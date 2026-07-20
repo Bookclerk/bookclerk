@@ -1,0 +1,47 @@
+# Example Libation configuration.
+# Copy to `$LIBATION_FILES_DIR/config.toml` or pass `--config`.
+
+[library]
+auto_liberate = false
+scan_interval_minutes = 60
+
+[download]
+quality = "high"   # high | normal
+format = "m4b"     # m4b | mp3 (mp3 re-encodes via ffmpeg after decrypt)
+# Prefer Widevine/CENC; also enables Adrm→Widevine fallback on 000307 when a CDM exists.
+widevine = false
+# Prefer xHE-AAC on the Widevine path when the server offers it.
+xhe_aac = false
+# Optional .wvd CDM path (else {{files_dir}}/widevine.wvd or Accounts/<account>.wvd).
+# widevine_cdm = "widevine.wvd"
+# Classic Libation naming templates (optional; default Author/Title/ASIN.ext).
+# folder_template = "<author>/<title>"
+# file_template = "<asin>"
+# Sidecar / metadata parity (classic Settings.json keys in comments).
+download_cover = false       # DownloadCoverArt
+download_pdf = true
+create_cue = false           # CreateCueSheet
+fixup_metadata = true        # AllowLibationFixup — embed cover/chapters/tags via ffmpeg
+save_chapter_json = true     # chapters.<layout>.json
+save_metadata_json = false   # metadata.json (classic SaveMetadataToFile)
+cover_size = "500"           # 500 | 1215 | native
+chapter_layout = "tree"      # tree | flat
+
+[storage]
+backend = "local"  # local | s3
+
+[storage.local]
+# Absolute path recommended for Docker/systemd.
+# Relative paths resolve under LIBATION_FILES_DIR (e.g. "Audiobooks").
+root = "/data/Audiobooks"
+
+[storage.s3]
+bucket = "my-audiobooks"
+prefix = "library/"
+region = "us-east-1"
+# endpoint = "https://minio.example.com"
+# force_path_style = true
+
+[daemon]
+listen = "127.0.0.1:8787"
+json_logs = true

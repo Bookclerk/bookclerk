@@ -1,0 +1,39 @@
+[package]
+name = "libation-audible"
+description = "Thin Libation wrapper over audible-rs for auth and download options"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+audible-rs.workspace = true
+chrono.workspace = true
+futures.workspace = true
+libation-config.workspace = true
+libation-library.workspace = true
+qrcode.workspace = true
+reqwest = { version = "0.13", default-features = true, features = ["json"] }
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+wiremock.workspace = true
+libation-library.workspace = true
+reqwest = { version = "0.13", default-features = true, features = ["json"] }
+serde_json.workspace = true
+audible-rs.workspace = true
+libation-config.workspace = true
+
+[lints]
+workspace = true

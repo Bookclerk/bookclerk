@@ -1,0 +1,98 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/libation-config",
+    "crates/libation-audible",
+    "crates/libation-decrypt",
+    "crates/libation-storage",
+    "crates/libation-library",
+    "crates/libation-liberate",
+    "crates/libation-naming",
+    "crates/libation-migrate",
+    "crates/libation-search",
+    "crates/libation-cli",
+    "crates/libationd",
+]
+default-members = [
+    "crates/libation-cli",
+    "crates/libationd",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/fritz-fritz/libation-rs"
+authors = ["fritz-fritz <contact@bookclerk.app>"]
+description = "Headless-first Audible library manager (Libation Rust rewrite)"
+
+[workspace.dependencies]
+# Internal crates
+libation-config = { path = "crates/libation-config" }
+libation-audible = { path = "crates/libation-audible" }
+libation-decrypt = { path = "crates/libation-decrypt" }
+libation-storage = { path = "crates/libation-storage" }
+libation-library = { path = "crates/libation-library" }
+libation-liberate = { path = "crates/libation-liberate" }
+libation-naming = { path = "crates/libation-naming" }
+libation-migrate = { path = "crates/libation-migrate" }
+libation-search = { path = "crates/libation-search" }
+
+# Async / runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "process", "signal"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Error / logging
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Serde / config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+directories = "6"
+
+# CLI / HTTP
+clap = { version = "4", features = ["derive", "env"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["trace"] }
+qrcode = { version = "0.14", default-features = false }
+
+# DB / storage — rusqlite (bundled) aligns with audible-rs; one libsqlite3-sys in the tree.
+rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite_migration = "2.6"
+aws-sdk-s3 = "1"
+aws-config = "1"
+aws-credential-types = "1"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+tempfile = "3"
+uuid = { version = "1", features = ["v4", "serde"] }
+tantivy = "0.22"
+csv = "1"
+filetime = "0.2"
+rust_xlsxwriter = "0.79"
+
+# audible-rs (pinned git rev; thin wrapper isolates API churn)
+audible-rs = { git = "https://github.com/mkb79/audible-rs", rev = "5a28f507072022ae7fd7f95a62e3bdc5e515d678" }
+secrecy = { version = "0.10", features = ["serde"] }
+
+# Test doubles
+wiremock = "0.6"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Keep CI green on defaults; tighten pedantic lints as crates mature.
+pedantic = { level = "allow", priority = -1 }
