@@ -81,7 +81,7 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 | `Lame*` | ✅ | `download.lame.*` (target/quality/bitrate/mode/downsample/CBR) |
 | `LameMatchSourceBR` | ⚠️ | Not a separate toggle; bitrate path uses configured kbps |
 | `MoveMoovToBeginning` | ⚠️ | Always on for native remux (`moov` faststart) |
-| `ReplacementCharacters` | ✅ | `download.replacement_characters` |
+| `ReplacementCharacters` | ✅ | `download.replacement_characters` (explicit) or `download.path_sanitization` (`auto`/`windows`/`posix`/`s3`/`none`) |
 | `MaxSampleRate` | ✅ | `download.max_sample_rate` |
 | `CreationTime` / `LastWriteTime` | ✅ | `download.creation_time` / `last_write_time` (local + S3 object metadata) |
 | `SavePodcastsToParentFolder` | ✅ | `library.save_podcasts_to_parent_folder` |

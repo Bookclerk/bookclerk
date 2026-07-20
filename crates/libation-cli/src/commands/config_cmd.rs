@@ -1,8 +1,10 @@
 //! `libation config` — get settings (LibationCli: `get-setting`).
 
 use clap::Subcommand;
-use libation_config::{classic_key_aliases, Config};
-use libation_liberate::{storage_key, NamingContext};
+use libation_config::{
+    classic_key_aliases, resolve_replacement_characters, Config, StorageBackendKind,
+};
+use libation_liberate::{storage_key_with_rules, NamingContext};
 use libation_library::LibraryStore;
 
 #[derive(Debug, Subcommand)]
@@ -109,6 +111,10 @@ pub fn run(command: ConfigCommand, config: &Config) -> anyhow::Result<()> {
                 config.download.file_template.as_deref().unwrap_or("-")
             );
             println!(
+                "download.path_sanitization = {:?}",
+                config.download.path_sanitization
+            );
+            println!(
                 "download.download_cover = {}",
                 config.download.download_cover
             );
@@ -188,13 +194,19 @@ fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()>
                 .as_deref()
                 .or(config.download.folder_template.as_deref());
             let file_tpl = file.as_deref().or(config.download.file_template.as_deref());
-            let key = storage_key(&ctx, folder_tpl, file_tpl, &ext);
+            let rules = resolve_replacement_characters(
+                &config.download.replacement_characters,
+                config.download.path_sanitization,
+                config.storage.backend == StorageBackendKind::S3,
+            );
+            let key = storage_key_with_rules(&ctx, folder_tpl, file_tpl, &ext, &rules);
             println!("asin\t{}", book.asin);
             println!(
                 "folder_template\t{}",
                 folder_tpl.unwrap_or("<author>/<title>")
             );
             println!("file_template\t{}", file_tpl.unwrap_or("<asin>"));
+            println!("path_sanitization\t{:?}", config.download.path_sanitization);
             println!("storage_key\t{key}");
             Ok(())
         }
@@ -255,6 +267,9 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
             .unwrap_or_default(),
         "download.folder_template" => config.download.folder_template.clone().unwrap_or_default(),
         "download.file_template" => config.download.file_template.clone().unwrap_or_default(),
+        "download.path_sanitization" => {
+            format!("{:?}", config.download.path_sanitization).to_ascii_lowercase()
+        }
         "download.download_cover" => config.download.download_cover.to_string(),
         "download.download_pdf" => config.download.download_pdf.to_string(),
         "download.create_cue" => config.download.create_cue.to_string(),

@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use libation_config::{
-    AudioQuality, Config, DownloadConfig, DownloadFormat, FileTimestampMode, LameConfig,
-    ReplacementRule,
+    resolve_replacement_characters, AudioQuality, Config, DownloadConfig, DownloadFormat,
+    FileTimestampMode, LameConfig, ReplacementRule, StorageBackendKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -84,7 +84,11 @@ impl From<&DownloadConfig> for DownloadOptions {
             max_sample_rate: cfg.max_sample_rate,
             creation_time: cfg.creation_time,
             last_write_time: cfg.last_write_time,
-            replacement_characters: cfg.replacement_characters.clone(),
+            replacement_characters: resolve_replacement_characters(
+                &cfg.replacement_characters,
+                cfg.path_sanitization,
+                false,
+            ),
             save_podcasts_to_parent_folder: false,
         }
     }
@@ -94,6 +98,12 @@ impl From<&Config> for DownloadOptions {
     fn from(cfg: &Config) -> Self {
         let mut opts = Self::from(&cfg.download);
         opts.save_podcasts_to_parent_folder = cfg.library.save_podcasts_to_parent_folder;
+        // Re-resolve with storage backend so Auto can pick the S3 profile.
+        opts.replacement_characters = resolve_replacement_characters(
+            &cfg.download.replacement_characters,
+            cfg.download.path_sanitization,
+            cfg.storage.backend == StorageBackendKind::S3,
+        );
         opts
     }
 }

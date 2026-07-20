@@ -29,6 +29,14 @@ xhe_aac = false
 # Classic Libation naming templates (optional; default Author/Title/ASIN.ext).
 # folder_template = "<author>/<title>"
 # file_template = "<asin>"
+# Path sanitization when replacement_characters is unset:
+#   auto (default) — posix on Linux/macOS local, windows on Windows local, s3 for S3
+#   windows | posix | s3 | none (none = separators only, same floor as posix)
+# path_sanitization = "auto"
+# Explicit override (classic ReplacementCharacters); non-empty wins over path_sanitization:
+# replacement_characters = [{ find = ":", replace = "_" }]
+# Reconcile matches existing files across profiles by treating sanitizable
+# characters as wildcards; creation always follows the rules above.
 # Sidecar / metadata parity (classic Settings.json keys in comments).
 download_cover = false       # DownloadCoverArt
 download_pdf = true

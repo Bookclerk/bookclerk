@@ -4,13 +4,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use libation_audible::DownloadOptions;
-use libation_config::DownloadFormat;
+use libation_config::{
+    key_matches_reconcile_pattern, reconciliation_wildcard_rules, DownloadFormat,
+};
 use libation_library::{BookRecord, LiberateStatus, LibraryStore};
 use libation_storage::StorageBackend;
 
 use crate::error::Result;
 use crate::naming::{default_storage_key, NamingContext};
-use crate::pipeline::{planned_storage_key_for, LiberateRequest};
+use crate::pipeline::{planned_storage_key_for, planned_storage_key_with_rules, LiberateRequest};
 use crate::storage_key_with_rules;
 
 /// Index of storage object keys, keyed by ASIN found in the path.
@@ -44,6 +46,16 @@ impl StorageIndex {
     #[must_use]
     pub fn contains_key(&self, key: &str) -> bool {
         self.all_keys.contains_key(key)
+    }
+
+    /// First key matching a reconcile wildcard `pattern`, preferring better media types.
+    #[must_use]
+    pub fn find_key_matching_pattern(&self, pattern: &str) -> Option<&str> {
+        self.all_keys
+            .keys()
+            .filter(|key| key_matches_reconcile_pattern(pattern, key))
+            .min_by_key(|key| media_rank(key))
+            .map(String::as_str)
     }
 
     /// Best matching storage key for an ASIN, if any.
@@ -184,6 +196,13 @@ pub fn find_existing_for_book(
 }
 
 /// Same as [`find_existing_for_book`] but for a liberate request before DB status is Liberated.
+///
+/// Matching strategy:
+/// 1. Exact planned path under the *creation* replacement rules
+/// 2. Same templates with sanitizable characters as wildcards (cross OS/backend)
+/// 3. Default Author/Title/ASIN layout (exact, then wildcard)
+/// 4. Template path without podcast-parent rewrite (exact, then wildcard)
+/// 5. ASIN token found anywhere in a storage key
 #[must_use]
 pub fn find_existing_for_request(
     index: &StorageIndex,
@@ -194,28 +213,45 @@ pub fn find_existing_for_request(
         DownloadFormat::M4b => "m4b",
         DownloadFormat::Mp3 => "mp3",
     };
-    let planned = planned_storage_key_for(library, req, ext);
-    if index.contains_key(&planned) {
-        return Some(planned);
+
+    // 1. Exact planned path (current creation sanitization).
+    if let Some(key) = find_exact_planned(index, library, req, ext) {
+        return Some(key);
     }
-    for alt in planned_extensions() {
-        if *alt == ext {
-            continue;
-        }
-        let key = planned_storage_key_for(library, req, alt);
-        if index.contains_key(&key) {
-            return Some(key);
-        }
+
+    // 2. Wildcard planned path — pickup liberations from another OS/backend.
+    let wildcard_rules = reconciliation_wildcard_rules(&req.options.replacement_characters);
+    if let Some(key) = find_wildcard_planned(index, library, req, &wildcard_rules) {
+        return Some(key.to_string());
     }
-    // Also try default Author/Title/ASIN layout for older files.
+
+    // 3. Default Author/Title/ASIN layout for older files.
     for alt in planned_extensions() {
         let key = default_storage_key(req.authors.as_deref(), &req.title, &req.asin, alt);
         if index.contains_key(&key) {
             return Some(key);
         }
     }
-    // When templates differ from defaults, still probe the raw template path
-    // without podcast-parent rewriting (older episode layouts).
+    for alt in planned_extensions() {
+        let pattern = storage_key_with_rules(
+            &NamingContext {
+                asin: req.asin.clone(),
+                title: req.title.clone(),
+                authors: req.authors.clone(),
+                ..Default::default()
+            },
+            None,
+            None,
+            alt,
+            &wildcard_rules,
+        );
+        if let Some(key) = index.find_key_matching_pattern(&pattern) {
+            return Some(key.to_string());
+        }
+    }
+
+    // 4. When templates differ from defaults, probe raw template path without
+    // podcast-parent rewriting (older episode layouts).
     if req.options.folder_template.is_some() || req.options.file_template.is_some() {
         let ctx = NamingContext {
             asin: req.asin.clone(),
@@ -239,8 +275,58 @@ pub fn find_existing_for_request(
                 return Some(key);
             }
         }
+        for alt in planned_extensions() {
+            let pattern = storage_key_with_rules(
+                &ctx,
+                req.options.folder_template.as_deref(),
+                req.options.file_template.as_deref(),
+                alt,
+                &wildcard_rules,
+            );
+            if let Some(key) = index.find_key_matching_pattern(&pattern) {
+                return Some(key.to_string());
+            }
+        }
     }
+
     index.best_key_for_asin(&req.asin).map(str::to_string)
+}
+
+fn find_exact_planned(
+    index: &StorageIndex,
+    library: &LibraryStore,
+    req: &LiberateRequest,
+    preferred_ext: &str,
+) -> Option<String> {
+    let planned = planned_storage_key_for(library, req, preferred_ext);
+    if index.contains_key(&planned) {
+        return Some(planned);
+    }
+    for alt in planned_extensions() {
+        if *alt == preferred_ext {
+            continue;
+        }
+        let key = planned_storage_key_for(library, req, alt);
+        if index.contains_key(&key) {
+            return Some(key);
+        }
+    }
+    None
+}
+
+fn find_wildcard_planned<'a>(
+    index: &'a StorageIndex,
+    library: &LibraryStore,
+    req: &LiberateRequest,
+    wildcard_rules: &[libation_config::ReplacementRule],
+) -> Option<&'a str> {
+    for alt in planned_extensions() {
+        let pattern = planned_storage_key_with_rules(library, req, alt, wildcard_rules);
+        if let Some(key) = index.find_key_matching_pattern(&pattern) {
+            return Some(key);
+        }
+    }
+    None
 }
 
 fn request_from_book(book: &BookRecord, download: &DownloadOptions) -> LiberateRequest {
@@ -451,6 +537,52 @@ mod reconcile_integration {
         assert_eq!(
             book.storage_key.as_deref(),
             Some("CustomRoot/B00EXAMPLE1.m4b")
+        );
+    }
+
+    #[tokio::test]
+    async fn matches_windows_sanitized_key_under_posix_rules() {
+        // File liberated on Windows (colon → underscore) should still match when
+        // this host creates paths with POSIX rules (colon kept).
+        let dir = tempdir().unwrap();
+        let store_root = dir.path().join("books");
+        let backend = LocalFsBackend::new(store_root).unwrap();
+        backend
+            .put(
+                "Jane Doe/Hello_ World/B00EXAMPLE1.m4b",
+                Bytes::from_static(b"audio"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+
+        let library = LibraryStore::open_in_memory().unwrap();
+        library.upsert_account("acct", "us", None, true).unwrap();
+        let mut book = NewBook::minimal("B00EXAMPLE1", "acct", "us", "Hello: World");
+        book.authors = Some("Jane Doe".into());
+        library.upsert_book(&book).unwrap();
+
+        let download = DownloadOptions {
+            // Creation rules keep ':'; reconcile must still find the Windows key.
+            replacement_characters: libation_config::posix_replacement_characters(),
+            ..Default::default()
+        };
+
+        let summary = reconcile_library(
+            &library,
+            &backend,
+            ReconcileOptions {
+                download,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.matched, 1);
+        let book = library.get_book("B00EXAMPLE1", "acct").unwrap().unwrap();
+        assert_eq!(
+            book.storage_key.as_deref(),
+            Some("Jane Doe/Hello_ World/B00EXAMPLE1.m4b")
         );
     }
 }

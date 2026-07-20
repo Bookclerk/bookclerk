@@ -17,7 +17,7 @@ pub use naming::{
 };
 pub use pipeline::{
     liberate_book, liberate_book_indexed, liberate_pdf_only, planned_storage_key,
-    planned_storage_key_for, LiberateRequest, LiberateResult,
+    planned_storage_key_for, planned_storage_key_with_rules, LiberateRequest, LiberateResult,
 };
 pub use reconcile::{
     extract_asins_from_key, find_existing_for_book, find_existing_for_request, reconcile_library,

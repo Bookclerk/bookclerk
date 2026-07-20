@@ -170,11 +170,9 @@ pub fn remove_spaces(parts: &[String]) -> String {
 }
 
 fn or_default_rules(rules: &[ReplacementRule]) -> std::borrow::Cow<'_, [ReplacementRule]> {
-    if rules.is_empty() {
-        std::borrow::Cow::Owned(libation_config::default_replacement_characters())
-    } else {
-        std::borrow::Cow::Borrowed(rules)
-    }
+    // Empty means "no replacement" — callers that want a profile must pass
+    // resolved rules from `libation_config::resolve_replacement_characters`.
+    std::borrow::Cow::Borrowed(rules)
 }
 
 /// Evaluate `template` into a single sanitised filename component.

@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ConfigError, Result};
-use crate::extras::{
-    default_replacement_characters, FileTimestampMode, LameConfig, ReplacementRule,
-};
+use crate::extras::{FileTimestampMode, LameConfig, PathSanitizationMode, ReplacementRule};
 use crate::paths::{resolve_config_path, resolve_files_dir, Paths};
 
 /// Top-level Libation configuration.
@@ -134,7 +132,10 @@ pub struct DownloadConfig {
     pub max_sample_rate: Option<u32>,
     pub creation_time: FileTimestampMode,
     pub last_write_time: FileTimestampMode,
-    /// Classic `ReplacementCharacters` map.
+    /// Path sanitization profile when [`Self::replacement_characters`] is empty.
+    pub path_sanitization: PathSanitizationMode,
+    /// Explicit classic `ReplacementCharacters` map. When non-empty, overrides
+    /// [`Self::path_sanitization`].
     pub replacement_characters: Vec<ReplacementRule>,
 }
 
@@ -186,7 +187,9 @@ impl Default for DownloadConfig {
             max_sample_rate: None,
             creation_time: FileTimestampMode::Now,
             last_write_time: FileTimestampMode::Now,
-            replacement_characters: default_replacement_characters(),
+            path_sanitization: PathSanitizationMode::Auto,
+            // Empty → resolve via path_sanitization + storage.backend at use time.
+            replacement_characters: Vec::new(),
         }
     }
 }

@@ -130,13 +130,10 @@ fn to_chapter_context(ctx: &NamingContext) -> Option<ChapterContext> {
     })
 }
 
-/// Rules to apply, falling back to the classic defaults when none are supplied.
+/// Rules to apply. Empty means no character replacement (callers should pass
+/// already-resolved rules from [`libation_config::resolve_replacement_characters`]).
 fn effective_rules(rules: &[ReplacementRule]) -> std::borrow::Cow<'_, [ReplacementRule]> {
-    if rules.is_empty() {
-        std::borrow::Cow::Owned(libation_config::default_replacement_characters())
-    } else {
-        std::borrow::Cow::Borrowed(rules)
-    }
+    std::borrow::Cow::Borrowed(rules)
 }
 
 /// Final filesystem hardening applied on top of the naming engine's output:
@@ -147,6 +144,9 @@ fn harden_segment(segment: &str) -> String {
 }
 
 /// Build a relative storage key for a liberated title.
+///
+/// Uses POSIX separator rules for creation. Reconcile probes this layout with
+/// wildcard sanitization so historical Windows/S3 keys still match.
 #[must_use]
 pub fn default_storage_key(authors: Option<&str>, title: &str, asin: &str, ext: &str) -> String {
     storage_key_with_rules(
@@ -159,7 +159,7 @@ pub fn default_storage_key(authors: Option<&str>, title: &str, asin: &str, ext: 
         None,
         None,
         ext,
-        &[],
+        &libation_config::posix_replacement_characters(),
     )
 }
 
@@ -171,7 +171,13 @@ pub fn storage_key(
     file_template: Option<&str>,
     ext: &str,
 ) -> String {
-    storage_key_with_rules(ctx, folder_template, file_template, ext, &[])
+    storage_key_with_rules(
+        ctx,
+        folder_template,
+        file_template,
+        ext,
+        &libation_config::posix_replacement_characters(),
+    )
 }
 
 /// Like [`storage_key`] but applies classic `ReplacementCharacters`.
@@ -375,8 +381,39 @@ mod tests {
 
     #[test]
     fn builds_safe_key() {
-        let key = default_storage_key(Some("A/B"), "Hello: World", "B00X", "m4b");
+        // With no rules, only harden_segment runs — `/` in authors would inject
+        // segments, so liberate always passes resolved rules. Explicit Windows
+        // map matches classic sanitization.
+        let key = storage_key_with_rules(
+            &NamingContext {
+                asin: "B00X".into(),
+                title: "Hello: World".into(),
+                authors: Some("A/B".into()),
+                ..Default::default()
+            },
+            None,
+            None,
+            "m4b",
+            &libation_config::windows_replacement_characters(),
+        );
         assert_eq!(key, "A_B/Hello_ World/B00X.m4b");
+    }
+
+    #[test]
+    fn posix_keeps_colon() {
+        let key = storage_key_with_rules(
+            &NamingContext {
+                asin: "B00X".into(),
+                title: "Hello: World".into(),
+                authors: Some("Jane Doe".into()),
+                ..Default::default()
+            },
+            None,
+            None,
+            "m4b",
+            &libation_config::posix_replacement_characters(),
+        );
+        assert_eq!(key, "Jane Doe/Hello: World/B00X.m4b");
     }
 
     #[test]

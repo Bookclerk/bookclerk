@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::extras::{classic_key_aliases, FileTimestampMode};
+use crate::extras::{classic_key_aliases, FileTimestampMode, PathSanitizationMode};
 use crate::settings::{AudioQuality, BadBookAction, Config, DownloadFormat};
 
 /// Apply classic-style `-o Setting=value` overrides onto `config`.
@@ -50,6 +50,15 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         }
         "download.folder_template" => config.download.folder_template = Some(v.to_string()),
         "download.file_template" => config.download.file_template = Some(v.to_string()),
+        "download.path_sanitization" => {
+            config.download.path_sanitization = match v.to_ascii_lowercase().as_str() {
+                "windows" | "win" | "ntfs" => PathSanitizationMode::Windows,
+                "posix" | "unix" | "linux" | "macos" | "mac" => PathSanitizationMode::Posix,
+                "s3" | "object" | "object_storage" => PathSanitizationMode::S3,
+                "none" | "off" | "disabled" => PathSanitizationMode::None,
+                _ => PathSanitizationMode::Auto,
+            };
+        }
         "download.download_cover" => {
             config.download.download_cover = parse_bool(v).unwrap_or(false);
         }

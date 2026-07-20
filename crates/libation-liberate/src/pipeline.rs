@@ -915,13 +915,25 @@ fn folder_naming_ctx(library: &LibraryStore, req: &LiberateRequest) -> NamingCon
 /// `save_podcasts_to_parent_folder`.
 #[must_use]
 pub fn planned_storage_key_for(library: &LibraryStore, req: &LiberateRequest, ext: &str) -> String {
+    planned_storage_key_with_rules(library, req, ext, &req.options.replacement_characters)
+}
+
+/// Like [`planned_storage_key_for`] but with an explicit replacement-rule set
+/// (used by reconcile to probe wildcard patterns across sanitization profiles).
+#[must_use]
+pub fn planned_storage_key_with_rules(
+    library: &LibraryStore,
+    req: &LiberateRequest,
+    ext: &str,
+    replacement_rules: &[libation_config::ReplacementRule],
+) -> String {
     storage_key_with_contexts(
         &folder_naming_ctx(library, req),
         &naming_ctx(library, req),
         req.options.folder_template.as_deref(),
         req.options.file_template.as_deref(),
         ext,
-        &req.options.replacement_characters,
+        replacement_rules,
     )
 }
 
