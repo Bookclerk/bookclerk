@@ -15,6 +15,9 @@ use libation_library::LibraryStore;
 #[derive(Debug, Subcommand)]
 pub enum AuthCommand {
     /// Log in via browser / QR (LibationCli: `login-external`).
+    ///
+    /// Amazon accounts with 2FA/MFA must complete OTP (or another challenge)
+    /// in the browser — audible-rs OAuth has no username/password flags.
     Login {
         /// Marketplace code (`us`, `uk`, `de`, …).
         #[arg(short = 'm', long, default_value = "us")]

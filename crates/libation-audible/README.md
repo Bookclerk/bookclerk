@@ -18,6 +18,13 @@ default for headless). `libation-library` uses the same rusqlite 0.40 + bundled 
 - **Server (default):** local reverse-proxy + terminal QR — best for SSH/Docker with port forward
 - **External (`--external`):** print authorize URL; paste redirect on stdin or `--response-url`
 
+Both modes open Amazon's OAuth / device-registration flow in a browser. There is
+**no** username/password CLI flag: credentials are entered in the browser
+(audible-rs). Amazon accounts with **2FA/MFA enabled require completing OTP**
+(or SMS / mobile verification) during that browser step. Headless agents need
+either an interactive Desktop session or a TOTP seed to finish login; importing
+an existing plain `{LIBATION_FILES_DIR}/auth/*.auth` file skips login entirely.
+
 ## Liberate download path
 
 `fetch_and_download_with_options`:

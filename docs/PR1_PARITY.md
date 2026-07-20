@@ -141,3 +141,12 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 | TOML config + env overrides | Classic uses `Settings.json` |
 | QR / local callback-server login | Extra headless login modes beyond `login-external` |
 | `config template tags` / `preview` | Headless template tooling |
+
+---
+
+## Post-PR1 (planned)
+
+| Item | Notes |
+| --- | --- |
+| Native Rust aaxclean in `libation-decrypt` | Replace the `aaxclean-cli` subprocess for Adrm/CENC decrypt so liberate has no external decrypt binary dependency (ffmpeg may remain for mp3 / metadata fix-up) |
+| GUI | Deferred Avalonia / Chardonnay-class UI |

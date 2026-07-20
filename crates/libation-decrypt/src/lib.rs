@@ -315,25 +315,72 @@ async fn run_tool(bin: &Path, args: &[String], output: &Path, label: &str) -> Re
     Ok(())
 }
 
+/// Locate an external tool without executing it.
+///
+/// Upstream `aaxclean-cli` (native builds) exits non-zero for `-version` /
+/// `--help`, so probing via process exit status is unreliable across tools.
+/// Instead we require a regular file at an absolute/relative path, or a bare
+/// command name found on `PATH` (Windows also honors `PATHEXT`).
+fn find_tool(bin: &Path) -> Option<PathBuf> {
+    if bin.as_os_str().is_empty() {
+        return None;
+    }
+    // Absolute path or explicit relative path (contains a separator) → as-is.
+    if bin.is_absolute() || bin.components().count() > 1 {
+        return bin.is_file().then(|| bin.to_path_buf());
+    }
+    let path_os = std::env::var_os("PATH")?;
+    find_tool_in_dirs(bin, std::env::split_paths(&path_os))
+}
+
+/// Search `dirs` for a bare command name (testable without mutating `PATH`).
+fn find_tool_in_dirs<I>(bin: &Path, dirs: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let name = bin.as_os_str();
+    for dir in dirs {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        if let Some(found) = find_with_pathext(&dir, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn find_with_pathext(dir: &Path, name: &std::ffi::OsStr) -> Option<PathBuf> {
+    // If the name already has an extension, the plain `is_file` check above
+    // is enough; appending PATHEXT would produce `tool.exe.exe`.
+    if Path::new(name).extension().is_some() {
+        return None;
+    }
+    let pathext = std::env::var_os("PATHEXT")?;
+    for ext in pathext.to_string_lossy().split(';') {
+        let ext = ext.trim();
+        if ext.is_empty() {
+            continue;
+        }
+        let mut file_name = name.to_os_string();
+        file_name.push(ext);
+        let candidate = dir.join(file_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Return true when `bin` resolves to an existing file on disk / `PATH`.
 async fn tool_available(bin: &Path) -> bool {
-    Command::new(bin)
-        .arg("-version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
-        || Command::new(bin)
-            .arg("--help")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false)
+    find_tool(bin).is_some()
 }
 
 /// True when `aaxclean-cli` appears to be available.
@@ -406,5 +453,36 @@ mod tests {
             aaxclean_args(&req),
             Err(DecryptError::UnsupportedActivationBytes)
         ));
+    }
+
+    #[tokio::test]
+    async fn tool_available_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = dir.path().join("stub-aaxclean");
+        std::fs::write(&tool, b"stub").unwrap();
+        assert!(tool_available(&tool).await);
+    }
+
+    #[tokio::test]
+    async fn tool_available_missing_binary_is_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-aaxclean-cli");
+        assert!(!missing.exists());
+        assert!(!tool_available(&missing).await);
+    }
+
+    #[test]
+    fn find_tool_in_dirs_resolves_bare_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "libation-test-decrypt-stub";
+        std::fs::write(dir.path().join(name), b"stub").unwrap();
+        let found = find_tool_in_dirs(Path::new(name), [dir.path().to_path_buf()]);
+        assert_eq!(found, Some(dir.path().join(name)));
+    }
+
+    #[test]
+    fn find_tool_in_dirs_missing_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(find_tool_in_dirs(Path::new("missing-tool"), [dir.path().to_path_buf()]).is_none());
     }
 }

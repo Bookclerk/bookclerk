@@ -56,6 +56,14 @@ cargo run -p libation-cli -- library scan
 cargo run -p libation-cli -- library liberate --asin B0EXAMPLE
 ```
 
+### Auth login (OTP / 2FA)
+
+`auth login` drives audible-rs OAuth in a browser (local callback server + QR by
+default, or `--external` paste). Amazon accounts with **2FA/MFA must complete
+OTP** (authenticator app) or another challenge in that browser session — there
+are no CLI password flags. Without interactive access, import an existing
+audible-rs `.auth` file (`auth import`) or migrate from classic Libation.
+
 ### Tools
 
 | Tool | Needed for |
@@ -66,6 +74,10 @@ cargo run -p libation-cli -- library liberate --asin B0EXAMPLE
 
 Place the CDM at `download.widevine_cdm`, `{LIBATION_FILES_DIR}/widevine.wvd`, or
 `Accounts/<account>.wvd`.
+
+Adrm decrypt currently shells out to `aaxclean-cli`. A **native Rust
+reimplementation of aaxclean** (inside `libation-decrypt`) is a planned
+post-PR1 goal so liberate no longer depends on that external binary.
 
 ### Widevine / xHE / mp3
 
