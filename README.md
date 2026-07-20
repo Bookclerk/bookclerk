@@ -25,10 +25,10 @@ GUI is deferred post-PR1.
 | Auth list / status / import (`.auth` + AccountsSettings.json) | done |
 | Migrate classic Libation Files (Settings / accounts / DB / templates) | done |
 | Library scan → SQLite (honors `scan_enabled`) | done |
-| Liberate Adrm aaxc → aaxclean → store | done |
+| Liberate Adrm aaxc → native decrypt → store | done |
 | Liberate Widevine/CENC (CDM `.wvd`, 000307 fallback) | done |
 | Prefer xHE-AAC on Widevine path | done |
-| `format=mp3` via ffmpeg re-encode | done |
+| `format=mp3` via native Symphonia+LAME re-encode | done |
 | Naming templates (`folder_template` / `file_template`) | done (Chardonnay engine) |
 | `auth set-scan` / `auth list --bare` (scan inclusion) | done |
 | `config template tags` / `config template preview` | done |
@@ -64,29 +64,57 @@ OTP** (authenticator app) or another challenge in that browser session — there
 are no CLI password flags. Without interactive access, import an existing
 audible-rs `.auth` file (`auth import`) or migrate from classic Libation.
 
+OAuth tokens are stored under `Accounts/<account>.auth`. Prefer encryption at
+rest (audible-rs Argon2id + XChaCha20-Poly1305):
+
+```bash
+# Explicit passphrase:
+export LIBATION_AUTH_PASSWORD='your-strong-passphrase'
+
+# Or point at a secrets path (created with a strong random secret if missing —
+# keep this off the Accounts/ volume):
+export LIBATION_AUTH_PASSWORD_FILE=/run/libation/secrets/auth_password
+
+libation auth login --force
+```
+
+For local throwaway setups only, `auth.allow_plaintext = true` stores unprotected
+token files.
+
 ### Tools
 
 | Tool | Needed for |
 | --- | --- |
-| [aaxclean-cli](https://github.com/Mbucari/aaxclean-cli) | Adrm decrypt; preferred CENC decrypt (`AUDIBLE_AAXCLEAN_CLI`) |
-| `ffmpeg` | CENC decrypt fallback; `format=mp3` re-encode (`LIBATION_FFMPEG`) |
-| Widevine `.wvd` CDM | Widevine-only titles / `download.widevine=true` |
+| *(none for decrypt/encode)* | Adrm aaxc and Audible Widevine **DASH fMP4/CENC**, MP3, metadata, and chapter split are **native Rust** |
+| Android auth + L3 CDM | Widevine / xHE-AAC (`download.widevine=true`) — L3 CDM auto-provisions via classic Libation AudibleCdm; optional BYO `.wvd` |
 
-Place the CDM at `download.widevine_cdm`, `{LIBATION_FILES_DIR}/widevine.wvd`, or
-`Accounts/<account>.wvd`.
+Audible’s Widevine downloads are a DASH MPD pointing at one CENC **fragmented MP4**
+(`moof`/`senc`), offered as AAC-LC and optionally xHE-AAC. We decrypt that path
+natively. Progressive (non-DASH) `enca` decrypt is also implemented as a general
+CENC fallback, but it is **not** what Audible’s liberate download produces today.
 
-Adrm decrypt currently shells out to `aaxclean-cli`. A **native Rust
-reimplementation of aaxclean** (inside `libation-decrypt`) is a planned
-post-PR1 goal so liberate no longer depends on that external binary.
+Widevine **L3** (software) is what we support for stereo / xHE-AAC. Spatial/Atmos needs **L1** (hardware) and is not available on desktop — same as classic Libation.
 
+For Widevine titles, use a normal login (registers as Android):
+
+```bash
+libation auth login --force
+```
+
+On first Widevine liberate, an L3 `.wvd` is fetched from the AudibleCdm provider and cached under `Accounts/<account>.wvd` (override with `download.widevine_cdm`, or set `download.widevine_cdm_provider = "off"` to require BYO only).
+
+No external `ffmpeg` or `aaxclean-cli` binaries are required. When
+`download.strip_audible_brand_audio = true`, liberate also trims Audible
+pre/post-roll using `brand_intro_duration_ms` / `brand_outro_duration_ms` from
+chapter metadata (classic Libation behavior).
 ### Widevine / xHE / mp3
 
 ```toml
 [download]
 widevine = true
 xhe_aac = true
-format = "mp3"          # requires ffmpeg
-widevine_cdm = "device.wvd"
+format = "mp3"          # native LAME re-encode after decrypt
+# widevine_cdm = "device.wvd"   # optional BYO; otherwise auto-provision L3
 folder_template = "<author>/<title>"
 file_template = "<title> [<asin>]"
 ```
@@ -101,7 +129,7 @@ aaxc asset), liberate automatically falls back to Widevine when a CDM is found.
 download_cover = true       # save .jpg alongside audio (DownloadCoverArt)
 download_pdf = true         # companion PDF when available
 create_cue = true           # .cue from API chapters (CreateCueSheet)
-fixup_metadata = true       # ffmpeg embed cover/chapters/tags (AllowLibationFixup)
+fixup_metadata = true       # embed cover/chapters/tags (AllowLibationFixup)
 save_chapter_json = true    # chapters.<tree|flat>.json
 cover_size = "500"          # 500 | 1215 | native
 chapter_layout = "tree"     # tree | flat

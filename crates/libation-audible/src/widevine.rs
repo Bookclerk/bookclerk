@@ -1,4 +1,13 @@
-//! Widevine/CENC download path via audible-rs (native CDM + drmlicense).
+//! Widevine download path via audible-rs — matches Audible’s Android L3 stack.
+//!
+//! Audible Widevine liberate flow:
+//! 1. `licenserequest` with `drm_types: ["Widevine","Mpeg"]` (Android account)
+//! 2. DASH MPD → one CENC fragmented MP4 (`BaseURL`) + PSSH
+//! 3. CDM challenge → `drmlicense` → content key (KID/key)
+//! 4. Ranged download of the fMP4, then native DASH/CENC decrypt
+//!
+//! Codecs: AAC-LC always; optional xHE-AAC. Spatial/Atmos needs L1 and is not
+//! requested by liberate on desktop.
 
 use std::path::{Path, PathBuf};
 
@@ -7,10 +16,17 @@ use audible_rs::downloader::{
     self, download_cenc_to_file, request_drmlicense, request_widevine_license, Quality,
     WidevineGrant,
 };
-use audible_rs::widevine::{mpd, Cdm, Device};
+use audible_rs::widevine::{mpd, provider, Cdm, Device};
 use libation_config::AudioQuality;
 
 use crate::error::{AudibleError, Result};
+
+/// Amazon Android device type id required for Widevine drmlicense grants.
+const ANDROID_DEVICE_TYPE: &str = "A10KISP2GWF0E4";
+
+/// Classic Libation AudibleCdm endpoint — provisions a unique L3 `.wvd` per account.
+pub const DEFAULT_WIDEVINE_CDM_PROVIDER: &str =
+    "https://ollj0gz40d.execute-api.us-west-2.amazonaws.com/default/AudibleCdm";
 
 /// Loaded Widevine CDM client.
 pub struct WidevineCdm {
@@ -18,10 +34,26 @@ pub struct WidevineCdm {
     pub security_level: u8,
 }
 
-/// Resolve and load a `.wvd` device blob.
+/// Resolve provider URL: `None` config → built-in Libation AudibleCdm; empty/`off` → disabled.
+#[must_use]
+pub fn effective_cdm_provider(configured: Option<&str>) -> Option<&str> {
+    match configured {
+        None => Some(DEFAULT_WIDEVINE_CDM_PROVIDER),
+        Some(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("off") {
+                None
+            } else {
+                Some(trimmed)
+            }
+        }
+    }
+}
+
+/// Resolve and load a `.wvd` device blob (local files only).
 ///
-/// Search order for `configured`:
-/// 1. Explicit absolute/relative path (relative to `files_dir`)
+/// Search order:
+/// 1. Explicit `download.widevine_cdm` path (absolute, or relative to `files_dir`)
 /// 2. `{files_dir}/widevine.wvd`
 /// 3. `{files_dir}/Accounts/{account_stem}.wvd`
 pub fn load_widevine_cdm(
@@ -49,6 +81,101 @@ pub fn load_widevine_cdm(
     }))
 }
 
+/// Load a local L3 CDM, or auto-provision one via the classic Libation AudibleCdm provider.
+///
+/// Widevine drmlicense requires an **Android**-registered account
+/// (`libation auth login` always registers as Android). Spatial/Atmos (L1) remains unavailable.
+pub async fn ensure_widevine_cdm(
+    files_dir: &Path,
+    configured: Option<&Path>,
+    account_stem: Option<&str>,
+    auth_file: &Path,
+    provider_url: Option<&str>,
+) -> Result<(WidevineCdm, PathBuf)> {
+    match load_widevine_cdm(files_dir, configured, account_stem) {
+        Ok(found) => return Ok(found),
+        Err(err) => {
+            if effective_cdm_provider(provider_url).is_none() {
+                return Err(err);
+            }
+            tracing::debug!(error = %err, "local Widevine CDM missing; trying provider");
+        }
+    }
+
+    let Some(endpoint) = effective_cdm_provider(provider_url) else {
+        unreachable!("checked above");
+    };
+
+    let dest = account_stem
+        .map(|stem| crate::paths::widevine_cdm_file_for(files_dir, stem))
+        .unwrap_or_else(|| files_dir.join("widevine.wvd"));
+
+    provision_cdm_from_provider(auth_file, endpoint, &dest).await?;
+    load_cdm_at(&dest).map(|cdm| (cdm, dest))
+}
+
+async fn provision_cdm_from_provider(auth_file: &Path, endpoint: &str, dest: &Path) -> Result<()> {
+    let auth = crate::auth::load_authenticator(auth_file, None).await?;
+    let device_type = auth.device_type().unwrap_or("unknown");
+    if device_type != ANDROID_DEVICE_TYPE {
+        return Err(AudibleError::Widevine(format!(
+            "Widevine L3 needs an Android-registered account (device_type={device_type:?}). \
+             Re-login with: libation auth login --force"
+        )));
+    }
+    let signer = auth.signer().cloned().ok_or_else(|| {
+        AudibleError::Widevine(
+            "account has no signing material; re-login with libation auth login --force".into(),
+        )
+    })?;
+    let api_url = format!(
+        "https://api.audible.{}/1.0/account/information",
+        auth.locale().domain
+    );
+    let signed = tokio::task::spawn_blocking(move || {
+        signer.sign_request("GET", "/1.0/account/information", b"")
+    })
+    .await
+    .map_err(|err| AudibleError::Widevine(format!("CDM sign task failed: {err}")))?;
+
+    tracing::info!(endpoint, dest = %dest.display(), "provisioning Widevine L3 CDM");
+    let wvd = provider::fetch_wvd(endpoint, &api_url, &signed)
+        .await
+        .map_err(|err| AudibleError::Widevine(format!("CDM provider failed: {err}")))?;
+    Device::from_wvd(&wvd).map_err(|err| {
+        AudibleError::Widevine(format!("CDM provider returned invalid .wvd: {err}"))
+    })?;
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    write_private_file(dest, &wvd)?;
+    tracing::info!(
+        path = %dest.display(),
+        bytes = wvd.len(),
+        "Widevine L3 CDM provisioned and cached"
+    );
+    Ok(())
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path).map_err(|err| {
+        AudibleError::Widevine(format!("failed to write CDM {}: {err}", path.display()))
+    })?;
+    file.write_all(bytes).map_err(|err| {
+        AudibleError::Widevine(format!("failed to write CDM {}: {err}", path.display()))
+    })?;
+    Ok(())
+}
+
 fn cdm_candidates(
     files_dir: &Path,
     configured: Option<&Path>,
@@ -64,7 +191,7 @@ fn cdm_candidates(
     }
     out.push(files_dir.join("widevine.wvd"));
     if let Some(stem) = account_stem {
-        out.push(files_dir.join("Accounts").join(format!("{stem}.wvd")));
+        out.push(crate::paths::widevine_cdm_file_for(files_dir, stem));
     }
     out
 }
@@ -328,6 +455,21 @@ mod tests {
         assert_eq!(list[0], PathBuf::from("/data/custom.wvd"));
         assert!(list.iter().any(|p| p.ends_with("widevine.wvd")));
         assert!(list.iter().any(|p| p.ends_with("Accounts/alice.wvd")));
+        assert!(!list.iter().any(|p| p.ends_with("auth/alice.wvd")));
+    }
+
+    #[test]
+    fn provider_defaults_and_off() {
+        assert_eq!(
+            effective_cdm_provider(None),
+            Some(DEFAULT_WIDEVINE_CDM_PROVIDER)
+        );
+        assert_eq!(effective_cdm_provider(Some("off")), None);
+        assert_eq!(effective_cdm_provider(Some("")), None);
+        assert_eq!(
+            effective_cdm_provider(Some("https://example.test/cdm")),
+            Some("https://example.test/cdm")
+        );
     }
 
     #[test]

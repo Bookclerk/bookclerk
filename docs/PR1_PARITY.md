@@ -73,14 +73,14 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 | `MinimumFileDuration` | ✅ | `download.minimum_file_duration_minutes` |
 | `CombineNestedChapterTitles` | ✅ | `download.combine_nested_chapter_titles` |
 | `MergeOpeningAndEndCredits` | ✅ | `download.merge_opening_and_end_credits` |
-| `StripUnabridged` / `StripAudibleBrandAudio` | ✅ | `download.strip_unabridged` / `strip_audible_brand_audio` |
+| `StripUnabridged` / `StripAudibleBrandAudio` | ✅ | `download.strip_unabridged` / `strip_audible_brand_audio` (brand audio is trimmed from the media using chapter `brand_intro`/`brand_outro` durations; titles are scrubbed too) |
 | `DownloadClipsBookmarks` | ✅ | `download.download_clips_bookmarks` (JSON sidecar) |
 | `ClipsBookmarksFileFormat` | ⚠️ | Always JSON; classic also offers CSV/XLSX |
 | `RetainAaxFile` | ✅ | `download.retain_aax_file` |
 | `DownloadSpeedLimit` | ✅ | `download.download_speed_limit_kbps` |
 | `Lame*` | ✅ | `download.lame.*` (target/quality/bitrate/mode/downsample/CBR) |
 | `LameMatchSourceBR` | ⚠️ | Not a separate toggle; bitrate path uses configured kbps |
-| `MoveMoovToBeginning` | ⚠️ | Always on for aaxclean/ffmpeg paths (`--moov_faststart`) |
+| `MoveMoovToBeginning` | ⚠️ | Always on for native remux (`moov` faststart) |
 | `ReplacementCharacters` | ✅ | `download.replacement_characters` |
 | `MaxSampleRate` | ✅ | `download.max_sample_rate` |
 | `CreationTime` / `LastWriteTime` | ✅ | `download.creation_time` / `last_write_time` (local + S3 object metadata) |
@@ -113,7 +113,6 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 | Item | Notes |
 | --- | --- |
 | Upgrade checks (`version --check`) | Intentionally deferred for PR1 |
-| Encrypted auth-file password prompt | Loader accepts a password; interactive CLI prompt not wired |
 | Clips/bookmarks export format | JSON only (classic CSV/XLSX options unused in headless path) |
 | `MoveMoovToBeginning` / `LameMatchSourceBR` toggles | Behavior covered by defaults / always-on moov_faststart |
 | Exotic naming edge cases | Rare TimeSpan masks / locale-specific number formats |
@@ -148,5 +147,5 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 
 | Item | Notes |
 | --- | --- |
-| Native Rust aaxclean in `libation-decrypt` | Replace the `aaxclean-cli` subprocess for Adrm/CENC decrypt so liberate has no external decrypt binary dependency (ffmpeg may remain for mp3 / metadata fix-up) |
+| Spatial / Atmos (Widevine L1) | Hardware TEE only; desktop L3 cannot satisfy L1 license grants |
 | GUI | Deferred Avalonia / Chardonnay-class UI |

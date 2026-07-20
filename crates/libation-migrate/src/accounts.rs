@@ -3,10 +3,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use audible_rs::auth::authfile::KdfParams;
 use audible_rs::auth::Authenticator;
 use chrono::{DateTime, Utc};
-use libation_audible::auth_file_for;
+use libation_audible::{auth_file_for, ensure_accounts_dir, save_authenticator, SaveAuthOptions};
 use libation_library::LibraryStore;
 use serde_json::Value;
 
@@ -106,7 +105,12 @@ pub async fn import_accounts(
                                     dest.display()
                                 ));
                             } else if !dry_run {
-                                auth.save_to(&dest, None, KdfParams::default())
+                                ensure_accounts_dir(dest_files_dir).map_err(|err| {
+                                    MigrateError::Auth(format!(
+                                        "failed to create Accounts dir: {err}"
+                                    ))
+                                })?;
+                                save_authenticator(&auth, &dest, SaveAuthOptions::default())
                                     .await
                                     .map_err(|err| {
                                         MigrateError::Auth(format!(

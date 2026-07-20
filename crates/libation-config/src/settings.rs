@@ -22,6 +22,21 @@ pub struct Config {
     pub download: DownloadConfig,
     pub storage: StorageConfig,
     pub daemon: DaemonConfig,
+    pub auth: AuthConfig,
+}
+
+/// Auth-file encryption settings (OAuth tokens under `Accounts/`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AuthConfig {
+    /// Path to a file containing the auth-file passphrase (Docker/systemd secret).
+    /// Prefer this or `LIBATION_AUTH_PASSWORD_FILE` over putting the secret in TOML.
+    /// If the path is set but the file is missing, Libation creates it with a
+    /// strong random secret — point it at a secrets volume, not `Accounts/`.
+    pub password_file: Option<PathBuf>,
+    /// Allow writing unencrypted `.auth` files when no passphrase is configured.
+    /// Default `false` — OAuth tokens should be encrypted at rest.
+    pub allow_plaintext: bool,
 }
 
 /// Library / scan related settings.
@@ -61,12 +76,15 @@ impl Default for LibraryConfig {
 pub struct DownloadConfig {
     pub quality: AudioQuality,
     pub format: DownloadFormat,
-    /// Prefer Widevine/CENC (also enables Adrm→Widevine fallback when a CDM is present).
+    /// Prefer Widevine/CENC (also enables Adrm→Widevine fallback; auto-provisions L3 CDM).
     pub widevine: bool,
     /// Prefer xHE-AAC on the Widevine path when offered.
     pub xhe_aac: bool,
-    /// Path to a Widevine `.wvd` CDM (absolute or relative to `LIBATION_FILES_DIR`).
+    /// Optional local Widevine `.wvd` path (absolute or relative to `LIBATION_FILES_DIR`).
+    /// When unset, liberate auto-provisions an L3 CDM via [`widevine_cdm_provider`].
     pub widevine_cdm: Option<PathBuf>,
+    /// Remote L3 CDM provider. `None` uses classic Libation AudibleCdm; empty/`off` disables auto-fetch.
+    pub widevine_cdm_provider: Option<String>,
     /// Classic Libation `FolderTemplate` (e.g. `<author>/<title>`).
     pub folder_template: Option<String>,
     /// Classic Libation `FileTemplate` without extension (e.g. `<asin>` or `<title> [<asin>]`).
@@ -77,7 +95,7 @@ pub struct DownloadConfig {
     pub download_pdf: bool,
     /// Write a `.cue` sidecar from API chapters (`CreateCueSheet`; classic default off).
     pub create_cue: bool,
-    /// Embed tags, cover, and chapters via ffmpeg (`AllowLibationFixup`; classic default on).
+    /// Embed tags, cover, and chapters natively (`AllowLibationFixup`; classic default on).
     pub fixup_metadata: bool,
     /// Persist API chapter JSON (`chapters.<layout>.json`).
     pub save_chapter_json: bool,
@@ -139,6 +157,7 @@ impl Default for DownloadConfig {
             widevine: false,
             xhe_aac: false,
             widevine_cdm: None,
+            widevine_cdm_provider: None,
             folder_template: None,
             file_template: None,
             download_cover: false,
@@ -359,6 +378,17 @@ impl Config {
                 self.library.scan_interval_minutes = n;
             }
         }
+        if let Ok(v) = std::env::var("LIBATION_AUTH_PASSWORD_FILE") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.auth.password_file = Some(PathBuf::from(trimmed));
+            }
+        }
+        if let Ok(v) = std::env::var("LIBATION_AUTH_ALLOW_PLAINTEXT") {
+            if let Some(b) = parse_bool(&v) {
+                self.auth.allow_plaintext = b;
+            }
+        }
         if let Ok(v) = std::env::var("LIBATION_WIDEVINE") {
             self.download.widevine = parse_bool(&v).unwrap_or(self.download.widevine);
         }
@@ -367,6 +397,9 @@ impl Config {
         }
         if let Ok(v) = std::env::var("LIBATION_WIDEVINE_CDM") {
             self.download.widevine_cdm = Some(PathBuf::from(v));
+        }
+        if let Ok(v) = std::env::var("LIBATION_WIDEVINE_CDM_PROVIDER") {
+            self.download.widevine_cdm_provider = Some(v);
         }
         if let Ok(v) = std::env::var("LIBATION_FOLDER_TEMPLATE") {
             self.download.folder_template = Some(v);
@@ -436,12 +469,30 @@ impl Config {
         }
     }
 
-    /// Warn about incomplete Widevine setup when widevine is enabled without a CDM path hint.
+    /// Warn / note about Widevine / auth encryption setup.
     pub fn warn_unsupported_options(&self) {
         if self.download.widevine && self.download.widevine_cdm.is_none() {
             tracing::info!(
-                "download.widevine=true — ensure a .wvd CDM is available \
-                 (download.widevine_cdm, {{files_dir}}/widevine.wvd, or Accounts/<account>.wvd)"
+                "download.widevine=true — L3 CDM auto-provisions via AudibleCdm on first Widevine \
+                 liberate (Android auth from `libation auth login`). \
+                 Optional BYO: download.widevine_cdm / {{files_dir}}/widevine.wvd / \
+                 {{files_dir}}/Accounts/<account>.wvd (or set download.widevine_cdm_provider=off)"
+            );
+        }
+        let has_password_env = std::env::var_os("LIBATION_AUTH_PASSWORD")
+            .is_some_and(|v| !v.is_empty())
+            || std::env::var_os("LIBATION_AUTH_PASSWORD_FILE").is_some_and(|v| !v.is_empty())
+            || self.auth.password_file.is_some();
+        if !has_password_env && !self.auth.allow_plaintext {
+            tracing::info!(
+                "auth encryption: set LIBATION_AUTH_PASSWORD or LIBATION_AUTH_PASSWORD_FILE \
+                 (auto-creates a strong random secret at that path if missing — use a secrets \
+                 volume, not Accounts/) or [auth].password_file; or set auth.allow_plaintext=true \
+                 for unprotected local token files"
+            );
+        } else if self.auth.allow_plaintext && !has_password_env {
+            tracing::warn!(
+                "auth.allow_plaintext=true — OAuth tokens may be stored unprotected under Accounts/"
             );
         }
     }

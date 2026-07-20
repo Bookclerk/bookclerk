@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use clap::Subcommand;
 use libation_audible::{
-    begin_login, import_auth_file, import_libation_accounts_json, import_mkb79_auth_json,
-    list_accounts, resolve_auth_file_async, AccountStatus, AuthLoginOptions, LoginMode,
-    LoginProgress, QrRenderMode,
+    begin_login, import_auth_file_with_options, import_libation_accounts_json,
+    import_mkb79_auth_json, list_accounts, resolve_auth_file_async, AccountStatus,
+    AuthLoginOptions, LoginMode, LoginProgress, QrRenderMode, SaveAuthOptions,
 };
 use libation_config::Config;
 use libation_library::LibraryStore;
@@ -121,6 +121,8 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
                 timeout_secs: timeout,
                 audible_username,
                 force,
+                password_file: config.auth.password_file.clone(),
+                allow_plaintext: config.auth.allow_plaintext,
             };
 
             let session = begin_login(opts, |progress| match progress {
@@ -210,8 +212,17 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
                 );
                 Ok(())
             } else {
-                let acct =
-                    import_auth_file(&paths.files_dir, &path, label.as_deref(), force).await?;
+                let acct = import_auth_file_with_options(
+                    &paths.files_dir,
+                    &path,
+                    label.as_deref(),
+                    force,
+                    SaveAuthOptions {
+                        password_file: config.auth.password_file.as_deref(),
+                        allow_plaintext: config.auth.allow_plaintext,
+                    },
+                )
+                .await?;
                 let store = LibraryStore::open(&paths.library_db)?;
                 store.upsert_account(
                     &acct.account_id,

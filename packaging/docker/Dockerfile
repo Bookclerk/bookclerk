@@ -2,16 +2,18 @@
 #
 # Build: docker build -f packaging/docker/Dockerfile -t libationd .
 #
-# Decrypt (liberate) requires aaxclean-cli on PATH inside the container
-# (Adrm + preferred CENC). ffmpeg is also needed for format=mp3 and as a
-# CENC decrypt fallback. This image does not bundle either — mount binaries, e.g.:
-#   -v /usr/local/bin/aaxclean-cli:/usr/local/bin/aaxclean-cli:ro
-#   -v /usr/bin/ffmpeg:/usr/bin/ffmpeg:ro
-# Widevine titles need a .wvd CDM under /config (widevine.wvd or download.widevine_cdm).
+# Decrypt (liberate): Adrm aaxc, Widevine DASH/CENC, MP3 encode, metadata
+# fix-up, and chapter split are all native Rust — no ffmpeg or aaxclean-cli.
+# Widevine L3 CDMs auto-provision via AudibleCdm (Android auth). Optional BYO
+# .wvd under /config still works. Spatial/Atmos (L1) is not available.
 #
 # Typical volumes:
-#   /config  → LIBATION_FILES_DIR (config.toml, library.db, auth/)
+#   /config  → LIBATION_FILES_DIR (config.toml, library.db, Accounts/*.auth + *.wvd)
 #   /data    → liberated audiobooks (set storage.local.root = "/data/Audiobooks")
+# Prefer: LIBATION_AUTH_PASSWORD, or mount a secrets volume and set
+# LIBATION_AUTH_PASSWORD_FILE=/secrets/auth_password (auto-created with a strong
+# random secret if missing — do not put this under Accounts/). For local-only
+# unprotected tokens: auth.allow_plaintext=true / LIBATION_AUTH_ALLOW_PLAINTEXT=1.
 #
 # The HTTP control plane is unauthenticated. Default listen is loopback inside
 # the container. To publish the port, override explicitly, e.g.:

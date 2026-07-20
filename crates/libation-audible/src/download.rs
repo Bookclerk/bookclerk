@@ -12,7 +12,7 @@ use crate::accounts::resolve_auth_file_async;
 use crate::auth::load_authenticator;
 use crate::error::{AudibleError, Result};
 use crate::options::DownloadOptions;
-use crate::widevine::{fetch_widevine_download, load_widevine_cdm};
+use crate::widevine::{ensure_widevine_cdm, fetch_widevine_download};
 
 /// Authenticated Audible client bound to one account.
 pub struct AccountClient {
@@ -63,7 +63,7 @@ pub struct EncryptedDownload {
     pub kid: Option<String>,
     /// Widevine CENC content key (hex).
     pub cenc_key: Option<String>,
-    /// True when the file still needs aaxclean/ffmpeg decrypt.
+    /// True when the file still needs decrypt (native Adrm or CENC).
     pub needs_decrypt: bool,
     pub pdf_url: Option<String>,
 }
@@ -389,7 +389,14 @@ async fn fetch_via_widevine(
     auth_stem: Option<&str>,
     forced: bool,
 ) -> Result<(AccountClient, EncryptedDownload, LicenseSummary)> {
-    let (cdm, cdm_path) = load_widevine_cdm(files_dir, options.widevine_cdm.as_deref(), auth_stem)?;
+    let (cdm, cdm_path) = ensure_widevine_cdm(
+        files_dir,
+        options.widevine_cdm.as_deref(),
+        auth_stem,
+        &account_client.auth_file,
+        options.widevine_cdm_provider.as_deref(),
+    )
+    .await?;
     tracing::info!(
         asin,
         cdm = %cdm_path.display(),

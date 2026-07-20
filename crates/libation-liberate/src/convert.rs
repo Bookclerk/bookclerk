@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use libation_decrypt::{encode_to_mp3, ffmpeg_available};
+use libation_decrypt::encode_to_mp3;
 use libation_library::{BookRecord, LiberateStatus, LibraryStore};
 use libation_storage::{ObjectMeta, StorageBackend};
 
@@ -12,7 +12,6 @@ use crate::naming::swap_audio_extension;
 /// Options for [`convert_book`].
 #[derive(Debug, Clone)]
 pub struct ConvertRequest {
-    pub ffmpeg_bin: Option<PathBuf>,
     pub cache_dir: PathBuf,
     pub force: bool,
     pub lame: libation_config::LameConfig,
@@ -58,16 +57,6 @@ pub async fn convert_book(
         return Ok(mp3_key);
     }
 
-    if !ffmpeg_available(req.ffmpeg_bin.as_deref()).await {
-        return Err(LiberateError::Decrypt(
-            libation_decrypt::DecryptError::FfmpegNotFound(
-                req.ffmpeg_bin
-                    .clone()
-                    .unwrap_or_else(|| PathBuf::from("ffmpeg")),
-            ),
-        ));
-    }
-
     let work_dir = req.cache_dir.join("convert").join(&book.asin);
     tokio::fs::create_dir_all(&work_dir).await?;
     let input = work_dir.join(format!("{}.{}", book.asin, ext));
@@ -75,14 +64,7 @@ pub async fn convert_book(
 
     let data = storage.get(key).await?;
     tokio::fs::write(&input, &data).await?;
-    encode_to_mp3(
-        &input,
-        &output,
-        req.ffmpeg_bin.as_deref(),
-        &req.lame,
-        req.max_sample_rate,
-    )
-    .await?;
+    encode_to_mp3(&input, &output, &req.lame, req.max_sample_rate).await?;
 
     let meta = ObjectMeta {
         content_type: Some("audio/mpeg".into()),

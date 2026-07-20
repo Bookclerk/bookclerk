@@ -255,8 +255,6 @@ fn request_from_book(book: &BookRecord, download: &DownloadOptions) -> LiberateR
         options: download.clone(),
         files_dir: PathBuf::new(),
         cache_dir: PathBuf::new(),
-        aaxclean_bin: None,
-        ffmpeg_bin: None,
         force: false,
         preloaded_license: None,
     }

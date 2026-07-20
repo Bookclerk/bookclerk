@@ -1,11 +1,9 @@
 //! Split liberated audio by chapter (classic `SplitFilesByChapter`).
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use libation_audible::DownloadOptions;
-use libation_decrypt::ffmpeg_available;
-use tokio::process::Command;
+use libation_decrypt::{remux_trimmed_async, TrimRange};
 
 use crate::cue::FlatChapter;
 use crate::error::{LiberateError, Result};
@@ -19,7 +17,10 @@ pub struct SplitChapterFile {
     pub title: String,
 }
 
-/// Split `input` into per-chapter files using ffmpeg stream copy.
+/// Split `input` into per-chapter files using native MP4 remux (stream copy).
+///
+/// `input` must be a progressive M4B/M4A. Callers that want MP3 chapter files
+/// should split the M4B first, then re-encode each chapter.
 #[allow(clippy::too_many_arguments)]
 pub async fn split_audio_by_chapters(
     input: &Path,
@@ -30,20 +31,21 @@ pub async fn split_audio_by_chapters(
     file_ctx: &NamingContext,
     options: &DownloadOptions,
     ext: &str,
-    ffmpeg_bin: Option<&Path>,
 ) -> Result<Vec<SplitChapterFile>> {
     if chapters.is_empty() {
         return Err(LiberateError::Other(anyhow::anyhow!(
             "split-by-chapter requested but no chapters available"
         )));
     }
-    let ffmpeg = ffmpeg_bin
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("ffmpeg"));
-    if !ffmpeg_available(ffmpeg_bin).await {
-        return Err(LiberateError::Decrypt(
-            libation_decrypt::DecryptError::FfmpegNotFound(ffmpeg),
-        ));
+    let input_ext = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(input_ext.as_str(), "mp3") {
+        return Err(LiberateError::Other(anyhow::anyhow!(
+            "native chapter split requires M4B/M4A input; split before MP3 encode"
+        )));
     }
     tokio::fs::create_dir_all(output_dir).await?;
 
@@ -77,37 +79,16 @@ pub async fn split_audio_by_chapters(
             ext,
         );
         let out_path = output_dir.join(filename.rsplit('/').next().unwrap_or(&filename));
-        let start = format_duration(start_ms);
-        let duration = format_duration(end_ms.saturating_sub(start_ms));
-        let status = Command::new(&ffmpeg)
-            .args([
-                "-y",
-                "-nostdin",
-                "-loglevel",
-                "error",
-                "-ss",
-                &start,
-                "-i",
-                &input.display().to_string(),
-                "-t",
-                &duration,
-                "-c",
-                "copy",
-                &out_path.display().to_string(),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .map_err(|e| LiberateError::Other(anyhow::anyhow!("ffmpeg split: {e}")))?;
-        if !status.status.success() {
-            let stderr = String::from_utf8_lossy(&status.stderr);
-            return Err(LiberateError::Other(anyhow::anyhow!(
-                "ffmpeg chapter split failed: {}",
-                stderr.trim()
-            )));
-        }
+        remux_trimmed_async(
+            input,
+            &out_path,
+            TrimRange {
+                start_ms,
+                end_ms: Some(end_ms),
+            },
+        )
+        .await
+        .map_err(LiberateError::Decrypt)?;
         outputs.push(SplitChapterFile {
             path: out_path,
             storage_key: filename,
@@ -149,11 +130,6 @@ fn group_chapters(
         }
     }
     groups
-}
-
-fn format_duration(ms: u64) -> String {
-    let secs = ms as f64 / 1000.0;
-    format!("{secs:.3}")
 }
 
 #[cfg(test)]

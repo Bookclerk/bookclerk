@@ -12,23 +12,6 @@ pub enum DecryptError {
     #[error("decrypt output missing: {0}")]
     OutputMissing(PathBuf),
 
-    #[error("aaxclean-cli not found at {0}; install it or set AUDIBLE_AAXCLEAN_CLI")]
-    AaxcleanNotFound(PathBuf),
-
-    #[error("ffmpeg not found at {0}; install it or set LIBATION_FFMPEG")]
-    FfmpegNotFound(PathBuf),
-
-    #[error(
-        "no CENC decrypt tool available (tried aaxclean-cli at {aaxclean} and ffmpeg at {ffmpeg})"
-    )]
-    DecryptToolMissing { aaxclean: PathBuf, ffmpeg: PathBuf },
-
-    #[error("aaxclean-cli failed (status={status:?}): {stderr}")]
-    AaxcleanFailed { status: Option<i32>, stderr: String },
-
-    #[error("ffmpeg failed (status={status:?}): {stderr}")]
-    FfmpegFailed { status: Option<i32>, stderr: String },
-
     #[error("decrypt requires audible_key + audible_iv (aaxc voucher)")]
     MissingCredentials,
 
@@ -36,6 +19,15 @@ pub enum DecryptError {
         "legacy AAX activation-bytes decrypt is not supported yet; use aaxc key/iv via liberate"
     )]
     UnsupportedActivationBytes,
+
+    #[error("invalid decrypt key/iv: {0}")]
+    InvalidKey(String),
+
+    #[error("MP4 parse/remux error: {0}")]
+    Mp4(String),
+
+    #[error("native decrypt failed: {0}")]
+    Native(String),
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

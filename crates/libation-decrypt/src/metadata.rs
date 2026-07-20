@@ -1,12 +1,14 @@
-//! Embed tags, cover art, and chapters via ffmpeg (classic Libation fix-up).
+//! Native audiobook metadata fix-up (M4B via mp4ameta, MP3 via id3).
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::time::Duration;
 
-use tokio::process::Command;
+use id3::frame::{Picture, PictureType};
+use id3::{Tag as Id3Tag, TagLike, Version as Id3Version};
+use mp4ameta::{Chapter, Img, ImgFmt, MediaType, Tag as Mp4Tag};
 
 use crate::error::{DecryptError, Result};
-use crate::{ffmpeg_available, DecryptOutcome};
+use crate::DecryptOutcome;
 
 /// Request to fix up audiobook metadata after decrypt.
 #[derive(Debug, Clone)]
@@ -17,21 +19,8 @@ pub struct FixupRequest {
     pub author: Option<String>,
     pub narrator: Option<String>,
     pub cover: Option<PathBuf>,
-    pub ffmetadata: Option<PathBuf>,
-    pub ffmpeg_bin: Option<PathBuf>,
-}
-
-fn resolve_ffmpeg_bin(explicit: Option<&Path>) -> PathBuf {
-    if let Some(path) = explicit {
-        return path.to_path_buf();
-    }
-    if let Ok(path) = std::env::var("LIBATION_FFMPEG") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
-    PathBuf::from("ffmpeg")
+    /// Chapter titles + start offsets in milliseconds (embedded for M4B).
+    pub chapters: Vec<(String, u64)>,
 }
 
 /// Apply metadata tags, optional cover embed, and optional chapters.
@@ -42,101 +31,139 @@ pub async fn fixup_audiobook(req: FixupRequest) -> Result<DecryptOutcome> {
     if let Some(parent) = req.output.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let ffmpeg = resolve_ffmpeg_bin(req.ffmpeg_bin.as_deref());
-    if !ffmpeg_available(req.ffmpeg_bin.as_deref()).await {
-        return Err(DecryptError::FfmpegNotFound(ffmpeg));
+
+    let output = req.output.clone();
+    tokio::task::spawn_blocking(move || fixup_audiobook_sync(&req))
+        .await
+        .map_err(|err| DecryptError::Native(format!("fixup task join error: {err}")))??;
+
+    if !output.exists() {
+        return Err(DecryptError::OutputMissing(output));
     }
+    Ok(DecryptOutcome { output })
+}
 
-    let mut cmd = Command::new(&ffmpeg);
-    cmd.args(["-y", "-nostdin", "-loglevel", "error", "-i"])
-        .arg(&req.input);
+fn fixup_audiobook_sync(req: &FixupRequest) -> Result<()> {
+    tracing::info!(
+        input = %req.input.display(),
+        output = %req.output.display(),
+        cover = req.cover.is_some(),
+        chapters = req.chapters.len(),
+        "native metadata fixup"
+    );
 
-    let mut map_chapters = false;
-    let mut next_input = 1usize;
-    let meta_idx = if let Some(meta) = &req.ffmetadata {
-        cmd.args(["-i"]).arg(meta);
-        map_chapters = true;
-        let idx = next_input;
-        next_input += 1;
-        Some(idx)
-    } else {
-        None
-    };
-    let cover_idx = if let Some(cover) = &req.cover {
-        cmd.args(["-i"]).arg(cover);
-        Some(next_input)
-    } else {
-        None
-    };
-
-    cmd.args(["-map", "0:a?"]);
-    if let Some(ci) = cover_idx {
-        cmd.args(["-map", &format!("{ci}:v:0")]);
-    }
-
-    if map_chapters {
-        if let Some(mi) = meta_idx {
-            cmd.args([
-                "-map_metadata",
-                &mi.to_string(),
-                "-map_chapters",
-                &mi.to_string(),
-            ]);
-        }
-    }
-
-    cmd.args(["-c", "copy"]);
-
-    if let Some(author) = req.author.as_deref().filter(|s| !s.is_empty()) {
-        cmd.args(["-metadata", &format!("artist={author}")]);
-        cmd.args(["-metadata", &format!("album_artist={author}")]);
-    }
-    cmd.args(["-metadata", &format!("title={}", req.title)]);
-    cmd.args(["-metadata", &format!("album={}", req.title)]);
-    if let Some(narrator) = req.narrator.as_deref().filter(|s| !s.is_empty()) {
-        cmd.args(["-metadata", &format!("composer={narrator}")]);
-    }
-    if req.cover.is_some() {
-        cmd.args(["-disposition:v:0", "attached_pic"]);
+    if req.input != req.output {
+        std::fs::copy(&req.input, &req.output)?;
     }
 
     let ext = req
         .output
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("");
-    if ext.eq_ignore_ascii_case("m4b") || ext.eq_ignore_ascii_case("m4a") {
-        cmd.args(["-movflags", "+faststart"]);
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    match ext.as_str() {
+        "mp3" => fixup_mp3(req),
+        _ => fixup_m4b(req),
+    }
+}
+
+fn fixup_m4b(req: &FixupRequest) -> Result<()> {
+    let mut tag = Mp4Tag::read_from_path(&req.output)
+        .map_err(|err| DecryptError::Native(format!("mp4ameta read failed: {err}")))?;
+
+    tag.set_title(&req.title);
+    tag.set_album(&req.title);
+    tag.set_media_type(MediaType::AudioBook);
+    if let Some(author) = req.author.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_artist(author);
+        tag.set_album_artist(author);
+    }
+    if let Some(narrator) = req.narrator.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_composer(narrator);
     }
 
-    cmd.arg(&req.output);
-
-    tracing::info!(
-        input = %req.input.display(),
-        output = %req.output.display(),
-        cover = req.cover.is_some(),
-        chapters = req.ffmetadata.is_some(),
-        "running ffmpeg metadata fixup"
-    );
-
-    let output = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(DecryptError::Io)?;
-
-    if !output.status.success() {
-        let _ = tokio::fs::remove_file(&req.output).await;
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DecryptError::FfmpegFailed {
-            status: output.status.code(),
-            stderr: stderr.trim().to_string(),
-        });
+    if let Some(cover) = &req.cover {
+        if cover.exists() {
+            let bytes = std::fs::read(cover)?;
+            tag.set_artwork(Img::new(guess_img_fmt(cover, &bytes), bytes));
+        }
     }
-    if !req.output.exists() {
-        return Err(DecryptError::OutputMissing(req.output));
+
+    if !req.chapters.is_empty() {
+        tag.chapter_track_mut().clear();
+        tag.chapter_list_mut().clear();
+        for (title, start_ms) in &req.chapters {
+            tag.chapter_list_mut().push(Chapter::new(
+                Duration::from_millis(*start_ms),
+                title.clone(),
+            ));
+        }
     }
-    Ok(DecryptOutcome { output: req.output })
+
+    tag.write_to_path(&req.output)
+        .map_err(|err| DecryptError::Native(format!("mp4ameta write failed: {err}")))?;
+    Ok(())
+}
+
+fn fixup_mp3(req: &FixupRequest) -> Result<()> {
+    let mut tag = Id3Tag::read_from_path(&req.output).unwrap_or_else(|_| Id3Tag::new());
+    tag.set_title(&req.title);
+    tag.set_album(&req.title);
+    if let Some(author) = req.author.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_artist(author);
+        tag.set_album_artist(author);
+    }
+    if let Some(narrator) = req.narrator.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_text("TCOM", narrator);
+    }
+    if let Some(cover) = &req.cover {
+        if cover.exists() {
+            let bytes = std::fs::read(cover)?;
+            let mime = match guess_img_fmt(cover, &bytes) {
+                ImgFmt::Png => "image/png",
+                ImgFmt::Bmp => "image/bmp",
+                ImgFmt::Jpeg => "image/jpeg",
+            };
+            tag.remove_all_pictures();
+            tag.add_frame(Picture {
+                mime_type: mime.to_string(),
+                picture_type: PictureType::CoverFront,
+                description: "Cover".to_string(),
+                data: bytes,
+            });
+        }
+    }
+    if !req.chapters.is_empty() {
+        tracing::debug!(
+            chapters = req.chapters.len(),
+            "MP3 fixup skips embedded chapters; use cue/json sidecars"
+        );
+    }
+    tag.write_to_path(&req.output, Id3Version::Id3v24)
+        .map_err(|err| DecryptError::Native(format!("id3 write failed: {err}")))?;
+    Ok(())
+}
+
+fn guess_img_fmt(path: &Path, bytes: &[u8]) -> ImgFmt {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        return ImgFmt::Png;
+    }
+    if bytes.starts_with(b"BM") {
+        return ImgFmt::Bmp;
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return ImgFmt::Jpeg;
+    }
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => ImgFmt::Png,
+        Some("bmp") => ImgFmt::Bmp,
+        _ => ImgFmt::Jpeg,
+    }
 }

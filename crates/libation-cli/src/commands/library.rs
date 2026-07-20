@@ -313,8 +313,6 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     options: options.clone(),
                     files_dir: paths.files_dir.clone(),
                     cache_dir: cfg.download_cache_dir(),
-                    aaxclean_bin: None,
-                    ffmpeg_bin: None,
                     force,
                     preloaded_license: preloaded_license.clone(),
                 };
@@ -550,7 +548,6 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             }
             paths.ensure_dirs()?;
             let req = ConvertRequest {
-                ffmpeg_bin: None,
                 cache_dir: config.download_cache_dir(),
                 force,
                 lame: config.download.lame.clone(),

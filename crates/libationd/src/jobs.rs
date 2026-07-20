@@ -163,8 +163,6 @@ pub async fn run_liberate(
             options: options.clone(),
             files_dir: paths.files_dir.clone(),
             cache_dir: cfg.download_cache_dir(),
-            aaxclean_bin: None,
-            ffmpeg_bin: None,
             force: false,
             preloaded_license: None,
         };

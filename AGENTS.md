@@ -5,7 +5,6 @@
 This is a Rust workspace (edition 2021, `rust-toolchain.toml` pins the `stable`
 channel with `rustfmt` + `clippy`). The startup update script runs
 `cargo fetch`, so dependencies are already downloaded when a session begins.
-`ffmpeg` is available on the VM.
 
 ### Services / binaries
 
@@ -67,12 +66,17 @@ When exercising real Audible credentials in this cloud environment:
 - Actually scanning/liberating a library requires real Audible credentials
   (`libation auth login`). Without a configured account, `scan`/`liberate` jobs
   fail with "no accounts configured" — this is expected, and the daemon +
-  control plane still run fine for everything else.
-- Optional external tools only needed for real decryption/re-encode work:
-  `aaxclean-cli` (Adrm/CENC decrypt; `AUDIBLE_AAXCLEAN_CLI`) and a Widevine
-  `.wvd` CDM. Neither is required to build, test, or run the services.
-  A native Rust aaxclean inside `libation-decrypt` is planned post-PR1
-  (see `docs/PR1_PARITY.md`).
+  control plane still run fine for everything else. OAuth tokens live under
+  `Accounts/<account>.auth`. Prefer encryption via `LIBATION_AUTH_PASSWORD` or
+  `LIBATION_AUTH_PASSWORD_FILE` / `[auth].password_file` (missing password-file
+  paths are auto-created with a strong random secret — use a secrets volume, not
+  `Accounts/`). `auth.allow_plaintext=true` stores unprotected token files.
+- Liberate decrypt/encode is fully native in `libation-decrypt` (Adrm aaxc,
+  Widevine DASH/CENC, MP3 via Symphonia+LAME, metadata fix-up, chapter split).
+  No `ffmpeg` or `aaxclean-cli` is required. Widevine L3 CDMs auto-provision via
+  classic Libation AudibleCdm (`auth login` registers as Android);
+  optional BYO `.wvd` still works. Spatial/Atmos (L1) is not available. Neither
+  a CDM nor ffmpeg is required to build, test, or run non-liberate commands.
 - S3/MinIO credentials are **env-only** (`AWS_ACCESS_KEY_ID` /
   `AWS_SECRET_ACCESS_KEY`); bucket/endpoint/path-style come from
   `LIBATION_S3_*` env vars or `[storage.s3]` in config.toml.

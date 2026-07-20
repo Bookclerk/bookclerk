@@ -2,23 +2,33 @@
 
 use std::path::Path;
 
-use audible_rs::auth::authfile::KdfParams;
 use serde::{Deserialize, Serialize};
 
-use crate::auth::load_authenticator;
+use crate::auth::{load_authenticator, save_authenticator, SaveAuthOptions};
 use crate::error::{AudibleError, Result};
-use crate::paths::{auth_dir, auth_file_for, list_auth_files, sanitize_name};
+use crate::paths::{auth_file_for, ensure_accounts_dir, list_auth_files, sanitize_name};
 use crate::AuthSession;
 
-/// Import an audible-rs `.auth` file into `{files_dir}/auth/`.
+/// Import an audible-rs `.auth` file into `{files_dir}/Accounts/`.
 ///
-/// Validates by loading the authenticator, then copies (or re-saves plain) into
-/// the Libation auth directory. `label` overrides the destination stem.
+/// Loads (decrypting via env / password file when needed), then re-saves
+/// with the configured protection into the canonical Accounts directory.
 pub async fn import_auth_file(
     files_dir: &Path,
     source: &Path,
     label: Option<&str>,
     force: bool,
+) -> Result<AccountInfo> {
+    import_auth_file_with_options(files_dir, source, label, force, SaveAuthOptions::default()).await
+}
+
+/// Import with explicit save options (password file / plaintext policy).
+pub async fn import_auth_file_with_options(
+    files_dir: &Path,
+    source: &Path,
+    label: Option<&str>,
+    force: bool,
+    save_opts: SaveAuthOptions<'_>,
 ) -> Result<AccountInfo> {
     if !source.is_file() {
         return Err(AudibleError::Import(format!(
@@ -27,12 +37,11 @@ pub async fn import_auth_file(
         )));
     }
 
-    let auth = load_authenticator(source, None).await.map_err(|err| {
-        AudibleError::Import(format!(
-            "could not load {}: {err} (encrypted files need a password prompt — not wired yet)",
-            source.display()
-        ))
-    })?;
+    let auth = load_authenticator(source, save_opts.password_file)
+        .await
+        .map_err(|err| {
+            AudibleError::Import(format!("could not load {}: {err}", source.display()))
+        })?;
 
     let marketplace = auth.locale().country_code.to_string();
     let customer_id = auth.customer_id().map(str::to_string);
@@ -47,7 +56,7 @@ pub async fn import_auth_file(
         .or_else(|| customer_id.clone())
         .unwrap_or_else(|| marketplace.clone());
 
-    std::fs::create_dir_all(auth_dir(files_dir))?;
+    ensure_accounts_dir(files_dir)?;
     let dest = auth_file_for(files_dir, &sanitize_name(&stem));
     if dest.exists() && !force {
         return Err(AudibleError::Import(format!(
@@ -56,10 +65,7 @@ pub async fn import_auth_file(
         )));
     }
 
-    // Prefer a byte copy so encrypted envelopes stay encrypted.
-    if source.canonicalize().ok().as_ref() != dest.canonicalize().ok().as_ref() {
-        tokio::fs::copy(source, &dest).await?;
-    }
+    save_authenticator(&auth, &dest, save_opts).await?;
 
     let account_id = customer_id.unwrap_or_else(|| stem.clone());
     Ok(AccountInfo {
@@ -244,7 +250,7 @@ pub async fn import_mkb79_auth_json(
         .or_else(|| customer_id.clone())
         .unwrap_or_else(|| marketplace.clone());
 
-    std::fs::create_dir_all(auth_dir(files_dir))?;
+    ensure_accounts_dir(files_dir)?;
     let dest = auth_file_for(files_dir, &sanitize_name(&stem));
     if dest.exists() && !force {
         return Err(AudibleError::Import(format!(
@@ -253,7 +259,7 @@ pub async fn import_mkb79_auth_json(
         )));
     }
 
-    auth.save_to(&dest, None, KdfParams::default())
+    save_authenticator(&auth, &dest, SaveAuthOptions::default())
         .await
         .map_err(|err| AudibleError::Import(format!("failed to save auth: {err}")))?;
 

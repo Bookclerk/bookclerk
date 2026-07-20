@@ -1,4 +1,4 @@
-//! CUE sheets and ffmpeg chapter metadata from Audible chapter_info.
+//! CUE sheets from Audible chapter_info.
 
 use std::io::Write;
 use std::path::Path;
@@ -124,49 +124,6 @@ fn ms_to_cue_time(ms: u64) -> String {
     let minutes = (total_secs % 3600) / 60;
     let seconds = total_secs % 60;
     format!("{hours:02}:{minutes:02}:{seconds:02}:{frames:02}")
-}
-
-/// Write an ffmpeg ffmetadata file with `[CHAPTER]` entries.
-pub fn write_ffmetadata(
-    path: &Path,
-    title: &str,
-    artist: &str,
-    narrator: Option<&str>,
-    chapters: &[FlatChapter],
-    total_duration_ms: Option<u64>,
-) -> Result<()> {
-    if chapters.is_empty() {
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = std::fs::File::create(path)?;
-    writeln!(file, ";FFMETADATA1")?;
-    writeln!(file, "title={title}")?;
-    writeln!(file, "artist={artist}")?;
-    if let Some(narrator) = narrator.filter(|s| !s.is_empty()) {
-        writeln!(file, "composer={narrator}")?;
-    }
-    for (idx, ch) in chapters.iter().enumerate() {
-        let end = chapters
-            .get(idx + 1)
-            .map(|next| next.start_ms)
-            .or(total_duration_ms)
-            .unwrap_or(ch.start_ms.saturating_add(1));
-        writeln!(file, "[CHAPTER]")?;
-        writeln!(file, "TIMEBASE=1/1000")?;
-        writeln!(file, "START={}", ch.start_ms)?;
-        writeln!(file, "END={end}")?;
-        writeln!(file, "title={}", escape_ffmeta(&ch.title))?;
-    }
-    Ok(())
-}
-
-fn escape_ffmeta(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('=', "\\=")
-        .replace(';', "\\;")
 }
 
 #[cfg(test)]

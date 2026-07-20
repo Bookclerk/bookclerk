@@ -23,8 +23,11 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/libation
-# aaxclean-cli must be installed system-wide (or set AUDIBLE_AAXCLEAN_CLI).
-# Liberate will fail clearly if the binary is missing.
+# Decrypt/encode/fixup/split are native Rust — no ffmpeg binary required.
+# Widevine L3 CDMs auto-provision (Android auth); optional BYO .wvd under Accounts/.
+# Prefer: LIBATION_AUTH_PASSWORD, or LoadCredential= + LIBATION_AUTH_PASSWORD_FILE
+# (missing password-file paths are auto-created with a strong random secret —
+# keep that path off Accounts/). auth.allow_plaintext=true for unprotected tokens.
 
 [Install]
 WantedBy=multi-user.target

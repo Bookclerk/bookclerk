@@ -91,6 +91,10 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     let config = Config::load(cli.libation_files.clone(), cli.config.clone())?;
+    libation_audible::configure_auth_secrets(
+        config.auth.password_file.clone(),
+        config.auth.allow_plaintext,
+    );
     if let Some(paths) = &config.paths {
         paths.ensure_dirs()?;
     }

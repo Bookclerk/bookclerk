@@ -39,6 +39,15 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         "download.widevine" => config.download.widevine = parse_bool(v).unwrap_or(false),
         "download.xhe_aac" => config.download.xhe_aac = parse_bool(v).unwrap_or(false),
         "download.widevine_cdm" => config.download.widevine_cdm = Some(PathBuf::from(v)),
+        "download.widevine_cdm_provider" => {
+            config.download.widevine_cdm_provider = Some(v.to_string());
+        }
+        "auth.password_file" => {
+            config.auth.password_file = Some(PathBuf::from(v));
+        }
+        "auth.allow_plaintext" => {
+            config.auth.allow_plaintext = parse_bool(v).unwrap_or(false);
+        }
         "download.folder_template" => config.download.folder_template = Some(v.to_string()),
         "download.file_template" => config.download.file_template = Some(v.to_string()),
         "download.download_cover" => {

@@ -16,6 +16,8 @@ pub struct DownloadOptions {
     pub widevine: bool,
     pub xhe_aac: bool,
     pub widevine_cdm: Option<PathBuf>,
+    /// Remote L3 CDM provider URL (`None` = classic Libation AudibleCdm; empty/`off` = disable).
+    pub widevine_cdm_provider: Option<String>,
     pub folder_template: Option<String>,
     pub file_template: Option<String>,
     pub download_cover: bool,
@@ -55,6 +57,7 @@ impl From<&DownloadConfig> for DownloadOptions {
             widevine: cfg.widevine,
             xhe_aac: cfg.xhe_aac,
             widevine_cdm: cfg.widevine_cdm.clone(),
+            widevine_cdm_provider: cfg.widevine_cdm_provider.clone(),
             folder_template: cfg.folder_template.clone(),
             file_template: cfg.file_template.clone(),
             download_cover: cfg.download_cover,
