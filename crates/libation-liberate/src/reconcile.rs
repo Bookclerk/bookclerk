@@ -58,10 +58,15 @@ impl StorageIndex {
             .map(String::as_str)
     }
 
-    /// Best matching storage key for an ASIN, if any.
+    /// Best matching storage key for an ASIN / ISBN token, if any.
     #[must_use]
     pub fn best_key_for_asin(&self, asin: &str) -> Option<&str> {
-        let candidates = self.by_asin.get(&asin.to_ascii_uppercase())?;
+        let upper = asin.to_ascii_uppercase();
+        if let Some(candidates) = self.by_asin.get(&upper) {
+            return pick_best_media_key(candidates);
+        }
+        let isbn = normalize_isbn13(asin)?;
+        let candidates = self.by_asin.get(&isbn)?;
         pick_best_media_key(candidates)
     }
 }
@@ -115,10 +120,18 @@ pub async fn reconcile_library(
 
     for book in books {
         if !options.asins.is_empty()
-            && !options
-                .asins
-                .iter()
-                .any(|a| a.eq_ignore_ascii_case(&book.asin))
+            && !options.asins.iter().any(|a| {
+                a.eq_ignore_ascii_case(&book.uuid)
+                    || a.eq_ignore_ascii_case(&book.product_id)
+                    || book
+                        .isbn
+                        .as_ref()
+                        .is_some_and(|isbn| a.eq_ignore_ascii_case(isbn))
+                    || book
+                        .asin
+                        .as_ref()
+                        .is_some_and(|asin| a.eq_ignore_ascii_case(asin))
+            })
         {
             continue;
         }
@@ -133,7 +146,7 @@ pub async fn reconcile_library(
                     || book.storage_key.as_deref() != Some(key.as_str());
                 if needs_update {
                     library.set_liberate_status(
-                        &book.asin,
+                        book.title_id(),
                         &book.account_id,
                         LiberateStatus::Liberated,
                         Some(&key),
@@ -141,7 +154,7 @@ pub async fn reconcile_library(
                     )?;
                     summary.matched += 1;
                     tracing::info!(
-                        asin = %book.asin,
+                        asin = %book.asin_or_isbn(),
                         key = %key,
                         "matched existing liberated media"
                     );
@@ -156,7 +169,7 @@ pub async fn reconcile_library(
                 }
                 if options.clear_missing && book.liberate_status == LiberateStatus::Liberated {
                     library.set_liberate_status(
-                        &book.asin,
+                        book.title_id(),
                         &book.account_id,
                         LiberateStatus::NotLiberated,
                         None,
@@ -192,7 +205,25 @@ pub fn find_existing_for_book(
     }
 
     let req = request_from_book(book, download);
-    find_existing_for_request(index, library, &req)
+    if let Some(key) = find_existing_for_request(index, library, &req) {
+        return Some(key);
+    }
+
+    // Fallback: match any identity token embedded in a storage key.
+    for id in [
+        Some(book.product_id.as_str()),
+        book.asin.as_deref(),
+        book.isbn.as_deref(),
+        Some(book.asin_or_isbn()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(key) = index.best_key_for_asin(id) {
+            return Some(key.to_string());
+        }
+    }
+    None
 }
 
 /// Same as [`find_existing_for_book`] but for a liberate request before DB status is Liberated.
@@ -331,7 +362,10 @@ fn find_wildcard_planned<'a>(
 
 fn request_from_book(book: &BookRecord, download: &DownloadOptions) -> LiberateRequest {
     LiberateRequest {
-        asin: book.asin.clone(),
+        asin: book.download_product_id().to_string(),
+        book_uuid: Some(book.uuid.clone()),
+        source: libation_source::SourceKind::parse(&book.source)
+            .unwrap_or(libation_source::SourceKind::Audible),
         account_id: book.account_id.clone(),
         title: book.title.clone(),
         authors: book.authors.clone(),
@@ -350,29 +384,30 @@ fn planned_extensions() -> &'static [&'static str] {
     &["m4b", "m4a", "mp3"]
 }
 
-/// Extract Audible-like ASINs from a storage key / file path.
+/// Extract Audible-like ASINs and ISBN-13 tokens from a storage key / file path.
 ///
 /// Matches:
 /// - filename stem `B00EXAMPLE.m4b`
 /// - bracket form `Title [B00EXAMPLE].m4b` (classic Libation)
 /// - path segment containing a standalone ASIN token
+/// - ISBN-13 shaped tokens (13 digits, optional hyphens)
 #[must_use]
 pub fn extract_asins_from_key(key: &str) -> Vec<String> {
     let mut found = Vec::new();
     let normalized = key.replace('\\', "/");
 
-    // Bracket form: [B0...]
+    // Bracket form: [B0...] / [978...]
     for part in normalized.split(['[', ']']) {
-        push_asin_candidate(&mut found, part);
+        push_id_candidate(&mut found, part);
     }
 
     for segment in normalized.split('/') {
         let stem = segment.rsplit_once('.').map(|(s, _)| s).unwrap_or(segment);
         // Strip trailing " [ASIN]" already handled; also try whole stem.
-        push_asin_candidate(&mut found, stem);
+        push_id_candidate(&mut found, stem);
         // Tokens separated by space / underscore / hyphen.
         for token in stem.split(|c: char| c.is_whitespace() || c == '_' || c == '-') {
-            push_asin_candidate(&mut found, token);
+            push_id_candidate(&mut found, token);
         }
     }
 
@@ -381,10 +416,12 @@ pub fn extract_asins_from_key(key: &str) -> Vec<String> {
     found
 }
 
-fn push_asin_candidate(out: &mut Vec<String>, raw: &str) {
+fn push_id_candidate(out: &mut Vec<String>, raw: &str) {
     let trimmed = raw.trim();
     if looks_like_asin(trimmed) {
         out.push(trimmed.to_ascii_uppercase());
+    } else if let Some(isbn) = normalize_isbn13(trimmed) {
+        out.push(isbn);
     }
 }
 
@@ -398,6 +435,21 @@ fn looks_like_asin(s: &str) -> bool {
         return false;
     }
     s.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// ISBN-13: exactly 13 digits, optionally separated by hyphens or spaces.
+fn normalize_isbn13(s: &str) -> Option<String> {
+    if s.chars()
+        .any(|c| !c.is_ascii_digit() && c != '-' && !c.is_whitespace())
+    {
+        return None;
+    }
+    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() == 13 {
+        Some(digits)
+    } else {
+        None
+    }
 }
 
 fn pick_best_media_key(candidates: &[String]) -> Option<&str> {
@@ -448,6 +500,15 @@ mod tests {
     #[test]
     fn rejects_short_tokens() {
         assert!(extract_asins_from_key("Author/Book.m4b").is_empty());
+    }
+
+    #[test]
+    fn extracts_isbn13_from_key() {
+        let ids = extract_asins_from_key("Author/Title/9781234567890.m4b");
+        assert!(ids.iter().any(|id| id == "9781234567890"));
+
+        let hyphenated = extract_asins_from_key("Author/Title [978-1-234567-89-0].m4b");
+        assert!(hyphenated.iter().any(|id| id == "9781234567890"));
     }
 }
 

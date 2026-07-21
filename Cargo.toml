@@ -6,6 +6,8 @@ members = [
     "crates/libation-decrypt",
     "crates/libation-storage",
     "crates/libation-library",
+    "crates/libation-source",
+    "crates/libation-libro",
     "crates/libation-liberate",
     "crates/libation-naming",
     "crates/libation-migrate",
@@ -34,6 +36,8 @@ libation-audible = { path = "crates/libation-audible" }
 libation-decrypt = { path = "crates/libation-decrypt" }
 libation-storage = { path = "crates/libation-storage" }
 libation-library = { path = "crates/libation-library" }
+libation-source = { path = "crates/libation-source" }
+libation-libro = { path = "crates/libation-libro" }
 libation-liberate = { path = "crates/libation-liberate" }
 libation-naming = { path = "crates/libation-naming" }
 libation-migrate = { path = "crates/libation-migrate" }

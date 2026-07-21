@@ -50,8 +50,8 @@ pub enum ContentKind {
 /// All data required to evaluate a naming template for a book.
 #[derive(Debug, Clone, Default)]
 pub struct BookContext {
-    /// Audible product id (ASIN) — used by `<id>`.
-    pub asin: String,
+    /// Canonical title id (ISBN / ASIN fallback) — used by `<id>`.
+    pub isbn: String,
     /// Audible title (no subtitle) — used by `<audible title>` and `<title short>`.
     pub title: Option<String>,
     /// Audible subtitle — used by `<audible subtitle>`.

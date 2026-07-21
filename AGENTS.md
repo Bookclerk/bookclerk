@@ -10,7 +10,8 @@ channel with `rustfmt` + `clippy`). The startup update script runs
 
 Two runnable binaries (the workspace `default-members`):
 
-- `libation-cli` (binary `libation`) — headless Audible library manager CLI.
+- `libation-cli` (binary `libation`) — headless audiobook library manager CLI
+  (Audible + Libro.fm).
 - `libationd` — long-running daemon with an HTTP control plane.
 
 Everything else under `crates/` is a library crate.
@@ -39,38 +40,44 @@ and `search_index/` under it.
   `POST` bodies require the `Content-Type: application/json` header (send `{}`
   for defaults), otherwise the request is rejected.
 
-### Live Audible / storage testing constraints
+### Live Audible / Libro.fm / storage testing constraints
 
-When exercising real Audible credentials in this cloud environment:
+When exercising real store credentials in this cloud environment:
 
 - Prefer **interactive** `libation auth login` (browser/QR or Desktop pane), not
-  a pre-baked `.auth` file, when the goal is to test login itself.
+  a pre-baked `.auth` file, when the goal is to test Audible login itself.
 - Amazon accounts with **2FA/MFA require OTP** during the browser OAuth step
   (audible-rs has no password CLI). Use a TOTP seed or complete the challenge
   in the Desktop pane; see README / `crates/libation-audible/README.md`.
+- Libro.fm: `libation auth login --source libro --email <addr>` with password
+  from `LIBATION_LIBRO_PASSWORD` (or interactive prompt — never on argv).
 - Keep `library.auto_liberate = false` in `$LIBATION_FILES_DIR/config.toml`.
 - After login, **disable the account for scans**:
   `libation auth set-scan <account> --scan false`.
   (Scan inclusion is per-account in SQLite, not a TOML key.)
-- Do **not** liberate the full library. Cap at **one** book via an explicit
-  ASIN: `libation library liberate --asin <ASIN>`.
+- Do **not** liberate the full library. Cap at **one** book:
+  - Audible: `libation library liberate --asin <ASIN>`
+  - Libro.fm: `libation library liberate --isbn <ISBN>` (or UUID)
 - Drive verification with the **CLI**, not `libationd` job triggers (`POST
   /scan` / `/liberate`), so nothing can bulk-queue work.
 - One-shot library sync without flipping scan back on: pass an explicit
   account (`libation library scan --account <id>`). Explicit account targets
   bypass `scan_enabled`; bare `library scan` / daemon scheduled scans honor
-  it and will skip disabled accounts.
+  it and will skip disabled accounts. Optional `--source audible|libro`
+  limits which store is scanned.
 
 ### Non-obvious gotchas
 
-- Actually scanning/liberating a library requires real Audible credentials
-  (`libation auth login`). Without a configured account, `scan`/`liberate` jobs
-  fail with "no accounts configured" — this is expected, and the daemon +
-  control plane still run fine for everything else. OAuth tokens live under
-  `Accounts/<account>.auth`. Prefer encryption via `LIBATION_AUTH_PASSWORD` or
+- Actually scanning/liberating a library requires real store credentials
+  (`libation auth login` for Audible and/or Libro). Without a configured
+  account, `scan`/`liberate` jobs fail with "no accounts configured" — this is
+  expected, and the daemon + control plane still run fine for everything else.
+  Tokens live under `Accounts/` (Audible `<account>.auth`, Libro
+  `*.libro.auth`). Prefer Audible encryption via `LIBATION_AUTH_PASSWORD` or
   `LIBATION_AUTH_PASSWORD_FILE` / `[auth].password_file` (missing password-file
   paths are auto-created with a strong random secret — use a secrets volume, not
-  `Accounts/`). `auth.allow_plaintext=true` stores unprotected token files.
+  `Accounts/`). `auth.allow_plaintext=true` stores unprotected Audible token
+  files. Libro passwords for login use `LIBATION_LIBRO_PASSWORD` only.
 - Liberate decrypt/encode is fully native in `libation-decrypt` (Adrm aaxc,
   Widevine DASH/CENC, MP3 via Symphonia+LAME, metadata fix-up, chapter split).
   No `ffmpeg` or `aaxclean-cli` is required. Widevine L3 CDMs auto-provision via

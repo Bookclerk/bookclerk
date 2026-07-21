@@ -2,6 +2,7 @@
 
 mod api;
 mod jobs;
+mod registry;
 mod scheduler;
 
 use std::net::SocketAddr;

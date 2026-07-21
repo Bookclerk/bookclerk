@@ -7,6 +7,10 @@ pub enum AudibleError {
     #[error("authentication error: {0}")]
     Auth(String),
 
+    /// No accounts configured for this source (safe to skip in multi-source scan).
+    #[error("no accounts configured: {0}")]
+    NoAccounts(String),
+
     #[error("account not found: {0}")]
     AccountNotFound(String),
 

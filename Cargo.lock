@@ -1805,6 +1805,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fdk-aac"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bb67e142688083cb9afb63f2424203fc98c4e7afb494bf912b60b55513b177e"
+dependencies = [
+ "fdk-aac-sys",
+]
+
+[[package]]
+name = "fdk-aac-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24516d2611506d5cb1833555adc75f6baf9fe2706b9c13e6fc33a6b22c51ca83"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2681,6 +2699,7 @@ dependencies = [
  "getrandom 0.3.4",
  "libation-config",
  "libation-library",
+ "libation-source",
  "qrcode",
  "reqwest",
  "secrecy",
@@ -2705,10 +2724,13 @@ dependencies = [
  "libation-config",
  "libation-liberate",
  "libation-library",
+ "libation-libro",
  "libation-migrate",
  "libation-naming",
  "libation-search",
+ "libation-source",
  "libation-storage",
+ "rpassword",
  "rusqlite",
  "rust_xlsxwriter",
  "serde_json",
@@ -2740,6 +2762,7 @@ dependencies = [
  "anyhow",
  "cbc 0.2.1",
  "ctr",
+ "fdk-aac",
  "hex",
  "id3",
  "libation-config",
@@ -2767,6 +2790,7 @@ dependencies = [
  "libation-decrypt",
  "libation-library",
  "libation-naming",
+ "libation-source",
  "libation-storage",
  "serde",
  "serde_json",
@@ -2789,6 +2813,28 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "libation-libro"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "libation-library",
+ "libation-source",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "wiremock",
+ "zip",
 ]
 
 [[package]]
@@ -2833,6 +2879,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "libation-source"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "libation-config",
+ "libation-library",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "libation-storage"
 version = "0.1.0"
 dependencies = [
@@ -2862,6 +2923,8 @@ dependencies = [
  "libation-config",
  "libation-liberate",
  "libation-library",
+ "libation-libro",
+ "libation-source",
  "libation-storage",
  "serde",
  "serde_json",
@@ -4054,6 +4117,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpassword"
+version = "7.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2da316a15f47e3d053de9cb2c439650bd8fa4aaeb9365f2e5f27f492ff73c196"
+dependencies = [
+ "libc",
+ "rtoolbox",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4082,6 +4156,16 @@ checksum = "c51c9ae4df8a7fba42103df5c621fa3c37eccf3a3c650879e90fc48b11cc192c"
 dependencies = [
  "hashbrown 0.16.1",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "rtoolbox"
+version = "0.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50a0e551c1e27e1731aba276dbeaeac73f53c7cd34d1bda485d02bd1e0f36844"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5916,6 +6000,15 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets",
 ]

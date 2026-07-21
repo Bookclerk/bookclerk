@@ -16,6 +16,7 @@ chrono.workspace = true
 futures.workspace = true
 libation-config.workspace = true
 libation-library.workspace = true
+libation-source.workspace = true
 qrcode.workspace = true
 reqwest = { version = "0.13", default-features = true, features = ["json"] }
 getrandom = "0.3"

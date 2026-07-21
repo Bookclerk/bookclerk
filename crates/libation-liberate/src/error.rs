@@ -7,6 +7,9 @@ pub enum LiberateError {
     #[error("audible error: {0}")]
     Audible(#[from] libation_audible::AudibleError),
 
+    #[error("source error: {0}")]
+    Source(#[from] libation_source::SourceError),
+
     #[error("storage error: {0}")]
     Storage(#[from] libation_storage::StorageError),
 

@@ -4,6 +4,8 @@
 [library]
 auto_liberate = false
 scan_interval_minutes = 60
+# After scan, enrich Libro.fm rows from the Audible catalog by ISBN (needs an Audible login).
+enrich_libro_from_audible = true
 
 # OAuth tokens live under Accounts/<account>.auth.
 # Prefer encryption: LIBATION_AUTH_PASSWORD, or a password file path

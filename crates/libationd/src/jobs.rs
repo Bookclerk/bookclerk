@@ -2,14 +2,16 @@
 
 use std::sync::Arc;
 
-use libation_audible::{scan_library, DownloadOptions, ScanOptions};
+use libation_audible::DownloadOptions;
 use libation_config::BadBookAction;
 use libation_liberate::{liberate_book_indexed, LiberateRequest, ReconcileOptions, StorageIndex};
 use libation_library::LiberateStatus;
+use libation_source::{ScanOptions, SourceKind};
 use libation_storage::from_config;
 use tracing::{error, info, warn};
 
 use crate::api::{AppState, JobInfo};
+use crate::registry::default_registry;
 
 /// Enqueue a library scan and run it in the background.
 pub async fn enqueue_scan(state: Arc<AppState>, account: Option<String>) -> String {
@@ -90,17 +92,26 @@ pub async fn run_scan(state: &AppState, account: Option<&str>) -> anyhow::Result
     let cfg = state.config.read().await.clone();
     let paths = cfg.paths();
     paths.ensure_dirs()?;
-    let summary = scan_library(
-        &paths.files_dir,
-        &state.library,
-        ScanOptions {
-            accounts: account.map(|a| vec![a.to_string()]).unwrap_or_default(),
-            page_size: 50,
-            import_episodes: cfg.library.import_episodes,
-            import_plus_titles: cfg.library.import_plus_titles,
-        },
-    )
-    .await?;
+    let registry = default_registry();
+    let summary = registry
+        .scan_all(
+            &paths.files_dir,
+            &state.library,
+            ScanOptions {
+                accounts: account.map(|a| vec![a.to_string()]).unwrap_or_default(),
+                page_size: 50,
+                import_episodes: cfg.library.import_episodes,
+                import_plus_titles: cfg.library.import_plus_titles,
+            },
+        )
+        .await?;
+    if cfg.library.enrich_libro_from_audible {
+        if let Err(err) =
+            libation_audible::enrich_libro_books_by_isbn(&paths.files_dir, &state.library).await
+        {
+            warn!(error = %err, "Libro ISBN enrichment failed");
+        }
+    }
     Ok(format!(
         "{} account(s), {} book upsert(s), {} page(s), {} skipped (scan disabled)",
         summary.accounts, summary.books_upserted, summary.pages, summary.skipped_disabled
@@ -119,6 +130,7 @@ pub async fn run_liberate(
     paths.ensure_dirs()?;
     let storage = from_config(&cfg).await?;
     let options = DownloadOptions::from(&cfg);
+    let registry = default_registry();
 
     // Match existing media first so auto-liberate does not re-download.
     let _ = libation_liberate::reconcile_library(
@@ -136,7 +148,14 @@ pub async fn run_liberate(
     let books = state.library.list_books(account)?;
     let targets: Vec<_> = books
         .into_iter()
-        .filter(|b| asin.is_none_or(|a| a == b.asin))
+        .filter(|b| {
+            asin.is_none_or(|a| {
+                a.eq_ignore_ascii_case(&b.uuid)
+                    || a.eq_ignore_ascii_case(&b.product_id)
+                    || b.isbn.as_deref().is_some_and(|i| a.eq_ignore_ascii_case(i))
+                    || b.asin.as_deref().is_some_and(|x| a.eq_ignore_ascii_case(x))
+            })
+        })
         .filter(|b| b.liberate_status != LiberateStatus::Liberated)
         .filter(|b| libation_library::is_downloadable(&b.content_kind))
         .filter(|b| cfg.library.download_episodes || b.content_kind != "episode")
@@ -152,8 +171,12 @@ pub async fn run_liberate(
     let mut failed = 0u32;
     let bad_book = cfg.download.bad_book_action;
     for book in targets {
+        let source_kind = SourceKind::parse(&book.source).unwrap_or(SourceKind::Audible);
+        let content_source = registry.require(source_kind).ok();
         let req = LiberateRequest {
-            asin: book.asin.clone(),
+            asin: book.download_product_id().to_string(),
+            book_uuid: Some(book.uuid.clone()),
+            source: source_kind,
             account_id: book.account_id.clone(),
             title: book.title.clone(),
             authors: book.authors.clone(),
@@ -174,6 +197,7 @@ pub async fn run_liberate(
                 storage.as_ref(),
                 req.clone(),
                 Some(&mut index),
+                content_source.as_deref(),
             )
             .await
             {
@@ -189,13 +213,13 @@ pub async fn run_liberate(
                 }
                 Err(err) => {
                     if bad_book == BadBookAction::Retry && attempts < 2 {
-                        warn!(asin = %book.asin, error = %err, "liberate failed; retrying");
+                        warn!(asin = %book.asin_or_isbn(), error = %err, "liberate failed; retrying");
                         continue;
                     }
-                    warn!(asin = %book.asin, error = %err, "liberate failed");
+                    warn!(asin = %book.asin_or_isbn(), error = %err, "liberate failed");
                     failed += 1;
                     if matches!(bad_book, BadBookAction::Ask | BadBookAction::Abort) {
-                        anyhow::bail!("liberate aborted on {}: {err}", book.asin);
+                        anyhow::bail!("liberate aborted on {}: {err}", book.asin_or_isbn());
                     }
                     break;
                 }

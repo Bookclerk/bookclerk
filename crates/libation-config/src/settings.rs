@@ -53,6 +53,8 @@ pub struct LibraryConfig {
     pub download_episodes: bool,
     /// Save podcast episodes into the parent show's folder (`SavePodcastsToParentFolder`).
     pub save_podcasts_to_parent_folder: bool,
+    /// After scan, enrich Libro.fm rows from the Audible catalog by ISBN.
+    pub enrich_libro_from_audible: bool,
 }
 
 impl Default for LibraryConfig {
@@ -64,6 +66,7 @@ impl Default for LibraryConfig {
             import_plus_titles: false,
             download_episodes: true,
             save_podcasts_to_parent_folder: false,
+            enrich_libro_from_audible: true,
         }
     }
 }
@@ -375,6 +378,10 @@ impl Config {
         }
         if let Ok(v) = std::env::var("LIBATION_AUTO_LIBERATE") {
             self.library.auto_liberate = parse_bool(&v).unwrap_or(self.library.auto_liberate);
+        }
+        if let Ok(v) = std::env::var("LIBATION_ENRICH_LIBRO_FROM_AUDIBLE") {
+            self.library.enrich_libro_from_audible =
+                parse_bool(&v).unwrap_or(self.library.enrich_libro_from_audible);
         }
         if let Ok(v) = std::env::var("LIBATION_SCAN_INTERVAL_MINUTES") {
             if let Ok(n) = v.parse() {

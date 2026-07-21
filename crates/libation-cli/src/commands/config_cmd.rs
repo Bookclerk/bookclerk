@@ -174,7 +174,7 @@ fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()>
             let store = LibraryStore::open(&paths.library_db)?;
             let book = resolve_book_for_preview(&store, &asin, account.as_deref())?;
             let ctx = NamingContext {
-                asin: book.asin.clone(),
+                asin: book.asin_or_isbn().to_string(),
                 title: book.title.clone(),
                 subtitle: book.subtitle.clone(),
                 authors: book.authors.clone(),
@@ -200,7 +200,7 @@ fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()>
                 config.storage.backend == StorageBackendKind::S3,
             );
             let key = storage_key_with_rules(&ctx, folder_tpl, file_tpl, &ext, &rules);
-            println!("asin\t{}", book.asin);
+            println!("asin\t{}", book.asin_or_isbn());
             println!(
                 "folder_template\t{}",
                 folder_tpl.unwrap_or("<author>/<title>")
@@ -229,7 +229,16 @@ fn resolve_book_for_preview(
     let matches: Vec<_> = store
         .list_books(None)?
         .into_iter()
-        .filter(|b| b.asin.eq_ignore_ascii_case(asin))
+        .filter(|b| {
+            b.uuid.eq_ignore_ascii_case(asin)
+                || b.product_id.eq_ignore_ascii_case(asin)
+                || b.isbn
+                    .as_ref()
+                    .is_some_and(|i| i.eq_ignore_ascii_case(asin))
+                || b.asin
+                    .as_ref()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(asin))
+        })
         .collect();
     match matches.as_slice() {
         [] => anyhow::bail!("ASIN {asin} not in library — run `libation library scan`"),

@@ -3,6 +3,7 @@
 mod boxutil;
 pub(crate) mod cenc;
 mod dash;
+pub(crate) mod mux_aac;
 mod parser;
 mod remux;
 mod samples;

@@ -48,8 +48,8 @@ pub fn normalize_lucene_query(input: &str) -> String {
     for (from, to) in [
         ("author:", "authors:"),
         ("narrator:", "narrators:"),
-        ("asin:", "id:"),
-        ("productid:", "id:"),
+        ("productid:", "product_id:"),
+        ("product_id:", "product_id:"),
     ] {
         out = out.replace(from, to);
     }

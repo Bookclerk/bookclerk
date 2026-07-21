@@ -155,7 +155,7 @@ pub(crate) fn eval_display(
     };
 
     Some(match name {
-        "id" => book.asin.clone(),
+        "id" => book.isbn.clone(),
         "title" => s(book.full_title()),
         "titleshort" => s(book.title_short()),
         "audibletitle" => s(book.title.clone()),
@@ -272,7 +272,7 @@ pub(crate) fn eval_object(
     };
 
     Some(match name {
-        "id" => Value::Str(book.asin.clone()),
+        "id" => Value::Str(book.isbn.clone()),
         "title" => s(book.full_title()),
         "titleshort" => s(book.title_short()),
         "audibletitle" => s(book.title.clone()),

@@ -7,11 +7,13 @@ mod accounts;
 mod artifacts;
 mod auth;
 mod download;
+mod enrich;
 mod error;
 mod options;
 mod paths;
 mod qr;
 mod secret;
+mod source;
 mod sync;
 mod throttle;
 mod widevine;
@@ -35,7 +37,12 @@ pub use download::{
     license_full_json, open_account_client, parse_license_json, request_content_license,
     summarize_license, AccountClient, DrmKind, EncryptedDownload, LicenseSummary,
 };
+pub use enrich::{
+    apply_enrichment_to_book, enrich_libro_books_by_isbn, lookup_by_isbn,
+    lookup_by_isbn_with_client, Enrichment,
+};
 pub use error::{AudibleError, Result};
+pub use libation_source::{ScanOptions, ScanSummary};
 pub use options::DownloadOptions;
 pub use paths::{
     accounts_dir, auth_file_for, ensure_accounts_dir, list_auth_files, widevine_cdm_file_for,
@@ -45,7 +52,8 @@ pub use secret::{
     configure_auth_secrets, default_allow_plaintext, read_or_create_password_file,
     require_auth_password, resolve_auth_password, AUTH_PASSWORD_ENV, AUTH_PASSWORD_FILE_ENV,
 };
-pub use sync::{scan_account_into_library, scan_library, ScanOptions, ScanSummary};
+pub use source::AudibleSource;
+pub use sync::{scan_account_into_library, scan_library};
 pub use widevine::{
     effective_cdm_provider, ensure_widevine_cdm, load_widevine_cdm, WidevineCdm, WidevineDownload,
     DEFAULT_WIDEVINE_CDM_PROVIDER,

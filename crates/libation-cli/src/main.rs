@@ -2,6 +2,7 @@
 
 mod commands;
 mod progress;
+mod registry;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

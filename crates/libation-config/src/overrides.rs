@@ -164,6 +164,9 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         "library.save_podcasts_to_parent_folder" => {
             config.library.save_podcasts_to_parent_folder = parse_bool(v).unwrap_or(false);
         }
+        "library.enrich_libro_from_audible" => {
+            config.library.enrich_libro_from_audible = parse_bool(v).unwrap_or(true);
+        }
         "library.scan_interval_minutes" => {
             if v.eq_ignore_ascii_case("true") {
                 config.library.scan_interval_minutes = 5;
@@ -209,5 +212,14 @@ mod tests {
         let mut cfg = Config::default();
         apply_setting_overrides(&mut cfg, &[("download.widevine", "true")]);
         assert!(cfg.download.widevine);
+    }
+
+    #[test]
+    fn enrich_libro_from_audible_defaults_true_and_override() {
+        let cfg = Config::default();
+        assert!(cfg.library.enrich_libro_from_audible);
+        let mut cfg = Config::default();
+        apply_setting_overrides(&mut cfg, &[("library.enrich_libro_from_audible", "false")]);
+        assert!(!cfg.library.enrich_libro_from_audible);
     }
 }

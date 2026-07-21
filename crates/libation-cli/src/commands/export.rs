@@ -23,7 +23,7 @@ pub fn export_csv(path: &Path, books: &[BookRecord]) -> anyhow::Result<()> {
     for book in books {
         let finished = if book.is_finished { "true" } else { "false" };
         writer.write_record([
-            &book.asin,
+            book.asin_or_isbn(),
             &book.account_id,
             &book.title,
             book.authors.as_deref().unwrap_or(""),
@@ -67,7 +67,7 @@ pub fn export_xlsx(path: &Path, books: &[BookRecord]) -> anyhow::Result<()> {
     }
     for (row, book) in books.iter().enumerate() {
         let r = (row + 1) as u32;
-        worksheet.write(r, 0, &book.asin)?;
+        worksheet.write(r, 0, book.asin_or_isbn())?;
         worksheet.write(r, 1, &book.account_id)?;
         worksheet.write(r, 2, &book.title)?;
         worksheet.write(r, 3, book.authors.as_deref().unwrap_or(""))?;
@@ -88,7 +88,18 @@ pub fn filter_books(books: Vec<BookRecord>, asins: Option<&[String]>) -> Vec<Boo
         None | Some([]) => books,
         Some(list) => books
             .into_iter()
-            .filter(|b| list.iter().any(|a| a.eq_ignore_ascii_case(&b.asin)))
+            .filter(|b| {
+                list.iter().any(|a| {
+                    a.eq_ignore_ascii_case(&b.uuid)
+                        || a.eq_ignore_ascii_case(&b.product_id)
+                        || b.isbn
+                            .as_ref()
+                            .is_some_and(|isbn| a.eq_ignore_ascii_case(isbn))
+                        || b.asin
+                            .as_ref()
+                            .is_some_and(|asin| a.eq_ignore_ascii_case(asin))
+                })
+            })
             .collect(),
     }
 }

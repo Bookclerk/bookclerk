@@ -177,7 +177,11 @@ pub fn import_library_db(
         };
 
         store.upsert_book(&NewBook {
-            asin: row.asin.clone(),
+            uuid: None,
+            product_id: row.asin.clone(),
+            asin: Some(row.asin.clone()),
+            isbn: None,
+            source: String::from("audible"),
             account_id: account_id.clone(),
             marketplace: row.locale.clone(),
             title,

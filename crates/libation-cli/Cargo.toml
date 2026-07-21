@@ -19,9 +19,11 @@ libation-audible.workspace = true
 libation-config.workspace = true
 libation-liberate.workspace = true
 libation-library.workspace = true
+libation-libro.workspace = true
 libation-migrate.workspace = true
 libation-naming.workspace = true
 libation-search.workspace = true
+libation-source.workspace = true
 libation-storage.workspace = true
 rusqlite.workspace = true
 chrono.workspace = true
@@ -31,6 +33,7 @@ rust_xlsxwriter.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+rpassword = "7"
 
 [lints]
 workspace = true

@@ -13,7 +13,7 @@
 //! use libation_naming::{expand_template, BookContext, Contributor};
 //!
 //! let book = BookContext {
-//!     asin: "B00X".into(),
+//!     isbn: "B00X".into(),
 //!     title_with_subtitle: Some("A Study in Scarlet".into()),
 //!     authors: vec![Contributor::new("Arthur Conan Doyle", None)],
 //!     ..Default::default()

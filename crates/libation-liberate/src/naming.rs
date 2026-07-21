@@ -84,7 +84,7 @@ fn to_book_context(ctx: &NamingContext) -> BookContext {
     .collect();
 
     BookContext {
-        asin: ctx.asin.clone(),
+        isbn: ctx.asin.clone(),
         title: Some(ctx.title.clone()),
         subtitle: ctx.subtitle.clone(),
         title_with_subtitle: None,

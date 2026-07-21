@@ -13,10 +13,15 @@ use libation_config::DownloadFormat;
 use libation_config::FileTimestampMode;
 use libation_decrypt::{
     brand_durations_from_chapter_info, brand_trim_range, decrypt_adrm, decrypt_cenc, encode_to_mp3,
-    fixup_audiobook, parse_mp4, rebase_chapters_after_brand_trim, track_duration_ms,
-    CencDecryptRequest, DecryptRequest, FixupRequest, TrimRange,
+    fixup_audiobook, package_m4b_from_mp3, parse_mp4, rebase_chapters_after_brand_trim,
+    track_duration_ms, CencDecryptRequest, DecryptRequest, FixupRequest, PackageM4bRequest,
+    TrimRange,
 };
 use libation_library::{LiberateStatus, LibraryStore};
+use libation_source::{
+    ContentSource, EncryptedDrmKind, EncryptedFetch, FetchOptions, PlainFetch, SourceFetch,
+    SourceKind,
+};
 use libation_storage::{ObjectMeta, StorageBackend};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,7 +35,12 @@ use crate::split::split_audio_by_chapters;
 /// Request to liberate a single title.
 #[derive(Debug, Clone)]
 pub struct LiberateRequest {
+    /// Download product id (Audible ASIN / Libro ISBN).
     pub asin: String,
+    /// Stable library UUID when known (preferred for status updates).
+    pub book_uuid: Option<String>,
+    /// Which store owns this title.
+    pub source: SourceKind,
     pub account_id: String,
     pub title: String,
     pub authors: Option<String>,
@@ -63,19 +73,31 @@ pub async fn liberate_book(
     storage: &dyn StorageBackend,
     req: LiberateRequest,
 ) -> Result<LiberateResult> {
-    liberate_book_indexed(library, storage, req, None).await
+    liberate_book_indexed(library, storage, req, None, None).await
 }
 
 /// Liberate with an optional pre-built [`StorageIndex`] (avoids re-listing storage
 /// when liberating many titles). On success, newly written keys are inserted into
 /// the index so later books in the same batch can match them.
+///
+/// When `source` is `Some`, fetch goes through [`ContentSource::fetch_title`]
+/// (Encrypted → decrypt path, Plain → M4B packaging / MP3 handling).
+/// When `None`, Audible titles use the legacy direct Audible download path;
+/// non-Audible titles require a `source`.
 pub async fn liberate_book_indexed(
     library: &LibraryStore,
     storage: &dyn StorageBackend,
     req: LiberateRequest,
     mut index: Option<&mut StorageIndex>,
+    source: Option<&dyn ContentSource>,
 ) -> Result<LiberateResult> {
-    tracing::info!(asin = %req.asin, title = %req.title, force = req.force, "liberate requested");
+    tracing::info!(
+        asin = %req.asin,
+        source = %req.source,
+        title = %req.title,
+        force = req.force,
+        "liberate requested"
+    );
 
     if !req.force && !req.options.overwrite_existing {
         let owned_index;
@@ -93,7 +115,7 @@ pub async fn liberate_book_indexed(
                 "skipping download — matched existing liberated media"
             );
             library.set_liberate_status(
-                &req.asin,
+                status_key(&req),
                 &req.account_id,
                 LiberateStatus::Liberated,
                 Some(&key),
@@ -108,20 +130,20 @@ pub async fn liberate_book_indexed(
     }
 
     library.set_liberate_status(
-        &req.asin,
+        status_key(&req),
         &req.account_id,
         LiberateStatus::Queued,
         None,
         None,
     )?;
 
-    match run_pipeline(library, storage, &req).await {
+    match run_pipeline(library, storage, &req, source).await {
         Ok(result) => {
             if let Some(idx) = index.as_mut() {
                 idx.insert_key(result.storage_key.clone());
             }
             library.set_liberate_status(
-                &req.asin,
+                status_key(&req),
                 &req.account_id,
                 LiberateStatus::Liberated,
                 Some(&result.storage_key),
@@ -132,7 +154,7 @@ pub async fn liberate_book_indexed(
         Err(err) => {
             let message = err.to_string();
             let _ = library.set_liberate_status(
-                &req.asin,
+                status_key(&req),
                 &req.account_id,
                 LiberateStatus::Error,
                 None,
@@ -143,18 +165,557 @@ pub async fn liberate_book_indexed(
     }
 }
 
+fn status_key(req: &LiberateRequest) -> &str {
+    req.book_uuid.as_deref().unwrap_or(&req.asin)
+}
+
 async fn run_pipeline(
     library: &LibraryStore,
     storage: &dyn StorageBackend,
     req: &LiberateRequest,
+    source: Option<&dyn ContentSource>,
 ) -> Result<LiberateResult> {
     library.set_liberate_status(
-        &req.asin,
+        status_key(req),
         &req.account_id,
         LiberateStatus::Downloading,
         None,
         None,
     )?;
+
+    // Prefer ContentSource when provided. For Audible with a preloaded license,
+    // keep the legacy license path (ContentSource does not accept vouchers).
+    if let Some(source) = source {
+        if req.preloaded_license.is_none() {
+            return run_source_pipeline(library, storage, req, source).await;
+        }
+    }
+
+    if req.source != SourceKind::Audible {
+        return Err(LiberateError::Other(anyhow::anyhow!(
+            "content source `{}` required to liberate title {}",
+            req.source,
+            req.asin
+        )));
+    }
+
+    run_audible_pipeline(library, storage, req).await
+}
+
+async fn run_source_pipeline(
+    library: &LibraryStore,
+    storage: &dyn StorageBackend,
+    req: &LiberateRequest,
+    source: &dyn ContentSource,
+) -> Result<LiberateResult> {
+    let work_dir = req.cache_dir.join("liberate").join(status_key(req));
+    tokio::fs::create_dir_all(&work_dir).await?;
+
+    let fetch = source
+        .fetch_title(
+            &req.files_dir,
+            &req.account_id,
+            &req.asin,
+            &FetchOptions {
+                download: req.options.clone(),
+                cache_dir: work_dir.clone(),
+            },
+        )
+        .await?;
+
+    match fetch {
+        SourceFetch::Plain(plain) => {
+            store_plain_fetch(library, storage, req, &work_dir, plain).await
+        }
+        SourceFetch::Encrypted(enc) => {
+            store_encrypted_fetch(library, storage, req, &work_dir, enc).await
+        }
+    }
+}
+
+async fn store_encrypted_fetch(
+    library: &LibraryStore,
+    storage: &dyn StorageBackend,
+    req: &LiberateRequest,
+    work_dir: &Path,
+    download: EncryptedFetch,
+) -> Result<LiberateResult> {
+    let brand = download
+        .chapter_info
+        .as_ref()
+        .map(brand_durations_from_chapter_info)
+        .unwrap_or_default();
+    let mut runtime_ms = download.chapter_info.as_ref().and_then(|info| {
+        info.get("runtime_length_ms")
+            .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|n| n.max(0) as u64)))
+    });
+    if req.options.strip_audible_brand_audio && brand.outro_ms > 0 && runtime_ms.is_none() {
+        if let Ok(mp4) = parse_mp4(&download.path) {
+            let probed = track_duration_ms(&mp4.audio);
+            if probed > 0 {
+                runtime_ms = Some(probed);
+            }
+        }
+    }
+    let trim = if req.options.strip_audible_brand_audio {
+        brand_trim_range(brand, runtime_ms)
+    } else {
+        None
+    };
+
+    let mut liberated_path = if download.needs_decrypt {
+        match download.drm_kind {
+            EncryptedDrmKind::Adrm => {
+                let (Some(key), Some(iv)) = (&download.key, &download.iv) else {
+                    return Err(LiberateError::Other(anyhow::anyhow!(
+                        "aaxc download missing key/iv"
+                    )));
+                };
+                let out = work_dir.join(format!("{}.m4b", status_key(req)));
+                decrypt_adrm(DecryptRequest {
+                    input: download.path.clone(),
+                    output: out.clone(),
+                    audible_key: Some(key.clone()),
+                    audible_iv: Some(iv.clone()),
+                    activation_bytes: None,
+                    trim,
+                })
+                .await?;
+                out
+            }
+            EncryptedDrmKind::Widevine => {
+                let (Some(kid), Some(key)) = (&download.kid, &download.cenc_key) else {
+                    return Err(LiberateError::Other(anyhow::anyhow!(
+                        "Widevine download missing kid/key"
+                    )));
+                };
+                let out = work_dir.join(format!("{}.m4b", status_key(req)));
+                decrypt_cenc(CencDecryptRequest {
+                    input: download.path.clone(),
+                    output: out.clone(),
+                    kid: kid.clone(),
+                    key: key.clone(),
+                    trim,
+                })
+                .await?;
+                out
+            }
+            EncryptedDrmKind::Mpeg => download.path.clone(),
+        }
+    } else {
+        download.path.clone()
+    };
+
+    let flat_chapters = download
+        .chapter_info
+        .as_ref()
+        .map(flatten_chapters)
+        .map(|ch| {
+            process_chapter_titles(
+                ch,
+                req.options.combine_nested_chapter_titles,
+                req.options.merge_opening_and_end_credits,
+                req.options.strip_unabridged,
+                req.options.strip_audible_brand_audio,
+            )
+        })
+        .map(|ch| {
+            if req.options.strip_audible_brand_audio && !brand.is_empty() {
+                let pairs: Vec<(String, u64)> =
+                    ch.iter().map(|c| (c.title.clone(), c.start_ms)).collect();
+                rebase_chapters_after_brand_trim(&pairs, brand, runtime_ms)
+                    .into_iter()
+                    .map(|(title, start_ms)| crate::cue::FlatChapter { title, start_ms })
+                    .collect()
+            } else {
+                ch
+            }
+        })
+        .unwrap_or_default();
+
+    let want_mp3 = matches!(req.options.format, DownloadFormat::Mp3);
+    let will_split = req.options.split_files_by_chapter && flat_chapters.len() > 1;
+    if want_mp3 && !will_split {
+        let ext = liberated_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !ext.eq_ignore_ascii_case("mp3") {
+            let mp3_out = work_dir.join(format!("{}.mp3", status_key(req)));
+            encode_to_mp3(
+                &liberated_path,
+                &mp3_out,
+                &req.options.lame,
+                req.options.max_sample_rate,
+            )
+            .await?;
+            liberated_path = mp3_out;
+        }
+    }
+
+    let chapters: Vec<(String, u64)> = flat_chapters
+        .iter()
+        .map(|c| (c.title.clone(), c.start_ms))
+        .collect();
+    let cover_path = download.cover_path.clone();
+    let ext = liberated_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("m4b")
+        .to_string();
+
+    if req.options.fixup_metadata && !will_split {
+        let fixed = work_dir.join(format!("{}.fixed.{}", status_key(req), ext));
+        match fixup_audiobook(FixupRequest {
+            input: liberated_path.clone(),
+            output: fixed.clone(),
+            title: req.title.clone(),
+            author: req.authors.clone(),
+            narrator: req.narrators.clone(),
+            cover: cover_path.clone(),
+            chapters,
+        })
+        .await
+        {
+            Ok(outcome) => liberated_path = outcome.output,
+            Err(err) => {
+                tracing::warn!(
+                    id = %status_key(req),
+                    error = %err,
+                    "metadata fixup failed; storing pre-fixup audio"
+                );
+            }
+        }
+    }
+
+    let storage_key = if will_split {
+        let total_ms = runtime_ms
+            .or_else(|| {
+                flat_chapters
+                    .last()
+                    .map(|c| c.start_ms.saturating_add(600_000))
+            })
+            .unwrap_or(3_600_000);
+        let split_dir = work_dir.join("chapters");
+        let chapters = split_audio_by_chapters(
+            &liberated_path,
+            &split_dir,
+            &flat_chapters,
+            total_ms,
+            &folder_naming_ctx(library, req),
+            &naming_ctx(library, req),
+            &req.options,
+            "m4b",
+        )
+        .await?;
+        let mut first_key = String::new();
+        let mut written_keys = Vec::new();
+        for ch in chapters {
+            let mut chapter_path = ch.path;
+            let mut key = ch.storage_key;
+            if want_mp3 {
+                let mp3_path = chapter_path.with_extension("mp3");
+                encode_to_mp3(
+                    &chapter_path,
+                    &mp3_path,
+                    &req.options.lame,
+                    req.options.max_sample_rate,
+                )
+                .await?;
+                chapter_path = mp3_path;
+                key = key
+                    .trim_end_matches(".m4b")
+                    .trim_end_matches(".M4B")
+                    .to_string()
+                    + ".mp3";
+            }
+            let meta = object_meta_for(
+                library,
+                req,
+                &ch.title,
+                content_type_for_ext(if want_mp3 { "mp3" } else { "m4b" }),
+                tokio::fs::metadata(&chapter_path)
+                    .await
+                    .ok()
+                    .map(|m| m.len()),
+            )
+            .await;
+            storage.put_file(&key, &chapter_path, meta).await?;
+            written_keys.push(key.clone());
+            if first_key.is_empty() {
+                first_key = key;
+            }
+        }
+        apply_storage_timestamps(storage, library, req, &written_keys).await;
+        first_key
+    } else {
+        let storage_key = planned_storage_key_for(library, req, &ext);
+        let data_len = tokio::fs::metadata(&liberated_path)
+            .await
+            .map(|m| m.len())
+            .ok();
+        let meta = object_meta_for(
+            library,
+            req,
+            &req.title,
+            content_type_for_ext(&ext),
+            data_len,
+        )
+        .await;
+        storage
+            .put_file(&storage_key, &liberated_path, meta)
+            .await?;
+        apply_storage_timestamps(storage, library, req, std::slice::from_ref(&storage_key)).await;
+        storage_key
+    };
+
+    if let Some(cover) = cover_path.as_ref() {
+        if req.options.download_cover {
+            let cover_key = sidecar_key(&storage_key, "jpg");
+            let meta = sidecar_meta(status_key(req), &req.title, "image/jpeg", cover).await;
+            if let Err(err) = storage.put_file(&cover_key, cover, meta).await {
+                tracing::warn!(id = %status_key(req), error = %err, "cover store failed");
+            }
+        }
+    }
+
+    if let Err(err) = tokio::fs::remove_dir_all(work_dir).await {
+        tracing::warn!(
+            path = %work_dir.display(),
+            error = %err,
+            "failed to clean liberate cache dir"
+        );
+    }
+
+    Ok(LiberateResult {
+        asin: req.asin.clone(),
+        storage_key,
+        matched_existing: false,
+    })
+}
+
+async fn store_plain_fetch(
+    library: &LibraryStore,
+    storage: &dyn StorageBackend,
+    req: &LiberateRequest,
+    work_dir: &Path,
+    plain: PlainFetch,
+) -> Result<LiberateResult> {
+    let want_mp3 = matches!(req.options.format, DownloadFormat::Mp3);
+    let multi = plain.parts.len() > 1;
+
+    if multi && req.options.split_files_by_chapter {
+        return store_plain_parts(library, storage, req, plain).await;
+    }
+
+    let mut chapters = plain.chapters.clone();
+    let mut liberated_path = if let Some(m4b) = plain.m4b_path.clone() {
+        m4b
+    } else if plain.parts.is_empty() {
+        return Err(LiberateError::Other(anyhow::anyhow!(
+            "source `{}` returned no audio for {}",
+            req.source,
+            req.asin
+        )));
+    } else if plain.parts.len() == 1 && want_mp3 {
+        plain.parts[0].path.clone()
+    } else {
+        // Package MP3 part(s) into M4B (single-file M4B target, or multi→single).
+        let titles: Vec<String> = plain
+            .parts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                p.title
+                    .clone()
+                    .unwrap_or_else(|| format!("Chapter {}", i + 1))
+            })
+            .collect();
+        let out = work_dir.join(format!("{}.m4b", status_key(req)));
+        let (outcome, packaged_chapters) = package_m4b_from_mp3(PackageM4bRequest {
+            parts: plain.parts.iter().map(|p| p.path.clone()).collect(),
+            output: out,
+            chapter_titles: titles,
+        })
+        .await?;
+        if chapters.is_empty() {
+            chapters = packaged_chapters;
+        }
+        outcome.output
+    };
+
+    if want_mp3 {
+        let ext = liberated_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !ext.eq_ignore_ascii_case("mp3") {
+            let mp3_out = work_dir.join(format!("{}.mp3", status_key(req)));
+            encode_to_mp3(
+                &liberated_path,
+                &mp3_out,
+                &req.options.lame,
+                req.options.max_sample_rate,
+            )
+            .await?;
+            liberated_path = mp3_out;
+        }
+    }
+
+    let ext = liberated_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or(match req.options.format {
+            DownloadFormat::M4b => "m4b",
+            DownloadFormat::Mp3 => "mp3",
+        })
+        .to_string();
+
+    let cover_path = plain.cover_path.clone();
+    if req.options.fixup_metadata {
+        let fixed = work_dir.join(format!("{}.fixed.{}", status_key(req), ext));
+        match fixup_audiobook(FixupRequest {
+            input: liberated_path.clone(),
+            output: fixed.clone(),
+            title: req.title.clone(),
+            author: req.authors.clone(),
+            narrator: req.narrators.clone(),
+            cover: cover_path.clone(),
+            chapters,
+        })
+        .await
+        {
+            Ok(outcome) => liberated_path = outcome.output,
+            Err(err) => {
+                tracing::warn!(
+                    id = %status_key(req),
+                    error = %err,
+                    "metadata fixup failed; storing pre-fixup audio"
+                );
+            }
+        }
+    }
+
+    let storage_key = planned_storage_key_for(library, req, &ext);
+    let data_len = tokio::fs::metadata(&liberated_path)
+        .await
+        .map(|m| m.len())
+        .ok();
+    let meta = object_meta_for(
+        library,
+        req,
+        &req.title,
+        content_type_for_ext(&ext),
+        data_len,
+    )
+    .await;
+    storage
+        .put_file(&storage_key, &liberated_path, meta)
+        .await?;
+    apply_storage_timestamps(storage, library, req, std::slice::from_ref(&storage_key)).await;
+
+    if let Some(cover) = cover_path.as_ref() {
+        if req.options.download_cover {
+            let cover_key = sidecar_key(&storage_key, "jpg");
+            let meta = sidecar_meta(status_key(req), &req.title, "image/jpeg", cover).await;
+            if let Err(err) = storage.put_file(&cover_key, cover, meta).await {
+                tracing::warn!(id = %status_key(req), error = %err, "cover store failed");
+            }
+        }
+    }
+
+    if let Err(err) = tokio::fs::remove_dir_all(work_dir).await {
+        tracing::warn!(
+            path = %work_dir.display(),
+            error = %err,
+            "failed to clean liberate cache dir"
+        );
+    }
+
+    Ok(LiberateResult {
+        asin: req.asin.clone(),
+        storage_key,
+        matched_existing: false,
+    })
+}
+
+async fn store_plain_parts(
+    library: &LibraryStore,
+    storage: &dyn StorageBackend,
+    req: &LiberateRequest,
+    plain: PlainFetch,
+) -> Result<LiberateResult> {
+    let file_ctx = naming_ctx(library, req);
+    let folder_ctx = folder_naming_ctx(library, req);
+    let mut first_key = String::new();
+    let mut written_keys = Vec::new();
+
+    for (idx, part) in plain.parts.iter().enumerate() {
+        let ext = part
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mp3")
+            .to_string();
+        let title = part
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("Part {}", idx + 1));
+        let mut part_ctx = file_ctx.clone();
+        part_ctx.title = format!("{} — {title}", req.title);
+        part_ctx.asin = format!("{}-p{:03}", req.asin, idx + 1);
+        part_ctx.chapter_number = Some(u32::try_from(idx + 1).unwrap_or(1));
+        part_ctx.chapter_title = Some(title.clone());
+        let storage_key = storage_key_with_contexts(
+            &folder_ctx,
+            &part_ctx,
+            req.options.folder_template.as_deref(),
+            req.options.file_template.as_deref(),
+            &ext,
+            &req.options.replacement_characters,
+        );
+        let meta = object_meta_for(
+            library,
+            req,
+            &title,
+            content_type_for_ext(&ext),
+            tokio::fs::metadata(&part.path).await.ok().map(|m| m.len()),
+        )
+        .await;
+        storage.put_file(&storage_key, &part.path, meta).await?;
+        written_keys.push(storage_key.clone());
+        if first_key.is_empty() {
+            first_key = storage_key;
+        }
+    }
+
+    apply_storage_timestamps(storage, library, req, &written_keys).await;
+
+    if let Some(cover) = plain.cover_path.as_ref() {
+        if req.options.download_cover {
+            let cover_key = sidecar_key(&first_key, "jpg");
+            let meta = sidecar_meta(status_key(req), &req.title, "image/jpeg", cover).await;
+            if let Err(err) = storage.put_file(&cover_key, cover, meta).await {
+                tracing::warn!(id = %status_key(req), error = %err, "cover store failed");
+            }
+        }
+    }
+
+    Ok(LiberateResult {
+        asin: req.asin.clone(),
+        storage_key: first_key,
+        matched_existing: false,
+    })
+}
+
+async fn run_audible_pipeline(
+    library: &LibraryStore,
+    storage: &dyn StorageBackend,
+    req: &LiberateRequest,
+) -> Result<LiberateResult> {
+    // LiberateRequest.asin is a title lookup id (uuid / product_id / asin / isbn);
+    // Audible APIs need the store product ASIN when that differs.
+    let audible_asin = audible_asin_for(library, req);
 
     let work_dir = req.cache_dir.join("liberate").join(&req.asin);
     tokio::fs::create_dir_all(&work_dir).await?;
@@ -175,7 +736,7 @@ async fn run_pipeline(
         fetch_and_download_with_options(
             &req.files_dir,
             &req.account_id,
-            &req.asin,
+            &audible_asin,
             &req.options,
             &work_dir,
         )
@@ -195,7 +756,7 @@ async fn run_pipeline(
         match fetch_chapter_info(
             &account_client.client,
             &account_client.marketplace,
-            &req.asin,
+            &audible_asin,
             req.options.quality,
             &req.options.chapter_layout,
         )
@@ -340,7 +901,7 @@ async fn run_pipeline(
         match download_cover_jpeg(
             &account_client.client,
             &account_client.marketplace,
-            &req.asin,
+            &audible_asin,
             &req.options.cover_size,
             &dest,
         )
@@ -760,7 +1321,7 @@ async fn object_meta_for(
     content_type: &str,
     content_length: Option<u64>,
 ) -> ObjectMeta {
-    let book = library.get_book(&req.asin, &req.account_id).ok().flatten();
+    let book = resolve_book(library, req);
     let created = resolve_timestamp(req.options.creation_time, book.as_ref());
     let modified = resolve_timestamp(req.options.last_write_time, book.as_ref());
     ObjectMeta {
@@ -818,7 +1379,7 @@ async fn apply_storage_timestamps(
     req: &LiberateRequest,
     keys: &[String],
 ) {
-    let book = library.get_book(&req.asin, &req.account_id).ok().flatten();
+    let book = resolve_book(library, req);
     let created = resolve_timestamp(req.options.creation_time, book.as_ref());
     let modified = resolve_timestamp(req.options.last_write_time, book.as_ref());
     if created.is_none() && modified.is_none() {
@@ -846,10 +1407,25 @@ fn resolve_timestamp(
     }
 }
 
+fn resolve_book(
+    library: &LibraryStore,
+    req: &LiberateRequest,
+) -> Option<libation_library::BookRecord> {
+    if let Some(uuid) = req.book_uuid.as_deref().filter(|s| !s.is_empty()) {
+        if let Ok(Some(b)) = library.get_book_by_uuid(uuid) {
+            return Some(b);
+        }
+    }
+    library.get_book(&req.asin, &req.account_id).ok().flatten()
+}
+
 fn naming_ctx(library: &LibraryStore, req: &LiberateRequest) -> NamingContext {
-    let book = library.get_book(&req.asin, &req.account_id).ok().flatten();
+    let book = resolve_book(library, req);
     NamingContext {
-        asin: req.asin.clone(),
+        asin: book
+            .as_ref()
+            .map(|b| b.asin_or_isbn().to_string())
+            .unwrap_or_else(|| req.asin.clone()),
         title: req.title.clone(),
         subtitle: book.as_ref().and_then(|b| b.subtitle.clone()),
         authors: req.authors.clone(),
@@ -874,6 +1450,13 @@ fn naming_ctx(library: &LibraryStore, req: &LiberateRequest) -> NamingContext {
     }
 }
 
+/// Resolve the Audible product ASIN for license/download APIs.
+fn audible_asin_for(library: &LibraryStore, req: &LiberateRequest) -> String {
+    resolve_book(library, req)
+        .and_then(|b| b.audible_asin().map(str::to_string))
+        .unwrap_or_else(|| req.asin.clone())
+}
+
 /// Folder naming context: when saving podcasts to the parent folder, evaluate
 /// the folder template against the podcast parent (classic Libation behavior).
 fn folder_naming_ctx(library: &LibraryStore, req: &LiberateRequest) -> NamingContext {
@@ -892,7 +1475,7 @@ fn folder_naming_ctx(library: &LibraryStore, req: &LiberateRequest) -> NamingCon
         return episode;
     };
     NamingContext {
-        asin: parent.asin.clone(),
+        asin: parent.asin_or_isbn().to_string(),
         title: parent.title.clone(),
         subtitle: parent.subtitle.clone(),
         authors: parent.authors.clone(),
@@ -963,7 +1546,7 @@ pub async fn liberate_pdf_only(
     let pdf_key = sidecar_key(&audio_key, "pdf");
 
     if !req.force {
-        if let Some(book) = library.get_book(&req.asin, &req.account_id)? {
+        if let Some(book) = resolve_book(library, req) {
             if book.pdf_status == LiberateStatus::Liberated {
                 if let Some(key) = book.pdf_storage_key {
                     return Ok(LiberateResult {
@@ -979,23 +1562,24 @@ pub async fn liberate_pdf_only(
     let work_dir = req.cache_dir.join("liberate-pdf").join(&req.asin);
     tokio::fs::create_dir_all(&work_dir).await?;
     let account = libation_audible::open_account_client(&req.files_dir, &req.account_id).await?;
-    let pdf_path = work_dir.join(format!("{}.pdf", req.asin));
+    let audible_asin = audible_asin_for(library, req);
+    let pdf_path = work_dir.join(format!("{}.pdf", audible_asin));
 
     let Some(path) = libation_audible::download_companion_pdf(
         &account.client,
         &account.marketplace,
-        &req.asin,
+        &audible_asin,
         &pdf_path,
     )
     .await?
     else {
         return Err(LiberateError::Other(anyhow::anyhow!(
             "no companion PDF available for {}",
-            req.asin
+            audible_asin
         )));
     };
 
-    let meta = sidecar_meta(&req.asin, &req.title, "application/pdf", &path).await;
+    let meta = sidecar_meta(&audible_asin, &req.title, "application/pdf", &path).await;
     storage.put_file(&pdf_key, &path, meta).await?;
     library.set_pdf_status(
         &req.asin,

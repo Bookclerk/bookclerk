@@ -1,8 +1,9 @@
 # Libation (Rust)
 
-Headless-first Audible library manager — a greenfield Rust rewrite of
-[Libation](https://github.com/rmcrackan/Libation), built on
-[audible-rs](https://github.com/mkb79/audible-rs).
+Headless-first audiobook library manager — a greenfield Rust rewrite of
+[Libation](https://github.com/rmcrackan/Libation). Audible support is built on
+[audible-rs](https://github.com/mkb79/audible-rs); Libro.fm is a first-party
+`ContentSource` alongside Audible.
 
 ## Status
 
@@ -52,20 +53,37 @@ cargo build --workspace
 
 export LIBATION_FILES_DIR=./LibationFiles
 cargo run -p libation-cli -- auth login -m us
+# Libro.fm (password via env — never on argv):
+# export LIBATION_LIBRO_PASSWORD='…'
+# cargo run -p libation-cli -- auth login --source libro --email you@example.com
 cargo run -p libation-cli -- library scan
 cargo run -p libation-cli -- library liberate --asin B0EXAMPLE
+# UUID / ISBN also work: --isbn 978… or positional title ids
 ```
+
+### Multi-source (Audible + Libro.fm)
+
+Library rows are keyed by a stable **UUID**; ASIN and ISBN are indexed attributes.
+`library liberate` / search accept UUID, ASIN, ISBN, or source product id.
+`library scan` syncs every configured source (or `--source audible|libro`); after
+scan, Libro rows are best-effort enriched with Audible catalog metadata by ISBN
+when `library.enrich_libro_from_audible` is true (default; set false to disable)
+when an Audible account is available.
 
 ### Auth login (OTP / 2FA)
 
-`auth login` drives audible-rs OAuth in a browser (local callback server + QR by
-default, or `--external` paste). Amazon accounts with **2FA/MFA must complete
-OTP** (authenticator app) or another challenge in that browser session — there
-are no CLI password flags. Without interactive access, import an existing
-audible-rs `.auth` file (`auth import`) or migrate from classic Libation.
+`auth login` (default `--source audible`) drives audible-rs OAuth in a browser
+(local callback server + QR by default, or `--external` paste). Amazon accounts
+with **2FA/MFA must complete OTP** (authenticator app) or another challenge in
+that browser session — there are no Audible CLI password flags. Without
+interactive access, import an existing audible-rs `.auth` file (`auth import`)
+or migrate from classic Libation.
 
-OAuth tokens are stored under `Accounts/<account>.auth`. Prefer encryption at
-rest (audible-rs Argon2id + XChaCha20-Poly1305):
+Libro.fm login: `auth login --source libro --email <addr>`. Password comes from
+`LIBATION_LIBRO_PASSWORD` or an interactive prompt (never pass it on argv).
+
+OAuth / token files live under `Accounts/` (Audible `.auth`, Libro `.libro.auth`).
+Prefer encryption at rest for Audible (audible-rs Argon2id + XChaCha20-Poly1305):
 
 ```bash
 # Explicit passphrase:

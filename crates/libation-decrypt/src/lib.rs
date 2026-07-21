@@ -7,6 +7,7 @@ mod metadata;
 mod mp3;
 mod mp4;
 mod native;
+mod package_m4b;
 
 pub use brand::{
     brand_durations_from_chapter_info, brand_trim_range, rebase_chapters_after_brand_trim,
@@ -19,6 +20,7 @@ pub use mp4::{
     SampleEntryKind, TrimRange,
 };
 pub use native::{decrypt_adrm_native, decrypt_cenc_native, remux_trimmed};
+pub use package_m4b::{package_m4b_from_mp3, package_m4b_from_pcm, PackageM4bRequest};
 
 use std::path::{Path, PathBuf};
 

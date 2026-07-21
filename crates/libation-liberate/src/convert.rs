@@ -33,22 +33,22 @@ pub async fn convert_book(
     book: &BookRecord,
     req: &ConvertRequest,
 ) -> Result<String> {
+    let title_id = book.title_id();
     let key = book
         .storage_key
         .as_ref()
-        .ok_or_else(|| LiberateError::Other(anyhow::anyhow!("{}: no storage_key", book.asin)))?;
+        .ok_or_else(|| LiberateError::Other(anyhow::anyhow!("{title_id}: no storage_key")))?;
     let ext = key.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     if !matches!(ext.as_str(), "m4b" | "m4a") {
         return Err(LiberateError::Other(anyhow::anyhow!(
-            "{}: not an m4b/m4a file ({ext})",
-            book.asin
+            "{title_id}: not an m4b/m4a file ({ext})",
         )));
     }
 
     let mp3_key = swap_audio_extension(key, "mp3");
     if !req.force && storage.exists(&mp3_key).await? {
         library.set_liberate_status(
-            &book.asin,
+            book.title_id(),
             &book.account_id,
             LiberateStatus::Liberated,
             Some(&mp3_key),
@@ -57,10 +57,11 @@ pub async fn convert_book(
         return Ok(mp3_key);
     }
 
-    let work_dir = req.cache_dir.join("convert").join(&book.asin);
+    let file_id = book.asin_or_isbn();
+    let work_dir = req.cache_dir.join("convert").join(file_id);
     tokio::fs::create_dir_all(&work_dir).await?;
-    let input = work_dir.join(format!("{}.{}", book.asin, ext));
-    let output = work_dir.join(format!("{}.mp3", book.asin));
+    let input = work_dir.join(format!("{file_id}.{ext}"));
+    let output = work_dir.join(format!("{file_id}.mp3"));
 
     let data = storage.get(key).await?;
     tokio::fs::write(&input, &data).await?;
@@ -69,7 +70,7 @@ pub async fn convert_book(
     let meta = ObjectMeta {
         content_type: Some("audio/mpeg".into()),
         content_length: tokio::fs::metadata(&output).await.ok().map(|m| m.len()),
-        asin: Some(book.asin.clone()),
+        asin: Some(file_id.to_string()),
         title: Some(book.title.clone()),
         creation_time: None,
         last_write_time: None,
@@ -81,7 +82,7 @@ pub async fn convert_book(
     }
 
     library.set_liberate_status(
-        &book.asin,
+        book.title_id(),
         &book.account_id,
         LiberateStatus::Liberated,
         Some(&mp3_key),
@@ -97,17 +98,4 @@ pub async fn convert_book(
     }
 
     Ok(mp3_key)
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::naming::swap_audio_extension;
-
-    #[test]
-    fn swaps_extension_for_convert_output() {
-        assert_eq!(
-            swap_audio_extension("Author/Title/B00X.m4b", "mp3"),
-            "Author/Title/B00X.mp3"
-        );
-    }
 }

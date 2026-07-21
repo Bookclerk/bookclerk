@@ -114,7 +114,7 @@ async fn export_classic(
             ) VALUES ($1,$2,$3,$4,'',$5,$6,$7,NULL,NULL,$8,FALSE,$9,NULL,0,0,0)"#,
             &[
                 &book_id,
-                &book.asin,
+                &book.product_id,
                 &title,
                 &subtitle,
                 &length,
@@ -269,6 +269,7 @@ async fn export_flat(
         CREATE TABLE IF NOT EXISTS accounts (
             id SERIAL PRIMARY KEY,
             account_id TEXT NOT NULL UNIQUE,
+            source TEXT NOT NULL DEFAULT 'audible',
             marketplace TEXT NOT NULL,
             label TEXT,
             scan_enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -277,8 +278,12 @@ async fn export_flat(
         );
         CREATE TABLE IF NOT EXISTS books (
             id SERIAL PRIMARY KEY,
-            asin TEXT NOT NULL,
+            uuid TEXT NOT NULL UNIQUE,
+            source TEXT NOT NULL DEFAULT 'audible',
             account_id TEXT NOT NULL,
+            product_id TEXT NOT NULL,
+            asin TEXT,
+            isbn TEXT,
             marketplace TEXT NOT NULL,
             title TEXT NOT NULL,
             authors TEXT,
@@ -306,7 +311,7 @@ async fn export_flat(
             published_at TIMESTAMPTZ,
             created_at TIMESTAMPTZ NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL,
-            UNIQUE (asin, account_id)
+            UNIQUE (source, account_id, product_id)
         );
         CREATE TABLE IF NOT EXISTS saved_filters (
             id SERIAL PRIMARY KEY,
@@ -325,7 +330,9 @@ async fn export_flat(
     tx.execute("DELETE FROM saved_filters", &[]).await?;
 
     let mut stmt = conn.prepare(
-        "SELECT account_id, marketplace, label, scan_enabled, created_at, updated_at FROM accounts",
+        "SELECT account_id, marketplace, label, scan_enabled, created_at, updated_at,
+                COALESCE(source, 'audible')
+         FROM accounts",
     )?;
     let accounts = stmt.query_map([], |row| {
         Ok((
@@ -335,16 +342,18 @@ async fn export_flat(
             row.get::<_, i64>(3)? != 0,
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
         ))
     })?;
     let mut acct_count = 0usize;
     for row in accounts {
-        let (account_id, marketplace, label, scan_enabled, created_at, updated_at) = row?;
+        let (account_id, marketplace, label, scan_enabled, created_at, updated_at, source) = row?;
         tx.execute(
-            "INSERT INTO accounts (account_id, marketplace, label, scan_enabled, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5::timestamptz, $6::timestamptz)",
+            "INSERT INTO accounts (account_id, source, marketplace, label, scan_enabled, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7::timestamptz)",
             &[
                 &account_id,
+                &source,
                 &marketplace,
                 &label,
                 &scan_enabled,
@@ -361,17 +370,22 @@ async fn export_flat(
     for book in books {
         tx.execute(
             "INSERT INTO books (
-                asin, account_id, marketplace, title, authors, narrators, series, series_index,
-                series_asin, liberate_status, storage_key, error_message, purchased_at, tags,
-                rating_overall, rating_performance, rating_story, is_finished,
-                pdf_status, pdf_storage_key, publisher, length_minutes, is_abridged,
-                content_kind, categories, subtitle, published_at, created_at, updated_at
+                uuid, source, account_id, product_id, asin, isbn, marketplace, title, authors,
+                narrators, series, series_index, series_asin, liberate_status, storage_key,
+                error_message, purchased_at, tags, rating_overall, rating_performance,
+                rating_story, is_finished, pdf_status, pdf_storage_key, publisher,
+                length_minutes, is_abridged, content_kind, categories, subtitle, published_at,
+                created_at, updated_at
             ) VALUES (
-                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::timestamptz,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27::timestamptz,$28::timestamptz,$29::timestamptz
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::timestamptz,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31::timestamptz,$32::timestamptz,$33::timestamptz
             )",
             &[
-                &book.asin,
+                &book.uuid,
+                &book.source,
                 &book.account_id,
+                &book.product_id,
+                &book.asin,
+                &book.isbn,
                 &book.marketplace,
                 &book.title,
                 &book.authors,
@@ -443,8 +457,12 @@ async fn export_flat(
 #[derive(Debug)]
 struct FlatBook {
     id: i64,
-    asin: String,
+    uuid: String,
+    source: String,
     account_id: String,
+    product_id: String,
+    asin: Option<String>,
+    isbn: Option<String>,
     marketplace: String,
     title: String,
     authors: Option<String>,
@@ -476,53 +494,59 @@ struct FlatBook {
 
 fn load_flat_books(conn: &Connection) -> anyhow::Result<Vec<FlatBook>> {
     let mut stmt = conn.prepare(
-        "SELECT id, asin, account_id, marketplace, title, authors, narrators, series, series_index,
-                series_asin, liberate_status, storage_key, error_message, purchased_at, tags,
-                rating_overall, rating_performance, rating_story, is_finished,
-                pdf_status, pdf_storage_key, publisher, length_minutes, is_abridged,
+        "SELECT id, uuid, source, account_id, product_id, asin, isbn, marketplace, title, authors,
+                narrators, series, series_index, series_asin, liberate_status, storage_key,
+                error_message, purchased_at, tags, rating_overall, rating_performance, rating_story,
+                is_finished, pdf_status, pdf_storage_key, publisher, length_minutes, is_abridged,
                 content_kind, categories, subtitle, published_at, created_at, updated_at
          FROM books",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(FlatBook {
             id: row.get(0)?,
-            asin: row.get(1)?,
-            account_id: row.get(2)?,
-            marketplace: row.get(3)?,
-            title: row.get(4)?,
-            authors: row.get(5)?,
-            narrators: row.get(6)?,
-            series: row.get(7)?,
-            series_index: row.get(8)?,
-            series_asin: row.get(9).ok().flatten(),
-            liberate_status: row.get(10)?,
-            storage_key: row.get(11)?,
-            error_message: row.get(12)?,
+            uuid: row.get(1)?,
+            source: row
+                .get::<_, String>(2)
+                .unwrap_or_else(|_| String::from("audible")),
+            account_id: row.get(3)?,
+            product_id: row.get(4)?,
+            asin: row.get(5)?,
+            isbn: row.get(6)?,
+            marketplace: row.get(7)?,
+            title: row.get(8)?,
+            authors: row.get(9)?,
+            narrators: row.get(10)?,
+            series: row.get(11)?,
+            series_index: row.get(12)?,
+            series_asin: row.get(13).ok().flatten(),
+            liberate_status: row.get(14)?,
+            storage_key: row.get(15)?,
+            error_message: row.get(16)?,
             purchased_at: row
-                .get::<_, Option<String>>(13)?
+                .get::<_, Option<String>>(17)?
                 .as_deref()
                 .and_then(parse_dt),
-            tags: row.get(14)?,
-            rating_overall: row.get(15)?,
-            rating_performance: row.get(16)?,
-            rating_story: row.get(17)?,
-            is_finished: row.get::<_, i64>(18)? != 0,
-            pdf_status: row.get(19)?,
-            pdf_storage_key: row.get(20)?,
-            publisher: row.get(21)?,
-            length_minutes: row.get(22)?,
-            is_abridged: row.get::<_, i64>(23)? != 0,
-            content_kind: row.get(24).unwrap_or_else(|_| "book".into()),
-            categories: row.get(25).ok().flatten(),
-            subtitle: row.get(26).ok().flatten(),
+            tags: row.get(18)?,
+            rating_overall: row.get(19)?,
+            rating_performance: row.get(20)?,
+            rating_story: row.get(21)?,
+            is_finished: row.get::<_, i64>(22)? != 0,
+            pdf_status: row.get(23)?,
+            pdf_storage_key: row.get(24)?,
+            publisher: row.get(25)?,
+            length_minutes: row.get(26)?,
+            is_abridged: row.get::<_, i64>(27)? != 0,
+            content_kind: row.get(28).unwrap_or_else(|_| "book".into()),
+            categories: row.get(29).ok().flatten(),
+            subtitle: row.get(30).ok().flatten(),
             published_at: row
-                .get::<_, Option<String>>(27)
+                .get::<_, Option<String>>(31)
                 .ok()
                 .flatten()
                 .as_deref()
                 .and_then(parse_dt),
-            created_at: parse_dt(&row.get::<_, String>(28)?).unwrap_or_else(chrono::Utc::now),
-            updated_at: parse_dt(&row.get::<_, String>(29)?).unwrap_or_else(chrono::Utc::now),
+            created_at: parse_dt(&row.get::<_, String>(32)?).unwrap_or_else(chrono::Utc::now),
+            updated_at: parse_dt(&row.get::<_, String>(33)?).unwrap_or_else(chrono::Utc::now),
         })
     })?;
     let mut out = Vec::new();

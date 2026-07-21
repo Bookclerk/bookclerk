@@ -19,7 +19,7 @@ fn dt(y: i32, m: u32, d: u32) -> NaiveDateTime {
 /// Equivalent of `GetLibraryBook()` (single "Sherlock Holmes" series).
 fn book() -> BookContext {
     BookContext {
-        asin: "asin".into(),
+        isbn: "asin".into(),
         title: Some("A Study in Scarlet: A Sherlock Holmes Novel".into()),
         subtitle: Some("An Audible Original Drama".into()),
         title_with_subtitle: Some("A Study in Scarlet: An Audible Original Drama".into()),

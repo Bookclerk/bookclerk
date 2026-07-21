@@ -14,6 +14,7 @@ use crate::{Result, SearchError};
 /// One search hit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {
+    /// Display / primary id (source `product_id`).
     pub asin: String,
     pub account_id: String,
     pub title: String,
@@ -24,6 +25,10 @@ pub struct SearchHit {
 pub struct SearchEngine {
     index: Index,
     id: Field,
+    uuid: Field,
+    product_id: Field,
+    isbn: Field,
+    asin: Field,
     account: Field,
     title: Field,
     authors: Field,
@@ -41,6 +46,10 @@ impl SearchEngine {
         std::fs::create_dir_all(dir).map_err(|err| SearchError::Index(err.to_string()))?;
         let mut schema_builder = Schema::builder();
         let id = schema_builder.add_text_field("id", STRING | STORED);
+        let uuid = schema_builder.add_text_field("uuid", STRING | STORED);
+        let product_id = schema_builder.add_text_field("product_id", STRING | STORED);
+        let isbn = schema_builder.add_text_field("isbn", STRING | STORED);
+        let asin = schema_builder.add_text_field("asin", STRING | STORED);
         let account = schema_builder.add_text_field("account", STRING | STORED);
         let title = schema_builder.add_text_field("title", TEXT | STORED);
         let authors = schema_builder.add_text_field("authors", TEXT | STORED);
@@ -62,6 +71,10 @@ impl SearchEngine {
         Ok(Self {
             index,
             id,
+            uuid,
+            product_id,
+            isbn,
+            asin,
             account,
             title,
             authors,
@@ -97,9 +110,14 @@ impl SearchEngine {
     fn add_book(&self, writer: &mut IndexWriter, book: &BookRecord) -> Result<()> {
         let liberated = bool_str(book.liberate_status == LiberateStatus::Liberated);
         let finished = bool_str(book.is_finished);
+        let asin = book.asin.as_deref().unwrap_or("");
+        let isbn = book.isbn.as_deref().unwrap_or("");
         let all_text = format!(
-            "{} {} {} {} {} {}",
-            book.asin,
+            "{} {} {} {} {} {} {} {} {}",
+            book.uuid,
+            book.product_id,
+            isbn,
+            asin,
             book.title,
             book.authors.as_deref().unwrap_or(""),
             book.narrators.as_deref().unwrap_or(""),
@@ -108,7 +126,11 @@ impl SearchEngine {
         );
         writer
             .add_document(doc!(
-                self.id => book.asin.to_ascii_lowercase(),
+                self.id => book.product_id.to_ascii_lowercase(),
+                self.uuid => book.uuid.to_ascii_lowercase(),
+                self.product_id => book.product_id.to_ascii_lowercase(),
+                self.isbn => isbn.to_ascii_lowercase(),
+                self.asin => asin.to_ascii_lowercase(),
                 self.account => book.account_id.clone(),
                 self.title => book.title.clone(),
                 self.authors => book.authors.clone().unwrap_or_default(),
@@ -148,6 +170,10 @@ impl SearchEngine {
                 self.series,
                 self.tags,
                 self.id,
+                self.uuid,
+                self.product_id,
+                self.isbn,
+                self.asin,
                 self.liberated,
                 self.finished,
             ],
@@ -231,5 +257,28 @@ mod tests {
         let hits = engine.search("potter", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].asin, "B00TEST");
+    }
+
+    #[test]
+    fn indexes_uuid_product_id_isbn_asin() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = LibraryStore::open_in_memory().unwrap();
+        library.upsert_account("acct", "us", None, true).unwrap();
+        let mut book = NewBook::minimal("B00TEST01", "acct", "us", "Indexed Book");
+        book.isbn = Some("9781234567890".into());
+        library.upsert_book(&book).unwrap();
+        let stored = library.get_book("B00TEST01", "acct").unwrap().unwrap();
+
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        engine.rebuild(&library).unwrap();
+
+        let by_uuid = engine.search(&stored.uuid, 10).unwrap();
+        assert_eq!(by_uuid.len(), 1);
+        assert_eq!(by_uuid[0].asin, "B00TEST01");
+
+        assert_eq!(engine.search("B00TEST01", 10).unwrap().len(), 1);
+        assert_eq!(engine.search("9781234567890", 10).unwrap().len(), 1);
+        assert_eq!(engine.search("asin:b00test01", 10).unwrap().len(), 1);
+        assert_eq!(engine.search("isbn:9781234567890", 10).unwrap().len(), 1);
     }
 }
