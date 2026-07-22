@@ -1,16 +1,29 @@
 //! Native audiobook metadata fix-up (M4B via mp4ameta, MP3 via id3).
+//!
+//! Tag mapping targets [Audiobookshelf file metadata](https://audiobookshelf.org/docs/documentation/libraries/book-library/directory-structure/)
+//! plus the `----:com.pilabor.tone:*` freeform atoms ABS embeds for series/ASIN.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use id3::frame::{Picture, PictureType};
+use id3::frame::{ExtendedText, Picture, PictureType};
 use id3::{Tag as Id3Tag, TagLike, Version as Id3Version};
-use mp4ameta::{Chapter, Img, ImgFmt, MediaType, Tag as Mp4Tag};
+use mp4ameta::{Chapter, Data, FreeformIdent, Img, ImgFmt, MediaType, Tag as Mp4Tag};
 
 use crate::error::{DecryptError, Result};
 use crate::DecryptOutcome;
 
-/// Request to fix up audiobook metadata after decrypt.
+/// Product / CLI name written into tool attribution tags.
+pub const LIBATION_TOOL_NAME: &str = "libation";
+
+/// Tone / ABS freeform namespace used for series + Audible ASIN on MPEG-4.
+const TONE_MEAN: &str = "com.pilabor.tone";
+/// Libation freeform namespace for tool attribution.
+const LIBATION_MEAN: &str = "org.libation";
+/// Common iTunes freeform mean (ffprobe often surfaces these without the mean).
+const ITUNES_MEAN: &str = "com.apple.iTunes";
+
+/// Request to fix up audiobook metadata after decrypt / download.
 #[derive(Debug, Clone)]
 pub struct FixupRequest {
     pub input: PathBuf,
@@ -21,6 +34,30 @@ pub struct FixupRequest {
     pub cover: Option<PathBuf>,
     /// Chapter titles + start offsets in milliseconds (embedded for M4B).
     pub chapters: Vec<(String, u64)>,
+    /// When true, replace any existing M4B chapter list/track with [`Self::chapters`]
+    /// (used when overlaying Audible chapter trees onto Libro packaged M4Bs).
+    /// When false, preserve existing chapters if the file already has them.
+    pub replace_chapters: bool,
+    pub subtitle: Option<String>,
+    pub publisher: Option<String>,
+    /// Publish year as a string (e.g. `"2011"`).
+    pub year: Option<String>,
+    /// Genre string; multiple genres should use `;` separators for ABS.
+    pub genre: Option<String>,
+    pub series: Option<String>,
+    pub series_index: Option<String>,
+    pub asin: Option<String>,
+    pub isbn: Option<String>,
+    pub description: Option<String>,
+    pub language: Option<String>,
+    /// Tool attribution (`libation 0.1.0`). Defaults to [`libation_tool_tag`] when `None`.
+    pub tool: Option<String>,
+}
+
+/// `libation <version>` string embedded in encoder / freeform TOOL tags.
+#[must_use]
+pub fn libation_tool_tag() -> String {
+    format!("{LIBATION_TOOL_NAME} {}", env!("CARGO_PKG_VERSION"))
 }
 
 /// Apply metadata tags, optional cover embed, and optional chapters.
@@ -69,20 +106,110 @@ fn fixup_audiobook_sync(req: &FixupRequest) -> Result<()> {
     }
 }
 
+fn tool_string(req: &FixupRequest) -> String {
+    req.tool
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(libation_tool_tag)
+}
+
+fn album_title(req: &FixupRequest) -> String {
+    // ABS `getFFMetadataObject` uses `title: subtitle` for album when subtitle exists.
+    match req.subtitle.as_deref().filter(|s| !s.is_empty()) {
+        Some(sub) => format!("{}: {sub}", req.title),
+        None => req.title.clone(),
+    }
+}
+
+fn genres_for_abs(raw: &str) -> String {
+    // ABS accepts `/`, `//`, or `;` as genre separators; normalize commas from our DB.
+    raw.split([',', '/', ';'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn grouping_for_abs(series: &str, index: Option<&str>) -> String {
+    match index.filter(|s| !s.is_empty()) {
+        Some(idx) => format!("{series} #{idx}"),
+        None => series.to_string(),
+    }
+}
+
+fn set_freeform(tag: &mut Mp4Tag, mean: &'static str, name: &'static str, value: &str) {
+    if value.is_empty() {
+        return;
+    }
+    tag.set_data(
+        FreeformIdent::new_static(mean, name),
+        Data::Utf8(value.to_string()),
+    );
+}
+
 fn fixup_m4b(req: &FixupRequest) -> Result<()> {
     let mut tag = Mp4Tag::read_from_path(&req.output)
         .map_err(|err| DecryptError::Native(format!("mp4ameta read failed: {err}")))?;
 
+    let tool = tool_string(req);
     tag.set_title(&req.title);
-    tag.set_album(&req.title);
+    tag.set_album(album_title(req));
     tag.set_media_type(MediaType::AudioBook);
+    tag.set_encoder(&tool);
+
     if let Some(author) = req.author.as_deref().filter(|s| !s.is_empty()) {
         tag.set_artist(author);
         tag.set_album_artist(author);
     }
     if let Some(narrator) = req.narrator.as_deref().filter(|s| !s.is_empty()) {
+        // ABS maps composer → narrator.
         tag.set_composer(narrator);
     }
+    if let Some(year) = req.year.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_year(year);
+    }
+    if let Some(genre) = req.genre.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_genre(genres_for_abs(genre));
+    }
+    if let Some(publisher) = req.publisher.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_copyright(publisher);
+        set_freeform(&mut tag, ITUNES_MEAN, "PUBLISHER", publisher);
+    }
+    if let Some(subtitle) = req.subtitle.as_deref().filter(|s| !s.is_empty()) {
+        set_freeform(&mut tag, ITUNES_MEAN, "SUBTITLE", subtitle);
+    }
+    if let Some(desc) = req.description.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_description(desc);
+        tag.set_comment(desc);
+    }
+    if let Some(lang) = req.language.as_deref().filter(|s| !s.is_empty()) {
+        set_freeform(&mut tag, ITUNES_MEAN, "LANGUAGE", lang);
+    }
+    if let Some(series) = req.series.as_deref().filter(|s| !s.is_empty()) {
+        // ©mvn / series-part style fields ABS also reads as series / series-part.
+        tag.set_movement(series);
+        tag.set_grouping(grouping_for_abs(series, req.series_index.as_deref()));
+        set_freeform(&mut tag, TONE_MEAN, "SERIES", series);
+        set_freeform(&mut tag, ITUNES_MEAN, "SERIES", series);
+        if let Some(idx) = req.series_index.as_deref().filter(|s| !s.is_empty()) {
+            set_freeform(&mut tag, TONE_MEAN, "PART", idx);
+            set_freeform(&mut tag, ITUNES_MEAN, "SERIES-PART", idx);
+            if let Ok(n) = idx.parse::<u16>() {
+                tag.set_movement_index(n);
+            }
+        }
+    }
+    if let Some(asin) = req.asin.as_deref().filter(|s| !s.is_empty()) {
+        set_freeform(&mut tag, TONE_MEAN, "AUDIBLE_ASIN", asin);
+        set_freeform(&mut tag, ITUNES_MEAN, "ASIN", asin);
+        set_freeform(&mut tag, ITUNES_MEAN, "AUDIBLE_ASIN", asin);
+    }
+    if let Some(isbn) = req.isbn.as_deref().filter(|s| !s.is_empty()) {
+        set_freeform(&mut tag, ITUNES_MEAN, "ISBN", isbn);
+    }
+
+    // Identify Libation as the metadata writer (binary name + version).
+    set_freeform(&mut tag, LIBATION_MEAN, "TOOL", &tool);
 
     if let Some(cover) = &req.cover {
         if cover.exists() {
@@ -91,14 +218,29 @@ fn fixup_m4b(req: &FixupRequest) -> Result<()> {
         }
     }
 
+    // Packaged Libro (and similar) M4Bs often already carry player-compatible
+    // chapter tracks that are track-boundary placeholders, not literary chapters.
+    // Preserve those by default; callers that supply a preferred chapter list
+    // (e.g. Audible tree overlaid onto Libro) set `replace_chapters`.
+    let has_existing_chapters = !tag.chapter_list().is_empty() || !tag.chapter_track().is_empty();
     if !req.chapters.is_empty() {
-        tag.chapter_track_mut().clear();
-        tag.chapter_list_mut().clear();
-        for (title, start_ms) in &req.chapters {
-            tag.chapter_list_mut().push(Chapter::new(
-                Duration::from_millis(*start_ms),
-                title.clone(),
-            ));
+        if has_existing_chapters && !req.replace_chapters {
+            tracing::debug!(
+                existing_list = tag.chapter_list().len(),
+                existing_track = tag.chapter_track().len(),
+                incoming = req.chapters.len(),
+                "preserving existing M4B chapters; skipping manifest rewrite"
+            );
+        } else {
+            tag.chapter_track_mut().clear();
+            tag.chapter_list_mut().clear();
+            for (title, start_ms) in &req.chapters {
+                let chapter = Chapter::new(Duration::from_millis(*start_ms), title.clone());
+                // Write both Nero `chpl` and QuickTime chapter tracks so players
+                // that only read one of the two still see the new titles.
+                tag.chapter_list_mut().push(chapter.clone());
+                tag.chapter_track_mut().push(chapter);
+            }
         }
     }
 
@@ -107,10 +249,22 @@ fn fixup_m4b(req: &FixupRequest) -> Result<()> {
     Ok(())
 }
 
+fn set_txxx(tag: &mut Id3Tag, description: &str, value: &str) {
+    if value.is_empty() {
+        return;
+    }
+    tag.add_frame(ExtendedText {
+        description: description.to_string(),
+        value: value.to_string(),
+    });
+}
+
 fn fixup_mp3(req: &FixupRequest) -> Result<()> {
     let mut tag = Id3Tag::read_from_path(&req.output).unwrap_or_else(|_| Id3Tag::new());
+    let tool = tool_string(req);
     tag.set_title(&req.title);
-    tag.set_album(&req.title);
+    tag.set_album(album_title(req));
+    tag.set_text("TSSE", tool.as_str());
     if let Some(author) = req.author.as_deref().filter(|s| !s.is_empty()) {
         tag.set_artist(author);
         tag.set_album_artist(author);
@@ -118,6 +272,50 @@ fn fixup_mp3(req: &FixupRequest) -> Result<()> {
     if let Some(narrator) = req.narrator.as_deref().filter(|s| !s.is_empty()) {
         tag.set_text("TCOM", narrator);
     }
+    if let Some(year) = req.year.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_text("TDRC", year);
+        tag.set_text("TYER", year);
+    }
+    if let Some(genre) = req.genre.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_genre(genres_for_abs(genre));
+    }
+    if let Some(publisher) = req.publisher.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_text("TPUB", publisher);
+        tag.set_text("TCOP", publisher);
+    }
+    if let Some(subtitle) = req.subtitle.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_text("TIT3", subtitle);
+    }
+    if let Some(desc) = req.description.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_text("COMM", desc);
+        set_txxx(&mut tag, "description", desc);
+    }
+    if let Some(lang) = req.language.as_deref().filter(|s| !s.is_empty()) {
+        tag.set_text("TLAN", lang);
+    }
+    if let Some(series) = req.series.as_deref().filter(|s| !s.is_empty()) {
+        set_txxx(&mut tag, "SERIES", series);
+        set_txxx(&mut tag, "series", series);
+        set_txxx(&mut tag, "MVNM", series);
+        if let Some(idx) = req.series_index.as_deref().filter(|s| !s.is_empty()) {
+            set_txxx(&mut tag, "SERIES-PART", idx);
+            set_txxx(&mut tag, "series-part", idx);
+            set_txxx(&mut tag, "PART", idx);
+            set_txxx(&mut tag, "MVIN", idx);
+        }
+    }
+    if let Some(asin) = req.asin.as_deref().filter(|s| !s.is_empty()) {
+        set_txxx(&mut tag, "ASIN", asin);
+        set_txxx(&mut tag, "AUDIBLE_ASIN", asin);
+        set_txxx(&mut tag, "asin", asin);
+        set_txxx(&mut tag, "audible_asin", asin);
+    }
+    if let Some(isbn) = req.isbn.as_deref().filter(|s| !s.is_empty()) {
+        set_txxx(&mut tag, "ISBN", isbn);
+        set_txxx(&mut tag, "isbn", isbn);
+    }
+    set_txxx(&mut tag, "LIBATION_TOOL", &tool);
+
     if let Some(cover) = &req.cover {
         if cover.exists() {
             let bytes = std::fs::read(cover)?;
@@ -165,5 +363,51 @@ fn guess_img_fmt(path: &Path, bytes: &[u8]) -> ImgFmt {
         Some("png") => ImgFmt::Png,
         Some("bmp") => ImgFmt::Bmp,
         _ => ImgFmt::Jpeg,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_tag_includes_binary_name_and_version() {
+        let tag = libation_tool_tag();
+        assert!(tag.starts_with("libation "), "{tag}");
+        assert!(tag.contains(env!("CARGO_PKG_VERSION")), "{tag}");
+    }
+
+    #[test]
+    fn album_includes_subtitle_like_abs() {
+        let req = FixupRequest {
+            input: PathBuf::from("in.m4b"),
+            output: PathBuf::from("out.m4b"),
+            title: "Title".into(),
+            author: None,
+            narrator: None,
+            cover: None,
+            chapters: vec![],
+            replace_chapters: false,
+            subtitle: Some("A Subtitle".into()),
+            publisher: None,
+            year: None,
+            genre: None,
+            series: None,
+            series_index: None,
+            asin: None,
+            isbn: None,
+            description: None,
+            language: None,
+            tool: None,
+        };
+        assert_eq!(album_title(&req), "Title: A Subtitle");
+    }
+
+    #[test]
+    fn genres_normalized_for_abs() {
+        assert_eq!(
+            genres_for_abs("Classics, Fiction, Science Fiction"),
+            "Classics; Fiction; Science Fiction"
+        );
     }
 }

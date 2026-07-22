@@ -60,7 +60,12 @@ pub trait StorageBackend: Send + Sync {
     /// Delete an object (no-op if missing).
     async fn delete(&self, key: &str) -> Result<()>;
 
-    /// Set filesystem timestamps on a stored object (local backends only; no-op elsewhere).
+    /// Set filesystem timestamps (local) or best-effort logical timestamp tags (S3).
+    ///
+    /// Local backends update mtime/ctime. S3 backends must **not** CopyObject to
+    /// rewrite user-metadata (creates a second full-size version on versioned
+    /// buckets). System `Last-Modified` cannot be set on AWS S3; logical times
+    /// belong in PutObject `x-amz-meta-*` (S3 backends set them at upload only).
     async fn touch_file(
         &self,
         key: &str,

@@ -1,7 +1,7 @@
 //! AWS S3 / MinIO storage backend.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
@@ -94,11 +94,18 @@ impl S3Backend {
         if let Some(title) = meta.title {
             req = req.metadata("title", title);
         }
-        if let Some(created) = meta.creation_time {
+        // Logical timestamps as user-defined metadata (x-amz-meta-*). AWS S3 and
+        // most compatible providers refuse to set system Last-Modified; this is
+        // the only cost-free way to record purchased/published times at upload.
+        // Also set `mtime` (unix secs) for s3fs/rclone-style mounts.
+        if let Some(created) = meta.creation_time.clone() {
             req = req.metadata("creation-time", created);
         }
-        if let Some(modified) = meta.last_write_time {
-            req = req.metadata("last-write-time", modified);
+        if let Some(modified) = meta.last_write_time.clone() {
+            req = req.metadata("last-write-time", modified.clone());
+            if let Some(secs) = rfc3339_unix_secs(&modified) {
+                req = req.metadata("mtime", secs.to_string());
+            }
         }
 
         req.send()
@@ -250,53 +257,17 @@ impl StorageBackend for S3Backend {
         created: Option<SystemTime>,
         modified: Option<SystemTime>,
     ) -> Result<()> {
-        if created.is_none() && modified.is_none() {
-            return Ok(());
-        }
-        let full = self.full_key(key);
-        let head = self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(&full)
-            .send()
-            .await
-            .map_err(|err| StorageError::S3(err.to_string()))?;
-
-        let mut meta = head.metadata().cloned().unwrap_or_default();
-        if let Some(created) = created {
-            meta.insert("creation-time".into(), system_time_rfc3339(created));
-        }
-        if let Some(modified) = modified {
-            meta.insert("last-write-time".into(), system_time_rfc3339(modified));
-        }
-
-        let mut copy = self
-            .client
-            .copy_object()
-            .bucket(&self.bucket)
-            .key(&full)
-            .copy_source(format!("{}/{}", self.bucket, full))
-            .metadata_directive(aws_sdk_s3::types::MetadataDirective::Replace);
-        for (k, v) in meta {
-            copy = copy.metadata(k, v);
-        }
-        if let Some(ct) = head.content_type() {
-            copy = copy.content_type(ct);
-        }
-        copy.send()
-            .await
-            .map_err(|err| StorageError::S3(err.to_string()))?;
+        // Logical times are already written on PutObject as x-amz-meta-*.
+        // Do not CopyObject (second full-size version on versioned buckets) and
+        // do not PutObjectTagging: Backblaze B2's S3 API accepts tagging calls
+        // but stores the Tagging XML as a new object body, destroying media.
+        let _ = (key, created, modified);
         Ok(())
     }
 }
 
-fn system_time_rfc3339(t: SystemTime) -> String {
-    let secs = t
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    chrono::DateTime::from_timestamp(secs, 0)
-        .unwrap_or(chrono::DateTime::UNIX_EPOCH)
-        .to_rfc3339()
+fn rfc3339_unix_secs(raw: &str) -> Option<u64> {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|dt| dt.timestamp().max(0) as u64)
 }

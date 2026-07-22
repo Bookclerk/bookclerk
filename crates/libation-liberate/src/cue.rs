@@ -3,6 +3,10 @@
 use std::io::Write;
 use std::path::Path;
 
+use libation_decrypt::{
+    brand_durations_from_chapter_info, rebase_chapters_after_brand_trim,
+    runtime_length_ms_from_chapter_info,
+};
 use serde_json::Value;
 
 use crate::error::Result;
@@ -65,6 +69,51 @@ pub fn process_chapter_titles(
     chapters
 }
 
+/// Flatten + title-process Audible `chapter_info`, then rebase starts for plain
+/// audio that has **no** Audible brand intro/outro (e.g. Libro.fm).
+///
+/// Always subtracts `brandIntroDurationMs` and drops chapters that fall in the
+/// outro window — Libro/packaged M4B audio is already free of those segments.
+///
+/// When Audnexus omits `runtime_length_ms`, pass the probed plain-file duration
+/// as `plain_audio_duration_ms` so outro chapters can still be trimmed
+/// (`plain + intro + outro` reconstructs the Audible timeline).
+#[must_use]
+pub fn chapters_from_audible_info_for_plain_audio(
+    info: &Value,
+    combine_nested: bool,
+    merge_credits: bool,
+    strip_unabridged: bool,
+    strip_brand_titles: bool,
+    plain_audio_duration_ms: Option<u64>,
+) -> Vec<(String, u64)> {
+    let brand = brand_durations_from_chapter_info(info);
+    let mut runtime_ms = runtime_length_ms_from_chapter_info(info);
+    if runtime_ms.is_none() {
+        if let Some(plain) = plain_audio_duration_ms.filter(|d| *d > 0) {
+            runtime_ms = Some(
+                plain
+                    .saturating_add(brand.intro_ms)
+                    .saturating_add(brand.outro_ms),
+            );
+        }
+    }
+    let flat = process_chapter_titles(
+        flatten_chapters(info),
+        combine_nested,
+        merge_credits,
+        strip_unabridged,
+        strip_brand_titles,
+    );
+    let pairs: Vec<(String, u64)> = flat.into_iter().map(|c| (c.title, c.start_ms)).collect();
+    rebase_chapters_after_brand_trim(&pairs, brand, runtime_ms)
+}
+
+/// Clamp signed millisecond offsets to `u64` without wrapping negatives.
+fn clamp_ms(n: i64) -> u64 {
+    u64::try_from(n).unwrap_or(0)
+}
+
 fn flatten_chapter_nodes(nodes: &[Value], out: &mut Vec<FlatChapter>) {
     for node in nodes {
         if let Some(nested) = node.get("chapters").and_then(Value::as_array) {
@@ -79,7 +128,13 @@ fn flatten_chapter_nodes(nodes: &[Value], out: &mut Vec<FlatChapter>) {
             .or_else(|| {
                 node.get("start_offset_ms")
                     .and_then(Value::as_i64)
-                    .map(|n| n as u64)
+                    .map(clamp_ms)
+            })
+            .or_else(|| node.get("startOffsetMs").and_then(Value::as_u64))
+            .or_else(|| {
+                node.get("startOffsetMs")
+                    .and_then(Value::as_i64)
+                    .map(clamp_ms)
             })
             .unwrap_or(0);
         if !title.trim().is_empty() {
@@ -150,6 +205,22 @@ mod tests {
     }
 
     #[test]
+    fn clamps_negative_start_offsets_to_zero() {
+        let info = serde_json::json!({
+            "chapters": [
+                {"title": "Bad", "start_offset_ms": -1},
+                {"title": "Camel", "startOffsetMs": -50},
+                {"title": "Ok", "start_offset_ms": 1000}
+            ]
+        });
+        let flat = flatten_chapters(&info);
+        // Negatives clamp to 0; flatten_chapters also dedupes by start_ms.
+        assert!(flat.iter().any(|c| c.start_ms == 0));
+        assert!(flat.iter().any(|c| c.start_ms == 1000));
+        assert!(flat.iter().all(|c| c.start_ms < 1_000_000_000_000));
+    }
+
+    #[test]
     fn writes_cue_with_tracks() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("book.cue");
@@ -174,5 +245,71 @@ mod tests {
         assert!(text.contains("FILE \"book.m4b\" WAVE"));
         assert!(text.contains("TRACK 01 AUDIO"));
         assert!(text.contains("TITLE \"Two\""));
+    }
+
+    #[test]
+    fn plain_audio_rebases_audible_tree_past_brand_intro() {
+        let info = serde_json::json!({
+            "brandIntroDurationMs": 4_000,
+            "brandOutroDurationMs": 5_000,
+            "runtime_length_ms": 3_600_000,
+            "chapters": [
+                {"title": "Opening Credits", "start_offset_ms": 0, "length_ms": 8_000},
+                {
+                    "title": "Part 1: Eto Demerzel",
+                    "start_offset_ms": 8_000,
+                    "length_ms": 2_000,
+                    "chapters": [
+                        {"title": "Chapter 1", "start_offset_ms": 10_000, "length_ms": 90_000},
+                        {"title": "Chapter 2", "start_offset_ms": 100_000, "length_ms": 90_000}
+                    ]
+                },
+                {"title": "End Credits", "start_offset_ms": 3_596_000, "length_ms": 4_000}
+            ]
+        });
+        let out =
+            chapters_from_audible_info_for_plain_audio(&info, false, false, false, false, None);
+        assert_eq!(out[0], ("Opening Credits".into(), 0));
+        // Part heading kept (distinct start from child chapters).
+        assert!(
+            out.iter()
+                .any(|(t, s)| t == "Part 1: Eto Demerzel" && *s == 4_000),
+            "{out:?}"
+        );
+        assert!(
+            out.iter().any(|(t, s)| t == "Chapter 1" && *s == 6_000),
+            "{out:?}"
+        );
+        assert!(
+            out.iter().any(|(t, s)| t == "Chapter 2" && *s == 96_000),
+            "{out:?}"
+        );
+        // End Credits starts at/after the outro window and is dropped.
+        assert!(out.iter().all(|(t, _)| t != "End Credits"), "{out:?}");
+    }
+
+    #[test]
+    fn plain_audio_uses_probed_duration_when_runtime_missing() {
+        let info = serde_json::json!({
+            "brandIntroDurationMs": 4_000,
+            "brandOutroDurationMs": 5_000,
+            "chapters": [
+                {"title": "Opening Credits", "start_offset_ms": 0},
+                {"title": "Chapter 1", "start_offset_ms": 10_000},
+                {"title": "End Credits", "start_offset_ms": 3_596_000}
+            ]
+        });
+        // Plain file duration = Audible runtime - intro - outro = 3_600_000 - 4k - 5k.
+        let plain_ms = 3_600_000u64 - 4_000 - 5_000;
+        let out = chapters_from_audible_info_for_plain_audio(
+            &info,
+            false,
+            false,
+            false,
+            false,
+            Some(plain_ms),
+        );
+        assert!(out.iter().any(|(t, _)| t == "Chapter 1"), "{out:?}");
+        assert!(out.iter().all(|(t, _)| t != "End Credits"), "{out:?}");
     }
 }

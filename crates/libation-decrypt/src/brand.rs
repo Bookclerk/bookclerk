@@ -18,25 +18,39 @@ impl BrandDurations {
     }
 }
 
-/// Read `brand_intro_duration_ms` / `brand_outro_duration_ms` from chapter_info JSON.
+/// Read brand intro/outro durations from chapter_info JSON.
+///
+/// Accepts both snake_case (`brand_intro_duration_ms`) and camelCase
+/// (`brandIntroDurationMs`) — Audible's live API uses camelCase.
 #[must_use]
 pub fn brand_durations_from_chapter_info(info: &Value) -> BrandDurations {
-    let intro = json_u64(info, "brand_intro_duration_ms");
-    let outro = json_u64(info, "brand_outro_duration_ms");
     BrandDurations {
-        intro_ms: intro,
-        outro_ms: outro,
+        intro_ms: json_u64_keys(info, &["brand_intro_duration_ms", "brandIntroDurationMs"]),
+        outro_ms: json_u64_keys(info, &["brand_outro_duration_ms", "brandOutroDurationMs"]),
     }
 }
 
-fn json_u64(info: &Value, key: &str) -> u64 {
-    info.get(key)
-        .and_then(|v| {
+/// Read `runtime_length_ms` / `runtimeLengthMs` from chapter_info JSON.
+#[must_use]
+pub fn runtime_length_ms_from_chapter_info(info: &Value) -> Option<u64> {
+    json_u64_opt_keys(info, &["runtime_length_ms", "runtimeLengthMs"])
+}
+
+fn json_u64_keys(info: &Value, keys: &[&str]) -> u64 {
+    json_u64_opt_keys(info, keys).unwrap_or(0)
+}
+
+fn json_u64_opt_keys(info: &Value, keys: &[&str]) -> Option<u64> {
+    for key in keys {
+        if let Some(v) = info.get(*key).and_then(|v| {
             v.as_u64()
                 .or_else(|| v.as_i64().map(|n| n.max(0) as u64))
                 .or_else(|| v.as_f64().map(|n| n.max(0.0) as u64))
-        })
-        .unwrap_or(0)
+        }) {
+            return Some(v);
+        }
+    }
+    None
 }
 
 /// Build a media trim window that drops Audible branding audio.
@@ -125,9 +139,23 @@ mod tests {
         let brand = brand_durations_from_chapter_info(&info);
         assert_eq!(brand.intro_ms, 4025);
         assert_eq!(brand.outro_ms, 3500);
+        assert_eq!(runtime_length_ms_from_chapter_info(&info), Some(3_600_000));
         let trim = brand_trim_range(brand, Some(3_600_000)).unwrap();
         assert_eq!(trim.start_ms, 4025);
         assert_eq!(trim.end_ms, Some(3_600_000 - 3500));
+    }
+
+    #[test]
+    fn parses_camel_case_brand_fields() {
+        let info = serde_json::json!({
+            "brandIntroDurationMs": 1904,
+            "brandOutroDurationMs": 4969,
+            "runtimeLengthMs": 58_213_821
+        });
+        let brand = brand_durations_from_chapter_info(&info);
+        assert_eq!(brand.intro_ms, 1904);
+        assert_eq!(brand.outro_ms, 4969);
+        assert_eq!(runtime_length_ms_from_chapter_info(&info), Some(58_213_821));
     }
 
     #[test]

@@ -105,11 +105,14 @@ pub async fn run_scan(state: &AppState, account: Option<&str>) -> anyhow::Result
             },
         )
         .await?;
-    if cfg.library.enrich_libro_from_audible {
-        if let Err(err) =
-            libation_audible::enrich_libro_books_by_isbn(&paths.files_dir, &state.library).await
+    if cfg.library.enrich_from_audible {
+        if let Err(err) = libation_enrich::enrich_books_from_audible(
+            &state.library,
+            cfg.library.enrich_min_confidence,
+        )
+        .await
         {
-            warn!(error = %err, "Libro ISBN enrichment failed");
+            warn!(error = %err, "Audible enrichment failed");
         }
     }
     Ok(format!(

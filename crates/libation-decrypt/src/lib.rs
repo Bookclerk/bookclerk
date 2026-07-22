@@ -11,10 +11,10 @@ mod package_m4b;
 
 pub use brand::{
     brand_durations_from_chapter_info, brand_trim_range, rebase_chapters_after_brand_trim,
-    BrandDurations,
+    runtime_length_ms_from_chapter_info, BrandDurations,
 };
 pub use error::{DecryptError, Result};
-pub use metadata::{fixup_audiobook, FixupRequest};
+pub use metadata::{fixup_audiobook, libation_tool_tag, FixupRequest, LIBATION_TOOL_NAME};
 pub use mp4::{
     decrypt_and_remux, decrypt_dash_cenc, parse_mp4, track_duration_ms, DecryptMode, RemuxOptions,
     SampleEntryKind, TrimRange,

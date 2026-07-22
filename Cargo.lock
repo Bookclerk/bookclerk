@@ -2722,6 +2722,7 @@ dependencies = [
  "csv",
  "libation-audible",
  "libation-config",
+ "libation-enrich",
  "libation-liberate",
  "libation-library",
  "libation-libro",
@@ -2778,6 +2779,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "libation-enrich"
+version = "0.1.0"
+dependencies = [
+ "libation-library",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "libation-liberate"
 version = "0.1.0"
 dependencies = [
@@ -2788,6 +2803,7 @@ dependencies = [
  "libation-audible",
  "libation-config",
  "libation-decrypt",
+ "libation-enrich",
  "libation-library",
  "libation-naming",
  "libation-source",
@@ -2921,6 +2937,7 @@ dependencies = [
  "clap",
  "libation-audible",
  "libation-config",
+ "libation-enrich",
  "libation-liberate",
  "libation-library",
  "libation-libro",

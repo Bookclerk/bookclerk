@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/libation-config",
     "crates/libation-audible",
+    "crates/libation-enrich",
     "crates/libation-decrypt",
     "crates/libation-storage",
     "crates/libation-library",
@@ -33,6 +34,7 @@ description = "Headless-first Audible library manager (Libation Rust rewrite)"
 # Internal crates
 libation-config = { path = "crates/libation-config" }
 libation-audible = { path = "crates/libation-audible" }
+libation-enrich = { path = "crates/libation-enrich" }
 libation-decrypt = { path = "crates/libation-decrypt" }
 libation-storage = { path = "crates/libation-storage" }
 libation-library = { path = "crates/libation-library" }

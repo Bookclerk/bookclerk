@@ -13,10 +13,11 @@ use libation_config::DownloadFormat;
 use libation_config::FileTimestampMode;
 use libation_decrypt::{
     brand_durations_from_chapter_info, brand_trim_range, decrypt_adrm, decrypt_cenc, encode_to_mp3,
-    fixup_audiobook, package_m4b_from_mp3, parse_mp4, rebase_chapters_after_brand_trim,
-    track_duration_ms, CencDecryptRequest, DecryptRequest, FixupRequest, PackageM4bRequest,
-    TrimRange,
+    fixup_audiobook, libation_tool_tag, package_m4b_from_mp3, parse_mp4,
+    rebase_chapters_after_brand_trim, runtime_length_ms_from_chapter_info, track_duration_ms,
+    CencDecryptRequest, DecryptRequest, FixupRequest, PackageM4bRequest, TrimRange,
 };
+use libation_enrich::fetch_public_chapter_info;
 use libation_library::{LiberateStatus, LibraryStore};
 use libation_source::{
     ContentSource, EncryptedDrmKind, EncryptedFetch, FetchOptions, PlainFetch, SourceFetch,
@@ -26,7 +27,10 @@ use libation_storage::{ObjectMeta, StorageBackend};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::cue::{flatten_chapters, process_chapter_titles, write_cue};
+use crate::cue::{
+    chapters_from_audible_info_for_plain_audio, flatten_chapters, process_chapter_titles,
+    write_cue, FlatChapter,
+};
 use crate::error::{LiberateError, Result};
 use crate::naming::{audio_basename, sidecar_key, storage_key_with_contexts, NamingContext};
 use crate::reconcile::{find_existing_for_request, StorageIndex};
@@ -245,10 +249,10 @@ async fn store_encrypted_fetch(
         .as_ref()
         .map(brand_durations_from_chapter_info)
         .unwrap_or_default();
-    let mut runtime_ms = download.chapter_info.as_ref().and_then(|info| {
-        info.get("runtime_length_ms")
-            .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|n| n.max(0) as u64)))
-    });
+    let mut runtime_ms = download
+        .chapter_info
+        .as_ref()
+        .and_then(runtime_length_ms_from_chapter_info);
     if req.options.strip_audible_brand_audio && brand.outro_ms > 0 && runtime_ms.is_none() {
         if let Ok(mp4) = parse_mp4(&download.path) {
             let probed = track_duration_ms(&mp4.audio);
@@ -366,15 +370,18 @@ async fn store_encrypted_fetch(
 
     if req.options.fixup_metadata && !will_split {
         let fixed = work_dir.join(format!("{}.fixed.{}", status_key(req), ext));
-        match fixup_audiobook(FixupRequest {
-            input: liberated_path.clone(),
-            output: fixed.clone(),
-            title: req.title.clone(),
-            author: req.authors.clone(),
-            narrator: req.narrators.clone(),
-            cover: cover_path.clone(),
+        // Audible chapters are rebased/title-processed; always replace embedded
+        // chpl/tracks so brand-trim alignment reaches the stored file.
+        match fixup_audiobook(build_fixup_request(
+            library,
+            req,
+            liberated_path.clone(),
+            fixed.clone(),
+            cover_path.clone(),
             chapters,
-        })
+            None,
+            !flat_chapters.is_empty(),
+        ))
         .await
         {
             Ok(outcome) => liberated_path = outcome.output,
@@ -472,7 +479,13 @@ async fn store_encrypted_fetch(
     if let Some(cover) = cover_path.as_ref() {
         if req.options.download_cover {
             let cover_key = sidecar_key(&storage_key, "jpg");
-            let meta = sidecar_meta(status_key(req), &req.title, "image/jpeg", cover).await;
+            let meta = sidecar_meta(
+                object_asin_for(library, req).as_str(),
+                &req.title,
+                "image/jpeg",
+                cover,
+            )
+            .await;
             if let Err(err) = storage.put_file(&cover_key, cover, meta).await {
                 tracing::warn!(id = %status_key(req), error = %err, "cover store failed");
             }
@@ -503,12 +516,20 @@ async fn store_plain_fetch(
 ) -> Result<LiberateResult> {
     let want_mp3 = matches!(req.options.format, DownloadFormat::Mp3);
     let multi = plain.parts.len() > 1;
+    let libro_overlay_possible = req.source == SourceKind::LibroFm
+        && resolve_book(library, req)
+            .and_then(|b| b.audible_asin().map(|_| ()))
+            .is_some();
 
-    if multi && req.options.split_files_by_chapter {
+    // Multi-part "split by chapter" without enrichment: store parts as-is.
+    // When Libro can overlay Audible chapters, package first so we can embed /
+    // split by the literary chapter tree instead of track-boundary placeholders.
+    if multi && req.options.split_files_by_chapter && !libro_overlay_possible {
         return store_plain_parts(library, storage, req, plain).await;
     }
 
     let mut chapters = plain.chapters.clone();
+    let mut replace_chapters = false;
     let mut liberated_path = if let Some(m4b) = plain.m4b_path.clone() {
         m4b
     } else if plain.parts.is_empty() {
@@ -517,10 +538,11 @@ async fn store_plain_fetch(
             req.source,
             req.asin
         )));
-    } else if plain.parts.len() == 1 && want_mp3 {
+    } else if plain.parts.len() == 1 && want_mp3 && !libro_overlay_possible {
         plain.parts[0].path.clone()
     } else {
-        // Package MP3 part(s) into M4B (single-file M4B target, or multi→single).
+        // Package MP3 part(s) into M4B (single-file M4B target, multi→single, or
+        // Libro overlay that needs a contiguous timeline before chapter split).
         let titles: Vec<String> = plain
             .parts
             .iter()
@@ -544,7 +566,36 @@ async fn store_plain_fetch(
         outcome.output
     };
 
-    if want_mp3 {
+    // Libro track markers are file-size splits, not literary chapters. When the
+    // row has an enriched Audible ASIN, overlay Audible's chapter tree and shift
+    // timestamps past Audible brand intro/outro (absent from Libro audio).
+    if req.source == SourceKind::LibroFm {
+        let plain_duration = probe_audio_duration_ms(&liberated_path);
+        if let Some(overlaid) =
+            overlay_audible_chapters_for_libro(library, req, plain_duration).await
+        {
+            tracing::info!(
+                id = %status_key(req),
+                audible_asin = ?resolve_book(library, req).and_then(|b| b.asin.clone()),
+                chapters = overlaid.len(),
+                plain_duration_ms = ?plain_duration,
+                "overlaying Audible chapter tree onto Libro audio"
+            );
+            chapters = overlaid;
+            replace_chapters = true;
+        }
+    }
+
+    let flat_chapters: Vec<FlatChapter> = chapters
+        .iter()
+        .map(|(title, start_ms)| FlatChapter {
+            title: title.clone(),
+            start_ms: *start_ms,
+        })
+        .collect();
+    let will_split = req.options.split_files_by_chapter && flat_chapters.len() > 1;
+
+    if want_mp3 && !will_split {
         let ext = liberated_path
             .extension()
             .and_then(|e| e.to_str())
@@ -562,27 +613,32 @@ async fn store_plain_fetch(
         }
     }
 
-    let ext = liberated_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or(match req.options.format {
-            DownloadFormat::M4b => "m4b",
-            DownloadFormat::Mp3 => "mp3",
-        })
-        .to_string();
+    let ext = if will_split && want_mp3 {
+        "mp3".to_string()
+    } else {
+        liberated_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or(match req.options.format {
+                DownloadFormat::M4b => "m4b",
+                DownloadFormat::Mp3 => "mp3",
+            })
+            .to_string()
+    };
 
     let cover_path = plain.cover_path.clone();
-    if req.options.fixup_metadata {
+    if req.options.fixup_metadata && !will_split {
         let fixed = work_dir.join(format!("{}.fixed.{}", status_key(req), ext));
-        match fixup_audiobook(FixupRequest {
-            input: liberated_path.clone(),
-            output: fixed.clone(),
-            title: req.title.clone(),
-            author: req.authors.clone(),
-            narrator: req.narrators.clone(),
-            cover: cover_path.clone(),
+        match fixup_audiobook(build_fixup_request(
+            library,
+            req,
+            liberated_path.clone(),
+            fixed.clone(),
+            cover_path.clone(),
             chapters,
-        })
+            None,
+            replace_chapters,
+        ))
         .await
         {
             Ok(outcome) => liberated_path = outcome.output,
@@ -596,28 +652,125 @@ async fn store_plain_fetch(
         }
     }
 
-    let storage_key = planned_storage_key_for(library, req, &ext);
-    let data_len = tokio::fs::metadata(&liberated_path)
-        .await
-        .map(|m| m.len())
-        .ok();
-    let meta = object_meta_for(
-        library,
-        req,
-        &req.title,
-        content_type_for_ext(&ext),
-        data_len,
-    )
-    .await;
-    storage
-        .put_file(&storage_key, &liberated_path, meta)
+    let storage_key = if will_split {
+        let total_ms = probe_audio_duration_ms(&liberated_path)
+            .or_else(|| {
+                flat_chapters
+                    .last()
+                    .map(|c| c.start_ms.saturating_add(600_000))
+            })
+            .unwrap_or(3_600_000);
+        let split_dir = work_dir.join("chapters");
+        let file_ctx = naming_ctx(library, req);
+        let folder_ctx = folder_naming_ctx(library, req);
+        let split_chapters = split_audio_by_chapters(
+            &liberated_path,
+            &split_dir,
+            &flat_chapters,
+            total_ms,
+            &folder_ctx,
+            &file_ctx,
+            &req.options,
+            "m4b",
+        )
         .await?;
-    apply_storage_timestamps(storage, library, req, std::slice::from_ref(&storage_key)).await;
+        let mut first_key = String::new();
+        let mut written_keys = Vec::new();
+        for (idx, ch) in split_chapters.into_iter().enumerate() {
+            let mut chapter_path = ch.path;
+            let mut key = ch.storage_key;
+            if want_mp3 {
+                let mp3_path = chapter_path.with_extension("mp3");
+                encode_to_mp3(
+                    &chapter_path,
+                    &mp3_path,
+                    &req.options.lame,
+                    req.options.max_sample_rate,
+                )
+                .await?;
+                chapter_path = mp3_path;
+                key = key
+                    .trim_end_matches(".m4b")
+                    .trim_end_matches(".M4B")
+                    .to_string()
+                    + ".mp3";
+            }
+            if req.options.fixup_metadata {
+                let fixed = chapter_path.with_extension(format!("fixed.{}", ext));
+                let chapter_chapters = vec![(ch.title.clone(), 0u64)];
+                match fixup_audiobook(build_fixup_request(
+                    library,
+                    req,
+                    chapter_path.clone(),
+                    fixed.clone(),
+                    cover_path.clone(),
+                    chapter_chapters,
+                    Some(format!("{} — {}", req.title, ch.title)),
+                    true,
+                ))
+                .await
+                {
+                    Ok(outcome) => chapter_path = outcome.output,
+                    Err(err) => {
+                        tracing::warn!(
+                            id = %status_key(req),
+                            chapter = idx + 1,
+                            error = %err,
+                            "chapter metadata fixup failed"
+                        );
+                    }
+                }
+            }
+            let meta = object_meta_for(
+                library,
+                req,
+                &ch.title,
+                content_type_for_ext(if want_mp3 { "mp3" } else { "m4b" }),
+                tokio::fs::metadata(&chapter_path)
+                    .await
+                    .ok()
+                    .map(|m| m.len()),
+            )
+            .await;
+            storage.put_file(&key, &chapter_path, meta).await?;
+            written_keys.push(key.clone());
+            if first_key.is_empty() {
+                first_key = key;
+            }
+        }
+        apply_storage_timestamps(storage, library, req, &written_keys).await;
+        first_key
+    } else {
+        let storage_key = planned_storage_key_for(library, req, &ext);
+        let data_len = tokio::fs::metadata(&liberated_path)
+            .await
+            .map(|m| m.len())
+            .ok();
+        let meta = object_meta_for(
+            library,
+            req,
+            &req.title,
+            content_type_for_ext(&ext),
+            data_len,
+        )
+        .await;
+        storage
+            .put_file(&storage_key, &liberated_path, meta)
+            .await?;
+        apply_storage_timestamps(storage, library, req, std::slice::from_ref(&storage_key)).await;
+        storage_key
+    };
 
     if let Some(cover) = cover_path.as_ref() {
         if req.options.download_cover {
             let cover_key = sidecar_key(&storage_key, "jpg");
-            let meta = sidecar_meta(status_key(req), &req.title, "image/jpeg", cover).await;
+            let meta = sidecar_meta(
+                object_asin_for(library, req).as_str(),
+                &req.title,
+                "image/jpeg",
+                cover,
+            )
+            .await;
             if let Err(err) = storage.put_file(&cover_key, cover, meta).await {
                 tracing::warn!(id = %status_key(req), error = %err, "cover store failed");
             }
@@ -694,7 +847,13 @@ async fn store_plain_parts(
     if let Some(cover) = plain.cover_path.as_ref() {
         if req.options.download_cover {
             let cover_key = sidecar_key(&first_key, "jpg");
-            let meta = sidecar_meta(status_key(req), &req.title, "image/jpeg", cover).await;
+            let meta = sidecar_meta(
+                object_asin_for(library, req).as_str(),
+                &req.title,
+                "image/jpeg",
+                cover,
+            )
+            .await;
             if let Err(err) = storage.put_file(&cover_key, cover, meta).await {
                 tracing::warn!(id = %status_key(req), error = %err, "cover store failed");
             }
@@ -776,10 +935,9 @@ async fn run_audible_pipeline(
         .as_ref()
         .map(brand_durations_from_chapter_info)
         .unwrap_or_default();
-    let mut runtime_ms = chapter_info.as_ref().and_then(|info| {
-        info.get("runtime_length_ms")
-            .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|n| n.max(0) as u64)))
-    });
+    let mut runtime_ms = chapter_info
+        .as_ref()
+        .and_then(runtime_length_ms_from_chapter_info);
     // Prefer chapter_info runtime; if outro trim needs length and it's missing,
     // probe the downloaded media before decrypt.
     let needs_runtime_probe =
@@ -959,15 +1117,18 @@ async fn run_audible_pipeline(
             .map(|c| (c.title.clone(), c.start_ms))
             .collect();
         let fixed = work_dir.join(format!("{}.fixed.{}", req.asin, ext));
-        match fixup_audiobook(FixupRequest {
-            input: liberated_path.clone(),
-            output: fixed.clone(),
-            title: req.title.clone(),
-            author: req.authors.clone(),
-            narrator: req.narrators.clone(),
-            cover: cover_path.clone(),
+        // Audible chapters are rebased/title-processed; always replace embedded
+        // chpl/tracks so brand-trim alignment reaches the stored file.
+        match fixup_audiobook(build_fixup_request(
+            library,
+            req,
+            liberated_path.clone(),
+            fixed.clone(),
+            cover_path.clone(),
             chapters,
-        })
+            None,
+            !flat_chapters.is_empty(),
+        ))
         .await
         {
             Ok(outcome) => liberated_path = outcome.output,
@@ -1038,15 +1199,16 @@ async fn run_audible_pipeline(
                 let fixed = chapter_path.with_extension(format!("fixed.{}", ext));
                 // Per-chapter files: rebase chapter title only (start at 0).
                 let chapter_chapters = vec![(ch.title.clone(), 0u64)];
-                match fixup_audiobook(FixupRequest {
-                    input: chapter_path.clone(),
-                    output: fixed.clone(),
-                    title: format!("{} — {}", req.title, ch.title),
-                    author: req.authors.clone(),
-                    narrator: req.narrators.clone(),
-                    cover: cover_path.clone(),
-                    chapters: chapter_chapters,
-                })
+                match fixup_audiobook(build_fixup_request(
+                    library,
+                    req,
+                    chapter_path.clone(),
+                    fixed.clone(),
+                    cover_path.clone(),
+                    chapter_chapters,
+                    Some(format!("{} — {}", req.title, ch.title)),
+                    true,
+                ))
                 .await
                 {
                     Ok(outcome) => chapter_path = outcome.output,
@@ -1327,11 +1489,19 @@ async fn object_meta_for(
     ObjectMeta {
         content_type: Some(content_type.into()),
         content_length,
-        asin: Some(req.asin.clone()),
+        asin: Some(object_asin_for(library, req)),
         title: Some(title.to_string()),
         creation_time: created.map(system_time_rfc3339),
         last_write_time: modified.map(system_time_rfc3339),
     }
+}
+
+/// Prefer enriched Audible ASIN for S3 object metadata when present; otherwise
+/// the liberate product id (Audible ASIN or Libro ISBN).
+fn object_asin_for(library: &LibraryStore, req: &LiberateRequest) -> String {
+    resolve_book(library, req)
+        .and_then(|b| b.audible_asin().map(str::to_string))
+        .unwrap_or_else(|| req.asin.clone())
 }
 
 fn system_time_rfc3339(t: SystemTime) -> String {
@@ -1370,6 +1540,59 @@ fn content_type_for_ext(ext: &str) -> &'static str {
         "m4b" => "audio/mp4",
         "aaxc" | "aax" | "cenc" => "audio/mp4",
         _ => "application/octet-stream",
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_fixup_request(
+    library: &LibraryStore,
+    req: &LiberateRequest,
+    input: PathBuf,
+    output: PathBuf,
+    cover: Option<PathBuf>,
+    chapters: Vec<(String, u64)>,
+    title_override: Option<String>,
+    replace_chapters: bool,
+) -> FixupRequest {
+    let book = resolve_book(library, req);
+    let year = book
+        .as_ref()
+        .and_then(|b| b.published_at)
+        .map(|dt| dt.format("%Y").to_string());
+    let asin = book.as_ref().and_then(|b| b.asin.clone());
+    let isbn = book.as_ref().and_then(|b| b.isbn.clone()).or_else(|| {
+        if req.source == SourceKind::LibroFm {
+            Some(req.asin.clone())
+        } else {
+            None
+        }
+    });
+    FixupRequest {
+        input,
+        output,
+        title: title_override.unwrap_or_else(|| req.title.clone()),
+        author: req.authors.clone(),
+        narrator: req.narrators.clone(),
+        cover,
+        chapters,
+        replace_chapters,
+        subtitle: book.as_ref().and_then(|b| b.subtitle.clone()),
+        publisher: book.as_ref().and_then(|b| b.publisher.clone()),
+        year,
+        genre: book.as_ref().and_then(|b| b.categories.clone()),
+        series: req
+            .series
+            .clone()
+            .or_else(|| book.as_ref().and_then(|b| b.series.clone())),
+        series_index: req
+            .series_index
+            .clone()
+            .or_else(|| book.as_ref().and_then(|b| b.series_index.clone())),
+        asin,
+        isbn,
+        description: None,
+        language: None,
+        tool: Some(libation_tool_tag()),
     }
 }
 
@@ -1417,6 +1640,75 @@ fn resolve_book(
         }
     }
     library.get_book(&req.asin, &req.account_id).ok().flatten()
+}
+
+/// When liberating Libro audio that was enriched with an Audible ASIN, fetch
+/// Audible's chapter tree (Audnexus, no login) and rebase starts for missing
+/// brand intro/outro.
+///
+/// `plain_audio_duration_ms` is the probed duration of the Libro file (no brand
+/// segments). When Audnexus omits runtime, it reconstructs the Audible timeline
+/// so outro chapters can still be trimmed.
+async fn overlay_audible_chapters_for_libro(
+    library: &LibraryStore,
+    req: &LiberateRequest,
+    plain_audio_duration_ms: Option<u64>,
+) -> Option<Vec<(String, u64)>> {
+    let book = resolve_book(library, req)?;
+    let audible_asin = book.audible_asin()?.to_string();
+    let region = if book.marketplace.trim().is_empty() {
+        "us"
+    } else {
+        book.marketplace.as_str()
+    };
+    let info = match fetch_public_chapter_info(&audible_asin, region).await {
+        Ok(Some(info)) => info,
+        Ok(None) => {
+            tracing::debug!(
+                audible_asin = %audible_asin,
+                "Audnexus returned no chapters for Libro overlay"
+            );
+            return None;
+        }
+        Err(err) => {
+            tracing::warn!(
+                audible_asin = %audible_asin,
+                error = %err,
+                "Audnexus chapter fetch failed for Libro overlay"
+            );
+            return None;
+        }
+    };
+    let chapters = chapters_from_audible_info_for_plain_audio(
+        &info,
+        req.options.combine_nested_chapter_titles,
+        req.options.merge_opening_and_end_credits,
+        req.options.strip_unabridged,
+        req.options.strip_audible_brand_audio,
+        plain_audio_duration_ms,
+    );
+    if chapters.is_empty() {
+        None
+    } else {
+        Some(chapters)
+    }
+}
+
+fn probe_audio_duration_ms(path: &Path) -> Option<u64> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(ext.as_str(), "m4b" | "m4a" | "mp4" | "aaxc" | "aax") {
+        if let Ok(mp4) = parse_mp4(path) {
+            let ms = track_duration_ms(&mp4.audio);
+            if ms > 0 {
+                return Some(ms);
+            }
+        }
+    }
+    None
 }
 
 fn naming_ctx(library: &LibraryStore, req: &LiberateRequest) -> NamingContext {

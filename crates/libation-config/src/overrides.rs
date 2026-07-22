@@ -164,8 +164,13 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         "library.save_podcasts_to_parent_folder" => {
             config.library.save_podcasts_to_parent_folder = parse_bool(v).unwrap_or(false);
         }
-        "library.enrich_libro_from_audible" => {
-            config.library.enrich_libro_from_audible = parse_bool(v).unwrap_or(true);
+        "library.enrich_from_audible" => {
+            config.library.enrich_from_audible = parse_bool(v).unwrap_or(true);
+        }
+        "library.enrich_min_confidence" => {
+            if let Ok(n) = v.parse::<u8>() {
+                config.library.enrich_min_confidence = n.min(100);
+            }
         }
         "library.scan_interval_minutes" => {
             if v.eq_ignore_ascii_case("true") {
@@ -215,11 +220,14 @@ mod tests {
     }
 
     #[test]
-    fn enrich_libro_from_audible_defaults_true_and_override() {
+    fn enrich_from_audible_defaults_true_and_override() {
         let cfg = Config::default();
-        assert!(cfg.library.enrich_libro_from_audible);
+        assert!(cfg.library.enrich_from_audible);
+        assert_eq!(cfg.library.enrich_min_confidence, 90);
         let mut cfg = Config::default();
-        apply_setting_overrides(&mut cfg, &[("library.enrich_libro_from_audible", "false")]);
-        assert!(!cfg.library.enrich_libro_from_audible);
+        apply_setting_overrides(&mut cfg, &[("library.enrich_from_audible", "false")]);
+        assert!(!cfg.library.enrich_from_audible);
+        apply_setting_overrides(&mut cfg, &[("library.enrich_min_confidence", "85")]);
+        assert_eq!(cfg.library.enrich_min_confidence, 85);
     }
 }

@@ -18,6 +18,7 @@ axum.workspace = true
 clap.workspace = true
 libation-audible.workspace = true
 libation-config.workspace = true
+libation-enrich.workspace = true
 libation-liberate.workspace = true
 libation-library.workspace = true
 libation-libro.workspace = true

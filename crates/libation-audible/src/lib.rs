@@ -7,7 +7,6 @@ mod accounts;
 mod artifacts;
 mod auth;
 mod download;
-mod enrich;
 mod error;
 mod options;
 mod paths;
@@ -36,10 +35,6 @@ pub use download::{
     download_licensed_audio, fetch_and_download, fetch_and_download_with_options,
     license_full_json, open_account_client, parse_license_json, request_content_license,
     summarize_license, AccountClient, DrmKind, EncryptedDownload, LicenseSummary,
-};
-pub use enrich::{
-    apply_enrichment_to_book, enrich_libro_books_by_isbn, lookup_by_isbn,
-    lookup_by_isbn_with_client, Enrichment,
 };
 pub use error::{AudibleError, Result};
 pub use libation_source::{ScanOptions, ScanSummary};

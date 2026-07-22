@@ -53,8 +53,11 @@ pub struct LibraryConfig {
     pub download_episodes: bool,
     /// Save podcast episodes into the parent show's folder (`SavePodcastsToParentFolder`).
     pub save_podcasts_to_parent_folder: bool,
-    /// After scan, enrich Libro.fm rows from the Audible catalog by ISBN.
-    pub enrich_libro_from_audible: bool,
+    /// After scan, enrich non-Audible rows (e.g. Libro.fm) from public Audible/Audnexus metadata.
+    pub enrich_from_audible: bool,
+    /// Minimum match confidence (0–100) to accept an Audible ASIN enrichment.
+    /// Uses AudioBookshelf-style duration/title/author scoring (default 90).
+    pub enrich_min_confidence: u8,
 }
 
 impl Default for LibraryConfig {
@@ -66,7 +69,8 @@ impl Default for LibraryConfig {
             import_plus_titles: false,
             download_episodes: true,
             save_podcasts_to_parent_folder: false,
-            enrich_libro_from_audible: true,
+            enrich_from_audible: true,
+            enrich_min_confidence: 90,
         }
     }
 }
@@ -379,9 +383,14 @@ impl Config {
         if let Ok(v) = std::env::var("LIBATION_AUTO_LIBERATE") {
             self.library.auto_liberate = parse_bool(&v).unwrap_or(self.library.auto_liberate);
         }
-        if let Ok(v) = std::env::var("LIBATION_ENRICH_LIBRO_FROM_AUDIBLE") {
-            self.library.enrich_libro_from_audible =
-                parse_bool(&v).unwrap_or(self.library.enrich_libro_from_audible);
+        if let Ok(v) = std::env::var("LIBATION_ENRICH_FROM_AUDIBLE") {
+            self.library.enrich_from_audible =
+                parse_bool(&v).unwrap_or(self.library.enrich_from_audible);
+        }
+        if let Ok(v) = std::env::var("LIBATION_ENRICH_MIN_CONFIDENCE") {
+            if let Ok(n) = v.parse::<u8>() {
+                self.library.enrich_min_confidence = n.min(100);
+            }
         }
         if let Ok(v) = std::env::var("LIBATION_SCAN_INTERVAL_MINUTES") {
             if let Ok(n) = v.parse() {
