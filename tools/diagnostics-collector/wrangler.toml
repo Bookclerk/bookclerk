@@ -1,0 +1,18 @@
+# Cloudflare Worker — deployed by GitHub Actions (wrangler-action).
+# See .github/workflows/diagnostics-collector-deploy.yml
+name = "libation-diagnostics"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+[vars]
+# Used by GET /report to resolve the latest stable release baseline.
+GITHUB_REPOSITORY = "fritz-fritz/libation-rs"
+
+[secrets]
+required = [
+  "B2_KEY_ID",
+  "B2_APPLICATION_KEY",
+  "B2_BUCKET_ID",
+  "REPORT_API_KEY",
+]

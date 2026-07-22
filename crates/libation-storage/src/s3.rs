@@ -38,7 +38,12 @@ impl S3Backend {
             std::env::var("AWS_ACCESS_KEY_ID"),
             std::env::var("AWS_SECRET_ACCESS_KEY"),
         ) {
+            libation_config::register_secret(&access);
+            libation_config::register_secret(&secret);
             let session = std::env::var("AWS_SESSION_TOKEN").ok();
+            if let Some(ref token) = session {
+                libation_config::register_secret(token);
+            }
             loader = loader.credentials_provider(Credentials::new(
                 access,
                 secret,

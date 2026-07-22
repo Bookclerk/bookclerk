@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::{info, warn};
+use tracing::{error, info};
 
 use crate::api::AppState;
 use crate::jobs::{run_liberate, run_scan};
@@ -29,7 +29,12 @@ pub fn spawn_scheduler(state: Arc<AppState>) {
 
             match run_scan(&state, None).await {
                 Ok(detail) => info!(%detail, "scheduled scan complete"),
-                Err(err) => warn!(error = %err, "scheduled scan failed"),
+                Err(err) => {
+                    error!(error = %err, "scheduled scan failed");
+                    if let Some(diag) = libation_config::diagnostics_global() {
+                        diag.request_upload("job_failed");
+                    }
+                }
             }
 
             let auto = {
@@ -39,7 +44,12 @@ pub fn spawn_scheduler(state: Arc<AppState>) {
             if auto {
                 match run_liberate(&state, None, None).await {
                     Ok(detail) => info!(%detail, "scheduled auto-liberate complete"),
-                    Err(err) => warn!(error = %err, "scheduled auto-liberate failed"),
+                    Err(err) => {
+                        error!(error = %err, "scheduled auto-liberate failed");
+                        if let Some(diag) = libation_config::diagnostics_global() {
+                            diag.request_upload("job_failed");
+                        }
+                    }
                 }
             }
         }

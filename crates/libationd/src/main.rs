@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use libation_config::{init_tracing, Config, LogFormat};
+use libation_config::{init_tracing_with, Config, LogFormat, TracingOptions};
 use libation_library::LibraryStore;
 use tokio::sync::{Mutex, RwLock};
 
@@ -54,7 +54,33 @@ async fn main() -> anyhow::Result<()> {
     } else {
         LogFormat::Text
     };
-    init_tracing(log_format, "libation=info,warn");
+    let logging = init_tracing_with(TracingOptions {
+        format: log_format,
+        default_level: "libation=info,warn".into(),
+        syslog_identifier: "libationd".into(),
+        diagnostics: config.diagnostics.clone(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        enable_journald: true,
+    });
+    // After subscriber install so startup guidance is not dropped.
+    config.warn_unsupported_options();
+    if logging.journald {
+        let facility = match logging.os_facility {
+            Some(libation_config::OsLogFacility::Journald) => "journald",
+            Some(libation_config::OsLogFacility::OsLog) => "os_log",
+            Some(libation_config::OsLogFacility::EventLog) => "windows-event-log",
+            None => "os",
+        };
+        tracing::info!(%facility, "OS log facility enabled (structured system logging)");
+    } else {
+        tracing::info!("OS log facility unavailable; logging to stderr only");
+    }
+    if config.diagnostics.share_reports {
+        tracing::info!(
+            url = %config.diagnostics.effective_submit_url(),
+            "diagnostics.share_reports=true — redacted reports POST to Worker /submit (B2 via Cloudflare)"
+        );
+    }
 
     let paths = config.paths().clone();
     paths.ensure_dirs()?;

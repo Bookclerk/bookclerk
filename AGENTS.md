@@ -28,8 +28,17 @@ Everything else under `crates/` is a library crate.
 ### Running the apps
 
 Set `LIBATION_FILES_DIR` to a writable dir; on first use the app creates
-`library.db` (SQLite, bundled — no external DB needed), plus `cache/`, `logs/`,
-and `search_index/` under it.
+`library.db` (SQLite, bundled — no external DB needed), plus `cache/`, `logs/`
+(reserved; Libation does not rotate log files), and `search_index/` under it.
+Logging goes to stderr and, when available, the OS facility (journald /
+macOS os_log / Windows Event Log); secrets are always redacted (exact values
+from config/env/auth including percent-encoded forms, plus patterns; uploads
+abort if a registered secret remains). Opt-in reports: `diagnostics.share_reports
+= true` with URL from `LIBATION_DIAGNOSTICS_COLLECTOR_URL` at `cargo build` (CI
+sets from `DIAGNOSTICS_COLLECTOR_BASE_URL`) or `collector_url` in config. The
+diagnostics ring always keeps TRACE+; stderr/OS facility honor `LIBATION_LOG` /
+`RUST_LOG`. Each upload gets a Worker `report_id` UUID (B2 object name). See
+`docs/diagnostics.md`.
 
 - CLI: `LIBATION_FILES_DIR=/tmp/LibationFiles cargo run -p libation-cli -- <cmd>`
   (e.g. `version`, `auth list`, `library list`).

@@ -1,0 +1,205 @@
+# Daily pull of new diagnostics from the Cloudflare Worker `/report`
+# endpoint, then analyze with GitHub Copilot CLI (prompt-injection guarded)
+# and open issues when warranted.
+#
+# Required repository secret:
+#   DIAGNOSTICS_REPORT_API_KEY — Worker REPORT_API_KEY (set on deploy via wrangler-action)
+#
+# Worker deploy: .github/workflows/diagnostics-collector-deploy.yml
+# Collector URL: repository variable DIAGNOSTICS_COLLECTOR_BASE_URL (set by deploy)
+#
+# Copilot auth (aligned with GitHub Agentic Workflows guidance):
+#   Prefer permissions.copilot-requests: write + ${{ github.token }} (org billing).
+#   Fallback PAT: COPILOT_GITHUB_TOKEN (personal repos / no centralized billing).
+#   https://github.com/github/gh-aw
+#   https://docs.github.com/en/copilot/how-tos/copilot-cli/use-copilot-cli-in-actions
+#
+# Permission names:
+#   https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#repository-permissions
+
+name: diagnostics-ingest
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      force_full:
+        description: "Ignore stored cursor and pull from epoch (0)"
+        type: boolean
+        default: false
+
+# Least privilege:
+#   contents          — checkout (analyze script lives in-repo)
+#   issues            — create triage issues (Copilot / gh fallback)
+#   copilot-requests  — Copilot inference via GITHUB_TOKEN (gh-aw recommended)
+permissions:
+  contents: read
+  issues: write
+  copilot-requests: write
+
+concurrency:
+  group: diagnostics-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require report API key
+        env:
+          KEY: ${{ secrets.DIAGNOSTICS_REPORT_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::Set DIAGNOSTICS_REPORT_API_KEY (same value as Worker REPORT_API_KEY)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Resolve collector base URL
+        id: collector
+        env:
+          BASE: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
+        run: |
+          set -euo pipefail
+          BASE="${BASE%/}"
+          if [ -z "$BASE" ]; then
+            echo "::error::DIAGNOSTICS_COLLECTOR_BASE_URL is unset — run diagnostics-collector-deploy on main first"
+            exit 1
+          fi
+          echo "Using collector URL: $BASE"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pull cursor
+        if: ${{ inputs.force_full != true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .diagnostics-cursor
+          key: diagnostics-pull-cursor-v1
+          restore-keys: |
+            diagnostics-pull-cursor-v1
+
+      - name: Resolve since
+        id: cursor
+        env:
+          FORCE: ${{ inputs.force_full }}
+        run: |
+          set -euo pipefail
+          SINCE=0
+          AFTER=""
+          if [ "${FORCE:-false}" != "true" ] && [ -f .diagnostics-cursor/since ]; then
+            SINCE=$(tr -d '[:space:]' < .diagnostics-cursor/since)
+            case "$SINCE" in
+              ''|*[!0-9]*) SINCE=0 ;;
+            esac
+          fi
+          if [ "${FORCE:-false}" != "true" ] && [ -f .diagnostics-cursor/after ]; then
+            AFTER=$(tr -d '\n\r' < .diagnostics-cursor/after)
+          fi
+          {
+            echo "since=$SINCE"
+            echo "after=$AFTER"
+          } >> "$GITHUB_OUTPUT"
+          echo "Using since=$SINCE after=${AFTER:-(none)}"
+
+      - name: Pull /report
+        id: pull
+        env:
+          BASE: ${{ steps.collector.outputs.base }}
+          KEY: ${{ secrets.DIAGNOSTICS_REPORT_API_KEY }}
+          SINCE: ${{ steps.cursor.outputs.since }}
+          AFTER: ${{ steps.cursor.outputs.after }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/diagnostics-batch
+          AFTER_Q=""
+          if [ -n "${AFTER}" ]; then
+            AFTER_Q="&after=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["AFTER"], safe=""))')"
+          fi
+          HTTP=$(curl -sS -o /tmp/diagnostics-batch/report.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${KEY}" \
+            -H "Accept: application/json" \
+            "${BASE}/report?since=${SINCE}${AFTER_Q}")
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::Worker /report returned HTTP $HTTP"
+            head -c 2000 /tmp/diagnostics-batch/report.json || true
+            exit 1
+          fi
+          COUNT=$(python3 -c 'import json; print(json.load(open("/tmp/diagnostics-batch/report.json")).get("count",0))')
+          NEXT=$(python3 -c 'import json; print(json.load(open("/tmp/diagnostics-batch/report.json")).get("next_since",0))')
+          NEXT_AFTER=$(python3 -c 'import json; print(json.load(open("/tmp/diagnostics-batch/report.json")).get("next_after") or "")')
+          BASELINE=$(python3 -c 'import json; d=json.load(open("/tmp/diagnostics-batch/report.json")); print(d.get("baseline_version") or "(all versions)")')
+          SOURCE=$(python3 -c 'import json; print(json.load(open("/tmp/diagnostics-batch/report.json")).get("baseline_source",""))')
+          SKIPPED=$(python3 -c 'import json; print(json.load(open("/tmp/diagnostics-batch/report.json")).get("skipped_version",0))')
+          {
+            echo "count=$COUNT"
+            echo "next_since=$NEXT"
+            echo "next_after=$NEXT_AFTER"
+          } >> "$GITHUB_OUTPUT"
+          echo "Pulled count=$COUNT next_since=$NEXT next_after=${NEXT_AFTER:-(none)} baseline=$BASELINE source=$SOURCE skipped_version=$SKIPPED"
+
+      - name: Setup Node + Copilot CLI
+        if: steps.pull.outputs.count != '0'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Copilot CLI
+        if: steps.pull.outputs.count != '0'
+        run: |
+          npm install -g @github/copilot
+          copilot --version || true
+
+      - name: Resolve Copilot auth
+        if: steps.pull.outputs.count != '0'
+        id: copilot_auth
+        env:
+          COPILOT_PAT: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          LEGACY_PAT: ${{ secrets.DIAGNOSTICS_COPILOT_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PAT="${COPILOT_PAT:-}"
+          if [ -z "$PAT" ] && [ -n "${LEGACY_PAT:-}" ]; then
+            PAT="$LEGACY_PAT"
+            echo "Using legacy DIAGNOSTICS_COPILOT_GITHUB_TOKEN secret (prefer COPILOT_GITHUB_TOKEN)"
+          fi
+          if [ -n "$PAT" ]; then
+            echo "mode=pat" >> "$GITHUB_OUTPUT"
+            echo "Copilot auth: COPILOT_GITHUB_TOKEN (PAT — personal repo / explicit override)"
+          else
+            echo "mode=actions" >> "$GITHUB_OUTPUT"
+            echo "Copilot auth: workflow GITHUB_TOKEN (org billing via copilot-requests: write)"
+          fi
+
+      - name: Analyze with Copilot (guarded)
+        if: steps.pull.outputs.count != '0'
+        env:
+          # Prefer workflow token when copilot-requests: write is granted (gh-aw).
+          # COPILOT_GITHUB_TOKEN overrides only when set (personal-repo fallback).
+          GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN || secrets.DIAGNOSTICS_COPILOT_GITHUB_TOKEN || github.token }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN || secrets.DIAGNOSTICS_COPILOT_GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq
+          chmod +x tools/diagnostics-collector/scripts/analyze-with-copilot.sh
+          tools/diagnostics-collector/scripts/analyze-with-copilot.sh \
+            /tmp/diagnostics-batch/report.json
+
+      - name: Persist pull cursor
+        # Advance even if Copilot analysis fails so the same batch is not re-pulled daily.
+        if: ${{ always() && steps.pull.outcome == 'success' && steps.pull.outputs.next_since != '' && steps.pull.outputs.next_since != '0' }}
+        env:
+          NEXT: ${{ steps.pull.outputs.next_since }}
+          NEXT_AFTER: ${{ steps.pull.outputs.next_after }}
+        run: |
+          mkdir -p .diagnostics-cursor
+          printf '%s\n' "$NEXT" > .diagnostics-cursor/since
+          printf '%s\n' "$NEXT_AFTER" > .diagnostics-cursor/after
+
+      - name: Save pull cursor
+        if: ${{ always() && steps.pull.outcome == 'success' && steps.pull.outputs.next_since != '' && steps.pull.outputs.next_since != '0' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .diagnostics-cursor
+          key: diagnostics-pull-cursor-v1-${{ github.run_id }}-${{ steps.pull.outputs.next_since }}-${{ steps.pull.outputs.next_after }}

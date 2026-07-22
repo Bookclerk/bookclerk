@@ -140,6 +140,46 @@ pub fn run(command: ConfigCommand, config: &Config) -> anyhow::Result<()> {
             );
             println!("daemon.listen = {}", config.daemon.listen);
             println!("daemon.json_logs = {}", config.daemon.json_logs);
+            println!(
+                "diagnostics.share_reports = {}",
+                config.diagnostics.share_reports
+            );
+            println!(
+                "diagnostics.collector_url = {}",
+                config.diagnostics.effective_collector_url()
+            );
+            println!(
+                "diagnostics.upload_on_crash = {}",
+                config.diagnostics.upload_on_crash
+            );
+            println!(
+                "diagnostics.upload_on_error_burst = {}",
+                config.diagnostics.upload_on_error_burst
+            );
+            println!(
+                "diagnostics.error_burst_threshold = {}",
+                config.diagnostics.error_burst_threshold
+            );
+            println!(
+                "diagnostics.error_burst_window_secs = {}",
+                config.diagnostics.error_burst_window_secs
+            );
+            println!(
+                "diagnostics.upload_on_warn_burst = {}",
+                config.diagnostics.upload_on_warn_burst
+            );
+            println!(
+                "diagnostics.warn_burst_threshold = {}",
+                config.diagnostics.warn_burst_threshold
+            );
+            println!(
+                "diagnostics.warn_burst_window_secs = {}",
+                config.diagnostics.warn_burst_window_secs
+            );
+            println!(
+                "diagnostics.ring_buffer_capacity = {}",
+                config.diagnostics.ring_buffer_capacity
+            );
             Ok(())
         }
         ConfigCommand::Paths => {
@@ -353,6 +393,20 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
         "library.enrich_min_confidence" => config.library.enrich_min_confidence.to_string(),
         "daemon.listen" => config.daemon.listen.clone(),
         "daemon.json_logs" => config.daemon.json_logs.to_string(),
+        "diagnostics.share_reports" => config.diagnostics.share_reports.to_string(),
+        "diagnostics.collector_url" => config.diagnostics.effective_collector_url(),
+        "diagnostics.upload_on_crash" => config.diagnostics.upload_on_crash.to_string(),
+        "diagnostics.upload_on_error_burst" => config.diagnostics.upload_on_error_burst.to_string(),
+        "diagnostics.error_burst_threshold" => config.diagnostics.error_burst_threshold.to_string(),
+        "diagnostics.error_burst_window_secs" => {
+            config.diagnostics.error_burst_window_secs.to_string()
+        }
+        "diagnostics.upload_on_warn_burst" => config.diagnostics.upload_on_warn_burst.to_string(),
+        "diagnostics.warn_burst_threshold" => config.diagnostics.warn_burst_threshold.to_string(),
+        "diagnostics.warn_burst_window_secs" => {
+            config.diagnostics.warn_burst_window_secs.to_string()
+        }
+        "diagnostics.ring_buffer_capacity" => config.diagnostics.ring_buffer_capacity.to_string(),
         "paths.files_dir" => paths?.files_dir.display().to_string(),
         "paths.config_file" => paths?.config_file.display().to_string(),
         "paths.library_db" => paths?.library_db.display().to_string(),

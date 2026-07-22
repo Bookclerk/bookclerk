@@ -40,6 +40,9 @@ pub async fn enqueue_scan(state: Arc<AppState>, account: Option<String>) -> Stri
             Err(err) => {
                 error!(%job_id, error = %err, "scan job failed");
                 set_job_status(&state, &job_id, "failed", Some(err.to_string())).await;
+                if let Some(diag) = libation_config::diagnostics_global() {
+                    diag.request_upload("job_failed");
+                }
             }
         }
     });
@@ -80,6 +83,9 @@ pub async fn enqueue_liberate(
             Err(err) => {
                 error!(%job_id, error = %err, "liberate job failed");
                 set_job_status(&state, &job_id, "failed", Some(err.to_string())).await;
+                if let Some(diag) = libation_config::diagnostics_global() {
+                    diag.request_upload("job_failed");
+                }
             }
         }
     });

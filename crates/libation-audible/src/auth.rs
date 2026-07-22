@@ -340,7 +340,7 @@ pub async fn load_authenticator(
     password_file: Option<&Path>,
 ) -> Result<Authenticator> {
     let password = resolve_auth_password(password_file)?;
-    Authenticator::load_file(path, password)
+    let auth = Authenticator::load_file(path, password)
         .await
         .map_err(|err| {
             let msg = err.to_string();
@@ -355,5 +355,17 @@ pub async fn load_authenticator(
             } else {
                 AudibleError::from(err)
             }
-        })
+        })?;
+    register_authenticator_secrets(&auth);
+    Ok(auth)
+}
+
+fn register_authenticator_secrets(auth: &Authenticator) {
+    use secrecy::ExposeSecret;
+    if let Some(t) = auth.access_token() {
+        libation_config::register_secret(t.expose_secret());
+    }
+    if let Some(t) = auth.refresh_token() {
+        libation_config::register_secret(t.expose_secret());
+    }
 }

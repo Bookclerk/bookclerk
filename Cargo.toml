@@ -55,6 +55,8 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Sync HTTP for crash/error diagnostics upload (usable from panic hooks).
+ureq = { version = "2", features = ["json"] }
 
 # Serde / config
 serde = { version = "1", features = ["derive"] }

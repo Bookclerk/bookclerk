@@ -71,3 +71,19 @@ region = "us-east-1"
 [daemon]
 listen = "127.0.0.1:8787"
 json_logs = true
+
+# Opt-in diagnostics: share redacted crash/ERROR-burst reports.
+# Deploy: `.github/workflows/diagnostics-collector-deploy.yml` sets collector URL.
+# Ingest: `.github/workflows/diagnostics-ingest.yml`.
+# Ring buffer always keeps TRACE+; stderr/OS logs honor LIBATION_LOG / RUST_LOG.
+# [diagnostics]
+# share_reports = false
+# collector_url = ""   # optional; bake LIBATION_DIAGNOSTICS_COLLECTOR_URL at cargo build
+# upload_on_crash = true
+# upload_on_error_burst = true
+# upload_on_warn_burst = true
+# error_burst_threshold = 10
+# error_burst_window_secs = 60
+# warn_burst_threshold = 20
+# warn_burst_window_secs = 60
+# ring_buffer_capacity = 200

@@ -78,6 +78,7 @@ pub fn resolve_auth_password(
     if let Ok(value) = std::env::var(AUTH_PASSWORD_ENV) {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
+            libation_config::register_secret(trimmed);
             return Ok(Some(SecretString::from(trimmed.to_string())));
         }
     }
@@ -85,16 +86,22 @@ pub fn resolve_auth_password(
     if let Ok(path) = std::env::var(AUTH_PASSWORD_FILE_ENV) {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
-            return Ok(Some(read_or_create_password_file(Path::new(trimmed))?));
+            let secret = read_or_create_password_file(Path::new(trimmed))?;
+            libation_config::register_secret(secret.expose_secret());
+            return Ok(Some(secret));
         }
     }
 
     if let Some(path) = configured_password_file {
-        return Ok(Some(read_or_create_password_file(path)?));
+        let secret = read_or_create_password_file(path)?;
+        libation_config::register_secret(secret.expose_secret());
+        return Ok(Some(secret));
     }
 
     if let Some(path) = default_password_file() {
-        return Ok(Some(read_or_create_password_file(&path)?));
+        let secret = read_or_create_password_file(&path)?;
+        libation_config::register_secret(secret.expose_secret());
+        return Ok(Some(secret));
     }
 
     Ok(None)

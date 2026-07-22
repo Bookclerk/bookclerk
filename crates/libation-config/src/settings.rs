@@ -21,6 +21,8 @@ pub struct Config {
     pub storage: StorageConfig,
     pub daemon: DaemonConfig,
     pub auth: AuthConfig,
+    /// Opt-in crash / error-burst log upload (always redacted).
+    pub diagnostics: DiagnosticsConfig,
 }
 
 /// Auth-file encryption settings (OAuth tokens under `Accounts/`).
@@ -294,7 +296,7 @@ impl Default for StorageS3Config {
 pub struct DaemonConfig {
     /// Bind address for the HTTP control plane.
     pub listen: String,
-    /// Emit JSON logs when true.
+    /// Emit JSON logs on stderr when true (journald sink is always structured).
     pub json_logs: bool,
 }
 
@@ -304,6 +306,103 @@ impl Default for DaemonConfig {
             listen: String::from("127.0.0.1:8787"),
             json_logs: true,
         }
+    }
+}
+
+/// Compile-time default from `LIBATION_DIAGNOSTICS_COLLECTOR_URL` when running `cargo build`.
+fn compile_time_collector_url() -> Option<&'static str> {
+    option_env!("LIBATION_DIAGNOSTICS_COLLECTOR_URL")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// Opt-in sharing of recent **redacted** logs on crash or error bursts.
+///
+/// Defaults to disabled. Operators flip `share_reports` and set `collector_url`
+/// (or bake `LIBATION_DIAGNOSTICS_COLLECTOR_URL` at `cargo build` time).
+/// The client POSTs to `/submit`; a GitHub Action calls `/report`.
+///
+/// Libation never manages log-file rotation — use journald / the container
+/// runtime (Windows Event Log / macOS unified logging are future work).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DiagnosticsConfig {
+    /// When true, share redacted crash/ERROR-burst reports with the collector.
+    #[serde(alias = "upload_enabled")]
+    pub share_reports: bool,
+    /// Worker origin (HTTPS). When empty, uses `LIBATION_DIAGNOSTICS_COLLECTOR_URL`
+    /// from config/runtime env, else the value baked in at `cargo build` time.
+    #[serde(alias = "upload_url")]
+    pub collector_url: String,
+    /// Upload the ring buffer from the panic hook.
+    pub upload_on_crash: bool,
+    /// Upload when ERROR volume crosses the burst threshold.
+    pub upload_on_error_burst: bool,
+    /// Upload when WARN volume crosses the warn-burst threshold.
+    pub upload_on_warn_burst: bool,
+    /// Number of ERROR events inside the window that trigger an upload.
+    pub error_burst_threshold: u32,
+    /// Sliding window length for error-burst detection, in seconds.
+    pub error_burst_window_secs: u64,
+    /// Number of WARN events inside the window that trigger an upload.
+    pub warn_burst_threshold: u32,
+    /// Sliding window length for warn-burst detection, in seconds.
+    pub warn_burst_window_secs: u64,
+    /// Max redacted events retained for upload (all levels through TRACE).
+    pub ring_buffer_capacity: u32,
+}
+
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        Self {
+            share_reports: false,
+            collector_url: String::new(),
+            upload_on_crash: true,
+            upload_on_error_burst: true,
+            upload_on_warn_burst: true,
+            error_burst_threshold: 10,
+            error_burst_window_secs: 60,
+            warn_burst_threshold: 20,
+            warn_burst_window_secs: 60,
+            ring_buffer_capacity: 200,
+        }
+    }
+}
+
+impl DiagnosticsConfig {
+    /// Resolved Worker origin: config/env `collector_url`, else baked deploy URL.
+    #[must_use]
+    pub fn effective_collector_url(&self) -> String {
+        let explicit = self.collector_url.trim();
+        if !explicit.is_empty() {
+            return explicit.to_string();
+        }
+        compile_time_collector_url()
+            .map(str::to_string)
+            .unwrap_or_default()
+    }
+
+    /// HTTPS endpoint clients POST redacted JSON to (`…/submit`).
+    #[must_use]
+    pub fn effective_submit_url(&self) -> String {
+        let base = self
+            .effective_collector_url()
+            .trim_end_matches('/')
+            .to_string();
+        if base.is_empty() {
+            return String::new();
+        }
+        if base.to_ascii_lowercase().ends_with("/submit") {
+            base
+        } else {
+            format!("{base}/submit")
+        }
+    }
+
+    /// True when report sharing is enabled and a collector URL can be resolved.
+    #[must_use]
+    pub fn upload_ready(&self) -> bool {
+        self.share_reports && !self.effective_collector_url().is_empty()
     }
 }
 
@@ -324,7 +423,9 @@ impl Config {
         cfg.apply_env_overrides();
         cfg.paths = Some(paths);
         cfg.resolve_relative_paths();
-        cfg.warn_unsupported_options();
+        cfg.register_known_secrets();
+        // Callers should invoke [`Self::warn_unsupported_options`] *after*
+        // `init_tracing_with` so startup guidance is not dropped.
         cfg.validate()?;
         Ok(cfg)
     }
@@ -379,6 +480,54 @@ impl Config {
         }
         if let Ok(v) = std::env::var("LIBATION_DAEMON_JSON_LOGS") {
             self.daemon.json_logs = parse_bool(&v).unwrap_or(self.daemon.json_logs);
+        }
+        if let Ok(v) = std::env::var("LIBATION_DIAGNOSTICS_SHARE_REPORTS")
+            .or_else(|_| std::env::var("LIBATION_DIAGNOSTICS_UPLOAD_ENABLED"))
+        {
+            self.diagnostics.share_reports =
+                parse_bool(&v).unwrap_or(self.diagnostics.share_reports);
+        }
+        if let Ok(v) = std::env::var("LIBATION_DIAGNOSTICS_COLLECTOR_URL")
+            .or_else(|_| std::env::var("LIBATION_DIAGNOSTICS_UPLOAD_URL"))
+        {
+            self.diagnostics.collector_url = v;
+        }
+        if let Ok(v) = std::env::var("LIBATION_DIAGNOSTICS_UPLOAD_ON_CRASH") {
+            self.diagnostics.upload_on_crash =
+                parse_bool(&v).unwrap_or(self.diagnostics.upload_on_crash);
+        }
+        if let Ok(v) = std::env::var("LIBATION_DIAGNOSTICS_UPLOAD_ON_ERROR_BURST") {
+            self.diagnostics.upload_on_error_burst =
+                parse_bool(&v).unwrap_or(self.diagnostics.upload_on_error_burst);
+        }
+        if let Ok(v) = std::env::var("LIBATION_DIAGNOSTICS_UPLOAD_ON_WARN_BURST") {
+            self.diagnostics.upload_on_warn_burst =
+                parse_bool(&v).unwrap_or(self.diagnostics.upload_on_warn_burst);
+        }
+        if let Ok(v) = std::env::var("LIBATION_DIAGNOSTICS_ERROR_BURST_THRESHOLD") {
+            if let Ok(n) = v.parse() {
+                self.diagnostics.error_burst_threshold = n;
+            }
+        }
+        if let Ok(v) = std::env::var("LIBATION_DIAGNOSTICS_ERROR_BURST_WINDOW_SECS") {
+            if let Ok(n) = v.parse() {
+                self.diagnostics.error_burst_window_secs = n;
+            }
+        }
+        if let Ok(v) = std::env::var("LIBATION_DIAGNOSTICS_WARN_BURST_THRESHOLD") {
+            if let Ok(n) = v.parse() {
+                self.diagnostics.warn_burst_threshold = n;
+            }
+        }
+        if let Ok(v) = std::env::var("LIBATION_DIAGNOSTICS_WARN_BURST_WINDOW_SECS") {
+            if let Ok(n) = v.parse() {
+                self.diagnostics.warn_burst_window_secs = n;
+            }
+        }
+        if let Ok(v) = std::env::var("LIBATION_DIAGNOSTICS_RING_BUFFER_CAPACITY") {
+            if let Ok(n) = v.parse() {
+                self.diagnostics.ring_buffer_capacity = n;
+            }
         }
         if let Ok(v) = std::env::var("LIBATION_AUTO_LIBERATE") {
             self.library.auto_liberate = parse_bool(&v).unwrap_or(self.library.auto_liberate);
@@ -461,7 +610,28 @@ impl Config {
                 "storage.backend=s3 requires storage.s3.bucket".into(),
             ));
         }
+        if self.diagnostics.share_reports && self.diagnostics.effective_collector_url().is_empty() {
+            return Err(ConfigError::Invalid(
+                "diagnostics.share_reports=true requires diagnostics.collector_url, \
+                 LIBATION_DIAGNOSTICS_COLLECTOR_URL at runtime, or the same variable \
+                 set when running cargo build"
+                    .into(),
+            ));
+        }
         Ok(())
+    }
+
+    /// Register config/env secrets for exact-value log redaction.
+    pub fn register_known_secrets(&self) {
+        crate::redact::register_secrets_from_env();
+        if let Some(path) = &self.auth.password_file {
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                let trimmed = contents.trim();
+                if !trimmed.is_empty() {
+                    crate::redact::register_secret(trimmed);
+                }
+            }
+        }
     }
 
     /// Resolve relative `storage.local.root` under `files_dir`.
@@ -598,6 +768,76 @@ json_logs = true
         assert_eq!(cfg.storage.backend, StorageBackendKind::Local);
         assert_eq!(cfg.storage.local.root, PathBuf::from("/data/audiobooks"));
         assert_eq!(cfg.daemon.listen, "0.0.0.0:8787");
+        assert!(!cfg.diagnostics.share_reports);
+    }
+
+    #[test]
+    fn diagnostics_share_reports_defaults_off() {
+        let cfg = Config::default();
+        assert!(!cfg.diagnostics.share_reports);
+        assert!(cfg.validate().is_ok());
+        assert!(cfg.diagnostics.effective_collector_url().is_empty());
+    }
+
+    #[test]
+    fn diagnostics_compile_time_collector_url_when_config_empty() {
+        let baked = compile_time_collector_url();
+        let mut cfg = Config::default();
+        cfg.diagnostics.share_reports = true;
+        match baked {
+            Some(url) => {
+                assert!(cfg.validate().is_ok());
+                assert_eq!(cfg.diagnostics.effective_collector_url(), url);
+            }
+            None => {
+                assert!(cfg.validate().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostics_share_reports_requires_collector_url() {
+        let mut cfg = Config::default();
+        cfg.diagnostics.share_reports = true;
+        assert!(cfg.validate().is_err());
+        cfg.diagnostics.collector_url = "https://reports.example".into();
+        assert!(cfg.validate().is_ok());
+        assert_eq!(
+            cfg.diagnostics.effective_submit_url(),
+            "https://reports.example/submit"
+        );
+    }
+
+    #[test]
+    fn diagnostics_submit_url_preserves_explicit_submit_path() {
+        let mut cfg = Config::default();
+        cfg.diagnostics.collector_url = "https://reports.example/submit".into();
+        assert_eq!(
+            cfg.diagnostics.effective_submit_url(),
+            "https://reports.example/submit"
+        );
+        cfg.diagnostics.collector_url = "https://reports.example/submit/".into();
+        assert_eq!(
+            cfg.diagnostics.effective_submit_url(),
+            "https://reports.example/submit"
+        );
+    }
+
+    #[test]
+    fn diagnostics_accepts_legacy_upload_enabled_alias() {
+        let text = r#"
+[diagnostics]
+upload_enabled = true
+upload_url = "https://example.invalid"
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert!(cfg.diagnostics.share_reports);
+        assert_eq!(cfg.diagnostics.collector_url, "https://example.invalid");
+        assert_eq!(
+            cfg.diagnostics.effective_submit_url(),
+            "https://example.invalid/submit"
+        );
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

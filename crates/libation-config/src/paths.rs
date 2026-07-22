@@ -22,7 +22,8 @@ pub struct Paths {
     pub library_db: PathBuf,
     /// Temporary download / decrypt scratch space.
     pub cache_dir: PathBuf,
-    /// Log directory (daemon / journald fallback).
+    /// Reserved path (legacy). Logging goes to stderr + journald; Libation does
+    /// not write or rotate files here.
     pub log_dir: PathBuf,
     /// Tantivy full-text search index (classic Lucene `SearchEngine`).
     pub search_index_dir: PathBuf,
