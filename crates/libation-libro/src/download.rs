@@ -7,10 +7,15 @@ use std::path::{Path, PathBuf};
 use libation_source::{PlainAudioPart, PlainFetch};
 use zip::ZipArchive;
 
-use crate::client::{DownloadManifest, LibroClient, ManifestTrack};
+use crate::client::{DownloadManifest, DownloadPart, LibroClient, ManifestFormat, ManifestTrack};
 use crate::error::{LibroError, Result};
 
-/// Fetch one ISBN into `cache_dir`, preferring packaged M4B when available.
+/// Fetch one ISBN into `cache_dir`, preferring M4B when available.
+///
+/// Order (matches Android `MediaFormat.M4B` then ZIP):
+/// 1. `download-manifest?format=m4b` — single M4B part + chapter tracks
+/// 2. `audiobooks/{isbn}/packaged_m4b` — legacy/alternate M4B URL
+/// 3. `download-manifest` without format — multi-part ZIP of MP3s
 pub async fn fetch_title_materials(
     client: &LibroClient,
     isbn: &str,
@@ -20,10 +25,38 @@ pub async fn fetch_title_materials(
     let title_dir = cache_dir.join(isbn);
     std::fs::create_dir_all(&title_dir)?;
 
-    // Prefer single-file M4B when Libro.fm offers it.
+    // 1) Prefer format=m4b (APK LibroDownloadManager uses MediaFormat.M4B).
+    match client.download_manifest(isbn, ManifestFormat::M4b).await {
+        Ok(manifest) => {
+            if let Some(url) = first_m4b_part_url(&manifest.parts) {
+                let m4b_path = download_m4b(client, url, &title_dir).await?;
+                return Ok(PlainFetch {
+                    parts: Vec::new(),
+                    m4b_path: Some(m4b_path),
+                    cover_path: None,
+                    chapters: chapters_from_tracks(&manifest.tracks),
+                });
+            }
+            // Server ignored format / returned zips — use those parts.
+            if parts_look_like_zip(&manifest.parts) && !manifest.parts.is_empty() {
+                let parts = download_mp3_parts(client, &manifest, &title_dir).await?;
+                return Ok(PlainFetch {
+                    parts,
+                    m4b_path: None,
+                    cover_path: None,
+                    chapters: chapters_from_tracks(&manifest.tracks),
+                });
+            }
+        }
+        Err(err) => {
+            tracing::debug!(%isbn, error = %err, "format=m4b download-manifest failed");
+        }
+    }
+
+    // 2) Legacy packaged_m4b endpoint (same CDN object when present).
     if let Some(m4b) = client.packaged_m4b(isbn).await? {
         let m4b_path = download_m4b(client, &m4b.m4b_url, &title_dir).await?;
-        let chapters = match client.download_manifest(isbn).await {
+        let chapters = match client.download_manifest(isbn, ManifestFormat::Zip).await {
             Ok(manifest) => chapters_from_tracks(&manifest.tracks),
             Err(err) => {
                 tracing::debug!(%isbn, error = %err, "manifest unavailable after M4B download");
@@ -38,13 +71,33 @@ pub async fn fetch_title_materials(
         });
     }
 
-    let manifest = client.download_manifest(isbn).await?;
+    // 3) Default ZIP / MP3 parts.
+    let manifest = client.download_manifest(isbn, ManifestFormat::Zip).await?;
     let parts = download_mp3_parts(client, &manifest, &title_dir).await?;
     Ok(PlainFetch {
         parts,
         m4b_path: None,
         cover_path: None,
         chapters: chapters_from_tracks(&manifest.tracks),
+    })
+}
+
+fn first_m4b_part_url(parts: &[DownloadPart]) -> Option<&str> {
+    parts.iter().find_map(|p| {
+        let url = p.url.as_str();
+        let path = url.split(['?', '#']).next().unwrap_or(url);
+        if path.to_ascii_lowercase().ends_with(".m4b") {
+            Some(url)
+        } else {
+            None
+        }
+    })
+}
+
+fn parts_look_like_zip(parts: &[DownloadPart]) -> bool {
+    parts.iter().any(|p| {
+        let path = p.url.split(['?', '#']).next().unwrap_or(p.url.as_str());
+        path.to_ascii_lowercase().ends_with(".zip")
     })
 }
 
@@ -159,7 +212,7 @@ pub fn chapters_from_tracks(tracks: &[ManifestTrack]) -> Vec<(String, u64)> {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| format!("Chapter {}", track.number.unwrap_or((i + 1) as u32)));
         chapters.push((title, offset_ms));
-        offset_ms = offset_ms.saturating_add(track.length_sec.unwrap_or(0).saturating_mul(1000));
+        offset_ms = offset_ms.saturating_add(track.duration_ms());
     }
     chapters
 }

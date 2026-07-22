@@ -16,9 +16,9 @@ pub use auth::{
     save_auth, LibroAuthFile,
 };
 pub use client::{
-    Audiobook, DownloadManifest, DownloadPart, LibraryPage, LibroClient, ManifestTrack,
-    PackagedM4b, TokenResponse, APP_VER, CLIENT_ID, DEFAULT_BASE_URL, DOWNLOAD_MANIFEST_PATH,
-    LIBRARY_PATH, OAUTH_TOKEN_PATH, PACKAGED_M4B_PATH, USER_AGENT_VALUE,
+    Audiobook, DownloadManifest, DownloadPart, LibraryPage, LibroClient, ManifestFormat,
+    ManifestTrack, PackagedM4b, TokenResponse, APP_VER, CLIENT_ID, DEFAULT_BASE_URL,
+    DOWNLOAD_MANIFEST_PATH, LIBRARY_PATH, OAUTH_TOKEN_PATH, PACKAGED_M4B_PATH, USER_AGENT_VALUE,
 };
 pub use download::{chapters_from_tracks, fetch_title_materials};
 pub use error::{LibroError, Result};

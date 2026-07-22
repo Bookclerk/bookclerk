@@ -5,6 +5,12 @@
 //! [burntcookie90/librofm-downloader](https://github.com/burntcookie90/librofm-downloader),
 //! [bfordham/librofm](https://codeberg.org/bfordham/librofm)) and the notes in
 //! audiobookshelf [#2112](https://github.com/advplyr/audiobookshelf/issues/2112).
+//!
+//! Keep constants below in sync with the Android app via
+//! `scripts/librofm-apk-probe/` (CI workflow `librofm-apk-probe.yml`).
+//! Absolute `/api/vN/…` paths below are the **last extracted** prefix from the
+//! Play Store APK — not a hard lock. When Libro.fm ships `v13` (etc.), the
+//! probe reports drift and the sync PR rewrites these constants.
 
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use reqwest::Client;
@@ -20,26 +26,49 @@ pub const DEFAULT_BASE_URL: &str = "https://libro.fm";
 /// OAuth password-grant path.
 pub const OAUTH_TOKEN_PATH: &str = "/oauth/token";
 
-/// Paginated library listing.
-///
-/// TODO: Some newer clients use `/api/v10/library` — bump if v7 is retired.
-pub const LIBRARY_PATH: &str = "/api/v7/library";
+/// Paginated library listing (`/api/vN/library` from the Android app prefix).
+pub const LIBRARY_PATH: &str = "/api/v12/library";
 
-/// DRM-free MP3 part manifest (zip URLs).
+/// Download manifest (`parts` + chapter `tracks`).
 ///
-/// TODO: Some newer clients use `/api/v10/download-manifest`.
-pub const DOWNLOAD_MANIFEST_PATH: &str = "/api/v9/download-manifest";
+/// Android `DownloadApi.getDownloadManifest` sends `isbn`, `client_version`, and
+/// optional `format` (`MediaFormat.M4B` → `"m4b"`; `ZIP` → omit / null).
+pub const DOWNLOAD_MANIFEST_PATH: &str = "/api/v12/download-manifest";
 
 /// Packaged single-file M4B when Libro.fm offers it.
-pub const PACKAGED_M4B_PATH: &str = "/api/v10/audiobooks/{isbn}/packaged_m4b";
+pub const PACKAGED_M4B_PATH: &str = "/api/v12/audiobooks/{isbn}/packaged_m4b";
 
 /// Android app version header (`X-LibroFm-AppVer`).
 ///
-/// TODO: Keep in sync with librofm-downloader `LIBRO_FM_HEADERS` / Android releases.
-pub const APP_VER: &str = "7.34.8";
+/// Keep in sync via `scripts/librofm-apk-probe/` / workflow `librofm-apk-probe.yml`.
+pub const APP_VER: &str = "7.37.4";
 
 /// User-Agent matching the official Android HTTP stack.
-pub const USER_AGENT_VALUE: &str = "okhttp/5.3.2";
+pub const USER_AGENT_VALUE: &str = "okhttp/4.12.0";
+
+/// Android `MediaFormat` id for `download-manifest?format=…`.
+///
+/// - [`ManifestFormat::M4b`] → `format=m4b` (must be lowercase; `M4B` is ignored)
+/// - [`ManifestFormat::Zip`] → omit `format` (APK `MediaFormat.ZIP` id is null)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ManifestFormat {
+    /// Single-file M4B CDN URL in `parts` when the title supports it.
+    M4b,
+    /// Multi-part ZIP of MP3s (API default when `format` is omitted).
+    #[default]
+    Zip,
+}
+
+impl ManifestFormat {
+    /// Wire value for the `format` query, if any.
+    #[must_use]
+    pub const fn query_value(self) -> Option<&'static str> {
+        match self {
+            Self::M4b => Some("m4b"),
+            Self::Zip => None,
+        }
+    }
+}
 
 /// Optional OAuth `client_id`.
 ///
@@ -110,6 +139,9 @@ impl LibroClient {
         );
         headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
         headers.insert("X-LibroFm-AppVer", HeaderValue::from_static(APP_VER));
+        // Match Android AuthInterceptor (prod): device + OS version headers.
+        headers.insert("X-LibroFm-Device", HeaderValue::from_static("libation-rs"));
+        headers.insert("X-LibroFm-OsVer", HeaderValue::from_static("Android 34"));
         if with_auth {
             let token = self
                 .access_token
@@ -182,15 +214,25 @@ impl LibroClient {
         Self::json_or_error(resp).await
     }
 
-    /// Download-manifest for MP3 zip parts.
-    pub async fn download_manifest(&self, isbn: &str) -> Result<DownloadManifest> {
-        let resp = self
+    /// Download-manifest for parts + chapter tracks.
+    ///
+    /// Pass [`ManifestFormat::M4b`] to request a single `.m4b` part (same asset as
+    /// [`Self::packaged_m4b`]) plus tracks in one response. [`ManifestFormat::Zip`]
+    /// (or omitting `format`) returns multi-part `.zip` URLs.
+    pub async fn download_manifest(
+        &self,
+        isbn: &str,
+        format: ManifestFormat,
+    ) -> Result<DownloadManifest> {
+        let mut req = self
             .http
             .get(self.url(DOWNLOAD_MANIFEST_PATH))
             .headers(self.headers(true)?)
-            .query(&[("isbn", isbn)])
-            .send()
-            .await?;
+            .query(&[("isbn", isbn), ("client_version", APP_VER)]);
+        if let Some(fmt) = format.query_value() {
+            req = req.query(&[("format", fmt)]);
+        }
+        let resp = req.send().await?;
         Self::json_or_error(resp).await
     }
 
@@ -398,10 +440,24 @@ pub struct DownloadPart {
 pub struct ManifestTrack {
     #[serde(default)]
     pub number: Option<u32>,
+    /// APK `ApiTrack` uses `length_msec` (Gson `@SerializedName`).
+    #[serde(default)]
+    pub length_msec: Option<u64>,
+    /// Legacy / fixture-only key; prefer `length_msec` when both are present.
     #[serde(default)]
     pub length_sec: Option<u64>,
     #[serde(default)]
     pub chapter_title: Option<String>,
+}
+
+impl ManifestTrack {
+    /// Duration in milliseconds (APK wire format), falling back to `length_sec`.
+    #[must_use]
+    pub fn duration_ms(&self) -> u64 {
+        self.length_msec
+            .or_else(|| self.length_sec.map(|s| s.saturating_mul(1000)))
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

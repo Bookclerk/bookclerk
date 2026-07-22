@@ -5,10 +5,11 @@ use std::io::{Cursor, Write};
 use libation_library::LibraryStore;
 use libation_libro::{
     fetch_title_materials, load_auth, save_auth, scan_account_into_library, LibroAuthFile,
-    LibroClient, LibroSource, APP_VER, USER_AGENT_VALUE,
+    LibroClient, LibroSource, APP_VER, DOWNLOAD_MANIFEST_PATH, LIBRARY_PATH, PACKAGED_M4B_PATH,
+    USER_AGENT_VALUE,
 };
 use libation_source::{ContentSource, LoginOptions, ScanOptions, SourceFetch, SourceKind};
-use wiremock::matchers::{header, method, path, query_param};
+use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
@@ -103,7 +104,7 @@ async fn oauth_token_login_saves_auth_file() {
 async fn library_page_upserts_libro_books() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/api/v7/library"))
+        .and(path(LIBRARY_PATH))
         .and(query_param("page", "1"))
         .and(header("authorization", "Bearer tok"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -147,19 +148,88 @@ async fn library_page_upserts_libro_books() {
 }
 
 #[tokio::test]
-async fn download_manifest_extracts_mp3_parts() {
+async fn download_manifest_format_m4b_preferred() {
     let server = MockServer::start().await;
-    let zip_bytes = zip_with_mp3();
+    let m4b_url = format!("{}/cdn/book.m4b", server.uri());
 
+    // format=m4b → single .m4b part + tracks (Android MediaFormat.M4B).
     Mock::given(method("GET"))
-        .and(path("/api/v10/audiobooks/9781111111111/packaged_m4b"))
-        .respond_with(ResponseTemplate::new(404))
+        .and(path(DOWNLOAD_MANIFEST_PATH))
+        .and(query_param("isbn", "9780000000001"))
+        .and(query_param("client_version", APP_VER))
+        .and(query_param("format", "m4b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "isbn": "9780000000001",
+            "parts": [{"url": m4b_url, "size_bytes": 12}],
+            "tracks": [
+                {"number": 1, "length_msec": 5000, "chapter_title": "All"}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // packaged_m4b must not be needed when format=m4b succeeds.
+    let packaged = PACKAGED_M4B_PATH.replace("{isbn}", "9780000000001");
+    Mock::given(method("GET"))
+        .and(path(packaged.as_str()))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/api/v9/download-manifest"))
+        .and(path("/cdn/book.m4b"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"xxxxftypM4Bfake".to_vec()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let cache = tempfile::tempdir().unwrap();
+    let client = LibroClient::new(server.uri()).with_token("tok");
+    let plain = fetch_title_materials(&client, "9780000000001", cache.path())
+        .await
+        .unwrap();
+
+    assert!(plain.parts.is_empty());
+    let m4b = plain.m4b_path.expect("m4b path");
+    assert_eq!(m4b.extension().unwrap(), "m4b");
+    assert_eq!(plain.chapters[0].0, "All");
+}
+
+#[tokio::test]
+async fn download_manifest_extracts_mp3_parts() {
+    let server = MockServer::start().await;
+    let zip_bytes = zip_with_mp3();
+
+    // format=m4b with no M4B part → fall through to packaged_m4b / ZIP.
+    Mock::given(method("GET"))
+        .and(path(DOWNLOAD_MANIFEST_PATH))
         .and(query_param("isbn", "9781111111111"))
+        .and(query_param("client_version", APP_VER))
+        .and(query_param("format", "m4b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "isbn": "9781111111111",
+            "parts": [],
+            "tracks": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let packaged = PACKAGED_M4B_PATH.replace("{isbn}", "9781111111111");
+    Mock::given(method("GET"))
+        .and(path(packaged.as_str()))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(DOWNLOAD_MANIFEST_PATH))
+        .and(query_param("isbn", "9781111111111"))
+        .and(query_param("client_version", APP_VER))
+        .and(query_param_is_missing("format"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "isbn": "9781111111111",
             "parts": [{
@@ -167,11 +237,12 @@ async fn download_manifest_extracts_mp3_parts() {
                 "size_bytes": zip_bytes.len()
             }],
             "tracks": [
-                {"number": 1, "length_sec": 10, "chapter_title": "Intro"},
-                {"number": 2, "length_sec": 20, "chapter_title": "Chapter One"}
+                {"number": 1, "length_msec": 10000, "chapter_title": "Intro"},
+                {"number": 2, "length_msec": 20000, "chapter_title": "Chapter One"}
             ],
             "size_bytes": zip_bytes.len()
         })))
+        .expect(1)
         .mount(&server)
         .await;
 
@@ -197,37 +268,54 @@ async fn download_manifest_extracts_mp3_parts() {
 }
 
 #[tokio::test]
-async fn packaged_m4b_preferred_when_available() {
+async fn packaged_m4b_used_when_format_m4b_has_no_m4b_part() {
     let server = MockServer::start().await;
     let m4b_url = format!("{}/cdn/book.m4b", server.uri());
 
     Mock::given(method("GET"))
-        .and(path("/api/v10/audiobooks/9782222222222/packaged_m4b"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "m4b_url": m4b_url
-        })))
-        .mount(&server)
-        .await;
-
-    Mock::given(method("GET"))
-        .and(path("/api/v9/download-manifest"))
+        .and(path(DOWNLOAD_MANIFEST_PATH))
         .and(query_param("isbn", "9782222222222"))
+        .and(query_param("client_version", APP_VER))
+        .and(query_param("format", "m4b"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "isbn": "9782222222222",
             "parts": [],
-            "tracks": [{"number": 1, "length_sec": 5, "chapter_title": "All"}]
+            "tracks": []
         })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let packaged = PACKAGED_M4B_PATH.replace("{isbn}", "9782222222222");
+    Mock::given(method("GET"))
+        .and(path(packaged.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "m4b_url": m4b_url
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Chapters come from a ZIP-format manifest after packaged_m4b download.
+    Mock::given(method("GET"))
+        .and(path(DOWNLOAD_MANIFEST_PATH))
+        .and(query_param("isbn", "9782222222222"))
+        .and(query_param("client_version", APP_VER))
+        .and(query_param_is_missing("format"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "isbn": "9782222222222",
+            "parts": [],
+            "tracks": [{"number": 1, "length_msec": 5000, "chapter_title": "All"}]
+        })))
+        .expect(1)
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
         .and(path("/cdn/book.m4b"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"ftypM4Bfake"[..].to_vec()))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"xxxxftypM4Bfake".to_vec()))
         .mount(&server)
         .await;
-
-    // Prefix ftyp at offset 4 for sniff — write a tiny iso-bmff-ish blob.
-    // (download path just writes bytes; content does not matter.)
 
     let cache = tempfile::tempdir().unwrap();
     let client = LibroClient::new(server.uri()).with_token("tok");
@@ -247,7 +335,7 @@ async fn content_source_scan_and_fetch_title() {
     let zip_bytes = zip_with_mp3();
 
     Mock::given(method("GET"))
-        .and(path("/api/v7/library"))
+        .and(path(LIBRARY_PATH))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "page": 1,
             "total_pages": 1,
@@ -257,15 +345,31 @@ async fn content_source_scan_and_fetch_title() {
         .mount(&server)
         .await;
 
+    let packaged = PACKAGED_M4B_PATH.replace("{isbn}", "9783333333333");
     Mock::given(method("GET"))
-        .and(path("/api/v10/audiobooks/9783333333333/packaged_m4b"))
+        .and(path(packaged.as_str()))
         .respond_with(ResponseTemplate::new(404))
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/api/v9/download-manifest"))
+        .and(path(DOWNLOAD_MANIFEST_PATH))
         .and(query_param("isbn", "9783333333333"))
+        .and(query_param("client_version", APP_VER))
+        .and(query_param("format", "m4b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "isbn": "9783333333333",
+            "parts": [],
+            "tracks": []
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(DOWNLOAD_MANIFEST_PATH))
+        .and(query_param("isbn", "9783333333333"))
+        .and(query_param("client_version", APP_VER))
+        .and(query_param_is_missing("format"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "isbn": "9783333333333",
             "parts": [{"url": format!("{}/cdn/p.zip", server.uri()), "size_bytes": 1}],

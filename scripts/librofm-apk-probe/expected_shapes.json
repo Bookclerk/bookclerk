@@ -1,0 +1,108 @@
+{
+  "_comment": "Declared contract for APK probe + live/public smoke. Auth endpoints need TEST_LIBRO_*; explore/* is public (no auth).",
+  "oauth/token": {
+    "method": "POST",
+    "path": "/oauth/token",
+    "auth_required": true,
+    "request_json_fields": ["grant_type", "password", "username"],
+    "response_json_fields": ["access_token", "created_at", "error", "error_description", "token_type"]
+  },
+  "library": {
+    "method": "GET",
+    "path": "library",
+    "auth_required": true,
+    "query": ["page"],
+    "path_params": [],
+    "request_json_fields": [],
+    "response_json_fields": ["audiobooks", "ebooks", "page", "pending_preorders", "tags", "total_pages"]
+  },
+  "download-manifest": {
+    "method": "GET",
+    "path": "download-manifest",
+    "auth_required": true,
+    "query": ["client_version", "format", "isbn"],
+    "path_params": [],
+    "request_json_fields": [],
+    "response_json_fields": ["expires_at", "isbn", "parts", "size_bytes", "tracks", "version"],
+    "response_children": {
+      "parts": {
+        "json_fields": ["size_bytes", "url"]
+      },
+      "tracks": {
+        "json_fields": ["chapter_title", "created_at", "length_msec", "number", "updated_at"]
+      }
+    }
+  },
+  "audiobooks/{isbn}/packaged_m4b": {
+    "method": "GET",
+    "path": "audiobooks/{isbn}/packaged_m4b",
+    "auth_required": true,
+    "query": [],
+    "path_params": ["isbn"],
+    "request_json_fields": [],
+    "response_json_fields": ["m4b_url"]
+  },
+  "explore/audiobook_details/{isbn}": {
+    "method": "GET",
+    "path": "explore/audiobook_details/{isbn}",
+    "auth_required": false,
+    "query": [],
+    "path_params": ["isbn"],
+    "request_json_fields": [],
+    "response_json_fields": ["data", "user_info"],
+    "response_children": {
+      "data": {
+        "json_fields": ["audiobook", "gift_info", "playlists", "purchase_info", "related_audiobooks", "sample_url"]
+      },
+      "user_info": {
+        "json_fields": ["signed_in"]
+      }
+    }
+  },
+  "explore/search": {
+    "method": "GET",
+    "path": "explore/search",
+    "auth_required": false,
+    "query": ["page"],
+    "has_query_map": true,
+    "path_params": [],
+    "request_json_fields": [],
+    "response_json_fields": ["audiobook_collection", "user_info"],
+    "response_children": {
+      "audiobook_collection": {
+        "json_fields": ["audiobooks", "page", "total_pages"]
+      },
+      "user_info": {
+        "json_fields": ["signed_in"]
+      }
+    }
+  },
+  "explore/search/suggest": {
+    "method": "GET",
+    "path": "explore/search/suggest",
+    "auth_required": false,
+    "query": ["q"],
+    "path_params": [],
+    "request_json_fields": [],
+    "response_json_fields": ["data"],
+    "response_children": {
+      "data": {
+        "json_fields": ["suggestions"]
+      }
+    }
+  },
+  "explore/genres": {
+    "method": "GET",
+    "path": "explore/genres",
+    "auth_required": false,
+    "query": [],
+    "path_params": [],
+    "request_json_fields": [],
+    "response_json_fields": ["data"],
+    "response_children": {
+      "data": {
+        "json_fields": ["genres"]
+      }
+    }
+  }
+}

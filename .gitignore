@@ -34,3 +34,8 @@ data/
 coverage/
 lcov.info
 *.profraw
+
+# Local APK probe outputs (CI uploads these as artifacts)
+/artifacts/
+**/__pycache__/
+*.py[cod]

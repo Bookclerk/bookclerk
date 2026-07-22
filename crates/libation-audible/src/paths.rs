@@ -33,7 +33,9 @@ pub fn ensure_accounts_dir(files_dir: &Path) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// List `*.auth` files under `Accounts/`.
+/// List Audible `*.auth` files under `Accounts/`.
+///
+/// Skips Libro.fm `*.libro.auth` envelopes (same directory, different suffix).
 pub fn list_auth_files(files_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let dir = accounts_dir(files_dir);
     if !dir.exists() {
@@ -42,14 +44,17 @@ pub fn list_auth_files(files_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("auth") {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') {
             continue;
         }
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with('.'))
-        {
+        // `foo.libro.auth` ends with `.auth` but belongs to Libro.fm.
+        if name.ends_with(".libro.auth") {
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("auth") {
             continue;
         }
         out.push(path);
@@ -100,6 +105,8 @@ mod tests {
         let accounts = accounts_dir(dir.path());
         std::fs::create_dir_all(&accounts).unwrap();
         std::fs::write(accounts.join("alice.auth"), b"{}").unwrap();
+        // Libro.fm envelopes share Accounts/ but must not be treated as Audible.
+        std::fs::write(accounts.join("alice.libro.auth"), b"{}").unwrap();
         // Stray non-auth files must be ignored.
         std::fs::write(accounts.join("notes.txt"), b"x").unwrap();
         // Stray legacy dir must be ignored.

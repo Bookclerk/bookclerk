@@ -1,0 +1,326 @@
+name: Libro.fm APK API probe
+
+# Re-extract the unofficial Libro.fm mobile API from the latest Android APK.
+# Live auth/download smoke runs only when the APK API surface drifted (or when
+# workflow_dispatch sets force_live_smoke), then may open a constants PR.
+
+on:
+  schedule:
+    # Mondays 14:00 UTC — after typical weekend Play Store pushes.
+    - cron: "0 14 * * 1"
+  workflow_dispatch:
+    inputs:
+      force_live_smoke:
+        description: Run live API/download smoke even if APK probe found no drift
+        type: boolean
+        default: false
+  push:
+    paths:
+      - "scripts/librofm-apk-probe/**"
+      - ".github/workflows/librofm-apk-probe.yml"
+      - "crates/libation-libro/src/client.rs"
+  pull_request:
+    paths:
+      - "scripts/librofm-apk-probe/**"
+      - ".github/workflows/librofm-apk-probe.yml"
+      - "crates/libation-libro/src/client.rs"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  probe:
+    name: extract / smoke / PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Java (jadx)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Probe latest Libro.fm APK
+        id: probe
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/librofm-apk-probe
+          set +e
+          python3 scripts/librofm-apk-probe/extract_libro_api.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --workdir "$RUNNER_TEMP/librofm-apk-probe" \
+            --out-dir "$GITHUB_WORKSPACE/artifacts/librofm-apk-probe" \
+            --no-fail-on-drift
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if [[ -f artifacts/librofm-apk-probe/report.json ]]; then
+            echo "report=true" >> "$GITHUB_OUTPUT"
+            python3 -c 'import json; r=json.load(open("artifacts/librofm-apk-probe/report.json")); print("drift=true" if r.get("has_blocking_drift") else "drift=false"); print("needs_live_smoke=true" if r.get("needs_live_smoke") else "needs_live_smoke=false")' >> "$GITHUB_OUTPUT"
+          else
+            echo "report=false" >> "$GITHUB_OUTPUT"
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            echo "needs_live_smoke=false" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$code"
+
+      - name: Decide whether to hit live Libro.fm API
+        id: live
+        if: always() && steps.probe.outputs.report == 'true'
+        run: |
+          force="${{ github.event.inputs.force_live_smoke }}"
+          if [[ "${{ steps.probe.outputs.needs_live_smoke }}" == "true" || "$force" == "true" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            if [[ "$force" == "true" && "${{ steps.probe.outputs.needs_live_smoke }}" != "true" ]]; then
+              echo "Live smoke forced via workflow_dispatch (no APK API drift)." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "APK API drift detected — running live auth/download smoke." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No APK API drift — skipping live auth/download smoke (avoids needless Libro.fm traffic)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload probe artifacts
+        if: always() && steps.probe.outputs.report == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: librofm-apk-probe
+          path: artifacts/librofm-apk-probe/
+          if-no-files-found: warn
+
+      - name: Summarize probe
+        if: always() && steps.probe.outputs.report == 'true'
+        run: |
+          echo "## Libro.fm APK API probe" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat artifacts/librofm-apk-probe/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Public catalog smoke (optional; only on API drift)
+        id: public_smoke
+        if: always() && steps.live.outputs.run == 'true'
+        continue-on-error: true
+        run: |
+          set +e
+          python3 scripts/librofm-apk-probe/live_smoke.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --report "$GITHUB_WORKSPACE/artifacts/librofm-apk-probe/report.json" \
+            --profiles public \
+            --out "$GITHUB_WORKSPACE/artifacts/librofm-apk-probe/public_smoke.json"
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if [[ -f artifacts/librofm-apk-probe/public_smoke.json ]]; then
+            echo "## Public catalog smoke (informational)" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat artifacts/librofm-apk-probe/public_smoke.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Informational only — do not fail the job on public explore drift.
+          exit 0
+
+      - name: Auth live-smoke (library + download; only on API drift)
+        id: smoke
+        if: always() && steps.live.outputs.run == 'true'
+        continue-on-error: true
+        env:
+          TEST_LIBRO_EMAIL: ${{ secrets.TEST_LIBRO_EMAIL }}
+          TEST_LIBRO_USERNAME: ${{ secrets.TEST_LIBRO_USERNAME }}
+          TEST_LIBRO_USER: ${{ secrets.TEST_LIBRO_USER }}
+          TEST_LIBRO_PASSWORD: ${{ secrets.TEST_LIBRO_PASSWORD }}
+          TEST_LIBRO_ISBN: ${{ secrets.TEST_LIBRO_ISBN }}
+          TEST_LIBRO_CATALOG_ISBN: ${{ secrets.TEST_LIBRO_CATALOG_ISBN }}
+          TEST_LIBRO_REQUIRE_MEDIA: ${{ vars.TEST_LIBRO_REQUIRE_MEDIA }}
+          LIBATION_LIBRO_PASSWORD: ${{ secrets.LIBATION_LIBRO_PASSWORD }}
+          TEST_LIBRO_MAX_DOWNLOAD_BYTES: ${{ vars.TEST_LIBRO_MAX_DOWNLOAD_BYTES }}
+        run: |
+          set +e
+          python3 scripts/librofm-apk-probe/live_smoke.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --report "$GITHUB_WORKSPACE/artifacts/librofm-apk-probe/report.json" \
+            --profiles current,apk \
+            --out "$GITHUB_WORKSPACE/artifacts/librofm-apk-probe/live_smoke.json"
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if [[ -f artifacts/librofm-apk-probe/live_smoke.json ]]; then
+            echo "report=true" >> "$GITHUB_OUTPUT"
+            echo "## Auth live smoke (incl. media probe)" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat artifacts/librofm-apk-probe/live_smoke.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "report=false" >> "$GITHUB_OUTPUT"
+          fi
+          # 2 = missing credentials — treat as skipped, not failed.
+          if [[ "$code" -eq 2 ]]; then
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            echo "Auth smoke skipped (TEST_LIBRO_* secrets not configured)." >> "$GITHUB_STEP_SUMMARY"
+            echo "Configure email+password (+ optional ISBN) so CI can validate on APK API drift." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Record skipped live smoke (no APK API drift)
+        if: always() && steps.probe.outputs.report == 'true' && steps.live.outputs.run != 'true'
+        run: |
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+          echo "Live smoke not run (no APK API drift; use workflow_dispatch force_live_smoke to override)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply suggested client.rs updates
+        id: apply
+        if: >
+          always()
+          && steps.probe.outputs.drift == 'true'
+          && steps.probe.outputs.report == 'true'
+          && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+          && steps.live.outputs.run == 'true'
+          && steps.smoke.outputs.skipped == 'false'
+          && steps.smoke.outputs.exit_code == '0'
+        run: |
+          python3 scripts/librofm-apk-probe/apply_client_updates.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --report "$GITHUB_WORKSPACE/artifacts/librofm-apk-probe/report.json"
+          if git diff --quiet -- crates/libation-libro/src/client.rs; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open PR with API constant updates
+        if: >
+          always()
+          && steps.apply.outputs.changed == 'true'
+          && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            chore(libro): sync mobile API constants from Android APK probe
+
+            Auto-generated by librofm-apk-probe.yml after APK API drift and
+            auth live smoke (oauth → library → download → media probe).
+          branch: chore/librofm-apk-api-sync
+          delete-branch: true
+          title: "chore(libro): sync API constants from Libro.fm Android APK"
+          body: |
+            ## Summary
+
+            The scheduled Libro.fm APK probe detected drift between the Play Store
+            Android app and `crates/libation-libro/src/client.rs`.
+
+            This PR applies the extracted constants (base URL, `/api/vN/` paths,
+            `X-LibroFm-AppVer`, OkHttp user-agent).
+
+            ### Verification
+
+            - Probe report: see workflow artifacts `librofm-apk-probe`
+            - Auth live smoke ran because APK API drift was detected (not on
+              no-op weekly probes)
+            - Secrets: `TEST_LIBRO_PASSWORD` + email; optional catalog/owned ISBN
+
+            ### Notes
+
+            - Wiremock tests bind to the path constants, so they follow this bump.
+            - Schema field renames are **not** auto-applied to Rust structs.
+          labels: librofm-api-drift
+
+      - name: Open issue when auth smoke missing or failed on drift
+        if: >
+          always()
+          && steps.probe.outputs.drift == 'true'
+          && steps.live.outputs.run == 'true'
+          && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+          && (
+            steps.smoke.outputs.skipped == 'true'
+            || steps.smoke.outputs.exit_code == '1'
+          )
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- librofm-apk-probe-smoke-fail -->';
+            const probe = fs.existsSync('artifacts/librofm-apk-probe/report.md')
+              ? fs.readFileSync('artifacts/librofm-apk-probe/report.md', 'utf8')
+              : '(missing report)';
+            const smoke = fs.existsSync('artifacts/librofm-apk-probe/live_smoke.json')
+              ? fs.readFileSync('artifacts/librofm-apk-probe/live_smoke.json', 'utf8')
+              : '(auth smoke skipped — configure TEST_LIBRO_EMAIL/USER + TEST_LIBRO_PASSWORD)';
+            const skipped = '${{ steps.smoke.outputs.skipped }}' === 'true';
+            const title = skipped
+              ? 'Libro.fm API drift: configure TEST_LIBRO_* secrets for auth smoke'
+              : 'Libro.fm API drift: auth live smoke failed';
+            const body = [
+              marker,
+              '',
+              skipped
+                ? 'APK probe found client.rs drift, but auth live smoke was skipped (no secrets).'
+                : 'APK probe found client.rs drift, but auth live smoke / media probe failed.',
+              'No auto-PR was opened.',
+              '',
+              'Required secrets: `TEST_LIBRO_EMAIL` (or USER/USERNAME) + `TEST_LIBRO_PASSWORD`.',
+              'Optional: `TEST_LIBRO_CATALOG_ISBN`, `TEST_LIBRO_ISBN`, `TEST_LIBRO_MAX_DOWNLOAD_BYTES`.',
+              '',
+              '<details><summary>Probe report</summary>',
+              '',
+              probe,
+              '',
+              '</details>',
+              '',
+              '<details><summary>Auth live smoke</summary>',
+              '',
+              '```json',
+              smoke,
+              '```',
+              '',
+              '</details>',
+              '',
+              `_Workflow run: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}_`,
+            ].join('\n');
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = issues.find((i) => (i.body || '').includes(marker) || i.title === title);
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+                title,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              });
+            }
+
+      - name: Fail on hard probe error
+        if: always() && steps.probe.outputs.exit_code == '2'
+        run: |
+          echo "Libro.fm APK probe failed hard (download/decompile/parse)."
+          exit 1
+
+      - name: Fail on auth live smoke failure (schedule / manual)
+        if: >
+          always()
+          && steps.live.outputs.run == 'true'
+          && steps.smoke.outputs.skipped == 'false'
+          && steps.smoke.outputs.exit_code == '1'
+          && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        run: |
+          echo "Auth live smoke failed (API JSON and/or media download probe)."
+          exit 1
