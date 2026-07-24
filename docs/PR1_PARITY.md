@@ -27,7 +27,7 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 | --- | --- | --- |
 | `scan` | ✅ | `library scan` |
 | `liberate` | ✅ | `library liberate` — `--pdf`, `--license`, `-o` overrides, positional ASINs |
-| `set-status` | ✅ | `library set-status` — `--downloaded` / `--not-downloaded` / `--force` + ASINs |
+| `set-status` | ✅ | `library set-status` — probe-based match; `--downloaded` / `--not-downloaded` / `--force` / `--fix-layout` + ASINs |
 | `get-license` | ✅ | `library get-license --json` (summary) / `--full` (raw API JSON) |
 | `search` | ✅ | `library search` (+ `--filter` saved quick filters) |
 | `export` | ✅ | `library export --csv|--json|--xlsx` |
@@ -43,6 +43,7 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 | `help` | ✅ | clap |
 | Progress bar (`liberate` / `convert`) | ✅ | TTY batch progress with ETA |
 | Template tag list / preview | ✅ | `config template tags` / `config template preview <asin>` |
+| Naming profiles | ✅ | `download.naming_profile` (`audiobookshelf` default, `classic`); `config template profiles` |
 
 ---
 
@@ -55,7 +56,8 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 | `DecryptToLossy` | ✅ | `download.format` |
 | `UseWidevine` | ✅ | `download.widevine` |
 | `Request_xHE_AAC` | ✅ | `download.xhe_aac` |
-| `FolderTemplate` / `FileTemplate` | ✅ | Chardonnay naming engine (`libation-naming`) + `config template preview` |
+| `FolderTemplate` / `FileTemplate` | ✅ | Chardonnay naming engine (`libation-naming`) + `config template preview`; defaults from `naming_profile` |
+| `MaxFilenameLength` (255) | ✅ | `download.max_filename_length` + S3 full-key budget in liberate naming |
 | `DownloadCoverArt` | ✅ | `download.download_cover` |
 | `CreateCueSheet` | ✅ | `download.create_cue` |
 | `AllowLibationFixup` | ✅ | `download.fixup_metadata` |
@@ -139,7 +141,7 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 | `libationd` daemon + HTTP control plane | Scheduled scan / auto-liberate |
 | TOML config + env overrides | Classic uses `Settings.json` |
 | QR / local callback-server login | Extra headless login modes beyond `login-external` |
-| `config template tags` / `preview` | Headless template tooling |
+| `config template tags` / `profiles` / `preview` | Headless template tooling |
 
 ---
 

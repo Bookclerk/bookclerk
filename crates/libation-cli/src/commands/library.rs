@@ -7,8 +7,8 @@ use libation_audible::{
 };
 use libation_config::{apply_setting_overrides, BadBookAction, Config};
 use libation_liberate::{
-    convert_book, liberate_book_indexed, liberate_pdf_only, reconcile_library, ConvertRequest,
-    LiberateRequest, ReconcileOptions, StorageIndex,
+    convert_book, liberate_book_indexed, liberate_pdf_only, match_storage_to_library,
+    ConvertRequest, LiberateRequest, MatchStorageOptions, StorageIndex,
 };
 use libation_library::{LiberateStatus, LibraryStore};
 use libation_search::SearchEngine;
@@ -33,8 +33,15 @@ pub enum LibraryCommand {
         #[arg(long, value_parser = parse_source_kind)]
         source: Option<SourceKind>,
         /// After scan, match existing files in storage to library rows.
+        ///
+        /// Lists `.m4b` / `.mp3` / `.m4a` / `.flac` / `.aac` / `.ogg` / `.oga`, probes object metadata (no body
+        /// download), and falls back to ASIN/ISBN tokens in the path.
         #[arg(long)]
         match_storage: bool,
+        /// With `--match-storage`, relocate matched audio + sidecars onto the
+        /// configured naming-profile layout (also `library.fix_storage_layout`).
+        #[arg(long)]
+        fix_layout: bool,
     },
     /// Download + decrypt + store titles (LibationCli: `liberate`).
     Liberate {
@@ -68,8 +75,9 @@ pub enum LibraryCommand {
     },
     /// Match storage files to library rows and update liberate status.
     ///
-    /// Finds media by planned path (`Author/Title/ASIN.m4b`) or by ASIN
-    /// appearing in the file path (classic Libation `Title [ASIN].m4b` layouts).
+    /// Lists audio in storage and probes custom object metadata (S3
+    /// `HeadObject` / local `.libation-meta.json`) without downloading bodies.
+    /// Falls back to ASIN/ISBN tokens embedded in the object key.
     SetStatus {
         #[arg(long)]
         account: Option<String>,
@@ -85,6 +93,10 @@ pub enum LibraryCommand {
         /// Force status without checking storage (classic `--force`).
         #[arg(short, long)]
         force: bool,
+        /// Relocate matched audio + accompanying sidecars onto the configured
+        /// naming-profile layout (`library.fix_storage_layout`).
+        #[arg(long)]
+        fix_layout: bool,
         #[arg(value_name = "ASIN")]
         asins: Vec<String>,
     },
@@ -180,6 +192,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             accounts,
             source,
             match_storage,
+            fix_layout,
         } => {
             let mut scan_accounts = accounts;
             if let Some(one) = account {
@@ -223,20 +236,25 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             }
             if match_storage {
                 let storage = from_config(config).await?;
-                let recon = reconcile_library(
+                let recon = match_storage_to_library(
                     &store,
                     storage.as_ref(),
-                    ReconcileOptions {
+                    MatchStorageOptions {
                         account: scan_accounts.first().cloned(),
                         clear_missing: true,
+                        fix_layout: fix_layout || config.library.fix_storage_layout,
                         download: DownloadOptions::from(config),
                         ..Default::default()
                     },
                 )
                 .await?;
                 println!(
-                    "storage match: matched={} cleared={} unchanged={}",
-                    recon.matched, recon.cleared, recon.unchanged
+                    "storage match: matched={} relocated={} cleared={} unchanged={} unmatched_files={}",
+                    recon.matched,
+                    recon.relocated,
+                    recon.cleared,
+                    recon.unchanged,
+                    recon.unmatched_files
                 );
             }
             let engine = SearchEngine::open(&paths.search_index_dir)?;
@@ -268,12 +286,13 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             // Match existing media first (same as libationd) so we do not
             // re-download titles already on disk.
             if !dry_run {
-                let _ = reconcile_library(
+                let _ = match_storage_to_library(
                     &store,
                     storage.as_ref(),
-                    ReconcileOptions {
+                    MatchStorageOptions {
                         account: account.clone(),
                         clear_missing: true,
+                        fix_layout: cfg.library.fix_storage_layout,
                         download: DownloadOptions::from(&cfg),
                         ..Default::default()
                     },
@@ -423,6 +442,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             downloaded,
             not_downloaded,
             force,
+            fix_layout,
             asins,
         } => {
             let asins: Vec<String> = asins.into_iter().map(|a| a.to_ascii_uppercase()).collect();
@@ -437,22 +457,23 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 return Ok(());
             }
             let storage = from_config(config).await?;
-            let summary = reconcile_library(
+            let summary = match_storage_to_library(
                 &store,
                 storage.as_ref(),
-                ReconcileOptions {
+                MatchStorageOptions {
                     account,
                     clear_missing: !keep_missing && !downloaded,
                     asins,
                     only_mark_found: downloaded,
                     only_clear_missing: not_downloaded,
+                    fix_layout: fix_layout || config.library.fix_storage_layout,
                     download: DownloadOptions::from(config),
                 },
             )
             .await?;
             println!(
-                "matched {}\tcleared {}\tunchanged {}",
-                summary.matched, summary.cleared, summary.unchanged
+                "matched {}\trelocated {}\tcleared {}\tunchanged {}",
+                summary.matched, summary.relocated, summary.cleared, summary.unchanged
             );
             Ok(())
         }

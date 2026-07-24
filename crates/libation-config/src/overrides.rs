@@ -21,6 +21,8 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
     let v = value.trim();
     match key {
         "storage.local.root" => config.storage.local.root = PathBuf::from(v),
+        "storage.prefix" => config.storage.prefix = v.to_string(),
+        "storage.s3.prefix" => config.storage.s3.prefix = v.to_string(),
         "download.quality" => {
             config.download.quality = match v.to_ascii_lowercase().as_str() {
                 "normal" => AudioQuality::Normal,
@@ -69,6 +71,11 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         "auth.allow_plaintext" => {
             config.auth.allow_plaintext = parse_bool(v).unwrap_or(false);
         }
+        "download.naming_profile" => {
+            if let Some(profile) = crate::NamingProfile::parse(v) {
+                config.download.naming_profile = profile;
+            }
+        }
         "download.folder_template" => config.download.folder_template = Some(v.to_string()),
         "download.file_template" => config.download.file_template = Some(v.to_string()),
         "download.path_sanitization" => {
@@ -79,6 +86,11 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 "none" | "off" | "disabled" => PathSanitizationMode::None,
                 _ => PathSanitizationMode::Auto,
             };
+        }
+        "download.max_filename_length" => {
+            if let Ok(n) = v.parse() {
+                config.download.max_filename_length = n;
+            }
         }
         "download.download_cover" => {
             config.download.download_cover = parse_bool(v).unwrap_or(false);
@@ -209,6 +221,9 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
             if let Ok(n) = v.parse::<u8>() {
                 config.library.enrich_min_confidence = n.min(100);
             }
+        }
+        "library.fix_storage_layout" => {
+            config.library.fix_storage_layout = parse_bool(v).unwrap_or(false);
         }
         "library.scan_interval_minutes" => {
             if v.eq_ignore_ascii_case("true") {

@@ -1,11 +1,13 @@
 //! `libation config` — get settings (LibationCli: `get-setting`).
 
+use chrono::Datelike;
 use clap::Subcommand;
 use libation_config::{
-    classic_key_aliases, resolve_replacement_characters, Config, StorageBackendKind,
+    classic_key_aliases, resolve_replacement_characters, Config, NamingProfile, StorageBackendKind,
 };
-use libation_liberate::{storage_key_with_rules, NamingContext};
+use libation_liberate::{storage_key_with_contexts, NamingContext};
 use libation_library::LibraryStore;
+use libation_source::DownloadOptions;
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
@@ -32,6 +34,8 @@ pub enum ConfigCommand {
 pub enum TemplateCommand {
     /// List supported naming template property tags.
     Tags,
+    /// List built-in naming profiles and their templates.
+    Profiles,
     /// Preview folder/file templates for a library title.
     Preview {
         /// Title ASIN from the local library DB.
@@ -39,6 +43,9 @@ pub enum TemplateCommand {
         /// Account id when the ASIN exists on multiple accounts.
         #[arg(long)]
         account: Option<String>,
+        /// Override `download.naming_profile` for this preview.
+        #[arg(long)]
+        profile: Option<String>,
         /// Override `download.folder_template` for this preview.
         #[arg(long)]
         folder: Option<String>,
@@ -74,6 +81,11 @@ pub fn run(command: ConfigCommand, config: &Config) -> anyhow::Result<()> {
         }
         ConfigCommand::Show => {
             println!("storage.backend = {:?}", config.storage.backend);
+            println!("storage.prefix = {}", config.storage.prefix);
+            println!(
+                "storage.effective_prefix = {}",
+                config.storage.effective_prefix()
+            );
             println!(
                 "storage.local.root = {}",
                 config.storage.local.root.display()
@@ -103,16 +115,35 @@ pub fn run(command: ConfigCommand, config: &Config) -> anyhow::Result<()> {
                     .unwrap_or_else(|| "-".into())
             );
             println!(
-                "download.folder_template = {}",
-                config.download.folder_template.as_deref().unwrap_or("-")
+                "download.naming_profile = {}",
+                config.download.naming_profile.as_str()
+            );
+            let resolved = config.download.resolve_naming_templates();
+            println!(
+                "download.folder_template = {}{}",
+                config.download.folder_template.as_deref().unwrap_or("-"),
+                if config.download.folder_template.is_none() {
+                    format!(" (profile: {})", resolved.folder)
+                } else {
+                    String::new()
+                }
             );
             println!(
-                "download.file_template = {}",
-                config.download.file_template.as_deref().unwrap_or("-")
+                "download.file_template = {}{}",
+                config.download.file_template.as_deref().unwrap_or("-"),
+                if config.download.file_template.is_none() {
+                    format!(" (profile: {})", resolved.file)
+                } else {
+                    String::new()
+                }
             );
             println!(
                 "download.path_sanitization = {:?}",
                 config.download.path_sanitization
+            );
+            println!(
+                "download.max_filename_length = {}",
+                config.download.max_filename_length
             );
             println!(
                 "download.download_cover = {}",
@@ -139,6 +170,10 @@ pub fn run(command: ConfigCommand, config: &Config) -> anyhow::Result<()> {
                 config.download.chapter_layout
             );
             println!("library.auto_liberate = {}", config.library.auto_liberate);
+            println!(
+                "library.fix_storage_layout = {}",
+                config.library.fix_storage_layout
+            );
             println!(
                 "library.scan_interval_minutes = {}",
                 config.library.scan_interval_minutes
@@ -208,9 +243,20 @@ fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()>
             }
             Ok(())
         }
+        TemplateCommand::Profiles => {
+            for profile in NamingProfile::all() {
+                let t = profile.templates();
+                println!("{}\t{}", profile.as_str(), profile.description());
+                println!("  folder_template\t{}", t.folder);
+                println!("  file_template\t{}", t.file);
+                println!("  chapter_file_template\t{}", t.chapter_file);
+            }
+            Ok(())
+        }
         TemplateCommand::Preview {
             asin,
             account,
+            profile,
             folder,
             file,
             ext,
@@ -226,6 +272,7 @@ fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()>
                 narrators: book.narrators.clone(),
                 series: book.series.clone(),
                 series_index: book.series_index.clone(),
+                year_published: book.published_at.map(|dt| dt.year()),
                 account_id: Some(book.account_id.clone()),
                 locale: Some(book.marketplace.clone()),
                 publisher: book.publisher.clone(),
@@ -235,23 +282,52 @@ fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()>
                 content_kind: Some(book.content_kind.clone()),
                 ..Default::default()
             };
-            let folder_tpl = folder
+            let naming_profile = profile
                 .as_deref()
-                .or(config.download.folder_template.as_deref());
-            let file_tpl = file.as_deref().or(config.download.file_template.as_deref());
+                .and_then(NamingProfile::parse)
+                .unwrap_or(config.download.naming_profile);
+            let resolved = libation_config::ResolvedNamingTemplates::resolve(
+                naming_profile,
+                folder
+                    .as_deref()
+                    .or(config.download.folder_template.as_deref()),
+                file.as_deref().or(config.download.file_template.as_deref()),
+                config.download.chapter_file_template.as_deref(),
+            );
             let rules = resolve_replacement_characters(
                 &config.download.replacement_characters,
                 config.download.path_sanitization,
                 config.storage.backend == StorageBackendKind::S3,
             );
-            let key = storage_key_with_rules(&ctx, folder_tpl, file_tpl, &ext, &rules);
-            println!("asin\t{}", book.asin_or_isbn());
-            println!(
-                "folder_template\t{}",
-                folder_tpl.unwrap_or("<author>/<title>")
+            let path_limits = DownloadOptions::from(config).path_limits;
+            let key = storage_key_with_contexts(
+                &ctx,
+                &ctx,
+                Some(resolved.folder.as_str()),
+                Some(resolved.file.as_str()),
+                &ext,
+                &rules,
+                path_limits,
             );
-            println!("file_template\t{}", file_tpl.unwrap_or("<asin>"));
+            println!("asin\t{}", book.asin_or_isbn());
+            println!("naming_profile\t{}", naming_profile.as_str());
+            println!("folder_template\t{}", resolved.folder);
+            println!("file_template\t{}", resolved.file);
             println!("path_sanitization\t{:?}", config.download.path_sanitization);
+            println!(
+                "max_filename_length\t{}",
+                if path_limits.max_filename_length == 0 {
+                    "disabled".to_string()
+                } else {
+                    path_limits.max_filename_length.to_string()
+                }
+            );
+            if path_limits.max_storage_key_bytes > 0 {
+                println!(
+                    "max_storage_key_bytes\t{}",
+                    path_limits.max_storage_key_bytes
+                );
+            }
             println!("storage_key\t{key}");
             Ok(())
         }
@@ -304,6 +380,8 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
     Some(match key {
         "storage.backend" => format!("{:?}", config.storage.backend).to_ascii_lowercase(),
         "storage.local.root" => config.storage.local.root.display().to_string(),
+        "storage.prefix" => config.storage.prefix.clone(),
+        "storage.effective_prefix" => config.storage.effective_prefix(),
         "storage.s3.bucket" => config.storage.s3.bucket.clone(),
         "storage.s3.prefix" => config.storage.s3.prefix.clone(),
         "storage.s3.region" => config.storage.s3.region.clone(),
@@ -319,11 +397,13 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
+        "download.naming_profile" => config.download.naming_profile.as_str().to_string(),
         "download.folder_template" => config.download.folder_template.clone().unwrap_or_default(),
         "download.file_template" => config.download.file_template.clone().unwrap_or_default(),
         "download.path_sanitization" => {
             format!("{:?}", config.download.path_sanitization).to_ascii_lowercase()
         }
+        "download.max_filename_length" => config.download.max_filename_length.to_string(),
         "download.download_cover" => config.download.download_cover.to_string(),
         "download.download_pdf" => config.download.download_pdf.to_string(),
         "download.create_cue" => config.download.create_cue.to_string(),
@@ -410,6 +490,7 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
         }
         "library.enrich_from_audible" => config.library.enrich_from_audible.to_string(),
         "library.enrich_min_confidence" => config.library.enrich_min_confidence.to_string(),
+        "library.fix_storage_layout" => config.library.fix_storage_layout.to_string(),
         "daemon.listen" => config.daemon.listen.clone(),
         "daemon.json_logs" => config.daemon.json_logs.to_string(),
         "diagnostics.share_reports" => config.diagnostics.share_reports.to_string(),

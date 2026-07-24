@@ -1,16 +1,38 @@
-//! Storage key naming: default layout + classic Libation-style templates.
+//! Storage key naming: profile defaults + classic Libation-style templates.
 //!
 //! Template evaluation is delegated to the [`libation_naming`] Chardonnay engine
 //! (full property-tag / conditional / formatter parity). [`NamingContext`] is the
 //! liberate-facing input; it is converted into a [`libation_naming::BookContext`]
 //! internally.
+//!
+//! When folder/file templates are `None`, the active
+//! [`libation_config::NamingProfile`] defaults apply (Audiobookshelf unless
+//! callers pass explicit templates).
 
-use libation_config::ReplacementRule;
+use libation_config::{
+    enforce_storage_key_limits, NamingProfile, PathLimits, ReplacementRule, ResolvedNamingTemplates,
+};
 use libation_naming::{BookContext, ChapterContext, ContentKind, Contributor, Series};
 
-const DEFAULT_FOLDER_TEMPLATE: &str = "<author>/<title>";
-const DEFAULT_FILE_TEMPLATE: &str = "<asin>";
-const DEFAULT_CHAPTER_TEMPLATE: &str = "<ch#> - <chapter title>";
+/// Resolve optional template overrides against a naming profile.
+#[must_use]
+pub fn resolve_templates(
+    profile: NamingProfile,
+    folder_template: Option<&str>,
+    file_template: Option<&str>,
+    chapter_file_template: Option<&str>,
+) -> ResolvedNamingTemplates {
+    ResolvedNamingTemplates::resolve(
+        profile,
+        folder_template,
+        file_template,
+        chapter_file_template,
+    )
+}
+
+fn profile_defaults() -> ResolvedNamingTemplates {
+    resolve_templates(NamingProfile::default(), None, None, None)
+}
 
 /// Metadata available to naming templates.
 #[derive(Debug, Clone, Default)]
@@ -24,6 +46,8 @@ pub struct NamingContext {
     pub series_index: Option<String>,
     /// Podcast parent / series ASIN for `SavePodcastsToParentFolder`.
     pub series_asin: Option<String>,
+    /// Publication year for `<year>` (from `published_at` when known).
+    pub year_published: Option<i32>,
     pub account_id: Option<String>,
     pub account_nickname: Option<String>,
     pub locale: Option<String>,
@@ -85,9 +109,14 @@ fn to_book_context(ctx: &NamingContext) -> BookContext {
 
     BookContext {
         isbn: ctx.asin.clone(),
+        // Audible title (no subtitle) — drives `<audible title>` / `<title short>`.
         title: Some(ctx.title.clone()),
         subtitle: ctx.subtitle.clone(),
-        title_with_subtitle: None,
+        // Full title with subtitle for `<title>` (e.g. file basename).
+        title_with_subtitle: Some(match ctx.subtitle.as_deref() {
+            Some(sub) if !sub.trim().is_empty() => format!("{}: {sub}", ctx.title),
+            _ => ctx.title.clone(),
+        }),
         authors: split_names(ctx.authors.as_deref()),
         narrators: split_names(ctx.narrators.as_deref()),
         series,
@@ -96,6 +125,7 @@ fn to_book_context(ctx: &NamingContext) -> BookContext {
         account_nickname: ctx.account_nickname.clone(),
         locale: ctx.locale.clone(),
         language: ctx.language.clone(),
+        year_published: ctx.year_published,
         publisher: ctx.publisher.clone(),
         categories: ctx
             .categories
@@ -143,7 +173,8 @@ fn harden_segment(segment: &str) -> String {
     cleaned.trim().trim_matches('.').trim().to_string()
 }
 
-/// Build a relative storage key for a liberated title.
+/// Build a relative storage key for a liberated title using the default
+/// [`NamingProfile`] (Audiobookshelf).
 ///
 /// Uses POSIX separator rules for creation. Reconcile probes this layout with
 /// wildcard sanitization so historical Windows/S3 keys still match.
@@ -196,6 +227,7 @@ pub fn storage_key_with_rules(
         file_template,
         ext,
         replacement_rules,
+        PathLimits::default(),
     )
 }
 
@@ -211,21 +243,23 @@ pub fn storage_key_with_contexts(
     file_template: Option<&str>,
     ext: &str,
     replacement_rules: &[ReplacementRule],
+    path_limits: PathLimits,
 ) -> String {
     let folder_book = to_book_context(folder_ctx);
     let folder_chapter = to_chapter_context(folder_ctx);
     let file_book = to_book_context(file_ctx);
     let file_chapter = to_chapter_context(file_ctx);
     let rules = effective_rules(replacement_rules);
+    let defaults = profile_defaults();
 
     let folder_parts = expand_folder_segments(
-        folder_template.unwrap_or(DEFAULT_FOLDER_TEMPLATE),
+        folder_template.unwrap_or(defaults.folder.as_str()),
         &folder_book,
         folder_chapter.as_ref(),
         &rules,
     );
     let file = expand_file_segment(
-        file_template.unwrap_or(DEFAULT_FILE_TEMPLATE),
+        file_template.unwrap_or(defaults.file.as_str()),
         &file_book,
         file_chapter.as_ref(),
         &rules,
@@ -242,7 +276,18 @@ pub fn storage_key_with_contexts(
     let ext = ext.trim_start_matches('.');
     let mut parts = folder_parts;
     parts.push(format!("{file}.{ext}"));
-    parts.join("/")
+    let key = parts.join("/");
+    let limited = enforce_storage_key_limits(&key, path_limits);
+    if limited != key {
+        tracing::debug!(
+            original = %key,
+            truncated = %limited,
+            max_filename_length = path_limits.max_filename_length,
+            max_storage_key_bytes = path_limits.max_storage_key_bytes,
+            "storage key truncated to filesystem path limits"
+        );
+    }
+    limited
 }
 
 /// Storage key for a split chapter file.
@@ -265,6 +310,7 @@ pub fn chapter_storage_key(
         chapter_number,
         chapter_title,
         ext,
+        PathLimits::default(),
     )
 }
 
@@ -280,6 +326,7 @@ pub fn chapter_storage_key_with_folder(
     chapter_number: usize,
     chapter_title: &str,
     ext: &str,
+    path_limits: PathLimits,
 ) -> String {
     let mut ch_ctx = file_ctx.clone();
     ch_ctx.chapter_number = Some(chapter_number as u32);
@@ -289,26 +336,36 @@ pub fn chapter_storage_key_with_folder(
     let file_book = to_book_context(&ch_ctx);
     let chapter = to_chapter_context(&ch_ctx);
     let rules = effective_rules(replacement_rules);
+    let defaults = profile_defaults();
 
     let folder_parts = expand_folder_segments(
-        folder_template.unwrap_or(DEFAULT_FOLDER_TEMPLATE),
+        folder_template.unwrap_or(defaults.folder.as_str()),
         &folder_book,
         chapter.as_ref(),
         &rules,
     );
     let file = expand_file_segment(
-        chapter_file_template.unwrap_or(DEFAULT_CHAPTER_TEMPLATE),
+        chapter_file_template.unwrap_or(defaults.chapter_file.as_str()),
         &file_book,
         chapter.as_ref(),
         &rules,
     );
 
     let ext = ext.trim_start_matches('.');
-    if folder_parts.is_empty() {
+    let key = if folder_parts.is_empty() {
         format!("{file}.{ext}")
     } else {
         format!("{}/{file}.{ext}", folder_parts.join("/"))
+    };
+    let limited = enforce_storage_key_limits(&key, path_limits);
+    if limited != key {
+        tracing::debug!(
+            original = %key,
+            truncated = %limited,
+            "chapter storage key truncated to filesystem path limits"
+        );
     }
+    limited
 }
 
 /// Expand a folder template into hardened, non-empty path segments.
@@ -383,7 +440,8 @@ mod tests {
     fn builds_safe_key() {
         // With no rules, only harden_segment runs — `/` in authors would inject
         // segments, so liberate always passes resolved rules. Explicit Windows
-        // map matches classic sanitization.
+        // map matches classic sanitization. Default Audiobookshelf profile uses
+        // first author + title short in the folder and Title [ASIN] as the file.
         let key = storage_key_with_rules(
             &NamingContext {
                 asin: "B00X".into(),
@@ -396,7 +454,7 @@ mod tests {
             "m4b",
             &libation_config::windows_replacement_characters(),
         );
-        assert_eq!(key, "A_B/Hello_ World/B00X.m4b");
+        assert_eq!(key, "A_B/Hello/Hello_ World [B00X].m4b");
     }
 
     #[test]
@@ -413,7 +471,67 @@ mod tests {
             "m4b",
             &libation_config::posix_replacement_characters(),
         );
-        assert_eq!(key, "Jane Doe/Hello: World/B00X.m4b");
+        assert_eq!(key, "Jane Doe/Hello/Hello: World [B00X].m4b");
+    }
+
+    #[test]
+    fn audiobookshelf_profile_includes_series_year_narrator() {
+        let ctx = NamingContext {
+            asin: "B00EXAMPLE1".into(),
+            title: "Wizards First Rule: A Novel".into(),
+            authors: Some("Terry Goodkind, Extra Author".into()),
+            narrators: Some("Sam Tsoutsouvas".into()),
+            series: Some("Sword of Truth".into()),
+            series_index: Some("1".into()),
+            year_published: Some(1994),
+            ..Default::default()
+        };
+        let templates = resolve_templates(NamingProfile::Audiobookshelf, None, None, None);
+        let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
+        assert_eq!(
+            key,
+            "Terry Goodkind/Sword of Truth/1 - 1994 - Wizards First Rule {Sam Tsoutsouvas}/Wizards First Rule: A Novel [B00EXAMPLE1].m4b"
+        );
+    }
+
+    #[test]
+    fn audiobookshelf_file_joins_subtitle() {
+        let ctx = NamingContext {
+            asin: "B00X".into(),
+            title: "Main".into(),
+            subtitle: Some("Sub".into()),
+            authors: Some("Jane Doe".into()),
+            ..Default::default()
+        };
+        let templates = resolve_templates(NamingProfile::Audiobookshelf, None, None, None);
+        let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
+        assert_eq!(key, "Jane Doe/Main/Main: Sub [B00X].m4b");
+    }
+
+    #[test]
+    fn audiobookshelf_profile_skips_missing_optional_fields() {
+        let ctx = NamingContext {
+            asin: "B00X".into(),
+            title: "Standalone".into(),
+            authors: Some("Jane Doe".into()),
+            ..Default::default()
+        };
+        let templates = resolve_templates(NamingProfile::Audiobookshelf, None, None, None);
+        let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
+        assert_eq!(key, "Jane Doe/Standalone/Standalone [B00X].m4b");
+    }
+
+    #[test]
+    fn classic_profile_matches_libation_desktop_defaults() {
+        let ctx = NamingContext {
+            asin: "B00X".into(),
+            title: "Hello: World".into(),
+            authors: Some("Jane Doe".into()),
+            ..Default::default()
+        };
+        let templates = resolve_templates(NamingProfile::Classic, None, None, None);
+        let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
+        assert_eq!(key, "Hello [B00X]/Hello: World [B00X].m4b");
     }
 
     #[test]
@@ -476,6 +594,33 @@ mod tests {
             "m4b",
         );
         assert_eq!(key, "Jane Doe/Book/3 - Intro.m4b");
+    }
+
+    #[test]
+    fn truncates_oversized_segments() {
+        let long_title = format!("{}: Extra", "A".repeat(300));
+        let key = storage_key_with_rules(
+            &NamingContext {
+                asin: "B00X".into(),
+                title: long_title,
+                authors: Some("Jane Doe".into()),
+                ..Default::default()
+            },
+            None,
+            None,
+            "m4b",
+            &libation_config::posix_replacement_characters(),
+        );
+        for part in key.split('/') {
+            assert!(
+                part.len() <= 255,
+                "segment exceeds 255 bytes: {} ({})",
+                part.len(),
+                part
+            );
+        }
+        assert!(key.contains("[B00X]"));
+        assert!(key.ends_with(".m4b"));
     }
 
     #[test]

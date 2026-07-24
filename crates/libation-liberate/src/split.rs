@@ -68,15 +68,17 @@ pub async fn split_audio_by_chapters(
             .collect::<Vec<_>>()
             .join(": ");
         let chapter_no = idx + 1;
+        let templates = options.naming_templates();
         let filename = chapter_storage_key_with_folder(
             folder_ctx,
             file_ctx,
-            options.folder_template.as_deref(),
-            options.chapter_file_template.as_deref(),
+            Some(templates.folder.as_str()),
+            Some(templates.chapter_file.as_str()),
             &options.replacement_characters,
             chapter_no,
             &title,
             ext,
+            options.path_limits,
         );
         let out_path = output_dir.join(filename.rsplit('/').next().unwrap_or(&filename));
         remux_trimmed_async(

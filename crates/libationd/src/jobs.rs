@@ -4,7 +4,10 @@ use std::sync::Arc;
 
 use libation_audible::DownloadOptions;
 use libation_config::BadBookAction;
-use libation_liberate::{liberate_book_indexed, LiberateRequest, ReconcileOptions, StorageIndex};
+use libation_liberate::{
+    liberate_book_indexed, match_storage_to_library, LiberateRequest, MatchStorageOptions,
+    StorageIndex,
+};
 use libation_library::LiberateStatus;
 use libation_source::{ScanOptions, SourceKind};
 use libation_storage::from_config;
@@ -142,12 +145,13 @@ pub async fn run_liberate(
     let registry = default_registry(&cfg);
 
     // Match existing media first so auto-liberate does not re-download.
-    let _ = libation_liberate::reconcile_library(
+    let _ = match_storage_to_library(
         &state.library,
         storage.as_ref(),
-        ReconcileOptions {
+        MatchStorageOptions {
             account: account.map(str::to_string),
             clear_missing: true,
+            fix_layout: cfg.library.fix_storage_layout,
             download: options.clone(),
             ..Default::default()
         },

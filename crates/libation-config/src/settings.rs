@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{ConfigError, Result};
 use crate::extras::{FileTimestampMode, LameConfig, PathSanitizationMode, ReplacementRule};
+use crate::naming_profile::{NamingProfile, ResolvedNamingTemplates};
+use crate::path_limits::DEFAULT_MAX_FILENAME_LENGTH;
 use crate::paths::{resolve_config_path, resolve_files_dir, Paths};
 use crate::pipeline_opts::{ChapterJsonMode, GraphicAudioAccess, IngestConfig, OutputFormat};
 use crate::plugins::{IntegrationsConfig, SourcesConfig};
@@ -67,6 +69,10 @@ pub struct LibraryConfig {
     /// Minimum match confidence (0–100) to accept an Audible ASIN enrichment.
     /// Uses AudioBookshelf-style duration/title/author scoring (default 90).
     pub enrich_min_confidence: u8,
+    /// When matching storage to the library, relocate matched audio (and
+    /// accompanying sidecars) onto the configured naming-profile layout.
+    /// Default false — match in place without moving files.
+    pub fix_storage_layout: bool,
 }
 
 impl Default for LibraryConfig {
@@ -80,6 +86,7 @@ impl Default for LibraryConfig {
             save_podcasts_to_parent_folder: false,
             enrich_from_audible: true,
             enrich_min_confidence: 90,
+            fix_storage_layout: false,
         }
     }
 }
@@ -107,9 +114,15 @@ pub struct DownloadConfig {
     pub widevine_cdm: Option<PathBuf>,
     /// Remote L3 CDM provider. `None` uses classic Libation AudibleCdm; empty/`off` disables auto-fetch.
     pub widevine_cdm_provider: Option<String>,
-    /// Classic Libation `FolderTemplate` (e.g. `<author>/<title>`).
+    /// Named path-template preset (`audiobookshelf` default, or `classic`).
+    /// Per-field `folder_template` / `file_template` / `chapter_file_template`
+    /// overrides win when set.
+    pub naming_profile: NamingProfile,
+    /// Classic Libation `FolderTemplate` override (e.g. `<author>/<title>`).
+    /// When unset, uses [`Self::naming_profile`].
     pub folder_template: Option<String>,
-    /// Classic Libation `FileTemplate` without extension (e.g. `<asin>` or `<title> [<asin>]`).
+    /// Classic Libation `FileTemplate` without extension (e.g. `<asin>` or `<title>`).
+    /// When unset, uses [`Self::naming_profile`].
     pub file_template: Option<String>,
     /// Save cover JPEG alongside audio (`DownloadCoverArt`).
     /// Default on; cover is also embedded when [`Self::fixup_metadata`] is true.
@@ -143,6 +156,7 @@ pub struct DownloadConfig {
     /// Max MP3 part size in MiB when output is `split_mp3_by_size`.
     pub split_mp3_max_mb: u32,
     /// Template for split chapter filenames (`ChapterFileTemplate`).
+    /// When unset, uses [`Self::naming_profile`].
     pub chapter_file_template: Option<String>,
     /// Template for chapter titles in metadata (`ChapterTitleTemplate`).
     pub chapter_title_template: Option<String>,
@@ -168,6 +182,9 @@ pub struct DownloadConfig {
     /// Explicit classic `ReplacementCharacters` map. When non-empty, overrides
     /// [`Self::path_sanitization`].
     pub replacement_characters: Vec<ReplacementRule>,
+    /// Max length per path segment (classic `LongPath.MaxFilenameLength`).
+    /// Default 255; set to `0` to disable truncation.
+    pub max_filename_length: u32,
 }
 
 impl DownloadConfig {
@@ -227,6 +244,7 @@ impl Default for DownloadConfig {
             xhe_aac: false,
             widevine_cdm: None,
             widevine_cdm_provider: None,
+            naming_profile: NamingProfile::default(),
             folder_template: None,
             file_template: None,
             download_cover: true,
@@ -260,7 +278,22 @@ impl Default for DownloadConfig {
             path_sanitization: PathSanitizationMode::Auto,
             // Empty → resolve via path_sanitization + storage.backend at use time.
             replacement_characters: Vec::new(),
+            max_filename_length: DEFAULT_MAX_FILENAME_LENGTH as u32,
         }
+    }
+}
+
+impl DownloadConfig {
+    /// Resolve folder / file / chapter-file templates from
+    /// [`Self::naming_profile`] with per-field overrides.
+    #[must_use]
+    pub fn resolve_naming_templates(&self) -> ResolvedNamingTemplates {
+        ResolvedNamingTemplates::resolve(
+            self.naming_profile,
+            self.folder_template.as_deref(),
+            self.file_template.as_deref(),
+            self.chapter_file_template.as_deref(),
+        )
     }
 }
 
@@ -287,6 +320,12 @@ pub enum DownloadFormat {
 #[serde(default)]
 pub struct StorageConfig {
     pub backend: StorageBackendKind,
+    /// Key prefix under the local root or S3 bucket (e.g. `library/`).
+    ///
+    /// Library `storage_key` values stay relative to this prefix (the backend
+    /// prepends it). When empty and [`Self::backend`] is S3, falls back to the
+    /// legacy [`StorageS3Config::prefix`].
+    pub prefix: String,
     pub local: StorageLocalConfig,
     pub s3: StorageS3Config,
 }
@@ -295,9 +334,42 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             backend: StorageBackendKind::Local,
+            prefix: String::new(),
             local: StorageLocalConfig::default(),
             s3: StorageS3Config::default(),
         }
+    }
+}
+
+impl StorageConfig {
+    /// Effective object-key prefix for the active backend (normalized, trailing `/`).
+    ///
+    /// Prefers [`Self::prefix`]. When that is empty and the backend is S3, uses
+    /// [`StorageS3Config::prefix`] so existing S3-only configs keep working.
+    #[must_use]
+    pub fn effective_prefix(&self) -> String {
+        let primary = self.prefix.trim();
+        if !primary.is_empty() {
+            return normalize_storage_prefix(primary);
+        }
+        if self.backend == StorageBackendKind::S3 {
+            return normalize_storage_prefix(self.s3.prefix.trim());
+        }
+        String::new()
+    }
+}
+
+/// Normalize a storage key prefix: empty stays empty; otherwise ensure a trailing `/`.
+#[must_use]
+pub fn normalize_storage_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim().trim_start_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.ends_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/")
     }
 }
 
@@ -331,6 +403,8 @@ impl Default for StorageLocalConfig {
 #[serde(default)]
 pub struct StorageS3Config {
     pub bucket: String,
+    /// Legacy S3-only key prefix. Prefer [`StorageConfig::prefix`]; used when
+    /// that shared prefix is empty.
     pub prefix: String,
     pub region: String,
     /// Optional custom endpoint (MinIO, LocalStack, etc.).
@@ -520,6 +594,9 @@ impl Config {
         if let Ok(v) = std::env::var("LIBATION_STORAGE_LOCAL_ROOT") {
             self.storage.local.root = PathBuf::from(v);
         }
+        if let Ok(v) = std::env::var("LIBATION_STORAGE_PREFIX") {
+            self.storage.prefix = v;
+        }
         if let Ok(v) = std::env::var("LIBATION_S3_BUCKET") {
             self.storage.s3.bucket = v;
         }
@@ -602,6 +679,10 @@ impl Config {
                 self.library.enrich_min_confidence = n.min(100);
             }
         }
+        if let Ok(v) = std::env::var("LIBATION_FIX_STORAGE_LAYOUT") {
+            self.library.fix_storage_layout =
+                parse_bool(&v).unwrap_or(self.library.fix_storage_layout);
+        }
         if let Ok(v) = std::env::var("LIBATION_SCAN_INTERVAL_MINUTES") {
             if let Ok(n) = v.parse() {
                 self.library.scan_interval_minutes = n;
@@ -654,6 +735,11 @@ impl Config {
         }
         if let Ok(v) = std::env::var("LIBATION_WIDEVINE_CDM_PROVIDER") {
             self.download.widevine_cdm_provider = Some(v);
+        }
+        if let Ok(v) = std::env::var("LIBATION_NAMING_PROFILE") {
+            if let Some(profile) = NamingProfile::parse(&v) {
+                self.download.naming_profile = profile;
+            }
         }
         if let Ok(v) = std::env::var("LIBATION_FOLDER_TEMPLATE") {
             self.download.folder_template = Some(v);
@@ -873,6 +959,37 @@ json_logs = true
         assert_eq!(cfg.storage.local.root, PathBuf::from("/data/audiobooks"));
         assert_eq!(cfg.daemon.listen, "0.0.0.0:8787");
         assert!(!cfg.diagnostics.share_reports);
+    }
+
+    #[test]
+    fn storage_prefix_effective_for_local_and_s3() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.storage.effective_prefix(), "");
+
+        cfg.storage.prefix = "books".into();
+        assert_eq!(cfg.storage.effective_prefix(), "books/");
+
+        // Shared prefix wins over legacy s3.prefix.
+        cfg.storage.backend = StorageBackendKind::S3;
+        cfg.storage.s3.prefix = "library/".into();
+        assert_eq!(cfg.storage.effective_prefix(), "books/");
+
+        // Empty shared prefix → S3 falls back to legacy s3.prefix.
+        cfg.storage.prefix.clear();
+        assert_eq!(cfg.storage.effective_prefix(), "library/");
+
+        // Local ignores legacy s3.prefix when shared prefix is empty.
+        cfg.storage.backend = StorageBackendKind::Local;
+        assert_eq!(cfg.storage.effective_prefix(), "");
+    }
+
+    #[test]
+    fn normalize_storage_prefix_trims_and_slashes() {
+        assert_eq!(normalize_storage_prefix(""), "");
+        assert_eq!(normalize_storage_prefix("  "), "");
+        assert_eq!(normalize_storage_prefix("library"), "library/");
+        assert_eq!(normalize_storage_prefix("library/"), "library/");
+        assert_eq!(normalize_storage_prefix("/library"), "library/");
     }
 
     #[test]

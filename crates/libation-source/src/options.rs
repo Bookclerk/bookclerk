@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 use libation_config::{
     resolve_replacement_characters, AudioQuality, ChapterJsonMode, Config, DownloadConfig,
-    DownloadFormat, FileTimestampMode, IngestConfig, IngestQuality, LameConfig, OutputFormat,
-    ReplacementRule, StorageBackendKind,
+    DownloadFormat, FileTimestampMode, IngestConfig, IngestQuality, LameConfig, NamingProfile,
+    OutputFormat, PathLimits, PathSanitizationMode, ReplacementRule, ResolvedNamingTemplates,
+    StorageBackendKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,8 @@ pub struct DownloadOptions {
     pub widevine_cdm: Option<PathBuf>,
     /// Remote L3 CDM provider URL (`None` = classic Libation AudibleCdm; empty/`off` = disable).
     pub widevine_cdm_provider: Option<String>,
+    /// Path-template profile; per-field template overrides win when set.
+    pub naming_profile: NamingProfile,
     pub folder_template: Option<String>,
     pub file_template: Option<String>,
     pub download_cover: bool,
@@ -51,8 +54,113 @@ pub struct DownloadOptions {
     pub creation_time: FileTimestampMode,
     pub last_write_time: FileTimestampMode,
     pub replacement_characters: Vec<ReplacementRule>,
+    /// Filesystem / object-store path length limits for storage keys.
+    pub path_limits: PathLimits,
     /// Save podcast episodes under the parent show folder.
     pub save_podcasts_to_parent_folder: bool,
+}
+
+fn path_sanitization_is_windows(mode: PathSanitizationMode, storage_is_s3: bool) -> bool {
+    match mode {
+        PathSanitizationMode::Windows => true,
+        PathSanitizationMode::Auto => !storage_is_s3 && cfg!(windows),
+        _ => false,
+    }
+}
+
+impl From<&DownloadConfig> for DownloadOptions {
+    fn from(cfg: &DownloadConfig) -> Self {
+        Self {
+            quality: cfg.ingest.quality_for("audible").as_audible(),
+            format: cfg.format,
+            output: cfg.output.or(Some(cfg.effective_output())),
+            ingest: cfg.ingest.clone(),
+            widevine: cfg.widevine,
+            xhe_aac: cfg.xhe_aac,
+            widevine_cdm: cfg.widevine_cdm.clone(),
+            widevine_cdm_provider: cfg.widevine_cdm_provider.clone(),
+            naming_profile: cfg.naming_profile,
+            folder_template: cfg.folder_template.clone(),
+            file_template: cfg.file_template.clone(),
+            download_cover: cfg.download_cover,
+            download_pdf: cfg.download_pdf,
+            create_cue: cfg.create_cue,
+            fixup_metadata: cfg.fixup_metadata,
+            chapter_json: cfg.effective_chapter_json(),
+            save_metadata_json: cfg.save_metadata_json,
+            cover_size: cfg.cover_size.clone(),
+            chapter_layout: cfg.chapter_layout.clone(),
+            overwrite_existing: cfg.overwrite_existing,
+            split_files_by_chapter: cfg.split_files_by_chapter
+                || matches!(cfg.effective_output(), OutputFormat::SplitMp3ByChapter),
+            split_mp3_max_mb: cfg.split_mp3_max_mb,
+            chapter_file_template: cfg.chapter_file_template.clone(),
+            chapter_title_template: cfg.chapter_title_template.clone(),
+            minimum_file_duration_minutes: cfg.minimum_file_duration_minutes,
+            combine_nested_chapter_titles: cfg.combine_nested_chapter_titles,
+            merge_opening_and_end_credits: cfg.merge_opening_and_end_credits,
+            strip_unabridged: cfg.strip_unabridged,
+            strip_audible_brand_audio: cfg.strip_audible_brand_audio,
+            download_clips_bookmarks: cfg.download_clips_bookmarks,
+            retain_aax_file: cfg.retain_aax_file,
+            download_speed_limit_kbps: cfg.download_speed_limit_kbps,
+            lame: cfg.lame.clone(),
+            max_sample_rate: cfg.max_sample_rate,
+            creation_time: cfg.creation_time,
+            last_write_time: cfg.last_write_time,
+            replacement_characters: resolve_replacement_characters(
+                &cfg.replacement_characters,
+                cfg.path_sanitization,
+                false,
+            ),
+            path_limits: PathLimits::resolve(
+                cfg.max_filename_length,
+                false,
+                "",
+                path_sanitization_is_windows(cfg.path_sanitization, false),
+            ),
+            save_podcasts_to_parent_folder: false,
+        }
+    }
+}
+
+impl From<&Config> for DownloadOptions {
+    fn from(cfg: &Config) -> Self {
+        let storage_is_s3 = cfg.storage.backend == StorageBackendKind::S3;
+        let mut opts = Self::from(&cfg.download);
+        opts.save_podcasts_to_parent_folder = cfg.library.save_podcasts_to_parent_folder;
+        opts.replacement_characters = resolve_replacement_characters(
+            &cfg.download.replacement_characters,
+            cfg.download.path_sanitization,
+            storage_is_s3,
+        );
+        opts.path_limits = PathLimits::resolve(
+            cfg.download.max_filename_length,
+            storage_is_s3,
+            &cfg.storage.effective_prefix(),
+            path_sanitization_is_windows(cfg.download.path_sanitization, storage_is_s3),
+        );
+        // Plugin-table ingest overrides win over [download.ingest.sources].
+        if let Some(q) = cfg.sources.ingest_override("audible") {
+            opts.ingest.sources.audible = Some(q);
+        }
+        if let Some(q) = cfg.sources.ingest_override("libro") {
+            opts.ingest.sources.libro = Some(q);
+        }
+        if let Some(q) = cfg.sources.ingest_override("chirp") {
+            opts.ingest.sources.chirp = Some(q);
+        }
+        if let Some(q) = cfg.sources.ingest_override("graphicaudio") {
+            opts.ingest.sources.graphicaudio = Some(q);
+        }
+        opts
+    }
+}
+
+impl Default for DownloadOptions {
+    fn default() -> Self {
+        Self::from(&DownloadConfig::default())
+    }
 }
 
 impl DownloadOptions {
@@ -114,85 +222,16 @@ impl DownloadOptions {
     pub fn ingest_quality(&self, source: &str) -> IngestQuality {
         self.ingest.quality_for(source)
     }
-}
 
-impl From<&DownloadConfig> for DownloadOptions {
-    fn from(cfg: &DownloadConfig) -> Self {
-        Self {
-            quality: cfg.ingest.quality_for("audible").as_audible(),
-            format: cfg.format,
-            output: cfg.output.or(Some(cfg.effective_output())),
-            ingest: cfg.ingest.clone(),
-            widevine: cfg.widevine,
-            xhe_aac: cfg.xhe_aac,
-            widevine_cdm: cfg.widevine_cdm.clone(),
-            widevine_cdm_provider: cfg.widevine_cdm_provider.clone(),
-            folder_template: cfg.folder_template.clone(),
-            file_template: cfg.file_template.clone(),
-            download_cover: cfg.download_cover,
-            download_pdf: cfg.download_pdf,
-            create_cue: cfg.create_cue,
-            fixup_metadata: cfg.fixup_metadata,
-            chapter_json: cfg.effective_chapter_json(),
-            save_metadata_json: cfg.save_metadata_json,
-            cover_size: cfg.cover_size.clone(),
-            chapter_layout: cfg.chapter_layout.clone(),
-            overwrite_existing: cfg.overwrite_existing,
-            split_files_by_chapter: cfg.split_files_by_chapter
-                || matches!(cfg.effective_output(), OutputFormat::SplitMp3ByChapter),
-            split_mp3_max_mb: cfg.split_mp3_max_mb,
-            chapter_file_template: cfg.chapter_file_template.clone(),
-            chapter_title_template: cfg.chapter_title_template.clone(),
-            minimum_file_duration_minutes: cfg.minimum_file_duration_minutes,
-            combine_nested_chapter_titles: cfg.combine_nested_chapter_titles,
-            merge_opening_and_end_credits: cfg.merge_opening_and_end_credits,
-            strip_unabridged: cfg.strip_unabridged,
-            strip_audible_brand_audio: cfg.strip_audible_brand_audio,
-            download_clips_bookmarks: cfg.download_clips_bookmarks,
-            retain_aax_file: cfg.retain_aax_file,
-            download_speed_limit_kbps: cfg.download_speed_limit_kbps,
-            lame: cfg.lame.clone(),
-            max_sample_rate: cfg.max_sample_rate,
-            creation_time: cfg.creation_time,
-            last_write_time: cfg.last_write_time,
-            replacement_characters: resolve_replacement_characters(
-                &cfg.replacement_characters,
-                cfg.path_sanitization,
-                false,
-            ),
-            save_podcasts_to_parent_folder: false,
-        }
-    }
-}
-
-impl From<&Config> for DownloadOptions {
-    fn from(cfg: &Config) -> Self {
-        let mut opts = Self::from(&cfg.download);
-        opts.save_podcasts_to_parent_folder = cfg.library.save_podcasts_to_parent_folder;
-        opts.replacement_characters = resolve_replacement_characters(
-            &cfg.download.replacement_characters,
-            cfg.download.path_sanitization,
-            cfg.storage.backend == StorageBackendKind::S3,
-        );
-        // Plugin-table ingest overrides win over [download.ingest.sources].
-        if let Some(q) = cfg.sources.ingest_override("audible") {
-            opts.ingest.sources.audible = Some(q);
-        }
-        if let Some(q) = cfg.sources.ingest_override("libro") {
-            opts.ingest.sources.libro = Some(q);
-        }
-        if let Some(q) = cfg.sources.ingest_override("chirp") {
-            opts.ingest.sources.chirp = Some(q);
-        }
-        if let Some(q) = cfg.sources.ingest_override("graphicaudio") {
-            opts.ingest.sources.graphicaudio = Some(q);
-        }
-        opts
-    }
-}
-
-impl Default for DownloadOptions {
-    fn default() -> Self {
-        Self::from(&DownloadConfig::default())
+    /// Resolve folder / file / chapter-file templates from the naming profile
+    /// with per-field overrides.
+    #[must_use]
+    pub fn naming_templates(&self) -> ResolvedNamingTemplates {
+        ResolvedNamingTemplates::resolve(
+            self.naming_profile,
+            self.folder_template.as_deref(),
+            self.file_template.as_deref(),
+            self.chapter_file_template.as_deref(),
+        )
     }
 }

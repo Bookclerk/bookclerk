@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use chrono::Datelike;
 use libation_audible::{
     download_companion_pdf, download_cover_jpeg, download_licensed_audio,
     fetch_and_download_with_options, fetch_chapter_info, fetch_clips_bookmarks,
@@ -907,13 +908,15 @@ async fn store_plain_parts(
         part_ctx.asin = format!("{}-p{:03}", req.asin, idx + 1);
         part_ctx.chapter_number = Some(u32::try_from(idx + 1).unwrap_or(1));
         part_ctx.chapter_title = Some(title.clone());
+        let templates = req.options.naming_templates();
         let storage_key = storage_key_with_contexts(
             &folder_ctx,
             &part_ctx,
-            req.options.folder_template.as_deref(),
-            req.options.file_template.as_deref(),
+            Some(templates.folder.as_str()),
+            Some(templates.file.as_str()),
             &ext,
             &req.options.replacement_characters,
+            req.options.path_limits,
         );
         let meta = object_meta_for(
             library,
@@ -1707,8 +1710,10 @@ async fn sidecar_meta(asin: &str, title: &str, content_type: &str, path: &Path) 
 fn content_type_for_ext(ext: &str) -> &'static str {
     match ext.to_ascii_lowercase().as_str() {
         "mp3" => "audio/mpeg",
-        "m4a" => "audio/mp4",
-        "m4b" => "audio/mp4",
+        "m4a" | "m4b" => "audio/mp4",
+        "flac" => "audio/flac",
+        "aac" => "audio/aac",
+        "ogg" | "oga" => "audio/ogg",
         "aaxc" | "aax" | "cenc" => "audio/mp4",
         _ => "application/octet-stream",
     }
@@ -2092,6 +2097,10 @@ fn naming_ctx(library: &LibraryStore, req: &LiberateRequest) -> NamingContext {
             .clone()
             .or_else(|| book.as_ref().and_then(|b| b.series_index.clone())),
         series_asin: book.as_ref().and_then(|b| b.series_asin.clone()),
+        year_published: book
+            .as_ref()
+            .and_then(|b| b.published_at)
+            .map(|dt| dt.year()),
         account_id: Some(req.account_id.clone()),
         locale: book.as_ref().map(|b| b.marketplace.clone()),
         publisher: book.as_ref().and_then(|b| b.publisher.clone()),
@@ -2136,6 +2145,7 @@ fn folder_naming_ctx(library: &LibraryStore, req: &LiberateRequest) -> NamingCon
         series: parent.series.clone(),
         series_index: None,
         series_asin: parent.series_asin.clone(),
+        year_published: parent.published_at.map(|dt| dt.year()),
         account_id: Some(parent.account_id.clone()),
         locale: Some(parent.marketplace.clone()),
         publisher: parent.publisher.clone(),
@@ -2163,13 +2173,15 @@ pub fn planned_storage_key_with_rules(
     ext: &str,
     replacement_rules: &[libation_config::ReplacementRule],
 ) -> String {
+    let templates = req.options.naming_templates();
     storage_key_with_contexts(
         &folder_naming_ctx(library, req),
         &naming_ctx(library, req),
-        req.options.folder_template.as_deref(),
-        req.options.file_template.as_deref(),
+        Some(templates.folder.as_str()),
+        Some(templates.file.as_str()),
         ext,
         replacement_rules,
+        req.options.path_limits,
     )
 }
 

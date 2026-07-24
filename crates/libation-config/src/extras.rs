@@ -306,6 +306,7 @@ pub fn classic_key_aliases() -> HashMap<&'static str, &'static str> {
         ("DecryptToLossy", "download.format"),
         ("UseWidevine", "download.widevine"),
         ("Request_xHE_AAC", "download.xhe_aac"),
+        ("NamingProfile", "download.naming_profile"),
         ("FolderTemplate", "download.folder_template"),
         ("FileTemplate", "download.file_template"),
         ("DownloadCoverArt", "download.download_cover"),
@@ -313,6 +314,7 @@ pub fn classic_key_aliases() -> HashMap<&'static str, &'static str> {
         ("AllowLibationFixup", "download.fixup_metadata"),
         ("SaveMetadataToFile", "download.save_metadata_json"),
         ("AutoDownloadEpisodes", "library.auto_liberate"),
+        ("FixStorageLayout", "library.fix_storage_layout"),
         ("AutoScan", "library.scan_interval_minutes"),
         ("OverwriteExisting", "download.overwrite_existing"),
         ("InProgress", "download.in_progress"),
@@ -329,6 +331,7 @@ pub fn classic_key_aliases() -> HashMap<&'static str, &'static str> {
         ("ChapterTitleTemplate", "download.chapter_title_template"),
         ("ReplacementCharacters", "download.replacement_characters"),
         ("PathSanitization", "download.path_sanitization"),
+        ("MaxFilenameLength", "download.max_filename_length"),
         (
             "MinimumFileDuration",
             "download.minimum_file_duration_minutes",

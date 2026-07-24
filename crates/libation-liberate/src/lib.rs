@@ -3,6 +3,7 @@
 mod convert;
 mod cue;
 mod error;
+mod match_storage;
 mod naming;
 mod pipeline;
 mod reconcile;
@@ -10,9 +11,10 @@ mod split;
 
 pub use convert::{convert_book, ConvertRequest, ConvertSummary};
 pub use error::{LiberateError, Result};
+pub use match_storage::{match_storage_to_library, MatchStorageOptions, MatchStorageSummary};
 pub use naming::{
     audio_basename, chapter_storage_key, chapter_storage_key_with_folder, default_storage_key,
-    sidecar_key, storage_key, storage_key_with_contexts, storage_key_with_rules,
+    resolve_templates, sidecar_key, storage_key, storage_key_with_contexts, storage_key_with_rules,
     swap_audio_extension, NamingContext,
 };
 pub use pipeline::{

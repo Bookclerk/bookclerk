@@ -31,10 +31,11 @@ GUI is deferred post-PR1.
 | Prefer xHE-AAC on Widevine path | done |
 | `format=mp3` via native Symphonia+LAME re-encode | done |
 | Naming templates (`folder_template` / `file_template`) | done (Chardonnay engine) |
+| Naming profiles (`naming_profile`, default Audiobookshelf) | done |
 | `auth set-scan` / `auth list --bare` (scan inclusion) | done |
-| `config template tags` / `config template preview` | done |
+| `config template tags` / `profiles` / `preview` | done |
 | PDF / cover / cue / chapter JSON sidecars + metadata fix-up | done |
-| Match existing storage media (`set-status` / `--match-storage`) | done |
+| Match existing storage media (`set-status` / `--match-storage`) | done (list audio + metadata probe; optional `--fix-layout`) |
 | Local FS + S3/MinIO storage (incl. S3 timestamp metadata) | done |
 | Classic Libation EF Postgres via `copydb` | done |
 | Podcast parent skip + `SavePodcastsToParentFolder` | done |
@@ -138,6 +139,13 @@ widevine = true
 xhe_aac = true
 format = "mp3"          # native LAME re-encode after decrypt
 # widevine_cdm = "device.wvd"   # optional BYO; otherwise auto-provision L3
+# naming_profile = "audiobookshelf"  # default; or "classic" for Libation desktop defaults
+# folder_template / file_template override the profile when set
+# audiobookshelf folder ≈
+#   <first author>/<has series-><first series>/<-has><has series#-><series#> - <-has><has year-><year> - <-has><title short><has narrator-> {<first narrator>}<-has>
+# audiobookshelf file = <title> [<asin>]
+# classic folder = <title short> [<id>]
+# classic file = <title> [<id>]
 folder_template = "<author>/<title>"
 file_template = "<title> [<asin>]"
 ```
@@ -166,9 +174,17 @@ Relative `storage.local.root` values resolve under `LIBATION_FILES_DIR`.
 
 ```bash
 libation library scan --match-storage
+# Optional: relocate matched files + sidecars onto the naming-profile layout
+# (also library.fix_storage_layout / LIBATION_FIX_STORAGE_LAYOUT; default false)
+libation library scan --match-storage --fix-layout
 libation library liberate          # skips matched titles
 libation library liberate --force  # re-download anyway
 ```
+
+Matching lists liberated audio (`.m4b` / `.mp3` / `.m4a` / `.flac` / `.aac` /
+`.ogg` / `.oga`) and probes custom object metadata
+(S3 `HeadObject` user-metadata / local `.libation-meta.json`) without downloading
+bodies, then falls back to ASIN/ISBN tokens in the path.
 
 ## Migrate from classic Libation
 

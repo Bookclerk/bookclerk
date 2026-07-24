@@ -96,5 +96,8 @@ When exercising real store credentials in this cloud environment:
 - S3/MinIO credentials are **env-only** (`AWS_ACCESS_KEY_ID` /
   `AWS_SECRET_ACCESS_KEY`); bucket/endpoint/path-style come from
   `LIBATION_S3_*` env vars or `[storage.s3]` in config.toml.
+  Shared key prefix for local and S3: `storage.prefix` /
+  `LIBATION_STORAGE_PREFIX` (when empty, S3 still honors legacy
+  `storage.s3.prefix` / `LIBATION_S3_PREFIX`).
 - `LIBATION_S3_ENDPOINT` may be host-only (no scheme); prepend `https://`
   before use when the value looks like a bare hostname.

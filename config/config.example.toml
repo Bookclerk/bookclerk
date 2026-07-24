@@ -10,6 +10,10 @@ enrich_from_audible = true
 # Minimum match confidence (0–100). Default 90 matches AudioBookshelf-style scoring.
 # Exact ISBN matches boost confidence but do not auto-accept (multi-ASIN ISBNs).
 enrich_min_confidence = 90
+# When matching storage (`library scan --match-storage` / `set-status`), relocate
+# matched audio + accompanying sidecars onto the configured naming-profile layout.
+# Default false — match in place (S3: list + HeadObject only; no body downloads).
+# fix_storage_layout = false
 
 # OAuth tokens live under Accounts/<account>.auth.
 # Prefer encryption: LIBATION_AUTH_PASSWORD, or a password file path
@@ -49,15 +53,33 @@ xhe_aac = false
 # widevine_cdm = "widevine.wvd"
 # Override or disable CDM provider (default = classic Libation AudibleCdm; "off" = BYO only).
 # widevine_cdm_provider = "off"
-# Classic Libation naming templates (optional; default Author/Title/ASIN.ext).
-# folder_template = "<author>/<title>"
-# file_template = "<asin>"
+# Naming profiles select preset folder/file/chapter templates.
+# naming_profile = "audiobookshelf"  # default
+# naming_profile = "classic"
+#
+# audiobookshelf (default) templates:
+#   folder_template = "<first author>/<has series-><first series>/<-has><has series#-><series#> - <-has><has year-><year> - <-has><title short><has narrator-> {<first narrator>}<-has>"
+#   file_template = "<title> [<asin>]"
+#   chapter_file_template = "<ch#> - <chapter title>"
+#
+# classic (Libation desktop DefaultTemplate) templates:
+#   folder_template = "<title short> [<id>]"
+#   file_template = "<title> [<id>]"
+#   chapter_file_template = "<title> [<id>] - <ch# 0> - <ch title>"
+#
+# Per-field overrides win over the selected profile when set:
+# folder_template = "<first author>/<has series-><first series>/<-has><has series#-><series#> - <-has><has year-><year> - <-has><title short><has narrator-> {<first narrator>}<-has>"
+# file_template = "<title> [<asin>]"
+# chapter_file_template = "<ch#> - <chapter title>"
 # Path sanitization when replacement_characters is unset:
 #   auto (default) — posix on Linux/macOS local, windows on Windows local, s3 for S3
 #   windows | posix | s3 | none (none = separators only, same floor as posix)
 # path_sanitization = "auto"
 # Explicit override (classic ReplacementCharacters); non-empty wins over path_sanitization:
 # replacement_characters = [{ find = ":", replace = "_" }]
+# Per-segment length cap (classic LongPath.MaxFilenameLength). Default 255; 0 disables.
+# S3 also caps the full relative key so prefix + key stays within 1024 UTF-8 bytes.
+# max_filename_length = 255
 # Reconcile matches existing files across profiles by treating sanitizable
 # characters as wildcards; creation always follows the rules above.
 # Sidecar / metadata options (classic Settings.json keys in comments).
@@ -102,6 +124,11 @@ chapter_layout = "tree"      # Audible API fetch layout when chapters are needed
 
 [storage]
 backend = "local"  # local | s3
+# Optional key prefix under the local root or S3 bucket (trailing slash optional).
+# Library storage_key values stay relative to this prefix; the backend prepends it.
+# When set, overrides the legacy storage.s3.prefix for S3 as well.
+# Env: LIBATION_STORAGE_PREFIX
+# prefix = "library/"
 
 [storage.local]
 # Absolute path recommended for Docker/systemd.
@@ -110,6 +137,7 @@ root = "/data/Audiobooks"
 
 [storage.s3]
 bucket = "my-audiobooks"
+# Legacy S3-only prefix; used when storage.prefix is empty.
 prefix = "library/"
 region = "us-east-1"
 # endpoint = "https://minio.example.com"

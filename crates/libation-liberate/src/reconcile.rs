@@ -11,7 +11,7 @@ use libation_library::{BookRecord, LiberateStatus, LibraryStore};
 use libation_storage::StorageBackend;
 
 use crate::error::Result;
-use crate::naming::{default_storage_key, NamingContext};
+use crate::naming::NamingContext;
 use crate::pipeline::{planned_storage_key_for, planned_storage_key_with_rules, LiberateRequest};
 use crate::storage_key_with_rules;
 
@@ -231,9 +231,8 @@ pub fn find_existing_for_book(
 /// Matching strategy:
 /// 1. Exact planned path under the *creation* replacement rules
 /// 2. Same templates with sanitizable characters as wildcards (cross OS/backend)
-/// 3. Default Author/Title/ASIN layout (exact, then wildcard)
-/// 4. Template path without podcast-parent rewrite (exact, then wildcard)
-/// 5. ASIN token found anywhere in a storage key
+/// 3. Template path without podcast-parent rewrite (exact, then wildcard)
+/// 4. ASIN token found anywhere in a storage key
 #[must_use]
 pub fn find_existing_for_request(
     index: &StorageIndex,
@@ -256,32 +255,7 @@ pub fn find_existing_for_request(
         return Some(key.to_string());
     }
 
-    // 3. Default Author/Title/ASIN layout for older files.
-    for alt in planned_extensions() {
-        let key = default_storage_key(req.authors.as_deref(), &req.title, &req.asin, alt);
-        if index.contains_key(&key) {
-            return Some(key);
-        }
-    }
-    for alt in planned_extensions() {
-        let pattern = storage_key_with_rules(
-            &NamingContext {
-                asin: req.asin.clone(),
-                title: req.title.clone(),
-                authors: req.authors.clone(),
-                ..Default::default()
-            },
-            None,
-            None,
-            alt,
-            &wildcard_rules,
-        );
-        if let Some(key) = index.find_key_matching_pattern(&pattern) {
-            return Some(key.to_string());
-        }
-    }
-
-    // 4. When templates differ from defaults, probe raw template path without
+    // 3. When templates differ from profile defaults, probe raw template path without
     // podcast-parent rewriting (older episode layouts).
     if req.options.folder_template.is_some() || req.options.file_template.is_some() {
         let ctx = NamingContext {
@@ -360,7 +334,7 @@ fn find_wildcard_planned<'a>(
     None
 }
 
-fn request_from_book(book: &BookRecord, download: &DownloadOptions) -> LiberateRequest {
+pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -> LiberateRequest {
     LiberateRequest {
         asin: book.download_product_id().to_string(),
         book_uuid: Some(book.uuid.clone()),
@@ -381,7 +355,9 @@ fn request_from_book(book: &BookRecord, download: &DownloadOptions) -> LiberateR
 }
 
 fn planned_extensions() -> &'static [&'static str] {
-    &["m4b", "m4a", "mp3"]
+    // Prefer packaged outputs first; include plain passthrough containers that
+    // Chirp / GraphicAudio may store under noop/`as_is` output.
+    &["m4b", "m4a", "mp3", "flac", "aac", "ogg", "oga"]
 }
 
 /// Extract Audible-like ASINs and ISBN-13 tokens from a storage key / file path.
@@ -465,8 +441,11 @@ fn media_rank(key: &str) -> u8 {
         "m4b" => 0,
         "m4a" => 1,
         "mp3" => 2,
+        "flac" => 3,
+        "aac" => 4,
+        "ogg" | "oga" => 5,
         "aaxc" | "aax" => 9,
-        _ => 5,
+        _ => 6,
     }
 }
 
