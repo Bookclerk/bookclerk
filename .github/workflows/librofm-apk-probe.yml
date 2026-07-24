@@ -85,12 +85,17 @@ jobs:
             echo "No APK API drift — skipping live auth/download smoke (avoids needless Libro.fm traffic)." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Upload probe artifacts
+      - name: Upload probe reports (JSON/Markdown only — no APK / media)
         if: always() && steps.probe.outputs.report == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: librofm-apk-probe
-          path: artifacts/librofm-apk-probe/
+          path: |
+            artifacts/librofm-apk-probe/report.json
+            artifacts/librofm-apk-probe/report.md
+            artifacts/librofm-apk-probe/apk_shapes.json
+            artifacts/librofm-apk-probe/public_smoke.json
+            artifacts/librofm-apk-probe/live_smoke.json
           if-no-files-found: warn
 
       - name: Summarize probe
@@ -144,13 +149,14 @@ jobs:
             --repo-root "$GITHUB_WORKSPACE" \
             --report "$GITHUB_WORKSPACE/artifacts/librofm-apk-probe/report.json" \
             --profiles current,apk \
+            --no-media-download \
             --out "$GITHUB_WORKSPACE/artifacts/librofm-apk-probe/live_smoke.json"
           code=$?
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           if [[ -f artifacts/librofm-apk-probe/live_smoke.json ]]; then
             echo "report=true" >> "$GITHUB_OUTPUT"
-            echo "## Auth live smoke (incl. media probe)" >> "$GITHUB_STEP_SUMMARY"
+            echo "## Auth live smoke (API JSON only — no media download)" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
             cat artifacts/librofm-apk-probe/live_smoke.json >> "$GITHUB_STEP_SUMMARY"

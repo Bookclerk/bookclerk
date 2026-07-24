@@ -145,9 +145,10 @@ exit `2` = hard failure / missing auth credentials.
 
 `.github/workflows/librofm-apk-probe.yml` runs weekly and on `workflow_dispatch`.
 
-1. Extract APK API surface + upload artifacts (always)
+1. Extract APK API surface; upload **report JSON/Markdown only** (never APKs or
+   media). Live smoke uses `--no-media-download`.
 2. **Only if APK API drifted** (or `force_live_smoke`): public catalog smoke +
-   auth live-smoke / media probe
+   auth live-smoke (API JSON only — no CDN media artifact)
 3. On blocking constant drift (schedule/manual): open a constants PR only if
    auth smoke passed; otherwise open an issue (missing secrets or smoke failure)
 

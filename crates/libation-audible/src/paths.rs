@@ -35,7 +35,8 @@ pub fn ensure_accounts_dir(files_dir: &Path) -> std::io::Result<PathBuf> {
 
 /// List Audible `*.auth` files under `Accounts/`.
 ///
-/// Skips Libro.fm `*.libro.auth` envelopes (same directory, different suffix).
+/// Skips other sources' envelopes that also end in `.auth`
+/// (`.libro.auth`, `.ga.auth`, `.chirp.auth`).
 pub fn list_auth_files(files_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let dir = accounts_dir(files_dir);
     if !dir.exists() {
@@ -50,8 +51,11 @@ pub fn list_auth_files(files_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
         if name.starts_with('.') {
             continue;
         }
-        // `foo.libro.auth` ends with `.auth` but belongs to Libro.fm.
-        if name.ends_with(".libro.auth") {
+        // Multi-suffix envelopes share Accounts/ but belong to other sources.
+        if name.ends_with(".libro.auth")
+            || name.ends_with(".ga.auth")
+            || name.ends_with(".chirp.auth")
+        {
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("auth") {
@@ -105,8 +109,10 @@ mod tests {
         let accounts = accounts_dir(dir.path());
         std::fs::create_dir_all(&accounts).unwrap();
         std::fs::write(accounts.join("alice.auth"), b"{}").unwrap();
-        // Libro.fm envelopes share Accounts/ but must not be treated as Audible.
+        // Other sources share Accounts/ but must not be treated as Audible.
         std::fs::write(accounts.join("alice.libro.auth"), b"{}").unwrap();
+        std::fs::write(accounts.join("alice.ga.auth"), b"{}").unwrap();
+        std::fs::write(accounts.join("alice.chirp.auth"), b"{}").unwrap();
         // Stray non-auth files must be ignored.
         std::fs::write(accounts.join("notes.txt"), b"x").unwrap();
         // Stray legacy dir must be ignored.

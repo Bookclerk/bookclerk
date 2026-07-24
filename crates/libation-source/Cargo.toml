@@ -19,5 +19,8 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+infer.workspace = true
+mime_guess.workspace = true
+
 [lints]
 workspace = true

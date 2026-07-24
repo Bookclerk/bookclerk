@@ -120,13 +120,18 @@ pub fn run(command: ConfigCommand, config: &Config) -> anyhow::Result<()> {
             );
             println!("download.download_pdf = {}", config.download.download_pdf);
             println!("download.create_cue = {}", config.download.create_cue);
+            println!("download.output = {:?}", config.download.effective_output());
+            println!(
+                "download.ingest.quality = {:?}",
+                config.download.ingest.quality
+            );
             println!(
                 "download.fixup_metadata = {}",
                 config.download.fixup_metadata
             );
             println!(
-                "download.save_chapter_json = {}",
-                config.download.save_chapter_json
+                "download.chapter_json = {:?}",
+                config.download.effective_chapter_json()
             );
             println!("download.cover_size = {}", config.download.cover_size);
             println!(
@@ -323,7 +328,17 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
         "download.download_pdf" => config.download.download_pdf.to_string(),
         "download.create_cue" => config.download.create_cue.to_string(),
         "download.fixup_metadata" => config.download.fixup_metadata.to_string(),
-        "download.save_chapter_json" => config.download.save_chapter_json.to_string(),
+        "download.chapter_json" => {
+            format!("{:?}", config.download.effective_chapter_json()).to_ascii_lowercase()
+        }
+        "download.save_chapter_json" => config
+            .download
+            .effective_chapter_json()
+            .wants_any()
+            .to_string(),
+        "download.output" => {
+            format!("{:?}", config.download.effective_output()).to_ascii_lowercase()
+        }
         "download.save_metadata_json" => config.download.save_metadata_json.to_string(),
         "download.cover_size" => config.download.cover_size.clone(),
         "download.chapter_layout" => config.download.chapter_layout.clone(),
@@ -336,6 +351,10 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
             .unwrap_or_default(),
         "download.bad_book_action" => format!("{:?}", config.download.bad_book_action),
         "download.split_files_by_chapter" => config.download.split_files_by_chapter.to_string(),
+        "download.split_mp3_max_mb" => config.download.split_mp3_max_mb.to_string(),
+        "download.ingest.quality" => {
+            format!("{:?}", config.download.ingest.quality).to_ascii_lowercase()
+        }
         "download.chapter_file_template" => config
             .download
             .chapter_file_template

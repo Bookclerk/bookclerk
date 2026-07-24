@@ -2,7 +2,11 @@
 //!
 //! Matches library rows that lack an Audible ASIN using public Audible catalog
 //! search + Audnexus (AudioBookshelf-style confidence scoring). Intended for
-//! Libro.fm and any future non-Audible sources.
+//! Libro.fm, Chirp, GraphicAudio, and any future non-Audible sources.
+//!
+//! A confident match stores the Audible ASIN and catalog fields on the row;
+//! liberate then overlays Audible chapter trees (and related tags) onto plain
+//! audio that lacks Audible brand intro/outro.
 
 mod enrich;
 mod error;

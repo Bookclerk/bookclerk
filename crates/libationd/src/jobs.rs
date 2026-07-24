@@ -98,7 +98,7 @@ pub async fn run_scan(state: &AppState, account: Option<&str>) -> anyhow::Result
     let cfg = state.config.read().await.clone();
     let paths = cfg.paths();
     paths.ensure_dirs()?;
-    let registry = default_registry();
+    let registry = default_registry(&cfg);
     let summary = registry
         .scan_all(
             &paths.files_dir,
@@ -139,7 +139,7 @@ pub async fn run_liberate(
     paths.ensure_dirs()?;
     let storage = from_config(&cfg).await?;
     let options = DownloadOptions::from(&cfg);
-    let registry = default_registry();
+    let registry = default_registry(&cfg);
 
     // Match existing media first so auto-liberate does not re-download.
     let _ = libation_liberate::reconcile_library(

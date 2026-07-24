@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+chrono.workspace = true
 libation-library.workspace = true
 reqwest = { version = "0.13", default-features = true, features = ["json", "query"] }
 serde.workspace = true

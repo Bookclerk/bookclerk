@@ -22,7 +22,24 @@ enrich_min_confidence = 90
 
 [download]
 quality = "high"   # high | normal
-format = "m4b"     # m4b | mp3 (mp3 re-encodes natively after decrypt)
+# Output formatting (default: highest-quality enriched M4B).
+#   enriched_m4b | single_mp3 | split_mp3_by_chapter | split_mp3_by_size | opus | none
+# Legacy `format = "m4b"|"mp3"` and `split_files_by_chapter` still work when `output` is unset.
+# output = "enriched_m4b"
+# split_mp3_max_mb = 200   # only for split_mp3_by_size
+format = "m4b"     # legacy: m4b | mp3 (prefer `output`)
+
+# Ingest quality: prefer the highest encode each store offers.
+# Global default; per-source overrides live under [sources.<id>].ingest.
+# [download.ingest]
+# quality = "highest"   # highest | high | normal | low
+# Legacy per-source map (still accepted; [sources.*.ingest] wins when both set):
+# [download.ingest.sources]
+# audible = "highest"
+# graphicaudio = "highest"
+# chirp = "highest"
+# libro = "highest"
+
 # Prefer Widevine/CENC; also enables Adrm→Widevine fallback on 000307.
 # L3 CDM auto-provisions via AudibleCdm (`auth login` registers as Android).
 widevine = false
@@ -43,15 +60,45 @@ xhe_aac = false
 # replacement_characters = [{ find = ":", replace = "_" }]
 # Reconcile matches existing files across profiles by treating sanitizable
 # characters as wildcards; creation always follows the rules above.
-# Sidecar / metadata parity (classic Settings.json keys in comments).
-download_cover = false       # DownloadCoverArt
-download_pdf = true
-create_cue = false           # CreateCueSheet
+# Sidecar / metadata options (classic Settings.json keys in comments).
+# Defaults: cover.jpg + companion PDFs on; cue off; chapter JSON off; metadata.json off.
+download_cover = true        # DownloadCoverArt — write cover.jpg next to audio
+download_pdf = true          # companion PDF when the store provides one
+create_cue = false           # CreateCueSheet — chapters.cue
 fixup_metadata = true        # AllowLibationFixup — embed cover/chapters/tags natively
-save_chapter_json = true     # chapters.<layout>.json
+chapter_json = "off"         # off | flat | tree | both
 save_metadata_json = false   # metadata.json (classic SaveMetadataToFile)
 cover_size = "500"           # 500 | 1215 | native
-chapter_layout = "tree"      # tree | flat
+chapter_layout = "tree"      # Audible API fetch layout when chapters are needed: tree | flat
+
+# ---------------------------------------------------------------------------
+# Content-source plugins ([sources.*])
+# Each source is independently enableable. Disabled sources are not registered
+# in CLI/daemon. Source-specific knobs live on that source's table.
+# Env: LIBATION_SOURCE_AUDIBLE_ENABLED, LIBATION_SOURCE_LIBRO_ENABLED,
+#      LIBATION_SOURCE_CHIRP_ENABLED, LIBATION_SOURCE_GRAPHICAUDIO_ENABLED
+# ---------------------------------------------------------------------------
+# [sources.audible]
+# enabled = true
+# ingest = "highest"
+
+# [sources.libro]
+# enabled = true
+# ingest = "highest"
+
+# [sources.chirp]
+# enabled = true
+# ingest = "highest"
+
+# [sources.graphicaudio]
+# enabled = true
+# How to fetch owned GraphicAudio titles. Default: web (Browser Player).
+#   web    — Magento Browser Player (no ZIP attempts, no device slot)
+#   zip    — Magento ZIP download (≤3 attempts; opt-in)
+#   device — Access App API (registers/uses a device activation; opt-in)
+# access = "web"
+# ingest = "highest"
+# Env override for access: LIBATION_GA_ACCESS (legacy: LIBATION_GA_FETCH).
 
 [storage]
 backend = "local"  # local | s3
@@ -71,6 +118,12 @@ region = "us-east-1"
 [daemon]
 listen = "127.0.0.1:8787"
 json_logs = true
+
+# ---------------------------------------------------------------------------
+# Integrations ([integrations.*]) — optional third-party hooks (future).
+# Not used for crash/error reporting; that stays under [diagnostics].
+# ---------------------------------------------------------------------------
+# [integrations]
 
 # Opt-in diagnostics: share redacted crash/ERROR-burst reports.
 # Deploy: `.github/workflows/diagnostics-collector-deploy.yml` sets collector URL.

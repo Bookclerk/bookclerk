@@ -3,8 +3,9 @@
 use std::path::PathBuf;
 
 use libation_config::{
-    resolve_replacement_characters, AudioQuality, Config, DownloadConfig, DownloadFormat,
-    FileTimestampMode, LameConfig, ReplacementRule, StorageBackendKind,
+    resolve_replacement_characters, AudioQuality, ChapterJsonMode, Config, DownloadConfig,
+    DownloadFormat, FileTimestampMode, IngestConfig, IngestQuality, LameConfig, OutputFormat,
+    ReplacementRule, StorageBackendKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +14,10 @@ use serde::{Deserialize, Serialize};
 pub struct DownloadOptions {
     pub quality: AudioQuality,
     pub format: DownloadFormat,
+    /// Explicit output format when set; else derived from [`Self::format`] /
+    /// [`Self::split_files_by_chapter`].
+    pub output: Option<OutputFormat>,
+    pub ingest: IngestConfig,
     pub widevine: bool,
     pub xhe_aac: bool,
     pub widevine_cdm: Option<PathBuf>,
@@ -24,12 +29,13 @@ pub struct DownloadOptions {
     pub download_pdf: bool,
     pub create_cue: bool,
     pub fixup_metadata: bool,
-    pub save_chapter_json: bool,
+    pub chapter_json: ChapterJsonMode,
     pub save_metadata_json: bool,
     pub cover_size: String,
     pub chapter_layout: String,
     pub overwrite_existing: bool,
     pub split_files_by_chapter: bool,
+    pub split_mp3_max_mb: u32,
     pub chapter_file_template: Option<String>,
     pub chapter_title_template: Option<String>,
     pub minimum_file_duration_minutes: u32,
@@ -49,11 +55,74 @@ pub struct DownloadOptions {
     pub save_podcasts_to_parent_folder: bool,
 }
 
+impl DownloadOptions {
+    /// Resolved post-processing format.
+    #[must_use]
+    pub fn effective_output(&self) -> OutputFormat {
+        if let Some(output) = self.output {
+            return output;
+        }
+        match (self.format, self.split_files_by_chapter) {
+            (DownloadFormat::Mp3, true) => OutputFormat::SplitMp3ByChapter,
+            (DownloadFormat::Mp3, false) => OutputFormat::SingleMp3,
+            (DownloadFormat::M4b, _) => OutputFormat::EnrichedM4b,
+        }
+    }
+
+    #[must_use]
+    pub fn wants_mp3(&self) -> bool {
+        self.effective_output().wants_mp3()
+    }
+
+    #[must_use]
+    pub fn wants_split_by_chapter(&self) -> bool {
+        self.effective_output().wants_split_by_chapter() || self.split_files_by_chapter
+    }
+
+    #[must_use]
+    pub fn is_noop_output(&self) -> bool {
+        self.effective_output().is_noop()
+    }
+
+    #[must_use]
+    pub fn wants_opus(&self) -> bool {
+        self.effective_output().wants_opus()
+    }
+
+    #[must_use]
+    pub fn wants_split_by_size(&self) -> bool {
+        self.effective_output().wants_split_by_size()
+    }
+
+    #[must_use]
+    pub fn chapter_json_flat(&self) -> bool {
+        self.chapter_json.wants_flat()
+    }
+
+    #[must_use]
+    pub fn chapter_json_tree(&self) -> bool {
+        self.chapter_json.wants_tree()
+    }
+
+    #[must_use]
+    pub fn wants_chapter_json(&self) -> bool {
+        self.chapter_json.wants_any()
+    }
+
+    /// Ingest quality for a content source id.
+    #[must_use]
+    pub fn ingest_quality(&self, source: &str) -> IngestQuality {
+        self.ingest.quality_for(source)
+    }
+}
+
 impl From<&DownloadConfig> for DownloadOptions {
     fn from(cfg: &DownloadConfig) -> Self {
         Self {
-            quality: cfg.quality,
+            quality: cfg.ingest.quality_for("audible").as_audible(),
             format: cfg.format,
+            output: cfg.output.or(Some(cfg.effective_output())),
+            ingest: cfg.ingest.clone(),
             widevine: cfg.widevine,
             xhe_aac: cfg.xhe_aac,
             widevine_cdm: cfg.widevine_cdm.clone(),
@@ -64,12 +133,14 @@ impl From<&DownloadConfig> for DownloadOptions {
             download_pdf: cfg.download_pdf,
             create_cue: cfg.create_cue,
             fixup_metadata: cfg.fixup_metadata,
-            save_chapter_json: cfg.save_chapter_json,
+            chapter_json: cfg.effective_chapter_json(),
             save_metadata_json: cfg.save_metadata_json,
             cover_size: cfg.cover_size.clone(),
             chapter_layout: cfg.chapter_layout.clone(),
             overwrite_existing: cfg.overwrite_existing,
-            split_files_by_chapter: cfg.split_files_by_chapter,
+            split_files_by_chapter: cfg.split_files_by_chapter
+                || matches!(cfg.effective_output(), OutputFormat::SplitMp3ByChapter),
+            split_mp3_max_mb: cfg.split_mp3_max_mb,
             chapter_file_template: cfg.chapter_file_template.clone(),
             chapter_title_template: cfg.chapter_title_template.clone(),
             minimum_file_duration_minutes: cfg.minimum_file_duration_minutes,
@@ -103,6 +174,19 @@ impl From<&Config> for DownloadOptions {
             cfg.download.path_sanitization,
             cfg.storage.backend == StorageBackendKind::S3,
         );
+        // Plugin-table ingest overrides win over [download.ingest.sources].
+        if let Some(q) = cfg.sources.ingest_override("audible") {
+            opts.ingest.sources.audible = Some(q);
+        }
+        if let Some(q) = cfg.sources.ingest_override("libro") {
+            opts.ingest.sources.libro = Some(q);
+        }
+        if let Some(q) = cfg.sources.ingest_override("chirp") {
+            opts.ingest.sources.chirp = Some(q);
+        }
+        if let Some(q) = cfg.sources.ingest_override("graphicaudio") {
+            opts.ingest.sources.graphicaudio = Some(q);
+        }
         opts
     }
 }

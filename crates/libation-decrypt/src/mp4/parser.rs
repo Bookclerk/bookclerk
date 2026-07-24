@@ -335,3 +335,239 @@ pub fn track_duration_ms(track: &AudioTrack) -> u64 {
         .map(|s| ((s.start_cts + u64::from(s.duration)) * 1000) / u64::from(track.timescale))
         .unwrap_or(0)
 }
+
+/// Clear AAC (`mp4a`) decoder config extracted from a progressive MP4/M4A/M4B.
+#[derive(Debug, Clone)]
+pub struct Mp4aConfig {
+    pub sample_rate: u32,
+    pub channels: u16,
+    /// AudioSpecificConfig from `esds` DecoderSpecificInfo.
+    pub asc: Vec<u8>,
+}
+
+/// Read sample-rate / channel count / ASC from a clear `mp4a` sample entry.
+pub fn extract_mp4a_config(mp4: &Mp4File) -> Result<Mp4aConfig> {
+    if mp4.audio.sample_entry_kind != SampleEntryKind::Mp4a {
+        return Err(DecryptError::Mp4(format!(
+            "expected clear mp4a sample entry, found {:?}",
+            mp4.audio.sample_entry_kind
+        )));
+    }
+    let moov = &mp4.moov_bytes;
+    let type_rel = usize::try_from(
+        mp4.audio
+            .sample_entry_type_offset
+            .checked_sub(mp4.moov.start)
+            .ok_or_else(|| DecryptError::Mp4("sample entry outside moov".into()))?,
+    )
+    .map_err(|_| DecryptError::Mp4("sample entry offset overflow".into()))?;
+    if type_rel < 4 || type_rel + 4 > moov.len() {
+        return Err(DecryptError::Mp4("mp4a type offset invalid".into()));
+    }
+    let entry_pos = type_rel - 4;
+    let entry_size =
+        u32::from_be_bytes(moov[entry_pos..entry_pos + 4].try_into().unwrap()) as usize;
+    let entry_end = entry_pos + entry_size;
+    if entry_end > moov.len() || entry_size < 36 {
+        return Err(DecryptError::Mp4("mp4a sample entry truncated".into()));
+    }
+    // AudioSampleEntry: after size(4)+type(4)+reserved(6)+data_ref(2)+reserved(8)
+    // → channelcount(2) + samplesize(2) + pre(2) + reserved(2) + samplerate(4)
+    let channels = u16::from_be_bytes(
+        moov[entry_pos + 16 + 8..entry_pos + 18 + 8]
+            .try_into()
+            .unwrap(),
+    );
+    let rate_fixed = u32::from_be_bytes(
+        moov[entry_pos + 24 + 8..entry_pos + 28 + 8]
+            .try_into()
+            .unwrap(),
+    );
+    let entry_rate = rate_fixed >> 16;
+    let sample_rate = if mp4.audio.timescale > 0 {
+        mp4.audio.timescale
+    } else {
+        entry_rate
+    };
+
+    let children_start = entry_pos + 36;
+    let esds = find_child_fourcc(moov, children_start, entry_end, b"esds")?
+        .ok_or_else(|| DecryptError::Mp4("mp4a missing esds".into()))?;
+    let asc = parse_asc_from_esds(&moov[esds.0..esds.1])?;
+    let channels = channels_from_asc(&asc).unwrap_or(channels.max(1));
+    if sample_rate == 0 || channels == 0 {
+        return Err(DecryptError::Mp4(
+            "mp4a config missing sample rate or channels".into(),
+        ));
+    }
+    Ok(Mp4aConfig {
+        sample_rate,
+        channels,
+        asc,
+    })
+}
+
+fn find_child_fourcc(
+    buf: &[u8],
+    start: usize,
+    end: usize,
+    fourcc: &[u8; 4],
+) -> Result<Option<(usize, usize)>> {
+    let mut pos = start;
+    while pos + 8 <= end {
+        let size = u32::from_be_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
+        if size < 8 || pos + size > end {
+            break;
+        }
+        let kind = &buf[pos + 4..pos + 8];
+        let box_end = pos + size;
+        if kind == fourcc {
+            return Ok(Some((pos, box_end)));
+        }
+        pos = box_end;
+    }
+    Ok(None)
+}
+
+fn parse_asc_from_esds(esds_box: &[u8]) -> Result<Vec<u8>> {
+    if esds_box.len() < 12 {
+        return Err(DecryptError::Mp4("esds too small".into()));
+    }
+    // size(4)+type(4)+version/flags(4) + descriptors
+    let mut i = 12;
+    while i < esds_box.len() {
+        let tag = esds_box[i];
+        i += 1;
+        let (len, next) = read_expandable_len(esds_box, i)?;
+        i = next;
+        let end = i
+            .checked_add(len)
+            .filter(|e| *e <= esds_box.len())
+            .ok_or_else(|| DecryptError::Mp4("esds descriptor truncated".into()))?;
+        if tag == 0x05 {
+            return Ok(esds_box[i..end].to_vec());
+        }
+        if tag == 0x03 {
+            // ES_Descriptor: ES_ID(2) + flags(1) [+ optional] then nested descriptors.
+            if end - i < 3 {
+                return Err(DecryptError::Mp4("ES_Descriptor truncated".into()));
+            }
+            let flags = esds_box[i + 2];
+            let mut nest = i + 3;
+            if flags & 0x80 != 0 {
+                nest += 2; // dependsOn ES_ID
+            }
+            if flags & 0x40 != 0 {
+                if nest >= end {
+                    return Err(DecryptError::Mp4("ES_Descriptor URL truncated".into()));
+                }
+                let url_len = esds_box[nest] as usize;
+                nest = nest
+                    .checked_add(1 + url_len)
+                    .ok_or_else(|| DecryptError::Mp4("ES_Descriptor URL overflow".into()))?;
+            }
+            if flags & 0x20 != 0 {
+                nest += 2; // OCR ES_ID
+            }
+            if let Some(asc) = find_desc_tag(&esds_box[nest..end], 0x05)? {
+                return Ok(asc);
+            }
+        } else if tag == 0x04 {
+            // DecoderConfigDescriptor fixed header is 13 bytes, then nested.
+            if end - i >= 13 {
+                if let Some(asc) = find_desc_tag(&esds_box[i + 13..end], 0x05)? {
+                    return Ok(asc);
+                }
+            }
+        }
+        i = end;
+    }
+    Err(DecryptError::Mp4(
+        "esds missing DecoderSpecificInfo (tag 0x05)".into(),
+    ))
+}
+
+fn find_desc_tag(buf: &[u8], want: u8) -> Result<Option<Vec<u8>>> {
+    let mut i = 0usize;
+    while i < buf.len() {
+        let tag = buf[i];
+        i += 1;
+        let (len, next) = read_expandable_len(buf, i)?;
+        i = next;
+        let end = i
+            .checked_add(len)
+            .filter(|e| *e <= buf.len())
+            .ok_or_else(|| DecryptError::Mp4("descriptor truncated".into()))?;
+        if tag == want {
+            return Ok(Some(buf[i..end].to_vec()));
+        }
+        if tag == 0x04 && end - i >= 13 {
+            if let Some(asc) = find_desc_tag(&buf[i + 13..end], want)? {
+                return Ok(Some(asc));
+            }
+        }
+        i = end;
+    }
+    Ok(None)
+}
+
+fn read_expandable_len(buf: &[u8], mut i: usize) -> Result<(usize, usize)> {
+    let mut length = 0usize;
+    for _ in 0..4 {
+        if i >= buf.len() {
+            return Err(DecryptError::Mp4("expandable length truncated".into()));
+        }
+        let b = buf[i];
+        i += 1;
+        length = (length << 7) | usize::from(b & 0x7f);
+        if b & 0x80 == 0 {
+            return Ok((length, i));
+        }
+    }
+    Err(DecryptError::Mp4("expandable length too long".into()))
+}
+
+fn channels_from_asc(asc: &[u8]) -> Option<u16> {
+    // Minimal ASC: AOT(5) + samplingFrequencyIndex(4) + channelConfiguration(4)
+    if asc.len() < 2 {
+        return None;
+    }
+    let freq_idx = ((asc[0] & 0x07) << 1) | (asc[1] >> 7);
+    let chan = if freq_idx == 0x0f {
+        // Explicit frequency: 24-bit rate follows; channel config after that.
+        // AOT(5) + idx(4) + rate(24) = 33 bits → channel bits touch asc[4] and asc[5].
+        if asc.len() < 6 {
+            return None;
+        }
+        ((asc[4] >> 7) & 0x01) << 3 | ((asc[5] >> 4) & 0x07)
+    } else {
+        (asc[1] >> 3) & 0x0f
+    };
+    if chan == 0 {
+        None
+    } else {
+        Some(u16::from(chan))
+    }
+}
+
+#[cfg(test)]
+mod channels_from_asc_tests {
+    use super::channels_from_asc;
+
+    #[test]
+    fn explicit_freq_needs_six_bytes() {
+        // AOT=2 (AAC LC), freq_idx=0x0f → would formerly panic on 5-byte ASC.
+        let short = [0x17, 0x80, 0x00, 0x00, 0x00];
+        assert_eq!(channels_from_asc(&short), None);
+        // 6 bytes: channelConfiguration = 2 (stereo) after explicit 24-bit rate.
+        let ok = [0x17, 0x80, 0x00, 0x00, 0x00, 0x20];
+        assert_eq!(channels_from_asc(&ok), Some(2));
+    }
+
+    #[test]
+    fn indexed_freq_stereo() {
+        // AOT=2, freq_idx=3 (48 kHz), channels=2
+        let asc = [0x11, 0x90];
+        assert_eq!(channels_from_asc(&asc), Some(2));
+    }
+}

@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{ConfigError, Result};
 use crate::extras::{FileTimestampMode, LameConfig, PathSanitizationMode, ReplacementRule};
 use crate::paths::{resolve_config_path, resolve_files_dir, Paths};
+use crate::pipeline_opts::{ChapterJsonMode, GraphicAudioAccess, IngestConfig, OutputFormat};
+use crate::plugins::{IntegrationsConfig, SourcesConfig};
 
 /// Top-level Libation configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -21,7 +23,12 @@ pub struct Config {
     pub storage: StorageConfig,
     pub daemon: DaemonConfig,
     pub auth: AuthConfig,
-    /// Opt-in crash / error-burst log upload (always redacted).
+    /// Content-source plugins (`[sources.audible]`, `[sources.graphicaudio]`, …).
+    pub sources: SourcesConfig,
+    /// Optional third-party integrations (`[integrations.*]`). Not diagnostics.
+    pub integrations: IntegrationsConfig,
+    /// Opt-in crash / error-burst report upload (`[diagnostics]`).
+    #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
 }
 
@@ -81,8 +88,16 @@ impl Default for LibraryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DownloadConfig {
+    /// Legacy Audible license quality (`high`/`normal`). Prefer [`Self::ingest`].
     pub quality: AudioQuality,
+    /// Legacy container preference (`m4b`/`mp3`). Prefer [`Self::output`].
     pub format: DownloadFormat,
+    /// Post-download output formatting. When unset, derived from [`Self::format`] +
+    /// [`Self::split_files_by_chapter`]. Default effective value: enriched M4B.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<OutputFormat>,
+    /// Ingest quality (global + per-source). Default: highest available.
+    pub ingest: IngestConfig,
     /// Prefer Widevine/CENC (also enables Adrm→Widevine fallback; auto-provisions L3 CDM).
     pub widevine: bool,
     /// Prefer xHE-AAC on the Widevine path when offered.
@@ -96,21 +111,26 @@ pub struct DownloadConfig {
     pub folder_template: Option<String>,
     /// Classic Libation `FileTemplate` without extension (e.g. `<asin>` or `<title> [<asin>]`).
     pub file_template: Option<String>,
-    /// Save cover JPEG alongside audio (`DownloadCoverArt`; classic default off).
+    /// Save cover JPEG alongside audio (`DownloadCoverArt`).
+    /// Default on; cover is also embedded when [`Self::fixup_metadata`] is true.
     pub download_cover: bool,
     /// Download companion PDF when available (classic separate PDF liberator).
+    /// Default on.
     pub download_pdf: bool,
     /// Write a `.cue` sidecar from API chapters (`CreateCueSheet`; classic default off).
     pub create_cue: bool,
     /// Embed tags, cover, and chapters natively (`AllowLibationFixup`; classic default on).
     pub fixup_metadata: bool,
-    /// Persist API chapter JSON (`chapters.<layout>.json`).
-    pub save_chapter_json: bool,
+    /// Chapter JSON sidecars: `off` | `flat` | `tree` | `both` (default off).
+    pub chapter_json: ChapterJsonMode,
+    /// Deprecated: use [`Self::chapter_json`]. Kept for migration/overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save_chapter_json: Option<bool>,
     /// Persist raw catalog API JSON (`metadata.json`; classic `SaveMetadataToFile`).
     pub save_metadata_json: bool,
     /// Cover image size for download/embed (`500`, `1215`, or `native`).
     pub cover_size: String,
-    /// Chapter layout for API/metadata (`tree` or `flat`).
+    /// Preferred Audible chapter API layout when fetching (`tree` or `flat`).
     pub chapter_layout: String,
     /// Re-download when liberated media already exists (`OverwriteExisting`).
     pub overwrite_existing: bool,
@@ -118,8 +138,10 @@ pub struct DownloadConfig {
     pub in_progress: Option<PathBuf>,
     /// Action when a title fails to liberate (`BadBook`).
     pub bad_book_action: BadBookAction,
-    /// Split liberated audio into one file per chapter (`SplitFilesByChapter`).
+    /// Legacy split flag; prefer `output = "split_mp3_by_chapter"`.
     pub split_files_by_chapter: bool,
+    /// Max MP3 part size in MiB when output is `split_mp3_by_size`.
+    pub split_mp3_max_mb: u32,
     /// Template for split chapter filenames (`ChapterFileTemplate`).
     pub chapter_file_template: Option<String>,
     /// Template for chapter titles in metadata (`ChapterTitleTemplate`).
@@ -148,6 +170,41 @@ pub struct DownloadConfig {
     pub replacement_characters: Vec<ReplacementRule>,
 }
 
+impl DownloadConfig {
+    /// Resolved output format (explicit `output`, else legacy `format`/`split_*`).
+    #[must_use]
+    pub fn effective_output(&self) -> OutputFormat {
+        if let Some(output) = self.output {
+            return output;
+        }
+        match (self.format, self.split_files_by_chapter) {
+            (DownloadFormat::Mp3, true) => OutputFormat::SplitMp3ByChapter,
+            (DownloadFormat::Mp3, false) => OutputFormat::SingleMp3,
+            (DownloadFormat::M4b, _) => OutputFormat::EnrichedM4b,
+        }
+    }
+
+    /// Resolved chapter JSON sidecar mode (default off).
+    #[must_use]
+    pub fn effective_chapter_json(&self) -> ChapterJsonMode {
+        if let Some(true) = self.save_chapter_json {
+            if self.chapter_json == ChapterJsonMode::Off {
+                return match self.chapter_layout.to_ascii_lowercase().as_str() {
+                    "flat" => ChapterJsonMode::Flat,
+                    "both" => ChapterJsonMode::Both,
+                    _ => ChapterJsonMode::Tree,
+                };
+            }
+        }
+        if let Some(false) = self.save_chapter_json {
+            if self.chapter_json == ChapterJsonMode::Off {
+                return ChapterJsonMode::Off;
+            }
+        }
+        self.chapter_json
+    }
+}
+
 /// How to handle liberate failures (`BadBook` setting).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -164,17 +221,20 @@ impl Default for DownloadConfig {
         Self {
             quality: AudioQuality::High,
             format: DownloadFormat::M4b,
+            output: None,
+            ingest: IngestConfig::default(),
             widevine: false,
             xhe_aac: false,
             widevine_cdm: None,
             widevine_cdm_provider: None,
             folder_template: None,
             file_template: None,
-            download_cover: false,
+            download_cover: true,
             download_pdf: true,
             create_cue: false,
             fixup_metadata: true,
-            save_chapter_json: true,
+            chapter_json: ChapterJsonMode::Off,
+            save_chapter_json: None,
             save_metadata_json: false,
             cover_size: String::from("500"),
             chapter_layout: String::from("tree"),
@@ -182,6 +242,7 @@ impl Default for DownloadConfig {
             in_progress: None,
             bad_book_action: BadBookAction::Ask,
             split_files_by_chapter: false,
+            split_mp3_max_mb: 200,
             chapter_file_template: None,
             chapter_title_template: None,
             minimum_file_duration_minutes: 0,
@@ -546,6 +607,31 @@ impl Config {
                 self.library.scan_interval_minutes = n;
             }
         }
+        if let Ok(v) =
+            std::env::var("LIBATION_GA_ACCESS").or_else(|_| std::env::var("LIBATION_GA_FETCH"))
+        {
+            if let Some(access) = GraphicAudioAccess::parse(&v) {
+                self.sources.graphicaudio.access = access;
+            } else if !v.trim().is_empty() && !v.eq_ignore_ascii_case("auto") {
+                tracing::warn!(
+                    value = %v,
+                    "unknown LIBATION_GA_ACCESS / LIBATION_GA_FETCH; expected web|zip|device"
+                );
+            }
+        }
+        if let Ok(v) = std::env::var("LIBATION_SOURCE_AUDIBLE_ENABLED") {
+            self.sources.audible.enabled = parse_bool(&v).unwrap_or(self.sources.audible.enabled);
+        }
+        if let Ok(v) = std::env::var("LIBATION_SOURCE_LIBRO_ENABLED") {
+            self.sources.libro.enabled = parse_bool(&v).unwrap_or(self.sources.libro.enabled);
+        }
+        if let Ok(v) = std::env::var("LIBATION_SOURCE_CHIRP_ENABLED") {
+            self.sources.chirp.enabled = parse_bool(&v).unwrap_or(self.sources.chirp.enabled);
+        }
+        if let Ok(v) = std::env::var("LIBATION_SOURCE_GRAPHICAUDIO_ENABLED") {
+            self.sources.graphicaudio.enabled =
+                parse_bool(&v).unwrap_or(self.sources.graphicaudio.enabled);
+        }
         if let Ok(v) = std::env::var("LIBATION_AUTH_PASSWORD_FILE") {
             let trimmed = v.trim();
             if !trimmed.is_empty() {
@@ -588,8 +674,26 @@ impl Config {
             self.download.fixup_metadata = parse_bool(&v).unwrap_or(self.download.fixup_metadata);
         }
         if let Ok(v) = std::env::var("LIBATION_SAVE_CHAPTER_JSON") {
-            self.download.save_chapter_json =
-                parse_bool(&v).unwrap_or(self.download.save_chapter_json);
+            if let Some(mode) = ChapterJsonMode::parse(&v) {
+                self.download.chapter_json = mode;
+            } else if let Some(b) = parse_bool(&v) {
+                self.download.save_chapter_json = Some(b);
+            }
+        }
+        if let Ok(v) = std::env::var("LIBATION_CHAPTER_JSON") {
+            if let Some(mode) = ChapterJsonMode::parse(&v) {
+                self.download.chapter_json = mode;
+            }
+        }
+        if let Ok(v) = std::env::var("LIBATION_OUTPUT") {
+            if let Some(output) = OutputFormat::parse(&v) {
+                self.download.output = Some(output);
+            }
+        }
+        if let Ok(v) = std::env::var("LIBATION_INGEST_QUALITY") {
+            if let Some(q) = crate::pipeline_opts::IngestQuality::parse(&v) {
+                self.download.ingest.quality = q;
+            }
         }
         if let Ok(v) = std::env::var("LIBATION_COVER_SIZE") {
             if !v.trim().is_empty() {
@@ -772,6 +876,94 @@ json_logs = true
     }
 
     #[test]
+    fn sources_graphicaudio_access_from_toml() {
+        let text = r#"
+[sources.graphicaudio]
+access = "zip"
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert_eq!(
+            cfg.sources.graphicaudio.access,
+            crate::GraphicAudioAccess::Zip
+        );
+        assert_eq!(
+            Config::default().sources.graphicaudio.access,
+            crate::GraphicAudioAccess::Web
+        );
+        assert!(Config::default().sources.audible.enabled);
+    }
+
+    #[test]
+    fn diagnostics_top_level_table() {
+        let text = r#"
+[diagnostics]
+share_reports = true
+collector_url = "https://reports.example"
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert!(cfg.diagnostics.share_reports);
+        assert_eq!(cfg.diagnostics.collector_url, "https://reports.example");
+        // Integrations stay empty / distinct from diagnostics.
+        assert_eq!(cfg.integrations, crate::IntegrationsConfig::default());
+    }
+
+    #[test]
+    fn integrations_diagnostics_is_rejected() {
+        let text = r#"
+[integrations.diagnostics]
+share_reports = true
+"#;
+        let err = Config::from_toml_str(text, "test").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("diagnostics") || msg.contains("unknown"),
+            "expected unknown-field error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn sources_plugin_enabled_defaults() {
+        let text = r#"
+[sources.chirp]
+enabled = false
+
+[sources.graphicaudio]
+enabled = true
+access = "device"
+ingest = "low"
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert!(!cfg.sources.is_enabled("chirp"));
+        assert!(cfg.sources.is_enabled("audible"));
+        assert_eq!(
+            cfg.sources.graphicaudio.access,
+            crate::GraphicAudioAccess::Device
+        );
+        assert_eq!(
+            cfg.sources.ingest_override("graphicaudio"),
+            Some(crate::IngestQuality::Low)
+        );
+    }
+
+    #[test]
+    fn sources_partial_table_keeps_enabled_true() {
+        // Only setting source-specific knobs must not flip enabled→false
+        // (bool's Default is false; plugins use default_true).
+        let text = r#"
+[sources.graphicaudio]
+access = "zip"
+
+[sources.libro]
+ingest = "high"
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert!(cfg.sources.graphicaudio.enabled);
+        assert!(cfg.sources.libro.enabled);
+        assert!(cfg.sources.audible.enabled);
+        assert!(cfg.sources.chirp.enabled);
+    }
+
+    #[test]
     fn diagnostics_share_reports_defaults_off() {
         let cfg = Config::default();
         assert!(!cfg.diagnostics.share_reports);
@@ -900,5 +1092,39 @@ upload_url = "https://example.invalid"
         let loaded = Config::from_toml_file(&path).unwrap();
         assert!(loaded.library.auto_liberate);
         assert_eq!(loaded.storage.local.root, PathBuf::from("/data/books"));
+    }
+
+    #[test]
+    fn chapter_json_defaults_off_and_maps_legacy_bool() {
+        let cfg = DownloadConfig::default();
+        assert_eq!(cfg.effective_chapter_json(), ChapterJsonMode::Off);
+        assert_eq!(cfg.effective_output(), OutputFormat::EnrichedM4b);
+
+        let legacy = DownloadConfig {
+            save_chapter_json: Some(true),
+            chapter_layout: "flat".into(),
+            ..Default::default()
+        };
+        assert_eq!(legacy.effective_chapter_json(), ChapterJsonMode::Flat);
+
+        let explicit = DownloadConfig {
+            chapter_json: ChapterJsonMode::Both,
+            save_chapter_json: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(explicit.effective_chapter_json(), ChapterJsonMode::Both);
+    }
+
+    #[test]
+    fn output_derives_from_legacy_format_and_split() {
+        let mut cfg = DownloadConfig {
+            format: DownloadFormat::Mp3,
+            ..Default::default()
+        };
+        assert_eq!(cfg.effective_output(), OutputFormat::SingleMp3);
+        cfg.split_files_by_chapter = true;
+        assert_eq!(cfg.effective_output(), OutputFormat::SplitMp3ByChapter);
+        cfg.output = Some(OutputFormat::None);
+        assert_eq!(cfg.effective_output(), OutputFormat::None);
     }
 }

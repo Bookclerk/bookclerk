@@ -1,0 +1,161 @@
+name: Chirp API probe
+
+# Public GraphQL + constant contract smoke for Chirp. Auth checks run only when
+# TEST_CHIRP_* secrets are set; missing secrets do not fail the job.
+
+on:
+  schedule:
+    - cron: "0 14 * * 3"
+  workflow_dispatch: {}
+  push:
+    paths:
+      - "scripts/source-probes/**"
+      - ".github/workflows/chirp-api-probe.yml"
+      - "crates/libation-chirp/src/client.rs"
+  pull_request:
+    paths:
+      - "scripts/source-probes/**"
+      - ".github/workflows/chirp-api-probe.yml"
+      - "crates/libation-chirp/src/client.rs"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    name: contract / live smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check client constants
+        run: python3 scripts/source-probes/check_client_constants.py --sources chirp
+
+      - name: Live API probe (public always; auth if secrets set)
+        id: smoke
+        env:
+          TEST_CHIRP_EMAIL: ${{ secrets.TEST_CHIRP_EMAIL }}
+          TEST_CHIRP_PASSWORD: ${{ secrets.TEST_CHIRP_PASSWORD }}
+        run: |
+          mkdir -p artifacts/chirp-api-probe
+          set +e
+          python3 scripts/source-probes/probe_all.py \
+            --sources chirp \
+            --out "$GITHUB_WORKSPACE/artifacts/chirp-api-probe"
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if [[ -f artifacts/chirp-api-probe/report.json ]]; then
+            echo "report=true" >> "$GITHUB_OUTPUT"
+            python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          r = json.load(open("artifacts/chirp-api-probe/report.json"))
+          checks = r.get("checks") or []
+          failed = [
+              c for c in checks
+              if not c.get("ok") and not c.get("skipped") and not c.get("needs_auth")
+          ]
+          auth_failed = [
+              c for c in checks
+              if c.get("needs_auth") and not c.get("ok") and not c.get("skipped")
+          ]
+          auth_ran = any(c.get("needs_auth") and not c.get("skipped") for c in checks)
+          print("failed=true" if failed else "failed=false")
+          print("auth_failed=true" if auth_failed else "auth_failed=false")
+          print("auth_ran=true" if auth_ran else "auth_ran=false")
+          PY
+          else
+            echo "report=false" >> "$GITHUB_OUTPUT"
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+            echo "auth_failed=false" >> "$GITHUB_OUTPUT"
+            echo "auth_ran=false" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Upload probe reports (JSON/Markdown only — no media)
+        if: always() && steps.smoke.outputs.report == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: chirp-api-probe
+          path: |
+            artifacts/chirp-api-probe/report.json
+            artifacts/chirp-api-probe/report.md
+          if-no-files-found: warn
+
+      - name: Summarize probe
+        if: always() && steps.smoke.outputs.report == 'true'
+        run: |
+          echo "## Chirp API probe" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.smoke.outputs.auth_ran }}" != "true" ]]; then
+            echo "_Auth smoke skipped (no TEST_CHIRP_* secrets) — public endpoints only._" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat artifacts/chirp-api-probe/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open issue on public probe failure
+        if: >
+          always()
+          && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+          && steps.smoke.outputs.failed == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- chirp-api-probe-fail -->';
+            const report = fs.existsSync('artifacts/chirp-api-probe/report.md')
+              ? fs.readFileSync('artifacts/chirp-api-probe/report.md', 'utf8')
+              : '(no report.md)';
+            const title = 'Chirp API probe failed (public endpoints)';
+            const body = [
+              marker,
+              '',
+              'Scheduled/manual Chirp reverse-API probe failed on **public** checks.',
+              '',
+              '<details><summary>Probe report</summary>',
+              '',
+              report,
+              '',
+              '</details>',
+              '',
+              `Workflow: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            ].join('\n');
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'chirp-api-drift',
+              per_page: 20,
+            });
+            const existing = issues.data.find(i => (i.body || '').includes(marker));
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['chirp-api-drift'],
+              });
+            }
+
+      - name: Fail job when public (or auth, if secrets set) probe failed
+        if: >
+          always()
+          && (steps.smoke.outputs.failed == 'true'
+              || steps.smoke.outputs.auth_failed == 'true')
+        run: |
+          if [[ "${{ steps.smoke.outputs.failed }}" == "true" ]]; then
+            echo "Chirp public API probe failed."
+          fi
+          if [[ "${{ steps.smoke.outputs.auth_failed }}" == "true" ]]; then
+            echo "Chirp auth API probe failed (secrets were set)."
+          fi
+          exit 1

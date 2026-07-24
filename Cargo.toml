@@ -9,6 +9,8 @@ members = [
     "crates/libation-library",
     "crates/libation-source",
     "crates/libation-libro",
+    "crates/libation-graphicaudio",
+    "crates/libation-chirp",
     "crates/libation-liberate",
     "crates/libation-naming",
     "crates/libation-migrate",
@@ -40,6 +42,8 @@ libation-storage = { path = "crates/libation-storage" }
 libation-library = { path = "crates/libation-library" }
 libation-source = { path = "crates/libation-source" }
 libation-libro = { path = "crates/libation-libro" }
+libation-graphicaudio = { path = "crates/libation-graphicaudio" }
+libation-chirp = { path = "crates/libation-chirp" }
 libation-liberate = { path = "crates/libation-liberate" }
 libation-naming = { path = "crates/libation-naming" }
 libation-migrate = { path = "crates/libation-migrate" }
@@ -92,6 +96,12 @@ secrecy = { version = "0.10", features = ["serde"] }
 
 # Test doubles
 wiremock = "0.6"
+
+# HTML / media helpers
+scraper = "0.23"
+html-escape = "0.2"
+infer = "0.19"
+mime_guess = "2"
 
 [profile.release]
 lto = true

@@ -4,12 +4,12 @@
 //! plus the `----:com.pilabor.tone:*` freeform atoms ABS embeds for series/ASIN.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use id3::frame::{ExtendedText, Picture, PictureType};
 use id3::{Tag as Id3Tag, TagLike, Version as Id3Version};
-use mp4ameta::{Chapter, Data, FreeformIdent, Img, ImgFmt, MediaType, Tag as Mp4Tag};
+use mp4ameta::{Data, FreeformIdent, Img, ImgFmt, MediaType, Tag as Mp4Tag, WriteConfig};
 
+use crate::chapters_mp4::write_audiobook_chapters;
 use crate::error::{DecryptError, Result};
 use crate::DecryptOutcome;
 
@@ -122,8 +122,18 @@ fn album_title(req: &FixupRequest) -> String {
 }
 
 fn genres_for_abs(raw: &str) -> String {
-    // ABS accepts `/`, `//`, or `;` as genre separators; normalize commas from our DB.
-    raw.split([',', '/', ';'])
+    // ABS accepts `/`, `//`, or `;` as genre separators.
+    // Prefer `;` when present so catalog names that contain commas
+    // (e.g. "Movie, TV & Video Game Tie-Ins") stay intact.
+    let parts: Vec<&str> = if raw.contains(';') {
+        raw.split(';').collect()
+    } else if raw.contains('/') {
+        raw.split('/').collect()
+    } else {
+        raw.split(',').collect()
+    };
+    parts
+        .into_iter()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
@@ -223,29 +233,33 @@ fn fixup_m4b(req: &FixupRequest) -> Result<()> {
     // Preserve those by default; callers that supply a preferred chapter list
     // (e.g. Audible tree overlaid onto Libro) set `replace_chapters`.
     let has_existing_chapters = !tag.chapter_list().is_empty() || !tag.chapter_track().is_empty();
-    if !req.chapters.is_empty() {
-        if has_existing_chapters && !req.replace_chapters {
-            tracing::debug!(
-                existing_list = tag.chapter_list().len(),
-                existing_track = tag.chapter_track().len(),
-                incoming = req.chapters.len(),
-                "preserving existing M4B chapters; skipping manifest rewrite"
-            );
-        } else {
-            tag.chapter_track_mut().clear();
-            tag.chapter_list_mut().clear();
-            for (title, start_ms) in &req.chapters {
-                let chapter = Chapter::new(Duration::from_millis(*start_ms), title.clone());
-                // Write both Nero `chpl` and QuickTime chapter tracks so players
-                // that only read one of the two still see the new titles.
-                tag.chapter_list_mut().push(chapter.clone());
-                tag.chapter_track_mut().push(chapter);
-            }
-        }
+    let write_chapters =
+        !req.chapters.is_empty() && (req.replace_chapters || !has_existing_chapters);
+    if !req.chapters.is_empty() && has_existing_chapters && !req.replace_chapters {
+        tracing::debug!(
+            existing_list = tag.chapter_list().len(),
+            existing_track = tag.chapter_track().len(),
+            incoming = req.chapters.len(),
+            "preserving existing M4B chapters; skipping manifest rewrite"
+        );
     }
 
-    tag.write_to_path(&req.output)
+    // Tags only via mp4ameta. Its QuickTime chapter track is not AVFoundation-
+    // conformant (wrong tkhd flags / timescale / sample entry), so chapters are
+    // written once below by `write_audiobook_chapters`.
+    tag.chapter_list_mut().clear();
+    tag.chapter_track_mut().clear();
+    let write_cfg = WriteConfig {
+        write_chapter_list: false,
+        write_chapter_track: false,
+        ..WriteConfig::DEFAULT
+    };
+    tag.write_with_path(&req.output, &write_cfg)
         .map_err(|err| DecryptError::Native(format!("mp4ameta write failed: {err}")))?;
+
+    if write_chapters {
+        write_audiobook_chapters(&req.output, &req.chapters)?;
+    }
     Ok(())
 }
 
@@ -408,6 +422,10 @@ mod tests {
         assert_eq!(
             genres_for_abs("Classics, Fiction, Science Fiction"),
             "Classics; Fiction; Science Fiction"
+        );
+        assert_eq!(
+            genres_for_abs("Literature & Fiction; Movie, TV & Video Game Tie-Ins"),
+            "Literature & Fiction; Movie, TV & Video Game Tie-Ins"
         );
     }
 }

@@ -16,18 +16,21 @@ use libation_source::{LoginOptions, SourceKind};
 use crate::registry::{default_registry, parse_source_kind};
 
 const LIBRO_PASSWORD_ENV: &str = "LIBATION_LIBRO_PASSWORD";
+const GA_PASSWORD_ENV: &str = "LIBATION_GA_PASSWORD";
+const CHIRP_PASSWORD_ENV: &str = "LIBATION_CHIRP_PASSWORD";
 
 #[derive(Debug, Subcommand)]
 pub enum AuthCommand {
-    /// Log in to a content source (Audible OAuth or Libro.fm email/password).
+    /// Log in to a content source (Audible OAuth or email/password stores).
     ///
     /// Audible: Amazon accounts with 2FA/MFA must complete OTP (or another
     /// challenge) in the browser — audible-rs OAuth has no username/password flags.
     ///
-    /// Libro.fm: requires `--email`; password from `LIBATION_LIBRO_PASSWORD` or
-    /// an interactive prompt (never pass the password on argv).
+    /// Libro.fm / GraphicAudio / Chirp: require `--email`; password from
+    /// `LIBATION_LIBRO_PASSWORD` / `LIBATION_GA_PASSWORD` / `LIBATION_CHIRP_PASSWORD`
+    /// (or an interactive prompt — never pass the password on argv).
     Login {
-        /// Content source (`audible` or `libro`).
+        /// Content source (`audible`, `libro`, `graphicaudio`, or `chirp`).
         #[arg(long, default_value = "audible", value_parser = parse_source_kind)]
         source: SourceKind,
         /// Marketplace code (`us`, `uk`, `de`, …).
@@ -36,7 +39,7 @@ pub enum AuthCommand {
         /// Optional account label (also used as auth filename stem).
         #[arg(long)]
         label: Option<String>,
-        /// Libro.fm account email (required when `--source libro`).
+        /// Account email (required for `libro`, `graphicaudio`, `chirp`).
         #[arg(long)]
         email: Option<String>,
         /// Print authorize URL and paste redirect (instead of local login server).
@@ -85,7 +88,7 @@ pub enum AuthCommand {
     },
     /// List configured accounts (LibationCli: `list-accounts`).
     List {
-        /// Content source filter (`audible` or `libro`). Omit for all.
+        /// Content source filter. Omit for all.
         #[arg(long, value_parser = parse_source_kind)]
         source: Option<SourceKind>,
         /// Tab-separated values for scripts (source, account, name, locale, scan, auth).
@@ -102,7 +105,7 @@ pub enum AuthCommand {
     },
     /// Show token validity / refresh health across sources.
     Status {
-        /// Content source filter (`audible` or `libro`). Omit for all.
+        /// Content source filter. Omit for all.
         #[arg(long, value_parser = parse_source_kind)]
         source: Option<SourceKind>,
     },
@@ -142,6 +145,32 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
                 .await
             }
             SourceKind::LibroFm => login_libro(config, marketplace, label, email, force).await,
+            SourceKind::GraphicAudio => {
+                login_email_password(
+                    config,
+                    SourceKind::GraphicAudio,
+                    GA_PASSWORD_ENV,
+                    "GraphicAudio",
+                    marketplace,
+                    label,
+                    email,
+                    force,
+                )
+                .await
+            }
+            SourceKind::Chirp => {
+                login_email_password(
+                    config,
+                    SourceKind::Chirp,
+                    CHIRP_PASSWORD_ENV,
+                    "Chirp",
+                    marketplace,
+                    label,
+                    email,
+                    force,
+                )
+                .await
+            }
         },
         AuthCommand::Import {
             path,
@@ -217,7 +246,7 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
             let account_id = if let Some(acct) = store.find_account(&account)? {
                 acct.account_id
             } else {
-                let registry = default_registry();
+                let registry = default_registry(config);
                 let mut found = None;
                 for src in registry.all() {
                     if let Ok(accounts) = src.list_accounts(&paths.files_dir).await {
@@ -247,7 +276,7 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
             if store.get_account(&account_id)?.is_some() {
                 store.set_scan_enabled(&account_id, scan)?;
             } else {
-                let registry = default_registry();
+                let registry = default_registry(config);
                 let mut info = None;
                 for src in registry.all() {
                     if let Ok(accounts) = src.list_accounts(&paths.files_dir).await {
@@ -278,7 +307,7 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
             Ok(())
         }
         AuthCommand::Status { source } => {
-            let registry = default_registry();
+            let registry = default_registry(config);
             let sources: Vec<_> = match source {
                 Some(kind) => vec![registry.require(kind)?],
                 None => registry.all(),
@@ -408,15 +437,39 @@ async fn login_libro(
     email: Option<String>,
     force: bool,
 ) -> anyhow::Result<()> {
+    login_email_password(
+        config,
+        SourceKind::LibroFm,
+        LIBRO_PASSWORD_ENV,
+        "Libro.fm",
+        marketplace,
+        label,
+        email,
+        force,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn login_email_password(
+    config: &Config,
+    kind: SourceKind,
+    password_env: &str,
+    display_name: &str,
+    marketplace: String,
+    label: Option<String>,
+    email: Option<String>,
+    force: bool,
+) -> anyhow::Result<()> {
     let paths = config.paths();
     let email = email
         .map(|e| e.trim().to_string())
         .filter(|e| !e.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("Libro.fm login requires `--email`"))?;
-    let password = resolve_libro_password()?;
+        .ok_or_else(|| anyhow::anyhow!("{display_name} login requires `--email`"))?;
+    let password = resolve_password(password_env, display_name)?;
 
-    let registry = default_registry();
-    let source = registry.require(SourceKind::LibroFm)?;
+    let registry = default_registry(config);
+    let source = registry.require(kind)?;
     let acct = source
         .login(
             &paths.files_dir,
@@ -445,27 +498,24 @@ async fn login_libro(
     Ok(())
 }
 
-fn resolve_libro_password() -> anyhow::Result<String> {
-    if let Ok(pw) = std::env::var(LIBRO_PASSWORD_ENV) {
+fn resolve_password(password_env: &str, display_name: &str) -> anyhow::Result<String> {
+    if let Ok(pw) = std::env::var(password_env) {
         let trimmed = pw.trim().to_string();
         if !trimmed.is_empty() {
             return Ok(trimmed);
         }
     }
-    // Prefer a no-echo TTY prompt; require the env var when stdin is not a TTY.
-    match rpassword::prompt_password("Libro.fm password: ") {
+    match rpassword::prompt_password(format!("{display_name} password: ")) {
         Ok(password) => {
             let password = password.trim_end_matches(['\r', '\n']).to_string();
             if password.is_empty() {
-                anyhow::bail!(
-                    "empty password — set {LIBRO_PASSWORD_ENV} or re-run and enter a password"
-                );
+                anyhow::bail!("empty password — set {password_env} or re-run and enter a password");
             }
             Ok(password)
         }
-        Err(err) => anyhow::bail!(
-            "cannot prompt for password securely ({err}); set {LIBRO_PASSWORD_ENV} instead"
-        ),
+        Err(err) => {
+            anyhow::bail!("cannot prompt for password securely ({err}); set {password_env} instead")
+        }
     }
 }
 
@@ -475,7 +525,7 @@ async fn list_all_accounts(
     bare: bool,
 ) -> anyhow::Result<()> {
     let paths = config.paths();
-    let registry = default_registry();
+    let registry = default_registry(config);
     let store = LibraryStore::open(&paths.library_db)?;
     let db_accounts = store.list_accounts()?;
 

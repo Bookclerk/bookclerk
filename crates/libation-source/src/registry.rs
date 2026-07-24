@@ -46,6 +46,8 @@ impl SourceRegistry {
         kinds.sort_by_key(|k| match k {
             SourceKind::Audible => 0,
             SourceKind::LibroFm => 1,
+            SourceKind::GraphicAudio => 2,
+            SourceKind::Chirp => 3,
         });
         kinds
             .into_iter()

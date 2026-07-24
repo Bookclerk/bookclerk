@@ -1,6 +1,8 @@
 //! Decrypt pipeline: native Rust Adrm + DASH/CENC remux, metadata fix-up, and MP3 encode.
 
 mod brand;
+mod chapter_align;
+mod chapters_mp4;
 mod crypto;
 mod error;
 mod metadata;
@@ -13,11 +15,12 @@ pub use brand::{
     brand_durations_from_chapter_info, brand_trim_range, rebase_chapters_after_brand_trim,
     runtime_length_ms_from_chapter_info, BrandDurations,
 };
+pub use chapter_align::{align_chapter_starts, scale_chapters_to_duration, ChapterAlignOptions};
 pub use error::{DecryptError, Result};
 pub use metadata::{fixup_audiobook, libation_tool_tag, FixupRequest, LIBATION_TOOL_NAME};
 pub use mp4::{
-    decrypt_and_remux, decrypt_dash_cenc, parse_mp4, track_duration_ms, DecryptMode, RemuxOptions,
-    SampleEntryKind, TrimRange,
+    decrypt_and_remux, decrypt_dash_cenc, extract_mp4a_config, parse_mp4, track_duration_ms,
+    DecryptMode, Mp4aConfig, RemuxOptions, SampleEntryKind, TrimRange,
 };
 pub use native::{decrypt_adrm_native, decrypt_cenc_native, remux_trimmed};
 pub use package_m4b::{package_m4b_from_mp3, package_m4b_from_pcm, PackageM4bRequest};

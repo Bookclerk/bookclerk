@@ -410,12 +410,13 @@ pub fn levenshtein_similarity(a: &str, b: &str) -> f64 {
 }
 
 /// True when `s` looks like an Audible ASIN (`^[A-Z0-9]{10}$`, case-insensitive).
+///
+/// Includes all-numeric catalog ids (e.g. `1094100765`); Audnexus accepts these
+/// and older Audible storefront ASINs are often numeric.
 #[must_use]
 pub fn is_valid_asin(s: &str) -> bool {
     let s = s.trim();
-    s.len() == 10
-        && s.chars().all(|c| c.is_ascii_alphanumeric())
-        && s.chars().any(|c| c.is_ascii_alphabetic())
+    s.len() == 10 && s.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 #[cfg(test)]
@@ -558,5 +559,14 @@ mod tests {
     fn normalize_isbn_strips_hyphens() {
         assert_eq!(normalize_isbn("978-1-234-56789-0"), "9781234567890");
         assert_eq!(normalize_isbn("ISBN: 9781234567890"), "9781234567890");
+    }
+
+    #[test]
+    fn valid_asin_accepts_alphanumeric_and_numeric_ids() {
+        assert!(is_valid_asin("B005WWT30E"));
+        assert!(is_valid_asin("1094100765"));
+        assert!(!is_valid_asin("444622"));
+        assert!(!is_valid_asin("B005WWT30"));
+        assert!(!is_valid_asin("B005-WWT30"));
     }
 }

@@ -5,7 +5,7 @@ use std::path::Path;
 
 use libation_decrypt::{
     brand_durations_from_chapter_info, rebase_chapters_after_brand_trim,
-    runtime_length_ms_from_chapter_info,
+    runtime_length_ms_from_chapter_info, scale_chapters_to_duration,
 };
 use serde_json::Value;
 
@@ -106,7 +106,13 @@ pub fn chapters_from_audible_info_for_plain_audio(
         strip_brand_titles,
     );
     let pairs: Vec<(String, u64)> = flat.into_iter().map(|c| (c.title, c.start_ms)).collect();
-    rebase_chapters_after_brand_trim(&pairs, brand, runtime_ms)
+    let rebased = rebase_chapters_after_brand_trim(&pairs, brand, runtime_ms);
+    let content_ms = runtime_ms.map(|runtime| {
+        runtime
+            .saturating_sub(brand.intro_ms)
+            .saturating_sub(brand.outro_ms)
+    });
+    scale_chapters_to_duration(&rebased, content_ms, plain_audio_duration_ms)
 }
 
 /// Clamp signed millisecond offsets to `u64` without wrapping negatives.
@@ -116,6 +122,10 @@ fn clamp_ms(n: i64) -> u64 {
 
 fn flatten_chapter_nodes(nodes: &[Value], out: &mut Vec<FlatChapter>) {
     for node in nodes {
+        // Depth-first: emit nested leaves first, then this node. Parent/part
+        // headings with distinct starts are kept so tree-aware players (and the
+        // chapters.tree.json sidecar) retain hierarchy; same-start parents are
+        // removed later by `dedup_by_key(start_ms)`.
         if let Some(nested) = node.get("chapters").and_then(Value::as_array) {
             flatten_chapter_nodes(nested, out);
         }
@@ -144,6 +154,161 @@ fn flatten_chapter_nodes(nodes: &[Value], out: &mut Vec<FlatChapter>) {
             });
         }
     }
+}
+
+/// Remap chapter-tree `startOffsetMs` values after flat-list alignment.
+///
+/// `start_map` keys are pre-align (rebased/scaled) starts; values are aligned
+/// starts. Nested `chapters` arrays and titles are preserved. Brand intro/outro
+/// fields are zeroed because plain audio does not include those segments.
+#[must_use]
+pub fn apply_start_map_to_chapter_tree(
+    info: &Value,
+    start_map: &std::collections::HashMap<u64, u64>,
+) -> Value {
+    let mut out = info.clone();
+    if let Some(arr) = out.get_mut("chapters").and_then(Value::as_array_mut) {
+        apply_start_map_to_nodes(arr, start_map);
+    }
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("brandIntroDurationMs".into(), Value::from(0));
+        obj.insert("brand_intro_duration_ms".into(), Value::from(0));
+        obj.insert("brandOutroDurationMs".into(), Value::from(0));
+        obj.insert("brand_outro_duration_ms".into(), Value::from(0));
+    }
+    out
+}
+
+fn apply_start_map_to_nodes(nodes: &mut [Value], start_map: &std::collections::HashMap<u64, u64>) {
+    for node in nodes {
+        if let Some(nested) = node.get_mut("chapters").and_then(Value::as_array_mut) {
+            apply_start_map_to_nodes(nested, start_map);
+        }
+        let start_ms = node
+            .get("start_offset_ms")
+            .and_then(Value::as_u64)
+            .or_else(|| node.get("startOffsetMs").and_then(Value::as_u64));
+        let Some(old) = start_ms else {
+            continue;
+        };
+        let Some(&new_start) = start_map.get(&old) else {
+            continue;
+        };
+        if let Some(obj) = node.as_object_mut() {
+            obj.insert("startOffsetMs".into(), Value::from(new_start));
+            obj.insert("start_offset_ms".into(), Value::from(new_start));
+        }
+    }
+}
+
+/// Brand-rebase + duration-scale every node in an Audnexus chapter tree for
+/// plain audio (no brand segments). Drops nodes that fall in the outro window.
+/// Nesting is preserved for tree-aware players.
+#[must_use]
+pub fn rebase_chapter_tree_for_plain_audio(
+    info: &Value,
+    plain_audio_duration_ms: Option<u64>,
+) -> Value {
+    let brand = brand_durations_from_chapter_info(info);
+    let mut runtime_ms = runtime_length_ms_from_chapter_info(info);
+    if runtime_ms.is_none() {
+        if let Some(plain) = plain_audio_duration_ms.filter(|d| *d > 0) {
+            runtime_ms = Some(
+                plain
+                    .saturating_add(brand.intro_ms)
+                    .saturating_add(brand.outro_ms),
+            );
+        }
+    }
+    let end_ms = runtime_ms
+        .map(|r| r.saturating_sub(brand.outro_ms))
+        .unwrap_or(u64::MAX);
+    let content_ms = runtime_ms.map(|runtime| {
+        runtime
+            .saturating_sub(brand.intro_ms)
+            .saturating_sub(brand.outro_ms)
+    });
+    let scale = match (content_ms, plain_audio_duration_ms) {
+        (Some(content), Some(plain))
+            if content > 0 && plain > 0 && content.abs_diff(plain) >= 250 && {
+                let s = plain as f64 / content as f64;
+                (0.98..=1.02).contains(&s)
+            } =>
+        {
+            Some(plain as f64 / content as f64)
+        }
+        _ => None,
+    };
+
+    let mut out = info.clone();
+    if let Some(arr) = out.get_mut("chapters").and_then(Value::as_array_mut) {
+        *arr = rebase_tree_nodes(arr, brand.intro_ms, end_ms, scale);
+    }
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("brandIntroDurationMs".into(), Value::from(0));
+        obj.insert("brand_intro_duration_ms".into(), Value::from(0));
+        obj.insert("brandOutroDurationMs".into(), Value::from(0));
+        obj.insert("brand_outro_duration_ms".into(), Value::from(0));
+        if let Some(plain) = plain_audio_duration_ms {
+            obj.insert("runtimeLengthMs".into(), Value::from(plain));
+            obj.insert("runtime_length_ms".into(), Value::from(plain));
+        }
+    }
+    out
+}
+
+fn rebase_tree_nodes(
+    nodes: &[Value],
+    intro_ms: u64,
+    end_ms: u64,
+    scale: Option<f64>,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    for node in nodes {
+        let start_ms = node
+            .get("start_offset_ms")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                node.get("start_offset_ms")
+                    .and_then(Value::as_i64)
+                    .map(clamp_ms)
+            })
+            .or_else(|| node.get("startOffsetMs").and_then(Value::as_u64))
+            .or_else(|| {
+                node.get("startOffsetMs")
+                    .and_then(Value::as_i64)
+                    .map(clamp_ms)
+            })
+            .unwrap_or(0);
+        if start_ms >= end_ms {
+            continue;
+        }
+        let mut rebased = if start_ms < intro_ms {
+            0
+        } else {
+            start_ms.saturating_sub(intro_ms)
+        };
+        if let Some(s) = scale {
+            rebased = ((rebased as f64) * s).round().max(0.0) as u64;
+        }
+        let mut cloned = node.clone();
+        if let Some(nested) = node.get("chapters").and_then(Value::as_array) {
+            let kids = rebase_tree_nodes(nested, intro_ms, end_ms, scale);
+            if let Some(obj) = cloned.as_object_mut() {
+                if kids.is_empty() {
+                    obj.remove("chapters");
+                } else {
+                    obj.insert("chapters".into(), Value::Array(kids));
+                }
+            }
+        }
+        if let Some(obj) = cloned.as_object_mut() {
+            obj.insert("startOffsetMs".into(), Value::from(rebased));
+            obj.insert("start_offset_ms".into(), Value::from(rebased));
+        }
+        out.push(cloned);
+    }
+    out
 }
 
 /// Write a classic `.cue` sidecar next to the audio file.
@@ -286,6 +451,35 @@ mod tests {
         );
         // End Credits starts at/after the outro window and is dropped.
         assert!(out.iter().all(|(t, _)| t != "End Credits"), "{out:?}");
+    }
+
+    #[test]
+    fn rebases_nested_tree_preserving_hierarchy() {
+        let info = serde_json::json!({
+            "brandIntroDurationMs": 4_000,
+            "brandOutroDurationMs": 5_000,
+            "runtimeLengthMs": 3_600_000,
+            "chapters": [
+                {"title": "Opening Credits", "startOffsetMs": 0},
+                {
+                    "title": "Part 1",
+                    "startOffsetMs": 8_000,
+                    "chapters": [
+                        {"title": "Chapter 1", "startOffsetMs": 10_000},
+                        {"title": "Chapter 2", "startOffsetMs": 100_000}
+                    ]
+                },
+                {"title": "End Credits", "startOffsetMs": 3_596_000}
+            ]
+        });
+        let tree = rebase_chapter_tree_for_plain_audio(&info, Some(3_591_000));
+        let parts = tree["chapters"].as_array().unwrap();
+        assert!(parts.iter().all(|n| n["title"] != "End Credits"));
+        let part = parts.iter().find(|n| n["title"] == "Part 1").unwrap();
+        assert_eq!(part["startOffsetMs"], 4_000);
+        assert_eq!(part["chapters"][0]["title"], "Chapter 1");
+        assert_eq!(part["chapters"][0]["startOffsetMs"], 6_000);
+        assert_eq!(tree["brandIntroDurationMs"], 0);
     }
 
     #[test]

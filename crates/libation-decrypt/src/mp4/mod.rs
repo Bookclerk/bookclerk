@@ -9,5 +9,5 @@ mod remux;
 mod samples;
 
 pub use dash::{decrypt_dash_cenc, looks_like_dash};
-pub use parser::{parse_mp4, track_duration_ms, SampleEntryKind};
+pub use parser::{extract_mp4a_config, parse_mp4, track_duration_ms, Mp4aConfig, SampleEntryKind};
 pub use remux::{decrypt_and_remux, DecryptMode, RemuxOptions, TrimRange};

@@ -28,10 +28,19 @@ pub struct Enrichment {
     pub authors: Option<String>,
     pub narrators: Option<String>,
     pub series: Option<String>,
+    pub series_index: Option<String>,
+    pub series_asin: Option<String>,
     pub length_minutes: Option<i64>,
     pub publisher: Option<String>,
     pub subtitle: Option<String>,
     pub cover_url: Option<String>,
+    pub isbn: Option<String>,
+    /// ISO-8601 / RFC3339 timestamp when known (`releaseDate`).
+    pub published_at: Option<String>,
+    /// ABS-style genre string (`;`-separated).
+    pub categories: Option<String>,
+    pub description: Option<String>,
+    pub language: Option<String>,
     /// Match confidence in `[0.0, 1.0]` (omit/`None` for legacy callers).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
@@ -138,10 +147,13 @@ pub async fn lookup_by_metadata_with_client(
     Ok(best)
 }
 
-/// Merge Audible catalog metadata into an existing ownership row.
+/// Apply a confident Audible catalog match onto a non-Audible ownership row.
 ///
-/// Preserves `source`, `product_id`, `uuid`, and `account_id`. May set `asin`
-/// from the Audible match when the row does not already have one.
+/// Preserves `source`, `product_id`, `uuid`, `account_id`, and an existing
+/// `asin` (sets ASIN only when the row does not already have one). Catalog
+/// fields win for display metadata (title, contributors, series, ISBN, genres,
+/// publish date). Store-native `length_minutes` is kept when present — Audible
+/// runtimes include brand intro/outro that plain Liberate files omit.
 pub fn apply_enrichment_to_book(
     library: &LibraryStore,
     book_uuid: &str,
@@ -153,17 +165,15 @@ pub fn apply_enrichment_to_book(
 
     let title = if enrichment.title.is_empty() {
         existing.title.clone()
-    } else if existing.title.is_empty()
-        || existing
-            .title
-            .eq_ignore_ascii_case(existing.product_id.as_str())
-    {
-        enrichment.title.clone()
     } else {
-        // Prefer catalog title when the row already has a real title — Libro
-        // titles can be sparse; Audible is usually richer.
         enrichment.title.clone()
     };
+
+    let published_at = enrichment
+        .published_at
+        .as_deref()
+        .and_then(parse_release_date)
+        .or(existing.published_at);
 
     let book = NewBook {
         uuid: Some(existing.uuid.clone()),
@@ -174,25 +184,33 @@ pub fn apply_enrichment_to_book(
             .asin
             .clone()
             .or_else(|| Some(enrichment.asin.clone())),
-        isbn: existing.isbn.clone(),
+        isbn: enrichment.isbn.clone().or(existing.isbn.clone()),
         marketplace: existing.marketplace.clone(),
         title,
         authors: enrichment.authors.clone().or(existing.authors.clone()),
         narrators: enrichment.narrators.clone().or(existing.narrators.clone()),
         series: enrichment.series.clone().or(existing.series.clone()),
-        series_index: existing.series_index.clone(),
-        series_asin: existing.series_asin.clone(),
+        series_index: enrichment
+            .series_index
+            .clone()
+            .or(existing.series_index.clone()),
+        series_asin: enrichment
+            .series_asin
+            .clone()
+            .or(existing.series_asin.clone()),
         purchased_at: existing.purchased_at,
         publisher: enrichment.publisher.clone().or(existing.publisher.clone()),
         // Prefer the store-native runtime. Audible catalog length includes
-        // Audible pre/post-roll that Libro DRM-free files do not have; using it
-        // for Libro rows mis-reports duration and invites bad chapter alignment.
+        // Audible pre/post-roll that plain DRM-free files do not have.
         length_minutes: existing.length_minutes.or(enrichment.length_minutes),
         is_abridged: existing.is_abridged,
         content_kind: existing.content_kind.clone(),
-        categories: existing.categories.clone(),
+        categories: enrichment
+            .categories
+            .clone()
+            .or(existing.categories.clone()),
         subtitle: enrichment.subtitle.clone().or(existing.subtitle.clone()),
-        published_at: existing.published_at,
+        published_at,
     };
 
     Ok(library.upsert_book(&book)?)
@@ -280,6 +298,22 @@ fn enrichment_from_audnexus(item: &serde_json::Value) -> Option<(Enrichment, Opt
         .and_then(|s| s.get("name"))
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    let series_index = item
+        .get("seriesPrimary")
+        .and_then(|s| s.get("position"))
+        .and_then(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .or_else(|| v.as_i64().map(|n| n.to_string()))
+                .or_else(|| v.as_f64().map(|n| n.to_string()))
+        })
+        .filter(|s| !s.is_empty());
+    let series_asin = item
+        .get("seriesPrimary")
+        .and_then(|s| s.get("asin"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let length_minutes = item
         .get("runtimeLengthMin")
         .and_then(|v| v.as_i64())
@@ -310,6 +344,28 @@ fn enrichment_from_audnexus(item: &serde_json::Value) -> Option<(Enrichment, Opt
                 .or_else(|| v.as_u64().map(|n| n.to_string()))
         })
         .filter(|s| !s.is_empty());
+    let published_at = item
+        .get("releaseDate")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let categories = genres_from_audnexus(item);
+    let description = item
+        .get("description")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            item.get("summary")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        });
+    let language = item
+        .get("language")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     Some((
         Enrichment {
@@ -318,14 +374,60 @@ fn enrichment_from_audnexus(item: &serde_json::Value) -> Option<(Enrichment, Opt
             authors,
             narrators,
             series,
+            series_index,
+            series_asin,
             length_minutes,
             publisher,
             subtitle,
             cover_url,
+            isbn: isbn.clone(),
+            published_at,
+            categories,
+            description,
+            language,
             confidence: None,
         },
         isbn,
     ))
+}
+
+fn genres_from_audnexus(item: &serde_json::Value) -> Option<String> {
+    let arr = item.get("genres")?.as_array()?;
+    let mut names = Vec::new();
+    for entry in arr {
+        let kind = entry
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("genre");
+        // Prefer catalog genres; still accept tags when no genres present.
+        if kind.eq_ignore_ascii_case("genre") || kind.eq_ignore_ascii_case("tag") {
+            if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
+                if !name.is_empty() && !names.iter().any(|n| n == name) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    if names.is_empty() {
+        None
+    } else {
+        Some(names.join("; "))
+    }
+}
+
+fn parse_release_date(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    // Audnexus sometimes returns `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS.sssZ` variants.
+    if let Ok(dt) = chrono::NaiveDate::parse_from_str(&raw[..raw.len().min(10)], "%Y-%m-%d") {
+        return dt.and_hms_opt(0, 0, 0).map(|naive| naive.and_utc());
+    }
+    None
 }
 
 fn join_named_people(item: &serde_json::Value, field: &str) -> Option<String> {
@@ -375,10 +477,17 @@ mod tests {
             authors: Some("Ann Author".into()),
             narrators: Some("Ned Narrator".into()),
             series: Some("Foundation".into()),
+            series_index: Some("2".into()),
+            series_asin: Some("B00SERIES1".into()),
             length_minutes: Some(970),
             publisher: Some("Pub".into()),
-            subtitle: None,
+            subtitle: Some("A Subtitle".into()),
             cover_url: None,
+            isbn: Some("9781234567890".into()),
+            published_at: Some("2011-01-15T00:00:00.000Z".into()),
+            categories: Some("Science Fiction; Classics".into()),
+            description: Some("Blurb".into()),
+            language: Some("english".into()),
             confidence: Some(0.95),
         };
         let updated = apply_enrichment_to_book(&store, &row.uuid, &enrichment).unwrap();
@@ -386,6 +495,50 @@ mod tests {
         assert_eq!(updated.authors.as_deref(), Some("Ann Author"));
         assert_eq!(updated.length_minutes, Some(900), "Libro runtime must win");
         assert_eq!(updated.series.as_deref(), Some("Foundation"));
+        assert_eq!(updated.series_index.as_deref(), Some("2"));
+        assert_eq!(updated.series_asin.as_deref(), Some("B00SERIES1"));
+        assert_eq!(updated.isbn.as_deref(), Some("9781234567890"));
+        assert_eq!(updated.subtitle.as_deref(), Some("A Subtitle"));
+        assert_eq!(
+            updated.categories.as_deref(),
+            Some("Science Fiction; Classics")
+        );
+        assert!(updated.published_at.is_some());
+    }
+
+    #[test]
+    fn enrichment_preserves_existing_asin() {
+        let store = LibraryStore::open_in_memory().unwrap();
+        store
+            .upsert_account_with_source("user@example.com", "us", None, true, "libro")
+            .unwrap();
+        let mut seed = NewBook::minimal("9781234567890", "user@example.com", "us", "Libro Title");
+        seed.source = "libro".into();
+        seed.asin = Some("B00EXIST01".into());
+        seed.length_minutes = Some(900);
+        let row = store.upsert_book(&seed).unwrap();
+        let enrichment = Enrichment {
+            asin: "B00NEWASIN".into(),
+            title: "Audible Title".into(),
+            authors: Some("Ann Author".into()),
+            narrators: None,
+            series: None,
+            series_index: None,
+            series_asin: None,
+            length_minutes: Some(970),
+            publisher: None,
+            subtitle: None,
+            cover_url: None,
+            isbn: None,
+            published_at: None,
+            categories: None,
+            description: None,
+            language: None,
+            confidence: Some(0.95),
+        };
+        let updated = apply_enrichment_to_book(&store, &row.uuid, &enrichment).unwrap();
+        assert_eq!(updated.asin.as_deref(), Some("B00EXIST01"));
+        assert_eq!(updated.title, "Audible Title");
     }
 
     #[test]
@@ -397,9 +550,16 @@ mod tests {
             "publisherName": "Pub Co",
             "runtimeLengthMin": 320,
             "isbn": "9781234567890",
+            "releaseDate": "2019-12-03T00:00:00.000Z",
+            "language": "english",
+            "description": "A long blurb",
             "authors": [{"name": "Ann Author"}],
             "narrators": [{"name": "Ned Narrator"}],
-            "seriesPrimary": {"name": "Series A", "position": "1"},
+            "seriesPrimary": {"name": "Series A", "position": "1", "asin": "B00SER01"},
+            "genres": [
+                {"name": "Literature & Fiction", "type": "genre"},
+                {"name": "Adventure", "type": "tag"}
+            ],
             "image": "https://img.example/cover.jpg"
         });
         let (e, isbn) = enrichment_from_audnexus(&item).unwrap();
@@ -409,11 +569,20 @@ mod tests {
         assert_eq!(e.narrators.as_deref(), Some("Ned Narrator"));
         assert_eq!(e.length_minutes, Some(320));
         assert_eq!(e.series.as_deref(), Some("Series A"));
+        assert_eq!(e.series_index.as_deref(), Some("1"));
+        assert_eq!(e.series_asin.as_deref(), Some("B00SER01"));
+        assert_eq!(
+            e.categories.as_deref(),
+            Some("Literature & Fiction; Adventure")
+        );
+        assert_eq!(e.description.as_deref(), Some("A long blurb"));
+        assert_eq!(e.language.as_deref(), Some("english"));
         assert_eq!(
             e.cover_url.as_deref(),
             Some("https://img.example/cover.jpg")
         );
         assert_eq!(isbn.as_deref(), Some("9781234567890"));
+        assert_eq!(e.isbn.as_deref(), Some("9781234567890"));
     }
 
     #[test]

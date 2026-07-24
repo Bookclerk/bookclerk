@@ -13,6 +13,8 @@ pub enum SourceKind {
     #[default]
     Audible,
     LibroFm,
+    GraphicAudio,
+    Chirp,
 }
 
 impl SourceKind {
@@ -21,6 +23,8 @@ impl SourceKind {
         match self {
             Self::Audible => "audible",
             Self::LibroFm => "libro",
+            Self::GraphicAudio => "graphicaudio",
+            Self::Chirp => "chirp",
         }
     }
 
@@ -29,6 +33,8 @@ impl SourceKind {
         match s.trim().to_ascii_lowercase().as_str() {
             "audible" => Some(Self::Audible),
             "libro" | "librofm" | "libro.fm" => Some(Self::LibroFm),
+            "graphicaudio" | "graphic-audio" | "ga" => Some(Self::GraphicAudio),
+            "chirp" | "chirpbooks" => Some(Self::Chirp),
             _ => None,
         }
     }
@@ -55,9 +61,9 @@ pub struct SourceAccount {
 pub struct LoginOptions {
     pub marketplace: String,
     pub label: Option<String>,
-    /// Libro.fm email (ignored for Audible OAuth).
+    /// Email/password sources (Libro.fm, GraphicAudio, Chirp); ignored for Audible OAuth.
     pub email: Option<String>,
-    /// Libro.fm password (ignored for Audible OAuth).
+    /// Email/password sources (Libro.fm, GraphicAudio, Chirp); ignored for Audible OAuth.
     pub password: Option<String>,
     pub force: bool,
 }

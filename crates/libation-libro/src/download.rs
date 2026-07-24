@@ -228,14 +228,7 @@ fn is_audio_filename(name: &str) -> bool {
 }
 
 fn sniff_audio_ext(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(b"ID3") || (bytes.len() > 1 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0)
-    {
-        return Some("mp3");
-    }
-    if bytes.len() > 8 && &bytes[4..8] == b"ftyp" {
-        return Some("m4b");
-    }
-    None
+    libation_source::extension_from_bytes(bytes).map(|ext| ext.trim_start_matches('.'))
 }
 
 fn filename_from_url(url: &str) -> Option<String> {

@@ -105,8 +105,8 @@ impl ContentSource for AudibleSource {
 
         let need_chapters = opts.download.create_cue
             || opts.download.fixup_metadata
-            || opts.download.save_chapter_json
-            || opts.download.split_files_by_chapter
+            || opts.download.wants_chapter_json()
+            || opts.download.wants_split_by_chapter()
             || opts.download.strip_audible_brand_audio;
         let mut chapter_info = None;
         if need_chapters {
