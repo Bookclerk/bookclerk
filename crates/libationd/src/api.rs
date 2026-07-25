@@ -2,26 +2,31 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::Json;
 use axum::Router;
 use libation_config::Config;
+use libation_integrations::{portal_router, IntegrationRegistry, PortalState};
 use libation_library::{LiberateStatus, LibraryStore};
+use libation_source::ContentSource;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
+use tower_http::normalize_path::NormalizePathLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::jobs::{enqueue_liberate, enqueue_scan};
 
 /// Shared daemon state.
 pub struct AppState {
-    pub config: RwLock<Config>,
+    pub config: Arc<RwLock<Config>>,
     pub library: LibraryStore,
     pub jobs: Arc<RwLock<Vec<JobInfo>>>,
     /// Serialize scan/liberate work so jobs do not thrash the same accounts.
     pub work_lock: Mutex<()>,
+    pub integrations: IntegrationRegistry,
+    pub sources: Vec<Arc<dyn ContentSource>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,15 +75,36 @@ pub struct LiberateRequestBody {
     pub account: Option<String>,
 }
 
-pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+#[derive(Debug, Deserialize, Default)]
+pub struct IntegrationScanRequest {
+    pub force: Option<bool>,
+}
+
+pub fn router(state: Arc<AppState>, portal_base: String, files_dir: std::path::PathBuf) -> Router {
+    let portal_state = PortalState {
+        config: state.config.clone(),
+        library: state.library.clone(),
+        integrations: state.integrations.clone(),
+        files_dir,
+        sources: state.sources.clone(),
+    };
+
+    let mut app = Router::new()
         .route("/health", get(health))
         .route("/status", get(status))
         .route("/scan", post(trigger_scan))
         .route("/liberate", post(trigger_liberate))
         .route("/jobs", get(list_jobs))
+        .route("/integrations/{id}/scan", post(trigger_integration_scan))
+        .with_state(state);
+
+    if !portal_base.is_empty() {
+        app = app.nest(&portal_base, portal_router(portal_state));
+    }
+
+    // Outermost: normalize `/connect/` → `/connect` before route matching.
+    app.layer(NormalizePathLayer::trim_trailing_slash())
         .layer(TraceLayer::new_for_http())
-        .with_state(state)
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -125,7 +151,14 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         error,
         in_progress: queued + downloading,
         listen: cfg.daemon.listen.clone(),
-        storage_backend: format!("{:?}", cfg.storage.backend).to_ascii_lowercase(),
+        storage_backend: {
+            let names = cfg.output.enabled_backend_names();
+            if names.is_empty() {
+                "none".into()
+            } else {
+                names.join(",")
+            }
+        },
     }))
 }
 
@@ -157,4 +190,23 @@ async fn trigger_liberate(
 
 async fn list_jobs(State(state): State<Arc<AppState>>) -> Json<Vec<JobInfo>> {
     Json(state.jobs.read().await.clone())
+}
+
+async fn trigger_integration_scan(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Option<Json<IntegrationScanRequest>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let force = body.and_then(|Json(b)| b.force).unwrap_or(false);
+    let Some(integration) = state.integrations.get(&id) else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    if !integration.supports_library_scan() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    integration
+        .scan_library(force)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    Ok(Json(serde_json::json!({ "ok": true, "integration": id })))
 }

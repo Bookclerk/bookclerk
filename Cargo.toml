@@ -15,6 +15,9 @@ members = [
     "crates/libation-naming",
     "crates/libation-migrate",
     "crates/libation-search",
+    "crates/libation-integrations",
+    "crates/libation-plugin",
+    "crates/libation-plugin-examples/echo-integration",
     "crates/libation-cli",
     "crates/libationd",
 ]
@@ -48,6 +51,8 @@ libation-liberate = { path = "crates/libation-liberate" }
 libation-naming = { path = "crates/libation-naming" }
 libation-migrate = { path = "crates/libation-migrate" }
 libation-search = { path = "crates/libation-search" }
+libation-integrations = { path = "crates/libation-integrations" }
+libation-plugin = { path = "crates/libation-plugin" }
 
 # Async / runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "process", "signal"] }
@@ -71,7 +76,7 @@ directories = "6"
 # CLI / HTTP
 clap = { version = "4", features = ["derive", "env"] }
 axum = "0.8"
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.6", features = ["trace", "fs", "normalize-path"] }
 qrcode = { version = "0.14", default-features = false }
 
 # DB / storage — rusqlite (bundled) aligns with audible-rs; one libsqlite3-sys in the tree.

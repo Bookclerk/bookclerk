@@ -8,12 +8,12 @@ use libation_library::LibraryStore;
 
 use crate::error::{Result, SourceError};
 use crate::traits::ContentSource;
-use crate::types::{ScanOptions, ScanSummary, SourceAccount, SourceKind};
+use crate::types::{ScanOptions, ScanSummary, SourceAccount};
 
-/// Maps [`SourceKind`] → installed [`ContentSource`] implementations.
+/// Maps source id → installed [`ContentSource`] implementations.
 #[derive(Clone, Default)]
 pub struct SourceRegistry {
-    sources: HashMap<SourceKind, Arc<dyn ContentSource>>,
+    sources: HashMap<String, Arc<dyn ContentSource>>,
 }
 
 impl SourceRegistry {
@@ -24,35 +24,59 @@ impl SourceRegistry {
 
     /// Register (or replace) a source implementation.
     pub fn register(&mut self, source: Arc<dyn ContentSource>) {
-        self.sources.insert(source.kind(), source);
+        let id = source.id().to_string();
+        self.sources.insert(id, source);
     }
 
-    /// Look up a source by kind.
+    /// Look up a source by canonical id or alias.
     #[must_use]
-    pub fn get(&self, kind: SourceKind) -> Option<Arc<dyn ContentSource>> {
-        self.sources.get(&kind).cloned()
+    pub fn get(&self, id_or_alias: &str) -> Option<Arc<dyn ContentSource>> {
+        let needle = id_or_alias.trim().to_ascii_lowercase();
+        if let Some(s) = self.sources.get(&needle) {
+            return Some(s.clone());
+        }
+        self.sources
+            .values()
+            .find(|s| {
+                s.id().eq_ignore_ascii_case(&needle)
+                    || s.aliases().iter().any(|a| a.eq_ignore_ascii_case(&needle))
+            })
+            .cloned()
     }
 
     /// Require a source or return an error.
-    pub fn require(&self, kind: SourceKind) -> Result<Arc<dyn ContentSource>> {
-        self.get(kind)
-            .ok_or_else(|| SourceError::api(format!("content source `{kind}` is not registered")))
+    pub fn require(&self, id_or_alias: &str) -> Result<Arc<dyn ContentSource>> {
+        self.get(id_or_alias).ok_or_else(|| {
+            SourceError::api(format!("content source `{id_or_alias}` is not registered"))
+        })
     }
 
-    /// All registered sources in stable order (Audible first, then Libro).
+    /// Resolve a needle to the canonical plugin id when registered.
+    #[must_use]
+    pub fn resolve_id(&self, id_or_alias: &str) -> Option<String> {
+        self.get(id_or_alias).map(|s| s.id().to_string())
+    }
+
+    /// All registered sources in stable plugin order.
     #[must_use]
     pub fn all(&self) -> Vec<Arc<dyn ContentSource>> {
-        let mut kinds: Vec<SourceKind> = self.sources.keys().copied().collect();
-        kinds.sort_by_key(|k| match k {
-            SourceKind::Audible => 0,
-            SourceKind::LibroFm => 1,
-            SourceKind::GraphicAudio => 2,
-            SourceKind::Chirp => 3,
-        });
-        kinds
-            .into_iter()
-            .filter_map(|k| self.sources.get(&k).cloned())
-            .collect()
+        let mut sources: Vec<_> = self.sources.values().cloned().collect();
+        sources.sort_by_key(|s| (s.sort_key(), s.id().to_string()));
+        sources
+    }
+
+    /// Credential filename suffixes declared by every registered source.
+    #[must_use]
+    pub fn all_auth_credential_suffixes(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        for source in self.all() {
+            for suffix in source.auth_credential_suffixes() {
+                if !out.contains(suffix) {
+                    out.push(*suffix);
+                }
+            }
+        }
+        out
     }
 
     /// Scan every registered source (honoring per-source account filters).
@@ -74,7 +98,7 @@ impl SourceRegistry {
                     Ok(Some(o)) => o,
                     Ok(None) => {
                         tracing::debug!(
-                            source = %source.kind(),
+                            source = %source.id(),
                             "skipping source — no matching accounts in filter"
                         );
                         continue;
@@ -88,7 +112,7 @@ impl SourceRegistry {
                 }
                 Err(SourceError::NoAccounts(msg)) => {
                     tracing::debug!(
-                        source = %source.kind(),
+                        source = %source.id(),
                         %msg,
                         "skipping source with no accounts"
                     );
@@ -141,13 +165,13 @@ fn account_needle_matches(needle: &str, accounts: &[SourceAccount]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::account_needle_matches;
-    use crate::types::{SourceAccount, SourceKind};
+    use crate::types::SourceAccount;
 
     #[test]
     fn account_needle_matches_id_and_label() {
         let accounts = vec![SourceAccount {
             account_id: "libro-user@example.com".into(),
-            source: SourceKind::LibroFm,
+            source: "libro".into(),
             marketplace: "us".into(),
             label: Some("Libro Main".into()),
             scan_enabled: true,

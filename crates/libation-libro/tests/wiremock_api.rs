@@ -8,7 +8,7 @@ use libation_libro::{
     LibroClient, LibroSource, APP_VER, DOWNLOAD_MANIFEST_PATH, LIBRARY_PATH, PACKAGED_M4B_PATH,
     USER_AGENT_VALUE,
 };
-use libation_source::{ContentSource, LoginOptions, ScanOptions, SourceFetch, SourceKind};
+use libation_source::{ContentSource, LoginOptions, ScanOptions, SourceFetch};
 use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use zip::write::SimpleFileOptions;
@@ -87,7 +87,7 @@ async fn oauth_token_login_saves_auth_file() {
         .await
         .unwrap();
 
-    assert_eq!(account.source, SourceKind::LibroFm);
+    assert_eq!(account.source, "libro");
     assert_eq!(account.account_id, "reader@example.com");
 
     let auth = load_auth(&libation_libro::auth_file_for_account(

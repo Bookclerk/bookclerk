@@ -5,16 +5,26 @@ use std::sync::Arc;
 use libation_audible::DownloadOptions;
 use libation_config::BadBookAction;
 use libation_liberate::{
-    liberate_book_indexed, match_storage_to_library, LiberateRequest, MatchStorageOptions,
-    StorageIndex,
+    liberate_book_indexed, match_storage_to_library, LiberateDestinations, LiberateRequest,
+    MatchStorageOptions, StorageIndex,
 };
 use libation_library::LiberateStatus;
-use libation_source::{ScanOptions, SourceKind};
+use libation_source::ScanOptions;
 use libation_storage::from_config;
 use tracing::{error, info, warn};
 
 use crate::api::{AppState, JobInfo};
-use crate::registry::default_registry;
+use crate::registry::default_registry_with_plugins;
+
+async fn notify_integrations(state: &AppState, asin: &str, storage_key: &str) {
+    libation_integrations::emit_book_liberated(
+        &state.integrations,
+        &state.library,
+        asin,
+        storage_key,
+    )
+    .await;
+}
 
 /// Enqueue a library scan and run it in the background.
 pub async fn enqueue_scan(state: Arc<AppState>, account: Option<String>) -> String {
@@ -101,7 +111,7 @@ pub async fn run_scan(state: &AppState, account: Option<&str>) -> anyhow::Result
     let cfg = state.config.read().await.clone();
     let paths = cfg.paths();
     paths.ensure_dirs()?;
-    let registry = default_registry(&cfg);
+    let registry = default_registry_with_plugins(&cfg).await?;
     let summary = registry
         .scan_all(
             &paths.files_dir,
@@ -141,8 +151,9 @@ pub async fn run_liberate(
     let paths = cfg.paths();
     paths.ensure_dirs()?;
     let storage = from_config(&cfg).await?;
+    let destinations = LiberateDestinations::from_config(&cfg).await?;
     let options = DownloadOptions::from(&cfg);
-    let registry = default_registry(&cfg);
+    let registry = default_registry_with_plugins(&cfg).await?;
 
     // Match existing media first so auto-liberate does not re-download.
     let _ = match_storage_to_library(
@@ -182,14 +193,13 @@ pub async fn run_liberate(
     let mut ok = 0u32;
     let mut matched = 0u32;
     let mut failed = 0u32;
-    let bad_book = cfg.download.bad_book_action;
+    let bad_book = cfg.output.bad_book_action;
     for book in targets {
-        let source_kind = SourceKind::parse(&book.source).unwrap_or(SourceKind::Audible);
-        let content_source = registry.require(source_kind).ok();
+        let content_source = registry.get(&book.source);
         let req = LiberateRequest {
             asin: book.download_product_id().to_string(),
             book_uuid: Some(book.uuid.clone()),
-            source: source_kind,
+            source: book.source.clone(),
             account_id: book.account_id.clone(),
             title: book.title.clone(),
             authors: book.authors.clone(),
@@ -201,13 +211,14 @@ pub async fn run_liberate(
             cache_dir: cfg.download_cache_dir(),
             force: false,
             preloaded_license: None,
+            write_destinations: None,
         };
         let mut attempts = 0u32;
         loop {
             attempts += 1;
             match liberate_book_indexed(
                 &state.library,
-                storage.as_ref(),
+                &destinations,
                 req.clone(),
                 Some(&mut index),
                 content_source.as_deref(),
@@ -216,11 +227,13 @@ pub async fn run_liberate(
             {
                 Ok(result) if result.matched_existing => {
                     info!(asin = %result.asin, key = %result.storage_key, "matched existing");
+                    notify_integrations(state, &result.asin, &result.storage_key).await;
                     matched += 1;
                     break;
                 }
                 Ok(result) => {
                     info!(asin = %result.asin, key = %result.storage_key, "liberated");
+                    notify_integrations(state, &result.asin, &result.storage_key).await;
                     ok += 1;
                     break;
                 }

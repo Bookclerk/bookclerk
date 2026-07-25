@@ -1,128 +1,221 @@
 //! Plugin-style `[sources.*]` and `[integrations.*]` configuration.
 //!
-//! Layout mirrors a small plugin registry for content sources and optional
-//! third-party integrations. **Diagnostics are not an integration** — they
-//! stay under top-level `[diagnostics]`.
+//! Source plugins are opaque TOML tables under `[sources.<id>]`. Host code
+//! never names store-specific knobs — each content-source crate parses its
+//! own table at registration time. Integrations remain typed for first-party
+//! ABS; additional ids land in opaque tables.
+//!
+//! External (subprocess) plugins are *discovered* via `plugin.toml` under
+//! plugin search dirs; these tables hold enablement and opaque knobs passed
+//! at handshake. See `docs/plugins.md`.
 //!
 //! ```toml
 //! [sources.audible]
 //! enabled = true
+//! bitrate = "high"
 //!
-//! [sources.graphicaudio]
+//! [sources.libro]
 //! enabled = true
-//! access = "web"          # source-specific knob
-//! ingest = "highest"      # optional override of [download.ingest]
+//! container = "m4b"
 //!
-//! # [integrations.some_future_hook]
-//! # enabled = true
+//! [integrations.audiobookshelf]
+//! enabled = false
 //!
-//! [diagnostics]
-//! share_reports = false
+//! [integrations.echo]
+//! enabled = true
 //! ```
-//!
-//! CLI/daemon registries only register sources with `enabled = true`. Future
-//! source crates should add a table under `[sources.<id>]` and a matching
-//! `is_enabled` arm rather than top-level TOML keys.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline_opts::{GraphicAudioAccess, IngestQuality};
-
-fn default_true() -> bool {
-    true
-}
-
 /// Per-content-source plugins under `[sources]`.
 ///
-/// Each source is independently enableable. Source-specific knobs live on that
-/// source's table (e.g. `[sources.graphicaudio] access`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(default)]
+/// Each key is a plugin id (`audible`, `libro`, …); values are opaque tables
+/// owned by that plugin (`enabled`, bitrate/container/access, …).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(transparent)]
 pub struct SourcesConfig {
-    pub audible: SourcePluginConfig,
-    pub libro: SourcePluginConfig,
-    pub chirp: SourcePluginConfig,
-    pub graphicaudio: GraphicAudioSourceConfig,
+    pub plugins: BTreeMap<String, toml::Value>,
 }
 
 impl SourcesConfig {
+    /// Borrow a plugin table when present and well-formed.
+    #[must_use]
+    pub fn table(&self, id: &str) -> Option<&toml::Table> {
+        self.plugins.get(id)?.as_table()
+    }
+
+    /// Mutable plugin table, creating an empty table if needed.
+    pub fn table_mut(&mut self, id: &str) -> &mut toml::Table {
+        let entry = self
+            .plugins
+            .entry(id.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if !entry.is_table() {
+            *entry = toml::Value::Table(toml::Table::new());
+        }
+        match entry {
+            toml::Value::Table(t) => t,
+            _ => unreachable!("plugin entry forced to table"),
+        }
+    }
+
     /// Whether a content source id should be registered / scanned.
+    ///
+    /// Missing tables default to enabled (`true`) so first-party sources work
+    /// out of the box before the user writes a `[sources.*]` section.
     #[must_use]
     pub fn is_enabled(&self, source: &str) -> bool {
-        match source.trim().to_ascii_lowercase().as_str() {
-            "audible" => self.audible.enabled,
-            "libro" | "libro.fm" | "librofm" => self.libro.enabled,
-            "chirp" => self.chirp.enabled,
-            "graphicaudio" | "graphic_audio" | "ga" => self.graphicaudio.enabled,
-            _ => true,
-        }
+        self.table(source)
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
     }
 
-    /// Optional per-source ingest quality override.
+    /// Set `enabled` on a plugin table.
+    pub fn set_enabled(&mut self, source: &str, enabled: bool) {
+        self.table_mut(source)
+            .insert("enabled".into(), toml::Value::Boolean(enabled));
+    }
+
+    /// Set a string-valued plugin knob (`bitrate`, `container`, …).
+    pub fn set_string(&mut self, source: &str, key: &str, value: impl Into<String>) {
+        self.table_mut(source)
+            .insert(key.into(), toml::Value::String(value.into()));
+    }
+
+    /// Read a string-valued plugin knob.
     #[must_use]
-    pub fn ingest_override(&self, source: &str) -> Option<IngestQuality> {
-        match source.trim().to_ascii_lowercase().as_str() {
-            "audible" => self.audible.ingest,
-            "libro" | "libro.fm" | "librofm" => self.libro.ingest,
-            "chirp" => self.chirp.ingest,
-            "graphicaudio" | "graphic_audio" | "ga" => self.graphicaudio.ingest,
-            _ => None,
+    pub fn get_string(&self, source: &str, key: &str) -> Option<&str> {
+        self.table(source)?.get(key)?.as_str()
+    }
+
+    /// Apply a dotted override `sources.<id>.<key>=value` (bool or string).
+    pub fn apply_dotted_override(&mut self, remainder: &str, value: &str) -> bool {
+        let Some((id, key)) = remainder.split_once('.') else {
+            return false;
+        };
+        if id.is_empty() || key.is_empty() {
+            return false;
         }
+        if key == "enabled" {
+            if let Some(b) = parse_bool_loose(value) {
+                self.set_enabled(id, b);
+                return true;
+            }
+            return false;
+        }
+        if let Some(b) = parse_bool_loose(value) {
+            self.table_mut(id)
+                .insert(key.into(), toml::Value::Boolean(b));
+        } else {
+            self.set_string(id, key, value.trim());
+        }
+        true
     }
 }
 
-/// Common knobs shared by every content-source plugin.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct SourcePluginConfig {
-    /// When false, the source is not registered in CLI/daemon registries.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Optional ingest quality override for this source only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ingest: Option<IngestQuality>,
-}
-
-impl Default for SourcePluginConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            ingest: None,
-        }
-    }
-}
-
-/// GraphicAudio plugin (`[sources.graphicaudio]`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct GraphicAudioSourceConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Fetch path: `web` (default) | `zip` | `device`.
-    #[serde(default)]
-    pub access: GraphicAudioAccess,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ingest: Option<IngestQuality>,
-}
-
-impl Default for GraphicAudioSourceConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            access: GraphicAudioAccess::Web,
-            ingest: None,
-        }
+fn parse_bool_loose(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
 /// Optional third-party integrations under `[integrations]`.
 ///
-/// Reserved for future hooks (webhooks, external library sync, …). Crash /
-/// error-burst reporting is **not** an integration — use top-level
-/// [`crate::DiagnosticsConfig`] / `[diagnostics]`.
-///
-/// Unknown keys are rejected so a mistaken `[integrations.diagnostics]` fails
-/// loudly instead of being ignored.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(default, deny_unknown_fields)]
-pub struct IntegrationsConfig {}
+/// First-party Audiobookshelf stays typed; additional `[integrations.<id>]`
+/// tables (including dynamically discovered plugins) land in [`Self::plugins`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct IntegrationsConfig {
+    pub portal_base_path: String,
+    pub claim_ticket_ttl_hours: u64,
+    pub public_origin: Option<String>,
+    pub portal_session_ttl_hours: u64,
+    pub audiobookshelf: AudiobookshelfConfig,
+    /// Opaque tables for external / discovered integration plugins.
+    #[serde(flatten)]
+    pub plugins: BTreeMap<String, toml::Value>,
+}
+
+impl Default for IntegrationsConfig {
+    fn default() -> Self {
+        Self {
+            portal_base_path: "/connect".into(),
+            claim_ticket_ttl_hours: 72,
+            public_origin: None,
+            portal_session_ttl_hours: 12,
+            audiobookshelf: AudiobookshelfConfig::default(),
+            plugins: BTreeMap::new(),
+        }
+    }
+}
+
+impl IntegrationsConfig {
+    /// Whether an integration plugin id is enabled.
+    ///
+    /// Built-in ABS uses its typed flag. External plugins default to **disabled**
+    /// unless `[integrations.<id>] enabled = true`.
+    #[must_use]
+    pub fn is_enabled(&self, integration: &str) -> bool {
+        match integration.trim().to_ascii_lowercase().as_str() {
+            "audiobookshelf" | "abs" => self.audiobookshelf.enabled,
+            other => self
+                .plugin_table(other)
+                .and_then(|t| t.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        }
+    }
+
+    /// Borrow an external plugin table when present.
+    #[must_use]
+    pub fn plugin_table(&self, id: &str) -> Option<&toml::Table> {
+        self.plugins.get(id)?.as_table()
+    }
+
+    /// Mutable external plugin table (creates empty table if needed).
+    pub fn plugin_table_mut(&mut self, id: &str) -> &mut toml::Table {
+        let entry = self
+            .plugins
+            .entry(id.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if !entry.is_table() {
+            *entry = toml::Value::Table(toml::Table::new());
+        }
+        match entry {
+            toml::Value::Table(t) => t,
+            _ => unreachable!("plugin entry forced to table"),
+        }
+    }
+}
+
+/// Audiobookshelf integration settings (`[integrations.audiobookshelf]`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AudiobookshelfConfig {
+    pub enabled: bool,
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub library_id: Option<String>,
+    pub watch_users: bool,
+    pub notify_scan_on_liberate: bool,
+    pub allow_credential_login: bool,
+}
+
+impl Default for AudiobookshelfConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: String::new(),
+            api_key: None,
+            library_id: None,
+            watch_users: true,
+            notify_scan_on_liberate: true,
+            allow_credential_login: true,
+        }
+    }
+}

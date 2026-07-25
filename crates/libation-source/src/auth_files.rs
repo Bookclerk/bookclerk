@@ -1,4 +1,4 @@
-//! Shared `Accounts/*.auth` path helpers for plain-token content sources.
+//! Shared `Accounts/*` path helpers for content-source credentials.
 
 use std::path::{Path, PathBuf};
 
@@ -97,6 +97,57 @@ pub fn save_json_auth<T: Serialize>(path: &Path, auth: &T) -> std::io::Result<()
     std::fs::write(path, json)
 }
 
+/// Whether `file_name` is a credential artifact for exactly `account_id`
+/// given plugin-declared `suffixes` (e.g. `.auth`, `.libro.auth`, `.wvd`).
+///
+/// Matching is exact stem + suffix so revoking `user-1` never deletes `user-10.*`.
+/// Plain `.auth` is only matched when the filename is exactly `{stem}.auth`
+/// (not `{stem}.libro.auth`).
+#[must_use]
+pub fn is_account_credential_file(account_id: &str, file_name: &str, suffixes: &[&str]) -> bool {
+    let stem = sanitize_name(account_id);
+    if stem.is_empty() || file_name.starts_with('.') {
+        return false;
+    }
+    for suffix in suffixes {
+        if *suffix == ".auth" {
+            if file_name == format!("{stem}.auth") {
+                return true;
+            }
+            continue;
+        }
+        if file_name == format!("{stem}{suffix}") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Remove auth/CDM files for one account id using plugin-declared suffixes.
+pub fn remove_account_credentials(
+    files_dir: &Path,
+    account_id: &str,
+    suffixes: &[&str],
+) -> std::io::Result<Vec<PathBuf>> {
+    let dir = accounts_dir(files_dir);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut removed = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !is_account_credential_file(account_id, name, suffixes) {
+            continue;
+        }
+        std::fs::remove_file(&path)?;
+        removed.push(path);
+    }
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +162,35 @@ mod tests {
     fn auth_path_uses_suffix() {
         let path = auth_file_for(Path::new("/tmp/files"), "alice", ".ga.auth");
         assert_eq!(path, PathBuf::from("/tmp/files/Accounts/alice.ga.auth"));
+    }
+
+    #[test]
+    fn credential_match_is_exact_stem() {
+        let suffixes = [".auth", ".libro.auth", ".ga.auth", ".chirp.auth", ".wvd"];
+        assert!(is_account_credential_file(
+            "user-1",
+            "user-1.auth",
+            &suffixes
+        ));
+        assert!(is_account_credential_file(
+            "user-1",
+            "user-1.libro.auth",
+            &suffixes
+        ));
+        assert!(is_account_credential_file(
+            "user-1",
+            "user-1.wvd",
+            &suffixes
+        ));
+        assert!(!is_account_credential_file(
+            "user-1",
+            "user-10.auth",
+            &suffixes
+        ));
+        assert!(!is_account_credential_file(
+            "user-1",
+            "user-1.bak.auth",
+            &suffixes
+        ));
     }
 }

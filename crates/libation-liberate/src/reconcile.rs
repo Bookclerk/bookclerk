@@ -4,9 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use libation_audible::DownloadOptions;
-use libation_config::{
-    key_matches_reconcile_pattern, reconciliation_wildcard_rules, DownloadFormat,
-};
+use libation_config::{key_matches_reconcile_pattern, reconciliation_wildcard_rules};
 use libation_library::{BookRecord, LiberateStatus, LibraryStore};
 use libation_storage::StorageBackend;
 
@@ -239,9 +237,12 @@ pub fn find_existing_for_request(
     library: &LibraryStore,
     req: &LiberateRequest,
 ) -> Option<String> {
-    let ext = match req.options.format {
-        DownloadFormat::M4b => "m4b",
-        DownloadFormat::Mp3 => "mp3",
+    let ext = if req.options.wants_mp3() {
+        "mp3"
+    } else if req.options.wants_opus() {
+        "opus"
+    } else {
+        "m4b"
     };
 
     // 1. Exact planned path (current creation sanitization).
@@ -338,8 +339,7 @@ pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -
     LiberateRequest {
         asin: book.download_product_id().to_string(),
         book_uuid: Some(book.uuid.clone()),
-        source: libation_source::SourceKind::parse(&book.source)
-            .unwrap_or(libation_source::SourceKind::Audible),
+        source: book.source.clone(),
         account_id: book.account_id.clone(),
         title: book.title.clone(),
         authors: book.authors.clone(),
@@ -351,6 +351,7 @@ pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -
         cache_dir: PathBuf::new(),
         force: false,
         preloaded_license: None,
+        write_destinations: None,
     }
 }
 

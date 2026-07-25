@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
+use crate::options::GraphicAudioAccess;
 use chrono::{DateTime, NaiveDate, Utc};
-use libation_config::GraphicAudioAccess;
 use libation_library::{LibraryStore, NewBook};
 use libation_source::ScanSummary;
 

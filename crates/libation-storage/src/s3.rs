@@ -9,7 +9,7 @@ use aws_sdk_s3::config::{Credentials, Region};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use bytes::Bytes;
-use libation_config::StorageS3Config;
+use libation_config::OutputS3Config;
 
 use crate::error::{Result, StorageError};
 use crate::traits::{ObjectInfo, ObjectMeta, ObjectProbe, StorageBackend};
@@ -23,11 +23,11 @@ pub struct S3Backend {
 }
 
 impl S3Backend {
-    /// Build from Libation storage config (credentials via default AWS chain / env).
+    /// Build from Libation S3 output config (credentials via default AWS chain / env).
     ///
-    /// `prefix` should already be the effective storage prefix (see
-    /// [`libation_config::StorageConfig::effective_prefix`]).
-    pub async fn from_config(cfg: &StorageS3Config, prefix: &str) -> Result<Self> {
+    /// `prefix` should already be the normalized destination prefix for this
+    /// S3 plugin (`[output.s3] prefix`).
+    pub async fn from_config(cfg: &OutputS3Config, prefix: &str) -> Result<Self> {
         if cfg.bucket.is_empty() {
             return Err(StorageError::S3("bucket must not be empty".into()));
         }

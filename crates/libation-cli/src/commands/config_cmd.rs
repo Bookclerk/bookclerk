@@ -2,9 +2,7 @@
 
 use chrono::Datelike;
 use clap::Subcommand;
-use libation_config::{
-    classic_key_aliases, resolve_replacement_characters, Config, NamingProfile, StorageBackendKind,
-};
+use libation_config::{classic_key_aliases, resolve_replacement_characters, Config, NamingProfile};
 use libation_liberate::{storage_key_with_contexts, NamingContext};
 use libation_library::LibraryStore;
 use libation_source::DownloadOptions;
@@ -13,7 +11,7 @@ use libation_source::DownloadOptions;
 pub enum ConfigCommand {
     /// Print a configuration value by dotted key or classic Settings.json name.
     Get {
-        /// Dotted key (`download.quality`) or classic name (`FileDownloadQuality`).
+        /// Dotted key (`sources.audible.bitrate`) or classic name (`FileDownloadQuality`).
         key: Option<String>,
         /// Bare list of all classic setting keys and values.
         #[arg(short, long)]
@@ -43,13 +41,13 @@ pub enum TemplateCommand {
         /// Account id when the ASIN exists on multiple accounts.
         #[arg(long)]
         account: Option<String>,
-        /// Override `download.naming_profile` for this preview.
+        /// Override `output.naming_profile` for this preview.
         #[arg(long)]
         profile: Option<String>,
-        /// Override `download.folder_template` for this preview.
+        /// Override `output.folder_template` for this preview.
         #[arg(long)]
         folder: Option<String>,
-        /// Override `download.file_template` for this preview.
+        /// Override `output.file_template` for this preview.
         #[arg(long)]
         file: Option<String>,
         /// File extension (default: m4b).
@@ -80,95 +78,91 @@ pub fn run(command: ConfigCommand, config: &Config) -> anyhow::Result<()> {
             Ok(())
         }
         ConfigCommand::Show => {
-            println!("storage.backend = {:?}", config.storage.backend);
-            println!("storage.prefix = {}", config.storage.prefix);
             println!(
-                "storage.effective_prefix = {}",
-                config.storage.effective_prefix()
+                "output.backends = {}",
+                config.output.enabled_backend_names().join(",")
             );
             println!(
-                "storage.local.root = {}",
-                config.storage.local.root.display()
+                "output.path_limit_prefix = {}",
+                config.output.path_limit_prefix()
             );
-            println!("storage.s3.bucket = {}", config.storage.s3.bucket);
-            println!("storage.s3.prefix = {}", config.storage.s3.prefix);
-            println!("storage.s3.region = {}", config.storage.s3.region);
+            println!("output.local.enabled = {}", config.output.local.enabled);
+            println!("output.local.root = {}", config.output.local.root.display());
+            println!("output.local.prefix = {}", config.output.local.prefix);
+            println!("output.s3.enabled = {}", config.output.s3.enabled);
+            println!("output.s3.bucket = {}", config.output.s3.bucket);
+            println!("output.s3.prefix = {}", config.output.s3.prefix);
+            println!("output.s3.region = {}", config.output.s3.region);
             println!(
-                "storage.s3.endpoint = {}",
-                config.storage.s3.endpoint.as_deref().unwrap_or("-")
+                "output.s3.endpoint = {}",
+                config.output.s3.endpoint.as_deref().unwrap_or("-")
             );
             println!(
-                "storage.s3.force_path_style = {}",
-                config.storage.s3.force_path_style
+                "output.s3.force_path_style = {}",
+                config.output.s3.force_path_style
             );
-            println!("download.quality = {:?}", config.download.quality);
-            println!("download.format = {:?}", config.download.format);
-            println!("download.widevine = {}", config.download.widevine);
-            println!("download.xhe_aac = {}", config.download.xhe_aac);
+            for (id, value) in &config.sources.plugins {
+                let Some(table) = value.as_table() else {
+                    println!("sources.{id} = {value}");
+                    continue;
+                };
+                for (key, v) in table {
+                    println!("sources.{id}.{key} = {v}");
+                }
+            }
+            println!("output.format = {:?}", config.output.format);
+            println!("output.widevine = {}", config.output.widevine);
+            println!("output.xhe_aac = {}", config.output.xhe_aac);
             println!(
-                "download.widevine_cdm = {}",
+                "output.widevine_cdm = {}",
                 config
-                    .download
+                    .output
                     .widevine_cdm
                     .as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "-".into())
             );
             println!(
-                "download.naming_profile = {}",
-                config.download.naming_profile.as_str()
+                "output.naming_profile = {}",
+                config.output.naming_profile.as_str()
             );
-            let resolved = config.download.resolve_naming_templates();
+            let resolved = config.output.resolve_naming_templates();
             println!(
-                "download.folder_template = {}{}",
-                config.download.folder_template.as_deref().unwrap_or("-"),
-                if config.download.folder_template.is_none() {
+                "output.folder_template = {}{}",
+                config.output.folder_template.as_deref().unwrap_or("-"),
+                if config.output.folder_template.is_none() {
                     format!(" (profile: {})", resolved.folder)
                 } else {
                     String::new()
                 }
             );
             println!(
-                "download.file_template = {}{}",
-                config.download.file_template.as_deref().unwrap_or("-"),
-                if config.download.file_template.is_none() {
+                "output.file_template = {}{}",
+                config.output.file_template.as_deref().unwrap_or("-"),
+                if config.output.file_template.is_none() {
                     format!(" (profile: {})", resolved.file)
                 } else {
                     String::new()
                 }
             );
             println!(
-                "download.path_sanitization = {:?}",
-                config.download.path_sanitization
+                "output.path_sanitization = {:?}",
+                config.output.path_sanitization
             );
             println!(
-                "download.max_filename_length = {}",
-                config.download.max_filename_length
+                "output.max_filename_length = {}",
+                config.output.max_filename_length
             );
+            println!("output.download_cover = {}", config.output.download_cover);
+            println!("output.download_pdf = {}", config.output.download_pdf);
+            println!("output.create_cue = {}", config.output.create_cue);
+            println!("output.fixup_metadata = {}", config.output.fixup_metadata);
             println!(
-                "download.download_cover = {}",
-                config.download.download_cover
+                "output.chapter_json = {:?}",
+                config.output.effective_chapter_json()
             );
-            println!("download.download_pdf = {}", config.download.download_pdf);
-            println!("download.create_cue = {}", config.download.create_cue);
-            println!("download.output = {:?}", config.download.effective_output());
-            println!(
-                "download.ingest.quality = {:?}",
-                config.download.ingest.quality
-            );
-            println!(
-                "download.fixup_metadata = {}",
-                config.download.fixup_metadata
-            );
-            println!(
-                "download.chapter_json = {:?}",
-                config.download.effective_chapter_json()
-            );
-            println!("download.cover_size = {}", config.download.cover_size);
-            println!(
-                "download.chapter_layout = {}",
-                config.download.chapter_layout
-            );
+            println!("output.cover_size = {}", config.output.cover_size);
+            println!("output.chapter_layout = {}", config.output.chapter_layout);
             println!("library.auto_liberate = {}", config.library.auto_liberate);
             println!(
                 "library.fix_storage_layout = {}",
@@ -285,19 +279,19 @@ fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()>
             let naming_profile = profile
                 .as_deref()
                 .and_then(NamingProfile::parse)
-                .unwrap_or(config.download.naming_profile);
+                .unwrap_or(config.output.naming_profile);
             let resolved = libation_config::ResolvedNamingTemplates::resolve(
                 naming_profile,
                 folder
                     .as_deref()
-                    .or(config.download.folder_template.as_deref()),
-                file.as_deref().or(config.download.file_template.as_deref()),
-                config.download.chapter_file_template.as_deref(),
+                    .or(config.output.folder_template.as_deref()),
+                file.as_deref().or(config.output.file_template.as_deref()),
+                config.output.chapter_file_template.as_deref(),
             );
             let rules = resolve_replacement_characters(
-                &config.download.replacement_characters,
-                config.download.path_sanitization,
-                config.storage.backend == StorageBackendKind::S3,
+                &config.output.replacement_characters,
+                config.output.path_sanitization,
+                config.output.is_s3(),
             );
             let path_limits = DownloadOptions::from(config).path_limits;
             let key = storage_key_with_contexts(
@@ -313,7 +307,7 @@ fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()>
             println!("naming_profile\t{}", naming_profile.as_str());
             println!("folder_template\t{}", resolved.folder);
             println!("file_template\t{}", resolved.file);
-            println!("path_sanitization\t{:?}", config.download.path_sanitization);
+            println!("path_sanitization\t{:?}", config.output.path_sanitization);
             println!(
                 "max_filename_length\t{}",
                 if path_limits.max_filename_length == 0 {
@@ -378,107 +372,95 @@ fn resolve_book_for_preview(
 fn lookup(config: &Config, key: &str) -> Option<String> {
     let paths = config.paths.as_ref();
     Some(match key {
-        "storage.backend" => format!("{:?}", config.storage.backend).to_ascii_lowercase(),
-        "storage.local.root" => config.storage.local.root.display().to_string(),
-        "storage.prefix" => config.storage.prefix.clone(),
-        "storage.effective_prefix" => config.storage.effective_prefix(),
-        "storage.s3.bucket" => config.storage.s3.bucket.clone(),
-        "storage.s3.prefix" => config.storage.s3.prefix.clone(),
-        "storage.s3.region" => config.storage.s3.region.clone(),
-        "storage.s3.endpoint" => config.storage.s3.endpoint.clone().unwrap_or_default(),
-        "storage.s3.force_path_style" => config.storage.s3.force_path_style.to_string(),
-        "download.quality" => format!("{:?}", config.download.quality).to_ascii_lowercase(),
-        "download.format" => format!("{:?}", config.download.format).to_ascii_lowercase(),
-        "download.widevine" => config.download.widevine.to_string(),
-        "download.xhe_aac" => config.download.xhe_aac.to_string(),
-        "download.widevine_cdm" => config
-            .download
+        "output.backend" | "output.backends" => config.output.enabled_backend_names().join(","),
+        "output.local.enabled" => config.output.local.enabled.to_string(),
+        "output.local.root" => config.output.local.root.display().to_string(),
+        "output.local.prefix" => config.output.local.prefix.clone(),
+        "output.effective_prefix" | "output.path_limit_prefix" => config.output.path_limit_prefix(),
+        "output.s3.enabled" => config.output.s3.enabled.to_string(),
+        "output.s3.bucket" => config.output.s3.bucket.clone(),
+        "output.s3.prefix" => config.output.s3.prefix.clone(),
+        "output.s3.region" => config.output.s3.region.clone(),
+        "output.s3.endpoint" => config.output.s3.endpoint.clone().unwrap_or_default(),
+        "output.s3.force_path_style" => config.output.s3.force_path_style.to_string(),
+        "output.format" => format!("{:?}", config.output.format).to_ascii_lowercase(),
+        "output.widevine" => config.output.widevine.to_string(),
+        "output.xhe_aac" => config.output.xhe_aac.to_string(),
+        "output.widevine_cdm" => config
+            .output
             .widevine_cdm
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
-        "download.naming_profile" => config.download.naming_profile.as_str().to_string(),
-        "download.folder_template" => config.download.folder_template.clone().unwrap_or_default(),
-        "download.file_template" => config.download.file_template.clone().unwrap_or_default(),
-        "download.path_sanitization" => {
-            format!("{:?}", config.download.path_sanitization).to_ascii_lowercase()
+        "output.naming_profile" => config.output.naming_profile.as_str().to_string(),
+        "output.folder_template" => config.output.folder_template.clone().unwrap_or_default(),
+        "output.file_template" => config.output.file_template.clone().unwrap_or_default(),
+        "output.path_sanitization" => {
+            format!("{:?}", config.output.path_sanitization).to_ascii_lowercase()
         }
-        "download.max_filename_length" => config.download.max_filename_length.to_string(),
-        "download.download_cover" => config.download.download_cover.to_string(),
-        "download.download_pdf" => config.download.download_pdf.to_string(),
-        "download.create_cue" => config.download.create_cue.to_string(),
-        "download.fixup_metadata" => config.download.fixup_metadata.to_string(),
-        "download.chapter_json" => {
-            format!("{:?}", config.download.effective_chapter_json()).to_ascii_lowercase()
+        "output.max_filename_length" => config.output.max_filename_length.to_string(),
+        "output.download_cover" => config.output.download_cover.to_string(),
+        "output.download_pdf" => config.output.download_pdf.to_string(),
+        "output.create_cue" => config.output.create_cue.to_string(),
+        "output.fixup_metadata" => config.output.fixup_metadata.to_string(),
+        "output.chapter_json" => {
+            format!("{:?}", config.output.effective_chapter_json()).to_ascii_lowercase()
         }
-        "download.save_chapter_json" => config
-            .download
+        "output.save_chapter_json" => config
+            .output
             .effective_chapter_json()
             .wants_any()
             .to_string(),
-        "download.output" => {
-            format!("{:?}", config.download.effective_output()).to_ascii_lowercase()
-        }
-        "download.save_metadata_json" => config.download.save_metadata_json.to_string(),
-        "download.cover_size" => config.download.cover_size.clone(),
-        "download.chapter_layout" => config.download.chapter_layout.clone(),
-        "download.overwrite_existing" => config.download.overwrite_existing.to_string(),
-        "download.in_progress" => config
-            .download
+        "output.save_metadata_json" => config.output.save_metadata_json.to_string(),
+        "output.cover_size" => config.output.cover_size.clone(),
+        "output.chapter_layout" => config.output.chapter_layout.clone(),
+        "output.overwrite_existing" => config.output.overwrite_existing.to_string(),
+        "output.in_progress" => config
+            .output
             .in_progress
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
-        "download.bad_book_action" => format!("{:?}", config.download.bad_book_action),
-        "download.split_files_by_chapter" => config.download.split_files_by_chapter.to_string(),
-        "download.split_mp3_max_mb" => config.download.split_mp3_max_mb.to_string(),
-        "download.ingest.quality" => {
-            format!("{:?}", config.download.ingest.quality).to_ascii_lowercase()
-        }
-        "download.chapter_file_template" => config
-            .download
+        "output.bad_book_action" => format!("{:?}", config.output.bad_book_action),
+        "output.split_mp3_max_mb" => config.output.split_mp3_max_mb.to_string(),
+        "output.chapter_file_template" => config
+            .output
             .chapter_file_template
             .clone()
             .unwrap_or_default(),
-        "download.chapter_title_template" => config
-            .download
+        "output.chapter_title_template" => config
+            .output
             .chapter_title_template
             .clone()
             .unwrap_or_default(),
-        "download.minimum_file_duration_minutes" => {
-            config.download.minimum_file_duration_minutes.to_string()
+        "output.minimum_file_duration_minutes" => {
+            config.output.minimum_file_duration_minutes.to_string()
         }
-        "download.combine_nested_chapter_titles" => {
-            config.download.combine_nested_chapter_titles.to_string()
+        "output.combine_nested_chapter_titles" => {
+            config.output.combine_nested_chapter_titles.to_string()
         }
-        "download.merge_opening_and_end_credits" => {
-            config.download.merge_opening_and_end_credits.to_string()
+        "output.merge_opening_and_end_credits" => {
+            config.output.merge_opening_and_end_credits.to_string()
         }
-        "download.strip_unabridged" => config.download.strip_unabridged.to_string(),
-        "download.strip_audible_brand_audio" => {
-            config.download.strip_audible_brand_audio.to_string()
-        }
-        "download.download_clips_bookmarks" => config.download.download_clips_bookmarks.to_string(),
-        "download.retain_aax_file" => config.download.retain_aax_file.to_string(),
-        "download.download_speed_limit_kbps" => {
-            config.download.download_speed_limit_kbps.to_string()
-        }
-        "download.lame.target" => config.download.lame.target.clone(),
-        "download.lame.vbr_quality" => config.download.lame.vbr_quality.to_string(),
-        "download.lame.bitrate_kbps" => config.download.lame.bitrate_kbps.to_string(),
-        "download.lame.mode" => config.download.lame.mode.clone(),
-        "download.lame.downsample_mono" => config.download.lame.downsample_mono.to_string(),
-        "download.lame.constant_bitrate" => config.download.lame.constant_bitrate.to_string(),
-        "download.max_sample_rate" => config
-            .download
+        "output.strip_unabridged" => config.output.strip_unabridged.to_string(),
+        "output.strip_audible_brand_audio" => config.output.strip_audible_brand_audio.to_string(),
+        "output.download_clips_bookmarks" => config.output.download_clips_bookmarks.to_string(),
+        "output.retain_aax_file" => config.output.retain_aax_file.to_string(),
+        "output.download_speed_limit_kbps" => config.output.download_speed_limit_kbps.to_string(),
+        "output.lame.target" => config.output.lame.target.clone(),
+        "output.lame.vbr_quality" => config.output.lame.vbr_quality.to_string(),
+        "output.lame.bitrate_kbps" => config.output.lame.bitrate_kbps.to_string(),
+        "output.lame.mode" => config.output.lame.mode.clone(),
+        "output.lame.downsample_mono" => config.output.lame.downsample_mono.to_string(),
+        "output.lame.constant_bitrate" => config.output.lame.constant_bitrate.to_string(),
+        "output.max_sample_rate" => config
+            .output
             .max_sample_rate
             .map(|n| n.to_string())
             .unwrap_or_default(),
-        "download.creation_time" => {
-            format!("{:?}", config.download.creation_time).to_ascii_lowercase()
-        }
-        "download.last_write_time" => {
-            format!("{:?}", config.download.last_write_time).to_ascii_lowercase()
+        "output.creation_time" => format!("{:?}", config.output.creation_time).to_ascii_lowercase(),
+        "output.last_write_time" => {
+            format!("{:?}", config.output.last_write_time).to_ascii_lowercase()
         }
         "library.auto_liberate" => config.library.auto_liberate.to_string(),
         "library.scan_interval_minutes" => config.library.scan_interval_minutes.to_string(),
@@ -512,6 +494,20 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
         "paths.library_db" => paths?.library_db.display().to_string(),
         "paths.cache_dir" => paths?.cache_dir.display().to_string(),
         "paths.log_dir" => paths?.log_dir.display().to_string(),
+        other if let Some(rest) = other.strip_prefix("sources.") => {
+            let (id, key) = rest.split_once('.')?;
+            if key == "enabled" {
+                return Some(config.sources.is_enabled(id).to_string());
+            }
+            if let Some(s) = config.sources.get_string(id, key) {
+                return Some(s.to_string());
+            }
+            config
+                .sources
+                .table(id)?
+                .get(key)
+                .map(|v| v.to_string().trim_matches('"').to_string())?
+        }
         _ => return None,
     })
 }

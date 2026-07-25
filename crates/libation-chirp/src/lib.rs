@@ -12,10 +12,10 @@ mod sync;
 
 pub use auth::{
     auth_file_for, auth_file_for_account, auth_stem, find_auth_file, list_auth_files, load_auth,
-    save_auth, ChirpAuthFile,
+    save_auth, ChirpAuthFile, AUTH_SUFFIX,
 };
 pub use client::{Audiobook, ChirpClient, LibraryItem, Track, DEFAULT_GRAPHQL_URL};
 pub use download::fetch_title_materials;
 pub use error::{ChirpError, Result};
-pub use source::ChirpSource;
+pub use source::{from_config, register, ChirpSource, ID as CHIRP_SOURCE_ID, PASSWORD_ENV};
 pub use sync::{audiobook_to_new_book, scan_library, ScanOptions};

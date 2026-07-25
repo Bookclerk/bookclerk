@@ -1,77 +1,93 @@
-//! Download Libro.fm title materials (M4B preferred, else MP3 zip parts) into a cache dir.
+//! Download Libro.fm title materials (M4B or MP3 zip parts) into a cache dir.
 
 use std::fs::File;
 use std::io::{copy, Cursor, Write};
 use std::path::{Path, PathBuf};
 
 use libation_source::{PlainAudioPart, PlainFetch};
+
+use crate::container::LibroContainer;
 use zip::ZipArchive;
 
 use crate::client::{DownloadManifest, DownloadPart, LibroClient, ManifestFormat, ManifestTrack};
 use crate::error::{LibroError, Result};
 
 /// Fetch one ISBN into `cache_dir`, preferring M4B when available.
-///
-/// Order (matches Android `MediaFormat.M4B` then ZIP):
-/// 1. `download-manifest?format=m4b` — single M4B part + chapter tracks
-/// 2. `audiobooks/{isbn}/packaged_m4b` — legacy/alternate M4B URL
-/// 3. `download-manifest` without format — multi-part ZIP of MP3s
 pub async fn fetch_title_materials(
     client: &LibroClient,
     isbn: &str,
     cache_dir: &Path,
 ) -> Result<PlainFetch> {
+    fetch_title_materials_with(client, isbn, cache_dir, LibroContainer::M4b).await
+}
+
+/// Fetch one ISBN into `cache_dir` using the preferred container.
+///
+/// [`LibroContainer::M4b`] (default):
+/// 1. `download-manifest?format=m4b` — single M4B part + chapter tracks
+/// 2. `audiobooks/{isbn}/packaged_m4b` — legacy/alternate M4B URL
+/// 3. `download-manifest` without format — multi-part ZIP of MP3s (fallback)
+///
+/// [`LibroContainer::Zip`]: skip M4B and go straight to ZIP / MP3 parts.
+pub async fn fetch_title_materials_with(
+    client: &LibroClient,
+    isbn: &str,
+    cache_dir: &Path,
+    container: LibroContainer,
+) -> Result<PlainFetch> {
     std::fs::create_dir_all(cache_dir)?;
     let title_dir = cache_dir.join(isbn);
     std::fs::create_dir_all(&title_dir)?;
 
-    // 1) Prefer format=m4b (APK LibroDownloadManager uses MediaFormat.M4B).
-    match client.download_manifest(isbn, ManifestFormat::M4b).await {
-        Ok(manifest) => {
-            if let Some(url) = first_m4b_part_url(&manifest.parts) {
-                let m4b_path = download_m4b(client, url, &title_dir).await?;
-                return Ok(PlainFetch {
-                    parts: Vec::new(),
-                    m4b_path: Some(m4b_path),
-                    cover_path: None,
-                    chapters: chapters_from_tracks(&manifest.tracks),
-                });
+    if matches!(container, LibroContainer::M4b) {
+        // 1) Prefer format=m4b (APK LibroDownloadManager uses MediaFormat.M4B).
+        match client.download_manifest(isbn, ManifestFormat::M4b).await {
+            Ok(manifest) => {
+                if let Some(url) = first_m4b_part_url(&manifest.parts) {
+                    let m4b_path = download_m4b(client, url, &title_dir).await?;
+                    return Ok(PlainFetch {
+                        parts: Vec::new(),
+                        m4b_path: Some(m4b_path),
+                        cover_path: None,
+                        chapters: chapters_from_tracks(&manifest.tracks),
+                    });
+                }
+                // Server ignored format / returned zips — use those parts.
+                if parts_look_like_zip(&manifest.parts) && !manifest.parts.is_empty() {
+                    let parts = download_mp3_parts(client, &manifest, &title_dir).await?;
+                    return Ok(PlainFetch {
+                        parts,
+                        m4b_path: None,
+                        cover_path: None,
+                        chapters: chapters_from_tracks(&manifest.tracks),
+                    });
+                }
             }
-            // Server ignored format / returned zips — use those parts.
-            if parts_look_like_zip(&manifest.parts) && !manifest.parts.is_empty() {
-                let parts = download_mp3_parts(client, &manifest, &title_dir).await?;
-                return Ok(PlainFetch {
-                    parts,
-                    m4b_path: None,
-                    cover_path: None,
-                    chapters: chapters_from_tracks(&manifest.tracks),
-                });
-            }
-        }
-        Err(err) => {
-            tracing::debug!(%isbn, error = %err, "format=m4b download-manifest failed");
-        }
-    }
-
-    // 2) Legacy packaged_m4b endpoint (same CDN object when present).
-    if let Some(m4b) = client.packaged_m4b(isbn).await? {
-        let m4b_path = download_m4b(client, &m4b.m4b_url, &title_dir).await?;
-        let chapters = match client.download_manifest(isbn, ManifestFormat::Zip).await {
-            Ok(manifest) => chapters_from_tracks(&manifest.tracks),
             Err(err) => {
-                tracing::debug!(%isbn, error = %err, "manifest unavailable after M4B download");
-                Vec::new()
+                tracing::debug!(%isbn, error = %err, "format=m4b download-manifest failed");
             }
-        };
-        return Ok(PlainFetch {
-            parts: Vec::new(),
-            m4b_path: Some(m4b_path),
-            cover_path: None,
-            chapters,
-        });
+        }
+
+        // 2) Legacy packaged_m4b endpoint (same CDN object when present).
+        if let Some(m4b) = client.packaged_m4b(isbn).await? {
+            let m4b_path = download_m4b(client, &m4b.m4b_url, &title_dir).await?;
+            let chapters = match client.download_manifest(isbn, ManifestFormat::Zip).await {
+                Ok(manifest) => chapters_from_tracks(&manifest.tracks),
+                Err(err) => {
+                    tracing::debug!(%isbn, error = %err, "manifest unavailable after M4B download");
+                    Vec::new()
+                }
+            };
+            return Ok(PlainFetch {
+                parts: Vec::new(),
+                m4b_path: Some(m4b_path),
+                cover_path: None,
+                chapters,
+            });
+        }
     }
 
-    // 3) Default ZIP / MP3 parts.
+    // ZIP / MP3 parts (preferred when container=zip, or M4B fallback).
     let manifest = client.download_manifest(isbn, ManifestFormat::Zip).await?;
     let parts = download_mp3_parts(client, &manifest, &title_dir).await?;
     Ok(PlainFetch {

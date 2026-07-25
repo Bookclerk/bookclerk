@@ -9,7 +9,7 @@
 #
 # Typical volumes:
 #   /config  → LIBATION_FILES_DIR (config.toml, library.db, Accounts/*.auth + *.wvd)
-#   /data    → liberated audiobooks (set storage.local.root = "/data/Audiobooks")
+#   /data    → liberated audiobooks (set output.local.root = "/data/Audiobooks")
 # Prefer: LIBATION_AUTH_PASSWORD, or mount a secrets volume and set
 # LIBATION_AUTH_PASSWORD_FILE=/secrets/auth_password (auto-created with a strong
 # random secret if missing — do not put this under Accounts/). For local-only
@@ -38,7 +38,7 @@ COPY config/config.example.toml /etc/libation/config.example.toml
 ENV LIBATION_FILES_DIR=/config \
     LIBATION_CONFIG=/config/config.toml \
     LIBATION_DAEMON_LISTEN=127.0.0.1:8787 \
-    LIBATION_STORAGE_LOCAL_ROOT=/data/Audiobooks
+    LIBATION_OUTPUT_LOCAL_ROOT=/data/Audiobooks
 VOLUME ["/config", "/data"]
 EXPOSE 8787
 USER libation

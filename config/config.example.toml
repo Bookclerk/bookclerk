@@ -4,162 +4,128 @@
 [library]
 auto_liberate = false
 scan_interval_minutes = 60
-# After scan, enrich non-Audible library rows from public Audible catalog + Audnexus
-# (title/author/duration + ISBN/narrator when available; no Audible login required).
+# After scan, enrich non-Audible library rows from public Audible catalog + Audnexus.
 enrich_from_audible = true
-# Minimum match confidence (0–100). Default 90 matches AudioBookshelf-style scoring.
-# Exact ISBN matches boost confidence but do not auto-accept (multi-ASIN ISBNs).
 enrich_min_confidence = 90
-# When matching storage (`library scan --match-storage` / `set-status`), relocate
-# matched audio + accompanying sidecars onto the configured naming-profile layout.
-# Default false — match in place (S3: list + HeadObject only; no body downloads).
+# When matching storage, relocate matched audio + sidecars onto the naming-profile layout.
 # fix_storage_layout = false
 
-# OAuth tokens live under Accounts/<account>.auth.
-# Prefer encryption: LIBATION_AUTH_PASSWORD, or a password file path
-# (LIBATION_AUTH_PASSWORD_FILE / [auth].password_file). Missing password-file
-# paths are auto-created with a strong random secret — use a secrets volume,
-# not Accounts/. Set allow_plaintext for unprotected local token files only.
 [auth]
+# Prefer LIBATION_AUTH_PASSWORD or LIBATION_AUTH_PASSWORD_FILE over plaintext token files.
 # password_file = "/run/libation/secrets/auth_password"
 # allow_plaintext = false
 
-[download]
-quality = "high"   # high | normal
-# Output formatting (default: highest-quality enriched M4B).
-#   enriched_m4b | single_mp3 | split_mp3_by_chapter | split_mp3_by_size | opus | none
-# Legacy `format = "m4b"|"mp3"` and `split_files_by_chapter` still work when `output` is unset.
-# output = "enriched_m4b"
-# split_mp3_max_mb = 200   # only for split_mp3_by_size
-format = "m4b"     # legacy: m4b | mp3 (prefer `output`)
+[output]
+# Packaging format: enriched_m4b | single_mp3 | split_mp3_by_chapter | split_mp3_by_size | opus | none
+format = "enriched_m4b"
+# split_mp3_max_mb = 200
 
-# Ingest quality: prefer the highest encode each store offers.
-# Global default; per-source overrides live under [sources.<id>].ingest.
-# [download.ingest]
-# quality = "highest"   # highest | high | normal | low
-# Legacy per-source map (still accepted; [sources.*.ingest] wins when both set):
-# [download.ingest.sources]
-# audible = "highest"
-# graphicaudio = "highest"
-# chirp = "highest"
-# libro = "highest"
-
-# Prefer Widevine/CENC; also enables Adrm→Widevine fallback on 000307.
-# L3 CDM auto-provisions via AudibleCdm (`auth login` registers as Android).
+# Prefer Widevine/CENC; L3 CDM auto-provisions via AudibleCdm.
 widevine = false
-# Prefer xHE-AAC on the Widevine path when the server offers it.
 xhe_aac = false
-# Optional BYO .wvd (else auto-provision, or {{files_dir}}/widevine.wvd / Accounts/<account>.wvd).
 # widevine_cdm = "widevine.wvd"
-# Override or disable CDM provider (default = classic Libation AudibleCdm; "off" = BYO only).
 # widevine_cdm_provider = "off"
-# Naming profiles select preset folder/file/chapter templates.
-# naming_profile = "audiobookshelf"  # default
-# naming_profile = "classic"
-#
-# audiobookshelf (default) templates:
-#   folder_template = "<first author>/<has series-><first series>/<-has><has series#-><series#> - <-has><has year-><year> - <-has><title short><has narrator-> {<first narrator>}<-has>"
-#   file_template = "<title> [<asin>]"
-#   chapter_file_template = "<ch#> - <chapter title>"
-#
-# classic (Libation desktop DefaultTemplate) templates:
-#   folder_template = "<title short> [<id>]"
-#   file_template = "<title> [<id>]"
-#   chapter_file_template = "<title> [<id>] - <ch# 0> - <ch title>"
-#
-# Per-field overrides win over the selected profile when set:
-# folder_template = "<first author>/<has series-><first series>/<-has><has series#-><series#> - <-has><has year-><year> - <-has><title short><has narrator-> {<first narrator>}<-has>"
+
+# Naming profiles: audiobookshelf (default) | classic.
+# naming_profile = "audiobookshelf"
+# folder_template = "<first author>/<title>"
 # file_template = "<title> [<asin>]"
 # chapter_file_template = "<ch#> - <chapter title>"
-# Path sanitization when replacement_characters is unset:
-#   auto (default) — posix on Linux/macOS local, windows on Windows local, s3 for S3
-#   windows | posix | s3 | none (none = separators only, same floor as posix)
-# path_sanitization = "auto"
-# Explicit override (classic ReplacementCharacters); non-empty wins over path_sanitization:
-# replacement_characters = [{ find = ":", replace = "_" }]
-# Per-segment length cap (classic LongPath.MaxFilenameLength). Default 255; 0 disables.
-# S3 also caps the full relative key so prefix + key stays within 1024 UTF-8 bytes.
-# max_filename_length = 255
-# Reconcile matches existing files across profiles by treating sanitizable
-# characters as wildcards; creation always follows the rules above.
-# Sidecar / metadata options (classic Settings.json keys in comments).
-# Defaults: cover.jpg + companion PDFs on; cue off; chapter JSON off; metadata.json off.
-download_cover = true        # DownloadCoverArt — write cover.jpg next to audio
-download_pdf = true          # companion PDF when the store provides one
-create_cue = false           # CreateCueSheet — chapters.cue
-fixup_metadata = true        # AllowLibationFixup — embed cover/chapters/tags natively
-chapter_json = "off"         # off | flat | tree | both
-save_metadata_json = false   # metadata.json (classic SaveMetadataToFile)
-cover_size = "500"           # 500 | 1215 | native
-chapter_layout = "tree"      # Audible API fetch layout when chapters are needed: tree | flat
 
-# ---------------------------------------------------------------------------
-# Content-source plugins ([sources.*])
-# Each source is independently enableable. Disabled sources are not registered
-# in CLI/daemon. Source-specific knobs live on that source's table.
-# Env: LIBATION_SOURCE_AUDIBLE_ENABLED, LIBATION_SOURCE_LIBRO_ENABLED,
-#      LIBATION_SOURCE_CHIRP_ENABLED, LIBATION_SOURCE_GRAPHICAUDIO_ENABLED
-# ---------------------------------------------------------------------------
+# Path sanitization: auto | windows | posix | s3 | none.
+# path_sanitization = "auto"
+# replacement_characters = [{ find = ":", replace = "_" }]
+# max_filename_length = 255
+
+# Sidecars / metadata.
+download_cover = true
+download_pdf = true
+create_cue = false
+fixup_metadata = true
+chapter_json = "off"
+save_metadata_json = false
+cover_size = "500"
+chapter_layout = "tree"
+
+# When multiple destinations are enabled and only some already have a title:
+#   sync_missing    — copy from a present dest into missing ones (default; no re-fetch)
+#   refetch_missing — re-download/encode, write only to missing destinations
+#   refetch_all     — re-download/encode into every destination
+# multi_destination = "sync_missing"
+
+# Destination plugins — each has `enabled`; multiple may be on at once
+# (liberated files are written to every enabled destination).
+[output.local]
+enabled = true
+root = "/data/Audiobooks"
+# prefix = "library/"
+# Optional per-destination naming overrides. Unset values inherit [output].
+# naming_profile = "audiobookshelf"
+# folder_template = "<first author>/<title>"
+# file_template = "<title> [<asin>]"
+# chapter_file_template = "<ch#> - <chapter title>"
+
+[output.s3]
+enabled = false
+# bucket = "my-audiobooks"
+# prefix = "library/"
+# region = "us-east-1"
+# endpoint = "http://minio:9000"
+# force_path_style = true
+# Optional per-destination naming overrides. Useful when object storage should
+# use a different key layout than the local filesystem.
+# naming_profile = "classic"
+# folder_template = "<author>/<series>"
+# file_template = "<asin>"
+# chapter_file_template = "<asin> - <ch#>"
+# Env: LIBATION_OUTPUT_S3_ENABLED, LIBATION_OUTPUT_S3_BUCKET (or LIBATION_S3_*), …
+
+# Content-source plugins ([sources.*]). Each source has `enabled`.
 # [sources.audible]
 # enabled = true
-# ingest = "highest"
+# bitrate = "high"          # high | normal
 
 # [sources.libro]
 # enabled = true
-# ingest = "highest"
+# container = "m4b"         # m4b | zip
 
 # [sources.chirp]
 # enabled = true
-# ingest = "highest"
 
 # [sources.graphicaudio]
 # enabled = true
-# How to fetch owned GraphicAudio titles. Default: web (Browser Player).
-#   web    — Magento Browser Player (no ZIP attempts, no device slot)
-#   zip    — Magento ZIP download (≤3 attempts; opt-in)
-#   device — Access App API (registers/uses a device activation; opt-in)
-# access = "web"
-# ingest = "highest"
-# Env override for access: LIBATION_GA_ACCESS (legacy: LIBATION_GA_FETCH).
-
-[storage]
-backend = "local"  # local | s3
-# Optional key prefix under the local root or S3 bucket (trailing slash optional).
-# Library storage_key values stay relative to this prefix; the backend prepends it.
-# When set, overrides the legacy storage.s3.prefix for S3 as well.
-# Env: LIBATION_STORAGE_PREFIX
-# prefix = "library/"
-
-[storage.local]
-# Absolute path recommended for Docker/systemd.
-# Relative paths resolve under LIBATION_FILES_DIR (e.g. "Audiobooks").
-root = "/data/Audiobooks"
-
-[storage.s3]
-bucket = "my-audiobooks"
-# Legacy S3-only prefix; used when storage.prefix is empty.
-prefix = "library/"
-region = "us-east-1"
-# endpoint = "https://minio.example.com"
-# force_path_style = true
+# access = "web"            # web | zip | device
+# bitrate = "hi"            # hi | lo
+# container = "auto"        # auto | m4b | mp3 | flac
 
 [daemon]
 listen = "127.0.0.1:8787"
 json_logs = true
 
-# ---------------------------------------------------------------------------
-# Integrations ([integrations.*]) — optional third-party hooks (future).
-# Not used for crash/error reporting; that stays under [diagnostics].
-# ---------------------------------------------------------------------------
 # [integrations]
+# portal_base_path = "/connect"
+# public_origin = "https://abs.example.com"
 
-# Opt-in diagnostics: share redacted crash/ERROR-burst reports.
-# Deploy: `.github/workflows/diagnostics-collector-deploy.yml` sets collector URL.
-# Ingest: `.github/workflows/diagnostics-ingest.yml`.
-# Ring buffer always keeps TRACE+; stderr/OS logs honor LIBATION_LOG / RUST_LOG.
+# [integrations.audiobookshelf]
+# enabled = false
+# base_url = "http://audiobookshelf:80"
+# # Prefer LIBATION_ABS_API_KEY env over storing the key in TOML.
+# # api_key = ""
+# # library_id = "lib_..."
+# watch_users = true
+# notify_scan_on_liberate = true
+# allow_credential_login = true
+
+# Third-party plugins (see docs/plugins.md) install under
+# `$LIBATION_FILES_DIR/plugins/<name>/plugin.toml` (or LIBATION_PLUGIN_DIRS).
+# Enable / configure by id in this file — external integrations default off:
+# [integrations.echo]
+# enabled = true
+# # … opaque knobs forwarded on handshake …
+
 # [diagnostics]
 # share_reports = false
-# collector_url = ""   # optional; bake LIBATION_DIAGNOSTICS_COLLECTOR_URL at cargo build
+# collector_url = ""
 # upload_on_crash = true
 # upload_on_error_burst = true
 # upload_on_warn_burst = true

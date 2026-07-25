@@ -61,7 +61,7 @@ impl PathLimits {
     /// (trailing `/` included when the prefix is non-empty).
     #[must_use]
     pub fn s3(prefix: &str) -> Self {
-        let prefix_len = crate::settings::normalize_storage_prefix(prefix).len();
+        let prefix_len = crate::output::normalize_storage_prefix(prefix).len();
         let budget = S3_MAX_OBJECT_KEY_BYTES.saturating_sub(prefix_len);
         Self {
             max_filename_length: DEFAULT_MAX_FILENAME_LENGTH,

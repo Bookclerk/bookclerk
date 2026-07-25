@@ -11,14 +11,14 @@ pub struct ReplacementRule {
     pub replace: String,
 }
 
-/// How to sanitize storage path segments when [`crate::DownloadConfig::replacement_characters`]
+/// How to sanitize storage path segments when [`crate::OutputConfig::replacement_characters`]
 /// is empty (explicit rules always win).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PathSanitizationMode {
     /// Pick a profile from the storage backend and host OS.
     ///
-    /// * `storage.backend = s3` → [`s3_replacement_characters`]
+    /// * `output.s3.enabled = true` → [`s3_replacement_characters`]
     /// * Windows host + local storage → [`windows_replacement_characters`]
     /// * otherwise → [`posix_replacement_characters`]
     #[default]
@@ -301,23 +301,23 @@ pub fn apply_replacements(input: &str, rules: &[ReplacementRule]) -> String {
 #[must_use]
 pub fn classic_key_aliases() -> HashMap<&'static str, &'static str> {
     HashMap::from([
-        ("Books", "storage.local.root"),
-        ("FileDownloadQuality", "download.quality"),
-        ("DecryptToLossy", "download.format"),
-        ("UseWidevine", "download.widevine"),
-        ("Request_xHE_AAC", "download.xhe_aac"),
-        ("NamingProfile", "download.naming_profile"),
-        ("FolderTemplate", "download.folder_template"),
-        ("FileTemplate", "download.file_template"),
-        ("DownloadCoverArt", "download.download_cover"),
-        ("CreateCueSheet", "download.create_cue"),
-        ("AllowLibationFixup", "download.fixup_metadata"),
-        ("SaveMetadataToFile", "download.save_metadata_json"),
+        ("Books", "output.local.root"),
+        ("FileDownloadQuality", "sources.audible.bitrate"),
+        ("DecryptToLossy", "output.format"),
+        ("UseWidevine", "output.widevine"),
+        ("Request_xHE_AAC", "output.xhe_aac"),
+        ("NamingProfile", "output.naming_profile"),
+        ("FolderTemplate", "output.folder_template"),
+        ("FileTemplate", "output.file_template"),
+        ("DownloadCoverArt", "output.download_cover"),
+        ("CreateCueSheet", "output.create_cue"),
+        ("AllowLibationFixup", "output.fixup_metadata"),
+        ("SaveMetadataToFile", "output.save_metadata_json"),
         ("AutoDownloadEpisodes", "library.auto_liberate"),
         ("FixStorageLayout", "library.fix_storage_layout"),
         ("AutoScan", "library.scan_interval_minutes"),
-        ("OverwriteExisting", "download.overwrite_existing"),
-        ("InProgress", "download.in_progress"),
+        ("OverwriteExisting", "output.overwrite_existing"),
+        ("InProgress", "output.in_progress"),
         ("ImportEpisodes", "library.import_episodes"),
         ("ImportPlusTitles", "library.import_plus_titles"),
         ("DownloadEpisodes", "library.download_episodes"),
@@ -325,45 +325,39 @@ pub fn classic_key_aliases() -> HashMap<&'static str, &'static str> {
             "SavePodcastsToParentFolder",
             "library.save_podcasts_to_parent_folder",
         ),
-        ("BadBook", "download.bad_book_action"),
-        ("SplitFilesByChapter", "download.split_files_by_chapter"),
-        ("ChapterFileTemplate", "download.chapter_file_template"),
-        ("ChapterTitleTemplate", "download.chapter_title_template"),
-        ("ReplacementCharacters", "download.replacement_characters"),
-        ("PathSanitization", "download.path_sanitization"),
-        ("MaxFilenameLength", "download.max_filename_length"),
+        ("BadBook", "output.bad_book_action"),
+        ("SplitFilesByChapter", "output.split_files_by_chapter"),
+        ("ChapterFileTemplate", "output.chapter_file_template"),
+        ("ChapterTitleTemplate", "output.chapter_title_template"),
+        ("ReplacementCharacters", "output.replacement_characters"),
+        ("PathSanitization", "output.path_sanitization"),
+        ("MaxFilenameLength", "output.max_filename_length"),
         (
             "MinimumFileDuration",
-            "download.minimum_file_duration_minutes",
+            "output.minimum_file_duration_minutes",
         ),
         (
             "CombineNestedChapterTitles",
-            "download.combine_nested_chapter_titles",
+            "output.combine_nested_chapter_titles",
         ),
         (
             "MergeOpeningAndEndCredits",
-            "download.merge_opening_and_end_credits",
+            "output.merge_opening_and_end_credits",
         ),
-        ("StripUnabridged", "download.strip_unabridged"),
-        (
-            "StripAudibleBrandAudio",
-            "download.strip_audible_brand_audio",
-        ),
-        (
-            "DownloadClipsBookmarks",
-            "download.download_clips_bookmarks",
-        ),
-        ("RetainAaxFile", "download.retain_aax_file"),
-        ("DownloadSpeedLimit", "download.download_speed_limit_kbps"),
-        ("LameTarget", "download.lame.target"),
-        ("LameVBRQuality", "download.lame.vbr_quality"),
-        ("LameBitrate", "download.lame.bitrate_kbps"),
-        ("LameMode", "download.lame.mode"),
-        ("LameDownsampleMono", "download.lame.downsample_mono"),
-        ("LameConstantBitrate", "download.lame.constant_bitrate"),
-        ("MaxSampleRate", "download.max_sample_rate"),
-        ("CreationTime", "download.creation_time"),
-        ("LastWriteTime", "download.last_write_time"),
+        ("StripUnabridged", "output.strip_unabridged"),
+        ("StripAudibleBrandAudio", "output.strip_audible_brand_audio"),
+        ("DownloadClipsBookmarks", "output.download_clips_bookmarks"),
+        ("RetainAaxFile", "output.retain_aax_file"),
+        ("DownloadSpeedLimit", "output.download_speed_limit_kbps"),
+        ("LameTarget", "output.lame.target"),
+        ("LameVBRQuality", "output.lame.vbr_quality"),
+        ("LameBitrate", "output.lame.bitrate_kbps"),
+        ("LameMode", "output.lame.mode"),
+        ("LameDownsampleMono", "output.lame.downsample_mono"),
+        ("LameConstantBitrate", "output.lame.constant_bitrate"),
+        ("MaxSampleRate", "output.max_sample_rate"),
+        ("CreationTime", "output.creation_time"),
+        ("LastWriteTime", "output.last_write_time"),
     ])
 }
 

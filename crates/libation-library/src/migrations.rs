@@ -215,5 +215,58 @@ pub fn migrations() -> Migrations<'static> {
         DROP TABLE ignored_asins;
         "#,
         ),
+        // Portal identities, claim tickets, sessions, account links; connection_status.
+        M::up(
+            r#"
+        ALTER TABLE accounts ADD COLUMN connection_status TEXT NOT NULL DEFAULT 'active';
+
+        CREATE TABLE portal_identities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            external_user_id TEXT NOT NULL,
+            label TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(provider, external_user_id)
+        );
+
+        CREATE TABLE claim_tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token_hash TEXT NOT NULL UNIQUE,
+            identity_id INTEGER,
+            expires_at TEXT NOT NULL,
+            redeemed_at TEXT,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX idx_claim_tickets_hash ON claim_tickets(token_hash);
+        CREATE INDEX idx_claim_tickets_identity ON claim_tickets(identity_id);
+
+        CREATE TABLE portal_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token_hash TEXT NOT NULL UNIQUE,
+            identity_id INTEGER NOT NULL,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX idx_portal_sessions_hash ON portal_sessions(token_hash);
+
+        CREATE TABLE account_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            identity_id INTEGER NOT NULL,
+            account_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(identity_id, account_id),
+            FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE,
+            FOREIGN KEY(account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX idx_account_links_account ON account_links(account_id);
+        "#,
+        ),
     ])
 }

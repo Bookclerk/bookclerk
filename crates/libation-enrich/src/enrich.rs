@@ -230,7 +230,9 @@ pub async fn enrich_books_from_audible(
     let mut enriched = 0usize;
 
     for book in library.list_books(None)? {
-        if book.source.eq_ignore_ascii_case("audible") {
+        // Skip Audible-native rows (asin already equals product_id) and rows
+        // that already carry an enrichment ASIN.
+        if book.asin.as_deref() == Some(book.product_id.as_str()) {
             continue;
         }
         if book.asin.is_some() {

@@ -1,0 +1,52 @@
+# Docker Compose for ABS ↔ Libation integration CI.
+#
+# ABS image tag should stay in the same release family as
+# crates/libation-integrations/openapi/PIN.md.
+
+services:
+  audiobookshelf:
+    image: ghcr.io/advplyr/audiobookshelf:2.35.1
+    environment:
+      AUDIOBOOKSHELF_UID: "0"
+      AUDIOBOOKSHELF_GID: "0"
+    volumes:
+      - abs-config:/config
+      - abs-metadata:/metadata
+      - shared-audiobooks:/audiobooks
+    ports:
+      - "13378:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  libationd:
+    image: libation-rs:abs-ci
+    build:
+      context: ../..
+      dockerfile: tests/abs-integration/Dockerfile
+    environment:
+      LIBATION_FILES_DIR: /data
+      LIBATION_DAEMON_LISTEN: 0.0.0.0:8787
+      LIBATION_ABS_ENABLED: "true"
+      LIBATION_ABS_BASE_URL: http://audiobookshelf:80
+      LIBATION_ABS_API_KEY: ${LIBATION_ABS_API_KEY:-}
+      LIBATION_ABS_LIBRARY_ID: ${LIBATION_ABS_LIBRARY_ID:-}
+      LIBATION_PORTAL_BASE_PATH: /connect
+      LIBATION_INTEGRATIONS_PUBLIC_ORIGIN: http://127.0.0.1:8787
+      LIBATION_AUTH_ALLOW_PLAINTEXT: "true"
+    volumes:
+      - libation-data:/data
+      - shared-audiobooks:/data/Audiobooks
+    ports:
+      - "8787:8787"
+    depends_on:
+      audiobookshelf:
+        condition: service_healthy
+
+volumes:
+  abs-config:
+  abs-metadata:
+  shared-audiobooks:
+  libation-data:

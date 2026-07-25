@@ -9,6 +9,8 @@ use reqwest::header::LOCATION;
 use reqwest::redirect::Policy;
 use reqwest::{Client, StatusCode, Url};
 
+use crate::options::GraphicAudioContainer;
+
 use crate::error::{GraphicAudioError, Result};
 
 /// Default Magento storefront origin (no `/access` suffix).
@@ -36,19 +38,16 @@ pub struct LibraryItem {
 }
 
 impl DownloadableProduct {
-    /// Prefer M4B ZIP, then MP3, then FLAC, then anything else.
+    /// Rank for Magento ZIP SKU selection (lower = better).
     #[must_use]
     pub fn format_rank(&self) -> u8 {
-        let label = self.option_label.to_ascii_lowercase();
-        if label.contains("m4b") {
-            0
-        } else if label.contains("mp3") {
-            1
-        } else if label.contains("flac") {
-            2
-        } else {
-            3
-        }
+        self.format_rank_for(GraphicAudioContainer::Auto)
+    }
+
+    /// Rank using a configured container preference.
+    #[must_use]
+    pub fn format_rank_for(&self, preference: GraphicAudioContainer) -> u8 {
+        preference.format_rank(&self.option_label)
     }
 
     #[must_use]
@@ -284,15 +283,16 @@ impl MagentoClient {
 
 /// Pick the best downloadable ZIP row whose title matches `product_title`.
 #[must_use]
-pub fn select_downloadable<'a>(
+pub fn select_downloadable_with<'a>(
     rows: &'a [DownloadableProduct],
     product_title: &str,
+    container: GraphicAudioContainer,
 ) -> Option<&'a DownloadableProduct> {
     let mut matched: Vec<&DownloadableProduct> = rows
         .iter()
         .filter(|r| r.has_remaining() && titles_match(&r.title, product_title))
         .collect();
-    matched.sort_by_key(|r| r.format_rank());
+    matched.sort_by_key(|r| r.format_rank_for(container));
     matched.into_iter().next()
 }
 
@@ -301,9 +301,10 @@ pub async fn fetch_zip_for_title(
     client: &MagentoClient,
     product_title: &str,
     title_dir: &Path,
+    container: GraphicAudioContainer,
 ) -> Result<PathBuf> {
     let rows = client.list_downloadable().await?;
-    let row = select_downloadable(&rows, product_title).ok_or_else(|| {
+    let row = select_downloadable_with(&rows, product_title, container).ok_or_else(|| {
         GraphicAudioError::download(format!(
             "no Magento ZIP download with remaining attempts for `{product_title}`"
         ))
@@ -312,6 +313,7 @@ pub async fn fetch_zip_for_title(
         title = %row.title,
         option = %row.option_label,
         remaining = ?row.remaining,
+        ?container,
         "GraphicAudio Magento ZIP selected"
     );
 
@@ -709,8 +711,10 @@ mod tests {
                 status: "Available".into(),
             },
         ];
-        let sel = select_downloadable(&rows, "Book").unwrap();
+        let sel = select_downloadable_with(&rows, "Book", GraphicAudioContainer::Auto).unwrap();
         assert!(sel.download_url.ends_with("m4b"));
+        let mp3 = select_downloadable_with(&rows, "Book", GraphicAudioContainer::Mp3).unwrap();
+        assert!(mp3.download_url.ends_with("mp3"));
     }
 
     #[test]

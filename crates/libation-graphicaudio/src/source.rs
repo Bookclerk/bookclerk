@@ -4,24 +4,30 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use libation_config::GraphicAudioAccess;
+use libation_config::Config;
 use libation_library::LibraryStore;
 use libation_source::{
-    ContentSource, FetchOptions, LoginOptions, ScanOptions, ScanSummary, SourceAccount,
-    SourceFetch, SourceKind,
+    ContentSource, FetchOptions, LoginOptions, PortalAuthMode, ScanOptions, ScanSummary,
+    SourceAccount, SourceBrand, SourceFetch, SourceRegistry,
 };
 
 use crate::auth::{
     auth_file_for_account, ensure_accounts_dir, find_auth_file, list_auth_files, load_auth,
-    save_auth, GraphicAudioAuthFile,
+    save_auth, GraphicAudioAuthFile, AUTH_SUFFIX,
 };
 use crate::client::{GraphicAudioClient, DEFAULT_BASE_URL};
 use crate::download::{
-    fetch_title_with_mode, password_from_env, product_title_for, TitleFetchRequest,
+    fetch_title_with_mode, password_from_env, product_title_for, TitleFetchRequest, GA_PASSWORD_ENV,
 };
 use crate::error::{GraphicAudioError, Result};
 use crate::magento::{MagentoClient, DEFAULT_STORE_URL};
+use crate::options::{GraphicAudioAccess, GraphicAudioBitrate, GraphicAudioContainer};
 use crate::sync::{scan_library, ScanOptions as GaScanOptions};
+
+/// Canonical plugin id.
+pub const ID: &str = "graphicaudio";
+
+const ALIASES: &[&str] = &["ga", "graphic-audio"];
 
 /// GraphicAudio content source.
 #[derive(Debug, Clone)]
@@ -31,7 +37,11 @@ pub struct GraphicAudioSource {
     /// Magento storefront origin (ZIP + Browser Player).
     store_url: String,
     /// Configured access path (login + default fetch). Env may still override fetch.
-    access: GraphicAudioAccess,
+    pub access: GraphicAudioAccess,
+    /// Device encode bitrate (`[sources.graphicaudio] bitrate`).
+    pub bitrate: GraphicAudioBitrate,
+    /// ZIP SKU container preference (`[sources.graphicaudio] container`).
+    pub container: GraphicAudioContainer,
     /// Optional fetch-mode override (tests / embedding).
     fetch_mode: Option<GraphicAudioAccess>,
     /// Optional Magento password override; else [`password_from_env`].
@@ -52,6 +62,38 @@ impl GraphicAudioSource {
             base_url: DEFAULT_BASE_URL.to_string(),
             store_url: DEFAULT_STORE_URL.to_string(),
             access: GraphicAudioAccess::Web,
+            bitrate: GraphicAudioBitrate::Hi,
+            container: GraphicAudioContainer::Auto,
+            fetch_mode: None,
+            magento_password: None,
+        }
+    }
+
+    /// Parse `[sources.graphicaudio]` knobs from config.
+    #[must_use]
+    pub fn from_config(config: &Config) -> Self {
+        let access = config
+            .sources
+            .get_string(ID, "access")
+            .and_then(GraphicAudioAccess::parse)
+            .or_else(GraphicAudioAccess::from_env)
+            .unwrap_or_default();
+        let bitrate = config
+            .sources
+            .get_string(ID, "bitrate")
+            .and_then(GraphicAudioBitrate::parse)
+            .unwrap_or_default();
+        let container = config
+            .sources
+            .get_string(ID, "container")
+            .and_then(GraphicAudioContainer::parse)
+            .unwrap_or_default();
+        Self {
+            base_url: DEFAULT_BASE_URL.to_string(),
+            store_url: DEFAULT_STORE_URL.to_string(),
+            access,
+            bitrate,
+            container,
             fetch_mode: None,
             magento_password: None,
         }
@@ -64,6 +106,8 @@ impl GraphicAudioSource {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             store_url: DEFAULT_STORE_URL.to_string(),
             access: GraphicAudioAccess::Web,
+            bitrate: GraphicAudioBitrate::Hi,
+            container: GraphicAudioContainer::Auto,
             fetch_mode: None,
             magento_password: None,
         }
@@ -80,6 +124,18 @@ impl GraphicAudioSource {
     #[must_use]
     pub fn with_access(mut self, access: GraphicAudioAccess) -> Self {
         self.access = access;
+        self
+    }
+
+    #[must_use]
+    pub fn with_bitrate(mut self, bitrate: GraphicAudioBitrate) -> Self {
+        self.bitrate = bitrate;
+        self
+    }
+
+    #[must_use]
+    pub fn with_container(mut self, container: GraphicAudioContainer) -> Self {
+        self.container = container;
         self
     }
 
@@ -195,8 +251,44 @@ impl GraphicAudioSource {
 
 #[async_trait]
 impl ContentSource for GraphicAudioSource {
-    fn kind(&self) -> SourceKind {
-        SourceKind::GraphicAudio
+    fn id(&self) -> &str {
+        ID
+    }
+
+    fn display_name(&self) -> &str {
+        "GraphicAudio"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        ALIASES
+    }
+
+    fn portal_auth_mode(&self) -> PortalAuthMode {
+        PortalAuthMode::Password
+    }
+
+    fn portal_brand(&self) -> SourceBrand {
+        SourceBrand {
+            id: "graphicaudio",
+            name: "GraphicAudio",
+            bg: "#141414",
+            fg: "#F5F5F5",
+            accent: "#C41E3A",
+            icon_url: "https://www.google.com/s2/favicons?domain=graphicaudio.net&sz=128",
+        }
+    }
+
+    fn auth_credential_suffixes(&self) -> &'static [&'static str] {
+        const SUFFIXES: &[&str] = &[AUTH_SUFFIX];
+        SUFFIXES
+    }
+
+    fn password_env_var(&self) -> Option<&'static str> {
+        Some(GA_PASSWORD_ENV)
+    }
+
+    fn sort_key(&self) -> u32 {
+        2
     }
 
     async fn login(
@@ -258,11 +350,7 @@ impl ContentSource for GraphicAudioSource {
         let path = find_auth_file(files_dir, account_id)?;
         let auth = load_auth(&path)?;
         let client = GraphicAudioClient::new(&self.base_url).with_token(&auth.token);
-        let prefer_hi = opts
-            .download
-            .ingest_quality("graphicaudio")
-            .prefers_graphicaudio_hi();
-
+        let prefer_hi = self.bitrate.prefers_hi();
         let mode = self.fetch_mode.unwrap_or(self.access);
 
         let product_title = if matches!(mode, GraphicAudioAccess::Zip) && auth.has_device_token() {
@@ -290,19 +378,94 @@ impl ContentSource for GraphicAudioSource {
                 prefer_hi,
                 mode,
                 password: password.as_deref(),
+                zip_container: self.container,
             },
         )
         .await?;
         Ok(SourceFetch::Plain(plain))
     }
+
+    fn config_options(&self) -> &'static [libation_source::SourceConfigOption] {
+        GA_CONFIG_OPTIONS
+    }
 }
+
+const GA_CONFIG_OPTIONS: &[libation_source::SourceConfigOption] = &[
+    libation_source::SourceConfigOption {
+        key: "access",
+        label: "Access",
+        values: &[
+            libation_source::ConfigOptionValue {
+                id: "web",
+                label: "Browser Player",
+            },
+            libation_source::ConfigOptionValue {
+                id: "zip",
+                label: "Magento ZIP",
+            },
+            libation_source::ConfigOptionValue {
+                id: "device",
+                label: "Access App",
+            },
+        ],
+    },
+    libation_source::SourceConfigOption {
+        key: "bitrate",
+        label: "Bitrate",
+        values: &[
+            libation_source::ConfigOptionValue {
+                id: "hi",
+                label: "Hi",
+            },
+            libation_source::ConfigOptionValue {
+                id: "lo",
+                label: "Lo",
+            },
+        ],
+    },
+    libation_source::SourceConfigOption {
+        key: "container",
+        label: "Container",
+        values: &[
+            libation_source::ConfigOptionValue {
+                id: "auto",
+                label: "Auto",
+            },
+            libation_source::ConfigOptionValue {
+                id: "m4b",
+                label: "M4B",
+            },
+            libation_source::ConfigOptionValue {
+                id: "mp3",
+                label: "MP3",
+            },
+            libation_source::ConfigOptionValue {
+                id: "flac",
+                label: "FLAC",
+            },
+        ],
+    },
+];
 
 fn source_account_from_auth(auth: &GraphicAudioAuthFile) -> SourceAccount {
     SourceAccount {
         account_id: auth.account_id().to_string(),
-        source: SourceKind::GraphicAudio,
+        source: ID.into(),
         marketplace: auth.marketplace.clone(),
         label: auth.label.clone().or_else(|| Some(auth.email.clone())),
         scan_enabled: true,
+    }
+}
+
+/// Parse `[sources.graphicaudio]` into a [`GraphicAudioSource`].
+#[must_use]
+pub fn from_config(config: &Config) -> GraphicAudioSource {
+    GraphicAudioSource::from_config(config)
+}
+
+/// Register GraphicAudio when `[sources.graphicaudio] enabled` (default true).
+pub fn register(registry: &mut SourceRegistry, config: &Config) {
+    if config.sources.is_enabled(ID) {
+        registry.register(Arc::new(from_config(config)));
     }
 }

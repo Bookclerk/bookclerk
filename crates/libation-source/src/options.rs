@@ -1,24 +1,24 @@
-//! Shared download / liberate options (source-agnostic).
+//! Shared download / liberate options (source-agnostic packaging + naming).
 
 use std::path::PathBuf;
 
 use libation_config::{
-    resolve_replacement_characters, AudioQuality, ChapterJsonMode, Config, DownloadConfig,
-    DownloadFormat, FileTimestampMode, IngestConfig, IngestQuality, LameConfig, NamingProfile,
-    OutputFormat, PathLimits, PathSanitizationMode, ReplacementRule, ResolvedNamingTemplates,
-    StorageBackendKind,
+    resolve_replacement_characters, AudioQuality, ChapterJsonMode, Config, FileTimestampMode,
+    LameConfig, NamingProfile, OutputBackendKind, OutputConfig, OutputFormat, PathLimits,
+    PathSanitizationMode, ReplacementRule, ResolvedNamingTemplates,
 };
 use serde::{Deserialize, Serialize};
 
-/// Options for liberate / fetch across content sources.
+/// Options for liberate / fetch packaging and naming.
+///
+/// Store-specific ingest knobs live on each [`crate::ContentSource`] instance
+/// (parsed from `[sources.<id>]` at registration). `quality` remains here so
+/// Audible’s download helpers can overlay the plugin bitrate for a single fetch.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DownloadOptions {
+    /// Optional per-fetch audio quality overlay (set by plugins that need it).
     pub quality: AudioQuality,
-    pub format: DownloadFormat,
-    /// Explicit output format when set; else derived from [`Self::format`] /
-    /// [`Self::split_files_by_chapter`].
-    pub output: Option<OutputFormat>,
-    pub ingest: IngestConfig,
+    pub format: OutputFormat,
     pub widevine: bool,
     pub xhe_aac: bool,
     pub widevine_cdm: Option<PathBuf>,
@@ -68,13 +68,11 @@ fn path_sanitization_is_windows(mode: PathSanitizationMode, storage_is_s3: bool)
     }
 }
 
-impl From<&DownloadConfig> for DownloadOptions {
-    fn from(cfg: &DownloadConfig) -> Self {
+impl From<&OutputConfig> for DownloadOptions {
+    fn from(cfg: &OutputConfig) -> Self {
         Self {
-            quality: cfg.ingest.quality_for("audible").as_audible(),
-            format: cfg.format,
-            output: cfg.output.or(Some(cfg.effective_output())),
-            ingest: cfg.ingest.clone(),
+            quality: AudioQuality::High,
+            format: cfg.effective_format(),
             widevine: cfg.widevine,
             xhe_aac: cfg.xhe_aac,
             widevine_cdm: cfg.widevine_cdm.clone(),
@@ -91,8 +89,7 @@ impl From<&DownloadConfig> for DownloadOptions {
             cover_size: cfg.cover_size.clone(),
             chapter_layout: cfg.chapter_layout.clone(),
             overwrite_existing: cfg.overwrite_existing,
-            split_files_by_chapter: cfg.split_files_by_chapter
-                || matches!(cfg.effective_output(), OutputFormat::SplitMp3ByChapter),
+            split_files_by_chapter: cfg.effective_format().wants_split_by_chapter(),
             split_mp3_max_mb: cfg.split_mp3_max_mb,
             chapter_file_template: cfg.chapter_file_template.clone(),
             chapter_title_template: cfg.chapter_title_template.clone(),
@@ -126,55 +123,61 @@ impl From<&DownloadConfig> for DownloadOptions {
 
 impl From<&Config> for DownloadOptions {
     fn from(cfg: &Config) -> Self {
-        let storage_is_s3 = cfg.storage.backend == StorageBackendKind::S3;
-        let mut opts = Self::from(&cfg.download);
-        opts.save_podcasts_to_parent_folder = cfg.library.save_podcasts_to_parent_folder;
-        opts.replacement_characters = resolve_replacement_characters(
-            &cfg.download.replacement_characters,
-            cfg.download.path_sanitization,
-            storage_is_s3,
-        );
-        opts.path_limits = PathLimits::resolve(
-            cfg.download.max_filename_length,
-            storage_is_s3,
-            &cfg.storage.effective_prefix(),
-            path_sanitization_is_windows(cfg.download.path_sanitization, storage_is_s3),
-        );
-        // Plugin-table ingest overrides win over [download.ingest.sources].
-        if let Some(q) = cfg.sources.ingest_override("audible") {
-            opts.ingest.sources.audible = Some(q);
-        }
-        if let Some(q) = cfg.sources.ingest_override("libro") {
-            opts.ingest.sources.libro = Some(q);
-        }
-        if let Some(q) = cfg.sources.ingest_override("chirp") {
-            opts.ingest.sources.chirp = Some(q);
-        }
-        if let Some(q) = cfg.sources.ingest_override("graphicaudio") {
-            opts.ingest.sources.graphicaudio = Some(q);
-        }
-        opts
+        let primary = cfg
+            .output
+            .primary_backend()
+            .unwrap_or(OutputBackendKind::Local);
+        Self::for_output_backend(cfg, primary)
     }
 }
 
 impl Default for DownloadOptions {
     fn default() -> Self {
-        Self::from(&DownloadConfig::default())
+        Self::from(&OutputConfig::default())
     }
 }
 
 impl DownloadOptions {
+    /// Build liberate options stamped for one output destination.
+    ///
+    /// Packaging knobs come from global `[output]`; naming templates prefer
+    /// that destination's overrides (`[output.local]` / `[output.s3]`).
+    #[must_use]
+    pub fn for_output_backend(cfg: &Config, kind: OutputBackendKind) -> Self {
+        let storage_is_s3 = matches!(kind, OutputBackendKind::S3);
+        let naming = cfg.output.naming_for(kind);
+        let mut opts = Self::from(&cfg.output);
+        opts.save_podcasts_to_parent_folder = cfg.library.save_podcasts_to_parent_folder;
+        opts.naming_profile = naming.effective_profile(&cfg.output);
+        opts.folder_template = naming.effective_folder_template(&cfg.output);
+        opts.file_template = naming.effective_file_template(&cfg.output);
+        opts.chapter_file_template = naming.effective_chapter_file_template(&cfg.output);
+        let prefix = match kind {
+            OutputBackendKind::Local => {
+                libation_config::normalize_storage_prefix(cfg.output.local.prefix.trim())
+            }
+            OutputBackendKind::S3 => {
+                libation_config::normalize_storage_prefix(cfg.output.s3.prefix.trim())
+            }
+        };
+        opts.replacement_characters = resolve_replacement_characters(
+            &cfg.output.replacement_characters,
+            cfg.output.path_sanitization,
+            storage_is_s3,
+        );
+        opts.path_limits = PathLimits::resolve(
+            cfg.output.max_filename_length,
+            storage_is_s3,
+            &prefix,
+            path_sanitization_is_windows(cfg.output.path_sanitization, storage_is_s3),
+        );
+        opts
+    }
+
     /// Resolved post-processing format.
     #[must_use]
     pub fn effective_output(&self) -> OutputFormat {
-        if let Some(output) = self.output {
-            return output;
-        }
-        match (self.format, self.split_files_by_chapter) {
-            (DownloadFormat::Mp3, true) => OutputFormat::SplitMp3ByChapter,
-            (DownloadFormat::Mp3, false) => OutputFormat::SingleMp3,
-            (DownloadFormat::M4b, _) => OutputFormat::EnrichedM4b,
-        }
+        self.format
     }
 
     #[must_use]
@@ -217,12 +220,6 @@ impl DownloadOptions {
         self.chapter_json.wants_any()
     }
 
-    /// Ingest quality for a content source id.
-    #[must_use]
-    pub fn ingest_quality(&self, source: &str) -> IngestQuality {
-        self.ingest.quality_for(source)
-    }
-
     /// Resolve folder / file / chapter-file templates from the naming profile
     /// with per-field overrides.
     #[must_use]
@@ -233,5 +230,41 @@ impl DownloadOptions {
             self.file_template.as_deref(),
             self.chapter_file_template.as_deref(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libation_config::Config;
+
+    #[test]
+    fn for_output_backend_applies_destination_naming_overrides() {
+        let mut cfg = Config::default();
+        cfg.output.naming_profile = NamingProfile::Classic;
+        cfg.output.folder_template = Some("<global folder>".into());
+        cfg.output.file_template = Some("<global file>".into());
+        cfg.output.chapter_file_template = Some("<global chapter>".into());
+        cfg.output.local.naming.file_template = Some("<local file>".into());
+        cfg.output.s3.enabled = true;
+        cfg.output.s3.bucket = "books".into();
+        cfg.output.s3.naming.naming_profile = Some(NamingProfile::Audiobookshelf);
+        cfg.output.s3.naming.folder_template = Some("<s3 folder>".into());
+        cfg.output.s3.naming.chapter_file_template = Some("<s3 chapter>".into());
+
+        let local = DownloadOptions::for_output_backend(&cfg, OutputBackendKind::Local);
+        let s3 = DownloadOptions::for_output_backend(&cfg, OutputBackendKind::S3);
+
+        assert_eq!(local.naming_profile, NamingProfile::Classic);
+        assert_eq!(local.folder_template.as_deref(), Some("<global folder>"));
+        assert_eq!(local.file_template.as_deref(), Some("<local file>"));
+        assert_eq!(
+            local.chapter_file_template.as_deref(),
+            Some("<global chapter>")
+        );
+        assert_eq!(s3.naming_profile, NamingProfile::Audiobookshelf);
+        assert_eq!(s3.folder_template.as_deref(), Some("<s3 folder>"));
+        assert_eq!(s3.file_template.as_deref(), Some("<global file>"));
+        assert_eq!(s3.chapter_file_template.as_deref(), Some("<s3 chapter>"));
     }
 }

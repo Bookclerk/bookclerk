@@ -7,7 +7,7 @@ use libation_graphicaudio::{
     LOGIN_PATH, PRODUCTS_PATH, REMOVE_PATH,
 };
 use libation_library::LibraryStore;
-use libation_source::{ContentSource, LoginOptions, ScanOptions, SourceFetch, SourceKind};
+use libation_source::{ContentSource, LoginOptions, ScanOptions, SourceFetch};
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use zip::write::SimpleFileOptions;
@@ -42,7 +42,7 @@ async fn login_saves_ga_auth_file() {
         .await
         .unwrap();
 
-    assert_eq!(account.source, SourceKind::GraphicAudio);
+    assert_eq!(account.source, "graphicaudio");
     assert_eq!(account.account_id, "reader@example.com");
 
     let auth = load_auth(&libation_graphicaudio::auth_file_for_account(

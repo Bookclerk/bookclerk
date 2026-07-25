@@ -47,7 +47,7 @@ pub use secret::{
     configure_auth_secrets, default_allow_plaintext, read_or_create_password_file,
     require_auth_password, resolve_auth_password, AUTH_PASSWORD_ENV, AUTH_PASSWORD_FILE_ENV,
 };
-pub use source::AudibleSource;
+pub use source::{from_config, register, AudibleSource, ID as AUDIBLE_SOURCE_ID};
 pub use sync::{scan_account_into_library, scan_library};
 pub use widevine::{
     effective_cdm_provider, ensure_widevine_cdm, load_widevine_cdm, WidevineCdm, WidevineDownload,

@@ -5,19 +5,19 @@ use libation_audible::{
     license_full_json, open_account_client, parse_license_json, request_content_license,
     summarize_license, DownloadOptions,
 };
-use libation_config::{apply_setting_overrides, BadBookAction, Config};
+use libation_config::{apply_setting_overrides, AudioQuality, BadBookAction, Config};
 use libation_liberate::{
     convert_book, liberate_book_indexed, liberate_pdf_only, match_storage_to_library,
-    ConvertRequest, LiberateRequest, MatchStorageOptions, StorageIndex,
+    ConvertRequest, LiberateDestinations, LiberateRequest, MatchStorageOptions, StorageIndex,
 };
 use libation_library::{LiberateStatus, LibraryStore};
 use libation_search::SearchEngine;
-use libation_source::{ScanOptions, SourceKind};
+use libation_source::ScanOptions;
 use libation_storage::from_config;
 
 use crate::commands::export::{export_csv, export_json, export_xlsx, filter_books, load_books};
 use crate::progress::BatchProgress;
-use crate::registry::{default_registry, parse_source_kind};
+use crate::registry::{default_registry_with_plugins, resolve_source_id};
 
 #[derive(Debug, Subcommand)]
 pub enum LibraryCommand {
@@ -30,8 +30,8 @@ pub enum LibraryCommand {
         #[arg(value_name = "ACCOUNT")]
         accounts: Vec<String>,
         /// Limit to one content source (`audible`, `libro`, `graphicaudio`, or `chirp`). Default: all.
-        #[arg(long, value_parser = parse_source_kind)]
-        source: Option<SourceKind>,
+        #[arg(long)]
+        source: Option<String>,
         /// After scan, match existing files in storage to library rows.
         ///
         /// Lists `.m4b` / `.mp3` / `.m4a` / `.flac` / `.aac` / `.ogg` / `.oga`, probes object metadata (no body
@@ -198,16 +198,17 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             if let Some(one) = account {
                 scan_accounts.push(one);
             }
-            let registry = default_registry(config);
+            let registry = default_registry_with_plugins(config).await?;
             let opts = ScanOptions {
                 accounts: scan_accounts.clone(),
                 page_size: 50,
                 import_episodes: config.library.import_episodes,
                 import_plus_titles: config.library.import_plus_titles,
             };
-            let summary = if let Some(kind) = source {
+            let summary = if let Some(needle) = source {
+                let id = resolve_source_id(&registry, &needle)?;
                 registry
-                    .require(kind)?
+                    .require(&id)?
                     .scan(&paths.files_dir, &store, opts)
                     .await?
             } else {
@@ -281,7 +282,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 .collect();
             apply_setting_overrides(&mut cfg, &pairs);
             let storage = from_config(&cfg).await?;
-            let registry = default_registry(&cfg);
+            let destinations = LiberateDestinations::from_config(&cfg).await?;
+            let registry = default_registry_with_plugins(&cfg).await?;
 
             // Match existing media first (same as libationd) so we do not
             // re-download titles already on disk.
@@ -338,22 +340,26 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 Some(StorageIndex::from_storage(storage.as_ref()).await?)
             };
 
+            let mut integrations = libation_integrations::from_config(&cfg)?;
+            if !dry_run {
+                libation_plugin::load_external_integrations(&cfg, &mut integrations).await?;
+            }
+
             let mut ok = 0u32;
             let mut matched = 0u32;
             let mut failed = 0u32;
-            let bad_book = cfg.download.bad_book_action;
+            let bad_book = cfg.output.bad_book_action;
 
             let total = targets.len();
             let mut batch = BatchProgress::new(total, if pdf { "pdf" } else { "liberate" });
 
             for (idx, book) in targets.into_iter().enumerate() {
                 batch.set(idx + 1, book.asin_or_isbn());
-                let source_kind = SourceKind::parse(&book.source).unwrap_or(SourceKind::Audible);
-                let content_source = registry.require(source_kind).ok();
+                let content_source = registry.get(&book.source);
                 let req = LiberateRequest {
                     asin: book.download_product_id().to_string(),
                     book_uuid: Some(book.uuid.clone()),
-                    source: source_kind,
+                    source: book.source.clone(),
                     account_id: book.account_id.clone(),
                     title: book.title.clone(),
                     authors: book.authors.clone(),
@@ -365,6 +371,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     cache_dir: cfg.download_cache_dir(),
                     force,
                     preloaded_license: preloaded_license.clone(),
+                    write_destinations: None,
                 };
                 if dry_run {
                     let key = if pdf {
@@ -383,11 +390,11 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 loop {
                     attempts += 1;
                     let result = if pdf {
-                        liberate_pdf_only(&store, storage.as_ref(), &req).await
+                        liberate_pdf_only(&store, &destinations, &req).await
                     } else {
                         liberate_book_indexed(
                             &store,
-                            storage.as_ref(),
+                            &destinations,
                             req.clone(),
                             index.as_mut(),
                             content_source.as_deref(),
@@ -397,11 +404,25 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     match result {
                         Ok(result) if result.matched_existing => {
                             println!("matched {} -> {}", result.asin, result.storage_key);
+                            libation_integrations::emit_book_liberated(
+                                &integrations,
+                                &store,
+                                &result.asin,
+                                &result.storage_key,
+                            )
+                            .await;
                             matched += 1;
                             break;
                         }
                         Ok(result) => {
                             println!("liberated {} -> {}", result.asin, result.storage_key);
+                            libation_integrations::emit_book_liberated(
+                                &integrations,
+                                &store,
+                                &result.asin,
+                                &result.storage_key,
+                            )
+                            .await;
                             ok += 1;
                             break;
                         }
@@ -486,11 +507,21 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             let (account_key, license_asin) =
                 resolve_audible_license_target(&store, &asin, account.as_deref())?;
             let client = open_account_client(&paths.files_dir, &account_key).await?;
+            let quality = match config
+                .sources
+                .get_string("audible", "bitrate")
+                .unwrap_or("high")
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "normal" => AudioQuality::Normal,
+                _ => AudioQuality::High,
+            };
             let license = request_content_license(
                 &client.client,
                 &client.marketplace,
                 &license_asin,
-                config.download.quality,
+                quality,
             )
             .await?;
             if full {
@@ -607,8 +638,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             let req = ConvertRequest {
                 cache_dir: config.download_cache_dir(),
                 force,
-                lame: config.download.lame.clone(),
-                max_sample_rate: config.download.max_sample_rate,
+                lame: config.output.lame.clone(),
+                max_sample_rate: config.output.max_sample_rate,
             };
             let total = targets.len();
             let mut batch = BatchProgress::new(total, "convert");

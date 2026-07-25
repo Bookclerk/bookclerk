@@ -28,6 +28,8 @@ libation-naming.workspace = true
 libation-search.workspace = true
 libation-source.workspace = true
 libation-storage.workspace = true
+libation-integrations.workspace = true
+libation-plugin.workspace = true
 rusqlite.workspace = true
 chrono.workspace = true
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }

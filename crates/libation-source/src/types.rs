@@ -6,51 +6,32 @@ use serde::{Deserialize, Serialize};
 
 use crate::options::DownloadOptions;
 
-/// Which store a title / account belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceKind {
-    #[default]
-    Audible,
-    LibroFm,
-    GraphicAudio,
-    Chirp,
+/// One allowed value for a [`SourceConfigOption`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigOptionValue {
+    /// Wire / TOML id (`high`, `m4b`, `web`, …).
+    pub id: &'static str,
+    /// Human label.
+    pub label: &'static str,
 }
 
-impl SourceKind {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Audible => "audible",
-            Self::LibroFm => "libro",
-            Self::GraphicAudio => "graphicaudio",
-            Self::Chirp => "chirp",
-        }
-    }
-
-    #[must_use]
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "audible" => Some(Self::Audible),
-            "libro" | "librofm" | "libro.fm" => Some(Self::LibroFm),
-            "graphicaudio" | "graphic-audio" | "ga" => Some(Self::GraphicAudio),
-            "chirp" | "chirpbooks" => Some(Self::Chirp),
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Display for SourceKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
+/// One source-native config knob under `[sources.<id>]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceConfigOption {
+    /// TOML key (`bitrate`, `container`, `access`).
+    pub key: &'static str,
+    /// Human label.
+    pub label: &'static str,
+    /// Allowed values.
+    pub values: &'static [ConfigOptionValue],
 }
 
 /// Account discovered or created by a content source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceAccount {
     pub account_id: String,
-    pub source: SourceKind,
+    /// Canonical plugin id (`audible`, `libro`, …).
+    pub source: String,
     pub marketplace: String,
     pub label: Option<String>,
     pub scan_enabled: bool,
@@ -61,9 +42,9 @@ pub struct SourceAccount {
 pub struct LoginOptions {
     pub marketplace: String,
     pub label: Option<String>,
-    /// Email/password sources (Libro.fm, GraphicAudio, Chirp); ignored for Audible OAuth.
+    /// Email/password sources; ignored for OAuth.
     pub email: Option<String>,
-    /// Email/password sources (Libro.fm, GraphicAudio, Chirp); ignored for Audible OAuth.
+    /// Email/password sources; ignored for OAuth.
     pub password: Option<String>,
     pub force: bool,
 }
@@ -74,9 +55,9 @@ pub struct ScanOptions {
     /// Limit to specific account nicknames / ids.
     pub accounts: Vec<String>,
     pub page_size: u32,
-    /// Import podcast episodes (`ImportEpisodes`) — Audible-only.
+    /// Import podcast episodes — consumed by plugins that support it.
     pub import_episodes: bool,
-    /// Import Audible Plus / non-owned titles — Audible-only.
+    /// Import catalog Plus / non-owned titles — consumed by plugins that support it.
     pub import_plus_titles: bool,
 }
 
@@ -148,7 +129,7 @@ pub struct EncryptedFetch {
     pub needs_decrypt: bool,
     pub pdf_url: Option<String>,
     pub content_format: Option<String>,
-    /// Chapter info JSON from Audible content metadata (optional).
+    /// Chapter info JSON from content metadata (optional).
     pub chapter_info: Option<serde_json::Value>,
     pub cover_path: Option<PathBuf>,
     pub product_metadata: Option<serde_json::Value>,

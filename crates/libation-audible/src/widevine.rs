@@ -53,7 +53,7 @@ pub fn effective_cdm_provider(configured: Option<&str>) -> Option<&str> {
 /// Resolve and load a `.wvd` device blob (local files only).
 ///
 /// Search order:
-/// 1. Explicit `download.widevine_cdm` path (absolute, or relative to `files_dir`)
+/// 1. Explicit `output.widevine_cdm` path (absolute, or relative to `files_dir`)
 /// 2. `{files_dir}/widevine.wvd`
 /// 3. `{files_dir}/Accounts/{account_stem}.wvd`
 pub fn load_widevine_cdm(
@@ -74,7 +74,7 @@ pub fn load_widevine_cdm(
     }
     Err(last_err.unwrap_or_else(|| {
         AudibleError::Widevine(
-            "no Widevine CDM (.wvd) found — set download.widevine_cdm, place \
+            "no Widevine CDM (.wvd) found — set output.widevine_cdm, place \
              widevine.wvd under LIBATION_FILES_DIR, or Accounts/<account>.wvd"
                 .into(),
         )

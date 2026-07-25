@@ -13,6 +13,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+libation-config.workspace = true
 libation-library.workspace = true
 libation-source.workspace = true
 reqwest = { version = "0.13", default-features = true, features = ["json", "query", "rustls"] }

@@ -110,7 +110,7 @@ token files.
 | Tool | Needed for |
 | --- | --- |
 | *(none for decrypt/encode)* | Adrm aaxc and Audible Widevine **DASH fMP4/CENC**, MP3, metadata, and chapter split are **native Rust** |
-| Android auth + L3 CDM | Widevine / xHE-AAC (`download.widevine=true`) — L3 CDM auto-provisions via classic Libation AudibleCdm; optional BYO `.wvd` |
+| Android auth + L3 CDM | Widevine / xHE-AAC (`output.widevine=true`) — L3 CDM auto-provisions via classic Libation AudibleCdm; optional BYO `.wvd` |
 
 Audible’s Widevine downloads are a DASH MPD pointing at one CENC **fragmented MP4**
 (`moof`/`senc`), offered as AAC-LC and optionally xHE-AAC. We decrypt that path
@@ -125,19 +125,19 @@ For Widevine titles, use a normal login (registers as Android):
 libation auth login --force
 ```
 
-On first Widevine liberate, an L3 `.wvd` is fetched from the AudibleCdm provider and cached under `Accounts/<account>.wvd` (override with `download.widevine_cdm`, or set `download.widevine_cdm_provider = "off"` to require BYO only).
+On first Widevine liberate, an L3 `.wvd` is fetched from the AudibleCdm provider and cached under `Accounts/<account>.wvd` (override with `output.widevine_cdm`, or set `output.widevine_cdm_provider = "off"` to require BYO only).
 
 No external `ffmpeg` or `aaxclean-cli` binaries are required. When
-`download.strip_audible_brand_audio = true`, liberate also trims Audible
+`output.strip_audible_brand_audio = true`, liberate also trims Audible
 pre/post-roll using `brand_intro_duration_ms` / `brand_outro_duration_ms` from
 chapter metadata (classic Libation behavior).
 ### Widevine / xHE / mp3
 
 ```toml
-[download]
+[output]
 widevine = true
 xhe_aac = true
-format = "mp3"          # native LAME re-encode after decrypt
+format = "single_mp3"   # native LAME re-encode after decrypt
 # widevine_cdm = "device.wvd"   # optional BYO; otherwise auto-provision L3
 # naming_profile = "audiobookshelf"  # default; or "classic" for Libation desktop defaults
 # folder_template / file_template override the profile when set
@@ -156,7 +156,7 @@ aaxc asset), liberate automatically falls back to Widevine when a CDM is found.
 ### Sidecars and metadata fix-up
 
 ```toml
-[download]
+[output]
 download_cover = true       # save .jpg alongside audio (DownloadCoverArt)
 download_pdf = true         # companion PDF when available
 create_cue = true           # .cue from API chapters (CreateCueSheet)
@@ -168,7 +168,7 @@ chapter_layout = "tree"     # tree | flat
 
 Artifact failures are logged and do not fail the audio liberate (classic behavior).
 
-Relative `storage.local.root` values resolve under `LIBATION_FILES_DIR`.
+Relative `output.local.root` values resolve under `LIBATION_FILES_DIR`.
 
 ## Fresh install with existing audiobooks
 

@@ -81,7 +81,7 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
             .push("Settings.json not found — using defaults".into());
     }
 
-    let books_root = config.storage.local.root.clone();
+    let books_root = config.output.local.root.clone();
 
     // --- AccountsSettings.json ---
     let mut account_id_map = HashMap::new();

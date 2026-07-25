@@ -113,8 +113,47 @@ pub struct AccountRecord {
     pub marketplace: String,
     pub label: Option<String>,
     pub scan_enabled: bool,
+    /// `active` or `revoked` (credentials removed; books retained).
+    #[serde(default = "default_connection_status")]
+    pub connection_status: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+fn default_connection_status() -> String {
+    String::from("active")
+}
+
+/// Portal identity bound to an external provider user (e.g. ABS).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortalIdentity {
+    pub id: i64,
+    pub provider: String,
+    pub external_user_id: String,
+    pub label: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Claim ticket metadata (token plaintext is never stored).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimTicketRecord {
+    pub id: i64,
+    pub token_hash: String,
+    pub identity_id: Option<i64>,
+    pub expires_at: DateTime<Utc>,
+    pub redeemed_at: Option<DateTime<Utc>>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Link between a portal identity and a bookstore account.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountLinkRecord {
+    pub id: i64,
+    pub identity_id: i64,
+    pub account_id: String,
+    pub source: String,
+    pub created_at: DateTime<Utc>,
 }
 
 /// Book / library item (one ownership row per store product per account).
@@ -193,12 +232,6 @@ impl BookRecord {
     /// Audible ASIN for Audible license / catalog APIs when one is known.
     #[must_use]
     pub fn audible_asin(&self) -> Option<&str> {
-        self.asin.as_deref().or_else(|| {
-            if self.source.eq_ignore_ascii_case("audible") {
-                Some(self.product_id.as_str())
-            } else {
-                None
-            }
-        })
+        self.asin.as_deref()
     }
 }

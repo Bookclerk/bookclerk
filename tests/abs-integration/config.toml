@@ -1,0 +1,28 @@
+# Config baked into the ABS integration image (secrets via env).
+[library]
+auto_liberate = false
+scan_interval_minutes = 0
+
+[output.local]
+enabled = true
+root = "/data/Audiobooks"
+
+[daemon]
+listen = "0.0.0.0:8787"
+json_logs = true
+
+[auth]
+allow_plaintext = true
+
+[integrations]
+portal_base_path = "/connect"
+claim_ticket_ttl_hours = 72
+portal_session_ttl_hours = 12
+public_origin = "http://127.0.0.1:8787"
+
+[integrations.audiobookshelf]
+enabled = true
+base_url = "http://audiobookshelf:80"
+watch_users = true
+notify_scan_on_liberate = true
+allow_credential_login = true

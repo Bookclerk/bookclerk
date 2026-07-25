@@ -10,13 +10,13 @@
 
 use std::path::{Path, PathBuf};
 
-use libation_config::GraphicAudioAccess;
 use libation_source::{PlainAudioPart, PlainFetch};
 
 use crate::client::{GraphicAudioClient, Product};
 use crate::error::{GraphicAudioError, Result};
 use crate::http_util::extension_from_url;
 use crate::magento::{self, MagentoClient};
+use crate::options::{GraphicAudioAccess, GraphicAudioContainer};
 
 /// Env override for which GraphicAudio access path to use (legacy name).
 pub const GA_FETCH_ENV: &str = "LIBATION_GA_FETCH";
@@ -45,7 +45,7 @@ pub async fn fetch_title_materials(
     fetch_title_materials_with_quality(client, product_id, cache_dir, true).await
 }
 
-/// Like [`fetch_title_materials`], but selects Hi vs Lo from ingest quality.
+/// Like [`fetch_title_materials`], but selects Hi vs Lo from source bitrate.
 pub async fn fetch_title_materials_with_quality(
     client: &GraphicAudioClient,
     product_id: &str,
@@ -66,6 +66,8 @@ pub struct TitleFetchRequest<'a> {
     pub prefer_hi: bool,
     pub mode: GraphicAudioAccess,
     pub password: Option<&'a str>,
+    /// ZIP SKU preference when [`Self::mode`] is [`GraphicAudioAccess::Zip`].
+    pub zip_container: GraphicAudioContainer,
 }
 
 /// Fetch owned audio for one product using the configured access path only
@@ -91,6 +93,7 @@ pub async fn fetch_title_with_mode(
                 req.product_id,
                 req.product_title,
                 &title_dir,
+                req.zip_container,
             )
             .await
         }
@@ -122,6 +125,7 @@ async fn fetch_magento_zip(
     product_id: &str,
     product_title: Option<&str>,
     title_dir: &Path,
+    container: GraphicAudioContainer,
 ) -> Result<PlainFetch> {
     let title = product_title
         .map(str::trim)
@@ -134,7 +138,7 @@ async fn fetch_magento_zip(
 
     let client = MagentoClient::new(store_base_url)?;
     client.login(email, password).await?;
-    let audio_path = magento::fetch_zip_for_title(&client, title, title_dir).await?;
+    let audio_path = magento::fetch_zip_for_title(&client, title, title_dir, container).await?;
     Ok(plain_from_audio_path(audio_path))
 }
 

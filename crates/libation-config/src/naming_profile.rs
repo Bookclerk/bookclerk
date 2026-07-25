@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Preset path-template profile.
 ///
-/// Select via `download.naming_profile`. Individual `folder_template` /
+/// Select via `output.naming_profile`. Individual `folder_template` /
 /// `file_template` / `chapter_file_template` values override the profile when
 /// set.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

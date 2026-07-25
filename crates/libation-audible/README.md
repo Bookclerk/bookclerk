@@ -46,7 +46,7 @@ encrypted files need a matching passphrase; plaintext files need
    - Mpeg fallback (plain mp3) when the server has no Widevine asset
 3. Spatial/Atmos (Widevine **L1**, `ec+3`) is not available on desktop — liberate never requests it
 
-CDM resolution: local `download.widevine_cdm` / `{files_dir}/widevine.wvd` /
+CDM resolution: local `output.widevine_cdm` / `{files_dir}/widevine.wvd` /
 `Accounts/<account>.wvd`, else auto-provision from
-`download.widevine_cdm_provider` (default: classic Libation AudibleCdm).
+`output.widevine_cdm_provider` (default: classic Libation AudibleCdm).
 Requires Android registration (`auth login` always uses Android).

@@ -21,7 +21,9 @@ const BOOK_SELECT: &str = r#"
 "#;
 
 const ACCOUNT_SELECT: &str = r#"
-    SELECT id, account_id, marketplace, label, scan_enabled, source, created_at, updated_at
+    SELECT id, account_id, marketplace, label, scan_enabled, source,
+           COALESCE(connection_status, 'active') AS connection_status,
+           created_at, updated_at
     FROM accounts
 "#;
 
@@ -229,8 +231,8 @@ impl LibraryStore {
                 // Copy account row under the new id, then move books, then drop old.
                 conn.execute(
                     r#"
-                    INSERT INTO accounts (account_id, marketplace, label, scan_enabled, source, created_at, updated_at)
-                    SELECT ?1, marketplace, label, scan_enabled, source, created_at, ?2
+                    INSERT INTO accounts (account_id, marketplace, label, scan_enabled, source, connection_status, created_at, updated_at)
+                    SELECT ?1, marketplace, label, scan_enabled, source, COALESCE(connection_status, 'active'), created_at, ?2
                     FROM accounts WHERE account_id = ?3
                     "#,
                     params![to, Utc::now().to_rfc3339(), from],
@@ -327,6 +329,303 @@ impl LibraryStore {
             conn.execute(
                 "UPDATE accounts SET scan_enabled = ?1, updated_at = ?2 WHERE account_id = ?3",
                 params![i64::from(scan_enabled), now, account_id],
+            )
+            .map_err(LibraryError::from)
+        })?;
+        if updated == 0 {
+            return Err(LibraryError::NotFound(account_id.into()));
+        }
+        Ok(())
+    }
+
+    /// Mark bookstore credentials active again (after reconnect).
+    pub fn mark_connection_active(&self, account_id: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let updated = self.with_conn(|conn| {
+            conn.execute(
+                r#"
+                UPDATE accounts
+                SET connection_status = 'active',
+                    scan_enabled = 1,
+                    updated_at = ?1
+                WHERE account_id = ?2
+                "#,
+                params![now, account_id],
+            )
+            .map_err(LibraryError::from)
+        })?;
+        if updated == 0 {
+            return Err(LibraryError::NotFound(account_id.into()));
+        }
+        Ok(())
+    }
+
+    /// Mark bookstore credentials revoked without deleting the account or books.
+    pub fn revoke_credentials(&self, account_id: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let updated = self.with_conn(|conn| {
+            conn.execute(
+                r#"
+                UPDATE accounts
+                SET scan_enabled = 0,
+                    connection_status = 'revoked',
+                    updated_at = ?1
+                WHERE account_id = ?2
+                "#,
+                params![now, account_id],
+            )
+            .map_err(LibraryError::from)
+        })?;
+        if updated == 0 {
+            return Err(LibraryError::NotFound(account_id.into()));
+        }
+        Ok(())
+    }
+
+    /// Create or fetch a portal identity for `(provider, external_user_id)`.
+    pub fn upsert_portal_identity(
+        &self,
+        provider: &str,
+        external_user_id: &str,
+        label: Option<&str>,
+    ) -> Result<crate::models::PortalIdentity> {
+        let now = Utc::now().to_rfc3339();
+        self.with_conn(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO portal_identities (provider, external_user_id, label, created_at)
+                VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(provider, external_user_id) DO UPDATE SET
+                    label = COALESCE(excluded.label, portal_identities.label)
+                "#,
+                params![provider, external_user_id, label, now],
+            )?;
+            Ok(())
+        })?;
+        self.get_portal_identity(provider, external_user_id)?
+            .ok_or_else(|| LibraryError::NotFound(format!("{provider}:{external_user_id}")))
+    }
+
+    /// Look up a portal identity.
+    pub fn get_portal_identity(
+        &self,
+        provider: &str,
+        external_user_id: &str,
+    ) -> Result<Option<crate::models::PortalIdentity>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                r#"
+                SELECT id, provider, external_user_id, label, created_at
+                FROM portal_identities
+                WHERE provider = ?1 AND external_user_id = ?2
+                "#,
+                params![provider, external_user_id],
+                map_portal_identity_row,
+            )
+            .optional()
+            .map_err(LibraryError::from)
+        })
+    }
+
+    /// Look up portal identity by row id.
+    pub fn get_portal_identity_by_id(
+        &self,
+        id: i64,
+    ) -> Result<Option<crate::models::PortalIdentity>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                r#"
+                SELECT id, provider, external_user_id, label, created_at
+                FROM portal_identities WHERE id = ?1
+                "#,
+                params![id],
+                map_portal_identity_row,
+            )
+            .optional()
+            .map_err(LibraryError::from)
+        })
+    }
+
+    /// Insert a claim ticket (store only the hash).
+    pub fn insert_claim_ticket(
+        &self,
+        token_hash: &str,
+        identity_id: Option<i64>,
+        expires_at: chrono::DateTime<Utc>,
+        created_by: &str,
+    ) -> Result<crate::models::ClaimTicketRecord> {
+        let now = Utc::now().to_rfc3339();
+        let expires = expires_at.to_rfc3339();
+        self.with_conn(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO claim_tickets
+                    (token_hash, identity_id, expires_at, redeemed_at, created_by, created_at)
+                VALUES (?1, ?2, ?3, NULL, ?4, ?5)
+                "#,
+                params![token_hash, identity_id, expires, created_by, now],
+            )?;
+            Ok(())
+        })?;
+        self.get_claim_ticket_by_hash(token_hash)?
+            .ok_or_else(|| LibraryError::NotFound(token_hash.into()))
+    }
+
+    pub fn get_claim_ticket_by_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<crate::models::ClaimTicketRecord>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                r#"
+                SELECT id, token_hash, identity_id, expires_at, redeemed_at, created_by, created_at
+                FROM claim_tickets WHERE token_hash = ?1
+                "#,
+                params![token_hash],
+                map_claim_ticket_row,
+            )
+            .optional()
+            .map_err(LibraryError::from)
+        })
+    }
+
+    /// List unredeemed, unexpired claim tickets (newest first).
+    pub fn list_open_claim_tickets(&self) -> Result<Vec<crate::models::ClaimTicketRecord>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, token_hash, identity_id, expires_at, redeemed_at, created_by, created_at
+                FROM claim_tickets
+                WHERE redeemed_at IS NULL AND expires_at > ?1
+                ORDER BY id DESC
+                "#,
+            )?;
+            let now = Utc::now().to_rfc3339();
+            let rows = stmt.query_map(params![now], map_claim_ticket_row)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(LibraryError::from)
+        })
+    }
+
+    /// Mark a claim ticket redeemed.
+    pub fn redeem_claim_ticket(
+        &self,
+        token_hash: &str,
+    ) -> Result<crate::models::ClaimTicketRecord> {
+        let now = Utc::now().to_rfc3339();
+        let updated = self.with_conn(|conn| {
+            conn.execute(
+                r#"
+                UPDATE claim_tickets
+                SET redeemed_at = ?1
+                WHERE token_hash = ?2
+                  AND redeemed_at IS NULL
+                  AND expires_at > ?1
+                "#,
+                params![now, token_hash],
+            )
+            .map_err(LibraryError::from)
+        })?;
+        if updated == 0 {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "claim ticket invalid, expired, or already redeemed"
+            )));
+        }
+        self.get_claim_ticket_by_hash(token_hash)?
+            .ok_or_else(|| LibraryError::NotFound(token_hash.into()))
+    }
+
+    /// Create a portal session (hash only).
+    pub fn insert_portal_session(
+        &self,
+        token_hash: &str,
+        identity_id: i64,
+        expires_at: chrono::DateTime<Utc>,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.with_conn(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO portal_sessions (token_hash, identity_id, expires_at, created_at)
+                VALUES (?1, ?2, ?3, ?4)
+                "#,
+                params![token_hash, identity_id, expires_at.to_rfc3339(), now],
+            )
+            .map_err(LibraryError::from)
+        })?;
+        Ok(())
+    }
+
+    /// Resolve a valid portal session to its identity.
+    pub fn get_portal_session_identity(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<crate::models::PortalIdentity>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                r#"
+                SELECT i.id, i.provider, i.external_user_id, i.label, i.created_at
+                FROM portal_sessions s
+                JOIN portal_identities i ON i.id = s.identity_id
+                WHERE s.token_hash = ?1 AND s.expires_at > ?2
+                "#,
+                params![token_hash, Utc::now().to_rfc3339()],
+                map_portal_identity_row,
+            )
+            .optional()
+            .map_err(LibraryError::from)
+        })
+    }
+
+    /// Link a bookstore account to a portal identity.
+    pub fn link_account(
+        &self,
+        identity_id: i64,
+        account_id: &str,
+        source: &str,
+    ) -> Result<crate::models::AccountLinkRecord> {
+        let now = Utc::now().to_rfc3339();
+        self.with_conn(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO account_links (identity_id, account_id, source, created_at)
+                VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(identity_id, account_id) DO NOTHING
+                "#,
+                params![identity_id, account_id, source, now],
+            )?;
+            Ok(())
+        })?;
+        self.list_account_links(identity_id)?
+            .into_iter()
+            .find(|l| l.account_id == account_id)
+            .ok_or_else(|| LibraryError::NotFound(account_id.into()))
+    }
+
+    pub fn list_account_links(
+        &self,
+        identity_id: i64,
+    ) -> Result<Vec<crate::models::AccountLinkRecord>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT id, identity_id, account_id, source, created_at
+                FROM account_links WHERE identity_id = ?1
+                ORDER BY id
+                "#,
+            )?;
+            let rows = stmt.query_map(params![identity_id], map_account_link_row)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(LibraryError::from)
+        })
+    }
+
+    /// Remove an account link row (does not delete the account).
+    pub fn unlink_account(&self, identity_id: i64, account_id: &str) -> Result<()> {
+        let updated = self.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM account_links WHERE identity_id = ?1 AND account_id = ?2",
+                params![identity_id, account_id],
             )
             .map_err(LibraryError::from)
         })?;
@@ -789,11 +1088,9 @@ impl LibraryStore {
 pub fn prefer_enrichment_source(books: &[BookRecord]) -> Option<&BookRecord> {
     books.iter().max_by_key(|b| {
         let mut score = 0u32;
-        if b.source.eq_ignore_ascii_case("audible") {
-            score += 100;
-        }
+        // Prefer rows that already carry an Audible ASIN (ownership or enrichment).
         if b.asin.is_some() {
-            score += 10;
+            score += 100;
         }
         if b.isbn.is_some() {
             score += 10;
@@ -904,8 +1201,54 @@ fn map_account_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRecord> {
         marketplace: r.get("marketplace")?,
         label: r.get("label")?,
         scan_enabled: r.get::<_, i64>("scan_enabled")? != 0,
+        connection_status: r
+            .get::<_, String>("connection_status")
+            .unwrap_or_else(|_| String::from("active")),
         created_at: parse_dt(&created_at),
         updated_at: parse_dt(&updated_at),
+    })
+}
+
+fn map_portal_identity_row(
+    r: &rusqlite::Row<'_>,
+) -> rusqlite::Result<crate::models::PortalIdentity> {
+    let created_at: String = r.get("created_at")?;
+    Ok(crate::models::PortalIdentity {
+        id: r.get("id")?,
+        provider: r.get("provider")?,
+        external_user_id: r.get("external_user_id")?,
+        label: r.get("label")?,
+        created_at: parse_dt(&created_at),
+    })
+}
+
+fn map_claim_ticket_row(
+    r: &rusqlite::Row<'_>,
+) -> rusqlite::Result<crate::models::ClaimTicketRecord> {
+    let expires_at: String = r.get("expires_at")?;
+    let created_at: String = r.get("created_at")?;
+    let redeemed_at: Option<String> = r.get("redeemed_at")?;
+    Ok(crate::models::ClaimTicketRecord {
+        id: r.get("id")?,
+        token_hash: r.get("token_hash")?,
+        identity_id: r.get("identity_id")?,
+        expires_at: parse_dt(&expires_at),
+        redeemed_at: redeemed_at.as_deref().map(parse_dt),
+        created_by: r.get("created_by")?,
+        created_at: parse_dt(&created_at),
+    })
+}
+
+fn map_account_link_row(
+    r: &rusqlite::Row<'_>,
+) -> rusqlite::Result<crate::models::AccountLinkRecord> {
+    let created_at: String = r.get("created_at")?;
+    Ok(crate::models::AccountLinkRecord {
+        id: r.get("id")?,
+        identity_id: r.get("identity_id")?,
+        account_id: r.get("account_id")?,
+        source: r.get("source")?,
+        created_at: parse_dt(&created_at),
     })
 }
 
@@ -1259,5 +1602,55 @@ mod tests {
         assert!(store.is_ignored("B00TEST", "user-1").unwrap());
         store.set_ignored("B00TEST", "user-1", false, None).unwrap();
         assert!(!store.is_ignored("B00TEST", "user-1").unwrap());
+    }
+
+    #[test]
+    fn revoke_keeps_books_and_portal_tickets_work() {
+        let store = LibraryStore::open_in_memory().unwrap();
+        store
+            .upsert_account("user-1", "us", Some("Main"), true)
+            .unwrap();
+        store
+            .upsert_book(&NewBook::minimal("B00TEST", "user-1", "us", "Test"))
+            .unwrap();
+        store.revoke_credentials("user-1").unwrap();
+        let acct = store.get_account("user-1").unwrap().unwrap();
+        assert!(!acct.scan_enabled);
+        assert_eq!(acct.connection_status, "revoked");
+        assert!(store.get_book("B00TEST", "user-1").unwrap().is_some());
+
+        let identity = store
+            .upsert_portal_identity("audiobookshelf", "usr_1", Some("bob"))
+            .unwrap();
+        let ticket = store
+            .insert_claim_ticket(
+                "abc123hash",
+                Some(identity.id),
+                Utc::now() + chrono::Duration::hours(1),
+                "test",
+            )
+            .unwrap();
+        assert!(ticket.redeemed_at.is_none());
+        store.redeem_claim_ticket("abc123hash").unwrap();
+        let redeemed = store
+            .get_claim_ticket_by_hash("abc123hash")
+            .unwrap()
+            .unwrap();
+        assert!(redeemed.redeemed_at.is_some());
+
+        store
+            .link_account(identity.id, "user-1", "audible")
+            .unwrap();
+        let links = store.list_account_links(identity.id).unwrap();
+        assert_eq!(links.len(), 1);
+        store.mark_connection_active("user-1").unwrap();
+        assert_eq!(
+            store
+                .get_account("user-1")
+                .unwrap()
+                .unwrap()
+                .connection_status,
+            "active"
+        );
     }
 }

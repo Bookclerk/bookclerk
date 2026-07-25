@@ -11,13 +11,9 @@ use libation_audible::{
 };
 use libation_config::Config;
 use libation_library::LibraryStore;
-use libation_source::{LoginOptions, SourceKind};
+use libation_source::{LoginOptions, PortalAuthMode};
 
-use crate::registry::{default_registry, parse_source_kind};
-
-const LIBRO_PASSWORD_ENV: &str = "LIBATION_LIBRO_PASSWORD";
-const GA_PASSWORD_ENV: &str = "LIBATION_GA_PASSWORD";
-const CHIRP_PASSWORD_ENV: &str = "LIBATION_CHIRP_PASSWORD";
+use crate::registry::{auth_credential_suffixes, default_registry_with_plugins, resolve_source_id};
 
 #[derive(Debug, Subcommand)]
 pub enum AuthCommand {
@@ -26,34 +22,33 @@ pub enum AuthCommand {
     /// Audible: Amazon accounts with 2FA/MFA must complete OTP (or another
     /// challenge) in the browser — audible-rs OAuth has no username/password flags.
     ///
-    /// Libro.fm / GraphicAudio / Chirp: require `--email`; password from
-    /// `LIBATION_LIBRO_PASSWORD` / `LIBATION_GA_PASSWORD` / `LIBATION_CHIRP_PASSWORD`
-    /// (or an interactive prompt — never pass the password on argv).
+    /// Password sources: require `--email`; password from the source's env var
+    /// (e.g. `LIBATION_LIBRO_PASSWORD`) or an interactive prompt — never on argv.
     Login {
-        /// Content source (`audible`, `libro`, `graphicaudio`, or `chirp`).
-        #[arg(long, default_value = "audible", value_parser = parse_source_kind)]
-        source: SourceKind,
+        /// Content source id (`audible`, `libro`, `graphicaudio`, `chirp`, …).
+        #[arg(long, default_value = "audible")]
+        source: String,
         /// Marketplace code (`us`, `uk`, `de`, …).
         #[arg(short = 'm', long, default_value = "us")]
         marketplace: String,
         /// Optional account label (also used as auth filename stem).
         #[arg(long)]
         label: Option<String>,
-        /// Account email (required for `libro`, `graphicaudio`, `chirp`).
+        /// Account email (required for password sources).
         #[arg(long)]
         email: Option<String>,
         /// Print authorize URL and paste redirect (instead of local login server).
-        /// Audible only.
+        /// OAuth sources only.
         #[arg(long)]
         external: bool,
         /// Amazon redirect URL (with `--external`; otherwise read from stdin).
-        /// Audible only.
+        /// OAuth sources only.
         #[arg(long)]
         response_url: Option<String>,
-        /// Callback server bind address (login-server mode). Audible only.
+        /// Callback server bind address (login-server mode). OAuth sources only.
         #[arg(long, default_value = "127.0.0.1:0")]
         callback_bind: SocketAddr,
-        /// Seconds to wait for login-server capture. Audible only.
+        /// Seconds to wait for login-server capture. OAuth sources only.
         #[arg(long, default_value_t = 300)]
         timeout: u64,
         /// Pre-merger Audible username login (de/us/uk only).
@@ -62,10 +57,10 @@ pub enum AuthCommand {
         /// Overwrite an existing auth file.
         #[arg(long)]
         force: bool,
-        /// Disable terminal QR output. Audible only.
+        /// Disable terminal QR output. OAuth sources only.
         #[arg(long)]
         no_qr: bool,
-        /// Use ASCII QR instead of Unicode blocks. Audible only.
+        /// Use ASCII QR instead of Unicode blocks. OAuth sources only.
         #[arg(long)]
         ascii_qr: bool,
     },
@@ -89,8 +84,8 @@ pub enum AuthCommand {
     /// List configured accounts (LibationCli: `list-accounts`).
     List {
         /// Content source filter. Omit for all.
-        #[arg(long, value_parser = parse_source_kind)]
-        source: Option<SourceKind>,
+        #[arg(long)]
+        source: Option<String>,
         /// Tab-separated values for scripts (source, account, name, locale, scan, auth).
         #[arg(short, long)]
         bare: bool,
@@ -106,8 +101,13 @@ pub enum AuthCommand {
     /// Show token validity / refresh health across sources.
     Status {
         /// Content source filter. Omit for all.
-        #[arg(long, value_parser = parse_source_kind)]
-        source: Option<SourceKind>,
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Remove store credentials but keep liberated books and account rows.
+    Revoke {
+        /// Account id, auth-file stem, or nickname.
+        account: String,
     },
 }
 
@@ -127,51 +127,32 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
             force,
             no_qr,
             ascii_qr,
-        } => match source {
-            SourceKind::Audible => {
-                login_audible(
-                    config,
-                    marketplace,
-                    label,
-                    external,
-                    response_url,
-                    callback_bind,
-                    timeout,
-                    audible_username,
-                    force,
-                    no_qr,
-                    ascii_qr,
-                )
-                .await
+        } => {
+            let registry = default_registry_with_plugins(config).await?;
+            let source_id = resolve_source_id(&registry, &source)?;
+            let content = registry.require(&source_id)?;
+            match content.portal_auth_mode() {
+                PortalAuthMode::Oauth => {
+                    login_audible(
+                        config,
+                        marketplace,
+                        label,
+                        external,
+                        response_url,
+                        callback_bind,
+                        timeout,
+                        audible_username,
+                        force,
+                        no_qr,
+                        ascii_qr,
+                    )
+                    .await
+                }
+                PortalAuthMode::Password => {
+                    login_password(config, content.as_ref(), marketplace, label, email, force).await
+                }
             }
-            SourceKind::LibroFm => login_libro(config, marketplace, label, email, force).await,
-            SourceKind::GraphicAudio => {
-                login_email_password(
-                    config,
-                    SourceKind::GraphicAudio,
-                    GA_PASSWORD_ENV,
-                    "GraphicAudio",
-                    marketplace,
-                    label,
-                    email,
-                    force,
-                )
-                .await
-            }
-            SourceKind::Chirp => {
-                login_email_password(
-                    config,
-                    SourceKind::Chirp,
-                    CHIRP_PASSWORD_ENV,
-                    "Chirp",
-                    marketplace,
-                    label,
-                    email,
-                    force,
-                )
-                .await
-            }
-        },
+        }
         AuthCommand::Import {
             path,
             libation_accounts,
@@ -240,13 +221,15 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
                 Ok(())
             }
         }
-        AuthCommand::List { source, bare } => list_all_accounts(config, source, bare).await,
+        AuthCommand::List { source, bare } => {
+            list_all_accounts(config, source.as_deref(), bare).await
+        }
         AuthCommand::SetScan { account, scan } => {
             let store = LibraryStore::open(&paths.library_db)?;
             let account_id = if let Some(acct) = store.find_account(&account)? {
                 acct.account_id
             } else {
-                let registry = default_registry(config);
+                let registry = default_registry_with_plugins(config).await?;
                 let mut found = None;
                 for src in registry.all() {
                     if let Ok(accounts) = src.list_accounts(&paths.files_dir).await {
@@ -276,7 +259,7 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
             if store.get_account(&account_id)?.is_some() {
                 store.set_scan_enabled(&account_id, scan)?;
             } else {
-                let registry = default_registry(config);
+                let registry = default_registry_with_plugins(config).await?;
                 let mut info = None;
                 for src in registry.all() {
                     if let Ok(accounts) = src.list_accounts(&paths.files_dir).await {
@@ -307,21 +290,28 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
             Ok(())
         }
         AuthCommand::Status { source } => {
-            let registry = default_registry(config);
-            let sources: Vec<_> = match source {
-                Some(kind) => vec![registry.require(kind)?],
+            let registry = default_registry_with_plugins(config).await?;
+            let sources: Vec<_> = match source.as_deref() {
+                Some(needle) => {
+                    let id = resolve_source_id(&registry, needle)?;
+                    vec![registry.require(&id)?]
+                }
                 None => registry.all(),
             };
             let mut any = false;
+            // Optional richer Audible token status when that plugin is registered.
+            let audible_statuses = if sources.iter().any(|s| s.id() == "audible") {
+                list_accounts(&paths.files_dir).await.unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             for src in sources {
                 let accounts = src.list_accounts(&paths.files_dir).await?;
                 for acct in accounts {
                     any = true;
-                    // Audible has richer AccountStatus; Libro lists as present.
-                    let status = if acct.source == SourceKind::Audible {
-                        list_accounts(&paths.files_dir)
-                            .await?
-                            .into_iter()
+                    let status = if src.id() == "audible" {
+                        audible_statuses
+                            .iter()
                             .find(|a| a.account_id == acct.account_id)
                             .map(|a| a.status.as_str().to_string())
                             .unwrap_or_else(|| "present".into())
@@ -337,6 +327,26 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
             if !any {
                 eprintln!("no accounts configured");
             }
+            Ok(())
+        }
+        AuthCommand::Revoke { account } => {
+            let store = LibraryStore::open(&paths.library_db)?;
+            let acct = store
+                .find_account(&account)?
+                .ok_or_else(|| anyhow::anyhow!("account `{account}` not found in library DB"))?;
+            let suffixes = auth_credential_suffixes(config).await?;
+            for path in libation_source::remove_account_credentials(
+                &paths.files_dir,
+                &acct.account_id,
+                &suffixes,
+            )? {
+                println!("removed {}", path.display());
+            }
+            store.revoke_credentials(&acct.account_id)?;
+            println!(
+                "revoked credentials for {} (books retained, scan_enabled=false)",
+                acct.account_id
+            );
             Ok(())
         }
     }
@@ -419,7 +429,7 @@ async fn login_audible(
         &session.marketplace,
         session.label.as_deref(),
         true,
-        SourceKind::Audible.as_str(),
+        "audible",
     )?;
     println!(
         "authenticated {} ({}) → {}",
@@ -430,46 +440,25 @@ async fn login_audible(
     Ok(())
 }
 
-async fn login_libro(
+async fn login_password(
     config: &Config,
-    marketplace: String,
-    label: Option<String>,
-    email: Option<String>,
-    force: bool,
-) -> anyhow::Result<()> {
-    login_email_password(
-        config,
-        SourceKind::LibroFm,
-        LIBRO_PASSWORD_ENV,
-        "Libro.fm",
-        marketplace,
-        label,
-        email,
-        force,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn login_email_password(
-    config: &Config,
-    kind: SourceKind,
-    password_env: &str,
-    display_name: &str,
+    source: &dyn libation_source::ContentSource,
     marketplace: String,
     label: Option<String>,
     email: Option<String>,
     force: bool,
 ) -> anyhow::Result<()> {
     let paths = config.paths();
+    let display_name = source.display_name();
     let email = email
         .map(|e| e.trim().to_string())
         .filter(|e| !e.is_empty())
         .ok_or_else(|| anyhow::anyhow!("{display_name} login requires `--email`"))?;
+    let password_env = source
+        .password_env_var()
+        .ok_or_else(|| anyhow::anyhow!("{display_name} has no password env var configured"))?;
     let password = resolve_password(password_env, display_name)?;
 
-    let registry = default_registry(config);
-    let source = registry.require(kind)?;
     let acct = source
         .login(
             &paths.files_dir,
@@ -521,16 +510,21 @@ fn resolve_password(password_env: &str, display_name: &str) -> anyhow::Result<St
 
 async fn list_all_accounts(
     config: &Config,
-    source_filter: Option<SourceKind>,
+    source_filter: Option<&str>,
     bare: bool,
 ) -> anyhow::Result<()> {
     let paths = config.paths();
-    let registry = default_registry(config);
+    let registry = default_registry_with_plugins(config).await?;
     let store = LibraryStore::open(&paths.library_db)?;
     let db_accounts = store.list_accounts()?;
 
-    let sources: Vec<_> = match source_filter {
-        Some(kind) => vec![registry.require(kind)?],
+    let filter_id = match source_filter {
+        Some(needle) => Some(resolve_source_id(&registry, needle)?),
+        None => None,
+    };
+
+    let sources: Vec<_> = match filter_id.as_deref() {
+        Some(id) => vec![registry.require(id)?],
         None => registry.all(),
     };
 
@@ -546,6 +540,12 @@ async fn list_all_accounts(
             .unwrap_or(true)
     };
 
+    let audible_statuses = if sources.iter().any(|s| s.id() == "audible") {
+        list_accounts(&paths.files_dir).await.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     for src in sources {
         let accounts = src.list_accounts(&paths.files_dir).await?;
         for acct in accounts {
@@ -553,15 +553,19 @@ async fn list_all_accounts(
             listed_ids.insert(acct.account_id.clone());
             let name = acct.label.as_deref().unwrap_or(&acct.account_id);
             let scan = yes_no(scan_enabled(&acct.account_id));
-            let auth_ok = if acct.source == SourceKind::Audible {
-                list_accounts(&paths.files_dir)
-                    .await?
-                    .into_iter()
-                    .find(|a| a.account_id == acct.account_id)
+            let (auth_ok, status) = if src.id() == "audible" {
+                let info = audible_statuses
+                    .iter()
+                    .find(|a| a.account_id == acct.account_id);
+                let ok = info
                     .map(|a| matches!(a.status, AccountStatus::Valid | AccountStatus::ExpiringSoon))
-                    .unwrap_or(true)
+                    .unwrap_or(true);
+                let status = info
+                    .map(|a| a.status.as_str().to_string())
+                    .unwrap_or_else(|| "ok".into());
+                (ok, status)
             } else {
-                true
+                (true, String::from("ok"))
             };
             if bare {
                 println!(
@@ -572,16 +576,6 @@ async fn list_all_accounts(
                     yes_no(auth_ok)
                 );
             } else {
-                let status = if acct.source == SourceKind::Audible {
-                    list_accounts(&paths.files_dir)
-                        .await?
-                        .into_iter()
-                        .find(|a| a.account_id == acct.account_id)
-                        .map(|a| a.status.as_str().to_string())
-                        .unwrap_or_else(|| "ok".into())
-                } else {
-                    String::from("ok")
-                };
                 println!(
                     "{}\t{}\t{}\t{}\t{status}",
                     acct.source, acct.account_id, acct.marketplace, name
@@ -595,8 +589,8 @@ async fn list_all_accounts(
         if listed_ids.contains(db.account_id.as_str()) {
             continue;
         }
-        if let Some(filter) = source_filter {
-            if SourceKind::parse(&db.source) != Some(filter) {
+        if let Some(filter) = filter_id.as_deref() {
+            if !db.source.eq_ignore_ascii_case(filter) {
                 continue;
             }
         }

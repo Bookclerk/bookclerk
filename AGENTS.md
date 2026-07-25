@@ -29,7 +29,10 @@ Everything else under `crates/` is a library crate.
 
 Set `LIBATION_FILES_DIR` to a writable dir; on first use the app creates
 `library.db` (SQLite, bundled — no external DB needed), plus `cache/`, `logs/`
-(reserved; Libation does not rotate log files), and `search_index/` under it.
+(reserved; Libation does not rotate log files), `search_index/`, and `plugins/`
+under it. Third-party plugins are discovered from `plugin.toml` under
+`plugins/` (and `LIBATION_PLUGIN_DIRS`); enablement and knobs live in
+`config.toml` (see `docs/plugins.md`).
 Logging goes to stderr and, when available, the OS facility (journald /
 macOS os_log / Windows Event Log); secrets are always redacted (exact values
 from config/env/auth including percent-encoded forms, plus patterns; uploads
@@ -94,10 +97,10 @@ When exercising real store credentials in this cloud environment:
   optional BYO `.wvd` still works. Spatial/Atmos (L1) is not available. Neither
   a CDM nor ffmpeg is required to build, test, or run non-liberate commands.
 - S3/MinIO credentials are **env-only** (`AWS_ACCESS_KEY_ID` /
-  `AWS_SECRET_ACCESS_KEY`); bucket/endpoint/path-style come from
-  `LIBATION_S3_*` env vars or `[storage.s3]` in config.toml.
-  Shared key prefix for local and S3: `storage.prefix` /
-  `LIBATION_STORAGE_PREFIX` (when empty, S3 still honors legacy
-  `storage.s3.prefix` / `LIBATION_S3_PREFIX`).
+  `AWS_SECRET_ACCESS_KEY`); bucket/region/endpoint/path-style come from
+  `LIBATION_OUTPUT_S3_*` (or familiar `LIBATION_S3_*`) env vars or
+  `[output.s3]` in config.toml. Local output uses `[output.local]` /
+  `LIBATION_OUTPUT_LOCAL_ROOT`. Multiple destination plugins may be
+  `enabled` at once — liberate writes to every enabled destination.
 - `LIBATION_S3_ENDPOINT` may be host-only (no scheme); prepend `https://`
   before use when the value looks like a bare hostname.

@@ -2,6 +2,7 @@
 
 mod convert;
 mod cue;
+mod destinations;
 mod error;
 mod match_storage;
 mod naming;
@@ -10,6 +11,7 @@ mod reconcile;
 mod split;
 
 pub use convert::{convert_book, ConvertRequest, ConvertSummary};
+pub use destinations::{LiberateDestination, LiberateDestinations};
 pub use error::{LiberateError, Result};
 pub use match_storage::{match_storage_to_library, MatchStorageOptions, MatchStorageSummary};
 pub use naming::{

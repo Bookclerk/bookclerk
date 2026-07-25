@@ -15,6 +15,7 @@ use libation_library::LibraryStore;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::api::{router, AppState};
+use crate::registry::default_registry_with_plugins;
 use crate::scheduler::spawn_scheduler;
 
 #[derive(Debug, Parser)]
@@ -86,20 +87,78 @@ async fn main() -> anyhow::Result<()> {
     paths.ensure_dirs()?;
 
     let library = LibraryStore::open(&paths.library_db)?;
+    let mut integrations = libation_integrations::from_config(&config)?;
+    libation_plugin::load_external_integrations(&config, &mut integrations).await?;
+    let sources = {
+        let cfg = config.clone();
+        let reg = default_registry_with_plugins(&cfg).await?;
+        reg.all()
+    };
+    let config = Arc::new(RwLock::new(config));
     let state = Arc::new(AppState {
-        config: RwLock::new(config.clone()),
-        library,
+        config: config.clone(),
+        library: library.clone(),
         jobs: Arc::new(RwLock::new(Vec::new())),
         work_lock: Mutex::new(()),
+        integrations: integrations.clone(),
+        sources,
     });
+
+    // Start integration watchers; mint claim tickets on new ABS users.
+    {
+        let library_for_tickets = library.clone();
+        let config_for_tickets = config.clone();
+        let ctx = libation_integrations::IntegrationContext {
+            on_external_user: Some(Arc::new(move |user| {
+                let library_for_tickets = library_for_tickets.clone();
+                let config_for_tickets = config_for_tickets.clone();
+                tokio::spawn(async move {
+                    let cfg = config_for_tickets.read().await;
+                    match libation_integrations::mint_for_external_user(
+                        &library_for_tickets,
+                        &cfg,
+                        &user,
+                        "abs_watcher",
+                    ) {
+                        Ok(minted) => {
+                            if let Some(url) = minted.portal_url {
+                                tracing::info!(%url, "claim ticket minted for ABS user");
+                            } else {
+                                tracing::info!(
+                                    token = %minted.token,
+                                    "claim ticket minted for ABS user"
+                                );
+                            }
+                        }
+                        Err(err) => tracing::warn!(%err, "failed to mint claim ticket"),
+                    }
+                });
+            })),
+        };
+        let integrations = integrations.clone();
+        tokio::spawn(async move {
+            let _ = integrations.start_all(ctx).await;
+        });
+    }
 
     spawn_scheduler(state.clone());
 
-    let addr: SocketAddr = config.daemon.listen.parse().map_err(|err| {
-        anyhow::anyhow!("invalid daemon.listen '{}': {err}", config.daemon.listen)
-    })?;
+    let cfg_snapshot = config.read().await;
+    let listen = cfg_snapshot.daemon.listen.clone();
+    let portal_base =
+        libation_integrations::normalize_portal_base(&cfg_snapshot.integrations.portal_base_path);
+    let files_dir = cfg_snapshot.paths().files_dir.clone();
+    drop(cfg_snapshot);
 
-    let app = router(state);
+    let addr: SocketAddr = listen
+        .parse()
+        .map_err(|err| anyhow::anyhow!("invalid daemon.listen '{listen}': {err}"))?;
+
+    // Ensure portal state files_dir is set before nest.
+    let app = {
+        // Rebuild sources/files into router via helper that takes portal_base + files_dir
+        router(state, portal_base, files_dir)
+    };
     tracing::info!(%addr, "libationd listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)

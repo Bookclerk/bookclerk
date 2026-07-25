@@ -4,20 +4,27 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use libation_config::Config;
 use libation_library::LibraryStore;
 use libation_source::{
-    ContentSource, FetchOptions, LoginOptions, ScanOptions, ScanSummary, SourceAccount,
-    SourceFetch, SourceKind,
+    ContentSource, FetchOptions, LoginOptions, PortalAuthMode, ScanOptions, ScanSummary,
+    SourceAccount, SourceBrand, SourceFetch, SourceRegistry,
 };
 
 use crate::auth::{
     auth_file_for_account, ensure_accounts_dir, find_auth_file, list_auth_files, load_auth,
-    save_auth, ChirpAuthFile,
+    save_auth, ChirpAuthFile, AUTH_SUFFIX,
 };
 use crate::client::{ChirpClient, DEFAULT_GRAPHQL_URL};
 use crate::download::fetch_title_materials;
 use crate::error::{ChirpError, Result};
 use crate::sync::{scan_library, ScanOptions as ChirpScanOptions};
+
+/// Canonical plugin id.
+pub const ID: &str = "chirp";
+
+/// Env var for non-interactive password login.
+pub const PASSWORD_ENV: &str = "LIBATION_CHIRP_PASSWORD";
 
 /// Chirp content source.
 #[derive(Debug, Clone)]
@@ -37,6 +44,12 @@ impl ChirpSource {
         Self {
             graphql_url: DEFAULT_GRAPHQL_URL.to_string(),
         }
+    }
+
+    /// Parse `[sources.chirp]` (enable flag only today).
+    #[must_use]
+    pub fn from_config(_config: &Config) -> Self {
+        Self::new()
     }
 
     #[must_use]
@@ -108,8 +121,40 @@ impl ChirpSource {
 
 #[async_trait]
 impl ContentSource for ChirpSource {
-    fn kind(&self) -> SourceKind {
-        SourceKind::Chirp
+    fn id(&self) -> &str {
+        ID
+    }
+
+    fn display_name(&self) -> &str {
+        "Chirp"
+    }
+
+    fn portal_auth_mode(&self) -> PortalAuthMode {
+        PortalAuthMode::Password
+    }
+
+    fn portal_brand(&self) -> SourceBrand {
+        SourceBrand {
+            id: "chirp",
+            name: "Chirp",
+            bg: "#0F766E",
+            fg: "#ECFEFF",
+            accent: "#14B8A6",
+            icon_url: "https://www.google.com/s2/favicons?domain=chirpbooks.com&sz=128",
+        }
+    }
+
+    fn auth_credential_suffixes(&self) -> &'static [&'static str] {
+        const SUFFIXES: &[&str] = &[AUTH_SUFFIX];
+        SUFFIXES
+    }
+
+    fn password_env_var(&self) -> Option<&'static str> {
+        Some(PASSWORD_ENV)
+    }
+
+    fn sort_key(&self) -> u32 {
+        3
     }
 
     async fn login(
@@ -173,9 +218,22 @@ impl ContentSource for ChirpSource {
 fn source_account_from_auth(auth: &ChirpAuthFile) -> SourceAccount {
     SourceAccount {
         account_id: auth.account_id().to_string(),
-        source: SourceKind::Chirp,
+        source: ID.into(),
         marketplace: auth.marketplace.clone(),
         label: auth.label.clone().or_else(|| Some(auth.email.clone())),
         scan_enabled: true,
+    }
+}
+
+/// Parse `[sources.chirp]` into a [`ChirpSource`].
+#[must_use]
+pub fn from_config(config: &Config) -> ChirpSource {
+    ChirpSource::from_config(config)
+}
+
+/// Register Chirp when `[sources.chirp] enabled` (default true).
+pub fn register(registry: &mut SourceRegistry, config: &Config) {
+    if config.sources.is_enabled(ID) {
+        registry.register(Arc::new(from_config(config)));
     }
 }

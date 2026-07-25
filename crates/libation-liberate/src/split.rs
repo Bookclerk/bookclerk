@@ -13,7 +13,6 @@ use crate::naming::{chapter_storage_key_with_folder, NamingContext};
 #[derive(Debug, Clone)]
 pub struct SplitChapterFile {
     pub path: PathBuf,
-    pub storage_key: String,
     pub title: String,
 }
 
@@ -93,7 +92,6 @@ pub async fn split_audio_by_chapters(
         .map_err(LiberateError::Decrypt)?;
         outputs.push(SplitChapterFile {
             path: out_path,
-            storage_key: filename,
             title,
         });
     }

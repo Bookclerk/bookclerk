@@ -12,12 +12,13 @@ mod download;
 mod error;
 mod http_util;
 mod magento;
+mod options;
 mod source;
 mod sync;
 
 pub use auth::{
     auth_file_for, auth_file_for_account, auth_stem, find_auth_file, list_auth_files, load_auth,
-    save_auth, GraphicAudioAuthFile,
+    save_auth, GraphicAudioAuthFile, AUTH_SUFFIX,
 };
 pub use client::{
     DownloadLinks, GraphicAudioClient, Product, DEFAULT_BASE_URL, LOGIN_PATH, PRODUCTS_PATH,
@@ -28,7 +29,7 @@ pub use download::{
     GA_ACCESS_ENV, GA_FETCH_ENV, GA_PASSWORD_ENV,
 };
 pub use error::{GraphicAudioError, Result};
-pub use libation_config::GraphicAudioAccess;
 pub use magento::{DownloadableProduct, LibraryItem, MagentoClient, DEFAULT_STORE_URL};
-pub use source::GraphicAudioSource;
+pub use options::{GraphicAudioAccess, GraphicAudioBitrate, GraphicAudioContainer};
+pub use source::{from_config, register, GraphicAudioSource, ID as GRAPHICAUDIO_SOURCE_ID};
 pub use sync::{product_to_new_book, scan_library, ScanContext, ScanOptions};

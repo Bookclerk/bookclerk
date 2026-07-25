@@ -1,0 +1,79 @@
+name: ABS Integration
+
+# Heavyweight Audiobookshelf ↔ Libation smoke (Docker).
+# Not run on every PR — manual or on published release.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+  ABS_ADMIN_USER: absadmin
+  ABS_ADMIN_PASS: AbsAdminPass1!
+
+jobs:
+  abs-smoke:
+    name: Docker ABS + libationd
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start compose stack
+        run: |
+          docker compose -f tests/abs-integration/docker-compose.yml build
+          docker compose -f tests/abs-integration/docker-compose.yml up -d audiobookshelf
+          # Wait for ABS before starting libationd (needs API key from init).
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:13378/ >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          # Init admin + fetch token
+          curl -sS -X POST http://127.0.0.1:13378/init \
+            -H 'Content-Type: application/json' \
+            -d "{\"newRoot\":{\"username\":\"$ABS_ADMIN_USER\",\"password\":\"$ABS_ADMIN_PASS\"}}" || true
+          LOGIN=$(curl -fsS -X POST http://127.0.0.1:13378/login \
+            -H 'Content-Type: application/json' \
+            -d "{\"username\":\"$ABS_ADMIN_USER\",\"password\":\"$ABS_ADMIN_PASS\"}")
+          TOKEN=$(echo "$LOGIN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["user"]["token"])')
+          # Ensure library
+          LIBS=$(curl -fsS http://127.0.0.1:13378/api/libraries -H "Authorization: Bearer $TOKEN")
+          LIB_ID=$(echo "$LIBS" | python3 -c '
+          import json,sys
+          libs=json.load(sys.stdin).get("libraries") or []
+          print(libs[0]["id"] if libs else "")
+          ')
+          if [ -z "$LIB_ID" ]; then
+            CREATE=$(curl -fsS -X POST http://127.0.0.1:13378/api/libraries \
+              -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+              -d '{"name":"Audiobooks","folders":[{"fullPath":"/audiobooks"}],"mediaType":"book"}')
+            LIB_ID=$(echo "$CREATE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          fi
+          echo "LIBATION_ABS_API_KEY=$TOKEN" >> "$GITHUB_ENV"
+          echo "LIBATION_ABS_LIBRARY_ID=$LIB_ID" >> "$GITHUB_ENV"
+          export LIBATION_ABS_API_KEY="$TOKEN"
+          export LIBATION_ABS_LIBRARY_ID="$LIB_ID"
+          docker compose -f tests/abs-integration/docker-compose.yml up -d libationd
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8787/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+
+      - name: Run smoke script
+        env:
+          ABS_URL: http://127.0.0.1:13378
+          LIBATION_URL: http://127.0.0.1:8787
+        run: |
+          chmod +x tests/abs-integration/smoke.sh
+          # Re-export keys for compose exec
+          export LIBATION_ABS_API_KEY="${{ env.LIBATION_ABS_API_KEY }}"
+          export LIBATION_ABS_LIBRARY_ID="${{ env.LIBATION_ABS_LIBRARY_ID }}"
+          # Patch running container env by recreating with keys
+          docker compose -f tests/abs-integration/docker-compose.yml up -d libationd
+          sleep 5
+          tests/abs-integration/smoke.sh
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f tests/abs-integration/docker-compose.yml logs --no-color | tail -n 200

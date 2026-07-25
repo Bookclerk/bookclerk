@@ -43,7 +43,7 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 | `help` | ✅ | clap |
 | Progress bar (`liberate` / `convert`) | ✅ | TTY batch progress with ETA |
 | Template tag list / preview | ✅ | `config template tags` / `config template preview <asin>` |
-| Naming profiles | ✅ | `download.naming_profile` (`audiobookshelf` default, `classic`); `config template profiles` |
+| Naming profiles | ✅ | `output.naming_profile` (`audiobookshelf` default, `classic`); `config template profiles` |
 
 ---
 
@@ -51,41 +51,41 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 
 | Classic key | Status | libation-rs key |
 | --- | --- | --- |
-| `Books` | ✅ | `storage.local.root` |
-| `FileDownloadQuality` | ✅ | `download.quality` |
-| `DecryptToLossy` | ✅ | `download.format` |
-| `UseWidevine` | ✅ | `download.widevine` |
-| `Request_xHE_AAC` | ✅ | `download.xhe_aac` |
+| `Books` | ✅ | `output.local.root` |
+| `FileDownloadQuality` | ✅ | `sources.audible.bitrate` |
+| `DecryptToLossy` | ✅ | `output.format = "single_mp3"` or `"enriched_m4b"` |
+| `UseWidevine` | ✅ | `output.widevine` |
+| `Request_xHE_AAC` | ✅ | `output.xhe_aac` |
 | `FolderTemplate` / `FileTemplate` | ✅ | Chardonnay naming engine (`libation-naming`) + `config template preview`; defaults from `naming_profile` |
-| `MaxFilenameLength` (255) | ✅ | `download.max_filename_length` + S3 full-key budget in liberate naming |
-| `DownloadCoverArt` | ✅ | `download.download_cover` |
-| `CreateCueSheet` | ✅ | `download.create_cue` |
-| `AllowLibationFixup` | ✅ | `download.fixup_metadata` |
-| `SaveMetadataToFile` | ✅ | `download.save_metadata_json` |
+| `MaxFilenameLength` (255) | ✅ | `output.max_filename_length` + S3 full-key budget in liberate naming |
+| `DownloadCoverArt` | ✅ | `output.download_cover` |
+| `CreateCueSheet` | ✅ | `output.create_cue` |
+| `AllowLibationFixup` | ✅ | `output.fixup_metadata` |
+| `SaveMetadataToFile` | ✅ | `output.save_metadata_json` |
 | `AutoDownloadEpisodes` | ✅ | `library.auto_liberate` |
 | `AutoScan` | ✅ | `library.scan_interval_minutes` |
-| `OverwriteExisting` | ✅ | `download.overwrite_existing` |
-| `InProgress` | ✅ | `download.in_progress` |
+| `OverwriteExisting` | ✅ | `output.overwrite_existing` |
+| `InProgress` | ✅ | `output.in_progress` |
 | `ImportEpisodes` | ✅ | `library.import_episodes` |
 | `ImportPlusTitles` | ✅ | `library.import_plus_titles` |
 | `DownloadEpisodes` | ✅ | `library.download_episodes` |
-| `BadBook` | ✅ | `download.bad_book_action` |
-| `SplitFilesByChapter` | ✅ | `download.split_files_by_chapter` |
-| `ChapterFileTemplate` / `ChapterTitleTemplate` | ✅ | `download.chapter_file_template` / `chapter_title_template` |
-| `MinimumFileDuration` | ✅ | `download.minimum_file_duration_minutes` |
-| `CombineNestedChapterTitles` | ✅ | `download.combine_nested_chapter_titles` |
-| `MergeOpeningAndEndCredits` | ✅ | `download.merge_opening_and_end_credits` |
-| `StripUnabridged` / `StripAudibleBrandAudio` | ✅ | `download.strip_unabridged` / `strip_audible_brand_audio` (brand audio is trimmed from the media using chapter `brand_intro`/`brand_outro` durations; titles are scrubbed too) |
-| `DownloadClipsBookmarks` | ✅ | `download.download_clips_bookmarks` (JSON sidecar) |
+| `BadBook` | ✅ | `output.bad_book_action` |
+| `SplitFilesByChapter` | ✅ | `output.format = "split_mp3_by_chapter"` |
+| `ChapterFileTemplate` / `ChapterTitleTemplate` | ✅ | `output.chapter_file_template` / `chapter_title_template` |
+| `MinimumFileDuration` | ✅ | `output.minimum_file_duration_minutes` |
+| `CombineNestedChapterTitles` | ✅ | `output.combine_nested_chapter_titles` |
+| `MergeOpeningAndEndCredits` | ✅ | `output.merge_opening_and_end_credits` |
+| `StripUnabridged` / `StripAudibleBrandAudio` | ✅ | `output.strip_unabridged` / `strip_audible_brand_audio` (brand audio is trimmed from the media using chapter `brand_intro`/`brand_outro` durations; titles are scrubbed too) |
+| `DownloadClipsBookmarks` | ✅ | `output.download_clips_bookmarks` (JSON sidecar) |
 | `ClipsBookmarksFileFormat` | ⚠️ | Always JSON; classic also offers CSV/XLSX |
-| `RetainAaxFile` | ✅ | `download.retain_aax_file` |
-| `DownloadSpeedLimit` | ✅ | `download.download_speed_limit_kbps` |
-| `Lame*` | ✅ | `download.lame.*` (target/quality/bitrate/mode/downsample/CBR) |
+| `RetainAaxFile` | ✅ | `output.retain_aax_file` |
+| `DownloadSpeedLimit` | ✅ | `output.download_speed_limit_kbps` |
+| `Lame*` | ✅ | `output.lame.*` (target/quality/bitrate/mode/downsample/CBR) |
 | `LameMatchSourceBR` | ⚠️ | Not a separate toggle; bitrate path uses configured kbps |
 | `MoveMoovToBeginning` | ⚠️ | Always on for native remux (`moov` faststart) |
-| `ReplacementCharacters` | ✅ | `download.replacement_characters` (explicit) or `download.path_sanitization` (`auto`/`windows`/`posix`/`s3`/`none`) |
-| `MaxSampleRate` | ✅ | `download.max_sample_rate` |
-| `CreationTime` / `LastWriteTime` | ✅ | `download.creation_time` / `last_write_time` (local + S3 object metadata) |
+| `ReplacementCharacters` | ✅ | `output.replacement_characters` (explicit) or `output.path_sanitization` (`auto`/`windows`/`posix`/`s3`/`none`) |
+| `MaxSampleRate` | ✅ | `output.max_sample_rate` |
+| `CreationTime` / `LastWriteTime` | ✅ | `output.creation_time` / `last_write_time` (local + S3 object metadata) |
 | `SavePodcastsToParentFolder` | ✅ | `library.save_podcasts_to_parent_folder` |
 | `RequestSpatial` / `SpatialAudioCodec` | 🚫 | Stubbed/`false` in upstream classic today |
 | Theme / Grid* / Column layout | 🚫 | GUI-only |

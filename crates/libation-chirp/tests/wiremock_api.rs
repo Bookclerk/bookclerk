@@ -2,7 +2,7 @@
 
 use libation_chirp::{fetch_title_materials, load_auth, ChirpClient, ChirpSource};
 use libation_library::LibraryStore;
-use libation_source::{ContentSource, LoginOptions, ScanOptions, SourceFetch, SourceKind};
+use libation_source::{ContentSource, LoginOptions, ScanOptions, SourceFetch};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -57,7 +57,7 @@ async fn signin_saves_chirp_auth_file() {
         .await
         .unwrap();
 
-    assert_eq!(account.source, SourceKind::Chirp);
+    assert_eq!(account.source, "chirp");
     assert_eq!(account.account_id, "42");
     let auth = load_auth(&libation_chirp::auth_file_for_account(
         dir.path(),
