@@ -136,15 +136,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
-dependencies = [
- "derive_arbitrary",
-]
-
-[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1111,7 +1102,7 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
- "zip 2.4.2",
+ "zip",
 ]
 
 [[package]]
@@ -1176,7 +1167,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
- "zip 2.4.2",
+ "zip",
 ]
 
 [[package]]
@@ -1962,17 +1953,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "derive_arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -4455,7 +4435,7 @@ version = "0.96.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd1746025420e17b5d62528b930e550e016e857038794d74e169018126ef3d14"
 dependencies = [
- "zip 7.2.0",
+ "zip",
 ]
 
 [[package]]
@@ -6569,23 +6549,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "zip"
-version = "2.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
-dependencies = [
- "arbitrary",
- "crc32fast",
- "crossbeam-utils",
- "displaydoc",
- "flate2",
- "indexmap",
- "memchr",
- "thiserror 2.0.19",
- "zopfli",
 ]
 
 [[package]]

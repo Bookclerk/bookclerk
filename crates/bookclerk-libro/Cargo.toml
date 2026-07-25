@@ -22,7 +22,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "7", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -31,7 +31,7 @@ wiremock.workspace = true
 serde_json.workspace = true
 bookclerk-library.workspace = true
 bookclerk-source.workspace = true
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "7", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true
