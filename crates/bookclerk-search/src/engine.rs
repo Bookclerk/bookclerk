@@ -195,8 +195,9 @@ impl SearchEngine {
         } else {
             limit
         };
+        // Tantivy 0.26: TopDocs is a builder; order_by_score() yields the Collector.
         let top_docs = searcher
-            .search(&query, &TopDocs::with_limit(top))
+            .search(&query, &TopDocs::with_limit(top).order_by_score())
             .map_err(|err| SearchError::Index(err.to_string()))?;
 
         let mut hits = Vec::new();

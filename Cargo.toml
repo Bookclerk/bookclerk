@@ -90,7 +90,7 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 tempfile = "3"
 uuid = { version = "1", features = ["v4", "serde"] }
-tantivy = "0.22"
+tantivy = "0.26"
 csv = "1"
 filetime = "0.2"
 rust_xlsxwriter = "0.96"
