@@ -2,6 +2,12 @@
 # Results upload to GitHub Code Scanning (Security tab) as SARIF —
 # complements CodeQL default setup for lockfile advisories (Cargo + npm).
 #
+# Behavior:
+#   - PR / merge_group: fail the check when the PR introduces *new* vulns
+#     (reusable-pr diff). Gates merges.
+#   - push / schedule / workflow_dispatch: always upload SARIF; do not fail
+#     the workflow. Existing advisories are tracked in Security → Code scanning.
+#
 # https://google.github.io/osv-scanner/github-action/
 
 name: OSV-Scanner
@@ -33,6 +39,14 @@ jobs:
       # Still scan (annotations/artifacts); only skip Code Scanning upload.
       # merge_group always runs in-repo with a writable token.
       upload-sarif: ${{ github.event_name == 'merge_group' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
+      # Fail the PR check when newly introduced vulns are found.
+      fail-on-vuln: true
+      # Override replaces the reusable default (-r ./); keep those plus
+      # experimental deps.dev deprecation/yank reporting (SARIF-compatible).
+      scan-args: |-
+        --experimental-flag-deprecated-packages
+        --recursive
+        ./
     permissions:
       actions: read
       contents: read
@@ -45,6 +59,16 @@ jobs:
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch'
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8
+    with:
+      # Report via Code Scanning SARIF; do not fail push/schedule runs on
+      # already-known advisories (those are triaged in the Security tab).
+      fail-on-vuln: false
+      # Override replaces the reusable default (-r ./); keep those plus
+      # experimental deps.dev deprecation/yank reporting (SARIF-compatible).
+      scan-args: |-
+        --experimental-flag-deprecated-packages
+        --recursive
+        ./
     permissions:
       actions: read
       contents: read
