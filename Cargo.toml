@@ -82,7 +82,15 @@ qrcode = { version = "0.14", default-features = false }
 # DB / storage — rusqlite (bundled) aligns with audible-rs; one libsqlite3-sys in the tree.
 rusqlite = { version = "0.40", features = ["bundled"] }
 rusqlite_migration = "2.6"
-aws-sdk-s3 = "1"
+# aws-sdk-s3's default `rustls` feature enables smithy's *legacy* rustls 0.21
+# path (vulnerable rustls-webpki 0.101). Prefer `default-https-client`, which
+# uses rustls 0.23 + aws-lc.
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "sigv4a",
+    "http-1x",
+    "default-https-client",
+    "rt-tokio",
+] }
 aws-config = "1"
 aws-credential-types = "1"
 bytes = "1"
