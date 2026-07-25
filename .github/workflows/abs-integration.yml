@@ -8,6 +8,10 @@ on:
   release:
     types: [published]
 
+# Least privilege: checkout + local Docker smoke only.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   ABS_ADMIN_USER: absadmin
