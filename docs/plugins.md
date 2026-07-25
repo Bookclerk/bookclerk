@@ -1,6 +1,6 @@
 # Dynamic plugins
 
-Libation discovers **third-party plugins** at runtime and talks to them over
+Bookclerk discovers **third-party plugins** at runtime and talks to them over
 newline-delimited [JSON-RPC 2.0](https://www.jsonrpc.org/specification) on
 stdio. First-party sources/integrations stay in-process; external plugins are
 separate executables that any language can implement.
@@ -19,20 +19,20 @@ releases, and a stable wire protocol.
 | `plugin.toml` (next to the binary) | **Install / discovery** — id, kind, command, args |
 | `config.toml` (`[sources.<id>]` / `[integrations.<id>]`) | **User settings** — `enabled`, opaque knobs |
 
-The plugin (or its installer) drops a directory under a search root. Libation
+The plugin (or its installer) drops a directory under a search root. Bookclerk
 scans for `plugin.toml`, spawns `command`, and passes the matching main-config
 table on `handshake`. Users never put `command` in `config.toml`.
 
 ## Layout
 
 ```text
-$LIBATION_FILES_DIR/plugins/
+$BOOKCLERK_FILES_DIR/plugins/
   echo/
     plugin.toml
-    libation-plugin-echo-integration   # executable
+    bookclerk-plugin-echo-integration   # executable
 ```
 
-Additional roots: `LIBATION_PLUGIN_DIRS` (OS path list).
+Additional roots: `BOOKCLERK_PLUGIN_DIRS` (OS path list).
 
 ### `plugin.toml`
 
@@ -41,7 +41,7 @@ api_version = 1
 id = "echo"
 name = "Echo Integration"
 kind = "integration"          # source | integration | output
-command = "./libation-plugin-echo-integration"
+command = "./bookclerk-plugin-echo-integration"
 # args = ["--verbose"]
 ```
 
@@ -93,7 +93,7 @@ Advertise in `handshake.capabilities`: `start`, `on_event`, `health`,
 | Method | Notes |
 | --- | --- |
 | `start` | Background watchers |
-| `on_event` | `{ "event": "book_liberated"\|"external_user_observed", "payload": … }` |
+| `on_event` | `{ "event": "book_acquired"\|"external_user_observed", "payload": … }` |
 | `scan_library` | `{ "force": bool }` |
 | `authenticate_user` | `{ "username", "password" }` → `ExternalUser` |
 
@@ -114,15 +114,15 @@ Encrypted/DRM fetch is not in the v1 external protocol yet (first-party only).
 ## Example
 
 ```bash
-cargo build -p libation-plugin-echo-integration
-mkdir -p "$LIBATION_FILES_DIR/plugins/echo"
-cp target/debug/libation-plugin-echo-integration \
-   "$LIBATION_FILES_DIR/plugins/echo/"
-cat > "$LIBATION_FILES_DIR/plugins/echo/plugin.toml" <<'EOF'
+cargo build -p bookclerk-plugin-echo-integration
+mkdir -p "$BOOKCLERK_FILES_DIR/plugins/echo"
+cp target/debug/bookclerk-plugin-echo-integration \
+   "$BOOKCLERK_FILES_DIR/plugins/echo/"
+cat > "$BOOKCLERK_FILES_DIR/plugins/echo/plugin.toml" <<'EOF'
 api_version = 1
 id = "echo"
 kind = "integration"
-command = "./libation-plugin-echo-integration"
+command = "./bookclerk-plugin-echo-integration"
 EOF
 ```
 
@@ -133,14 +133,14 @@ enabled = true
 ```
 
 ```bash
-libation plugins list
-libation integrations status
+bookclerk plugins list
+bookclerk integrations status
 # echo enabled=true ok=true echo plugin ready
 ```
 
 ## Distribution
 
 Ship a directory (or archive) containing `plugin.toml` + binary for the target
-OS/arch. Users unpack under `plugins/` (or a `LIBATION_PLUGIN_DIRS` root) and set
-`enabled = true` in `config.toml`. No rebuild of Libation is required when the
+OS/arch. Users unpack under `plugins/` (or a `BOOKCLERK_PLUGIN_DIRS` root) and set
+`enabled = true` in `config.toml`. No rebuild of Bookclerk is required when the
 protocol version matches.

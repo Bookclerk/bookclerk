@@ -1,6 +1,6 @@
 name: ABS Integration
 
-# Heavyweight Audiobookshelf ↔ Libation smoke (Docker).
+# Heavyweight Audiobookshelf ↔ Bookclerk smoke (Docker).
 # Not run on every PR — manual or on published release.
 
 on:
@@ -15,7 +15,7 @@ env:
 
 jobs:
   abs-smoke:
-    name: Docker ABS + libationd
+    name: Docker ABS + bookclerkd
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
         run: |
           docker compose -f tests/abs-integration/docker-compose.yml build
           docker compose -f tests/abs-integration/docker-compose.yml up -d audiobookshelf
-          # Wait for ABS before starting libationd (needs API key from init).
+          # Wait for ABS before starting bookclerkd (needs API key from init).
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:13378/ >/dev/null 2>&1; then break; fi
             sleep 2
@@ -50,11 +50,11 @@ jobs:
               -d '{"name":"Audiobooks","folders":[{"fullPath":"/audiobooks"}],"mediaType":"book"}')
             LIB_ID=$(echo "$CREATE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
           fi
-          echo "LIBATION_ABS_API_KEY=$TOKEN" >> "$GITHUB_ENV"
-          echo "LIBATION_ABS_LIBRARY_ID=$LIB_ID" >> "$GITHUB_ENV"
-          export LIBATION_ABS_API_KEY="$TOKEN"
-          export LIBATION_ABS_LIBRARY_ID="$LIB_ID"
-          docker compose -f tests/abs-integration/docker-compose.yml up -d libationd
+          echo "BOOKCLERK_ABS_API_KEY=$TOKEN" >> "$GITHUB_ENV"
+          echo "BOOKCLERK_ABS_LIBRARY_ID=$LIB_ID" >> "$GITHUB_ENV"
+          export BOOKCLERK_ABS_API_KEY="$TOKEN"
+          export BOOKCLERK_ABS_LIBRARY_ID="$LIB_ID"
+          docker compose -f tests/abs-integration/docker-compose.yml up -d bookclerkd
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8787/health >/dev/null 2>&1; then break; fi
             sleep 2
@@ -63,14 +63,14 @@ jobs:
       - name: Run smoke script
         env:
           ABS_URL: http://127.0.0.1:13378
-          LIBATION_URL: http://127.0.0.1:8787
+          BOOKCLERK_URL: http://127.0.0.1:8787
         run: |
           chmod +x tests/abs-integration/smoke.sh
           # Re-export keys for compose exec
-          export LIBATION_ABS_API_KEY="${{ env.LIBATION_ABS_API_KEY }}"
-          export LIBATION_ABS_LIBRARY_ID="${{ env.LIBATION_ABS_LIBRARY_ID }}"
+          export BOOKCLERK_ABS_API_KEY="${{ env.BOOKCLERK_ABS_API_KEY }}"
+          export BOOKCLERK_ABS_LIBRARY_ID="${{ env.BOOKCLERK_ABS_LIBRARY_ID }}"
           # Patch running container env by recreating with keys
-          docker compose -f tests/abs-integration/docker-compose.yml up -d libationd
+          docker compose -f tests/abs-integration/docker-compose.yml up -d bookclerkd
           sleep 5
           tests/abs-integration/smoke.sh
 

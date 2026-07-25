@@ -1,4 +1,4 @@
-# PR1 parity: libation-rs vs Libation Chardonnay (headless)
+# PR1 parity: bookclerk vs Libation Chardonnay (headless)
 
 **Goal:** Full feature parity with [Libation Chardonnay](https://github.com/rmcrackan/Libation) for headless/CLI/daemon use. **GUI is deferred** until after PR1.
 
@@ -6,7 +6,7 @@ Chardonnay and Classic share the same backend; this matrix uses upstream `master
 
 ## Verdict
 
-**Headless parity with Classic/Chardonnay is complete for the LibationCli + liberate surface.** All LibationCli verbs, download/decrypt settings that affect headless operation, naming templates, podcast handling, library metadata, migrate-from-classic, and classic EF Postgres `copydb` are implemented.
+**Headless parity with Classic/Chardonnay is complete for the LibationCli + acquire surface.** All LibationCli verbs, download/decrypt settings that affect headless operation, naming templates, podcast handling, library metadata, migrate-from-classic, and classic EF Postgres `copydb` are implemented.
 
 Remaining items are either **GUI-only**, **intentionally deferred** (upgrade checks), or **minor headless polish** listed under [Still open (non-GUI)](#still-open-non-gui).
 
@@ -23,10 +23,10 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 
 ## CLI verbs (LibationCli)
 
-| Verb | Status | libation-rs |
+| Verb | Status | bookclerk |
 | --- | --- | --- |
 | `scan` | ✅ | `library scan` |
-| `liberate` | ✅ | `library liberate` — `--pdf`, `--license`, `-o` overrides, positional ASINs |
+| `liberate` | ✅ | `library acquire` (Bookclerk verb) — `--pdf`, `--license`, `-o` overrides, positional ASINs |
 | `set-status` | ✅ | `library set-status` — probe-based match; `--downloaded` / `--not-downloaded` / `--force` / `--fix-layout` + ASINs |
 | `get-license` | ✅ | `library get-license --json` (summary) / `--full` (raw API JSON) |
 | `search` | ✅ | `library search` (+ `--filter` saved quick filters) |
@@ -38,10 +38,10 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 | `set-scan` | ✅ | `auth set-scan <account> [--scan true\|false]` (GUI checkbox; CLI addition) |
 | `get-setting` | ✅ | `config get/show/paths` (classic key aliases + `--bare`) |
 | `copydb` | ✅ | `copydb` — classic Libation EF Postgres schema (default); `--format flat` for native |
-| `version` | ✅ | `libation version` |
+| `version` | ✅ | `bookclerk version` |
 | `version --check` | 🚫 | Intentionally deferred (no upgrade checks in PR1) |
 | `help` | ✅ | clap |
-| Progress bar (`liberate` / `convert`) | ✅ | TTY batch progress with ETA |
+| Progress bar (`acquire` / `convert`) | ✅ | TTY batch progress with ETA |
 | Template tag list / preview | ✅ | `config template tags` / `config template preview <asin>` |
 | Naming profiles | ✅ | `output.naming_profile` (`audiobookshelf` default, `classic`); `config template profiles` |
 
@@ -49,20 +49,20 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 
 ## Settings.json → config.toml
 
-| Classic key | Status | libation-rs key |
+| Classic key | Status | bookclerk key |
 | --- | --- | --- |
 | `Books` | ✅ | `output.local.root` |
 | `FileDownloadQuality` | ✅ | `sources.audible.bitrate` |
 | `DecryptToLossy` | ✅ | `output.format = "single_mp3"` or `"enriched_m4b"` |
 | `UseWidevine` | ✅ | `output.widevine` |
 | `Request_xHE_AAC` | ✅ | `output.xhe_aac` |
-| `FolderTemplate` / `FileTemplate` | ✅ | Chardonnay naming engine (`libation-naming`) + `config template preview`; defaults from `naming_profile` |
-| `MaxFilenameLength` (255) | ✅ | `output.max_filename_length` + S3 full-key budget in liberate naming |
+| `FolderTemplate` / `FileTemplate` | ✅ | Libation NamingTemplate port (`bookclerk-naming`) + `config template preview`; defaults from `naming_profile` |
+| `MaxFilenameLength` (255) | ✅ | `output.max_filename_length` + S3 full-key budget in acquire naming |
 | `DownloadCoverArt` | ✅ | `output.download_cover` |
 | `CreateCueSheet` | ✅ | `output.create_cue` |
 | `AllowLibationFixup` | ✅ | `output.fixup_metadata` |
 | `SaveMetadataToFile` | ✅ | `output.save_metadata_json` |
-| `AutoDownloadEpisodes` | ✅ | `library.auto_liberate` |
+| `AutoDownloadEpisodes` | ✅ | `library.auto_acquire` |
 | `AutoScan` | ✅ | `library.scan_interval_minutes` |
 | `OverwriteExisting` | ✅ | `output.overwrite_existing` |
 | `InProgress` | ✅ | `output.in_progress` |
@@ -103,7 +103,7 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 | Finished flag | ✅ DB + migrate import |
 | Separate PDF status | ✅ |
 | Publisher, length, categories, subtitle, published_at, content_kind, series_asin | ✅ scan + DB |
-| Podcast parents skipped on liberate | ✅ classic WithoutParents |
+| Podcast parents skipped on acquire | ✅ classic WithoutParents |
 | Podcast episode parent-folder naming | ✅ SavePodcastsToParentFolder |
 | Lucene/Tantivy search index | ✅ |
 | Saved quick filters | ✅ `library filters` list/save/delete |
@@ -118,7 +118,7 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 | Clips/bookmarks export format | JSON only (classic CSV/XLSX options unused in headless path) |
 | `MoveMoovToBeginning` / `LameMatchSourceBR` toggles | Behavior covered by defaults / always-on moov_faststart |
 | Exotic naming edge cases | Rare TimeSpan masks / locale-specific number formats |
-| Per-byte download progress | Batch title progress + ETA on liberate/convert; classic also draws a byte bar mid-download |
+| Per-byte download progress | Batch title progress + ETA on acquire/convert; classic also draws a byte bar mid-download |
 
 ---
 
@@ -133,12 +133,12 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 
 ---
 
-## Beyond classic (libation-rs extras)
+## Beyond classic (bookclerk extras)
 
 | Capability | Notes |
 | --- | --- |
 | S3 / MinIO storage | Not in classic Libation |
-| `libationd` daemon + HTTP control plane | Scheduled scan / auto-liberate |
+| `bookclerkd` daemon + HTTP control plane | Scheduled scan / auto-acquire |
 | TOML config + env overrides | Classic uses `Settings.json` |
 | QR / local callback-server login | Extra headless login modes beyond `login-external` |
 | `config template tags` / `profiles` / `preview` | Headless template tooling |

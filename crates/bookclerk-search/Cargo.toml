@@ -1,0 +1,23 @@
+[package]
+name = "bookclerk-search"
+description = "Full-text library search (Tantivy; classic Lucene parity)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bookclerk-library.workspace = true
+serde.workspace = true
+tantivy.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

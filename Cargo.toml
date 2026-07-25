@@ -1,29 +1,29 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/libation-config",
-    "crates/libation-audible",
-    "crates/libation-enrich",
-    "crates/libation-decrypt",
-    "crates/libation-storage",
-    "crates/libation-library",
-    "crates/libation-source",
-    "crates/libation-libro",
-    "crates/libation-graphicaudio",
-    "crates/libation-chirp",
-    "crates/libation-liberate",
-    "crates/libation-naming",
-    "crates/libation-migrate",
-    "crates/libation-search",
-    "crates/libation-integrations",
-    "crates/libation-plugin",
-    "crates/libation-plugin-examples/echo-integration",
-    "crates/libation-cli",
-    "crates/libationd",
+    "crates/bookclerk-config",
+    "crates/bookclerk-audible",
+    "crates/bookclerk-enrich",
+    "crates/bookclerk-decrypt",
+    "crates/bookclerk-storage",
+    "crates/bookclerk-library",
+    "crates/bookclerk-source",
+    "crates/bookclerk-libro",
+    "crates/bookclerk-graphicaudio",
+    "crates/bookclerk-chirp",
+    "crates/bookclerk-acquire",
+    "crates/bookclerk-naming",
+    "crates/bookclerk-migrate",
+    "crates/bookclerk-search",
+    "crates/bookclerk-integrations",
+    "crates/bookclerk-plugin",
+    "crates/bookclerk-plugin-examples/echo-integration",
+    "crates/bookclerk-cli",
+    "crates/bookclerkd",
 ]
 default-members = [
-    "crates/libation-cli",
-    "crates/libationd",
+    "crates/bookclerk-cli",
+    "crates/bookclerkd",
 ]
 
 [workspace.package]
@@ -31,28 +31,28 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/fritz-fritz/libation-rs"
+repository = "https://github.com/fritz-fritz/bookclerk"
 authors = ["fritz-fritz <contact@bookclerk.app>"]
-description = "Headless-first Audible library manager (Libation Rust rewrite)"
+description = "Headless-first multi-source audiobook library manager"
 
 [workspace.dependencies]
 # Internal crates
-libation-config = { path = "crates/libation-config" }
-libation-audible = { path = "crates/libation-audible" }
-libation-enrich = { path = "crates/libation-enrich" }
-libation-decrypt = { path = "crates/libation-decrypt" }
-libation-storage = { path = "crates/libation-storage" }
-libation-library = { path = "crates/libation-library" }
-libation-source = { path = "crates/libation-source" }
-libation-libro = { path = "crates/libation-libro" }
-libation-graphicaudio = { path = "crates/libation-graphicaudio" }
-libation-chirp = { path = "crates/libation-chirp" }
-libation-liberate = { path = "crates/libation-liberate" }
-libation-naming = { path = "crates/libation-naming" }
-libation-migrate = { path = "crates/libation-migrate" }
-libation-search = { path = "crates/libation-search" }
-libation-integrations = { path = "crates/libation-integrations" }
-libation-plugin = { path = "crates/libation-plugin" }
+bookclerk-config = { path = "crates/bookclerk-config" }
+bookclerk-audible = { path = "crates/bookclerk-audible" }
+bookclerk-enrich = { path = "crates/bookclerk-enrich" }
+bookclerk-decrypt = { path = "crates/bookclerk-decrypt" }
+bookclerk-storage = { path = "crates/bookclerk-storage" }
+bookclerk-library = { path = "crates/bookclerk-library" }
+bookclerk-source = { path = "crates/bookclerk-source" }
+bookclerk-libro = { path = "crates/bookclerk-libro" }
+bookclerk-graphicaudio = { path = "crates/bookclerk-graphicaudio" }
+bookclerk-chirp = { path = "crates/bookclerk-chirp" }
+bookclerk-acquire = { path = "crates/bookclerk-acquire" }
+bookclerk-naming = { path = "crates/bookclerk-naming" }
+bookclerk-migrate = { path = "crates/bookclerk-migrate" }
+bookclerk-search = { path = "crates/bookclerk-search" }
+bookclerk-integrations = { path = "crates/bookclerk-integrations" }
+bookclerk-plugin = { path = "crates/bookclerk-plugin" }
 
 # Async / runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "process", "signal"] }

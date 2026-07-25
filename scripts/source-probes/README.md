@@ -54,8 +54,8 @@ Scheduled GitHub Actions (staggered weekly) keep reverse-engineered surfaces hon
 
 | Source | Probe env | CLI password env |
 | --- | --- | --- |
-| GraphicAudio | `TEST_GA_EMAIL` / `TEST_GA_PASSWORD` | `LIBATION_GA_PASSWORD` |
-| Chirp | `TEST_CHIRP_EMAIL` / `TEST_CHIRP_PASSWORD` | `LIBATION_CHIRP_PASSWORD` |
+| GraphicAudio | `TEST_GA_EMAIL` / `TEST_GA_PASSWORD` | `BOOKCLERK_GA_PASSWORD` |
+| Chirp | `TEST_CHIRP_EMAIL` / `TEST_CHIRP_PASSWORD` | `BOOKCLERK_CHIRP_PASSWORD` |
 | Storytel | `TEST_STORYTEL_EMAIL` / `TEST_STORYTEL_PASSWORD` | *(not wired yet)* |
 | Audiobooks.com | `TEST_ABC_EMAIL` / `TEST_ABC_PASSWORD` | *(not wired yet)* |
 | Kobo | — | Browser ActivateOnWeb |
@@ -63,10 +63,10 @@ Scheduled GitHub Actions (staggered weekly) keep reverse-engineered surfaces hon
 | LibriVox | — | — |
 
 ```bash
-export LIBATION_GA_PASSWORD=…
-libation auth login --source graphicaudio --email you@example.com
-export LIBATION_CHIRP_PASSWORD=…
-libation auth login --source chirp --email you@example.com
+export BOOKCLERK_GA_PASSWORD=…
+bookclerk auth login --source graphicaudio --email you@example.com
+export BOOKCLERK_CHIRP_PASSWORD=…
+bookclerk auth login --source chirp --email you@example.com
 ```
 
 Do **not** put passwords on argv. Prefer cheap/owned libraries for GA/Chirp;

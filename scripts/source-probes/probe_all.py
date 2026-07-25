@@ -77,7 +77,7 @@ def env(*names: str) -> str | None:
 DEFAULT_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 "
-    "LibationSourceProbe/0.1"
+    "BookclerkSourceProbe/0.1"
 )
 
 
@@ -222,7 +222,7 @@ def probe_graphicaudio(report: Report) -> None:
         form={
             "username": "probe@example.com",
             "password": "invalid",
-            "client_id": "libation-probe",
+            "client_id": "bookclerk-probe",
         },
     )
     data = json_or_text(body)
@@ -252,7 +252,7 @@ def probe_graphicaudio(report: Report) -> None:
         )
         return
 
-    device = f"libation-{uuid.uuid4()}"
+    device = f"bookclerk-{uuid.uuid4()}"
     status, _, body = http(
         f"{base}/activation/login",
         method="POST",
@@ -299,7 +299,7 @@ def probe_graphicaudio(report: Report) -> None:
 
 
 def probe_chirp(report: Report) -> None:
-    # Matches crates/libation-chirp/src/client.rs DEFAULT_GRAPHQL_URL.
+    # Matches crates/bookclerk-chirp/src/client.rs DEFAULT_GRAPHQL_URL.
     gql = "https://api.chirpbooks.com/api/graphql"
     status, _, body = http(
         gql,
@@ -624,7 +624,7 @@ def probe_audiobooks_com(report: Report) -> None:
             "apiKey": ABC_API_KEY,
             "emailAddress": "probe@example.com",
             "password": "invalid",
-            "deviceId": "libation-probe-device-001",
+            "deviceId": "bookclerk-probe-device-001",
             "deviceType": "Android",
             "appVersion": "12.0.7",
             "OSVersion": "14",
@@ -684,7 +684,7 @@ def probe_audiobooks_com(report: Report) -> None:
         )
         return
 
-    device = f"libation-{uuid.uuid4()}"
+    device = f"bookclerk-{uuid.uuid4()}"
     status, _, body = http(
         ABC_BASE + "authenticate/login",
         method="POST",
@@ -761,8 +761,8 @@ KOBO_PLATFORM = "00000000-0000-0000-0000-000000000373"
 
 
 def probe_kobo(report: Report) -> None:
-    device_id = hashlib.sha256(b"libation-probe-device").hexdigest()
-    serial = hashlib.sha256(b"libation-probe-serial").hexdigest()[:32]
+    device_id = hashlib.sha256(b"bookclerk-probe-device").hexdigest()
+    serial = hashlib.sha256(b"bookclerk-probe-serial").hexdigest()[:32]
     client_key = (
         __import__("base64")
         .b64encode(KOBO_PLATFORM.encode())

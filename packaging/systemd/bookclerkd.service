@@ -1,0 +1,33 @@
+[Unit]
+Description=Bookclerk audiobook daemon
+Documentation=https://github.com/fritz-fritz/bookclerk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bookclerk
+Group=bookclerk
+Environment=BOOKCLERK_FILES_DIR=/var/lib/bookclerk
+Environment=BOOKCLERK_CONFIG=/var/lib/bookclerk/config.toml
+Environment=BOOKCLERK_DAEMON_LISTEN=127.0.0.1:8787
+# Relative output.local.root resolves under BOOKCLERK_FILES_DIR.
+# Prefer an absolute Books path in config.toml if media lives elsewhere,
+# and add that path to ReadWritePaths.
+ExecStart=/usr/local/bin/bookclerkd
+Restart=on-failure
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/bookclerk
+# Decrypt/encode/fixup/split are native Rust — no ffmpeg binary required.
+# Widevine L3 CDMs auto-provision (Android auth); optional BYO .wvd under Accounts/.
+# Prefer: BOOKCLERK_AUTH_PASSWORD, or LoadCredential= + BOOKCLERK_AUTH_PASSWORD_FILE
+# (missing password-file paths are auto-created with a strong random secret —
+# keep that path off Accounts/). auth.allow_plaintext=true for unprotected tokens.
+
+[Install]
+WantedBy=multi-user.target

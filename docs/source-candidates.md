@@ -1,6 +1,6 @@
 # Audiobook source candidates (beyond Audible / Libro.fm)
 
-Research notes on stores that could plug into `libation-source`'s
+Research notes on stores that could plug into `bookclerk-source`'s
 `ContentSource` trait. Criteria:
 
 1. Public API **or** reverse-engineerable Android APK (Libro.fm pattern)
@@ -17,14 +17,14 @@ community tooling ([audiobook-dl](https://github.com/jo1gi/audiobook-dl),
 | Concern | Notes |
 | --- | --- |
 | Trait surface | `login` / `list_accounts` / `scan` / `fetch_title` → `SourceFetch::Plain` or `Encrypted` |
-| Plain path | Matches Libro.fm today (no `libation-decrypt`) |
+| Plain path | Matches Libro.fm today (no `bookclerk-decrypt`) |
 | Encrypted path | Today: Adrm + Widevine only; new DRM kinds need decrypt work |
 | Auth files | Per-account tokens under `Accounts/` |
 | Config plugins | `[sources.<id>]` enable + source knobs; `[integrations.*]` reserved for third-party hooks |
 | Diagnostics | Top-level `[diagnostics]` only (not an integration plugin) |
 
 Sources are registered from config like a small plugin table: set
-`[sources.chirp] enabled = false` (or `LIBATION_SOURCE_CHIRP_ENABLED=0`) to
+`[sources.chirp] enabled = false` (or `BOOKCLERK_SOURCE_CHIRP_ENABLED=0`) to
 keep the binary from loading that store. Store-specific knobs live on the
 same table (`bitrate`, `container`, `access` as applicable). Crash/error-burst
 reporting stays under `[diagnostics]` — distinct from `[integrations.*]`.
@@ -70,7 +70,7 @@ plain download URLs. Official store also sells DRM-free MP3/M4B/FLAC ZIPs.
 URLs (m4a in-app). No Widevine/MediaDrm usage in app code beyond ExoPlayer
 boilerplate.
 
-**Libation mapping:** GraphicAudio content-source plugin (`id = "graphicaudio"`),
+**Bookclerk mapping:** GraphicAudio content-source plugin (`id = "graphicaudio"`),
 `SourceFetch::Plain`, auth file e.g. `Accounts/*.ga.auth`. Optional: also scrape
 Magento “My Downloadable Products” for ZIP MP3/M4B/FLAC purchases.
 
@@ -101,9 +101,9 @@ skips content-key decrypt when `DrmType` is not KDRM/AdobeDrm and writes
 plain part files. Treat as **plain for typical audiobooks**; verify live
 before committing.
 
-**Libation mapping:** Device-activation login (browser code, like Audible
+**Bookclerk mapping:** Device-activation login (browser code, like Audible
 QR/OAuth UX), `SourceFetch::Plain` for spine parts (ZIP/M4B packaging in
-liberate). Do **not** need KDRM remover unless we also want ebooks.
+acquire). Do **not** need KDRM remover unless we also want ebooks.
 
 **Risks:** Activation UX; API churn; regional audiobook availability.
 
@@ -137,7 +137,7 @@ App also has `KingfisherDownloadedTrackEncryptor` / ExoPlayer offline cache —
 local-at-rest encryption for offline listening, separate from the web URL
 obfuscation.
 
-**Libation mapping:** Prefer GraphQL **password** `signIn` (proven live) →
+**Bookclerk mapping:** Prefer GraphQL **password** `signIn` (proven live) →
 token → library/track queries → decrypt `webPlayerMediaUrl` → `Plain` MP3.
 Avoid cookie sessions for headless use. APK Mockingjay schema is a second
 source of truth (`scripts/source-probes/`).
@@ -166,10 +166,10 @@ login + MP3 asset fetch.
 | `POST api.storytel.net/libraries/bookshelf` | Library |
 
 **DRM:** Download responses expected as `audio/mpeg`. Not classic Widevine
-file DRM in the community path. Treat liberate as `Plain`, but watch for
+file DRM in the community path. Treat acquire as `Plain`, but watch for
 CDN/format changes. Aggressive download rate-limits can invalidate sessions.
 
-**Libation mapping:** Password login + JWT; scan bookshelf; `Plain` fetch.
+**Bookclerk mapping:** Password login + JWT; scan bookshelf; `Plain` fetch.
 Subscription semantics differ from purchase libraries (titles can leave the
 catalog).
 
@@ -207,7 +207,7 @@ Entitlement model includes `isDrm()`. FAQ: most titles DRM-free MP3; some
 publisher-required DRM playable only in-app. App uses Readium audiobook
 manifests.
 
-**Libation mapping:** Prefer DRM-free web account downloads when available;
+**Bookclerk mapping:** Prefer DRM-free web account downloads when available;
 app API for library sync, skip/error when `isDrm == true`. Heavy Kotlin
 obfuscation → slower RE than GraphicAudio.
 
@@ -245,8 +245,8 @@ via password login.
 | Source | Verdict |
 | --- | --- |
 | **Google Play Books** | Some titles offer official M4A export; no good library/download API for automation; eBook DRM tooling ≠ audiobooks |
-| **Spotify Audiobooks** | App-bound DRM; no credible personal-library liberate path |
-| **Everand / Scribd** | Streaming subscription; cookie scrapers exist; DRM/ToS hostile to Libation model |
+| **Spotify Audiobooks** | App-bound DRM; no credible personal-library acquire path |
+| **Everand / Scribd** | Streaming subscription; cookie scrapers exist; DRM/ToS hostile to Bookclerk model |
 | **Nextory** | audiobook-dl login support; APK not fetched this pass; treat DRM as unknown |
 | **OverDrive / Libby / cloudLibrary** | Library lending, not ownership; different product semantics |
 
@@ -255,7 +255,7 @@ via password login.
 ## Recommended implementation order
 
 1. **GraphicAudio** — smallest Libro-shaped spike (`ContentSource` + Plain
-   liberate + APK probe script).
+   acquire + APK probe script).
 2. **Kobo audiobooks** — reuse kobodl protocol knowledge; device-activation
    auth UX.
 3. **Chirp** — GraphQL + URL decrypt; optional APK Mockingjay probe.
@@ -299,14 +299,14 @@ Test accounts (empty owned libraries except Chirp auto-entitlement):
 Configure passwords via env (never argv):
 
 ```bash
-export LIBATION_GA_PASSWORD='…'
-export LIBATION_CHIRP_PASSWORD='…'
-libation auth login --source graphicaudio --email you+ga@example.com
-libation auth login --source chirp --email you+chirp@example.com
-libation library scan --source graphicaudio
-libation library scan --source chirp
+export BOOKCLERK_GA_PASSWORD='…'
+export BOOKCLERK_CHIRP_PASSWORD='…'
+bookclerk auth login --source graphicaudio --email you+ga@example.com
+bookclerk auth login --source chirp --email you+chirp@example.com
+bookclerk library scan --source graphicaudio
+bookclerk library scan --source chirp
 # After verification, disable scan inclusion:
-libation auth set-scan <account> --scan false
+bookclerk auth set-scan <account> --scan false
 ```
 
 Probe harness still uses `TEST_GA_*` / `TEST_CHIRP_*` for Python smoke tests.
@@ -315,16 +315,16 @@ Probe harness still uses `TEST_GA_*` / `TEST_CHIRP_*` for Python smoke tests.
 
 | Source | Env vars | Notes |
 | --- | --- | --- |
-| Storytel | `TEST_STORYTEL_EMAIL`, `TEST_STORYTEL_PASSWORD` | + `pycryptodome`; CLI later: `LIBATION_STORYTEL_PASSWORD` |
+| Storytel | `TEST_STORYTEL_EMAIL`, `TEST_STORYTEL_PASSWORD` | + `pycryptodome`; CLI later: `BOOKCLERK_STORYTEL_PASSWORD` |
 | Audiobooks.com | `TEST_ABC_EMAIL`, `TEST_ABC_PASSWORD` | APK `apiKey` already in probe |
 | Kobo | *(browser ActivateOnWeb)* | No password API |
 | Downpour | `TEST_DOWNPOUR_EMAIL`, `TEST_DOWNPOUR_PASSWORD` | After REST deobfuscation |
 | Podimo | `TEST_PODIMO_EMAIL`, `TEST_PODIMO_PASSWORD` | After Cloudflare |
 | LibriVox | — | None |
 
-Keep `library.auto_liberate = false`, disable scan after login, liberate ≤1 title.
+Keep `library.auto_acquire = false`, disable scan after login, acquire ≤1 title.
 
-## GraphicAudio purchase tiers → Libation access paths
+## GraphicAudio purchase tiers → Bookclerk access paths
 
 Store SKUs (example: *Red Rising 1 of 2*, base **$12**):
 
@@ -341,14 +341,14 @@ activations (`client_id`); Browser Player is a separate website feature (no
 device-slot language in FAQ). Magento ZIP links live under
 [My Downloadable Products](https://www.graphicaudio.net/downloadable/customer/products/).
 
-### Expected Libation functionality (`[sources.graphicaudio] access`)
+### Expected Bookclerk functionality (`[sources.graphicaudio] access`)
 
 1. **Browser Player (default: `access = "web"`)** — **implemented**  
    Magento login → `library/index/content_library` →
    `/library/player/listen/title/{slug}/` → `<audio src>` on
    `media.graphicaudio.net` → download with **CloudFront signed cookies**
    set by the player page (bare URL without cookies returns 403). No
-   device slot. Requires `LIBATION_GA_PASSWORD` (same as login). Login does
+   device slot. Requires `BOOKCLERK_GA_PASSWORD` (same as login). Login does
    **not** register an Access App device.
 
 2. **Magento ZIP (opt-in: `access = "zip"`)** — **implemented**  
@@ -375,9 +375,9 @@ access = "web"       # web | zip | device
 # container = "auto" # auto | m4b | mp3 | flac (zip)
 ```
 
-Env override: `LIBATION_GA_ACCESS` (legacy alias `LIBATION_GA_FETCH`).
+Env override: `BOOKCLERK_GA_ACCESS` (legacy alias `BOOKCLERK_GA_FETCH`).
 Disable registration with `enabled = false` or
-`LIBATION_SOURCE_GRAPHICAUDIO_ENABLED=0`. There is no ZIP→Browser→App cascade —
+`BOOKCLERK_SOURCE_GRAPHICAUDIO_ENABLED=0`. There is no ZIP→Browser→App cascade —
 pick one path explicitly (default web).
 
 ### Live purchase probe (Sons of Ares Vol. 1, product `5273`)
@@ -388,7 +388,7 @@ pick one path explicitly (default web).
 - Browser / App Hi: same ~521 MB M4A object under `app-high/`
 - App Lo: `app-normal/…_lo.m4a` (~198 MB, signed query string)
 - Remaining Magento downloads after probe: **2** (one attempt used to
-  capture the CDN redirect; Browser Player liberate does not consume ZIP
+  capture the CDN redirect; Browser Player acquire does not consume ZIP
   attempts)
 - After `activation/remove`, re-run `auth login --force` (same `client_id`)
   before scan — stale tokens may list samples only until refreshed
@@ -400,25 +400,25 @@ pick one path explicitly (default web).
 That single SKU unlocks **ZIP + Browser + App**, so we can validate all three
 paths without a second purchase. Prefer a short/cheap title. After purchase:
 
-1. Confirm ZIP under My Downloadable Products (primary liberate path).
+1. Confirm ZIP under My Downloadable Products (primary acquire path).
 2. Probe Browser Player network calls while logged into Magento (session OK for
    discovery; implement API-first afterward if possible).
 3. Only then exercise Access App login if (1)/(2) miss media — and remove the
-   Libation `client_id` when done.
+   Bookclerk `client_id` when done.
 
 App Access–only first is only worthwhile for the cheapest Browser Player RE
 experiment if you accept buying ZIP later.
 
-**Note:** Earlier cloud probe logins used a Libation `client_id` against the
+**Note:** Earlier cloud probe logins used a Bookclerk `client_id` against the
 test GA account and may have registered a device — check Account → Access App
 device management and remove unknown devices.
 
 ## Open questions before coding
 
 - Confirm owned-title `api/links` signed-URL TTL vs Browser Player CloudFront
-  cookie TTL in long liberates.
+  cookie TTL in long acquires.
 - Live-check one Kobo audiobook spine for empty/`None` DRM fields.
-- Decide whether subscription sources (Storytel, Podimo) belong in Libation
+- Decide whether subscription sources (Storytel, Podimo) belong in Bookclerk
   (owned-library product) or stay out of scope.
 - Chirp: **prefer GraphQL password `signIn`** over cookie sessions for
   headless/daemon use (probe confirms this path).

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Smoke-test Audiobookshelf + libationd sidecar.
+# Smoke-test Audiobookshelf + bookclerkd sidecar.
 # Expects compose stack running and ABS reachable at ABS_URL (default localhost:13378).
 set -euo pipefail
 
 ABS_URL="${ABS_URL:-http://127.0.0.1:13378}"
-LIBATION_URL="${LIBATION_URL:-http://127.0.0.1:8787}"
+BOOKCLERK_URL="${BOOKCLERK_URL:-http://127.0.0.1:8787}"
 ADMIN_USER="${ABS_ADMIN_USER:-absadmin}"
 ADMIN_PASS="${ABS_ADMIN_PASS:-AbsAdminPass1!}"
 
@@ -57,42 +57,42 @@ if [[ -z "$LIB_ID" ]]; then
 fi
 echo "library_id=$LIB_ID"
 
-echo "== authorize via libation CLI in container"
+echo "== authorize via bookclerk CLI in container"
 docker compose -f tests/abs-integration/docker-compose.yml exec -T \
-  -e LIBATION_ABS_API_KEY="$TOKEN" \
-  -e LIBATION_ABS_LIBRARY_ID="$LIB_ID" \
-  libationd libation integrations test
+  -e BOOKCLERK_ABS_API_KEY="$TOKEN" \
+  -e BOOKCLERK_ABS_LIBRARY_ID="$LIB_ID" \
+  bookclerkd bookclerk integrations test
 
 echo "== mint claim ticket"
 TICKET_OUT=$(docker compose -f tests/abs-integration/docker-compose.yml exec -T \
-  -e LIBATION_ABS_API_KEY="$TOKEN" \
-  libationd libation integrations tickets create \
+  -e BOOKCLERK_ABS_API_KEY="$TOKEN" \
+  bookclerkd bookclerk integrations tickets create \
   --provider audiobookshelf --external-user-id ci-user --label ci)
 TICKET=$(echo "$TICKET_OUT" | sed -n 's/^ticket=//p' | head -n1)
 echo "ticket=${TICKET:0:8}…"
 
 echo "== redeem ticket on portal"
-curl -fsS -c /tmp/libation-portal.jar -X POST "$LIBATION_URL/connect/api/redeem" \
+curl -fsS -c /tmp/bookclerk-portal.jar -X POST "$BOOKCLERK_URL/connect/api/redeem" \
   -H 'Content-Type: application/json' \
   -d "{\"ticket\":\"$TICKET\"}" >/tmp/redeem.json
-curl -fsS -b /tmp/libation-portal.jar "$LIBATION_URL/connect/api/me" | tee /tmp/me.json
+curl -fsS -b /tmp/bookclerk-portal.jar "$BOOKCLERK_URL/connect/api/me" | tee /tmp/me.json
 python3 -c 'import json; d=json.load(open("/tmp/me.json")); assert d["external_user_id"]=="ci-user"'
 
 echo "== portal landing"
-curl -fsS "$LIBATION_URL/connect" | grep -q 'Libation Connect'
+curl -fsS "$BOOKCLERK_URL/connect" | grep -q 'Bookclerk Connect'
 # Trailing-slash is optional; prefer `/connect` (ticket URLs omit the slash).
-curl -fsS "$LIBATION_URL/connect/" >/dev/null 2>&1 || true
+curl -fsS "$BOOKCLERK_URL/connect/" >/dev/null 2>&1 || true
 
 echo "== credential login path"
-curl -fsS -c /tmp/libation-portal2.jar -X POST "$LIBATION_URL/connect/api/login/integration" \
+curl -fsS -c /tmp/bookclerk-portal2.jar -X POST "$BOOKCLERK_URL/connect/api/login/integration" \
   -H 'Content-Type: application/json' \
   -d "{\"provider\":\"audiobookshelf\",\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" >/tmp/login.json
-curl -fsS -b /tmp/libation-portal2.jar "$LIBATION_URL/connect/api/me" | tee /tmp/me2.json
+curl -fsS -b /tmp/bookclerk-portal2.jar "$BOOKCLERK_URL/connect/api/me" | tee /tmp/me2.json
 
 echo "== trigger integration library scan via CLI"
 docker compose -f tests/abs-integration/docker-compose.yml exec -T \
-  -e LIBATION_ABS_API_KEY="$TOKEN" \
-  -e LIBATION_ABS_LIBRARY_ID="$LIB_ID" \
-  libationd libation integrations scan --integration audiobookshelf || true
+  -e BOOKCLERK_ABS_API_KEY="$TOKEN" \
+  -e BOOKCLERK_ABS_LIBRARY_ID="$LIB_ID" \
+  bookclerkd bookclerk integrations scan --integration audiobookshelf || true
 
 echo "ABS integration smoke OK"

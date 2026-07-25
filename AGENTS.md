@@ -10,9 +10,9 @@ channel with `rustfmt` + `clippy`). The startup update script runs
 
 Two runnable binaries (the workspace `default-members`):
 
-- `libation-cli` (binary `libation`) — headless audiobook library manager CLI
+- `bookclerk-cli` (binary `bookclerk`) — headless audiobook library manager CLI
   (Audible + Libro.fm).
-- `libationd` — long-running daemon with an HTTP control plane.
+- `bookclerkd` — long-running daemon with an HTTP control plane.
 
 Everything else under `crates/` is a library crate.
 
@@ -23,32 +23,32 @@ Everything else under `crates/` is a library crate.
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings` (CI treats
   warnings as errors via `RUSTFLAGS="-D warnings"`).
 - Test: `cargo test --workspace`
-- Release binaries: `cargo build --release -p libation-cli -p libationd`
+- Release binaries: `cargo build --release -p bookclerk-cli -p bookclerkd`
 
 ### Running the apps
 
-Set `LIBATION_FILES_DIR` to a writable dir; on first use the app creates
+Set `BOOKCLERK_FILES_DIR` to a writable dir; on first use the app creates
 `library.db` (SQLite, bundled — no external DB needed), plus `cache/`, `logs/`
-(reserved; Libation does not rotate log files), `search_index/`, and `plugins/`
+(reserved; Bookclerk does not rotate log files), `search_index/`, and `plugins/`
 under it. Third-party plugins are discovered from `plugin.toml` under
-`plugins/` (and `LIBATION_PLUGIN_DIRS`); enablement and knobs live in
+`plugins/` (and `BOOKCLERK_PLUGIN_DIRS`); enablement and knobs live in
 `config.toml` (see `docs/plugins.md`).
 Logging goes to stderr and, when available, the OS facility (journald /
 macOS os_log / Windows Event Log); secrets are always redacted (exact values
 from config/env/auth including percent-encoded forms, plus patterns; uploads
 abort if a registered secret remains). Opt-in reports: `diagnostics.share_reports
-= true` with URL from `LIBATION_DIAGNOSTICS_COLLECTOR_URL` at `cargo build` (CI
+= true` with URL from `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` at `cargo build` (CI
 sets from `DIAGNOSTICS_COLLECTOR_BASE_URL`) or `collector_url` in config. The
-diagnostics ring always keeps TRACE+; stderr/OS facility honor `LIBATION_LOG` /
+diagnostics ring always keeps TRACE+; stderr/OS facility honor `BOOKCLERK_LOG` /
 `RUST_LOG`. Each upload gets a Worker `report_id` UUID (B2 object name). See
 `docs/diagnostics.md`.
 
-- CLI: `LIBATION_FILES_DIR=/tmp/LibationFiles cargo run -p libation-cli -- <cmd>`
+- CLI: `BOOKCLERK_FILES_DIR=/tmp/BookclerkFiles cargo run -p bookclerk-cli -- <cmd>`
   (e.g. `version`, `auth list`, `library list`).
-- Daemon: `LIBATION_FILES_DIR=/tmp/LibationFiles cargo run -p libationd`.
+- Daemon: `BOOKCLERK_FILES_DIR=/tmp/BookclerkFiles cargo run -p bookclerkd`.
   It listens on `127.0.0.1:8787` by default (override with
-  `LIBATION_DAEMON_LISTEN` or `daemon.listen` in `config.toml`). Control plane:
-  `GET /health`, `GET /status`, `POST /scan`, `POST /liberate`, `GET /jobs`.
+  `BOOKCLERK_DAEMON_LISTEN` or `daemon.listen` in `config.toml`). Control plane:
+  `GET /health`, `GET /status`, `POST /scan`, `POST /acquire`, `GET /jobs`.
   `POST` bodies require the `Content-Type: application/json` header (send `{}`
   for defaults), otherwise the request is rejected.
 
@@ -56,51 +56,51 @@ diagnostics ring always keeps TRACE+; stderr/OS facility honor `LIBATION_LOG` /
 
 When exercising real store credentials in this cloud environment:
 
-- Prefer **interactive** `libation auth login` (browser/QR or Desktop pane), not
+- Prefer **interactive** `bookclerk auth login` (browser/QR or Desktop pane), not
   a pre-baked `.auth` file, when the goal is to test Audible login itself.
 - Amazon accounts with **2FA/MFA require OTP** during the browser OAuth step
   (audible-rs has no password CLI). Use a TOTP seed or complete the challenge
-  in the Desktop pane; see README / `crates/libation-audible/README.md`.
-- Libro.fm: `libation auth login --source libro --email <addr>` with password
-  from `LIBATION_LIBRO_PASSWORD` (or interactive prompt — never on argv).
-- Keep `library.auto_liberate = false` in `$LIBATION_FILES_DIR/config.toml`.
+  in the Desktop pane; see README / `crates/bookclerk-audible/README.md`.
+- Libro.fm: `bookclerk auth login --source libro --email <addr>` with password
+  from `BOOKCLERK_LIBRO_PASSWORD` (or interactive prompt — never on argv).
+- Keep `library.auto_acquire = false` in `$BOOKCLERK_FILES_DIR/config.toml`.
 - After login, **disable the account for scans**:
-  `libation auth set-scan <account> --scan false`.
+  `bookclerk auth set-scan <account> --scan false`.
   (Scan inclusion is per-account in SQLite, not a TOML key.)
-- Do **not** liberate the full library. Cap at **one** book:
-  - Audible: `libation library liberate --asin <ASIN>`
-  - Libro.fm: `libation library liberate --isbn <ISBN>` (or UUID)
-- Drive verification with the **CLI**, not `libationd` job triggers (`POST
-  /scan` / `/liberate`), so nothing can bulk-queue work.
+- Do **not** acquire the full library. Cap at **one** book:
+  - Audible: `bookclerk library acquire --asin <ASIN>`
+  - Libro.fm: `bookclerk library acquire --isbn <ISBN>` (or UUID)
+- Drive verification with the **CLI**, not `bookclerkd` job triggers (`POST
+  /scan` / `/acquire`), so nothing can bulk-queue work.
 - One-shot library sync without flipping scan back on: pass an explicit
-  account (`libation library scan --account <id>`). Explicit account targets
+  account (`bookclerk library scan --account <id>`). Explicit account targets
   bypass `scan_enabled`; bare `library scan` / daemon scheduled scans honor
   it and will skip disabled accounts. Optional `--source audible|libro`
   limits which store is scanned.
 
 ### Non-obvious gotchas
 
-- Actually scanning/liberating a library requires real store credentials
-  (`libation auth login` for Audible and/or Libro). Without a configured
-  account, `scan`/`liberate` jobs fail with "no accounts configured" — this is
+- Actually scanning/acquiring a library requires real store credentials
+  (`bookclerk auth login` for Audible and/or Libro). Without a configured
+  account, `scan`/`acquire` jobs fail with "no accounts configured" — this is
   expected, and the daemon + control plane still run fine for everything else.
   Tokens live under `Accounts/` (Audible `<account>.auth`, Libro
-  `*.libro.auth`). Prefer Audible encryption via `LIBATION_AUTH_PASSWORD` or
-  `LIBATION_AUTH_PASSWORD_FILE` / `[auth].password_file` (missing password-file
+  `*.libro.auth`). Prefer Audible encryption via `BOOKCLERK_AUTH_PASSWORD` or
+  `BOOKCLERK_AUTH_PASSWORD_FILE` / `[auth].password_file` (missing password-file
   paths are auto-created with a strong random secret — use a secrets volume, not
   `Accounts/`). `auth.allow_plaintext=true` stores unprotected Audible token
-  files. Libro passwords for login use `LIBATION_LIBRO_PASSWORD` only.
-- Liberate decrypt/encode is fully native in `libation-decrypt` (Adrm aaxc,
+  files. Libro passwords for login use `BOOKCLERK_LIBRO_PASSWORD` only.
+- Acquire decrypt/encode is fully native in `bookclerk-decrypt` (Adrm aaxc,
   Widevine DASH/CENC, MP3 via Symphonia+LAME, metadata fix-up, chapter split).
   No `ffmpeg` or `aaxclean-cli` is required. Widevine L3 CDMs auto-provision via
   classic Libation AudibleCdm (`auth login` registers as Android);
   optional BYO `.wvd` still works. Spatial/Atmos (L1) is not available. Neither
-  a CDM nor ffmpeg is required to build, test, or run non-liberate commands.
+  a CDM nor ffmpeg is required to build, test, or run non-acquire commands.
 - S3/MinIO credentials are **env-only** (`AWS_ACCESS_KEY_ID` /
   `AWS_SECRET_ACCESS_KEY`); bucket/region/endpoint/path-style come from
-  `LIBATION_OUTPUT_S3_*` (or familiar `LIBATION_S3_*`) env vars or
+  `BOOKCLERK_OUTPUT_S3_*` (or familiar `BOOKCLERK_S3_*`) env vars or
   `[output.s3]` in config.toml. Local output uses `[output.local]` /
-  `LIBATION_OUTPUT_LOCAL_ROOT`. Multiple destination plugins may be
-  `enabled` at once — liberate writes to every enabled destination.
-- `LIBATION_S3_ENDPOINT` may be host-only (no scheme); prepend `https://`
+  `BOOKCLERK_OUTPUT_LOCAL_ROOT`. Multiple destination plugins may be
+  `enabled` at once — acquire writes to every enabled destination.
+- `BOOKCLERK_S3_ENDPOINT` may be host-only (no scheme); prepend `https://`
   before use when the value looks like a bare hostname.

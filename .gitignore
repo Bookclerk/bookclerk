@@ -22,8 +22,8 @@ Thumbs.db
 *.auth.json
 config.local.toml
 
-# Libation / runtime data
-LibationFiles/
+# Bookclerk / runtime data
+BookclerkFiles/
 data/
 *.db
 *.db-journal

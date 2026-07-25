@@ -43,7 +43,7 @@ IMPORT_RE = re.compile(r"^\s*import\s+([\w.]+)\s*;", re.MULTILINE)
 GENERIC_LIST_RE = re.compile(r"(?:List|Set|Collection|ArrayList)<\s*([\w.]+)\s*>")
 
 # Endpoints we deep-track for schema drift.
-# Auth-required (libation-libro liberate path) + public catalog (CI smoke without secrets).
+# Auth-required (bookclerk-libro acquire path) + public catalog (CI smoke without secrets).
 TRACKED_ENDPOINT_KEYS = {
     "library",
     "download-manifest",
@@ -341,7 +341,7 @@ def parse_api_contracts(sources: Path) -> list[EndpointContract]:
 
 
 def build_tracked_schema(sources: Path, contracts: list[EndpointContract]) -> dict[str, Any]:
-    """Deep schema for endpoints libation-libro uses."""
+    """Deep schema for endpoints bookclerk-libro uses."""
     by_path = {c.path: c for c in contracts}
     out: dict[str, Any] = {}
     for rel in TRACKED_ENDPOINT_KEYS:

@@ -2,11 +2,11 @@
 
 ## Operator config
 
-After deploy CI has set `DIAGNOSTICS_COLLECTOR_BASE_URL`, build Libation with that
+After deploy CI has set `DIAGNOSTICS_COLLECTOR_BASE_URL`, build Bookclerk with that
 URL baked in:
 
 ```bash
-LIBATION_DIAGNOSTICS_COLLECTOR_URL="https://your-worker.workers.dev" cargo build --release -p libation-cli
+BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL="https://your-worker.workers.dev" cargo build --release -p bookclerk-cli
 ```
 
 Release builds on `main` in CI pass the repository variable automatically.
@@ -16,15 +16,15 @@ Release builds on `main` in CI pass the repository variable automatically.
 share_reports = true
 ```
 
-Override with `collector_url` or runtime `LIBATION_DIAGNOSTICS_COLLECTOR_URL`.
+Override with `collector_url` or runtime `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL`.
 
 ### Local verbosity vs ring buffer
 
 - **stderr / OS facility** (journald, macOS `os_log`, Windows Event Log) honor
-  `LIBATION_LOG` → `RUST_LOG` → default `libation=info,warn`.
+  `BOOKCLERK_LOG` → `RUST_LOG` → default `bookclerk=info,warn`.
 - The **diagnostics ring buffer always retains TRACE and above**, so crash /
   burst uploads include deep context even when the console is quiet.
-- For local investigation: `LIBATION_LOG=libation=debug` (or `-v` / `-vv` on the CLI).
+- For local investigation: `BOOKCLERK_LOG=bookclerk=debug` (or `-v` / `-vv` on the CLI).
 
 Uploads fire on: panic, ERROR burst, WARN burst, daemon/CLI job failure, or CLI
 command failure (when sharing is enabled).
@@ -32,7 +32,7 @@ command failure (when sharing is enabled).
 ## Architecture
 
 ```text
-libation / libationd  →  POST /submit  →  Worker (assigns report_id UUID)
+bookclerk / bookclerkd  →  POST /submit  →  Worker (assigns report_id UUID)
                               ↓
                     B2: diagnostics/<version>/<report_id>.json
                               ↓
@@ -66,7 +66,7 @@ stable.
 |----------|---------|
 | `diagnostics-collector-deploy` | Deploy Worker; set `DIAGNOSTICS_COLLECTOR_BASE_URL` from `deployment-url` |
 | `diagnostics-ingest` | Daily `/report` pull + Copilot triage |
-| `ci` | Release builds with `LIBATION_DIAGNOSTICS_COLLECTOR_URL` from repo variable |
+| `ci` | Release builds with `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` from repo variable |
 
 ### Workflow permissions (least privilege)
 

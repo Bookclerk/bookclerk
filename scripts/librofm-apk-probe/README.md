@@ -1,6 +1,6 @@
 # Libro.fm APK API probe
 
-The Libro.fm integration in `crates/libation-libro` follows the unofficial
+The Libro.fm integration in `crates/bookclerk-libro` follows the unofficial
 mobile API used by the Android app (`fm.libro.librofm`). Community clients
 originally reverse-engineered those calls; this probe keeps that surface
 honest by re-extracting it from the latest Play Store APK.
@@ -32,7 +32,7 @@ to catch — there is no such fallback.
 - OAuth password-grant path (`/oauth/token`) plus auth request/response fields
 
 Then it diffs tracked path/header/version constants against
-`crates/libation-libro/src/client.rs` and request/response shapes against
+`crates/bookclerk-libro/src/client.rs` and request/response shapes against
 `scripts/librofm-apk-probe/expected_shapes.json`.
 
 | Client constant | APK source |
@@ -51,9 +51,9 @@ Declared Gson/Retrofit contracts are **not** a live wire dump. We auto-update
 path/version/UA constants after a successful **auth** smoke. We do **not**
 auto-rewrite Rust `serde` structs.
 
-## Live API validation (auth required for liberate path)
+## Live API validation (auth required for acquire path)
 
-`libation-libro` uses oauth → library → `download-manifest?format=m4b` →
+`bookclerk-libro` uses oauth → library → `download-manifest?format=m4b` →
 packaged_m4b / ZIP download-manifest → CDN bytes. Those calls need a library
 account. Catalog `explore/*` exists and is unauthenticated, but the client does
 not use it today — public smoke is informational only.
@@ -113,7 +113,7 @@ trigger live calls. Override with `workflow_dispatch` → `force_live_smoke`.
 
 `live_smoke.py --profiles public` hits `explore/search`, suggest, genres, and
 `explore/audiobook_details/{isbn}` without auth. Useful for catalog metadata
-shapes; not a substitute for liberate-path checks.
+shapes; not a substitute for acquire-path checks.
 
 ## Local usage
 

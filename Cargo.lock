@@ -928,6 +928,388 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-acquire"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bookclerk-audible",
+ "bookclerk-config",
+ "bookclerk-decrypt",
+ "bookclerk-enrich",
+ "bookclerk-library",
+ "bookclerk-naming",
+ "bookclerk-source",
+ "bookclerk-storage",
+ "bytes",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "bookclerk-audible"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "audible-rs",
+ "bookclerk-config",
+ "bookclerk-library",
+ "bookclerk-source",
+ "chrono",
+ "futures",
+ "getrandom 0.3.4",
+ "qrcode",
+ "reqwest",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "bookclerk-chirp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bookclerk-config",
+ "bookclerk-library",
+ "bookclerk-source",
+ "bytes",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "bookclerk-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bookclerk-acquire",
+ "bookclerk-audible",
+ "bookclerk-chirp",
+ "bookclerk-config",
+ "bookclerk-enrich",
+ "bookclerk-graphicaudio",
+ "bookclerk-integrations",
+ "bookclerk-library",
+ "bookclerk-libro",
+ "bookclerk-migrate",
+ "bookclerk-naming",
+ "bookclerk-plugin",
+ "bookclerk-search",
+ "bookclerk-source",
+ "bookclerk-storage",
+ "chrono",
+ "clap",
+ "csv",
+ "rpassword",
+ "rusqlite",
+ "rust_xlsxwriter",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+]
+
+[[package]]
+name = "bookclerk-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "directories",
+ "oslog",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "ureq",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "bookclerk-decrypt"
+version = "0.1.0"
+dependencies = [
+ "aes 0.9.1",
+ "anyhow",
+ "bookclerk-config",
+ "cbc 0.2.1",
+ "ctr",
+ "fdk-aac",
+ "hex",
+ "id3",
+ "mp3lame-encoder",
+ "mp4ameta",
+ "serde",
+ "serde_json",
+ "symphonia",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "bookclerk-enrich"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-library",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "bookclerk-graphicaudio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bookclerk-config",
+ "bookclerk-library",
+ "bookclerk-source",
+ "bytes",
+ "chrono",
+ "html-escape",
+ "reqwest",
+ "scraper 0.23.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "uuid",
+ "wiremock",
+ "zip",
+]
+
+[[package]]
+name = "bookclerk-integrations"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bookclerk-audible",
+ "bookclerk-config",
+ "bookclerk-library",
+ "bookclerk-source",
+ "chrono",
+ "hex",
+ "rand 0.9.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
+name = "bookclerk-library"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bookclerk-config",
+ "chrono",
+ "rusqlite",
+ "rusqlite_migration",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "bookclerk-libro"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bookclerk-config",
+ "bookclerk-library",
+ "bookclerk-source",
+ "bytes",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "wiremock",
+ "zip",
+]
+
+[[package]]
+name = "bookclerk-migrate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "audible-rs",
+ "bookclerk-audible",
+ "bookclerk-config",
+ "bookclerk-library",
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "bookclerk-naming"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-config",
+ "chrono",
+ "regex",
+]
+
+[[package]]
+name = "bookclerk-plugin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bookclerk-config",
+ "bookclerk-integrations",
+ "bookclerk-library",
+ "bookclerk-source",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "bookclerk-plugin-echo-integration"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-plugin",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "bookclerk-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bookclerk-library",
+ "serde",
+ "tantivy",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tracing",
+]
+
+[[package]]
+name = "bookclerk-source"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bookclerk-config",
+ "bookclerk-library",
+ "infer",
+ "mime_guess",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "bookclerk-storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
+ "bookclerk-config",
+ "bytes",
+ "chrono",
+ "filetime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "bookclerkd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bookclerk-acquire",
+ "bookclerk-audible",
+ "bookclerk-chirp",
+ "bookclerk-config",
+ "bookclerk-enrich",
+ "bookclerk-graphicaudio",
+ "bookclerk-integrations",
+ "bookclerk-library",
+ "bookclerk-libro",
+ "bookclerk-plugin",
+ "bookclerk-source",
+ "bookclerk-storage",
+ "clap",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-http",
+ "tracing",
+]
+
+[[package]]
 name = "brotli"
 version = "8.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2811,388 +3193,6 @@ name = "levenshtein_automata"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c2cdeb66e45e9f36bfad5bbdb4d2384e70936afbee843c6f6543f0c551ebb25"
-
-[[package]]
-name = "libation-audible"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "audible-rs",
- "chrono",
- "futures",
- "getrandom 0.3.4",
- "libation-config",
- "libation-library",
- "libation-source",
- "qrcode",
- "reqwest",
- "secrecy",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
-name = "libation-chirp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "chrono",
- "libation-config",
- "libation-library",
- "libation-source",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
-name = "libation-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "csv",
- "libation-audible",
- "libation-chirp",
- "libation-config",
- "libation-enrich",
- "libation-graphicaudio",
- "libation-integrations",
- "libation-liberate",
- "libation-library",
- "libation-libro",
- "libation-migrate",
- "libation-naming",
- "libation-plugin",
- "libation-search",
- "libation-source",
- "libation-storage",
- "rpassword",
- "rusqlite",
- "rust_xlsxwriter",
- "serde_json",
- "tokio",
- "tokio-postgres",
- "tracing",
-]
-
-[[package]]
-name = "libation-config"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "directories",
- "oslog",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "ureq",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "libation-decrypt"
-version = "0.1.0"
-dependencies = [
- "aes 0.9.1",
- "anyhow",
- "cbc 0.2.1",
- "ctr",
- "fdk-aac",
- "hex",
- "id3",
- "libation-config",
- "mp3lame-encoder",
- "mp4ameta",
- "serde",
- "serde_json",
- "symphonia",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "libation-enrich"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "libation-library",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "unicode-normalization",
-]
-
-[[package]]
-name = "libation-graphicaudio"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "chrono",
- "html-escape",
- "libation-config",
- "libation-library",
- "libation-source",
- "reqwest",
- "scraper 0.23.1",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "uuid",
- "wiremock",
- "zip",
-]
-
-[[package]]
-name = "libation-integrations"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "chrono",
- "hex",
- "libation-audible",
- "libation-config",
- "libation-library",
- "libation-source",
- "rand 0.9.5",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tower-http",
- "tracing",
- "uuid",
- "wiremock",
-]
-
-[[package]]
-name = "libation-liberate"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "chrono",
- "libation-audible",
- "libation-config",
- "libation-decrypt",
- "libation-enrich",
- "libation-library",
- "libation-naming",
- "libation-source",
- "libation-storage",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "libation-library"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "libation-config",
- "rusqlite",
- "rusqlite_migration",
- "serde",
- "tempfile",
- "thiserror 2.0.19",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "libation-libro"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "chrono",
- "libation-config",
- "libation-library",
- "libation-source",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "wiremock",
- "zip",
-]
-
-[[package]]
-name = "libation-migrate"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "audible-rs",
- "chrono",
- "libation-audible",
- "libation-config",
- "libation-library",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "libation-naming"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "libation-config",
- "regex",
-]
-
-[[package]]
-name = "libation-plugin"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "libation-config",
- "libation-integrations",
- "libation-library",
- "libation-source",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "libation-plugin-echo-integration"
-version = "0.1.0"
-dependencies = [
- "libation-plugin",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "libation-search"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "libation-library",
- "serde",
- "tantivy",
- "tempfile",
- "thiserror 2.0.19",
- "tracing",
-]
-
-[[package]]
-name = "libation-source"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "infer",
- "libation-config",
- "libation-library",
- "mime_guess",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "libation-storage"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "aws-config",
- "aws-sdk-s3",
- "bytes",
- "chrono",
- "filetime",
- "libation-config",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "libationd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "libation-audible",
- "libation-chirp",
- "libation-config",
- "libation-enrich",
- "libation-graphicaudio",
- "libation-integrations",
- "libation-liberate",
- "libation-library",
- "libation-libro",
- "libation-plugin",
- "libation-source",
- "libation-storage",
- "serde",
- "serde_json",
- "tokio",
- "tower-http",
- "tracing",
-]
 
 [[package]]
 name = "libc"

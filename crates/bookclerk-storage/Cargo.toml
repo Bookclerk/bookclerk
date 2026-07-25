@@ -1,0 +1,33 @@
+[package]
+name = "bookclerk-storage"
+description = "Pluggable local and S3 storage backends for acquired audiobooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+filetime.workspace = true
+bookclerk-config.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+tracing.workspace = true
+
+# S3 is compiled in but unused until Phase 3 wiring; keeps the trait ready.
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

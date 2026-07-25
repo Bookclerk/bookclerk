@@ -1,0 +1,20 @@
+[package]
+name = "bookclerk-naming"
+description = "Port of Libation's NamingTemplate tag-template engine (Chardonnay parity)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+bookclerk-config.workspace = true
+chrono.workspace = true
+regex = { workspace = true }
+
+[dev-dependencies]
+chrono.workspace = true
+
+[lints]
+workspace = true

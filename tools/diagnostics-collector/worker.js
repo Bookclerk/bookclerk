@@ -1,5 +1,5 @@
 /**
- * Libation diagnostics Worker (deployed via GitHub Actions + wrangler-action).
+ * Bookclerk diagnostics Worker (deployed via GitHub Actions + wrangler-action).
  *
  * POST /submit  — clients send redacted JSON; validated + enriched → B2
  * GET  /report  — GitHub Action pulls new objects since `since` (secret key)
@@ -18,7 +18,7 @@
  *   GITHUB_TOKEN            — optional; higher GitHub API rate limits
  *
  * Vars:
- *   GITHUB_REPOSITORY       — owner/repo for releases/latest (e.g. fritz-fritz/libation-rs)
+ *   GITHUB_REPOSITORY       — owner/repo for releases/latest (e.g. fritz-fritz/bookclerk)
  */
 
 import {
@@ -41,7 +41,7 @@ export default {
         const origin = new URL(request.url).origin;
         return json({
           ok: true,
-          service: "libation-diagnostics",
+          service: "bookclerk-diagnostics",
           url: origin,
         });
       }
@@ -95,7 +95,7 @@ async function handleSubmit(request, env) {
     schema_version: 1,
     report_id: reportId,
     received_at_unix_ms: receivedAt,
-    worker: "libation-diagnostics",
+    worker: "bookclerk-diagnostics",
     client_ip_hash: await maybeHashIp(request, env),
     user_agent: truncate(request.headers.get("user-agent") || "", 200),
     payload,
@@ -114,7 +114,7 @@ async function handleSubmit(request, env) {
     report_id: reportId,
     received_at_unix_ms: String(receivedAt),
     trigger: safeToken(payload.trigger, "report"),
-    libation_version: truncate(String(payload.version || ""), 64),
+    bookclerk_version: truncate(String(payload.version || ""), 64),
   });
 
   return json(
@@ -257,7 +257,7 @@ async function resolveLatestStableBaseline(env) {
 
   const headers = {
     Accept: "application/vnd.github+json",
-    "User-Agent": "libation-diagnostics-worker",
+    "User-Agent": "bookclerk-diagnostics-worker",
     "X-GitHub-Api-Version": "2022-11-28",
   };
   if (env.GITHUB_TOKEN) {
@@ -296,7 +296,7 @@ function requireReportAuth(request, env) {
   const bearer = header.toLowerCase().startsWith("bearer ")
     ? header.slice(7).trim()
     : "";
-  const alt = (request.headers.get("x-libation-report-key") || "").trim();
+  const alt = (request.headers.get("x-bookclerk-report-key") || "").trim();
   return timingSafe.equal(bearer, expected) || timingSafe.equal(alt, expected);
 }
 

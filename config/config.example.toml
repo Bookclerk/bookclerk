@@ -1,8 +1,8 @@
-# Example Libation configuration.
-# Copy to `$LIBATION_FILES_DIR/config.toml` or pass `--config`.
+# Example Bookclerk configuration.
+# Copy to `$BOOKCLERK_FILES_DIR/config.toml` or pass `--config`.
 
 [library]
-auto_liberate = false
+auto_acquire = false
 scan_interval_minutes = 60
 # After scan, enrich non-Audible library rows from public Audible catalog + Audnexus.
 enrich_from_audible = true
@@ -11,8 +11,8 @@ enrich_min_confidence = 90
 # fix_storage_layout = false
 
 [auth]
-# Prefer LIBATION_AUTH_PASSWORD or LIBATION_AUTH_PASSWORD_FILE over plaintext token files.
-# password_file = "/run/libation/secrets/auth_password"
+# Prefer BOOKCLERK_AUTH_PASSWORD or BOOKCLERK_AUTH_PASSWORD_FILE over plaintext token files.
+# password_file = "/run/bookclerk/secrets/auth_password"
 # allow_plaintext = false
 
 [output]
@@ -54,7 +54,7 @@ chapter_layout = "tree"
 # multi_destination = "sync_missing"
 
 # Destination plugins — each has `enabled`; multiple may be on at once
-# (liberated files are written to every enabled destination).
+# (acquired files are written to every enabled destination).
 [output.local]
 enabled = true
 root = "/data/Audiobooks"
@@ -78,7 +78,7 @@ enabled = false
 # folder_template = "<author>/<series>"
 # file_template = "<asin>"
 # chapter_file_template = "<asin> - <ch#>"
-# Env: LIBATION_OUTPUT_S3_ENABLED, LIBATION_OUTPUT_S3_BUCKET (or LIBATION_S3_*), …
+# Env: BOOKCLERK_OUTPUT_S3_ENABLED, BOOKCLERK_OUTPUT_S3_BUCKET (or BOOKCLERK_S3_*), …
 
 # Content-source plugins ([sources.*]). Each source has `enabled`.
 # [sources.audible]
@@ -109,15 +109,15 @@ json_logs = true
 # [integrations.audiobookshelf]
 # enabled = false
 # base_url = "http://audiobookshelf:80"
-# # Prefer LIBATION_ABS_API_KEY env over storing the key in TOML.
+# # Prefer BOOKCLERK_ABS_API_KEY env over storing the key in TOML.
 # # api_key = ""
 # # library_id = "lib_..."
 # watch_users = true
-# notify_scan_on_liberate = true
+# notify_scan_on_acquire = true
 # allow_credential_login = true
 
 # Third-party plugins (see docs/plugins.md) install under
-# `$LIBATION_FILES_DIR/plugins/<name>/plugin.toml` (or LIBATION_PLUGIN_DIRS).
+# `$BOOKCLERK_FILES_DIR/plugins/<name>/plugin.toml` (or BOOKCLERK_PLUGIN_DIRS).
 # Enable / configure by id in this file — external integrations default off:
 # [integrations.echo]
 # enabled = true

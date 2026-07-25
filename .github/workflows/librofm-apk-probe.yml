@@ -18,12 +18,12 @@ on:
     paths:
       - "scripts/librofm-apk-probe/**"
       - ".github/workflows/librofm-apk-probe.yml"
-      - "crates/libation-libro/src/client.rs"
+      - "crates/bookclerk-libro/src/client.rs"
   pull_request:
     paths:
       - "scripts/librofm-apk-probe/**"
       - ".github/workflows/librofm-apk-probe.yml"
-      - "crates/libation-libro/src/client.rs"
+      - "crates/bookclerk-libro/src/client.rs"
 
 permissions:
   contents: write
@@ -141,7 +141,7 @@ jobs:
           TEST_LIBRO_ISBN: ${{ secrets.TEST_LIBRO_ISBN }}
           TEST_LIBRO_CATALOG_ISBN: ${{ secrets.TEST_LIBRO_CATALOG_ISBN }}
           TEST_LIBRO_REQUIRE_MEDIA: ${{ vars.TEST_LIBRO_REQUIRE_MEDIA }}
-          LIBATION_LIBRO_PASSWORD: ${{ secrets.LIBATION_LIBRO_PASSWORD }}
+          BOOKCLERK_LIBRO_PASSWORD: ${{ secrets.BOOKCLERK_LIBRO_PASSWORD }}
           TEST_LIBRO_MAX_DOWNLOAD_BYTES: ${{ vars.TEST_LIBRO_MAX_DOWNLOAD_BYTES }}
         run: |
           set +e
@@ -194,7 +194,7 @@ jobs:
           python3 scripts/librofm-apk-probe/apply_client_updates.py \
             --repo-root "$GITHUB_WORKSPACE" \
             --report "$GITHUB_WORKSPACE/artifacts/librofm-apk-probe/report.json"
-          if git diff --quiet -- crates/libation-libro/src/client.rs; then
+          if git diff --quiet -- crates/bookclerk-libro/src/client.rs; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -220,7 +220,7 @@ jobs:
             ## Summary
 
             The scheduled Libro.fm APK probe detected drift between the Play Store
-            Android app and `crates/libation-libro/src/client.rs`.
+            Android app and `crates/bookclerk-libro/src/client.rs`.
 
             This PR applies the extracted constants (base URL, `/api/vN/` paths,
             `X-LibroFm-AppVer`, OkHttp user-agent).

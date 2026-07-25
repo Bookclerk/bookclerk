@@ -1,7 +1,7 @@
 {
-  "name": "libation-diagnostics",
+  "name": "bookclerk-diagnostics",
   "private": true,
-  "description": "Libation diagnostics Worker (Cloudflare Builds)",
+  "description": "Bookclerk diagnostics Worker (Cloudflare Builds)",
   "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",

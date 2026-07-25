@@ -1,0 +1,32 @@
+[package]
+name = "bookclerk-acquire"
+description = "End-to-end acquire pipeline: license, download, decrypt, store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+bookclerk-audible.workspace = true
+bookclerk-config.workspace = true
+bookclerk-enrich.workspace = true
+bookclerk-decrypt.workspace = true
+bookclerk-library.workspace = true
+bookclerk-naming.workspace = true
+bookclerk-source.workspace = true
+bookclerk-storage.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

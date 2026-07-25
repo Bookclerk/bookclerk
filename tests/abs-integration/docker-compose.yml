@@ -1,7 +1,7 @@
-# Docker Compose for ABS ↔ Libation integration CI.
+# Docker Compose for ABS ↔ Bookclerk integration CI.
 #
 # ABS image tag should stay in the same release family as
-# crates/libation-integrations/openapi/PIN.md.
+# crates/bookclerk-integrations/openapi/PIN.md.
 
 services:
   audiobookshelf:
@@ -21,23 +21,23 @@ services:
       timeout: 5s
       retries: 30
 
-  libationd:
-    image: libation-rs:abs-ci
+  bookclerkd:
+    image: bookclerk:abs-ci
     build:
       context: ../..
       dockerfile: tests/abs-integration/Dockerfile
     environment:
-      LIBATION_FILES_DIR: /data
-      LIBATION_DAEMON_LISTEN: 0.0.0.0:8787
-      LIBATION_ABS_ENABLED: "true"
-      LIBATION_ABS_BASE_URL: http://audiobookshelf:80
-      LIBATION_ABS_API_KEY: ${LIBATION_ABS_API_KEY:-}
-      LIBATION_ABS_LIBRARY_ID: ${LIBATION_ABS_LIBRARY_ID:-}
-      LIBATION_PORTAL_BASE_PATH: /connect
-      LIBATION_INTEGRATIONS_PUBLIC_ORIGIN: http://127.0.0.1:8787
-      LIBATION_AUTH_ALLOW_PLAINTEXT: "true"
+      BOOKCLERK_FILES_DIR: /data
+      BOOKCLERK_DAEMON_LISTEN: 0.0.0.0:8787
+      BOOKCLERK_ABS_ENABLED: "true"
+      BOOKCLERK_ABS_BASE_URL: http://audiobookshelf:80
+      BOOKCLERK_ABS_API_KEY: ${BOOKCLERK_ABS_API_KEY:-}
+      BOOKCLERK_ABS_LIBRARY_ID: ${BOOKCLERK_ABS_LIBRARY_ID:-}
+      BOOKCLERK_PORTAL_BASE_PATH: /connect
+      BOOKCLERK_INTEGRATIONS_PUBLIC_ORIGIN: http://127.0.0.1:8787
+      BOOKCLERK_AUTH_ALLOW_PLAINTEXT: "true"
     volumes:
-      - libation-data:/data
+      - bookclerk-data:/data
       - shared-audiobooks:/data/Audiobooks
     ports:
       - "8787:8787"
@@ -49,4 +49,4 @@ volumes:
   abs-config:
   abs-metadata:
   shared-audiobooks:
-  libation-data:
+  bookclerk-data:

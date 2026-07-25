@@ -11,12 +11,12 @@ on:
     paths:
       - "scripts/source-probes/**"
       - ".github/workflows/chirp-api-probe.yml"
-      - "crates/libation-chirp/src/client.rs"
+      - "crates/bookclerk-chirp/src/client.rs"
   pull_request:
     paths:
       - "scripts/source-probes/**"
       - ".github/workflows/chirp-api-probe.yml"
-      - "crates/libation-chirp/src/client.rs"
+      - "crates/bookclerk-chirp/src/client.rs"
 
 permissions:
   contents: read

@@ -1,0 +1,31 @@
+[package]
+name = "bookclerk-decrypt"
+description = "Native AAXC/Adrm + DASH/CENC decrypt, remux, metadata fix-up, and MP3 encode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bookclerk-config.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+tracing.workspace = true
+tempfile.workspace = true
+aes = "0.9.1"
+cbc = "0.2.1"
+ctr = "0.10.1"
+hex = "0.4.3"
+serde_json.workspace = true
+mp4ameta = "0.12"
+id3 = "1.17"
+symphonia = { version = "0.5", default-features = false, features = ["aac", "isomp4", "mp3", "pcm"] }
+mp3lame-encoder = "0.2"
+fdk-aac = "0.8"
+
+[lints]
+workspace = true

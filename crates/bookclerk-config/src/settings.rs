@@ -1,0 +1,1080 @@
+//! Application settings loaded from TOML with environment overrides.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::{ConfigError, Result};
+use crate::naming_profile::NamingProfile;
+use crate::output::OutputConfig;
+use crate::paths::{resolve_config_path, resolve_files_dir, Paths};
+use crate::pipeline_opts::{ChapterJsonMode, OutputFormat};
+use crate::plugins::{IntegrationsConfig, SourcesConfig};
+
+/// Top-level Bookclerk configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct Config {
+    /// Filesystem layout (resolved at load time; not always present in TOML).
+    #[serde(skip)]
+    pub paths: Option<Paths>,
+
+    pub library: LibraryConfig,
+    pub output: OutputConfig,
+    pub daemon: DaemonConfig,
+    pub auth: AuthConfig,
+    /// Content-source plugins (`[sources.audible]`, `[sources.graphicaudio]`, …).
+    pub sources: SourcesConfig,
+    /// Optional third-party integrations (`[integrations.*]`). Not diagnostics.
+    pub integrations: IntegrationsConfig,
+    /// Opt-in crash / error-burst report upload (`[diagnostics]`).
+    #[serde(default)]
+    pub diagnostics: DiagnosticsConfig,
+}
+
+/// Auth-file encryption settings (OAuth tokens under `Accounts/`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AuthConfig {
+    /// Path to a file containing the auth-file passphrase (Docker/systemd secret).
+    /// Prefer this or `BOOKCLERK_AUTH_PASSWORD_FILE` over putting the secret in TOML.
+    /// If the path is set but the file is missing, Bookclerk creates it with a
+    /// strong random secret — point it at a secrets volume, not `Accounts/`.
+    pub password_file: Option<PathBuf>,
+    /// Allow writing unencrypted `.auth` files when no passphrase is configured.
+    /// Default `false` — OAuth tokens should be encrypted at rest.
+    pub allow_plaintext: bool,
+}
+
+/// Library / scan related settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LibraryConfig {
+    /// Automatically acquire newly scanned titles (daemon).
+    pub auto_acquire: bool,
+    /// Scan interval in minutes for `bookclerkd` (0 = disabled).
+    pub scan_interval_minutes: u64,
+    /// Import podcast episodes during scan (`ImportEpisodes`).
+    pub import_episodes: bool,
+    /// Import Audible Plus titles during scan (`ImportPlusTitles`).
+    pub import_plus_titles: bool,
+    /// Acquire podcast episodes (`DownloadEpisodes`; distinct from `ImportEpisodes`).
+    pub download_episodes: bool,
+    /// Save podcast episodes into the parent show's folder (`SavePodcastsToParentFolder`).
+    pub save_podcasts_to_parent_folder: bool,
+    /// After scan, enrich non-Audible rows (e.g. Libro.fm) from public Audible/Audnexus metadata.
+    pub enrich_from_audible: bool,
+    /// Minimum match confidence (0–100) to accept an Audible ASIN enrichment.
+    /// Uses AudioBookshelf-style duration/title/author scoring (default 90).
+    pub enrich_min_confidence: u8,
+    /// When matching storage to the library, relocate matched audio (and
+    /// accompanying sidecars) onto the configured naming-profile layout.
+    /// Default false — match in place without moving files.
+    pub fix_storage_layout: bool,
+}
+
+impl Default for LibraryConfig {
+    fn default() -> Self {
+        Self {
+            auto_acquire: false,
+            scan_interval_minutes: 60,
+            import_episodes: true,
+            import_plus_titles: false,
+            download_episodes: true,
+            save_podcasts_to_parent_folder: false,
+            enrich_from_audible: true,
+            enrich_min_confidence: 90,
+            fix_storage_layout: false,
+        }
+    }
+}
+
+/// Audible download quality.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioQuality {
+    #[default]
+    High,
+    Normal,
+}
+
+/// Daemon / HTTP control plane settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DaemonConfig {
+    /// Bind address for the HTTP control plane.
+    pub listen: String,
+    /// Emit JSON logs on stderr when true (journald sink is always structured).
+    pub json_logs: bool,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            listen: String::from("127.0.0.1:8787"),
+            json_logs: true,
+        }
+    }
+}
+
+/// Compile-time default from `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` when running `cargo build`.
+fn compile_time_collector_url() -> Option<&'static str> {
+    option_env!("BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// Opt-in sharing of recent **redacted** logs on crash or error bursts.
+///
+/// Defaults to disabled. Operators flip `share_reports` and set `collector_url`
+/// (or bake `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` at `cargo build` time).
+/// The client POSTs to `/submit`; a GitHub Action calls `/report`.
+///
+/// Bookclerk never manages log-file rotation — use journald / the container
+/// runtime (Windows Event Log / macOS unified logging are future work).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DiagnosticsConfig {
+    /// When true, share redacted crash/ERROR-burst reports with the collector.
+    #[serde(alias = "upload_enabled")]
+    pub share_reports: bool,
+    /// Worker origin (HTTPS). When empty, uses `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL`
+    /// from config/runtime env, else the value baked in at `cargo build` time.
+    #[serde(alias = "upload_url")]
+    pub collector_url: String,
+    /// Upload the ring buffer from the panic hook.
+    pub upload_on_crash: bool,
+    /// Upload when ERROR volume crosses the burst threshold.
+    pub upload_on_error_burst: bool,
+    /// Upload when WARN volume crosses the warn-burst threshold.
+    pub upload_on_warn_burst: bool,
+    /// Number of ERROR events inside the window that trigger an upload.
+    pub error_burst_threshold: u32,
+    /// Sliding window length for error-burst detection, in seconds.
+    pub error_burst_window_secs: u64,
+    /// Number of WARN events inside the window that trigger an upload.
+    pub warn_burst_threshold: u32,
+    /// Sliding window length for warn-burst detection, in seconds.
+    pub warn_burst_window_secs: u64,
+    /// Max redacted events retained for upload (all levels through TRACE).
+    pub ring_buffer_capacity: u32,
+}
+
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        Self {
+            share_reports: false,
+            collector_url: String::new(),
+            upload_on_crash: true,
+            upload_on_error_burst: true,
+            upload_on_warn_burst: true,
+            error_burst_threshold: 10,
+            error_burst_window_secs: 60,
+            warn_burst_threshold: 20,
+            warn_burst_window_secs: 60,
+            ring_buffer_capacity: 200,
+        }
+    }
+}
+
+impl DiagnosticsConfig {
+    /// Resolved Worker origin: config/env `collector_url`, else baked deploy URL.
+    #[must_use]
+    pub fn effective_collector_url(&self) -> String {
+        let explicit = self.collector_url.trim();
+        if !explicit.is_empty() {
+            return explicit.to_string();
+        }
+        compile_time_collector_url()
+            .map(str::to_string)
+            .unwrap_or_default()
+    }
+
+    /// HTTPS endpoint clients POST redacted JSON to (`…/submit`).
+    #[must_use]
+    pub fn effective_submit_url(&self) -> String {
+        let base = self
+            .effective_collector_url()
+            .trim_end_matches('/')
+            .to_string();
+        if base.is_empty() {
+            return String::new();
+        }
+        if base.to_ascii_lowercase().ends_with("/submit") {
+            base
+        } else {
+            format!("{base}/submit")
+        }
+    }
+
+    /// True when report sharing is enabled and a collector URL can be resolved.
+    #[must_use]
+    pub fn upload_ready(&self) -> bool {
+        self.share_reports && !self.effective_collector_url().is_empty()
+    }
+}
+
+impl Config {
+    /// Load config: defaults ← optional TOML file ← environment overrides.
+    pub fn load(cli_files_dir: Option<PathBuf>, config_path: Option<PathBuf>) -> Result<Self> {
+        let files_dir = resolve_files_dir(cli_files_dir);
+        let paths = Paths::from_files_dir(files_dir);
+        let path = config_path.unwrap_or_else(|| resolve_config_path(&paths.files_dir));
+
+        let mut cfg = if path.exists() {
+            Self::from_toml_file(&path)?
+        } else {
+            tracing::debug!(?path, "config file not found; using defaults");
+            Self::default()
+        };
+
+        cfg.apply_env_overrides();
+        cfg.paths = Some(paths);
+        cfg.resolve_relative_paths();
+        cfg.register_known_secrets();
+        // Callers should invoke [`Self::warn_unsupported_options`] *after*
+        // `init_tracing_with` so startup guidance is not dropped.
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// Parse a TOML config file.
+    pub fn from_toml_file(path: &Path) -> Result<Self> {
+        let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+            path: path.display().to_string(),
+            source,
+        })?;
+        Self::from_toml_str(&text, &path.display().to_string())
+    }
+
+    /// Parse TOML from a string.
+    pub fn from_toml_str(text: &str, origin: &str) -> Result<Self> {
+        toml::from_str(text).map_err(|source| ConfigError::Parse {
+            path: origin.to_string(),
+            source,
+        })
+    }
+
+    /// Apply `BOOKCLERK_*` environment overrides.
+    pub fn apply_env_overrides(&mut self) {
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_LOCAL_ENABLED") {
+            if let Some(enabled) = parse_bool(&v) {
+                self.output.local.enabled = enabled;
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_ENABLED") {
+            if let Some(enabled) = parse_bool(&v) {
+                self.output.s3.enabled = enabled;
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_LOCAL_ROOT") {
+            self.output.local.root = PathBuf::from(v);
+            self.output.local.enabled = true;
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_LOCAL_PREFIX") {
+            self.output.local.prefix = v;
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_BUCKET")
+            .or_else(|_| std::env::var("BOOKCLERK_S3_BUCKET"))
+        {
+            self.output.s3.bucket = v;
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_PREFIX")
+            .or_else(|_| std::env::var("BOOKCLERK_S3_PREFIX"))
+        {
+            self.output.s3.prefix = v;
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_REGION")
+            .or_else(|_| std::env::var("BOOKCLERK_S3_REGION"))
+        {
+            self.output.s3.region = v;
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_ENDPOINT")
+            .or_else(|_| std::env::var("BOOKCLERK_S3_ENDPOINT"))
+        {
+            self.output.s3.endpoint = Some(v);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_FORCE_PATH_STYLE")
+            .or_else(|_| std::env::var("BOOKCLERK_S3_FORCE_PATH_STYLE"))
+        {
+            self.output.s3.force_path_style =
+                parse_bool(&v).unwrap_or(self.output.s3.force_path_style);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_LISTEN") {
+            self.daemon.listen = v;
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_JSON_LOGS") {
+            self.daemon.json_logs = parse_bool(&v).unwrap_or(self.daemon.json_logs);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_SHARE_REPORTS")
+            .or_else(|_| std::env::var("BOOKCLERK_DIAGNOSTICS_UPLOAD_ENABLED"))
+        {
+            self.diagnostics.share_reports =
+                parse_bool(&v).unwrap_or(self.diagnostics.share_reports);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL")
+            .or_else(|_| std::env::var("BOOKCLERK_DIAGNOSTICS_UPLOAD_URL"))
+        {
+            self.diagnostics.collector_url = v;
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_UPLOAD_ON_CRASH") {
+            self.diagnostics.upload_on_crash =
+                parse_bool(&v).unwrap_or(self.diagnostics.upload_on_crash);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_UPLOAD_ON_ERROR_BURST") {
+            self.diagnostics.upload_on_error_burst =
+                parse_bool(&v).unwrap_or(self.diagnostics.upload_on_error_burst);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_UPLOAD_ON_WARN_BURST") {
+            self.diagnostics.upload_on_warn_burst =
+                parse_bool(&v).unwrap_or(self.diagnostics.upload_on_warn_burst);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_ERROR_BURST_THRESHOLD") {
+            if let Ok(n) = v.parse() {
+                self.diagnostics.error_burst_threshold = n;
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_ERROR_BURST_WINDOW_SECS") {
+            if let Ok(n) = v.parse() {
+                self.diagnostics.error_burst_window_secs = n;
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_WARN_BURST_THRESHOLD") {
+            if let Ok(n) = v.parse() {
+                self.diagnostics.warn_burst_threshold = n;
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_WARN_BURST_WINDOW_SECS") {
+            if let Ok(n) = v.parse() {
+                self.diagnostics.warn_burst_window_secs = n;
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_RING_BUFFER_CAPACITY") {
+            if let Ok(n) = v.parse() {
+                self.diagnostics.ring_buffer_capacity = n;
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_AUTO_ACQUIRE") {
+            self.library.auto_acquire = parse_bool(&v).unwrap_or(self.library.auto_acquire);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_ENRICH_FROM_AUDIBLE") {
+            self.library.enrich_from_audible =
+                parse_bool(&v).unwrap_or(self.library.enrich_from_audible);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_ENRICH_MIN_CONFIDENCE") {
+            if let Ok(n) = v.parse::<u8>() {
+                self.library.enrich_min_confidence = n.min(100);
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_FIX_STORAGE_LAYOUT") {
+            self.library.fix_storage_layout =
+                parse_bool(&v).unwrap_or(self.library.fix_storage_layout);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_SCAN_INTERVAL_MINUTES") {
+            if let Ok(n) = v.parse() {
+                self.library.scan_interval_minutes = n;
+            }
+        }
+        if let Ok(v) =
+            std::env::var("BOOKCLERK_GA_ACCESS").or_else(|_| std::env::var("BOOKCLERK_GA_FETCH"))
+        {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("auto") {
+                self.sources.set_string("graphicaudio", "access", trimmed);
+            }
+        }
+        // Generic `BOOKCLERK_SOURCE_<ID>_ENABLED` plus legacy first-party shims.
+        for (env, id) in [
+            ("BOOKCLERK_SOURCE_AUDIBLE_ENABLED", "audible"),
+            ("BOOKCLERK_SOURCE_LIBRO_ENABLED", "libro"),
+            ("BOOKCLERK_SOURCE_CHIRP_ENABLED", "chirp"),
+            ("BOOKCLERK_SOURCE_GRAPHICAUDIO_ENABLED", "graphicaudio"),
+        ] {
+            if let Ok(v) = std::env::var(env) {
+                if let Some(b) = parse_bool(&v) {
+                    self.sources.set_enabled(id, b);
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_AUTH_PASSWORD_FILE") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.auth.password_file = Some(PathBuf::from(trimmed));
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_AUTH_ALLOW_PLAINTEXT") {
+            if let Some(b) = parse_bool(&v) {
+                self.auth.allow_plaintext = b;
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_PORTAL_BASE_PATH") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.integrations.portal_base_path = trimmed.to_string();
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_INTEGRATIONS_PUBLIC_ORIGIN") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.integrations.public_origin = Some(trimmed.to_string());
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_ABS_BASE_URL") {
+            self.integrations.audiobookshelf.base_url = v;
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_ABS_API_KEY") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.integrations.audiobookshelf.api_key = Some(trimmed.to_string());
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_ABS_LIBRARY_ID") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.integrations.audiobookshelf.library_id = Some(trimmed.to_string());
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_ABS_ENABLED") {
+            self.integrations.audiobookshelf.enabled =
+                parse_bool(&v).unwrap_or(self.integrations.audiobookshelf.enabled);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_ABS_WATCH_USERS") {
+            self.integrations.audiobookshelf.watch_users =
+                parse_bool(&v).unwrap_or(self.integrations.audiobookshelf.watch_users);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_ABS_NOTIFY_SCAN_ON_ACQUIRE") {
+            self.integrations.audiobookshelf.notify_scan_on_acquire =
+                parse_bool(&v).unwrap_or(self.integrations.audiobookshelf.notify_scan_on_acquire);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_ABS_ALLOW_CREDENTIAL_LOGIN") {
+            self.integrations.audiobookshelf.allow_credential_login =
+                parse_bool(&v).unwrap_or(self.integrations.audiobookshelf.allow_credential_login);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_WIDEVINE")
+            .or_else(|_| std::env::var("BOOKCLERK_WIDEVINE"))
+        {
+            self.output.widevine = parse_bool(&v).unwrap_or(self.output.widevine);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_XHE_AAC")
+            .or_else(|_| std::env::var("BOOKCLERK_XHE_AAC"))
+        {
+            self.output.xhe_aac = parse_bool(&v).unwrap_or(self.output.xhe_aac);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_WIDEVINE_CDM")
+            .or_else(|_| std::env::var("BOOKCLERK_WIDEVINE_CDM"))
+        {
+            self.output.widevine_cdm = Some(PathBuf::from(v));
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_WIDEVINE_CDM_PROVIDER")
+            .or_else(|_| std::env::var("BOOKCLERK_WIDEVINE_CDM_PROVIDER"))
+        {
+            self.output.widevine_cdm_provider = Some(v);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_NAMING_PROFILE")
+            .or_else(|_| std::env::var("BOOKCLERK_NAMING_PROFILE"))
+        {
+            if let Some(profile) = NamingProfile::parse(&v) {
+                self.output.naming_profile = profile;
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_FOLDER_TEMPLATE")
+            .or_else(|_| std::env::var("BOOKCLERK_FOLDER_TEMPLATE"))
+        {
+            self.output.folder_template = Some(v);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_FILE_TEMPLATE")
+            .or_else(|_| std::env::var("BOOKCLERK_FILE_TEMPLATE"))
+        {
+            self.output.file_template = Some(v);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_DOWNLOAD_COVER")
+            .or_else(|_| std::env::var("BOOKCLERK_DOWNLOAD_COVER"))
+        {
+            self.output.download_cover = parse_bool(&v).unwrap_or(self.output.download_cover);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_DOWNLOAD_PDF")
+            .or_else(|_| std::env::var("BOOKCLERK_DOWNLOAD_PDF"))
+        {
+            self.output.download_pdf = parse_bool(&v).unwrap_or(self.output.download_pdf);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_CREATE_CUE")
+            .or_else(|_| std::env::var("BOOKCLERK_CREATE_CUE"))
+        {
+            self.output.create_cue = parse_bool(&v).unwrap_or(self.output.create_cue);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_FIXUP_METADATA")
+            .or_else(|_| std::env::var("BOOKCLERK_FIXUP_METADATA"))
+        {
+            self.output.fixup_metadata = parse_bool(&v).unwrap_or(self.output.fixup_metadata);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_SAVE_CHAPTER_JSON")
+            .or_else(|_| std::env::var("BOOKCLERK_SAVE_CHAPTER_JSON"))
+        {
+            if let Some(mode) = ChapterJsonMode::parse(&v) {
+                self.output.chapter_json = mode;
+            } else if let Some(b) = parse_bool(&v) {
+                self.output.save_chapter_json = Some(b);
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_CHAPTER_JSON")
+            .or_else(|_| std::env::var("BOOKCLERK_CHAPTER_JSON"))
+        {
+            if let Some(mode) = ChapterJsonMode::parse(&v) {
+                self.output.chapter_json = mode;
+            }
+        }
+        if let Ok(v) =
+            std::env::var("BOOKCLERK_OUTPUT_FORMAT").or_else(|_| std::env::var("BOOKCLERK_OUTPUT"))
+        {
+            if let Some(output) = OutputFormat::parse(&v) {
+                self.output.format = output;
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_AUDIBLE_BITRATE") {
+            let bitrate = match v.trim().to_ascii_lowercase().as_str() {
+                "normal" => "normal",
+                _ => "high",
+            };
+            self.sources.set_string("audible", "bitrate", bitrate);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_LIBRO_CONTAINER") {
+            if !v.trim().is_empty() {
+                self.sources
+                    .set_string("libro", "container", v.trim().to_ascii_lowercase());
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_GA_BITRATE") {
+            if !v.trim().is_empty() {
+                self.sources
+                    .set_string("graphicaudio", "bitrate", v.trim().to_ascii_lowercase());
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_GA_CONTAINER") {
+            if !v.trim().is_empty() {
+                self.sources
+                    .set_string("graphicaudio", "container", v.trim().to_ascii_lowercase());
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_COVER_SIZE")
+            .or_else(|_| std::env::var("BOOKCLERK_COVER_SIZE"))
+        {
+            if !v.trim().is_empty() {
+                self.output.cover_size = v;
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_CHAPTER_LAYOUT")
+            .or_else(|_| std::env::var("BOOKCLERK_CHAPTER_LAYOUT"))
+        {
+            if !v.trim().is_empty() {
+                self.output.chapter_layout = v;
+            }
+        }
+    }
+
+    /// Soft validation of cross-field constraints.
+    pub fn validate(&self) -> Result<()> {
+        self.output.validate_destinations()?;
+        if self.diagnostics.share_reports && self.diagnostics.effective_collector_url().is_empty() {
+            return Err(ConfigError::Invalid(
+                "diagnostics.share_reports=true requires diagnostics.collector_url, \
+                 BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL at runtime, or the same variable \
+                 set when running cargo build"
+                    .into(),
+            ));
+        }
+        // Reserved names that must not appear as opaque plugin tables.
+        if self.integrations.plugins.contains_key("diagnostics") {
+            return Err(ConfigError::Invalid(
+                "unknown field `diagnostics` under [integrations] — use top-level [diagnostics]"
+                    .into(),
+            ));
+        }
+        for reserved in [
+            "portal_base_path",
+            "claim_ticket_ttl_hours",
+            "public_origin",
+            "portal_session_ttl_hours",
+            "audiobookshelf",
+        ] {
+            if self.integrations.plugins.contains_key(reserved) {
+                return Err(ConfigError::Invalid(format!(
+                    "reserved integrations field `{reserved}` must not be a plugin table"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Register config/env secrets for exact-value log redaction.
+    pub fn register_known_secrets(&self) {
+        crate::redact::register_secrets_from_env();
+        if let Some(path) = &self.auth.password_file {
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                let trimmed = contents.trim();
+                if !trimmed.is_empty() {
+                    crate::redact::register_secret(trimmed);
+                }
+            }
+        }
+        if let Some(key) = &self.integrations.audiobookshelf.api_key {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() {
+                crate::redact::register_secret(trimmed);
+            }
+        }
+    }
+
+    /// Resolve relative `output.local.root` under `files_dir`.
+    ///
+    /// Keeps absolute roots (Docker `/data/Audiobooks`, classic migrate paths)
+    /// unchanged. Relative defaults like `Audiobooks` become
+    /// `{BOOKCLERK_FILES_DIR}/Audiobooks` so systemd/Docker cwd does not matter.
+    pub fn resolve_relative_paths(&mut self) {
+        let Some(paths) = &self.paths else {
+            return;
+        };
+        if self.output.local.root.is_relative() {
+            self.output.local.root = paths.files_dir.join(&self.output.local.root);
+        }
+        if let Some(cdm) = &self.output.widevine_cdm {
+            if cdm.is_relative() {
+                self.output.widevine_cdm = Some(paths.files_dir.join(cdm));
+            }
+        }
+        if let Some(scratch) = &self.output.in_progress {
+            if scratch.is_relative() {
+                self.output.in_progress = Some(paths.files_dir.join(scratch));
+            }
+        }
+    }
+
+    /// Warn / note about Widevine / auth encryption setup.
+    pub fn warn_unsupported_options(&self) {
+        if self.output.widevine && self.output.widevine_cdm.is_none() {
+            tracing::info!(
+                "output.widevine=true — L3 CDM auto-provisions via AudibleCdm on first Widevine \
+                 acquire (Android auth from `bookclerk auth login`). \
+                 Optional BYO: output.widevine_cdm / {{files_dir}}/widevine.wvd / \
+                 {{files_dir}}/Accounts/<account>.wvd (or set output.widevine_cdm_provider=off)"
+            );
+        }
+        let has_password_env = std::env::var_os("BOOKCLERK_AUTH_PASSWORD")
+            .is_some_and(|v| !v.is_empty())
+            || std::env::var_os("BOOKCLERK_AUTH_PASSWORD_FILE").is_some_and(|v| !v.is_empty())
+            || self.auth.password_file.is_some();
+        if !has_password_env && !self.auth.allow_plaintext {
+            tracing::info!(
+                "auth encryption: set BOOKCLERK_AUTH_PASSWORD or BOOKCLERK_AUTH_PASSWORD_FILE \
+                 (auto-creates a strong random secret at that path if missing — use a secrets \
+                 volume, not Accounts/) or [auth].password_file; or set auth.allow_plaintext=true \
+                 for unprotected local token files"
+            );
+        } else if self.auth.allow_plaintext && !has_password_env {
+            tracing::warn!(
+                "auth.allow_plaintext=true — OAuth tokens may be stored unprotected under Accounts/"
+            );
+        }
+    }
+
+    /// Write the config as TOML (skips resolved `paths`).
+    pub fn write_toml_file(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let text = self.to_toml_string()?;
+        std::fs::write(path, text)?;
+        Ok(())
+    }
+
+    /// Serialize to a TOML string suitable for `config.toml`.
+    pub fn to_toml_string(&self) -> Result<String> {
+        // Clone without paths so they are not written.
+        let mut out = self.clone();
+        out.paths = None;
+        toml::to_string_pretty(&out).map_err(|source| ConfigError::Invalid(source.to_string()))
+    }
+
+    /// Resolved paths (panic only if `load` was not used — callers should use `load`).
+    #[must_use]
+    pub fn paths(&self) -> &Paths {
+        self.paths
+            .as_ref()
+            .expect("Config.paths populated by Config::load")
+    }
+
+    /// Scratch directory for downloads / decrypt (`InProgress` or default cache).
+    #[must_use]
+    pub fn download_cache_dir(&self) -> PathBuf {
+        self.output
+            .in_progress
+            .clone()
+            .unwrap_or_else(|| self.paths().cache_dir.clone())
+    }
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::normalize_storage_prefix;
+
+    #[test]
+    fn parse_example_toml() {
+        let text = r#"
+[library]
+auto_acquire = true
+scan_interval_minutes = 30
+
+[output]
+format = "enriched_m4b"
+widevine = true
+xhe_aac = false
+
+[sources.audible]
+bitrate = "high"
+
+[output.local]
+enabled = true
+root = "/data/audiobooks"
+
+[output.s3]
+enabled = false
+bucket = "my-audiobooks"
+prefix = "library/"
+region = "us-east-1"
+
+[daemon]
+listen = "0.0.0.0:8787"
+json_logs = true
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert!(cfg.library.auto_acquire);
+        assert_eq!(cfg.library.scan_interval_minutes, 30);
+        assert_eq!(cfg.output.enabled_backend_names(), vec!["local"]);
+        assert_eq!(cfg.output.local.root, PathBuf::from("/data/audiobooks"));
+        assert_eq!(cfg.daemon.listen, "0.0.0.0:8787");
+        assert!(!cfg.diagnostics.share_reports);
+    }
+
+    #[test]
+    fn output_path_limit_prefix_and_multi_enabled() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.output.path_limit_prefix(), "");
+        assert_eq!(cfg.output.enabled_backend_names(), vec!["local"]);
+
+        cfg.output.local.prefix = "books".into();
+        assert_eq!(cfg.output.path_limit_prefix(), "books/");
+
+        // Both destinations may be enabled; S3 prefix wins for key budgeting.
+        cfg.output.s3.enabled = true;
+        cfg.output.s3.bucket = "b".into();
+        cfg.output.s3.prefix = "library/".into();
+        assert_eq!(cfg.output.enabled_backend_names(), vec!["local", "s3"]);
+        assert_eq!(cfg.output.path_limit_prefix(), "library/");
+        assert!(cfg.validate().is_ok());
+
+        cfg.output.local.enabled = false;
+        cfg.output.s3.prefix = "s3-books".into();
+        assert_eq!(cfg.output.path_limit_prefix(), "s3-books/");
+        assert_eq!(cfg.output.enabled_backend_names(), vec!["s3"]);
+    }
+
+    #[test]
+    fn normalize_storage_prefix_trims_and_slashes() {
+        assert_eq!(normalize_storage_prefix(""), "");
+        assert_eq!(normalize_storage_prefix("  "), "");
+        assert_eq!(normalize_storage_prefix("library"), "library/");
+        assert_eq!(normalize_storage_prefix("library/"), "library/");
+        assert_eq!(normalize_storage_prefix("/library"), "library/");
+    }
+
+    #[test]
+    fn sources_graphicaudio_access_from_toml() {
+        let text = r#"
+[sources.graphicaudio]
+access = "zip"
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert_eq!(
+            cfg.sources.get_string("graphicaudio", "access"),
+            Some("zip")
+        );
+        // Missing plugin tables default to enabled.
+        assert!(Config::default().sources.is_enabled("audible"));
+        assert!(Config::default().sources.is_enabled("graphicaudio"));
+    }
+
+    #[test]
+    fn diagnostics_top_level_table() {
+        let text = r#"
+[diagnostics]
+share_reports = true
+collector_url = "https://reports.example"
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert!(cfg.diagnostics.share_reports);
+        assert_eq!(cfg.diagnostics.collector_url, "https://reports.example");
+        // Integrations stay empty / distinct from diagnostics.
+        assert_eq!(cfg.integrations, crate::IntegrationsConfig::default());
+    }
+
+    #[test]
+    fn integrations_diagnostics_is_rejected() {
+        let text = r#"
+[integrations.diagnostics]
+share_reports = true
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("diagnostics"),
+            "expected reserved diagnostics error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn sources_plugin_enabled_defaults() {
+        let text = r#"
+[sources.chirp]
+enabled = false
+
+[sources.graphicaudio]
+enabled = true
+access = "device"
+bitrate = "lo"
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert!(!cfg.sources.is_enabled("chirp"));
+        assert!(cfg.sources.is_enabled("audible"));
+        assert_eq!(
+            cfg.sources.get_string("graphicaudio", "access"),
+            Some("device")
+        );
+        assert_eq!(
+            cfg.sources.get_string("graphicaudio", "bitrate"),
+            Some("lo")
+        );
+    }
+
+    #[test]
+    fn sources_native_knobs() {
+        let text = r#"
+[sources.audible]
+bitrate = "normal"
+
+[sources.libro]
+container = "zip"
+
+[sources.graphicaudio]
+access = "zip"
+bitrate = "lo"
+container = "mp3"
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert_eq!(cfg.sources.get_string("audible", "bitrate"), Some("normal"));
+        assert_eq!(cfg.sources.get_string("libro", "container"), Some("zip"));
+        assert_eq!(
+            cfg.sources.get_string("graphicaudio", "access"),
+            Some("zip")
+        );
+        assert_eq!(
+            cfg.sources.get_string("graphicaudio", "bitrate"),
+            Some("lo")
+        );
+        assert_eq!(
+            cfg.sources.get_string("graphicaudio", "container"),
+            Some("mp3")
+        );
+    }
+
+    #[test]
+    fn sources_partial_table_keeps_enabled_true() {
+        // Only setting source-specific knobs must not flip enabled→false.
+        let text = r#"
+[sources.graphicaudio]
+access = "zip"
+
+[sources.libro]
+enabled = true
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert!(cfg.sources.is_enabled("graphicaudio"));
+        assert!(cfg.sources.is_enabled("libro"));
+        assert!(cfg.sources.is_enabled("audible"));
+        assert!(cfg.sources.is_enabled("chirp"));
+    }
+
+    #[test]
+    fn diagnostics_share_reports_defaults_off() {
+        let cfg = Config::default();
+        assert!(!cfg.diagnostics.share_reports);
+        assert!(cfg.validate().is_ok());
+        assert!(cfg.diagnostics.effective_collector_url().is_empty());
+    }
+
+    #[test]
+    fn diagnostics_compile_time_collector_url_when_config_empty() {
+        let baked = compile_time_collector_url();
+        let mut cfg = Config::default();
+        cfg.diagnostics.share_reports = true;
+        match baked {
+            Some(url) => {
+                assert!(cfg.validate().is_ok());
+                assert_eq!(cfg.diagnostics.effective_collector_url(), url);
+            }
+            None => {
+                assert!(cfg.validate().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostics_share_reports_requires_collector_url() {
+        let mut cfg = Config::default();
+        cfg.diagnostics.share_reports = true;
+        assert!(cfg.validate().is_err());
+        cfg.diagnostics.collector_url = "https://reports.example".into();
+        assert!(cfg.validate().is_ok());
+        assert_eq!(
+            cfg.diagnostics.effective_submit_url(),
+            "https://reports.example/submit"
+        );
+    }
+
+    #[test]
+    fn diagnostics_submit_url_preserves_explicit_submit_path() {
+        let mut cfg = Config::default();
+        cfg.diagnostics.collector_url = "https://reports.example/submit".into();
+        assert_eq!(
+            cfg.diagnostics.effective_submit_url(),
+            "https://reports.example/submit"
+        );
+        cfg.diagnostics.collector_url = "https://reports.example/submit/".into();
+        assert_eq!(
+            cfg.diagnostics.effective_submit_url(),
+            "https://reports.example/submit"
+        );
+    }
+
+    #[test]
+    fn diagnostics_accepts_legacy_upload_enabled_alias() {
+        let text = r#"
+[diagnostics]
+upload_enabled = true
+upload_url = "https://example.invalid"
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert!(cfg.diagnostics.share_reports);
+        assert_eq!(cfg.diagnostics.collector_url, "https://example.invalid");
+        assert_eq!(
+            cfg.diagnostics.effective_submit_url(),
+            "https://example.invalid/submit"
+        );
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn s3_requires_bucket() {
+        let mut cfg = Config::default();
+        cfg.output.local.enabled = false;
+        cfg.output.s3.enabled = true;
+        assert!(cfg.validate().is_err());
+        cfg.output.s3.bucket = "books".into();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn default_widevine_is_off() {
+        assert!(!Config::default().output.widevine);
+    }
+
+    #[test]
+    fn relative_storage_root_resolves_under_files_dir() {
+        let mut cfg = Config {
+            paths: Some(Paths::from_files_dir(PathBuf::from("/var/lib/bookclerk"))),
+            output: OutputConfig {
+                local: crate::OutputLocalConfig {
+                    root: PathBuf::from("Audiobooks"),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cfg.resolve_relative_paths();
+        assert_eq!(
+            cfg.output.local.root,
+            PathBuf::from("/var/lib/bookclerk/Audiobooks")
+        );
+    }
+
+    #[test]
+    fn absolute_storage_root_unchanged() {
+        let mut cfg = Config {
+            paths: Some(Paths::from_files_dir(PathBuf::from("/var/lib/bookclerk"))),
+            output: OutputConfig {
+                local: crate::OutputLocalConfig {
+                    root: PathBuf::from("/data/Audiobooks"),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cfg.resolve_relative_paths();
+        assert_eq!(cfg.output.local.root, PathBuf::from("/data/Audiobooks"));
+    }
+
+    #[test]
+    fn write_toml_roundtrip() {
+        let mut cfg = Config::default();
+        cfg.library.auto_acquire = true;
+        cfg.output.local.root = PathBuf::from("/data/books");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        cfg.write_toml_file(&path).unwrap();
+        let loaded = Config::from_toml_file(&path).unwrap();
+        assert!(loaded.library.auto_acquire);
+        assert_eq!(loaded.output.local.root, PathBuf::from("/data/books"));
+    }
+
+    #[test]
+    fn chapter_json_defaults_off_and_maps_legacy_bool() {
+        let cfg = OutputConfig::default();
+        assert_eq!(cfg.effective_chapter_json(), ChapterJsonMode::Off);
+        assert_eq!(cfg.effective_format(), OutputFormat::EnrichedM4b);
+
+        let legacy = OutputConfig {
+            save_chapter_json: Some(true),
+            chapter_layout: "flat".into(),
+            ..Default::default()
+        };
+        assert_eq!(legacy.effective_chapter_json(), ChapterJsonMode::Flat);
+
+        let explicit = OutputConfig {
+            chapter_json: ChapterJsonMode::Both,
+            save_chapter_json: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(explicit.effective_chapter_json(), ChapterJsonMode::Both);
+    }
+
+    #[test]
+    fn output_format_is_direct() {
+        let mut cfg = OutputConfig {
+            format: OutputFormat::SingleMp3,
+            ..Default::default()
+        };
+        assert_eq!(cfg.effective_format(), OutputFormat::SingleMp3);
+        cfg.format = OutputFormat::None;
+        assert_eq!(cfg.effective_format(), OutputFormat::None);
+    }
+}

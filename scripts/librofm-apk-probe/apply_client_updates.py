@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply APK-probe suggested constants onto crates/libation-libro/src/client.rs.
+"""Apply APK-probe suggested constants onto crates/bookclerk-libro/src/client.rs.
 
 Reads artifacts/librofm-apk-probe/report.json (or --report) and rewrites the
 tracked `pub const ...: &str = "...";` lines. Does not touch CLIENT_ID.
@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     report_path = args.report or (
         args.repo_root / "artifacts/librofm-apk-probe/report.json"
     )
-    client_rs = args.repo_root / "crates/libation-libro/src/client.rs"
+    client_rs = args.repo_root / "crates/bookclerk-libro/src/client.rs"
     if not report_path.exists():
         print(f"error: missing report {report_path}", file=sys.stderr)
         return 2

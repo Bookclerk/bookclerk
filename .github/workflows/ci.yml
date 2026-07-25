@@ -35,5 +35,5 @@ jobs:
 
       - name: Build release binaries
         env:
-          LIBATION_DIAGNOSTICS_COLLECTOR_URL: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
-        run: cargo build --release -p libation-cli -p libationd
+          BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
+        run: cargo build --release -p bookclerk-cli -p bookclerkd

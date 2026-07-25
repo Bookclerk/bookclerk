@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live-smoke Libro.fm API calls used by libation-libro (auth path).
+"""Live-smoke Libro.fm API calls used by bookclerk-libro (auth path).
 
 Auth profiles (`current`, `apk`) exercise oauth, library, and authenticated
 catalog metadata via ``explore/audiobook_details/{isbn}`` (works for ISBNs
@@ -12,7 +12,7 @@ Optional `public` profile hits explore endpoints without auth (informational).
 Credentials (auth profiles; first match wins):
   email:    TEST_LIBRO_EMAIL | TEST_LIBRO_USERNAME | TEST_LIBRO_USER |
             LIBRO_FM_USERNAME
-  password: TEST_LIBRO_PASSWORD | LIBATION_LIBRO_PASSWORD | LIBRO_FM_PASSWORD
+  password: TEST_LIBRO_PASSWORD | BOOKCLERK_LIBRO_PASSWORD | LIBRO_FM_PASSWORD
 
 Optional:
   TEST_LIBRO_ISBN — prefer this **library** ISBN for download/media
@@ -79,7 +79,7 @@ class Profile:
 
 def load_client_profile(repo: Path) -> Profile:
     # Import constants by parsing client.rs (avoid compiling Rust for a smoke).
-    text = (repo / "crates/libation-libro/src/client.rs").read_text(encoding="utf-8")
+    text = (repo / "crates/bookclerk-libro/src/client.rs").read_text(encoding="utf-8")
     consts: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
@@ -92,7 +92,7 @@ def load_client_profile(repo: Path) -> Profile:
             consts[name] = value
         except IndexError:
             continue
-    # Mirror crates/libation-libro/src/client.rs AuthInterceptor-equivalent
+    # Mirror crates/bookclerk-libro/src/client.rs AuthInterceptor-equivalent
     # headers and DownloadApi client_version query (not separate pub consts).
     return Profile(
         name="current-client",
@@ -104,7 +104,7 @@ def load_client_profile(repo: Path) -> Profile:
         app_ver=consts["APP_VER"],
         user_agent=consts["USER_AGENT_VALUE"],
         extra_headers={
-            "X-LibroFm-Device": "libation-rs",
+            "X-LibroFm-Device": "bookclerk",
             "X-LibroFm-OsVer": "Android 34",
         },
         manifest_extra_query={
@@ -152,7 +152,7 @@ def load_apk_profile(report_path: Path) -> Profile:
         or client.get("user_agent_value")
         or "okhttp/4.12.0",
         extra_headers={
-            "X-LibroFm-Device": "libation-rs-smoke",
+            "X-LibroFm-Device": "bookclerk-smoke",
             "X-LibroFm-OsVer": "Android 34",
         },
         # Android DownloadApi: client_version=appVer, format=null for ZIP / "m4b" for M4B.
@@ -224,7 +224,7 @@ def download_headers(profile: Profile, token: str, url: str) -> dict[str, str]:
 
 
 def sniff_media(data: bytes) -> dict[str, Any]:
-    """Identify downloaded bytes as the media object libation-libro expects."""
+    """Identify downloaded bytes as the media object bookclerk-libro expects."""
     out: dict[str, Any] = {
         "bytes": len(data),
         "kind": "unknown",
@@ -536,7 +536,7 @@ def run_profile(
     catalog_isbn: str | None = None,
     require_media: bool = False,
 ) -> dict[str, Any]:
-    """Auth smoke for liberate-adjacent APIs.
+    """Auth smoke for acquire-adjacent APIs.
 
     Metadata for an ISBN you do **not** own is available via authenticated
     ``explore/audiobook_details/{isbn}`` (``purchase_info.owned=false``).
@@ -1134,7 +1134,7 @@ def main(argv: list[str] | None = None) -> int:
         "LIBRO_FM_USERNAME",
     )
     password = first_env(
-        "TEST_LIBRO_PASSWORD", "LIBATION_LIBRO_PASSWORD", "LIBRO_FM_PASSWORD"
+        "TEST_LIBRO_PASSWORD", "BOOKCLERK_LIBRO_PASSWORD", "LIBRO_FM_PASSWORD"
     )
     isbn = first_env("TEST_LIBRO_ISBN")
     catalog_isbn = args.catalog_isbn or first_env("TEST_LIBRO_CATALOG_ISBN")
@@ -1164,7 +1164,7 @@ def main(argv: list[str] | None = None) -> int:
     results: list[dict[str, Any]] = []
 
     if public_wanted:
-        if (args.repo_root / "crates/libation-libro/src/client.rs").exists():
+        if (args.repo_root / "crates/bookclerk-libro/src/client.rs").exists():
             pub_profile = load_client_profile(args.repo_root)
         elif report.exists():
             pub_profile = load_apk_profile(report)

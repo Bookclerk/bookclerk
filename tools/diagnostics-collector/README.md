@@ -8,7 +8,7 @@ After deploy, `deployment-url` is stored in repository variable
 
 | Method | Path | Who | Auth |
 |--------|------|-----|------|
-| `POST` | `/submit` | Libation clients | none (validated + secret heuristics) |
+| `POST` | `/submit` | Bookclerk clients | none (validated + secret heuristics) |
 | `GET` | `/report?since=<ms>&after=<name>` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `GET` | `/health` | probes | none |
 
@@ -47,13 +47,13 @@ Deploy uses `actions-variables: write` (not broad `actions: write`) so
 `copilot-requests: write` + `issues: write` per
 [gh-aw Copilot auth guidance](https://github.com/github/gh-aw).
 
-## Libation client
+## Bookclerk client
 
 Bake the collector URL at build time (CI does this automatically):
 
 ```bash
-LIBATION_DIAGNOSTICS_COLLECTOR_URL="https://diagnostics.bookclerk.app" \
-  cargo build --release -p libation-cli -p libationd
+BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL="https://diagnostics.bookclerk.app" \
+  cargo build --release -p bookclerk-cli -p bookclerkd
 ```
 
 Then enable sharing without a config URL:
@@ -63,7 +63,7 @@ Then enable sharing without a config URL:
 share_reports = true
 ```
 
-Override anytime with `collector_url` or runtime `LIBATION_DIAGNOSTICS_COLLECTOR_URL`.
+Override anytime with `collector_url` or runtime `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL`.
 
 ## Ingest
 
