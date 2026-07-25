@@ -973,7 +973,7 @@ dependencies = [
  "bookclerk-source",
  "chrono",
  "futures",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "qrcode",
  "reqwest",
  "secrecy",
