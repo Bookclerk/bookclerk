@@ -3,7 +3,7 @@
 use bookclerk_config::IntegrationsConfig;
 use bookclerk_library::{ClaimTicketRecord, LibraryStore, PortalIdentity};
 use chrono::{Duration, Utc};
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 use crate::error::{IntegrationError, Result};
