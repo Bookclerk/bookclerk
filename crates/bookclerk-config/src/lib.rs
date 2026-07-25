@@ -39,7 +39,7 @@ pub use path_limits::{
     enforce_storage_key_limits, path_len, truncate_filename_stem, truncate_path_component,
     PathLengthMeasure, PathLimits, DEFAULT_MAX_FILENAME_LENGTH, S3_MAX_OBJECT_KEY_BYTES,
 };
-pub use paths::{resolve_files_dir, Paths};
+pub use paths::{resolve_config_path, resolve_files_dir, Paths};
 pub use pipeline_opts::{ChapterJsonMode, OutputFormat};
 pub use platform::detect_distro;
 pub use plugins::{AudiobookshelfConfig, IntegrationsConfig, SourcesConfig};

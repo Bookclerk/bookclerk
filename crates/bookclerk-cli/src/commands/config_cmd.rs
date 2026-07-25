@@ -1,13 +1,16 @@
-//! `bookclerk config` — get settings (LibationCli: `get-setting`).
+//! `bookclerk config` — get/set settings and naming helpers.
 
 use bookclerk_acquire::{storage_key_with_contexts, NamingContext};
 use bookclerk_config::{
-    classic_key_aliases, resolve_replacement_characters, Config, NamingProfile,
+    apply_setting_overrides, classic_key_aliases, resolve_replacement_characters, Config,
+    NamingProfile,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_source::DownloadOptions;
 use chrono::Datelike;
 use clap::Subcommand;
+
+use crate::format_out::{emit, OutputFormat};
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
@@ -19,11 +22,18 @@ pub enum ConfigCommand {
         #[arg(short, long)]
         bare: bool,
     },
+    /// Set a configuration value and write `config.toml`.
+    Set {
+        /// Dotted key (`library.auto_acquire`) or classic name (`AutoDownloadEpisodes`).
+        key: String,
+        /// Value to assign.
+        value: String,
+    },
     /// Print the effective configuration as TOML-ish summary.
     Show,
     /// Print resolved filesystem paths.
     Paths,
-    /// Naming template helpers (Libation NamingTemplate / tag-template engine).
+    /// Naming template helpers.
     Template {
         #[command(subcommand)]
         command: TemplateCommand,
@@ -58,7 +68,7 @@ pub enum TemplateCommand {
     },
 }
 
-pub fn run(command: ConfigCommand, config: &Config) -> anyhow::Result<()> {
+pub fn run(command: ConfigCommand, config: &Config, format: OutputFormat) -> anyhow::Result<()> {
     match command {
         ConfigCommand::Get { key, bare } => {
             if bare {
@@ -76,8 +86,29 @@ pub fn run(command: ConfigCommand, config: &Config) -> anyhow::Result<()> {
                 .unwrap_or(key.as_str());
             let value = lookup(config, dotted)
                 .ok_or_else(|| anyhow::anyhow!("unknown config key: {key}"))?;
-            println!("{value}");
-            Ok(())
+            let payload = serde_json::json!({ "key": dotted, "value": value });
+            emit(format, &payload, || println!("{value}"))
+        }
+        ConfigCommand::Set { key, value } => {
+            let mut cfg = config.clone();
+            let dotted = classic_key_aliases()
+                .get(key.as_str())
+                .copied()
+                .unwrap_or(key.as_str())
+                .to_string();
+            apply_setting_overrides(&mut cfg, &[(&dotted, value.as_str())]);
+            let path = cfg.paths().config_file.clone();
+            cfg.write_toml_file(&path)?;
+            let new_value = lookup(&cfg, &dotted).unwrap_or_else(|| value.clone());
+            let payload = serde_json::json!({
+                "key": dotted,
+                "value": new_value,
+                "config": path.display().to_string(),
+            });
+            emit(format, &payload, || {
+                println!("set {dotted}={new_value}");
+                println!("wrote {}", path.display());
+            })
         }
         ConfigCommand::Show => {
             println!(

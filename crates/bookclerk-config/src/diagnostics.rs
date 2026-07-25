@@ -110,6 +110,19 @@ impl DiagnosticsHandle {
         self.inner.config.upload_ready()
     }
 
+    /// Snapshot of the in-memory diagnostics ring (newest last).
+    #[must_use]
+    pub fn snapshot_events(&self) -> Vec<BufferedEvent> {
+        let guard = self.inner.ring.lock().unwrap_or_else(|e| e.into_inner());
+        guard.snapshot()
+    }
+
+    /// Bookclerk version string recorded at subscriber install.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.inner.version
+    }
+
     /// Number of upload attempts since init (successful or failed HTTP tries).
     #[must_use]
     pub fn uploads_attempted(&self) -> u64 {

@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::CliSchema;
+
 /// Which Bookclerk surface a plugin implements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -46,6 +48,9 @@ pub struct PluginManifest {
     /// Extra argv after `command`.
     #[serde(default)]
     pub args: Vec<String>,
+    /// Optional CLI schema for help without spawning (handshake / `cli.describe` win at invoke).
+    #[serde(default)]
+    pub cli: Option<CliSchema>,
 }
 
 impl PluginManifest {
@@ -82,5 +87,34 @@ command = "./echo-integration"
         assert_eq!(m.id, "echo");
         assert_eq!(m.kind, PluginKind::Integration);
         assert!(m.args.is_empty());
+        assert!(m.cli.is_none());
+    }
+
+    #[test]
+    fn parse_cli_schema() {
+        let m = PluginManifest::parse(
+            r#"
+api_version = 1
+id = "echo"
+kind = "integration"
+command = "./echo-integration"
+
+[cli]
+[[cli.commands]]
+name = "ping"
+about = "Probe echo plugin"
+[[cli.commands.args]]
+name = "message"
+long = "message"
+kind = "string"
+default = "hi"
+"#,
+        )
+        .unwrap();
+        let cli = m.cli.expect("cli");
+        assert_eq!(cli.commands.len(), 1);
+        assert_eq!(cli.commands[0].name, "ping");
+        assert_eq!(cli.commands[0].args.len(), 1);
+        assert_eq!(cli.commands[0].args[0].name, "message");
     }
 }

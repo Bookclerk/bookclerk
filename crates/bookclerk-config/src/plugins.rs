@@ -191,6 +191,17 @@ impl IntegrationsConfig {
             _ => unreachable!("plugin entry forced to table"),
         }
     }
+
+    /// Set `enabled` for an integration id (typed ABS or opaque plugin table).
+    pub fn set_enabled(&mut self, integration: &str, enabled: bool) {
+        match integration.trim().to_ascii_lowercase().as_str() {
+            "audiobookshelf" | "abs" => self.audiobookshelf.enabled = enabled,
+            other => {
+                self.plugin_table_mut(other)
+                    .insert("enabled".into(), toml::Value::Boolean(enabled));
+            }
+        }
+    }
 }
 
 /// Audiobookshelf integration settings (`[integrations.audiobookshelf]`).

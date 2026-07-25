@@ -31,6 +31,79 @@ pub struct HandshakeResult {
     pub brand: Option<BrandDto>,
     #[serde(default)]
     pub config_options: Vec<ConfigOptionDto>,
+    /// Optional CLI command schema (also available via [`methods::CLI_DESCRIBE`]).
+    #[serde(default)]
+    pub cli: Option<CliSchema>,
+}
+
+/// Declared CLI surface for a plugin (`cli.describe` / handshake `cli` / `plugin.toml`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CliSchema {
+    #[serde(default)]
+    pub commands: Vec<CliCommandSpec>,
+}
+
+/// One plugin subcommand under `bookclerk plugins <id> <name>`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CliCommandSpec {
+    pub name: String,
+    #[serde(default)]
+    pub about: Option<String>,
+    #[serde(default)]
+    pub args: Vec<CliArgSpec>,
+}
+
+/// Argument kind for declarative plugin CLI args.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CliArgKind {
+    #[default]
+    String,
+    Bool,
+    Int,
+    Path,
+}
+
+/// One argument on a plugin CLI command.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CliArgSpec {
+    pub name: String,
+    #[serde(default)]
+    pub long: Option<String>,
+    #[serde(default)]
+    pub short: Option<char>,
+    #[serde(default)]
+    pub kind: CliArgKind,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub default: Option<String>,
+    #[serde(default)]
+    pub about: Option<String>,
+    /// When true, accept as a positional value (still keyed by `name` in invoke args).
+    #[serde(default)]
+    pub positional: bool,
+}
+
+/// Params for [`methods::CLI_INVOKE`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliInvokeParams {
+    pub command: String,
+    #[serde(default)]
+    pub args: serde_json::Map<String, Value>,
+}
+
+/// Result of [`methods::CLI_INVOKE`].
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CliInvokeResult {
+    #[serde(default)]
+    pub exit_code: i32,
+    #[serde(default)]
+    pub stdout: String,
+    #[serde(default)]
+    pub stderr: String,
+    #[serde(default)]
+    pub json: Option<Value>,
 }
 
 /// Portal brand crossing the RPC boundary (owned strings).
@@ -189,4 +262,8 @@ pub mod methods {
     pub const LIST_ACCOUNTS: &str = "list_accounts";
     pub const SCAN: &str = "scan";
     pub const FETCH_TITLE: &str = "fetch_title";
+    /// Return [`CliSchema`] (authoritative at invoke time when capability `cli` is set).
+    pub const CLI_DESCRIBE: &str = "cli.describe";
+    /// Run a declared plugin CLI command ([`CliInvokeParams`] → [`CliInvokeResult`]).
+    pub const CLI_INVOKE: &str = "cli.invoke";
 }

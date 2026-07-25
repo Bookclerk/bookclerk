@@ -43,6 +43,17 @@ name = "Echo Integration"
 kind = "integration"          # source | integration | output
 command = "./bookclerk-plugin-echo-integration"
 # args = ["--verbose"]
+
+# Optional: CLI help without spawning (handshake/cli.describe win at invoke)
+[cli]
+[[cli.commands]]
+name = "ping"
+about = "Probe echo plugin"
+[[cli.commands.args]]
+name = "message"
+long = "message"
+kind = "string"
+default = "hi"
 ```
 
 `command` may be absolute or relative to the manifest directory.
@@ -80,15 +91,58 @@ Stderr is free for logging.
 | `handshake` | Negotiate version, id, kind, capabilities, brand |
 | `health` | Connectivity / config check |
 | `diagnose` | Human-readable CLI probe lines |
+| `cli.describe` | Declared CLI command schema (`CliSchema`) |
+| `cli.invoke` | Run a declared command (`CliInvokeParams` → `CliInvokeResult`) |
 
 Handshake params include `{ "api_version": 1, "config": {…} }` — the plugin’s
 `[sources.<id>]` / `[integrations.<id>]` table from **main** `config.toml` as JSON
 (empty object if the table is missing).
 
+Optional handshake field `cli` may embed the same schema as `cli.describe`. Prefer
+advertising capability `cli` and implementing both methods. You may also mirror
+the schema in `plugin.toml` under `[cli]` so `bookclerk plugins <id> --help`
+works without spawning the plugin; at invoke time handshake / `cli.describe`
+remain authoritative.
+
+### Plugin CLI
+
+Host commands that apply to every plugin stay on Bookclerk verbs
+(`plugins list|info|diagnose|enable|disable`, `integrations …`, `auth …`).
+Plugin-specific commands are declared and invoked as:
+
+```bash
+bookclerk plugins <plugin-id> <command> [args…]
+```
+
+Example schema (JSON / handshake `cli` / `cli.describe`):
+
+```json
+{
+  "commands": [
+    {
+      "name": "ping",
+      "about": "Probe echo plugin",
+      "args": [
+        {
+          "name": "message",
+          "long": "message",
+          "kind": "string",
+          "required": false,
+          "default": "hi"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`cli.invoke` params: `{ "command": "ping", "args": { "message": "hi" } }`.
+Result: `{ "exit_code": 0, "stdout": "…", "stderr": "…", "json": … }`.
+
 ### Integration capabilities
 
 Advertise in `handshake.capabilities`: `start`, `on_event`, `health`,
-`diagnose`, `scan_library`, `authenticate_user`.
+`diagnose`, `scan_library`, `authenticate_user`, `cli`.
 
 | Method | Notes |
 | --- | --- |
@@ -123,6 +177,16 @@ api_version = 1
 id = "echo"
 kind = "integration"
 command = "./bookclerk-plugin-echo-integration"
+
+[cli]
+[[cli.commands]]
+name = "ping"
+about = "Probe echo plugin"
+[[cli.commands.args]]
+name = "message"
+long = "message"
+kind = "string"
+default = "hi"
 EOF
 ```
 
@@ -134,8 +198,11 @@ enabled = true
 
 ```bash
 bookclerk plugins list
+bookclerk plugins enable echo
 bookclerk integrations status
 # echo enabled=true ok=true echo plugin ready
+bookclerk plugins echo ping --message hello
+# pong: hello
 ```
 
 ## Distribution

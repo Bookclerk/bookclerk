@@ -26,7 +26,7 @@ pub enum LibraryCommand {
         /// Limit sync to one account (alias for positional account list).
         #[arg(long)]
         account: Option<String>,
-        /// Account nickname(s) or id(s) to scan (LibationCli: `scan nick1 nick2`).
+        /// Account nickname(s) or id(s) to scan.
         #[arg(value_name = "ACCOUNT")]
         accounts: Vec<String>,
         /// Limit to one content source (`audible`, `libro`, `graphicaudio`, or `chirp`). Default: all.
@@ -43,7 +43,7 @@ pub enum LibraryCommand {
         #[arg(long)]
         fix_layout: bool,
     },
-    /// Download + decrypt + store titles (LibationCli: `liberate`).
+    /// Download + decrypt + store titles.
     Acquire {
         /// Acquire a single ASIN / product id / UUID.
         #[arg(long)]
@@ -63,13 +63,13 @@ pub enum LibraryCommand {
         /// Re-download even when matching media already exists in storage.
         #[arg(short, long)]
         force: bool,
-        /// Download companion PDF only (classic `acquire --pdf`).
+        /// Download companion PDF only.
         #[arg(short, long)]
         pdf: bool,
         /// Read license JSON from file (or `-` for stdin) instead of requesting.
         #[arg(long, value_name = "FILE")]
         license: Option<std::path::PathBuf>,
-        /// Runtime setting override (classic `-o Setting=value`). Repeatable.
+        /// Runtime setting override (`-o key=value`). Repeatable.
         #[arg(short = 'o', long = "override", value_name = "KEY=VALUE")]
         overrides: Vec<String>,
     },
@@ -90,7 +90,7 @@ pub enum LibraryCommand {
         /// Only clear Acquired status when the file is missing.
         #[arg(long, conflicts_with = "downloaded")]
         not_downloaded: bool,
-        /// Force status without checking storage (classic `--force`).
+        /// Force status without checking storage.
         #[arg(short, long)]
         force: bool,
         /// Relocate matched audio + accompanying sidecars onto the configured
@@ -100,23 +100,23 @@ pub enum LibraryCommand {
         #[arg(value_name = "ASIN")]
         asins: Vec<String>,
     },
-    /// Fetch a content license for an ASIN (LibationCli: `get-license`).
+    /// Fetch a content license for an ASIN.
     GetLicense {
         asin: String,
         #[arg(long)]
         account: Option<String>,
-        /// Emit full license summary as JSON (classic prints license JSON).
+        /// Emit full license summary as JSON.
         #[arg(long)]
         json: bool,
         /// Emit full license API response JSON (not summary).
         #[arg(long, conflicts_with = "json")]
         full: bool,
     },
-    /// Search the library index (LibationCli: `search`).
+    /// Search the library index.
     Search {
         /// Lucene-style query string.
         query: String,
-        /// Max results (0 = all, classic `-n 0`).
+        /// Max results (0 = all).
         #[arg(short = 'n', long, default_value = "10")]
         limit: usize,
         /// Print ASINs only.
@@ -129,7 +129,7 @@ pub enum LibraryCommand {
         #[arg(long)]
         filter: Option<String>,
     },
-    /// Export library rows (LibationCli: `export`).
+    /// Export library rows as CSV / JSON / XLSX (alias of `export library`).
     Export {
         /// Output file path.
         #[arg(short, long)]
@@ -152,7 +152,7 @@ pub enum LibraryCommand {
         #[arg(long)]
         status: Option<String>,
     },
-    /// Convert acquired m4b/m4a to mp3 (LibationCli: `convert`).
+    /// Convert acquired m4b/m4a to mp3.
     Convert {
         #[arg(long)]
         account: Option<String>,
@@ -161,7 +161,7 @@ pub enum LibraryCommand {
         #[arg(value_name = "ASIN")]
         asins: Vec<String>,
     },
-    /// Manage saved quick filters (classic Lucene shortcuts).
+    /// Manage saved quick filters.
     Filters {
         #[command(subcommand)]
         command: FilterCommand,

@@ -1,10 +1,7 @@
-//! `bookclerk copydb` — export library.db to PostgreSQL (LibationCli: `copydb`).
+//! `bookclerk export postgres` (hidden alias: `copydb`) — SQLite → PostgreSQL.
 //!
-//! Default `--format classic` writes the classic Libation EF schema
-//! (`Books`, `LibraryBooks`, `UserDefinedItem`, …) so Postgres can be used as a
-//! drop-in for Bookclerk's `BOOKCLERK_CONNECTION_STRING` target.
-//!
-//! `--format flat` writes the native bookclerk schema (`accounts` / `books`).
+//! Default `--format flat` writes the native bookclerk schema (`accounts` / `books`).
+//! `--format classic` writes the Libation EF schema (`Books`, `LibraryBooks`, …).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,10 +13,10 @@ use rusqlite::Connection;
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
 pub enum CopyDbFormat {
-    /// Classic Libation EF / Postgres schema (LibationCli parity).
-    #[default]
+    /// Classic Libation EF / Postgres schema.
     Classic,
     /// Native bookclerk flat schema.
+    #[default]
     Flat,
 }
 

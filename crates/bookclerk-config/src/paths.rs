@@ -16,7 +16,7 @@ pub const BOOKCLERK_CONFIG_ENV: &str = "BOOKCLERK_CONFIG";
 pub struct Paths {
     /// Root data directory (accounts, DB, settings).
     pub files_dir: PathBuf,
-    /// Default config.toml location inside `files_dir`.
+    /// Resolved config.toml path (may be overridden by `--config` / `BOOKCLERK_CONFIG`).
     pub config_file: PathBuf,
     /// SQLite library database path.
     pub library_db: PathBuf,

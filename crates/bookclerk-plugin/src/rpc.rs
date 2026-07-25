@@ -124,6 +124,7 @@ impl PluginClient {
                 sort_key: None,
                 brand: None,
                 config_options: vec![],
+                cli: None,
             },
         };
 
@@ -215,6 +216,38 @@ impl PluginClient {
             }
             Err(err) => Err(err),
         }
+    }
+
+    /// Resolve CLI schema: `cli.describe` when capable, else handshake `cli`.
+    pub async fn cli_describe(&self) -> Result<crate::protocol::CliSchema> {
+        use crate::protocol::CliSchema;
+        if self.has_capability("cli") {
+            if let Some(schema) = self
+                .call_optional::<CliSchema>(
+                    methods::CLI_DESCRIBE,
+                    Value::Object(Default::default()),
+                )
+                .await?
+            {
+                return Ok(schema);
+            }
+        }
+        Ok(self.handshake.cli.clone().unwrap_or_default())
+    }
+
+    /// Invoke a declared plugin CLI command.
+    pub async fn cli_invoke(
+        &self,
+        params: crate::protocol::CliInvokeParams,
+    ) -> Result<crate::protocol::CliInvokeResult> {
+        if !self.has_capability("cli") {
+            return Err(PluginError::message(format!(
+                "plugin `{}` does not advertise the `cli` capability",
+                self.id
+            )));
+        }
+        self.call(methods::CLI_INVOKE, serde_json::to_value(params)?)
+            .await
     }
 }
 

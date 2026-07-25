@@ -1,4 +1,4 @@
-//! `bookclerk auth` — login, import, list, status.
+//! `bookclerk auth` — login, import, list, status, revoke.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -81,7 +81,7 @@ pub enum AuthCommand {
         #[arg(long)]
         force: bool,
     },
-    /// List configured accounts (LibationCli: `list-accounts`).
+    /// List configured accounts.
     List {
         /// Content source filter. Omit for all.
         #[arg(long)]

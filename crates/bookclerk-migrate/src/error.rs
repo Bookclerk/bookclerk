@@ -31,6 +31,9 @@ pub enum MigrateError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

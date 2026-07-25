@@ -229,6 +229,11 @@ impl Config {
         };
 
         cfg.apply_env_overrides();
+        // Record the path actually used for load so writers (`config set`,
+        // `plugins enable`, …) update the same file the user pointed at via
+        // `--config` / `BOOKCLERK_CONFIG`, not only `{files_dir}/config.toml`.
+        let mut paths = paths;
+        paths.config_file = path;
         cfg.paths = Some(paths);
         cfg.resolve_relative_paths();
         cfg.register_known_secrets();
@@ -1044,6 +1049,18 @@ upload_url = "https://example.invalid"
         let loaded = Config::from_toml_file(&path).unwrap();
         assert!(loaded.library.auto_acquire);
         assert_eq!(loaded.output.local.root, PathBuf::from("/data/books"));
+    }
+
+    #[test]
+    fn load_records_explicit_config_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = dir.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let custom = dir.path().join("custom.toml");
+        std::fs::write(&custom, "library.auto_acquire = true\n").unwrap();
+        let cfg = Config::load(Some(files), Some(custom.clone())).unwrap();
+        assert_eq!(cfg.paths().config_file, custom);
+        assert!(cfg.library.auto_acquire);
     }
 
     #[test]

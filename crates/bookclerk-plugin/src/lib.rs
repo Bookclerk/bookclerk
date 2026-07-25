@@ -38,7 +38,10 @@ pub use host::{
     load_external_integrations, load_external_sources, ExternalIntegration, ExternalSource,
 };
 pub use manifest::{PluginKind, PluginManifest};
-pub use protocol::{methods, HandshakeResult, HealthDto, PLUGIN_API_VERSION};
+pub use protocol::{
+    methods, CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
+    HandshakeResult, HealthDto, PLUGIN_API_VERSION,
+};
 pub use rpc::{PluginClient, PluginGuest};
 
 /// Register discovered external plugins into the in-process registries.

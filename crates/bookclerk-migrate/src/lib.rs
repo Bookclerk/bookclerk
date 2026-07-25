@@ -1,18 +1,25 @@
-//! Migrate data from classic (C#) Libation into Bookclerk.
+//! Import/export classic Libation Files and native Bookclerk backups.
 
 mod accounts;
 mod discover;
 mod error;
+mod export_libation;
 mod files;
 mod library;
+mod native;
 mod settings;
 
 pub use accounts::import_accounts;
 pub use discover::{discover_source, ClassicSource};
 pub use error::{MigrateError, Result};
+pub use export_libation::{export_libation, LibationExportOptions, LibationExportSummary};
 pub use files::load_audio_paths;
 pub use library::import_library_db;
-pub use settings::{apply_settings_json, load_settings_json};
+pub use native::{
+    export_native, import_native, NativeExportOptions, NativeExportSummary, NativeImportOptions,
+    NativeImportSummary, NATIVE_BACKUP_FORMAT_VERSION,
+};
+pub use settings::{apply_settings_json, config_to_settings_json, load_settings_json};
 
 use std::collections::HashMap;
 use std::path::Path;

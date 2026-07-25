@@ -192,6 +192,164 @@ fn bool_at(value: &Value, key: &str) -> Option<bool> {
     value.get(key).and_then(Value::as_bool)
 }
 
+/// Best-effort reverse of [`apply_settings_json`] for Libation Settings.json export.
+#[must_use]
+pub fn config_to_settings_json(config: &Config) -> Value {
+    use serde_json::json;
+
+    let quality = match config.sources.get_string("audible", "bitrate") {
+        Some("normal") => "Normal",
+        _ => "High",
+    };
+    let decrypt_to_lossy = matches!(
+        config.output.format,
+        OutputFormat::SingleMp3 | OutputFormat::SplitMp3ByChapter
+    );
+    let bad_book = match config.output.bad_book_action {
+        BadBookAction::Abort => "Abort",
+        BadBookAction::Retry => "Retry",
+        BadBookAction::Ignore => "Ignore",
+        BadBookAction::Ask => "Ask",
+    };
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "Books".into(),
+        json!(config.output.local.root.display().to_string()),
+    );
+    map.insert("FileDownloadQuality".into(), json!(quality));
+    map.insert("DecryptToLossy".into(), json!(decrypt_to_lossy));
+    map.insert("UseWidevine".into(), json!(config.output.widevine));
+    map.insert("Request_xHE_AAC".into(), json!(config.output.xhe_aac));
+    if let Some(folder) = &config.output.folder_template {
+        map.insert("FolderTemplate".into(), json!(folder));
+    }
+    if let Some(file) = &config.output.file_template {
+        map.insert("FileTemplate".into(), json!(file));
+    }
+    map.insert(
+        "DownloadCoverArt".into(),
+        json!(config.output.download_cover),
+    );
+    map.insert("CreateCueSheet".into(), json!(config.output.create_cue));
+    map.insert(
+        "AllowLibationFixup".into(),
+        json!(config.output.fixup_metadata),
+    );
+    map.insert(
+        "SaveMetadataToFile".into(),
+        json!(config.output.save_metadata_json),
+    );
+    map.insert(
+        "AutoDownloadEpisodes".into(),
+        json!(config.library.auto_acquire),
+    );
+    map.insert(
+        "AutoScan".into(),
+        json!(config.library.scan_interval_minutes > 0),
+    );
+    map.insert(
+        "OverwriteExisting".into(),
+        json!(config.output.overwrite_existing),
+    );
+    map.insert(
+        "ImportEpisodes".into(),
+        json!(config.library.import_episodes),
+    );
+    map.insert(
+        "ImportPlusTitles".into(),
+        json!(config.library.import_plus_titles),
+    );
+    if let Some(dir) = &config.output.in_progress {
+        map.insert("InProgress".into(), json!(dir.display().to_string()));
+    }
+    map.insert("BadBook".into(), json!(bad_book));
+    map.insert(
+        "DownloadEpisodes".into(),
+        json!(config.library.download_episodes),
+    );
+    map.insert(
+        "SavePodcastsToParentFolder".into(),
+        json!(config.library.save_podcasts_to_parent_folder),
+    );
+    map.insert(
+        "SplitFilesByChapter".into(),
+        json!(matches!(
+            config.output.format,
+            OutputFormat::SplitMp3ByChapter
+        )),
+    );
+    if let Some(v) = &config.output.chapter_file_template {
+        map.insert("ChapterFileTemplate".into(), json!(v));
+    }
+    if let Some(v) = &config.output.chapter_title_template {
+        map.insert("ChapterTitleTemplate".into(), json!(v));
+    }
+    map.insert(
+        "MinimumFileDuration".into(),
+        json!(config.output.minimum_file_duration_minutes),
+    );
+    map.insert(
+        "CombineNestedChapterTitles".into(),
+        json!(config.output.combine_nested_chapter_titles),
+    );
+    map.insert(
+        "MergeOpeningAndEndCredits".into(),
+        json!(config.output.merge_opening_and_end_credits),
+    );
+    map.insert(
+        "StripUnabridged".into(),
+        json!(config.output.strip_unabridged),
+    );
+    map.insert(
+        "StripAudibleBrandAudio".into(),
+        json!(config.output.strip_audible_brand_audio),
+    );
+    map.insert(
+        "DownloadClipsBookmarks".into(),
+        json!(config.output.download_clips_bookmarks),
+    );
+    map.insert("RetainAaxFile".into(), json!(config.output.retain_aax_file));
+    map.insert(
+        "DownloadSpeedLimit".into(),
+        json!(config.output.download_speed_limit_kbps),
+    );
+    map.insert("LameTarget".into(), json!(config.output.lame.target));
+    map.insert(
+        "LameVBRQuality".into(),
+        json!(config.output.lame.vbr_quality),
+    );
+    map.insert("LameBitrate".into(), json!(config.output.lame.bitrate_kbps));
+    map.insert("LameMode".into(), json!(config.output.lame.mode));
+    map.insert(
+        "LameDownsampleMono".into(),
+        json!(config.output.lame.downsample_mono),
+    );
+    map.insert(
+        "LameConstantBitrate".into(),
+        json!(config.output.lame.constant_bitrate),
+    );
+    if let Some(rate) = config.output.max_sample_rate {
+        map.insert("MaxSampleRate".into(), json!(rate));
+    }
+    map.insert(
+        "CreationTime".into(),
+        json!(match config.output.creation_time {
+            FileTimestampMode::Purchased => "DateAdded",
+            FileTimestampMode::Published => "PublishedDate",
+            FileTimestampMode::Now => "Now",
+        }),
+    );
+    map.insert(
+        "LastWriteTime".into(),
+        json!(match config.output.last_write_time {
+            FileTimestampMode::Purchased => "DateAdded",
+            FileTimestampMode::Published => "PublishedDate",
+            FileTimestampMode::Now => "Now",
+        }),
+    );
+    Value::Object(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

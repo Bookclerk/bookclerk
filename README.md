@@ -38,11 +38,14 @@ GUI is deferred post-PR1.
 | PDF / cover / cue / chapter JSON sidecars + metadata fix-up | done |
 | Match existing storage media (`set-status` / `--match-storage`) | done (list audio + metadata probe; optional `--fix-layout`) |
 | Local FS + S3/MinIO storage (incl. S3 timestamp metadata) | done |
-| Classic Libation EF Postgres via `copydb` | done |
+| Classic Libation EF Postgres via `export postgres` / `copydb` | done |
 | Podcast parent skip + `SavePodcastsToParentFolder` | done |
 | `bookclerkd` scheduled scan + auto-acquire + HTTP control plane | done |
 | Tantivy library search (`library search`) | done |
-| Library export CSV/JSON/XLSX (`library export`) | done |
+| Library export CSV/JSON/XLSX (`export library`) | done |
+| Native backup / restore (`export native` / `import native`) | done |
+| Libation Files export (`export libation`) + import | done |
+| Dynamic plugin CLI (`plugins <id> …` via `cli.describe` / `cli.invoke`) | done |
 | PDF-only acquire (`library acquire --pdf`) | done |
 | User metadata (tags, ratings, pdf_status) in DB | done |
 | Full Chardonnay CLI + settings parity | done — see PR1_PARITY.md |
