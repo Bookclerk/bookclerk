@@ -1111,7 +1111,7 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
- "zip",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -1176,7 +1176,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
- "zip",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -2276,6 +2276,7 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -4450,11 +4451,11 @@ dependencies = [
 
 [[package]]
 name = "rust_xlsxwriter"
-version = "0.79.4"
+version = "0.96.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c743cb9f2a4524676020e26ee5f298445a82d882b09956811b1e78ca7e42b440"
+checksum = "dd1746025420e17b5d62528b930e550e016e857038794d74e169018126ef3d14"
 dependencies = [
- "zip",
+ "zip 7.2.0",
 ]
 
 [[package]]
@@ -5840,6 +5841,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "typed-path"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6580,6 +6587,26 @@ dependencies = [
  "thiserror 2.0.19",
  "zopfli",
 ]
+
+[[package]]
+name = "zip"
+version = "7.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c42e33efc22a0650c311c2ef19115ce232583abbe80850bc8b66509ebef02de0"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "typed-path",
+ "zopfli",
+]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b142a20ec14a91d5bc708c1dc21b080c550113d8aa77afa29635673a65dd02c5"
 
 [[package]]
 name = "zmij"

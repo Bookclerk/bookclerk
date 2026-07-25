@@ -93,7 +93,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tantivy = "0.22"
 csv = "1"
 filetime = "0.2"
-rust_xlsxwriter = "0.79"
+rust_xlsxwriter = "0.96"
 tar = "0.4"
 flate2 = "1"
 
