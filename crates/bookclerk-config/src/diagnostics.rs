@@ -601,11 +601,14 @@ mod tests {
 
     #[test]
     fn exact_config_secret_redacted_in_upload() {
-        use crate::redact::{clear_registered_secrets, register_secret};
+        use crate::redact::{
+            clear_registered_secrets, register_secret, secrets_registry_test_lock,
+        };
         use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::sync::{Arc, Mutex};
 
+        let _lock = secrets_registry_test_lock();
         clear_registered_secrets();
         register_secret("exact-config-passphrase-abc123");
 

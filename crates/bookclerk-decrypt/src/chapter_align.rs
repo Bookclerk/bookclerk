@@ -8,13 +8,14 @@
 use std::fs::File;
 use std::path::Path;
 
-use symphonia::core::audio::{AudioBufferRef, Signal};
-use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::audio::GenericAudioBufferRef;
+use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
+use symphonia::core::codecs::CodecParameters;
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 use symphonia::core::units::Time;
 
 use crate::error::{DecryptError, Result};
@@ -142,10 +143,12 @@ pub fn align_chapter_starts(
 
 struct AlignReader {
     format: Box<dyn FormatReader>,
-    decoder: Box<dyn Decoder>,
+    decoder: Box<dyn AudioDecoder>,
     track_id: u32,
     sample_rate: u32,
     channels: usize,
+    /// Interleaved PCM scratch reused across packets/windows (avoids per-AU alloc).
+    interleaved_scratch: Vec<i16>,
 }
 
 impl AlignReader {
@@ -157,40 +160,41 @@ impl AlignReader {
             hint.with_extension(ext);
         }
 
-        let probed = symphonia::default::get_probe()
-            .format(
+        // One seek index for all chapter windows.
+        let format = symphonia::default::get_probe()
+            .probe(
                 &hint,
                 mss,
-                &FormatOptions {
-                    // One index for all chapter windows.
-                    prebuild_seek_index: true,
-                    ..FormatOptions::default()
-                },
-                &MetadataOptions::default(),
+                FormatOptions::default().prebuild_seek_index(true),
+                MetadataOptions::default(),
             )
             .map_err(|err| DecryptError::Native(format!("chapter align probe failed: {err}")))?;
-        let format = probed.format;
 
         let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+            .default_track(TrackType::Audio)
             .ok_or_else(|| DecryptError::Native("chapter align: no decodable audio track".into()))?
             .clone();
         let track_id = track.id;
-        let sample_rate = track
-            .codec_params
+        let audio_params = match track.codec_params.as_ref() {
+            Some(CodecParameters::Audio(params)) => params.clone(),
+            _ => {
+                return Err(DecryptError::Native(
+                    "chapter align: selected track is missing audio codec parameters".into(),
+                ));
+            }
+        };
+        let sample_rate = audio_params
             .sample_rate
             .ok_or_else(|| DecryptError::Native("chapter align: missing sample rate".into()))?;
-        let channels = track
-            .codec_params
+        let channels = audio_params
             .channels
-            .map(|c| c.count())
+            .as_ref()
+            .map(symphonia::core::audio::Channels::count)
             .unwrap_or(1)
             .max(1);
 
         let decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &DecoderOptions::default())
+            .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
             .map_err(|err| {
                 DecryptError::Native(format!("chapter align decoder init failed: {err}"))
             })?;
@@ -201,6 +205,7 @@ impl AlignReader {
             track_id,
             sample_rate,
             channels,
+            interleaved_scratch: Vec::new(),
         })
     }
 
@@ -216,13 +221,11 @@ impl AlignReader {
             return Ok(Vec::new());
         }
 
-        let seek_secs = start_ms / 1000;
-        let seek_frac = (start_ms % 1000) as f64 / 1000.0;
         self.format
             .seek(
                 SeekMode::Accurate,
                 SeekTo::Time {
-                    time: Time::new(seek_secs, seek_frac),
+                    time: Time::from_millis_u64(start_ms),
                     track_id: Some(self.track_id),
                 },
             )
@@ -248,15 +251,11 @@ impl AlignReader {
                 break;
             }
             let packet = match self.format.next_packet() {
-                Ok(packet) => packet,
+                Ok(Some(packet)) => packet,
+                Ok(None) => break,
                 Err(SymphoniaError::ResetRequired) => {
                     self.decoder.reset();
                     continue;
-                }
-                Err(SymphoniaError::IoError(err))
-                    if err.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
-                    break;
                 }
                 Err(err) => {
                     return Err(DecryptError::Native(format!(
@@ -264,7 +263,7 @@ impl AlignReader {
                     )));
                 }
             };
-            if packet.track_id() != self.track_id {
+            if packet.track_id != self.track_id {
                 continue;
             }
             let decoded = match self.decoder.decode(&packet) {
@@ -276,12 +275,18 @@ impl AlignReader {
                     )));
                 }
             };
-            append_mono_i16(&decoded, self.channels, &mut mono_frame);
+            append_mono_i16(
+                &decoded,
+                self.channels,
+                &mut self.interleaved_scratch,
+                &mut mono_frame,
+            );
             while mono_frame.len() >= frame_samples {
-                let frame: Vec<i16> = mono_frame.drain(..frame_samples).collect();
-                let vocal = vocal_band_rms(&frame, &mut bandpass);
+                // Analyze in place, then drop the consumed prefix (no per-frame alloc).
+                let vocal = vocal_band_rms(&mono_frame[..frame_samples], &mut bandpass);
                 let t_ms = start_ms + samples_seen * 1000 / u64::from(self.sample_rate);
                 energies.push((t_ms, vocal));
+                mono_frame.drain(..frame_samples);
                 samples_seen = samples_seen.saturating_add(frame_samples as u64);
                 if samples_seen >= window_samples {
                     break;
@@ -441,35 +446,38 @@ fn vocal_band_rms(samples: &[i16], filter: &mut Bandpass) -> f32 {
     (sum_sq / samples.len() as f64).sqrt() as f32
 }
 
-fn append_mono_i16(buf: &AudioBufferRef<'_>, channels: usize, dst: &mut Vec<i16>) {
-    match buf {
-        AudioBufferRef::F32(buf) => {
-            let frames = buf.frames();
-            let chans = buf.spec().channels.count().min(channels).max(1);
-            for i in 0..frames {
-                let mut acc = 0.0f32;
-                for ch in 0..chans {
-                    acc += buf.chan(ch)[i];
-                }
-                let sample = (acc / chans as f32).clamp(-1.0, 1.0);
-                dst.push((sample * f32::from(i16::MAX)) as i16);
-            }
+fn append_mono_i16(
+    buf: &GenericAudioBufferRef<'_>,
+    channels: usize,
+    interleaved: &mut Vec<i16>,
+    dst: &mut Vec<i16>,
+) {
+    let frames = buf.frames();
+    if frames == 0 {
+        return;
+    }
+    let in_channels = buf.spec().channels().count().max(1);
+
+    // Mono source: copy straight into `dst` (no scratch / downmix).
+    if in_channels == 1 {
+        let start = dst.len();
+        dst.resize(start + frames, 0);
+        buf.copy_to_slice_interleaved(&mut dst[start..]);
+        return;
+    }
+
+    let need = frames.saturating_mul(in_channels);
+    interleaved.resize(need, 0);
+    buf.copy_to_slice_interleaved(&mut interleaved[..need]);
+
+    let mix_channels = in_channels.min(channels).max(1);
+    dst.reserve(frames);
+    for frame in interleaved[..need].chunks_exact(in_channels) {
+        let mut acc = 0i32;
+        for sample in frame.iter().take(mix_channels) {
+            acc += i32::from(*sample);
         }
-        AudioBufferRef::S16(buf) => {
-            let frames = buf.frames();
-            let chans = buf.spec().channels.count().min(channels).max(1);
-            for i in 0..frames {
-                let mut acc = 0i32;
-                for ch in 0..chans {
-                    acc += i32::from(buf.chan(ch)[i]);
-                }
-                dst.push((acc / chans as i32) as i16);
-            }
-        }
-        other => {
-            let frames = other.frames();
-            dst.extend(std::iter::repeat_n(0i16, frames));
-        }
+        dst.push((acc / mix_channels as i32) as i16);
     }
 }
 

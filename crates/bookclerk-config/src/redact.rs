@@ -126,6 +126,18 @@ pub fn clear_registered_secrets() {
     }
 }
 
+/// Serialize tests that mutate the process-wide exact-secret registry.
+///
+/// Registration is global so parallel tests that `clear`/`register` can race;
+/// hold this guard for the full arrange/act/assert window.
+#[cfg(test)]
+pub(crate) fn secrets_registry_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn redact_exact_values(input: &str) -> String {
     let Ok(guard) = exact_secrets().lock() else {
         return input.to_string();
@@ -534,6 +546,7 @@ mod tests {
 
     #[test]
     fn exact_registered_secret_is_redacted() {
+        let _lock = secrets_registry_test_lock();
         clear_registered_secrets();
         register_secret("super-unique-passphrase-xyz");
         let out = redact_str("using super-unique-passphrase-xyz for auth");
@@ -544,6 +557,7 @@ mod tests {
 
     #[test]
     fn percent_encoded_secret_is_also_redacted() {
+        let _lock = secrets_registry_test_lock();
         clear_registered_secrets();
         register_secret("p@ss word/leak");
         let encoded = "p%40ss%20word%2Fleak";
@@ -555,6 +569,7 @@ mod tests {
 
     #[test]
     fn contains_registered_secret_detects_leaks() {
+        let _lock = secrets_registry_test_lock();
         clear_registered_secrets();
         register_secret("detect-me-secret-value");
         assert!(contains_registered_secret("x detect-me-secret-value y"));
@@ -608,6 +623,7 @@ mod tests {
 
     #[test]
     fn writer_scrubs_secret_split_across_writes() {
+        let _lock = secrets_registry_test_lock();
         clear_registered_secrets();
         register_secret("split-secret-value-xyz");
         let mut buf = Vec::new();
