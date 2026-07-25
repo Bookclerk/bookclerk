@@ -78,7 +78,7 @@ jobs:
 
       - name: Upload probe reports (JSON/Markdown only — no media)
         if: always() && steps.smoke.outputs.report == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: graphicaudio-api-probe
           path: |
