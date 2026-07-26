@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0b3553;
+  --color-teal: #3d7f7a;
+  --color-brick: #c84a34;
+  --color-parchment: #f3e5c6;
+  --color-fold: #e7d3ac;
+  --color-paper: #fbf7ee;
+  --color-ink-soft: #1a4a6b;
+  --font-display: "Literata", "Iowan Old Style", "Palatino Linotype", Palatino,
+    serif;
+  --font-sans: "Source Sans 3", "Segoe UI", Candara, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, #fff9ee 0%, transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, #e8f0ef 0%, transparent 50%),
+    linear-gradient(180deg, var(--color-paper) 0%, #f0e6d4 100%);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-teal) 35%, white);
+}

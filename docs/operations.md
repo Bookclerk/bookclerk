@@ -14,18 +14,23 @@ Reads `config.toml` from the files dir (or `BOOKCLERK_CONFIG`). Schedules:
 
 HTTP control plane (default `127.0.0.1:8787`):
 
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /health` | Liveness |
-| `GET /status` | Status snapshot |
-| `POST /scan` | Queue scan (`Content-Type: application/json`, body `{}` ok) |
-| `POST /acquire` | Queue acquire |
-| `GET /jobs` | Job list |
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `GET /health` | no | Liveness |
+| `POST /api/auth/login` | no | Operator token → session cookie |
+| `GET /api/status` (also `/status`) | yes | Status snapshot |
+| `POST /api/library/scan` (also `/scan`) | yes | Queue scan (`Content-Type: application/json`) |
+| `POST /api/library/acquire` (also `/acquire`) | yes | Queue acquire |
+| `GET /api/library/books` | yes | Book rows for the GUI |
+| `GET /api/jobs` (also `/jobs`) | yes | Job list |
+| `/` static UI | no | Built React SPA when `ui/dist` is present |
 
-Override listen with `BOOKCLERK_DAEMON_LISTEN` or `daemon.listen`.
-**Unauthenticated** — do not expose publicly without a reverse proxy / ACL.
+Override listen with `BOOKCLERK_DAEMON_LISTEN` or `daemon.listen`. Operator auth
+defaults **on** (`[daemon.auth]`); token at `$BOOKCLERK_FILES_DIR/operator.token`
+or `BOOKCLERK_OPERATOR_TOKEN`. Do not expose publicly without TLS (reverse
+proxy) and a protected token. Details: [gui.md](gui.md).
 
-Talk to a running daemon from the CLI:
+Talk to a running daemon from the CLI (sends Bearer when auth is enabled):
 
 ```bash
 bookclerk daemon health
@@ -75,10 +80,12 @@ docker run --rm \
 | `/data` | Default books root (`BOOKCLERK_OUTPUT_LOCAL_ROOT=/data/Audiobooks`) |
 | `BOOKCLERK_DAEMON_LISTEN` | Default loopback inside the container |
 
-To publish the control plane:
+To publish the UI / API (keep operator auth enabled; terminate TLS at a proxy):
 
 ```bash
-docker run … -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 -p 8787:8787 bookclerkd
+docker run … -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 \
+  -e BOOKCLERK_OPERATOR_TOKEN_FILE=/secrets/operator.token \
+  -p 8787:8787 bookclerkd
 ```
 
 Copy `/etc/bookclerk/config.example.toml` from the image as a starting config.

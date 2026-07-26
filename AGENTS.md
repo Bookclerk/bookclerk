@@ -16,9 +16,14 @@ Two runnable binaries (the workspace `default-members`):
 
 - `bookclerk-cli` (binary `bookclerk`) — headless library manager CLI
   (Audible, Libro.fm, Chirp, GraphicAudio, plugins).
-- `bookclerkd` — long-running daemon with an HTTP control plane.
+- `bookclerkd` — long-running daemon with an authenticated HTTP API / GUI.
 
-Everything else under `crates/` is a library crate.
+Optional desktop shell (workspace member, not a default-member):
+
+- `bookclerk-desktop` — Tauri 2 + system tray (needs WebKitGTK on Linux).
+
+Frontend sources live in `ui/` (Vite/React); build with `npm ci && npm run build`
+so `bookclerkd` can serve `ui/dist`. See `docs/gui.md`.
 
 ### Build / lint / test (mirrors `.github/workflows/ci.yml`)
 
@@ -51,8 +56,11 @@ diagnostics ring always keeps TRACE+; stderr/OS facility honor `BOOKCLERK_LOG` /
   (e.g. `version`, `auth list`, `library list`).
 - Daemon: `BOOKCLERK_FILES_DIR=/tmp/BookclerkFiles cargo run -p bookclerkd`.
   It listens on `127.0.0.1:8787` by default (override with
-  `BOOKCLERK_DAEMON_LISTEN` or `daemon.listen` in `config.toml`). Control plane:
-  `GET /health`, `GET /status`, `POST /scan`, `POST /acquire`, `GET /jobs`.
+  `BOOKCLERK_DAEMON_LISTEN` or `daemon.listen` in `config.toml`). Operator auth
+  defaults on (`operator.token` under the files dir, or
+  `BOOKCLERK_OPERATOR_TOKEN`). Control plane: `GET /health`,
+  `POST /api/auth/login`, authenticated `/api/status`, `/api/jobs`,
+  `/api/library/*` (legacy `/status` `/scan` `/acquire` `/jobs` also gated).
   `POST` bodies require the `Content-Type: application/json` header (send `{}`
   for defaults), otherwise the request is rejected.
 

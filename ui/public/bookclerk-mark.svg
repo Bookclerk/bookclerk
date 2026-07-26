@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc" xmlns:bx="https://boxy-svg.com">
+  <title id="title">Bookclerk mark</title>
+  <desc id="desc">An upright book, catalog card, ownership stamp, and audiobook waveform.</desc>
+  <g fill="#C84A34">
+    <rect x="316" y="91" width="17" height="68" rx="8.5"/>
+    <rect x="347" y="68" width="17" height="114" rx="8.5"/>
+    <rect x="378" y="95" width="17" height="62" rx="8.5"/>
+  </g>
+  <g transform="matrix(1.106627, 0.015912, 0, 1.122187, -9.45863, -55.800747)" style="">
+    <path style="paint-order: fill; fill: rgb(11, 53, 83); transform-origin: 38.351px 7.959px;" transform="matrix(0.964824, -0.262896, 0, 1.036458, -16.366029, 23.194865)" d="M 89.261 109.207 H 275.726 A 11 11 0 0 1 286.726 120.207 V 370.235 A 11 11 0 0 1 275.726 381.235 H 78.283 A 0 0 0 0 1 78.283 381.235 V 120.185 A 10.978 10.978 0 0 1 89.261 109.207 Z" bx:shape="rect 78.283 109.207 208.443 272.028 0 10.978 10.978 0 11 11 0 11 11 0 0 0 2@6d1dbdde"/>
+    <path d="M 73.56 128.34 L 253.655 79.128 L 265.516 107.316 L 85.422 156.527 C 74.175 159.824 61.478 135.397 73.56 128.34 Z" style="fill: rgb(243, 229, 198);"/>
+    <path d="M 60.287 131.989 C 60.316 143.026 73.602 162.178 79.141 163.708 L 79.141 157.958 L 269.639 106.051 C 275.501 104.454 280.252 108.264 280.252 114.561 L 280.252 373.704 C 280.252 380.001 275.501 386.4 269.639 387.997 L 79.141 439.904 L 79.141 439.306 C 73.633 438.01 60.472 418.917 60.287 407.17 L 60.287 131.989 Z" style="fill: rgb(11, 53, 83);"/>
+    <path d="M 60.077 167.612 C 60.138 172.756 79.126 193.879 79.223 189.198 L 79.223 204.664 C 79.223 209.706 60.077 188.881 60.077 183.078 L 60.077 167.612 Z" style="fill: rgb(61, 127, 122);"/>
+    <path d="M 60.12 191.873 C 60.181 197.017 79.169 218.14 79.266 213.459 L 79.266 228.925 C 79.266 233.967 60.12 213.142 60.12 207.339 L 60.12 191.873 Z" style="stroke-width: 1; fill: rgb(61, 127, 122);"/>
+    <path d="M 60.241 372.752 C 60.302 377.896 79.29 399.019 79.387 394.338 L 79.387 409.804 C 79.387 414.846 60.241 394.021 60.241 388.218 L 60.241 372.752 Z" style="stroke-width: 1; fill: rgb(61, 127, 122);"/>
+    <rect x="77.294" y="140.303" width="188.266" height="244.258" style="fill: rgb(61, 127, 122);" transform="matrix(0.963635, -0.267223, 0, 1.037738, 15.497526, 44.395302)"/>
+  </g>
+  <path fill="#F3E5C6" d="M166 226c0-12 10-22 22-22h172l65 65v139c0 12-10 22-22 22H188c-12 0-22-10-22-22V226Z"/>
+  <path fill="#E7D3AC" d="M360 204v47c0 10 8 18 18 18h47l-65-65Z"/>
+  <path fill="none" stroke="#C84A34" stroke-linecap="round" d="M 204 222 L 204 417" style="stroke-width: 4px;"/>
+  <path fill="none" stroke="#0B3553" stroke-linecap="round" stroke-width="8" d="M 219.347 277.797 L 358.042 277.797 M 219.347 318.891 L 343.332 318.891 M 219.347 359.985 L 301.303 359.985" style=""/>
+  <ellipse style="fill: none; stroke: rgb(200, 74, 52); stroke-width: 7px;" cx="360.371" cy="373.694" rx="44.819" ry="44.819"/>
+  <ellipse style="fill: none; stroke: rgb(200, 74, 52); stroke-width: 7px; stroke-dasharray: 70, 15; stroke-dashoffset: -4px;" cx="360.371" cy="373.694" rx="27.694" ry="27.694"/>
+</svg>
