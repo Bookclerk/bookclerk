@@ -3,6 +3,11 @@
 **/*.rs.bk
 Cargo.lock.bak
 
+# Frontend
+ui/node_modules/
+ui/dist/
+ui/*.local
+
 # IDE
 .idea/
 .vscode/

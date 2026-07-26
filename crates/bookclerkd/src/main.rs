@@ -1,6 +1,7 @@
 //! `bookclerkd` — long-running scan / acquire daemon with HTTP control plane.
 
 mod api;
+mod auth;
 mod jobs;
 mod registry;
 mod scheduler;
@@ -9,12 +10,15 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bookclerk_config::{init_tracing_with, Config, LogFormat, TracingOptions};
+use bookclerk_config::{
+    init_tracing_with, read_or_create_operator_token, Config, LogFormat, TracingOptions,
+};
 use bookclerk_library::LibraryStore;
 use clap::Parser;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::api::{router, AppState};
+use crate::api::{resolve_ui_dist, router, AppState};
+use crate::auth::OperatorAuthState;
 use crate::registry::default_registry_with_plugins;
 use crate::scheduler::spawn_scheduler;
 
@@ -94,6 +98,33 @@ async fn main() -> anyhow::Result<()> {
         let reg = default_registry_with_plugins(&cfg).await?;
         reg.all()
     };
+    let auth_cfg = {
+        let listen = config.daemon.listen.clone();
+        let auth = config.daemon.auth.clone();
+        if !auth.enabled && !listen_is_loopback(&listen) {
+            anyhow::bail!(
+                "daemon.auth.enabled=false is unsafe when listen is not loopback ({listen}); \
+                 enable operator auth or bind 127.0.0.1"
+            );
+        }
+        auth
+    };
+    let operator_auth = if auth_cfg.enabled {
+        let (token, _created) = read_or_create_operator_token(&config)?;
+        Some(Arc::new(OperatorAuthState::new(
+            token,
+            auth_cfg.session_ttl_hours,
+            true,
+        )))
+    } else {
+        tracing::warn!("daemon.auth.enabled=false — HTTP API is unauthenticated");
+        Some(Arc::new(OperatorAuthState::new(
+            String::new(),
+            auth_cfg.session_ttl_hours,
+            false,
+        )))
+    };
+
     let config = Arc::new(RwLock::new(config));
     let state = Arc::new(AppState {
         config: config.clone(),
@@ -102,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
         work_lock: Mutex::new(()),
         integrations: integrations.clone(),
         sources,
+        auth: operator_auth,
     });
 
     // Start integration watchers; mint claim tickets on new ABS users.
@@ -154,17 +186,23 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .map_err(|err| anyhow::anyhow!("invalid daemon.listen '{listen}': {err}"))?;
 
-    // Ensure portal state files_dir is set before nest.
-    let app = {
-        // Rebuild sources/files into router via helper that takes portal_base + files_dir
-        router(state, portal_base, files_dir)
-    };
+    let ui_dist = resolve_ui_dist();
+    let app = router(state, portal_base, files_dir, ui_dist);
     tracing::info!(%addr, "bookclerkd listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+fn listen_is_loopback(listen: &str) -> bool {
+    let host = listen
+        .strip_prefix("http://")
+        .or_else(|| listen.strip_prefix("https://"))
+        .unwrap_or(listen);
+    let host = host.split(':').next().unwrap_or(host);
+    matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
 }
 
 async fn shutdown_signal() {

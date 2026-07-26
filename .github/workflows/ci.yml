@@ -13,6 +13,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: "-D warnings"
+  # rust-lld needs an explicit search path for libstdc++ on some images.
+  LIBRARY_PATH: /usr/lib/gcc/x86_64-linux-gnu/13:/usr/lib/gcc/x86_64-linux-gnu/14:/usr/lib/x86_64-linux-gnu
 
 jobs:
   check:
@@ -26,12 +28,32 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install Tauri Linux deps
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            g++ libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           env-vars: RUSTFLAGS
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build UI
+        run: |
+          cd ui
+          npm ci
+          npm run build
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -51,12 +73,25 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           env-vars: RUSTFLAGS
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build UI
+        run: |
+          cd ui
+          npm ci
+          npm run build
 
       - name: Build release binaries
         env:

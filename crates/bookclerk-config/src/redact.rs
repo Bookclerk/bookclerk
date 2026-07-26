@@ -105,6 +105,7 @@ where
 pub fn register_secrets_from_env() {
     const KEYS: &[&str] = &[
         "BOOKCLERK_AUTH_PASSWORD",
+        "BOOKCLERK_OPERATOR_TOKEN",
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",

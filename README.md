@@ -23,9 +23,10 @@ portal for services like [Audiobookshelf](https://www.audiobookshelf.org/).
 | **Integrations** | Audiobookshelf scan notify, claim tickets, Connect portal |
 | **Plugins** | External source/integration plugins over JSON-RPC stdio |
 | **Ops** | `bookclerk` CLI + `bookclerkd` daemon, Docker, systemd |
+| **GUI** | Shared React web UI (served by `bookclerkd`) + Tauri desktop shell / tray |
 
-GUI is intentionally out of scope for now; the HTTP control plane is the API
-surface for future UIs.
+The library GUI and `/api/*` control plane live in Rust (`bookclerkd`) with
+operator-token auth. See [docs/gui.md](docs/gui.md).
 
 ## Architecture at a glance
 
@@ -143,18 +144,20 @@ S3 credentials stay in the environment (`AWS_ACCESS_KEY_ID` /
 | Binary | Role |
 | --- | --- |
 | `bookclerk` | One-shot CLI (`auth`, `library`, `integrations`, `plugins`, …) |
-| `bookclerkd` | Long-running daemon: scheduled scan/acquire + HTTP control plane |
+| `bookclerkd` | Long-running daemon: scheduled scan/acquire + HTTP API / GUI |
+| `bookclerk-desktop` | Tauri desktop shell + system tray (optional workspace member) |
 
-Default control plane: `127.0.0.1:8787` — `GET /health`, `GET /status`,
-`POST /scan`, `POST /acquire`, `GET /jobs` (JSON bodies need
-`Content-Type: application/json`).
+Default listen: `127.0.0.1:8787`. Public routes: `GET /health`, static UI,
+`POST /api/auth/login`. Authenticated: `/api/status`, `/api/jobs`,
+`/api/library/*`, plus legacy `/status` `/scan` `/acquire` `/jobs`.
+JSON POST bodies need `Content-Type: application/json`.
 
 ## Status
 
 Headless multi-source acquire, daemon, destinations, Audiobookshelf
-integration, and the plugin host are in active use. Libation Classic/Chardonnay
-CLI parity for the Audible acquire surface is tracked in
-[docs/libation-parity.md](docs/libation-parity.md). A native/web GUI is deferred.
+integration, the plugin host, and an MVP library GUI (web + Tauri) are in
+active development. Libation Classic/Chardonnay CLI parity for the Audible
+acquire surface is tracked in [docs/libation-parity.md](docs/libation-parity.md).
 
 ## License
 

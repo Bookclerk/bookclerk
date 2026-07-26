@@ -6,7 +6,8 @@ Bookclerk is a **multi-storefront** library manager. This page is a
 
 **Historical goal (PR1):** Full feature parity with
 [Libation Chardonnay](https://github.com/rmcrackan/Libation) for
-headless/CLI/daemon use. GUI remains deferred.
+headless/CLI/daemon use. A Bookclerk-native GUI (Tauri + React) is tracked
+separately in [gui.md](gui.md) and is not a WinForms/Avalonia port.
 
 Chardonnay and Classic share the same backend; this matrix uses upstream
 `master` / LibationCli + `Configuration.PersistentSettings.cs` as the reference.
@@ -138,7 +139,7 @@ checks), or **minor headless polish** listed under
 
 | Item | Reason |
 | --- | --- |
-| Chardonnay / Classic GUI (WinForms / Avalonia) | Deferred post-PR1 |
+| Chardonnay / Classic GUI (WinForms / Avalonia) | Not planned — Bookclerk GUI is Tauri + React ([gui.md](gui.md)) |
 | Password + CAPTCHA WebView login | GUI-only; OAuth headless paths cover CLI |
 | Hangover trash-bin / deleted-title recovery UI | Separate classic tool / GUI |
 | Series view, find-better-quality, theme, grid layout | GUI-only |
@@ -165,4 +166,4 @@ checks), or **minor headless polish** listed under
 | Item | Notes |
 | --- | --- |
 | Spatial / Atmos (Widevine L1) | Hardware TEE only; desktop L3 cannot satisfy L1 license grants |
-| GUI | Deferred Avalonia / Chardonnay-class UI |
+| GUI | MVP Tauri + React library UI ([gui.md](gui.md)); not Avalonia |
