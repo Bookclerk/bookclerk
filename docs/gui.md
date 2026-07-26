@@ -1,15 +1,21 @@
-# GUI (web)
+# GUI (web + desktop)
 
-Bookclerk ships a shared React UI for library management, served by
-`bookclerkd`. The UI talks to the Rust HTTP API only (TypeScript never hosts
-the API).
+Bookclerk ships a shared React UI for library management. The UI talks to the
+Rust HTTP API on `bookclerkd` only (TypeScript never hosts the API).
 
-A **native desktop shell / system tray** is intentionally deferred here so this
-PR stays clear of unmaintained GTK3/`gtk-rs` 0.18 advisories (current Tauri on
-Linux). The Tauri implementation is preserved for tracking and future bumps in
-draft PR [#44](https://github.com/fritz-fritz/bookclerk/pull/44) — no OSV
-ignores. Revisit merge when upstream ships maintained Linux bindings (GTK4 or
-equivalent).
+## Status: desktop blocked
+
+The **web UI** (served by `bookclerkd`) is the supported path on mainline
+([#43](https://github.com/fritz-fritz/bookclerk/pull/43)).
+
+This branch / [#44](https://github.com/fritz-fritz/bookclerk/pull/44) preserves
+the **Tauri desktop shell / system tray** (`bookclerk-desktop`) for tracking and
+future updates, but it is **not mergeable** while Tauri’s Linux backend still
+pulls the unmaintained GTK3 / `gtk-rs` 0.18 stack (OSV/RUSTSEC advisories). We
+intentionally do **not** ignore those findings.
+
+Unblock when upstream ships a maintained Linux path (GTK4 / maintained
+bindings, or equivalent) without advisory-pinned crates.
 
 ## Operator auth
 
@@ -58,7 +64,28 @@ Override the static dist directory with `BOOKCLERK_UI_DIST`.
 - Scan / acquire pending / acquire one title
 - Jobs + status strip
 
+## Desktop (`bookclerk-desktop`) — WIP / blocked
+
+Tauri 2 shell: loads the same UI, shows a tray icon (Show / Hide / Scan / Quit),
+spawns `bookclerkd` when the configured listen address is unreachable, and can
+inject the operator token for auto-login.
+
+```bash
+# Linux deps (Debian/Ubuntu):
+#   libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+cd ui && npm ci && npm run build
+cargo run -p bookclerk-desktop
+```
+
+`bookclerk-desktop` is a workspace member but not a `default-members` binary.
+Release CI builds CLI + daemon; build the desktop app explicitly when packaging
+native installs.
+
+**Do not merge** while `Cargo.lock` still resolves GTK3 / `gtk-rs` 0.18 (or
+other unmaintained advisory-pinned deps) via Tauri. Bump Tauri when upstream
+clears that path, re-run OSV, then revisit merge.
+
 ## Brand assets
 
 Production logo/mark/favicons live under [`assets/brand/`](../assets/brand/).
-The UI copies web assets into `ui/public/`.
+The UI copies web assets into `ui/public/` at build time in the repo layout.

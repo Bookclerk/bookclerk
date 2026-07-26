@@ -1,9 +1,21 @@
 import { useEffect, useState } from "react";
 import { LibraryPage } from "@/components/LibraryPage";
 import { LoginPage } from "@/components/LoginPage";
-import { authMe } from "@/lib/api";
+import { authMe, login } from "@/lib/api";
 
 type AuthState = "loading" | "anon" | "authed";
+
+async function tryTauriAutoLogin(): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const token = await invoke<string | null>("operator_token");
+    if (!token) return false;
+    await login(token);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState>("loading");
@@ -12,7 +24,10 @@ export default function App() {
     let cancelled = false;
     void (async () => {
       try {
-        const ok = await authMe();
+        let ok = await authMe();
+        if (!ok) {
+          ok = await tryTauriAutoLogin();
+        }
         if (!cancelled) setAuth(ok ? "authed" : "anon");
       } catch {
         if (!cancelled) setAuth("anon");
