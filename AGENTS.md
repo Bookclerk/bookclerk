@@ -6,12 +6,16 @@ This is a Rust workspace (edition 2021, `rust-toolchain.toml` pins the `stable`
 channel with `rustfmt` + `clippy`). The startup update script runs
 `cargo fetch`, so dependencies are already downloaded when a session begins.
 
+Product docs live under [`docs/`](docs/README.md). Bookclerk is a
+**multi-storefront** audiobook library manager (sources + destinations +
+integrations), not an Audible-only Libation fork.
+
 ### Services / binaries
 
 Two runnable binaries (the workspace `default-members`):
 
-- `bookclerk-cli` (binary `bookclerk`) — headless audiobook library manager CLI
-  (Audible + Libro.fm).
+- `bookclerk-cli` (binary `bookclerk`) — headless library manager CLI
+  (Audible, Libro.fm, Chirp, GraphicAudio, plugins).
 - `bookclerkd` — long-running daemon with an HTTP control plane.
 
 Everything else under `crates/` is a library crate.
@@ -52,7 +56,7 @@ diagnostics ring always keeps TRACE+; stderr/OS facility honor `BOOKCLERK_LOG` /
   `POST` bodies require the `Content-Type: application/json` header (send `{}`
   for defaults), otherwise the request is rejected.
 
-### Live Audible / Libro.fm / storage testing constraints
+### Live store / storage testing constraints
 
 When exercising real store credentials in this cloud environment:
 
@@ -61,35 +65,36 @@ When exercising real store credentials in this cloud environment:
 - Amazon accounts with **2FA/MFA require OTP** during the browser OAuth step
   (audible-rs has no password CLI). Use a TOTP seed or complete the challenge
   in the Desktop pane; see README / `crates/bookclerk-audible/README.md`.
-- Libro.fm: `bookclerk auth login --source libro --email <addr>` with password
-  from `BOOKCLERK_LIBRO_PASSWORD` (or interactive prompt — never on argv).
+- Password stores (never put passwords on argv):
+  - Libro.fm: `auth login --source libro --email <addr>` + `BOOKCLERK_LIBRO_PASSWORD`
+  - Chirp: `auth login --source chirp --email <addr>` + `BOOKCLERK_CHIRP_PASSWORD`
+  - GraphicAudio: `auth login --source graphicaudio --email <addr>` + `BOOKCLERK_GA_PASSWORD`
 - Keep `library.auto_acquire = false` in `$BOOKCLERK_FILES_DIR/config.toml`.
 - After login, **disable the account for scans**:
   `bookclerk auth set-scan <account> --scan false`.
   (Scan inclusion is per-account in SQLite, not a TOML key.)
 - Do **not** acquire the full library. Cap at **one** book:
   - Audible: `bookclerk library acquire --asin <ASIN>`
-  - Libro.fm: `bookclerk library acquire --isbn <ISBN>` (or UUID)
+  - Libro.fm / others: `bookclerk library acquire --isbn <ISBN>` (or UUID / product id)
 - Drive verification with the **CLI**, not `bookclerkd` job triggers (`POST
   /scan` / `/acquire`), so nothing can bulk-queue work.
 - One-shot library sync without flipping scan back on: pass an explicit
   account (`bookclerk library scan --account <id>`). Explicit account targets
   bypass `scan_enabled`; bare `library scan` / daemon scheduled scans honor
-  it and will skip disabled accounts. Optional `--source audible|libro`
-  limits which store is scanned.
+  it and will skip disabled accounts. Optional
+  `--source audible|libro|chirp|graphicaudio` limits which store is scanned.
 
 ### Non-obvious gotchas
 
-- Actually scanning/acquiring a library requires real store credentials
-  (`bookclerk auth login` for Audible and/or Libro). Without a configured
-  account, `scan`/`acquire` jobs fail with "no accounts configured" — this is
-  expected, and the daemon + control plane still run fine for everything else.
-  Tokens live under `Accounts/` (Audible `<account>.auth`, Libro
-  `*.libro.auth`). Prefer Audible encryption via `BOOKCLERK_AUTH_PASSWORD` or
-  `BOOKCLERK_AUTH_PASSWORD_FILE` / `[auth].password_file` (missing password-file
-  paths are auto-created with a strong random secret — use a secrets volume, not
-  `Accounts/`). `auth.allow_plaintext=true` stores unprotected Audible token
-  files. Libro passwords for login use `BOOKCLERK_LIBRO_PASSWORD` only.
+- Scanning/acquiring requires real store credentials for the sources in use.
+  Without a configured account, `scan`/`acquire` jobs fail with "no accounts
+  configured" — expected; the daemon + control plane still run for everything
+  else. Tokens live under `Accounts/` (Audible `<account>.auth`, Libro
+  `*.libro.auth`, GraphicAudio `*.ga.auth`, Chirp `*.chirp.auth`). Prefer Audible
+  encryption via `BOOKCLERK_AUTH_PASSWORD` or `BOOKCLERK_AUTH_PASSWORD_FILE` /
+  `[auth].password_file` (missing password-file paths are auto-created with a
+  strong random secret — use a secrets volume, not `Accounts/`).
+  `auth.allow_plaintext=true` stores unprotected Audible token files.
 - Acquire decrypt/encode is fully native in `bookclerk-decrypt` (Adrm aaxc,
   Widevine DASH/CENC, MP3 via Symphonia+LAME, metadata fix-up, chapter split).
   No `ffmpeg` or `aaxclean-cli` is required. Widevine L3 CDMs auto-provision via

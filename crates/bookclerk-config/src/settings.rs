@@ -388,19 +388,9 @@ impl Config {
                 self.sources.set_string("graphicaudio", "access", trimmed);
             }
         }
-        // Generic `BOOKCLERK_SOURCE_<ID>_ENABLED` plus legacy first-party shims.
-        for (env, id) in [
-            ("BOOKCLERK_SOURCE_AUDIBLE_ENABLED", "audible"),
-            ("BOOKCLERK_SOURCE_LIBRO_ENABLED", "libro"),
-            ("BOOKCLERK_SOURCE_CHIRP_ENABLED", "chirp"),
-            ("BOOKCLERK_SOURCE_GRAPHICAUDIO_ENABLED", "graphicaudio"),
-        ] {
-            if let Ok(v) = std::env::var(env) {
-                if let Some(b) = parse_bool(&v) {
-                    self.sources.set_enabled(id, b);
-                }
-            }
-        }
+        // Generic `BOOKCLERK_SOURCE_<ID>_ENABLED` for any source/plugin id
+        // (`AUDIBLE` → `audible`, `MY_STORE` → `my_store`, …).
+        apply_source_enabled_env_overrides(&mut self.sources, std::env::vars());
         if let Ok(v) = std::env::var("BOOKCLERK_AUTH_PASSWORD_FILE") {
             let trimmed = v.trim();
             if !trimmed.is_empty() {
@@ -725,6 +715,33 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
+/// Apply `BOOKCLERK_SOURCE_<ID>_ENABLED` overrides from an env-like key/value
+/// iterator. `<ID>` is lowercased as the source plugin id.
+fn apply_source_enabled_env_overrides<I, K, V>(sources: &mut crate::SourcesConfig, vars: I)
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    const PREFIX: &str = "BOOKCLERK_SOURCE_";
+    const SUFFIX: &str = "_ENABLED";
+    for (key, value) in vars {
+        let key = key.as_ref();
+        let Some(rest) = key.strip_prefix(PREFIX) else {
+            continue;
+        };
+        let Some(id_part) = rest.strip_suffix(SUFFIX) else {
+            continue;
+        };
+        if id_part.is_empty() {
+            continue;
+        }
+        if let Some(enabled) = parse_bool(value.as_ref()) {
+            sources.set_enabled(&id_part.to_ascii_lowercase(), enabled);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -915,6 +932,30 @@ enabled = true
         assert!(cfg.sources.is_enabled("libro"));
         assert!(cfg.sources.is_enabled("audible"));
         assert!(cfg.sources.is_enabled("chirp"));
+    }
+
+    #[test]
+    fn source_enabled_env_overrides_any_plugin_id() {
+        let mut cfg = Config::default();
+        apply_source_enabled_env_overrides(
+            &mut cfg.sources,
+            [
+                ("BOOKCLERK_SOURCE_CHIRP_ENABLED", "0"),
+                ("BOOKCLERK_SOURCE_ECHO_ENABLED", "false"),
+                ("BOOKCLERK_SOURCE_MY_STORE_ENABLED", "1"),
+                ("BOOKCLERK_SOURCE_GRAPHICAUDIO_ENABLED", "off"),
+                ("UNRELATED", "0"),
+                ("BOOKCLERK_SOURCE_NOPE", "0"),
+                ("BOOKCLERK_SOURCE__ENABLED", "0"),
+            ],
+        );
+        assert!(!cfg.sources.is_enabled("chirp"));
+        assert!(!cfg.sources.is_enabled("echo"));
+        assert!(cfg.sources.is_enabled("my_store"));
+        assert!(!cfg.sources.is_enabled("graphicaudio"));
+        // Untouched ids still default enabled.
+        assert!(cfg.sources.is_enabled("audible"));
+        assert!(cfg.sources.is_enabled("libro"));
     }
 
     #[test]

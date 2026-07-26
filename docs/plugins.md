@@ -1,9 +1,14 @@
 # Dynamic plugins
 
-Bookclerk discovers **third-party plugins** at runtime and talks to them over
-newline-delimited [JSON-RPC 2.0](https://www.jsonrpc.org/specification) on
-stdio. First-party sources/integrations stay in-process; external plugins are
-separate executables that any language can implement.
+Bookclerk is built around pluggable **sources**, **destinations**, and
+**integrations**. First-party adapters ship in-process. This document covers
+**third-party plugins**: separate executables discovered at runtime and talked
+to over newline-delimited [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
+on stdio (any language).
+
+For the product overview see the [documentation index](README.md). Built-in
+storefronts: [sources.md](sources.md). Audiobookshelf / Connect:
+[integrations.md](integrations.md).
 
 ## Why subprocesses?
 

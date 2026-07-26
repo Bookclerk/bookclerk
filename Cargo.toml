@@ -33,7 +33,7 @@ rust-version = "1.85"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/fritz-fritz/bookclerk"
 authors = ["fritz-fritz <contact@bookclerk.app>"]
-description = "Headless-first multi-source audiobook library manager"
+description = "Multi-storefront audiobook library manager with pluggable integrations"
 
 [workspace.dependencies]
 # Internal crates

@@ -1,5 +1,8 @@
 # Diagnostics & crash reports
 
+Opt-in crash / error-burst reporting for Bookclerk operators. Product docs:
+[documentation index](README.md).
+
 ## Operator config
 
 After deploy CI has set `DIAGNOSTICS_COLLECTOR_BASE_URL`, build Bookclerk with that

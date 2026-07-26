@@ -1,14 +1,26 @@
-# PR1 parity: bookclerk vs Libation Chardonnay (headless)
+# Libation headless parity (reference)
 
-**Goal:** Full feature parity with [Libation Chardonnay](https://github.com/rmcrackan/Libation) for headless/CLI/daemon use. **GUI is deferred** until after PR1.
+Bookclerk is a **multi-storefront** library manager. This page is a
+**compatibility reference** for the Audible / classic Libation headless surface
+— not a product roadmap. For day-to-day docs start at [README.md](README.md).
 
-Chardonnay and Classic share the same backend; this matrix uses upstream `master` / LibationCli + `Configuration.PersistentSettings.cs` as the reference.
+**Historical goal (PR1):** Full feature parity with
+[Libation Chardonnay](https://github.com/rmcrackan/Libation) for
+headless/CLI/daemon use. GUI remains deferred.
+
+Chardonnay and Classic share the same backend; this matrix uses upstream
+`master` / LibationCli + `Configuration.PersistentSettings.cs` as the reference.
 
 ## Verdict
 
-**Headless parity with Classic/Chardonnay is complete for the LibationCli + acquire surface.** All LibationCli verbs, download/decrypt settings that affect headless operation, naming templates, podcast handling, library metadata, migrate-from-classic, and classic EF Postgres `copydb` are implemented.
+**Headless parity with Classic/Chardonnay is complete for the LibationCli +
+acquire surface.** All LibationCli verbs, download/decrypt settings that affect
+headless operation, naming templates, podcast handling, library metadata,
+migrate-from-classic, and classic EF Postgres `copydb` are implemented.
 
-Remaining items are either **GUI-only**, **intentionally deferred** (upgrade checks), or **minor headless polish** listed under [Still open (non-GUI)](#still-open-non-gui).
+Remaining items are either **GUI-only**, **intentionally deferred** (upgrade
+checks), or **minor headless polish** listed under
+[Still open (non-GUI)](#still-open-non-gui).
 
 ## Status legend
 
@@ -133,10 +145,13 @@ Remaining items are either **GUI-only**, **intentionally deferred** (upgrade che
 
 ---
 
-## Beyond classic (bookclerk extras)
+## Beyond classic (Bookclerk extras)
 
 | Capability | Notes |
 | --- | --- |
+| Multi-storefront sources | Libro.fm, Chirp, GraphicAudio (+ plugin sources) |
+| Pluggable integrations | Audiobookshelf, Connect portal, external JSON-RPC plugins |
+| Multi-destination output | Local + S3/MinIO simultaneously |
 | S3 / MinIO storage | Not in classic Libation |
 | `bookclerkd` daemon + HTTP control plane | Scheduled scan / auto-acquire |
 | TOML config + env overrides | Classic uses `Settings.json` |

@@ -1,205 +1,163 @@
 # Bookclerk
 
-Headless-first multi-source audiobook library manager (CLI + daemon). Bookclerk
-grew out of a Rust rewrite of [Libation](https://github.com/rmcrackan/Libation)
-and now covers Audible, Libro.fm, Chirp, GraphicAudio, plugins, and a Connect
-portal. Audible support is built on
-[audible-rs](https://github.com/mkb79/audible-rs).
+**Every purchase, properly placed.**
 
-## Status
+Bookclerk is a headless-first **multi-storefront audiobook library manager**.
+It syncs owned titles from multiple stores into one library, acquires and
+decrypts media with a native pipeline, writes to local disk and/or object
+storage, and hooks into library servers through pluggable integrations.
 
-**Phase 1 (headless)** covers the Classic/Chardonnay acquire surface (LibationCli
-parity): Adrm and Widevine/CENC, optional mp3 re-encode, xHE-AAC preference,
-Chardonnay naming templates, classic Libation Files migrate, CLI, `bookclerkd`,
-classic EF Postgres `copydb`, S3 timestamps, and podcast handling.
+It began as a Rust rewrite of [Libation](https://github.com/rmcrackan/Libation)
+for Audible. It is now a broader toolkit: several content sources, multiple
+output destinations, a daemon control plane, third-party plugins, and a Connect
+portal for services like [Audiobookshelf](https://www.audiobookshelf.org/).
 
-**PR1 verdict:** headless parity with Libation Classic/Chardonnay is complete
-aside from GUI and a few intentionally deferred / minor items — see
-[docs/PR1_PARITY.md](docs/PR1_PARITY.md).
+## What you get
 
-GUI is deferred post-PR1.
-
-### Phase 1 checklist
-
-| Capability | Status |
+| Area | Capabilities |
 | --- | --- |
-| Auth login (QR / callback server / external paste) | done |
-| Auth list / status / import (`.auth` + AccountsSettings.json) | done |
-| Migrate classic Libation Files (Settings / accounts / DB / templates) | done |
-| Library scan → SQLite (honors `scan_enabled`) | done |
-| Acquire Adrm aaxc → native decrypt → store | done |
-| Acquire Widevine/CENC (CDM `.wvd`, 000307 fallback) | done |
-| Prefer xHE-AAC on Widevine path | done |
-| `format=mp3` via native Symphonia+LAME re-encode | done |
-| Naming templates (`folder_template` / `file_template`) | done (Libation NamingTemplate port) |
-| Naming profiles (`naming_profile`, default Audiobookshelf) | done |
-| `auth set-scan` / `auth list --bare` (scan inclusion) | done |
-| `config template tags` / `profiles` / `preview` | done |
-| PDF / cover / cue / chapter JSON sidecars + metadata fix-up | done |
-| Match existing storage media (`set-status` / `--match-storage`) | done (list audio + metadata probe; optional `--fix-layout`) |
-| Local FS + S3/MinIO storage (incl. S3 timestamp metadata) | done |
-| Classic Libation EF Postgres via `export postgres` / `copydb` | done |
-| Podcast parent skip + `SavePodcastsToParentFolder` | done |
-| `bookclerkd` scheduled scan + auto-acquire + HTTP control plane | done |
-| Tantivy library search (`library search`) | done |
-| Library export CSV/JSON/XLSX (`export library`) | done |
-| Native backup / restore (`export native` / `import native`) | done |
-| Libation Files export (`export libation`) + import | done |
-| Dynamic plugin CLI (`plugins <id> …` via `cli.describe` / `cli.invoke`) | done |
-| PDF-only acquire (`library acquire --pdf`) | done |
-| User metadata (tags, ratings, pdf_status) in DB | done |
-| Full Chardonnay CLI + settings parity | done — see PR1_PARITY.md |
-| GUI | post-PR1 |
+| **Sources** | Audible, Libro.fm, Chirp, GraphicAudio (enable/disable per store) |
+| **Library** | Unified SQLite catalog (UUID keys; ASIN/ISBN as attributes), Tantivy search, tags/ratings |
+| **Acquire** | Native Adrm + Widevine/CENC decrypt, optional MP3, covers/PDFs/cues/chapters |
+| **Destinations** | Local filesystem and/or S3/MinIO (write to every enabled destination) |
+| **Integrations** | Audiobookshelf scan notify, claim tickets, Connect portal |
+| **Plugins** | External source/integration plugins over JSON-RPC stdio |
+| **Ops** | `bookclerk` CLI + `bookclerkd` daemon, Docker, systemd |
+
+GUI is intentionally out of scope for now; the HTTP control plane is the API
+surface for future UIs.
+
+## Architecture at a glance
+
+```text
+  Storefronts              Core                            Destinations / hooks
+ ─────────────            ──────                          ─────────────────────
+  Audible       ─┐                                      ┌─► local filesystem
+  Libro.fm      ─┼─► scan ─► library.db ─► acquire ────┼─► S3 / MinIO
+  Chirp         ─┤         ▲              (+ pack)     └─► (output plugins*)
+  GraphicAudio  ─┘         │
+  external source*         │ naming / enrich / search
+                           │
+                           ├─► integrations (Audiobookshelf, Connect portal, …)
+                           └─► bookclerkd jobs + HTTP control plane
+
+  * discovered at runtime — see docs/plugins.md
+```
+
+See [docs/architecture.md](docs/architecture.md) for crate layout and data flow.
 
 ## Quick start
 
 ```bash
-cargo build --workspace
+cargo build --release -p bookclerk-cli -p bookclerkd
+export PATH="$PWD/target/release:$PATH"
 
 export BOOKCLERK_FILES_DIR=./BookclerkFiles
-cargo run -p bookclerk-cli -- auth login -m us
-# Libro.fm (password via env — never on argv):
+mkdir -p "$BOOKCLERK_FILES_DIR"
+cp config/config.example.toml "$BOOKCLERK_FILES_DIR/config.toml"
+
+# Audible (browser / QR OAuth — OTP/2FA completed in the browser)
+bookclerk auth login -m us
+
+# Other stores (password via env — never on argv)
 # export BOOKCLERK_LIBRO_PASSWORD='…'
-# cargo run -p bookclerk-cli -- auth login --source libro --email you@example.com
-cargo run -p bookclerk-cli -- library scan
-cargo run -p bookclerk-cli -- library acquire --asin B0EXAMPLE
-# UUID / ISBN also work: --isbn 978… or positional title ids
+# bookclerk auth login --source libro --email you@example.com
+# export BOOKCLERK_CHIRP_PASSWORD='…'
+# bookclerk auth login --source chirp --email you@example.com
+# export BOOKCLERK_GA_PASSWORD='…'
+# bookclerk auth login --source graphicaudio --email you@example.com
+
+bookclerk library scan
+bookclerk library acquire --asin B0EXAMPLE   # or --isbn / UUID / product id
 ```
 
-### Multi-source (Audible + Libro.fm)
+First-time setup, auth notes, and “existing files” workflows:
+[docs/getting-started.md](docs/getting-started.md).
 
-Library rows are keyed by a stable **UUID**; ASIN and ISBN are indexed attributes.
-`library acquire` / search accept UUID, ASIN, ISBN, or source product id.
-`library scan` syncs every configured source (or `--source audible|libro`); after
-scan, non-Audible rows (e.g. Libro.fm) are best-effort enriched with an Audible
-ASIN via the shared `bookclerk-enrich` crate (public catalog search + Audnexus,
-AudioBookshelf-style confidence scoring, plus ISBN / narrator / subtitle when
-available) when `library.enrich_from_audible` is true (default). Exact ISBN
-matches boost confidence but do not auto-accept (multiple ASINs can share an
-ISBN). No Audible account is required. Set `library.enrich_min_confidence`
-(default `90`) to raise or lower the acceptance threshold, or set enrichment
-to false to disable.
+## Documentation
 
-### Auth login (OTP / 2FA)
-
-`auth login` (default `--source audible`) drives audible-rs OAuth in a browser
-(local callback server + QR by default, or `--external` paste). Amazon accounts
-with **2FA/MFA must complete OTP** (authenticator app) or another challenge in
-that browser session — there are no Audible CLI password flags. Without
-interactive access, import an existing audible-rs `.auth` file (`auth import`)
-or migrate from classic Libation.
-
-Libro.fm login: `auth login --source libro --email <addr>`. Password comes from
-`BOOKCLERK_LIBRO_PASSWORD` or an interactive prompt (never pass it on argv).
-
-OAuth / token files live under `Accounts/` (Audible `.auth`, Libro `.libro.auth`).
-Prefer encryption at rest for Audible (audible-rs Argon2id + XChaCha20-Poly1305):
-
-```bash
-# Explicit passphrase:
-export BOOKCLERK_AUTH_PASSWORD='your-strong-passphrase'
-
-# Or point at a secrets path (created with a strong random secret if missing —
-# keep this off the Accounts/ volume):
-export BOOKCLERK_AUTH_PASSWORD_FILE=/run/bookclerk/secrets/auth_password
-
-bookclerk auth login --force
-```
-
-For local throwaway setups only, `auth.allow_plaintext = true` stores unprotected
-token files.
-
-### Tools
-
-| Tool | Needed for |
+| Doc | Topic |
 | --- | --- |
-| *(none for decrypt/encode)* | Adrm aaxc and Audible Widevine **DASH fMP4/CENC**, MP3, metadata, and chapter split are **native Rust** |
-| Android auth + L3 CDM | Widevine / xHE-AAC (`output.widevine=true`) — L3 CDM auto-provisions via classic Libation AudibleCdm; optional BYO `.wvd` |
+| [docs/README.md](docs/README.md) | Documentation index |
+| [docs/getting-started.md](docs/getting-started.md) | Install, auth, first scan/acquire |
+| [docs/architecture.md](docs/architecture.md) | Components and data flow |
+| [docs/sources.md](docs/sources.md) | Storefront plugins and login |
+| [docs/destinations.md](docs/destinations.md) | Local + S3 output, naming |
+| [docs/integrations.md](docs/integrations.md) | Audiobookshelf, Connect portal |
+| [docs/plugins.md](docs/plugins.md) | Third-party plugin protocol |
+| [docs/operations.md](docs/operations.md) | Daemon, Docker, systemd |
+| [docs/configuration.md](docs/configuration.md) | `config.toml` and env overrides |
+| [docs/migration.md](docs/migration.md) | Move from classic Libation |
+| [docs/diagnostics.md](docs/diagnostics.md) | Opt-in crash/error reports |
+| [docs/libation-parity.md](docs/libation-parity.md) | Headless Libation parity matrix |
+| [docs/source-candidates.md](docs/source-candidates.md) | Research notes for future stores |
 
-Audible’s Widevine downloads are a DASH MPD pointing at one CENC **fragmented MP4**
-(`moof`/`senc`), offered as AAC-LC and optionally xHE-AAC. We decrypt that path
-natively. Progressive (non-DASH) `enca` decrypt is also implemented as a general
-CENC fallback, but it is **not** what Audible’s acquire download produces today.
+## Example configuration
 
-Widevine **L3** (software) is what we support for stereo / xHE-AAC. Spatial/Atmos needs **L1** (hardware) and is not available on desktop — same as classic Libation.
-
-For Widevine titles, use a normal login (registers as Android):
-
-```bash
-bookclerk auth login --force
-```
-
-On first Widevine acquire, an L3 `.wvd` is fetched from the AudibleCdm provider and cached under `Accounts/<account>.wvd` (override with `output.widevine_cdm`, or set `output.widevine_cdm_provider = "off"` to require BYO only).
-
-No external `ffmpeg` or `aaxclean-cli` binaries are required. When
-`output.strip_audible_brand_audio = true`, acquire also trims Audible
-pre/post-roll using `brand_intro_duration_ms` / `brand_outro_duration_ms` from
-chapter metadata (classic Libation behavior).
-### Widevine / xHE / mp3
+Minimal multi-store, local + S3 sketch (full example:
+[`config/config.example.toml`](config/config.example.toml)):
 
 ```toml
+[library]
+auto_acquire = false
+scan_interval_minutes = 60
+enrich_from_audible = true
+
 [output]
-widevine = true
-xhe_aac = true
-format = "single_mp3"   # native LAME re-encode after decrypt
-# widevine_cdm = "device.wvd"   # optional BYO; otherwise auto-provision L3
-# naming_profile = "audiobookshelf"  # default; or "classic" for Libation desktop defaults
-# folder_template / file_template override the profile when set
-# audiobookshelf folder ≈
-#   <first author>/<has series-><first series>/<-has><has series#-><series#> - <-has><has year-><year> - <-has><title short><has narrator-> {<first narrator>}<-has>
-# audiobookshelf file = <title> [<asin>]
-# classic folder = <title short> [<id>]
-# classic file = <title> [<id>]
-folder_template = "<author>/<title>"
-file_template = "<title> [<asin>]"
+format = "enriched_m4b"
+naming_profile = "audiobookshelf"
+
+[output.local]
+enabled = true
+root = "/data/Audiobooks"
+
+[output.s3]
+enabled = false
+# bucket = "my-audiobooks"
+# region = "us-east-1"
+
+[sources.audible]
+enabled = true
+
+[sources.libro]
+enabled = true
+
+[sources.chirp]
+enabled = true
+
+[sources.graphicaudio]
+enabled = true
+access = "web"          # web | zip | device
+
+[integrations.audiobookshelf]
+enabled = false
+# base_url = "http://audiobookshelf:80"
 ```
 
-Adrm is tried first when `widevine = false`. If Audible returns `000307` (no
-aaxc asset), acquire automatically falls back to Widevine when a CDM is found.
+S3 credentials stay in the environment (`AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`). Store passwords use per-source env vars (see
+[docs/sources.md](docs/sources.md)).
 
-### Sidecars and metadata fix-up
+## Binaries
 
-```toml
-[output]
-download_cover = true       # save .jpg alongside audio (DownloadCoverArt)
-download_pdf = true         # companion PDF when available
-create_cue = true           # .cue from API chapters (CreateCueSheet)
-fixup_metadata = true       # embed cover/chapters/tags (AllowLibationFixup)
-save_chapter_json = true    # chapters.<tree|flat>.json
-cover_size = "500"          # 500 | 1215 | native
-chapter_layout = "tree"     # tree | flat
-```
+| Binary | Role |
+| --- | --- |
+| `bookclerk` | One-shot CLI (`auth`, `library`, `integrations`, `plugins`, …) |
+| `bookclerkd` | Long-running daemon: scheduled scan/acquire + HTTP control plane |
 
-Artifact failures are logged and do not fail the audio acquire (classic behavior).
+Default control plane: `127.0.0.1:8787` — `GET /health`, `GET /status`,
+`POST /scan`, `POST /acquire`, `GET /jobs` (JSON bodies need
+`Content-Type: application/json`).
 
-Relative `output.local.root` values resolve under `BOOKCLERK_FILES_DIR`.
+## Status
 
-## Fresh install with existing audiobooks
-
-```bash
-bookclerk library scan --match-storage
-# Optional: relocate matched files + sidecars onto the naming-profile layout
-# (also library.fix_storage_layout / BOOKCLERK_FIX_STORAGE_LAYOUT; default false)
-bookclerk library scan --match-storage --fix-layout
-bookclerk library acquire          # skips matched titles
-bookclerk library acquire --force  # re-download anyway
-```
-
-Matching lists acquired audio (`.m4b` / `.mp3` / `.m4a` / `.flac` / `.aac` /
-`.ogg` / `.oga`) and probes custom object metadata
-(S3 `HeadObject` user-metadata / local `.bookclerk-meta.json`) without downloading
-bodies, then falls back to ASIN/ISBN tokens in the path.
-
-## Migrate from classic Libation
-
-```bash
-export BOOKCLERK_FILES_DIR=./BookclerkFiles
-cargo run -p bookclerk-cli -- migrate import --from ~/Bookclerk --force
-```
-
-Imports Settings (including `UseWidevine`, `DecryptToLossy`, `FolderTemplate` /
-`FileTemplate`, `AllowLibationFixup`, `DownloadCoverArt`, `CreateCueSheet`), accounts/auth, and `LibationContext.db`.
+Headless multi-source acquire, daemon, destinations, Audiobookshelf
+integration, and the plugin host are in active use. Libation Classic/Chardonnay
+CLI parity for the Audible acquire surface is tracked in
+[docs/libation-parity.md](docs/libation-parity.md). A native/web GUI is deferred.
 
 ## License
 
-GPL-3.0-or-later (aligned with upstream Libation). `audible-rs` remains MIT.
+GPL-3.0-or-later (aligned with upstream Libation). Dependencies such as
+[audible-rs](https://github.com/mkb79/audible-rs) remain under their own
+licenses (MIT).
