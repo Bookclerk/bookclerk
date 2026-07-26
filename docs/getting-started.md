@@ -51,7 +51,7 @@ Default mode starts a local callback server and prints a URL + terminal QR
 Amazon accounts with **2FA/MFA must complete OTP in the browser**. There is no
 username/password CLI for Audible. Alternatives:
 
-- Import an existing audible-rs `.auth`: `bookclerk auth import path/to/file.auth`
+- Import an existing audible-rs auth file: `bookclerk auth import path/to/file.audible.auth`
 - Migrate classic Libation accounts: see [migration.md](migration.md)
 
 Encrypt Audible token files at rest:

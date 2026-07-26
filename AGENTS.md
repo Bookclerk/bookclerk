@@ -89,7 +89,7 @@ When exercising real store credentials in this cloud environment:
 - Scanning/acquiring requires real store credentials for the sources in use.
   Without a configured account, `scan`/`acquire` jobs fail with "no accounts
   configured" — expected; the daemon + control plane still run for everything
-  else. Tokens live under `Accounts/` (Audible `<account>.auth`, Libro
+  else. Tokens live under `Accounts/` (Audible `*.audible.auth`, Libro
   `*.libro.auth`, GraphicAudio `*.ga.auth`, Chirp `*.chirp.auth`). Prefer Audible
   encryption via `BOOKCLERK_AUTH_PASSWORD` or `BOOKCLERK_AUTH_PASSWORD_FILE` /
   `[auth].password_file` (missing password-file paths are auto-created with a
@@ -101,11 +101,15 @@ When exercising real store credentials in this cloud environment:
   classic Libation AudibleCdm (`auth login` registers as Android);
   optional BYO `.wvd` still works. Spatial/Atmos (L1) is not available. Neither
   a CDM nor ffmpeg is required to build, test, or run non-acquire commands.
-- S3/MinIO credentials are **env-only** (`AWS_ACCESS_KEY_ID` /
-  `AWS_SECRET_ACCESS_KEY`); bucket/region/endpoint/path-style come from
-  `BOOKCLERK_OUTPUT_S3_*` (or familiar `BOOKCLERK_S3_*`) env vars or
-  `[output.s3]` in config.toml. Local output uses `[output.local]` /
+- S3/MinIO credentials prefer `Accounts/*.s3.auth` (default
+  `Accounts/default.s3.auth`, or `[output.s3].credentials_file` /
+  `BOOKCLERK_OUTPUT_S3_CREDENTIALS_FILE`). `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` still override when both are set; otherwise the AWS
+  SDK default provider chain applies (same as AWS CLI: `~/.aws/credentials`,
+  SSO, EC2/ECS/EKS roles — CLI install not required). Bucket/region/endpoint/
+  path-style come from `BOOKCLERK_OUTPUT_S3_*` (or familiar `BOOKCLERK_S3_*`)
+  env vars or `[output.s3]` in config.toml. Local output uses `[output.local]` /
   `BOOKCLERK_OUTPUT_LOCAL_ROOT`. Multiple destination plugins may be
   `enabled` at once — acquire writes to every enabled destination.
-- `BOOKCLERK_S3_ENDPOINT` may be host-only (no scheme); prepend `https://`
-  before use when the value looks like a bare hostname.
+- `BOOKCLERK_S3_ENDPOINT` may be host-only (no scheme); Bookclerk prepends
+  `https://` when the value looks like a bare hostname.

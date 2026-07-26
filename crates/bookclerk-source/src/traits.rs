@@ -57,7 +57,7 @@ pub trait ContentSource: Send + Sync {
     /// Portal button brand (colors + favicon).
     fn portal_brand(&self) -> SourceBrand;
 
-    /// Auth/CDM filename suffixes under `Accounts/` (e.g. `.auth`, `.libro.auth`).
+    /// Auth/CDM filename suffixes under `Accounts/` (e.g. `.audible.auth`, `.libro.auth`).
     fn auth_credential_suffixes(&self) -> &'static [&'static str];
 
     /// Optional env var for non-interactive password login.

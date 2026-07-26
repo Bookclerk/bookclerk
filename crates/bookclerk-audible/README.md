@@ -10,9 +10,11 @@ git = "https://github.com/mkb79/audible-rs"
 rev = "5a28f507072022ae7fd7f95a62e3bdc5e515d678"
 ```
 
-Auth files live under `{BOOKCLERK_FILES_DIR}/Accounts/<account>.auth` (audible-rs
-envelope). Prefer encrypting at rest (Argon2id + XChaCha20-Poly1305). Widevine L3
-CDMs live alongside them as `{BOOKCLERK_FILES_DIR}/Accounts/<account>.wvd`.
+Auth files live under `{BOOKCLERK_FILES_DIR}/Accounts/<account>.audible.auth`
+(audible-rs envelope; aligned with `.libro.auth` / `.chirp.auth` / `.ga.auth`).
+Prefer encrypting at rest (Argon2id + XChaCha20-Poly1305). Widevine L3 CDMs live
+alongside them as `{BOOKCLERK_FILES_DIR}/Accounts/<account>.wvd`. Classic
+Libation migrate writes these from `AccountsSettings.json` IdentityTokens.
 
 Passphrase sources (first match wins): `BOOKCLERK_AUTH_PASSWORD`,
 `BOOKCLERK_AUTH_PASSWORD_FILE`, or `[auth].password_file`. A configured password
@@ -31,8 +33,8 @@ Both modes open Amazon's OAuth / device-registration flow in a browser. There is
 (audible-rs). Amazon accounts with **2FA/MFA enabled require completing OTP**
 (or SMS / mobile verification) during that browser step. Headless agents need
 either an interactive Desktop session or a TOTP seed to finish login; importing
-an existing `{BOOKCLERK_FILES_DIR}/Accounts/*.auth` file skips login entirely —
-encrypted files need a matching passphrase; plaintext files need
+an existing `{BOOKCLERK_FILES_DIR}/Accounts/*.audible.auth` file skips login
+entirely — encrypted files need a matching passphrase; plaintext files need
 `auth.allow_plaintext` only when *writing* unprotected envelopes.
 
 ## Acquire download path

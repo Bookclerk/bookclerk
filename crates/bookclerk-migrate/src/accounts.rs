@@ -1,4 +1,4 @@
-//! Import classic `AccountsSettings.json`, converting IdentityTokens → `.auth`.
+//! Import classic `AccountsSettings.json`, converting IdentityTokens → `*.audible.auth`.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -20,7 +20,7 @@ pub struct AccountsImportSummary {
     pub account_id_map: HashMap<(String, String), String>,
 }
 
-/// Import accounts; when tokens are present, write audible-rs `.auth` files.
+/// Import accounts; when tokens are present, write audible-rs `*.audible.auth` files.
 pub async fn import_accounts(
     path: &Path,
     dest_files_dir: &Path,

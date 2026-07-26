@@ -59,7 +59,9 @@ impl ExternalSource {
             Some("oauth") => PortalAuthMode::Oauth,
             _ => PortalAuthMode::Password,
         };
-        let suffixes = leak_str_slice(&hs.auth_credential_suffixes, &[".auth"]);
+        // Empty handshake list means "no Account credential files" — do not
+        // fall back to Audible's suffix or revoke could delete the wrong files.
+        let suffixes = leak_str_slice(&hs.auth_credential_suffixes, &[]);
         let aliases = leak_str_slice(&hs.aliases, &[]);
         let password_env = hs
             .password_env_var

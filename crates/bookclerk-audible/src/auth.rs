@@ -283,7 +283,7 @@ pub struct SaveAuthOptions<'a> {
     /// When set (or via `BOOKCLERK_AUTH_PASSWORD_FILE` / process defaults) and the
     /// file is missing, a strong random passphrase is written there on first use.
     pub password_file: Option<&'a Path>,
-    /// Allow writing unencrypted `.auth` files when no passphrase is configured.
+    /// Allow writing unencrypted `.audible.auth` files when no passphrase is configured.
     pub allow_plaintext: bool,
 }
 
@@ -347,7 +347,7 @@ pub async fn load_authenticator(
             if msg.contains("password") || msg.contains("decrypt") || msg.contains("cipher") {
                 AudibleError::Auth(format!(
                     "failed to load {} ({msg}) — set {} / {} / [auth].password_file \
-                     for encrypted files, or use a plaintext .auth with auth.allow_plaintext",
+                     for encrypted files, or use a plaintext .audible.auth with auth.allow_plaintext",
                     path.display(),
                     crate::secret::AUTH_PASSWORD_ENV,
                     crate::secret::AUTH_PASSWORD_FILE_ENV,

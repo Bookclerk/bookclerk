@@ -41,8 +41,8 @@ pub struct AuthConfig {
     /// If the path is set but the file is missing, Bookclerk creates it with a
     /// strong random secret — point it at a secrets volume, not `Accounts/`.
     pub password_file: Option<PathBuf>,
-    /// Allow writing unencrypted `.auth` files when no passphrase is configured.
-    /// Default `false` — OAuth tokens should be encrypted at rest.
+    /// Allow writing unencrypted Audible `.audible.auth` files when no passphrase
+    /// is configured. Default `false` — OAuth tokens should be encrypted at rest.
     pub allow_plaintext: bool,
 }
 
@@ -304,6 +304,14 @@ impl Config {
         {
             self.output.s3.force_path_style =
                 parse_bool(&v).unwrap_or(self.output.s3.force_path_style);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_CREDENTIALS_FILE")
+            .or_else(|_| std::env::var("BOOKCLERK_S3_CREDENTIALS_FILE"))
+        {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.output.s3.credentials_file = Some(PathBuf::from(trimmed));
+            }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_LISTEN") {
             self.daemon.listen = v;
@@ -617,6 +625,35 @@ impl Config {
                 crate::redact::register_secret(trimmed);
             }
         }
+        if let Some(path) = self.resolved_s3_credentials_path() {
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    for key in ["access_key_id", "secret_access_key", "session_token"] {
+                        if let Some(secret) = value.get(key).and_then(|v| v.as_str()) {
+                            let trimmed = secret.trim();
+                            if !trimmed.is_empty() {
+                                crate::redact::register_secret(trimmed);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Path used for S3 destination credentials (`credentials_file` or default).
+    #[must_use]
+    pub fn resolved_s3_credentials_path(&self) -> Option<PathBuf> {
+        if let Some(path) = &self.output.s3.credentials_file {
+            return Some(path.clone());
+        }
+        let files_dir = self.paths.as_ref()?.files_dir.as_path();
+        let default = files_dir.join("Accounts").join("default.s3.auth");
+        if default.is_file() {
+            Some(default)
+        } else {
+            None
+        }
     }
 
     /// Resolve relative `output.local.root` under `files_dir`.
@@ -639,6 +676,11 @@ impl Config {
         if let Some(scratch) = &self.output.in_progress {
             if scratch.is_relative() {
                 self.output.in_progress = Some(paths.files_dir.join(scratch));
+            }
+        }
+        if let Some(creds) = &self.output.s3.credentials_file {
+            if creds.is_relative() {
+                self.output.s3.credentials_file = Some(paths.files_dir.join(creds));
             }
         }
     }

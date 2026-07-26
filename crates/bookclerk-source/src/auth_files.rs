@@ -98,11 +98,9 @@ pub fn save_json_auth<T: Serialize>(path: &Path, auth: &T) -> std::io::Result<()
 }
 
 /// Whether `file_name` is a credential artifact for exactly `account_id`
-/// given plugin-declared `suffixes` (e.g. `.auth`, `.libro.auth`, `.wvd`).
+/// given plugin-declared `suffixes` (e.g. `.audible.auth`, `.libro.auth`, `.wvd`).
 ///
 /// Matching is exact stem + suffix so revoking `user-1` never deletes `user-10.*`.
-/// Plain `.auth` is only matched when the filename is exactly `{stem}.auth`
-/// (not `{stem}.libro.auth`).
 #[must_use]
 pub fn is_account_credential_file(account_id: &str, file_name: &str, suffixes: &[&str]) -> bool {
     let stem = sanitize_name(account_id);
@@ -110,12 +108,6 @@ pub fn is_account_credential_file(account_id: &str, file_name: &str, suffixes: &
         return false;
     }
     for suffix in suffixes {
-        if *suffix == ".auth" {
-            if file_name == format!("{stem}.auth") {
-                return true;
-            }
-            continue;
-        }
         if file_name == format!("{stem}{suffix}") {
             return true;
         }
@@ -166,10 +158,17 @@ mod tests {
 
     #[test]
     fn credential_match_is_exact_stem() {
-        let suffixes = [".auth", ".libro.auth", ".ga.auth", ".chirp.auth", ".wvd"];
+        let suffixes = [
+            ".audible.auth",
+            ".libro.auth",
+            ".ga.auth",
+            ".chirp.auth",
+            ".s3.auth",
+            ".wvd",
+        ];
         assert!(is_account_credential_file(
             "user-1",
-            "user-1.auth",
+            "user-1.audible.auth",
             &suffixes
         ));
         assert!(is_account_credential_file(
@@ -179,12 +178,17 @@ mod tests {
         ));
         assert!(is_account_credential_file(
             "user-1",
+            "user-1.s3.auth",
+            &suffixes
+        ));
+        assert!(is_account_credential_file(
+            "user-1",
             "user-1.wvd",
             &suffixes
         ));
         assert!(!is_account_credential_file(
             "user-1",
-            "user-10.auth",
+            "user-10.audible.auth",
             &suffixes
         ));
         assert!(!is_account_credential_file(

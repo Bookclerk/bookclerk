@@ -77,7 +77,7 @@ spoken to over newline-delimited JSON-RPC on stdio. See [plugins.md](plugins.md)
 BookclerkFiles/
   config.toml
   library.db
-  Accounts/           # *.auth, *.libro.auth, *.ga.auth, *.chirp.auth, *.wvd
+  Accounts/           # *.audible.auth, *.libro.auth, *.ga.auth, *.chirp.auth, *.s3.auth, *.wvd
   cache/
   search_index/
   plugins/            # third-party plugin installs

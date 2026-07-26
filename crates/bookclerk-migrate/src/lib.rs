@@ -37,7 +37,7 @@ pub struct MigrateOptions {
     pub dest_files_dir: std::path::PathBuf,
     /// Overwrite existing auth files / config.toml.
     pub force: bool,
-    /// Skip writing `.auth` files (still upserts account metadata).
+    /// Skip writing `*.audible.auth` files (still upserts account metadata).
     pub skip_auth: bool,
     /// Report only; do not write.
     pub dry_run: bool,

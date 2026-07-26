@@ -642,7 +642,7 @@ mod tests {
     #[test]
     fn sanitize_strips_titles_and_home_paths() {
         assert_eq!(sanitize_for_remote_upload("title", "My Book"), REDACTED);
-        let path = sanitize_for_remote_upload("message", "/home/alice/Accounts/bob.auth");
+        let path = sanitize_for_remote_upload("message", "/home/alice/Accounts/bob.audible.auth");
         assert!(!path.contains("alice"));
         assert!(path.contains(REDACTED));
     }

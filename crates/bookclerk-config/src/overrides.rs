@@ -38,6 +38,9 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         "output.s3.force_path_style" => {
             config.output.s3.force_path_style = parse_bool(v).unwrap_or(false);
         }
+        "output.s3.credentials_file" => {
+            config.output.s3.credentials_file = Some(PathBuf::from(v));
+        }
         "sources.audible.bitrate" | "sources.audible.quality" => {
             // Classic FileDownloadQuality maps onto Audible store bitrate.
             let bitrate = match v.to_ascii_lowercase().as_str() {

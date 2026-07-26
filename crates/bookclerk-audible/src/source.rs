@@ -22,7 +22,7 @@ use crate::sync::scan_library;
 /// Canonical plugin id.
 pub const ID: &str = "audible";
 
-const AUTH_SUFFIXES: &[&str] = &[".auth", ".wvd"];
+const AUTH_SUFFIXES: &[&str] = &[".audible.auth", ".wvd"];
 
 /// Audible store as a [`ContentSource`].
 #[derive(Debug, Default, Clone, Copy)]

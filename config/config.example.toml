@@ -72,13 +72,18 @@ enabled = false
 # region = "us-east-1"
 # endpoint = "http://minio:9000"
 # force_path_style = true
+# Credentials JSON under Accounts/ (same pattern as source *.*.auth files).
+# Default when unset: Accounts/default.s3.auth
+# credentials_file = "Accounts/default.s3.auth"
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY still override when both are set.
 # Optional per-destination naming overrides. Useful when object storage should
 # use a different key layout than the local filesystem.
 # naming_profile = "classic"
 # folder_template = "<author>/<series>"
 # file_template = "<asin>"
 # chapter_file_template = "<asin> - <ch#>"
-# Env: BOOKCLERK_OUTPUT_S3_ENABLED, BOOKCLERK_OUTPUT_S3_BUCKET (or BOOKCLERK_S3_*), …
+# Env: BOOKCLERK_OUTPUT_S3_ENABLED, BOOKCLERK_OUTPUT_S3_BUCKET,
+#      BOOKCLERK_OUTPUT_S3_CREDENTIALS_FILE (or BOOKCLERK_S3_*), …
 
 # Content-source plugins ([sources.*]). Each source has `enabled`.
 # [sources.audible]

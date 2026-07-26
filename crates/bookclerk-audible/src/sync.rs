@@ -15,7 +15,7 @@ use reqwest::Method;
 use crate::accounts::resolve_auth_file_async;
 use crate::auth::load_authenticator;
 use crate::error::{AudibleError, Result};
-use crate::paths::list_auth_files;
+use crate::paths::{auth_stem_from_path, list_auth_files};
 
 /// Sync Audible library for configured accounts into `library`.
 pub async fn scan_library(
@@ -231,22 +231,14 @@ async fn resolve_targets(
         let mut out = Vec::with_capacity(accounts.len());
         for account in accounts {
             let path = resolve_auth_file_async(files_dir, account).await?;
-            let key = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(account.as_str())
-                .to_string();
+            let key = auth_stem_from_path(&path).unwrap_or_else(|| account.clone());
             out.push((key, path));
         }
         return Ok(out);
     }
     let mut out = Vec::new();
     for path in list_auth_files(files_dir)? {
-        let key = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("account")
-            .to_string();
+        let key = auth_stem_from_path(&path).unwrap_or_else(|| "account".into());
         out.push((key, path));
     }
     Ok(out)

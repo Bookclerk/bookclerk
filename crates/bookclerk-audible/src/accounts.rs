@@ -6,10 +6,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::{load_authenticator, save_authenticator, SaveAuthOptions};
 use crate::error::{AudibleError, Result};
-use crate::paths::{auth_file_for, ensure_accounts_dir, list_auth_files, sanitize_name};
+use crate::paths::{
+    auth_file_for, auth_stem_from_path, ensure_accounts_dir, list_auth_files, sanitize_name,
+};
 use crate::AuthSession;
 
-/// Import an audible-rs `.auth` file into `{files_dir}/Accounts/`.
+/// Import an audible-rs auth file into `{files_dir}/Accounts/*.audible.auth`.
 ///
 /// Loads (decrypting via env / password file when needed), then re-saves
 /// with the configured protection into the canonical Accounts directory.
@@ -47,6 +49,7 @@ pub async fn import_auth_file_with_options(
     let customer_id = auth.customer_id().map(str::to_string);
     let stem = label
         .map(str::to_string)
+        .or_else(|| auth_stem_from_path(source))
         .or_else(|| {
             source
                 .file_stem()
@@ -115,11 +118,7 @@ impl AccountStatus {
 pub async fn list_accounts(files_dir: &Path) -> Result<Vec<AccountInfo>> {
     let mut out = Vec::new();
     for path in list_auth_files(files_dir)? {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("account")
-            .to_string();
+        let stem = auth_stem_from_path(&path).unwrap_or_else(|| "account".into());
 
         match crate::auth::load_authenticator(&path, None).await {
             Ok(auth) => {
@@ -174,10 +173,7 @@ pub fn resolve_auth_file(files_dir: &Path, account: &str) -> Result<std::path::P
         return Ok(direct);
     }
     for path in list_auth_files(files_dir)? {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
+        let stem = auth_stem_from_path(&path).unwrap_or_default();
         if stem.eq_ignore_ascii_case(account) {
             return Ok(path);
         }
@@ -188,7 +184,7 @@ pub fn resolve_auth_file(files_dir: &Path, account: &str) -> Result<std::path::P
 /// Resolve auth file by stem **or** by matching `customer_id` inside the file.
 ///
 /// Library rows store Audible `customer_id` as `account_id`, while auth files may
-/// be named with a user label (`main.auth`). Prefer stem match, then probe files.
+/// be named with a user label (`main.audible.auth`). Prefer stem match, then probe files.
 pub async fn resolve_auth_file_async(
     files_dir: &Path,
     account: &str,
@@ -241,6 +237,7 @@ pub async fn import_mkb79_auth_json(
     let customer_id = auth.customer_id().map(str::to_string);
     let stem = label
         .map(str::to_string)
+        .or_else(|| auth_stem_from_path(source))
         .or_else(|| {
             source
                 .file_stem()

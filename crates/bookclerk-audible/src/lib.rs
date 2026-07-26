@@ -40,7 +40,8 @@ pub use download::{
 pub use error::{AudibleError, Result};
 pub use options::DownloadOptions;
 pub use paths::{
-    accounts_dir, auth_file_for, ensure_accounts_dir, list_auth_files, widevine_cdm_file_for,
+    accounts_dir, auth_file_for, auth_stem_from_name, auth_stem_from_path, ensure_accounts_dir,
+    list_auth_files, widevine_cdm_file_for, AUTH_SUFFIX,
 };
 pub use qr::{render_login_qr, QrRenderMode};
 pub use secret::{
