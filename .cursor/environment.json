@@ -1,0 +1,7 @@
+{
+  "build": {
+    "dockerfile": "cloud-agent.Dockerfile",
+    "context": "."
+  },
+  "install": "cargo fetch"
+}
