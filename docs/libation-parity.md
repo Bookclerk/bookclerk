@@ -140,7 +140,7 @@ checks), or **minor headless polish** listed under
 
 | Item | Reason |
 | --- | --- |
-| Chardonnay / Classic GUI (WinForms / Avalonia) | Not planned — Bookclerk ships a web GUI ([gui.md](gui.md)); native/tray deferred |
+| Chardonnay / Classic GUI (WinForms / Avalonia) | Not planned — Bookclerk ships a web GUI + optional tray ([gui.md](gui.md)) |
 | Password + CAPTCHA WebView login | GUI-only; OAuth headless paths cover CLI |
 | Hangover trash-bin / deleted-title recovery UI | Separate classic tool / GUI |
 | Series view, find-better-quality, theme, grid layout | GUI-only |
@@ -167,4 +167,4 @@ checks), or **minor headless polish** listed under
 | Item | Notes |
 | --- | --- |
 | Spatial / Atmos (Widevine L1) | Hardware TEE only; desktop L3 cannot satisfy L1 license grants |
-| GUI | MVP React web UI ([gui.md](gui.md)); native/tray deferred; not Avalonia |
+| GUI | MVP React web UI + optional tray→browser ([gui.md](gui.md)); Tauri deferred; not Avalonia |

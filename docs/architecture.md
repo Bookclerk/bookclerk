@@ -1,11 +1,12 @@
 # Architecture
 
-Bookclerk is a Cargo workspace of library crates plus two binaries:
+Bookclerk is a Cargo workspace of library crates plus binaries:
 
 | Binary | Crate | Role |
 | --- | --- | --- |
 | `bookclerk` | `bookclerk-cli` | One-shot operator CLI |
 | `bookclerkd` | `bookclerkd` | Scheduled jobs + authenticated HTTP API / GUI |
+| `bookclerk-tray` | `bookclerk-tray` | Optional tray → system browser (not a default-member) |
 
 Both share the same core: sources, library DB, acquire pipeline, storage, and
 integrations.

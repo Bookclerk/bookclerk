@@ -1,0 +1,37 @@
+[package]
+name = "bookclerk-tray"
+description = "System tray companion that opens the Bookclerk web UI in a browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "bookclerk-tray"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+bookclerk-config.workspace = true
+open = "5"
+png = "0.18"
+ureq.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# default = tokio (required by zbus); blocking exposes the sync TrayMethods API.
+ksni = { version = "0.3", features = ["blocking"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+
+# tray-icon/muda default features enable Linux GTK — keep them off so the root
+# Cargo.lock stays free of the advisory-pinned gtk-rs 0.18 stack. Linux uses ksni.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tray-icon = { version = "0.24", default-features = false }
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3", features = ["CFRunLoop"] }
+
+[lints]
+workspace = true

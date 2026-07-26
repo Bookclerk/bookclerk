@@ -18,9 +18,14 @@ Two runnable binaries (the workspace `default-members`):
   (Audible, Libro.fm, Chirp, GraphicAudio, plugins).
 - `bookclerkd` — long-running daemon with an authenticated HTTP API / GUI.
 
+Optional companion (workspace member, not a default-member):
+
+- `bookclerk-tray` — system tray that opens the web UI in the browser (Linux
+  `ksni`; Windows/macOS `tray-icon` with GTK features off). See `docs/gui.md`.
+
 Frontend sources live in `ui/` (Vite/React); build with `npm ci && npm run build`
-so `bookclerkd` can serve `ui/dist`. See `docs/gui.md`. Native desktop/tray is
-deferred (do not add Tauri/GTK3-pinned shells while RUSTSEC advisories remain).
+so `bookclerkd` can serve `ui/dist`. Do not add Tauri/GTK3-pinned shells while
+RUSTSEC advisories remain (tracked in `#44`).
 
 ### Build / lint / test (mirrors `.github/workflows/ci.yml`)
 

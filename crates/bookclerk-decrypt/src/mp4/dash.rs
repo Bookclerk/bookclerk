@@ -672,7 +672,7 @@ fn parse_senc_ivs(
     if sample_count == 0 {
         return Ok(Vec::new());
     }
-    if remaining % sample_count as u64 != 0 {
+    if !remaining.is_multiple_of(sample_count as u64) {
         return Err(DecryptError::Mp4(format!(
             "senc IV region {remaining} not divisible by sample_count {sample_count}"
         )));

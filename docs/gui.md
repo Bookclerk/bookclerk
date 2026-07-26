@@ -1,15 +1,20 @@
-# GUI (web)
+# GUI (web + tray companion)
 
 Bookclerk ships a shared React UI for library management, served by
 `bookclerkd`. The UI talks to the Rust HTTP API only (TypeScript never hosts
 the API).
 
-A **native desktop shell / system tray** is intentionally deferred here so this
-PR stays clear of unmaintained GTK3/`gtk-rs` 0.18 advisories (current Tauri on
-Linux). The Tauri implementation is preserved for tracking and future bumps in
-draft PR [#44](https://github.com/fritz-fritz/bookclerk/pull/44) — no OSV
-ignores. Revisit merge when upstream ships maintained Linux bindings (GTK4 or
-equivalent).
+An optional **tray companion** (`bookclerk-tray`) spawns/attaches `bookclerkd`
+and opens the UI in the system browser:
+
+| OS | Backend |
+| --- | --- |
+| Linux | StatusNotifierItem (`ksni`, no GTK/WebKit) |
+| Windows / macOS | `tray-icon` with default features **disabled** (no GTK) |
+
+An embedded Tauri window remains deferred pending an OSV-clean GTK4 graph —
+tracked in [#44](https://github.com/fritz-fritz/bookclerk/pull/44). Path notes:
+[gui-desktop-path.md](gui-desktop-path.md).
 
 ## Operator auth
 
@@ -57,6 +62,21 @@ Override the static dist directory with `BOOKCLERK_UI_DIST`.
 - Search + status filter
 - Scan / acquire pending / acquire one title
 - Jobs + status strip
+
+## Tray companion (`bookclerk-tray`)
+
+```bash
+cd ui && npm ci && npm run build
+cargo build -p bookclerkd -p bookclerk-tray
+BOOKCLERK_FILES_DIR=/tmp/BookclerkFiles cargo run -p bookclerk-tray
+```
+
+Menu: Open Bookclerk · Scan library · Print operator token · Quit. Left-click
+opens the browser. Workspace member, not a `default-member`.
+
+`tray-icon` is depended on only for Windows/macOS **and** with
+`default-features = false`, so the root `Cargo.lock` does not resolve the Linux
+GTK3 graph. Do not enable `tray-icon`/`muda` default features in this workspace.
 
 ## Brand assets
 

@@ -88,3 +88,33 @@ jobs:
         env:
           BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
         run: cargo build --release -p bookclerk-cli -p bookclerkd
+
+  # Explicit tray matrix so each OS backend is compiled (ksni on Linux,
+  # tray-icon without GTK features on Windows/macOS).
+  tray:
+    name: tray (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy bookclerk-tray
+        run: cargo clippy -p bookclerk-tray --all-targets -- -D warnings
+
+      - name: Test bookclerk-tray
+        run: cargo test -p bookclerk-tray

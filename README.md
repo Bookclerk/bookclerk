@@ -146,6 +146,7 @@ use per-source env vars (see [docs/sources.md](docs/sources.md)).
 | --- | --- |
 | `bookclerk` | One-shot CLI (`auth`, `library`, `integrations`, `plugins`, …) |
 | `bookclerkd` | Long-running daemon: scheduled scan/acquire + HTTP API / GUI |
+| `bookclerk-tray` | Optional tray companion (opens web UI in the system browser) |
 
 Default listen: `127.0.0.1:8787`. Public routes: `GET /health`, static UI,
 `POST /api/auth/login`. Authenticated: `/api/status`, `/api/jobs`,
@@ -155,10 +156,11 @@ JSON POST bodies need `Content-Type: application/json`.
 ## Status
 
 Headless multi-source acquire, daemon, destinations, Audiobookshelf
-integration, the plugin host, and an MVP web library GUI are in active
-development. A native desktop/tray shell is deferred until a maintained
-wrapper is available (see [docs/gui.md](docs/gui.md)). Libation
-Classic/Chardonnay CLI parity for the Audible acquire surface is tracked in
+integration, the plugin host, an MVP web library GUI, and an optional
+tray→browser companion are in active development. An embedded Tauri window is
+deferred until an OSV-clean GTK4 graph is available (see
+[docs/gui.md](docs/gui.md)). Libation Classic/Chardonnay CLI parity for the
+Audible acquire surface is tracked in
 [docs/libation-parity.md](docs/libation-parity.md).
 
 ## License
