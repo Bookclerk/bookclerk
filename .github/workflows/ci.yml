@@ -13,8 +13,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: "-D warnings"
-  # rust-lld needs an explicit search path for libstdc++ on some images.
-  LIBRARY_PATH: /usr/lib/gcc/x86_64-linux-gnu/13:/usr/lib/gcc/x86_64-linux-gnu/14:/usr/lib/x86_64-linux-gnu
 
 jobs:
   check:
@@ -34,13 +32,6 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: ui/package-lock.json
-
-      - name: Install Tauri Linux deps
-        run: |
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            g++ libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-            librsvg2-dev patchelf
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
