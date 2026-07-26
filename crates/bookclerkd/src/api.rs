@@ -14,7 +14,7 @@ use bookclerk_acquire::sidecar_key;
 use bookclerk_config::Config;
 use bookclerk_integrations::{portal_router, IntegrationRegistry, PortalState};
 use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
-use bookclerk_search::SearchEngine;
+use bookclerk_search::{SearchEngine, SearchHit};
 use bookclerk_source::ContentSource;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
@@ -317,18 +317,10 @@ async fn list_books(
                     continue;
                 }
             }
-            if let Ok(Some(book)) = state.library.get_book(&hit.asin, &hit.account_id) {
+            if let Some(book) = book_for_search_hit(&state.library, &hit)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            {
                 out.push(book);
-            } else if let Ok(books) = state.library.list_books(Some(&hit.account_id)) {
-                if let Some(book) = books.into_iter().find(|b| {
-                    b.product_id.eq_ignore_ascii_case(&hit.asin)
-                        || b.asin
-                            .as_deref()
-                            .is_some_and(|a| a.eq_ignore_ascii_case(&hit.asin))
-                        || b.uuid.eq_ignore_ascii_case(&hit.asin)
-                }) {
-                    out.push(book);
-                }
             }
         }
         out
@@ -416,4 +408,59 @@ fn resolve_local_key(root: &Path, prefix: &str, key: &str) -> PathBuf {
         path.push(part);
     }
     path
+}
+
+/// Resolve a search hit without scanning the full account library.
+///
+/// The index stores ids lowercased and returns `asin` uppercased for display, so
+/// an exact `get_book(&hit.asin)` can miss. Prefer uuid, then a small set of
+/// case-normalized title_id candidates.
+fn book_for_search_hit(
+    library: &LibraryStore,
+    hit: &SearchHit,
+) -> Result<Option<BookRecord>, bookclerk_library::LibraryError> {
+    if !hit.uuid.is_empty() {
+        if let Some(book) = library.get_book_by_uuid(&hit.uuid)? {
+            return Ok(Some(book));
+        }
+    }
+    for candidate in title_id_candidates(&hit.asin) {
+        if let Some(book) = library.get_book(&candidate, &hit.account_id)? {
+            return Ok(Some(book));
+        }
+    }
+    Ok(None)
+}
+
+fn title_id_candidates(id: &str) -> Vec<String> {
+    let mut out = Vec::with_capacity(3);
+    if id.is_empty() {
+        return out;
+    }
+    out.push(id.to_string());
+    let lower = id.to_ascii_lowercase();
+    if lower != id {
+        out.push(lower);
+    }
+    let upper = id.to_ascii_uppercase();
+    if upper != id && out.iter().all(|c| c != &upper) {
+        out.push(upper);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::title_id_candidates;
+
+    #[test]
+    fn title_id_candidates_dedupes_case_folds() {
+        assert_eq!(
+            title_id_candidates("B00Test"),
+            vec!["B00Test", "b00test", "B00TEST"]
+        );
+        assert_eq!(title_id_candidates("b00test"), vec!["b00test", "B00TEST"]);
+        assert_eq!(title_id_candidates("B00TEST"), vec!["B00TEST", "b00test"]);
+        assert!(title_id_candidates("").is_empty());
+    }
 }
