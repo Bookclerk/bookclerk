@@ -1,15 +1,14 @@
-# GUI (web)
+# GUI (web + tray companion)
 
 Bookclerk ships a shared React UI for library management, served by
 `bookclerkd`. The UI talks to the Rust HTTP API only (TypeScript never hosts
 the API).
 
-A **native desktop shell / system tray** is intentionally deferred here so this
-PR stays clear of unmaintained GTK3/`gtk-rs` 0.18 advisories (current Tauri on
-Linux). The Tauri implementation is preserved for tracking and future bumps in
-draft PR [#44](https://github.com/fritz-fritz/bookclerk/pull/44) — no OSV
-ignores. Revisit merge when upstream ships maintained Linux bindings (GTK4 or
-equivalent).
+An optional Linux **tray companion** (`bookclerk-tray`) uses StatusNotifierItem
+(`ksni`, no GTK/WebKit) to spawn/attach `bookclerkd` and open the UI in the
+system browser. An embedded Tauri window/tray remains deferred pending upstream
+GTK4 — tracked in [#44](https://github.com/fritz-fritz/bookclerk/pull/44). Path
+notes: [gui-desktop-path.md](gui-desktop-path.md).
 
 ## Operator auth
 
@@ -57,6 +56,18 @@ Override the static dist directory with `BOOKCLERK_UI_DIST`.
 - Search + status filter
 - Scan / acquire pending / acquire one title
 - Jobs + status strip
+
+## Tray companion (`bookclerk-tray`)
+
+```bash
+cd ui && npm ci && npm run build
+cargo build -p bookclerkd -p bookclerk-tray
+BOOKCLERK_FILES_DIR=/tmp/BookclerkFiles cargo run -p bookclerk-tray
+```
+
+Menu: Open Bookclerk · Scan library · Print operator token · Quit. Left-click
+opens the browser. Workspace member, not a `default-member`. Non-Linux builds
+open the browser only (no tray icon).
 
 ## Brand assets
 

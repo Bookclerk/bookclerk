@@ -8,7 +8,7 @@ Bookclerk is a **multi-storefront** library manager. This page is a
 [Libation Chardonnay](https://github.com/rmcrackan/Libation) for
 headless/CLI/daemon use. A Bookclerk-native web GUI (React, served by
 `bookclerkd`) is tracked in [gui.md](gui.md) and is not a WinForms/Avalonia
-port. Native desktop/tray is deferred.
+port. Linux tray→browser companion is optional; embedded desktop shell deferred.
 
 Chardonnay and Classic share the same backend; this matrix uses upstream
 `master` / LibationCli + `Configuration.PersistentSettings.cs` as the reference.
@@ -140,7 +140,7 @@ checks), or **minor headless polish** listed under
 
 | Item | Reason |
 | --- | --- |
-| Chardonnay / Classic GUI (WinForms / Avalonia) | Not planned — Bookclerk ships a web GUI ([gui.md](gui.md)); native/tray deferred |
+| Chardonnay / Classic GUI (WinForms / Avalonia) | Not planned — Bookclerk ships a web GUI (+ optional Linux tray) ([gui.md](gui.md)) |
 | Password + CAPTCHA WebView login | GUI-only; OAuth headless paths cover CLI |
 | Hangover trash-bin / deleted-title recovery UI | Separate classic tool / GUI |
 | Series view, find-better-quality, theme, grid layout | GUI-only |
@@ -167,4 +167,4 @@ checks), or **minor headless polish** listed under
 | Item | Notes |
 | --- | --- |
 | Spatial / Atmos (Widevine L1) | Hardware TEE only; desktop L3 cannot satisfy L1 license grants |
-| GUI | MVP React web UI ([gui.md](gui.md)); native/tray deferred; not Avalonia |
+| GUI | MVP React web UI + Linux tray companion ([gui.md](gui.md)); not Avalonia |

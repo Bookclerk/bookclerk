@@ -1,0 +1,28 @@
+[package]
+name = "bookclerk-tray"
+description = "Linux StatusNotifier tray that opens the Bookclerk web UI in a browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "bookclerk-tray"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+bookclerk-config.workspace = true
+open = "5"
+png = "0.18"
+ureq.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# default = tokio (required by zbus); blocking exposes the sync TrayMethods API.
+ksni = { version = "0.3", features = ["blocking"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+
+[lints]
+workspace = true

@@ -178,7 +178,7 @@ fn group_thousands(num: &str) -> String {
     let mut grouped = String::new();
     let count = digits.len();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (count - i) % 3 == 0 {
+        if i > 0 && (count - i).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(c);

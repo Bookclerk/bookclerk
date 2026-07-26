@@ -20,6 +20,7 @@ members = [
     "crates/bookclerk-plugin-examples/echo-integration",
     "crates/bookclerk-cli",
     "crates/bookclerkd",
+    "crates/bookclerk-tray",
 ]
 default-members = [
     "crates/bookclerk-cli",
@@ -29,7 +30,7 @@ default-members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.87"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/fritz-fritz/bookclerk"
 authors = ["fritz-fritz <contact@bookclerk.app>"]

@@ -13,7 +13,8 @@ Start here if you are new:
 5. [Integrations](integrations.md) — Audiobookshelf and the Connect portal
 6. [Configuration](configuration.md) — `config.toml` and environment variables
 7. [Operations](operations.md) — `bookclerkd`, Docker, systemd
-8. [GUI](gui.md) — web UI, operator auth (native/tray deferred)
+8. [GUI](gui.md) — web UI, operator auth, Linux tray companion
+9. [Desktop shell path](gui-desktop-path.md) — tray now; Tauri GTK4 later
 
 ## Extending Bookclerk
 
