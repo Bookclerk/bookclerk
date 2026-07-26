@@ -17,6 +17,9 @@ intentionally do **not** ignore those findings.
 Unblock when upstream ships a maintained Linux path (GTK4 / maintained
 bindings, or equivalent) without advisory-pinned crates.
 
+Path evaluation (Tauri GTK4 PRs, idento-style risk acceptance, tray+browser
+alternative, rejected options): [gui-desktop-path.md](gui-desktop-path.md).
+
 ## Operator auth
 
 The GUI / `/api/*` routes use a separate **operator** credential from the
