@@ -4,12 +4,12 @@ Bookclerk ships a shared React UI for library management, served by
 `bookclerkd`. The UI talks to the Rust HTTP API only (TypeScript never hosts
 the API).
 
-A **native desktop shell / system tray** is intentionally deferred. Candidate
-wrappers that pull unmaintained GTK3/`gtk-rs` 0.18 stacks (including current
-Tauri on Linux) are not acceptable while OSV/RUSTSEC advisories remain
-unfixed. Revisit when a maintained native shell is available (for example a
-future Tauri/WebKitGTK stack on maintained bindings, or a carefully scoped Qt
-WebEngine shell).
+A **native desktop shell / system tray** is intentionally deferred here so this
+PR stays clear of unmaintained GTK3/`gtk-rs` 0.18 advisories (current Tauri on
+Linux). The Tauri implementation is preserved for tracking and future bumps in
+draft PR [#44](https://github.com/fritz-fritz/bookclerk/pull/44) — no OSV
+ignores. Revisit merge when upstream ships maintained Linux bindings (GTK4 or
+equivalent).
 
 ## Operator auth
 
