@@ -32,7 +32,7 @@ surface for future UIs.
 ```text
   Storefronts              Core                            Destinations / hooks
  ─────────────            ──────                          ─────────────────────
-  Audible       ─┐                                      ┌─► local filesystem
+  Audible       ─┐                                     ┌─► local filesystem
   Libro.fm      ─┼─► scan ─► library.db ─► acquire ────┼─► S3 / MinIO
   Chirp         ─┤         ▲              (+ pack)     └─► (output plugins*)
   GraphicAudio  ─┘         │
