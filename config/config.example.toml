@@ -107,6 +107,13 @@ enabled = false
 listen = "127.0.0.1:8787"
 json_logs = true
 
+# Operator auth for the HTTP API / GUI (required when binding non-loopback).
+# [daemon.auth]
+# enabled = true
+# token_file = "operator.token"   # under $BOOKCLERK_FILES_DIR, or absolute
+# session_ttl_hours = 12
+# Env: BOOKCLERK_OPERATOR_TOKEN, BOOKCLERK_OPERATOR_TOKEN_FILE, BOOKCLERK_DAEMON_AUTH_ENABLED
+
 # [integrations]
 # portal_base_path = "/connect"
 # public_origin = "https://abs.example.com"

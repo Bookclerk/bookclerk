@@ -16,6 +16,8 @@ use crate::{Result, SearchError};
 pub struct SearchHit {
     /// Display / primary id (source `product_id`).
     pub asin: String,
+    /// Library public uuid (indexed lowercased; returned as stored).
+    pub uuid: String,
     pub account_id: String,
     pub title: String,
     pub score: f32,
@@ -210,6 +212,11 @@ impl SearchEngine {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_ascii_uppercase();
+            let uuid = doc
+                .get_first(self.uuid)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let account_id = doc
                 .get_first(self.account)
                 .and_then(|v| v.as_str())
@@ -222,6 +229,7 @@ impl SearchEngine {
                 .to_string();
             hits.push(SearchHit {
                 asin,
+                uuid,
                 account_id,
                 title,
                 score,
@@ -258,6 +266,8 @@ mod tests {
         let hits = engine.search("potter", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].asin, "B00TEST");
+        let stored = library.get_book("B00TEST", "acct").unwrap().unwrap();
+        assert_eq!(hits[0].uuid, stored.uuid.to_ascii_lowercase());
     }
 
     #[test]

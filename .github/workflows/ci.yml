@@ -26,12 +26,25 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           env-vars: RUSTFLAGS
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build UI
+        run: |
+          cd ui
+          npm ci
+          npm run build
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -51,12 +64,25 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           env-vars: RUSTFLAGS
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build UI
+        run: |
+          cd ui
+          npm ci
+          npm run build
 
       - name: Build release binaries
         env:

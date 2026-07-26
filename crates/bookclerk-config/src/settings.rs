@@ -106,6 +106,8 @@ pub struct DaemonConfig {
     pub listen: String,
     /// Emit JSON logs on stderr when true (journald sink is always structured).
     pub json_logs: bool,
+    /// Operator authentication for the HTTP API / GUI.
+    pub auth: DaemonAuthConfig,
 }
 
 impl Default for DaemonConfig {
@@ -113,6 +115,29 @@ impl Default for DaemonConfig {
         Self {
             listen: String::from("127.0.0.1:8787"),
             json_logs: true,
+            auth: DaemonAuthConfig::default(),
+        }
+    }
+}
+
+/// Operator token / session settings for the daemon HTTP API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DaemonAuthConfig {
+    /// When true, `/api/*` (and legacy control routes) require Bearer or session cookie.
+    pub enabled: bool,
+    /// Token file path relative to `$BOOKCLERK_FILES_DIR`, or absolute.
+    pub token_file: String,
+    /// Browser session lifetime in hours after `POST /api/auth/login`.
+    pub session_ttl_hours: u64,
+}
+
+impl Default for DaemonAuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            token_file: String::from("operator.token"),
+            session_ttl_hours: 12,
         }
     }
 }
@@ -318,6 +343,20 @@ impl Config {
         }
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_JSON_LOGS") {
             self.daemon.json_logs = parse_bool(&v).unwrap_or(self.daemon.json_logs);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_AUTH_ENABLED") {
+            self.daemon.auth.enabled = parse_bool(&v).unwrap_or(self.daemon.auth.enabled);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_OPERATOR_TOKEN_FILE") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.daemon.auth.token_file = trimmed.to_string();
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_AUTH_SESSION_TTL_HOURS") {
+            if let Ok(hours) = v.trim().parse::<u64>() {
+                self.daemon.auth.session_ttl_hours = hours.max(1);
+            }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_SHARE_REPORTS")
             .or_else(|_| std::env::var("BOOKCLERK_DIAGNOSTICS_UPLOAD_ENABLED"))

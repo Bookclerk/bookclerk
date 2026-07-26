@@ -6,6 +6,7 @@ mod extras;
 mod journal;
 mod logging;
 mod naming_profile;
+mod operator_auth;
 mod output;
 mod overrides;
 mod path_limits;
@@ -30,6 +31,9 @@ pub use extras::{
 pub use journal::{journald_available, os_log_available, OsLogFacility, OsLogLayer};
 pub use logging::{init_tracing, init_tracing_with, LogFormat, LoggingHandle, TracingOptions};
 pub use naming_profile::{NamingProfile, NamingProfileTemplates, ResolvedNamingTemplates};
+pub use operator_auth::{
+    operator_token_path, read_operator_token, read_or_create_operator_token, ResolveOperatorToken,
+};
 pub use output::{
     normalize_storage_prefix, BadBookAction, DestinationNaming, MultiDestinationMode,
     OutputBackendKind, OutputConfig, OutputLocalConfig, OutputS3Config,
@@ -49,5 +53,6 @@ pub use redact::{
     sanitize_for_remote_upload, truncate_upload_message, REDACTED,
 };
 pub use settings::{
-    AudioQuality, AuthConfig, Config, DaemonConfig, DiagnosticsConfig, LibraryConfig,
+    AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig, DiagnosticsConfig,
+    LibraryConfig,
 };

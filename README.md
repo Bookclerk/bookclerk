@@ -23,9 +23,10 @@ portal for services like [Audiobookshelf](https://www.audiobookshelf.org/).
 | **Integrations** | Audiobookshelf scan notify, claim tickets, Connect portal |
 | **Plugins** | External source/integration plugins over JSON-RPC stdio |
 | **Ops** | `bookclerk` CLI + `bookclerkd` daemon, Docker, systemd |
+| **GUI** | Shared React web UI served by `bookclerkd` (native/tray deferred) |
 
-GUI is intentionally out of scope for now; the HTTP control plane is the API
-surface for future UIs.
+The library GUI and `/api/*` control plane live in Rust (`bookclerkd`) with
+operator-token auth. See [docs/gui.md](docs/gui.md).
 
 ## Architecture at a glance
 
@@ -144,18 +145,21 @@ use per-source env vars (see [docs/sources.md](docs/sources.md)).
 | Binary | Role |
 | --- | --- |
 | `bookclerk` | One-shot CLI (`auth`, `library`, `integrations`, `plugins`, …) |
-| `bookclerkd` | Long-running daemon: scheduled scan/acquire + HTTP control plane |
+| `bookclerkd` | Long-running daemon: scheduled scan/acquire + HTTP API / GUI |
 
-Default control plane: `127.0.0.1:8787` — `GET /health`, `GET /status`,
-`POST /scan`, `POST /acquire`, `GET /jobs` (JSON bodies need
-`Content-Type: application/json`).
+Default listen: `127.0.0.1:8787`. Public routes: `GET /health`, static UI,
+`POST /api/auth/login`. Authenticated: `/api/status`, `/api/jobs`,
+`/api/library/*`, plus legacy `/status` `/scan` `/acquire` `/jobs`.
+JSON POST bodies need `Content-Type: application/json`.
 
 ## Status
 
 Headless multi-source acquire, daemon, destinations, Audiobookshelf
-integration, and the plugin host are in active use. Libation Classic/Chardonnay
-CLI parity for the Audible acquire surface is tracked in
-[docs/libation-parity.md](docs/libation-parity.md). A native/web GUI is deferred.
+integration, the plugin host, and an MVP web library GUI are in active
+development. A native desktop/tray shell is deferred until a maintained
+wrapper is available (see [docs/gui.md](docs/gui.md)). Libation
+Classic/Chardonnay CLI parity for the Audible acquire surface is tracked in
+[docs/libation-parity.md](docs/libation-parity.md).
 
 ## License
 

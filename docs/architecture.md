@@ -5,7 +5,7 @@ Bookclerk is a Cargo workspace of library crates plus two binaries:
 | Binary | Crate | Role |
 | --- | --- | --- |
 | `bookclerk` | `bookclerk-cli` | One-shot operator CLI |
-| `bookclerkd` | `bookclerkd` | Scheduled jobs + HTTP control plane |
+| `bookclerkd` | `bookclerkd` | Scheduled jobs + authenticated HTTP API / GUI |
 
 Both share the same core: sources, library DB, acquire pipeline, storage, and
 integrations.
@@ -97,13 +97,20 @@ Relative `output.local.root` values resolve under this directory.
 
 Default listen: `127.0.0.1:8787` (`BOOKCLERK_DAEMON_LISTEN` / `daemon.listen`).
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| `GET` | `/health` | Liveness |
-| `GET` | `/status` | Daemon + job snapshot |
-| `POST` | `/scan` | Queue a library scan (`Content-Type: application/json`) |
-| `POST` | `/acquire` | Queue acquire |
-| `GET` | `/jobs` | Job list |
+Operator auth (`[daemon.auth]`, token file / `BOOKCLERK_OPERATOR_TOKEN`) gates
+the API. See [gui.md](gui.md) and [operations.md](operations.md).
 
-The HTTP surface is **unauthenticated**. Keep it on loopback or behind a trusted
-network; see [operations.md](operations.md).
+| Method | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/health` | no | Liveness |
+| `POST` | `/api/auth/login` | no | Operator token → session cookie |
+| `GET` | `/api/auth/me` | yes | SPA bootstrap |
+| `GET` | `/api/status`, `/status` | yes | Counts + listen |
+| `GET` | `/api/jobs`, `/jobs` | yes | Job list |
+| `POST` | `/api/library/scan`, `/scan` | yes | Queue scan |
+| `POST` | `/api/library/acquire`, `/acquire` | yes | Queue acquire |
+| `GET` | `/api/library/books` | yes | Paginated book rows |
+| `GET` | `/api/library/books/{uuid}/cover` | yes | Best-effort local cover |
+| static | `/` | no | Built React UI (`ui/dist`) when present |
+
+Connect portal under `/connect` keeps its own claim-ticket session model.
