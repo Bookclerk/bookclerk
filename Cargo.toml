@@ -20,7 +20,6 @@ members = [
     "crates/bookclerk-plugin-examples/echo-integration",
     "crates/bookclerk-cli",
     "crates/bookclerkd",
-    "crates/bookclerk-desktop",
 ]
 default-members = [
     "crates/bookclerk-cli",

@@ -6,7 +6,6 @@ Bookclerk is a Cargo workspace of library crates plus two binaries:
 | --- | --- | --- |
 | `bookclerk` | `bookclerk-cli` | One-shot operator CLI |
 | `bookclerkd` | `bookclerkd` | Scheduled jobs + authenticated HTTP API / GUI |
-| `bookclerk-desktop` | `bookclerk-desktop` | Tauri shell + tray (optional; not a default-member) |
 
 Both share the same core: sources, library DB, acquire pipeline, storage, and
 integrations.
