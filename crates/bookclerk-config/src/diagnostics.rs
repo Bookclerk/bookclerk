@@ -378,13 +378,15 @@ fn post_http_payload(
         return Err("diagnostics collector_url is empty".into());
     }
     ureq::post(&url)
-        .set("Content-Type", "application/json")
-        .set(
+        .header("Content-Type", "application/json")
+        .header(
             "User-Agent",
             &format!("bookclerk-diagnostics/{}", payload.version),
         )
-        .timeout(Duration::from_secs(10))
-        .send_string(&body)
+        .config()
+        .timeout_global(Some(Duration::from_secs(10)))
+        .build()
+        .send(body.as_str())
         .map_err(|e| format!("diagnostics collector upload failed: {e}"))?;
     Ok(url)
 }

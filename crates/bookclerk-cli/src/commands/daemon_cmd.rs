@@ -152,23 +152,25 @@ async fn post_json_async(url: &str, body: Value, bearer: Option<&str>) -> anyhow
 fn get_json(url: &str, bearer: Option<&str>) -> anyhow::Result<Value> {
     let mut req = ureq::get(url);
     if let Some(token) = bearer {
-        req = req.set("Authorization", &format!("Bearer {token}"));
+        req = req.header("Authorization", format!("Bearer {token}"));
     }
-    let resp = req
+    let mut resp = req
         .call()
         .map_err(|err| anyhow::anyhow!("daemon GET {url}: {err}"))?;
-    resp.into_json()
+    resp.body_mut()
+        .read_json()
         .map_err(|err| anyhow::anyhow!("daemon JSON: {err}"))
 }
 
 fn post_json(url: &str, body: &Value, bearer: Option<&str>) -> anyhow::Result<Value> {
-    let mut req = ureq::post(url).set("Content-Type", "application/json");
+    let mut req = ureq::post(url).header("Content-Type", "application/json");
     if let Some(token) = bearer {
-        req = req.set("Authorization", &format!("Bearer {token}"));
+        req = req.header("Authorization", format!("Bearer {token}"));
     }
-    let resp = req
+    let mut resp = req
         .send_json(body)
         .map_err(|err| anyhow::anyhow!("daemon POST {url}: {err}"))?;
-    resp.into_json()
+    resp.body_mut()
+        .read_json()
         .map_err(|err| anyhow::anyhow!("daemon JSON: {err}"))
 }

@@ -75,13 +75,15 @@ impl DaemonHandle {
     pub fn trigger_scan(&self, config: &Config) -> anyhow::Result<()> {
         let url = format!("{}/api/library/scan", self.base_url);
         let mut req = ureq::post(&url)
-            .set("Content-Type", "application/json")
-            .timeout(Duration::from_secs(10));
+            .header("Content-Type", "application/json")
+            .config()
+            .timeout_global(Some(Duration::from_secs(10)))
+            .build();
         if config.daemon.auth.enabled {
             let token = existing_operator_token(config)?;
-            req = req.set("Authorization", &format!("Bearer {token}"));
+            req = req.header("Authorization", format!("Bearer {token}"));
         }
-        req.send_string("{}")?;
+        req.send("{}")?;
         Ok(())
     }
 
@@ -131,7 +133,9 @@ fn existing_operator_token(config: &Config) -> anyhow::Result<String> {
 
 fn daemon_reachable(base: &str) -> bool {
     ureq::get(&format!("{base}/health"))
-        .timeout(Duration::from_secs(2))
+        .config()
+        .timeout_global(Some(Duration::from_secs(2)))
+        .build()
         .call()
         .is_ok()
 }

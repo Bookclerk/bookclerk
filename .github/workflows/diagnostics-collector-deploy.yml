@@ -42,7 +42,7 @@ jobs:
       run:
         working-directory: tools/diagnostics-collector
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Require deploy secrets
         env:

@@ -68,12 +68,12 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Sync HTTP for crash/error diagnostics upload (usable from panic hooks).
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
 
 # Serde / config
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1.1"
 directories = "6"
 
 # CLI / HTTP
@@ -118,7 +118,7 @@ wiremock = "0.6"
 # HTML / media helpers
 scraper = "0.27"
 html-escape = "0.2"
-infer = "0.19"
+infer = "0.22"
 mime_guess = "2"
 
 [profile.release]

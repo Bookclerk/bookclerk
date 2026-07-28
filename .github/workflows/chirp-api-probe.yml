@@ -27,7 +27,7 @@ jobs:
     name: contract / live smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check client constants
         run: python3 scripts/source-probes/check_client_constants.py --sources chirp

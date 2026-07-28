@@ -55,7 +55,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve collector base URL
         id: collector
@@ -73,7 +73,7 @@ jobs:
 
       - name: Restore pull cursor
         if: ${{ inputs.force_full != true }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .diagnostics-cursor
           key: diagnostics-pull-cursor-v1
@@ -199,7 +199,7 @@ jobs:
 
       - name: Save pull cursor
         if: ${{ always() && steps.pull.outcome == 'success' && steps.pull.outputs.next_since != '' && steps.pull.outputs.next_since != '0' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .diagnostics-cursor
           key: diagnostics-pull-cursor-v1-${{ github.run_id }}-${{ steps.pull.outputs.next_since }}-${{ steps.pull.outputs.next_after }}
