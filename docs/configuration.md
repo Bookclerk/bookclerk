@@ -27,6 +27,7 @@ Classic Libation setting names are accepted as aliases where documented in
 | `[sources.<id>]` | Per-storefront enable + store knobs |
 | `[daemon]` | Listen address, JSON logs |
 | `[integrations]` / `[integrations.<id>]` | Portal + outbound integrations |
+| `[discovery]` | Recommendations, embeddings, Open Library, listening sync |
 | `[diagnostics]` | Opt-in report sharing |
 
 ## Important environment variables
@@ -45,6 +46,9 @@ Classic Libation setting names are accepted as aliases where documented in
 | `BOOKCLERK_GA_PASSWORD` | GraphicAudio login |
 | `BOOKCLERK_GA_ACCESS` | GraphicAudio access mode (`web`/`zip`/`device`) |
 | `BOOKCLERK_ABS_API_KEY` | Audiobookshelf API key |
+| `BOOKCLERK_DISCOVERY_EMBEDDINGS_ENABLED` | Local ONNX embeddings on/off |
+| `BOOKCLERK_DISCOVERY_OPENLIBRARY_ENABLED` | Open Library enrichment on/off |
+| `BOOKCLERK_DISCOVERY_RECOMMEND_LIMIT` | Default recommendation count |
 | `BOOKCLERK_OUTPUT_LOCAL_ROOT` | Local destination root |
 | `BOOKCLERK_OUTPUT_S3_*` / `BOOKCLERK_S3_*` | S3 destination settings (incl. `CREDENTIALS_FILE`) |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | S3 credentials override (else `Accounts/*.s3.auth`, else AWS SDK/CLI shared chain) |

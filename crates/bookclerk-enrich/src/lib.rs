@@ -20,11 +20,13 @@ pub use enrich::{
 };
 pub use error::{EnrichError, Result};
 pub use match_score::{
-    calculate_match_confidence, clean_author_for_compares, clean_title_for_compares, is_valid_asin,
-    isbn_exact_match, levenshtein_distance, levenshtein_similarity, normalize_isbn, MatchQuery,
-    ScoreInput,
+    calculate_match_confidence, canonicalize_isbn, clean_author_for_compares,
+    clean_title_for_compares, is_valid_asin, isbn_exact_match, levenshtein_distance,
+    levenshtein_similarity, normalize_isbn, MatchQuery, ScoreInput,
 };
 pub use public_meta::{
     fetch_audnexus_book, fetch_audnexus_chapters, fetch_public_chapter_info, normalize_region,
-    public_http_client, region_tld, search_catalog_asins, search_catalog_keywords,
+    public_http_client, region_tld, search_catalog_asins, search_catalog_by_narrator,
+    search_catalog_by_series_asin, search_catalog_keywords, search_catalog_products,
+    search_catalog_products_ex, CatalogProduct,
 };

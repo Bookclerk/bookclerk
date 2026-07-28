@@ -1,0 +1,50 @@
+[package]
+name = "bookclerk-discover"
+description = "Recommendations, embeddings, listening sync, and title request helpers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+anyhow.workspace = true
+bookclerk-chirp.workspace = true
+bookclerk-config.workspace = true
+bookclerk-enrich.workspace = true
+bookclerk-graphicaudio.workspace = true
+bookclerk-library.workspace = true
+chrono.workspace = true
+# Always compiled in: try MiniLM ONNX at runtime, fall back to local-hash.
+# - no image-models (drops rav1e/image weight)
+# - load-dynamic: do not statically link ORT (works on glibc < 2.38 hosts;
+#   OnnxEmbedder::open downloads/loads the dylib or fails → hash fallback)
+# - download-binaries: fetch ORT shared lib for dynamic load when needed
+# Transitive crates.io `paste` is INFO/unmaintained (RUSTSEC-2024-0436); ignored in
+# osv-scanner.toml — see that file and docs/discovery.md.
+fastembed = { version = "5", default-features = false, features = [
+    "ort-load-dynamic",
+    "ort-download-binaries-native-tls",
+    "hf-hub-native-tls",
+] }
+hex = "0.4"
+reqwest = { version = "0.13", default-features = true, features = ["json", "query"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11"
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+wiremock.workspace = true
+
+[lints]
+workspace = true

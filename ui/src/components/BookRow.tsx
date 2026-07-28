@@ -21,10 +21,12 @@ export function BookRow({
   book,
   onAcquire,
   busy,
+  showAcquire = true,
 }: {
   book: BookRecord;
   onAcquire: (book: BookRecord) => void;
   busy: boolean;
+  showAcquire?: boolean;
 }) {
   const [coverFailed, setCoverFailed] = useState(false);
   const meta = [book.authors, book.narrators ? `narr. ${book.narrators}` : null]
@@ -75,7 +77,7 @@ export function BookRow({
         ) : null}
       </div>
       <div className="flex shrink-0 items-center">
-        {book.acquire_status !== "acquired" ? (
+        {showAcquire && book.acquire_status !== "acquired" ? (
           <Button
             variant="secondary"
             className="px-2.5 py-1.5"

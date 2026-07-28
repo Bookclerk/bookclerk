@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-integrations"
-description = "Outbound integrations (Audiobookshelf) and connect portal helpers"
+description = "Outbound integrations (Audiobookshelf) and SPA portal APIs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

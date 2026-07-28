@@ -29,6 +29,7 @@ bookclerk-search.workspace = true
 bookclerk-source.workspace = true
 bookclerk-storage.workspace = true
 bookclerk-integrations.workspace = true
+bookclerk-discover.workspace = true
 bookclerk-plugin.workspace = true
 rusqlite.workspace = true
 chrono.workspace = true

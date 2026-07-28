@@ -85,4 +85,56 @@ impl IntegrationRegistry {
             .cloned()
             .collect()
     }
+
+    /// Integrations that can sync listening / progress.
+    #[must_use]
+    pub fn listening_sync_providers(&self) -> Vec<Arc<dyn Integration>> {
+        self.integrations
+            .iter()
+            .filter(|i| i.supports_listening_sync())
+            .cloned()
+            .collect()
+    }
+
+    /// Sync listening progress from every capable integration into the library DB.
+    ///
+    /// Individual failures are recorded in the summary and do not abort siblings.
+    pub async fn sync_listening_progress_all(
+        &self,
+        library: &bookclerk_library::LibraryStore,
+    ) -> crate::types::SyncListeningSummary {
+        use crate::types::{SyncListeningProviderResult, SyncListeningSummary};
+
+        let mut summary = SyncListeningSummary::default();
+        let providers = self.listening_sync_providers();
+        if providers.is_empty() {
+            return summary;
+        }
+        for integration in providers {
+            match integration.sync_listening_progress(library).await {
+                Ok(n) => {
+                    info!(
+                        id = integration.id(),
+                        upserted = n,
+                        "listening sync complete"
+                    );
+                    summary.upserted += n;
+                    summary.by_provider.push(SyncListeningProviderResult {
+                        id: integration.id().to_string(),
+                        upserted: n,
+                        error: None,
+                    });
+                }
+                Err(err) => {
+                    warn!(id = integration.id(), %err, "listening sync failed");
+                    summary.by_provider.push(SyncListeningProviderResult {
+                        id: integration.id().to_string(),
+                        upserted: 0,
+                        error: Some(err.to_string()),
+                    });
+                }
+            }
+        }
+        summary
+    }
 }

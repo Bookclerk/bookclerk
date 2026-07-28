@@ -40,7 +40,7 @@ pub use host::{
 pub use manifest::{PluginKind, PluginManifest};
 pub use protocol::{
     methods, CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-    HandshakeResult, HealthDto, PLUGIN_API_VERSION,
+    HandshakeResult, HealthDto, SyncListeningResultDto, PLUGIN_API_VERSION,
 };
 pub use rpc::{PluginClient, PluginGuest};
 

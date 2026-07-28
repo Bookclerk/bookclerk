@@ -27,6 +27,9 @@ pub struct Config {
     pub sources: SourcesConfig,
     /// Optional third-party integrations (`[integrations.*]`). Not diagnostics.
     pub integrations: IntegrationsConfig,
+    /// Discovery / recommendations / request queue (`[discovery]`).
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
     /// Opt-in crash / error-burst report upload (`[diagnostics]`).
     #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
@@ -71,6 +74,59 @@ pub struct LibraryConfig {
     /// accompanying sidecars) onto the configured naming-profile layout.
     /// Default false — match in place without moving files.
     pub fix_storage_layout: bool,
+}
+
+/// Discovery / recommendations / embeddings settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct DiscoveryConfig {
+    /// Run local embeddings for similarity scoring of storefront candidates.
+    pub embeddings_enabled: bool,
+    /// Model id (`all-minilm-l6-v2-q` preferred; runtime may fall back to `local-hash-v1`).
+    pub embedding_model: String,
+    /// ONNX intra-op threads (keep at 1 on small VPSes).
+    pub embed_intra_threads: usize,
+    /// Fill metadata gaps via Open Library (low-volume, cached; not for bulk).
+    pub openlibrary_enabled: bool,
+    /// Contact email for Open Library User-Agent (API guidelines).
+    pub openlibrary_contact_email: Option<String>,
+    /// Max Open Library HTTP calls per enrich run.
+    pub openlibrary_max_requests_per_run: usize,
+    /// Reserved for a future WorldCat provider (requires API key).
+    pub worldcat_enabled: bool,
+    /// Expand recommendations from storefront catalogs (unowned titles).
+    pub storefront_candidates: bool,
+    /// Max local taste seeds used for storefront expansion.
+    pub storefront_seed_limit: usize,
+    /// Cap remote storefront HTTP calls per recommend run.
+    pub storefront_max_remote_calls: usize,
+    /// When true, drop GraphicAudio Magento series-set SKUs from candidates.
+    /// Default false — series sets are included.
+    pub exclude_graphicaudio_series_sets: bool,
+    /// How often `bookclerkd` syncs ABS listening progress (0 = disabled).
+    pub listen_sync_interval_minutes: u64,
+    /// Default recommendation list size.
+    pub recommend_limit: usize,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            embeddings_enabled: true,
+            embedding_model: String::from("all-minilm-l6-v2-q"),
+            embed_intra_threads: 1,
+            openlibrary_enabled: true,
+            openlibrary_contact_email: None,
+            openlibrary_max_requests_per_run: 25,
+            worldcat_enabled: false,
+            storefront_candidates: true,
+            storefront_seed_limit: 8,
+            storefront_max_remote_calls: 32,
+            exclude_graphicaudio_series_sets: false,
+            listen_sync_interval_minutes: 60,
+            recommend_limit: 20,
+        }
+    }
 }
 
 impl Default for LibraryConfig {
@@ -418,6 +474,49 @@ impl Config {
                 self.library.enrich_min_confidence = n.min(100);
             }
         }
+        if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_EMBEDDINGS_ENABLED") {
+            self.discovery.embeddings_enabled =
+                parse_bool(&v).unwrap_or(self.discovery.embeddings_enabled);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_EMBEDDING_MODEL") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.discovery.embedding_model = trimmed.to_string();
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_EMBED_INTRA_THREADS") {
+            if let Ok(n) = v.parse::<usize>() {
+                self.discovery.embed_intra_threads = n.max(1);
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_OPENLIBRARY_ENABLED") {
+            self.discovery.openlibrary_enabled =
+                parse_bool(&v).unwrap_or(self.discovery.openlibrary_enabled);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_OPENLIBRARY_CONTACT_EMAIL") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.discovery.openlibrary_contact_email = Some(trimmed.to_string());
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_STOREFRONT_CANDIDATES") {
+            self.discovery.storefront_candidates =
+                parse_bool(&v).unwrap_or(self.discovery.storefront_candidates);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_EXCLUDE_GRAPHICAUDIO_SERIES_SETS") {
+            self.discovery.exclude_graphicaudio_series_sets =
+                parse_bool(&v).unwrap_or(self.discovery.exclude_graphicaudio_series_sets);
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_LISTEN_SYNC_INTERVAL_MINUTES") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.discovery.listen_sync_interval_minutes = n;
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DISCOVERY_RECOMMEND_LIMIT") {
+            if let Ok(n) = v.parse::<usize>() {
+                self.discovery.recommend_limit = n.max(1);
+            }
+        }
         if let Ok(v) = std::env::var("BOOKCLERK_FIX_STORAGE_LAYOUT") {
             self.library.fix_storage_layout =
                 parse_bool(&v).unwrap_or(self.library.fix_storage_layout);
@@ -447,12 +546,6 @@ impl Config {
         if let Ok(v) = std::env::var("BOOKCLERK_AUTH_ALLOW_PLAINTEXT") {
             if let Some(b) = parse_bool(&v) {
                 self.auth.allow_plaintext = b;
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_PORTAL_BASE_PATH") {
-            let trimmed = v.trim();
-            if !trimmed.is_empty() {
-                self.integrations.portal_base_path = trimmed.to_string();
             }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_INTEGRATIONS_PUBLIC_ORIGIN") {
@@ -632,7 +725,6 @@ impl Config {
             ));
         }
         for reserved in [
-            "portal_base_path",
             "claim_ticket_ttl_hours",
             "public_origin",
             "portal_session_ttl_hours",

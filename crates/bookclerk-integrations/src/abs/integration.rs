@@ -255,6 +255,18 @@ impl Integration for AbsIntegration {
         self.scan_now(force).await
     }
 
+    fn supports_listening_sync(&self) -> bool {
+        self.client.is_some()
+    }
+
+    async fn sync_listening_progress(
+        &self,
+        library: &bookclerk_library::LibraryStore,
+    ) -> Result<usize> {
+        let client = self.require_client()?;
+        super::listening::sync_listening_progress(library, client).await
+    }
+
     async fn diagnose(&self) -> Result<Vec<String>> {
         let client = self.require_client()?;
         let auth = client.authorize().await?;

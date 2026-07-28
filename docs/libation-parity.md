@@ -152,7 +152,7 @@ checks), or **minor headless polish** listed under
 | Capability | Notes |
 | --- | --- |
 | Multi-storefront sources | Libro.fm, Chirp, GraphicAudio (+ plugin sources) |
-| Pluggable integrations | Audiobookshelf, Connect portal, external JSON-RPC plugins |
+| Pluggable integrations | Audiobookshelf, SPA claim/Accounts, external JSON-RPC plugins |
 | Multi-destination output | Local + S3/MinIO simultaneously |
 | S3 / MinIO storage | Not in classic Libation |
 | `bookclerkd` daemon + HTTP control plane | Scheduled scan / auto-acquire |

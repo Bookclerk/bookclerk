@@ -213,7 +213,25 @@ pub fn apply_enrichment_to_book(
         published_at,
     };
 
-    Ok(library.upsert_book(&book)?)
+    library.upsert_book(&book)?;
+
+    library.update_catalog_enrichment(
+        book_uuid,
+        &bookclerk_library::CatalogEnrichmentFields {
+            description: enrichment.description.clone(),
+            language: enrichment.language.clone(),
+            cover_url: enrichment.cover_url.clone(),
+            subjects: None,
+            categories: enrichment.categories.clone(),
+            enrich_source: Some(String::from("audible")),
+            enrich_confidence: enrichment.confidence,
+            enrich_updated_at: Some(chrono::Utc::now()),
+        },
+    )?;
+
+    library
+        .get_book_by_uuid(book_uuid)?
+        .ok_or_else(|| EnrichError::Sync(format!("book not found after enrich: {book_uuid}")))
 }
 
 /// Enrich library rows that lack an ASIN via public Audible catalog + Audnexus.

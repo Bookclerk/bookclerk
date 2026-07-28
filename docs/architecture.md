@@ -47,7 +47,7 @@ Bookclerk uses three first-class plugin roles (in-process and/or external):
 | --- | --- | --- |
 | **Source** | `ContentSource` | `audible`, `libro`, `chirp`, `graphicaudio` |
 | **Output / destination** | storage backends under `[output.*]` | `local`, `s3` |
-| **Integration** | `Integration` | `audiobookshelf`, Connect portal helpers |
+| **Integration** | `Integration` | `audiobookshelf`, SPA portal claim helpers |
 
 Third-party plugins are separate executables discovered via `plugin.toml` and
 spoken to over newline-delimited JSON-RPC on stdio. See [plugins.md](plugins.md).
@@ -64,6 +64,7 @@ spoken to over newline-delimited JSON-RPC on stdio. See [plugins.md](plugins.md)
 | Naming templates | `bookclerk-naming` |
 | Library DB | `bookclerk-library` |
 | Search | `bookclerk-search` |
+| Discovery / recommendations | `bookclerk-discover` |
 | Storage backends | `bookclerk-storage` |
 | Catalog enrichment | `bookclerk-enrich` |
 | Integrations + portal | `bookclerk-integrations` |
@@ -114,4 +115,4 @@ the API. See [gui.md](gui.md) and [operations.md](operations.md).
 | `GET` | `/api/library/books/{uuid}/cover` | yes | Best-effort local cover |
 | static | `/` | no | Built React UI (`ui/dist`) when present |
 
-Connect portal under `/connect` keeps its own claim-ticket session model.
+Portal claim sessions use `bookclerk_portal_session` (`Path=/`) via `/api/portal/*`.

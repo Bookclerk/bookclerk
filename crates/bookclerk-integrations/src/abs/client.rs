@@ -102,6 +102,28 @@ impl AbsApiClient {
         })
     }
 
+    /// `GET /api/users/{id}` — full user including `mediaProgress`.
+    pub async fn get_user(&self, user_id: &str) -> Result<AbsUserDetail> {
+        let resp = self
+            .http
+            .get(self.url(&format!("/api/users/{user_id}")))
+            .header("Authorization", self.bearer())
+            .send()
+            .await?;
+        Self::json(resp).await
+    }
+
+    /// `GET /api/items/{id}` — library item metadata for matching.
+    pub async fn get_library_item(&self, item_id: &str) -> Result<AbsLibraryItem> {
+        let resp = self
+            .http
+            .get(self.url(&format!("/api/items/{item_id}")))
+            .header("Authorization", self.bearer())
+            .send()
+            .await?;
+        Self::json(resp).await
+    }
+
     /// `GET /api/libraries`
     pub async fn list_libraries(&self) -> Result<Vec<AbsLibrary>> {
         let resp = self
@@ -217,6 +239,58 @@ pub struct AbsUser {
     pub typ: Option<String>,
     #[serde(rename = "type", default)]
     pub user_type: Option<String>,
+}
+
+/// Full ABS user payload including listening progress.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AbsUserDetail {
+    pub id: String,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default, rename = "mediaProgress")]
+    pub media_progress: Vec<AbsMediaProgress>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AbsMediaProgress {
+    pub id: String,
+    #[serde(rename = "libraryItemId")]
+    pub library_item_id: String,
+    #[serde(default)]
+    pub duration: Option<f64>,
+    #[serde(default)]
+    pub progress: Option<f64>,
+    #[serde(default, rename = "currentTime")]
+    pub current_time: Option<f64>,
+    #[serde(default, rename = "isFinished")]
+    pub is_finished: bool,
+    #[serde(default, rename = "lastUpdate")]
+    pub last_update: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AbsLibraryItem {
+    pub id: String,
+    #[serde(default)]
+    pub media: Option<AbsItemMedia>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AbsItemMedia {
+    #[serde(default)]
+    pub metadata: Option<AbsItemMetadata>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AbsItemMetadata {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub author_name: Option<String>,
+    #[serde(default)]
+    pub asin: Option<String>,
+    #[serde(default)]
+    pub isbn: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

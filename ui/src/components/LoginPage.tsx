@@ -1,20 +1,61 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { login } from "@/lib/api";
+import {
+  authMe,
+  login,
+  portalLoginIntegration,
+  portalRedeem,
+  type AuthSession,
+} from "@/lib/api";
+import { cn } from "@/lib/utils";
 
-export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
+type Tab = "operator" | "claim" | "return";
+
+export function LoginPage({
+  onSuccess,
+}: {
+  onSuccess: (session: AuthSession) => void;
+}) {
+  const [tab, setTab] = useState<Tab>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("ticket") ? "claim" : "operator";
+  });
   const [token, setToken] = useState("");
+  const [ticket, setTicket] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("ticket") ?? "";
+  });
+  const [provider, setProvider] = useState("audiobookshelf");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function onSubmit(e: FormEvent) {
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const t = params.get("ticket");
+    if (t) {
+      setTicket(t);
+      setTab("claim");
+    }
+  }, []);
+
+  async function finishPortal() {
+    const session = await authMe();
+    if (!session.authenticated) {
+      throw new Error("Signed in but session was not established.");
+    }
+    onSuccess(session);
+  }
+
+  async function onOperatorSubmit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await login(token.trim());
-      onSuccess();
+      const session = await login(token.trim());
+      onSuccess(session);
     } catch {
       setError("Invalid operator token.");
     } finally {
@@ -22,49 +63,209 @@ export function LoginPage({ onSuccess }: { onSuccess: () => void }) {
     }
   }
 
+  async function onClaimSubmit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await portalRedeem(ticket.trim());
+      await finishPortal();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid or expired ticket.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onReturnSubmit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await portalLoginIntegration({
+        provider: provider.trim(),
+        username: username.trim(),
+        password,
+      });
+      await finishPortal();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sign-in failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="flex min-h-full items-center justify-center px-4 py-10">
-      <form
-        onSubmit={onSubmit}
-        className="w-full max-w-md animate-[fadeUp_420ms_ease-out]"
-      >
+      <div className="w-full max-w-md animate-[fadeUp_420ms_ease-out]">
         <img
           src="/bookclerk-logo.svg"
           alt="Bookclerk"
           className="mb-8 h-12 w-auto"
         />
         <h1 className="font-display text-3xl font-bold tracking-tight text-ink">
-          Operator sign-in
+          Sign in
         </h1>
         <p className="mt-2 text-sm text-ink/70">
-          Paste the operator API token from{" "}
-          <code className="rounded bg-fold/60 px-1 py-0.5 text-[13px]">
-            operator.token
-          </code>{" "}
-          (or <code className="rounded bg-fold/60 px-1 py-0.5 text-[13px]">BOOKCLERK_OPERATOR_TOKEN</code>).
+          Operator token, claim ticket, or return with an integration account.
         </p>
-        <label className="mt-6 block text-sm font-semibold" htmlFor="token">
-          Operator token
-        </label>
-        <Input
-          id="token"
-          type="password"
-          autoComplete="current-password"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          className="mt-1.5"
-          placeholder="64-character hex token"
-          required
-        />
-        {error ? (
-          <p className="mt-2 text-sm font-medium text-brick" role="alert">
-            {error}
-          </p>
+
+        <div
+          className="mt-6 flex gap-1 rounded-md border border-ink/10 bg-white/40 p-1"
+          role="tablist"
+        >
+          {(
+            [
+              ["operator", "Operator"],
+              ["claim", "Claim ticket"],
+              ["return", "Return visit"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              className={cn(
+                "flex-1 rounded px-2 py-1.5 text-sm font-medium transition-colors",
+                tab === id
+                  ? "bg-ink text-paper shadow-sm"
+                  : "text-ink/60 hover:text-ink",
+              )}
+              onClick={() => {
+                setTab(id);
+                setError(null);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === "operator" ? (
+          <form onSubmit={onOperatorSubmit} className="mt-5">
+            <p className="text-sm text-ink/70">
+              Paste the operator API token from{" "}
+              <code className="rounded bg-fold/60 px-1 py-0.5 text-[13px]">
+                operator.token
+              </code>{" "}
+              (or{" "}
+              <code className="rounded bg-fold/60 px-1 py-0.5 text-[13px]">
+                BOOKCLERK_OPERATOR_TOKEN
+              </code>
+              ).
+            </p>
+            <label className="mt-4 block text-sm font-semibold" htmlFor="token">
+              Operator token
+            </label>
+            <Input
+              id="token"
+              type="password"
+              autoComplete="current-password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              className="mt-1.5"
+              placeholder="64-character hex token"
+              required
+            />
+            {error ? (
+              <p className="mt-2 text-sm font-medium text-brick" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <Button type="submit" className="mt-5 w-full" disabled={busy || !token}>
+              {busy ? "Signing in…" : "Open library"}
+            </Button>
+          </form>
         ) : null}
-        <Button type="submit" className="mt-5 w-full" disabled={busy || !token}>
-          {busy ? "Signing in…" : "Open library"}
-        </Button>
-      </form>
+
+        {tab === "claim" ? (
+          <form onSubmit={onClaimSubmit} className="mt-5">
+            <p className="text-sm text-ink/70">
+              Use a ticket issued when your library user was created.
+            </p>
+            <label className="mt-4 block text-sm font-semibold" htmlFor="ticket">
+              Claim ticket
+            </label>
+            <Input
+              id="ticket"
+              value={ticket}
+              onChange={(e) => setTicket(e.target.value)}
+              className="mt-1.5"
+              placeholder="Paste ticket"
+              autoComplete="off"
+              spellCheck={false}
+              required
+            />
+            {error ? (
+              <p className="mt-2 text-sm font-medium text-brick" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <Button
+              type="submit"
+              className="mt-5 w-full"
+              disabled={busy || !ticket.trim()}
+            >
+              {busy ? "Redeeming…" : "Continue"}
+            </Button>
+          </form>
+        ) : null}
+
+        {tab === "return" ? (
+          <form onSubmit={onReturnSubmit} className="mt-5">
+            <p className="text-sm text-ink/70">
+              Sign in with your integration credentials to manage store links.
+            </p>
+            <label className="mt-4 block text-sm font-semibold" htmlFor="provider">
+              Provider
+            </label>
+            <Input
+              id="provider"
+              value={provider}
+              onChange={(e) => setProvider(e.target.value)}
+              className="mt-1.5"
+              placeholder="audiobookshelf"
+              required
+            />
+            <label className="mt-3 block text-sm font-semibold" htmlFor="username">
+              Username
+            </label>
+            <Input
+              id="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="mt-1.5"
+              autoComplete="username"
+              required
+            />
+            <label className="mt-3 block text-sm font-semibold" htmlFor="password">
+              Password
+            </label>
+            <Input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="mt-1.5"
+              autoComplete="current-password"
+              required
+            />
+            {error ? (
+              <p className="mt-2 text-sm font-medium text-brick" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <Button
+              type="submit"
+              className="mt-5 w-full"
+              disabled={busy || !provider.trim() || !username.trim() || !password}
+            >
+              {busy ? "Signing in…" : "Sign in"}
+            </Button>
+          </form>
+        ) : null}
+      </div>
       <style>{`
         @keyframes fadeUp {
           from { opacity: 0; transform: translateY(10px); }

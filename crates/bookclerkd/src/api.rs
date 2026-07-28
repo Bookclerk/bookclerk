@@ -4,16 +4,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Json;
 use axum::Router;
 use bookclerk_acquire::sidecar_key;
 use bookclerk_config::Config;
-use bookclerk_integrations::{portal_router, IntegrationRegistry, PortalState};
-use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
+use bookclerk_integrations::{portal_spa_router, IntegrationRegistry, PortalState};
+use bookclerk_library::{
+    AcquireStatus, BookRecord, LibraryStore, NewTitleRequest, RequestStatus, TitleRequestRecord,
+};
 use bookclerk_search::{SearchEngine, SearchHit};
 use bookclerk_source::ContentSource;
 use serde::{Deserialize, Serialize};
@@ -108,13 +110,8 @@ struct BooksResponse {
     offset: usize,
 }
 
-/// Build the HTTP router (API + optional static UI + Connect portal).
-pub fn router(
-    state: Arc<AppState>,
-    portal_base: String,
-    files_dir: PathBuf,
-    ui_dist: Option<PathBuf>,
-) -> Router {
+/// Build the HTTP router (API + optional static UI + SPA portal APIs).
+pub fn router(state: Arc<AppState>, files_dir: PathBuf, ui_dist: Option<PathBuf>) -> Router {
     let portal_state = PortalState {
         config: state.config.clone(),
         library: state.library.clone(),
@@ -123,7 +120,7 @@ pub fn router(
         sources: state.sources.clone(),
     };
 
-    let protected = Router::new()
+    let operator_only = Router::new()
         .route("/status", get(status))
         .route("/scan", post(trigger_scan))
         .route("/acquire", post(trigger_acquire))
@@ -133,26 +130,54 @@ pub fn router(
         .route("/api/jobs", get(list_jobs))
         .route("/api/library/scan", post(trigger_scan))
         .route("/api/library/acquire", post(trigger_acquire))
-        .route("/api/library/books", get(list_books))
-        .route("/api/library/books/{uuid}", get(get_book))
-        .route("/api/library/books/{uuid}/cover", get(get_book_cover))
-        .route("/api/auth/logout", post(auth::logout))
-        .route("/api/auth/me", get(auth::me))
+        .route("/api/discover/sync-listening", post(sync_listening))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_operator_auth,
         ))
         .with_state(state.clone());
 
+    let shared = Router::new()
+        .route("/api/library/books", get(list_books))
+        .route("/api/library/books/{uuid}", get(get_book))
+        .route("/api/library/books/{uuid}/cover", get(get_book_cover))
+        .route(
+            "/api/discover/recommendations",
+            get(discover_recommendations),
+        )
+        .route(
+            "/api/discover/purchase-hints",
+            post(discover_purchase_hints),
+        )
+        .route(
+            "/api/discover/purchase-hints/batch",
+            post(discover_purchase_hints_batch),
+        )
+        .route("/api/discover/search", get(discover_catalog_search))
+        .route("/api/wishlist", get(list_wishlist).post(create_wishlist))
+        .route("/api/wishlist/{uuid}", delete(delete_wishlist))
+        .route("/api/request-queue", get(list_request_queue))
+        .route("/api/auth/logout", post(auth::logout))
+        .route("/api/auth/me", get(auth::me))
+        .route(
+            "/api/preferences",
+            get(get_preferences).patch(patch_preferences),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_operator_or_portal_auth,
+        ))
+        .with_state(state.clone());
+
     let mut app = Router::new()
         .route("/health", get(health))
         .route("/api/auth/login", post(auth::login))
-        .merge(protected)
+        .merge(operator_only)
+        .merge(shared)
         .with_state(state);
 
-    if !portal_base.is_empty() {
-        app = app.nest(&portal_base, portal_router(portal_state));
-    }
+    // SPA Accounts / claim APIs (Path=/ portal session cookie).
+    app = app.nest("/api/portal", portal_spa_router(portal_state));
 
     if let Some(dist) = ui_dist {
         if dist.is_dir() {
@@ -168,7 +193,7 @@ pub fn router(
         }
     }
 
-    // Outermost: normalize `/connect/` → `/connect` before route matching.
+    // Outermost: normalize trailing slashes before route matching.
     app.layer(NormalizePathLayer::trim_trailing_slash())
         .layer(TraceLayer::new_for_http())
 }
@@ -297,11 +322,24 @@ async fn trigger_integration_scan(
 
 async fn list_books(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<BooksQuery>,
 ) -> Result<Json<BooksResponse>, StatusCode> {
-    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let limit = query.limit.unwrap_or(40).clamp(1, 500);
     let offset = query.offset.unwrap_or(0);
     let status_filter = query.status.as_deref().and_then(AcquireStatus::parse);
+
+    // Portal users only see books from accounts they linked (contributed).
+    let portal_accounts: Option<std::collections::HashSet<String>> =
+        if let Some(identity) = auth::caller_portal_identity(&state, &headers).await {
+            let links = state
+                .library
+                .list_account_links(identity.id)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            Some(links.into_iter().map(|l| l.account_id).collect())
+        } else {
+            None
+        };
 
     let mut books = if let Some(q) = query.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let cfg = state.config.read().await;
@@ -317,6 +355,11 @@ async fn list_books(
                     continue;
                 }
             }
+            if let Some(allowed) = portal_accounts.as_ref() {
+                if !allowed.contains(&hit.account_id) {
+                    continue;
+                }
+            }
             if let Some(book) = book_for_search_hit(&state.library, &hit)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
             {
@@ -324,10 +367,37 @@ async fn list_books(
             }
         }
         out
+    } else if let Some(account) = query.account.as_deref() {
+        if let Some(allowed) = portal_accounts.as_ref() {
+            if !allowed.contains(account) {
+                Vec::new()
+            } else {
+                state
+                    .library
+                    .list_books(Some(account))
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            }
+        } else {
+            state
+                .library
+                .list_books(Some(account))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        }
+    } else if let Some(allowed) = portal_accounts.as_ref() {
+        let mut out = Vec::new();
+        for account_id in allowed {
+            out.extend(
+                state
+                    .library
+                    .list_books(Some(account_id))
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            );
+        }
+        out
     } else {
         state
             .library
-            .list_books(query.account.as_deref())
+            .list_books(None)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     };
 
@@ -335,7 +405,6 @@ async fn list_books(
         books.retain(|b| b.acquire_status == status);
     }
 
-    // Stable-ish ordering: title then uuid.
     books.sort_by(|a, b| {
         a.title
             .to_ascii_lowercase()
@@ -447,6 +516,484 @@ fn title_id_candidates(id: &str) -> Vec<String> {
         out.push(upper);
     }
     out
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RecommendQuery {
+    limit: Option<usize>,
+    user: Option<String>,
+    #[serde(default)]
+    no_purchase_hints: Option<bool>,
+    /// When true, ignore listening_progress (owned-library taste only).
+    #[serde(default)]
+    no_listening: Option<bool>,
+    /// Comma-separated integration ids; empty = all listening providers.
+    #[serde(default)]
+    listening_providers: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateRequestBody {
+    title: String,
+    authors: Option<String>,
+    asin: Option<String>,
+    isbn: Option<String>,
+    notes: Option<String>,
+    /// Optional known storefront editions (for work_key / metadata only).
+    #[serde(default)]
+    store_editions: Vec<bookclerk_discover::StoreEdition>,
+    work_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogSearchQuery {
+    q: Option<String>,
+    limit: Option<usize>,
+    region: Option<String>,
+}
+
+async fn discover_recommendations(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<RecommendQuery>,
+) -> Result<Json<bookclerk_discover::DiscoverFeed>, (StatusCode, String)> {
+    let cfg = state.config.read().await.clone();
+    let library = state.library.clone();
+    let _ = bookclerk_discover::rebuild_works_from_library(&library).map_err(internal_err)?;
+
+    let mut embedder = bookclerk_discover::open_embedder(
+        &cfg.paths().models_dir,
+        cfg.discovery.embed_intra_threads,
+        cfg.discovery.embeddings_enabled,
+    )
+    .map_err(internal_err)?;
+    let model_id = embedder.model_id().to_string();
+    let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut());
+
+    let listening_providers = q
+        .listening_providers
+        .as_deref()
+        .unwrap_or("")
+        .split([',', ';'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    // Portal sessions personalize by default from their external user id.
+    let external_user_id = if let Some(user) = q.user {
+        Some(user)
+    } else if let Some(identity) = auth::caller_portal_identity(&state, &headers).await {
+        Some(identity.external_user_id)
+    } else {
+        None
+    };
+
+    let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers).await;
+    let disabled_shelves = state
+        .library
+        .get_user_preferences_or_default(&subject_key, identity_id)
+        .map(|p| p.disabled_shelves)
+        .unwrap_or_default();
+
+    let opts = bookclerk_discover::RecommendOptions {
+        limit: q.limit.unwrap_or(cfg.discovery.recommend_limit.max(24)),
+        embedding_model: model_id,
+        region: String::from("us"),
+        include_purchase_hints: !q.no_purchase_hints.unwrap_or(false),
+        external_user_id,
+        include_listening: !q.no_listening.unwrap_or(false),
+        listening_providers,
+        fetch_storefront_candidates: cfg.discovery.storefront_candidates,
+        storefront_seed_limit: cfg.discovery.storefront_seed_limit,
+        storefront_max_remote_calls: cfg.discovery.storefront_max_remote_calls,
+        exclude_graphicaudio_series_sets: cfg.discovery.exclude_graphicaudio_series_sets,
+        disabled_shelves,
+        models_dir: Some(cfg.paths().models_dir.clone()),
+        embed_intra_threads: cfg.discovery.embed_intra_threads,
+        embeddings_enabled: cfg.discovery.embeddings_enabled,
+    };
+    let feed = bookclerk_discover::recommend_feed(&library, &opts)
+        .await
+        .map_err(internal_err)?;
+    Ok(Json(feed))
+}
+
+async fn discover_purchase_hints(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut body): Json<bookclerk_discover::PurchaseHintsQuery>,
+) -> Result<Json<bookclerk_discover::PurchaseHintsResponse>, (StatusCode, String)> {
+    validate_purchase_hints_query(&body)?;
+    // Always derive linked stores server-side (ignore client-supplied overrides).
+    body.preferred_sources = preferred_sources_for_caller(&state, &headers).await;
+    let response = bookclerk_discover::resolve_purchase_hints(&body)
+        .await
+        .map_err(internal_err)?;
+    Ok(Json(response))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PurchaseHintsBatchBody {
+    #[serde(default)]
+    queries: Vec<bookclerk_discover::PurchaseHintsQuery>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct PurchaseHintsBatchResponse {
+    results: Vec<bookclerk_discover::PurchaseHintsResponse>,
+}
+
+async fn discover_purchase_hints_batch(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<PurchaseHintsBatchBody>,
+) -> Result<Json<PurchaseHintsBatchResponse>, (StatusCode, String)> {
+    if body.queries.len() > 24 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "at most 24 purchase-hint queries per batch".into(),
+        ));
+    }
+    let preferred = preferred_sources_for_caller(&state, &headers).await;
+    let mut queries = Vec::with_capacity(body.queries.len());
+    for mut q in body.queries {
+        validate_purchase_hints_query(&q)?;
+        q.preferred_sources = preferred.clone();
+        queries.push(q);
+    }
+    let resolved = bookclerk_discover::resolve_purchase_hints_batch(&queries, 4).await;
+    let mut results = Vec::with_capacity(resolved.len());
+    for item in resolved {
+        results.push(item.map_err(internal_err)?);
+    }
+    Ok(Json(PurchaseHintsBatchResponse { results }))
+}
+
+fn validate_purchase_hints_query(
+    body: &bookclerk_discover::PurchaseHintsQuery,
+) -> Result<(), (StatusCode, String)> {
+    if body.title.trim().is_empty()
+        && body.asin.as_deref().unwrap_or("").trim().is_empty()
+        && body.isbn.as_deref().unwrap_or("").trim().is_empty()
+        && body
+            .candidate_product_id
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "title, asin, isbn, or candidate_product_id is required".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Storefronts the caller is associated with (portal links, or all operator accounts).
+async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> Vec<String> {
+    if let Some(identity) = auth::caller_portal_identity(state, headers).await {
+        return state
+            .library
+            .list_account_links(identity.id)
+            .map(|links| {
+                let mut sources: Vec<String> = links
+                    .into_iter()
+                    .map(|l| l.source.to_ascii_lowercase())
+                    .collect();
+                sources.sort();
+                sources.dedup();
+                sources
+            })
+            .unwrap_or_default();
+    }
+    state
+        .library
+        .list_accounts()
+        .map(|accounts| {
+            let mut sources: Vec<String> = accounts
+                .into_iter()
+                .map(|a| a.source.to_ascii_lowercase())
+                .collect();
+            sources.sort();
+            sources.dedup();
+            sources
+        })
+        .unwrap_or_default()
+}
+
+async fn discover_catalog_search(
+    Query(q): Query<CatalogSearchQuery>,
+) -> Result<Json<Vec<bookclerk_discover::CatalogSearchHit>>, (StatusCode, String)> {
+    let query = q.q.unwrap_or_default();
+    if query.trim().len() < 2 {
+        return Ok(Json(Vec::new()));
+    }
+    let region = q.region.unwrap_or_else(|| String::from("us"));
+    let limit = q.limit.unwrap_or(12).clamp(1, 24);
+    let hits = bookclerk_discover::catalog_search(&query, &region, limit)
+        .await
+        .map_err(internal_err)?;
+    Ok(Json(hits))
+}
+
+fn work_key_for_request(body: &CreateRequestBody) -> String {
+    if let Some(key) = body
+        .work_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return key.to_string();
+    }
+    let (source, product_id) = body
+        .store_editions
+        .first()
+        .map(|e| (Some(e.source.as_str()), Some(e.product_id.as_str())))
+        .unwrap_or((None, None));
+    bookclerk_discover::work_map_key(
+        body.asin.as_deref(),
+        body.isbn.as_deref(),
+        &body.title,
+        body.authors.as_deref(),
+        source,
+        product_id.or(body.asin.as_deref()).or(body.isbn.as_deref()),
+    )
+}
+
+async fn list_wishlist(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<TitleRequestRecord>>, (StatusCode, String)> {
+    let identity_id = auth::caller_portal_identity(&state, &headers)
+        .await
+        .map(|identity| identity.id);
+    let rows = state
+        .library
+        .list_wishlist(identity_id)
+        .map_err(internal_err)?;
+    Ok(Json(rows))
+}
+
+async fn create_wishlist(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<CreateRequestBody>,
+) -> Result<Json<TitleRequestRecord>, (StatusCode, String)> {
+    create_request_inner(&state, &headers, body).await
+}
+
+async fn delete_wishlist(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(uuid): AxumPath<String>,
+) -> Result<Json<TitleRequestRecord>, (StatusCode, String)> {
+    let row = state
+        .library
+        .get_title_request_by_uuid(&uuid)
+        .map_err(internal_err)?
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            format!("wishlist item not found: {uuid}"),
+        ))?;
+
+    if row.status != RequestStatus::Open {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "only open wishlist items can be removed".into(),
+        ));
+    }
+    let portal = auth::caller_portal_identity(&state, &headers).await;
+    match portal {
+        Some(identity) => {
+            if row.identity_id != Some(identity.id) {
+                return Err((StatusCode::FORBIDDEN, "not your wishlist item".into()));
+            }
+        }
+        None => {
+            // Operator token: only un-wishlist operator-owned rows.
+            if row.identity_id.is_some() {
+                return Err((StatusCode::FORBIDDEN, "not your wishlist item".into()));
+            }
+        }
+    }
+
+    state
+        .library
+        .update_title_request_status(&uuid, RequestStatus::Cancelled, None)
+        .map_err(internal_err)?;
+    state
+        .library
+        .get_title_request_by_uuid(&uuid)
+        .map_err(internal_err)?
+        .map(Json)
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            format!("wishlist item not found: {uuid}"),
+        ))
+}
+
+async fn list_request_queue(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<bookclerk_discover::RankedQueueEntry>>, (StatusCode, String)> {
+    let cfg = state.config.read().await.clone();
+
+    let mut embedder = bookclerk_discover::open_embedder(
+        &cfg.paths().models_dir,
+        cfg.discovery.embed_intra_threads,
+        cfg.discovery.embeddings_enabled,
+    )
+    .map_err(internal_err)?;
+    let model_id = embedder.model_id().to_string();
+    let _ = bookclerk_discover::embed_dirty_works(&state.library, embedder.as_mut());
+
+    // Shared queue: overall / operator taste only (no portal personalization).
+    let opts = bookclerk_discover::RecommendOptions {
+        limit: cfg.discovery.recommend_limit.max(24),
+        embedding_model: model_id,
+        region: String::from("us"),
+        include_purchase_hints: false,
+        external_user_id: None,
+        include_listening: true,
+        listening_providers: Vec::new(),
+        fetch_storefront_candidates: false,
+        storefront_seed_limit: 0,
+        storefront_max_remote_calls: 0,
+        exclude_graphicaudio_series_sets: cfg.discovery.exclude_graphicaudio_series_sets,
+        disabled_shelves: Vec::new(),
+        models_dir: Some(cfg.paths().models_dir.clone()),
+        embed_intra_threads: cfg.discovery.embed_intra_threads,
+        embeddings_enabled: cfg.discovery.embeddings_enabled,
+    };
+    let rows = bookclerk_discover::rank_global_request_queue(&state.library, &opts)
+        .map_err(internal_err)?;
+    Ok(Json(rows))
+}
+
+async fn create_request_inner(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: CreateRequestBody,
+) -> Result<Json<TitleRequestRecord>, (StatusCode, String)> {
+    if body.title.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "title is required".into()));
+    }
+    let identity_id = auth::caller_portal_identity(state, headers)
+        .await
+        .map(|identity| identity.id);
+    let work_key = work_key_for_request(&body);
+    let row = state
+        .library
+        .create_title_request(&NewTitleRequest {
+            uuid: None,
+            identity_id,
+            title: body.title,
+            authors: body.authors,
+            asin: body.asin,
+            isbn: body.isbn,
+            notes: body.notes,
+            status: RequestStatus::Open,
+            work_key,
+            work_id: None,
+            resolved_book_uuid: None,
+        })
+        .map_err(internal_err)?;
+    Ok(Json(row))
+}
+
+async fn sync_listening(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<bookclerk_integrations::SyncListeningSummary>, (StatusCode, String)> {
+    let summary = state
+        .integrations
+        .sync_listening_progress_all(&state.library)
+        .await;
+    if summary.by_provider.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "no listening-capable integrations are enabled".into(),
+        ));
+    }
+    Ok(Json(summary))
+}
+
+#[derive(Debug, Serialize)]
+struct PreferencesResponse {
+    default_view: String,
+    disabled_shelves: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchPreferencesBody {
+    default_view: Option<String>,
+    disabled_shelves: Option<Vec<String>>,
+}
+
+async fn get_preferences(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<PreferencesResponse>, (StatusCode, String)> {
+    let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers).await;
+    let prefs = state
+        .library
+        .get_user_preferences_or_default(&subject_key, identity_id)
+        .map_err(internal_err)?;
+    Ok(Json(PreferencesResponse {
+        default_view: auth::normalize_default_view(&prefs.default_view),
+        disabled_shelves: prefs.disabled_shelves,
+    }))
+}
+
+async fn patch_preferences(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<PatchPreferencesBody>,
+) -> Result<Json<PreferencesResponse>, (StatusCode, String)> {
+    let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers).await;
+    let current = state
+        .library
+        .get_user_preferences_or_default(&subject_key, identity_id)
+        .map_err(internal_err)?;
+
+    let default_view = body
+        .default_view
+        .as_deref()
+        .map(auth::normalize_default_view)
+        .unwrap_or_else(|| auth::normalize_default_view(&current.default_view));
+
+    let disabled_shelves = body
+        .disabled_shelves
+        .map(normalize_disabled_shelves)
+        .unwrap_or(current.disabled_shelves);
+
+    let saved = state
+        .library
+        .upsert_user_preferences(&subject_key, identity_id, &default_view, &disabled_shelves)
+        .map_err(internal_err)?;
+
+    Ok(Json(PreferencesResponse {
+        default_view: auth::normalize_default_view(&saved.default_view),
+        disabled_shelves: saved.disabled_shelves,
+    }))
+}
+
+fn normalize_disabled_shelves(raw: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in raw {
+        let trimmed = item.trim().to_ascii_lowercase();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.iter().any(|existing| existing == &trimmed) {
+            out.push(trimmed);
+        }
+    }
+    out
+}
+
+fn internal_err(err: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
 }
 
 #[cfg(test)]

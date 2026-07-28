@@ -251,6 +251,30 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 config.library.scan_interval_minutes = n;
             }
         }
+        "discovery.embeddings_enabled" => {
+            config.discovery.embeddings_enabled = parse_bool(v).unwrap_or(true);
+        }
+        "discovery.embedding_model" => {
+            config.discovery.embedding_model = v.to_string();
+        }
+        "discovery.embed_intra_threads" => {
+            if let Ok(n) = v.parse::<usize>() {
+                config.discovery.embed_intra_threads = n.max(1);
+            }
+        }
+        "discovery.openlibrary_enabled" => {
+            config.discovery.openlibrary_enabled = parse_bool(v).unwrap_or(true);
+        }
+        "discovery.listen_sync_interval_minutes" => {
+            if let Ok(n) = v.parse() {
+                config.discovery.listen_sync_interval_minutes = n;
+            }
+        }
+        "discovery.recommend_limit" => {
+            if let Ok(n) = v.parse::<usize>() {
+                config.discovery.recommend_limit = n.max(1);
+            }
+        }
         other if let Some(rest) = other.strip_prefix("sources.") => {
             if !config.sources.apply_dotted_override(rest, v) {
                 tracing::warn!(key, value = v, "unknown sources override; ignoring");

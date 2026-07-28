@@ -28,6 +28,7 @@ bookclerk-search.workspace = true
 bookclerk-source.workspace = true
 bookclerk-storage.workspace = true
 bookclerk-integrations.workspace = true
+bookclerk-discover.workspace = true
 bookclerk-plugin.workspace = true
 serde.workspace = true
 serde_json.workspace = true

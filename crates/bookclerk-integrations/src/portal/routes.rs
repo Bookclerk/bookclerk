@@ -1,11 +1,11 @@
-//! Axum routes for the connect portal.
+//! Axum routes for portal claim / Accounts linking (`/api/portal`).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bookclerk_config::Config;
@@ -16,11 +16,9 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use super::brands::{integration_brand, Brand};
-use super::html::landing_page;
 use crate::registry::IntegrationRegistry;
 use crate::tickets::{
-    identity_from_session, mint_claim_ticket, normalize_portal_base, redeem_ticket_to_session,
-    session_for_identity,
+    identity_from_session, mint_claim_ticket, redeem_ticket_to_session, session_for_identity,
 };
 use crate::types::ExternalUser;
 
@@ -36,53 +34,31 @@ pub struct PortalState {
     pub sources: Vec<Arc<dyn ContentSource>>,
 }
 
-pub fn portal_router(state: PortalState) -> Router {
+/// SPA-facing portal API. Nest under `/api/portal`.
+pub fn portal_spa_router(state: PortalState) -> Router {
     Router::new()
-        .route("/", get(landing))
-        .route("/api/redeem", post(redeem))
-        .route("/api/login/integration", post(login_integration))
-        .route("/api/logout", post(logout))
-        .route("/api/me", get(me))
-        .route("/api/sources", get(sources))
-        .route("/api/sources/{id}/login", post(source_password_login))
-        .route("/api/sources/{id}/oauth/start", post(source_oauth_start))
-        // Legacy aliases kept for older portal clients / smoke scripts.
-        .route("/api/libro/login", post(libro_login_legacy))
-        .route("/api/audible/start", post(audible_start))
-        .route("/api/connections", get(connections))
-        .route(
-            "/api/connections/{account_id}/revoke",
-            post(revoke_connection),
-        )
+        .route("/redeem", post(redeem))
+        .route("/login/integration", post(login_integration))
+        .route("/logout", post(logout))
+        .route("/me", get(me))
+        .route("/sources", get(sources))
+        .route("/sources/{id}/login", post(source_password_login))
+        .route("/sources/{id}/oauth/start", post(source_oauth_start))
+        // Legacy aliases kept for older SPA / smoke clients.
+        .route("/libro/login", post(libro_login_legacy))
+        .route("/audible/start", post(audible_start))
+        .route("/connections", get(connections))
+        .route("/connections/{account_id}/revoke", post(revoke_connection))
         .with_state(state)
 }
 
-async fn landing(State(state): State<PortalState>) -> Html<String> {
-    let cfg = state.config.read().await;
-    let base = normalize_portal_base(&cfg.integrations.portal_base_path);
-    // Credential-login integrations: registered AND still enabled in config.
-    let providers: Vec<String> = state
-        .integrations
-        .credential_login_providers()
-        .into_iter()
-        .map(|i| i.id().to_string())
-        .filter(|id| cfg.integrations.is_enabled(id))
-        .collect();
-    let enabled_sources: Vec<Brand> = state
-        .sources
-        .iter()
-        .filter(|s| cfg.sources.is_enabled(s.id()))
-        .map(|s| Brand::from(s.portal_brand()))
-        .collect();
-    drop(cfg);
-    let brands: Vec<_> = state
-        .integrations
-        .credential_login_providers()
-        .into_iter()
-        .filter(|i| providers.iter().any(|id| id == i.id()))
-        .filter_map(|i| i.portal_brand())
-        .collect();
-    Html(landing_page(&base, &brands, &enabled_sources))
+/// Resolve a portal identity from the request cookie, if present and valid.
+pub fn portal_identity_from_headers(
+    library: &LibraryStore,
+    headers: &HeaderMap,
+) -> Option<bookclerk_library::PortalIdentity> {
+    let raw = cookie_value(headers, SESSION_COOKIE)?;
+    identity_from_session(library, &raw).ok().flatten()
 }
 
 #[derive(Debug, Deserialize)]
@@ -158,13 +134,15 @@ async fn login_integration(
     Ok(session_response(session, &state).await)
 }
 
-async fn logout(State(state): State<PortalState>) -> Response {
-    let cfg = state.config.read().await;
-    let base = normalize_portal_base(&cfg.integrations.portal_base_path);
-    let cookie = format!("{SESSION_COOKIE}=; Path={base}; HttpOnly; SameSite=Lax; Max-Age=0");
+async fn logout(State(_state): State<PortalState>) -> Response {
+    let cookie = format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    let mut headers = HeaderMap::new();
+    if let Ok(v) = axum::http::HeaderValue::from_str(&cookie) {
+        headers.append(header::SET_COOKIE, v);
+    }
     (
         StatusCode::OK,
-        [(header::SET_COOKIE, cookie)],
+        headers,
         Json(serde_json::json!({ "ok": true })),
     )
         .into_response()
@@ -542,11 +520,10 @@ fn find_source(state: &PortalState, id_or_alias: &str) -> Option<Arc<dyn Content
 
 async fn session_response(session: String, state: &PortalState) -> Response {
     let cfg = state.config.read().await;
-    let base = normalize_portal_base(&cfg.integrations.portal_base_path);
     let max_age = cfg.integrations.portal_session_ttl_hours * 3600;
-    let cookie = format!(
-        "{SESSION_COOKIE}={session}; Path={base}; HttpOnly; SameSite=Lax; Max-Age={max_age}"
-    );
+    // Path=/ so the SPA (and /api/portal) can share the session cookie.
+    let cookie =
+        format!("{SESSION_COOKIE}={session}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}");
     (
         StatusCode::OK,
         [(header::SET_COOKIE, cookie)],

@@ -61,6 +61,11 @@ enum Commands {
         #[command(subcommand)]
         command: commands::library::LibraryCommand,
     },
+    /// Recommendations, embeddings, listening sync, and title requests.
+    Discover {
+        #[command(subcommand)]
+        command: commands::discover::DiscoverCommand,
+    },
     /// Outbound integrations (Audiobookshelf) and claim tickets.
     Integrations {
         #[command(subcommand)]
@@ -282,6 +287,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     match cli.command {
         Commands::Auth { command } => commands::auth::run(command, &config).await,
         Commands::Library { command } => commands::library::run(command, &config).await,
+        Commands::Discover { command } => commands::discover::run(&config, format, command).await,
         Commands::Integrations { command } => commands::integrations::run(command, &config).await,
         Commands::Plugins { command } => commands::plugins::run(command, &config, format).await,
         Commands::Config { command } => commands::config_cmd::run(command, &config, format),

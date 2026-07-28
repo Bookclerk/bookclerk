@@ -10,11 +10,12 @@ Start here if you are new:
 2. [Architecture](architecture.md) — how the pieces fit
 3. [Sources](sources.md) — Audible, Libro.fm, Chirp, GraphicAudio
 4. [Destinations](destinations.md) — local disk and S3/MinIO
-5. [Integrations](integrations.md) — Audiobookshelf and the Connect portal
-6. [Configuration](configuration.md) — `config.toml` and environment variables
-7. [Operations](operations.md) — `bookclerkd`, Docker, systemd
-8. [GUI](gui.md) — web UI, operator auth, tray companion
-9. [Desktop path](gui-desktop-path.md) — tray vs deferred Tauri / OSV constraints
+5. [Integrations](integrations.md) — Audiobookshelf and SPA claim / Accounts
+6. [Discovery](discovery.md) — recommendations, embeddings, wishlist / global queue
+7. [Configuration](configuration.md) — `config.toml` and environment variables
+8. [Operations](operations.md) — `bookclerkd`, Docker, systemd
+9. [GUI](gui.md) — web UI, operator auth, tray companion
+10. [Desktop path](gui-desktop-path.md) — tray vs deferred Tauri / OSV constraints
 
 ## Extending Bookclerk
 

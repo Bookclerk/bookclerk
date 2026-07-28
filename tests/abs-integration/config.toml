@@ -15,7 +15,6 @@ json_logs = true
 allow_plaintext = true
 
 [integrations]
-portal_base_path = "/connect"
 claim_ticket_ttl_hours = 72
 portal_session_ttl_hours = 12
 public_origin = "http://127.0.0.1:8787"

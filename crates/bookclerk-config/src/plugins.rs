@@ -131,7 +131,6 @@ fn parse_bool_loose(raw: &str) -> Option<bool> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct IntegrationsConfig {
-    pub portal_base_path: String,
     pub claim_ticket_ttl_hours: u64,
     pub public_origin: Option<String>,
     pub portal_session_ttl_hours: u64,
@@ -144,7 +143,6 @@ pub struct IntegrationsConfig {
 impl Default for IntegrationsConfig {
     fn default() -> Self {
         Self {
-            portal_base_path: "/connect".into(),
             claim_ticket_ttl_hours: 72,
             public_origin: None,
             portal_session_ttl_hours: 12,

@@ -71,23 +71,18 @@ TICKET_OUT=$(docker compose -f tests/abs-integration/docker-compose.yml exec -T 
 TICKET=$(echo "$TICKET_OUT" | sed -n 's/^ticket=//p' | head -n1)
 echo "ticket=${TICKET:0:8}…"
 
-echo "== redeem ticket on portal"
-curl -fsS -c /tmp/bookclerk-portal.jar -X POST "$BOOKCLERK_URL/connect/api/redeem" \
+echo "== redeem ticket on portal API"
+curl -fsS -c /tmp/bookclerk-portal.jar -X POST "$BOOKCLERK_URL/api/portal/redeem" \
   -H 'Content-Type: application/json' \
   -d "{\"ticket\":\"$TICKET\"}" >/tmp/redeem.json
-curl -fsS -b /tmp/bookclerk-portal.jar "$BOOKCLERK_URL/connect/api/me" | tee /tmp/me.json
+curl -fsS -b /tmp/bookclerk-portal.jar "$BOOKCLERK_URL/api/portal/me" | tee /tmp/me.json
 python3 -c 'import json; d=json.load(open("/tmp/me.json")); assert d["external_user_id"]=="ci-user"'
 
-echo "== portal landing"
-curl -fsS "$BOOKCLERK_URL/connect" | grep -q 'Bookclerk Connect'
-# Trailing-slash is optional; prefer `/connect` (ticket URLs omit the slash).
-curl -fsS "$BOOKCLERK_URL/connect/" >/dev/null 2>&1 || true
-
 echo "== credential login path"
-curl -fsS -c /tmp/bookclerk-portal2.jar -X POST "$BOOKCLERK_URL/connect/api/login/integration" \
+curl -fsS -c /tmp/bookclerk-portal2.jar -X POST "$BOOKCLERK_URL/api/portal/login/integration" \
   -H 'Content-Type: application/json' \
   -d "{\"provider\":\"audiobookshelf\",\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" >/tmp/login.json
-curl -fsS -b /tmp/bookclerk-portal2.jar "$BOOKCLERK_URL/connect/api/me" | tee /tmp/me2.json
+curl -fsS -b /tmp/bookclerk-portal2.jar "$BOOKCLERK_URL/api/portal/me" | tee /tmp/me2.json
 
 echo "== trigger integration library scan via CLI"
 docker compose -f tests/abs-integration/docker-compose.yml exec -T \

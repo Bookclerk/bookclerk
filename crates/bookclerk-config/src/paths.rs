@@ -27,6 +27,8 @@ pub struct Paths {
     pub log_dir: PathBuf,
     /// Tantivy full-text search index (classic Lucene `SearchEngine`).
     pub search_index_dir: PathBuf,
+    /// Downloaded ONNX embedding models (`discovery.embeddings_enabled`).
+    pub models_dir: PathBuf,
 }
 
 impl Paths {
@@ -38,6 +40,7 @@ impl Paths {
         let cache_dir = files_dir.join("cache");
         let log_dir = files_dir.join("logs");
         let search_index_dir = files_dir.join("search_index");
+        let models_dir = files_dir.join("models");
         Self {
             files_dir,
             config_file,
@@ -45,6 +48,7 @@ impl Paths {
             cache_dir,
             log_dir,
             search_index_dir,
+            models_dir,
         }
     }
 
@@ -54,6 +58,7 @@ impl Paths {
         std::fs::create_dir_all(&self.cache_dir)?;
         std::fs::create_dir_all(&self.log_dir)?;
         std::fs::create_dir_all(&self.search_index_dir)?;
+        std::fs::create_dir_all(&self.models_dir)?;
         std::fs::create_dir_all(self.files_dir.join("Accounts"))?;
         // Install root for third-party plugins (`plugin.toml` + binary).
         std::fs::create_dir_all(self.files_dir.join("plugins"))?;
@@ -142,5 +147,6 @@ mod tests {
         assert_eq!(paths.library_db, PathBuf::from("/data/library.db"));
         assert_eq!(paths.cache_dir, PathBuf::from("/data/cache"));
         assert_eq!(paths.search_index_dir, PathBuf::from("/data/search_index"));
+        assert_eq!(paths.models_dir, PathBuf::from("/data/models"));
     }
 }

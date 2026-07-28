@@ -182,6 +182,21 @@ impl Integration for ExternalIntegration {
         Ok(())
     }
 
+    fn supports_listening_sync(&self) -> bool {
+        self.client.has_capability("sync_listening")
+    }
+
+    async fn sync_listening_progress(
+        &self,
+        library: &bookclerk_library::LibraryStore,
+    ) -> bookclerk_integrations::Result<usize> {
+        let dto: crate::protocol::SyncListeningResultDto = self
+            .client
+            .call(methods::SYNC_LISTENING, Value::Object(Default::default()))
+            .await?;
+        bookclerk_integrations::upsert_listening_snapshots(library, self.id(), &dto.items)
+    }
+
     async fn diagnose(&self) -> bookclerk_integrations::Result<Vec<String>> {
         if !self.client.has_capability("diagnose") {
             let h = self.health().await?;

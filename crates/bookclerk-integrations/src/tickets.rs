@@ -60,27 +60,13 @@ pub fn mint_claim_ticket(
     })
 }
 
-/// Build a shareable portal URL when `public_origin` is configured.
+/// Build a shareable SPA claim URL when `public_origin` is configured.
+///
+/// Opens the Bookclerk GUI login page with `?ticket=` (see `LoginPage`).
 #[must_use]
 pub fn ticket_portal_url(integrations: &IntegrationsConfig, token: &str) -> Option<String> {
     let origin = integrations.public_origin.as_deref()?.trim_end_matches('/');
-    let base = normalize_portal_base(&integrations.portal_base_path);
-    // Prefer `/connect?ticket=` (axum nest matches `/connect`, not `/connect/`).
-    Some(format!("{origin}{base}?ticket={token}"))
-}
-
-#[must_use]
-pub fn normalize_portal_base(path: &str) -> String {
-    let trimmed = path.trim();
-    if trimmed.is_empty() || trimmed == "/" {
-        return String::new();
-    }
-    let with_slash = if trimmed.starts_with('/') {
-        trimmed.to_string()
-    } else {
-        format!("/{trimmed}")
-    };
-    with_slash.trim_end_matches('/').to_string()
+    Some(format!("{origin}/?ticket={token}"))
 }
 
 /// Redeem a claim ticket into a portal session cookie value (plaintext).

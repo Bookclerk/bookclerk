@@ -115,8 +115,7 @@ json_logs = true
 # Env: BOOKCLERK_OPERATOR_TOKEN, BOOKCLERK_OPERATOR_TOKEN_FILE, BOOKCLERK_DAEMON_AUTH_ENABLED
 
 # [integrations]
-# portal_base_path = "/connect"
-# public_origin = "https://abs.example.com"
+# public_origin = "https://bookclerk.example.com"  # shareable SPA claim URLs (?ticket=)
 
 # [integrations.audiobookshelf]
 # enabled = false
@@ -134,6 +133,31 @@ json_logs = true
 # [integrations.echo]
 # enabled = true
 # # … opaque knobs forwarded on handshake …
+
+# Recommendations / embeddings / request queue (see docs/discovery.md).
+# Storefront candidates (Libro related + Audible catalog) are the primary
+# discovery path; local embeddings score those unowned hits.
+[discovery]
+embeddings_enabled = true
+# Preferred model id; runtime falls back to local-hash-v1 if ONNX cannot load.
+embedding_model = "all-minilm-l6-v2-q"
+embed_intra_threads = 1
+storefront_candidates = true
+storefront_seed_limit = 8
+storefront_max_remote_calls = 32
+# Drop GraphicAudio Magento series-set SKUs from candidates (default: keep them).
+# exclude_graphicaudio_series_sets = true
+# Shelf visibility + default view are per-user DB prefs (GET/PATCH /api/preferences),
+# not TOML — see docs/gui.md and docs/discovery.md.
+# Open Library: low-volume gap-fill only (not bulk). Set a contact email so
+# requests are identified per https://openlibrary.org/developers/api
+openlibrary_enabled = true
+# openlibrary_contact_email = "you@example.com"
+openlibrary_max_requests_per_run = 25
+# worldcat_enabled = false  # reserved; needs API key
+# How often bookclerkd syncs listening progress from capable integrations (0 = off).
+listen_sync_interval_minutes = 60
+recommend_limit = 20
 
 # [diagnostics]
 # share_reports = false

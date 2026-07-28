@@ -249,6 +249,16 @@ pub struct PlainPartDto {
     pub duration_ms: Option<u64>,
 }
 
+/// Listening / progress rows returned by integration capability `sync_listening`.
+///
+/// Host upserts into the generic `listening_progress` table tagged with the
+/// plugin id; plugins must not open the library DB themselves.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SyncListeningResultDto {
+    #[serde(default)]
+    pub items: Vec<bookclerk_integrations::ListeningProgressSnapshot>,
+}
+
 /// Method names (keep stable).
 pub mod methods {
     pub const HANDSHAKE: &str = "handshake";
@@ -257,6 +267,8 @@ pub mod methods {
     pub const START: &str = "start";
     pub const ON_EVENT: &str = "on_event";
     pub const SCAN_LIBRARY: &str = "scan_library";
+    /// Return [`SyncListeningResultDto`] for the host to upsert.
+    pub const SYNC_LISTENING: &str = "sync_listening";
     pub const AUTHENTICATE_USER: &str = "authenticate_user";
     pub const LOGIN: &str = "login";
     pub const LIST_ACCOUNTS: &str = "list_accounts";

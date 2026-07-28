@@ -20,7 +20,7 @@ portal for services like [Audiobookshelf](https://www.audiobookshelf.org/).
 | **Library** | Unified SQLite catalog (UUID keys; ASIN/ISBN as attributes), Tantivy search, tags/ratings |
 | **Acquire** | Native Adrm + Widevine/CENC decrypt, optional MP3, covers/PDFs/cues/chapters |
 | **Destinations** | Local filesystem and/or S3/MinIO (write to every enabled destination) |
-| **Integrations** | Audiobookshelf scan notify, claim tickets, Connect portal |
+| **Integrations** | Audiobookshelf scan notify, claim tickets, SPA Accounts |
 | **Plugins** | External source/integration plugins over JSON-RPC stdio |
 | **Ops** | `bookclerk` CLI + `bookclerkd` daemon, Docker, systemd |
 | **GUI** | Shared React web UI served by `bookclerkd` (native/tray deferred) |
@@ -39,7 +39,7 @@ operator-token auth. See [docs/gui.md](docs/gui.md).
   GraphicAudio  ─┘         │
   external source*         │ naming / enrich / search
                            │
-                           ├─► integrations (Audiobookshelf, Connect portal, …)
+                           ├─► integrations (Audiobookshelf, SPA Accounts, …)
                            └─► bookclerkd jobs + HTTP control plane
 
   * discovered at runtime — see docs/plugins.md
@@ -84,7 +84,7 @@ First-time setup, auth notes, and “existing files” workflows:
 | [docs/architecture.md](docs/architecture.md) | Components and data flow |
 | [docs/sources.md](docs/sources.md) | Storefront plugins and login |
 | [docs/destinations.md](docs/destinations.md) | Local + S3 output, naming |
-| [docs/integrations.md](docs/integrations.md) | Audiobookshelf, Connect portal |
+| [docs/integrations.md](docs/integrations.md) | Audiobookshelf, SPA Accounts |
 | [docs/plugins.md](docs/plugins.md) | Third-party plugin protocol |
 | [docs/operations.md](docs/operations.md) | Daemon, Docker, systemd |
 | [docs/configuration.md](docs/configuration.md) | `config.toml` and env overrides |

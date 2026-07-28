@@ -177,8 +177,6 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg_snapshot = config.read().await;
     let listen = cfg_snapshot.daemon.listen.clone();
-    let portal_base =
-        bookclerk_integrations::normalize_portal_base(&cfg_snapshot.integrations.portal_base_path);
     let files_dir = cfg_snapshot.paths().files_dir.clone();
     drop(cfg_snapshot);
 
@@ -187,7 +185,7 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|err| anyhow::anyhow!("invalid daemon.listen '{listen}': {err}"))?;
 
     let ui_dist = resolve_ui_dist();
-    let app = router(state, portal_base, files_dir, ui_dist);
+    let app = router(state, files_dir, ui_dist);
     tracing::info!(%addr, "bookclerkd listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)

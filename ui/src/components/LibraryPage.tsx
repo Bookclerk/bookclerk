@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LogOut, RefreshCw, ScanSearch } from "lucide-react";
+import { AppNav, type AppNavProps } from "@/components/AppNav";
 import { BookRow } from "@/components/BookRow";
 import { JobsStrip } from "@/components/JobsStrip";
 import { Button } from "@/components/ui/button";
@@ -8,9 +9,10 @@ import {
   fetchBooks,
   fetchJobs,
   fetchStatus,
-  logout,
+  signOut,
   triggerAcquire,
   triggerScan,
+  type AuthRole,
   type BookRecord,
   type JobInfo,
   type StatusResponse,
@@ -25,7 +27,19 @@ const STATUS_OPTIONS = [
   { value: "error", label: "Error" },
 ] as const;
 
-export function LibraryPage({ onLogout }: { onLogout: () => void }) {
+const PAGE_SIZE = 40;
+
+export function LibraryPage({
+  onLogout,
+  canAcquire,
+  nav,
+  role,
+}: {
+  onLogout: () => void;
+  canAcquire: boolean;
+  nav: AppNavProps;
+  role?: AuthRole;
+}) {
   const [books, setBooks] = useState<BookRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -35,34 +49,82 @@ export function LibraryPage({ onLogout }: { onLogout: () => void }) {
   const [statusFilter, setStatusFilter] = useState("all");
   const [error, setError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const loadingRef = useRef(false);
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
     return () => window.clearTimeout(t);
   }, [q]);
 
-  const refresh = useCallback(async () => {
+  const loadPage = useCallback(
+    async (offset: number, append: boolean) => {
+      if (loadingRef.current) return;
+      loadingRef.current = true;
+      if (append) setLoadingMore(true);
+      try {
+        const booksRes = await fetchBooks({
+          q: debouncedQ || undefined,
+          status: statusFilter,
+          limit: PAGE_SIZE,
+          offset,
+        });
+        setBooks((prev) =>
+          append ? [...prev, ...booksRes.books] : booksRes.books,
+        );
+        setTotal(booksRes.total);
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load library");
+      } finally {
+        loadingRef.current = false;
+        setLoadingMore(false);
+      }
+    },
+    [debouncedQ, statusFilter],
+  );
+
+  const refreshMeta = useCallback(async () => {
+    if (!canAcquire) return;
     try {
-      const [booksRes, statusRes, jobsRes] = await Promise.all([
-        fetchBooks({ q: debouncedQ || undefined, status: statusFilter }),
-        fetchStatus(),
-        fetchJobs(),
-      ]);
-      setBooks(booksRes.books);
-      setTotal(booksRes.total);
+      const [statusRes, jobsRes] = await Promise.all([fetchStatus(), fetchJobs()]);
       setStatus(statusRes);
       setJobs(jobsRes);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load library");
+    } catch {
+      // operator-only endpoints; ignore for portal
     }
-  }, [debouncedQ, statusFilter]);
+  }, [canAcquire]);
+
+  const refresh = useCallback(async () => {
+    await Promise.all([loadPage(0, false), refreshMeta()]);
+  }, [loadPage, refreshMeta]);
 
   useEffect(() => {
     void refresh();
-    const id = window.setInterval(() => void refresh(), 4000);
-    return () => window.clearInterval(id);
   }, [refresh]);
+
+  useEffect(() => {
+    if (!canAcquire) return;
+    const id = window.setInterval(() => void refreshMeta(), 4000);
+    return () => window.clearInterval(id);
+  }, [canAcquire, refreshMeta]);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const hit = entries.some((e) => e.isIntersecting);
+        if (!hit) return;
+        if (books.length >= total) return;
+        void loadPage(books.length, true);
+      },
+      { root: null, rootMargin: "200px", threshold: 0 },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [books.length, total, loadPage]);
 
   const pendingCount = useMemo(
     () => status?.pending ?? books.filter((b) => b.acquire_status === "not_acquired").length,
@@ -106,7 +168,7 @@ export function LibraryPage({ onLogout }: { onLogout: () => void }) {
   }
 
   async function onSignOut() {
-    await logout();
+    await signOut(role);
     onLogout();
   }
 
@@ -115,28 +177,44 @@ export function LibraryPage({ onLogout }: { onLogout: () => void }) {
       <header className="sticky top-0 z-10 border-b border-ink/10 bg-paper/85 px-3 py-3 backdrop-blur-md sm:px-5">
         <div className="mx-auto flex max-w-6xl flex-col gap-3">
           <div className="flex items-center justify-between gap-3">
-            <img
-              src="/bookclerk-logo.svg"
-              alt="Bookclerk"
-              className="h-8 w-auto sm:h-9"
-            />
+            <div className="flex items-center gap-3 sm:gap-5">
+              <img
+                src="/bookclerk-logo.svg"
+                alt="Bookclerk"
+                className="h-8 w-auto sm:h-9"
+              />
+              <AppNav {...nav} />
+            </div>
             <div className="flex items-center gap-2">
-              <Button
-                variant="secondary"
-                onClick={() => void onScan()}
-                disabled={busyKey !== null}
-              >
-                <ScanSearch className="h-4 w-4" />
-                Scan
-              </Button>
-              <Button
-                onClick={() => void onAcquirePending()}
-                disabled={busyKey !== null || pendingCount === 0}
-                title="Acquire all pending"
-              >
-                <RefreshCw className="h-4 w-4" />
-                Acquire pending
-              </Button>
+              {canAcquire ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    onClick={() => void onScan()}
+                    disabled={busyKey !== null}
+                  >
+                    <ScanSearch className="h-4 w-4" />
+                    Scan
+                  </Button>
+                  <Button
+                    onClick={() => void onAcquirePending()}
+                    disabled={busyKey !== null || pendingCount === 0}
+                    title="Acquire all pending"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Acquire pending
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="secondary"
+                  onClick={() => void refresh()}
+                  disabled={busyKey !== null}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Refresh
+                </Button>
+              )}
               <Button variant="ghost" onClick={() => void onSignOut()} aria-label="Sign out">
                 <LogOut className="h-4 w-4" />
               </Button>
@@ -168,6 +246,7 @@ export function LibraryPage({ onLogout }: { onLogout: () => void }) {
           ) : (
             <p className="text-xs text-ink/50">
               Showing {books.length} of {total} titles
+              {loadingMore ? " · loading more…" : ""}
             </p>
           )}
         </div>
@@ -177,7 +256,8 @@ export function LibraryPage({ onLogout }: { onLogout: () => void }) {
         <div className="animate-[rowIn_500ms_ease-out] bg-white/35 shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
           {books.length === 0 ? (
             <p className="px-4 py-16 text-center text-sm text-ink/60">
-              No books match this view. Run a scan or adjust filters.
+              No books match this view.
+              {canAcquire ? " Run a scan or adjust filters." : " Link a store under Accounts."}
             </p>
           ) : (
             books.map((book) => (
@@ -185,14 +265,16 @@ export function LibraryPage({ onLogout }: { onLogout: () => void }) {
                 key={book.uuid}
                 book={book}
                 busy={busyKey !== null}
+                showAcquire={canAcquire}
                 onAcquire={(b) => void onAcquireBook(b)}
               />
             ))
           )}
+          <div ref={sentinelRef} className="h-8" aria-hidden />
         </div>
       </main>
 
-      <JobsStrip status={status} jobs={jobs} />
+      {canAcquire ? <JobsStrip status={status} jobs={jobs} /> : null}
       <style>{`
         @keyframes rowIn {
           from { opacity: 0; transform: translateY(6px); }

@@ -147,13 +147,14 @@ Result: `{ "exit_code": 0, "stdout": "…", "stderr": "…", "json": … }`.
 ### Integration capabilities
 
 Advertise in `handshake.capabilities`: `start`, `on_event`, `health`,
-`diagnose`, `scan_library`, `authenticate_user`, `cli`.
+`diagnose`, `scan_library`, `sync_listening`, `authenticate_user`, `cli`.
 
 | Method | Notes |
 | --- | --- |
 | `start` | Background watchers |
 | `on_event` | `{ "event": "book_acquired"\|"external_user_observed", "payload": … }` |
 | `scan_library` | `{ "force": bool }` |
+| `sync_listening` | Return `{ "items": [ ListeningProgressSnapshot, … ] }`; host upserts tagged with plugin id |
 | `authenticate_user` | `{ "username", "password" }` → `ExternalUser` |
 
 ### Source capabilities

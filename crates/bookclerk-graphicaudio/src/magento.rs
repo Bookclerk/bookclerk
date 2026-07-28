@@ -390,7 +390,7 @@ fn extract_zip_audio(zip_path: &Path, title_dir: &Path) -> Result<PathBuf> {
     Ok(audio_paths.remove(0))
 }
 
-fn parse_html_fragment(html: &str) -> scraper::Html {
+pub(crate) fn parse_html_fragment(html: &str) -> scraper::Html {
     // Bare `<tr>` fragments are dropped by html5ever unless wrapped in a table.
     let lower = html.to_ascii_lowercase();
     if lower.contains("<tr") && !lower.contains("<table") {
@@ -655,7 +655,7 @@ fn sanitize_filename(name: &str) -> String {
     }
 }
 
-fn decode_html(s: &str) -> String {
+pub(crate) fn decode_html(s: &str) -> String {
     html_escape::decode_html_entities(s).into_owned()
 }
 

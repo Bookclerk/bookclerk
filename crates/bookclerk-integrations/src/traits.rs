@@ -1,11 +1,13 @@
 //! Pluggable outbound integration trait.
 //!
-//! Required methods cover identity, lifecycle, events, and health. Credential
-//! login for the connect portal is **optional** — override
-//! [`Integration::supports_credential_login`] / [`Integration::authenticate_user`]
-//! only when the adapter can validate end-user credentials.
+//! Required methods cover identity, lifecycle, events, and health. Optional
+//! capabilities (credential login, library scan, listening sync) default off —
+//! override only when the adapter can provide them. Ranking / discovery never
+//! call adapter clients; they read the generic `listening_progress` table after
+//! hosts sync via [`Integration::sync_listening_progress`].
 
 use async_trait::async_trait;
+use bookclerk_library::LibraryStore;
 
 use crate::brand::Brand;
 use crate::error::{IntegrationError, Result};
@@ -69,6 +71,29 @@ pub trait Integration: Send + Sync {
     async fn scan_library(&self, _force: bool) -> Result<()> {
         Err(IntegrationError::message(format!(
             "integration `{}` does not support library scan",
+            self.id()
+        )))
+    }
+
+    /// Whether this integration can sync listening / progress into the library DB.
+    ///
+    /// Default: `false`. Ranking treats listening as optional — when no
+    /// integration syncs (or recommend filters exclude it), discovery still
+    /// runs on owned-library taste alone.
+    fn supports_listening_sync(&self) -> bool {
+        false
+    }
+
+    /// Pull listening / progress rows into the generic `listening_progress` table.
+    ///
+    /// Implementations must tag rows with [`Self::id`] as `provider`. Hosts
+    /// fan this out via [`crate::IntegrationRegistry::sync_listening_progress_all`]
+    /// so one or more integrations can contribute.
+    ///
+    /// Default: unsupported.
+    async fn sync_listening_progress(&self, _library: &LibraryStore) -> Result<usize> {
+        Err(IntegrationError::message(format!(
+            "integration `{}` does not support listening sync",
             self.id()
         )))
     }

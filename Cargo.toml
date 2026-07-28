@@ -16,6 +16,7 @@ members = [
     "crates/bookclerk-migrate",
     "crates/bookclerk-search",
     "crates/bookclerk-integrations",
+    "crates/bookclerk-discover",
     "crates/bookclerk-plugin",
     "crates/bookclerk-plugin-examples/echo-integration",
     "crates/bookclerk-cli",
@@ -53,6 +54,7 @@ bookclerk-naming = { path = "crates/bookclerk-naming" }
 bookclerk-migrate = { path = "crates/bookclerk-migrate" }
 bookclerk-search = { path = "crates/bookclerk-search" }
 bookclerk-integrations = { path = "crates/bookclerk-integrations" }
+bookclerk-discover = { path = "crates/bookclerk-discover" }
 bookclerk-plugin = { path = "crates/bookclerk-plugin" }
 
 # Async / runtime

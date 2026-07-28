@@ -268,5 +268,136 @@ pub fn migrations() -> Migrations<'static> {
         CREATE INDEX idx_account_links_account ON account_links(account_id);
         "#,
         ),
+        // Discovery: durable enrichment fields, works graph, listening, requests, embeddings.
+        M::up(
+            r#"
+        ALTER TABLE books ADD COLUMN description TEXT;
+        ALTER TABLE books ADD COLUMN language TEXT;
+        ALTER TABLE books ADD COLUMN cover_url TEXT;
+        ALTER TABLE books ADD COLUMN subjects TEXT;
+        ALTER TABLE books ADD COLUMN enrich_source TEXT;
+        ALTER TABLE books ADD COLUMN enrich_confidence REAL;
+        ALTER TABLE books ADD COLUMN enrich_updated_at TEXT;
+
+        CREATE TABLE works (
+            id TEXT PRIMARY KEY,
+            canonical_asin TEXT,
+            canonical_isbn TEXT,
+            title TEXT NOT NULL,
+            authors TEXT,
+            narrators TEXT,
+            description TEXT,
+            subjects TEXT,
+            categories TEXT,
+            language TEXT,
+            series TEXT,
+            series_index TEXT,
+            cover_url TEXT,
+            openlibrary_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_works_asin ON works(canonical_asin);
+        CREATE INDEX idx_works_isbn ON works(canonical_isbn);
+        CREATE INDEX idx_works_title ON works(title);
+
+        CREATE TABLE work_editions (
+            work_id TEXT NOT NULL,
+            book_uuid TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (work_id, book_uuid),
+            FOREIGN KEY(work_id) REFERENCES works(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX idx_work_editions_book ON work_editions(book_uuid);
+
+        CREATE TABLE listening_progress (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            identity_id INTEGER,
+            provider TEXT NOT NULL,
+            external_user_id TEXT NOT NULL,
+            book_uuid TEXT,
+            work_id TEXT,
+            external_item_id TEXT NOT NULL,
+            title TEXT,
+            authors TEXT,
+            asin TEXT,
+            isbn TEXT,
+            progress REAL,
+            current_time_seconds REAL,
+            duration_seconds REAL,
+            is_finished INTEGER NOT NULL DEFAULT 0,
+            last_listened_at TEXT,
+            updated_at TEXT NOT NULL,
+            UNIQUE(provider, external_user_id, external_item_id),
+            FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX idx_listening_book ON listening_progress(book_uuid);
+        CREATE INDEX idx_listening_work ON listening_progress(work_id);
+        CREATE INDEX idx_listening_user ON listening_progress(provider, external_user_id);
+
+        CREATE TABLE title_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uuid TEXT NOT NULL UNIQUE,
+            identity_id INTEGER,
+            title TEXT NOT NULL,
+            authors TEXT,
+            asin TEXT,
+            isbn TEXT,
+            notes TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            preferred_source TEXT,
+            work_id TEXT,
+            resolved_book_uuid TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX idx_title_requests_status ON title_requests(status);
+        CREATE INDEX idx_title_requests_identity ON title_requests(identity_id);
+
+        CREATE TABLE embeddings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_kind TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            dims INTEGER NOT NULL,
+            vector BLOB NOT NULL,
+            text_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(target_kind, target_id, model)
+        );
+
+        CREATE INDEX idx_embeddings_target ON embeddings(target_kind, target_id);
+        "#,
+        ),
+        // Per-user GUI / Discover preferences (not config.toml).
+        M::up(
+            r#"
+        CREATE TABLE user_preferences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject_key TEXT NOT NULL UNIQUE,
+            identity_id INTEGER,
+            default_view TEXT NOT NULL DEFAULT 'discover',
+            disabled_shelves_json TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX idx_user_preferences_identity ON user_preferences(identity_id);
+        "#,
+        ),
+        // Stable bibliographic key for wishlist aggregation (multi-user boost).
+        M::up(
+            r#"
+        ALTER TABLE title_requests ADD COLUMN work_key TEXT NOT NULL DEFAULT '';
+        CREATE INDEX idx_title_requests_work_key ON title_requests(work_key);
+        CREATE INDEX idx_title_requests_identity_status ON title_requests(identity_id, status);
+        "#,
+        ),
     ])
 }

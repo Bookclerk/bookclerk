@@ -140,12 +140,42 @@ pub fn normalize_isbn(raw: &str) -> String {
         .to_ascii_uppercase()
 }
 
+/// Normalize then convert ISBN-10 → ISBN-13 (`978…`) when possible.
+///
+/// ISBN is **not** available from every storefront (Chirp / GraphicAudio / Audible
+/// public catalog often omit it). When present, prefer this canonical form so
+/// 10- and 13-digit variants of the same book share one key.
+#[must_use]
+pub fn canonicalize_isbn(raw: &str) -> String {
+    let n = normalize_isbn(raw);
+    if n.len() == 13 && (n.starts_with("978") || n.starts_with("979")) {
+        return n;
+    }
+    if n.len() == 10 {
+        let core = &n[..9];
+        if !core.chars().all(|c| c.is_ascii_digit()) {
+            return n;
+        }
+        let mut body = String::from("978");
+        body.push_str(core);
+        let mut sum = 0u32;
+        for (i, c) in body.chars().enumerate() {
+            let d = c.to_digit(10).unwrap_or(0);
+            sum += if i % 2 == 0 { d } else { d * 3 };
+        }
+        let check = (10 - (sum % 10)) % 10;
+        body.push(char::from_digit(check, 10).unwrap_or('0'));
+        return body;
+    }
+    n
+}
+
 #[must_use]
 pub fn isbn_exact_match(query_isbn: Option<&str>, book_isbn: Option<&str>) -> bool {
-    let Some(q) = query_isbn.map(normalize_isbn).filter(|s| !s.is_empty()) else {
+    let Some(q) = query_isbn.map(canonicalize_isbn).filter(|s| !s.is_empty()) else {
         return false;
     };
-    let Some(b) = book_isbn.map(normalize_isbn).filter(|s| !s.is_empty()) else {
+    let Some(b) = book_isbn.map(canonicalize_isbn).filter(|s| !s.is_empty()) else {
         return false;
     };
     q == b

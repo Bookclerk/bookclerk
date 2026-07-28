@@ -1,8 +1,8 @@
 # GUI (web + tray companion)
 
-Bookclerk ships a shared React UI for library management, served by
-`bookclerkd`. The UI talks to the Rust HTTP API only (TypeScript never hosts
-the API).
+Bookclerk ships a shared React UI for Discover, Wishlist, library, and account
+linking, served by `bookclerkd`. The UI talks to the Rust HTTP API only
+(TypeScript never hosts the API).
 
 An optional **tray companion** (`bookclerk-tray`) spawns/attaches `bookclerkd`
 and opens the UI in the system browser:
@@ -16,32 +16,65 @@ An embedded Tauri window remains deferred pending an OSV-clean GTK4 graph —
 tracked in [#44](https://github.com/fritz-fritz/bookclerk/pull/44). Path notes:
 [gui-desktop-path.md](gui-desktop-path.md).
 
-## Operator auth
+## Auth (operator + portal)
 
-The GUI / `/api/*` routes use a separate **operator** credential from the
-Connect portal:
+The SPA supports two session types:
+
+| Role | How to sign in | Capabilities |
+| --- | --- | --- |
+| **Operator** | Paste `operator.token` | Full library, scan/acquire, jobs, Discover, Wishlist, Accounts |
+| **Portal** | Claim ticket or integration return-visit login | Discover (personalized), Wishlist, library of **linked-account books only** (no acquire), Accounts |
 
 | Item | Detail |
 | --- | --- |
-| Token file | `$BOOKCLERK_FILES_DIR/operator.token` (or `[daemon.auth].token_file`) |
-| Env | `BOOKCLERK_OPERATOR_TOKEN` / `BOOKCLERK_OPERATOR_TOKEN_FILE` |
-| Browser | `POST /api/auth/login` → HttpOnly cookie `bookclerk_operator_session` |
-| CLI / automation | `Authorization: Bearer <token>` |
-| Config | `[daemon.auth] enabled`, `token_file`, `session_ttl_hours` |
+| Operator token | `$BOOKCLERK_FILES_DIR/operator.token` / `BOOKCLERK_OPERATOR_TOKEN` |
+| Operator cookie | `bookclerk_operator_session` (`Path=/`) |
+| Portal cookie | `bookclerk_portal_session` (`Path=/`) |
+| Portal APIs | `/api/portal/*` (SPA Accounts / claim redeem) |
+| Config | `[daemon.auth]` |
+| User prefs (DB) | `GET` / `PATCH /api/preferences` — `default_view`, `disabled_shelves` |
 
-On first start with auth enabled, `bookclerkd` mints the token file (`0600`) and
-prints its path to stderr. Auth is required by default; binding a non-loopback
-address with `daemon.auth.enabled = false` is rejected at startup.
+`GET /api/auth/me` returns `{ authenticated, role, default_view, can_acquire, portal? }`
+with `default_view` from the caller's SQLite preferences row.
 
-Prefer TLS termination at a reverse proxy when exposing the UI remotely.
+## Default view
 
-## Web UI (served by `bookclerkd`)
+After auth the SPA opens the signed-in user's **`default_view`** (default
+**`discover`**). Change it in Discover → settings, or:
+
+```http
+PATCH /api/preferences
+Content-Type: application/json
+
+{ "default_view": "library" }
+```
+
+Values: `discover` | `wishlist` | `library` | `accounts`. Stored in
+`user_preferences` (subject `operator` or `portal:{identity_id}`), not
+`config.toml`.
+
+## Screens
+
+- **Discover** — Netflix-style shelves with progressive horizontal scroll; top
+  multi-store catalog search with autocomplete (wishlist from suggestions or
+  cards). Live storefront prices are viewport-gated and batched; `best` prefers
+  the caller’s linked accounts when priced. No approval/triage UI.
+- **Wishlist** — personal open wishes (un-wishlist removes your row and lowers
+  / drops the shared queue entry) plus a sidebar **global queue** ranked by
+  overall / operator Discover taste with a heavy multi-user wish boost
+  (shared order for every viewer; store-agnostic; no approval flow)
+- **Library** — vertical infinite scroll; operators see acquire/scan; portal
+  users see only books from accounts they linked
+- **Accounts** — link bookstore sources, revoke connections, manage portal identity
+  connections (claim ticket / credential login on the sign-in screen)
+
+## Run
 
 ```bash
 cd ui && npm ci && npm run build
 export BOOKCLERK_FILES_DIR=/tmp/BookclerkFiles
 cargo run -p bookclerkd
-# open http://127.0.0.1:8787/ and paste the operator token
+# open http://127.0.0.1:8787/
 ```
 
 Dev (Vite with API proxy):
@@ -54,14 +87,6 @@ cd ui && npm run dev   # http://127.0.0.1:5173
 ```
 
 Override the static dist directory with `BOOKCLERK_UI_DIST`.
-
-### MVP screens
-
-- Operator login
-- Dense book rows (cover, title, authors/narrators, series, source, status)
-- Search + status filter
-- Scan / acquire pending / acquire one title
-- Jobs + status strip
 
 ## Tray companion (`bookclerk-tray`)
 
