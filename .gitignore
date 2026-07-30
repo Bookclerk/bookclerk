@@ -44,3 +44,6 @@ lcov.info
 /artifacts/
 **/__pycache__/
 *.py[cod]
+
+# Vendored crate build outputs
+third_party/**/target/

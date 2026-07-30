@@ -104,6 +104,9 @@ pub fn filter_books(books: Vec<BookRecord>, asins: Option<&[String]>) -> Vec<Boo
     }
 }
 
-pub fn load_books(store: &LibraryStore, account: Option<&str>) -> anyhow::Result<Vec<BookRecord>> {
-    Ok(store.list_books(account)?)
+pub async fn load_books(
+    store: &LibraryStore,
+    account: Option<&str>,
+) -> anyhow::Result<Vec<BookRecord>> {
+    Ok(store.list_books(account).await?)
 }

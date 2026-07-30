@@ -113,7 +113,7 @@ pub async fn reconcile_library(
     options: ReconcileOptions,
 ) -> Result<ReconcileSummary> {
     let index = StorageIndex::from_storage(storage).await?;
-    let books = library.list_books(options.account.as_deref())?;
+    let books = library.list_books(options.account.as_deref()).await?;
     let mut summary = ReconcileSummary::default();
 
     for book in books {
@@ -133,7 +133,7 @@ pub async fn reconcile_library(
         {
             continue;
         }
-        let matched = find_existing_for_book(&index, library, &book, &options.download);
+        let matched = find_existing_for_book(&index, library, &book, &options.download).await;
         match matched {
             Some(key) => {
                 if options.only_clear_missing {
@@ -143,13 +143,15 @@ pub async fn reconcile_library(
                 let needs_update = book.acquire_status != AcquireStatus::Acquired
                     || book.storage_key.as_deref() != Some(key.as_str());
                 if needs_update {
-                    library.set_acquire_status(
-                        book.title_id(),
-                        &book.account_id,
-                        AcquireStatus::Acquired,
-                        Some(&key),
-                        None,
-                    )?;
+                    library
+                        .set_acquire_status(
+                            book.title_id(),
+                            &book.account_id,
+                            AcquireStatus::Acquired,
+                            Some(&key),
+                            None,
+                        )
+                        .await?;
                     summary.matched += 1;
                     tracing::info!(
                         asin = %book.asin_or_isbn(),
@@ -166,13 +168,15 @@ pub async fn reconcile_library(
                     continue;
                 }
                 if options.clear_missing && book.acquire_status == AcquireStatus::Acquired {
-                    library.set_acquire_status(
-                        book.title_id(),
-                        &book.account_id,
-                        AcquireStatus::NotAcquired,
-                        None,
-                        None,
-                    )?;
+                    library
+                        .set_acquire_status(
+                            book.title_id(),
+                            &book.account_id,
+                            AcquireStatus::NotAcquired,
+                            None,
+                            None,
+                        )
+                        .await?;
                     summary.cleared += 1;
                 } else {
                     summary.unchanged += 1;
@@ -188,8 +192,7 @@ pub async fn reconcile_library(
 ///
 /// Honors configured folder/file templates and `save_podcasts_to_parent_folder`
 /// via the same path planner as acquire.
-#[must_use]
-pub fn find_existing_for_book(
+pub async fn find_existing_for_book(
     index: &StorageIndex,
     library: &LibraryStore,
     book: &BookRecord,
@@ -203,7 +206,7 @@ pub fn find_existing_for_book(
     }
 
     let req = request_from_book(book, download);
-    if let Some(key) = find_existing_for_request(index, library, &req) {
+    if let Some(key) = find_existing_for_request(index, library, &req).await {
         return Some(key);
     }
 
@@ -231,8 +234,7 @@ pub fn find_existing_for_book(
 /// 2. Same templates with sanitizable characters as wildcards (cross OS/backend)
 /// 3. Template path without podcast-parent rewrite (exact, then wildcard)
 /// 4. ASIN token found anywhere in a storage key
-#[must_use]
-pub fn find_existing_for_request(
+pub async fn find_existing_for_request(
     index: &StorageIndex,
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -246,13 +248,13 @@ pub fn find_existing_for_request(
     };
 
     // 1. Exact planned path (current creation sanitization).
-    if let Some(key) = find_exact_planned(index, library, req, ext) {
+    if let Some(key) = find_exact_planned(index, library, req, ext).await {
         return Some(key);
     }
 
     // 2. Wildcard planned path — pickup liberations from another OS/backend.
     let wildcard_rules = reconciliation_wildcard_rules(&req.options.replacement_characters);
-    if let Some(key) = find_wildcard_planned(index, library, req, &wildcard_rules) {
+    if let Some(key) = find_wildcard_planned(index, library, req, &wildcard_rules).await {
         return Some(key.to_string());
     }
 
@@ -298,13 +300,13 @@ pub fn find_existing_for_request(
     index.best_key_for_asin(&req.asin).map(str::to_string)
 }
 
-fn find_exact_planned(
+async fn find_exact_planned(
     index: &StorageIndex,
     library: &LibraryStore,
     req: &AcquireRequest,
     preferred_ext: &str,
 ) -> Option<String> {
-    let planned = planned_storage_key_for(library, req, preferred_ext);
+    let planned = planned_storage_key_for(library, req, preferred_ext).await;
     if index.contains_key(&planned) {
         return Some(planned);
     }
@@ -312,7 +314,7 @@ fn find_exact_planned(
         if *alt == preferred_ext {
             continue;
         }
-        let key = planned_storage_key_for(library, req, alt);
+        let key = planned_storage_key_for(library, req, alt).await;
         if index.contains_key(&key) {
             return Some(key);
         }
@@ -320,14 +322,14 @@ fn find_exact_planned(
     None
 }
 
-fn find_wildcard_planned<'a>(
+async fn find_wildcard_planned<'a>(
     index: &'a StorageIndex,
     library: &LibraryStore,
     req: &AcquireRequest,
     wildcard_rules: &[bookclerk_config::ReplacementRule],
 ) -> Option<&'a str> {
     for alt in planned_extensions() {
-        let pattern = planned_storage_key_with_rules(library, req, alt, wildcard_rules);
+        let pattern = planned_storage_key_with_rules(library, req, alt, wildcard_rules).await;
         if let Some(key) = index.find_key_matching_pattern(&pattern) {
             return Some(key);
         }
@@ -352,6 +354,7 @@ pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -
         force: false,
         preloaded_license: None,
         write_destinations: None,
+        audible_client: None,
     }
 }
 
@@ -514,10 +517,14 @@ mod reconcile_integration {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().unwrap();
-        library.upsert_account("acct", "us", None, true).unwrap();
+        let library = LibraryStore::open_in_memory().await.unwrap();
+        library
+            .upsert_account("acct", "us", None, true, "audible")
+            .await
+            .unwrap();
         library
             .upsert_book(&NewBook::minimal("B00EXAMPLE1", "acct", "us", "Cool Book"))
+            .await
             .unwrap();
 
         let summary = reconcile_library(
@@ -532,7 +539,11 @@ mod reconcile_integration {
         .await
         .unwrap();
         assert_eq!(summary.matched, 1);
-        let book = library.get_book("B00EXAMPLE1", "acct").unwrap().unwrap();
+        let book = library
+            .get_book("B00EXAMPLE1", "acct")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(book.acquire_status, AcquireStatus::Acquired);
         assert!(book.storage_key.as_deref().unwrap().contains("B00EXAMPLE1"));
     }
@@ -551,11 +562,14 @@ mod reconcile_integration {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().unwrap();
-        library.upsert_account("acct", "us", None, true).unwrap();
+        let library = LibraryStore::open_in_memory().await.unwrap();
+        library
+            .upsert_account("acct", "us", None, true, "audible")
+            .await
+            .unwrap();
         let mut book = NewBook::minimal("B00EXAMPLE1", "acct", "us", "Cool Book");
         book.authors = Some("Jane Doe".into());
-        library.upsert_book(&book).unwrap();
+        library.upsert_book(&book).await.unwrap();
 
         let download = DownloadOptions {
             folder_template: Some("CustomRoot".into()),
@@ -574,7 +588,11 @@ mod reconcile_integration {
         .await
         .unwrap();
         assert_eq!(summary.matched, 1);
-        let book = library.get_book("B00EXAMPLE1", "acct").unwrap().unwrap();
+        let book = library
+            .get_book("B00EXAMPLE1", "acct")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             book.storage_key.as_deref(),
             Some("CustomRoot/B00EXAMPLE1.m4b")
@@ -597,11 +615,14 @@ mod reconcile_integration {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().unwrap();
-        library.upsert_account("acct", "us", None, true).unwrap();
+        let library = LibraryStore::open_in_memory().await.unwrap();
+        library
+            .upsert_account("acct", "us", None, true, "audible")
+            .await
+            .unwrap();
         let mut book = NewBook::minimal("B00EXAMPLE1", "acct", "us", "Hello: World");
         book.authors = Some("Jane Doe".into());
-        library.upsert_book(&book).unwrap();
+        library.upsert_book(&book).await.unwrap();
 
         let download = DownloadOptions {
             // Creation rules keep ':'; reconcile must still find the Windows key.
@@ -620,7 +641,11 @@ mod reconcile_integration {
         .await
         .unwrap();
         assert_eq!(summary.matched, 1);
-        let book = library.get_book("B00EXAMPLE1", "acct").unwrap().unwrap();
+        let book = library
+            .get_book("B00EXAMPLE1", "acct")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             book.storage_key.as_deref(),
             Some("Jane Doe/Hello_ World/B00EXAMPLE1.m4b")

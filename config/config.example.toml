@@ -10,10 +10,33 @@ enrich_min_confidence = 90
 # When matching storage, relocate matched audio + sidecars onto the naming-profile layout.
 # fix_storage_layout = false
 
+# Library database plugin — exactly one backend (default: local SQLite).
+# See docs/database.md (SeaORM; Cloudflare D1 and PostgreSQL supported).
+[database]
+plugin = "sqlite"   # sqlite | d1 | postgres
+
+[database.sqlite]
+# path = "library.db"   # relative to BOOKCLERK_FILES_DIR, or absolute
+
+# [database.d1]
+# account_id = "your-cloudflare-account-id"
+# database_id = "your-d1-database-uuid"
+# API token via env only: BOOKCLERK_D1_API_TOKEN or CLOUDFLARE_API_TOKEN.
+# api_base = "https://api.cloudflare.com/client/v4"
+
+# [database.postgres]
+# PostgreSQL connection URL (contains credentials — prefer url_file in production).
+# url = "postgres://user:password@localhost:5432/bookclerk"
+# url_file = "/run/secrets/postgres_url"
+# Env: BOOKCLERK_DATABASE_POSTGRES_URL / BOOKCLERK_DATABASE_POSTGRES_URL_FILE
+
 [auth]
-# Prefer BOOKCLERK_AUTH_PASSWORD or BOOKCLERK_AUTH_PASSWORD_FILE over plaintext token files.
-# password_file = "/run/bookclerk/secrets/auth_password"
-# allow_plaintext = false
+# Prefer BOOKCLERK_AUTH_PASSWORD (env). Optional TOML fallback:
+# password = "your-strong-passphrase"
+# Wrap an existing BCK1 master.key later with:
+#   bookclerk config master-key wrap
+# or set auth.password / env and reload bookclerkd (SIGHUP or POST /api/config/reload).
+# password_file is no longer supported.
 
 [output]
 # Packaging format: enriched_m4b | single_mp3 | split_mp3_by_chapter | split_mp3_by_size | opus | none
@@ -72,10 +95,12 @@ enabled = false
 # region = "us-east-1"
 # endpoint = "http://minio:9000"
 # force_path_style = true
-# Credentials JSON under Accounts/ (same pattern as source *.*.auth files).
-# Default when unset: Accounts/default.s3.auth
-# credentials_file = "Accounts/default.s3.auth"
-# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY still override when both are set.
+# Credentials resolve in order:
+#   1. BOOKCLERK_AWS_ACCESS_KEY_ID + BOOKCLERK_AWS_SECRET_ACCESS_KEY
+#      (+ optional BOOKCLERK_AWS_SESSION_TOKEN) — process-env override; wins over DB row.
+#   2. encrypted_secrets DB row (kind=s3, account_id=operator, name=default).
+#      Save with: bookclerk config s3-credentials set
+#   3. AWS SDK default provider chain (~/.aws/credentials, SSO, instance roles).
 # Optional per-destination naming overrides. Useful when object storage should
 # use a different key layout than the local filesystem.
 # naming_profile = "classic"
@@ -83,7 +108,7 @@ enabled = false
 # file_template = "<asin>"
 # chapter_file_template = "<asin> - <ch#>"
 # Env: BOOKCLERK_OUTPUT_S3_ENABLED, BOOKCLERK_OUTPUT_S3_BUCKET,
-#      BOOKCLERK_OUTPUT_S3_CREDENTIALS_FILE (or BOOKCLERK_S3_*), …
+#      BOOKCLERK_OUTPUT_S3_REGION, BOOKCLERK_OUTPUT_S3_ENDPOINT (or BOOKCLERK_S3_*), …
 
 # Content-source plugins ([sources.*]). Each source has `enabled`.
 # [sources.audible]

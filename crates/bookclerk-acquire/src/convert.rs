@@ -47,13 +47,15 @@ pub async fn convert_book(
 
     let mp3_key = swap_audio_extension(key, "mp3");
     if !req.force && storage.exists(&mp3_key).await? {
-        library.set_acquire_status(
-            book.title_id(),
-            &book.account_id,
-            AcquireStatus::Acquired,
-            Some(&mp3_key),
-            None,
-        )?;
+        library
+            .set_acquire_status(
+                book.title_id(),
+                &book.account_id,
+                AcquireStatus::Acquired,
+                Some(&mp3_key),
+                None,
+            )
+            .await?;
         return Ok(mp3_key);
     }
 
@@ -81,13 +83,15 @@ pub async fn convert_book(
         let _ = storage.delete(key).await;
     }
 
-    library.set_acquire_status(
-        book.title_id(),
-        &book.account_id,
-        AcquireStatus::Acquired,
-        Some(&mp3_key),
-        None,
-    )?;
+    library
+        .set_acquire_status(
+            book.title_id(),
+            &book.account_id,
+            AcquireStatus::Acquired,
+            Some(&mp3_key),
+            None,
+        )
+        .await?;
 
     if let Err(err) = tokio::fs::remove_dir_all(&work_dir).await {
         tracing::warn!(

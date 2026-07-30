@@ -1,9 +1,7 @@
 //! ContentSource trait.
 
-use std::path::Path;
-
 use async_trait::async_trait;
-use bookclerk_library::LibraryStore;
+use bookclerk_library::SourceScope;
 
 use crate::brand::SourceBrand;
 use crate::error::Result;
@@ -33,9 +31,12 @@ impl PortalAuthMode {
 
 /// Pluggable audiobook store.
 ///
-/// Plugins own their id, brand, auth mode, credential suffixes, and config
-/// parsing. Hosts register concrete crates at startup and talk only through
-/// this trait.
+/// Plugins own their id, brand, auth mode, and config parsing. Hosts register
+/// concrete crates at startup and talk only through this trait.
+///
+/// All credential and library mutations go through [`SourceScope`], which
+/// forces `source` / `provider` to this plugin's id. First-party in-repo
+/// adapters and third-party JSON-RPC plugins share the same scope rules.
 #[async_trait]
 pub trait ContentSource: Send + Sync {
     /// Stable plugin id (`audible`, `libro`, …).
@@ -57,9 +58,6 @@ pub trait ContentSource: Send + Sync {
     /// Portal button brand (colors + favicon).
     fn portal_brand(&self) -> SourceBrand;
 
-    /// Auth/CDM filename suffixes under `Accounts/` (e.g. `.audible.auth`, `.libro.auth`).
-    fn auth_credential_suffixes(&self) -> &'static [&'static str];
-
     /// Optional env var for non-interactive password login.
     fn password_env_var(&self) -> Option<&'static str> {
         None
@@ -75,26 +73,23 @@ pub trait ContentSource: Send + Sync {
         false
     }
 
-    /// Authenticate and persist credentials under `files_dir`.
-    async fn login(&self, files_dir: &Path, opts: LoginOptions) -> Result<SourceAccount>;
+    /// Authenticate and persist credentials via [`SourceScope`].
+    async fn login(&self, scope: &SourceScope, opts: LoginOptions) -> Result<SourceAccount>;
 
-    /// List accounts known to this source under `files_dir`.
-    async fn list_accounts(&self, files_dir: &Path) -> Result<Vec<SourceAccount>>;
+    /// List accounts for this plugin (scope filters by source id).
+    async fn list_accounts(&self, scope: &SourceScope) -> Result<Vec<SourceAccount>>;
 
-    /// Sync library rows into `library`.
-    async fn scan(
-        &self,
-        files_dir: &Path,
-        library: &LibraryStore,
-        opts: ScanOptions,
-    ) -> Result<ScanSummary>;
+    /// Sync library rows using scoped credentials / upserts.
+    async fn scan(&self, scope: &SourceScope, opts: ScanOptions) -> Result<ScanSummary>;
 
     /// Fetch everything needed to acquire one title (no storage writes).
     ///
     /// `title_id` is the source-native product id (Audible ASIN or Libro ISBN).
+    /// Auth is loaded through `scope`; `opts.files_dir` carries the
+    /// `BOOKCLERK_FILES_DIR` path for CDM / Widevine resolution.
     async fn fetch_title(
         &self,
-        files_dir: &Path,
+        scope: &SourceScope,
         account_id: &str,
         title_id: &str,
         opts: &FetchOptions,

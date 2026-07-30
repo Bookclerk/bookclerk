@@ -1,22 +1,18 @@
 //! OAuth login orchestration via audible-rs (QR + callback server + external paste).
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use audible_rs::api::locale;
-use audible_rs::auth::authfile::KdfParams;
 use audible_rs::auth::device::{Device, DeviceKind};
 use audible_rs::auth::login::{self as login_flow, LoginDefaults, LoginServer};
 use audible_rs::auth::Authenticator;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AudibleError, Result};
-use crate::paths::{auth_file_for, ensure_accounts_dir};
 use crate::qr::{render_login_qr, QrRenderMode};
-use crate::secret::{
-    default_allow_plaintext, harden_secret_path, require_auth_password, resolve_auth_password,
-};
+use crate::secret::resolve_auth_password;
 
 /// How to complete the browser sign-in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -37,7 +33,6 @@ pub struct AuthLoginOptions {
     pub response_url: Option<String>,
     pub show_qr: bool,
     pub qr_mode: QrRenderMode,
-    pub files_dir: PathBuf,
     pub mode: LoginMode,
     /// Seconds to wait for LoginServer capture.
     pub timeout_secs: u64,
@@ -45,10 +40,9 @@ pub struct AuthLoginOptions {
     pub audible_username: bool,
     /// Overwrite an existing auth file.
     pub force: bool,
-    /// Optional `[auth].password_file` from config.
-    pub password_file: Option<PathBuf>,
-    /// Allow writing an unencrypted auth file when no passphrase is configured.
-    pub allow_plaintext: bool,
+    /// When `Some`, credentials are persisted via the Audible [`SourceScope`]
+    /// (same scoping rules as third-party plugins).
+    pub scope: Option<bookclerk_library::SourceScope>,
 }
 
 impl Default for AuthLoginOptions {
@@ -60,13 +54,11 @@ impl Default for AuthLoginOptions {
             response_url: None,
             show_qr: true,
             qr_mode: QrRenderMode::Unicode,
-            files_dir: PathBuf::from("BookclerkFiles"),
             mode: LoginMode::Server,
             timeout_secs: 300,
             audible_username: false,
             force: false,
-            password_file: None,
-            allow_plaintext: false,
+            scope: None,
         }
     }
 }
@@ -87,7 +79,6 @@ pub struct AuthSession {
     pub account_id: String,
     pub marketplace: String,
     pub label: Option<String>,
-    pub auth_file: PathBuf,
     pub customer_id: Option<String>,
 }
 
@@ -104,7 +95,11 @@ pub async fn begin_login(
         ));
     }
 
-    ensure_accounts_dir(&opts.files_dir)?;
+    if opts.scope.is_none() {
+        return Err(AudibleError::Auth(
+            "SourceScope is required for Audible login (credentials are DB-only)".into(),
+        ));
+    }
 
     // Android registration is required for Widevine L3 drmlicense grants.
     let device_kind = DeviceKind::Android;
@@ -130,7 +125,9 @@ async fn login_via_server(
         country_code: Some(opts.marketplace.clone()),
         device: device_kind,
         username: opts.audible_username,
-        name: opts.label.clone(),
+        // Account identity is the Audible customer id after login — do not
+        // prefill / solicit a local "account name" that could diverge from it.
+        name: None,
         marketplaces: None,
         default_marketplaces: None,
         plain: true,
@@ -213,31 +210,36 @@ async fn persist_account(
 ) -> Result<AuthSession> {
     let marketplace = auth.locale().country_code.to_string();
     let customer_id = auth.customer_id().map(str::to_string);
-    let account_name = opts
-        .label
+    // Secrets and account rows are keyed by Audible customer id (never by
+    // display label). Label is display-only metadata on the account row.
+    let account_id = customer_id
         .clone()
-        .or_else(|| customer_id.clone())
+        .or_else(|| opts.label.clone())
         .unwrap_or_else(|| marketplace.clone());
+    let label = opts.label.clone();
 
-    let auth_file = auth_file_for(&opts.files_dir, &account_name);
-    if auth_file.exists() && !opts.force {
-        return Err(AudibleError::Auth(format!(
-            "{} already exists (pass --force to overwrite)",
-            auth_file.display()
-        )));
+    if let Some(scope) = &opts.scope {
+        if !opts.force {
+            let existing = crate::db::load_authenticator_from_db(scope, &account_id).await?;
+            if existing.is_some() {
+                return Err(AudibleError::Auth(format!(
+                    "audible account `{account_id}` already exists in encrypted_secrets \
+                     (pass --force to overwrite)"
+                )));
+            }
+        }
+        crate::db::save_authenticator_to_db(&auth, scope, &account_id).await?;
+        scope
+            .upsert_account(&account_id, &marketplace, label.as_deref(), true)
+            .await
+            .map_err(|e| AudibleError::Auth(e.to_string()))?;
+    } else {
+        return Err(AudibleError::Auth(
+            "SourceScope is required to persist Audible credentials (DB-only auth; \
+             pass scope via AuthLoginOptions::scope)"
+                .into(),
+        ));
     }
-
-    save_authenticator(
-        &auth,
-        &auth_file,
-        SaveAuthOptions {
-            password_file: opts.password_file.as_deref(),
-            allow_plaintext: opts.allow_plaintext,
-        },
-    )
-    .await?;
-
-    let account_id = customer_id.clone().unwrap_or_else(|| account_name.clone());
 
     on_progress(LoginProgress::Completed {
         account_id: account_id.clone(),
@@ -246,8 +248,7 @@ async fn persist_account(
     Ok(AuthSession {
         account_id,
         marketplace,
-        label: opts.label.or(Some(account_name)),
-        auth_file,
+        label,
         customer_id,
     })
 }
@@ -275,82 +276,22 @@ fn read_redirect_from_stdin() -> Result<String> {
     Ok(trimmed)
 }
 
-/// Options controlling how auth envelopes are written.
-#[derive(Debug, Clone, Copy)]
-pub struct SaveAuthOptions<'a> {
-    /// Optional passphrase file from `[auth].password_file`.
-    ///
-    /// When set (or via `BOOKCLERK_AUTH_PASSWORD_FILE` / process defaults) and the
-    /// file is missing, a strong random passphrase is written there on first use.
-    pub password_file: Option<&'a Path>,
-    /// Allow writing unencrypted `.audible.auth` files when no passphrase is configured.
-    pub allow_plaintext: bool,
-}
-
-impl Default for SaveAuthOptions<'static> {
-    fn default() -> Self {
-        Self {
-            password_file: None,
-            allow_plaintext: default_allow_plaintext(),
-        }
-    }
-}
-
-/// Persist an authenticator under `Accounts/`.
+/// Load an authenticator from an external audible-rs auth file (plain or encrypted).
 ///
-/// Encrypts when a passphrase is available (env / password file). Otherwise
-/// requires [`SaveAuthOptions::allow_plaintext`].
-pub async fn save_authenticator(
-    auth: &Authenticator,
-    path: &Path,
-    opts: SaveAuthOptions<'_>,
-) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-        let _ = harden_secret_path(parent);
-    }
-
-    let password = resolve_auth_password(opts.password_file)?;
-    let password = match password {
-        Some(secret) => Some(secret),
-        None if opts.allow_plaintext => {
-            tracing::warn!(
-                path = %path.display(),
-                "writing unprotected auth file (auth.allow_plaintext=true); \
-                 set BOOKCLERK_AUTH_PASSWORD or a password file to encrypt OAuth tokens"
-            );
-            None
-        }
-        None => return Err(require_auth_password(opts.password_file).unwrap_err()),
-    };
-
-    auth.save_to(path, password, KdfParams::default())
-        .await
-        .map_err(AudibleError::from)?;
-    let _ = harden_secret_path(path);
-    Ok(())
-}
-
-/// Load an authenticator from a Bookclerk auth file (plain or encrypted).
-///
-/// Passphrase resolution: env / password file (auto-created when path is set
-/// but missing). When `None`, loads a plaintext envelope.
-pub async fn load_authenticator(
-    path: &Path,
-    password_file: Option<&Path>,
-) -> Result<Authenticator> {
-    let password = resolve_auth_password(password_file)?;
+/// Used only for one-shot **import** of a user-supplied file into the DB.
+/// Passphrase resolution: `BOOKCLERK_AUTH_PASSWORD`. When unset, loads a
+/// plaintext envelope.
+pub(crate) async fn load_authenticator(path: &Path) -> Result<Authenticator> {
+    let password = resolve_auth_password()?;
     let auth = Authenticator::load_file(path, password)
         .await
         .map_err(|err| {
             let msg = err.to_string();
             if msg.contains("password") || msg.contains("decrypt") || msg.contains("cipher") {
                 AudibleError::Auth(format!(
-                    "failed to load {} ({msg}) — set {} / {} / [auth].password_file \
-                     for encrypted files, or use a plaintext .audible.auth with auth.allow_plaintext",
+                    "failed to load {} ({msg}) — set {} for encrypted files",
                     path.display(),
                     crate::secret::AUTH_PASSWORD_ENV,
-                    crate::secret::AUTH_PASSWORD_FILE_ENV,
                 ))
             } else {
                 AudibleError::from(err)

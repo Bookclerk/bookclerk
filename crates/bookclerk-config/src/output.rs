@@ -18,10 +18,10 @@
 //! Each destination plugin has its own `enabled` flag; multiple may be on at
 //! once (acquired files are written to every enabled destination).
 //!
-//! S3 credentials prefer `Accounts/*.s3.auth` (or `[output.s3].credentials_file`);
-//! `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` still override when both are set.
-//! With neither, the AWS SDK default provider chain is used (shared
-//! `~/.aws/credentials` / config, SSO, instance/task roles — same as AWS CLI).
+//! S3 credentials come from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+//! (optional `AWS_SESSION_TOKEN`) when both are set; otherwise the AWS SDK
+//! default provider chain is used (shared `~/.aws/credentials` / config, SSO,
+//! instance/task roles — same as AWS CLI).
 
 use std::path::PathBuf;
 
@@ -418,9 +418,15 @@ impl Default for OutputLocalConfig {
 
 /// S3 / MinIO destination (`[output.s3]`).
 ///
-/// Credentials resolve in order: `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`
-/// env → [`Self::credentials_file`] / default `Accounts/default.s3.auth` → AWS
-/// SDK default provider chain (`~/.aws/credentials`, SSO, EC2/ECS/EKS roles, …).
+/// Credentials resolve in order:
+/// 1. `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` env (optional
+///    `AWS_SESSION_TOKEN`) — process env override (not written to the DB unless
+///    you run `bookclerk config s3-credentials set`)
+/// 2. `encrypted_secrets` row (`kind=s3`, `account_type=operator`,
+///    `account_id=default`, `name=default`) — fail closed if the row is
+///    encrypted and `BOOKCLERK_AUTH_PASSWORD` cannot unlock it
+/// 3. AWS SDK default provider chain (`~/.aws/credentials`, SSO, EC2/ECS/EKS
+///    roles, …)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct OutputS3Config {
@@ -432,11 +438,6 @@ pub struct OutputS3Config {
     pub endpoint: Option<String>,
     /// Force path-style addressing (typical for MinIO).
     pub force_path_style: bool,
-    /// Optional path to an S3 credentials auth file (`Accounts/*.s3.auth` JSON).
-    /// Relative paths resolve under `BOOKCLERK_FILES_DIR`. When unset, Bookclerk
-    /// looks for `Accounts/default.s3.auth` automatically.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credentials_file: Option<PathBuf>,
     /// Optional naming overrides for this destination only.
     #[serde(flatten)]
     pub naming: DestinationNaming,
@@ -451,7 +452,6 @@ impl Default for OutputS3Config {
             region: String::from("us-east-1"),
             endpoint: None,
             force_path_style: false,
-            credentials_file: None,
             naming: DestinationNaming::default(),
         }
     }

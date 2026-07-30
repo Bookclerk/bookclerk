@@ -95,7 +95,7 @@ pub async fn enrich_books_from_openlibrary_with(
     let mut enriched = 0usize;
     let mut requests = 0usize;
 
-    for book in library.list_books(None)? {
+    for book in library.list_books(None).await? {
         if requests >= opts.max_requests {
             tracing::info!(
                 requests,
@@ -182,22 +182,26 @@ pub async fn enrich_books_from_openlibrary_with(
         }
 
         let openlibrary_id = doc.key.clone();
-        library.update_catalog_enrichment(
-            &book.uuid,
-            &CatalogEnrichmentFields {
-                description,
-                language,
-                cover_url,
-                subjects,
-                categories: None,
-                enrich_source: Some(String::from("openlibrary")),
-                enrich_confidence: Some(0.7),
-                enrich_updated_at: Some(Utc::now()),
-            },
-        )?;
+        library
+            .update_catalog_enrichment(
+                &book.uuid,
+                &CatalogEnrichmentFields {
+                    description,
+                    language,
+                    cover_url,
+                    subjects,
+                    categories: None,
+                    enrich_source: Some(String::from("openlibrary")),
+                    enrich_confidence: Some(0.7),
+                    enrich_updated_at: Some(Utc::now()),
+                },
+            )
+            .await?;
 
-        if let (Some(ol), Some(work_id)) = (openlibrary_id, library.work_id_for_book(&book.uuid)?) {
-            if let Some(work) = library.get_work(&work_id)? {
+        if let (Some(ol), Some(work_id)) =
+            (openlibrary_id, library.work_id_for_book(&book.uuid).await?)
+        {
+            if let Some(work) = library.get_work(&work_id).await? {
                 let mut nw = bookclerk_library::NewWork {
                     id: Some(work.id),
                     canonical_asin: work.canonical_asin,
@@ -214,13 +218,13 @@ pub async fn enrich_books_from_openlibrary_with(
                     cover_url: work.cover_url,
                     openlibrary_id: Some(ol),
                 };
-                if let Some(b) = library.get_book_by_uuid(&book.uuid)? {
+                if let Some(b) = library.get_book_by_uuid(&book.uuid).await? {
                     nw.description = b.description.or(nw.description);
                     nw.subjects = b.subjects.or(nw.subjects);
                     nw.language = b.language.or(nw.language);
                     nw.cover_url = b.cover_url.or(nw.cover_url);
                 }
-                library.upsert_work(&nw)?;
+                library.upsert_work(&nw).await?;
             }
         }
 

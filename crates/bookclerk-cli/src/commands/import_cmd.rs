@@ -92,7 +92,7 @@ pub async fn run(
             emit(format, &summary, || {
                 println!("settings\t{}", summary.settings_imported);
                 println!("accounts\t{}", summary.accounts);
-                println!("auth_files\t{}", summary.auth_files);
+                println!("credentials\t{}", summary.credentials);
                 println!("books\t{}", summary.books);
                 println!("acquired\t{}", summary.acquired);
                 println!("storage_keys\t{}", summary.storage_keys);

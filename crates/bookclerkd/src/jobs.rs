@@ -10,7 +10,6 @@ use bookclerk_audible::DownloadOptions;
 use bookclerk_config::BadBookAction;
 use bookclerk_library::AcquireStatus;
 use bookclerk_source::ScanOptions;
-use bookclerk_storage::from_config;
 use tracing::{error, info, warn};
 
 use crate::api::{AppState, JobInfo};
@@ -114,7 +113,6 @@ pub async fn run_scan(state: &AppState, account: Option<&str>) -> anyhow::Result
     let registry = default_registry_with_plugins(&cfg).await?;
     let summary = registry
         .scan_all(
-            &paths.files_dir,
             &state.library,
             ScanOptions {
                 accounts: account.map(|a| vec![a.to_string()]).unwrap_or_default(),
@@ -150,8 +148,8 @@ pub async fn run_acquire(
     let cfg = state.config.read().await.clone();
     let paths = cfg.paths();
     paths.ensure_dirs()?;
-    let storage = from_config(&cfg).await?;
-    let destinations = AcquireDestinations::from_config(&cfg).await?;
+    let destinations = AcquireDestinations::from_config(&cfg, Some(&state.library)).await?;
+    let storage = destinations.listing_backend()?;
     let options = DownloadOptions::from(&cfg);
     let registry = default_registry_with_plugins(&cfg).await?;
 
@@ -169,7 +167,7 @@ pub async fn run_acquire(
     )
     .await?;
 
-    let books = state.library.list_books(account)?;
+    let books = state.library.list_books(account).await?;
     let targets: Vec<_> = books
         .into_iter()
         .filter(|b| {
@@ -212,6 +210,8 @@ pub async fn run_acquire(
             force: false,
             preloaded_license: None,
             write_destinations: None,
+            // AccountClient cache lives in bookclerk-audible::open_account_client.
+            audible_client: None,
         };
         let mut attempts = 0u32;
         loop {
@@ -280,10 +280,5 @@ async fn set_job_status(state: &AppState, id: &str, status: &str, detail: Option
 }
 
 fn new_job_id(kind: &str) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    format!("{kind}-{secs}")
+    format!("{kind}-{}", uuid::Uuid::new_v4())
 }

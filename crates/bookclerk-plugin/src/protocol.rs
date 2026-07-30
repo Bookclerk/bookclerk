@@ -1,4 +1,12 @@
 //! Shared JSON-RPC method names and payload types (api_version = 1).
+//!
+//! # Trust boundary
+//!
+//! External plugins are **untrusted** relative to the host. The host must never
+//! hand them `library.db`, `master.key`, or the Bookclerk files-dir root. Plugins
+//! receive only a scoped `plugin_data_dir` / `cache_dir`, and credentials are
+//! host-mediated (login returns a blob the host seals; scan and fetch receive
+//! that blob from the host). Scan returns book DTOs for the host to upsert.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,8 +27,6 @@ pub struct HandshakeResult {
     /// Source plugins: oauth | password
     #[serde(default)]
     pub portal_auth_mode: Option<String>,
-    #[serde(default)]
-    pub auth_credential_suffixes: Vec<String>,
     #[serde(default)]
     pub password_env_var: Option<String>,
     #[serde(default)]
@@ -166,10 +172,11 @@ fn default_true() -> bool {
     true
 }
 
-/// Login params for source plugins.
+/// Login params for source plugins (no files-dir root / DB path).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginParams {
-    pub files_dir: String,
+    /// Scoped writable directory for this plugin only (`…/plugins/<id>/data`).
+    pub plugin_data_dir: String,
     #[serde(default)]
     pub marketplace: String,
     #[serde(default)]
@@ -182,11 +189,23 @@ pub struct LoginParams {
     pub force: bool,
 }
 
-/// Scan params.
+/// Login result — account metadata plus opaque credentials for the host to seal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoginResultDto {
+    pub account: SourceAccountDto,
+    /// Opaque JSON credential blob. Host seals into `encrypted_secrets`
+    /// (`provider = plugin id`). Never written by the plugin into the library DB.
+    #[serde(default)]
+    pub credentials: Option<Value>,
+}
+
+/// Scan params — no library DB path.
+///
+/// Host injects sealed credentials (same mediation as `fetch_title`) so the
+/// plugin does not need a private credential store under `plugin_data_dir`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanParams {
-    pub files_dir: String,
-    pub library_db: String,
+    pub plugin_data_dir: String,
     #[serde(default)]
     pub accounts: Vec<String>,
     #[serde(default = "default_page")]
@@ -195,10 +214,46 @@ pub struct ScanParams {
     pub import_episodes: bool,
     #[serde(default = "default_true")]
     pub import_plus_titles: bool,
+    /// Host-loaded credential blobs keyed by `account_id`.
+    ///
+    /// Values are the same opaque JSON sealed at `login`. Empty when the host
+    /// has no credentials for the requested accounts.
+    #[serde(default)]
+    pub credentials: std::collections::BTreeMap<String, Value>,
 }
 
 fn default_page() -> u32 {
     50
+}
+
+/// One library title returned by an external source `scan` (host upserts).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanBookDto {
+    pub account_id: String,
+    pub product_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub marketplace: Option<String>,
+    #[serde(default)]
+    pub asin: Option<String>,
+    #[serde(default)]
+    pub isbn: Option<String>,
+    #[serde(default)]
+    pub authors: Option<String>,
+    #[serde(default)]
+    pub narrators: Option<String>,
+    #[serde(default)]
+    pub series: Option<String>,
+    #[serde(default)]
+    pub series_index: Option<String>,
+    #[serde(default)]
+    pub content_kind: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub length_minutes: Option<i64>,
+    #[serde(default)]
+    pub subtitle: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -211,15 +266,21 @@ pub struct ScanSummaryDto {
     pub pages: u32,
     #[serde(default)]
     pub skipped_disabled: usize,
+    /// Titles for the host to upsert. Prefer this over plugin-side DB writes.
+    #[serde(default)]
+    pub books: Vec<ScanBookDto>,
 }
 
 /// Fetch-title params. Plugin writes media under `cache_dir` and returns paths.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchTitleParams {
-    pub files_dir: String,
+    pub plugin_data_dir: String,
     pub account_id: String,
     pub title_id: String,
     pub cache_dir: String,
+    /// Host-loaded credential blob for this account (sealed in DB; plugin never opens DB).
+    #[serde(default)]
+    pub credentials: Option<Value>,
     /// Opaque plugin table from `[sources.<id>]`.
     #[serde(default)]
     pub source_config: Value,

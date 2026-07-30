@@ -1,8 +1,12 @@
 //! Wiremock fixtures for Chirp GraphQL login, library, and single audiobook.
 
-use bookclerk_chirp::{fetch_title_materials, load_auth, ChirpClient, ChirpSource};
-use bookclerk_library::LibraryStore;
+use bookclerk_chirp::{
+    fetch_title_materials, load_auth_from_db, save_auth_to_db, ChirpAuthFile, ChirpClient,
+    ChirpSource,
+};
+use bookclerk_library::{configure_master_key, LibraryStore};
 use bookclerk_source::{ContentSource, LoginOptions, ScanOptions, SourceFetch};
+use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -17,8 +21,22 @@ fn op_name(req: &Request) -> Option<String> {
         .map(str::to_string)
 }
 
+fn dek_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+async fn setup_dek() -> (tokio::sync::MutexGuard<'static, ()>, TempDir) {
+    let guard = dek_lock().lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::remove_var(bookclerk_library::MASTER_KEY_AUTH_PASSWORD_ENV);
+    configure_master_key(dir.path()).unwrap();
+    (guard, dir)
+}
+
 #[tokio::test]
-async fn signin_saves_chirp_auth_file() {
+async fn signin_saves_auth_to_db() {
+    let (_guard, _dek_dir) = setup_dek().await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/"))
@@ -41,11 +59,11 @@ async fn signin_saves_chirp_auth_file() {
         .mount(&server)
         .await;
 
-    let dir = tempfile::tempdir().unwrap();
+    let store = LibraryStore::open_in_memory().await.unwrap();
     let source = ChirpSource::with_graphql_url(server.uri());
     let account = source
         .login(
-            dir.path(),
+            &store.scope("chirp"),
             LoginOptions {
                 marketplace: "us".into(),
                 label: Some("Chirp".into()),
@@ -58,19 +76,21 @@ async fn signin_saves_chirp_auth_file() {
         .unwrap();
 
     assert_eq!(account.source, "chirp");
+    // user_id = "42" is used as account_id by ChirpAuthFile::account_id().
     assert_eq!(account.account_id, "42");
-    let auth = load_auth(&bookclerk_chirp::auth_file_for_account(
-        dir.path(),
-        Some("Chirp"),
-        "reader@example.com",
-    ))
-    .unwrap();
+
+    // Verify credentials were persisted to the DB.
+    let auth = load_auth_from_db(&store.scope("chirp"), "42")
+        .await
+        .unwrap()
+        .expect("auth must be present in DB");
     assert_eq!(auth.access_token, "jwt-access");
     assert_eq!(auth.user_id.as_deref(), Some("42"));
 }
 
 #[tokio::test]
 async fn empty_library_scan_upserts_zero() {
+    let (_guard, _dek_dir) = setup_dek().await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/"))
@@ -87,10 +107,10 @@ async fn empty_library_scan_upserts_zero() {
         .mount(&server)
         .await;
 
-    let dir = tempfile::tempdir().unwrap();
-    bookclerk_chirp::save_auth(
-        &bookclerk_chirp::auth_file_for_account(dir.path(), None, "a@ex.com"),
-        &bookclerk_chirp::ChirpAuthFile {
+    // Credentials are now stored in the DB (not files).
+    let store = LibraryStore::open_in_memory().await.unwrap();
+    save_auth_to_db(
+        &ChirpAuthFile {
             access_token: "tok".into(),
             web_token: None,
             email: "a@ex.com".into(),
@@ -98,13 +118,15 @@ async fn empty_library_scan_upserts_zero() {
             marketplace: "us".into(),
             label: None,
         },
+        &store.scope("chirp"),
+        "9",
     )
+    .await
     .unwrap();
 
-    let store = LibraryStore::open(&dir.path().join("library.db")).unwrap();
     let source = ChirpSource::with_graphql_url(server.uri());
     let summary = source
-        .scan(dir.path(), &store, ScanOptions::default())
+        .scan(&store.scope("chirp"), ScanOptions::default())
         .await
         .unwrap();
     assert_eq!(summary.books_upserted, 0);
@@ -113,6 +135,7 @@ async fn empty_library_scan_upserts_zero() {
 
 #[tokio::test]
 async fn library_scan_upserts_books() {
+    let (_guard, _dek_dir) = setup_dek().await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/"))
@@ -144,10 +167,10 @@ async fn library_scan_upserts_books() {
         .mount(&server)
         .await;
 
-    let dir = tempfile::tempdir().unwrap();
-    bookclerk_chirp::save_auth(
-        &bookclerk_chirp::auth_file_for_account(dir.path(), None, "a@ex.com"),
-        &bookclerk_chirp::ChirpAuthFile {
+    // Credentials are now stored in the DB (not files).
+    let store = LibraryStore::open_in_memory().await.unwrap();
+    save_auth_to_db(
+        &ChirpAuthFile {
             access_token: "tok".into(),
             web_token: None,
             email: "a@ex.com".into(),
@@ -155,17 +178,19 @@ async fn library_scan_upserts_books() {
             marketplace: "us".into(),
             label: None,
         },
+        &store.scope("chirp"),
+        "9",
     )
+    .await
     .unwrap();
 
-    let store = LibraryStore::open(&dir.path().join("library.db")).unwrap();
     let source = ChirpSource::with_graphql_url(server.uri());
     let summary = source
-        .scan(dir.path(), &store, ScanOptions::default())
+        .scan(&store.scope("chirp"), ScanOptions::default())
         .await
         .unwrap();
     assert_eq!(summary.books_upserted, 1);
-    let books = store.list_books(None).unwrap();
+    let books = store.list_books(None).await.unwrap();
     assert_eq!(books[0].product_id, "ab-100");
     assert_eq!(books[0].source, "chirp");
 }
@@ -215,6 +240,7 @@ async fn fetch_title_downloads_tracks() {
 
 #[tokio::test]
 async fn fetch_via_content_source() {
+    let (_guard, _dek_dir) = setup_dek().await;
     let server = MockServer::start().await;
     let media_url = format!("{}/x.mp3", server.uri());
     Mock::given(method("POST"))
@@ -243,10 +269,10 @@ async fn fetch_via_content_source() {
         .mount(&server)
         .await;
 
-    let dir = tempfile::tempdir().unwrap();
-    bookclerk_chirp::save_auth(
-        &bookclerk_chirp::auth_file_for_account(dir.path(), None, "u@ex.com"),
-        &bookclerk_chirp::ChirpAuthFile {
+    // Credentials are now stored in the DB (not files).
+    let store = LibraryStore::open_in_memory().await.unwrap();
+    save_auth_to_db(
+        &ChirpAuthFile {
             access_token: "tok".into(),
             web_token: None,
             email: "u@ex.com".into(),
@@ -254,18 +280,23 @@ async fn fetch_via_content_source() {
             marketplace: "us".into(),
             label: None,
         },
+        &store.scope("chirp"),
+        "1",
     )
+    .await
     .unwrap();
 
+    let cache = tempfile::tempdir().unwrap();
     let source = ChirpSource::with_graphql_url(server.uri());
     let fetch = source
         .fetch_title(
-            dir.path(),
+            &store.scope("chirp"),
             "1",
             "ab-2",
             &bookclerk_source::FetchOptions {
                 download: bookclerk_source::DownloadOptions::default(),
-                cache_dir: dir.path().join("cache"),
+                cache_dir: cache.path().to_path_buf(),
+                files_dir: cache.path().to_path_buf(),
             },
         )
         .await

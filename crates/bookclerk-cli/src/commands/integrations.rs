@@ -56,7 +56,7 @@ pub enum TicketsCommand {
 pub async fn run(command: IntegrationsCommand, config: &Config) -> anyhow::Result<()> {
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
-    let library = LibraryStore::open(&paths.library_db)?;
+    let library = LibraryStore::open_from_config(config).await?;
     let mut registry = bookclerk_integrations::from_config(config)?;
     bookclerk_plugin::load_external_integrations(config, &mut registry).await?;
 
@@ -110,7 +110,7 @@ pub async fn run(command: IntegrationsCommand, config: &Config) -> anyhow::Resul
                     display_name: label,
                     access_token: None,
                 };
-                let minted = mint_for_external_user(&library, config, &user, "cli")?;
+                let minted = mint_for_external_user(&library, config, &user, "cli").await?;
                 println!("ticket={}", minted.token);
                 if let Some(url) = minted.portal_url {
                     println!("url={url}");
@@ -123,7 +123,7 @@ pub async fn run(command: IntegrationsCommand, config: &Config) -> anyhow::Resul
                 Ok(())
             }
             TicketsCommand::List => {
-                let tickets = library.list_open_claim_tickets()?;
+                let tickets = library.list_open_claim_tickets().await?;
                 if tickets.is_empty() {
                     println!("no open claim tickets");
                 }

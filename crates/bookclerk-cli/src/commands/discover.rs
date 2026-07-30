@@ -67,12 +67,11 @@ pub enum WishlistCommand {
 }
 
 pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -> Result<()> {
-    let paths = cfg.paths();
-    let library = LibraryStore::open(&paths.library_db)?;
+    let library = LibraryStore::open_from_config(cfg).await?;
 
     match command {
         DiscoverCommand::RebuildWorks => {
-            let n = bookclerk_discover::rebuild_works_from_library(&library)?;
+            let n = bookclerk_discover::rebuild_works_from_library(&library).await?;
             println!("linked {n} book(s) into works");
         }
         DiscoverCommand::EnrichOpenlibrary => {
@@ -85,7 +84,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
             println!("open library enriched {n} book(s)");
         }
         DiscoverCommand::Embed { hash } => {
-            let n = embed_works(cfg, &library, !hash && cfg.discovery.embeddings_enabled)?;
+            let n = embed_works(cfg, &library, !hash && cfg.discovery.embeddings_enabled).await?;
             println!("embedded {n} work(s)");
         }
         DiscoverCommand::SyncListening => {
@@ -112,7 +111,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
             no_listening,
             listening_providers,
         } => {
-            let _ = bookclerk_discover::rebuild_works_from_library(&library)?;
+            let _ = bookclerk_discover::rebuild_works_from_library(&library).await?;
             let prefer_onnx = cfg.discovery.embeddings_enabled;
             let mut embedder = bookclerk_discover::open_embedder(
                 &cfg.paths().models_dir,
@@ -120,7 +119,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                 prefer_onnx,
             )?;
             let model_id = embedder.model_id().to_string();
-            let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut())?;
+            let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut()).await?;
 
             if cfg.discovery.openlibrary_enabled {
                 let ol = bookclerk_discover::OpenLibraryOptions {
@@ -133,6 +132,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
 
             let operator_prefs = library
                 .get_user_preferences_or_default(bookclerk_library::OPERATOR_PREFS_KEY, None)
+                .await
                 .unwrap_or_else(|_| {
                     bookclerk_library::UserPreferences::defaults_for(
                         bookclerk_library::OPERATOR_PREFS_KEY,
@@ -206,25 +206,27 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                     None,
                     asin.as_deref().or(isbn.as_deref()),
                 );
-                let row = library.create_title_request(&NewTitleRequest {
-                    uuid: None,
-                    identity_id: None,
-                    title,
-                    authors,
-                    asin,
-                    isbn,
-                    notes,
-                    status: RequestStatus::Open,
-                    work_key,
-                    work_id: None,
-                    resolved_book_uuid: None,
-                })?;
+                let row = library
+                    .create_title_request(&NewTitleRequest {
+                        uuid: None,
+                        identity_id: None,
+                        title,
+                        authors,
+                        asin,
+                        isbn,
+                        notes,
+                        status: RequestStatus::Open,
+                        work_key,
+                        work_id: None,
+                        resolved_book_uuid: None,
+                    })
+                    .await?;
                 format_out::emit(format, &row, || {
                     println!("wishlisted {}", row.uuid);
                 })?;
             }
             WishlistCommand::List => {
-                let rows = library.list_wishlist(None)?;
+                let rows = library.list_wishlist(None).await?;
                 format_out::emit(format, &rows, || {
                     for r in &rows {
                         println!(
@@ -238,7 +240,9 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                 })?;
             }
             WishlistCommand::Remove { uuid } => {
-                library.update_title_request_status(&uuid, RequestStatus::Cancelled, None)?;
+                library
+                    .update_title_request_status(&uuid, RequestStatus::Cancelled, None)
+                    .await?;
                 println!("removed {uuid} from wishlist");
             }
         },
@@ -246,16 +250,13 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
     Ok(())
 }
 
-fn embed_works(cfg: &Config, library: &LibraryStore, prefer_onnx: bool) -> Result<usize> {
+async fn embed_works(cfg: &Config, library: &LibraryStore, prefer_onnx: bool) -> Result<usize> {
     let mut embedder = bookclerk_discover::open_embedder(
         &cfg.paths().models_dir,
         cfg.discovery.embed_intra_threads,
         prefer_onnx,
     )?;
-    Ok(bookclerk_discover::embed_dirty_works(
-        library,
-        embedder.as_mut(),
-    )?)
+    Ok(bookclerk_discover::embed_dirty_works(library, embedder.as_mut()).await?)
 }
 
 async fn sync_listening(

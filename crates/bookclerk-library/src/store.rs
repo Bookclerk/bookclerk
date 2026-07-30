@@ -1,43 +1,44 @@
-//! SQLite-backed library store (rusqlite + bundled libsqlite3).
+//! SeaORM-backed, async library store.
+//!
+//! [`LibraryStore`] holds a [`DatabaseConnection`] (local rusqlite `sqlite`
+//! proxy, Cloudflare `d1` proxy, or native `postgres`) and drives the majority
+//! of CRUD through the typed SeaORM [`entities`](crate::entities)
+//! (`Entity::find`, `ActiveModel`, `QueryFilter`). A handful of upserts with
+//! COALESCE/precedence semantics are expressed as load-then-merge over the same
+//! entities so they stay backend-portable. Timestamps live in the DB as RFC
+//! 3339 `TEXT`; records expose `chrono::DateTime<Utc>` and conversions happen at
+//! the record boundary.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use sea_orm::{
+    ActiveModelTrait,
+    ActiveValue::{NotSet, Set},
+    ColumnTrait, Condition, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
+    QueryOrder,
+};
 use uuid::Uuid;
 
+use crate::db::{connect_from_config, connect_sqlite, connect_sqlite_memory};
+use crate::entities::{
+    account_links, accounts, books, claim_tickets, embeddings, ignored_titles, listening_progress,
+    portal_identities, portal_sessions, saved_filters, title_requests, user_preferences,
+    work_editions, works,
+};
 use crate::error::{LibraryError, Result};
-use crate::migrations;
 use crate::models::{
     AccountRecord, AcquireStatus, BookRecord, GlobalQueueEntry, ListeningProgressRecord,
     RequestStatus, TitleRequestRecord, UserPreferences, WorkRecord,
 };
 
-const BOOK_SELECT: &str = r#"
-    SELECT id, uuid, source, account_id, product_id, asin, isbn, marketplace, title, authors,
-           narrators, series, series_index, series_asin, acquire_status, storage_key,
-           error_message, purchased_at, tags, rating_overall, rating_performance, rating_story,
-           is_finished, pdf_status, pdf_storage_key, publisher, length_minutes, is_abridged,
-           content_kind, categories, subtitle, published_at, description, language, cover_url,
-           subjects, enrich_source, enrich_confidence, enrich_updated_at, created_at, updated_at
-    FROM books
-"#;
-
-const ACCOUNT_SELECT: &str = r#"
-    SELECT id, account_id, marketplace, label, scan_enabled, source,
-           COALESCE(connection_status, 'active') AS connection_status,
-           created_at, updated_at
-    FROM accounts
-"#;
-
 /// Handle to the Bookclerk library database.
 ///
-/// Sync API (SQLite is local and fast). Callers in async contexts may invoke
-/// these methods directly; wrap in `spawn_blocking` only for long batches.
+/// Async API over a SeaORM [`DatabaseConnection`]. `DatabaseConnection` is
+/// cheaply cloneable (shared connection), so `LibraryStore` is `Clone`.
 #[derive(Clone)]
 pub struct LibraryStore {
-    conn: Arc<Mutex<Connection>>,
+    db: DatabaseConnection,
 }
 
 impl std::fmt::Debug for LibraryStore {
@@ -48,51 +49,49 @@ impl std::fmt::Debug for LibraryStore {
 
 impl LibraryStore {
     /// Open (or create) the SQLite database at `path` and run migrations.
-    pub fn open(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+    pub async fn open(path: &Path) -> Result<Self> {
+        let db = connect_sqlite(path).await?;
+        Ok(Self { db })
+    }
 
-        let mut conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        migrations::migrations().to_latest(&mut conn)?;
-        tracing::debug!(path = %path.display(), "opened library database");
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+    /// Open the library using `[database]` plugin settings.
+    ///
+    /// Works for `sqlite`, Cloudflare `d1`, and `postgres`; the store query API
+    /// is identical because every backend is a SeaORM [`DatabaseConnection`].
+    pub async fn open_from_config(config: &bookclerk_config::Config) -> Result<Self> {
+        let db = connect_from_config(config).await?;
+        Ok(Self { db })
     }
 
     /// In-memory database (tests).
-    pub fn open_in_memory() -> Result<Self> {
-        let mut conn = Connection::open_in_memory()?;
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        migrations::migrations().to_latest(&mut conn)?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+    pub async fn open_in_memory() -> Result<Self> {
+        let db = connect_sqlite_memory().await?;
+        Ok(Self { db })
     }
 
-    fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| LibraryError::Other(anyhow::anyhow!("library database mutex poisoned")))?;
-        f(&conn)
+    /// Wrap an already-opened SeaORM connection.
+    #[must_use]
+    pub fn from_connection(db: DatabaseConnection) -> Self {
+        Self { db }
     }
 
-    /// Upsert an account (updates `scan_enabled` on conflict). Defaults `source` to `"audible"`.
-    pub fn upsert_account(
-        &self,
-        account_id: &str,
-        marketplace: &str,
-        label: Option<&str>,
-        scan_enabled: bool,
-    ) -> Result<AccountRecord> {
-        self.upsert_account_with_source(account_id, marketplace, label, scan_enabled, "audible")
+    /// Borrow the underlying SeaORM connection (e.g. for [`crate::secrets`]).
+    #[must_use]
+    pub fn connection(&self) -> &DatabaseConnection {
+        &self.db
     }
 
-    /// Upsert an account with an explicit catalog `source` (`audible`, `libro`, …).
-    pub fn upsert_account_with_source(
+    /// Alias for [`Self::connection`] — convenience name used by credential modules.
+    #[must_use]
+    pub fn db(&self) -> &DatabaseConnection {
+        &self.db
+    }
+
+    /// Upsert an account (updates `scan_enabled` on conflict).
+    ///
+    /// `source` is required — there is no audible default. Content sources should
+    /// prefer [`crate::SourceScope::upsert_account`], which forces the plugin id.
+    pub async fn upsert_account(
         &self,
         account_id: &str,
         marketplace: &str,
@@ -101,21 +100,14 @@ impl LibraryStore {
         source: &str,
     ) -> Result<AccountRecord> {
         self.upsert_account_inner(account_id, marketplace, label, scan_enabled, source, true)
+            .await
     }
 
-    /// Ensure an account row exists for a scan without overwriting `scan_enabled`.
-    /// Defaults `source` to `"audible"`.
-    pub fn ensure_account(
-        &self,
-        account_id: &str,
-        marketplace: &str,
-        label: Option<&str>,
-    ) -> Result<AccountRecord> {
-        self.ensure_account_with_source(account_id, marketplace, label, "audible")
-    }
-
-    /// Ensure an account row exists with an explicit `source`, without overwriting `scan_enabled`.
-    pub fn ensure_account_with_source(
+    /// Ensure an account row exists without overwriting `scan_enabled`.
+    ///
+    /// `source` is required — there is no audible default. Content sources should
+    /// prefer [`crate::SourceScope::ensure_account`].
+    pub async fn ensure_account(
         &self,
         account_id: &str,
         marketplace: &str,
@@ -123,9 +115,10 @@ impl LibraryStore {
         source: &str,
     ) -> Result<AccountRecord> {
         self.upsert_account_inner(account_id, marketplace, label, true, source, false)
+            .await
     }
 
-    fn upsert_account_inner(
+    async fn upsert_account_inner(
         &self,
         account_id: &str,
         marketplace: &str,
@@ -134,190 +127,191 @@ impl LibraryStore {
         source: &str,
         update_scan_enabled: bool,
     ) -> Result<AccountRecord> {
-        let now = Utc::now().to_rfc3339();
-        self.with_conn(|conn| {
-            // Reject collisions when the same account_id is claimed by another source.
-            let existing_source: Option<String> = conn
-                .query_row(
-                    "SELECT source FROM accounts WHERE account_id = ?1",
-                    params![account_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if let Some(existing) = existing_source.as_deref() {
-                if existing != source {
-                    return Err(LibraryError::Other(anyhow::anyhow!(
-                        "account_id `{account_id}` already exists for source `{existing}`; \
-                         cannot claim it for source `{source}`"
-                    )));
-                }
-            }
+        let now = now_str();
+        let existing = accounts::Entity::find()
+            .filter(accounts::Column::AccountId.eq(account_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
 
-            if update_scan_enabled {
-                conn.execute(
-                    r#"
-                    INSERT INTO accounts (account_id, marketplace, label, scan_enabled, source, created_at, updated_at)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                    ON CONFLICT(account_id) DO UPDATE SET
-                        marketplace = excluded.marketplace,
-                        label = COALESCE(excluded.label, accounts.label),
-                        scan_enabled = excluded.scan_enabled,
-                        updated_at = excluded.updated_at
-                    "#,
-                    params![
-                        account_id,
-                        marketplace,
-                        label,
-                        i64::from(scan_enabled),
-                        source,
-                        now,
-                        now
-                    ],
-                )?;
-            } else {
-                conn.execute(
-                    r#"
-                    INSERT INTO accounts (account_id, marketplace, label, scan_enabled, source, created_at, updated_at)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                    ON CONFLICT(account_id) DO UPDATE SET
-                        marketplace = excluded.marketplace,
-                        label = COALESCE(excluded.label, accounts.label),
-                        updated_at = excluded.updated_at
-                    "#,
-                    params![
-                        account_id,
-                        marketplace,
-                        label,
-                        i64::from(scan_enabled),
-                        source,
-                        now,
-                        now
-                    ],
-                )?;
+        if let Some(model) = existing {
+            if model.source != source {
+                return Err(LibraryError::Other(anyhow::anyhow!(
+                    "account_id `{account_id}` already exists for source `{}`; \
+                     cannot claim it for source `{source}`",
+                    model.source
+                )));
             }
-            Ok(())
-        })?;
-        self.get_account(account_id)?
-            .ok_or_else(|| LibraryError::NotFound(account_id.into()))
+            let mut am: accounts::ActiveModel = model.into();
+            am.marketplace = Set(marketplace.to_string());
+            if let Some(label) = label {
+                am.label = Set(Some(label.to_string()));
+            }
+            if update_scan_enabled {
+                am.scan_enabled = Set(i64::from(scan_enabled));
+            }
+            am.updated_at = Set(now);
+            let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
+            return Ok(map_account(model));
+        }
+
+        let am = accounts::ActiveModel {
+            id: NotSet,
+            account_id: Set(account_id.to_string()),
+            marketplace: Set(marketplace.to_string()),
+            label: Set(label.map(str::to_string)),
+            scan_enabled: Set(i64::from(scan_enabled)),
+            source: Set(source.to_string()),
+            connection_status: Set(String::from("active")),
+            created_at: Set(now.clone()),
+            updated_at: Set(now),
+        };
+        let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(map_account(model))
     }
 
     /// Remap `from` → `to` account ids (books + account row).
     ///
     /// Used when classic Libation stored an email `AccountId` and a later
     /// login/scan discovers Audible `customer_id`.
-    pub fn remap_account_id(&self, from: &str, to: &str) -> Result<()> {
+    pub async fn remap_account_id(&self, from: &str, to: &str) -> Result<()> {
         if from == to {
             return Ok(());
         }
-        self.with_conn(|conn| {
-            let from_exists: bool = conn
-                .query_row(
-                    "SELECT 1 FROM accounts WHERE account_id = ?1",
-                    params![from],
-                    |_| Ok(true),
-                )
-                .optional()?
-                .unwrap_or(false);
-            if !from_exists {
-                return Ok(());
+        let Some(from_acct) = accounts::Entity::find()
+            .filter(accounts::Column::AccountId.eq(from))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(());
+        };
+
+        let to_acct = accounts::Entity::find()
+            .filter(accounts::Column::AccountId.eq(to))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let now = now_str();
+
+        match to_acct {
+            None => {
+                // Copy the account row under the new id.
+                let am = accounts::ActiveModel {
+                    id: NotSet,
+                    account_id: Set(to.to_string()),
+                    marketplace: Set(from_acct.marketplace.clone()),
+                    label: Set(from_acct.label.clone()),
+                    scan_enabled: Set(from_acct.scan_enabled),
+                    source: Set(from_acct.source.clone()),
+                    connection_status: Set(from_acct.connection_status.clone()),
+                    created_at: Set(from_acct.created_at.clone()),
+                    updated_at: Set(now.clone()),
+                };
+                am.insert(&self.db).await.map_err(LibraryError::Orm)?;
             }
-
-            let to_exists: bool = conn
-                .query_row(
-                    "SELECT 1 FROM accounts WHERE account_id = ?1",
-                    params![to],
-                    |_| Ok(true),
-                )
-                .optional()?
-                .unwrap_or(false);
-
-            if !to_exists {
-                // Copy account row under the new id, then move books, then drop old.
-                conn.execute(
-                    r#"
-                    INSERT INTO accounts (account_id, marketplace, label, scan_enabled, source, connection_status, created_at, updated_at)
-                    SELECT ?1, marketplace, label, scan_enabled, source, COALESCE(connection_status, 'active'), created_at, ?2
-                    FROM accounts WHERE account_id = ?3
-                    "#,
-                    params![to, Utc::now().to_rfc3339(), from],
-                )?;
-            } else {
-                // Prefer label from the old row when the canonical row has none.
-                conn.execute(
-                    r#"
-                    UPDATE accounts SET
-                        label = COALESCE(accounts.label, (SELECT label FROM accounts WHERE account_id = ?1)),
-                        updated_at = ?2
-                    WHERE account_id = ?3
-                    "#,
-                    params![from, Utc::now().to_rfc3339(), to],
-                )?;
+            Some(to_model) => {
+                // Prefer the old label when the canonical row has none.
+                if to_model.label.is_none() && from_acct.label.is_some() {
+                    let mut am: accounts::ActiveModel = to_model.into();
+                    am.label = Set(from_acct.label.clone());
+                    am.updated_at = Set(now.clone());
+                    am.update(&self.db).await.map_err(LibraryError::Orm)?;
+                }
             }
+        }
 
-            // Move books that do not already exist under `to` (same source + product_id).
-            conn.execute(
-                r#"
-                UPDATE books SET account_id = ?1, updated_at = ?2
-                WHERE account_id = ?3
-                  AND NOT EXISTS (
-                      SELECT 1 FROM books b2
-                      WHERE b2.account_id = ?1
-                        AND b2.source = books.source
-                        AND b2.product_id = books.product_id
-                  )
-                "#,
-                params![to, Utc::now().to_rfc3339(), from],
-            )?;
-            // Drop duplicate product rows left on the old id.
-            conn.execute("DELETE FROM books WHERE account_id = ?1", params![from])?;
-            conn.execute("DELETE FROM accounts WHERE account_id = ?1", params![from])?;
-            Ok(())
-        })
+        // Move books that do not already exist under `to` (same source + product_id).
+        let existing_keys: std::collections::HashSet<(String, String)> = books::Entity::find()
+            .filter(books::Column::AccountId.eq(to))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(|b| (b.source, b.product_id))
+            .collect();
+
+        let from_books = books::Entity::find()
+            .filter(books::Column::AccountId.eq(from))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        for book in from_books {
+            if existing_keys.contains(&(book.source.clone(), book.product_id.clone())) {
+                continue;
+            }
+            let mut am: books::ActiveModel = book.into();
+            am.account_id = Set(to.to_string());
+            am.updated_at = Set(now.clone());
+            am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        }
+
+        // Drop duplicate product rows left on the old id, then the account.
+        books::Entity::delete_many()
+            .filter(books::Column::AccountId.eq(from))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        accounts::Entity::delete_many()
+            .filter(accounts::Column::AccountId.eq(from))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(())
     }
 
     /// Remap any existing alias account ids onto `canonical_id`, then upsert.
-    pub fn reconcile_account_id(
+    pub async fn reconcile_account_id(
         &self,
         canonical_id: &str,
         aliases: &[&str],
         marketplace: &str,
         label: Option<&str>,
         scan_enabled: bool,
+        source: &str,
     ) -> Result<AccountRecord> {
         for alias in aliases {
             if *alias != canonical_id {
-                self.remap_account_id(alias, canonical_id)?;
+                self.remap_account_id(alias, canonical_id).await?;
             }
         }
-        self.upsert_account(canonical_id, marketplace, label, scan_enabled)
+        self.upsert_account(canonical_id, marketplace, label, scan_enabled, source)
+            .await
     }
 
-    pub fn get_account(&self, account_id: &str) -> Result<Option<AccountRecord>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                &format!("{ACCOUNT_SELECT} WHERE account_id = ?1"),
-                params![account_id],
-                map_account_row,
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+    pub async fn get_account(&self, account_id: &str) -> Result<Option<AccountRecord>> {
+        Ok(accounts::Entity::find()
+            .filter(accounts::Column::AccountId.eq(account_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_account))
     }
 
-    pub fn list_accounts(&self) -> Result<Vec<AccountRecord>> {
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(&format!("{ACCOUNT_SELECT} ORDER BY account_id"))?;
-            let rows = stmt
-                .query_map([], map_account_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })
+    pub async fn list_accounts(&self) -> Result<Vec<AccountRecord>> {
+        Ok(accounts::Entity::find()
+            .order_by_asc(accounts::Column::AccountId)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_account)
+            .collect())
+    }
+
+    /// Count account rows (SQL `COUNT`, not a full fetch).
+    pub async fn count_accounts(&self) -> Result<i64> {
+        let count = accounts::Entity::find()
+            .count(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(count as i64)
     }
 
     /// Resolve an account row by id or nickname (`label`), case-insensitive.
-    pub fn find_account(&self, identifier: &str) -> Result<Option<AccountRecord>> {
+    pub async fn find_account(&self, identifier: &str) -> Result<Option<AccountRecord>> {
         let needle = identifier.to_ascii_lowercase();
-        Ok(self.list_accounts()?.into_iter().find(|a| {
+        Ok(self.list_accounts().await?.into_iter().find(|a| {
             a.account_id.eq_ignore_ascii_case(identifier)
                 || a.label
                     .as_ref()
@@ -327,614 +321,622 @@ impl LibraryStore {
     }
 
     /// Toggle whether an account is included in automatic library scans.
-    pub fn set_scan_enabled(&self, account_id: &str, scan_enabled: bool) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
-        let updated = self.with_conn(|conn| {
-            conn.execute(
-                "UPDATE accounts SET scan_enabled = ?1, updated_at = ?2 WHERE account_id = ?3",
-                params![i64::from(scan_enabled), now, account_id],
-            )
-            .map_err(LibraryError::from)
-        })?;
-        if updated == 0 {
-            return Err(LibraryError::NotFound(account_id.into()));
-        }
+    pub async fn set_scan_enabled(&self, account_id: &str, scan_enabled: bool) -> Result<()> {
+        let model = accounts::Entity::find()
+            .filter(accounts::Column::AccountId.eq(account_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound(account_id.into()))?;
+        let mut am: accounts::ActiveModel = model.into();
+        am.scan_enabled = Set(i64::from(scan_enabled));
+        am.updated_at = Set(now_str());
+        am.update(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(())
     }
 
     /// Mark bookstore credentials active again (after reconnect).
-    pub fn mark_connection_active(&self, account_id: &str) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
-        let updated = self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                UPDATE accounts
-                SET connection_status = 'active',
-                    scan_enabled = 1,
-                    updated_at = ?1
-                WHERE account_id = ?2
-                "#,
-                params![now, account_id],
-            )
-            .map_err(LibraryError::from)
-        })?;
-        if updated == 0 {
-            return Err(LibraryError::NotFound(account_id.into()));
-        }
+    pub async fn mark_connection_active(&self, account_id: &str) -> Result<()> {
+        let model = accounts::Entity::find()
+            .filter(accounts::Column::AccountId.eq(account_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound(account_id.into()))?;
+        let mut am: accounts::ActiveModel = model.into();
+        am.connection_status = Set(String::from("active"));
+        am.scan_enabled = Set(1);
+        am.updated_at = Set(now_str());
+        am.update(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(())
     }
 
+    /// Delete all `encrypted_secrets` rows for an account (source auth + Widevine CDM).
+    pub async fn delete_account_secrets(&self, account_id: &str) -> Result<()> {
+        crate::secrets::delete_secrets_for_account(&self.db, account_id).await
+    }
+
     /// Mark bookstore credentials revoked without deleting the account or books.
-    pub fn revoke_credentials(&self, account_id: &str) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
-        let updated = self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                UPDATE accounts
-                SET scan_enabled = 0,
-                    connection_status = 'revoked',
-                    updated_at = ?1
-                WHERE account_id = ?2
-                "#,
-                params![now, account_id],
-            )
-            .map_err(LibraryError::from)
-        })?;
-        if updated == 0 {
-            return Err(LibraryError::NotFound(account_id.into()));
-        }
+    pub async fn revoke_credentials(&self, account_id: &str) -> Result<()> {
+        let model = accounts::Entity::find()
+            .filter(accounts::Column::AccountId.eq(account_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound(account_id.into()))?;
+        let mut am: accounts::ActiveModel = model.into();
+        am.scan_enabled = Set(0);
+        am.connection_status = Set(String::from("revoked"));
+        am.updated_at = Set(now_str());
+        am.update(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(())
     }
 
     /// Create or fetch a portal identity for `(provider, external_user_id)`.
-    pub fn upsert_portal_identity(
+    pub async fn upsert_portal_identity(
         &self,
         provider: &str,
         external_user_id: &str,
         label: Option<&str>,
     ) -> Result<crate::models::PortalIdentity> {
-        let now = Utc::now().to_rfc3339();
-        self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO portal_identities (provider, external_user_id, label, created_at)
-                VALUES (?1, ?2, ?3, ?4)
-                ON CONFLICT(provider, external_user_id) DO UPDATE SET
-                    label = COALESCE(excluded.label, portal_identities.label)
-                "#,
-                params![provider, external_user_id, label, now],
-            )?;
-            Ok(())
-        })?;
-        self.get_portal_identity(provider, external_user_id)?
-            .ok_or_else(|| LibraryError::NotFound(format!("{provider}:{external_user_id}")))
+        let existing = portal_identities::Entity::find()
+            .filter(portal_identities::Column::Provider.eq(provider))
+            .filter(portal_identities::Column::ExternalUserId.eq(external_user_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        if let Some(model) = existing {
+            if label.is_some() && model.label.is_none() {
+                let mut am: portal_identities::ActiveModel = model.into();
+                am.label = Set(label.map(str::to_string));
+                let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
+                return Ok(map_portal_identity(model));
+            }
+            return Ok(map_portal_identity(model));
+        }
+        let am = portal_identities::ActiveModel {
+            id: NotSet,
+            provider: Set(provider.to_string()),
+            external_user_id: Set(external_user_id.to_string()),
+            label: Set(label.map(str::to_string)),
+            created_at: Set(now_str()),
+        };
+        let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(map_portal_identity(model))
     }
 
     /// Look up a portal identity.
-    pub fn get_portal_identity(
+    pub async fn get_portal_identity(
         &self,
         provider: &str,
         external_user_id: &str,
     ) -> Result<Option<crate::models::PortalIdentity>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                r#"
-                SELECT id, provider, external_user_id, label, created_at
-                FROM portal_identities
-                WHERE provider = ?1 AND external_user_id = ?2
-                "#,
-                params![provider, external_user_id],
-                map_portal_identity_row,
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+        Ok(portal_identities::Entity::find()
+            .filter(portal_identities::Column::Provider.eq(provider))
+            .filter(portal_identities::Column::ExternalUserId.eq(external_user_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_portal_identity))
     }
 
     /// Look up portal identity by row id.
-    pub fn get_portal_identity_by_id(
+    pub async fn get_portal_identity_by_id(
         &self,
         id: i64,
     ) -> Result<Option<crate::models::PortalIdentity>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                r#"
-                SELECT id, provider, external_user_id, label, created_at
-                FROM portal_identities WHERE id = ?1
-                "#,
-                params![id],
-                map_portal_identity_row,
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+        Ok(portal_identities::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_portal_identity))
     }
 
     /// Insert a claim ticket (store only the hash).
-    pub fn insert_claim_ticket(
+    pub async fn insert_claim_ticket(
         &self,
         token_hash: &str,
         identity_id: Option<i64>,
         expires_at: chrono::DateTime<Utc>,
         created_by: &str,
     ) -> Result<crate::models::ClaimTicketRecord> {
-        let now = Utc::now().to_rfc3339();
-        let expires = expires_at.to_rfc3339();
-        self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO claim_tickets
-                    (token_hash, identity_id, expires_at, redeemed_at, created_by, created_at)
-                VALUES (?1, ?2, ?3, NULL, ?4, ?5)
-                "#,
-                params![token_hash, identity_id, expires, created_by, now],
-            )?;
-            Ok(())
-        })?;
-        self.get_claim_ticket_by_hash(token_hash)?
-            .ok_or_else(|| LibraryError::NotFound(token_hash.into()))
+        let am = claim_tickets::ActiveModel {
+            id: NotSet,
+            token_hash: Set(token_hash.to_string()),
+            identity_id: Set(identity_id),
+            expires_at: Set(expires_at.to_rfc3339()),
+            redeemed_at: Set(None),
+            created_by: Set(created_by.to_string()),
+            created_at: Set(now_str()),
+        };
+        let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(map_claim_ticket(model))
     }
 
-    pub fn get_claim_ticket_by_hash(
+    pub async fn get_claim_ticket_by_hash(
         &self,
         token_hash: &str,
     ) -> Result<Option<crate::models::ClaimTicketRecord>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                r#"
-                SELECT id, token_hash, identity_id, expires_at, redeemed_at, created_by, created_at
-                FROM claim_tickets WHERE token_hash = ?1
-                "#,
-                params![token_hash],
-                map_claim_ticket_row,
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+        Ok(claim_tickets::Entity::find()
+            .filter(claim_tickets::Column::TokenHash.eq(token_hash))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_claim_ticket))
     }
 
     /// List unredeemed, unexpired claim tickets (newest first).
-    pub fn list_open_claim_tickets(&self) -> Result<Vec<crate::models::ClaimTicketRecord>> {
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                r#"
-                SELECT id, token_hash, identity_id, expires_at, redeemed_at, created_by, created_at
-                FROM claim_tickets
-                WHERE redeemed_at IS NULL AND expires_at > ?1
-                ORDER BY id DESC
-                "#,
-            )?;
-            let now = Utc::now().to_rfc3339();
-            let rows = stmt.query_map(params![now], map_claim_ticket_row)?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(LibraryError::from)
-        })
+    pub async fn list_open_claim_tickets(&self) -> Result<Vec<crate::models::ClaimTicketRecord>> {
+        let now = now_str();
+        Ok(claim_tickets::Entity::find()
+            .filter(claim_tickets::Column::RedeemedAt.is_null())
+            .filter(claim_tickets::Column::ExpiresAt.gt(now))
+            .order_by_desc(claim_tickets::Column::Id)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_claim_ticket)
+            .collect())
     }
 
     /// Mark a claim ticket redeemed.
-    pub fn redeem_claim_ticket(
+    pub async fn redeem_claim_ticket(
         &self,
         token_hash: &str,
     ) -> Result<crate::models::ClaimTicketRecord> {
-        let now = Utc::now().to_rfc3339();
-        let updated = self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                UPDATE claim_tickets
-                SET redeemed_at = ?1
-                WHERE token_hash = ?2
-                  AND redeemed_at IS NULL
-                  AND expires_at > ?1
-                "#,
-                params![now, token_hash],
-            )
-            .map_err(LibraryError::from)
-        })?;
-        if updated == 0 {
+        let now = now_str();
+        let model = claim_tickets::Entity::find()
+            .filter(claim_tickets::Column::TokenHash.eq(token_hash))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let valid = model
+            .as_ref()
+            .is_some_and(|m| m.redeemed_at.is_none() && m.expires_at.as_str() > now.as_str());
+        let Some(model) = model.filter(|_| valid) else {
             return Err(LibraryError::Other(anyhow::anyhow!(
                 "claim ticket invalid, expired, or already redeemed"
             )));
-        }
-        self.get_claim_ticket_by_hash(token_hash)?
-            .ok_or_else(|| LibraryError::NotFound(token_hash.into()))
+        };
+        let mut am: claim_tickets::ActiveModel = model.into();
+        am.redeemed_at = Set(Some(now));
+        let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(map_claim_ticket(model))
     }
 
     /// Create a portal session (hash only).
-    pub fn insert_portal_session(
+    pub async fn insert_portal_session(
         &self,
         token_hash: &str,
         identity_id: i64,
         expires_at: chrono::DateTime<Utc>,
     ) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
-        self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO portal_sessions (token_hash, identity_id, expires_at, created_at)
-                VALUES (?1, ?2, ?3, ?4)
-                "#,
-                params![token_hash, identity_id, expires_at.to_rfc3339(), now],
-            )
-            .map_err(LibraryError::from)
-        })?;
+        let am = portal_sessions::ActiveModel {
+            id: NotSet,
+            token_hash: Set(token_hash.to_string()),
+            identity_id: Set(identity_id),
+            expires_at: Set(expires_at.to_rfc3339()),
+            created_at: Set(now_str()),
+        };
+        am.insert(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(())
     }
 
     /// Resolve a valid portal session to its identity.
-    pub fn get_portal_session_identity(
+    pub async fn get_portal_session_identity(
         &self,
         token_hash: &str,
     ) -> Result<Option<crate::models::PortalIdentity>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                r#"
-                SELECT i.id, i.provider, i.external_user_id, i.label, i.created_at
-                FROM portal_sessions s
-                JOIN portal_identities i ON i.id = s.identity_id
-                WHERE s.token_hash = ?1 AND s.expires_at > ?2
-                "#,
-                params![token_hash, Utc::now().to_rfc3339()],
-                map_portal_identity_row,
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+        let now = now_str();
+        let Some(session) = portal_sessions::Entity::find()
+            .filter(portal_sessions::Column::TokenHash.eq(token_hash))
+            .filter(portal_sessions::Column::ExpiresAt.gt(now))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        self.get_portal_identity_by_id(session.identity_id).await
     }
 
     /// Link a bookstore account to a portal identity.
-    pub fn link_account(
+    pub async fn link_account(
         &self,
         identity_id: i64,
         account_id: &str,
         source: &str,
     ) -> Result<crate::models::AccountLinkRecord> {
-        let now = Utc::now().to_rfc3339();
-        self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO account_links (identity_id, account_id, source, created_at)
-                VALUES (?1, ?2, ?3, ?4)
-                ON CONFLICT(identity_id, account_id) DO NOTHING
-                "#,
-                params![identity_id, account_id, source, now],
-            )?;
-            Ok(())
-        })?;
-        self.list_account_links(identity_id)?
-            .into_iter()
-            .find(|l| l.account_id == account_id)
-            .ok_or_else(|| LibraryError::NotFound(account_id.into()))
+        let existing = account_links::Entity::find()
+            .filter(account_links::Column::IdentityId.eq(identity_id))
+            .filter(account_links::Column::AccountId.eq(account_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        if let Some(model) = existing {
+            return Ok(map_account_link(model));
+        }
+        let am = account_links::ActiveModel {
+            id: NotSet,
+            identity_id: Set(identity_id),
+            account_id: Set(account_id.to_string()),
+            source: Set(source.to_string()),
+            created_at: Set(now_str()),
+        };
+        let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(map_account_link(model))
     }
 
-    pub fn list_account_links(
+    pub async fn list_account_links(
         &self,
         identity_id: i64,
     ) -> Result<Vec<crate::models::AccountLinkRecord>> {
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                r#"
-                SELECT id, identity_id, account_id, source, created_at
-                FROM account_links WHERE identity_id = ?1
-                ORDER BY id
-                "#,
-            )?;
-            let rows = stmt.query_map(params![identity_id], map_account_link_row)?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(LibraryError::from)
-        })
+        Ok(account_links::Entity::find()
+            .filter(account_links::Column::IdentityId.eq(identity_id))
+            .order_by_asc(account_links::Column::Id)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_account_link)
+            .collect())
     }
 
     /// Remove an account link row (does not delete the account).
-    pub fn unlink_account(&self, identity_id: i64, account_id: &str) -> Result<()> {
-        let updated = self.with_conn(|conn| {
-            conn.execute(
-                "DELETE FROM account_links WHERE identity_id = ?1 AND account_id = ?2",
-                params![identity_id, account_id],
-            )
-            .map_err(LibraryError::from)
-        })?;
-        if updated == 0 {
+    pub async fn unlink_account(&self, identity_id: i64, account_id: &str) -> Result<()> {
+        let res = account_links::Entity::delete_many()
+            .filter(account_links::Column::IdentityId.eq(identity_id))
+            .filter(account_links::Column::AccountId.eq(account_id))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        if res.rows_affected == 0 {
             return Err(LibraryError::NotFound(account_id.into()));
         }
         Ok(())
     }
 
     /// Upsert a book from a library sync.
-    pub fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
-        let now = Utc::now().to_rfc3339();
-        let uuid = book
-            .uuid
-            .clone()
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
-        self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO books (
-                    uuid, source, account_id, product_id, asin, isbn, marketplace, title,
-                    authors, narrators, series, series_index, series_asin, acquire_status,
-                    purchased_at, publisher, length_minutes, is_abridged, content_kind,
-                    categories, subtitle, published_at, created_at, updated_at
-                ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                    ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
-                )
-                ON CONFLICT(source, account_id, product_id) DO UPDATE SET
-                    asin = COALESCE(excluded.asin, books.asin),
-                    isbn = COALESCE(excluded.isbn, books.isbn),
-                    marketplace = excluded.marketplace,
-                    -- When the existing row already has an Audible ASIN (native or
-                    -- enriched) and the incoming row does not, keep catalog fields
-                    -- so a Libro rescan does not wipe Audible enrichment.
-                    title = CASE
-                        WHEN excluded.asin IS NOT NULL OR books.asin IS NULL
-                        THEN excluded.title ELSE books.title END,
-                    authors = CASE
-                        WHEN excluded.asin IS NOT NULL OR books.asin IS NULL
-                        THEN excluded.authors ELSE books.authors END,
-                    narrators = CASE
-                        WHEN excluded.asin IS NOT NULL OR books.asin IS NULL
-                        THEN excluded.narrators ELSE books.narrators END,
-                    series = CASE
-                        WHEN excluded.asin IS NOT NULL OR books.asin IS NULL
-                        THEN excluded.series ELSE books.series END,
-                    series_index = CASE
-                        WHEN excluded.asin IS NOT NULL OR books.asin IS NULL
-                        THEN excluded.series_index ELSE books.series_index END,
-                    series_asin = CASE
-                        WHEN excluded.asin IS NOT NULL OR books.asin IS NULL
-                        THEN COALESCE(excluded.series_asin, books.series_asin)
-                        ELSE books.series_asin END,
-                    purchased_at = excluded.purchased_at,
-                    publisher = CASE
-                        WHEN excluded.asin IS NOT NULL OR books.asin IS NULL
-                        THEN COALESCE(excluded.publisher, books.publisher)
-                        ELSE books.publisher END,
-                    length_minutes = CASE
-                        WHEN excluded.asin IS NOT NULL OR books.asin IS NULL
-                        THEN COALESCE(excluded.length_minutes, books.length_minutes)
-                        ELSE books.length_minutes END,
-                    is_abridged = excluded.is_abridged,
-                    content_kind = excluded.content_kind,
-                    categories = CASE
-                        WHEN excluded.asin IS NOT NULL OR books.asin IS NULL
-                        THEN COALESCE(excluded.categories, books.categories)
-                        ELSE books.categories END,
-                    subtitle = CASE
-                        WHEN excluded.asin IS NOT NULL OR books.asin IS NULL
-                        THEN COALESCE(excluded.subtitle, books.subtitle)
-                        ELSE books.subtitle END,
-                    published_at = CASE
-                        WHEN excluded.asin IS NOT NULL OR books.asin IS NULL
-                        THEN COALESCE(excluded.published_at, books.published_at)
-                        ELSE books.published_at END,
-                    updated_at = excluded.updated_at
-                "#,
-                params![
-                    uuid,
-                    book.source,
-                    book.account_id,
-                    book.product_id,
-                    book.asin,
-                    book.isbn,
-                    book.marketplace,
-                    book.title,
-                    book.authors,
-                    book.narrators,
-                    book.series,
-                    book.series_index,
-                    book.series_asin,
-                    AcquireStatus::NotAcquired.as_str(),
-                    book.purchased_at.map(|d| d.to_rfc3339()),
-                    book.publisher,
-                    book.length_minutes,
-                    i64::from(book.is_abridged),
-                    book.content_kind,
-                    book.categories,
-                    book.subtitle,
-                    book.published_at.map(|d| d.to_rfc3339()),
-                    now,
-                    now,
-                ],
-            )?;
-            Ok(())
-        })?;
-        self.get_book(&book.product_id, &book.account_id)?
-            .ok_or_else(|| LibraryError::NotFound(book.product_id.clone()))
+    ///
+    /// Insert on first sight; on `(source, account_id, product_id)` conflict,
+    /// merge fields with Audible-precedence rules (a Libro rescan without an
+    /// ASIN must not wipe Audible enrichment). Expressed as load-then-merge over
+    /// the `books` entity so the precedence logic is explicit and portable.
+    pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
+        let now = now_str();
+        let existing = books::Entity::find()
+            .filter(books::Column::Source.eq(book.source.as_str()))
+            .filter(books::Column::AccountId.eq(book.account_id.as_str()))
+            .filter(books::Column::ProductId.eq(book.product_id.as_str()))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+
+        let model = if let Some(existing) = existing {
+            // `prefer_new`: incoming row is authoritative when it carries an
+            // Audible ASIN, or the stored row never had one.
+            let prefer_new = book.asin.is_some() || existing.asin.is_none();
+            let keep =
+                |new: Option<String>, old: Option<String>| if prefer_new { new } else { old };
+            let coalesce_keep = |new: Option<String>, old: Option<String>| {
+                if prefer_new {
+                    new.or(old)
+                } else {
+                    old
+                }
+            };
+
+            let mut am: books::ActiveModel = existing.clone().into();
+            am.asin = Set(book.asin.clone().or(existing.asin.clone()));
+            am.isbn = Set(book.isbn.clone().or(existing.isbn.clone()));
+            am.marketplace = Set(book.marketplace.clone());
+            am.title = Set(if prefer_new {
+                book.title.clone()
+            } else {
+                existing.title.clone()
+            });
+            am.authors = Set(keep(book.authors.clone(), existing.authors.clone()));
+            am.narrators = Set(keep(book.narrators.clone(), existing.narrators.clone()));
+            am.series = Set(keep(book.series.clone(), existing.series.clone()));
+            am.series_index = Set(keep(
+                book.series_index.clone(),
+                existing.series_index.clone(),
+            ));
+            am.series_asin = Set(coalesce_keep(
+                book.series_asin.clone(),
+                existing.series_asin.clone(),
+            ));
+            am.purchased_at = Set(book.purchased_at.map(|d| d.to_rfc3339()));
+            am.publisher = Set(coalesce_keep(
+                book.publisher.clone(),
+                existing.publisher.clone(),
+            ));
+            am.length_minutes = Set(if prefer_new {
+                book.length_minutes.or(existing.length_minutes)
+            } else {
+                existing.length_minutes
+            });
+            am.is_abridged = Set(i64::from(book.is_abridged));
+            am.content_kind = Set(book.content_kind.clone());
+            am.categories = Set(coalesce_keep(
+                book.categories.clone(),
+                existing.categories.clone(),
+            ));
+            am.subtitle = Set(coalesce_keep(
+                book.subtitle.clone(),
+                existing.subtitle.clone(),
+            ));
+            am.published_at = Set(if prefer_new {
+                book.published_at
+                    .map(|d| d.to_rfc3339())
+                    .or(existing.published_at.clone())
+            } else {
+                existing.published_at.clone()
+            });
+            am.updated_at = Set(now);
+            am.update(&self.db).await.map_err(LibraryError::Orm)?
+        } else {
+            let uuid = book
+                .uuid
+                .clone()
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
+            let am = books::ActiveModel {
+                id: NotSet,
+                uuid: Set(uuid),
+                source: Set(book.source.clone()),
+                account_id: Set(book.account_id.clone()),
+                product_id: Set(book.product_id.clone()),
+                asin: Set(book.asin.clone()),
+                isbn: Set(book.isbn.clone()),
+                marketplace: Set(book.marketplace.clone()),
+                title: Set(book.title.clone()),
+                authors: Set(book.authors.clone()),
+                narrators: Set(book.narrators.clone()),
+                series: Set(book.series.clone()),
+                series_index: Set(book.series_index.clone()),
+                series_asin: Set(book.series_asin.clone()),
+                acquire_status: Set(AcquireStatus::NotAcquired.as_str().to_string()),
+                storage_key: Set(None),
+                error_message: Set(None),
+                purchased_at: Set(book.purchased_at.map(|d| d.to_rfc3339())),
+                tags: Set(None),
+                rating_overall: Set(None),
+                rating_performance: Set(None),
+                rating_story: Set(None),
+                is_finished: Set(0),
+                pdf_status: Set(AcquireStatus::NotAcquired.as_str().to_string()),
+                pdf_storage_key: Set(None),
+                publisher: Set(book.publisher.clone()),
+                length_minutes: Set(book.length_minutes),
+                is_abridged: Set(i64::from(book.is_abridged)),
+                content_kind: Set(book.content_kind.clone()),
+                categories: Set(book.categories.clone()),
+                subtitle: Set(book.subtitle.clone()),
+                published_at: Set(book.published_at.map(|d| d.to_rfc3339())),
+                description: Set(None),
+                language: Set(None),
+                cover_url: Set(None),
+                subjects: Set(None),
+                enrich_source: Set(None),
+                enrich_confidence: Set(None),
+                enrich_updated_at: Set(None),
+                created_at: Set(now.clone()),
+                updated_at: Set(now),
+            };
+            am.insert(&self.db).await.map_err(LibraryError::Orm)?
+        };
+        map_book(model)
     }
 
     /// Look up a book by its public `uuid`.
-    pub fn get_book_by_uuid(&self, uuid: &str) -> Result<Option<BookRecord>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                &format!("{BOOK_SELECT} WHERE uuid = ?1"),
-                params![uuid],
-                map_book_row,
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+    pub async fn get_book_by_uuid(&self, uuid: &str) -> Result<Option<BookRecord>> {
+        books::Entity::find()
+            .filter(books::Column::Uuid.eq(uuid))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_book)
+            .transpose()
     }
 
     /// Look up a book by uuid, product_id, asin, or isbn for the given account.
     ///
-    /// Prefer exact uuid / product_id matches. When only ISBN matches multiple
-    /// sources under one account, prefer product_id/uuid exactness, then
-    /// deterministic `ORDER BY source`.
-    pub fn get_book(&self, title_id: &str, account_id: &str) -> Result<Option<BookRecord>> {
-        self.with_conn(|conn| {
-            let sql = format!(
-                "{BOOK_SELECT}
-                WHERE account_id = ?2
-                  AND (uuid = ?1 OR product_id = ?1 OR asin = ?1 OR isbn = ?1)
-                ORDER BY
-                  CASE
-                    WHEN uuid = ?1 THEN 0
-                    WHEN product_id = ?1 THEN 1
-                    WHEN asin = ?1 THEN 2
-                    ELSE 3
-                  END,
-                  source
-                LIMIT 1"
-            );
-            conn.query_row(&sql, params![title_id, account_id], map_book_row)
-                .optional()
-                .map_err(LibraryError::from)
-        })
+    /// Prefer exact uuid / product_id matches, then asin, then isbn; ties break
+    /// by `source` ascending.
+    pub async fn get_book(&self, title_id: &str, account_id: &str) -> Result<Option<BookRecord>> {
+        let mut matches = books::Entity::find()
+            .filter(books::Column::AccountId.eq(account_id))
+            .filter(
+                Condition::any()
+                    .add(books::Column::Uuid.eq(title_id))
+                    .add(books::Column::ProductId.eq(title_id))
+                    .add(books::Column::Asin.eq(title_id))
+                    .add(books::Column::Isbn.eq(title_id)),
+            )
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        matches.sort_by(|a, b| {
+            match_priority(a, title_id)
+                .cmp(&match_priority(b, title_id))
+                .then_with(|| a.source.cmp(&b.source))
+        });
+        matches.into_iter().next().map(map_book).transpose()
     }
 
     /// All ownership rows sharing an ISBN (cross-account / cross-store enrichment).
-    pub fn find_books_by_isbn(&self, isbn: &str) -> Result<Vec<BookRecord>> {
-        self.with_conn(|conn| {
-            let sql = format!("{BOOK_SELECT} WHERE isbn = ?1 ORDER BY source, account_id");
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt
-                .query_map(params![isbn], map_book_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })
+    pub async fn find_books_by_isbn(&self, isbn: &str) -> Result<Vec<BookRecord>> {
+        books::Entity::find()
+            .filter(books::Column::Isbn.eq(isbn))
+            .order_by_asc(books::Column::Source)
+            .order_by_asc(books::Column::AccountId)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_book)
+            .collect()
     }
 
-    pub fn list_books(&self, account_id: Option<&str>) -> Result<Vec<BookRecord>> {
-        self.with_conn(|conn| {
-            if let Some(account_id) = account_id {
-                let sql = format!("{BOOK_SELECT} WHERE account_id = ?1 ORDER BY title");
-                let mut stmt = conn.prepare(&sql)?;
-                let rows = stmt
-                    .query_map(params![account_id], map_book_row)?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                Ok(rows)
-            } else {
-                let sql = format!("{BOOK_SELECT} ORDER BY title");
-                let mut stmt = conn.prepare(&sql)?;
-                let rows = stmt
-                    .query_map([], map_book_row)?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                Ok(rows)
-            }
-        })
+    pub async fn list_books(&self, account_id: Option<&str>) -> Result<Vec<BookRecord>> {
+        let mut query = books::Entity::find().order_by_asc(books::Column::Title);
+        if let Some(account_id) = account_id {
+            query = query.filter(books::Column::AccountId.eq(account_id));
+        }
+        query
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_book)
+            .collect()
     }
 
-    /// Resolve `title_id` to the stored public uuid, or error if missing.
-    fn resolve_uuid(&self, title_id: &str, account_id: &str) -> Result<String> {
-        self.get_book(title_id, account_id)?
-            .map(|b| b.uuid)
+    /// Count book rows (SQL `COUNT`, not a full fetch).
+    pub async fn count_books(&self, account_id: Option<&str>) -> Result<i64> {
+        let mut query = books::Entity::find();
+        if let Some(account_id) = account_id {
+            query = query.filter(books::Column::AccountId.eq(account_id));
+        }
+        let count = query.count(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(count as i64)
+    }
+
+    /// Resolve `title_id` to the stored public book model, or error if missing.
+    async fn resolve_book(&self, title_id: &str, account_id: &str) -> Result<books::Model> {
+        let mut matches = books::Entity::find()
+            .filter(books::Column::AccountId.eq(account_id))
+            .filter(
+                Condition::any()
+                    .add(books::Column::Uuid.eq(title_id))
+                    .add(books::Column::ProductId.eq(title_id))
+                    .add(books::Column::Asin.eq(title_id))
+                    .add(books::Column::Isbn.eq(title_id)),
+            )
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        matches.sort_by(|a, b| {
+            match_priority(a, title_id)
+                .cmp(&match_priority(b, title_id))
+                .then_with(|| a.source.cmp(&b.source))
+        });
+        matches
+            .into_iter()
+            .next()
             .ok_or_else(|| LibraryError::NotFound(title_id.into()))
     }
 
     /// Update user-defined fields (tags, ratings, finished) without touching scan metadata.
-    pub fn update_user_fields(
+    pub async fn update_user_fields(
         &self,
         title_id: &str,
         account_id: &str,
         fields: &UserBookFields,
     ) -> Result<()> {
-        let uuid = self.resolve_uuid(title_id, account_id)?;
-        let now = Utc::now().to_rfc3339();
-        let rows = self.with_conn(|conn| {
-            let n = conn.execute(
-                r#"
-                UPDATE books SET
-                    tags = COALESCE(?1, tags),
-                    rating_overall = COALESCE(?2, rating_overall),
-                    rating_performance = COALESCE(?3, rating_performance),
-                    rating_story = COALESCE(?4, rating_story),
-                    is_finished = COALESCE(?5, is_finished),
-                    updated_at = ?6
-                WHERE uuid = ?7
-                "#,
-                params![
-                    fields.tags,
-                    fields.rating_overall,
-                    fields.rating_performance,
-                    fields.rating_story,
-                    fields.is_finished.map(|b| if b { 1 } else { 0 }),
-                    now,
-                    uuid,
-                ],
-            )?;
-            Ok(n)
-        })?;
-        if rows == 0 {
-            return Err(LibraryError::NotFound(title_id.into()));
+        let model = self.resolve_book(title_id, account_id).await?;
+        let mut am: books::ActiveModel = model.into();
+        if let Some(tags) = &fields.tags {
+            am.tags = Set(Some(tags.clone()));
         }
+        if let Some(v) = fields.rating_overall {
+            am.rating_overall = Set(Some(f64::from(v)));
+        }
+        if let Some(v) = fields.rating_performance {
+            am.rating_performance = Set(Some(f64::from(v)));
+        }
+        if let Some(v) = fields.rating_story {
+            am.rating_story = Set(Some(f64::from(v)));
+        }
+        if let Some(v) = fields.is_finished {
+            am.is_finished = Set(i64::from(v));
+        }
+        am.updated_at = Set(now_str());
+        am.update(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(())
     }
 
-    pub fn set_pdf_status(
+    pub async fn set_pdf_status(
         &self,
         title_id: &str,
         account_id: &str,
         status: AcquireStatus,
         pdf_storage_key: Option<&str>,
     ) -> Result<()> {
-        let uuid = self.resolve_uuid(title_id, account_id)?;
-        let now = Utc::now().to_rfc3339();
-        let rows = self.with_conn(|conn| {
-            let n = conn.execute(
-                r#"
-                UPDATE books SET pdf_status = ?1, pdf_storage_key = ?2, updated_at = ?3
-                WHERE uuid = ?4
-                "#,
-                params![status.as_str(), pdf_storage_key, now, uuid],
-            )?;
-            Ok(n)
-        })?;
-        if rows == 0 {
-            return Err(LibraryError::NotFound(title_id.into()));
-        }
+        let model = self.resolve_book(title_id, account_id).await?;
+        let mut am: books::ActiveModel = model.into();
+        am.pdf_status = Set(status.as_str().to_string());
+        am.pdf_storage_key = Set(pdf_storage_key.map(str::to_string));
+        am.updated_at = Set(now_str());
+        am.update(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(())
     }
 
-    pub fn is_ignored(&self, title_id: &str, account_id: &str) -> Result<bool> {
-        let (source, product_id) = match self.get_book(title_id, account_id)? {
-            Some(b) => (b.source, b.product_id),
-            None => (String::from("audible"), title_id.to_string()),
-        };
-        self.with_conn(|conn| {
-            conn.query_row(
-                "SELECT 1 FROM ignored_titles WHERE source = ?1 AND account_id = ?2 AND product_id = ?3",
-                params![source, account_id, product_id],
-                |_| Ok(true),
-            )
-            .optional()
-            .map(|opt| opt.is_some())
-            .map_err(LibraryError::from)
-        })
+    pub async fn is_ignored(&self, title_id: &str, account_id: &str) -> Result<bool> {
+        let (source, product_id) = self.ignore_key(title_id, account_id).await?;
+        Ok(ignored_titles::Entity::find()
+            .filter(ignored_titles::Column::Source.eq(source))
+            .filter(ignored_titles::Column::AccountId.eq(account_id))
+            .filter(ignored_titles::Column::ProductId.eq(product_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .is_some())
     }
 
-    pub fn set_ignored(
+    pub async fn set_ignored(
         &self,
         title_id: &str,
         account_id: &str,
         ignored: bool,
         reason: Option<&str>,
     ) -> Result<()> {
-        let (source, product_id) = match self.get_book(title_id, account_id)? {
+        let (source, product_id) = self.ignore_key(title_id, account_id).await?;
+        if ignored {
+            let existing = ignored_titles::Entity::find()
+                .filter(ignored_titles::Column::Source.eq(source.as_str()))
+                .filter(ignored_titles::Column::AccountId.eq(account_id))
+                .filter(ignored_titles::Column::ProductId.eq(product_id.as_str()))
+                .one(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            if let Some(model) = existing {
+                let mut am: ignored_titles::ActiveModel = model.into();
+                am.reason = Set(reason.map(str::to_string));
+                am.update(&self.db).await.map_err(LibraryError::Orm)?;
+            } else {
+                let am = ignored_titles::ActiveModel {
+                    source: Set(source),
+                    account_id: Set(account_id.to_string()),
+                    product_id: Set(product_id),
+                    reason: Set(reason.map(str::to_string)),
+                    created_at: Set(now_str()),
+                };
+                am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+            }
+        } else {
+            ignored_titles::Entity::delete_many()
+                .filter(ignored_titles::Column::Source.eq(source))
+                .filter(ignored_titles::Column::AccountId.eq(account_id))
+                .filter(ignored_titles::Column::ProductId.eq(product_id))
+                .exec(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+        }
+        Ok(())
+    }
+
+    /// Resolve the `(source, product_id)` ignore key for a title, defaulting to
+    /// Audible + the raw id when the book is unknown.
+    async fn ignore_key(&self, title_id: &str, account_id: &str) -> Result<(String, String)> {
+        Ok(match self.get_book(title_id, account_id).await? {
             Some(b) => (b.source, b.product_id),
             None => (String::from("audible"), title_id.to_string()),
-        };
-        let now = Utc::now().to_rfc3339();
-        self.with_conn(|conn| {
-            if ignored {
-                conn.execute(
-                    r#"
-                    INSERT INTO ignored_titles (source, account_id, product_id, reason, created_at)
-                    VALUES (?1, ?2, ?3, ?4, ?5)
-                    ON CONFLICT(source, account_id, product_id) DO UPDATE SET reason = excluded.reason
-                    "#,
-                    params![source, account_id, product_id, reason, now],
-                )?;
-            } else {
-                conn.execute(
-                    "DELETE FROM ignored_titles WHERE source = ?1 AND account_id = ?2 AND product_id = ?3",
-                    params![source, account_id, product_id],
-                )?;
-            }
-            Ok(())
         })
     }
 
-    pub fn set_acquire_status(
+    pub async fn set_acquire_status(
         &self,
         title_id: &str,
         account_id: &str,
@@ -942,38 +944,26 @@ impl LibraryStore {
         storage_key: Option<&str>,
         error_message: Option<&str>,
     ) -> Result<()> {
-        let uuid = self.resolve_uuid(title_id, account_id)?;
-        let now = Utc::now().to_rfc3339();
-        let rows = self.with_conn(|conn| {
-            let n = conn.execute(
-                r#"
-                UPDATE books SET
-                    acquire_status = ?1,
-                    storage_key = ?2,
-                    error_message = ?3,
-                    updated_at = ?4
-                WHERE uuid = ?5
-                "#,
-                params![status.as_str(), storage_key, error_message, now, uuid],
-            )?;
-            Ok(n)
-        })?;
-        if rows == 0 {
-            return Err(LibraryError::NotFound(title_id.into()));
-        }
+        let model = self.resolve_book(title_id, account_id).await?;
+        let mut am: books::ActiveModel = model.into();
+        am.acquire_status = Set(status.as_str().to_string());
+        am.storage_key = Set(storage_key.map(str::to_string));
+        am.error_message = Set(error_message.map(str::to_string));
+        am.updated_at = Set(now_str());
+        am.update(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(())
     }
 
     /// Bulk-update acquire status (classic `set-status --force`).
     ///
     /// When `asins` is non-empty, matches against uuid, product_id, isbn, or asin.
-    pub fn bulk_set_acquire_status(
+    pub async fn bulk_set_acquire_status(
         &self,
         account: Option<&str>,
         asins: &[String],
         status: AcquireStatus,
     ) -> Result<u32> {
-        let books = self.list_books(account)?;
+        let books = self.list_books(account).await?;
         let mut updated = 0u32;
         for book in books {
             if !asins.is_empty()
@@ -998,425 +988,375 @@ impl LibraryStore {
                 status,
                 book.storage_key.as_deref(),
                 None,
-            )?;
+            )
+            .await?;
             updated += 1;
         }
         Ok(updated)
     }
 
     /// List saved quick-filter expressions.
-    pub fn list_saved_filters(&self) -> Result<Vec<SavedFilterRecord>> {
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, name, query, created_at, updated_at FROM saved_filters ORDER BY name",
-            )?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok(SavedFilterRecord {
-                        id: row.get(0)?,
-                        name: row.get(1)?,
-                        query: row.get(2)?,
-                        created_at: parse_dt(&row.get::<_, String>(3)?),
-                        updated_at: parse_dt(&row.get::<_, String>(4)?),
-                    })
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })
+    pub async fn list_saved_filters(&self) -> Result<Vec<SavedFilterRecord>> {
+        Ok(saved_filters::Entity::find()
+            .order_by_asc(saved_filters::Column::Name)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_saved_filter)
+            .collect())
     }
 
-    pub fn upsert_saved_filter(&self, name: &str, query: &str) -> Result<SavedFilterRecord> {
-        let now = Utc::now().to_rfc3339();
-        self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO saved_filters (name, query, created_at, updated_at)
-                VALUES (?1, ?2, ?3, ?4)
-                ON CONFLICT(name) DO UPDATE SET
-                    query = excluded.query,
-                    updated_at = excluded.updated_at
-                "#,
-                params![name, query, now, now],
-            )?;
-            Ok(())
-        })?;
-        self.get_saved_filter(name)?
-            .ok_or_else(|| LibraryError::NotFound(name.into()))
+    pub async fn upsert_saved_filter(&self, name: &str, query: &str) -> Result<SavedFilterRecord> {
+        let now = now_str();
+        let existing = saved_filters::Entity::find()
+            .filter(saved_filters::Column::Name.eq(name))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let model = if let Some(model) = existing {
+            let mut am: saved_filters::ActiveModel = model.into();
+            am.query = Set(query.to_string());
+            am.updated_at = Set(now);
+            am.update(&self.db).await.map_err(LibraryError::Orm)?
+        } else {
+            let am = saved_filters::ActiveModel {
+                id: NotSet,
+                name: Set(name.to_string()),
+                query: Set(query.to_string()),
+                created_at: Set(now.clone()),
+                updated_at: Set(now),
+            };
+            am.insert(&self.db).await.map_err(LibraryError::Orm)?
+        };
+        Ok(map_saved_filter(model))
     }
 
-    pub fn get_saved_filter(&self, name: &str) -> Result<Option<SavedFilterRecord>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                "SELECT id, name, query, created_at, updated_at FROM saved_filters WHERE name = ?1",
-                params![name],
-                |row| {
-                    Ok(SavedFilterRecord {
-                        id: row.get(0)?,
-                        name: row.get(1)?,
-                        query: row.get(2)?,
-                        created_at: parse_dt(&row.get::<_, String>(3)?),
-                        updated_at: parse_dt(&row.get::<_, String>(4)?),
-                    })
-                },
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+    pub async fn get_saved_filter(&self, name: &str) -> Result<Option<SavedFilterRecord>> {
+        Ok(saved_filters::Entity::find()
+            .filter(saved_filters::Column::Name.eq(name))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_saved_filter))
     }
 
-    pub fn delete_saved_filter(&self, name: &str) -> Result<()> {
-        let rows = self.with_conn(|conn| {
-            let n = conn.execute("DELETE FROM saved_filters WHERE name = ?1", params![name])?;
-            Ok(n)
-        })?;
-        if rows == 0 {
+    pub async fn delete_saved_filter(&self, name: &str) -> Result<()> {
+        let res = saved_filters::Entity::delete_many()
+            .filter(saved_filters::Column::Name.eq(name))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        if res.rows_affected == 0 {
             return Err(LibraryError::NotFound(name.into()));
         }
         Ok(())
     }
 
-    pub fn count_by_status(&self, status: AcquireStatus) -> Result<i64> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM books WHERE acquire_status = ?1",
-                params![status.as_str()],
-                |row| row.get(0),
-            )
-            .map_err(LibraryError::from)
-        })
+    pub async fn count_by_status(&self, status: AcquireStatus) -> Result<i64> {
+        let count = books::Entity::find()
+            .filter(books::Column::AcquireStatus.eq(status.as_str()))
+            .count(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(count as i64)
     }
 
     /// Persist enrichment fields without touching scan / ownership columns.
-    pub fn update_catalog_enrichment(
+    pub async fn update_catalog_enrichment(
         &self,
         book_uuid: &str,
         fields: &CatalogEnrichmentFields,
     ) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
-        let rows = self.with_conn(|conn| {
-            let n = conn.execute(
-                r#"
-                UPDATE books SET
-                    description = COALESCE(?1, description),
-                    language = COALESCE(?2, language),
-                    cover_url = COALESCE(?3, cover_url),
-                    subjects = COALESCE(?4, subjects),
-                    categories = COALESCE(?5, categories),
-                    enrich_source = COALESCE(?6, enrich_source),
-                    enrich_confidence = COALESCE(?7, enrich_confidence),
-                    enrich_updated_at = COALESCE(?8, enrich_updated_at),
-                    updated_at = ?9
-                WHERE uuid = ?10
-                "#,
-                params![
-                    fields.description,
-                    fields.language,
-                    fields.cover_url,
-                    fields.subjects,
-                    fields.categories,
-                    fields.enrich_source,
-                    fields.enrich_confidence,
-                    fields.enrich_updated_at.map(|d| d.to_rfc3339()),
-                    now,
-                    book_uuid,
-                ],
-            )?;
-            Ok(n)
-        })?;
-        if rows == 0 {
-            return Err(LibraryError::NotFound(book_uuid.into()));
+        let model = books::Entity::find()
+            .filter(books::Column::Uuid.eq(book_uuid))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound(book_uuid.into()))?;
+        let mut am: books::ActiveModel = model.into();
+        if let Some(v) = &fields.description {
+            am.description = Set(Some(v.clone()));
         }
+        if let Some(v) = &fields.language {
+            am.language = Set(Some(v.clone()));
+        }
+        if let Some(v) = &fields.cover_url {
+            am.cover_url = Set(Some(v.clone()));
+        }
+        if let Some(v) = &fields.subjects {
+            am.subjects = Set(Some(v.clone()));
+        }
+        if let Some(v) = &fields.categories {
+            am.categories = Set(Some(v.clone()));
+        }
+        if let Some(v) = &fields.enrich_source {
+            am.enrich_source = Set(Some(v.clone()));
+        }
+        if let Some(v) = fields.enrich_confidence {
+            am.enrich_confidence = Set(Some(v));
+        }
+        if let Some(v) = fields.enrich_updated_at {
+            am.enrich_updated_at = Set(Some(v.to_rfc3339()));
+        }
+        am.updated_at = Set(now_str());
+        am.update(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(())
     }
 
-    /// Upsert a canonical work row.
-    pub fn upsert_work(&self, work: &NewWork) -> Result<WorkRecord> {
-        let now = Utc::now().to_rfc3339();
+    /// Upsert a canonical work row (COALESCE-preserve on conflict).
+    pub async fn upsert_work(&self, work: &NewWork) -> Result<WorkRecord> {
+        let now = now_str();
         let id = work
             .id
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO works (
-                    id, canonical_asin, canonical_isbn, title, authors, narrators,
-                    description, subjects, categories, language, series, series_index,
-                    cover_url, openlibrary_id, created_at, updated_at
-                ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
-                )
-                ON CONFLICT(id) DO UPDATE SET
-                    canonical_asin = COALESCE(excluded.canonical_asin, works.canonical_asin),
-                    canonical_isbn = COALESCE(excluded.canonical_isbn, works.canonical_isbn),
-                    title = excluded.title,
-                    authors = COALESCE(excluded.authors, works.authors),
-                    narrators = COALESCE(excluded.narrators, works.narrators),
-                    description = COALESCE(excluded.description, works.description),
-                    subjects = COALESCE(excluded.subjects, works.subjects),
-                    categories = COALESCE(excluded.categories, works.categories),
-                    language = COALESCE(excluded.language, works.language),
-                    series = COALESCE(excluded.series, works.series),
-                    series_index = COALESCE(excluded.series_index, works.series_index),
-                    cover_url = COALESCE(excluded.cover_url, works.cover_url),
-                    openlibrary_id = COALESCE(excluded.openlibrary_id, works.openlibrary_id),
-                    updated_at = excluded.updated_at
-                "#,
-                params![
-                    id,
-                    work.canonical_asin,
-                    work.canonical_isbn,
-                    work.title,
-                    work.authors,
-                    work.narrators,
-                    work.description,
-                    work.subjects,
-                    work.categories,
-                    work.language,
-                    work.series,
-                    work.series_index,
-                    work.cover_url,
-                    work.openlibrary_id,
-                    now,
-                    now,
-                ],
-            )?;
-            Ok(())
-        })?;
-        self.get_work(&id)?
-            .ok_or_else(|| LibraryError::NotFound(id))
+        let existing = works::Entity::find_by_id(id.clone())
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let model = if let Some(existing) = existing {
+            let coalesce = |new: Option<String>, old: Option<String>| new.or(old);
+            let mut am: works::ActiveModel = existing.clone().into();
+            am.canonical_asin = Set(coalesce(
+                work.canonical_asin.clone(),
+                existing.canonical_asin.clone(),
+            ));
+            am.canonical_isbn = Set(coalesce(
+                work.canonical_isbn.clone(),
+                existing.canonical_isbn.clone(),
+            ));
+            am.title = Set(work.title.clone());
+            am.authors = Set(coalesce(work.authors.clone(), existing.authors.clone()));
+            am.narrators = Set(coalesce(work.narrators.clone(), existing.narrators.clone()));
+            am.description = Set(coalesce(
+                work.description.clone(),
+                existing.description.clone(),
+            ));
+            am.subjects = Set(coalesce(work.subjects.clone(), existing.subjects.clone()));
+            am.categories = Set(coalesce(
+                work.categories.clone(),
+                existing.categories.clone(),
+            ));
+            am.language = Set(coalesce(work.language.clone(), existing.language.clone()));
+            am.series = Set(coalesce(work.series.clone(), existing.series.clone()));
+            am.series_index = Set(coalesce(
+                work.series_index.clone(),
+                existing.series_index.clone(),
+            ));
+            am.cover_url = Set(coalesce(work.cover_url.clone(), existing.cover_url.clone()));
+            am.openlibrary_id = Set(coalesce(
+                work.openlibrary_id.clone(),
+                existing.openlibrary_id.clone(),
+            ));
+            am.updated_at = Set(now);
+            am.update(&self.db).await.map_err(LibraryError::Orm)?
+        } else {
+            let am = works::ActiveModel {
+                id: Set(id),
+                canonical_asin: Set(work.canonical_asin.clone()),
+                canonical_isbn: Set(work.canonical_isbn.clone()),
+                title: Set(work.title.clone()),
+                authors: Set(work.authors.clone()),
+                narrators: Set(work.narrators.clone()),
+                description: Set(work.description.clone()),
+                subjects: Set(work.subjects.clone()),
+                categories: Set(work.categories.clone()),
+                language: Set(work.language.clone()),
+                series: Set(work.series.clone()),
+                series_index: Set(work.series_index.clone()),
+                cover_url: Set(work.cover_url.clone()),
+                openlibrary_id: Set(work.openlibrary_id.clone()),
+                created_at: Set(now.clone()),
+                updated_at: Set(now),
+            };
+            am.insert(&self.db).await.map_err(LibraryError::Orm)?
+        };
+        Ok(map_work(model))
     }
 
-    pub fn get_work(&self, id: &str) -> Result<Option<WorkRecord>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                r#"
-                SELECT id, canonical_asin, canonical_isbn, title, authors, narrators,
-                       description, subjects, categories, language, series, series_index,
-                       cover_url, openlibrary_id, created_at, updated_at
-                FROM works WHERE id = ?1
-                "#,
-                params![id],
-                map_work_row,
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+    pub async fn get_work(&self, id: &str) -> Result<Option<WorkRecord>> {
+        Ok(works::Entity::find_by_id(id.to_string())
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_work))
     }
 
-    pub fn find_work_by_asin(&self, asin: &str) -> Result<Option<WorkRecord>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                r#"
-                SELECT id, canonical_asin, canonical_isbn, title, authors, narrators,
-                       description, subjects, categories, language, series, series_index,
-                       cover_url, openlibrary_id, created_at, updated_at
-                FROM works WHERE canonical_asin = ?1 LIMIT 1
-                "#,
-                params![asin],
-                map_work_row,
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+    pub async fn find_work_by_asin(&self, asin: &str) -> Result<Option<WorkRecord>> {
+        Ok(works::Entity::find()
+            .filter(works::Column::CanonicalAsin.eq(asin))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_work))
     }
 
-    pub fn find_work_by_isbn(&self, isbn: &str) -> Result<Option<WorkRecord>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                r#"
-                SELECT id, canonical_asin, canonical_isbn, title, authors, narrators,
-                       description, subjects, categories, language, series, series_index,
-                       cover_url, openlibrary_id, created_at, updated_at
-                FROM works WHERE canonical_isbn = ?1 LIMIT 1
-                "#,
-                params![isbn],
-                map_work_row,
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+    pub async fn find_work_by_isbn(&self, isbn: &str) -> Result<Option<WorkRecord>> {
+        Ok(works::Entity::find()
+            .filter(works::Column::CanonicalIsbn.eq(isbn))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_work))
     }
 
-    pub fn list_works(&self) -> Result<Vec<WorkRecord>> {
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                r#"
-                SELECT id, canonical_asin, canonical_isbn, title, authors, narrators,
-                       description, subjects, categories, language, series, series_index,
-                       cover_url, openlibrary_id, created_at, updated_at
-                FROM works ORDER BY title
-                "#,
-            )?;
-            let rows = stmt
-                .query_map([], map_work_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })
+    pub async fn list_works(&self) -> Result<Vec<WorkRecord>> {
+        Ok(works::Entity::find()
+            .order_by_asc(works::Column::Title)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_work)
+            .collect())
     }
 
-    pub fn link_book_to_work(&self, work_id: &str, book_uuid: &str) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
-        self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO work_editions (work_id, book_uuid, created_at)
-                VALUES (?1, ?2, ?3)
-                ON CONFLICT(book_uuid) DO UPDATE SET work_id = excluded.work_id
-                "#,
-                params![work_id, book_uuid, now],
-            )?;
-            Ok(())
-        })
+    pub async fn link_book_to_work(&self, work_id: &str, book_uuid: &str) -> Result<()> {
+        let existing = work_editions::Entity::find()
+            .filter(work_editions::Column::BookUuid.eq(book_uuid))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        if let Some(model) = existing {
+            if model.work_id == work_id {
+                return Ok(());
+            }
+            // The primary key includes work_id, so re-key by delete + insert.
+            work_editions::Entity::delete_many()
+                .filter(work_editions::Column::BookUuid.eq(book_uuid))
+                .exec(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+        }
+        let am = work_editions::ActiveModel {
+            work_id: Set(work_id.to_string()),
+            book_uuid: Set(book_uuid.to_string()),
+            created_at: Set(now_str()),
+        };
+        am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(())
     }
 
-    pub fn work_id_for_book(&self, book_uuid: &str) -> Result<Option<String>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                "SELECT work_id FROM work_editions WHERE book_uuid = ?1",
-                params![book_uuid],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+    pub async fn work_id_for_book(&self, book_uuid: &str) -> Result<Option<String>> {
+        Ok(work_editions::Entity::find()
+            .filter(work_editions::Column::BookUuid.eq(book_uuid))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(|m| m.work_id))
     }
 
-    pub fn book_uuids_for_work(&self, work_id: &str) -> Result<Vec<String>> {
-        self.with_conn(|conn| {
-            let mut stmt =
-                conn.prepare("SELECT book_uuid FROM work_editions WHERE work_id = ?1")?;
-            let rows = stmt
-                .query_map(params![work_id], |row| row.get(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })
+    pub async fn book_uuids_for_work(&self, work_id: &str) -> Result<Vec<String>> {
+        Ok(work_editions::Entity::find()
+            .filter(work_editions::Column::WorkId.eq(work_id))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(|m| m.book_uuid)
+            .collect())
     }
 
-    pub fn upsert_listening_progress(
+    pub async fn upsert_listening_progress(
         &self,
         row: &NewListeningProgress,
     ) -> Result<ListeningProgressRecord> {
-        let now = Utc::now().to_rfc3339();
-        self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO listening_progress (
-                    identity_id, provider, external_user_id, book_uuid, work_id,
-                    external_item_id, title, authors, asin, isbn, progress,
-                    current_time_seconds, duration_seconds, is_finished,
-                    last_listened_at, updated_at
-                ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
-                )
-                ON CONFLICT(provider, external_user_id, external_item_id) DO UPDATE SET
-                    identity_id = COALESCE(excluded.identity_id, listening_progress.identity_id),
-                    book_uuid = COALESCE(excluded.book_uuid, listening_progress.book_uuid),
-                    work_id = COALESCE(excluded.work_id, listening_progress.work_id),
-                    title = COALESCE(excluded.title, listening_progress.title),
-                    authors = COALESCE(excluded.authors, listening_progress.authors),
-                    asin = COALESCE(excluded.asin, listening_progress.asin),
-                    isbn = COALESCE(excluded.isbn, listening_progress.isbn),
-                    progress = excluded.progress,
-                    current_time_seconds = excluded.current_time_seconds,
-                    duration_seconds = excluded.duration_seconds,
-                    is_finished = excluded.is_finished,
-                    last_listened_at = COALESCE(
-                        excluded.last_listened_at, listening_progress.last_listened_at
-                    ),
-                    updated_at = excluded.updated_at
-                "#,
-                params![
-                    row.identity_id,
-                    row.provider,
-                    row.external_user_id,
-                    row.book_uuid,
-                    row.work_id,
-                    row.external_item_id,
-                    row.title,
-                    row.authors,
-                    row.asin,
-                    row.isbn,
-                    row.progress,
-                    row.current_time_seconds,
-                    row.duration_seconds,
-                    i64::from(row.is_finished),
-                    row.last_listened_at.map(|d| d.to_rfc3339()),
-                    now,
-                ],
-            )?;
-            Ok(())
-        })?;
-        self.get_listening_progress(&row.provider, &row.external_user_id, &row.external_item_id)?
-            .ok_or_else(|| LibraryError::NotFound(row.external_item_id.clone()))
+        let now = now_str();
+        let existing = listening_progress::Entity::find()
+            .filter(listening_progress::Column::Provider.eq(row.provider.as_str()))
+            .filter(listening_progress::Column::ExternalUserId.eq(row.external_user_id.as_str()))
+            .filter(listening_progress::Column::ExternalItemId.eq(row.external_item_id.as_str()))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let model = if let Some(existing) = existing {
+            let coalesce = |new: Option<String>, old: Option<String>| new.or(old);
+            let mut am: listening_progress::ActiveModel = existing.clone().into();
+            am.identity_id = Set(row.identity_id.or(existing.identity_id));
+            am.book_uuid = Set(coalesce(row.book_uuid.clone(), existing.book_uuid.clone()));
+            am.work_id = Set(coalesce(row.work_id.clone(), existing.work_id.clone()));
+            am.title = Set(coalesce(row.title.clone(), existing.title.clone()));
+            am.authors = Set(coalesce(row.authors.clone(), existing.authors.clone()));
+            am.asin = Set(coalesce(row.asin.clone(), existing.asin.clone()));
+            am.isbn = Set(coalesce(row.isbn.clone(), existing.isbn.clone()));
+            am.progress = Set(row.progress);
+            am.current_time_seconds = Set(row.current_time_seconds);
+            am.duration_seconds = Set(row.duration_seconds);
+            am.is_finished = Set(i64::from(row.is_finished));
+            am.last_listened_at = Set(row
+                .last_listened_at
+                .map(|d| d.to_rfc3339())
+                .or(existing.last_listened_at.clone()));
+            am.updated_at = Set(now);
+            am.update(&self.db).await.map_err(LibraryError::Orm)?
+        } else {
+            let am = listening_progress::ActiveModel {
+                id: NotSet,
+                identity_id: Set(row.identity_id),
+                provider: Set(row.provider.clone()),
+                external_user_id: Set(row.external_user_id.clone()),
+                book_uuid: Set(row.book_uuid.clone()),
+                work_id: Set(row.work_id.clone()),
+                external_item_id: Set(row.external_item_id.clone()),
+                title: Set(row.title.clone()),
+                authors: Set(row.authors.clone()),
+                asin: Set(row.asin.clone()),
+                isbn: Set(row.isbn.clone()),
+                progress: Set(row.progress),
+                current_time_seconds: Set(row.current_time_seconds),
+                duration_seconds: Set(row.duration_seconds),
+                is_finished: Set(i64::from(row.is_finished)),
+                last_listened_at: Set(row.last_listened_at.map(|d| d.to_rfc3339())),
+                updated_at: Set(now),
+            };
+            am.insert(&self.db).await.map_err(LibraryError::Orm)?
+        };
+        Ok(map_listening(model))
     }
 
-    pub fn get_listening_progress(
+    pub async fn get_listening_progress(
         &self,
         provider: &str,
         external_user_id: &str,
         external_item_id: &str,
     ) -> Result<Option<ListeningProgressRecord>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                r#"
-                SELECT id, identity_id, provider, external_user_id, book_uuid, work_id,
-                       external_item_id, title, authors, asin, isbn, progress,
-                       current_time_seconds, duration_seconds, is_finished,
-                       last_listened_at, updated_at
-                FROM listening_progress
-                WHERE provider = ?1 AND external_user_id = ?2 AND external_item_id = ?3
-                "#,
-                params![provider, external_user_id, external_item_id],
-                map_listening_row,
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+        Ok(listening_progress::Entity::find()
+            .filter(listening_progress::Column::Provider.eq(provider))
+            .filter(listening_progress::Column::ExternalUserId.eq(external_user_id))
+            .filter(listening_progress::Column::ExternalItemId.eq(external_item_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_listening))
     }
 
-    pub fn list_listening_progress(
+    pub async fn list_listening_progress(
         &self,
         external_user_id: Option<&str>,
     ) -> Result<Vec<ListeningProgressRecord>> {
-        self.with_conn(|conn| {
-            if let Some(uid) = external_user_id {
-                let mut stmt = conn.prepare(
-                    r#"
-                    SELECT id, identity_id, provider, external_user_id, book_uuid, work_id,
-                           external_item_id, title, authors, asin, isbn, progress,
-                           current_time_seconds, duration_seconds, is_finished,
-                           last_listened_at, updated_at
-                    FROM listening_progress
-                    WHERE external_user_id = ?1
-                    ORDER BY COALESCE(last_listened_at, updated_at) DESC
-                    "#,
-                )?;
-                let rows = stmt
-                    .query_map(params![uid], map_listening_row)?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                Ok(rows)
-            } else {
-                let mut stmt = conn.prepare(
-                    r#"
-                    SELECT id, identity_id, provider, external_user_id, book_uuid, work_id,
-                           external_item_id, title, authors, asin, isbn, progress,
-                           current_time_seconds, duration_seconds, is_finished,
-                           last_listened_at, updated_at
-                    FROM listening_progress
-                    ORDER BY COALESCE(last_listened_at, updated_at) DESC
-                    "#,
-                )?;
-                let rows = stmt
-                    .query_map([], map_listening_row)?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                Ok(rows)
-            }
-        })
+        let mut query = listening_progress::Entity::find();
+        if let Some(uid) = external_user_id {
+            query = query.filter(listening_progress::Column::ExternalUserId.eq(uid));
+        }
+        let mut rows: Vec<ListeningProgressRecord> = query
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_listening)
+            .collect();
+        // ORDER BY COALESCE(last_listened_at, updated_at) DESC.
+        rows.sort_by(|a, b| {
+            let ka = a.last_listened_at.unwrap_or(a.updated_at);
+            let kb = b.last_listened_at.unwrap_or(b.updated_at);
+            kb.cmp(&ka)
+        });
+        Ok(rows)
     }
 
-    pub fn create_title_request(&self, req: &NewTitleRequest) -> Result<TitleRequestRecord> {
-        let now = Utc::now().to_rfc3339();
+    pub async fn create_title_request(&self, req: &NewTitleRequest) -> Result<TitleRequestRecord> {
+        let now = now_str();
         let uuid = req
             .uuid
             .clone()
@@ -1434,54 +1374,46 @@ impl LibraryStore {
 
         // Idempotent wishlist: same wisher + exact work_key, or same bibliographic
         // identity under a different key (e.g. soft:… vs asin:… / isbn:…).
-        if let Some(existing) = self.find_open_wishlist(req.identity_id, &work_key)? {
+        if let Some(existing) = self.find_open_wishlist(req.identity_id, &work_key).await? {
             return Ok(existing);
         }
-        if let Some(existing) = self.find_open_wishlist_matching(
-            req.identity_id,
-            &work_key,
-            &req.title,
-            req.authors.as_deref(),
-            req.asin.as_deref(),
-            req.isbn.as_deref(),
-        )? {
+        if let Some(existing) = self
+            .find_open_wishlist_matching(
+                req.identity_id,
+                &work_key,
+                &req.title,
+                req.authors.as_deref(),
+                req.asin.as_deref(),
+                req.isbn.as_deref(),
+            )
+            .await?
+        {
             return Ok(existing);
         }
 
-        self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO title_requests (
-                    uuid, identity_id, title, authors, asin, isbn, notes, status,
-                    work_key, work_id, resolved_book_uuid, created_at, updated_at
-                ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
-                )
-                "#,
-                params![
-                    uuid,
-                    req.identity_id,
-                    req.title,
-                    req.authors,
-                    req.asin,
-                    req.isbn,
-                    req.notes,
-                    req.status.as_str(),
-                    work_key,
-                    req.work_id,
-                    req.resolved_book_uuid,
-                    now,
-                    now,
-                ],
-            )?;
-            Ok(())
-        })?;
-        self.get_title_request_by_uuid(&uuid)?
-            .ok_or_else(|| LibraryError::NotFound(uuid))
+        let am = title_requests::ActiveModel {
+            id: NotSet,
+            uuid: Set(uuid),
+            identity_id: Set(req.identity_id),
+            title: Set(req.title.clone()),
+            authors: Set(req.authors.clone()),
+            asin: Set(req.asin.clone()),
+            isbn: Set(req.isbn.clone()),
+            notes: Set(req.notes.clone()),
+            status: Set(req.status.as_str().to_string()),
+            preferred_source: NotSet,
+            work_id: Set(req.work_id.clone()),
+            work_key: Set(work_key),
+            resolved_book_uuid: Set(req.resolved_book_uuid.clone()),
+            created_at: Set(now.clone()),
+            updated_at: Set(now),
+        };
+        let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(map_request(model))
     }
 
     /// Open wishlist row for this identity + work key, if any.
-    pub fn find_open_wishlist(
+    pub async fn find_open_wishlist(
         &self,
         identity_id: Option<i64>,
         work_key: &str,
@@ -1490,43 +1422,23 @@ impl LibraryStore {
         if work_key.is_empty() {
             return Ok(None);
         }
-        self.with_conn(|conn| {
-            if let Some(id) = identity_id {
-                conn.query_row(
-                    r#"
-                    SELECT id, uuid, identity_id, title, authors, asin, isbn, notes, status,
-                           work_key, work_id, resolved_book_uuid,
-                           created_at, updated_at
-                    FROM title_requests
-                    WHERE identity_id = ?1 AND work_key = ?2 AND status = 'open'
-                    ORDER BY created_at DESC LIMIT 1
-                    "#,
-                    params![id, work_key],
-                    map_request_row,
-                )
-                .optional()
-                .map_err(LibraryError::from)
-            } else {
-                conn.query_row(
-                    r#"
-                    SELECT id, uuid, identity_id, title, authors, asin, isbn, notes, status,
-                           work_key, work_id, resolved_book_uuid,
-                           created_at, updated_at
-                    FROM title_requests
-                    WHERE identity_id IS NULL AND work_key = ?1 AND status = 'open'
-                    ORDER BY created_at DESC LIMIT 1
-                    "#,
-                    params![work_key],
-                    map_request_row,
-                )
-                .optional()
-                .map_err(LibraryError::from)
-            }
-        })
+        let mut query = title_requests::Entity::find()
+            .filter(title_requests::Column::WorkKey.eq(work_key))
+            .filter(title_requests::Column::Status.eq("open"))
+            .order_by_desc(title_requests::Column::CreatedAt);
+        query = match identity_id {
+            Some(id) => query.filter(title_requests::Column::IdentityId.eq(id)),
+            None => query.filter(title_requests::Column::IdentityId.is_null()),
+        };
+        Ok(query
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_request))
     }
 
     /// Open wishlist row that matches bibliographic identity even when `work_key` differs.
-    pub fn find_open_wishlist_matching(
+    pub async fn find_open_wishlist_matching(
         &self,
         identity_id: Option<i64>,
         work_key: &str,
@@ -1542,7 +1454,7 @@ impl LibraryStore {
             asin,
             isbn,
         };
-        let open = self.list_wishlist(identity_id)?;
+        let open = self.list_wishlist(identity_id).await?;
         Ok(open.into_iter().find(|row| {
             needle.matches(WishlistIdentity {
                 work_key: &row.work_key,
@@ -1555,48 +1467,29 @@ impl LibraryStore {
     }
 
     /// Personal open wishlist for a portal identity, or operator (`identity_id` null).
-    pub fn list_wishlist(&self, identity_id: Option<i64>) -> Result<Vec<TitleRequestRecord>> {
-        self.with_conn(|conn| {
-            if let Some(id) = identity_id {
-                let mut stmt = conn.prepare(
-                    r#"
-                    SELECT id, uuid, identity_id, title, authors, asin, isbn, notes, status,
-                           work_key, work_id, resolved_book_uuid,
-                           created_at, updated_at
-                    FROM title_requests
-                    WHERE identity_id = ?1 AND status = 'open'
-                    ORDER BY created_at DESC
-                    "#,
-                )?;
-                let rows = stmt
-                    .query_map(params![id], map_request_row)?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                Ok(rows)
-            } else {
-                let mut stmt = conn.prepare(
-                    r#"
-                    SELECT id, uuid, identity_id, title, authors, asin, isbn, notes, status,
-                           work_key, work_id, resolved_book_uuid,
-                           created_at, updated_at
-                    FROM title_requests
-                    WHERE identity_id IS NULL AND status = 'open'
-                    ORDER BY created_at DESC
-                    "#,
-                )?;
-                let rows = stmt
-                    .query_map([], map_request_row)?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                Ok(rows)
-            }
-        })
+    pub async fn list_wishlist(&self, identity_id: Option<i64>) -> Result<Vec<TitleRequestRecord>> {
+        let mut query = title_requests::Entity::find()
+            .filter(title_requests::Column::Status.eq("open"))
+            .order_by_desc(title_requests::Column::CreatedAt);
+        query = match identity_id {
+            Some(id) => query.filter(title_requests::Column::IdentityId.eq(id)),
+            None => query.filter(title_requests::Column::IdentityId.is_null()),
+        };
+        Ok(query
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_request)
+            .collect())
     }
 
     /// Global request queue: open wishes grouped by `work_key`.
     ///
     /// Sorted by wish count as a simple default; Discover re-ranks with local
     /// taste plus a heavy per-wisher boost for the Wishlist sidebar.
-    pub fn list_global_request_queue(&self) -> Result<Vec<GlobalQueueEntry>> {
-        let open = self.list_title_requests(Some(RequestStatus::Open))?;
+    pub async fn list_global_request_queue(&self) -> Result<Vec<GlobalQueueEntry>> {
+        let open = self.list_title_requests(Some(RequestStatus::Open)).await?;
         let mut by_key: std::collections::HashMap<String, GlobalQueueEntry> =
             std::collections::HashMap::new();
         for row in open {
@@ -1659,87 +1552,59 @@ impl LibraryStore {
         Ok(out)
     }
 
-    pub fn get_title_request_by_uuid(&self, uuid: &str) -> Result<Option<TitleRequestRecord>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                r#"
-                SELECT id, uuid, identity_id, title, authors, asin, isbn, notes, status,
-                       work_key, work_id, resolved_book_uuid,
-                       created_at, updated_at
-                FROM title_requests WHERE uuid = ?1
-                "#,
-                params![uuid],
-                map_request_row,
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+    pub async fn get_title_request_by_uuid(
+        &self,
+        uuid: &str,
+    ) -> Result<Option<TitleRequestRecord>> {
+        Ok(title_requests::Entity::find()
+            .filter(title_requests::Column::Uuid.eq(uuid))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_request))
     }
 
-    pub fn list_title_requests(
+    pub async fn list_title_requests(
         &self,
         status: Option<RequestStatus>,
     ) -> Result<Vec<TitleRequestRecord>> {
-        self.with_conn(|conn| {
-            if let Some(status) = status {
-                let mut stmt = conn.prepare(
-                    r#"
-                    SELECT id, uuid, identity_id, title, authors, asin, isbn, notes, status,
-                           work_key, work_id, resolved_book_uuid,
-                           created_at, updated_at
-                    FROM title_requests WHERE status = ?1
-                    ORDER BY created_at DESC
-                    "#,
-                )?;
-                let rows = stmt
-                    .query_map(params![status.as_str()], map_request_row)?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                Ok(rows)
-            } else {
-                let mut stmt = conn.prepare(
-                    r#"
-                    SELECT id, uuid, identity_id, title, authors, asin, isbn, notes, status,
-                           work_key, work_id, resolved_book_uuid,
-                           created_at, updated_at
-                    FROM title_requests
-                    ORDER BY created_at DESC
-                    "#,
-                )?;
-                let rows = stmt
-                    .query_map([], map_request_row)?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                Ok(rows)
-            }
-        })
+        let mut query =
+            title_requests::Entity::find().order_by_desc(title_requests::Column::CreatedAt);
+        if let Some(status) = status {
+            query = query.filter(title_requests::Column::Status.eq(status.as_str()));
+        }
+        Ok(query
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_request)
+            .collect())
     }
 
-    pub fn update_title_request_status(
+    pub async fn update_title_request_status(
         &self,
         uuid: &str,
         status: RequestStatus,
         resolved_book_uuid: Option<&str>,
     ) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
-        let rows = self.with_conn(|conn| {
-            let n = conn.execute(
-                r#"
-                UPDATE title_requests SET
-                    status = ?1,
-                    resolved_book_uuid = COALESCE(?2, resolved_book_uuid),
-                    updated_at = ?3
-                WHERE uuid = ?4
-                "#,
-                params![status.as_str(), resolved_book_uuid, now, uuid],
-            )?;
-            Ok(n)
-        })?;
-        if rows == 0 {
-            return Err(LibraryError::NotFound(uuid.into()));
+        let model = title_requests::Entity::find()
+            .filter(title_requests::Column::Uuid.eq(uuid))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound(uuid.into()))?;
+        let mut am: title_requests::ActiveModel = model.into();
+        am.status = Set(status.as_str().to_string());
+        if let Some(v) = resolved_book_uuid {
+            am.resolved_book_uuid = Set(Some(v.to_string()));
         }
+        am.updated_at = Set(now_str());
+        am.update(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(())
     }
 
-    pub fn upsert_embedding(
+    pub async fn upsert_embedding(
         &self,
         target_kind: &str,
         target_id: &str,
@@ -1748,152 +1613,158 @@ impl LibraryStore {
         vector: &[u8],
         text_hash: &str,
     ) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
-        self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO embeddings (
-                    target_kind, target_id, model, dims, vector, text_hash, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                ON CONFLICT(target_kind, target_id, model) DO UPDATE SET
-                    dims = excluded.dims,
-                    vector = excluded.vector,
-                    text_hash = excluded.text_hash,
-                    updated_at = excluded.updated_at
-                "#,
-                params![
-                    target_kind,
-                    target_id,
-                    model,
-                    dims,
-                    vector,
-                    text_hash,
-                    now,
-                    now
-                ],
-            )?;
-            Ok(())
-        })
+        let now = now_str();
+        let existing = embeddings::Entity::find()
+            .filter(embeddings::Column::TargetKind.eq(target_kind))
+            .filter(embeddings::Column::TargetId.eq(target_id))
+            .filter(embeddings::Column::Model.eq(model))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        if let Some(existing) = existing {
+            let mut am: embeddings::ActiveModel = existing.into();
+            am.dims = Set(dims);
+            am.vector = Set(vector.to_vec());
+            am.text_hash = Set(text_hash.to_string());
+            am.updated_at = Set(now);
+            am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        } else {
+            let am = embeddings::ActiveModel {
+                id: NotSet,
+                target_kind: Set(target_kind.to_string()),
+                target_id: Set(target_id.to_string()),
+                model: Set(model.to_string()),
+                dims: Set(dims),
+                vector: Set(vector.to_vec()),
+                text_hash: Set(text_hash.to_string()),
+                created_at: Set(now.clone()),
+                updated_at: Set(now),
+            };
+            am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        }
+        Ok(())
     }
 
-    pub fn get_embedding_vector(
+    pub async fn get_embedding_vector(
         &self,
         target_kind: &str,
         target_id: &str,
         model: &str,
     ) -> Result<Option<(String, Vec<u8>)>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                r#"
-                SELECT text_hash, vector FROM embeddings
-                WHERE target_kind = ?1 AND target_id = ?2 AND model = ?3
-                "#,
-                params![target_kind, target_id, model],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+        Ok(embeddings::Entity::find()
+            .filter(embeddings::Column::TargetKind.eq(target_kind))
+            .filter(embeddings::Column::TargetId.eq(target_id))
+            .filter(embeddings::Column::Model.eq(model))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(|m| (m.text_hash, m.vector)))
     }
 
-    pub fn list_embeddings(
+    pub async fn list_embeddings(
         &self,
         target_kind: &str,
         model: &str,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                r#"
-                SELECT target_id, vector FROM embeddings
-                WHERE target_kind = ?1 AND model = ?2
-                "#,
-            )?;
-            let rows = stmt
-                .query_map(params![target_kind, model], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })
+        Ok(embeddings::Entity::find()
+            .filter(embeddings::Column::TargetKind.eq(target_kind))
+            .filter(embeddings::Column::Model.eq(model))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(|m| (m.target_id, m.vector))
+            .collect())
     }
 
-    pub fn embedding_text_hash(
+    pub async fn embedding_text_hash(
         &self,
         target_kind: &str,
         target_id: &str,
         model: &str,
     ) -> Result<Option<String>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                r#"
-                SELECT text_hash FROM embeddings
-                WHERE target_kind = ?1 AND target_id = ?2 AND model = ?3
-                "#,
-                params![target_kind, target_id, model],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+        Ok(embeddings::Entity::find()
+            .filter(embeddings::Column::TargetKind.eq(target_kind))
+            .filter(embeddings::Column::TargetId.eq(target_id))
+            .filter(embeddings::Column::Model.eq(model))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(|m| m.text_hash))
     }
 
     /// Load per-user GUI / Discover preferences by subject key.
-    pub fn get_user_preferences(&self, subject_key: &str) -> Result<Option<UserPreferences>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                r#"
-                SELECT id, subject_key, identity_id, default_view, disabled_shelves_json, updated_at
-                FROM user_preferences
-                WHERE subject_key = ?1
-                "#,
-                params![subject_key],
-                map_user_preferences_row,
-            )
-            .optional()
-            .map_err(LibraryError::from)
-        })
+    pub async fn get_user_preferences(&self, subject_key: &str) -> Result<Option<UserPreferences>> {
+        Ok(user_preferences::Entity::find()
+            .filter(user_preferences::Column::SubjectKey.eq(subject_key))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_user_preferences))
     }
 
     /// Preferences for `subject_key`, or in-memory defaults when no row exists.
-    pub fn get_user_preferences_or_default(
+    pub async fn get_user_preferences_or_default(
         &self,
         subject_key: &str,
         identity_id: Option<i64>,
     ) -> Result<UserPreferences> {
         Ok(self
-            .get_user_preferences(subject_key)?
+            .get_user_preferences(subject_key)
+            .await?
             .unwrap_or_else(|| UserPreferences::defaults_for(subject_key, identity_id)))
     }
 
     /// Insert or replace preferences for a subject (operator or portal identity).
-    pub fn upsert_user_preferences(
+    pub async fn upsert_user_preferences(
         &self,
         subject_key: &str,
         identity_id: Option<i64>,
         default_view: &str,
         disabled_shelves: &[String],
     ) -> Result<UserPreferences> {
-        let now = Utc::now().to_rfc3339();
+        let now = now_str();
         let shelves_json =
             serde_json::to_string(disabled_shelves).unwrap_or_else(|_| String::from("[]"));
-        self.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO user_preferences (
-                    subject_key, identity_id, default_view, disabled_shelves_json, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5)
-                ON CONFLICT(subject_key) DO UPDATE SET
-                    identity_id = COALESCE(excluded.identity_id, user_preferences.identity_id),
-                    default_view = excluded.default_view,
-                    disabled_shelves_json = excluded.disabled_shelves_json,
-                    updated_at = excluded.updated_at
-                "#,
-                params![subject_key, identity_id, default_view, shelves_json, now],
-            )?;
-            Ok(())
-        })?;
-        self.get_user_preferences(subject_key)?
-            .ok_or_else(|| LibraryError::NotFound(subject_key.into()))
+        let existing = user_preferences::Entity::find()
+            .filter(user_preferences::Column::SubjectKey.eq(subject_key))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let model = if let Some(existing) = existing {
+            let mut am: user_preferences::ActiveModel = existing.clone().into();
+            if identity_id.is_some() {
+                am.identity_id = Set(identity_id.or(existing.identity_id));
+            }
+            am.default_view = Set(default_view.to_string());
+            am.disabled_shelves_json = Set(shelves_json);
+            am.updated_at = Set(now);
+            am.update(&self.db).await.map_err(LibraryError::Orm)?
+        } else {
+            let am = user_preferences::ActiveModel {
+                id: NotSet,
+                subject_key: Set(subject_key.to_string()),
+                identity_id: Set(identity_id),
+                default_view: Set(default_view.to_string()),
+                disabled_shelves_json: Set(shelves_json),
+                updated_at: Set(now),
+            };
+            am.insert(&self.db).await.map_err(LibraryError::Orm)?
+        };
+        Ok(map_user_preferences(model))
+    }
+}
+
+/// Match precedence for [`LibraryStore::get_book`]: uuid, product_id, asin, else.
+fn match_priority(book: &books::Model, needle: &str) -> u8 {
+    if book.uuid == needle {
+        0
+    } else if book.product_id == needle {
+        1
+    } else if book.asin.as_deref() == Some(needle) {
+        2
+    } else {
+        3
     }
 }
 
@@ -2001,83 +1872,6 @@ impl NewBook {
             published_at: None,
         }
     }
-}
-
-fn map_account_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRecord> {
-    let created_at: String = r.get("created_at")?;
-    let updated_at: String = r.get("updated_at")?;
-    Ok(AccountRecord {
-        id: r.get("id")?,
-        account_id: r.get("account_id")?,
-        source: r
-            .get::<_, String>("source")
-            .unwrap_or_else(|_| String::from("audible")),
-        marketplace: r.get("marketplace")?,
-        label: r.get("label")?,
-        scan_enabled: r.get::<_, i64>("scan_enabled")? != 0,
-        connection_status: r
-            .get::<_, String>("connection_status")
-            .unwrap_or_else(|_| String::from("active")),
-        created_at: parse_dt(&created_at),
-        updated_at: parse_dt(&updated_at),
-    })
-}
-
-fn map_portal_identity_row(
-    r: &rusqlite::Row<'_>,
-) -> rusqlite::Result<crate::models::PortalIdentity> {
-    let created_at: String = r.get("created_at")?;
-    Ok(crate::models::PortalIdentity {
-        id: r.get("id")?,
-        provider: r.get("provider")?,
-        external_user_id: r.get("external_user_id")?,
-        label: r.get("label")?,
-        created_at: parse_dt(&created_at),
-    })
-}
-
-fn map_claim_ticket_row(
-    r: &rusqlite::Row<'_>,
-) -> rusqlite::Result<crate::models::ClaimTicketRecord> {
-    let expires_at: String = r.get("expires_at")?;
-    let created_at: String = r.get("created_at")?;
-    let redeemed_at: Option<String> = r.get("redeemed_at")?;
-    Ok(crate::models::ClaimTicketRecord {
-        id: r.get("id")?,
-        token_hash: r.get("token_hash")?,
-        identity_id: r.get("identity_id")?,
-        expires_at: parse_dt(&expires_at),
-        redeemed_at: redeemed_at.as_deref().map(parse_dt),
-        created_by: r.get("created_by")?,
-        created_at: parse_dt(&created_at),
-    })
-}
-
-fn map_account_link_row(
-    r: &rusqlite::Row<'_>,
-) -> rusqlite::Result<crate::models::AccountLinkRecord> {
-    let created_at: String = r.get("created_at")?;
-    Ok(crate::models::AccountLinkRecord {
-        id: r.get("id")?,
-        identity_id: r.get("identity_id")?,
-        account_id: r.get("account_id")?,
-        source: r.get("source")?,
-        created_at: parse_dt(&created_at),
-    })
-}
-
-fn map_user_preferences_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<UserPreferences> {
-    let updated_at: String = r.get("updated_at")?;
-    let shelves_json: String = r.get("disabled_shelves_json")?;
-    let disabled_shelves: Vec<String> = serde_json::from_str(&shelves_json).unwrap_or_default();
-    Ok(UserPreferences {
-        id: r.get("id")?,
-        subject_key: r.get("subject_key")?,
-        identity_id: r.get("identity_id")?,
-        default_view: r.get("default_view")?,
-        disabled_shelves,
-        updated_at: parse_dt(&updated_at),
-    })
 }
 
 /// Saved Lucene-style quick filter.
@@ -2312,67 +2106,10 @@ pub fn fallback_work_key(
     format!("soft:{t}|{a}")
 }
 
-fn map_book_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<BookRecord> {
-    let status_raw: String = r.get("acquire_status")?;
-    let pdf_raw: String = r
-        .get("pdf_status")
-        .unwrap_or_else(|_| "not_acquired".into());
-    let created_at: String = r.get("created_at")?;
-    let updated_at: String = r.get("updated_at")?;
-    let purchased_at: Option<String> = r.get("purchased_at")?;
-    let published_at: Option<String> = r.get("published_at").ok().flatten();
-    Ok(BookRecord {
-        id: r.get("id")?,
-        uuid: r.get("uuid")?,
-        source: r
-            .get::<_, String>("source")
-            .unwrap_or_else(|_| String::from("audible")),
-        account_id: r.get("account_id")?,
-        product_id: r.get("product_id")?,
-        asin: r.get("asin")?,
-        isbn: r.get("isbn")?,
-        marketplace: r.get("marketplace")?,
-        title: r.get("title")?,
-        authors: r.get("authors")?,
-        narrators: r.get("narrators")?,
-        series: r.get("series")?,
-        series_index: r.get("series_index")?,
-        series_asin: r.get("series_asin").ok().flatten(),
-        acquire_status: AcquireStatus::parse(&status_raw).unwrap_or_default(),
-        storage_key: r.get("storage_key")?,
-        error_message: r.get("error_message")?,
-        purchased_at: purchased_at.as_deref().map(parse_dt),
-        tags: r.get("tags").ok(),
-        rating_overall: r.get("rating_overall").ok(),
-        rating_performance: r.get("rating_performance").ok(),
-        rating_story: r.get("rating_story").ok(),
-        is_finished: r.get::<_, i64>("is_finished").unwrap_or(0) != 0,
-        pdf_status: AcquireStatus::parse(&pdf_raw).unwrap_or_default(),
-        pdf_storage_key: r.get("pdf_storage_key").ok(),
-        publisher: r.get("publisher").ok(),
-        length_minutes: r.get("length_minutes").ok(),
-        is_abridged: r.get::<_, i64>("is_abridged").unwrap_or(0) != 0,
-        content_kind: r
-            .get::<_, String>("content_kind")
-            .unwrap_or_else(|_| "book".into()),
-        categories: r.get("categories").ok(),
-        subtitle: r.get("subtitle").ok(),
-        published_at: published_at.as_deref().map(parse_dt),
-        description: r.get("description").ok(),
-        language: r.get("language").ok(),
-        cover_url: r.get("cover_url").ok(),
-        subjects: r.get("subjects").ok(),
-        enrich_source: r.get("enrich_source").ok(),
-        enrich_confidence: r.get("enrich_confidence").ok(),
-        enrich_updated_at: r
-            .get::<_, Option<String>>("enrich_updated_at")
-            .ok()
-            .flatten()
-            .as_deref()
-            .map(parse_dt),
-        created_at: parse_dt(&created_at),
-        updated_at: parse_dt(&updated_at),
-    })
+// ── Entity → record mapping ─────────────────────────────────────────────────
+
+fn now_str() -> String {
+    Utc::now().to_rfc3339()
 }
 
 fn parse_dt(value: &str) -> chrono::DateTime<Utc> {
@@ -2381,578 +2118,186 @@ fn parse_dt(value: &str) -> chrono::DateTime<Utc> {
         .unwrap_or_else(|_| Utc::now())
 }
 
-fn map_work_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkRecord> {
-    let created_at: String = r.get("created_at")?;
-    let updated_at: String = r.get("updated_at")?;
-    Ok(WorkRecord {
-        id: r.get("id")?,
-        canonical_asin: r.get("canonical_asin")?,
-        canonical_isbn: r.get("canonical_isbn")?,
-        title: r.get("title")?,
-        authors: r.get("authors")?,
-        narrators: r.get("narrators")?,
-        description: r.get("description")?,
-        subjects: r.get("subjects")?,
-        categories: r.get("categories")?,
-        language: r.get("language")?,
-        series: r.get("series")?,
-        series_index: r.get("series_index")?,
-        cover_url: r.get("cover_url")?,
-        openlibrary_id: r.get("openlibrary_id")?,
-        created_at: parse_dt(&created_at),
-        updated_at: parse_dt(&updated_at),
-    })
+fn parse_dt_opt(value: Option<&str>) -> Option<chrono::DateTime<Utc>> {
+    value.map(parse_dt)
 }
 
-fn map_listening_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ListeningProgressRecord> {
-    let updated_at: String = r.get("updated_at")?;
-    let last_listened_at: Option<String> = r.get("last_listened_at")?;
-    Ok(ListeningProgressRecord {
-        id: r.get("id")?,
-        identity_id: r.get("identity_id")?,
-        provider: r.get("provider")?,
-        external_user_id: r.get("external_user_id")?,
-        book_uuid: r.get("book_uuid")?,
-        work_id: r.get("work_id")?,
-        external_item_id: r.get("external_item_id")?,
-        title: r.get("title")?,
-        authors: r.get("authors")?,
-        asin: r.get("asin")?,
-        isbn: r.get("isbn")?,
-        progress: r.get("progress")?,
-        current_time_seconds: r.get("current_time_seconds")?,
-        duration_seconds: r.get("duration_seconds")?,
-        is_finished: r.get::<_, i64>("is_finished").unwrap_or(0) != 0,
-        last_listened_at: last_listened_at.as_deref().map(parse_dt),
-        updated_at: parse_dt(&updated_at),
-    })
+fn map_account(m: accounts::Model) -> AccountRecord {
+    AccountRecord {
+        id: m.id,
+        account_id: m.account_id,
+        source: m.source,
+        marketplace: m.marketplace,
+        label: m.label,
+        scan_enabled: m.scan_enabled != 0,
+        connection_status: m.connection_status,
+        created_at: parse_dt(&m.created_at),
+        updated_at: parse_dt(&m.updated_at),
+    }
 }
 
-fn map_request_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TitleRequestRecord> {
-    let status_raw: String = r.get("status")?;
-    let created_at: String = r.get("created_at")?;
-    let updated_at: String = r.get("updated_at")?;
-    Ok(TitleRequestRecord {
-        id: r.get("id")?,
-        uuid: r.get("uuid")?,
-        identity_id: r.get("identity_id")?,
-        title: r.get("title")?,
-        authors: r.get("authors")?,
-        asin: r.get("asin")?,
-        isbn: r.get("isbn")?,
-        notes: r.get("notes")?,
-        status: RequestStatus::parse(&status_raw).unwrap_or_default(),
-        work_key: r.get::<_, String>("work_key").unwrap_or_default(),
-        work_id: r.get("work_id")?,
-        resolved_book_uuid: r.get("resolved_book_uuid")?,
-        created_at: parse_dt(&created_at),
-        updated_at: parse_dt(&updated_at),
+fn map_portal_identity(m: portal_identities::Model) -> crate::models::PortalIdentity {
+    crate::models::PortalIdentity {
+        id: m.id,
+        provider: m.provider,
+        external_user_id: m.external_user_id,
+        label: m.label,
+        created_at: parse_dt(&m.created_at),
+    }
+}
+
+fn map_claim_ticket(m: claim_tickets::Model) -> crate::models::ClaimTicketRecord {
+    crate::models::ClaimTicketRecord {
+        id: m.id,
+        token_hash: m.token_hash,
+        identity_id: m.identity_id,
+        expires_at: parse_dt(&m.expires_at),
+        redeemed_at: parse_dt_opt(m.redeemed_at.as_deref()),
+        created_by: m.created_by,
+        created_at: parse_dt(&m.created_at),
+    }
+}
+
+fn map_account_link(m: account_links::Model) -> crate::models::AccountLinkRecord {
+    crate::models::AccountLinkRecord {
+        id: m.id,
+        identity_id: m.identity_id,
+        account_id: m.account_id,
+        source: m.source,
+        created_at: parse_dt(&m.created_at),
+    }
+}
+
+fn map_user_preferences(m: user_preferences::Model) -> UserPreferences {
+    let disabled_shelves: Vec<String> =
+        serde_json::from_str(&m.disabled_shelves_json).unwrap_or_default();
+    UserPreferences {
+        id: m.id,
+        subject_key: m.subject_key,
+        identity_id: m.identity_id,
+        default_view: m.default_view,
+        disabled_shelves,
+        updated_at: parse_dt(&m.updated_at),
+    }
+}
+
+fn map_saved_filter(m: saved_filters::Model) -> SavedFilterRecord {
+    SavedFilterRecord {
+        id: m.id,
+        name: m.name,
+        query: m.query,
+        created_at: parse_dt(&m.created_at),
+        updated_at: parse_dt(&m.updated_at),
+    }
+}
+
+fn map_work(m: works::Model) -> WorkRecord {
+    WorkRecord {
+        id: m.id,
+        canonical_asin: m.canonical_asin,
+        canonical_isbn: m.canonical_isbn,
+        title: m.title,
+        authors: m.authors,
+        narrators: m.narrators,
+        description: m.description,
+        subjects: m.subjects,
+        categories: m.categories,
+        language: m.language,
+        series: m.series,
+        series_index: m.series_index,
+        cover_url: m.cover_url,
+        openlibrary_id: m.openlibrary_id,
+        created_at: parse_dt(&m.created_at),
+        updated_at: parse_dt(&m.updated_at),
+    }
+}
+
+fn map_listening(m: listening_progress::Model) -> ListeningProgressRecord {
+    ListeningProgressRecord {
+        id: m.id,
+        identity_id: m.identity_id,
+        provider: m.provider,
+        external_user_id: m.external_user_id,
+        book_uuid: m.book_uuid,
+        work_id: m.work_id,
+        external_item_id: m.external_item_id,
+        title: m.title,
+        authors: m.authors,
+        asin: m.asin,
+        isbn: m.isbn,
+        progress: m.progress,
+        current_time_seconds: m.current_time_seconds,
+        duration_seconds: m.duration_seconds,
+        is_finished: m.is_finished != 0,
+        last_listened_at: parse_dt_opt(m.last_listened_at.as_deref()),
+        updated_at: parse_dt(&m.updated_at),
+    }
+}
+
+fn map_request(m: title_requests::Model) -> TitleRequestRecord {
+    TitleRequestRecord {
+        id: m.id,
+        uuid: m.uuid,
+        identity_id: m.identity_id,
+        title: m.title,
+        authors: m.authors,
+        asin: m.asin,
+        isbn: m.isbn,
+        notes: m.notes,
+        status: RequestStatus::parse(&m.status).unwrap_or_default(),
+        work_key: m.work_key,
+        work_id: m.work_id,
+        resolved_book_uuid: m.resolved_book_uuid,
+        created_at: parse_dt(&m.created_at),
+        updated_at: parse_dt(&m.updated_at),
+    }
+}
+
+fn map_book(m: books::Model) -> Result<BookRecord> {
+    Ok(BookRecord {
+        id: m.id,
+        uuid: m.uuid,
+        source: m.source,
+        account_id: m.account_id,
+        product_id: m.product_id,
+        asin: m.asin,
+        isbn: m.isbn,
+        marketplace: m.marketplace,
+        title: m.title,
+        authors: m.authors,
+        narrators: m.narrators,
+        series: m.series,
+        series_index: m.series_index,
+        series_asin: m.series_asin,
+        acquire_status: AcquireStatus::parse(&m.acquire_status).unwrap_or_default(),
+        storage_key: m.storage_key,
+        error_message: m.error_message,
+        purchased_at: parse_dt_opt(m.purchased_at.as_deref()),
+        tags: m.tags,
+        rating_overall: m.rating_overall.map(|v| v as f32),
+        rating_performance: m.rating_performance.map(|v| v as f32),
+        rating_story: m.rating_story.map(|v| v as f32),
+        is_finished: m.is_finished != 0,
+        pdf_status: AcquireStatus::parse(&m.pdf_status).unwrap_or_default(),
+        pdf_storage_key: m.pdf_storage_key,
+        publisher: m.publisher,
+        length_minutes: m.length_minutes,
+        is_abridged: m.is_abridged != 0,
+        content_kind: m.content_kind,
+        categories: m.categories,
+        subtitle: m.subtitle,
+        published_at: parse_dt_opt(m.published_at.as_deref()),
+        description: m.description,
+        language: m.language,
+        cover_url: m.cover_url,
+        subjects: m.subjects,
+        enrich_source: m.enrich_source,
+        enrich_confidence: m.enrich_confidence,
+        enrich_updated_at: parse_dt_opt(m.enrich_updated_at.as_deref()),
+        created_at: parse_dt(&m.created_at),
+        updated_at: parse_dt(&m.updated_at),
     })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn account_and_book_roundtrip() {
-        let store = LibraryStore::open_in_memory().unwrap();
-        let acct = store
-            .upsert_account("user-1", "us", Some("Main"), true)
-            .unwrap();
-        assert_eq!(acct.account_id, "user-1");
-        assert_eq!(acct.source, "audible");
-
-        let mut book = NewBook::minimal("B00TEST", "user-1", "us", "Test Book");
-        book.authors = Some("Author".into());
-        let book = store.upsert_book(&book).unwrap();
-        assert_eq!(book.title, "Test Book");
-        assert!(!book.uuid.is_empty());
-        assert_eq!(book.product_id, "B00TEST");
-        assert_eq!(book.asin.as_deref(), Some("B00TEST"));
-        assert!(book.isbn.is_none());
-        assert_eq!(book.source, "audible");
-        assert_eq!(book.title_id(), book.uuid.as_str());
-        assert_eq!(book.asin_or_isbn(), "B00TEST");
-        assert_eq!(book.acquire_status, AcquireStatus::NotAcquired);
-
-        store
-            .set_acquire_status(
-                "B00TEST",
-                "user-1",
-                AcquireStatus::Acquired,
-                Some("Author/Test Book/book.m4b"),
-                None,
-            )
-            .unwrap();
-
-        let updated = store.get_book("B00TEST", "user-1").unwrap().unwrap();
-        assert_eq!(updated.acquire_status, AcquireStatus::Acquired);
-        assert_eq!(
-            updated.storage_key.as_deref(),
-            Some("Author/Test Book/book.m4b")
-        );
-        assert_eq!(store.count_by_status(AcquireStatus::Acquired).unwrap(), 1);
-
-        let by_uuid = store.get_book_by_uuid(&updated.uuid).unwrap().unwrap();
-        assert_eq!(by_uuid.product_id, "B00TEST");
-    }
-
-    #[test]
-    fn same_isbn_multi_account_and_source() {
-        let store = LibraryStore::open_in_memory().unwrap();
-        store.upsert_account("user-1", "us", None, true).unwrap();
-        store.upsert_account("user-2", "us", None, true).unwrap();
-        store
-            .upsert_account_with_source("libro-1", "us", None, true, "libro")
-            .unwrap();
-
-        let mut a1 = NewBook::minimal("B00SAME", "user-1", "us", "Same Book");
-        a1.isbn = Some("9781234567890".into());
-        store.upsert_book(&a1).unwrap();
-
-        let mut a2 = NewBook::minimal("B00SAME", "user-2", "us", "Same Book");
-        a2.isbn = Some("9781234567890".into());
-        store.upsert_book(&a2).unwrap();
-
-        let libro = NewBook {
-            uuid: None,
-            product_id: "9781234567890".into(),
-            source: "libro".into(),
-            account_id: "libro-1".into(),
-            asin: None,
-            isbn: Some("9781234567890".into()),
-            marketplace: "us".into(),
-            title: "Same Book".into(),
-            authors: None,
-            narrators: None,
-            series: None,
-            series_index: None,
-            series_asin: None,
-            purchased_at: None,
-            publisher: None,
-            length_minutes: None,
-            is_abridged: false,
-            content_kind: "book".into(),
-            categories: None,
-            subtitle: None,
-            published_at: None,
-        };
-        store.upsert_book(&libro).unwrap();
-
-        let by_isbn = store.find_books_by_isbn("9781234567890").unwrap();
-        assert_eq!(by_isbn.len(), 3);
-        let uuids: std::collections::HashSet<_> = by_isbn.iter().map(|b| b.uuid.as_str()).collect();
-        assert_eq!(uuids.len(), 3);
-
-        let preferred = prefer_enrichment_source(&by_isbn).unwrap();
-        assert_eq!(preferred.source, "audible");
-    }
-
-    #[test]
-    fn libro_rescan_preserves_audible_enrichment() {
-        let store = LibraryStore::open_in_memory().unwrap();
-        store
-            .upsert_account_with_source("libro-1", "us", None, true, "libro")
-            .unwrap();
-
-        let isbn = "9781234567890";
-        let initial = NewBook {
-            uuid: None,
-            product_id: isbn.into(),
-            source: "libro".into(),
-            account_id: "libro-1".into(),
-            asin: None,
-            isbn: Some(isbn.into()),
-            marketplace: "us".into(),
-            title: "Sparse Libro Title".into(),
-            authors: Some("Libro Author".into()),
-            narrators: None,
-            series: None,
-            series_index: None,
-            series_asin: None,
-            purchased_at: None,
-            publisher: None,
-            length_minutes: None,
-            is_abridged: false,
-            content_kind: "book".into(),
-            categories: None,
-            subtitle: None,
-            published_at: None,
-        };
-        let row = store.upsert_book(&initial).unwrap();
-
-        // Simulate Audible catalog enrichment.
-        let enriched = NewBook {
-            uuid: Some(row.uuid.clone()),
-            asin: Some("B00ENRICHED".into()),
-            title: "Rich Audible Title".into(),
-            authors: Some("Audible Author".into()),
-            narrators: Some("Audible Narrator".into()),
-            series: Some("Audible Series".into()),
-            publisher: Some("Publisher".into()),
-            length_minutes: Some(420),
-            subtitle: Some("A Subtitle".into()),
-            ..initial.clone()
-        };
-        let after_enrich = store.upsert_book(&enriched).unwrap();
-        assert_eq!(after_enrich.asin.as_deref(), Some("B00ENRICHED"));
-        assert_eq!(after_enrich.title, "Rich Audible Title");
-        assert_eq!(after_enrich.narrators.as_deref(), Some("Audible Narrator"));
-
-        // Libro rescan without asin must not wipe enrichment.
-        let rescan = NewBook {
-            title: "Sparse Libro Title Again".into(),
-            authors: Some("Libro Author".into()),
-            narrators: None,
-            asin: None,
-            series: None,
-            publisher: None,
-            length_minutes: Some(400),
-            subtitle: None,
-            ..initial
-        };
-        let after_rescan = store.upsert_book(&rescan).unwrap();
-        assert_eq!(after_rescan.uuid, row.uuid);
-        assert_eq!(after_rescan.asin.as_deref(), Some("B00ENRICHED"));
-        assert_eq!(after_rescan.title, "Rich Audible Title");
-        assert_eq!(after_rescan.authors.as_deref(), Some("Audible Author"));
-        assert_eq!(after_rescan.narrators.as_deref(), Some("Audible Narrator"));
-        assert_eq!(after_rescan.series.as_deref(), Some("Audible Series"));
-        assert_eq!(after_rescan.publisher.as_deref(), Some("Publisher"));
-        assert_eq!(after_rescan.length_minutes, Some(420));
-        assert_eq!(after_rescan.subtitle.as_deref(), Some("A Subtitle"));
-        assert_eq!(after_rescan.download_product_id(), isbn);
-    }
-
-    #[test]
-    fn download_product_id_is_source_native() {
-        let store = LibraryStore::open_in_memory().unwrap();
-        store
-            .upsert_account_with_source("libro-1", "us", None, true, "libro")
-            .unwrap();
-        let book = store
-            .upsert_book(&NewBook {
-                uuid: None,
-                product_id: "9789999999999".into(),
-                source: "libro".into(),
-                account_id: "libro-1".into(),
-                asin: Some("B00FROMAD".into()),
-                isbn: Some("9789999999999".into()),
-                marketplace: "us".into(),
-                title: "Enriched".into(),
-                authors: None,
-                narrators: None,
-                series: None,
-                series_index: None,
-                series_asin: None,
-                purchased_at: None,
-                publisher: None,
-                length_minutes: None,
-                is_abridged: false,
-                content_kind: "book".into(),
-                categories: None,
-                subtitle: None,
-                published_at: None,
-            })
-            .unwrap();
-        assert_eq!(book.download_product_id(), "9789999999999");
-        assert_eq!(book.audible_asin(), Some("B00FROMAD"));
-    }
-
-    #[test]
-    fn ensure_account_preserves_scan_enabled() {
-        let store = LibraryStore::open_in_memory().unwrap();
-        store
-            .upsert_account("user-1", "us", Some("Main"), false)
-            .unwrap();
-        store.ensure_account("user-1", "us", Some("Main")).unwrap();
-        let acct = store.get_account("user-1").unwrap().unwrap();
-        assert!(!acct.scan_enabled);
-    }
-
-    #[test]
-    fn upsert_account_with_source_persists() {
-        let store = LibraryStore::open_in_memory().unwrap();
-        let acct = store
-            .upsert_account_with_source("libro-1", "us", Some("Libro"), true, "libro")
-            .unwrap();
-        assert_eq!(acct.source, "libro");
-        let again = store.get_account("libro-1").unwrap().unwrap();
-        assert_eq!(again.source, "libro");
-    }
-
-    #[test]
-    fn remap_account_moves_books() {
-        let store = LibraryStore::open_in_memory().unwrap();
-        store
-            .upsert_account("email@example.com", "us", Some("Main"), true)
-            .unwrap();
-        store
-            .upsert_book(&NewBook::minimal(
-                "B00TEST",
-                "email@example.com",
-                "us",
-                "Test Book",
-            ))
-            .unwrap();
-
-        store
-            .remap_account_id("email@example.com", "amzn1.account.CID")
-            .unwrap();
-
-        assert!(store.get_account("email@example.com").unwrap().is_none());
-        assert!(store.get_account("amzn1.account.CID").unwrap().is_some());
-        assert!(store
-            .get_book("B00TEST", "amzn1.account.CID")
-            .unwrap()
-            .is_some());
-    }
-
-    #[test]
-    fn ignored_titles_roundtrip() {
-        let store = LibraryStore::open_in_memory().unwrap();
-        store.upsert_account("user-1", "us", None, true).unwrap();
-        store
-            .upsert_book(&NewBook::minimal("B00TEST", "user-1", "us", "Test"))
-            .unwrap();
-        assert!(!store.is_ignored("B00TEST", "user-1").unwrap());
-        store
-            .set_ignored("B00TEST", "user-1", true, Some("skip"))
-            .unwrap();
-        assert!(store.is_ignored("B00TEST", "user-1").unwrap());
-        store.set_ignored("B00TEST", "user-1", false, None).unwrap();
-        assert!(!store.is_ignored("B00TEST", "user-1").unwrap());
-    }
-
-    #[test]
-    fn revoke_keeps_books_and_portal_tickets_work() {
-        let store = LibraryStore::open_in_memory().unwrap();
-        store
-            .upsert_account("user-1", "us", Some("Main"), true)
-            .unwrap();
-        store
-            .upsert_book(&NewBook::minimal("B00TEST", "user-1", "us", "Test"))
-            .unwrap();
-        store.revoke_credentials("user-1").unwrap();
-        let acct = store.get_account("user-1").unwrap().unwrap();
-        assert!(!acct.scan_enabled);
-        assert_eq!(acct.connection_status, "revoked");
-        assert!(store.get_book("B00TEST", "user-1").unwrap().is_some());
-
-        let identity = store
-            .upsert_portal_identity("audiobookshelf", "usr_1", Some("bob"))
-            .unwrap();
-        let ticket = store
-            .insert_claim_ticket(
-                "abc123hash",
-                Some(identity.id),
-                Utc::now() + chrono::Duration::hours(1),
-                "test",
-            )
-            .unwrap();
-        assert!(ticket.redeemed_at.is_none());
-        store.redeem_claim_ticket("abc123hash").unwrap();
-        let redeemed = store
-            .get_claim_ticket_by_hash("abc123hash")
-            .unwrap()
-            .unwrap();
-        assert!(redeemed.redeemed_at.is_some());
-
-        store
-            .link_account(identity.id, "user-1", "audible")
-            .unwrap();
-        let links = store.list_account_links(identity.id).unwrap();
-        assert_eq!(links.len(), 1);
-        store.mark_connection_active("user-1").unwrap();
-        assert_eq!(
-            store
-                .get_account("user-1")
-                .unwrap()
-                .unwrap()
-                .connection_status,
-            "active"
-        );
-    }
-
-    #[test]
-    fn user_preferences_roundtrip_operator_and_portal() {
-        use crate::models::{portal_prefs_key, OPERATOR_PREFS_KEY};
-
-        let store = LibraryStore::open_in_memory().unwrap();
-        let defaults = store
-            .get_user_preferences_or_default(OPERATOR_PREFS_KEY, None)
-            .unwrap();
-        assert_eq!(defaults.default_view, "discover");
-        assert!(defaults.disabled_shelves.is_empty());
-        assert!(store
-            .get_user_preferences(OPERATOR_PREFS_KEY)
-            .unwrap()
-            .is_none());
-
-        let saved = store
-            .upsert_user_preferences(
-                OPERATOR_PREFS_KEY,
-                None,
-                "library",
-                &["chirp_deals".into(), "genre".into()],
-            )
-            .unwrap();
-        assert_eq!(saved.default_view, "library");
-        assert_eq!(saved.disabled_shelves, vec!["chirp_deals", "genre"]);
-
-        let again = store
-            .get_user_preferences(OPERATOR_PREFS_KEY)
-            .unwrap()
-            .unwrap();
-        assert_eq!(again.default_view, "library");
-        assert_eq!(again.disabled_shelves.len(), 2);
-
-        let identity = store
-            .upsert_portal_identity("audiobookshelf", "usr_prefs", Some("alice"))
-            .unwrap();
-        let key = portal_prefs_key(identity.id);
-        let portal = store
-            .upsert_user_preferences(&key, Some(identity.id), "accounts", &["narrator".into()])
-            .unwrap();
-        assert_eq!(portal.identity_id, Some(identity.id));
-        assert_eq!(portal.default_view, "accounts");
-        assert_eq!(portal.disabled_shelves, vec!["narrator"]);
-
-        // Operator prefs stay independent.
-        assert_eq!(
-            store
-                .get_user_preferences(OPERATOR_PREFS_KEY)
-                .unwrap()
-                .unwrap()
-                .default_view,
-            "library"
-        );
-    }
-
-    #[test]
-    fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
-        let store = LibraryStore::open_in_memory().unwrap();
-        let a = store
-            .upsert_portal_identity("audiobookshelf", "u1", Some("alice"))
-            .unwrap();
-        let b = store
-            .upsert_portal_identity("audiobookshelf", "u2", Some("bob"))
-            .unwrap();
-
-        let work = fallback_work_key("Hail Mary", Some("Andy Weir"), Some("B00HAIL"), None);
-        store
-            .create_title_request(&NewTitleRequest {
-                uuid: None,
-                identity_id: Some(a.id),
-                title: "Hail Mary".into(),
-                authors: Some("Andy Weir".into()),
-                asin: Some("B00HAIL".into()),
-                isbn: None,
-                notes: None,
-                status: RequestStatus::Open, // ignored
-                work_key: work.clone(),
-                work_id: None,
-                resolved_book_uuid: None,
-            })
-            .unwrap();
-        store
-            .create_title_request(&NewTitleRequest {
-                uuid: None,
-                identity_id: Some(b.id),
-                title: "Project Hail Mary".into(),
-                authors: Some("Andy Weir".into()),
-                asin: Some("B00HAIL".into()),
-                isbn: None,
-                notes: None,
-                status: RequestStatus::Open,
-                work_key: work.clone(),
-                work_id: None,
-                resolved_book_uuid: None,
-            })
-            .unwrap();
-        // Solo wish — should rank below Hail Mary.
-        store
-            .create_title_request(&NewTitleRequest {
-                uuid: None,
-                identity_id: None,
-                title: "Solo Title".into(),
-                authors: None,
-                asin: Some("B00SOLO".into()),
-                isbn: None,
-                notes: None,
-                status: RequestStatus::Open,
-                work_key: String::new(),
-                work_id: None,
-                resolved_book_uuid: None,
-            })
-            .unwrap();
-
-        // Idempotent for same identity + work.
-        let again = store
-            .create_title_request(&NewTitleRequest {
-                uuid: None,
-                identity_id: Some(a.id),
-                title: "Hail Mary".into(),
-                authors: Some("Andy Weir".into()),
-                asin: Some("B00HAIL".into()),
-                isbn: None,
-                notes: None,
-                status: RequestStatus::Open,
-                work_key: work.clone(),
-                work_id: None,
-                resolved_book_uuid: None,
-            })
-            .unwrap();
-        assert_eq!(again.asin.as_deref(), Some("B00HAIL"));
-        assert_eq!(store.list_wishlist(Some(a.id)).unwrap().len(), 1);
-        assert_eq!(store.list_wishlist(Some(b.id)).unwrap().len(), 1);
-
-        // Soft catalog key vs later asin: for the same wisher → one open row.
-        let soft = store
-            .create_title_request(&NewTitleRequest {
-                uuid: None,
-                identity_id: Some(a.id),
-                title: "The Martian".into(),
-                authors: Some("Andy Weir".into()),
-                asin: None,
-                isbn: None,
-                notes: None,
-                status: RequestStatus::Open,
-                work_key: String::from("soft:the martian|andy weir"),
-                work_id: None,
-                resolved_book_uuid: None,
-            })
-            .unwrap();
-        let again_hard = store
-            .create_title_request(&NewTitleRequest {
-                uuid: None,
-                identity_id: Some(a.id),
-                title: "The Martian".into(),
-                authors: Some("Andy Weir".into()),
-                asin: Some("B00MARTIAN".into()),
-                isbn: None,
-                notes: None,
-                status: RequestStatus::Open,
-                work_key: String::from("asin:B00MARTIAN"),
-                work_id: None,
-                resolved_book_uuid: None,
-            })
-            .unwrap();
-        assert_eq!(soft.uuid, again_hard.uuid);
-        assert_eq!(store.list_wishlist(Some(a.id)).unwrap().len(), 2);
-        assert_eq!(store.list_wishlist(None).unwrap().len(), 1);
-
-        let queue = store.list_global_request_queue().unwrap();
-        // Hail Mary (2 wishes) ranks above Solo + Martian (1 each).
-        assert_eq!(queue.len(), 3);
-        assert_eq!(queue[0].wish_count, 2);
-        assert_eq!(queue[0].work_key, work);
-        assert!(queue
-            .iter()
-            .any(|e| e.wish_count == 1 && e.title.contains("Martian")));
-        assert!(queue
-            .iter()
-            .any(|e| e.wish_count == 1 && e.title.contains("Solo")));
-    }
-}
+mod tests;

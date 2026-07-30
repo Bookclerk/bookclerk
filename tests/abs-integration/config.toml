@@ -12,7 +12,8 @@ listen = "0.0.0.0:8787"
 json_logs = true
 
 [auth]
-allow_plaintext = true
+# Auth encryption uses master.key (auto-minted) + optional BOOKCLERK_AUTH_PASSWORD wrap.
+# Plaintext credential storage is not supported.
 
 [integrations]
 claim_ticket_ttl_hours = 72

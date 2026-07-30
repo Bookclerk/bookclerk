@@ -1,0 +1,8 @@
+# CodeQL configuration for Bookclerk.
+# Vendored third-party trees are patched for dependency alignment only;
+# do not treat their upstream crypto patterns as product regressions.
+name: Bookclerk CodeQL
+paths-ignore:
+  - third_party/**
+  - "**/target/**"
+  - ui/dist/**

@@ -15,15 +15,15 @@ bookclerk import libation --from ~/LibationFiles --force
 | Flag | Meaning |
 | --- | --- |
 | `--from` | Classic Libation Files directory (`BOOKCLERK_CLASSIC_FILES`) |
-| `--force` | Overwrite existing `config.toml` and auth files |
-| `--skip-auth` | Import account metadata / library without writing `*.audible.auth` |
+| `--force` | Overwrite existing `config.toml` |
+| `--skip-auth` | Import account metadata / library without storing credentials |
 | `--dry-run` | Report only |
 
 Imports typically include:
 
 - Settings → `config.toml` (Widevine, lossy decrypt, folder/file templates,
   cover/cue/fix-up flags, …)
-- `AccountsSettings.json` / auth material → `Accounts/`
+- `AccountsSettings.json` / auth material → `encrypted_secrets` (in `library.db`)
 - `LibationContext.db` → Bookclerk `library.db`
 - Naming templates and user metadata where present
 
@@ -36,8 +36,9 @@ Example AccountsSettings shape:
 bookclerk export libation --path ./LibationFilesOut --force
 ```
 
-Writes Settings.json, AccountsSettings.json, and LibationContext.db for
-interoperability with classic tooling.
+Writes Settings.json, AccountsSettings.json (account metadata only), and
+LibationContext.db for interoperability with classic tooling. Credential
+material is never exported — it stays in `encrypted_secrets`.
 
 ## Native Bookclerk backup
 

@@ -1,0 +1,3247 @@
+//! Library items: sync-state, page application (upserts/soft-deletes,
+//! sync log), listing, search (FTS5), export, counts and item removal.
+
+use rusqlite::OptionalExtension;
+
+use super::changes::{ChangeClass, ChangeRecording, classify_change};
+use super::{Db, DbError, consumable_clause, in_placeholders, not_archived_clause, now_iso_utc};
+
+/// Sync state for a specific marketplace row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settings {
+    /// Response groups every request must use (fixed per database).
+    pub response_groups: String,
+    /// Raw state token of the last successful sync, if any.
+    pub last_state_token: Option<String>,
+}
+
+/// One item to upsert during a sync.
+#[derive(Debug, Clone)]
+pub struct UpsertItem {
+    /// Audible ASIN (primary key together with marketplace).
+    pub asin: String,
+    /// Full item document as JSON text.
+    pub doc: String,
+    /// Item title.
+    pub title: String,
+    /// Optional subtitle.
+    pub subtitle: Option<String>,
+    /// `Title: Subtitle` (or just the title).
+    pub full_title: String,
+    /// Series memberships extracted from the document.
+    pub series: Vec<SeriesRef>,
+}
+
+/// One series membership of an item.
+#[derive(Debug, Clone)]
+pub struct SeriesRef {
+    /// ASIN of the series.
+    pub series_asin: String,
+    /// Title of the series.
+    pub series_title: String,
+    /// Position within the series — may be empty or a range (`"1-6"`).
+    pub sequence: Option<String>,
+}
+
+/// Audit-log entry for one sync request (page).
+#[derive(Debug, Clone, Default)]
+pub struct SyncLogEntry {
+    /// When the request was sent.
+    pub request_time_utc: String,
+    /// State token sent with the request (delta sync), ISO form.
+    pub request_state_token_utc: Option<String>,
+    /// When the response arrived.
+    pub response_time_utc: String,
+    /// State token received, ISO form.
+    pub response_state_token_utc: Option<String>,
+    /// HTTP status of the response.
+    pub http_status: Option<i64>,
+    /// Free-form note (`sync-full-page-1`, …).
+    pub note: Option<String>,
+}
+
+/// One item touched by a sync, for the change summary: ASIN + display title.
+#[derive(Debug, Clone)]
+pub struct ChangedItem {
+    /// ASIN of the item.
+    pub asin: String,
+    /// Title (incl. subtitle) for display.
+    pub full_title: String,
+}
+
+/// What applying a sync page changed, split by kind. `added` are items new to
+/// the library (or returning from a soft-delete), `changed` existing items with
+/// a significant (non-volatile) change, `changed_volatile` existing items whose
+/// change is confined to [volatile](VOLATILE_KEYS) keys (recorded, but hidden
+/// from the summary unless `--show-volatile`), `removed` soft-deletes.
+#[derive(Debug, Default)]
+pub struct ApplyOutcome {
+    /// Newly added items.
+    pub added: Vec<ChangedItem>,
+    /// Existing items with a significant (non-volatile) change.
+    pub changed: Vec<ChangedItem>,
+    /// Existing items whose change is confined to volatile keys.
+    pub changed_volatile: Vec<ChangedItem>,
+    /// Items soft-deleted in this page.
+    pub removed: Vec<ChangedItem>,
+}
+
+impl ApplyOutcome {
+    /// Merges another page's outcome into this one.
+    pub fn extend(&mut self, other: ApplyOutcome) {
+        self.added.extend(other.added);
+        self.changed.extend(other.changed);
+        self.changed_volatile.extend(other.changed_volatile);
+        self.removed.extend(other.removed);
+    }
+}
+
+/// Result of [`Db::remove_items`] (`db library remove`).
+#[derive(Debug, Clone, Default)]
+pub struct ItemRemoval {
+    /// Requested ASINs that existed and were removed.
+    pub removed_asins: Vec<String>,
+    /// Requested ASINs not present in `items`.
+    pub missing_asins: Vec<String>,
+    /// Episodes removed via the parent cascade.
+    pub episodes_removed: usize,
+}
+
+/// A flat export row (`library export --format csv`).
+#[derive(Debug, Clone)]
+pub struct ExportBookRow {
+    /// Marketplace the row belongs to.
+    pub marketplace: String,
+    /// Audible ASIN.
+    pub asin: String,
+    /// Item title.
+    pub title: String,
+    /// Optional subtitle.
+    pub subtitle: Option<String>,
+    /// `Title: Subtitle`.
+    pub full_title: String,
+    /// Purchase/added date, if present.
+    pub purchase_date: Option<String>,
+    /// Runtime in minutes, if present.
+    pub runtime_min: Option<String>,
+    /// Language, if present.
+    pub language: Option<String>,
+    /// Content kind: `book`, `podcast` or `episode` (AUD-173).
+    pub kind: String,
+}
+
+/// An active item lacking download records
+/// (`library list --missing`).
+#[derive(Debug, Clone)]
+pub struct MissingDownloadsRow {
+    /// Marketplace the row belongs to.
+    pub marketplace: String,
+    /// Audible ASIN.
+    pub asin: String,
+    /// `Title: Subtitle`.
+    pub full_title: String,
+    /// Comma-separated kinds the item has no download record of.
+    pub missing: String,
+}
+
+/// A row of `library list --borrowed` (AUD-153): a title the user did not
+/// purchase (access via a subscription/grant plan).
+#[derive(Debug, Clone)]
+pub struct BorrowedRow {
+    /// Marketplace the row belongs to.
+    pub marketplace: String,
+    /// Audible ASIN.
+    pub asin: String,
+    /// `Title: Subtitle`.
+    pub full_title: String,
+    /// Comma-separated names of the plans the user is eligible for
+    /// (e.g. `Audible-AYCL`, `US Minerva`, `Free Tier`) — the ones through
+    /// which the title is currently playable. Empty when none.
+    pub eligible: String,
+    /// Comma-separated names of the other plans the title belongs to that the
+    /// user is NOT eligible for (e.g. `SpecialBenefit`, or the membership plan
+    /// once a subscription lapses). The generic `AccessViaMusic` route is
+    /// omitted as noise. Empty when there is none.
+    pub not_eligible: String,
+}
+
+/// A row of the `v_books` view.
+#[derive(Debug, Clone)]
+pub struct BookRow {
+    /// Marketplace the row belongs to.
+    pub marketplace: String,
+    /// Audible ASIN.
+    pub asin: String,
+    /// `Title: Subtitle`.
+    pub full_title: String,
+    /// Purchase/added date, if present in the document.
+    pub purchase_date: Option<String>,
+    /// Runtime in minutes, if present.
+    pub runtime_min: Option<String>,
+    /// Language, if present.
+    pub language: Option<String>,
+    /// Content kind: `book`, `podcast` or `episode` (AUD-173).
+    pub kind: String,
+}
+
+fn book_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BookRow> {
+    Ok(BookRow {
+        marketplace: row.get(0)?,
+        asin: row.get(1)?,
+        full_title: row.get(2)?,
+        purchase_date: row.get(3)?,
+        runtime_min: row.get(4)?,
+        language: row.get(5)?,
+        kind: row.get(6)?,
+    })
+}
+
+/// The `v_books` column expressions, selected straight from `items` so an
+/// FTS join can map a matched `rowid` to its exact `(asin, marketplace)`
+/// row without a cross product on the (non-unique) asin.
+/// The book columns for the FTS search path, built from the same document
+/// projections as `v_books` (audit 2026-07-18, D5) — the FTS join reads
+/// `items` directly (aliased `i`) to map a matched rowid, so it cannot use
+/// the view; the projections must nonetheless agree with it.
+fn items_book_columns() -> String {
+    format!(
+        "i.marketplace, i.asin, i.full_title, \
+         CAST({} AS TEXT), CAST({} AS TEXT), CAST({} AS TEXT)",
+        super::purchase_date_sql("i.doc"),
+        super::runtime_min_sql("i.doc"),
+        super::language_sql("i.doc"),
+    )
+}
+
+/// Converts an epoch state token (seconds or milliseconds) to ISO form,
+/// like the reference's `epoch_ms_to_iso`.
+pub fn state_token_iso(raw: &str) -> Option<String> {
+    let value: i64 = raw.trim().parse().ok()?;
+    let seconds = if value > 10_000_000_000 {
+        value / 1000
+    } else {
+        value
+    };
+    let timestamp = time::OffsetDateTime::from_unix_timestamp(seconds).ok()?;
+    crate::timefmt::format_iso(timestamp)
+}
+
+/// The `items_fts` columns a `col:term` filter may target. `asin` is
+/// UNINDEXED and cannot appear in a MATCH, so it is deliberately absent.
+const FTS_FILTER_COLUMNS: [&str; 3] = ["full_title", "title", "subtitle"];
+
+/// True when every `:` in the query directly follows a real FTS column
+/// name (`title:dune`, negated `-title:dune`). Only then is a colon FTS5
+/// syntax; in "Dune: Part Two" it is title punctuation, and passing it
+/// through would make FTS5 read `Dune:` as a filter on a nonexistent
+/// column ("no such column: Dune").
+fn colons_are_column_filters(text: &str) -> bool {
+    let mut found_any = false;
+    for (idx, _) in text.match_indices(':') {
+        let ident_rev: String = text[..idx]
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let ident: String = ident_rev.chars().rev().collect();
+        if !FTS_FILTER_COLUMNS.contains(&ident.as_str()) {
+            return false;
+        }
+        found_any = true;
+    }
+    found_any
+}
+
+/// Prepares a user query for an FTS5 `MATCH`. Plain words become
+/// quoted prefix tokens joined by an implicit AND, so `jed` finds
+/// "Jedi" and punctuation can no longer break the query syntax
+/// (`c++` would otherwise be a syntax error). If the input already
+/// uses FTS5 syntax (`"`, `*`, `(`, `)`, `^`, a `column:` filter, or a
+/// bare `AND`/`OR`/`NOT`/`NEAR` token), it is passed through unchanged
+/// so power users keep full control. A colon after anything that is
+/// not an FTS column ("Dune: Part Two") is ordinary punctuation and is
+/// tokenized like any other word.
+pub fn prepare_fts_query(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // Passthrough: FTS5 special chars or explicit operators present.
+    if trimmed.contains('"')
+        || trimmed.contains('*')
+        || trimmed.contains('(')
+        || trimmed.contains(')')
+        || trimmed.contains('^')
+        || colons_are_column_filters(trimmed)
+    {
+        return trimmed.to_owned();
+    }
+    for token in trimmed.split_whitespace() {
+        if matches!(token, "AND" | "OR" | "NOT" | "NEAR") {
+            return trimmed.to_owned();
+        }
+    }
+    // Build `"<tok>"*` for each whitespace-separated token, doubling
+    // any embedded `"` characters (defensive; real `"` hits passthrough
+    // above, but escape anyway for correctness).
+    let parts: Vec<String> = trimmed
+        .split_whitespace()
+        .map(|tok| format!("\"{}\"*", tok.replace('"', "\"\"")))
+        .collect();
+    parts.join(" ")
+}
+
+impl Db {
+    /// Creates the `sync_state` row for `marketplace` on first use, or
+    /// verifies that the stored `response_groups` match. One row per
+    /// marketplace; groups are pinned per row.
+    pub async fn ensure_sync_state(
+        &self,
+        marketplace: String,
+        response_groups: String,
+    ) -> Result<Settings, DbError> {
+        self.call(move |conn| {
+            let existing: Option<(String, Option<String>)> = conn
+                .query_row(
+                    "SELECT response_groups, last_state_token_raw
+                     FROM sync_state WHERE marketplace = ?",
+                    rusqlite::params![marketplace],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map(Some)
+                .or_else(|error| match error {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(other),
+                })?;
+
+            match existing {
+                Some((stored, last_state_token)) => {
+                    if stored != response_groups {
+                        return Err(DbError::ResponseGroupsMismatch {
+                            existing: stored,
+                            requested: response_groups,
+                        });
+                    }
+                    Ok(Settings {
+                        response_groups: stored,
+                        last_state_token,
+                    })
+                }
+                None => {
+                    conn.execute(
+                        "INSERT INTO sync_state(marketplace, response_groups, created_utc)
+                         VALUES (?, ?, ?)",
+                        rusqlite::params![marketplace, response_groups, now_iso_utc()],
+                    )?;
+                    Ok(Settings {
+                        response_groups,
+                        last_state_token: None,
+                    })
+                }
+            }
+        })
+        .await
+    }
+
+    /// Applies one sync page without recording the change log — the convenience
+    /// form used by tests and non-sync callers.
+    pub async fn apply_page(
+        &self,
+        marketplace: String,
+        upserts: Vec<UpsertItem>,
+        soft_deletes: Vec<String>,
+        log: SyncLogEntry,
+        state_token_raw: Option<String>,
+    ) -> Result<ApplyOutcome, DbError> {
+        self.apply_page_recording(
+            marketplace,
+            upserts,
+            soft_deletes,
+            log,
+            state_token_raw,
+            ChangeRecording {
+                record: false,
+                mode: "delta",
+            },
+        )
+        .await
+    }
+
+    /// Applies one sync page atomically: upserts, soft-deletes, the sync-log
+    /// row, the change log (per `recording`) and (when present) the new state
+    /// token. All rows are tagged with `marketplace`.
+    pub async fn apply_page_recording(
+        &self,
+        marketplace: String,
+        upserts: Vec<UpsertItem>,
+        soft_deletes: Vec<String>,
+        log: SyncLogEntry,
+        state_token_raw: Option<String>,
+        recording: ChangeRecording,
+    ) -> Result<ApplyOutcome, DbError> {
+        self.call(move |conn| {
+            let now = now_iso_utc();
+            let tx = conn.transaction()?;
+
+            let mut added: Vec<ChangedItem> = Vec::new();
+            let mut changed: Vec<ChangedItem> = Vec::new();
+            let mut changed_volatile: Vec<ChangedItem> = Vec::new();
+            // change_log rows for this page, if recording:
+            // (change, asin, full_title, item_kind, diff).
+            let mut change_rows: Vec<(&'static str, String, String, &'static str, Option<String>)> =
+                Vec::new();
+            // Content kind of a raw item document, for the change log's
+            // item_kind column (AUD-173).
+            let kind_of_doc = |doc: &str| {
+                crate::models::library::item_kind(
+                    &serde_json::from_str(doc).unwrap_or(serde_json::Value::Null),
+                )
+            };
+            {
+                // Read the prior state to classify each upsert before it is
+                // overwritten: absent / soft-deleted → added; a non-volatile key
+                // differs → changed; only volatile keys differ → volatile-only
+                // (recorded, hidden by default); identical / reordered →
+                // unchanged (still upserted, not reported).
+                let mut prior = tx.prepare_cached(
+                    "SELECT doc, is_deleted FROM items WHERE asin = ? AND marketplace = ?",
+                )?;
+                let mut statement = tx.prepare_cached(
+                    "INSERT INTO items(asin, marketplace, doc, title, subtitle, full_title, updated_utc, is_deleted, deleted_utc)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                     ON CONFLICT(asin, marketplace) DO UPDATE SET
+                       doc         = excluded.doc,
+                       title       = excluded.title,
+                       subtitle    = excluded.subtitle,
+                       full_title  = excluded.full_title,
+                       updated_utc = excluded.updated_utc,
+                       is_deleted  = 0,
+                       deleted_utc = NULL",
+                )?;
+                let mut clear_series = tx
+                    .prepare_cached("DELETE FROM item_series WHERE item_asin = ? AND marketplace = ?")?;
+                let mut insert_series = tx.prepare_cached(
+                    "INSERT INTO item_series(item_asin, marketplace, series_asin, series_title, sequence)
+                     VALUES (?, ?, ?, ?, ?)
+                     ON CONFLICT(item_asin, marketplace, series_asin) DO UPDATE SET
+                       series_title = excluded.series_title,
+                       sequence     = excluded.sequence",
+                )?;
+                for item in &upserts {
+                    let prior_state: Option<(String, i64)> = prior
+                        .query_row(rusqlite::params![item.asin, marketplace], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                        })
+                        .optional()?;
+                    statement.execute(rusqlite::params![
+                        item.asin,
+                        marketplace,
+                        item.doc,
+                        item.title,
+                        item.subtitle,
+                        item.full_title,
+                        now,
+                    ])?;
+                    clear_series.execute(rusqlite::params![item.asin, marketplace])?;
+                    for series in &item.series {
+                        insert_series.execute(rusqlite::params![
+                            item.asin,
+                            marketplace,
+                            series.series_asin,
+                            series.series_title,
+                            series.sequence,
+                        ])?;
+                    }
+                    // Classify against the prior state read above. `changed`
+                    // covers both a significant change and a volatile-only one;
+                    // `significant` decides which display bucket it lands in,
+                    // while the recorded diff is the full diff either way.
+                    let classified: Option<(&'static str, bool, Option<String>)> = match &prior_state
+                    {
+                        Some((old_doc, 0)) => match classify_change(old_doc, &item.doc) {
+                            (ChangeClass::Unchanged, _) => None,
+                            (ChangeClass::Significant, diff) => Some(("changed", true, diff)),
+                            (ChangeClass::VolatileOnly, diff) => Some(("changed", false, diff)),
+                        },
+                        _ => Some(("added", true, None)),
+                    };
+                    if let Some((kind, significant, diff)) = classified {
+                        let entry = ChangedItem {
+                            asin: item.asin.clone(),
+                            full_title: item.full_title.clone(),
+                        };
+                        match (kind, significant) {
+                            ("added", _) => added.push(entry),
+                            (_, true) => changed.push(entry),
+                            (_, false) => changed_volatile.push(entry),
+                        }
+                        if recording.record {
+                            change_rows.push((
+                                kind,
+                                item.asin.clone(),
+                                item.full_title.clone(),
+                                kind_of_doc(&item.doc),
+                                diff,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            let mut removed: Vec<ChangedItem> = Vec::new();
+            {
+                // Title and doc are read before the soft-delete (the row stays,
+                // only its flag flips) so the change summary can show the title
+                // and the change log can classify the item's kind.
+                let mut title_of = tx.prepare_cached(
+                    "SELECT full_title, doc FROM items WHERE asin = ? AND marketplace = ?",
+                )?;
+                let mut statement = tx.prepare_cached(
+                    "UPDATE items SET is_deleted = 1, deleted_utc = ?, updated_utc = ?
+                     WHERE asin = ? AND marketplace = ?",
+                )?;
+                // A soft-deleted parent takes its episodes with it. An
+                // independently-owned episode keeps its own `items` row — only
+                // that row makes it visible (`--kind episode`), so nothing is
+                // lost when the parent's child rows go (AUD-173).
+                let mut delete_episodes = tx.prepare_cached(
+                    "UPDATE episodes SET is_deleted = 1, deleted_utc = ?, updated_utc = ?
+                     WHERE parent_asin = ? AND marketplace = ? AND is_deleted = 0",
+                )?;
+                for asin in &soft_deletes {
+                    let prior: Option<(String, String)> = title_of
+                        .query_row(rusqlite::params![asin, marketplace], |row| {
+                            Ok((row.get(0)?, row.get(1)?))
+                        })
+                        .optional()?;
+                    if statement.execute(rusqlite::params![now, now, asin, marketplace])? > 0 {
+                        delete_episodes.execute(rusqlite::params![now, now, asin, marketplace])?;
+                        let (title, doc) = prior.unwrap_or_default();
+                        if recording.record {
+                            change_rows.push((
+                                "removed",
+                                asin.clone(),
+                                title.clone(),
+                                kind_of_doc(&doc),
+                                None,
+                            ));
+                        }
+                        removed.push(ChangedItem {
+                            asin: asin.clone(),
+                            full_title: title,
+                        });
+                    }
+                }
+            }
+
+            let added_asins: Vec<&str> = added.iter().map(|item| item.asin.as_str()).collect();
+            let changed_asins: Vec<&str> = changed.iter().map(|item| item.asin.as_str()).collect();
+            let removed_asins: Vec<&str> = removed.iter().map(|item| item.asin.as_str()).collect();
+            tx.execute(
+                "INSERT INTO sync_log(marketplace, request_time_utc, request_state_token_utc,
+                                      response_time_utc, response_state_token_utc,
+                                      http_status, num_added, num_changed, num_soft_deleted,
+                                      note, added_asins, changed_asins, soft_deleted_asins)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    marketplace,
+                    log.request_time_utc,
+                    log.request_state_token_utc,
+                    log.response_time_utc,
+                    log.response_state_token_utc,
+                    log.http_status,
+                    added_asins.len() as i64,
+                    changed_asins.len() as i64,
+                    removed_asins.len() as i64,
+                    log.note,
+                    serde_json::to_string(&added_asins).expect("strings serialize"),
+                    serde_json::to_string(&changed_asins).expect("strings serialize"),
+                    serde_json::to_string(&removed_asins).expect("strings serialize"),
+                ],
+            )?;
+
+            // Per-item change history, correlated to the sync_log row just
+            // inserted. Skipped on the initial sync (recording.record is false).
+            if recording.record && !change_rows.is_empty() {
+                let sync_id = tx.last_insert_rowid();
+                let mut insert = tx.prepare_cached(
+                    "INSERT INTO change_log(sync_id, recorded_utc, marketplace, asin, full_title, mode, kind, item_kind, changed)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                )?;
+                for (kind, asin, full_title, item_kind, diff) in &change_rows {
+                    insert.execute(rusqlite::params![
+                        sync_id,
+                        now,
+                        marketplace,
+                        asin,
+                        full_title,
+                        recording.mode,
+                        kind,
+                        item_kind,
+                        diff,
+                    ])?;
+                }
+            }
+
+            if let Some(raw) = &state_token_raw {
+                tx.execute(
+                    "UPDATE sync_state SET last_state_token_raw = ?, last_state_token_utc = ?
+                     WHERE marketplace = ?",
+                    rusqlite::params![raw, state_token_iso(raw), marketplace],
+                )?;
+            }
+
+            tx.commit()?;
+            Ok(ApplyOutcome {
+                added,
+                changed,
+                changed_volatile,
+                removed,
+            })
+        })
+        .await
+    }
+
+    /// The full stored document of an item **currently in the library**, if
+    /// present (used to read `product_images` for covers without an extra API
+    /// call). Callers asking whether a title is in the library want this one.
+    ///
+    /// Callers asking what we know about a *file* want
+    /// [`item_doc_including_deleted`](Self::item_doc_including_deleted).
+    pub async fn item_doc(
+        &self,
+        asin: String,
+        marketplace: String,
+    ) -> Result<Option<String>, DbError> {
+        self.item_doc_scoped(asin, marketplace, false).await
+    }
+
+    /// Like [`item_doc`](Self::item_doc), but also returns a title that left
+    /// the library. A return or revoke only soft-deletes — the row and its doc
+    /// survive intact, as do the `downloads` rows and the files themselves.
+    ///
+    /// Naming needs this: the doc describes the file that was downloaded, not
+    /// whether the title is still yours. Hiding it strands the file with a bare
+    /// ASIN and makes `reorganize` skip it forever (AUD-216).
+    pub async fn item_doc_including_deleted(
+        &self,
+        asin: String,
+        marketplace: String,
+    ) -> Result<Option<String>, DbError> {
+        self.item_doc_scoped(asin, marketplace, true).await
+    }
+
+    async fn item_doc_scoped(
+        &self,
+        asin: String,
+        marketplace: String,
+        include_deleted: bool,
+    ) -> Result<Option<String>, DbError> {
+        self.call(move |conn| {
+            conn.query_row(
+                "SELECT doc FROM items
+                 WHERE asin = ? AND marketplace = ? AND (? OR is_deleted = 0)",
+                rusqlite::params![asin, marketplace, include_deleted],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other.into()),
+            })
+        })
+        .await
+    }
+
+    /// The raw document and parent (podcast) ASIN of a podcast **episode**
+    /// currently in the library, if present (AUD-100). The naming engine falls
+    /// back to this when an ASIN is not an `items` row, so downloaded episodes
+    /// are named/reorganized like books instead of by bare ASIN.
+    pub async fn episode_doc(
+        &self,
+        asin: String,
+        marketplace: String,
+    ) -> Result<Option<(String, String)>, DbError> {
+        self.episode_doc_scoped(asin, marketplace, false).await
+    }
+
+    /// Like [`episode_doc`](Self::episode_doc), but also returns an episode
+    /// that left the library. A returned show soft-deletes its episodes with
+    /// it, so without this every episode of a returned podcast loses its name
+    /// at once (AUD-216).
+    pub async fn episode_doc_including_deleted(
+        &self,
+        asin: String,
+        marketplace: String,
+    ) -> Result<Option<(String, String)>, DbError> {
+        self.episode_doc_scoped(asin, marketplace, true).await
+    }
+
+    async fn episode_doc_scoped(
+        &self,
+        asin: String,
+        marketplace: String,
+        include_deleted: bool,
+    ) -> Result<Option<(String, String)>, DbError> {
+        self.call(move |conn| {
+            conn.query_row(
+                "SELECT doc, parent_asin FROM episodes
+                 WHERE asin = ? AND marketplace = ? AND (? OR is_deleted = 0)",
+                rusqlite::params![asin, marketplace, include_deleted],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map(Some)
+            .or_else(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other.into()),
+            })
+        })
+        .await
+    }
+
+    /// The `full_title` of an active item, if present.
+    pub async fn find_title(
+        &self,
+        asin: String,
+        marketplace: String,
+    ) -> Result<Option<String>, DbError> {
+        self.call(move |conn| {
+            conn.query_row(
+                "SELECT full_title FROM items WHERE asin = ? AND marketplace = ? AND is_deleted = 0",
+                rusqlite::params![asin, marketplace],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other.into()),
+            })
+        })
+        .await
+    }
+
+    /// Lists books from `v_books` across the marketplace set, newest
+    /// purchases first (marketplace as the final, deterministic tiebreaker).
+    pub async fn list_books(
+        &self,
+        marketplaces: Vec<String>,
+        kinds: Vec<String>,
+        limit: u32,
+        offset: u64,
+    ) -> Result<Vec<BookRow>, DbError> {
+        let offset = offset.min(i64::MAX as u64) as i64;
+        self.call(move |conn| {
+            if marketplaces.is_empty() {
+                return Ok(Vec::new());
+            }
+            let sql = format!(
+                "SELECT marketplace, asin, full_title, CAST(purchase_date AS TEXT),
+                        CAST(runtime_min AS TEXT), CAST(language AS TEXT), kind
+                 FROM v_books
+                 WHERE marketplace IN ({}) {}
+                 ORDER BY purchase_date DESC, asin, marketplace
+                 LIMIT ? OFFSET ?",
+                in_placeholders(marketplaces.len()),
+                super::kind_clause("kind", &kinds)
+            );
+            let mut statement = conn.prepare_cached(&sql)?;
+            let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(marketplaces.len() + 2);
+            for marketplace in &marketplaces {
+                params.push(marketplace);
+            }
+            params.push(&limit);
+            params.push(&offset);
+            let rows = statement
+                .query_map(params.as_slice(), book_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// Counts active items across the marketplace set, honoring a
+    /// `--kind` content filter (for `library list`'s empty/page-end
+    /// paths; [`Self::count_active`] stays unfiltered for the sync).
+    pub async fn count_books(
+        &self,
+        marketplaces: Vec<String>,
+        kinds: Vec<String>,
+    ) -> Result<u64, DbError> {
+        self.call(move |conn| {
+            if marketplaces.is_empty() {
+                return Ok(0);
+            }
+            let sql = format!(
+                "SELECT COUNT(*) FROM v_books WHERE marketplace IN ({}) {}",
+                in_placeholders(marketplaces.len()),
+                super::kind_clause("kind", &kinds)
+            );
+            let params: Vec<&dyn rusqlite::ToSql> = marketplaces
+                .iter()
+                .map(|m| m as &dyn rusqlite::ToSql)
+                .collect();
+            let count: i64 = conn.query_row(&sql, params.as_slice(), |row| row.get(0))?;
+            Ok(count as u64)
+        })
+        .await
+    }
+
+    /// Active items that have no download record of at least one of the
+    /// given kinds (`library list --missing`), newest purchases first.
+    /// Each row names the kinds that are actually missing and its
+    /// marketplace. `kinds` are matched regardless of content format.
+    /// Archived items (`is_archived` in the doc, AUD-110) are excluded
+    /// unless `include_archived`; items without a provable consumption
+    /// right (AUD-104) are excluded unless `include_lapsed` (no CLI
+    /// opt-out — a lapsed title cannot license; the flag exists so
+    /// `download --missing` can count what the filter skipped).
+    ///
+    /// A podcast show is a **roll-up**: it owns no download record (the record
+    /// sits on the episode), so it counts as missing a kind while any of its
+    /// episodes still lacks it, and drops off the list once they are all
+    /// downloaded (AUD-203; see [`super::missing_kind_predicate`]). The
+    /// download twin [`Self::missing_download_asins`] expresses the same rule
+    /// as leaves — the episodes themselves.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn books_missing_downloads(
+        &self,
+        marketplaces: Vec<String>,
+        kinds: Vec<String>,
+        item_kinds: Vec<String>,
+        limit: u32,
+        offset: u64,
+        include_archived: bool,
+        include_lapsed: bool,
+    ) -> Result<Vec<MissingDownloadsRow>, DbError> {
+        let kinds_json = serde_json::to_string(&kinds).expect("strings serialize");
+        let offset = offset.min(i64::MAX as u64) as i64;
+        self.call(move |conn| {
+            if marketplaces.is_empty() {
+                return Ok(Vec::new());
+            }
+            let sql = format!(
+                "SELECT marketplace, asin, full_title, missing FROM (
+                     SELECT b.marketplace, b.asin, b.full_title, b.purchase_date,
+                            (SELECT group_concat(k.value)
+                             FROM json_each(?) k
+                             WHERE {}) AS missing
+                     FROM v_books b
+                     WHERE b.marketplace IN ({}) {} {} {}
+                 )
+                 WHERE missing IS NOT NULL
+                 ORDER BY purchase_date DESC, asin, marketplace
+                 LIMIT ? OFFSET ?",
+                super::missing_kind_predicate(),
+                in_placeholders(marketplaces.len()),
+                not_archived_clause(include_archived),
+                consumable_clause(include_lapsed),
+                super::kind_clause("b.kind", &item_kinds)
+            );
+            let mut statement = conn.prepare_cached(&sql)?;
+            let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(marketplaces.len() + 3);
+            params.push(&kinds_json);
+            for marketplace in &marketplaces {
+                params.push(marketplace);
+            }
+            params.push(&limit);
+            params.push(&offset);
+            let rows = statement
+                .query_map(params.as_slice(), |row| {
+                    Ok(MissingDownloadsRow {
+                        marketplace: row.get(0)?,
+                        asin: row.get(1)?,
+                        full_title: row.get(2)?,
+                        missing: row.get(3)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// Counts the rows [`Self::books_missing_downloads`] would return
+    /// without limit (for the `--page` end-of-pages message).
+    pub async fn count_books_missing_downloads(
+        &self,
+        marketplaces: Vec<String>,
+        kinds: Vec<String>,
+        item_kinds: Vec<String>,
+        include_archived: bool,
+        include_lapsed: bool,
+    ) -> Result<u64, DbError> {
+        let kinds_json = serde_json::to_string(&kinds).expect("strings serialize");
+        self.call(move |conn| {
+            if marketplaces.is_empty() {
+                return Ok(0);
+            }
+            let sql = format!(
+                "SELECT COUNT(*) FROM v_books b
+                 WHERE b.marketplace IN ({})
+                   AND EXISTS (
+                     SELECT 1 FROM json_each(?) k
+                     WHERE {}
+                 ) {} {} {}",
+                in_placeholders(marketplaces.len()),
+                super::missing_kind_predicate(),
+                not_archived_clause(include_archived),
+                consumable_clause(include_lapsed),
+                super::kind_clause("b.kind", &item_kinds)
+            );
+            let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(marketplaces.len() + 1);
+            for marketplace in &marketplaces {
+                params.push(marketplace);
+            }
+            params.push(&kinds_json);
+            let count: i64 = conn.query_row(&sql, params.as_slice(), |row| row.get(0))?;
+            Ok(count as u64)
+        })
+        .await
+    }
+
+    /// Titles the user did NOT purchase — access comes from a subscription or
+    /// grant, so they can leave the library (`library list --borrowed`,
+    /// AUD-153). Gated on `origin_type != 'Purchase'` (null-safe SQL `IS NOT`,
+    /// so subscription titles with an absent `origin_type` are kept).
+    /// `origin_type` is the reliable ownership marker; NOT `is_ayce`, which
+    /// reflects current Plus-catalog membership (not acquisition), is `true`
+    /// even for purchased titles also in Plus, and flips between API calls.
+    ///
+    /// Splits the item's `plans[]` (each `{plan_name, customer_eligible}`) by
+    /// eligibility, sorted and comma-joined:
+    /// - `eligible`: plans with `customer_eligible = true` — those you can
+    ///   currently play through. Empty when none.
+    /// - `not_eligible`: the remaining plans (`customer_eligible` false/null),
+    ///   minus the generic `AccessViaMusic` route (near-universal noise) —
+    ///   e.g. a promo `SpecialBenefit`, or the membership plan you'd need once
+    ///   a subscription lapses. Empty when none.
+    ///
+    /// Ordered by title, then by the `(asin, marketplace)` key so pagination
+    /// (`--limit`/`--page`) is stable.
+    pub async fn books_borrowed(
+        &self,
+        marketplaces: Vec<String>,
+        item_kinds: Vec<String>,
+        limit: u32,
+        offset: u64,
+    ) -> Result<Vec<BorrowedRow>, DbError> {
+        let offset = offset.min(i64::MAX as u64) as i64;
+        self.call(move |conn| {
+            if marketplaces.is_empty() {
+                return Ok(Vec::new());
+            }
+            let sql = format!(
+                "SELECT marketplace, asin, full_title,
+                        COALESCE((SELECT group_concat(name, ', ') FROM (
+                                    SELECT DISTINCT json_extract(p.value, '$.plan_name') AS name
+                                    FROM json_each(items.doc, '$.plans') p
+                                    WHERE json_extract(p.value, '$.customer_eligible') = 1
+                                    ORDER BY name)), '') AS eligible,
+                        COALESCE((SELECT group_concat(name, ', ') FROM (
+                                    SELECT DISTINCT json_extract(p.value, '$.plan_name') AS name
+                                    FROM json_each(items.doc, '$.plans') p
+                                    WHERE json_extract(p.value, '$.customer_eligible') IS NOT 1
+                                      AND json_extract(p.value, '$.plan_name') <> 'AccessViaMusic'
+                                    ORDER BY name)), '') AS not_eligible
+                 FROM items
+                 WHERE is_deleted = 0
+                   AND marketplace IN ({}) {}
+                   AND json_extract(doc, '$.origin_type') IS NOT 'Purchase'
+                 ORDER BY full_title, asin, marketplace
+                 LIMIT ? OFFSET ?",
+                in_placeholders(marketplaces.len()),
+                super::kind_clause(&super::item_kind_sql("doc"), &item_kinds)
+            );
+            let mut statement = conn.prepare_cached(&sql)?;
+            let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(marketplaces.len() + 2);
+            for marketplace in &marketplaces {
+                params.push(marketplace);
+            }
+            params.push(&limit);
+            params.push(&offset);
+            let rows = statement
+                .query_map(params.as_slice(), |row| {
+                    Ok(BorrowedRow {
+                        marketplace: row.get(0)?,
+                        asin: row.get(1)?,
+                        full_title: row.get(2)?,
+                        eligible: row.get(3)?,
+                        not_eligible: row.get(4)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// Count for [`Self::books_borrowed`] (page-end detection).
+    pub async fn count_books_borrowed(
+        &self,
+        marketplaces: Vec<String>,
+        item_kinds: Vec<String>,
+    ) -> Result<u64, DbError> {
+        self.call(move |conn| {
+            if marketplaces.is_empty() {
+                return Ok(0);
+            }
+            let sql = format!(
+                "SELECT COUNT(*) FROM items
+                 WHERE is_deleted = 0
+                   AND marketplace IN ({}) {}
+                   AND json_extract(doc, '$.origin_type') IS NOT 'Purchase'",
+                in_placeholders(marketplaces.len()),
+                super::kind_clause(&super::item_kind_sql("doc"), &item_kinds)
+            );
+            let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(marketplaces.len());
+            for marketplace in &marketplaces {
+                params.push(marketplace);
+            }
+            let count: i64 = conn.query_row(&sql, params.as_slice(), |row| row.get(0))?;
+            Ok(count as u64)
+        })
+        .await
+    }
+
+    /// ASINs missing a download record of at least one of the given kinds,
+    /// newest first (`download --missing`). Audio is format-aware (AUD-96): it
+    /// counts as present only when a downloaded row's `request_kind` is one of
+    /// `audio_request_kinds` (the run's candidate set, as in the per-item
+    /// skip); other kinds stay kind-level. Archived items are excluded unless
+    /// `include_archived` (AUD-110). Lean variant of
+    /// [`Self::books_missing_downloads`]: only the ASINs, no pagination —
+    /// built to scale to whole-library downloads.
+    ///
+    /// Returns **leaves only** — every ASIN is directly downloadable (AUD-203):
+    ///
+    /// * `include_podcasts`: books, individually-subscribed episode items, and
+    ///   the **missing episodes of followed shows** (an episode inherits its
+    ///   parent's archive state). The show's own ASIN is never returned: it has
+    ///   no audio of its own and would fail the licenserequest. This is the
+    ///   leaf form of the roll-up that `library list --missing` displays.
+    /// * `!include_podcasts` (`--exclude-podcasts`): books only.
+    pub async fn missing_download_asins(
+        &self,
+        marketplaces: Vec<String>,
+        kinds: Vec<String>,
+        audio_request_kinds: Vec<String>,
+        include_archived: bool,
+        include_lapsed: bool,
+        include_podcasts: bool,
+    ) -> Result<Vec<String>, DbError> {
+        let audio = kinds.iter().any(|kind| kind == "audio");
+        let other: Vec<String> = kinds.into_iter().filter(|kind| kind != "audio").collect();
+        let has_other = !other.is_empty();
+        let other_json = serde_json::to_string(&other).expect("strings serialize");
+        self.call(move |conn| {
+            if marketplaces.is_empty() || (!audio && !has_other) {
+                return Ok(Vec::new());
+            }
+            // "This row misses at least one requested kind", for a row alias:
+            // `b` over v_books (books + individually-subscribed episode items)
+            // and `e` over v_episodes (a followed show's episodes). `doc_table`
+            // is where that row's document lives — neither view carries it.
+            let missing_expr = |asin: &str, marketplace: &str, doc_table: &str| -> String {
+                let mut parts: Vec<String> = Vec::new();
+                if has_other {
+                    // A kind that cannot exist for the row is never missing, so
+                    // the sweep never tries to fetch it (AUD-206).
+                    let possible = super::kind_possible_sql(&super::pdf_available_lookup_sql(
+                        doc_table,
+                        asin,
+                        marketplace,
+                    ));
+                    let missing = super::missing_download_sql(asin, marketplace, "k.value");
+                    parts.push(format!(
+                        "EXISTS (
+                             SELECT 1 FROM json_each(?) k
+                             WHERE {missing}
+                             AND {possible}
+                         )"
+                    ));
+                }
+                if audio {
+                    // With no candidate set the audio check degrades to
+                    // kind-level (defensive; the caller always passes ≥ `mpeg`).
+                    if audio_request_kinds.is_empty() {
+                        parts.push(super::missing_download_sql(asin, marketplace, "'audio'"));
+                    } else {
+                        let placeholders = vec!["?"; audio_request_kinds.len()].join(",");
+                        parts.push(format!(
+                            "NOT EXISTS (
+                                 SELECT 1 FROM downloads d
+                                 WHERE d.asin = {asin} AND d.marketplace = {marketplace}
+                                   AND d.kind = 'audio' AND d.status = 'downloaded'
+                                   AND d.request_kind IN ({placeholders})
+                             )"
+                        ));
+                    }
+                }
+                parts.join(" OR ")
+            };
+
+            let mp_placeholders = in_placeholders(marketplaces.len());
+            // A podcast parent is never a download target: it owns no audio —
+            // its episodes do (AUD-203). With podcasts included, the episodes
+            // branch below contributes a show's *missing* episodes as leaves, so
+            // the sweep fetches exactly what is missing and never hands the
+            // un-downloadable parent to the download path. `--exclude-podcasts`
+            // narrows the sweep to books.
+            let items_kind_clause = if include_podcasts {
+                "AND b.kind != 'podcast'"
+            } else {
+                "AND b.kind = 'book'"
+            };
+            let mut sql = format!(
+                "SELECT asin FROM (
+                     SELECT b.asin AS asin, b.purchase_date AS sort_date,
+                            b.marketplace AS marketplace
+                       FROM v_books b
+                      WHERE b.marketplace IN ({mp_placeholders})
+                        AND ({}) {} {} {items_kind_clause}",
+                missing_expr("b.asin", "b.marketplace", "items"),
+                not_archived_clause(include_archived),
+                consumable_clause(include_lapsed),
+            );
+            if include_podcasts {
+                // A followed show's episodes. One that is also its own library
+                // membership is already covered by the items branch, so it is
+                // excluded here instead of being emitted twice.
+                sql.push_str(&format!(
+                    " UNION ALL
+                     SELECT e.asin AS asin, e.release_date AS sort_date,
+                            e.marketplace AS marketplace
+                       FROM v_episodes e
+                      WHERE e.marketplace IN ({mp_placeholders})
+                        AND ({}) {} {}
+                        AND NOT EXISTS (
+                            SELECT 1 FROM items i
+                            WHERE i.asin = e.asin AND i.marketplace = e.marketplace
+                              AND i.is_deleted = 0
+                        )",
+                    missing_expr("e.asin", "e.marketplace", "episodes"),
+                    super::episode_not_archived_clause(include_archived),
+                    super::episode_consumable_clause(include_lapsed),
+                ));
+            }
+            sql.push_str(" ) ORDER BY sort_date DESC, asin, marketplace");
+            let mut statement = conn.prepare_cached(&sql)?;
+            // One parameter set per UNION branch, in textual order: the
+            // marketplaces, then the missing expression's own placeholders.
+            let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+            let branches = if include_podcasts { 2 } else { 1 };
+            for _ in 0..branches {
+                for marketplace in &marketplaces {
+                    params.push(marketplace);
+                }
+                if has_other {
+                    params.push(&other_json);
+                }
+                if audio {
+                    for kind in &audio_request_kinds {
+                        params.push(kind);
+                    }
+                }
+            }
+            let asins = statement
+                .query_map(params.as_slice(), |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(asins)
+        })
+        .await
+    }
+
+    /// The memberships among `asins` that fail the consumption-right check
+    /// (AUD-104): active library items whose stored doc does not prove
+    /// `customer_rights.is_consumable` — full identity with the external
+    /// download check, `false` and absent both fail. Returned as
+    /// `(asin, full_title)`, deduplicated and sorted.
+    ///
+    /// An episode carries no `customer_rights` of its own, so it reports
+    /// its **parent show** (the membership that holds the right) — unless
+    /// the episode is itself a library item (individually owned), which
+    /// the items branch already judged by its own doc. ASINs the library
+    /// does not hold are ignored: they are the external check's business.
+    pub async fn lapsed_titles(
+        &self,
+        marketplace: String,
+        asins: Vec<String>,
+    ) -> Result<Vec<(String, String)>, DbError> {
+        let asins_json = serde_json::to_string(&asins).expect("strings serialize");
+        self.call(move |conn| {
+            let sql = format!(
+                "SELECT DISTINCT m.asin, m.full_title FROM (
+                     SELECT i.asin AS asin, i.full_title AS full_title, i.doc AS doc
+                       FROM json_each(?) sel
+                       JOIN items i ON i.asin = sel.value AND i.marketplace = ?
+                      WHERE i.is_deleted = 0
+                     UNION ALL
+                     SELECT p.asin, p.full_title, p.doc
+                       FROM json_each(?) sel
+                       JOIN episodes e ON e.asin = sel.value AND e.marketplace = ?
+                       JOIN items p ON p.asin = e.parent_asin AND p.marketplace = e.marketplace
+                      WHERE e.is_deleted = 0 AND p.is_deleted = 0
+                        AND NOT EXISTS (
+                            SELECT 1 FROM items own
+                            WHERE own.asin = e.asin AND own.marketplace = e.marketplace
+                              AND own.is_deleted = 0
+                        )
+                 ) m
+                 WHERE COALESCE(({}), 0) = 0
+                 ORDER BY m.asin",
+                // COALESCE, because this is the *negative* use of the
+                // predicate: an absent field yields SQL NULL, and `NOT
+                // (NULL = 1)` is NULL — which WHERE drops, silently passing
+                // a rights-less doc. Absent must fail like `false` does.
+                super::consumable_sql("m.doc")
+            );
+            let mut statement = conn.prepare_cached(&sql)?;
+            let rows = statement
+                .query_map(
+                    rusqlite::params![asins_json, marketplace, asins_json, marketplace],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// Searches active books across the marketplace set — FTS5 `MATCH`
+    /// (one global BM25 ranking) or case-insensitive LIKE. The FTS join
+    /// maps each matched `rowid` to its exact `(asin, marketplace)` item,
+    /// so the (non-unique) asin never causes a cross product.
+    pub async fn search(
+        &self,
+        marketplaces: Vec<String>,
+        item_kinds: Vec<String>,
+        query: String,
+        limit: u32,
+        fts: bool,
+    ) -> Result<Vec<BookRow>, DbError> {
+        self.call(move |conn| {
+            if marketplaces.is_empty() {
+                return Ok(Vec::new());
+            }
+            let placeholders = in_placeholders(marketplaces.len());
+            if fts {
+                let fts_query = prepare_fts_query(&query);
+                let book_columns = items_book_columns();
+                let sql = format!(
+                    "SELECT {book_columns}, {}
+                     FROM items_fts f JOIN items i ON i.rowid = f.rowid
+                     WHERE items_fts MATCH ?
+                       AND i.is_deleted = 0
+                       AND i.marketplace IN ({placeholders}) {}
+                     ORDER BY rank
+                     LIMIT ?",
+                    super::item_kind_sql("i.doc"),
+                    super::kind_clause(&super::item_kind_sql("i.doc"), &item_kinds)
+                );
+                let mut statement = conn.prepare_cached(&sql)?;
+                let mut params: Vec<&dyn rusqlite::ToSql> =
+                    Vec::with_capacity(marketplaces.len() + 2);
+                params.push(&fts_query);
+                for marketplace in &marketplaces {
+                    params.push(marketplace);
+                }
+                params.push(&limit);
+                let rows = statement
+                    .query_map(params.as_slice(), book_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            } else {
+                let sql = format!(
+                    "SELECT marketplace, asin, full_title, CAST(purchase_date AS TEXT),
+                            CAST(runtime_min AS TEXT), CAST(language AS TEXT), kind
+                     FROM v_books
+                     WHERE marketplace IN ({placeholders}) {}
+                       AND lower(full_title) LIKE '%' || lower(?) || '%' ESCAPE '\\'
+                     ORDER BY full_title, marketplace
+                     LIMIT ?",
+                    super::kind_clause("kind", &item_kinds)
+                );
+                let mut statement = conn.prepare_cached(&sql)?;
+                let mut params: Vec<&dyn rusqlite::ToSql> =
+                    Vec::with_capacity(marketplaces.len() + 2);
+                for marketplace in &marketplaces {
+                    params.push(marketplace);
+                }
+                let like_query = super::escape_like(&query);
+                params.push(&like_query);
+                params.push(&limit);
+                let rows = statement
+                    .query_map(params.as_slice(), book_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            }
+        })
+        .await
+    }
+
+    /// Flat book rows of all active items across the marketplace set (for
+    /// `library export --format csv`): the `v_books` columns plus title
+    /// and subtitle.
+    pub async fn export_books(
+        &self,
+        marketplaces: Vec<String>,
+        item_kinds: Vec<String>,
+    ) -> Result<Vec<ExportBookRow>, DbError> {
+        self.call(move |conn| {
+            if marketplaces.is_empty() {
+                return Ok(Vec::new());
+            }
+            let sql = format!(
+                "SELECT marketplace, asin, title, CAST(subtitle AS TEXT), full_title,
+                        CAST(purchase_date AS TEXT), CAST(runtime_min AS TEXT),
+                        CAST(language AS TEXT), kind
+                 FROM v_books
+                 WHERE marketplace IN ({}) {}
+                 ORDER BY purchase_date DESC, asin, marketplace",
+                in_placeholders(marketplaces.len()),
+                super::kind_clause("kind", &item_kinds)
+            );
+            let mut statement = conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> = marketplaces
+                .iter()
+                .map(|m| m as &dyn rusqlite::ToSql)
+                .collect();
+            let rows = statement
+                .query_map(params.as_slice(), |row| {
+                    Ok(ExportBookRow {
+                        marketplace: row.get(0)?,
+                        asin: row.get(1)?,
+                        title: row.get(2)?,
+                        subtitle: row.get(3)?,
+                        full_title: row.get(4)?,
+                        purchase_date: row.get(5)?,
+                        runtime_min: row.get(6)?,
+                        language: row.get(7)?,
+                        kind: row.get(8)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// Full documents of all active items across the marketplace set (for
+    /// `library export`).
+    pub async fn export_docs(
+        &self,
+        marketplaces: Vec<String>,
+    ) -> Result<Vec<serde_json::Value>, DbError> {
+        self.call(move |conn| {
+            if marketplaces.is_empty() {
+                return Ok(Vec::new());
+            }
+            let sql = format!(
+                "SELECT asin, doc FROM items WHERE marketplace IN ({}) AND is_deleted = 0
+                 ORDER BY marketplace, asin",
+                in_placeholders(marketplaces.len())
+            );
+            let mut statement = conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> = marketplaces
+                .iter()
+                .map(|m| m as &dyn rusqlite::ToSql)
+                .collect();
+            let docs = statement
+                .query_map(params.as_slice(), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter_map(|(asin, doc)| match serde_json::from_str(&doc) {
+                    Ok(value) => Some(value),
+                    Err(error) => {
+                        // Name the damaged row instead of exporting a silent
+                        // `null` nobody can trace back to its item.
+                        tracing::warn!(
+                            asin,
+                            %error,
+                            "stored document is not valid JSON; skipping it in the export"
+                        );
+                        None
+                    }
+                })
+                .collect();
+            Ok(docs)
+        })
+        .await
+    }
+
+    /// Number of active (not soft-deleted) items across the marketplace set.
+    pub async fn count_active(&self, marketplaces: Vec<String>) -> Result<u64, DbError> {
+        self.call(move |conn| {
+            if marketplaces.is_empty() {
+                return Ok(0);
+            }
+            let sql = format!(
+                "SELECT COUNT(*) FROM items WHERE marketplace IN ({}) AND is_deleted = 0",
+                in_placeholders(marketplaces.len())
+            );
+            let params: Vec<&dyn rusqlite::ToSql> = marketplaces
+                .iter()
+                .map(|m| m as &dyn rusqlite::ToSql)
+                .collect();
+            let count: i64 = conn.query_row(&sql, params.as_slice(), |row| row.get(0))?;
+            Ok(count as u64)
+        })
+        .await
+    }
+
+    /// Hard-deletes library items by ASIN in a given marketplace, in one
+    /// transaction (`db library remove`). Deleting an item cascades its
+    /// `episodes` and `item_series` rows. Unknown ASINs are reported, not an
+    /// error.
+    ///
+    /// **The library, and nothing else** (AUD-217). `downloads` and `licenses`
+    /// carry no foreign key, and this used to clear them by hand — which left
+    /// the files on disk referenced by nothing: `download orphans` offered to
+    /// delete them, `reorganize` could no longer see them, and no re-sync
+    /// brought them back. The command's name is its scope; forgetting a title's
+    /// files is `db downloads remove`.
+    pub async fn remove_items(
+        &self,
+        marketplace: String,
+        asins: Vec<String>,
+    ) -> Result<ItemRemoval, DbError> {
+        self.call(move |conn| {
+            let tx = conn.transaction()?;
+            let mut removal = ItemRemoval::default();
+            {
+                let mut find_item =
+                    tx.prepare_cached("SELECT 1 FROM items WHERE asin = ? AND marketplace = ?")?;
+                let mut find_episodes = tx.prepare_cached(
+                    "SELECT asin FROM episodes WHERE parent_asin = ? AND marketplace = ?",
+                )?;
+                let mut delete_item =
+                    tx.prepare_cached("DELETE FROM items WHERE asin = ? AND marketplace = ?")?;
+                for asin in asins {
+                    if !find_item.exists(rusqlite::params![asin, marketplace])? {
+                        removal.missing_asins.push(asin);
+                        continue;
+                    }
+                    let episode_asins: Vec<String> = find_episodes
+                        .query_map(rusqlite::params![asin, marketplace], |row| row.get(0))?
+                        .collect::<Result<_, _>>()?;
+                    removal.episodes_removed += episode_asins.len();
+                    delete_item.execute(rusqlite::params![asin, marketplace])?;
+                    removal.removed_asins.push(asin);
+                }
+            }
+            tx.commit()?;
+            Ok(removal)
+        })
+        .await
+    }
+
+    /// Soft-deletes a single library item (and its episodes) by flipping
+    /// `is_deleted`, exactly as a sync does when the item turns `Revoked`.
+    /// Used by `library return`: the loan is gone the moment the server
+    /// accepts the DELETE, so the title leaves the library view now instead
+    /// of lingering until the delta change-feed catches up (which lags
+    /// minutes for a return, unlike a borrow). Downloaded files, `downloads`
+    /// and `licenses` rows are kept. Returns true if a row flipped.
+    pub async fn soft_delete_item(
+        &self,
+        marketplace: String,
+        asin: String,
+    ) -> Result<bool, DbError> {
+        self.call(move |conn| {
+            // One transaction: parent and episodes flip together, or not at
+            // all — a crash between the two updates left the parent hidden
+            // with its episodes still active until a delta sync touched the
+            // parent again (its `apply_page` sibling was already atomic).
+            let tx = conn.transaction()?;
+            let now = crate::db::now_iso_utc();
+            let flipped = tx.execute(
+                "UPDATE items SET is_deleted = 1, deleted_utc = ?, updated_utc = ?
+                 WHERE asin = ? AND marketplace = ? AND is_deleted = 0",
+                rusqlite::params![now, now, asin, marketplace],
+            )?;
+            if flipped > 0 {
+                // A soft-deleted parent takes its episodes with it.
+                tx.execute(
+                    "UPDATE episodes SET is_deleted = 1, deleted_utc = ?, updated_utc = ?
+                     WHERE parent_asin = ? AND marketplace = ? AND is_deleted = 0",
+                    rusqlite::params![now, now, asin, marketplace],
+                )?;
+            }
+            tx.commit()?;
+            Ok(flipped > 0)
+        })
+        .await
+    }
+
+    /// Persists the sync state token — called **only after every page of
+    /// a sync stream has been applied** (audit 2026-07-17, A16, verified
+    /// live 2026-07-17): the server sends `State-Token` on the **first**
+    /// page of a paginated sync, a snapshot marker from before the pages.
+    /// Persisting it together with its page meant an abort after page 1
+    /// advanced the token past the never-applied remainder, and the next
+    /// delta silently skipped those items until a manual `--full`.
+    pub async fn persist_state_token(
+        &self,
+        marketplace: String,
+        raw: String,
+    ) -> Result<(), DbError> {
+        self.call(move |conn| {
+            conn.execute(
+                "UPDATE sync_state SET last_state_token_raw = ?, last_state_token_utc = ?
+                 WHERE marketplace = ?",
+                rusqlite::params![raw, state_token_iso(&raw), marketplace],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Timestamp of the last successful sync request for each of the
+    /// given marketplaces. A marketplace that never synced successfully
+    /// is absent from the map — staleness is per marketplace, so a fresh
+    /// `de` must not hide a never-synced `us` (and one stale marketplace
+    /// must not force a resync of its fresh siblings).
+    pub async fn last_sync_utc_by_marketplace(
+        &self,
+        marketplaces: Vec<String>,
+    ) -> Result<std::collections::HashMap<String, String>, DbError> {
+        if marketplaces.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        self.call(move |conn| {
+            let placeholders = vec!["?"; marketplaces.len()].join(",");
+            let sql = format!(
+                "SELECT marketplace, MAX(response_time_utc) FROM sync_log
+                 WHERE http_status = 200 AND marketplace IN ({placeholders})
+                 GROUP BY marketplace"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(marketplaces.iter()), |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?;
+            Ok(rows.collect::<Result<_, _>>()?)
+        })
+        .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_util::{MP, default_log, episode, item, open_temp};
+    #[allow(unused_imports)]
+    use crate::db::*;
+
+    /// The SQL kind expression (`v_books.kind`, the FTS twin) must
+    /// classify exactly like `models::library::item_kind` — one truth,
+    /// three copies, verified functionally over the whole taxonomy.
+    #[tokio::test]
+    async fn kind_sql_matches_rust_classifier() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+
+        let docs = [
+            serde_json::json!({"asin":"K1","title":"episode",
+                "content_delivery_type":"PodcastEpisode","content_type":"Podcast"}),
+            serde_json::json!({"asin":"K2","title":"parent",
+                "content_delivery_type":"PodcastParent","content_type":"Podcast"}),
+            serde_json::json!({"asin":"K3","title":"periodical",
+                "content_delivery_type":"Periodical","content_type":"Show"}),
+            serde_json::json!({"asin":"K4","title":"season",
+                "content_delivery_type":"PodcastSeason","content_type":"Podcast"}),
+            serde_json::json!({"asin":"K5","title":"ct fallback","content_type":"Podcast"}),
+            serde_json::json!({"asin":"K6","title":"book",
+                "content_delivery_type":"SinglePartBook","content_type":"Product"}),
+            serde_json::json!({"asin":"K7","title":"multipart",
+                "content_delivery_type":"MultiPartBook","content_type":"Product"}),
+            serde_json::json!({"asin":"K8","title":"bare"}),
+        ];
+        let upserts: Vec<UpsertItem> = docs
+            .iter()
+            .map(|doc| crate::db::test_util::upsert(doc["asin"].as_str().unwrap(), doc.clone()))
+            .collect();
+        db.apply_page(MP.into(), upserts, vec![], default_log(), None)
+            .await
+            .unwrap();
+
+        // v_books.kind (list_books) against the Rust classifier.
+        let books = db
+            .list_books(vec![MP.to_owned()], vec![], u32::MAX, 0)
+            .await
+            .unwrap();
+        assert_eq!(books.len(), docs.len());
+        for doc in &docs {
+            let asin = doc["asin"].as_str().unwrap();
+            let row = books.iter().find(|b| b.asin == asin).unwrap();
+            assert_eq!(
+                row.kind,
+                crate::models::library::item_kind(doc),
+                "v_books.kind diverges from item_kind for {asin}: {doc}"
+            );
+        }
+        // The FTS branch builds its own `item_kind_sql` over `i.doc`
+        // (it reads `items` directly, not `v_books`), so sweep it over the
+        // whole taxonomy too, not just one row (audit 2026-07-18, D8):
+        // search each doc by its asin and check the classified kind.
+        for doc in &docs {
+            let asin = doc["asin"].as_str().unwrap();
+            let hits = db
+                .search(vec![MP.to_owned()], vec![], asin.into(), 10, true)
+                .await
+                .unwrap();
+            let hit = hits.iter().find(|b| b.asin == asin).unwrap();
+            assert_eq!(
+                hit.kind,
+                crate::models::library::item_kind(doc),
+                "FTS item_kind_sql diverges from item_kind for {asin}: {doc}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn kind_filter_narrows_list_search_export_and_counts() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        let upserts = vec![
+            crate::db::test_util::upsert(
+                "B1",
+                serde_json::json!({"asin":"B1","title":"Buch",
+                    "content_delivery_type":"SinglePartBook"}),
+            ),
+            crate::db::test_util::upsert(
+                "P1",
+                serde_json::json!({"asin":"P1","title":"Show",
+                    "content_delivery_type":"PodcastParent"}),
+            ),
+            crate::db::test_util::upsert(
+                "E1",
+                serde_json::json!({"asin":"E1","title":"Folge",
+                    "content_delivery_type":"PodcastEpisode","content_type":"Podcast"}),
+            ),
+        ];
+        db.apply_page(MP.into(), upserts, vec![], default_log(), None)
+            .await
+            .unwrap();
+
+        let asins = |rows: Vec<BookRow>| {
+            let mut asins: Vec<String> = rows.into_iter().map(|r| r.asin).collect();
+            asins.sort();
+            asins
+        };
+        // Empty filter = everything.
+        assert_eq!(
+            asins(
+                db.list_books(vec![MP.to_owned()], vec![], u32::MAX, 0)
+                    .await
+                    .unwrap()
+            ),
+            ["B1", "E1", "P1"]
+        );
+        // Single and multi-kind filters.
+        assert_eq!(
+            asins(
+                db.list_books(vec![MP.to_owned()], vec!["episode".into()], u32::MAX, 0)
+                    .await
+                    .unwrap()
+            ),
+            ["E1"]
+        );
+        assert_eq!(
+            asins(
+                db.list_books(
+                    vec![MP.to_owned()],
+                    vec!["book".into(), "podcast".into()],
+                    u32::MAX,
+                    0,
+                )
+                .await
+                .unwrap()
+            ),
+            ["B1", "P1"]
+        );
+        // Counts follow the same filter.
+        assert_eq!(
+            db.count_books(vec![MP.to_owned()], vec!["podcast".into()])
+                .await
+                .unwrap(),
+            1
+        );
+        // Export carries the kind column and honors the filter.
+        let export = db
+            .export_books(vec![MP.to_owned()], vec!["episode".into()])
+            .await
+            .unwrap();
+        assert_eq!(export.len(), 1);
+        assert_eq!(
+            (export[0].asin.as_str(), export[0].kind.as_str()),
+            ("E1", "episode")
+        );
+        // Search (LIKE branch) honors it too: "title" matches every
+        // full_title, the filter narrows to the book.
+        let hits = db
+            .search(
+                vec![MP.to_owned()],
+                vec!["book".into()],
+                "title".into(),
+                10,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(asins(hits), ["B1"]);
+    }
+
+    /// An item for the `books_borrowed` tests. `purchased` sets
+    /// `origin_type = "Purchase"` (owned); otherwise the field is absent, as
+    /// on subscription titles. `plans` is a list of `(plan_name, eligible)`,
+    /// where `eligible` is `Some(true|false)` or `None` (JSON null).
+    fn borrowed_item(asin: &str, purchased: bool, plans: &[(&str, Option<bool>)]) -> UpsertItem {
+        let plans: Vec<serde_json::Value> = plans
+            .iter()
+            .map(|(name, eligible)| {
+                serde_json::json!({
+                    "plan_name": name,
+                    "customer_eligible": match eligible {
+                        Some(value) => serde_json::Value::Bool(*value),
+                        None => serde_json::Value::Null,
+                    },
+                })
+            })
+            .collect();
+        let mut doc = serde_json::json!({
+            "asin": asin,
+            "title": asin,
+            "plans": plans,
+        });
+        if purchased {
+            doc["origin_type"] = "Purchase".into();
+        }
+        UpsertItem {
+            asin: asin.into(),
+            doc: doc.to_string(),
+            title: asin.into(),
+            subtitle: None,
+            full_title: asin.into(),
+            series: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn books_borrowed_splits_plans_by_eligibility() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        db.apply_page(
+            MP.into(),
+            vec![
+                // Eligible plan + the generic AccessViaMusic route (ignored).
+                borrowed_item(
+                    "A_ELIG",
+                    false,
+                    &[("Audible-AYCL", Some(true)), ("AccessViaMusic", None)],
+                ),
+                // Eligible, plus a promo the user is NOT on (kept as not_eligible).
+                borrowed_item(
+                    "B_PROMO",
+                    false,
+                    &[
+                        ("US Minerva", Some(true)),
+                        ("AccessViaMusic", None),
+                        ("SpecialBenefit", None),
+                    ],
+                ),
+                // No eligible plan (false + null) → membership plan surfaces as
+                // not_eligible; eligible is empty.
+                borrowed_item(
+                    "C_LAPSED",
+                    false,
+                    &[("US Minerva", Some(false)), ("AccessViaMusic", None)],
+                ),
+                // Two eligible plans → sorted and comma-joined.
+                borrowed_item(
+                    "D_MULTI",
+                    false,
+                    &[("Plan B", Some(true)), ("Plan A", Some(true))],
+                ),
+                // Purchased → excluded entirely.
+                borrowed_item("E_OWNED", true, &[("Audible-AYCL", Some(true))]),
+            ],
+            vec![],
+            default_log(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let rows = db
+            .books_borrowed(vec![MP.to_owned()], vec![], u32::MAX, 0)
+            .await
+            .unwrap();
+        let seen: Vec<(&str, &str, &str)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.asin.as_str(),
+                    row.eligible.as_str(),
+                    row.not_eligible.as_str(),
+                )
+            })
+            .collect();
+        // Ordered by title; the purchased title is excluded. AccessViaMusic is
+        // dropped from not_eligible; false and null both count as not eligible;
+        // multiple eligible plans are sorted and joined.
+        assert_eq!(
+            seen,
+            vec![
+                ("A_ELIG", "Audible-AYCL", ""),
+                ("B_PROMO", "US Minerva", "SpecialBenefit"),
+                ("C_LAPSED", "", "US Minerva"),
+                ("D_MULTI", "Plan A, Plan B", ""),
+            ]
+        );
+        assert_eq!(
+            db.count_books_borrowed(vec![MP.to_owned()], vec![])
+                .await
+                .unwrap(),
+            4
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_state_is_created_once_and_groups_are_pinned() {
+        let (_dir, db) = open_temp().await;
+        let settings = db.ensure_sync_state(MP.into(), "a,b".into()).await.unwrap();
+        assert_eq!(settings.last_state_token, None);
+        // Same groups: fine. Different groups: rejected.
+        db.ensure_sync_state(MP.into(), "a,b".into()).await.unwrap();
+        assert!(matches!(
+            db.ensure_sync_state(MP.into(), "other".into()).await,
+            Err(DbError::ResponseGroupsMismatch { .. })
+        ));
+        // A second marketplace is independent.
+        db.ensure_sync_state("us".into(), "other".into())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn apply_page_roundtrip() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+
+        let log = SyncLogEntry {
+            request_time_utc: now_iso_utc(),
+            response_time_utc: now_iso_utc(),
+            http_status: Some(200),
+            note: Some("test-page-1".into()),
+            ..Default::default()
+        };
+        let outcome = db
+            .apply_page(
+                MP.into(),
+                vec![item("A1", "Erstes Buch"), item("A2", "Zweites Buch")],
+                vec![],
+                log,
+                Some("1750000000000".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                outcome.added.len(),
+                outcome.changed.len(),
+                outcome.removed.len()
+            ),
+            (2, 0, 0),
+            "two new items on an empty DB are added"
+        );
+        assert_eq!(db.count_active(vec![MP.to_owned()]).await.unwrap(), 2);
+
+        // State token persisted (and converted to ISO) for this marketplace.
+        let settings = db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        assert_eq!(settings.last_state_token.as_deref(), Some("1750000000000"));
+        let last = db
+            .last_sync_utc_by_marketplace(vec![MP.to_owned(), "zz".to_owned()])
+            .await
+            .unwrap();
+        // The synced marketplace has a timestamp; a never-synced one must
+        // not inherit it (that hid a stale/empty marketplace behind a
+        // fresh sibling and made auto-sync skip it).
+        assert!(last.contains_key(MP));
+        assert!(!last.contains_key("zz"));
+
+        // Soft delete via a second page.
+        let log = SyncLogEntry {
+            request_time_utc: now_iso_utc(),
+            response_time_utc: now_iso_utc(),
+            http_status: Some(200),
+            ..Default::default()
+        };
+        let outcome = db
+            .apply_page(
+                MP.into(),
+                vec![],
+                vec!["A2".into(), "GHOST".into()],
+                log,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.removed.len(), 1, "unknown asins are not counted");
+        assert_eq!(db.count_active(vec![MP.to_owned()]).await.unwrap(), 1);
+
+        // Upserting a deleted item revives it.
+        let log = SyncLogEntry {
+            request_time_utc: now_iso_utc(),
+            response_time_utc: now_iso_utc(),
+            http_status: Some(200),
+            ..Default::default()
+        };
+        let outcome = db
+            .apply_page(
+                MP.into(),
+                vec![item("A2", "Zweites Buch")],
+                vec![],
+                log,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.added.len(),
+            1,
+            "an item returning from a soft-delete counts as added"
+        );
+        assert_eq!(db.count_active(vec![MP.to_owned()]).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn marketplaces_are_isolated() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state("de".into(), "g".into()).await.unwrap();
+        db.ensure_sync_state("us".into(), "g".into()).await.unwrap();
+
+        // Insert the same ASIN into two different marketplaces.
+        db.apply_page(
+            "de".into(),
+            vec![item("A1", "Buch DE")],
+            vec![],
+            default_log(),
+            None,
+        )
+        .await
+        .unwrap();
+        db.apply_page(
+            "us".into(),
+            vec![item("A1", "Book US")],
+            vec![],
+            default_log(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Each marketplace sees only its own row.
+        assert_eq!(db.count_active(vec!["de".to_owned()]).await.unwrap(), 1);
+        assert_eq!(db.count_active(vec!["us".to_owned()]).await.unwrap(), 1);
+
+        let de_books = db
+            .list_books(vec!["de".to_owned()], vec![], 10, 0)
+            .await
+            .unwrap();
+        let us_books = db
+            .list_books(vec!["us".to_owned()], vec![], 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(de_books[0].full_title, "Buch DE");
+        assert_eq!(us_books[0].full_title, "Book US");
+
+        // The combined set (WHERE marketplace IN (…)) returns both rows,
+        // each tagged with its marketplace.
+        let both = db
+            .list_books(vec!["de".to_owned(), "us".to_owned()], vec![], 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(both.len(), 2);
+        let mut mps: Vec<&str> = both.iter().map(|b| b.marketplace.as_str()).collect();
+        mps.sort_unstable();
+        assert_eq!(mps, vec!["de", "us"]);
+        assert_eq!(
+            db.count_active(vec!["de".to_owned(), "us".to_owned()])
+                .await
+                .unwrap(),
+            2
+        );
+
+        // FTS search across the set finds the same ASIN in both, one row
+        // per (asin, marketplace) — no cross-product from the shared asin.
+        let hits = db
+            .search(
+                vec!["de".to_owned(), "us".to_owned()],
+                vec![],
+                "buch OR book".into(),
+                10,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            hits.len(),
+            2,
+            "one ranked row per marketplace, no duplicates"
+        );
+
+        // Soft-deleting in DE does not affect US.
+        db.apply_page("de".into(), vec![], vec!["A1".into()], default_log(), None)
+            .await
+            .unwrap();
+        assert_eq!(db.count_active(vec!["de".to_owned()]).await.unwrap(), 0);
+        assert_eq!(db.count_active(vec!["us".to_owned()]).await.unwrap(), 1);
+        // The combined search now sees only the surviving US row.
+        let hits = db
+            .search(
+                vec!["de".to_owned(), "us".to_owned()],
+                vec![],
+                "buch OR book".into(),
+                10,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].marketplace, "us");
+    }
+
+    #[tokio::test]
+    async fn cascade_works_across_asin_marketplace() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+
+        let mut podcast = item("P1", "Podcast");
+        podcast.series.push(SeriesRef {
+            series_asin: "S1".into(),
+            series_title: "Serie".into(),
+            sequence: None,
+        });
+        db.apply_page(MP.into(), vec![podcast], vec![], default_log(), None)
+            .await
+            .unwrap();
+        db.apply_episodes(
+            MP.into(),
+            "P1".into(),
+            vec![episode("E1", "Folge 1"), episode("E2", "Folge 2")],
+            ChangeRecording {
+                record: false,
+                mode: "delta",
+            },
+        )
+        .await
+        .unwrap();
+
+        // Verify episodes exist.
+        assert_eq!(
+            db.episodes(MP.into(), Some("P1".into()), 10, 0)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // Hard-delete the item: episodes and item_series cascade.
+        let removal = db.remove_items(MP.into(), vec!["P1".into()]).await.unwrap();
+        assert_eq!(removal.removed_asins, vec!["P1".to_owned()]);
+        assert_eq!(removal.episodes_removed, 2);
+
+        // No episodes or series left.
+        assert!(
+            db.episodes(MP.into(), Some("P1".into()), 10, 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let overview = db.series_overview(vec![MP.to_owned()]).await.unwrap();
+        assert!(overview.is_empty());
+    }
+
+    #[tokio::test]
+    async fn episode_doc_returns_doc_and_parent() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        db.apply_page(
+            MP.into(),
+            vec![item("P1", "Podcast")],
+            vec![],
+            default_log(),
+            None,
+        )
+        .await
+        .unwrap();
+        db.apply_episodes(
+            MP.into(),
+            "P1".into(),
+            vec![episode("E1", "Folge 1")],
+            ChangeRecording {
+                record: false,
+                mode: "delta",
+            },
+        )
+        .await
+        .unwrap();
+
+        let (doc, parent) = db
+            .episode_doc("E1".into(), MP.into())
+            .await
+            .unwrap()
+            .expect("the episode exists");
+        assert_eq!(parent, "P1");
+        let parsed: serde_json::Value = serde_json::from_str(&doc).unwrap();
+        assert_eq!(parsed["title"], "Folge 1");
+
+        // A book ASIN is not an episode; an unknown ASIN is None.
+        assert!(
+            db.episode_doc("P1".into(), MP.into())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.episode_doc("X9".into(), MP.into())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Returning a show soft-deletes it *and its episodes*, but the files stay
+    /// on disk. Membership must forget them; naming must not, or every episode
+    /// of a returned podcast loses its name at once (AUD-216).
+    #[tokio::test]
+    async fn a_returned_show_keeps_its_episodes_nameable() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        db.apply_page(
+            MP.into(),
+            vec![item("P1", "Podcast")],
+            vec![],
+            default_log(),
+            None,
+        )
+        .await
+        .unwrap();
+        db.apply_episodes(
+            MP.into(),
+            "P1".into(),
+            vec![episode("E1", "Folge 1")],
+            ChangeRecording {
+                record: false,
+                mode: "delta",
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(db.soft_delete_item(MP.into(), "P1".into()).await.unwrap());
+
+        // Membership: the show and its episode are gone from the library.
+        assert!(db.item_doc("P1".into(), MP.into()).await.unwrap().is_none());
+        assert!(
+            db.episode_doc("E1".into(), MP.into())
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // Naming: both survive, because their files do.
+        let doc = db
+            .item_doc_including_deleted("P1".into(), MP.into())
+            .await
+            .unwrap()
+            .expect("the returned show keeps its doc");
+        let parsed: serde_json::Value = serde_json::from_str(&doc).unwrap();
+        assert_eq!(parsed["title"], "Podcast");
+
+        let (doc, parent) = db
+            .episode_doc_including_deleted("E1".into(), MP.into())
+            .await
+            .unwrap()
+            .expect("the returned show's episode keeps its doc");
+        assert_eq!(parent, "P1");
+        let parsed: serde_json::Value = serde_json::from_str(&doc).unwrap();
+        assert_eq!(parsed["title"], "Folge 1");
+
+        // An unknown ASIN stays unknown either way — this widens what counts as
+        // present, it does not invent rows.
+        assert!(
+            db.item_doc_including_deleted("X9".into(), MP.into())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn list_search_and_export() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        let log = SyncLogEntry {
+            request_time_utc: now_iso_utc(),
+            response_time_utc: now_iso_utc(),
+            http_status: Some(200),
+            ..Default::default()
+        };
+        db.apply_page(
+            MP.into(),
+            vec![
+                item("A1", "Der Hobbit"),
+                item("A2", "Die Känguru-Chroniken"),
+            ],
+            vec![],
+            log,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let books = db
+            .list_books(vec![MP.to_owned()], vec![], 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(books.len(), 2);
+        assert_eq!(books[0].purchase_date.as_deref(), Some("2024-01-01"));
+        assert_eq!(books[0].runtime_min.as_deref(), Some("123"));
+
+        let like = db
+            .search(vec![MP.to_owned()], vec![], "hobbit".into(), 10, false)
+            .await
+            .unwrap();
+        assert_eq!(like.len(), 1);
+        assert_eq!(like[0].asin, "A1");
+
+        let fts = db
+            .search(vec![MP.to_owned()], vec![], "känguru".into(), 10, true)
+            .await
+            .unwrap();
+        assert_eq!(fts.len(), 1);
+        assert_eq!(fts[0].asin, "A2");
+
+        let docs = db.export_docs(vec![MP.to_owned()]).await.unwrap();
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0]["asin"], "A1");
+    }
+
+    #[tokio::test]
+    async fn lists_items_missing_download_kinds() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        db.apply_page(
+            MP.into(),
+            vec![item("A1", "Mit Audio"), item("A2", "Ohne alles")],
+            vec![],
+            default_log(),
+            None,
+        )
+        .await
+        .unwrap();
+        db.record_download(
+            MP.into(),
+            DownloadRecord {
+                asin: "A1".into(),
+                kind: "audio".into(),
+                acr: None,
+                content_format: "AAX_44_128".into(),
+                variant: "original".into(),
+                request_kind: String::new(),
+                version: None,
+                sku: None,
+                file_path: "/dl/A1.aaxc".into(),
+                file_size: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+
+        // audio + cover: A1 lacks only the cover, A2 lacks both.
+        let rows = db
+            .books_missing_downloads(
+                vec![MP.to_owned()],
+                vec!["audio".into(), "cover".into()],
+                vec![],
+                u32::MAX,
+                0,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            (rows[0].asin.as_str(), rows[0].missing.as_str()),
+            ("A1", "cover")
+        );
+        assert_eq!(
+            (rows[1].asin.as_str(), rows[1].missing.as_str()),
+            ("A2", "audio,cover")
+        );
+
+        // audio only: A1 is complete and drops out.
+        let rows = db
+            .books_missing_downloads(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                u32::MAX,
+                0,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].asin, "A2");
+
+        // limit/offset page through the result.
+        let rows = db
+            .books_missing_downloads(
+                vec![MP.to_owned()],
+                vec!["cover".into()],
+                vec![],
+                1,
+                1,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].asin, "A2");
+
+        // The count matches the unlimited result per kind set.
+        assert_eq!(
+            db.count_books_missing_downloads(
+                vec![MP.to_owned()],
+                vec!["audio".into(), "cover".into()],
+                vec![],
+                true,
+                true
+            )
+            .await
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            db.count_books_missing_downloads(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                true,
+                true
+            )
+            .await
+            .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_items_takes_the_library_and_leaves_the_downloads() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+
+        // A1: podcast with two episodes and a series membership.
+        // A2: unrelated book that must survive.
+        let mut podcast = item("A1", "Podcast");
+        podcast.series.push(SeriesRef {
+            series_asin: "S1".into(),
+            series_title: "Serie".into(),
+            sequence: None,
+        });
+        db.apply_page(
+            MP.into(),
+            vec![podcast, item("A2", "Buch")],
+            vec![],
+            default_log(),
+            None,
+        )
+        .await
+        .unwrap();
+        db.apply_episodes(
+            MP.into(),
+            "A1".into(),
+            vec![episode("E1", "Eins"), episode("E2", "Zwei")],
+            ChangeRecording {
+                record: false,
+                mode: "delta",
+            },
+        )
+        .await
+        .unwrap();
+
+        let rec = |asin: &str, kind: &str, path: &str| DownloadRecord {
+            asin: asin.into(),
+            kind: kind.into(),
+            acr: None,
+            content_format: String::new(),
+            variant: "original".into(),
+            request_kind: String::new(),
+            version: None,
+            sku: None,
+            file_path: path.into(),
+            file_size: None,
+        };
+        db.record_download(MP.into(), rec("A1", "cover", "/dl/A1.jpg"))
+            .await
+            .unwrap();
+        db.record_download(MP.into(), rec("E1", "audio", "/dl/E1.aaxc"))
+            .await
+            .unwrap();
+        db.record_download(MP.into(), rec("A2", "cover", "/dl/A2.jpg"))
+            .await
+            .unwrap();
+        db.upsert_license(
+            MP.into(),
+            LicenseGrant {
+                asin: "E1".into(),
+                content_format: "AAX_44_128".into(),
+                request_kind: "adrm-high".into(),
+                valid_until: None,
+                doc: "{}".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let removal = db
+            .remove_items(MP.into(), vec!["A1".into(), "GHOST".into()])
+            .await
+            .unwrap();
+        assert_eq!(removal.removed_asins, vec!["A1".to_owned()]);
+        assert_eq!(removal.missing_asins, vec!["GHOST".to_owned()]);
+        assert_eq!(removal.episodes_removed, 2);
+
+        // The library goes: A1's episodes and series rows with it, A2 untouched.
+        let stats = db.stats().await.unwrap();
+        assert_eq!(stats.items_active, 1);
+        assert_eq!(stats.episodes_active, 0);
+        assert_eq!(stats.series, 0);
+
+        // The downloads stay — all three, including the removed item's own and
+        // its episode's. Clearing them here left the files referenced by
+        // nothing: `download orphans` offered to delete them and `reorganize`
+        // went blind to them, with no way back (AUD-217).
+        assert_eq!(stats.downloads, 3);
+        assert_eq!(stats.licenses, 1, "the episode's grant serves its audio");
+        let mut rest: Vec<String> = db
+            .download_entries()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.asin)
+            .collect();
+        rest.sort();
+        assert_eq!(rest, vec!["A1", "A2", "E1"]);
+    }
+
+    #[tokio::test]
+    async fn missing_download_asins_lists_items_lacking_a_kind() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        let log = SyncLogEntry {
+            request_time_utc: now_iso_utc(),
+            response_time_utc: now_iso_utc(),
+            http_status: Some(200),
+            ..Default::default()
+        };
+        db.apply_page(
+            MP.into(),
+            vec![item("A1", "Eins"), item("A2", "Zwei")],
+            vec![],
+            log,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let rec = |asin: &str, kind: &str| DownloadRecord {
+            asin: asin.into(),
+            kind: kind.into(),
+            acr: None,
+            content_format: String::new(),
+            variant: "original".into(),
+            request_kind: String::new(),
+            version: None,
+            sku: None,
+            file_path: format!("/dl/{asin}.{kind}"),
+            file_size: None,
+        };
+        // A1 has adrm-high audio recorded; A2 has nothing.
+        let mut a1_audio = rec("A1", "audio");
+        a1_audio.request_kind = "adrm-high".into();
+        db.record_download(MP.into(), a1_audio).await.unwrap();
+
+        let default_high = || {
+            vec![
+                "adrm-high".to_owned(),
+                "widevine-aac-high".to_owned(),
+                "mpeg".to_owned(),
+            ]
+        };
+
+        // Missing audio (default-high run) → only A2; A1's row matches a
+        // candidate.
+        let mut audio = db
+            .missing_download_asins(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                default_high(),
+                true,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        audio.sort();
+        assert_eq!(audio, vec!["A2".to_owned()]);
+
+        // Format-aware (AUD-96): a forced-xhe run does not accept A1's
+        // adrm-high row → both items are missing.
+        let mut xhe = db
+            .missing_download_asins(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec!["widevine-xhe-high".to_owned(), "mpeg".to_owned()],
+                true,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        xhe.sort();
+        assert_eq!(xhe, vec!["A1".to_owned(), "A2".to_owned()]);
+
+        // Missing audio OR cover → A1 (no cover) and A2 (neither).
+        let mut both = db
+            .missing_download_asins(
+                vec![MP.to_owned()],
+                vec!["audio".into(), "cover".into()],
+                default_high(),
+                true,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        both.sort();
+        assert_eq!(both, vec!["A1".to_owned(), "A2".to_owned()]);
+
+        // A different marketplace has none of these items.
+        assert!(
+            db.missing_download_asins(
+                vec!["us".to_owned()],
+                vec!["audio".into()],
+                default_high(),
+                true,
+                true,
+                true,
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    /// A kind that cannot exist is never missing (AUD-206): `pdf` is reported
+    /// only for a title whose document advertises one — never for a book
+    /// without one, and never for a show (its episodes have none), which is
+    /// what used to make `download` probe the companion-file URL pointlessly.
+    #[tokio::test]
+    async fn missing_never_reports_a_pdf_that_cannot_exist() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        let doc = |asin: &str, extra: serde_json::Value| {
+            let mut value = serde_json::json!({
+                "asin": asin,
+                "title": asin,
+                "purchase_date": "2024-01-01",
+            });
+            for (key, item) in extra.as_object().unwrap() {
+                value[key] = item.clone();
+            }
+            crate::db::test_util::upsert(asin, value)
+        };
+        db.apply_page(
+            MP.into(),
+            vec![
+                doc("A1", serde_json::json!({"is_pdf_url_available": true})),
+                doc("A2", serde_json::json!({"is_pdf_url_available": false})),
+                doc(
+                    "P1",
+                    serde_json::json!({
+                        "content_type": "Podcast",
+                        "content_delivery_type": "PodcastParent",
+                        "is_pdf_url_available": false,
+                    }),
+                ),
+            ],
+            vec![],
+            default_log(),
+            None,
+        )
+        .await
+        .unwrap();
+        // The episode doc carries no PDF signal at all — absent must read as
+        // "no PDF", like an explicit `false`.
+        db.apply_episodes(
+            MP.into(),
+            "P1".into(),
+            vec![episode("E1", "Eins")],
+            ChangeRecording {
+                record: false,
+                mode: "delta",
+            },
+        )
+        .await
+        .unwrap();
+
+        // The list reports a PDF only where one can exist.
+        let rows = db
+            .books_missing_downloads(
+                vec![MP.to_owned()],
+                vec!["pdf".into()],
+                vec![],
+                u32::MAX,
+                0,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        let listed: Vec<&str> = rows.iter().map(|row| row.asin.as_str()).collect();
+        assert_eq!(
+            listed,
+            vec!["A1"],
+            "only the title advertising a PDF (not the PDF-less book, not the show)"
+        );
+
+        // The download sweep resolves to the same single leaf.
+        let leaves = db
+            .missing_download_asins(
+                vec![MP.to_owned()],
+                vec!["pdf".into()],
+                vec![],
+                true,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(leaves, vec!["A1".to_owned()]);
+
+        // And the episode drill-down reports no PDF for an episode.
+        let episodes = db
+            .episodes_missing_downloads(MP.into(), "P1".into(), vec!["pdf".into()], u32::MAX, 0)
+            .await
+            .unwrap();
+        assert!(
+            episodes.is_empty(),
+            "an episode has no PDF: {:?}",
+            episodes.iter().map(|e| &e.asin).collect::<Vec<_>>()
+        );
+    }
+
+    /// A podcast show is a **roll-up**, never a download target (AUD-203): the
+    /// list reports it missing while any episode is missing and drops it once
+    /// they are all downloaded; the download twin resolves it to the missing
+    /// **episodes** as leaves and never returns the show itself.
+    #[tokio::test]
+    async fn missing_podcast_rolls_up_in_list_and_resolves_to_episodes_in_download() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        let show = |asin: &str, title: &str| {
+            crate::db::test_util::upsert(
+                asin,
+                serde_json::json!({
+                    "asin": asin,
+                    "title": title,
+                    "content_type": "Podcast",
+                    "content_delivery_type": "PodcastParent",
+                    "purchase_date": "2024-01-01",
+                }),
+            )
+        };
+        // A book, a half-downloaded show, a fully-downloaded one, and a show
+        // whose episodes were never synced.
+        db.apply_page(
+            MP.into(),
+            vec![
+                item("A1", "Book"),
+                show("P1", "Half"),
+                show("P2", "Complete"),
+                show("P3", "No episodes"),
+            ],
+            vec![],
+            default_log(),
+            None,
+        )
+        .await
+        .unwrap();
+        let recording = || ChangeRecording {
+            record: false,
+            mode: "delta",
+        };
+        db.apply_episodes(
+            MP.into(),
+            "P1".into(),
+            vec![episode("E1", "Eins"), episode("E2", "Zwei")],
+            recording(),
+        )
+        .await
+        .unwrap();
+        db.apply_episodes(
+            MP.into(),
+            "P2".into(),
+            vec![episode("F1", "Eins")],
+            recording(),
+        )
+        .await
+        .unwrap();
+
+        let audio = |asin: &str| DownloadRecord {
+            asin: asin.into(),
+            kind: "audio".into(),
+            acr: None,
+            content_format: String::new(),
+            variant: "original".into(),
+            request_kind: String::new(),
+            version: None,
+            sku: None,
+            file_path: format!("/dl/{asin}.aaxc"),
+            file_size: None,
+        };
+        // P1 has only E1 downloaded (E2 still missing); P2's single episode is
+        // downloaded, so the show is complete.
+        db.record_download(MP.into(), audio("E1")).await.unwrap();
+        db.record_download(MP.into(), audio("F1")).await.unwrap();
+
+        // The list rolls up: the half-done show is listed, the complete one is
+        // not, and a show with no episodes has nothing to miss.
+        let rows = db
+            .books_missing_downloads(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                u32::MAX,
+                0,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        let listed: Vec<&str> = rows.iter().map(|row| row.asin.as_str()).collect();
+        assert!(listed.contains(&"A1"), "book missing audio: {listed:?}");
+        assert!(
+            listed.contains(&"P1"),
+            "show with a missing episode: {listed:?}"
+        );
+        assert!(
+            !listed.contains(&"P2"),
+            "fully downloaded show must not be listed: {listed:?}"
+        );
+        assert!(
+            !listed.contains(&"P3"),
+            "show without episodes has nothing missing: {listed:?}"
+        );
+        let count = db
+            .count_books_missing_downloads(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(count as usize, rows.len(), "count matches the roll-up rows");
+
+        // The download resolves to leaves: the missing episode, never a show.
+        let mut leaves = db
+            .missing_download_asins(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                true,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        leaves.sort();
+        assert_eq!(leaves, vec!["A1".to_owned(), "E2".to_owned()]);
+
+        // --exclude-podcasts narrows the sweep to books.
+        let books_only = db
+            .missing_download_asins(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                true,
+                true,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(books_only, vec!["A1".to_owned()]);
+    }
+
+    /// Archived items are excluded from every missing-downloads query
+    /// unless `include_archived` (AUD-110).
+    #[tokio::test]
+    async fn missing_queries_skip_archived_items_unless_included() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        let mut archived = item("A1", "Archived");
+        let mut doc: serde_json::Value = serde_json::from_str(&archived.doc).unwrap();
+        doc["is_archived"] = serde_json::Value::Bool(true);
+        archived.doc = doc.to_string();
+        let log = SyncLogEntry {
+            request_time_utc: now_iso_utc(),
+            response_time_utc: now_iso_utc(),
+            http_status: Some(200),
+            ..Default::default()
+        };
+        // A1 archived, A2 active — neither has any download.
+        db.apply_page(
+            MP.into(),
+            vec![archived, item("A2", "Active")],
+            vec![],
+            log,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let asins = db
+            .missing_download_asins(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                false,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(asins, vec!["A2".to_owned()]);
+        let mut all = db
+            .missing_download_asins(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                true,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        all.sort();
+        assert_eq!(all, vec!["A1".to_owned(), "A2".to_owned()]);
+
+        let rows = db
+            .books_missing_downloads(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                u32::MAX,
+                0,
+                false,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].asin, "A2");
+        assert_eq!(
+            db.count_books_missing_downloads(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                false,
+                true
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.count_books_missing_downloads(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                true,
+                true
+            )
+            .await
+            .unwrap(),
+            2
+        );
+    }
+
+    /// Items without a provable consumption right are excluded from the
+    /// missing-download queries (AUD-104 — full identity with the external
+    /// check: an explicit `false` and an absent field both fail), and
+    /// `lapsed_titles` names the refused memberships, an episode as its
+    /// parent show.
+    #[tokio::test]
+    async fn missing_queries_skip_lapsed_rights_and_lapsed_titles_names_them() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        // A1 consumable, A2 explicitly lapsed, A3 without customer_rights;
+        // P1 a lapsed show with episode E1, P2 a consumable show with F1.
+        let mut lapsed_item = item("A2", "Lapsed");
+        let mut doc: serde_json::Value = serde_json::from_str(&lapsed_item.doc).unwrap();
+        doc["customer_rights"]["is_consumable"] = serde_json::Value::Bool(false);
+        lapsed_item.doc = doc.to_string();
+        let no_rights = crate::db::test_util::upsert(
+            "A3",
+            serde_json::json!({
+                "asin": "A3", "title": "No rights", "purchase_date": "2024-01-01",
+            }),
+        );
+        let show = |asin: &str, consumable: bool| {
+            crate::db::test_util::upsert(
+                asin,
+                serde_json::json!({
+                    "asin": asin, "title": asin,
+                    "content_type": "Podcast",
+                    "content_delivery_type": "PodcastParent",
+                    "purchase_date": "2024-01-01",
+                    "customer_rights": {"is_consumable": consumable},
+                }),
+            )
+        };
+        db.apply_page(
+            MP.into(),
+            vec![
+                item("A1", "Active"),
+                lapsed_item,
+                no_rights,
+                show("P1", false),
+                show("P2", true),
+            ],
+            vec![],
+            default_log(),
+            None,
+        )
+        .await
+        .unwrap();
+        let recording = || ChangeRecording {
+            record: false,
+            mode: "delta",
+        };
+        db.apply_episodes(
+            MP.into(),
+            "P1".into(),
+            vec![episode("E1", "Eins")],
+            recording(),
+        )
+        .await
+        .unwrap();
+        db.apply_episodes(
+            MP.into(),
+            "P2".into(),
+            vec![episode("F1", "Eins")],
+            recording(),
+        )
+        .await
+        .unwrap();
+
+        // The sweep keeps only provably consumable leaves (an episode
+        // inherits its parent show's right).
+        let mut leaves = db
+            .missing_download_asins(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                true,
+                false,
+                true,
+            )
+            .await
+            .unwrap();
+        leaves.sort();
+        assert_eq!(leaves, vec!["A1".to_owned(), "F1".to_owned()]);
+
+        // Counting mode (`include_lapsed`) restores the full sweep — the
+        // difference is what `download --missing` reports as skipped.
+        let mut all = db
+            .missing_download_asins(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                true,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        all.sort();
+        assert_eq!(
+            all,
+            vec![
+                "A1".to_owned(),
+                "A2".to_owned(),
+                "A3".to_owned(),
+                "E1".to_owned(),
+                "F1".to_owned(),
+            ]
+        );
+
+        // The list twin filters identically (silently, like archived).
+        let rows = db
+            .books_missing_downloads(
+                vec![MP.to_owned()],
+                vec!["audio".into()],
+                vec![],
+                u32::MAX,
+                0,
+                true,
+                false,
+            )
+            .await
+            .unwrap();
+        let listed: Vec<&str> = rows.iter().map(|row| row.asin.as_str()).collect();
+        assert_eq!(listed, vec!["A1", "P2"]);
+
+        // `lapsed_titles` names the refused memberships: the lapsed item,
+        // the rights-less item, and the episode as its parent show. The
+        // consumable ones and an unknown ASIN are not its business.
+        let lapsed = db
+            .lapsed_titles(
+                MP.into(),
+                vec![
+                    "A1".into(),
+                    "A2".into(),
+                    "A3".into(),
+                    "E1".into(),
+                    "F1".into(),
+                    "X9".into(),
+                ],
+            )
+            .await
+            .unwrap();
+        let asins: Vec<&str> = lapsed.iter().map(|(asin, _)| asin.as_str()).collect();
+        assert_eq!(asins, vec!["A2", "A3", "P1"]);
+    }
+
+    #[test]
+    fn state_token_iso_handles_seconds_and_millis() {
+        assert_eq!(
+            state_token_iso("1750000000000").as_deref(),
+            Some("2025-06-15T15:06:40Z")
+        );
+        assert_eq!(
+            state_token_iso("1750000000").as_deref(),
+            Some("2025-06-15T15:06:40Z")
+        );
+        assert_eq!(state_token_iso("abc"), None);
+    }
+
+    #[test]
+    fn prepare_fts_query_quotes_and_prefixes() {
+        // Multi-word plain query: each token becomes a quoted prefix.
+        assert_eq!(prepare_fts_query("star wars"), "\"star\"* \"wars\"*");
+        // Single plain word: becomes a quoted prefix.
+        assert_eq!(prepare_fts_query("jed"), "\"jed\"*");
+        // Punctuation that would otherwise crash FTS5: still quoted.
+        assert_eq!(prepare_fts_query("c++"), "\"c++\"*");
+        // Empty string: returns empty string.
+        assert_eq!(prepare_fts_query(""), "");
+        // Whitespace-only: returns empty string.
+        assert_eq!(prepare_fts_query("   "), "");
+        // Input containing `*`: passthrough (user is using FTS5 syntax).
+        assert_eq!(prepare_fts_query("jedi*"), "jedi*");
+        // Input with a leading `"`: passthrough.
+        assert_eq!(prepare_fts_query("\"star wars\""), "\"star wars\"");
+        // Explicit AND operator: passthrough.
+        assert_eq!(
+            prepare_fts_query("hobbit AND tolkien"),
+            "hobbit AND tolkien"
+        );
+        // Explicit OR operator: passthrough.
+        assert_eq!(prepare_fts_query("star OR wars"), "star OR wars");
+        // Explicit NOT operator: passthrough.
+        assert_eq!(prepare_fts_query("jedi NOT sith"), "jedi NOT sith");
+        // NEAR is an operator too: passthrough.
+        assert_eq!(prepare_fts_query("NEAR(jedi sith)"), "NEAR(jedi sith)");
+    }
+
+    #[test]
+    fn prepare_fts_query_colon_is_punctuation_unless_column_filter() {
+        // A subtitle colon is punctuation: tokenized, not passed through
+        // (passthrough would raise "no such column: Dune" in FTS5).
+        assert_eq!(
+            prepare_fts_query("Dune: Part Two"),
+            "\"Dune:\"* \"Part\"* \"Two\"*"
+        );
+        // Colon glued to the next word, same story.
+        assert_eq!(
+            prepare_fts_query("12:30 to Paris"),
+            "\"12:30\"* \"to\"* \"Paris\"*"
+        );
+        // A real column filter is power-user FTS5 syntax: passthrough.
+        assert_eq!(prepare_fts_query("title:dune"), "title:dune");
+        assert_eq!(prepare_fts_query("subtitle:two"), "subtitle:two");
+        assert_eq!(
+            prepare_fts_query("full_title:dune title:part"),
+            "full_title:dune title:part"
+        );
+        // Negated column filter keeps working.
+        assert_eq!(prepare_fts_query("-title:dune"), "-title:dune");
+        // One real filter plus one punctuation colon: not a valid filter
+        // query as a whole, so it is tokenized.
+        assert_eq!(
+            prepare_fts_query("title:dune Bonus: extras"),
+            "\"title:dune\"* \"Bonus:\"* \"extras\"*"
+        );
+        // The UNINDEXED asin column cannot be matched: treat as text.
+        assert_eq!(prepare_fts_query("asin:B0EXAMPLE1"), "\"asin:B0EXAMPLE1\"*");
+    }
+
+    #[tokio::test]
+    async fn fts_prefix_search_finds_partial_title() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        db.apply_page(
+            MP.into(),
+            vec![item("JQ1", "Jedi Quest"), item("SW1", "Star Wars")],
+            vec![],
+            SyncLogEntry {
+                request_time_utc: now_iso_utc(),
+                response_time_utc: now_iso_utc(),
+                http_status: Some(200),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        // "jed" does not appear literally in any title; without prefix
+        // expansion the FTS MATCH would return nothing. With prepare_fts_query
+        // it becomes `"jed"*` and matches "Jedi Quest".
+        let results = db
+            .search(vec![MP.to_owned()], vec![], "jed".into(), 10, true)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1, "prefix search must find 'Jedi Quest'");
+        assert_eq!(results[0].asin, "JQ1");
+
+        // Punctuation that previously caused a syntax error is now safe.
+        // "c++" has no match in the DB, but the query must not return an error.
+        let punct = db
+            .search(vec![MP.to_owned()], vec![], "c++".into(), 10, true)
+            .await;
+        assert!(punct.is_ok(), "punctuation query must not raise FTS5 error");
+        assert!(punct.unwrap().is_empty());
+
+        // Sanity: exact-token FTS still works (känguru → "känguru"*).
+        let exact = db
+            .search(vec![MP.to_owned()], vec![], "star".into(), 10, true)
+            .await
+            .unwrap();
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].asin, "SW1");
+    }
+
+    /// A16: `%`/`_` in a LIKE search are literal text, not wildcards —
+    /// "100%" must not match every title starting with "100".
+    #[tokio::test]
+    async fn like_search_treats_percent_and_underscore_literally() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        db.apply_page(
+            MP.into(),
+            vec![
+                item("PC1", "100% Motivation"),
+                item("YR1", "100 Jahre Einsamkeit"),
+            ],
+            vec![],
+            SyncLogEntry {
+                request_time_utc: now_iso_utc(),
+                response_time_utc: now_iso_utc(),
+                http_status: Some(200),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let results = db
+            .search(vec![MP.to_owned()], vec![], "100%".into(), 10, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "\"100%\" must match only the literal title"
+        );
+        assert_eq!(results[0].asin, "PC1");
+
+        // `_` is literal too ("100_" would otherwise match "100 J…").
+        let results = db
+            .search(vec![MP.to_owned()], vec![], "100_".into(), 10, false)
+            .await
+            .unwrap();
+        assert!(results.is_empty(), "\"100_\" matches nothing literally");
+    }
+
+    #[tokio::test]
+    async fn fts_search_matches_titles_with_colons() {
+        let (_dir, db) = open_temp().await;
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        db.apply_page(
+            MP.into(),
+            vec![item("DN2", "Dune: Part Two"), item("SW1", "Star Wars")],
+            vec![],
+            SyncLogEntry {
+                request_time_utc: now_iso_utc(),
+                response_time_utc: now_iso_utc(),
+                http_status: Some(200),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Searching with the colon typed exactly as the title carries it
+        // used to raise "no such column: Dune"; it must match the title.
+        let results = db
+            .search(
+                vec![MP.to_owned()],
+                vec![],
+                "Dune: Part Two".into(),
+                10,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1, "colon query must find 'Dune: Part Two'");
+        assert_eq!(results[0].asin, "DN2");
+
+        // A genuine column filter still reaches FTS5 untouched.
+        let filtered = db
+            .search(
+                vec![MP.to_owned()],
+                vec![],
+                "full_title:dune".into(),
+                10,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].asin, "DN2");
+    }
+}

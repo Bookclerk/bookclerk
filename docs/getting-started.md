@@ -34,7 +34,8 @@ cp config/config.example.toml "$BOOKCLERK_FILES_DIR/config.toml"
 ```
 
 On first use Bookclerk also creates `library.db`, `cache/`, `search_index/`,
-`plugins/`, and `Accounts/` under the files directory.
+and `plugins/` under the files directory. Auth credentials are stored in the
+`encrypted_secrets` table inside `library.db` — there is no `Accounts/` directory.
 
 ## Authenticate a store
 
@@ -54,17 +55,12 @@ username/password CLI for Audible. Alternatives:
 - Import an existing audible-rs auth file: `bookclerk auth import path/to/file.audible.auth`
 - Migrate classic Libation accounts: see [migration.md](migration.md)
 
-Encrypt Audible token files at rest:
+Wrap `master.key` at rest (strongly recommended for production):
 
 ```bash
 export BOOKCLERK_AUTH_PASSWORD='your-strong-passphrase'
-# or: BOOKCLERK_AUTH_PASSWORD_FILE=/run/bookclerk/secrets/auth_password
 bookclerk auth login --force
 ```
-
-Missing password-file paths are auto-created with a strong random secret — keep
-that path on a secrets volume, not under `Accounts/`. Local throwaway only:
-`auth.allow_plaintext = true`.
 
 ### Password stores (Libro.fm, Chirp, GraphicAudio)
 

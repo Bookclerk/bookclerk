@@ -1,28 +1,25 @@
 //! [`ContentSource`] adapter for Audible.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bookclerk_config::{AudioQuality, Config};
-use bookclerk_library::LibraryStore;
+use bookclerk_library::SourceScope;
 use bookclerk_source::{
     ContentSource, EncryptedDrmKind, EncryptedFetch, FetchOptions, LoginOptions, PortalAuthMode,
     Result, ScanOptions, ScanSummary, SourceAccount, SourceBrand, SourceError, SourceFetch,
     SourceRegistry,
 };
 
-use crate::accounts::list_accounts;
 use crate::artifacts::{download_cover_jpeg, fetch_chapter_info};
 use crate::auth::{begin_login, AuthLoginOptions, LoginMode};
+use crate::db::list_audible_accounts_from_db;
 use crate::download::{fetch_and_download_with_options, DrmKind};
 use crate::error::AudibleError;
 use crate::sync::scan_library;
 
 /// Canonical plugin id.
 pub const ID: &str = "audible";
-
-const AUTH_SUFFIXES: &[&str] = &[".audible.auth", ".wvd"];
 
 /// Audible store as a [`ContentSource`].
 #[derive(Debug, Default, Clone, Copy)]
@@ -80,10 +77,6 @@ impl ContentSource for AudibleSource {
         }
     }
 
-    fn auth_credential_suffixes(&self) -> &'static [&'static str] {
-        AUTH_SUFFIXES
-    }
-
     fn sort_key(&self) -> u32 {
         0
     }
@@ -92,7 +85,7 @@ impl ContentSource for AudibleSource {
         true
     }
 
-    async fn login(&self, files_dir: &Path, opts: LoginOptions) -> Result<SourceAccount> {
+    async fn login(&self, scope: &SourceScope, opts: LoginOptions) -> Result<SourceAccount> {
         // Audible ignores email/password (OAuth via browser/QR). Drive the
         // interactive LoginServer flow with marketplace / label / force.
         let marketplace = if opts.marketplace.trim().is_empty() {
@@ -103,9 +96,9 @@ impl ContentSource for AudibleSource {
         let auth_opts = AuthLoginOptions {
             marketplace,
             label: opts.label,
-            files_dir: files_dir.to_path_buf(),
             mode: LoginMode::Server,
             force: opts.force,
+            scope: Some(scope.clone()),
             ..AuthLoginOptions::default()
         };
         let session = begin_login(auth_opts, |_| {})
@@ -120,34 +113,49 @@ impl ContentSource for AudibleSource {
         })
     }
 
-    async fn list_accounts(&self, files_dir: &Path) -> Result<Vec<SourceAccount>> {
-        let accounts = list_accounts(files_dir).await.map_err(map_audible_err)?;
-        Ok(accounts
+    async fn list_accounts(&self, scope: &SourceScope) -> Result<Vec<SourceAccount>> {
+        // Prefer the accounts table (customer id + display label). Fall back to
+        // secret rows when an account has credentials but no metadata row yet.
+        let mut by_id: std::collections::BTreeMap<String, SourceAccount> = scope
+            .list_accounts()
+            .await
+            .map_err(|e| SourceError::api(e.to_string()))?
             .into_iter()
-            .map(|a| SourceAccount {
-                account_id: a.account_id,
-                source: ID.into(),
-                marketplace: a.marketplace,
-                label: a.label,
-                scan_enabled: true,
+            .map(|a| {
+                (
+                    a.account_id.clone(),
+                    SourceAccount {
+                        account_id: a.account_id,
+                        source: ID.into(),
+                        marketplace: a.marketplace,
+                        label: a.label,
+                        scan_enabled: a.scan_enabled,
+                    },
+                )
             })
-            .collect())
+            .collect();
+        let secrets = list_audible_accounts_from_db(scope)
+            .await
+            .map_err(map_audible_err)?;
+        for (account_id, _name) in secrets {
+            by_id.entry(account_id.clone()).or_insert(SourceAccount {
+                account_id,
+                source: ID.into(),
+                marketplace: String::new(),
+                label: None,
+                scan_enabled: true,
+            });
+        }
+        Ok(by_id.into_values().collect())
     }
 
-    async fn scan(
-        &self,
-        files_dir: &Path,
-        library: &LibraryStore,
-        opts: ScanOptions,
-    ) -> Result<ScanSummary> {
-        scan_library(files_dir, library, opts)
-            .await
-            .map_err(map_audible_err)
+    async fn scan(&self, scope: &SourceScope, opts: ScanOptions) -> Result<ScanSummary> {
+        scan_library(scope, opts).await.map_err(map_audible_err)
     }
 
     async fn fetch_title(
         &self,
-        files_dir: &Path,
+        scope: &SourceScope,
         account_id: &str,
         title_id: &str,
         opts: &FetchOptions,
@@ -155,10 +163,16 @@ impl ContentSource for AudibleSource {
         let mut dl = opts.download.clone();
         dl.quality = self.bitrate;
 
-        let (account, download, _summary) =
-            fetch_and_download_with_options(files_dir, account_id, title_id, &dl, &opts.cache_dir)
-                .await
-                .map_err(map_audible_err)?;
+        let (account, download, _summary) = fetch_and_download_with_options(
+            scope,
+            &opts.files_dir,
+            account_id,
+            title_id,
+            &dl,
+            &opts.cache_dir,
+        )
+        .await
+        .map_err(map_audible_err)?;
 
         let need_chapters = dl.create_cue
             || dl.fixup_metadata

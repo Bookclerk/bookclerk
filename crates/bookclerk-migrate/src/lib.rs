@@ -48,7 +48,7 @@ pub struct MigrateOptions {
 pub struct MigrateSummary {
     pub settings_imported: bool,
     pub accounts: usize,
-    pub auth_files: usize,
+    pub credentials: usize,
     pub books: usize,
     pub acquired: usize,
     pub storage_keys: usize,
@@ -62,7 +62,6 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
 
     if !opts.dry_run {
         std::fs::create_dir_all(&opts.dest_files_dir)?;
-        let _ = bookclerk_audible::ensure_accounts_dir(&opts.dest_files_dir);
     }
 
     // --- Settings.json → config.toml ---
@@ -102,7 +101,7 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
         )
         .await?;
         summary.accounts = acct.accounts;
-        summary.auth_files = acct.auth_files;
+        summary.credentials = acct.credentials;
         summary.warnings.extend(acct.warnings);
         account_id_map = acct.account_id_map;
     } else {
@@ -122,9 +121,9 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
     if let Some(db_path) = &source.library_db {
         let library_db = opts.dest_files_dir.join("library.db");
         let store = if opts.dry_run {
-            LibraryStore::open_in_memory()?
+            LibraryStore::open_in_memory().await?
         } else {
-            LibraryStore::open(&library_db)?
+            LibraryStore::open(&library_db).await?
         };
         let lib = import_library_db(
             db_path,
@@ -133,7 +132,8 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
             books_root.as_path(),
             &account_id_map,
             opts.dry_run,
-        )?;
+        )
+        .await?;
         summary.books = lib.books;
         summary.acquired = lib.acquired;
         summary.storage_keys = lib.storage_keys;

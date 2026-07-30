@@ -1,6 +1,5 @@
-//! Axum routes for portal claim / Accounts linking (`/api/portal`).
+//! Axum routes for portal claim / account linking (`/api/portal`).
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -30,7 +29,6 @@ pub struct PortalState {
     pub config: Arc<RwLock<Config>>,
     pub library: LibraryStore,
     pub integrations: IntegrationRegistry,
-    pub files_dir: PathBuf,
     pub sources: Vec<Arc<dyn ContentSource>>,
 }
 
@@ -53,12 +51,12 @@ pub fn portal_spa_router(state: PortalState) -> Router {
 }
 
 /// Resolve a portal identity from the request cookie, if present and valid.
-pub fn portal_identity_from_headers(
+pub async fn portal_identity_from_headers(
     library: &LibraryStore,
     headers: &HeaderMap,
 ) -> Option<bookclerk_library::PortalIdentity> {
     let raw = cookie_value(headers, SESSION_COOKIE)?;
-    identity_from_session(library, &raw).ok().flatten()
+    identity_from_session(library, &raw).await.ok().flatten()
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,7 +70,7 @@ async fn redeem(
 ) -> Result<Response, PortalError> {
     let cfg = state.config.read().await;
     let (session, identity) =
-        redeem_ticket_to_session(&state.library, &cfg.integrations, body.ticket.trim())?;
+        redeem_ticket_to_session(&state.library, &cfg.integrations, body.ticket.trim()).await?;
     // Defense-in-depth: refuse tickets whose provider integration is disabled.
     if !cfg.integrations.is_enabled(&identity.provider) {
         return Err(PortalError::bad(format!(
@@ -123,13 +121,16 @@ async fn login_integration(
         .authenticate_user(body.username.trim(), &body.password)
         .await
         .map_err(|e| PortalError::bad(e.to_string()))?;
-    let identity = state.library.upsert_portal_identity(
-        &user.provider,
-        &user.external_user_id,
-        user.display_name.as_deref(),
-    )?;
+    let identity = state
+        .library
+        .upsert_portal_identity(
+            &user.provider,
+            &user.external_user_id,
+            user.display_name.as_deref(),
+        )
+        .await?;
     let cfg = state.config.read().await;
-    let session = session_for_identity(&state.library, &cfg.integrations, &identity)?;
+    let session = session_for_identity(&state.library, &cfg.integrations, &identity).await?;
     drop(cfg);
     Ok(session_response(session, &state).await)
 }
@@ -265,9 +266,11 @@ async fn source_password_login(
         ));
     }
 
+    let source_id = source.id();
+    let scope = state.library.scope(source_id);
     let account = source
         .login(
-            &state.files_dir,
+            &scope,
             LoginOptions {
                 marketplace: "us".into(),
                 label: None,
@@ -279,18 +282,22 @@ async fn source_password_login(
         .await
         .map_err(|e| PortalError::bad(e.to_string()))?;
 
-    let source_id = source.id();
-    state.library.upsert_account_with_source(
-        &account.account_id,
-        &account.marketplace,
-        account.label.as_deref(),
-        true,
-        source_id,
-    )?;
-    state.library.mark_connection_active(&account.account_id)?;
+    scope
+        .upsert_account(
+            &account.account_id,
+            &account.marketplace,
+            account.label.as_deref(),
+            true,
+        )
+        .await?;
     state
         .library
-        .link_account(identity.id, &account.account_id, source_id)?;
+        .mark_connection_active(&account.account_id)
+        .await?;
+    state
+        .library
+        .link_account(identity.id, &account.account_id, source_id)
+        .await?;
     Ok(Json(serde_json::json!({
         "ok": true,
         "account_id": account.account_id,
@@ -348,17 +355,13 @@ async fn start_audible_login_session(
     use bookclerk_audible::{begin_login, AuthLoginOptions, LoginProgress};
     use tokio::sync::mpsc;
 
-    let files_dir = state.files_dir.clone();
-    let password_file = state.config.read().await.auth.password_file.clone();
-    let allow_plaintext = state.config.read().await.auth.allow_plaintext;
     let library = state.library.clone();
     let (url_tx, mut url_rx) = mpsc::channel::<String>(1);
 
     tokio::spawn(async move {
+        let scope = library.scope("audible");
         let opts = AuthLoginOptions {
-            files_dir,
-            password_file,
-            allow_plaintext,
+            scope: Some(scope.clone()),
             show_qr: false,
             callback_bind: "0.0.0.0:0".parse().expect("bind"),
             ..Default::default()
@@ -372,15 +375,18 @@ async fn start_audible_login_session(
         .await;
         match result {
             Ok(session) => {
-                let _ = library.upsert_account_with_source(
-                    &session.account_id,
-                    &session.marketplace,
-                    session.label.as_deref(),
-                    true,
-                    "audible",
-                );
-                let _ = library.mark_connection_active(&session.account_id);
-                let _ = library.link_account(identity_id, &session.account_id, "audible");
+                let _ = scope
+                    .upsert_account(
+                        &session.account_id,
+                        &session.marketplace,
+                        session.label.as_deref(),
+                        true,
+                    )
+                    .await;
+                let _ = library.mark_connection_active(&session.account_id).await;
+                let _ = library
+                    .link_account(identity_id, &session.account_id, "audible")
+                    .await;
                 info!(account = %session.account_id, "portal Audible login completed");
             }
             Err(err) => warn!(%err, "portal Audible login failed"),
@@ -400,10 +406,10 @@ async fn connections(
 ) -> Result<Json<ConnectionsResponse>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
     let cfg = state.config.read().await;
-    let links = state.library.list_account_links(identity.id)?;
+    let links = state.library.list_account_links(identity.id).await?;
     let mut connections = Vec::new();
     for link in links {
-        let acct = state.library.get_account(&link.account_id)?;
+        let acct = state.library.get_account(&link.account_id).await?;
         let brand = find_source(&state, &link.source)
             .map(|s| Brand::from(s.portal_brand()))
             .or_else(|| {
@@ -458,29 +464,16 @@ async fn revoke_connection(
     Path(account_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
-    let links = state.library.list_account_links(identity.id)?;
+    let links = state.library.list_account_links(identity.id).await?;
     if !links.iter().any(|l| l.account_id == account_id) {
         return Err(PortalError::bad("account not linked to this identity"));
     }
-    let suffixes: Vec<&str> = state
-        .sources
-        .iter()
-        .flat_map(|s| s.auth_credential_suffixes().iter().copied())
-        .fold(Vec::new(), |mut acc, suffix| {
-            if !acc.contains(&suffix) {
-                acc.push(suffix);
-            }
-            acc
-        });
-    match bookclerk_source::remove_account_credentials(&state.files_dir, &account_id, &suffixes) {
-        Ok(paths) => {
-            for path in paths {
-                info!(path = %path.display(), "removed auth file on revoke");
-            }
-        }
-        Err(err) => warn!(%account_id, %err, "failed to remove auth files on revoke"),
+    // Delete the DB-stored credentials (source auth + Widevine CDM) and mark the
+    // account revoked. No filesystem credentials exist to clean up.
+    if let Err(err) = state.library.delete_account_secrets(&account_id).await {
+        warn!(%account_id, %err, "failed to delete encrypted_secrets on revoke");
     }
-    state.library.revoke_credentials(&account_id)?;
+    state.library.revoke_credentials(&account_id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -490,7 +483,8 @@ async fn require_identity(
 ) -> Result<bookclerk_library::PortalIdentity, PortalError> {
     let raw = cookie_value(headers, SESSION_COOKIE)
         .ok_or_else(|| PortalError::unauthorized("not signed in"))?;
-    identity_from_session(&state.library, &raw)?
+    identity_from_session(&state.library, &raw)
+        .await?
         .ok_or_else(|| PortalError::unauthorized("session expired"))
 }
 
@@ -546,7 +540,7 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 /// Mint a claim ticket for an external user (daemon watcher / CLI).
-pub fn mint_for_external_user(
+pub async fn mint_for_external_user(
     library: &LibraryStore,
     config: &Config,
     user: &ExternalUser,
@@ -558,7 +552,7 @@ pub fn mint_for_external_user(
             user.provider
         )));
     }
-    let minted = mint_claim_ticket(library, &config.integrations, user, created_by)?;
+    let minted = mint_claim_ticket(library, &config.integrations, user, created_by).await?;
     if let Some(url) = crate::tickets::ticket_portal_url(&config.integrations, &minted.token) {
         info!(%url, identity = minted.identity.id, "minted claim ticket");
     } else {

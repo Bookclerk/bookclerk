@@ -90,7 +90,7 @@ impl SearchEngine {
     }
 
     /// Rebuild the entire index from the library DB.
-    pub fn rebuild(&self, library: &LibraryStore) -> Result<usize> {
+    pub async fn rebuild(&self, library: &LibraryStore) -> Result<usize> {
         let mut writer = self
             .index
             .writer(50_000_000)
@@ -99,7 +99,7 @@ impl SearchEngine {
             .delete_all_documents()
             .map_err(|err| SearchError::Index(err.to_string()))?;
 
-        let books = library.list_books(None)?;
+        let books = library.list_books(None).await?;
         for book in &books {
             self.add_book(&mut writer, book)?;
         }
@@ -252,36 +252,46 @@ mod tests {
     use super::*;
     use bookclerk_library::NewBook;
 
-    #[test]
-    fn indexes_and_finds_by_title() {
+    #[tokio::test]
+    async fn indexes_and_finds_by_title() {
         let dir = tempfile::tempdir().unwrap();
-        let library = LibraryStore::open_in_memory().unwrap();
-        library.upsert_account("acct", "us", None, true).unwrap();
+        let library = LibraryStore::open_in_memory().await.unwrap();
+        library
+            .upsert_account("acct", "us", None, true, "audible")
+            .await
+            .unwrap();
         let mut book = NewBook::minimal("B00TEST", "acct", "us", "Harry Potter");
         book.authors = Some("Rowling".into());
-        library.upsert_book(&book).unwrap();
+        library.upsert_book(&book).await.unwrap();
 
         let engine = SearchEngine::open(dir.path()).unwrap();
-        engine.rebuild(&library).unwrap();
+        engine.rebuild(&library).await.unwrap();
         let hits = engine.search("potter", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].asin, "B00TEST");
-        let stored = library.get_book("B00TEST", "acct").unwrap().unwrap();
+        let stored = library.get_book("B00TEST", "acct").await.unwrap().unwrap();
         assert_eq!(hits[0].uuid, stored.uuid.to_ascii_lowercase());
     }
 
-    #[test]
-    fn indexes_uuid_product_id_isbn_asin() {
+    #[tokio::test]
+    async fn indexes_uuid_product_id_isbn_asin() {
         let dir = tempfile::tempdir().unwrap();
-        let library = LibraryStore::open_in_memory().unwrap();
-        library.upsert_account("acct", "us", None, true).unwrap();
+        let library = LibraryStore::open_in_memory().await.unwrap();
+        library
+            .upsert_account("acct", "us", None, true, "audible")
+            .await
+            .unwrap();
         let mut book = NewBook::minimal("B00TEST01", "acct", "us", "Indexed Book");
         book.isbn = Some("9781234567890".into());
-        library.upsert_book(&book).unwrap();
-        let stored = library.get_book("B00TEST01", "acct").unwrap().unwrap();
+        library.upsert_book(&book).await.unwrap();
+        let stored = library
+            .get_book("B00TEST01", "acct")
+            .await
+            .unwrap()
+            .unwrap();
 
         let engine = SearchEngine::open(dir.path()).unwrap();
-        engine.rebuild(&library).unwrap();
+        engine.rebuild(&library).await.unwrap();
 
         let by_uuid = engine.search(&stored.uuid, 10).unwrap();
         assert_eq!(by_uuid.len(), 1);

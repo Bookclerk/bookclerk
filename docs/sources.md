@@ -52,15 +52,15 @@ Widevine **L3** (software) covers stereo / xHE-AAC. Spatial/Atmos needs **L1**
 and is not available on desktop (same limitation as classic Libation).
 
 On first Widevine acquire, an L3 `.wvd` is auto-provisioned via classic Libation
-AudibleCdm and cached as `Accounts/<account>.wvd`. Override with
+AudibleCdm and cached in the `encrypted_secrets` DB table (kind=widevine). Override with
 `output.widevine_cdm`, or set `output.widevine_cdm_provider = "off"` to require
 bring-your-own only. Login registers as an Android device.
 
 Optional brand-audio trim: `output.strip_audible_brand_audio = true`.
 
-Auth files: `Accounts/*.audible.auth`. Widevine CDMs: `Accounts/*.wvd`.
-Classic Libation import converts `AccountsSettings.json` IdentityTokens into
-`*.audible.auth` (Libation does not use bare `Accounts/*.auth`).
+Credentials are stored in `encrypted_secrets` (DB-backed). Classic Libation import
+converts `AccountsSettings.json` account metadata; token material is imported via
+`bookclerk auth import`.
 
 Low-level auth/download notes: [`crates/bookclerk-audible/README.md`](../crates/bookclerk-audible/README.md).
 
@@ -92,7 +92,7 @@ enabled = true
 container = "m4b"         # m4b | zip
 ```
 
-Auth files: `Accounts/*.libro.auth`.
+Credentials are stored in `encrypted_secrets` (DB-backed).
 
 ## Chirp
 

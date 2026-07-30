@@ -3,18 +3,34 @@
 use std::io::{Cursor, Write};
 
 use bookclerk_graphicaudio::{
-    fetch_title_materials, load_auth, GraphicAudioAccess, GraphicAudioClient, GraphicAudioSource,
-    LOGIN_PATH, PRODUCTS_PATH, REMOVE_PATH,
+    fetch_title_materials, load_auth_from_db, save_auth_to_db, GraphicAudioAccess,
+    GraphicAudioAuthFile, GraphicAudioClient, GraphicAudioSource, LOGIN_PATH, PRODUCTS_PATH,
+    REMOVE_PATH,
 };
-use bookclerk_library::LibraryStore;
+use bookclerk_library::{configure_master_key, LibraryStore};
 use bookclerk_source::{ContentSource, LoginOptions, ScanOptions, SourceFetch};
+use tempfile::TempDir;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
+fn dek_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+async fn setup_dek() -> (tokio::sync::MutexGuard<'static, ()>, TempDir) {
+    let guard = dek_lock().lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::remove_var(bookclerk_library::MASTER_KEY_AUTH_PASSWORD_ENV);
+    configure_master_key(dir.path()).unwrap();
+    (guard, dir)
+}
+
 #[tokio::test]
-async fn login_saves_ga_auth_file() {
+async fn login_saves_auth_to_db() {
+    let (_guard, _dek_dir) = setup_dek().await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(LOGIN_PATH))
@@ -25,12 +41,12 @@ async fn login_saves_ga_auth_file() {
         .mount(&server)
         .await;
 
-    let dir = tempfile::tempdir().unwrap();
+    let store = LibraryStore::open_in_memory().await.unwrap();
     let source =
         GraphicAudioSource::with_base_url(server.uri()).with_access(GraphicAudioAccess::Device);
     let account = source
         .login(
-            dir.path(),
+            &store.scope("graphicaudio"),
             LoginOptions {
                 marketplace: "us".into(),
                 label: Some("GA".into()),
@@ -43,20 +59,21 @@ async fn login_saves_ga_auth_file() {
         .unwrap();
 
     assert_eq!(account.source, "graphicaudio");
+    // GraphicAudioAuthFile::account_id() returns email.
     assert_eq!(account.account_id, "reader@example.com");
 
-    let auth = load_auth(&bookclerk_graphicaudio::auth_file_for_account(
-        dir.path(),
-        Some("GA"),
-        "reader@example.com",
-    ))
-    .unwrap();
+    // Verify credentials were persisted to the DB.
+    let auth = load_auth_from_db(&store.scope("graphicaudio"), "reader@example.com")
+        .await
+        .unwrap()
+        .expect("auth must be present in DB");
     assert_eq!(auth.token, "ga-token-xyz");
     assert!(!auth.client_id.is_empty());
 }
 
 #[tokio::test]
 async fn scan_skips_samples_upserts_owned() {
+    let (_guard, _dek_dir) = setup_dek().await;
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(PRODUCTS_PATH))
@@ -83,30 +100,30 @@ async fn scan_skips_samples_upserts_owned() {
         .mount(&server)
         .await;
 
-    let dir = tempfile::tempdir().unwrap();
-    let auth_path = bookclerk_graphicaudio::auth_file_for_account(dir.path(), None, "a@ex.com");
-    bookclerk_graphicaudio::save_auth(
-        &auth_path,
-        &bookclerk_graphicaudio::GraphicAudioAuthFile {
+    // Credentials are now stored in the DB (not files).
+    let store = LibraryStore::open_in_memory().await.unwrap();
+    save_auth_to_db(
+        &GraphicAudioAuthFile {
             token: "tok".into(),
             client_id: "dev".into(),
             email: "a@ex.com".into(),
             marketplace: "us".into(),
             label: None,
         },
+        &store.scope("graphicaudio"),
+        "a@ex.com",
     )
+    .await
     .unwrap();
 
-    let db = dir.path().join("library.db");
-    let store = LibraryStore::open(&db).unwrap();
     let source =
         GraphicAudioSource::with_base_url(server.uri()).with_access(GraphicAudioAccess::Device);
     let summary = source
-        .scan(dir.path(), &store, ScanOptions::default())
+        .scan(&store.scope("graphicaudio"), ScanOptions::default())
         .await
         .unwrap();
     assert_eq!(summary.books_upserted, 1);
-    let books = store.list_books(None).unwrap();
+    let books = store.list_books(None).await.unwrap();
     assert_eq!(books.len(), 1);
     assert_eq!(books[0].product_id, "99");
     assert_eq!(books[0].source, "graphicaudio");
@@ -144,6 +161,7 @@ async fn fetch_title_downloads_hi_mp3() {
 
 #[tokio::test]
 async fn fetch_title_via_content_source() {
+    let (_guard, _dek_dir) = setup_dek().await;
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(PRODUCTS_PATH))
@@ -170,30 +188,34 @@ async fn fetch_title_via_content_source() {
         .mount(&server)
         .await;
 
-    let dir = tempfile::tempdir().unwrap();
-    bookclerk_graphicaudio::save_auth(
-        &bookclerk_graphicaudio::auth_file_for_account(dir.path(), None, "u@ex.com"),
-        &bookclerk_graphicaudio::GraphicAudioAuthFile {
+    // Credentials are now stored in the DB (not files).
+    let store = LibraryStore::open_in_memory().await.unwrap();
+    save_auth_to_db(
+        &GraphicAudioAuthFile {
             token: "tok".into(),
             client_id: "dev".into(),
             email: "u@ex.com".into(),
             marketplace: "us".into(),
             label: None,
         },
+        &store.scope("graphicaudio"),
+        "u@ex.com",
     )
+    .await
     .unwrap();
 
     let source =
         GraphicAudioSource::with_base_url(server.uri()).with_fetch_mode(GraphicAudioAccess::Device);
-    let cache = dir.path().join("cache");
+    let cache = tempfile::tempdir().unwrap();
     let fetch = source
         .fetch_title(
-            dir.path(),
+            &store.scope("graphicaudio"),
             "u@ex.com",
             "7",
             &bookclerk_source::FetchOptions {
                 download: bookclerk_source::DownloadOptions::default(),
-                cache_dir: cache,
+                cache_dir: cache.path().to_path_buf(),
+                files_dir: cache.path().to_path_buf(),
             },
         )
         .await
@@ -224,7 +246,8 @@ async fn remove_activation_posts_client_id() {
 
 #[tokio::test]
 async fn magento_zip_fetch_via_content_source() {
-    let store = MockServer::start().await;
+    let (_guard, _dek_dir) = setup_dek().await;
+    let store_server = MockServer::start().await;
     let access = MockServer::start().await;
 
     Mock::given(method("GET"))
@@ -233,12 +256,12 @@ async fn magento_zip_fetch_via_content_source() {
             ResponseTemplate::new(200)
                 .set_body_string(r#"<input name="form_key" type="hidden" value="fk123"/>"#),
         )
-        .mount(&store)
+        .mount(&store_server)
         .await;
     Mock::given(method("POST"))
         .and(path("/customer/account/loginPost/"))
         .respond_with(ResponseTemplate::new(302).insert_header("location", "/customer/account/"))
-        .mount(&store)
+        .mount(&store_server)
         .await;
     Mock::given(method("GET"))
         .and(path("/customer/account/"))
@@ -246,7 +269,7 @@ async fn magento_zip_fetch_via_content_source() {
             ResponseTemplate::new(200)
                 .set_body_string(r#"<a href="/customer/account/logout/">Log Out</a> My Account"#),
         )
-        .mount(&store)
+        .mount(&store_server)
         .await;
 
     let link_path = "/downloadable/download/link/id/ABC/";
@@ -257,13 +280,13 @@ async fn magento_zip_fetch_via_content_source() {
           <a href="{uri}{link}" class="action download">M4B Zip Download</a></td>
           <td>Available</td><td>2</td>
         </tr></html>"#,
-        uri = store.uri(),
+        uri = store_server.uri(),
         link = link_path
     );
     Mock::given(method("GET"))
         .and(path("/downloadable/customer/products/"))
         .respond_with(ResponseTemplate::new(200).set_body_string(products_html))
-        .mount(&store)
+        .mount(&store_server)
         .await;
 
     let mut zip_buf = Cursor::new(Vec::new());
@@ -280,14 +303,14 @@ async fn magento_zip_fetch_via_content_source() {
         .and(path(link_path))
         .respond_with(
             ResponseTemplate::new(307)
-                .insert_header("location", format!("{}/cdn/book.zip", store.uri())),
+                .insert_header("location", format!("{}/cdn/book.zip", store_server.uri())),
         )
-        .mount(&store)
+        .mount(&store_server)
         .await;
     Mock::given(method("GET"))
         .and(path("/cdn/book.zip"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(zip_bytes))
-        .mount(&store)
+        .mount(&store_server)
         .await;
 
     Mock::given(method("GET"))
@@ -302,31 +325,36 @@ async fn magento_zip_fetch_via_content_source() {
         .mount(&access)
         .await;
 
-    let dir = tempfile::tempdir().unwrap();
-    bookclerk_graphicaudio::save_auth(
-        &bookclerk_graphicaudio::auth_file_for_account(dir.path(), None, "u@ex.com"),
-        &bookclerk_graphicaudio::GraphicAudioAuthFile {
+    // Credentials are now stored in the DB (not files).
+    let db_store = LibraryStore::open_in_memory().await.unwrap();
+    save_auth_to_db(
+        &GraphicAudioAuthFile {
             token: "tok".into(),
             client_id: "dev".into(),
             email: "u@ex.com".into(),
             marketplace: "us".into(),
             label: None,
         },
+        &db_store.scope("graphicaudio"),
+        "u@ex.com",
     )
+    .await
     .unwrap();
 
+    let cache = tempfile::tempdir().unwrap();
     let source = GraphicAudioSource::with_base_url(access.uri())
-        .with_store_url(store.uri())
+        .with_store_url(store_server.uri())
         .with_fetch_mode(GraphicAudioAccess::Zip)
         .with_magento_password("secret");
     let fetch = source
         .fetch_title(
-            dir.path(),
+            &db_store.scope("graphicaudio"),
             "u@ex.com",
             "99",
             &bookclerk_source::FetchOptions {
                 download: bookclerk_source::DownloadOptions::default(),
-                cache_dir: dir.path().join("cache"),
+                cache_dir: cache.path().to_path_buf(),
+                files_dir: cache.path().to_path_buf(),
             },
         )
         .await
@@ -343,7 +371,8 @@ async fn magento_zip_fetch_via_content_source() {
 
 #[tokio::test]
 async fn browser_player_fetch_via_content_source() {
-    let store = MockServer::start().await;
+    let (_guard, _dek_dir) = setup_dek().await;
+    let store_server = MockServer::start().await;
     let access = MockServer::start().await;
 
     Mock::given(method("GET"))
@@ -352,12 +381,12 @@ async fn browser_player_fetch_via_content_source() {
             ResponseTemplate::new(200)
                 .set_body_string(r#"<input name="form_key" type="hidden" value="fk123"/>"#),
         )
-        .mount(&store)
+        .mount(&store_server)
         .await;
     Mock::given(method("POST"))
         .and(path("/customer/account/loginPost/"))
         .respond_with(ResponseTemplate::new(302).insert_header("location", "/customer/account/"))
-        .mount(&store)
+        .mount(&store_server)
         .await;
     Mock::given(method("GET"))
         .and(path("/customer/account/"))
@@ -365,7 +394,7 @@ async fn browser_player_fetch_via_content_source() {
             ResponseTemplate::new(200)
                 .set_body_string(r#"<a href="/customer/account/logout/">Log Out</a>"#),
         )
-        .mount(&store)
+        .mount(&store_server)
         .await;
     Mock::given(method("GET"))
         .and(path("/library/index/content_library"))
@@ -374,20 +403,20 @@ async fn browser_player_fetch_via_content_source() {
                 <a href="/library/player/listen/title/demo-book/">Play</a>
                </tr>"#,
         ))
-        .mount(&store)
+        .mount(&store_server)
         .await;
     Mock::given(method("GET"))
         .and(path("/library/player/listen/title/demo-book/"))
         .respond_with(ResponseTemplate::new(200).set_body_string(format!(
             r#"<audio id="audio-player" src="{uri}/media/hi.m4a"></audio>"#,
-            uri = store.uri()
+            uri = store_server.uri()
         )))
-        .mount(&store)
+        .mount(&store_server)
         .await;
     Mock::given(method("GET"))
         .and(path("/media/hi.m4a"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"ftypisombrowser"))
-        .mount(&store)
+        .mount(&store_server)
         .await;
 
     Mock::given(method("GET"))
@@ -402,31 +431,36 @@ async fn browser_player_fetch_via_content_source() {
         .mount(&access)
         .await;
 
-    let dir = tempfile::tempdir().unwrap();
-    bookclerk_graphicaudio::save_auth(
-        &bookclerk_graphicaudio::auth_file_for_account(dir.path(), None, "u@ex.com"),
-        &bookclerk_graphicaudio::GraphicAudioAuthFile {
+    // Credentials are now stored in the DB (not files).
+    let db_store = LibraryStore::open_in_memory().await.unwrap();
+    save_auth_to_db(
+        &GraphicAudioAuthFile {
             token: "tok".into(),
             client_id: "dev".into(),
             email: "u@ex.com".into(),
             marketplace: "us".into(),
             label: None,
         },
+        &db_store.scope("graphicaudio"),
+        "u@ex.com",
     )
+    .await
     .unwrap();
 
+    let cache = tempfile::tempdir().unwrap();
     let source = GraphicAudioSource::with_base_url(access.uri())
-        .with_store_url(store.uri())
+        .with_store_url(store_server.uri())
         .with_fetch_mode(GraphicAudioAccess::Web)
         .with_magento_password("secret");
     let fetch = source
         .fetch_title(
-            dir.path(),
+            &db_store.scope("graphicaudio"),
             "u@ex.com",
             "5273",
             &bookclerk_source::FetchOptions {
                 download: bookclerk_source::DownloadOptions::default(),
-                cache_dir: dir.path().join("cache"),
+                cache_dir: cache.path().to_path_buf(),
+                files_dir: cache.path().to_path_buf(),
             },
         )
         .await

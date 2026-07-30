@@ -1,21 +1,18 @@
 //! [`GraphicAudioSource`]: [`ContentSource`] implementation for GraphicAudio.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bookclerk_config::Config;
-use bookclerk_library::LibraryStore;
+use bookclerk_library::SourceScope;
 use bookclerk_source::{
     ContentSource, FetchOptions, LoginOptions, PortalAuthMode, ScanOptions, ScanSummary,
     SourceAccount, SourceBrand, SourceFetch, SourceRegistry,
 };
 
-use crate::auth::{
-    auth_file_for_account, ensure_accounts_dir, find_auth_file, list_auth_files, load_auth,
-    save_auth, GraphicAudioAuthFile, AUTH_SUFFIX,
-};
+use crate::auth::GraphicAudioAuthFile;
 use crate::client::{GraphicAudioClient, DEFAULT_BASE_URL};
+use crate::db::{delete_auth_from_db, list_auth_from_db, load_auth_from_db, save_auth_to_db};
 use crate::download::{
     fetch_title_with_mode, password_from_env, product_title_for, TitleFetchRequest, GA_PASSWORD_ENV,
 };
@@ -159,13 +156,13 @@ impl GraphicAudioSource {
         Arc::new(Self::new())
     }
 
-    /// Login and persist `.ga.auth`.
+    /// Login and persist credentials to the DB.
     ///
     /// - `access=web|zip`: Magento customer login only (no Access App device slot).
     /// - `access=device`: Access App `activation/login` (registers a device).
     pub async fn login_account(
         &self,
-        files_dir: &Path,
+        library: &SourceScope,
         opts: LoginOptions,
     ) -> Result<SourceAccount> {
         let email = opts
@@ -180,50 +177,46 @@ impl GraphicAudioSource {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| GraphicAudioError::auth("GraphicAudio login requires password"))?;
 
-        ensure_accounts_dir(files_dir)?;
-        let path = auth_file_for_account(files_dir, opts.label.as_deref(), email);
-        if path.is_file() && !opts.force {
-            let existing = load_auth(&path)?;
-            return Ok(source_account_from_auth(&existing));
-        }
-
         let marketplace = if opts.marketplace.trim().is_empty() {
             String::from("us")
         } else {
             opts.marketplace.trim().to_ascii_lowercase()
         };
 
+        // Determine if there's an existing auth in DB to preserve client_id / device token.
+        // Account id for GraphicAudio is the email (see GraphicAudioAuthFile::account_id).
+        let account_id_candidate = email.to_string();
+        let existing = load_auth_from_db(library, &account_id_candidate)
+            .await
+            .unwrap_or(None);
+
+        if let Some(ref existing_auth) = existing {
+            if !opts.force {
+                return Ok(source_account_from_auth(existing_auth));
+            }
+        }
+
         let (token, client_id) = match self.access {
             GraphicAudioAccess::Device => {
-                let client_id = if path.is_file() {
-                    load_auth(&path)
-                        .map(|a| a.client_id)
-                        .unwrap_or_else(|_| format!("bookclerk-{}", uuid::Uuid::new_v4()))
-                } else {
-                    format!("bookclerk-{}", uuid::Uuid::new_v4())
-                };
+                let client_id = existing
+                    .as_ref()
+                    .map(|a| a.client_id.clone())
+                    .unwrap_or_else(|| format!("bookclerk-{}", uuid::Uuid::new_v4()));
                 let mut client = GraphicAudioClient::new(&self.base_url);
                 let token = client.login(email, password, &client_id).await?;
                 (token, client_id)
             }
             GraphicAudioAccess::Web | GraphicAudioAccess::Zip => {
-                // Validate Magento credentials without consuming an Access App device slot.
                 let store = MagentoClient::new(&self.store_url)?;
                 store.login(email, password).await?;
-                let client_id = if path.is_file() {
-                    load_auth(&path)
-                        .map(|a| a.client_id)
-                        .unwrap_or_else(|_| format!("bookclerk-{}", uuid::Uuid::new_v4()))
-                } else {
-                    format!("bookclerk-{}", uuid::Uuid::new_v4())
-                };
-                // Preserve an existing Access App token when re-saving after Magento
-                // validation so prior device activations remain usable for scan/device.
-                let token = if path.is_file() {
-                    load_auth(&path).map(|a| a.token).unwrap_or_default()
-                } else {
-                    String::new()
-                };
+                let client_id = existing
+                    .as_ref()
+                    .map(|a| a.client_id.clone())
+                    .unwrap_or_else(|| format!("bookclerk-{}", uuid::Uuid::new_v4()));
+                let token = existing
+                    .as_ref()
+                    .map(|a| a.token.clone())
+                    .unwrap_or_default();
                 (token, client_id)
             }
         };
@@ -235,17 +228,32 @@ impl GraphicAudioSource {
             marketplace,
             label: opts.label.clone(),
         };
-        save_auth(&path, &auth)?;
+        let account_id = auth.account_id().to_string();
+        save_auth_to_db(&auth, library, &account_id)
+            .await
+            .map_err(|e| {
+                GraphicAudioError::auth(format!("failed to save GraphicAudio auth: {e}"))
+            })?;
+        library
+            .upsert_account(&account_id, &auth.marketplace, auth.label.as_deref(), true)
+            .await
+            .map_err(|e| {
+                GraphicAudioError::auth(format!("failed to upsert GraphicAudio account: {e}"))
+            })?;
 
         tracing::info!(
             email = %auth.email,
             access = ?self.access,
             has_device_token = auth.has_device_token(),
-            path = %path.display(),
-            "saved GraphicAudio auth file"
+            "saved GraphicAudio auth to encrypted_secrets"
         );
 
         Ok(source_account_from_auth(&auth))
+    }
+
+    /// Delete a GraphicAudio account from the DB.
+    pub async fn delete_account(&self, library: &SourceScope, account_id: &str) -> Result<()> {
+        delete_auth_from_db(library, account_id).await
     }
 }
 
@@ -278,11 +286,6 @@ impl ContentSource for GraphicAudioSource {
         }
     }
 
-    fn auth_credential_suffixes(&self) -> &'static [&'static str] {
-        const SUFFIXES: &[&str] = &[AUTH_SUFFIX];
-        SUFFIXES
-    }
-
     fn password_env_var(&self) -> Option<&'static str> {
         Some(GA_PASSWORD_ENV)
     }
@@ -293,43 +296,32 @@ impl ContentSource for GraphicAudioSource {
 
     async fn login(
         &self,
-        files_dir: &Path,
+        library: &SourceScope,
         opts: LoginOptions,
     ) -> bookclerk_source::Result<SourceAccount> {
-        self.login_account(files_dir, opts)
-            .await
-            .map_err(Into::into)
+        self.login_account(library, opts).await.map_err(Into::into)
     }
 
     async fn list_accounts(
         &self,
-        files_dir: &Path,
+        library: &SourceScope,
     ) -> bookclerk_source::Result<Vec<SourceAccount>> {
-        let mut out = Vec::new();
-        for path in list_auth_files(files_dir)? {
-            match load_auth(&path) {
-                Ok(auth) => out.push(source_account_from_auth(&auth)),
-                Err(err) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %err,
-                        "skipping unreadable GraphicAudio auth file"
-                    );
-                }
-            }
-        }
-        Ok(out)
+        let records = list_auth_from_db(library)
+            .await
+            .map_err(Into::<bookclerk_source::SourceError>::into)?;
+        Ok(records
+            .into_iter()
+            .map(|(_id, auth)| source_account_from_auth(&auth))
+            .collect())
     }
 
     async fn scan(
         &self,
-        files_dir: &Path,
-        library: &LibraryStore,
+        library: &SourceScope,
         opts: ScanOptions,
     ) -> bookclerk_source::Result<ScanSummary> {
         let password = self.magento_password.clone().or_else(password_from_env);
         scan_library(
-            files_dir,
             library,
             GaScanOptions::from(&opts),
             crate::sync::ScanContext {
@@ -345,13 +337,20 @@ impl ContentSource for GraphicAudioSource {
 
     async fn fetch_title(
         &self,
-        files_dir: &Path,
+        library: &SourceScope,
         account_id: &str,
         title_id: &str,
         opts: &FetchOptions,
     ) -> bookclerk_source::Result<SourceFetch> {
-        let path = find_auth_file(files_dir, account_id)?;
-        let auth = load_auth(&path)?;
+        let auth = load_auth_from_db(library, account_id)
+            .await
+            .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?
+            .ok_or_else(|| {
+                bookclerk_source::SourceError::Auth(format!(
+                    "no GraphicAudio credentials for account `{account_id}` in DB"
+                ))
+            })?;
+        let _ = &opts.files_dir;
         let client = GraphicAudioClient::new(&self.base_url).with_token(&auth.token);
         let prefer_hi = self.bitrate.prefers_hi();
         let mode = self.fetch_mode.unwrap_or(self.access);

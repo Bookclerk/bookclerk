@@ -38,9 +38,6 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         "output.s3.force_path_style" => {
             config.output.s3.force_path_style = parse_bool(v).unwrap_or(false);
         }
-        "output.s3.credentials_file" => {
-            config.output.s3.credentials_file = Some(PathBuf::from(v));
-        }
         "sources.audible.bitrate" | "sources.audible.quality" => {
             // Classic FileDownloadQuality maps onto Audible store bitrate.
             let bitrate = match v.to_ascii_lowercase().as_str() {
@@ -74,11 +71,24 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         "output.widevine_cdm_provider" => {
             config.output.widevine_cdm_provider = Some(v.to_string());
         }
-        "auth.password_file" => {
-            config.auth.password_file = Some(PathBuf::from(v));
-        }
         "auth.allow_plaintext" => {
-            config.auth.allow_plaintext = parse_bool(v).unwrap_or(false);
+            tracing::warn!(key, "auth.allow_plaintext is no longer supported; Bookclerk always encrypts credentials via the master key (master.key)");
+        }
+        "auth.password" => {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                config.auth.password = None;
+            } else {
+                crate::redact::register_secret(trimmed);
+                config.auth.password = Some(trimmed.to_string());
+            }
+        }
+        "auth.password_file" => {
+            tracing::warn!(
+                key,
+                "auth.password_file is no longer supported; use BOOKCLERK_AUTH_PASSWORD \
+                 or [auth].password (then `bookclerk config master-key wrap` / daemon reload)"
+            );
         }
         "output.naming_profile" => {
             if let Some(profile) = crate::NamingProfile::parse(v) {

@@ -16,23 +16,25 @@ pub async fn emit_book_acquired(
     if registry.is_empty() {
         return;
     }
-    let book = library
+    let mut book = library
         .get_book_by_uuid(product_or_uuid)
+        .await
         .ok()
-        .flatten()
-        .or_else(|| {
-            library
-                .list_books(None)
-                .ok()
-                .into_iter()
-                .flatten()
-                .find(|b| {
-                    b.uuid == product_or_uuid
-                        || b.product_id == product_or_uuid
-                        || b.asin.as_deref() == Some(product_or_uuid)
-                        || b.storage_key.as_deref() == Some(storage_key)
-                })
-        });
+        .flatten();
+    if book.is_none() {
+        book = library
+            .list_books(None)
+            .await
+            .ok()
+            .into_iter()
+            .flatten()
+            .find(|b| {
+                b.uuid == product_or_uuid
+                    || b.product_id == product_or_uuid
+                    || b.asin.as_deref() == Some(product_or_uuid)
+                    || b.storage_key.as_deref() == Some(storage_key)
+            });
+    }
 
     let Some(book) = book else {
         debug!(id = %product_or_uuid, "no book row for acquire event");

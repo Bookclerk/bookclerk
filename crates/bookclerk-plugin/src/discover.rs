@@ -157,7 +157,7 @@ pub fn settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::Table
             .plugin_table(&plugin.manifest.id)
             .cloned()
             .unwrap_or_default(),
-        crate::PluginKind::Output => toml::Table::new(),
+        crate::PluginKind::Output | crate::PluginKind::Database => toml::Table::new(),
     }
 }
 

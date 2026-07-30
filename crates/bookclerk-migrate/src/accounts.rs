@@ -1,10 +1,10 @@
-//! Import classic `AccountsSettings.json`, converting IdentityTokens → `*.audible.auth`.
+//! Import classic `AccountsSettings.json`, converting IdentityTokens → DB `encrypted_secrets`.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use audible_rs::auth::Authenticator;
-use bookclerk_audible::{auth_file_for, ensure_accounts_dir, save_authenticator, SaveAuthOptions};
+use bookclerk_audible::save_authenticator_to_db;
 use bookclerk_library::LibraryStore;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -14,17 +14,18 @@ use crate::error::{MigrateError, Result};
 #[derive(Debug, Default)]
 pub struct AccountsImportSummary {
     pub accounts: usize,
-    pub auth_files: usize,
+    /// Number of classic IdentityTokens converted into `encrypted_secrets`.
+    pub credentials: usize,
     pub warnings: Vec<String>,
     /// Classic AccountId (email) + locale → canonical account_id used in DB.
     pub account_id_map: HashMap<(String, String), String>,
 }
 
-/// Import accounts; when tokens are present, write audible-rs `*.audible.auth` files.
+/// Import accounts; when tokens are present, store credentials in `encrypted_secrets`.
 pub async fn import_accounts(
     path: &Path,
     dest_files_dir: &Path,
-    force: bool,
+    _force: bool,
     skip_auth: bool,
     dry_run: bool,
 ) -> Result<AccountsImportSummary> {
@@ -44,9 +45,9 @@ pub async fn import_accounts(
         })?;
 
     let store = if dry_run {
-        LibraryStore::open_in_memory()?
+        LibraryStore::open_in_memory().await?
     } else {
-        LibraryStore::open(&dest_files_dir.join("library.db"))?
+        LibraryStore::open(&dest_files_dir.join("library.db")).await?
     };
 
     let mut summary = AccountsImportSummary::default();
@@ -97,31 +98,20 @@ pub async fn import_accounts(
                             if let Some(cid) = auth.customer_id() {
                                 canonical_id = cid.to_string();
                             }
-                            let stem = label.clone().unwrap_or_else(|| account_id_classic.clone());
-                            let dest = auth_file_for(dest_files_dir, &stem);
-                            if dest.exists() && !force {
-                                summary.warnings.push(format!(
-                                    "auth file {} exists (pass --force to overwrite)",
-                                    dest.display()
-                                ));
-                            } else if !dry_run {
-                                ensure_accounts_dir(dest_files_dir).map_err(|err| {
+                            if !dry_run {
+                                save_authenticator_to_db(
+                                    &auth,
+                                    &store.scope("audible"),
+                                    &canonical_id,
+                                )
+                                .await
+                                .map_err(|err| {
                                     MigrateError::Auth(format!(
-                                        "failed to create Accounts dir: {err}"
+                                        "failed to store credentials for {canonical_id}: {err}"
                                     ))
                                 })?;
-                                save_authenticator(&auth, &dest, SaveAuthOptions::default())
-                                    .await
-                                    .map_err(|err| {
-                                        MigrateError::Auth(format!(
-                                            "failed to write {}: {err}",
-                                            dest.display()
-                                        ))
-                                    })?;
-                                wrote_auth = true;
-                            } else {
-                                wrote_auth = true;
                             }
+                            wrote_auth = true;
                         }
                         Err(err) => {
                             summary.warnings.push(format!(
@@ -139,14 +129,22 @@ pub async fn import_accounts(
             }
         }
 
-        store.upsert_account(&canonical_id, &marketplace, label.as_deref(), scan_enabled)?;
+        store
+            .upsert_account(
+                &canonical_id,
+                &marketplace,
+                label.as_deref(),
+                scan_enabled,
+                "audible",
+            )
+            .await?;
         summary.account_id_map.insert(
             (account_id_classic.clone(), marketplace.clone()),
             canonical_id,
         );
         summary.accounts += 1;
         if wrote_auth {
-            summary.auth_files += 1;
+            summary.credentials += 1;
         }
     }
 

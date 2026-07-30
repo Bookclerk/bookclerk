@@ -10,6 +10,12 @@ pub enum LibraryError {
     #[error("migration error: {0}")]
     Migrate(#[from] rusqlite_migration::Error),
 
+    #[error("ORM / database plugin error: {0}")]
+    Orm(#[from] sea_orm::DbErr),
+
+    #[error("config error: {0}")]
+    Config(#[from] bookclerk_config::ConfigError),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 

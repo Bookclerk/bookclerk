@@ -53,8 +53,9 @@ Highlights from the sample unit:
 
 - `Environment=BOOKCLERK_FILES_DIR=/var/lib/bookclerk`
 - `ProtectSystem=strict` + `ReadWritePaths=/var/lib/bookclerk`
-- Prefer `BOOKCLERK_AUTH_PASSWORD` or `LoadCredential=` +
-  `BOOKCLERK_AUTH_PASSWORD_FILE` (not under `Accounts/`)
+- Prefer `BOOKCLERK_AUTH_PASSWORD` (or `[auth].password`) — not under the files dir.
+  Wrap an existing BCK1 key later with `bookclerk config master-key wrap` or
+  reload `bookclerkd` after setting the password (SIGHUP / `POST /api/config/reload`).
 
 If acquired media lives outside the files dir, set an absolute
 `output.local.root` and add that path to `ReadWritePaths`.
@@ -69,14 +70,13 @@ docker build -f packaging/docker/Dockerfile -t bookclerkd .
 docker run --rm \
   -v bookclerk-config:/config \
   -v bookclerk-data:/data \
-  -e BOOKCLERK_AUTH_PASSWORD_FILE=/secrets/auth_password \
-  -v bookclerk-secrets:/secrets \
+  -e BOOKCLERK_AUTH_PASSWORD='your-strong-passphrase' \
   bookclerkd
 ```
 
 | Path / env | Role |
 | --- | --- |
-| `/config` | `BOOKCLERK_FILES_DIR` (`config.toml`, `library.db`, `Accounts/`) |
+| `/config` | `BOOKCLERK_FILES_DIR` (`config.toml`, `library.db` incl. `encrypted_secrets`) |
 | `/data` | Default books root (`BOOKCLERK_OUTPUT_LOCAL_ROOT=/data/Audiobooks`) |
 | `BOOKCLERK_DAEMON_LISTEN` | Default loopback inside the container |
 

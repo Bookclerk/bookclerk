@@ -41,20 +41,3 @@ pub fn resolve_source_id(registry: &SourceRegistry, s: &str) -> anyhow::Result<S
         }
     })
 }
-
-/// Credential filename suffixes from registered plugins (including externals).
-pub async fn auth_credential_suffixes(config: &Config) -> anyhow::Result<Vec<&'static str>> {
-    let registry = default_registry_with_plugins(config).await?;
-    let suffixes = registry.all_auth_credential_suffixes();
-    if !suffixes.is_empty() {
-        return Ok(suffixes);
-    }
-    let mut all = SourceRegistry::new();
-    all.register(std::sync::Arc::new(bookclerk_audible::from_config(config)));
-    all.register(std::sync::Arc::new(bookclerk_libro::from_config(config)));
-    all.register(std::sync::Arc::new(bookclerk_graphicaudio::from_config(
-        config,
-    )));
-    all.register(std::sync::Arc::new(bookclerk_chirp::from_config(config)));
-    Ok(all.all_auth_credential_suffixes())
-}

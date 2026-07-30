@@ -1,21 +1,20 @@
 //! Library scan: fetch GraphicAudio products and upsert owned titles.
 
-use std::path::Path;
-
 use crate::options::GraphicAudioAccess;
-use bookclerk_library::{LibraryStore, NewBook};
+use bookclerk_library::{NewBook, SourceScope};
 use bookclerk_source::ScanSummary;
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::auth::{find_auth_file, list_auth_files, load_auth, GraphicAudioAuthFile};
+use crate::auth::GraphicAudioAuthFile;
 use crate::client::{GraphicAudioClient, Product};
+use crate::db::list_auth_from_db;
 use crate::error::{GraphicAudioError, Result};
 use crate::magento::{LibraryItem, MagentoClient};
 
 /// Options for a GraphicAudio library scan.
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
-    /// Limit to specific account emails / labels / ids. Empty = all auth files.
+    /// Limit to specific account emails / labels / ids. Empty = all accounts.
     pub accounts: Vec<String>,
     /// When true, also import promotional `Type=sample` entries (default: false).
     pub include_samples: bool,
@@ -63,14 +62,33 @@ impl Default for ScanContext<'_> {
 }
 
 /// Sync GraphicAudio libraries for configured accounts into `library`.
+///
+/// Accounts are resolved from `encrypted_secrets` (DB-backed); no
+/// `Accounts/*.ga.auth` files are read.
 pub async fn scan_library(
-    files_dir: &Path,
-    library: &LibraryStore,
+    library: &SourceScope,
     options: ScanOptions,
     ctx: ScanContext<'_>,
 ) -> Result<ScanSummary> {
     let explicit = !options.accounts.is_empty();
-    let targets = resolve_targets(files_dir, &options.accounts)?;
+    let all = list_auth_from_db(library).await?;
+    let targets: Vec<(String, GraphicAudioAuthFile)> = if explicit {
+        all.into_iter()
+            .filter(|(id, auth)| {
+                options.accounts.iter().any(|needle| {
+                    id.eq_ignore_ascii_case(needle)
+                        || auth
+                            .label
+                            .as_deref()
+                            .is_some_and(|l| l.eq_ignore_ascii_case(needle))
+                        || auth.email.eq_ignore_ascii_case(needle)
+                })
+            })
+            .collect()
+    } else {
+        all
+    };
+
     if targets.is_empty() {
         return Err(GraphicAudioError::no_accounts(
             "no GraphicAudio accounts configured — run login first",
@@ -85,12 +103,11 @@ pub async fn scan_library(
         .store_base_url
         .unwrap_or(crate::magento::DEFAULT_STORE_URL);
 
-    for auth in targets {
-        let account_id = auth.account_id().to_string();
+    for (account_id, auth) in targets {
         let marketplace = auth.marketplace.clone();
 
         if !explicit {
-            if let Some(acct) = library.get_account(&account_id)? {
+            if let Some(acct) = library.get_account(&account_id).await? {
                 if !acct.scan_enabled {
                     tracing::info!(
                         account = %account_id,
@@ -102,12 +119,9 @@ pub async fn scan_library(
             }
         }
 
-        library.ensure_account_with_source(
-            &account_id,
-            &marketplace,
-            auth.label.as_deref(),
-            "graphicaudio",
-        )?;
+        library
+            .ensure_account(&account_id, &marketplace, auth.label.as_deref())
+            .await?;
 
         let books = scan_account_books(
             &auth,
@@ -146,7 +160,7 @@ async fn scan_account_books(
     access: GraphicAudioAccess,
     magento_password: Option<&str>,
     include_samples: bool,
-    library: &LibraryStore,
+    library: &SourceScope,
     account_id: &str,
     marketplace: &str,
 ) -> Result<usize> {
@@ -191,7 +205,9 @@ async fn scan_account_books(
     let items = store.list_library().await?;
     let mut books = 0usize;
     for item in &items {
-        library.upsert_book(&library_item_to_new_book(item, account_id, marketplace))?;
+        library
+            .upsert_book(&library_item_to_new_book(item, account_id, marketplace))
+            .await?;
         books += 1;
     }
     Ok(books)
@@ -201,7 +217,7 @@ async fn scan_access_products(
     access_base: &str,
     auth: &GraphicAudioAuthFile,
     include_samples: bool,
-    library: &LibraryStore,
+    library: &SourceScope,
     account_id: &str,
     marketplace: &str,
 ) -> Result<usize> {
@@ -212,7 +228,9 @@ async fn scan_access_products(
         if product.is_sample() && !include_samples {
             continue;
         }
-        library.upsert_book(&product_to_new_book(product, account_id, marketplace))?;
+        library
+            .upsert_book(&product_to_new_book(product, account_id, marketplace))
+            .await?;
         books += 1;
     }
     tracing::debug!(
@@ -341,21 +359,4 @@ fn parse_ga_date(raw: &str) -> Option<DateTime<Utc>> {
                 .and_then(|d| d.and_hms_opt(0, 0, 0))
                 .map(|ndt| DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc))
         })
-}
-
-fn resolve_targets(files_dir: &Path, accounts: &[String]) -> Result<Vec<GraphicAudioAuthFile>> {
-    if accounts.is_empty() {
-        let mut out = Vec::new();
-        for path in list_auth_files(files_dir)? {
-            out.push(load_auth(&path)?);
-        }
-        return Ok(out);
-    }
-
-    let mut out = Vec::new();
-    for key in accounts {
-        let path = find_auth_file(files_dir, key)?;
-        out.push(load_auth(&path)?);
-    }
-    Ok(out)
 }

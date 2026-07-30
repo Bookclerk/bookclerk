@@ -76,5 +76,5 @@ pub async fn sync_listening_progress(
         }
     }
 
-    upsert_listening_snapshots(library, PROVIDER, &snapshots)
+    upsert_listening_snapshots(library, PROVIDER, &snapshots).await
 }

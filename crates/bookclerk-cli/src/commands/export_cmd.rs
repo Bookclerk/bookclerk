@@ -102,7 +102,8 @@ pub async fn run(
                 dest: path.clone(),
                 force,
                 dry_run,
-            })?;
+            })
+            .await?;
             emit(format, &summary, || {
                 println!("dest\t{}", path.display());
                 println!("settings\t{}", summary.settings);
@@ -124,9 +125,9 @@ pub async fn run(
             asins,
             account,
         } => {
-            let store = LibraryStore::open(&config.paths().library_db)?;
+            let store = LibraryStore::open_from_config(config).await?;
             let books = filter_books(
-                load_books(&store, account.as_deref())?,
+                load_books(&store, account.as_deref()).await?,
                 if asins.is_empty() { None } else { Some(&asins) },
             );
             let ext = path

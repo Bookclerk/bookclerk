@@ -135,10 +135,11 @@ enabled = false
 # base_url = "http://audiobookshelf:80"
 ```
 
-S3 credentials resolve as: env `AWS_*` override → `Accounts/*.s3.auth` (default
-`Accounts/default.s3.auth`) → AWS SDK default provider chain (same sources the
-AWS CLI uses: `~/.aws/credentials`, SSO, instance/task roles). Store passwords
-use per-source env vars (see [docs/sources.md](docs/sources.md)).
+S3 credentials resolve as: env `BOOKCLERK_AWS_ACCESS_KEY_ID` /
+`BOOKCLERK_AWS_SECRET_ACCESS_KEY` (optional `BOOKCLERK_AWS_SESSION_TOKEN`) →
+`encrypted_secrets` → AWS SDK default provider chain (may still use standard
+`AWS_*` via the SDK). Store passwords use per-source env vars (see
+[docs/sources.md](docs/sources.md)).
 
 ## Binaries
 

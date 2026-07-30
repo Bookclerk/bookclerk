@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bookclerk_config::{init_tracing_with, Config, LogFormat, TracingOptions};
+use bookclerk_library::configure_master_key_with;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use crate::cli_plugin::RESERVED_PLUGIN_SUBCOMMANDS;
@@ -163,12 +164,9 @@ async fn main() -> ExitCode {
 
     // Dynamic plugin CLI: `bookclerk plugins <plugin-id> …`
     if let Some((plugin_id, rest)) = plugin_cli_args(&std::env::args().collect::<Vec<_>>()) {
-        bookclerk_audible::configure_auth_secrets(
-            config.auth.password_file.clone(),
-            config.auth.allow_plaintext,
-        );
         if let Some(paths) = &config.paths {
             let _ = paths.ensure_dirs();
+            let _ = configure_master_key_with(&paths.files_dir, config.auth_password().as_deref());
         }
         return match commands::plugins::run_plugin_cli(&config, plugin_id, rest, format).await {
             Ok(()) => ExitCode::SUCCESS,
@@ -275,12 +273,9 @@ fn plugin_cli_args(argv: &[String]) -> Option<(&str, &[String])> {
 }
 
 async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
-    bookclerk_audible::configure_auth_secrets(
-        config.auth.password_file.clone(),
-        config.auth.allow_plaintext,
-    );
     if let Some(paths) = &config.paths {
         paths.ensure_dirs()?;
+        configure_master_key_with(&paths.files_dir, config.auth_password().as_deref())?;
     }
     let format = cli.format;
 
@@ -290,7 +285,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         Commands::Discover { command } => commands::discover::run(&config, format, command).await,
         Commands::Integrations { command } => commands::integrations::run(command, &config).await,
         Commands::Plugins { command } => commands::plugins::run(command, &config, format).await,
-        Commands::Config { command } => commands::config_cmd::run(command, &config, format),
+        Commands::Config { command } => commands::config_cmd::run(command, &config, format).await,
         Commands::Export { command } => commands::export_cmd::run(command, &config, format).await,
         Commands::Import { command } => commands::import_cmd::run(command, &config, format).await,
         Commands::Daemon { command } => commands::daemon_cmd::run(command, &config, format).await,

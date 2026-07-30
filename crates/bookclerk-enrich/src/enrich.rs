@@ -154,13 +154,14 @@ pub async fn lookup_by_metadata_with_client(
 /// fields win for display metadata (title, contributors, series, ISBN, genres,
 /// publish date). Store-native `length_minutes` is kept when present — Audible
 /// runtimes include brand intro/outro that plain Acquire files omit.
-pub fn apply_enrichment_to_book(
+pub async fn apply_enrichment_to_book(
     library: &LibraryStore,
     book_uuid: &str,
     enrichment: &Enrichment,
 ) -> Result<bookclerk_library::BookRecord> {
     let existing = library
-        .get_book_by_uuid(book_uuid)?
+        .get_book_by_uuid(book_uuid)
+        .await?
         .ok_or_else(|| EnrichError::Sync(format!("book not found: {book_uuid}")))?;
 
     let title = if enrichment.title.is_empty() {
@@ -213,24 +214,27 @@ pub fn apply_enrichment_to_book(
         published_at,
     };
 
-    library.upsert_book(&book)?;
-
-    library.update_catalog_enrichment(
-        book_uuid,
-        &bookclerk_library::CatalogEnrichmentFields {
-            description: enrichment.description.clone(),
-            language: enrichment.language.clone(),
-            cover_url: enrichment.cover_url.clone(),
-            subjects: None,
-            categories: enrichment.categories.clone(),
-            enrich_source: Some(String::from("audible")),
-            enrich_confidence: enrichment.confidence,
-            enrich_updated_at: Some(chrono::Utc::now()),
-        },
-    )?;
+    library.upsert_book(&book).await?;
 
     library
-        .get_book_by_uuid(book_uuid)?
+        .update_catalog_enrichment(
+            book_uuid,
+            &bookclerk_library::CatalogEnrichmentFields {
+                description: enrichment.description.clone(),
+                language: enrichment.language.clone(),
+                cover_url: enrichment.cover_url.clone(),
+                subjects: None,
+                categories: enrichment.categories.clone(),
+                enrich_source: Some(String::from("audible")),
+                enrich_confidence: enrichment.confidence,
+                enrich_updated_at: Some(chrono::Utc::now()),
+            },
+        )
+        .await?;
+
+    library
+        .get_book_by_uuid(book_uuid)
+        .await?
         .ok_or_else(|| EnrichError::Sync(format!("book not found after enrich: {book_uuid}")))
 }
 
@@ -247,7 +251,7 @@ pub async fn enrich_books_from_audible(
     let http = public_http_client()?;
     let mut enriched = 0usize;
 
-    for book in library.list_books(None)? {
+    for book in library.list_books(None).await? {
         // Skip Audible-native rows (asin already equals product_id) and rows
         // that already carry an enrichment ASIN.
         if book.asin.as_deref() == Some(book.product_id.as_str()) {
@@ -270,7 +274,7 @@ pub async fn enrich_books_from_audible(
         };
         match lookup_by_metadata_with_client(&http, &query, region, min_confidence).await? {
             Some(matched) => {
-                apply_enrichment_to_book(library, &book.uuid, &matched.enrichment)?;
+                apply_enrichment_to_book(library, &book.uuid, &matched.enrichment).await?;
                 enriched += 1;
                 tracing::info!(
                     uuid = %book.uuid,
@@ -479,18 +483,19 @@ mod tests {
     use super::*;
     use bookclerk_library::NewBook;
 
-    #[test]
-    fn enrichment_keeps_libro_runtime_over_audible() {
-        let store = LibraryStore::open_in_memory().unwrap();
+    #[tokio::test]
+    async fn enrichment_keeps_libro_runtime_over_audible() {
+        let store = LibraryStore::open_in_memory().await.unwrap();
         store
-            .upsert_account_with_source("user@example.com", "us", None, true, "libro")
+            .upsert_account("user@example.com", "us", None, true, "libro")
+            .await
             .unwrap();
         let mut seed = NewBook::minimal("9781234567890", "user@example.com", "us", "Libro Title");
         seed.source = "libro".into();
         seed.asin = None;
         seed.isbn = Some("9781234567890".into());
         seed.length_minutes = Some(900);
-        let row = store.upsert_book(&seed).unwrap();
+        let row = store.upsert_book(&seed).await.unwrap();
         let enrichment = Enrichment {
             asin: "B00TEST01".into(),
             title: "Audible Title".into(),
@@ -510,7 +515,9 @@ mod tests {
             language: Some("english".into()),
             confidence: Some(0.95),
         };
-        let updated = apply_enrichment_to_book(&store, &row.uuid, &enrichment).unwrap();
+        let updated = apply_enrichment_to_book(&store, &row.uuid, &enrichment)
+            .await
+            .unwrap();
         assert_eq!(updated.asin.as_deref(), Some("B00TEST01"));
         assert_eq!(updated.authors.as_deref(), Some("Ann Author"));
         assert_eq!(updated.length_minutes, Some(900), "Libro runtime must win");
@@ -526,17 +533,18 @@ mod tests {
         assert!(updated.published_at.is_some());
     }
 
-    #[test]
-    fn enrichment_preserves_existing_asin() {
-        let store = LibraryStore::open_in_memory().unwrap();
+    #[tokio::test]
+    async fn enrichment_preserves_existing_asin() {
+        let store = LibraryStore::open_in_memory().await.unwrap();
         store
-            .upsert_account_with_source("user@example.com", "us", None, true, "libro")
+            .upsert_account("user@example.com", "us", None, true, "libro")
+            .await
             .unwrap();
         let mut seed = NewBook::minimal("9781234567890", "user@example.com", "us", "Libro Title");
         seed.source = "libro".into();
         seed.asin = Some("B00EXIST01".into());
         seed.length_minutes = Some(900);
-        let row = store.upsert_book(&seed).unwrap();
+        let row = store.upsert_book(&seed).await.unwrap();
         let enrichment = Enrichment {
             asin: "B00NEWASIN".into(),
             title: "Audible Title".into(),
@@ -556,7 +564,9 @@ mod tests {
             language: None,
             confidence: Some(0.95),
         };
-        let updated = apply_enrichment_to_book(&store, &row.uuid, &enrichment).unwrap();
+        let updated = apply_enrichment_to_book(&store, &row.uuid, &enrichment)
+            .await
+            .unwrap();
         assert_eq!(updated.asin.as_deref(), Some("B00EXIST01"));
         assert_eq!(updated.title, "Audible Title");
     }

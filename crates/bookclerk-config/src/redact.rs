@@ -109,6 +109,9 @@ pub fn register_secrets_from_env() {
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
+        "BOOKCLERK_AWS_ACCESS_KEY_ID",
+        "BOOKCLERK_AWS_SECRET_ACCESS_KEY",
+        "BOOKCLERK_AWS_SESSION_TOKEN",
         "BOOKCLERK_DIAGNOSTICS_GITHUB_TOKEN",
         "GITHUB_TOKEN",
     ];

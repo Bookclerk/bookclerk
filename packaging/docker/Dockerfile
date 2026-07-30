@@ -10,10 +10,8 @@
 # Typical volumes:
 #   /config  → BOOKCLERK_FILES_DIR (config.toml, library.db, Accounts/*.auth + *.wvd)
 #   /data    → acquired audiobooks (set output.local.root = "/data/Audiobooks")
-# Prefer: BOOKCLERK_AUTH_PASSWORD, or mount a secrets volume and set
-# BOOKCLERK_AUTH_PASSWORD_FILE=/secrets/auth_password (auto-created with a strong
-# random secret if missing — do not put this under Accounts/). For local-only
-# unprotected tokens: auth.allow_plaintext=true / BOOKCLERK_AUTH_ALLOW_PLAINTEXT=1.
+# Prefer: BOOKCLERK_AUTH_PASSWORD (env-only). For local-only unprotected tokens:
+# auth.allow_plaintext=true / BOOKCLERK_AUTH_ALLOW_PLAINTEXT=1.
 #
 # The HTTP control plane is unauthenticated. Default listen is loopback inside
 # the container. To publish the port, override explicitly, e.g.:

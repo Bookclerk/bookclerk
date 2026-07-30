@@ -82,13 +82,6 @@ pub fn export_native(opts: NativeExportOptions) -> Result<NativeExportSummary> {
 
     push_if_exists(&opts.files_dir, "config.toml", &mut entries, &mut included);
     push_if_exists(&opts.files_dir, "library.db", &mut entries, &mut included);
-    collect_dir(
-        &opts.files_dir.join("Accounts"),
-        "Accounts",
-        &mut entries,
-        &mut included,
-        true,
-    )?;
 
     if opts.include_plugin_manifests {
         collect_plugin_tomls(&opts.files_dir.join("plugins"), &mut entries, &mut included)?;
@@ -339,10 +332,14 @@ mod tests {
     fn roundtrip_native_backup() {
         let tmp = tempfile::tempdir().unwrap();
         let files = tmp.path().join("files");
-        std::fs::create_dir_all(files.join("Accounts")).unwrap();
+        std::fs::create_dir_all(files.join("plugins/example")).unwrap();
         std::fs::write(files.join("config.toml"), b"library.auto_acquire = false\n").unwrap();
         std::fs::write(files.join("library.db"), b"sqlite-placeholder").unwrap();
-        std::fs::write(files.join("Accounts/a.auth"), b"secret").unwrap();
+        std::fs::write(
+            files.join("plugins/example/plugin.toml"),
+            b"id = \"example\"\n",
+        )
+        .unwrap();
 
         let archive = tmp.path().join("backup.tar.gz");
         let summary = export_native(NativeExportOptions {
@@ -369,6 +366,6 @@ mod tests {
             std::fs::read_to_string(dest.join("config.toml")).unwrap(),
             "library.auto_acquire = false\n"
         );
-        assert!(dest.join("Accounts/a.auth").is_file());
+        assert!(dest.join("plugins/example/plugin.toml").is_file());
     }
 }

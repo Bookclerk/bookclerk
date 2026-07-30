@@ -1,11 +1,22 @@
 //! [`ContentSource`] adapter over an external plugin process.
+//!
+//! # Security
+//!
+//! External plugins are untrusted. This host adapter:
+//! - never passes `library.db` or the Bookclerk files-dir root
+//! - gives only a scoped `plugin_data_dir` (`…/plugins/<id>/data`) and fetch `cache_dir`
+//! - seals login credentials via [`SourceScope`] (`provider = plugin id`)
+//! - loads those credentials for `scan` and `fetch_title` (plugin never opens the DB)
+//! - upserts scan book DTOs via [`SourceScope`] with `source` forced to the plugin id
+//!
+//! First-party in-process adapters use the same [`SourceScope`] boundary.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bookclerk_config::Config;
-use bookclerk_library::LibraryStore;
+use bookclerk_library::{NewBook, SourceScope};
 use bookclerk_source::{
     ContentSource, FetchOptions, LoginOptions, PlainAudioPart, PlainFetch, PortalAuthMode,
     ScanOptions, ScanSummary, SourceAccount, SourceBrand, SourceFetch, SourceRegistry,
@@ -14,8 +25,8 @@ use serde_json::Value;
 
 use crate::discover::DiscoveredPlugin;
 use crate::protocol::{
-    methods, FetchTitleParams, LoginParams, ScanParams, ScanSummaryDto, SourceAccountDto,
-    SourceFetchDto,
+    methods, FetchTitleParams, LoginParams, LoginResultDto, ScanBookDto, ScanParams,
+    ScanSummaryDto, SourceAccountDto, SourceFetchDto,
 };
 use crate::rpc::PluginClient;
 use crate::Result;
@@ -26,11 +37,11 @@ pub struct ExternalSource {
     display_name: String,
     brand: SourceBrand,
     auth_mode: PortalAuthMode,
-    suffixes: &'static [&'static str],
     aliases: &'static [&'static str],
     password_env: Option<&'static str>,
     sort_key: u32,
-    library_db: PathBuf,
+    /// Scoped data directory for this plugin only.
+    plugin_data_dir: PathBuf,
     /// `[sources.<id>]` table from main config (also sent on handshake).
     source_config: Value,
 }
@@ -59,24 +70,27 @@ impl ExternalSource {
             Some("oauth") => PortalAuthMode::Oauth,
             _ => PortalAuthMode::Password,
         };
-        // Empty handshake list means "no Account credential files" — do not
-        // fall back to Audible's suffix or revoke could delete the wrong files.
-        let suffixes = leak_str_slice(&hs.auth_credential_suffixes, &[]);
         let aliases = leak_str_slice(&hs.aliases, &[]);
         let password_env = hs
             .password_env_var
             .as_deref()
             .map(|s| Box::leak(s.to_string().into_boxed_str()) as &'static str);
+        let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id);
+        std::fs::create_dir_all(&plugin_data_dir).map_err(|e| {
+            crate::PluginError::message(format!(
+                "failed to create plugin data dir {}: {e}",
+                plugin_data_dir.display()
+            ))
+        })?;
         Ok(Self {
             client,
             display_name,
             brand,
             auth_mode,
-            suffixes,
             aliases,
             password_env,
             sort_key: hs.sort_key.unwrap_or(200),
-            library_db: config.paths().library_db.clone(),
+            plugin_data_dir,
             source_config: config_json,
         })
     }
@@ -137,10 +151,6 @@ impl ContentSource for ExternalSource {
         self.brand
     }
 
-    fn auth_credential_suffixes(&self) -> &'static [&'static str] {
-        self.suffixes
-    }
-
     fn password_env_var(&self) -> Option<&'static str> {
         self.password_env
     }
@@ -151,15 +161,15 @@ impl ContentSource for ExternalSource {
 
     async fn login(
         &self,
-        files_dir: &Path,
+        scope: &SourceScope,
         opts: LoginOptions,
     ) -> bookclerk_source::Result<SourceAccount> {
-        let dto: SourceAccountDto = self
+        let result: LoginResultDto = self
             .client
             .call(
                 methods::LOGIN,
                 serde_json::to_value(LoginParams {
-                    files_dir: files_dir.display().to_string(),
+                    plugin_data_dir: self.plugin_data_dir.display().to_string(),
                     marketplace: opts.marketplace,
                     label: opts.label,
                     email: opts.email,
@@ -169,47 +179,84 @@ impl ContentSource for ExternalSource {
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
             )
             .await?;
-        Ok(account_from_dto(dto))
+        let mut account = account_from_dto(result.account);
+        // Force source id to the plugin id — plugins cannot claim another storefront.
+        account.source = self.id().to_string();
+        scope
+            .upsert_account(
+                &account.account_id,
+                &account.marketplace,
+                account.label.as_deref(),
+                account.scan_enabled,
+            )
+            .await
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        if let Some(creds) = result.credentials {
+            scope
+                .save_credentials_json(&account.account_id, &creds)
+                .await
+                .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?;
+        }
+        Ok(account)
     }
 
     async fn list_accounts(
         &self,
-        files_dir: &Path,
+        scope: &SourceScope,
     ) -> bookclerk_source::Result<Vec<SourceAccount>> {
-        let list: Vec<SourceAccountDto> = self
-            .client
-            .call(
-                methods::LIST_ACCOUNTS,
-                serde_json::json!({ "files_dir": files_dir.display().to_string() }),
-            )
-            .await?;
-        Ok(list.into_iter().map(account_from_dto).collect())
+        // Host-mediated: accounts table rows for this source id (never ask plugin to open DB).
+        let all = scope
+            .list_accounts()
+            .await
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        Ok(all
+            .into_iter()
+            .map(|a| SourceAccount {
+                account_id: a.account_id,
+                source: a.source,
+                marketplace: a.marketplace,
+                label: a.label,
+                scan_enabled: a.scan_enabled,
+            })
+            .collect())
     }
 
     async fn scan(
         &self,
-        files_dir: &Path,
-        _library: &LibraryStore,
+        scope: &SourceScope,
         opts: ScanOptions,
     ) -> bookclerk_source::Result<ScanSummary> {
+        let credentials = scan_credentials_for(scope, &opts.accounts).await?;
         let dto: ScanSummaryDto = self
             .client
             .call(
                 methods::SCAN,
                 serde_json::to_value(ScanParams {
-                    files_dir: files_dir.display().to_string(),
-                    library_db: self.library_db.display().to_string(),
+                    plugin_data_dir: self.plugin_data_dir.display().to_string(),
                     accounts: opts.accounts,
                     page_size: opts.page_size,
                     import_episodes: opts.import_episodes,
                     import_plus_titles: opts.import_plus_titles,
+                    credentials,
                 })
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
             )
             .await?;
+        let mut upserted = 0usize;
+        for book in dto.books {
+            scope
+                .upsert_book(&scan_book_to_new(self.id(), book))
+                .await
+                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+            upserted += 1;
+        }
         Ok(ScanSummary {
             accounts: dto.accounts,
-            books_upserted: dto.books_upserted,
+            books_upserted: if upserted > 0 {
+                upserted
+            } else {
+                dto.books_upserted
+            },
             pages: dto.pages,
             skipped_disabled: dto.skipped_disabled,
         })
@@ -217,20 +264,25 @@ impl ContentSource for ExternalSource {
 
     async fn fetch_title(
         &self,
-        files_dir: &Path,
+        scope: &SourceScope,
         account_id: &str,
         title_id: &str,
         opts: &FetchOptions,
     ) -> bookclerk_source::Result<SourceFetch> {
+        let credentials = scope
+            .load_credentials_json(account_id)
+            .await
+            .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?;
         let dto: SourceFetchDto = self
             .client
             .call(
                 methods::FETCH_TITLE,
                 serde_json::to_value(FetchTitleParams {
-                    files_dir: files_dir.display().to_string(),
+                    plugin_data_dir: self.plugin_data_dir.display().to_string(),
                     account_id: account_id.to_string(),
                     title_id: title_id.to_string(),
                     cache_dir: opts.cache_dir.display().to_string(),
+                    credentials,
                     source_config: self.source_config.clone(),
                 })
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
@@ -256,6 +308,83 @@ impl ContentSource for ExternalSource {
                 chapters,
             })),
         }
+    }
+}
+
+fn plugin_data_dir(config: &Config, plugin_id: &str) -> PathBuf {
+    config
+        .paths()
+        .files_dir
+        .join("plugins")
+        .join(plugin_id)
+        .join("data")
+}
+
+/// Load host-sealed credentials for the accounts a scan will cover.
+///
+/// Empty `accounts` filter → all scoped accounts that have credentials.
+/// Explicit account needles match `account_id` or label (case-insensitive).
+async fn scan_credentials_for(
+    scope: &SourceScope,
+    account_filter: &[String],
+) -> bookclerk_source::Result<std::collections::BTreeMap<String, Value>> {
+    let accounts = scope
+        .list_accounts()
+        .await
+        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+    let explicit = !account_filter.is_empty();
+    let mut out = std::collections::BTreeMap::new();
+    for acct in accounts {
+        if explicit {
+            let matched = account_filter.iter().any(|needle| {
+                acct.account_id.eq_ignore_ascii_case(needle)
+                    || acct
+                        .label
+                        .as_deref()
+                        .is_some_and(|l| l.eq_ignore_ascii_case(needle))
+            });
+            if !matched {
+                continue;
+            }
+        } else if !acct.scan_enabled {
+            continue;
+        }
+        match scope.load_credentials_json(&acct.account_id).await {
+            Ok(Some(creds)) => {
+                out.insert(acct.account_id, creds);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Err(bookclerk_source::SourceError::Auth(e.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn scan_book_to_new(plugin_id: &str, book: ScanBookDto) -> NewBook {
+    NewBook {
+        uuid: None,
+        product_id: book.product_id.clone(),
+        source: plugin_id.to_string(),
+        account_id: book.account_id,
+        asin: book.asin,
+        isbn: book.isbn,
+        marketplace: book.marketplace.unwrap_or_else(|| String::from("us")),
+        title: book.title,
+        authors: book.authors,
+        narrators: book.narrators,
+        series: book.series,
+        series_index: book.series_index,
+        series_asin: None,
+        purchased_at: None,
+        publisher: book.publisher,
+        length_minutes: book.length_minutes,
+        is_abridged: false,
+        content_kind: book.content_kind.unwrap_or_else(|| String::from("book")),
+        categories: None,
+        subtitle: book.subtitle,
+        published_at: None,
     }
 }
 
@@ -317,5 +446,79 @@ fn toml_to_json(value: &toml::Value) -> Value {
                 .map(|(k, v)| (k.clone(), toml_to_json(v)))
                 .collect(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bookclerk_library::{configure_master_key, LibraryStore};
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn scan_credentials_only_from_this_scope() {
+        let dir = tempdir().unwrap();
+        configure_master_key(dir.path()).unwrap();
+        let store = LibraryStore::open_in_memory().await.unwrap();
+        let echo = store.scope("echo");
+        let other = store.scope("other");
+
+        echo.upsert_account("a1", "us", Some("Echo"), true)
+            .await
+            .unwrap();
+        other
+            .upsert_account("b1", "us", Some("Other"), true)
+            .await
+            .unwrap();
+        echo.save_credentials_json("a1", &serde_json::json!({"token": "echo-secret"}))
+            .await
+            .unwrap();
+        other
+            .save_credentials_json("b1", &serde_json::json!({"token": "other-secret"}))
+            .await
+            .unwrap();
+
+        let creds = scan_credentials_for(&echo, &[]).await.unwrap();
+        assert_eq!(creds.len(), 1);
+        assert_eq!(creds["a1"]["token"], "echo-secret");
+        assert!(!creds.contains_key("b1"));
+    }
+
+    #[tokio::test]
+    async fn scan_credentials_skips_scan_disabled_unless_explicit() {
+        let dir = tempdir().unwrap();
+        configure_master_key(dir.path()).unwrap();
+        let store = LibraryStore::open_in_memory().await.unwrap();
+        let echo = store.scope("echo");
+        echo.upsert_account("a1", "us", None, false).await.unwrap();
+        echo.save_credentials_json("a1", &serde_json::json!({"t": 1}))
+            .await
+            .unwrap();
+
+        assert!(scan_credentials_for(&echo, &[]).await.unwrap().is_empty());
+        let explicit = scan_credentials_for(&echo, &["a1".into()]).await.unwrap();
+        assert_eq!(explicit.len(), 1);
+    }
+
+    #[test]
+    fn scan_book_forces_plugin_source() {
+        let book = ScanBookDto {
+            account_id: "a".into(),
+            product_id: "p".into(),
+            title: "T".into(),
+            marketplace: None,
+            asin: None,
+            isbn: None,
+            authors: None,
+            narrators: None,
+            series: None,
+            series_index: None,
+            content_kind: None,
+            publisher: None,
+            length_minutes: None,
+            subtitle: None,
+        };
+        let new = scan_book_to_new("echo", book);
+        assert_eq!(new.source, "echo");
     }
 }

@@ -2,7 +2,11 @@
 //!
 //! Plugins are **separate executables** discovered from install directories
 //! (`plugin.toml` + binary) and spoken to over newline-delimited JSON-RPC on
-//! stdio. User settings stay in the main `config.toml` under matching
+//! stdio. They are **untrusted** relative to the host: the host never passes
+//! `library.db` / `master.key` / the files-dir root, clears secret-bearing env
+//! on spawn, and mediates credentials + library upserts.
+//!
+//! User settings stay in the main `config.toml` under matching
 //! `[sources.<id>]` / `[integrations.<id>]` tables and are passed at handshake.
 //!
 //! # Layout
@@ -40,7 +44,8 @@ pub use host::{
 pub use manifest::{PluginKind, PluginManifest};
 pub use protocol::{
     methods, CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-    HandshakeResult, HealthDto, SyncListeningResultDto, PLUGIN_API_VERSION,
+    HandshakeResult, HealthDto, LoginResultDto, ScanBookDto, SyncListeningResultDto,
+    PLUGIN_API_VERSION,
 };
 pub use rpc::{PluginClient, PluginGuest};
 
@@ -123,6 +128,13 @@ pub async fn register_discovered(
                 tracing::warn!(
                     id = %plugin.manifest.id,
                     "output plugins are discovered but not yet loaded (coming soon)"
+                );
+            }
+            PluginKind::Database => {
+                tracing::warn!(
+                    id = %plugin.manifest.id,
+                    "external database plugins are discovered but not yet loaded; \
+                     use built-in [database].plugin = \"sqlite\"|\"d1\""
                 );
             }
         }

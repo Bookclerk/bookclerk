@@ -25,9 +25,8 @@ ProtectHome=true
 ReadWritePaths=/var/lib/bookclerk
 # Decrypt/encode/fixup/split are native Rust — no ffmpeg binary required.
 # Widevine L3 CDMs auto-provision (Android auth); optional BYO .wvd under Accounts/.
-# Prefer: BOOKCLERK_AUTH_PASSWORD, or LoadCredential= + BOOKCLERK_AUTH_PASSWORD_FILE
-# (missing password-file paths are auto-created with a strong random secret —
-# keep that path off Accounts/). auth.allow_plaintext=true for unprotected tokens.
+# Prefer: BOOKCLERK_AUTH_PASSWORD (env-only).
+# auth.allow_plaintext=true for unprotected tokens.
 
 [Install]
 WantedBy=multi-user.target

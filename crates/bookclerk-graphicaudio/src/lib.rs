@@ -9,6 +9,7 @@
 mod auth;
 mod catalog;
 mod client;
+pub mod db;
 mod download;
 mod error;
 mod http_util;
@@ -17,10 +18,7 @@ mod options;
 mod source;
 mod sync;
 
-pub use auth::{
-    auth_file_for, auth_file_for_account, auth_stem, find_auth_file, list_auth_files, load_auth,
-    save_auth, GraphicAudioAuthFile, AUTH_SUFFIX,
-};
+pub use auth::GraphicAudioAuthFile;
 pub use catalog::{
     catalog_http_client, expand_from_product_id, expand_from_search, fetch_product_by_id,
     fetch_series_page, parse_catalog_grid, parse_related_products, search_catalog,
@@ -30,6 +28,7 @@ pub use client::{
     DownloadLinks, GraphicAudioClient, Product, DEFAULT_BASE_URL, LOGIN_PATH, PRODUCTS_PATH,
     REMOVE_PATH,
 };
+pub use db::{delete_auth_from_db, list_auth_from_db, load_auth_from_db, save_auth_to_db};
 pub use download::{
     fetch_title_materials, fetch_title_with_mode, password_from_env, TitleFetchRequest,
     GA_ACCESS_ENV, GA_FETCH_ENV, GA_PASSWORD_ENV,

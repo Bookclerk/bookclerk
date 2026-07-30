@@ -20,7 +20,7 @@ community tooling ([audiobook-dl](https://github.com/jo1gi/audiobook-dl),
 | Trait surface | `login` / `list_accounts` / `scan` / `fetch_title` → `SourceFetch::Plain` or `Encrypted` |
 | Plain path | Matches Libro.fm today (no `bookclerk-decrypt`) |
 | Encrypted path | Today: Adrm + Widevine only; new DRM kinds need decrypt work |
-| Auth files | Per-account tokens under `Accounts/` |
+| Auth storage | Per-account tokens in `encrypted_secrets` (DB), keyed by account id |
 | Config plugins | `[sources.<id>]` enable + source knobs; `[integrations.*]` reserved for third-party hooks |
 | Diagnostics | Top-level `[diagnostics]` only (not an integration plugin) |
 
@@ -72,7 +72,7 @@ URLs (m4a in-app). No Widevine/MediaDrm usage in app code beyond ExoPlayer
 boilerplate.
 
 **Bookclerk mapping:** GraphicAudio content-source plugin (`id = "graphicaudio"`),
-`SourceFetch::Plain`, auth file e.g. `Accounts/*.ga.auth`. Optional: also scrape
+`SourceFetch::Plain`, credentials stored in `encrypted_secrets`. Optional: also scrape
 Magento “My Downloadable Products” for ZIP MP3/M4B/FLAC purchases.
 
 **Risks:** Niche catalog (dramatized productions). Device activation may

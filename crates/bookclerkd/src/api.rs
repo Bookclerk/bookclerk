@@ -14,7 +14,8 @@ use bookclerk_acquire::sidecar_key;
 use bookclerk_config::Config;
 use bookclerk_integrations::{portal_spa_router, IntegrationRegistry, PortalState};
 use bookclerk_library::{
-    AcquireStatus, BookRecord, LibraryStore, NewTitleRequest, RequestStatus, TitleRequestRecord,
+    configure_master_key_with, AcquireStatus, BookRecord, LibraryStore, NewTitleRequest,
+    RequestStatus, TitleRequestRecord,
 };
 use bookclerk_search::{SearchEngine, SearchHit};
 use bookclerk_source::ContentSource;
@@ -111,12 +112,11 @@ struct BooksResponse {
 }
 
 /// Build the HTTP router (API + optional static UI + SPA portal APIs).
-pub fn router(state: Arc<AppState>, files_dir: PathBuf, ui_dist: Option<PathBuf>) -> Router {
+pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     let portal_state = PortalState {
         config: state.config.clone(),
         library: state.library.clone(),
         integrations: state.integrations.clone(),
-        files_dir,
         sources: state.sources.clone(),
     };
 
@@ -127,6 +127,7 @@ pub fn router(state: Arc<AppState>, files_dir: PathBuf, ui_dist: Option<PathBuf>
         .route("/jobs", get(list_jobs))
         .route("/integrations/{id}/scan", post(trigger_integration_scan))
         .route("/api/status", get(status))
+        .route("/api/config/reload", post(reload_config))
         .route("/api/jobs", get(list_jobs))
         .route("/api/library/scan", post(trigger_scan))
         .route("/api/library/acquire", post(trigger_acquire))
@@ -219,54 +220,110 @@ async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
+/// Reload `config.toml` from disk and re-apply master-key wrap (BCK1→BCK2).
+pub async fn reload_daemon_config(state: &AppState) -> anyhow::Result<String> {
+    let (files_dir, config_path, listen) = {
+        let cfg = state.config.read().await;
+        (
+            cfg.paths().files_dir.clone(),
+            cfg.paths().config_file.clone(),
+            cfg.daemon.listen.clone(),
+        )
+    };
+    let mut new_cfg = Config::load(Some(files_dir.clone()), Some(config_path.clone()))?;
+    // Listen changes require a process restart; keep the live bind address.
+    if new_cfg.daemon.listen != listen {
+        tracing::warn!(
+            old = %listen,
+            new = %new_cfg.daemon.listen,
+            "daemon.listen changed in config — ignoring until restart"
+        );
+        new_cfg.daemon.listen = listen;
+    }
+    configure_master_key_with(&files_dir, new_cfg.auth_password().as_deref())?;
+    new_cfg.warn_unsupported_options();
+    let wrapped = new_cfg.auth_password().is_some();
+    *state.config.write().await = new_cfg;
+    Ok(format!(
+        "reloaded {} (master.key wrap={wrapped})",
+        config_path.display()
+    ))
+}
+
+async fn reload_config(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ActionResponse>, StatusCode> {
+    match reload_daemon_config(&state).await {
+        Ok(message) => Ok(Json(ActionResponse {
+            ok: true,
+            message,
+            job_id: String::new(),
+        })),
+        Err(err) => {
+            tracing::error!(error = %err, "config reload failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusResponse>, StatusCode> {
     let accounts = state
         .library
-        .list_accounts()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .len();
+        .count_accounts()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? as usize;
     let books = state
         .library
-        .list_books(None)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .len();
+        .count_books(None)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)? as usize;
     let acquired = state
         .library
         .count_by_status(AcquireStatus::Acquired)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let pending = state
         .library
         .count_by_status(AcquireStatus::NotAcquired)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let error = state
         .library
         .count_by_status(AcquireStatus::Error)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let queued = state
         .library
         .count_by_status(AcquireStatus::Queued)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let downloading = state
         .library
         .count_by_status(AcquireStatus::Downloading)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let cfg = state.config.read().await;
+    let in_progress = queued + downloading;
+    let (listen, storage_backend) = {
+        let cfg = state.config.read().await;
+        let names = cfg.output.enabled_backend_names();
+        (
+            cfg.daemon.listen.clone(),
+            if names.is_empty() {
+                "none".into()
+            } else {
+                names.join(",")
+            },
+        )
+    };
     Ok(Json(StatusResponse {
         accounts,
         books,
         acquired,
         pending,
         error,
-        in_progress: queued + downloading,
-        listen: cfg.daemon.listen.clone(),
-        storage_backend: {
-            let names = cfg.output.enabled_backend_names();
-            if names.is_empty() {
-                "none".into()
-            } else {
-                names.join(",")
-            }
-        },
+        in_progress,
+        listen,
+        storage_backend,
     }))
 }
 
@@ -335,6 +392,7 @@ async fn list_books(
             let links = state
                 .library
                 .list_account_links(identity.id)
+                .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             Some(links.into_iter().map(|l| l.account_id).collect())
         } else {
@@ -361,6 +419,7 @@ async fn list_books(
                 }
             }
             if let Some(book) = book_for_search_hit(&state.library, &hit)
+                .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
             {
                 out.push(book);
@@ -375,12 +434,14 @@ async fn list_books(
                 state
                     .library
                     .list_books(Some(account))
+                    .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
             }
         } else {
             state
                 .library
                 .list_books(Some(account))
+                .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         }
     } else if let Some(allowed) = portal_accounts.as_ref() {
@@ -390,6 +451,7 @@ async fn list_books(
                 state
                     .library
                     .list_books(Some(account_id))
+                    .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
             );
         }
@@ -398,6 +460,7 @@ async fn list_books(
         state
             .library
             .list_books(None)
+            .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     };
 
@@ -429,6 +492,7 @@ async fn get_book(
     state
         .library
         .get_book_by_uuid(&uuid)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .map(Json)
         .ok_or(StatusCode::NOT_FOUND)
@@ -441,6 +505,7 @@ async fn get_book_cover(
     let book = state
         .library
         .get_book_by_uuid(&uuid)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     let storage_key = book.storage_key.as_deref().ok_or(StatusCode::NOT_FOUND)?;
@@ -484,17 +549,17 @@ fn resolve_local_key(root: &Path, prefix: &str, key: &str) -> PathBuf {
 /// The index stores ids lowercased and returns `asin` uppercased for display, so
 /// an exact `get_book(&hit.asin)` can miss. Prefer uuid, then a small set of
 /// case-normalized title_id candidates.
-fn book_for_search_hit(
+async fn book_for_search_hit(
     library: &LibraryStore,
     hit: &SearchHit,
 ) -> Result<Option<BookRecord>, bookclerk_library::LibraryError> {
     if !hit.uuid.is_empty() {
-        if let Some(book) = library.get_book_by_uuid(&hit.uuid)? {
+        if let Some(book) = library.get_book_by_uuid(&hit.uuid).await? {
             return Ok(Some(book));
         }
     }
     for candidate in title_id_candidates(&hit.asin) {
-        if let Some(book) = library.get_book(&candidate, &hit.account_id)? {
+        if let Some(book) = library.get_book(&candidate, &hit.account_id).await? {
             return Ok(Some(book));
         }
     }
@@ -559,7 +624,9 @@ async fn discover_recommendations(
 ) -> Result<Json<bookclerk_discover::DiscoverFeed>, (StatusCode, String)> {
     let cfg = state.config.read().await.clone();
     let library = state.library.clone();
-    let _ = bookclerk_discover::rebuild_works_from_library(&library).map_err(internal_err)?;
+    let _ = bookclerk_discover::rebuild_works_from_library(&library)
+        .await
+        .map_err(internal_err)?;
 
     let mut embedder = bookclerk_discover::open_embedder(
         &cfg.paths().models_dir,
@@ -568,7 +635,7 @@ async fn discover_recommendations(
     )
     .map_err(internal_err)?;
     let model_id = embedder.model_id().to_string();
-    let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut());
+    let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut()).await;
 
     let listening_providers = q
         .listening_providers
@@ -593,6 +660,7 @@ async fn discover_recommendations(
     let disabled_shelves = state
         .library
         .get_user_preferences_or_default(&subject_key, identity_id)
+        .await
         .map(|p| p.disabled_shelves)
         .unwrap_or_default();
 
@@ -697,6 +765,7 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
         return state
             .library
             .list_account_links(identity.id)
+            .await
             .map(|links| {
                 let mut sources: Vec<String> = links
                     .into_iter()
@@ -711,6 +780,7 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
     state
         .library
         .list_accounts()
+        .await
         .map(|accounts| {
             let mut sources: Vec<String> = accounts
                 .into_iter()
@@ -772,6 +842,7 @@ async fn list_wishlist(
     let rows = state
         .library
         .list_wishlist(identity_id)
+        .await
         .map_err(internal_err)?;
     Ok(Json(rows))
 }
@@ -792,6 +863,7 @@ async fn delete_wishlist(
     let row = state
         .library
         .get_title_request_by_uuid(&uuid)
+        .await
         .map_err(internal_err)?
         .ok_or((
             StatusCode::NOT_FOUND,
@@ -822,10 +894,12 @@ async fn delete_wishlist(
     state
         .library
         .update_title_request_status(&uuid, RequestStatus::Cancelled, None)
+        .await
         .map_err(internal_err)?;
     state
         .library
         .get_title_request_by_uuid(&uuid)
+        .await
         .map_err(internal_err)?
         .map(Json)
         .ok_or((
@@ -846,7 +920,7 @@ async fn list_request_queue(
     )
     .map_err(internal_err)?;
     let model_id = embedder.model_id().to_string();
-    let _ = bookclerk_discover::embed_dirty_works(&state.library, embedder.as_mut());
+    let _ = bookclerk_discover::embed_dirty_works(&state.library, embedder.as_mut()).await;
 
     // Shared queue: overall / operator taste only (no portal personalization).
     let opts = bookclerk_discover::RecommendOptions {
@@ -867,6 +941,7 @@ async fn list_request_queue(
         embeddings_enabled: cfg.discovery.embeddings_enabled,
     };
     let rows = bookclerk_discover::rank_global_request_queue(&state.library, &opts)
+        .await
         .map_err(internal_err)?;
     Ok(Json(rows))
 }
@@ -898,6 +973,7 @@ async fn create_request_inner(
             work_id: None,
             resolved_book_uuid: None,
         })
+        .await
         .map_err(internal_err)?;
     Ok(Json(row))
 }
@@ -938,6 +1014,7 @@ async fn get_preferences(
     let prefs = state
         .library
         .get_user_preferences_or_default(&subject_key, identity_id)
+        .await
         .map_err(internal_err)?;
     Ok(Json(PreferencesResponse {
         default_view: auth::normalize_default_view(&prefs.default_view),
@@ -954,6 +1031,7 @@ async fn patch_preferences(
     let current = state
         .library
         .get_user_preferences_or_default(&subject_key, identity_id)
+        .await
         .map_err(internal_err)?;
 
     let default_view = body
@@ -970,6 +1048,7 @@ async fn patch_preferences(
     let saved = state
         .library
         .upsert_user_preferences(&subject_key, identity_id, &default_view, &disabled_shelves)
+        .await
         .map_err(internal_err)?;
 
     Ok(Json(PreferencesResponse {

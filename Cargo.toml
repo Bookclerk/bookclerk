@@ -27,11 +27,15 @@ default-members = [
     "crates/bookclerk-cli",
     "crates/bookclerkd",
 ]
+# Vendored fork is a path dep only — do not fmt/clippy/test it as a workspace member
+# (upstream tests need fixtures we do not ship).
+exclude = ["third_party/audible-rs"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.87"
+# SeaORM 2 / sqlx-sqlite require 1.94+.
+rust-version = "1.94"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/fritz-fritz/bookclerk"
 authors = ["fritz-fritz <contact@bookclerk.app>"]
@@ -82,9 +86,29 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["trace", "fs", "normalize-path"] }
 qrcode = { version = "0.14", default-features = false }
 
-# DB / storage — rusqlite (bundled) aligns with audible-rs; one libsqlite3-sys in the tree.
-rusqlite = { version = "0.40", features = ["bundled"] }
-rusqlite_migration = "2.6"
+# DB / storage — rusqlite 0.37 shares libsqlite3-sys 0.35 with SeaORM's sqlx-sqlite
+# (rusqlite 0.40 needs ^0.38 and cannot coexist in one binary). Vendored audible-rs
+# under third_party/ matches this pin — see docs/database.md.
+rusqlite = { version = "0.37", features = ["bundled", "column_decltype"] }
+rusqlite_migration = "2.3"
+sea-orm = { version = "2.0.0", default-features = false, features = [
+    "macros",
+    "with-chrono",
+    "with-uuid",
+    "with-json",
+    "proxy",
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+] }
+# Crypto for encrypted_secrets (Argon2id KDF + XChaCha20-Poly1305 cipher).
+# These are already in the dependency tree via audible-rs — adding them as
+# explicit workspace deps keeps versions aligned with no extra downloads.
+argon2 = { version = "0.5", features = ["std"] }
+chacha20poly1305 = "0.10"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+base64 = "0.22"
+reqwest = { version = "0.13", default-features = true, features = ["json"] }
 # aws-sdk-s3's default `rustls` feature enables smithy's *legacy* rustls 0.21
 # path (vulnerable rustls-webpki 0.101). Prefer `default-https-client`, which
 # uses rustls 0.23 + aws-lc.
@@ -108,8 +132,9 @@ rust_xlsxwriter = "0.96"
 tar = "0.4"
 flate2 = "1"
 
-# audible-rs (pinned git rev; thin wrapper isolates API churn)
-audible-rs = { git = "https://github.com/mkb79/audible-rs", rev = "5a28f507072022ae7fd7f95a62e3bdc5e515d678" }
+# audible-rs — path-patched fork (rusqlite 0.37). Upstream rev documented in
+# third_party/audible-rs/BOOKCLERK_PATCH.md.
+audible-rs = { path = "third_party/audible-rs" }
 secrecy = { version = "0.10", features = ["serde"] }
 
 # Test doubles

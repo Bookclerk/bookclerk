@@ -41,16 +41,20 @@ integrations.
 
 ## Plugin kinds
 
-Bookclerk uses three first-class plugin roles (in-process and/or external):
+Bookclerk uses four first-class plugin roles (in-process and/or external):
 
 | Kind | Trait / host | Examples |
 | --- | --- | --- |
 | **Source** | `ContentSource` | `audible`, `libro`, `chirp`, `graphicaudio` |
 | **Output / destination** | storage backends under `[output.*]` | `local`, `s3` |
+| **Database** | SeaORM connection under `[database]` | `sqlite` (default), `d1` |
 | **Integration** | `Integration` | `audiobookshelf`, SPA portal claim helpers |
 
 Third-party plugins are separate executables discovered via `plugin.toml` and
 spoken to over newline-delimited JSON-RPC on stdio. See [plugins.md](plugins.md).
+Database backends today are selected in-process via `[database].plugin` (see
+[database.md](database.md)); external `kind = "database"` manifests are
+discovered but not loaded yet.
 
 ## Workspace crates (by concern)
 
@@ -62,7 +66,7 @@ spoken to over newline-delimited JSON-RPC on stdio. See [plugins.md](plugins.md)
 | Decrypt / remux / MP3 | `bookclerk-decrypt` |
 | Acquire orchestration | `bookclerk-acquire` |
 | Naming templates | `bookclerk-naming` |
-| Library DB | `bookclerk-library` |
+| Library DB | `bookclerk-library` (SeaORM plugins + rusqlite store) |
 | Search | `bookclerk-search` |
 | Discovery / recommendations | `bookclerk-discover` |
 | Storage backends | `bookclerk-storage` |
@@ -78,13 +82,17 @@ spoken to over newline-delimited JSON-RPC on stdio. See [plugins.md](plugins.md)
 ```text
 BookclerkFiles/
   config.toml
-  library.db
-  Accounts/           # *.audible.auth, *.libro.auth, *.ga.auth, *.chirp.auth, *.s3.auth, *.wvd
+  library.db          # incl. encrypted_secrets (auth + Widevine CDM + S3 keys)
   cache/
   search_index/
   plugins/            # third-party plugin installs
   logs/               # reserved (Bookclerk does not rotate log files)
 ```
+
+Runtime credentials are **not** stored as files under the files dir:
+Audible/Libro.fm/Chirp/GraphicAudio auth, Widevine CDM blobs, and S3 destination
+keys live in the `encrypted_secrets` DB table; bootstrap secrets (passphrase,
+DB/API tokens) come from the environment. There is no `Accounts/` directory.
 
 Relative `output.local.root` values resolve under this directory.
 

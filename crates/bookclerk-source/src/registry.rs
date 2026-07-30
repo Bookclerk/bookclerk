@@ -1,10 +1,9 @@
 //! Registry of content sources.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
-use bookclerk_library::LibraryStore;
+use bookclerk_library::{LibraryStore, SourceScope};
 
 use crate::error::{Result, SourceError};
 use crate::traits::ContentSource;
@@ -65,36 +64,18 @@ impl SourceRegistry {
         sources
     }
 
-    /// Credential filename suffixes declared by every registered source.
-    #[must_use]
-    pub fn all_auth_credential_suffixes(&self) -> Vec<&'static str> {
-        let mut out = Vec::new();
-        for source in self.all() {
-            for suffix in source.auth_credential_suffixes() {
-                if !out.contains(suffix) {
-                    out.push(*suffix);
-                }
-            }
-        }
-        out
-    }
-
     /// Scan every registered source (honoring per-source account filters).
     ///
     /// When `opts.accounts` is non-empty, each source only receives the subset of
     /// account needles that resolve to an account on that source. Sources with no
     /// matching accounts are skipped instead of failing the whole multi-source scan.
-    pub async fn scan_all(
-        &self,
-        files_dir: &Path,
-        library: &LibraryStore,
-        opts: ScanOptions,
-    ) -> Result<ScanSummary> {
+    pub async fn scan_all(&self, library: &LibraryStore, opts: ScanOptions) -> Result<ScanSummary> {
         let mut total = ScanSummary::default();
         let mut any = false;
         for source in self.all() {
+            let scope = library.scope(source.id());
             let source_opts =
-                match filter_scan_opts_for_source(source.as_ref(), files_dir, &opts).await {
+                match filter_scan_opts_for_source(source.as_ref(), &scope, &opts).await {
                     Ok(Some(o)) => o,
                     Ok(None) => {
                         tracing::debug!(
@@ -105,7 +86,7 @@ impl SourceRegistry {
                     }
                     Err(err) => return Err(err),
                 };
-            match source.scan(files_dir, library, source_opts).await {
+            match source.scan(&scope, source_opts).await {
                 Ok(summary) => {
                     any = true;
                     total.merge(&summary);
@@ -132,13 +113,13 @@ impl SourceRegistry {
 /// Returns `None` when an explicit account filter matches nothing on this source.
 async fn filter_scan_opts_for_source(
     source: &dyn ContentSource,
-    files_dir: &Path,
+    scope: &SourceScope,
     opts: &ScanOptions,
 ) -> Result<Option<ScanOptions>> {
     if opts.accounts.is_empty() {
         return Ok(Some(opts.clone()));
     }
-    let accounts = source.list_accounts(files_dir).await?;
+    let accounts = source.list_accounts(scope).await?;
     let filtered: Vec<String> = opts
         .accounts
         .iter()

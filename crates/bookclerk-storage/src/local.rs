@@ -102,6 +102,10 @@ impl StorageBackend for LocalFsBackend {
         "local"
     }
 
+    fn clone_box(&self) -> Box<dyn StorageBackend> {
+        Box::new(self.clone())
+    }
+
     async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {
         let path = self.resolve(key)?;
         if let Some(parent) = path.parent() {

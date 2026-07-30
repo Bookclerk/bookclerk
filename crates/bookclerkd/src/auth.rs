@@ -83,7 +83,7 @@ pub async fn login(
     Json(body): Json<LoginRequest>,
 ) -> Result<Response, StatusCode> {
     let auth = state.auth.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let default_view = default_view_for_subject(&state.library, OPERATOR_PREFS_KEY, None);
+    let default_view = default_view_for_subject(&state.library, OPERATOR_PREFS_KEY, None).await;
     if !auth.enabled {
         return Ok((
             StatusCode::OK,
@@ -161,7 +161,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
     };
 
     if !auth.enabled {
-        let default_view = default_view_for_subject(&state.library, OPERATOR_PREFS_KEY, None);
+        let default_view = default_view_for_subject(&state.library, OPERATOR_PREFS_KEY, None).await;
         return (
             StatusCode::OK,
             Json(AuthMeResponse {
@@ -175,7 +175,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
     }
 
     if authorize_operator(auth, &headers).await {
-        let default_view = default_view_for_subject(&state.library, OPERATOR_PREFS_KEY, None);
+        let default_view = default_view_for_subject(&state.library, OPERATOR_PREFS_KEY, None).await;
         return (
             StatusCode::OK,
             Json(AuthMeResponse {
@@ -188,9 +188,9 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
         );
     }
 
-    if let Some(identity) = portal_identity_from_headers(&state.library, &headers) {
+    if let Some(identity) = portal_identity_from_headers(&state.library, &headers).await {
         let key = portal_prefs_key(identity.id);
-        let default_view = default_view_for_subject(&state.library, &key, Some(identity.id));
+        let default_view = default_view_for_subject(&state.library, &key, Some(identity.id)).await;
         return (
             StatusCode::OK,
             Json(AuthMeResponse {
@@ -253,7 +253,10 @@ pub async fn require_operator_or_portal_auth(
     if authorize_operator(auth, req.headers()).await {
         return Ok(next.run(req).await);
     }
-    if portal_identity_from_headers(&state.library, req.headers()).is_some() {
+    if portal_identity_from_headers(&state.library, req.headers())
+        .await
+        .is_some()
+    {
         return Ok(next.run(req).await);
     }
     Err(StatusCode::UNAUTHORIZED)
@@ -271,7 +274,7 @@ pub async fn caller_portal_identity(
     if authorize_operator(auth, headers).await {
         return None;
     }
-    portal_identity_from_headers(&state.library, headers)
+    portal_identity_from_headers(&state.library, headers).await
 }
 
 /// Subject key + optional portal identity id for the caller's preferences row.
@@ -286,19 +289,20 @@ pub async fn prefs_subject_for_caller(
     } else {
         return (OPERATOR_PREFS_KEY.to_string(), None);
     }
-    if let Some(identity) = portal_identity_from_headers(&state.library, headers) {
+    if let Some(identity) = portal_identity_from_headers(&state.library, headers).await {
         return (portal_prefs_key(identity.id), Some(identity.id));
     }
     (OPERATOR_PREFS_KEY.to_string(), None)
 }
 
-fn default_view_for_subject(
+async fn default_view_for_subject(
     library: &bookclerk_library::LibraryStore,
     subject_key: &str,
     identity_id: Option<i64>,
 ) -> String {
     library
         .get_user_preferences_or_default(subject_key, identity_id)
+        .await
         .map(|p| normalize_default_view(&p.default_view))
         .unwrap_or_else(|_| String::from("discover"))
 }

@@ -10,9 +10,10 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use bookclerk_config::OutputS3Config;
 use bytes::Bytes;
+use sea_orm::DatabaseConnection;
 
 use crate::error::{Result, StorageError};
-use crate::s3_auth::{load_auth, resolve_credentials_path};
+use crate::s3_credentials::load_s3_credentials;
 use crate::traits::{ObjectInfo, ObjectMeta, ObjectProbe, StorageBackend};
 
 /// S3-compatible object storage.
@@ -27,15 +28,18 @@ impl S3Backend {
     /// Build from Bookclerk S3 output config.
     ///
     /// Credential resolution order:
-    /// 1. `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (optional `AWS_SESSION_TOKEN`)
-    /// 2. `[output.s3].credentials_file` or default `Accounts/default.s3.auth`
-    /// 3. AWS SDK default provider chain (same sources the AWS CLI/SDK use when
-    ///    no static keys are set: `~/.aws/credentials` / `~/.aws/config`, SSO,
-    ///    EC2/ECS/EKS instance or task roles, etc.)
+    /// 1. `BOOKCLERK_AWS_ACCESS_KEY_ID` + `BOOKCLERK_AWS_SECRET_ACCESS_KEY` env override
+    ///    (wins when both are set; empty string counts as set — intentional override).
+    ///    Do NOT confuse with bare `AWS_*` which the SDK chain may use independently.
+    /// 2. `encrypted_secrets` (`kind=s3`, `name=default`) when `db` is provided (sealed-v1)
+    /// 3. AWS SDK default provider chain (`~/.aws/credentials`, SSO, EC2/ECS/EKS roles, etc.)
     ///
-    /// `prefix` should already be the normalized destination prefix for this
-    /// S3 plugin (`[output.s3] prefix`).
-    pub async fn from_config(cfg: &OutputS3Config, prefix: &str, files_dir: &Path) -> Result<Self> {
+    /// `prefix` should already be the normalized destination prefix for this S3 plugin.
+    pub async fn from_config(
+        cfg: &OutputS3Config,
+        prefix: &str,
+        db: Option<&DatabaseConnection>,
+    ) -> Result<Self> {
         if cfg.bucket.is_empty() {
             return Err(StorageError::S3("bucket must not be empty".into()));
         }
@@ -44,12 +48,12 @@ impl S3Backend {
             aws_config::defaults(BehaviorVersion::latest()).region(Region::new(cfg.region.clone()));
 
         if let (Ok(access), Ok(secret)) = (
-            std::env::var("AWS_ACCESS_KEY_ID"),
-            std::env::var("AWS_SECRET_ACCESS_KEY"),
+            std::env::var(crate::s3_credentials::ENV_AWS_ACCESS_KEY_ID),
+            std::env::var(crate::s3_credentials::ENV_AWS_SECRET_ACCESS_KEY),
         ) {
             bookclerk_config::register_secret(&access);
             bookclerk_config::register_secret(&secret);
-            let session = std::env::var("AWS_SESSION_TOKEN").ok();
+            let session = std::env::var(crate::s3_credentials::ENV_AWS_SESSION_TOKEN).ok();
             if let Some(ref token) = session {
                 bookclerk_config::register_secret(token);
             }
@@ -60,17 +64,16 @@ impl S3Backend {
                 None,
                 "bookclerk-env",
             ));
-        } else if let Some(path) =
-            resolve_credentials_path(files_dir, cfg.credentials_file.as_deref())
-        {
-            let auth = load_auth(&path)?;
-            loader = loader.credentials_provider(Credentials::new(
-                auth.access_key_id,
-                auth.secret_access_key,
-                auth.session_token,
-                None,
-                "bookclerk-s3-auth",
-            ));
+        } else if let Some(db) = db {
+            if let Some(creds) = load_s3_credentials(db).await? {
+                loader = loader.credentials_provider(Credentials::new(
+                    creds.access_key_id,
+                    creds.secret_access_key,
+                    creds.session_token,
+                    None,
+                    "bookclerk-encrypted-secrets",
+                ));
+            }
         }
 
         let shared = loader.load().await;
@@ -147,6 +150,10 @@ impl S3Backend {
 impl StorageBackend for S3Backend {
     fn name(&self) -> &'static str {
         "s3"
+    }
+
+    fn clone_box(&self) -> Box<dyn StorageBackend> {
+        Box::new(self.clone())
     }
 
     async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {

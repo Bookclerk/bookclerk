@@ -1,23 +1,20 @@
 //! [`LibroSource`]: [`ContentSource`] implementation for Libro.fm.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bookclerk_config::Config;
-use bookclerk_library::LibraryStore;
+use bookclerk_library::SourceScope;
 use bookclerk_source::{
     ContentSource, FetchOptions, LoginOptions, PortalAuthMode, ScanOptions, ScanSummary,
     SourceAccount, SourceBrand, SourceFetch, SourceRegistry,
 };
 use chrono::{Duration, TimeZone, Utc};
 
-use crate::auth::{
-    auth_file_for_account, ensure_accounts_dir, find_auth_file, list_auth_files, load_auth,
-    save_auth, LibroAuthFile, AUTH_SUFFIX,
-};
+use crate::auth::LibroAuthFile;
 use crate::client::{LibroClient, DEFAULT_BASE_URL};
 use crate::container::LibroContainer;
+use crate::db::{delete_auth_from_db, list_auth_from_db, load_auth_from_db, save_auth_to_db};
 use crate::download::fetch_title_materials_with;
 use crate::error::{LibroError, Result};
 use crate::sync::{scan_library, ScanOptions as LibroScanOptions};
@@ -89,10 +86,10 @@ impl LibroSource {
         Arc::new(Self::new())
     }
 
-    /// Login and persist `.libro.auth` (crate-level helper).
+    /// Login and persist credentials to DB.
     pub async fn login_account(
         &self,
-        files_dir: &Path,
+        library: &SourceScope,
         opts: LoginOptions,
     ) -> Result<SourceAccount> {
         let email = opts
@@ -106,13 +103,6 @@ impl LibroSource {
             .as_deref()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| LibroError::auth("Libro.fm login requires password"))?;
-
-        ensure_accounts_dir(files_dir)?;
-        let path = auth_file_for_account(files_dir, opts.label.as_deref(), email);
-        if path.is_file() && !opts.force {
-            let existing = load_auth(&path)?;
-            return Ok(source_account_from_auth(&existing));
-        }
 
         let mut client = LibroClient::new(&self.base_url);
         let token = client.login(email, password).await?;
@@ -141,15 +131,27 @@ impl LibroSource {
             marketplace,
             label: opts.label.clone(),
         };
-        save_auth(&path, &auth)?;
+
+        let account_id = auth.account_id().to_string();
+        save_auth_to_db(&auth, library, &account_id)
+            .await
+            .map_err(|e| LibroError::auth(format!("failed to save Libro auth: {e}")))?;
+        library
+            .upsert_account(&account_id, &auth.marketplace, auth.label.as_deref(), true)
+            .await
+            .map_err(|e| LibroError::auth(format!("failed to upsert Libro account: {e}")))?;
 
         tracing::info!(
             email = %auth.email,
-            path = %path.display(),
-            "saved Libro.fm auth file"
+            "saved Libro.fm auth to encrypted_secrets"
         );
 
         Ok(source_account_from_auth(&auth))
+    }
+
+    /// Delete a Libro.fm account from the DB.
+    pub async fn delete_account(&self, library: &SourceScope, account_id: &str) -> Result<()> {
+        delete_auth_from_db(library, account_id).await
     }
 }
 
@@ -182,11 +184,6 @@ impl ContentSource for LibroSource {
         }
     }
 
-    fn auth_credential_suffixes(&self) -> &'static [&'static str] {
-        const SUFFIXES: &[&str] = &[AUTH_SUFFIX];
-        SUFFIXES
-    }
-
     fn password_env_var(&self) -> Option<&'static str> {
         Some(PASSWORD_ENV)
     }
@@ -197,42 +194,31 @@ impl ContentSource for LibroSource {
 
     async fn login(
         &self,
-        files_dir: &Path,
+        library: &SourceScope,
         opts: LoginOptions,
     ) -> bookclerk_source::Result<SourceAccount> {
-        self.login_account(files_dir, opts)
-            .await
-            .map_err(Into::into)
+        self.login_account(library, opts).await.map_err(Into::into)
     }
 
     async fn list_accounts(
         &self,
-        files_dir: &Path,
+        library: &SourceScope,
     ) -> bookclerk_source::Result<Vec<SourceAccount>> {
-        let mut out = Vec::new();
-        for path in list_auth_files(files_dir)? {
-            match load_auth(&path) {
-                Ok(auth) => out.push(source_account_from_auth(&auth)),
-                Err(err) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %err,
-                        "skipping unreadable Libro.fm auth file"
-                    );
-                }
-            }
-        }
-        Ok(out)
+        let records = list_auth_from_db(library)
+            .await
+            .map_err(Into::<bookclerk_source::SourceError>::into)?;
+        Ok(records
+            .into_iter()
+            .map(|(_id, auth)| source_account_from_auth(&auth))
+            .collect())
     }
 
     async fn scan(
         &self,
-        files_dir: &Path,
-        library: &LibraryStore,
+        library: &SourceScope,
         opts: ScanOptions,
     ) -> bookclerk_source::Result<ScanSummary> {
         scan_library(
-            files_dir,
             library,
             LibroScanOptions::from(&opts),
             Some(self.base_url.as_str()),
@@ -243,13 +229,20 @@ impl ContentSource for LibroSource {
 
     async fn fetch_title(
         &self,
-        files_dir: &Path,
+        library: &SourceScope,
         account_id: &str,
         title_id: &str,
         opts: &FetchOptions,
     ) -> bookclerk_source::Result<SourceFetch> {
-        let path = find_auth_file(files_dir, account_id)?;
-        let auth = load_auth(&path)?;
+        let auth = load_auth_from_db(library, account_id)
+            .await
+            .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?
+            .ok_or_else(|| {
+                bookclerk_source::SourceError::Auth(format!(
+                    "no Libro.fm credentials for account `{account_id}` in DB"
+                ))
+            })?;
+        let _ = &opts.files_dir;
         let client = LibroClient::new(&self.base_url).with_token(&auth.access_token);
         let plain =
             fetch_title_materials_with(&client, title_id, &opts.cache_dir, self.container).await?;

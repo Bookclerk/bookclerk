@@ -59,7 +59,6 @@ impl Paths {
         std::fs::create_dir_all(&self.log_dir)?;
         std::fs::create_dir_all(&self.search_index_dir)?;
         std::fs::create_dir_all(&self.models_dir)?;
-        std::fs::create_dir_all(self.files_dir.join("Accounts"))?;
         // Install root for third-party plugins (`plugin.toml` + binary).
         std::fs::create_dir_all(self.files_dir.join("plugins"))?;
         Ok(())

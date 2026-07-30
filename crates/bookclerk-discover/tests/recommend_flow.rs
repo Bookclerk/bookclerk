@@ -7,9 +7,10 @@ mod integration {
 
     #[tokio::test]
     async fn works_embed_and_recommend_series_gap() {
-        let store = LibraryStore::open_in_memory().unwrap();
+        let store = LibraryStore::open_in_memory().await.unwrap();
         store
-            .upsert_account("acct", "us", Some("Main"), true)
+            .upsert_account("acct", "us", Some("Main"), true, "audible")
+            .await
             .unwrap();
 
         let mut b1 = NewBook::minimal("B000001", "acct", "us", "Series Book 1");
@@ -17,7 +18,7 @@ mod integration {
         b1.series = Some("Test Series".into());
         b1.series_index = Some("1".into());
         b1.categories = Some("Fantasy".into());
-        let b1 = store.upsert_book(&b1).unwrap();
+        let b1 = store.upsert_book(&b1).await.unwrap();
         store
             .update_user_fields(
                 &b1.uuid,
@@ -28,6 +29,7 @@ mod integration {
                     ..Default::default()
                 },
             )
+            .await
             .unwrap();
 
         // A second owned book in another series so we have embedding seeds,
@@ -37,7 +39,7 @@ mod integration {
         b2.series = Some("Test Series".into());
         b2.series_index = Some("2".into());
         b2.categories = Some("Fantasy".into());
-        store.upsert_book(&b2).unwrap();
+        store.upsert_book(&b2).await.unwrap();
 
         // Simulate a catalog-only candidate by creating a work without ownership:
         // use a second account "wishlist" book then we still treat it as owned.
@@ -56,13 +58,14 @@ mod integration {
                 work_id: None,
                 resolved_book_uuid: None,
             })
+            .await
             .unwrap();
 
-        let linked = rebuild_works_from_library(&store).unwrap();
+        let linked = rebuild_works_from_library(&store).await.unwrap();
         assert!(linked >= 2);
 
         let mut embedder = HashEmbedder::new(32);
-        let n = embed_dirty_works(&store, &mut embedder).unwrap();
+        let n = embed_dirty_works(&store, &mut embedder).await.unwrap();
         assert!(n >= 1);
 
         let opts = RecommendOptions {

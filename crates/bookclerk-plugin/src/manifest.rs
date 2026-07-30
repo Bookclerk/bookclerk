@@ -13,6 +13,7 @@ pub enum PluginKind {
     Source,
     Integration,
     Output,
+    Database,
 }
 
 impl PluginKind {
@@ -22,6 +23,7 @@ impl PluginKind {
             Self::Source => "source",
             Self::Integration => "integration",
             Self::Output => "output",
+            Self::Database => "database",
         }
     }
 }

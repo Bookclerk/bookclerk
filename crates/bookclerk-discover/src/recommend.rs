@@ -197,8 +197,8 @@ pub async fn recommend_feed(
     opts: &RecommendOptions,
 ) -> Result<crate::shelves::DiscoverFeed> {
     let recs = recommend_all(library, opts).await?;
-    let books = library.list_books(None)?;
-    let listening = load_listening(library, opts)?;
+    let books = library.list_books(None).await?;
+    let listening = load_listening(library, opts).await?;
     let taste = build_shelf_taste(&books, &listening);
     Ok(crate::shelves::build_discover_feed(
         &recs,
@@ -216,19 +216,19 @@ pub async fn recommend_feed(
 /// + all listening progress). Titles already in the library are omitted.
 ///
 /// Wishlist rows keyed as ASIN vs ISBN for the same work are merged first.
-pub fn rank_global_request_queue(
+pub async fn rank_global_request_queue(
     library: &LibraryStore,
     opts: &RecommendOptions,
 ) -> Result<Vec<RankedQueueEntry>> {
     let mut opts = opts.clone();
     opts.external_user_id = None;
 
-    let books = library.list_books(None)?;
-    let listening = load_listening(library, &opts)?;
-    let profile = build_taste_profile(library, &books, &listening, &opts)?;
+    let books = library.list_books(None).await?;
+    let listening = load_listening(library, &opts).await?;
+    let profile = build_taste_profile(library, &books, &listening, &opts).await?;
     let mut embedder = open_candidate_embedder(&opts)?;
 
-    let queue = merge_global_queue_entries(library.list_global_request_queue()?);
+    let queue = merge_global_queue_entries(library.list_global_request_queue().await?);
     let mut ranked = Vec::new();
     for entry in queue {
         if library_owns_identity(
@@ -262,14 +262,16 @@ pub fn rank_global_request_queue(
 }
 
 /// Load optional listening rows for ranking (empty when disabled / no providers).
-fn load_listening(
+async fn load_listening(
     library: &LibraryStore,
     opts: &RecommendOptions,
 ) -> Result<Vec<ListeningProgressRecord>> {
     if !opts.include_listening {
         return Ok(Vec::new());
     }
-    let mut rows = library.list_listening_progress(opts.external_user_id.as_deref())?;
+    let mut rows = library
+        .list_listening_progress(opts.external_user_id.as_deref())
+        .await?;
     if !opts.listening_providers.is_empty() {
         rows.retain(|r| {
             opts.listening_providers
@@ -285,7 +287,7 @@ async fn recommend_all(
     library: &LibraryStore,
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
-    let books = library.list_books(None)?;
+    let books = library.list_books(None).await?;
 
     let owned_asins: HashSet<String> = books
         .iter()
@@ -308,7 +310,7 @@ async fn recommend_all(
         })
         .collect();
 
-    let listening = load_listening(library, opts)?;
+    let listening = load_listening(library, opts).await?;
     let mut listening_engagement_by_uuid: HashMap<String, f64> = HashMap::new();
     for row in &listening {
         let weight = listening_engagement(row);
@@ -323,7 +325,7 @@ async fn recommend_all(
         }
     }
     let seeds = select_taste_seeds(&books, &listening_engagement_by_uuid);
-    let profile = build_taste_profile(library, &books, &listening, opts)?;
+    let profile = build_taste_profile(library, &books, &listening, opts).await?;
     let mut embedder = open_candidate_embedder(opts)?;
 
     // --- Primary path: storefront candidates not in the owned library ---
@@ -411,7 +413,7 @@ async fn recommend_all(
     }
 
     // Global wishlist works: recommend taste + heavy multi-user wish boost.
-    for entry in merge_global_queue_entries(library.list_global_request_queue()?) {
+    for entry in merge_global_queue_entries(library.list_global_request_queue().await?) {
         if library_owns_identity(
             &books,
             entry.asin.as_deref(),
@@ -486,7 +488,7 @@ struct TasteProfile {
     seed_centroid: Option<Vec<f32>>,
 }
 
-fn build_taste_profile(
+async fn build_taste_profile(
     library: &LibraryStore,
     books: &[BookRecord],
     listening: &[ListeningProgressRecord],
@@ -516,7 +518,7 @@ fn build_taste_profile(
         if weight <= 0.0 {
             continue;
         }
-        if let Ok(Some(wid)) = library.work_id_for_book(&book.uuid) {
+        if let Ok(Some(wid)) = library.work_id_for_book(&book.uuid).await {
             seed_work_ids.insert(wid);
         }
         if let Some(authors) = &book.authors {
@@ -558,7 +560,8 @@ fn build_taste_profile(
     }
 
     let series_affinity = build_series_affinity(books, listening, &listening_engagement_by_uuid);
-    let seed_centroid = seed_embedding_centroid(library, &seed_work_ids, &opts.embedding_model)?;
+    let seed_centroid =
+        seed_embedding_centroid(library, &seed_work_ids, &opts.embedding_model).await?;
     Ok(TasteProfile {
         liked_authors,
         liked_narrators,
@@ -1034,7 +1037,7 @@ pub fn parse_series_index(raw: Option<&str>) -> Option<f64> {
     }
 }
 
-fn seed_embedding_centroid(
+async fn seed_embedding_centroid(
     library: &LibraryStore,
     seed_work_ids: &HashSet<String>,
     model: &str,
@@ -1042,7 +1045,7 @@ fn seed_embedding_centroid(
     let mut query: Option<Vec<f32>> = None;
     let mut count = 0usize;
     for wid in seed_work_ids {
-        if let Some((_, blob)) = library.get_embedding_vector("work", wid, model)? {
+        if let Some((_, blob)) = library.get_embedding_vector("work", wid, model).await? {
             let v = bytes_to_vector(&blob);
             match &mut query {
                 Some(acc) => {

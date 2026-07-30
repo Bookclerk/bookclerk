@@ -5,8 +5,15 @@ use bookclerk_config::{
     apply_setting_overrides, classic_key_aliases, resolve_replacement_characters, Config,
     NamingProfile,
 };
-use bookclerk_library::LibraryStore;
+use bookclerk_library::{
+    inspect_master_key, wrap_master_key, LibraryStore, MasterKeyFormat,
+    MASTER_KEY_AUTH_PASSWORD_ENV,
+};
 use bookclerk_source::DownloadOptions;
+use bookclerk_storage::{
+    delete_s3_credentials, load_s3_credentials, save_s3_credentials, S3Credentials,
+    ENV_AWS_ACCESS_KEY_ID, ENV_AWS_SECRET_ACCESS_KEY, ENV_AWS_SESSION_TOKEN,
+};
 use chrono::Datelike;
 use clap::Subcommand;
 
@@ -33,11 +40,49 @@ pub enum ConfigCommand {
     Show,
     /// Print resolved filesystem paths.
     Paths,
+    /// Manage S3 destination credentials in `encrypted_secrets`.
+    S3Credentials {
+        #[command(subcommand)]
+        command: S3CredentialsCommand,
+    },
+    /// Inspect or wrap `{files_dir}/master.key` (BCK1 ↔ BCK2).
+    MasterKey {
+        #[command(subcommand)]
+        command: MasterKeyCommand,
+    },
     /// Naming template helpers.
     Template {
         #[command(subcommand)]
         command: TemplateCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MasterKeyCommand {
+    /// Show whether `master.key` exists and if it is raw (BCK1) or wrapped (BCK2).
+    Status,
+    /// Wrap a BCK1 `master.key` with a passphrase (no-op unlock if already BCK2).
+    ///
+    /// Password from `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` — never argv.
+    Wrap,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum S3CredentialsCommand {
+    /// Save S3 credentials from `BOOKCLERK_AWS_ACCESS_KEY_ID` / `BOOKCLERK_AWS_SECRET_ACCESS_KEY`
+    /// (optional `BOOKCLERK_AWS_SESSION_TOKEN`) into `encrypted_secrets` (sealed with master key).
+    ///
+    /// Secrets are never accepted on argv — set the env vars (or export them
+    /// for this one command), then run `set`.
+    Set {
+        /// Optional label stored with the credentials (e.g. `minio`).
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Show whether S3 credentials are stored (access key id only; secret redacted).
+    Show,
+    /// Delete stored S3 credentials from `encrypted_secrets`.
+    Clear,
 }
 
 #[derive(Debug, Subcommand)]
@@ -68,7 +113,11 @@ pub enum TemplateCommand {
     },
 }
 
-pub fn run(command: ConfigCommand, config: &Config, format: OutputFormat) -> anyhow::Result<()> {
+pub async fn run(
+    command: ConfigCommand,
+    config: &Config,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
     match command {
         ConfigCommand::Get { key, bare } => {
             if bare {
@@ -99,7 +148,17 @@ pub fn run(command: ConfigCommand, config: &Config, format: OutputFormat) -> any
             apply_setting_overrides(&mut cfg, &[(&dotted, value.as_str())]);
             let path = cfg.paths().config_file.clone();
             cfg.write_toml_file(&path)?;
-            let new_value = lookup(&cfg, &dotted).unwrap_or_else(|| value.clone());
+            // Setting auth.password should wrap BCK1 immediately (same as wrap CLI).
+            if dotted == "auth.password" {
+                if let Some(pw) = cfg.auth_password() {
+                    wrap_master_key(&cfg.paths().files_dir, &pw)?;
+                }
+            }
+            let new_value = if dotted == "auth.password" {
+                String::from("***")
+            } else {
+                lookup(&cfg, &dotted).unwrap_or_else(|| value.clone())
+            };
             let payload = serde_json::json!({
                 "key": dotted,
                 "value": new_value,
@@ -133,21 +192,6 @@ pub fn run(command: ConfigCommand, config: &Config, format: OutputFormat) -> any
             println!(
                 "output.s3.force_path_style = {}",
                 config.output.s3.force_path_style
-            );
-            println!(
-                "output.s3.credentials_file = {}",
-                config
-                    .output
-                    .s3
-                    .credentials_file
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .or_else(|| {
-                        config
-                            .resolved_s3_credentials_path()
-                            .map(|p| p.display().to_string())
-                    })
-                    .unwrap_or_else(|| "-".into())
             );
             for (id, value) in &config.sources.plugins {
                 let Some(table) = value.as_table() else {
@@ -273,11 +317,160 @@ pub fn run(command: ConfigCommand, config: &Config, format: OutputFormat) -> any
             println!("log_dir\t{}", paths.log_dir.display());
             Ok(())
         }
-        ConfigCommand::Template { command } => run_template(command, config),
+        ConfigCommand::S3Credentials { command } => {
+            run_s3_credentials(command, config, format).await
+        }
+        ConfigCommand::MasterKey { command } => run_master_key(command, config, format),
+        ConfigCommand::Template { command } => run_template(command, config).await,
     }
 }
 
-fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()> {
+fn run_master_key(
+    command: MasterKeyCommand,
+    config: &Config,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let files_dir = &config.paths().files_dir;
+    match command {
+        MasterKeyCommand::Status => {
+            let format_kind = inspect_master_key(files_dir)?;
+            let (exists, kind) = match format_kind {
+                None => (false, "missing"),
+                Some(MasterKeyFormat::Raw) => (true, "BCK1"),
+                Some(MasterKeyFormat::Wrapped) => (true, "BCK2"),
+            };
+            let payload = serde_json::json!({
+                "path": bookclerk_library::master_key_path(files_dir).display().to_string(),
+                "exists": exists,
+                "format": kind,
+                "password_configured": config.auth_password().is_some(),
+            });
+            emit(format, &payload, || {
+                println!(
+                    "master.key\t{}\tformat={kind}\tpassword={}",
+                    if exists { "present" } else { "missing" },
+                    if config.auth_password().is_some() {
+                        "set"
+                    } else {
+                        "unset"
+                    }
+                );
+            })
+        }
+        MasterKeyCommand::Wrap => {
+            let password = config.auth_password().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "set {MASTER_KEY_AUTH_PASSWORD_ENV} or [auth].password before wrapping \
+                     (secrets are not accepted on argv)"
+                )
+            })?;
+            wrap_master_key(files_dir, &password)?;
+            let kind = inspect_master_key(files_dir)?;
+            let payload = serde_json::json!({
+                "path": bookclerk_library::master_key_path(files_dir).display().to_string(),
+                "format": match kind {
+                    Some(MasterKeyFormat::Wrapped) => "BCK2",
+                    Some(MasterKeyFormat::Raw) => "BCK1",
+                    None => "missing",
+                },
+                "wrapped": matches!(kind, Some(MasterKeyFormat::Wrapped)),
+            });
+            emit(format, &payload, || {
+                println!(
+                    "wrapped {}",
+                    bookclerk_library::master_key_path(files_dir).display()
+                );
+            })
+        }
+    }
+}
+
+async fn run_s3_credentials(
+    command: S3CredentialsCommand,
+    config: &Config,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let store = LibraryStore::open_from_config(config).await?;
+    match command {
+        S3CredentialsCommand::Set { label } => {
+            let access_key_id = std::env::var(ENV_AWS_ACCESS_KEY_ID).map_err(|_| {
+                anyhow::anyhow!(
+                    "set {ENV_AWS_ACCESS_KEY_ID} and {ENV_AWS_SECRET_ACCESS_KEY} in the environment \
+                     (secrets are not accepted on argv)"
+                )
+            })?;
+            let secret_access_key = std::env::var(ENV_AWS_SECRET_ACCESS_KEY).map_err(|_| {
+                anyhow::anyhow!(
+                    "set {ENV_AWS_ACCESS_KEY_ID} and {ENV_AWS_SECRET_ACCESS_KEY} in the environment \
+                     (secrets are not accepted on argv)"
+                )
+            })?;
+            let session_token = std::env::var(ENV_AWS_SESSION_TOKEN)
+                .ok()
+                .filter(|s| !s.is_empty());
+            let creds = S3Credentials {
+                access_key_id,
+                secret_access_key,
+                session_token,
+                label,
+            };
+            save_s3_credentials(store.db(), &creds).await?;
+            let payload = serde_json::json!({
+                "stored": true,
+                "access_key_id": redact_access_key(&creds.access_key_id),
+                "has_session_token": creds.session_token.is_some(),
+                "encrypted": true,
+                "label": creds.label,
+            });
+            emit(format, &payload, || {
+                println!(
+                    "saved S3 credentials for access key {} → encrypted_secrets (sealed-v1)",
+                    redact_access_key(&creds.access_key_id),
+                );
+            })
+        }
+        S3CredentialsCommand::Show => {
+            let loaded = load_s3_credentials(store.db()).await?;
+            let payload = match &loaded {
+                Some(creds) => serde_json::json!({
+                    "present": true,
+                    "access_key_id": redact_access_key(&creds.access_key_id),
+                    "has_session_token": creds.session_token.is_some(),
+                    "label": creds.label,
+                }),
+                None => serde_json::json!({ "present": false }),
+            };
+            emit(format, &payload, || match loaded {
+                Some(creds) => {
+                    println!(
+                        "present\taccess_key_id={}\thas_session_token={}\tlabel={}",
+                        redact_access_key(&creds.access_key_id),
+                        creds.session_token.is_some(),
+                        creds.label.as_deref().unwrap_or("-")
+                    );
+                }
+                None => println!("present\tfalse"),
+            })
+        }
+        S3CredentialsCommand::Clear => {
+            delete_s3_credentials(store.db()).await?;
+            let payload = serde_json::json!({ "cleared": true });
+            emit(format, &payload, || {
+                println!("cleared S3 credentials from encrypted_secrets");
+            })
+        }
+    }
+}
+
+fn redact_access_key(access_key_id: &str) -> String {
+    if access_key_id.len() <= 4 {
+        return "****".into();
+    }
+    let (prefix, rest) = access_key_id.split_at(4);
+    format!("{prefix}{}", "*".repeat(rest.len().min(8)))
+}
+
+async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()> {
     match command {
         TemplateCommand::Tags => {
             for (name, fmt) in bookclerk_naming::property_tag_names() {
@@ -303,9 +496,8 @@ fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()>
             file,
             ext,
         } => {
-            let paths = config.paths();
-            let store = LibraryStore::open(&paths.library_db)?;
-            let book = resolve_book_for_preview(&store, &asin, account.as_deref())?;
+            let store = LibraryStore::open_from_config(config).await?;
+            let book = resolve_book_for_preview(&store, &asin, account.as_deref()).await?;
             let ctx = NamingContext {
                 asin: book.asin_or_isbn().to_string(),
                 title: book.title.clone(),
@@ -376,7 +568,7 @@ fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()>
     }
 }
 
-fn resolve_book_for_preview(
+async fn resolve_book_for_preview(
     store: &LibraryStore,
     asin: &str,
     account: Option<&str>,
@@ -384,13 +576,15 @@ fn resolve_book_for_preview(
     if let Some(account) = account {
         return store
             .get_book(asin, account)
+            .await
             .map_err(|e| e.into())
             .and_then(|opt| {
                 opt.ok_or_else(|| anyhow::anyhow!("ASIN {asin} not found for account {account}"))
             });
     }
     let matches: Vec<_> = store
-        .list_books(None)?
+        .list_books(None)
+        .await?
         .into_iter()
         .filter(|b| {
             b.uuid.eq_ignore_ascii_case(asin)
@@ -431,18 +625,6 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
         "output.s3.region" => config.output.s3.region.clone(),
         "output.s3.endpoint" => config.output.s3.endpoint.clone().unwrap_or_default(),
         "output.s3.force_path_style" => config.output.s3.force_path_style.to_string(),
-        "output.s3.credentials_file" => config
-            .output
-            .s3
-            .credentials_file
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .or_else(|| {
-                config
-                    .resolved_s3_credentials_path()
-                    .map(|p| p.display().to_string())
-            })
-            .unwrap_or_default(),
         "output.format" => format!("{:?}", config.output.format).to_ascii_lowercase(),
         "output.widevine" => config.output.widevine.to_string(),
         "output.xhe_aac" => config.output.xhe_aac.to_string(),
@@ -533,6 +715,13 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
         "library.enrich_from_audible" => config.library.enrich_from_audible.to_string(),
         "library.enrich_min_confidence" => config.library.enrich_min_confidence.to_string(),
         "library.fix_storage_layout" => config.library.fix_storage_layout.to_string(),
+        "auth.password" => {
+            if config.auth_password().is_some() {
+                "***".into()
+            } else {
+                String::new()
+            }
+        }
         "daemon.listen" => config.daemon.listen.clone(),
         "daemon.json_logs" => config.daemon.json_logs.to_string(),
         "diagnostics.share_reports" => config.diagnostics.share_reports.to_string(),

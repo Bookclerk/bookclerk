@@ -9,8 +9,8 @@ use crate::error::Result;
 ///
 /// When a book has both identifiers, prefer an existing work that already
 /// carries either alias so ISBN-only and ASIN-only rows consolidate.
-pub fn rebuild_works_from_library(library: &LibraryStore) -> Result<usize> {
-    let books = library.list_books(None)?;
+pub async fn rebuild_works_from_library(library: &LibraryStore) -> Result<usize> {
+    let books = library.list_books(None).await?;
     let mut linked = 0usize;
 
     for book in books {
@@ -27,14 +27,16 @@ pub fn rebuild_works_from_library(library: &LibraryStore) -> Result<usize> {
             .filter(|s| !s.is_empty());
 
         let existing = match (&asin, &isbn) {
-            (Some(a), Some(i)) => library
-                .find_work_by_asin(a)?
-                .or(library.find_work_by_isbn(i)?),
-            (Some(a), None) => library.find_work_by_asin(a)?,
-            (None, Some(i)) => library.find_work_by_isbn(i)?,
-            (None, None) => library
-                .work_id_for_book(&book.uuid)?
-                .and_then(|id| library.get_work(&id).ok().flatten()),
+            (Some(a), Some(i)) => match library.find_work_by_asin(a).await? {
+                Some(w) => Some(w),
+                None => library.find_work_by_isbn(i).await?,
+            },
+            (Some(a), None) => library.find_work_by_asin(a).await?,
+            (None, Some(i)) => library.find_work_by_isbn(i).await?,
+            (None, None) => match library.work_id_for_book(&book.uuid).await? {
+                Some(id) => library.get_work(&id).await.ok().flatten(),
+                None => None,
+            },
         };
 
         let work_id = if let Some(existing) = existing {
@@ -54,7 +56,7 @@ pub fn rebuild_works_from_library(library: &LibraryStore) -> Result<usize> {
                 cover_url: book.cover_url.clone().or(existing.cover_url),
                 openlibrary_id: existing.openlibrary_id,
             };
-            library.upsert_work(&updated)?.id
+            library.upsert_work(&updated).await?.id
         } else {
             let work = NewWork {
                 id: None,
@@ -72,10 +74,10 @@ pub fn rebuild_works_from_library(library: &LibraryStore) -> Result<usize> {
                 cover_url: book.cover_url.clone(),
                 openlibrary_id: None,
             };
-            library.upsert_work(&work)?.id
+            library.upsert_work(&work).await?.id
         };
 
-        library.link_book_to_work(&work_id, &book.uuid)?;
+        library.link_book_to_work(&work_id, &book.uuid).await?;
         linked += 1;
     }
 

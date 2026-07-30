@@ -1,36 +1,24 @@
-//! Account listing / import helpers.
+//! Account import helpers (DB-backed `encrypted_secrets`).
 
 use std::path::Path;
 
+use bookclerk_library::SourceScope;
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{load_authenticator, save_authenticator, SaveAuthOptions};
+use crate::auth::load_authenticator;
+use crate::db::save_authenticator_to_db;
 use crate::error::{AudibleError, Result};
-use crate::paths::{
-    auth_file_for, auth_stem_from_path, ensure_accounts_dir, list_auth_files, sanitize_name,
-};
-use crate::AuthSession;
 
-/// Import an audible-rs auth file into `{files_dir}/Accounts/*.audible.auth`.
+/// Import an audible-rs auth file into the `encrypted_secrets` table.
 ///
-/// Loads (decrypting via env / password file when needed), then re-saves
-/// with the configured protection into the canonical Accounts directory.
+/// Reads (decrypting via `BOOKCLERK_AUTH_PASSWORD` when needed) a user-supplied
+/// auth file, then persists the authenticator into the DB. No `Accounts/` file
+/// is written.
 pub async fn import_auth_file(
-    files_dir: &Path,
+    scope: &SourceScope,
     source: &Path,
     label: Option<&str>,
     force: bool,
-) -> Result<AccountInfo> {
-    import_auth_file_with_options(files_dir, source, label, force, SaveAuthOptions::default()).await
-}
-
-/// Import with explicit save options (password file / plaintext policy).
-pub async fn import_auth_file_with_options(
-    files_dir: &Path,
-    source: &Path,
-    label: Option<&str>,
-    force: bool,
-    save_opts: SaveAuthOptions<'_>,
 ) -> Result<AccountInfo> {
     if !source.is_file() {
         return Err(AudibleError::Import(format!(
@@ -39,17 +27,14 @@ pub async fn import_auth_file_with_options(
         )));
     }
 
-    let auth = load_authenticator(source, save_opts.password_file)
-        .await
-        .map_err(|err| {
-            AudibleError::Import(format!("could not load {}: {err}", source.display()))
-        })?;
+    let auth = load_authenticator(source).await.map_err(|err| {
+        AudibleError::Import(format!("could not load {}: {err}", source.display()))
+    })?;
 
     let marketplace = auth.locale().country_code.to_string();
     let customer_id = auth.customer_id().map(str::to_string);
-    let stem = label
+    let account_name = label
         .map(str::to_string)
-        .or_else(|| auth_stem_from_path(source))
         .or_else(|| {
             source
                 .file_stem()
@@ -59,24 +44,90 @@ pub async fn import_auth_file_with_options(
         .or_else(|| customer_id.clone())
         .unwrap_or_else(|| marketplace.clone());
 
-    ensure_accounts_dir(files_dir)?;
-    let dest = auth_file_for(files_dir, &sanitize_name(&stem));
-    if dest.exists() && !force {
+    persist_imported_auth(scope, &auth, &account_name, marketplace, customer_id, force).await
+}
+
+/// Import mkb79/audible-cli legacy auth JSON (LibationCli: `import-account`).
+pub async fn import_mkb79_auth_json(
+    scope: &SourceScope,
+    source: &Path,
+    label: Option<&str>,
+    force: bool,
+) -> Result<AccountInfo> {
+    if !source.is_file() {
         return Err(AudibleError::Import(format!(
-            "{} already exists (pass --force to overwrite)",
-            dest.display()
+            "account JSON not found: {}",
+            source.display()
         )));
     }
 
-    save_authenticator(&auth, &dest, save_opts).await?;
+    let auth = audible_rs::auth::Authenticator::import_file(source, None)
+        .await
+        .map_err(|err| AudibleError::Import(format!("invalid mkb79/audible-cli JSON: {err}")))?;
 
-    let account_id = customer_id.unwrap_or_else(|| stem.clone());
+    let marketplace = auth.locale().country_code.to_string();
+    let customer_id = auth.customer_id().map(str::to_string);
+    let account_name = label
+        .map(str::to_string)
+        .or_else(|| {
+            source
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+        })
+        .or_else(|| customer_id.clone())
+        .unwrap_or_else(|| marketplace.clone());
+
+    let mut info =
+        persist_imported_auth(scope, &auth, &account_name, marketplace, customer_id, force).await?;
+    info.status = AccountStatus::Valid;
+    Ok(info)
+}
+
+async fn persist_imported_auth(
+    scope: &SourceScope,
+    auth: &audible_rs::auth::Authenticator,
+    account_name: &str,
+    marketplace: String,
+    customer_id: Option<String>,
+    force: bool,
+) -> Result<AccountInfo> {
+    // Prefer Audible customer id as the secret/account key; `account_name`
+    // (label / file stem) is display-only.
+    let account_id = customer_id
+        .clone()
+        .unwrap_or_else(|| account_name.to_string());
+    let label = if account_name != account_id {
+        Some(account_name.to_string())
+    } else {
+        None
+    };
+
+    if !force {
+        let existing = crate::db::load_authenticator_from_db(scope, &account_id).await?;
+        if existing.is_some() {
+            return Err(AudibleError::Import(format!(
+                "audible account `{account_id}` already exists in encrypted_secrets \
+                 (pass --force to overwrite)"
+            )));
+        }
+    }
+
+    save_authenticator_to_db(auth, scope, &account_id)
+        .await
+        .map_err(|err| AudibleError::Import(format!("failed to save auth to DB: {err}")))?;
+
+    scope
+        .upsert_account(&account_id, &marketplace, label.as_deref(), true)
+        .await
+        .map_err(|err| AudibleError::Import(format!("failed to upsert account row: {err}")))?;
+
     Ok(AccountInfo {
-        account_id,
+        account_id: account_id.clone(),
         marketplace,
-        label: Some(stem),
+        label,
         status: AccountStatus::Unknown,
-        auth_file: Some(dest.display().to_string()),
+        auth_file: Some(format!("encrypted_secrets:{account_id}")),
     })
 }
 
@@ -87,6 +138,7 @@ pub struct AccountInfo {
     pub marketplace: String,
     pub label: Option<String>,
     pub status: AccountStatus,
+    /// Reference to where credentials live (`encrypted_secrets:<id>`), for display only.
     pub auth_file: Option<String>,
 }
 
@@ -112,162 +164,6 @@ impl AccountStatus {
             Self::Unknown => "unknown",
         }
     }
-}
-
-/// List accounts from auth files under `files_dir`, probing token health.
-pub async fn list_accounts(files_dir: &Path) -> Result<Vec<AccountInfo>> {
-    let mut out = Vec::new();
-    for path in list_auth_files(files_dir)? {
-        let stem = auth_stem_from_path(&path).unwrap_or_else(|| "account".into());
-
-        match crate::auth::load_authenticator(&path, None).await {
-            Ok(auth) => {
-                let marketplace = auth.locale().country_code.to_string();
-                let account_id = auth
-                    .customer_id()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| stem.clone());
-                let client =
-                    audible_rs::api::client::Client::new(auth).map_err(AudibleError::from)?;
-                let token = client.token_status().await;
-                out.push(AccountInfo {
-                    account_id,
-                    marketplace,
-                    label: Some(stem),
-                    status: classify_token(&token),
-                    auth_file: Some(path.display().to_string()),
-                });
-            }
-            Err(err) => {
-                tracing::warn!(path = %path.display(), error = %err, "skipping auth file");
-                out.push(AccountInfo {
-                    account_id: stem.clone(),
-                    marketplace: "unknown".into(),
-                    label: Some(stem),
-                    status: AccountStatus::Unknown,
-                    auth_file: Some(path.display().to_string()),
-                });
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn classify_token(token: &audible_rs::api::client::TokenStatus) -> AccountStatus {
-    if !token.has_refresh_token {
-        return AccountStatus::MissingRefresh;
-    }
-    match token.remaining_secs {
-        Some(secs) if secs <= 0 => AccountStatus::Expired,
-        Some(secs) if secs < 3600 => AccountStatus::ExpiringSoon,
-        Some(_) => AccountStatus::Valid,
-        None if token.has_access_token => AccountStatus::Unknown,
-        None => AccountStatus::Expired,
-    }
-}
-
-/// Resolve auth file for an account id / label (filename stem match only).
-pub fn resolve_auth_file(files_dir: &Path, account: &str) -> Result<std::path::PathBuf> {
-    let direct = auth_file_for(files_dir, account);
-    if direct.exists() {
-        return Ok(direct);
-    }
-    for path in list_auth_files(files_dir)? {
-        let stem = auth_stem_from_path(&path).unwrap_or_default();
-        if stem.eq_ignore_ascii_case(account) {
-            return Ok(path);
-        }
-    }
-    Err(AudibleError::AccountNotFound(account.into()))
-}
-
-/// Resolve auth file by stem **or** by matching `customer_id` inside the file.
-///
-/// Library rows store Audible `customer_id` as `account_id`, while auth files may
-/// be named with a user label (`main.audible.auth`). Prefer stem match, then probe files.
-pub async fn resolve_auth_file_async(
-    files_dir: &Path,
-    account: &str,
-) -> Result<std::path::PathBuf> {
-    if let Ok(path) = resolve_auth_file(files_dir, account) {
-        return Ok(path);
-    }
-
-    for path in list_auth_files(files_dir)? {
-        match crate::auth::load_authenticator(&path, None).await {
-            Ok(auth) => {
-                if auth
-                    .customer_id()
-                    .is_some_and(|id| id.eq_ignore_ascii_case(account))
-                {
-                    return Ok(path);
-                }
-            }
-            Err(err) => {
-                tracing::debug!(
-                    path = %path.display(),
-                    error = %err,
-                    "skipping unreadable auth file during account resolve"
-                );
-            }
-        }
-    }
-    Err(AudibleError::AccountNotFound(account.into()))
-}
-
-/// Import mkb79/audible-cli legacy auth JSON (LibationCli: `import-account`).
-pub async fn import_mkb79_auth_json(
-    files_dir: &Path,
-    source: &Path,
-    label: Option<&str>,
-    force: bool,
-) -> Result<AccountInfo> {
-    if !source.is_file() {
-        return Err(AudibleError::Import(format!(
-            "account JSON not found: {}",
-            source.display()
-        )));
-    }
-
-    let auth = audible_rs::auth::Authenticator::import_file(source, None)
-        .await
-        .map_err(|err| AudibleError::Import(format!("invalid mkb79/audible-cli JSON: {err}")))?;
-
-    let marketplace = auth.locale().country_code.to_string();
-    let customer_id = auth.customer_id().map(str::to_string);
-    let stem = label
-        .map(str::to_string)
-        .or_else(|| auth_stem_from_path(source))
-        .or_else(|| {
-            source
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(str::to_string)
-        })
-        .or_else(|| customer_id.clone())
-        .unwrap_or_else(|| marketplace.clone());
-
-    ensure_accounts_dir(files_dir)?;
-    let dest = auth_file_for(files_dir, &sanitize_name(&stem));
-    if dest.exists() && !force {
-        return Err(AudibleError::Import(format!(
-            "{} already exists (pass --force to overwrite)",
-            dest.display()
-        )));
-    }
-
-    save_authenticator(&auth, &dest, SaveAuthOptions::default())
-        .await
-        .map_err(|err| AudibleError::Import(format!("failed to save auth: {err}")))?;
-
-    let account_id = customer_id.unwrap_or_else(|| stem.clone());
-    Ok(AccountInfo {
-        account_id,
-        marketplace,
-        label: Some(stem),
-        status: AccountStatus::Valid,
-        auth_file: Some(dest.display().to_string()),
-    })
 }
 
 /// Import classic Libation `AccountsSettings.json` metadata (auth material still via audible import).
@@ -320,18 +216,6 @@ pub fn import_libation_accounts_json(path: &Path) -> Result<Vec<AccountInfo>> {
     }
 
     Ok(out)
-}
-
-/// Register a just-logged-in session into the account list shape.
-#[must_use]
-pub fn session_to_info(session: &AuthSession) -> AccountInfo {
-    AccountInfo {
-        account_id: session.account_id.clone(),
-        marketplace: session.marketplace.clone(),
-        label: session.label.clone(),
-        status: AccountStatus::Valid,
-        auth_file: Some(session.auth_file.display().to_string()),
-    }
 }
 
 #[cfg(test)]

@@ -184,7 +184,7 @@ pub(crate) enum FilterCommand {
 
 pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()> {
     let paths = config.paths();
-    let store = LibraryStore::open(&paths.library_db)?;
+    let store = LibraryStore::open_from_config(config).await?;
 
     match command {
         LibraryCommand::Scan {
@@ -207,12 +207,9 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             };
             let summary = if let Some(needle) = source {
                 let id = resolve_source_id(&registry, &needle)?;
-                registry
-                    .require(&id)?
-                    .scan(&paths.files_dir, &store, opts)
-                    .await?
+                registry.require(&id)?.scan(&store.scope(id), opts).await?
             } else {
-                registry.scan_all(&paths.files_dir, &store, opts).await?
+                registry.scan_all(&store, opts).await?
             };
             println!(
                 "scan complete: {} account(s), {} book upsert(s), {} page(s), {} skipped (scan disabled)",
@@ -236,7 +233,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 }
             }
             if match_storage {
-                let storage = from_config(config).await?;
+                let storage = from_config(config, Some(store.db())).await?;
                 let recon = match_storage_to_library(
                     &store,
                     storage.as_ref(),
@@ -259,7 +256,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 );
             }
             let engine = SearchEngine::open(&paths.search_index_dir)?;
-            let indexed = engine.rebuild(&store)?;
+            let indexed = engine.rebuild(&store).await?;
             println!("search index rebuilt: {indexed} book(s)");
             Ok(())
         }
@@ -281,8 +278,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 .map(|(k, v)| (k.trim(), v.trim()))
                 .collect();
             apply_setting_overrides(&mut cfg, &pairs);
-            let storage = from_config(&cfg).await?;
-            let destinations = AcquireDestinations::from_config(&cfg).await?;
+            let destinations = AcquireDestinations::from_config(&cfg, Some(&store)).await?;
+            let storage = destinations.listing_backend()?;
             let registry = default_registry_with_plugins(&cfg).await?;
 
             // Match existing media first (same as bookclerkd) so we do not
@@ -302,7 +299,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 .await?;
             }
 
-            let books = store.list_books(account.as_deref())?;
+            let books = store.list_books(account.as_deref()).await?;
             let filter_ids: Vec<String> = asin.into_iter().chain(isbn).chain(asins).collect();
             let targets: Vec<_> = books
                 .into_iter()
@@ -372,15 +369,17 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     force,
                     preloaded_license: preloaded_license.clone(),
                     write_destinations: None,
+                    // AccountClient cache lives in bookclerk-audible::open_account_client.
+                    audible_client: None,
                 };
                 if dry_run {
                     let key = if pdf {
                         bookclerk_acquire::sidecar_key(
-                            &bookclerk_acquire::planned_storage_key(&store, &req),
+                            &bookclerk_acquire::planned_storage_key(&store, &req).await,
                             "pdf",
                         )
                     } else {
-                        bookclerk_acquire::planned_storage_key(&store, &req)
+                        bookclerk_acquire::planned_storage_key(&store, &req).await
                     };
                     println!("{}\t{}", book.asin_or_isbn(), key);
                     continue;
@@ -473,11 +472,13 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 } else {
                     AcquireStatus::Acquired
                 };
-                let n = store.bulk_set_acquire_status(account.as_deref(), &asins, status)?;
+                let n = store
+                    .bulk_set_acquire_status(account.as_deref(), &asins, status)
+                    .await?;
                 println!("force-updated {n} book(s) to {}", status.as_str());
                 return Ok(());
             }
-            let storage = from_config(config).await?;
+            let storage = from_config(config, Some(store.db())).await?;
             let summary = match_storage_to_library(
                 &store,
                 storage.as_ref(),
@@ -505,8 +506,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             full,
         } => {
             let (account_key, license_asin) =
-                resolve_audible_license_target(&store, &asin, account.as_deref())?;
-            let client = open_account_client(&paths.files_dir, &account_key).await?;
+                resolve_audible_license_target(&store, &asin, account.as_deref()).await?;
+            let client = open_account_client(&store.scope("audible"), &account_key).await?;
             let quality = match config
                 .sources
                 .get_string("audible", "bitrate")
@@ -564,12 +565,13 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
         } => {
             let engine = SearchEngine::open(&paths.search_index_dir)?;
             if rebuild_index {
-                let n = engine.rebuild(&store)?;
+                let n = engine.rebuild(&store).await?;
                 println!("search index rebuilt: {n} book(s)");
             }
             let query_text = if let Some(name) = filter {
                 store
-                    .get_saved_filter(&name)?
+                    .get_saved_filter(&name)
+                    .await?
                     .map(|f| f.query)
                     .ok_or_else(|| anyhow::anyhow!("unknown saved filter: {name}"))?
             } else {
@@ -597,7 +599,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             account,
         } => {
             let books = filter_books(
-                load_books(&store, account.as_deref())?,
+                load_books(&store, account.as_deref()).await?,
                 if asins.is_empty() { None } else { Some(&asins) },
             );
             let ext = path
@@ -622,10 +624,11 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             force,
             asins,
         } => {
-            let storage = from_config(config).await?;
+            let storage = from_config(config, Some(store.db())).await?;
             let filter: Vec<String> = asins.into_iter().map(|a| a.to_ascii_uppercase()).collect();
             let targets: Vec<_> = store
-                .list_books(account.as_deref())?
+                .list_books(account.as_deref())
+                .await?
                 .into_iter()
                 .filter(|b| b.acquire_status == AcquireStatus::Acquired)
                 .filter(|b| filter.is_empty() || filter.iter().any(|a| title_id_matches(b, a)))
@@ -666,24 +669,24 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
         }
         LibraryCommand::Filters { command } => match command {
             FilterCommand::List => {
-                for f in store.list_saved_filters()? {
+                for f in store.list_saved_filters().await? {
                     println!("{}\t{}", f.name, f.query);
                 }
                 Ok(())
             }
             FilterCommand::Save { name, query } => {
-                store.upsert_saved_filter(&name, &query)?;
+                store.upsert_saved_filter(&name, &query).await?;
                 println!("saved filter {name}");
                 Ok(())
             }
             FilterCommand::Delete { name } => {
-                store.delete_saved_filter(&name)?;
+                store.delete_saved_filter(&name).await?;
                 println!("deleted filter {name}");
                 Ok(())
             }
         },
         LibraryCommand::List { account, status } => {
-            let books = store.list_books(account.as_deref())?;
+            let books = store.list_books(account.as_deref()).await?;
             for book in books {
                 if let Some(filter) = &status {
                     if book.acquire_status.as_str() != filter.as_str() {
@@ -719,12 +722,12 @@ async fn read_license_input(path: &std::path::Path) -> anyhow::Result<String> {
 /// Accepts uuid / product_id / isbn / asin. Never sends a Libro ISBN or library
 /// UUID to Audible's license API. Enriched Libro rows may supply an ASIN, but
 /// the account must still be an Audible auth identity.
-fn resolve_audible_license_target(
+async fn resolve_audible_license_target(
     store: &LibraryStore,
     id: &str,
     account: Option<&str>,
 ) -> anyhow::Result<(String, String)> {
-    let books = store.list_books(None)?;
+    let books = store.list_books(None).await?;
     let matches: Vec<_> = books
         .into_iter()
         .filter(|b| title_id_matches(b, id))
@@ -763,7 +766,8 @@ fn resolve_audible_license_target(
     // Libro (or other) row with an enriched ASIN — find an Audible account that
     // owns the same ASIN, otherwise require --account.
     let audible_owners: Vec<_> = store
-        .list_books(None)?
+        .list_books(None)
+        .await?
         .into_iter()
         .filter(|b| {
             b.source.eq_ignore_ascii_case("audible")

@@ -4,32 +4,36 @@ mod error;
 mod fanout;
 mod local;
 mod s3;
-mod s3_auth;
+mod s3_credentials;
 mod traits;
 
 pub use error::{Result, StorageError};
 pub use fanout::FanoutBackend;
 pub use local::LocalFsBackend;
 pub use s3::S3Backend;
-pub use s3_auth::{
-    credentials_file_for, default_credentials_file, load_auth as load_s3_auth,
-    resolve_credentials_path, save_auth as save_s3_auth, S3AuthFile, AUTH_SUFFIX as S3_AUTH_SUFFIX,
-    DEFAULT_STEM as S3_DEFAULT_STEM,
+pub use s3_credentials::{
+    delete_s3_credentials, load_s3_credentials, save_s3_credentials, S3Credentials,
+    ENV_AWS_ACCESS_KEY_ID, ENV_AWS_SECRET_ACCESS_KEY, ENV_AWS_SESSION_TOKEN, S3_SECRET_NAME,
 };
 pub use traits::{
     bookclerk_meta_sidecar_key, is_audio_key, ObjectInfo, ObjectMeta, ObjectProbe, StorageBackend,
     AUDIO_EXTENSIONS,
 };
 
-use std::path::Path;
-
 use bookclerk_config::{normalize_storage_prefix, Config, OutputBackendKind};
+use sea_orm::DatabaseConnection;
 
 /// Build the configured storage backend(s).
 ///
 /// When multiple `[output.*]` destination plugins are enabled, returns a
 /// [`FanoutBackend`] that writes to all of them.
-pub async fn from_config(config: &Config) -> Result<Box<dyn StorageBackend>> {
+///
+/// Pass `db` so the S3 destination can load credentials from `encrypted_secrets`
+/// after env override (`BOOKCLERK_AWS_*`) and before the AWS SDK default chain.
+pub async fn from_config(
+    config: &Config,
+    db: Option<&DatabaseConnection>,
+) -> Result<Box<dyn StorageBackend>> {
     config
         .output
         .validate_destinations()
@@ -47,13 +51,8 @@ pub async fn from_config(config: &Config) -> Result<Box<dyn StorageBackend>> {
             }
             OutputBackendKind::S3 => {
                 let prefix = normalize_storage_prefix(config.output.s3.prefix.trim());
-                let files_dir = config
-                    .paths
-                    .as_ref()
-                    .map(|p| p.files_dir.as_path())
-                    .unwrap_or_else(|| Path::new("."));
                 backends.push(Box::new(
-                    S3Backend::from_config(&config.output.s3, &prefix, files_dir).await?,
+                    S3Backend::from_config(&config.output.s3, &prefix, db).await?,
                 ));
             }
         }

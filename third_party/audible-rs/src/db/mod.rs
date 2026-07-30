@@ -1,0 +1,505 @@
+//! SQLite layer (archived architecture reference §8): `rusqlite` (bundled,
+//! FTS5) behind a dedicated writer thread, WAL, migrations via
+//! `user_version`. The DB is the engine of the `library` commands.
+//!
+//! One [`Db`] handle owns one database file. All operations run as
+//! closures on the dedicated connection thread (rusqlite connections
+//! are not `Sync`); async callers await the result through a oneshot
+//! channel, so nothing blocks the executor.
+//!
+//! The domain methods live in submodules — one `impl Db` block each —
+//! re-exported here so callers keep using `db::` paths: [`items`]
+//! (sync/list/search/export), [`episodes`], [`series`], [`downloads`]
+//! (+ licenses), [`annotations`], [`changes`] (the change log) and
+//! [`stats`] (maintenance).
+
+mod annotations;
+mod changes;
+mod downloads;
+mod episodes;
+mod items;
+mod series;
+mod stats;
+#[cfg(test)]
+mod test_util;
+
+pub use annotations::{AnnotationDoc, AnnotationStatus};
+pub use changes::{ChangeFilter, ChangeRecord, ChangeRecording};
+pub use downloads::{
+    DOWNLOAD_KINDS, DOWNLOAD_VARIANTS, DownloadEntry, DownloadRecord, LicenseGrant, ReorgDownload,
+    normalize_download_kinds,
+};
+pub use episodes::{EpisodeHit, EpisodeRow, MissingEpisodeRow, PodcastRow, UpsertEpisode};
+pub use items::{
+    ApplyOutcome, BookRow, BorrowedRow, ChangedItem, ExportBookRow, ItemRemoval,
+    MissingDownloadsRow, SeriesRef, Settings, SyncLogEntry, UpsertItem, prepare_fts_query,
+    state_token_iso,
+};
+pub use series::{SeriesItemRow, SeriesRow};
+pub use stats::DbStats;
+
+pub mod schema;
+
+use std::path::{Path, PathBuf};
+
+use rusqlite::Connection;
+
+/// Errors raised by the database layer.
+#[derive(Debug, thiserror::Error)]
+pub enum DbError {
+    /// SQLite reported an error.
+    #[error("database error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    /// Filesystem access around the database failed.
+    #[error("database IO failed: {0}")]
+    Io(#[from] std::io::Error),
+    /// The connection thread is gone.
+    #[error("database connection thread terminated")]
+    Closed,
+    /// The database was initialized with different response groups.
+    #[error(
+        "this database was created with response_groups {existing:?} but \
+         {requested:?} was requested — keep the value stable or start a \
+         new database"
+    )]
+    ResponseGroupsMismatch {
+        /// Groups stored in the database.
+        existing: String,
+        /// Groups requested now.
+        requested: String,
+    },
+}
+
+/// File name for an account's database: `account_{sha256(user_id)[..16]}.sqlite`
+/// (one file per account; the marketplace is stored as a column).
+pub fn account_file_name(user_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(user_id.as_bytes());
+    format!("account_{}.sqlite", hex::encode(&digest[..8]))
+}
+
+type Job = Box<dyn FnOnce(&mut Connection) + Send>;
+
+/// Handle to one database file; cheap to clone.
+#[derive(Clone)]
+pub struct Db {
+    jobs: std::sync::mpsc::Sender<Job>,
+    path: PathBuf,
+}
+
+impl Db {
+    /// Opens (and migrates) the database, creating file and parent
+    /// directory on demand.
+    pub async fn open(path: PathBuf, busy_timeout_ms: u64) -> Result<Self, DbError> {
+        let (jobs, job_receiver) = std::sync::mpsc::channel::<Job>();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+        let thread_path = path.clone();
+        std::thread::Builder::new()
+            .name("audible-db".into())
+            .spawn(move || {
+                let opened = open_connection(&thread_path, busy_timeout_ms);
+                let mut conn = match opened {
+                    Ok(conn) => {
+                        let _ = ready_tx.send(Ok(()));
+                        conn
+                    }
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error));
+                        return;
+                    }
+                };
+                while let Ok(job) = job_receiver.recv() {
+                    job(&mut conn);
+                }
+            })?;
+
+        ready_rx.await.map_err(|_| DbError::Closed)??;
+        Ok(Self { jobs, path })
+    }
+
+    /// Path of the database file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Runs a closure on the connection thread and awaits its result.
+    pub async fn call<T, F>(&self, f: F) -> Result<T, DbError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, DbError> + Send + 'static,
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.jobs
+            .send(Box::new(move |conn| {
+                let _ = tx.send(f(conn));
+            }))
+            .map_err(|_| DbError::Closed)?;
+        rx.await.map_err(|_| DbError::Closed)?
+    }
+}
+
+fn open_connection(path: &Path, busy_timeout_ms: u64) -> Result<Connection, DbError> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let conn = Connection::open(path)?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.busy_timeout(std::time::Duration::from_millis(busy_timeout_ms))?;
+    schema::migrate(&conn)?;
+    Ok(conn)
+}
+
+/// Current UTC time as `YYYY-MM-DDTHH:MM:SSZ` (the reference format,
+/// one home: [`crate::timefmt`]).
+pub fn now_iso_utc() -> String {
+    crate::timefmt::now_iso()
+}
+
+// ------------------------- typed operations -------------------------
+
+/// Builds an `IN (?,?,…)` placeholder list for `n` bound values.
+fn in_placeholders(n: usize) -> String {
+    vec!["?"; n].join(",")
+}
+
+/// SQL fragment excluding archived items from a `v_books b` query
+/// (AUD-110) — empty when archived items are wanted. The correlated
+/// lookup keeps the `v_books` view untouched (no schema change, no DB
+/// reset); `is_archived` may be true/false/absent in the doc.
+fn not_archived_clause(include_archived: bool) -> &'static str {
+    if include_archived {
+        ""
+    } else {
+        "AND COALESCE((SELECT json_extract(i.doc, '$.is_archived')
+                       FROM items i
+                       WHERE i.asin = b.asin AND i.marketplace = b.marketplace), 0) = 0"
+    }
+}
+
+/// The archive filter for a query over `v_episodes` aliased `e`: an episode
+/// has no archive flag of its own, so it inherits its parent show's
+/// (AUD-110/AUD-203). Twin of [`not_archived_clause`], which assumes the `b`
+/// alias over `v_books`.
+fn episode_not_archived_clause(include_archived: bool) -> &'static str {
+    if include_archived {
+        ""
+    } else {
+        "AND COALESCE((SELECT json_extract(i.doc, '$.is_archived')
+                       FROM items i
+                       WHERE i.asin = e.parent_asin AND i.marketplace = e.marketplace), 0) = 0"
+    }
+}
+
+/// Whether a document proves an active consumption right — the SQL twin of
+/// [`crate::models::library::is_consumable`] (the Rust source of truth),
+/// kept in lockstep by a functional test below. Full identity with the
+/// external-download check (AUD-104): only a provable right passes — an
+/// explicit `false` and an absent field both fail (`!= Some(true)` on the
+/// Rust side), so a lapsed subscription title never reaches a
+/// licenserequest. `doc_expr` must name a document column in scope.
+fn consumable_sql(doc_expr: &str) -> String {
+    format!("json_extract({doc_expr}, '$.customer_rights.is_consumable') = 1")
+}
+
+/// Excludes items whose subscription right has lapsed from a `v_books b`
+/// query (AUD-104) — empty when lapsed rows are wanted (callers pass
+/// `true` only to *count* what the always-on filter skips; there is no
+/// user-facing opt-out, a lapsed title cannot license). Twin of
+/// [`not_archived_clause`]; the predicate is [`consumable_sql`].
+fn consumable_clause(include_lapsed: bool) -> String {
+    if include_lapsed {
+        String::new()
+    } else {
+        format!(
+            "AND EXISTS (SELECT 1 FROM items i
+                         WHERE i.asin = b.asin AND i.marketplace = b.marketplace
+                           AND {})",
+            consumable_sql("i.doc")
+        )
+    }
+}
+
+/// The lapsed-right filter for a query over `v_episodes` aliased `e`: an
+/// episode carries no `customer_rights` of its own — it inherits its
+/// parent show's right, exactly like [`episode_not_archived_clause`]
+/// inherits the archive flag. Twin of [`consumable_clause`].
+fn episode_consumable_clause(include_lapsed: bool) -> String {
+    if include_lapsed {
+        String::new()
+    } else {
+        format!(
+            "AND EXISTS (SELECT 1 FROM items i
+                         WHERE i.asin = e.parent_asin AND i.marketplace = e.marketplace
+                           AND {})",
+            consumable_sql("i.doc")
+        )
+    }
+}
+
+/// Escapes `%`, `_` and the escape character itself in user text bound
+/// into a `LIKE '%' || ? || '%'` pattern — pair the pattern with
+/// `ESCAPE '\\'`. Without it a `--title 100%` filter matched every title
+/// starting with "100" instead of the literal percent sign.
+pub(crate) fn escape_like(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Whether a document advertises a companion PDF — the SQL twin of
+/// [`crate::models::library::pdf_available`] (the Rust source of truth):
+/// `is_pdf_url_available`, with a `pdf_url`-presence fallback. The two are
+/// kept in lockstep by a functional test below. `doc_expr` must name a
+/// document column in scope (e.g. `e.doc`).
+///
+/// Verified against a real library (AUD-206): the flag and an actual `pdf_url`
+/// agree 100% (29 titles with both, 139 with neither), and **every** podcast
+/// episode reports `false` — so this is what tells a title that can have a PDF
+/// from one that cannot.
+fn pdf_available_sql(doc_expr: &str) -> String {
+    format!(
+        "(json_extract({doc_expr}, '$.is_pdf_url_available') = 1
+          OR json_extract({doc_expr}, '$.pdf_url') IS NOT NULL)"
+    )
+}
+
+/// The `purchase_date` document projection over a `doc` column/expression.
+/// One home (audit 2026-07-18, D5): the `v_books` view column, the
+/// `idx_items_purchase` expression index and `ITEMS_BOOK_COLUMNS` all
+/// build from this — an expression index is only used when its text
+/// matches the query expression **exactly**, so the view and the index
+/// must never drift apart.
+fn purchase_date_sql(doc: &str) -> String {
+    format!(
+        "COALESCE(json_extract({doc}, '$.purchase_date'), \
+                  json_extract({doc}, '$.library_status.date_added'))"
+    )
+}
+
+/// The `language` document projection (see [`purchase_date_sql`] for the
+/// single-home rationale).
+fn language_sql(doc: &str) -> String {
+    format!(
+        "COALESCE(json_extract({doc}, '$.language'), json_extract({doc}, '$.metadata.language'))"
+    )
+}
+
+/// The `runtime_min` document projection (see [`purchase_date_sql`]).
+fn runtime_min_sql(doc: &str) -> String {
+    format!(
+        "COALESCE(json_extract({doc}, '$.runtime_length_min'), \
+                  json_extract({doc}, '$.duration_min'))"
+    )
+}
+
+/// As [`pdf_available_sql`], for a row that carries no `doc` column of its own
+/// (`v_books`/`v_episodes`): looks the document up in `table` by the row's
+/// `(asin, marketplace)`.
+fn pdf_available_lookup_sql(table: &str, asin_expr: &str, marketplace_expr: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM {table} pdfdoc
+                 WHERE pdfdoc.asin = {asin_expr}
+                   AND pdfdoc.marketplace = {marketplace_expr}
+                   AND {})",
+        pdf_available_sql("pdfdoc.doc")
+    )
+}
+
+/// Gates the requested kind `k.value` on the artifact being able to exist at
+/// all (AUD-206). Only `pdf` is gated: it is the one kind the library document
+/// advertises. There is deliberately **no** chapter gate — no document field
+/// says whether a title has chapters (they come from a live
+/// `content/{asin}/metadata` request), so the DB cannot know; and a cover is
+/// universal.
+///
+/// `pdf_available` is the row-appropriate [`pdf_available_sql`] /
+/// [`pdf_available_lookup_sql`] expression.
+fn kind_possible_sql(pdf_available: &str) -> String {
+    format!("(k.value != 'pdf' OR {pdf_available})")
+}
+
+/// The correlated `NOT EXISTS` that holds when the `downloads` table has
+/// **no** record of `kind_expr` for the item at `asin_expr`/`marketplace_expr`
+/// — the "still missing this kind" shell shared by the `--missing` roll-up
+/// (`v_books`), the episode sweep and the `download --missing` sweep (audit
+/// 2026-07-18, C3: it was hand-copied into four SQL homes across three files).
+/// The audio request-kind variant (which also gates on `status` +
+/// `request_kind`) is deliberately a different predicate and stays separate.
+fn missing_download_sql(asin_expr: &str, marketplace_expr: &str, kind_expr: &str) -> String {
+    format!(
+        "NOT EXISTS (
+             SELECT 1 FROM downloads d
+             WHERE d.asin = {asin_expr} AND d.marketplace = {marketplace_expr}
+               AND d.kind = {kind_expr}
+         )"
+    )
+}
+
+/// Whether the requested download kind `k.value` is still missing for the
+/// `v_books` row aliased `b` — for queries that join `json_each(?) k` over the
+/// requested kinds (AUD-203).
+///
+/// A podcast **parent** owns no download record: the record always sits on the
+/// episode. Testing the parent's own ASIN would therefore report it missing
+/// forever, even with every episode downloaded. So a show counts as missing a
+/// kind while **any** of its episodes still lacks it; a show whose episodes are
+/// all downloaded (or that has none) is complete. Books and individually-
+/// subscribed episodes keep testing their own ASIN.
+///
+/// A kind that cannot exist for the row is never missing (AUD-206) — which is
+/// also what stops a show whose episodes have no PDF from reporting one.
+fn missing_kind_predicate() -> String {
+    format!(
+        "CASE WHEN b.kind = 'podcast' THEN
+         EXISTS (
+             SELECT 1 FROM episodes e
+             WHERE e.parent_asin = b.asin AND e.marketplace = b.marketplace
+               AND e.is_deleted = 0
+               AND {}
+               AND {}
+         )
+     ELSE
+         {}
+         AND {}
+     END",
+        missing_download_sql("e.asin", "e.marketplace", "k.value"),
+        // The roll-up reads the episode rows directly, so the doc is in scope.
+        kind_possible_sql(&pdf_available_sql("e.doc")),
+        missing_download_sql("b.asin", "b.marketplace", "k.value"),
+        kind_possible_sql(&pdf_available_lookup_sql(
+            "items",
+            "b.asin",
+            "b.marketplace"
+        )),
+    )
+}
+
+/// The content-kind expression over an item document column — the SQL
+/// twin of [`crate::models::library::item_kind`] (AUD-173), for queries
+/// selecting from `items` directly. `v_books` embeds the same CASE as its
+/// `kind` column; a functional test keeps all copies in lockstep.
+fn item_kind_sql(doc_column: &str) -> String {
+    format!(
+        "CASE \
+           WHEN json_extract({doc_column}, '$.content_delivery_type') = 'PodcastEpisode' \
+             THEN 'episode' \
+           WHEN json_extract({doc_column}, '$.content_delivery_type') \
+                  IN ('PodcastParent', 'Periodical', 'PodcastSeason') \
+                OR json_extract({doc_column}, '$.content_type') = 'Podcast' \
+             THEN 'podcast' \
+           ELSE 'book' \
+         END"
+    )
+}
+
+/// SQL fragment for a `--kind` content filter over a kind column or
+/// expression; empty `kinds` = empty fragment (all kinds). The values come
+/// from clap's fixed `book|podcast|episode` set, so they are embedded as
+/// literals (asserted, defensively).
+fn kind_clause(kind_expr: &str, kinds: &[String]) -> String {
+    if kinds.is_empty() {
+        return String::new();
+    }
+    debug_assert!(
+        kinds
+            .iter()
+            .all(|kind| crate::models::library::ITEM_KINDS.contains(&kind.as_str())),
+        "kind filter values must come from the fixed clap set"
+    );
+    let quoted: Vec<String> = kinds.iter().map(|kind| format!("'{kind}'")).collect();
+    format!(" AND {kind_expr} IN ({})", quoted.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_util::MP;
+
+    #[tokio::test]
+    async fn reopen_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library_test.sqlite");
+        {
+            let db = Db::open(path.clone(), 5000).await.unwrap();
+            db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+        }
+        let db = Db::open(path, 5000).await.unwrap();
+        db.ensure_sync_state(MP.into(), "g".into()).await.unwrap();
+    }
+
+    /// The SQL predicate must classify exactly like
+    /// `models::library::pdf_available` — one truth, two homes, verified
+    /// functionally (the drift this guards against: `download info` once
+    /// dropped the `pdf_url` fallback and denied PDFs `download --kind pdf`
+    /// would fetch). The SQL side has no "unknown": absent fields gate as
+    /// `false`, i.e. `unwrap_or(false)` on the Rust side.
+    #[test]
+    fn pdf_sql_matches_rust_predicate() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let sql = format!("SELECT COALESCE({}, 0)", pdf_available_sql("?"));
+        let docs = [
+            serde_json::json!({"is_pdf_url_available": true}),
+            serde_json::json!({"is_pdf_url_available": false}),
+            serde_json::json!({"is_pdf_url_available": true, "pdf_url": null}),
+            serde_json::json!({"is_pdf_url_available": false, "pdf_url": "https://example.test/x.pdf"}),
+            serde_json::json!({"pdf_url": "https://example.test/x.pdf"}),
+            serde_json::json!({"pdf_url": null}),
+            serde_json::json!({"title": "carries neither field"}),
+        ];
+        for doc in docs {
+            let text = doc.to_string();
+            let sql_says: bool = conn
+                .query_row(&sql, rusqlite::params![text, text], |row| row.get(0))
+                .unwrap();
+            let rust_says = crate::models::library::pdf_available(&doc).unwrap_or(false);
+            assert_eq!(sql_says, rust_says, "SQL and Rust diverged on {text}");
+        }
+        // The tri-state contract: only a document with neither field is
+        // "unknown" (probe-worthy); a lone `pdf_url: null` means "no".
+        use crate::models::library::pdf_available;
+        assert_eq!(pdf_available(&serde_json::json!({"a": 1})), None);
+        assert_eq!(
+            pdf_available(&serde_json::json!({"pdf_url": null})),
+            Some(false)
+        );
+    }
+
+    /// The SQL right-check must classify exactly like the download paths'
+    /// Rust predicate `models::library::is_consumable(doc) == Some(true)` —
+    /// one truth, two homes (AUD-104). Full identity with the external
+    /// check: `false` AND absent both fail, only a provable right passes.
+    #[test]
+    fn consumable_sql_matches_rust_predicate() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let sql = format!("SELECT COALESCE(({}), 0)", consumable_sql("?"));
+        let docs = [
+            serde_json::json!({"customer_rights": {"is_consumable": true}}),
+            serde_json::json!({"customer_rights": {"is_consumable": false}}),
+            serde_json::json!({"customer_rights": {"is_consumable": null}}),
+            serde_json::json!({"customer_rights": {"other": 1}}),
+            serde_json::json!({"title": "no customer_rights at all"}),
+        ];
+        for doc in docs {
+            let text = doc.to_string();
+            let sql_says: bool = conn
+                .query_row(&sql, rusqlite::params![text], |row| row.get(0))
+                .unwrap();
+            let rust_says = crate::models::library::is_consumable(&doc) == Some(true);
+            assert_eq!(sql_says, rust_says, "SQL and Rust diverged on {text}");
+        }
+    }
+
+    #[test]
+    fn account_file_name_is_stable_and_scoped() {
+        let a = account_file_name("amzn1.account.X");
+        let b = account_file_name("amzn1.account.Y");
+        assert!(a.starts_with("account_") && a.ends_with(".sqlite"));
+        assert_ne!(a, b);
+        assert_eq!(a, account_file_name("amzn1.account.X"));
+        // The marketplace no longer affects the file name.
+        // (No second argument, one file per account.)
+    }
+}

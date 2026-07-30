@@ -56,15 +56,23 @@ impl PluginClient {
         cwd: &Path,
         config_table: Value,
     ) -> Result<Self> {
-        let mut child = Command::new(command)
-            .args(args)
+        let mut cmd = Command::new(command);
+        cmd.args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
-            .env("BOOKCLERK_PLUGIN_ID", id)
-            .spawn()?;
+            // Do not inherit host secrets (BOOKCLERK_AUTH_PASSWORD, AWS keys,
+            // operator token, DB URLs, …). Allowlist only non-sensitive vars.
+            .env_clear();
+        for (key, value) in std::env::vars() {
+            if plugin_env_allowed(&key) {
+                cmd.env(key, value);
+            }
+        }
+        cmd.env("BOOKCLERK_PLUGIN_ID", id);
+        let mut child = cmd.spawn()?;
 
         let stdin = child
             .stdin
@@ -118,7 +126,6 @@ impl PluginClient {
                 display_name: None,
                 capabilities: vec![],
                 portal_auth_mode: None,
-                auth_credential_suffixes: vec![],
                 password_env_var: None,
                 aliases: vec![],
                 sort_key: None,
@@ -334,4 +341,62 @@ struct GuestResponse {
 struct GuestError {
     code: i64,
     message: String,
+}
+
+/// Env keys safe to inherit into a plugin child.
+///
+/// Explicitly excludes Bookclerk/AWS/Cloudflare secrets and DB URLs.
+fn plugin_env_allowed(key: &str) -> bool {
+    const ALLOW: &[&str] = &[
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "XDG_RUNTIME_DIR",
+        "TERM",
+        "COLORTERM",
+        "RUST_BACKTRACE",
+        "NO_COLOR",
+        "FORCE_COLOR",
+    ];
+    if ALLOW.iter().any(|k| key.eq_ignore_ascii_case(k)) {
+        return true;
+    }
+    // Block anything that looks like a secret or Bookclerk bootstrap var.
+    let upper = key.to_ascii_uppercase();
+    if upper.starts_with("BOOKCLERK_")
+        || upper.starts_with("AWS_")
+        || upper.starts_with("CLOUDFLARE_")
+        || upper.contains("PASSWORD")
+        || upper.contains("SECRET")
+        || upper.contains("TOKEN")
+        || upper.contains("API_KEY")
+        || upper.contains("DATABASE_URL")
+    {
+        return false;
+    }
+    false
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::plugin_env_allowed;
+
+    #[test]
+    fn allows_path_blocks_secrets() {
+        assert!(plugin_env_allowed("PATH"));
+        assert!(plugin_env_allowed("HOME"));
+        assert!(!plugin_env_allowed("BOOKCLERK_AUTH_PASSWORD"));
+        assert!(!plugin_env_allowed("BOOKCLERK_OPERATOR_TOKEN"));
+        assert!(!plugin_env_allowed("AWS_SECRET_ACCESS_KEY"));
+        assert!(!plugin_env_allowed("CLOUDFLARE_API_TOKEN"));
+        assert!(!plugin_env_allowed("BOOKCLERK_DATABASE_POSTGRES_URL"));
+    }
 }

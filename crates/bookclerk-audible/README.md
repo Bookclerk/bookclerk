@@ -10,18 +10,16 @@ git = "https://github.com/mkb79/audible-rs"
 rev = "5a28f507072022ae7fd7f95a62e3bdc5e515d678"
 ```
 
-Auth files live under `{BOOKCLERK_FILES_DIR}/Accounts/<account>.audible.auth`
-(audible-rs envelope; aligned with `.libro.auth` / `.chirp.auth` / `.ga.auth`).
-Prefer encrypting at rest (Argon2id + XChaCha20-Poly1305). Widevine L3 CDMs live
-alongside them as `{BOOKCLERK_FILES_DIR}/Accounts/<account>.wvd`. Classic
-Libation migrate writes these from `AccountsSettings.json` IdentityTokens.
+Audible OAuth tokens live in the `encrypted_secrets` DB table (sealed-v1
+format), alongside Libro.fm / Chirp / GraphicAudio credentials. All credentials
+are encrypted at rest using the process DEK from `master.key`
+(XChaCha20-Poly1305). Widevine L3 CDMs are also stored in `encrypted_secrets`
+(per account). Classic Libation migrate imports these from
+`AccountsSettings.json` IdentityTokens straight into the DB.
 
-Passphrase sources (first match wins): `BOOKCLERK_AUTH_PASSWORD`,
-`BOOKCLERK_AUTH_PASSWORD_FILE`, or `[auth].password_file`. A configured password
-**file path that does not exist yet** is created with a strong random secret —
-point it at a dedicated secrets volume, not `Accounts/`. Set
-`auth.allow_plaintext = true` to store unprotected token files (local/dev).
-`bookclerk-library` uses the same rusqlite 0.40 + bundled SQLite.
+Passphrase: set `BOOKCLERK_AUTH_PASSWORD` (env-only) to wrap `master.key` at
+rest (strongly recommended for production). `bookclerk-library` uses the same
+rusqlite 0.40 + bundled SQLite.
 
 ## Login modes
 
@@ -33,9 +31,8 @@ Both modes open Amazon's OAuth / device-registration flow in a browser. There is
 (audible-rs). Amazon accounts with **2FA/MFA enabled require completing OTP**
 (or SMS / mobile verification) during that browser step. Headless agents need
 either an interactive Desktop session or a TOTP seed to finish login; importing
-an existing `{BOOKCLERK_FILES_DIR}/Accounts/*.audible.auth` file skips login
-entirely — encrypted files need a matching passphrase; plaintext files need
-`auth.allow_plaintext` only when *writing* unprotected envelopes.
+an existing audible-rs `*.audible.auth` file (`bookclerk auth import`) stores it
+in `encrypted_secrets` and skips login entirely.
 
 ## Acquire download path
 
@@ -48,7 +45,8 @@ entirely — encrypted files need a matching passphrase; plaintext files need
    - Mpeg fallback (plain mp3) when the server has no Widevine asset
 3. Spatial/Atmos (Widevine **L1**, `ec+3`) is not available on desktop — acquire never requests it
 
-CDM resolution: local `output.widevine_cdm` / `{files_dir}/widevine.wvd` /
-`Accounts/<account>.wvd`, else auto-provision from
-`output.widevine_cdm_provider` (default: classic Libation AudibleCdm).
-Requires Android registration (`auth login` always uses Android).
+CDM resolution: `encrypted_secrets` (per account) → optional BYO file
+`output.widevine_cdm` / `{files_dir}/widevine.wvd` (imported into the DB on
+first use) → auto-provision from `output.widevine_cdm_provider` (default: classic
+Libation AudibleCdm), stored back into `encrypted_secrets`. Requires Android
+registration (`auth login` always uses Android).

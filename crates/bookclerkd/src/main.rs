@@ -13,11 +13,11 @@ use std::sync::Arc;
 use bookclerk_config::{
     init_tracing_with, read_or_create_operator_token, Config, LogFormat, TracingOptions,
 };
-use bookclerk_library::LibraryStore;
+use bookclerk_library::{configure_master_key_with, LibraryStore};
 use clap::Parser;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::api::{resolve_ui_dist, router, AppState};
+use crate::api::{reload_daemon_config, resolve_ui_dist, router, AppState};
 use crate::auth::OperatorAuthState;
 use crate::registry::default_registry_with_plugins;
 use crate::scheduler::spawn_scheduler;
@@ -46,10 +46,6 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let mut config = Config::load(args.bookclerk_files, args.config)?;
-    bookclerk_audible::configure_auth_secrets(
-        config.auth.password_file.clone(),
-        config.auth.allow_plaintext,
-    );
     if let Some(listen) = args.listen {
         config.daemon.listen = listen;
     }
@@ -89,8 +85,9 @@ async fn main() -> anyhow::Result<()> {
 
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
+    configure_master_key_with(&paths.files_dir, config.auth_password().as_deref())?;
 
-    let library = LibraryStore::open(&paths.library_db)?;
+    let library = LibraryStore::open_from_config(&config).await?;
     let mut integrations = bookclerk_integrations::from_config(&config)?;
     bookclerk_plugin::load_external_integrations(&config, &mut integrations).await?;
     let sources = {
@@ -151,7 +148,9 @@ async fn main() -> anyhow::Result<()> {
                         &cfg,
                         &user,
                         "abs_watcher",
-                    ) {
+                    )
+                    .await
+                    {
                         Ok(minted) => {
                             if let Some(url) = minted.portal_url {
                                 tracing::info!(%url, "claim ticket minted for ABS user");
@@ -174,10 +173,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     spawn_scheduler(state.clone());
+    spawn_config_reload_signals(state.clone());
 
     let cfg_snapshot = config.read().await;
     let listen = cfg_snapshot.daemon.listen.clone();
-    let files_dir = cfg_snapshot.paths().files_dir.clone();
     drop(cfg_snapshot);
 
     let addr: SocketAddr = listen
@@ -185,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|err| anyhow::anyhow!("invalid daemon.listen '{listen}': {err}"))?;
 
     let ui_dist = resolve_ui_dist();
-    let app = router(state, files_dir, ui_dist);
+    let app = router(state, ui_dist);
     tracing::info!(%addr, "bookclerkd listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
@@ -201,6 +200,32 @@ fn listen_is_loopback(listen: &str) -> bool {
         .unwrap_or(listen);
     let host = host.split(':').next().unwrap_or(host);
     matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
+}
+
+fn spawn_config_reload_signals(state: Arc<AppState>) {
+    #[cfg(unix)]
+    {
+        tokio::spawn(async move {
+            let mut stream =
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        tracing::warn!(%err, "failed to install SIGHUP handler for config reload");
+                        return;
+                    }
+                };
+            while stream.recv().await.is_some() {
+                match reload_daemon_config(&state).await {
+                    Ok(detail) => tracing::info!(%detail, "SIGHUP config reload"),
+                    Err(err) => tracing::error!(error = %err, "SIGHUP config reload failed"),
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = state;
+    }
 }
 
 async fn shutdown_signal() {

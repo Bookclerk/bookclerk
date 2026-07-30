@@ -40,6 +40,12 @@ impl StorageBackend for FanoutBackend {
         "multi"
     }
 
+    fn clone_box(&self) -> Box<dyn StorageBackend> {
+        Box::new(Self {
+            backends: self.backends.iter().map(|b| b.clone_box()).collect(),
+        })
+    }
+
     async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {
         for backend in &self.backends {
             backend.put(key, data.clone(), meta.clone()).await?;

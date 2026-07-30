@@ -43,6 +43,7 @@ tokio.workspace = true
 tracing.workspace = true
 ureq.workspace = true
 rpassword = "7"
+secrecy.workspace = true
 
 [lints]
 workspace = true

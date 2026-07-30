@@ -139,33 +139,30 @@ async fn scan_account_upserts_library_rows() {
         .mount(&server)
         .await;
 
-    let library = LibraryStore::open_in_memory().unwrap();
+    let library = LibraryStore::open_in_memory().await.unwrap();
+    let scope = library.scope("audible");
     library
-        .upsert_account("amzn1.account.TEST", "us", Some("Main"), true)
+        .upsert_account("amzn1.account.TEST", "us", Some("Main"), true, "audible")
+        .await
         .unwrap();
 
     let client = synthetic_client(&server);
-    let (books, pages) = scan_account_into_library(
-        &library,
-        &client,
-        "amzn1.account.TEST",
-        "us",
-        50,
-        true,
-        true,
-    )
-    .await
-    .unwrap();
+    let (books, pages) =
+        scan_account_into_library(&scope, &client, "amzn1.account.TEST", "us", 50, true, true)
+            .await
+            .unwrap();
 
     assert_eq!(pages, 1);
     assert_eq!(books, 2);
     assert!(library
         .get_book("B00EXAMPLE1", "amzn1.account.TEST")
+        .await
         .unwrap()
         .is_some());
     assert_eq!(
         library
             .get_book("B00EXAMPLE2", "amzn1.account.TEST")
+            .await
             .unwrap()
             .unwrap()
             .title,

@@ -1,6 +1,7 @@
 //! Destination-specific storage backends for one acquire operation.
 
 use bookclerk_config::{normalize_storage_prefix, Config, MultiDestinationMode, OutputBackendKind};
+use bookclerk_library::LibraryStore;
 use bookclerk_source::DownloadOptions;
 use bookclerk_storage::{FanoutBackend, LocalFsBackend, S3Backend, StorageBackend};
 
@@ -19,7 +20,12 @@ pub struct AcquireDestinations {
 }
 
 impl AcquireDestinations {
-    pub async fn from_config(config: &Config) -> Result<Self> {
+    /// Build destination backends.
+    ///
+    /// `library` is used when the S3 destination loads credentials from
+    /// `encrypted_secrets` (after `BOOKCLERK_AWS_*` env override, before
+    /// the AWS SDK default chain).
+    pub async fn from_config(config: &Config, library: Option<&LibraryStore>) -> Result<Self> {
         config.output.validate_destinations().map_err(|err| {
             AcquireError::Other(anyhow::anyhow!("invalid output destination config: {err}"))
         })?;
@@ -29,6 +35,7 @@ impl AcquireDestinations {
                 "enable at least one of [output.local] or [output.s3]"
             ))
         })?;
+        let db = library.map(|store| store.db());
         let mut items = Vec::new();
         for kind in config.output.enabled_backends() {
             let backend: Box<dyn StorageBackend> = match kind {
@@ -41,12 +48,7 @@ impl AcquireDestinations {
                 }
                 OutputBackendKind::S3 => {
                     let prefix = normalize_storage_prefix(config.output.s3.prefix.trim());
-                    let files_dir = config
-                        .paths
-                        .as_ref()
-                        .map(|p| p.files_dir.as_path())
-                        .unwrap_or_else(|| std::path::Path::new("."));
-                    Box::new(S3Backend::from_config(&config.output.s3, &prefix, files_dir).await?)
+                    Box::new(S3Backend::from_config(&config.output.s3, &prefix, db).await?)
                 }
             };
             items.push(AcquireDestination {
@@ -83,6 +85,23 @@ impl AcquireDestinations {
     #[must_use]
     pub fn destination(&self, kind: OutputBackendKind) -> Option<&AcquireDestination> {
         self.items.iter().find(|dest| dest.kind == kind)
+    }
+
+    /// Clone destination backends into a listing/match storage handle.
+    ///
+    /// Prefer this over a second [`bookclerk_storage::from_config`] call when
+    /// acquire already built destinations (avoids decrypting S3 secrets twice).
+    pub fn listing_backend(&self) -> Result<Box<dyn StorageBackend>> {
+        let backends = self
+            .items
+            .iter()
+            .map(|dest| dest.backend.clone_box())
+            .collect::<Vec<_>>();
+        if backends.len() == 1 {
+            let mut backends = backends;
+            return Ok(backends.remove(0));
+        }
+        Ok(Box::new(FanoutBackend::new(backends)?))
     }
 
     pub fn into_listing_backend(self) -> Result<Box<dyn StorageBackend>> {

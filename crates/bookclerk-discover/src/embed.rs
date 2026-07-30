@@ -222,16 +222,21 @@ pub struct CosineHit {
 }
 
 /// Embed works whose text hash changed (or are missing).
-pub fn embed_dirty_works(library: &LibraryStore, embedder: &mut dyn Embedder) -> Result<usize> {
+pub async fn embed_dirty_works(
+    library: &LibraryStore,
+    embedder: &mut dyn Embedder,
+) -> Result<usize> {
     let model = embedder.model_id().to_string();
-    let works = library.list_works()?;
+    let works = library.list_works().await?;
     let mut dirty_texts = Vec::new();
     let mut dirty_ids = Vec::new();
 
     for work in &works {
         let text = text_for_work(work);
         let hash = text_hash(&text);
-        let existing = library.embedding_text_hash("work", &work.id, &model)?;
+        let existing = library
+            .embedding_text_hash("work", &work.id, &model)
+            .await?;
         if existing.as_deref() == Some(hash.as_str()) {
             continue;
         }
@@ -255,7 +260,9 @@ pub fn embed_dirty_works(library: &LibraryStore, embedder: &mut dyn Embedder) ->
     let dims = embedder.dimensions() as i64;
     let mut written = 0usize;
     for ((id, hash), vec) in dirty_ids.into_iter().zip(vectors) {
-        library.upsert_embedding("work", &id, &model, dims, &vector_to_bytes(&vec), &hash)?;
+        library
+            .upsert_embedding("work", &id, &model, dims, &vector_to_bytes(&vec), &hash)
+            .await?;
         written += 1;
     }
     Ok(written)
@@ -263,14 +270,14 @@ pub fn embed_dirty_works(library: &LibraryStore, embedder: &mut dyn Embedder) ->
 
 /// Brute-force cosine search against stored work embeddings.
 #[allow(dead_code)]
-pub fn similar_works(
+pub async fn similar_works(
     library: &LibraryStore,
     model: &str,
     query: &[f32],
     exclude: &[String],
     limit: usize,
 ) -> Result<Vec<CosineHit>> {
-    let all = library.list_embeddings("work", model)?;
+    let all = library.list_embeddings("work", model).await?;
     let mut hits = Vec::new();
     for (id, blob) in all {
         if exclude.iter().any(|e| e == &id) {

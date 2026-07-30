@@ -96,6 +96,10 @@ impl ScanSummary {
 pub struct FetchOptions {
     pub download: DownloadOptions,
     pub cache_dir: PathBuf,
+    /// Root files directory (`BOOKCLERK_FILES_DIR`). Used for CDM / Widevine path
+    /// resolution by Audible. Non-auth operations only; auth is loaded from the
+    /// [`bookclerk_library::LibraryStore`] passed directly to the trait method.
+    pub files_dir: PathBuf,
 }
 
 /// One DRM-free audio part (chapter file or single book).

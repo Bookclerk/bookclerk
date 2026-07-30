@@ -21,7 +21,7 @@ pub struct LibraryImportSummary {
 }
 
 /// Import books from classic EF Core SQLite `LibationContext.db`.
-pub fn import_library_db(
+pub async fn import_library_db(
     classic_db: &Path,
     store: &LibraryStore,
     audio_paths: &AudioPathMap,
@@ -113,7 +113,9 @@ pub fn import_library_db(
         .map_err(|err| MigrateError::Library(format!("query prepare failed: {err}")))?;
 
     let mut summary = LibraryImportSummary::default();
-    let rows = stmt
+    // Collect all classic rows up front so the (non-Send) rusqlite iterator is
+    // dropped before we `.await` any async store operations below.
+    let rows: Vec<ClassicBookRow> = stmt
         .query_map([], |row| {
             Ok(ClassicBookRow {
                 asin: row.get::<_, String>(0)?,
@@ -139,10 +141,13 @@ pub fn import_library_db(
                 series_asin: row.get::<_, Option<String>>(21)?,
             })
         })
-        .map_err(|err| MigrateError::Library(format!("query failed: {err}")))?;
+        .map_err(|err| MigrateError::Library(format!("query failed: {err}")))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|err| MigrateError::Library(format!("row read failed: {err}")))?;
+    drop(stmt);
+    drop(conn);
 
     for row in rows {
-        let row = row.map_err(|err| MigrateError::Library(format!("row read failed: {err}")))?;
         if row.asin.is_empty() {
             continue;
         }
@@ -160,7 +165,9 @@ pub fn import_library_db(
             .unwrap_or_else(|| row.account.clone());
 
         // Ensure account row exists even if AccountsSettings was missing.
-        let _ = store.upsert_account(&account_id, &row.locale, None, true);
+        let _ = store
+            .upsert_account(&account_id, &row.locale, None, true, "audible")
+            .await;
 
         let title = if row.subtitle.trim().is_empty() {
             row.title.clone()
@@ -176,36 +183,38 @@ pub fn import_library_db(
             row.series_order.filter(|s| !s.is_empty())
         };
 
-        store.upsert_book(&NewBook {
-            uuid: None,
-            product_id: row.asin.clone(),
-            asin: Some(row.asin.clone()),
-            isbn: None,
-            source: String::from("audible"),
-            account_id: account_id.clone(),
-            marketplace: row.locale.clone(),
-            title,
-            authors: row.authors.filter(|s| !s.is_empty()),
-            narrators: row.narrators.filter(|s| !s.is_empty()),
-            series: row.series_name.filter(|s| !s.is_empty()),
-            series_index,
-            series_asin: row.series_asin.filter(|s| !s.is_empty()),
-            purchased_at: row.date_added.as_deref().and_then(parse_dt),
-            publisher: None,
-            length_minutes: row.length_minutes,
-            is_abridged: row.is_abridged,
-            content_kind,
-            categories: None,
-            subtitle: {
-                let s = row.subtitle.trim();
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s.to_string())
-                }
-            },
-            published_at: row.date_published.as_deref().and_then(parse_dt),
-        })?;
+        store
+            .upsert_book(&NewBook {
+                uuid: None,
+                product_id: row.asin.clone(),
+                asin: Some(row.asin.clone()),
+                isbn: None,
+                source: String::from("audible"),
+                account_id: account_id.clone(),
+                marketplace: row.locale.clone(),
+                title,
+                authors: row.authors.filter(|s| !s.is_empty()),
+                narrators: row.narrators.filter(|s| !s.is_empty()),
+                series: row.series_name.filter(|s| !s.is_empty()),
+                series_index,
+                series_asin: row.series_asin.filter(|s| !s.is_empty()),
+                purchased_at: row.date_added.as_deref().and_then(parse_dt),
+                publisher: None,
+                length_minutes: row.length_minutes,
+                is_abridged: row.is_abridged,
+                content_kind,
+                categories: None,
+                subtitle: {
+                    let s = row.subtitle.trim();
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s.to_string())
+                    }
+                },
+                published_at: row.date_published.as_deref().and_then(parse_dt),
+            })
+            .await?;
 
         let status = AcquireStatus::from_classic(row.book_status);
         let storage_key = audio_paths
@@ -218,7 +227,9 @@ pub fn import_library_db(
             summary.acquired += 1;
         }
 
-        store.set_acquire_status(&row.asin, &account_id, status, storage_key.as_deref(), None)?;
+        store
+            .set_acquire_status(&row.asin, &account_id, status, storage_key.as_deref(), None)
+            .await?;
 
         let has_user_fields = row.tags.as_ref().is_some_and(|s| !s.is_empty())
             || row.rating_overall.is_some()
@@ -226,17 +237,19 @@ pub fn import_library_db(
             || row.rating_story.is_some()
             || row.is_finished;
         if has_user_fields {
-            store.update_user_fields(
-                &row.asin,
-                &account_id,
-                &UserBookFields {
-                    tags: row.tags.clone(),
-                    rating_overall: row.rating_overall,
-                    rating_performance: row.rating_performance,
-                    rating_story: row.rating_story,
-                    is_finished: Some(row.is_finished),
-                },
-            )?;
+            store
+                .update_user_fields(
+                    &row.asin,
+                    &account_id,
+                    &UserBookFields {
+                        tags: row.tags.clone(),
+                        rating_overall: row.rating_overall,
+                        rating_performance: row.rating_performance,
+                        rating_story: row.rating_story,
+                        is_finished: Some(row.is_finished),
+                    },
+                )
+                .await?;
         }
 
         summary.books += 1;
@@ -287,8 +300,8 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    #[test]
-    fn imports_minimal_classic_db() {
+    #[tokio::test]
+    async fn imports_minimal_classic_db() {
         let dir = tempdir().unwrap();
         let classic = dir.path().join("LibationContext.db");
         {
@@ -364,19 +377,20 @@ mod tests {
             .unwrap();
         }
 
-        let store = LibraryStore::open_in_memory().unwrap();
+        let store = LibraryStore::open_in_memory().await.unwrap();
         let mut paths = AudioPathMap::new();
         paths.insert(
             "B00TEST".into(),
             Path::new("/books/Ann Author/Hello/B00TEST.m4b").to_path_buf(),
         );
         let map = HashMap::from([(("user@example.com".into(), "us".into()), "cust-1".into())]);
-        let summary =
-            import_library_db(&classic, &store, &paths, Path::new("/books"), &map, false).unwrap();
+        let summary = import_library_db(&classic, &store, &paths, Path::new("/books"), &map, false)
+            .await
+            .unwrap();
         assert_eq!(summary.books, 1);
         assert_eq!(summary.acquired, 1);
         assert_eq!(summary.storage_keys, 1);
-        let book = store.get_book("B00TEST", "cust-1").unwrap().unwrap();
+        let book = store.get_book("B00TEST", "cust-1").await.unwrap().unwrap();
         assert_eq!(book.title, "Hello: World");
         assert_eq!(book.authors.as_deref(), Some("Ann Author"));
         assert_eq!(book.acquire_status, AcquireStatus::Acquired);

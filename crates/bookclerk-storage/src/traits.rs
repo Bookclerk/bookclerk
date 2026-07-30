@@ -70,6 +70,9 @@ pub trait StorageBackend: Send + Sync {
     /// Backend name for logs (`local`, `s3`).
     fn name(&self) -> &'static str;
 
+    /// Clone into a new boxed backend (same client / root).
+    fn clone_box(&self) -> Box<dyn StorageBackend>;
+
     /// Write bytes under `key`.
     async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()>;
 

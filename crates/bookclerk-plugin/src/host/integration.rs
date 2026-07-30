@@ -194,7 +194,7 @@ impl Integration for ExternalIntegration {
             .client
             .call(methods::SYNC_LISTENING, Value::Object(Default::default()))
             .await?;
-        bookclerk_integrations::upsert_listening_snapshots(library, self.id(), &dto.items)
+        bookclerk_integrations::upsert_listening_snapshots(library, self.id(), &dto.items).await
     }
 
     async fn diagnose(&self) -> bookclerk_integrations::Result<Vec<String>> {

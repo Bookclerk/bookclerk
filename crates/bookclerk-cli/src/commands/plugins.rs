@@ -376,6 +376,9 @@ fn set_plugin_enabled(
         PluginKind::Source => cfg.sources.set_enabled(&plugin.manifest.id, enabled),
         PluginKind::Integration => cfg.integrations.set_enabled(&plugin.manifest.id, enabled),
         PluginKind::Output => anyhow::bail!("output plugins cannot be enabled yet"),
+        PluginKind::Database => anyhow::bail!(
+            "database plugins are selected via [database].plugin in config.toml (sqlite|d1)"
+        ),
     }
     let path = cfg.paths().config_file.clone();
     cfg.write_toml_file(&path)?;
@@ -407,6 +410,10 @@ fn is_enabled(config: &Config, plugin: &DiscoveredPlugin) -> bool {
         PluginKind::Source => config.sources.is_enabled(&plugin.manifest.id),
         PluginKind::Integration => config.integrations.is_enabled(&plugin.manifest.id),
         PluginKind::Output => false,
+        PluginKind::Database => config
+            .database
+            .plugin
+            .eq_ignore_ascii_case(&plugin.manifest.id),
     }
 }
 

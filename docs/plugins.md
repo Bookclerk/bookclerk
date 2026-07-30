@@ -17,6 +17,32 @@ and OAuth flows. Loading foreign `cdylib`s into the host process is fragile
 across Rust/Tokio versions. A child process gives crash isolation, independent
 releases, and a stable wire protocol.
 
+## Trust model (external plugins are untrusted)
+
+External plugins run as a **separate OS process** but are **not** a security
+sandbox by themselves. Bookclerk hardens the host boundary:
+
+| Host guarantees | Detail |
+| --- | --- |
+| No library DB path | `library.db` is never passed on the wire |
+| No files-dir root | Plugins get `plugin_data_dir` (`…/plugins/<id>/data`) and fetch `cache_dir` only — not `master.key` |
+| Env scrub | Child spawn uses `env_clear` + a small allowlist (`PATH`, `HOME`, locale, …). `BOOKCLERK_*`, `AWS_*`, tokens, and DB URLs are not inherited |
+| Host-mediated secrets | `login` returns `{ account, credentials }`; host seals into `encrypted_secrets` with `provider = plugin id`. `scan` and `fetch_title` receive those blobs from the host |
+| Host-mediated library writes | `scan` returns book DTOs; host upserts with `source` forced to the plugin id. `list_accounts` is answered from the host accounts table |
+| Scoped identity | Plugin cannot claim another storefront’s `source` / `provider` |
+
+First-party sources (Audible, Libro.fm, Chirp, GraphicAudio) ship **in-process**
+for ease of development, but they use the same host-enforced `SourceScope`
+boundary as third-party plugins: `source` / `provider` is forced to the plugin
+id, and secrets for other plugins are invisible. Audible is not a separate
+privilege class; its DRM pipeline is just richer (`Encrypted` fetch / licenses).
+Client reuse for Audible lives in `open_account_client`, same idea as the library
+unseal cache. Packaging may later omit first-party adapters from the binary;
+scoping will remain identical.
+
+Enabling a third-party plugin still means running that binary as the Bookclerk
+user — review plugins before enabling them.
+
 ## Two files, two jobs
 
 | File | Role |
@@ -45,7 +71,7 @@ Additional roots: `BOOKCLERK_PLUGIN_DIRS` (OS path list).
 api_version = 1
 id = "echo"
 name = "Echo Integration"
-kind = "integration"          # source | integration | output
+kind = "integration"          # source | integration | output | database
 command = "./bookclerk-plugin-echo-integration"
 # args = ["--verbose"]
 
@@ -161,11 +187,13 @@ Advertise in `handshake.capabilities`: `start`, `on_event`, `health`,
 
 | Method | Notes |
 | --- | --- |
-| `login` / `list_accounts` | Auth under `files_dir` |
-| `scan` | Receives `library_db` path; plugin opens SQLite |
-| `fetch_title` | Write media under `cache_dir`; return `plain` paths |
+| `login` | Params: `plugin_data_dir`, marketplace/label/email/password. Result: `{ account, credentials? }` — host seals credentials (`provider = plugin id`) and upserts the account row |
+| `list_accounts` | Host-only (accounts table for this plugin id); plugin is not called |
+| `scan` | Params: `plugin_data_dir`, filters, and host-injected `credentials` map (`account_id` → opaque JSON; **no** `library_db`). Result includes `books[]` DTOs; host upserts with `source` forced to plugin id |
+| `fetch_title` | Host injects `credentials` from `encrypted_secrets`; plugin writes media under `cache_dir` and returns `plain` paths |
 
 Encrypted/DRM fetch is not in the v1 external protocol yet (first-party only).
+Plugins must not open `library.db` or read `master.key`.
 
 ### Output plugins
 

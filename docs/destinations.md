@@ -9,7 +9,7 @@ Built-in destinations today:
 | Id | Config table | Credentials |
 | --- | --- | --- |
 | Local filesystem | `[output.local]` | none |
-| S3 / MinIO | `[output.s3]` | `Accounts/*.s3.auth`, AWS env override, or SDK/CLI shared chain |
+| S3 / MinIO | `[output.s3]` | `AWS_*` env override → `encrypted_secrets` → SDK chain |
 
 External `kind = "output"` plugins are discovered; loading is not implemented
 yet ([plugins.md](plugins.md)).
@@ -36,33 +36,25 @@ prefix = "library/"
 region = "us-east-1"
 # endpoint = "http://minio:9000"
 # force_path_style = true
-# credentials_file = "Accounts/default.s3.auth"   # default when unset
 ```
 
-Credentials use the same `Accounts/*.*.auth` pattern as storefront sources.
-Default path when `credentials_file` is unset: `Accounts/default.s3.auth`.
+Credentials resolve in this order:
 
-```json
-{
-  "access_key_id": "…",
-  "secret_access_key": "…",
-  "session_token": null,
-  "label": "minio"
-}
-```
+1. `BOOKCLERK_AWS_ACCESS_KEY_ID` + `BOOKCLERK_AWS_SECRET_ACCESS_KEY`
+   (optional `BOOKCLERK_AWS_SESSION_TOKEN`) — process env override. Empty string
+   counts as set (intentional override). These are not written to the DB unless
+   you run `bookclerk config s3-credentials set`.
+2. `encrypted_secrets` row `kind=s3`, `account_type=operator`, `account_id=default`, `name=default`
+   (save with `bookclerk config s3-credentials set`; secrets are never accepted
+   on argv). **Fail closed** if the row is present but cannot be unsealed —
+   Bookclerk does not fall through to the SDK chain in that case.
+3. AWS SDK **default provider chain** — shared config files (`~/.aws/credentials`,
+   `~/.aws/config`), AWS SSO, and cloud identity (EC2/ECS/EKS roles, …).
+   Installing the AWS CLI is not required.
 
-Resolution order:
+`bookclerk config s3-credentials show|clear` inspects or removes the DB row.
 
-1. `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (optional `AWS_SESSION_TOKEN`)
-2. `credentials_file` / default `Accounts/default.s3.auth`
-3. AWS SDK **default provider chain** — the same lookup the AWS CLI / official
-   SDKs use when no static keys are set. That includes shared config files
-   written by `aws configure` (`~/.aws/credentials`, `~/.aws/config`), AWS SSO
-   profiles, and cloud identity (EC2 instance profile, ECS task role, EKS
-   IRSA, …). Installing the AWS CLI is not required; Bookclerk only reads the
-   shared files / ambient role credentials the SDK discovers.
-
-Bucket/region/endpoint/credentials path also accept `BOOKCLERK_OUTPUT_S3_*`
+Bucket/region/endpoint also accept `BOOKCLERK_OUTPUT_S3_*`
 (or familiar `BOOKCLERK_S3_*`) env vars. Host-only endpoints are accepted;
 `https://` is prepended when the value looks like a bare hostname. Whitespace-
 only endpoint values are ignored.
