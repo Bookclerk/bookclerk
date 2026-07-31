@@ -13,6 +13,11 @@ pub enum Mp4Error {
     #[error("sample transform failed: {0}")]
     Transform(String),
 
+    /// A rebuilt `moov` outgrew the space reserved for it, so it cannot be
+    /// swapped in without moving the media. Callers fall back to a rewrite.
+    #[error("moov needs {needed} bytes but only {available} are reserved")]
+    NoRoom { needed: usize, available: usize },
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }

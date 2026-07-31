@@ -1,7 +1,7 @@
 //! Minimal progressive AAC-LC → M4B muxer (single audio track).
 
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crate::error::{MediaError, Result};
@@ -11,149 +11,164 @@ use crate::error::{MediaError, Result};
 /// spend the run in `write`/`read` syscalls.
 pub(crate) const IO_BUFFER_BYTES: usize = 1 << 20;
 
-/// Parameters for writing a single-track AAC-LC M4B while streaming AU payloads.
-#[derive(Debug, Clone)]
-pub struct MuxAacStreamRequest<'a> {
-    pub sample_rate: u32,
-    pub channels: u16,
-    /// AudioSpecificConfig bytes from the encoder (`confBuf`).
-    pub asc: &'a [u8],
-    pub sample_sizes: &'a [u32],
-    /// Per-AU durations in media timescale ticks.
-    ///
-    /// When every AU shares one duration, pass a one-element slice `[d]` together
-    /// with [`Self::uniform_duration`] semantics via [`AuTiming::Uniform`].
-    pub timing: AuTiming<'a>,
-}
-
-/// Sample timing for [`MuxAacStreamRequest`].
+/// Sample timing for a muxed track.
 #[derive(Debug, Clone, Copy)]
-pub enum AuTiming<'a> {
+enum AuTiming<'a> {
     /// Every access unit has the same duration (typical fdk-aac encode).
     Uniform(u32),
     /// Per-AU durations (lossless remux of existing AAC).
     Variable(&'a [u32]),
 }
 
-/// Write `ftyp` + `mdat` + `moov`, filling each AU via `fill_au` so only one
-/// access-unit buffer is live at a time.
-pub fn write_aac_m4b_streaming<F>(
-    output: &Path,
-    req: &MuxAacStreamRequest<'_>,
-    mut fill_au: F,
-) -> Result<()>
-where
-    F: FnMut(u32, &mut Vec<u8>) -> Result<()>,
-{
-    if req.sample_sizes.is_empty() {
-        return Err(MediaError::Mp4("no AAC samples to mux".into()));
+/// Writes a single-track AAC-LC M4B as its access units arrive.
+///
+/// `mdat` has to declare its length before any of the media, and the sample
+/// table cannot be finished until the last unit is written — only the encoder
+/// knows how big each one comes out. Reserving the 64-bit size field costs eight
+/// bytes and settles both: the units stream straight to the output and the
+/// length is patched in at the end. The alternative is parking the whole encode
+/// somewhere first, which for a book is a second full-size write and a full-size
+/// read back.
+pub struct AacM4bWriter {
+    out: BufWriter<File>,
+    /// Where the `mdat` largesize field sits, to be patched on [`Self::finish`].
+    size_field: u64,
+    first_sample: u64,
+    sample_rate: u32,
+    channels: u16,
+    asc: Vec<u8>,
+    sizes: Vec<u32>,
+    /// The duration the first unit claimed, and the one the rest are compared to.
+    uniform: Option<u32>,
+    /// Stays empty while every unit matches `uniform`, which is the whole of an
+    /// encoder's output. A book runs to a couple of million units, so the table
+    /// nobody needs is worth not keeping.
+    durations: Vec<u32>,
+    payload: u64,
+}
+
+impl AacM4bWriter {
+    pub fn create(output: &Path, sample_rate: u32, channels: u16, asc: &[u8]) -> Result<Self> {
+        if sample_rate == 0 {
+            return Err(MediaError::Mp4("sample rate must be non-zero".into()));
+        }
+        if channels == 0 {
+            return Err(MediaError::Mp4("channel count must be non-zero".into()));
+        }
+        if asc.is_empty() {
+            return Err(MediaError::Mp4("AudioSpecificConfig is empty".into()));
+        }
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let ftyp = build_m4b_ftyp();
+        let mut out = BufWriter::with_capacity(IO_BUFFER_BYTES, File::create(output)?);
+        out.write_all(&ftyp)?;
+        // The extended-size form, always: the length is not known yet, and this
+        // is the only header that can be corrected without moving the media.
+        out.write_all(&1u32.to_be_bytes())?;
+        out.write_all(b"mdat")?;
+        out.write_all(&0u64.to_be_bytes())?;
+
+        let mdat = ftyp.len() as u64;
+        Ok(Self {
+            out,
+            size_field: mdat + 8,
+            first_sample: mdat + MDAT_HEADER_BYTES,
+            sample_rate,
+            channels,
+            asc: asc.to_vec(),
+            sizes: Vec::new(),
+            uniform: None,
+            durations: Vec::new(),
+            payload: 0,
+        })
     }
-    let media_duration: u64 = match req.timing {
+
+    pub fn push(&mut self, au: &[u8], duration: u32) -> Result<()> {
+        if au.is_empty() {
+            return Err(MediaError::Mp4("AAC access unit is empty".into()));
+        }
+        if duration == 0 {
+            return Err(MediaError::Mp4("sample durations must be non-zero".into()));
+        }
+        match self.uniform {
+            None => self.uniform = Some(duration),
+            Some(first) if first != duration && self.durations.is_empty() => {
+                self.durations = vec![first; self.sizes.len()];
+                self.durations.push(duration);
+            }
+            Some(_) if !self.durations.is_empty() => self.durations.push(duration),
+            Some(_) => {}
+        }
+        self.out.write_all(au)?;
+        self.sizes.push(au.len() as u32);
+        self.payload += au.len() as u64;
+        Ok(())
+    }
+
+    pub fn samples(&self) -> usize {
+        self.sizes.len()
+    }
+
+    pub fn finish(mut self) -> Result<()> {
+        if self.sizes.is_empty() {
+            return Err(MediaError::Mp4("no AAC samples to mux".into()));
+        }
+        let timing = match self.uniform {
+            Some(duration) if self.durations.is_empty() => AuTiming::Uniform(duration),
+            _ => AuTiming::Variable(&self.durations),
+        };
+        let media_duration = media_duration(timing, self.sizes.len())?;
+        // All samples in one chunk — keeps stco/co64 to a single entry however
+        // long the book runs.
+        let moov = build_moov(
+            self.sample_rate,
+            self.channels,
+            &self.asc,
+            &self.sizes,
+            timing,
+            &[self.first_sample],
+            media_duration,
+        )?;
+        self.out.write_all(&moov)?;
+
+        let mut file = self
+            .out
+            .into_inner()
+            .map_err(std::io::IntoInnerError::into_error)?;
+        file.seek(SeekFrom::Start(self.size_field))?;
+        file.write_all(&(MDAT_HEADER_BYTES + self.payload).to_be_bytes())?;
+        file.sync_all()?;
+        Ok(())
+    }
+}
+
+/// A `size == 1` header: the four-byte marker, the type, and the real length.
+const MDAT_HEADER_BYTES: u64 = 16;
+
+fn media_duration(timing: AuTiming<'_>, samples: usize) -> Result<u64> {
+    match timing {
         AuTiming::Uniform(duration) => {
             if duration == 0 {
                 return Err(MediaError::Mp4("sample duration must be non-zero".into()));
             }
-            u64::from(duration).saturating_mul(req.sample_sizes.len() as u64)
+            Ok(u64::from(duration).saturating_mul(samples as u64))
         }
         AuTiming::Variable(durations) => {
-            if durations.len() != req.sample_sizes.len() {
+            if durations.len() != samples {
                 return Err(MediaError::Mp4(format!(
-                    "size/duration count mismatch: {} vs {}",
-                    req.sample_sizes.len(),
+                    "size/duration count mismatch: {samples} vs {}",
                     durations.len()
                 )));
             }
             if durations.contains(&0) {
                 return Err(MediaError::Mp4("sample durations must be non-zero".into()));
             }
-            durations.iter().map(|d| u64::from(*d)).sum()
+            Ok(durations.iter().map(|d| u64::from(*d)).sum())
         }
-    };
-    if req.sample_rate == 0 {
-        return Err(MediaError::Mp4("sample rate must be non-zero".into()));
     }
-    if req.channels == 0 {
-        return Err(MediaError::Mp4("channel count must be non-zero".into()));
-    }
-    if req.asc.is_empty() {
-        return Err(MediaError::Mp4("AudioSpecificConfig is empty".into()));
-    }
-
-    if let Some(parent) = output.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let ftyp = build_m4b_ftyp();
-    let payload_total: u64 = req.sample_sizes.iter().map(|s| u64::from(*s)).sum();
-
-    // Layout: ftyp | mdat(header+payload) | moov
-    // Use 32-bit mdat size when it fits; otherwise 64-bit extended size.
-    let mdat_header_len: u64 = if payload_total + 8 > u64::from(u32::MAX) {
-        16
-    } else {
-        8
-    };
-    let mdat_file_offset = ftyp.len() as u64;
-    let first_sample_offset = mdat_file_offset + mdat_header_len;
-
-    // All samples in one chunk — keeps stco/co64 to a single entry regardless of length.
-    let chunk_offsets = [first_sample_offset];
-
-    let moov = build_moov(
-        req.sample_rate,
-        req.channels,
-        req.asc,
-        req.sample_sizes,
-        req.timing,
-        &chunk_offsets,
-        media_duration,
-    )?;
-
-    let mut out = BufWriter::with_capacity(IO_BUFFER_BYTES, File::create(output)?);
-    out.write_all(&ftyp)?;
-
-    let mdat_size = mdat_header_len + payload_total;
-    if mdat_header_len == 16 {
-        out.write_all(&1u32.to_be_bytes())?;
-        out.write_all(b"mdat")?;
-        out.write_all(&mdat_size.to_be_bytes())?;
-    } else {
-        out.write_all(&(mdat_size as u32).to_be_bytes())?;
-        out.write_all(b"mdat")?;
-    }
-
-    let mut au_buf = Vec::new();
-    for &size in req.sample_sizes {
-        fill_au(size, &mut au_buf)?;
-        if au_buf.len() as u32 != size {
-            return Err(MediaError::Mp4(format!(
-                "AU fill size {} != expected {size}",
-                au_buf.len()
-            )));
-        }
-        out.write_all(&au_buf)?;
-    }
-    out.write_all(&moov)?;
-    out.into_inner()
-        .map_err(std::io::IntoInnerError::into_error)?
-        .sync_all()?;
-    Ok(())
-}
-
-/// Stream AU payloads from `reader` (concatenated AU bytes in order).
-pub fn write_aac_m4b_from_reader(
-    output: &Path,
-    req: &MuxAacStreamRequest<'_>,
-    reader: impl Read,
-) -> Result<()> {
-    let mut reader = BufReader::with_capacity(IO_BUFFER_BYTES, reader);
-    write_aac_m4b_streaming(output, req, |size, buf| {
-        buf.resize(size as usize, 0);
-        reader
-            .read_exact(buf)
-            .map_err(|err| MediaError::Mp4(format!("read AAC AU payload: {err}")))?;
-        Ok(())
-    })
 }
 
 fn build_m4b_ftyp() -> Vec<u8> {

@@ -3,12 +3,13 @@
 //! - Clear AAC in MP4/M4A/M4B parts are **losslessly remuxed** (sample copy; no
 //!   decode/re-encode) — the fast path for Chirp and similar sources.
 //! - MP3 (and other decode-only) parts stream through Symphonia → a small PCM
-//!   staging buffer → fdk-aac, spilling AAC access units to a temp file so the
-//!   full book is never held in memory. This is typically much faster than
-//!   realtime playback for a single encode pass.
+//!   staging buffer → fdk-aac, and each access unit goes straight into the M4B
+//!   being written, so the full book is never held in memory or staged on disk.
+//!   This is typically much faster than realtime playback for a single encode
+//!   pass.
 
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use fdk_aac::enc::{AudioObjectType, BitRate, ChannelMode, Encoder, EncoderParams, Transport};
@@ -25,7 +26,7 @@ use tempfile::NamedTempFile;
 use crate::error::{MediaError, Result};
 use bookclerk_mp4::{extract_mp4a_config, parse_mp4, SampleEntryKind, SampleReader};
 
-use crate::mux_aac::{write_aac_m4b_from_reader, AuTiming, MuxAacStreamRequest, IO_BUFFER_BYTES};
+use crate::mux_aac::AacM4bWriter;
 use crate::MediaOutcome;
 
 /// Open a scratch file in the directory `output` will be written to.
@@ -37,7 +38,7 @@ use crate::MediaOutcome;
 /// rename cheap, since scratch and output share a filesystem.
 ///
 /// The handle deletes itself on drop, including on the error paths below.
-fn scratch_beside(output: &Path) -> Result<NamedTempFile> {
+pub(crate) fn scratch_beside(output: &Path) -> Result<NamedTempFile> {
     let dir = match output.parent() {
         // A bare relative filename has an empty parent, which is the cwd.
         Some(parent) if !parent.as_os_str().is_empty() => parent,
@@ -129,8 +130,7 @@ pub fn package_m4b_from_pcm(
     for chunk in pcm.chunks(stride) {
         session.push_pcm(chunk)?;
     }
-    let encoded = session.finish()?;
-    mux_encoded_to_m4b(output, &encoded)?;
+    session.finish()?;
 
     let chapters = if chapter_boundaries_ms.is_empty() {
         vec![("Chapter 1".into(), 0u64)]
@@ -195,15 +195,11 @@ fn package_m4b_remux_aac_parts(
         "package m4b from aac parts (lossless remux)"
     );
 
-    let mut sample_sizes: Vec<u32> = Vec::new();
-    let mut sample_durations: Vec<u32> = Vec::new();
     let mut chapter_starts_ms: Vec<u64> = Vec::with_capacity(req.parts.len());
     let mut cumulative_ticks: u64 = 0;
     let mut config = None;
     let mut timescale = 0u32;
-
-    let payload = scratch_beside(&req.output)?;
-    let mut spill = BufWriter::with_capacity(IO_BUFFER_BYTES, payload.as_file());
+    let mut writer: Option<AacM4bWriter> = None;
     let mut sample_buf = Vec::new();
 
     for part in &req.parts {
@@ -255,6 +251,17 @@ fn package_m4b_remux_aac_parts(
             )));
         }
 
+        let config = config.as_ref().expect("config set above");
+        let out = match &mut writer {
+            Some(writer) => writer,
+            slot => slot.insert(AacM4bWriter::create(
+                &req.output,
+                config.sample_rate,
+                config.channels,
+                &config.asc,
+            )?),
+        };
+
         let mut input = SampleReader::open(part).map_err(|err| {
             MediaError::Native(format!("open AAC part {}: {err}", part.display()))
         })?;
@@ -268,47 +275,14 @@ fn package_m4b_remux_aac_parts(
                         part.display()
                     ))
                 })?;
-            spill
-                .write_all(&sample_buf)
-                .map_err(|err| MediaError::Native(format!("write AAC sample: {err}")))?;
-            sample_sizes.push(sample.size);
-            sample_durations.push(sample.duration.max(1));
+            out.push(&sample_buf, sample.duration.max(1))?;
             cumulative_ticks = cumulative_ticks.saturating_add(u64::from(sample.duration));
         }
     }
 
-    let config = config.ok_or_else(|| MediaError::Native("no AAC parts decoded".into()))?;
-    if sample_sizes.is_empty() {
-        return Err(MediaError::Native("no AAC samples to remux".into()));
-    }
-
-    spill
-        .into_inner()
-        .map_err(|err| MediaError::Native(format!("flush AAC remux temp: {err}")))?;
-    let mut reader = payload
-        .reopen()
-        .map_err(|err| MediaError::Native(format!("reopen AAC remux temp: {err}")))?;
-    reader
-        .seek(SeekFrom::Start(0))
-        .map_err(|err| MediaError::Native(format!("seek AAC remux temp: {err}")))?;
-
-    let timing = if sample_durations.iter().all(|d| *d == sample_durations[0]) {
-        AuTiming::Uniform(sample_durations[0])
-    } else {
-        AuTiming::Variable(&sample_durations)
-    };
-
-    write_aac_m4b_from_reader(
-        &req.output,
-        &MuxAacStreamRequest {
-            sample_rate: config.sample_rate,
-            channels: config.channels,
-            asc: &config.asc,
-            sample_sizes: &sample_sizes,
-            timing,
-        },
-        reader,
-    )?;
+    writer
+        .ok_or_else(|| MediaError::Native("no AAC samples to remux".into()))?
+        .finish()?;
 
     let chapters: Vec<(String, u64)> = chapter_starts_ms
         .into_iter()
@@ -396,10 +370,9 @@ fn package_m4b_transcode_parts(
         return Err(MediaError::Native("decoded no PCM from input parts".into()));
     }
 
-    let encoded = session
+    session
         .ok_or_else(|| MediaError::Native("AAC encoder was never initialized".into()))?
         .finish()?;
-    mux_encoded_to_m4b(&req.output, &encoded)?;
 
     let chapters: Vec<(String, u64)> = chapter_starts_ms
         .into_iter()
@@ -427,59 +400,24 @@ fn package_m4b_transcode_parts(
     ))
 }
 
-struct EncodedAacStream {
-    sample_rate: u32,
-    channels: u16,
-    asc: Vec<u8>,
-    sample_sizes: Vec<u32>,
-    sample_duration: u32,
-    /// Concatenated AAC AU payloads on disk.
-    payload: NamedTempFile,
-}
-
-fn mux_encoded_to_m4b(output: &Path, encoded: &EncodedAacStream) -> Result<()> {
-    let mut reader = encoded
-        .payload
-        .reopen()
-        .map_err(|err| MediaError::Native(format!("reopen AAC payload temp: {err}")))?;
-    reader
-        .seek(SeekFrom::Start(0))
-        .map_err(|err| MediaError::Native(format!("seek AAC payload temp: {err}")))?;
-    write_aac_m4b_from_reader(
-        output,
-        &MuxAacStreamRequest {
-            sample_rate: encoded.sample_rate,
-            channels: encoded.channels,
-            asc: &encoded.asc,
-            sample_sizes: &encoded.sample_sizes,
-            timing: AuTiming::Uniform(encoded.sample_duration),
-        },
-        reader,
-    )
-}
-
-/// Streaming fdk-aac session: bounded PCM staging + AU spill to temp file.
+/// Streaming fdk-aac session: bounded PCM staging, access units written straight
+/// into the M4B being built.
 struct StreamingAacSession {
-    sample_rate: u32,
     /// Channel count of PCM fed via [`Self::push_pcm`].
     pcm_channels: u16,
     encoder: Encoder,
     frame_length: u32,
     samples_per_frame: usize,
     out_channels: usize,
-    asc: Vec<u8>,
     /// Interleaved PCM awaiting encode (encoder input channel layout).
     staging: Vec<i16>,
     out_buf: Vec<u8>,
-    sample_sizes: Vec<u32>,
-    /// Access units accumulate here; buffered, since each is only a few hundred
-    /// bytes and a book produces a couple of million of them.
-    payload: BufWriter<NamedTempFile>,
+    out: AacM4bWriter,
 }
 
 impl StreamingAacSession {
-    /// `output` is the eventual M4B; the encoder spills access units to a
-    /// scratch file beside it. See [`scratch_beside`].
+    /// `output` is the M4B, and the encoder writes each access unit into it as
+    /// it comes out.
     fn new(sample_rate: u32, pcm_channels: u16, output: &Path) -> Result<Self> {
         let channel_mode = match pcm_channels {
             1 => ChannelMode::Mono,
@@ -510,20 +448,15 @@ impl StreamingAacSession {
             ));
         }
 
-        let payload = scratch_beside(output)?;
-
         Ok(Self {
-            sample_rate,
             pcm_channels,
             encoder,
             frame_length,
             samples_per_frame,
             out_channels,
-            asc,
             staging: Vec::with_capacity(samples_per_frame * 4),
             out_buf: vec![0u8; info.maxOutBufBytes.max(2048) as usize],
-            sample_sizes: Vec::new(),
-            payload: BufWriter::with_capacity(IO_BUFFER_BYTES, payload),
+            out: AacM4bWriter::create(output, sample_rate, pcm_channels, &asc)?,
         })
     }
 
@@ -535,7 +468,7 @@ impl StreamingAacSession {
         self.encode_full_frames()
     }
 
-    fn finish(mut self) -> Result<EncodedAacStream> {
+    fn finish(mut self) -> Result<()> {
         // Pad to a whole number of encoder frames so we never need EOF flush.
         let rem = self.staging.len() % self.samples_per_frame;
         if rem != 0 {
@@ -544,25 +477,12 @@ impl StreamingAacSession {
         }
         self.encode_full_frames()?;
 
-        if self.sample_sizes.is_empty() {
+        if self.out.samples() == 0 {
             return Err(MediaError::Native(
                 "fdk-aac produced no AAC access units".into(),
             ));
         }
-
-        let payload = self
-            .payload
-            .into_inner()
-            .map_err(|err| MediaError::Native(format!("flush AAC payload temp: {err}")))?;
-
-        Ok(EncodedAacStream {
-            sample_rate: self.sample_rate,
-            channels: self.pcm_channels,
-            asc: self.asc,
-            sample_sizes: self.sample_sizes,
-            sample_duration: self.frame_length,
-            payload,
-        })
+        self.out.finish()
     }
 
     fn append_converted(&mut self, pcm: &[i16]) {
@@ -598,11 +518,8 @@ impl StreamingAacSession {
             }
             self.staging.drain(..enc.input_consumed);
             if enc.output_size > 0 {
-                let au = &self.out_buf[..enc.output_size];
-                self.payload
-                    .write_all(au)
-                    .map_err(|err| MediaError::Native(format!("write AAC AU: {err}")))?;
-                self.sample_sizes.push(au.len() as u32);
+                self.out
+                    .push(&self.out_buf[..enc.output_size], self.frame_length)?;
             }
         }
         Ok(())
@@ -762,7 +679,6 @@ fn append_pcm_i16(
 mod tests {
     use super::*;
     use bookclerk_mp4::parse_mp4;
-    use std::io::Read;
 
     #[test]
     fn package_silent_pcm_to_m4b() {
@@ -829,8 +745,10 @@ mod tests {
         assert!(mp4.audio.samples.len() >= 2);
     }
 
+    /// The encoder writes each access unit into the M4B as it comes out, so the
+    /// only thing left over at the end is the file itself.
     #[test]
-    fn streaming_session_spills_aus_not_heap() {
+    fn a_streaming_encode_leaves_no_scratch_behind() {
         let sample_rate = 16_000u32;
         let channels = 1u16;
         let dir = tempfile::tempdir().unwrap();
@@ -841,47 +759,60 @@ mod tests {
         for _ in 0..(sample_rate as usize * 2 / 256) {
             session.push_pcm(&packet).unwrap();
         }
-        let encoded = session.finish().unwrap();
-        assert!(!encoded.sample_sizes.is_empty());
-        let payload_bytes: u64 = encoded.sample_sizes.iter().map(|s| u64::from(*s)).sum();
-        let mut reader = encoded.payload.reopen().unwrap();
-        let mut buf = Vec::new();
-        reader.read_to_end(&mut buf).unwrap();
-        assert_eq!(buf.len() as u64, payload_bytes);
+        session.finish().unwrap();
 
-        mux_encoded_to_m4b(&out, &encoded).unwrap();
-        assert!(out.metadata().unwrap().len() > 100);
+        let mp4 = parse_mp4(&out).unwrap();
+        assert!(!mp4.audio.samples.is_empty());
+        let left_over: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| *path != out)
+            .collect();
+        assert!(left_over.is_empty(), "encode left {left_over:?} on disk");
     }
 
+    /// `mdat` declares its length before the media arrives, so the placeholder
+    /// has to end up holding the length that was actually written.
     #[test]
-    fn package_mp3_parts_streaming() {
-        // Verify the streaming mux reader path end-to-end.
+    fn the_patched_mdat_length_matches_the_media_written() {
         let sample_rate = 22_050u32;
-        let channels = 2u16;
         let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("from_reader.m4b");
-        let mut session = StreamingAacSession::new(sample_rate, channels, &out).unwrap();
+        let out = dir.path().join("patched.m4b");
+        let mut session = StreamingAacSession::new(sample_rate, 2, &out).unwrap();
         session
             .push_pcm(&vec![0i16; (sample_rate as usize) * 2])
             .unwrap();
-        let encoded = session.finish().unwrap();
-        let mut reader = encoded.payload.reopen().unwrap();
-        reader.seek(SeekFrom::Start(0)).unwrap();
-        write_aac_m4b_from_reader(
-            &out,
-            &MuxAacStreamRequest {
-                sample_rate: encoded.sample_rate,
-                channels: encoded.channels,
-                asc: &encoded.asc,
-                sample_sizes: &encoded.sample_sizes,
-                timing: AuTiming::Uniform(encoded.sample_duration),
-            },
-            reader,
-        )
-        .unwrap();
+        session.finish().unwrap();
 
         let mp4 = parse_mp4(&out).unwrap();
-        assert_eq!(mp4.audio.samples.len(), encoded.sample_sizes.len());
+        let media: u64 = mp4.audio.samples.iter().map(|s| u64::from(s.size)).sum();
+        let last = mp4
+            .audio
+            .samples
+            .last()
+            .expect("the encode produced samples");
+
+        let data = std::fs::read(&out).unwrap();
+        let mdat = data
+            .windows(4)
+            .position(|w| w == b"mdat")
+            .expect("mdat header");
+        // The extended-size form: `1`, the type, then the real length.
+        assert_eq!(
+            u32::from_be_bytes(data[mdat - 4..mdat].try_into().unwrap()),
+            1
+        );
+        let declared = u64::from_be_bytes(data[mdat + 4..mdat + 12].try_into().unwrap());
+        assert_eq!(
+            declared,
+            16 + media,
+            "the placeholder was not patched to the media it holds"
+        );
+        assert_eq!(
+            (mdat as u64 - 4) + declared,
+            last.offset + u64::from(last.size),
+            "mdat must end where the last sample does"
+        );
     }
 
     #[test]

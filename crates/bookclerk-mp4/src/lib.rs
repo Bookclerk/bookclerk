@@ -20,6 +20,7 @@ mod error;
 #[cfg(feature = "fixtures")]
 pub mod fixture;
 mod parser;
+mod patch;
 mod read;
 mod remux;
 mod samples;
@@ -28,6 +29,10 @@ pub use error::{Mp4Error, Result};
 pub use parser::{
     extract_mp4a_config, parse_mp4, track_duration_ms, AudioTrack, Mp4File, Mp4aConfig,
     SampleEntryKind,
+};
+pub use patch::{
+    pad_moov_to, read_moov, shift_chunk_offsets, strip_trailing_free, top_level_boxes,
+    write_moov_in_place, MoovLocation, RESERVED_MOOV_SLACK,
 };
 pub use read::SampleReader;
 pub use remux::{

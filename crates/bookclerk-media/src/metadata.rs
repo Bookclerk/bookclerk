@@ -260,13 +260,61 @@ fn fixup_m4b(req: &FixupRequest) -> Result<()> {
         write_chapter_track: false,
         ..WriteConfig::DEFAULT
     };
-    tag.write_with_path(&req.output, &write_cfg)
-        .map_err(|err| MediaError::Native(format!("mp4ameta write failed: {err}")))?;
+    write_tags(&req.output, &tag, &write_cfg)?;
 
     if write_chapters {
         write_audiobook_chapters(&req.output, &req.chapters)?;
     }
     Ok(())
+}
+
+/// Write `tag` into an M4B whose media is already on disk.
+///
+/// mp4ameta makes room for metadata by moving everything that follows it, and it
+/// reads the moved bytes into memory to do so. In a faststart book that is the
+/// entire audio track, which is more than a small VPS has to spare — so it is
+/// handed a header-only stand-in instead: the same `moov` at the same offset,
+/// with a stub where the media would be. The `moov` that comes back is patched
+/// into the real file, where the reserved slack absorbs the growth.
+///
+/// When `moov` is already last there is nothing behind it to move, so mp4ameta
+/// writes to the file directly.
+fn write_tags(path: &Path, tag: &Mp4Tag, cfg: &WriteConfig) -> Result<()> {
+    use std::io::{Read, Write};
+
+    let (at, mut moov) = bookclerk_mp4::read_moov(path)?;
+    if at.is_last {
+        return tag
+            .write_with_path(path, cfg)
+            .map_err(|err| MediaError::Native(format!("mp4ameta write failed: {err}")));
+    }
+    // Anything appended to `moov` lands after its last child, so the slack has
+    // to come off first and go back on at the end.
+    bookclerk_mp4::strip_trailing_free(&mut moov)?;
+
+    let sidecar = crate::package_m4b::scratch_beside(path)?;
+    {
+        let mut source = std::fs::File::open(path)?;
+        let mut stand_in = sidecar.as_file();
+        // Everything ahead of `moov` is the brands, so `moov` lands at the same
+        // offset it has in the real file and the arithmetic matches.
+        std::io::copy(&mut Read::take(&mut source, at.start), &mut stand_in)?;
+        stand_in.write_all(&moov)?;
+        // mp4ameta refuses a file with no media; it only reads the bounds.
+        stand_in.write_all(&8u32.to_be_bytes())?;
+        stand_in.write_all(b"mdat")?;
+        stand_in.flush()?;
+    }
+
+    tag.write_with_path(sidecar.path(), cfg)
+        .map_err(|err| MediaError::Native(format!("mp4ameta write failed: {err}")))?;
+
+    let (_, mut edited) = bookclerk_mp4::read_moov(sidecar.path())?;
+    // mp4ameta pushed the stub media along to make room and corrected the chunk
+    // offsets to match. The real media is staying where it is, so undo that.
+    let delta = edited.len() as i64 - moov.len() as i64;
+    bookclerk_mp4::shift_chunk_offsets(&mut edited, at.start, -delta)?;
+    crate::moov::write_moov(path, at, edited)
 }
 
 fn set_txxx(tag: &mut Id3Tag, description: &str, value: &str) {

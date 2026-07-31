@@ -45,6 +45,9 @@ impl From<bookclerk_mp4::Mp4Error> for DrmError {
             // Raised by the shared remuxer or by DASH assembly when a sample
             // cannot be copied/decrypted (not only the decrypt transform).
             Mp4Error::Transform(detail) => Self::Native(detail),
+            Mp4Error::NoRoom { needed, available } => Self::Mp4(format!(
+                "moov slack exhausted: needed {needed}, available {available}"
+            )),
         }
     }
 }

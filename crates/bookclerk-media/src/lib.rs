@@ -24,6 +24,7 @@ mod chapters_mp4;
 mod error;
 mod job;
 mod metadata;
+mod moov;
 mod mp3;
 mod mux_aac;
 mod native;

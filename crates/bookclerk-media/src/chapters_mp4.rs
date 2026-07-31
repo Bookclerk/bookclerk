@@ -14,7 +14,7 @@
 //! leave chapter writing to this module and use mp4ameta for tags only.
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crate::error::{MediaError, Result};
@@ -55,31 +55,16 @@ const GMHD_TEXT_PAYLOAD: &[u8] = &[
 
 /// Write Nero `chpl` and an AVFoundation-readable QuickTime chapter track.
 ///
-/// Replaces any existing chapter track / `chpl`. Expects a normal M4B layout
-/// (`ftyp` + `mdat` + `moov`); `moov` is rewritten once at EOF.
+/// Replaces any existing chapter track / `chpl`. Works on either M4B layout: the
+/// title samples go into their own `mdat` at the end of the file, so the audio
+/// never moves and only `moov` is read, edited and written back.
 pub fn write_audiobook_chapters(path: &Path, chapters: &[(String, u64)]) -> Result<()> {
     if chapters.is_empty() {
         return Ok(());
     }
 
-    let mut file = File::options().read(true).write(true).open(path)?;
-    let file_len = file.seek(SeekFrom::End(0))? as usize;
-    file.seek(SeekFrom::Start(0))?;
-    let mut data = Vec::with_capacity(file_len);
-    file.read_to_end(&mut data)?;
-
-    let mdat = find_atom(&data, 0, data.len(), *b"mdat")
-        .ok_or_else(|| MediaError::Native("M4B missing mdat; cannot write chapters".into()))?;
-    let moov = find_atom(&data, 0, data.len(), *b"moov")
-        .ok_or_else(|| MediaError::Native("M4B missing moov; cannot write chapters".into()))?;
-
-    if moov.offset < mdat.offset {
-        return Err(MediaError::Native(
-            "unsupported M4B layout (moov before mdat); cannot write chapters".into(),
-        ));
-    }
-
-    let mut moov_buf = data[moov.offset..moov.offset + moov.size].to_vec();
+    let (at, mut moov_buf) = bookclerk_mp4::read_moov(path)?;
+    bookclerk_mp4::strip_trailing_free(&mut moov_buf)?;
     strip_existing_chapters(&mut moov_buf)?;
 
     let (movie_timescale, movie_duration) = read_mvhd_timing(&moov_buf)?;
@@ -90,25 +75,8 @@ pub fn write_audiobook_chapters(path: &Path, chapters: &[(String, u64)]) -> Resu
     let duration_ms = ((movie_duration as u128) * 1000 / movie_timescale as u128) as u64;
     let (sample_payload, sample_sizes, sample_deltas) =
         build_chapter_samples(chapters, duration_ms)?;
+    let sample_offset = append_chapter_media(path, &sample_payload)?;
 
-    // Extend mdat with chapter title samples (insert before moov).
-    let old_payload_len = mdat.size - mdat.header;
-    let new_payload_len = old_payload_len + sample_payload.len();
-    let new_header_len: usize = if new_payload_len + 8 > u32::MAX as usize {
-        16
-    } else {
-        8
-    };
-    let new_mdat_size = new_header_len + new_payload_len;
-    let sample_offset = (mdat.offset + new_header_len + old_payload_len) as u64;
-
-    let mut new_data = Vec::with_capacity(data.len() + sample_payload.len() + 64 * 1024);
-    new_data.extend_from_slice(&data[..mdat.offset]);
-    write_atom_header(&mut new_data, new_mdat_size as u64, *b"mdat")?;
-    new_data.extend_from_slice(&data[mdat.offset + mdat.header..mdat.offset + mdat.size]);
-    new_data.extend_from_slice(&sample_payload);
-
-    // Anything between old mdat end and moov (usually empty) is dropped; moov follows.
     let audio_track_id = first_audio_track_id(&moov_buf)?.unwrap_or(1);
     let chapter_track_id = next_track_id(&moov_buf);
 
@@ -127,11 +95,7 @@ pub fn write_audiobook_chapters(path: &Path, chapters: &[(String, u64)]) -> Resu
     let moov_buf_len = moov_buf.len();
     set_atom_size(&mut moov_buf, 0, moov_buf_len)?;
 
-    new_data.extend_from_slice(&moov_buf);
-
-    file.seek(SeekFrom::Start(0))?;
-    file.write_all(&new_data)?;
-    file.set_len(new_data.len() as u64)?;
+    crate::moov::write_moov(path, at, moov_buf)?;
 
     tracing::info!(
         path = %path.display(),
@@ -139,6 +103,45 @@ pub fn write_audiobook_chapters(path: &Path, chapters: &[(String, u64)]) -> Resu
         "wrote Nero chpl + AVFoundation QuickTime chapter track"
     );
     Ok(())
+}
+
+/// Put the chapter title samples in their own `mdat` at the end of the file, and
+/// answer with the offset the first one landed at.
+///
+/// Chapter text is a few kilobytes against a few hundred megabytes of audio, and
+/// a sample table addresses the file rather than a particular box, so there is
+/// nothing to gain by squeezing these in beside the audio and a whole book to
+/// rewrite if we try. A second `mdat` is ordinary ISO-BMFF.
+///
+/// Re-running drops the one left by the previous run first, so writing chapters
+/// twice does not leave the first set stranded in the file.
+fn append_chapter_media(path: &Path, payload: &[u8]) -> Result<u64> {
+    let mut file = File::options().read(true).write(true).open(path)?;
+    let boxes = bookclerk_mp4::top_level_boxes(&mut file)?;
+
+    let media = boxes
+        .iter()
+        .position(|header| header.kind.0 == *b"mdat")
+        .ok_or_else(|| MediaError::Native("M4B missing mdat; cannot write chapters".into()))?;
+    let end = match boxes.last() {
+        Some(last) if last.kind.0 == *b"mdat" && last.start != boxes[media].start => last.start,
+        _ => file.seek(SeekFrom::End(0))?,
+    };
+    file.set_len(end)?;
+
+    let header_len: u64 = if payload.len() as u64 + 8 > u64::from(u32::MAX) {
+        16
+    } else {
+        8
+    };
+    let mut header = Vec::with_capacity(header_len as usize);
+    write_atom_header(&mut header, header_len + payload.len() as u64, *b"mdat")?;
+
+    file.seek(SeekFrom::Start(end))?;
+    file.write_all(&header)?;
+    file.write_all(payload)?;
+    file.sync_all()?;
+    Ok(end + header_len)
 }
 
 fn build_chapter_samples(
@@ -371,6 +374,8 @@ struct AtomSpan {
     header: usize,
 }
 
+/// Only the tests reach for a whole file now; the writer reads `moov` alone.
+#[cfg(test)]
 fn find_atom(data: &[u8], start: usize, end: usize, fourcc: [u8; 4]) -> Option<AtomSpan> {
     let mut pos = start;
     while pos + 8 <= end {

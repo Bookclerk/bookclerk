@@ -9,8 +9,9 @@ use std::path::Path;
 
 use bookclerk_mp4::fixture::ProgressiveFixture;
 use bookclerk_mp4::{
-    parse_mp4, remux_progressive, track_duration_ms, CopySamples, Mp4Error, RemuxOptions,
-    SampleEntryKind, SampleTransform, TrimRange,
+    parse_mp4, read_moov, remux_progressive, strip_trailing_free, track_duration_ms,
+    write_moov_in_place, CopySamples, Mp4Error, RemuxOptions, SampleEntryKind, SampleTransform,
+    TrimRange, RESERVED_MOOV_SLACK,
 };
 
 /// Read every sample payload back out of a progressive file.
@@ -28,6 +29,56 @@ fn payloads(path: &Path) -> Vec<Vec<u8>> {
             buf
         })
         .collect()
+}
+
+/// Tags, a cover and a chapter track all arrive after the media is written, and
+/// all of them live in `moov`. The remuxer leaves them room, so adding them
+/// later is a header-sized write rather than a rewrite of the book.
+#[test]
+fn an_edit_that_fits_the_reserved_slack_leaves_the_media_where_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.m4a");
+    let output = dir.path().join("out.m4b");
+    ProgressiveFixture::default()
+        .with_samples((0..64).map(|i| vec![i as u8; 128]).collect())
+        .write(&input)
+        .unwrap();
+    remux_progressive(&input, &output, &RemuxOptions::default(), &mut CopySamples).unwrap();
+
+    let before = payloads(&output);
+    let size_before = std::fs::metadata(&output).unwrap().len();
+
+    let (at, mut moov) = read_moov(&output).unwrap();
+    assert!(
+        !at.is_last,
+        "a faststart file puts moov in front of the media"
+    );
+    assert!(
+        strip_trailing_free(&mut moov).unwrap(),
+        "the remuxer must reserve slack"
+    );
+    assert!(
+        at.len as usize - moov.len() >= RESERVED_MOOV_SLACK,
+        "reserved {} bytes, wanted at least {RESERVED_MOOV_SLACK}",
+        at.len as usize - moov.len()
+    );
+
+    // Stand in for a tag set with a cover: big enough to be worth reserving for.
+    let cover = vec![0xAB; 256 * 1024];
+    moov.extend_from_slice(&((cover.len() + 8) as u32).to_be_bytes());
+    moov.extend_from_slice(b"udta");
+    moov.extend_from_slice(&cover);
+    let grown = moov.len() as u32;
+    moov[0..4].copy_from_slice(&grown.to_be_bytes());
+
+    write_moov_in_place(&output, at, &moov).unwrap();
+
+    assert_eq!(
+        std::fs::metadata(&output).unwrap().len(),
+        size_before,
+        "the file must be exactly as long as it was"
+    );
+    assert_eq!(payloads(&output), before, "the media must not have moved");
 }
 
 #[test]

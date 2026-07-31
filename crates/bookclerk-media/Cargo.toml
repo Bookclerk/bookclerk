@@ -27,5 +27,11 @@ symphonia = { version = "0.6", default-features = false, features = ["aac", "iso
 mp3lame-encoder = "0.2"
 fdk-aac = "0.8"
 
+[dev-dependencies]
+# The faststart layout is written by the remuxer, so the tests that cover
+# editing one build it from the same synthetic file the remuxer's own tests use.
+bookclerk-mp4 = { workspace = true, features = ["fixtures"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [lints]
 workspace = true

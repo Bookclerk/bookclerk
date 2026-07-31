@@ -8,6 +8,7 @@ use crate::boxutil::FourCC;
 use crate::edit::{find_box_range, find_child_in_range, find_direct_child, splice_replace};
 use crate::error::{Mp4Error, Result};
 use crate::parser::parse_mp4;
+use crate::patch::{pad_moov_to, RESERVED_MOOV_SLACK};
 use crate::read::{SampleReader, IO_BUFFER_BYTES};
 use crate::samples::select_samples_by_ms;
 
@@ -172,7 +173,7 @@ where
             chunk_offsets.push(offset);
             offset = offset.saturating_add(u64::from(size));
         }
-        let built = rebuild_moov(
+        let mut built = rebuild_moov(
             input.moov_bytes,
             input.moov_file_start,
             input.sample_entry_type_offset,
@@ -183,6 +184,11 @@ where
             media_duration,
             input.mvhd_timescale,
         )?;
+        // Tags, a cover and a chapter track all arrive after the media is on
+        // disk, and all of them live in `moov`. Reserving room for them here is
+        // what lets them be written later without moving a byte of audio.
+        let reserved = built.len() + RESERVED_MOOV_SLACK;
+        pad_moov_to(&mut built, reserved)?;
         let built_len = built.len() as u64;
         if built_len == moov_len {
             break built;
