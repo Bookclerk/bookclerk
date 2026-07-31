@@ -1436,6 +1436,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bookclerk-config",
+ "bookclerk-mp4",
  "bookclerk-sandbox",
  "fdk-aac",
  "id3",
@@ -1478,6 +1479,16 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "bookclerk-mp4"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-mp4",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1569,6 +1580,7 @@ dependencies = [
  "bookclerk-enrich",
  "bookclerk-library",
  "bookclerk-media",
+ "bookclerk-mp4",
  "bookclerk-plugin-sdk",
  "bookclerk-source",
  "cbc 0.2.1",

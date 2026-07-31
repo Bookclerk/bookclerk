@@ -2,8 +2,9 @@
 
 use std::path::Path;
 
+use bookclerk_mp4::{remux_progressive, CopySamples, RemuxOptions, TrimRange};
+
 use crate::error::{MediaError, Result};
-use crate::mp4::{remux_progressive, RemuxOptions, TrimRange};
 use crate::MediaOutcome;
 
 /// Remux a progressive clear M4B/M4A with an optional media-time trim (chapter split).
@@ -17,10 +18,8 @@ pub fn remux_trimmed(input: &Path, output: &Path, trim: TrimRange) -> Result<Med
     remux_progressive(
         input,
         output,
-        &RemuxOptions {
-            trim: Some(trim),
-            rewrite_ftyp: true,
-        },
+        &RemuxOptions { trim: Some(trim) },
+        &mut CopySamples,
     )?;
     if !output.exists() {
         return Err(MediaError::OutputMissing(output.to_path_buf()));

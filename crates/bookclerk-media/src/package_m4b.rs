@@ -8,7 +8,7 @@
 //!   realtime playback for a single encode pass.
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use fdk_aac::enc::{AudioObjectType, BitRate, ChannelMode, Encoder, EncoderParams, Transport};
@@ -23,8 +23,9 @@ use symphonia::core::meta::MetadataOptions;
 use tempfile::NamedTempFile;
 
 use crate::error::{MediaError, Result};
-use crate::mp4::mux_aac::{write_aac_m4b_from_reader, AuTiming, MuxAacStreamRequest};
-use crate::mp4::{extract_mp4a_config, parse_mp4, SampleEntryKind};
+use bookclerk_mp4::{extract_mp4a_config, parse_mp4, SampleEntryKind, SampleReader};
+
+use crate::mux_aac::{write_aac_m4b_from_reader, AuTiming, MuxAacStreamRequest, IO_BUFFER_BYTES};
 use crate::MediaOutcome;
 
 /// Open a scratch file in the directory `output` will be written to.
@@ -201,7 +202,8 @@ fn package_m4b_remux_aac_parts(
     let mut config = None;
     let mut timescale = 0u32;
 
-    let mut payload = scratch_beside(&req.output)?;
+    let payload = scratch_beside(&req.output)?;
+    let mut spill = BufWriter::with_capacity(IO_BUFFER_BYTES, payload.as_file());
     let mut sample_buf = Vec::new();
 
     for part in &req.parts {
@@ -253,16 +255,20 @@ fn package_m4b_remux_aac_parts(
             )));
         }
 
-        let mut input = File::open(part)?;
+        let mut input = SampleReader::open(part).map_err(|err| {
+            MediaError::Native(format!("open AAC part {}: {err}", part.display()))
+        })?;
         for sample in &mp4.audio.samples {
-            sample_buf.resize(sample.size as usize, 0);
             input
-                .seek(SeekFrom::Start(sample.offset))
-                .map_err(|err| MediaError::Native(format!("seek AAC sample: {err}")))?;
-            input
-                .read_exact(&mut sample_buf)
-                .map_err(|err| MediaError::Native(format!("read AAC sample: {err}")))?;
-            payload
+                .read_sample(sample.offset, sample.size as usize, &mut sample_buf)
+                .map_err(|err| {
+                    MediaError::Native(format!(
+                        "read AAC sample at offset {} in {}: {err}",
+                        sample.offset,
+                        part.display()
+                    ))
+                })?;
+            spill
                 .write_all(&sample_buf)
                 .map_err(|err| MediaError::Native(format!("write AAC sample: {err}")))?;
             sample_sizes.push(sample.size);
@@ -276,8 +282,8 @@ fn package_m4b_remux_aac_parts(
         return Err(MediaError::Native("no AAC samples to remux".into()));
     }
 
-    payload
-        .flush()
+    spill
+        .into_inner()
         .map_err(|err| MediaError::Native(format!("flush AAC remux temp: {err}")))?;
     let mut reader = payload
         .reopen()
@@ -466,7 +472,9 @@ struct StreamingAacSession {
     staging: Vec<i16>,
     out_buf: Vec<u8>,
     sample_sizes: Vec<u32>,
-    payload: NamedTempFile,
+    /// Access units accumulate here; buffered, since each is only a few hundred
+    /// bytes and a book produces a couple of million of them.
+    payload: BufWriter<NamedTempFile>,
 }
 
 impl StreamingAacSession {
@@ -515,7 +523,7 @@ impl StreamingAacSession {
             staging: Vec::with_capacity(samples_per_frame * 4),
             out_buf: vec![0u8; info.maxOutBufBytes.max(2048) as usize],
             sample_sizes: Vec::new(),
-            payload,
+            payload: BufWriter::with_capacity(IO_BUFFER_BYTES, payload),
         })
     }
 
@@ -542,8 +550,9 @@ impl StreamingAacSession {
             ));
         }
 
-        self.payload
-            .flush()
+        let payload = self
+            .payload
+            .into_inner()
             .map_err(|err| MediaError::Native(format!("flush AAC payload temp: {err}")))?;
 
         Ok(EncodedAacStream {
@@ -552,7 +561,7 @@ impl StreamingAacSession {
             asc: self.asc,
             sample_sizes: self.sample_sizes,
             sample_duration: self.frame_length,
-            payload: self.payload,
+            payload,
         })
     }
 
@@ -752,7 +761,7 @@ fn append_pcm_i16(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mp4::parse_mp4;
+    use bookclerk_mp4::parse_mp4;
     use std::io::Read;
 
     #[test]

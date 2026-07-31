@@ -13,9 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::chapter_align::ChapterAlignOptions;
 use crate::error::Result;
 use crate::metadata::FixupRequest;
-use crate::mp4::TrimRange;
 use crate::package_m4b::PackageM4bRequest;
 use crate::MediaOutcome;
+use bookclerk_mp4::TrimRange;
 
 /// A single codec operation.
 ///

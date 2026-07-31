@@ -3,17 +3,30 @@
 use std::fs::File;
 use std::path::Path;
 
+use bookclerk_mp4::{parse_mp4, remux_progressive, RemuxOptions, SampleEntryKind, TrimRange};
+
 use super::crypto::parse_aes128_hex;
+use super::decrypt::{Decryptor, SampleCipher};
 use super::error::{DrmError, Result};
-use super::mp4::{
-    decrypt_and_remux, decrypt_dash_cenc, looks_like_dash, parse_mp4, DecryptMode, RemuxOptions,
-    SampleEntryKind, TrimRange,
-};
+use super::mp4::{decrypt_dash_cenc, looks_like_dash};
 use super::mp4::{
     find_stbl_in_trak, parse_tenc_from_enca_entry, progressive_sample_ivs,
     sample_entry_end_from_type_offset,
 };
 use super::DecryptOutcome;
+
+/// Decrypt into a DRM-free faststart M4B, trimming the requested window as the
+/// samples stream past.
+fn decrypt_to_m4b(
+    input: &Path,
+    output: &Path,
+    cipher: SampleCipher,
+    trim: Option<TrimRange>,
+) -> Result<()> {
+    let mut decryptor = Decryptor::new(cipher);
+    remux_progressive(input, output, &RemuxOptions { trim }, &mut decryptor)?;
+    Ok(())
+}
 
 /// Native Adrm aaxc decrypt (+ optional brand trim) to a DRM-free M4B.
 pub fn decrypt_adrm_native(
@@ -61,15 +74,7 @@ pub fn decrypt_adrm_native(
         "native Adrm aaxc decrypt"
     );
 
-    decrypt_and_remux(
-        input,
-        output,
-        &RemuxOptions {
-            decrypt: DecryptMode::Adrm { key: &key, iv: &iv },
-            trim,
-            rewrite_ftyp: true,
-        },
-    )?;
+    decrypt_to_m4b(input, output, SampleCipher::Adrm { key, iv }, trim)?;
 
     if !output.exists() {
         return Err(DrmError::OutputMissing(output.to_path_buf()));
@@ -119,16 +124,11 @@ pub fn decrypt_cenc_native(
     }
 
     if matches!(mp4.audio.sample_entry_kind, SampleEntryKind::Mp4a) {
+        // Nothing to decrypt, but the key still has to parse: a bad key here
+        // means the caller's voucher is wrong, whatever this file turned out
+        // to be.
         let _key = parse_aes128_hex(key_hex)?;
-        decrypt_and_remux(
-            input,
-            output,
-            &RemuxOptions {
-                decrypt: DecryptMode::None,
-                trim,
-                rewrite_ftyp: true,
-            },
-        )?;
+        decrypt_to_m4b(input, output, SampleCipher::Clear, trim)?;
         return finish_cenc_output(output);
     }
 
@@ -161,33 +161,15 @@ pub fn decrypt_cenc_native(
         "native progressive enca CENC decrypt"
     );
 
-    if tenc.per_sample_iv_size == 0 {
+    let cipher = if tenc.per_sample_iv_size == 0 {
         let iv = ivs.first().copied().ok_or_else(|| {
             DrmError::Mp4("progressive enca constant_IV produced no sample IVs".into())
         })?;
-        decrypt_and_remux(
-            input,
-            output,
-            &RemuxOptions {
-                decrypt: DecryptMode::CencConstantIv { key: &key, iv: &iv },
-                trim,
-                rewrite_ftyp: true,
-            },
-        )?;
+        SampleCipher::CencConstantIv { key, iv }
     } else {
-        decrypt_and_remux(
-            input,
-            output,
-            &RemuxOptions {
-                decrypt: DecryptMode::CencSampleIvs {
-                    key: &key,
-                    ivs: &ivs,
-                },
-                trim,
-                rewrite_ftyp: true,
-            },
-        )?;
-    }
+        SampleCipher::CencSampleIvs { key, ivs }
+    };
+    decrypt_to_m4b(input, output, cipher, trim)?;
 
     finish_cenc_output(output)
 }
@@ -199,4 +181,131 @@ fn finish_cenc_output(output: &Path) -> Result<DecryptOutcome> {
     Ok(DecryptOutcome {
         output: output.to_path_buf(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Seek, SeekFrom};
+
+    use bookclerk_mp4::fixture::ProgressiveFixture;
+
+    use super::*;
+
+    const KEY: [u8; 16] = [0x3cu8; 16];
+    const IV: [u8; 16] = [0x9au8; 16];
+
+    /// Encrypt like an aaxc: AES-128-CBC over whole blocks, tail left clear.
+    fn encrypt_adrm(plain: &[u8]) -> Vec<u8> {
+        use cbc::cipher::{block_padding::NoPadding, BlockModeEncrypt, KeyIvInit};
+        type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
+
+        let mut out = plain.to_vec();
+        let whole = out.len() & !0x0f;
+        Aes128CbcEnc::new(&KEY.into(), &IV.into())
+            .encrypt_padded::<NoPadding>(&mut out[..whole], whole)
+            .expect("whole blocks");
+        out
+    }
+
+    fn payloads(path: &Path) -> Vec<Vec<u8>> {
+        let mp4 = parse_mp4(path).expect("parse output");
+        let mut file = File::open(path).expect("open output");
+        mp4.audio
+            .samples
+            .iter()
+            .map(|sample| {
+                let mut buf = vec![0u8; sample.size as usize];
+                file.seek(SeekFrom::Start(sample.offset)).expect("seek");
+                file.read_exact(&mut buf).expect("read");
+                buf
+            })
+            .collect()
+    }
+
+    /// An `aavd` file whose payloads are the encrypted form of `plain`.
+    fn encrypted_fixture(plain: &[Vec<u8>]) -> ProgressiveFixture {
+        ProgressiveFixture {
+            timescale: 1000,
+            sample_duration: 100,
+            ..ProgressiveFixture::default()
+        }
+        .with_sample_entry(b"aavd")
+        .with_samples(plain.iter().map(|s| encrypt_adrm(s)).collect())
+    }
+
+    fn plain_samples(count: usize) -> Vec<Vec<u8>> {
+        ProgressiveFixture::with_generated_samples(count).samples
+    }
+
+    #[test]
+    fn an_aaxc_file_decrypts_to_a_clear_m4b() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("book.aaxc");
+        let output = dir.path().join("book.m4b");
+
+        let plain = plain_samples(12);
+        encrypted_fixture(&plain).write(&input).unwrap();
+        assert_ne!(
+            payloads(&input),
+            plain,
+            "the fixture must actually be encrypted"
+        );
+
+        let outcome =
+            decrypt_adrm_native(&input, &output, &hex::encode(KEY), &hex::encode(IV), None)
+                .expect("decrypt");
+        assert_eq!(outcome.output, output);
+
+        assert_eq!(payloads(&output), plain);
+        assert_eq!(
+            parse_mp4(&output).unwrap().audio.sample_entry_kind,
+            SampleEntryKind::Mp4a,
+            "output must no longer claim to be Adrm"
+        );
+    }
+
+    #[test]
+    fn a_brand_trim_is_applied_during_the_decrypt_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("book.aaxc");
+        let output = dir.path().join("book.m4b");
+
+        // 100 ms per sample: drop the first 300 ms and everything past 900 ms.
+        let plain = plain_samples(12);
+        encrypted_fixture(&plain).write(&input).unwrap();
+
+        decrypt_adrm_native(
+            &input,
+            &output,
+            &hex::encode(KEY),
+            &hex::encode(IV),
+            Some(TrimRange {
+                start_ms: 300,
+                end_ms: Some(900),
+            }),
+        )
+        .expect("decrypt");
+
+        assert_eq!(payloads(&output), plain[3..9]);
+    }
+
+    #[test]
+    fn a_cenc_file_is_not_decrypted_as_adrm() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("book.mp4");
+        ProgressiveFixture::with_generated_samples(4)
+            .with_sample_entry(b"enca")
+            .write(&input)
+            .unwrap();
+
+        let err = decrypt_adrm_native(
+            &input,
+            &dir.path().join("out.m4b"),
+            &hex::encode(KEY),
+            &hex::encode(IV),
+            None,
+        )
+        .expect_err("enca must be refused");
+        assert!(matches!(err, DrmError::Native(_)), "{err}");
+    }
 }

@@ -1,13 +1,15 @@
-//! Remux clear progressive M4B/M4A (trim / faststart). No DRM.
+//! Remux a progressive MP4 into a faststart M4B, one sample at a time.
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use super::boxutil::FourCC;
-use super::parser::parse_mp4;
-use super::samples::{filter_samples_by_ms, SampleInfo};
-use crate::error::{MediaError, Result};
+use crate::boxutil::FourCC;
+use crate::edit::{find_box_range, find_child_in_range, find_direct_child, splice_replace};
+use crate::error::{Mp4Error, Result};
+use crate::parser::parse_mp4;
+use crate::read::{SampleReader, IO_BUFFER_BYTES};
+use crate::samples::select_samples_by_ms;
 
 /// Optional media-time trim window in milliseconds (absolute, pre-rebase).
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
@@ -17,15 +19,45 @@ pub struct TrimRange {
     pub end_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RemuxOptions {
     pub trim: Option<TrimRange>,
-    /// Force `ftyp` brands suitable for M4B players.
-    pub rewrite_ftyp: bool,
+}
+
+/// Rewrites sample payloads as they stream from input to output.
+///
+/// The remuxer moves bytes and rebuilds tables; it never inspects a payload.
+/// A caller that has to turn its own ciphertext into plaintext keeps the key and
+/// the cipher on its side of this trait, which is how store plugins decrypt
+/// their downloads without any of that living here. [`CopySamples`] is the only
+/// implementation in this crate.
+pub trait SampleTransform {
+    /// The original sample indices kept by the trim, in output order.
+    ///
+    /// Called once before any payload, so a transform holding per-sample state
+    /// (a table of initialization vectors, say) can narrow it to the same
+    /// selection and then index it by output position.
+    fn retain(&mut self, kept: &[usize]) -> Result<()> {
+        let _ = kept;
+        Ok(())
+    }
+
+    /// Rewrite output sample `index` in place. The length must not change.
+    fn sample(&mut self, index: usize, payload: &mut [u8]) -> Result<()>;
+}
+
+/// Copies every sample through untouched.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CopySamples;
+
+impl SampleTransform for CopySamples {
+    fn sample(&mut self, _index: usize, _payload: &mut [u8]) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Inputs for writing a progressive faststart M4B (ftyp + moov + mdat) in one pass.
-pub(crate) struct ProgressiveWriteInput<'a> {
+pub struct ProgressiveWriteInput<'a> {
     pub moov_bytes: &'a [u8],
     pub moov_file_start: u64,
     pub sample_entry_type_offset: u64,
@@ -33,36 +65,46 @@ pub(crate) struct ProgressiveWriteInput<'a> {
     pub mvhd_timescale: u32,
     pub sample_sizes: &'a [u32],
     pub durations: &'a [u32],
-    pub rewrite_ftyp: bool,
 }
 
-/// Decrypt (and optionally trim) a progressive MP4 into a faststart M4B.
+/// Copy (and optionally trim) a progressive MP4 into a faststart M4B, passing
+/// every payload through `transform`.
 ///
-/// Sample *payloads* are streamed one buffer at a time. Metadata needed for the
-/// output `moov` (sizes + durations) and seek offsets are retained; full
-/// `SampleInfo` clones are avoided when no trim is applied.
-pub fn remux_progressive(input: &Path, output: &Path, opts: &RemuxOptions) -> Result<()> {
+/// Sample *payloads* are streamed one buffer at a time. Only the retained sizes,
+/// durations, and read offsets are held in memory; the parsed sample table is
+/// never cloned.
+pub fn remux_progressive(
+    input: &Path,
+    output: &Path,
+    opts: &RemuxOptions,
+    transform: &mut dyn SampleTransform,
+) -> Result<()> {
     let mp4 = parse_mp4(input)?;
     let timescale = mp4.audio.timescale;
+    let samples = &mp4.audio.samples;
 
-    // Compact read plan: (offset, size) + parallel duration/IV tables.
-    // Avoids keeping start_cts/chunk_index after filtering and avoids cloning
-    // the full sample table when trim is unset.
-    let (offsets, sample_sizes, durations) = if let Some(trim) = opts.trim {
-        let samples =
-            filter_samples_by_ms(&mp4.audio.samples, timescale, trim.start_ms, trim.end_ms);
-        compact_sample_tables(&samples)
-    } else {
-        compact_sample_tables(&mp4.audio.samples)
+    let kept = match opts.trim {
+        Some(trim) => select_samples_by_ms(samples, timescale, trim.start_ms, trim.end_ms),
+        None => (0..samples.len()).collect(),
     };
-
-    if sample_sizes.is_empty() {
-        return Err(MediaError::Mp4(
-            "no samples remain after trim; check brand intro/outro durations".into(),
+    if kept.is_empty() {
+        return Err(Mp4Error::container(
+            "no samples remain after trim; check brand intro/outro durations",
         ));
     }
+    transform.retain(&kept)?;
 
-    let mut src = File::open(input)?;
+    let mut offsets = Vec::with_capacity(kept.len());
+    let mut sample_sizes = Vec::with_capacity(kept.len());
+    let mut durations = Vec::with_capacity(kept.len());
+    for &index in &kept {
+        let sample = &samples[index];
+        offsets.push(sample.offset);
+        sample_sizes.push(sample.size);
+        durations.push(sample.duration);
+    }
+
+    let mut src = SampleReader::open(input)?;
 
     write_progressive_m4b(
         output,
@@ -74,36 +116,24 @@ pub fn remux_progressive(input: &Path, output: &Path, opts: &RemuxOptions) -> Re
             mvhd_timescale: mp4.mvhd_timescale,
             sample_sizes: &sample_sizes,
             durations: &durations,
-            rewrite_ftyp: opts.rewrite_ftyp,
         },
         |i, buf| {
-            let size = sample_sizes[i] as usize;
-            buf.resize(size, 0);
-            src.seek(SeekFrom::Start(offsets[i]))?;
-            src.read_exact(buf)?;
-            Ok(())
+            src.read_sample(offsets[i], sample_sizes[i] as usize, buf)?;
+            transform.sample(i, buf)
         },
     )
 }
 
-fn compact_sample_tables(samples: &[SampleInfo]) -> (Vec<u64>, Vec<u32>, Vec<u32>) {
-    let mut offsets = Vec::with_capacity(samples.len());
-    let mut sizes = Vec::with_capacity(samples.len());
-    let mut durations = Vec::with_capacity(samples.len());
-    for sample in samples {
-        offsets.push(sample.offset);
-        sizes.push(sample.size);
-        durations.push(sample.duration);
-    }
-    (offsets, sizes, durations)
-}
-
 /// Write a progressive faststart M4B by streaming one sample at a time.
 ///
-/// Layout is written as `ftyp` + `moov` + `mdat` in a single pass (no full-file rewrite).
-/// `fill_sample(i, buf)` must populate `buf` with the decrypted payload for sample `i`
-/// (length must match `sample_sizes[i]`). Only one sample buffer is live at a time.
-pub(crate) fn write_progressive_m4b<F>(
+/// Layout is written as `ftyp` + `moov` + `mdat` in a single pass (no full-file
+/// rewrite), and `ftyp` always declares M4B brands. `fill_sample(i, buf)` must
+/// populate `buf` with the payload for sample `i` (length must match
+/// `sample_sizes[i]`). Only one sample buffer is live at a time.
+///
+/// Callers that assemble their own sample plan — from fragments, say, rather
+/// than from one progressive `mdat` — use this directly.
+pub fn write_progressive_m4b<F>(
     output: &Path,
     input: ProgressiveWriteInput<'_>,
     mut fill_sample: F,
@@ -112,10 +142,10 @@ where
     F: FnMut(usize, &mut Vec<u8>) -> Result<()>,
 {
     if input.sample_sizes.is_empty() {
-        return Err(MediaError::Mp4("no samples to write".into()));
+        return Err(Mp4Error::container("no samples to write"));
     }
     if input.sample_sizes.len() != input.durations.len() {
-        return Err(MediaError::Mp4(format!(
+        return Err(Mp4Error::container(format!(
             "payload/duration count mismatch: {} vs {}",
             input.sample_sizes.len(),
             input.durations.len()
@@ -130,7 +160,6 @@ where
     }
 
     let ftyp_bytes = build_m4b_ftyp();
-    let _ = input.rewrite_ftyp;
     let ftyp_len = ftyp_bytes.len() as u64;
     const MDAT_HEADER_LEN: u64 = 16; // 64-bit size form
 
@@ -161,7 +190,7 @@ where
         moov_len = built_len;
     };
 
-    let mut out = File::create(output)?;
+    let mut out = BufWriter::with_capacity(IO_BUFFER_BYTES, File::create(output)?);
     out.write_all(&ftyp_bytes)?;
     out.write_all(&moov)?;
 
@@ -174,14 +203,16 @@ where
     for (i, &expected) in input.sample_sizes.iter().enumerate() {
         fill_sample(i, &mut sample_buf)?;
         if sample_buf.len() as u32 != expected {
-            return Err(MediaError::Mp4(format!(
+            return Err(Mp4Error::container(format!(
                 "sample {i} size {} != expected {expected}",
                 sample_buf.len()
             )));
         }
         out.write_all(&sample_buf)?;
     }
-    out.sync_all()?;
+    out.into_inner()
+        .map_err(std::io::IntoInnerError::into_error)?
+        .sync_all()?;
     Ok(())
 }
 
@@ -214,22 +245,22 @@ fn rebuild_moov(
     mvhd_timescale: u32,
 ) -> Result<Vec<u8>> {
     if moov_bytes.len() < 8 {
-        return Err(MediaError::Mp4("moov too small".into()));
+        return Err(Mp4Error::container("moov too small"));
     }
 
     let mut body = moov_bytes.to_vec();
     let type_rel = sample_entry_type_offset
         .checked_sub(moov_file_start)
-        .ok_or_else(|| MediaError::Mp4("sample entry offset outside moov".into()))?;
+        .ok_or_else(|| Mp4Error::container("sample entry offset outside moov"))?;
     let type_rel = usize::try_from(type_rel)
-        .map_err(|_| MediaError::Mp4("sample entry offset overflow".into()))?;
+        .map_err(|_| Mp4Error::container("sample entry offset overflow"))?;
 
-    // Clear progressive DRM sample-entry markup before rewriting tables.
-    body = clear_progressive_drm_boxes(&body, type_rel)?;
+    // Clear progressive encryption sample-entry markup before rewriting tables.
+    body = clear_protection_markup(&body, type_rel)?;
 
     // Replace stts / stsc / stsz / stco|co64 boxes inside stbl.
     let stts = encode_stts(durations);
-    let stsc = encode_stsc_one_per_chunk(sample_sizes.len() as u32);
+    let stsc = encode_stsc_one_per_chunk();
     let stsz = encode_stsz(sample_sizes);
     let need_co64 = chunk_offsets.iter().any(|&o| o > u64::from(u32::MAX));
     let stco = if need_co64 {
@@ -239,15 +270,16 @@ fn rebuild_moov(
     };
 
     body = replace_stbl_child(&body, b"stts", &stts)
-        .map_err(|e| MediaError::Mp4(format!("replace stts: {e}")))?;
+        .map_err(|e| Mp4Error::container(format!("replace stts: {e}")))?;
     body = replace_stbl_child(&body, b"stsc", &stsc)
-        .map_err(|e| MediaError::Mp4(format!("replace stsc: {e}")))?;
+        .map_err(|e| Mp4Error::container(format!("replace stsc: {e}")))?;
     body = replace_stbl_child(&body, b"stsz", &stsz)
-        .map_err(|e| MediaError::Mp4(format!("replace stsz: {e}")))?;
+        .map_err(|e| Mp4Error::container(format!("replace stsz: {e}")))?;
     body = replace_chunk_offset_box(&body, &stco)
-        .map_err(|e| MediaError::Mp4(format!("replace chunk offsets: {e}")))?;
+        .map_err(|e| Mp4Error::container(format!("replace chunk offsets: {e}")))?;
 
-    // Drop CENC sample-aux boxes if present (IVs are consumed during decrypt).
+    // Drop CENC sample-aux boxes if present (their IVs no longer describe the
+    // payloads once a transform has rewritten them).
     body = remove_stbl_children_named(&body, &[b"saiz", b"saio"])?;
 
     // Update durations in mdhd / tkhd / mvhd.
@@ -264,8 +296,11 @@ fn rebuild_moov(
     Ok(body)
 }
 
-/// Replace `aavd`→`mp4a` or `enca`→`frma` format and strip `sinf`.
-fn clear_progressive_drm_boxes(moov: &[u8], type_rel: usize) -> Result<Vec<u8>> {
+/// Rewrite a protected sample entry as the clear format it wraps.
+///
+/// `aavd` becomes `mp4a`; `enca` becomes whatever its `sinf`/`frma` names, and
+/// the `sinf` describing the protection is removed. Anything else is left alone.
+fn clear_protection_markup(moov: &[u8], type_rel: usize) -> Result<Vec<u8>> {
     let mut body = moov.to_vec();
     if type_rel + 4 > body.len() {
         return Ok(body);
@@ -282,49 +317,27 @@ fn clear_progressive_drm_boxes(moov: &[u8], type_rel: usize) -> Result<Vec<u8>> 
     // Sample entry box starts 4 bytes before the type field.
     let entry_pos = type_rel.saturating_sub(4);
     if entry_pos + 8 > body.len() {
-        return Err(MediaError::Mp4("enca sample entry truncated".into()));
+        return Err(Mp4Error::container("enca sample entry truncated"));
     }
     let entry_size =
         u32::from_be_bytes(body[entry_pos..entry_pos + 4].try_into().unwrap()) as usize;
     let entry_end = entry_pos + entry_size;
     if entry_end > body.len() || entry_size < 36 {
-        return Err(MediaError::Mp4("invalid enca sample entry".into()));
+        return Err(Mp4Error::container("invalid enca sample entry"));
     }
 
     let children_start = entry_pos + 36;
-    let sinf = find_child_in_buf(&body, children_start, entry_end, b"sinf")?
-        .ok_or_else(|| MediaError::Mp4("enca missing sinf".into()))?;
-    let frma = find_child_in_buf(&body, sinf.0 + 8, sinf.1, b"frma")?
-        .ok_or_else(|| MediaError::Mp4("sinf missing frma".into()))?;
+    let sinf = find_child_in_range(&body, children_start, entry_end, b"sinf")?
+        .ok_or_else(|| Mp4Error::container("enca missing sinf"))?;
+    let frma = find_child_in_range(&body, sinf.0 + 8, sinf.1, b"frma")?
+        .ok_or_else(|| Mp4Error::container("sinf missing frma"))?;
     if frma.0 + 12 > frma.1 {
-        return Err(MediaError::Mp4("frma truncated".into()));
+        return Err(Mp4Error::container("frma truncated"));
     }
     let format = body[frma.0 + 8..frma.0 + 12].to_vec();
     body[type_rel..type_rel + 4].copy_from_slice(&format);
     body = splice_replace(&body, sinf.0, sinf.1, &[])?;
     Ok(body)
-}
-
-fn find_child_in_buf(
-    buf: &[u8],
-    start: usize,
-    end: usize,
-    fourcc: &[u8; 4],
-) -> Result<Option<(usize, usize)>> {
-    let mut pos = start;
-    while pos + 8 <= end {
-        let size = u32::from_be_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
-        if size < 8 || pos + size > end {
-            break;
-        }
-        let kind = &buf[pos + 4..pos + 8];
-        let box_end = pos + size;
-        if kind == fourcc {
-            return Ok(Some((pos, box_end)));
-        }
-        pos = box_end;
-    }
-    Ok(None)
 }
 
 fn remove_stbl_children_named(moov: &[u8], names: &[&[u8; 4]]) -> Result<Vec<u8>> {
@@ -374,7 +387,7 @@ fn encode_stts(durations: &[u32]) -> Vec<u8> {
     buf
 }
 
-fn encode_stsc_one_per_chunk(sample_count: u32) -> Vec<u8> {
+fn encode_stsc_one_per_chunk() -> Vec<u8> {
     // first_chunk=1, samples_per_chunk=1, desc=1 — one entry covers all chunks.
     let size = 8 + 4 + 4 + 12;
     let mut buf = Vec::with_capacity(size);
@@ -385,7 +398,6 @@ fn encode_stsc_one_per_chunk(sample_count: u32) -> Vec<u8> {
     buf.extend_from_slice(&1u32.to_be_bytes()); // first_chunk
     buf.extend_from_slice(&1u32.to_be_bytes()); // samples_per_chunk
     buf.extend_from_slice(&1u32.to_be_bytes()); // sample_description_index
-    let _ = sample_count;
     buf
 }
 
@@ -431,163 +443,23 @@ fn encode_co64(offsets: &[u64]) -> Vec<u8> {
 
 /// Find a direct child of the first `stbl` in `moov` and replace it.
 fn replace_stbl_child(moov: &[u8], fourcc: &[u8; 4], replacement: &[u8]) -> Result<Vec<u8>> {
-    let (stbl_start, stbl_end) = find_box_range(moov, b"stbl")?
-        .ok_or_else(|| MediaError::Mp4("moov missing stbl".into()))?;
+    let (stbl_start, stbl_end) =
+        find_box_range(moov, b"stbl")?.ok_or_else(|| Mp4Error::container("moov missing stbl"))?;
     let child = find_direct_child(moov, stbl_start, stbl_end, fourcc)?
-        .ok_or_else(|| MediaError::Mp4(format!("stbl missing {}", FourCC(*fourcc))))?;
+        .ok_or_else(|| Mp4Error::container(format!("stbl missing {}", FourCC(*fourcc))))?;
     splice_replace(moov, child.0, child.1, replacement)
 }
 
 fn replace_chunk_offset_box(moov: &[u8], replacement: &[u8]) -> Result<Vec<u8>> {
-    let (stbl_start, stbl_end) = find_box_range(moov, b"stbl")?
-        .ok_or_else(|| MediaError::Mp4("moov missing stbl".into()))?;
+    let (stbl_start, stbl_end) =
+        find_box_range(moov, b"stbl")?.ok_or_else(|| Mp4Error::container("moov missing stbl"))?;
     if let Some(child) = find_direct_child(moov, stbl_start, stbl_end, b"stco")? {
         return splice_replace(moov, child.0, child.1, replacement);
     }
     if let Some(child) = find_direct_child(moov, stbl_start, stbl_end, b"co64")? {
         return splice_replace(moov, child.0, child.1, replacement);
     }
-    Err(MediaError::Mp4("stbl missing stco/co64".into()))
-}
-
-pub(super) fn splice_replace(
-    buf: &[u8],
-    start: usize,
-    end: usize,
-    replacement: &[u8],
-) -> Result<Vec<u8>> {
-    let old_len = end - start;
-    let new_len = replacement.len();
-    let delta = new_len as i64 - old_len as i64;
-    let ancestors = if delta == 0 {
-        Vec::new()
-    } else {
-        ancestor_size_offsets(buf, start)?
-    };
-    let mut out = Vec::with_capacity(buf.len() - old_len + new_len);
-    out.extend_from_slice(&buf[..start]);
-    out.extend_from_slice(replacement);
-    out.extend_from_slice(&buf[end..]);
-    for (offset, old_size) in ancestors {
-        let new_size = (old_size as i64 + delta) as u32;
-        if offset + 4 <= out.len() {
-            out[offset..offset + 4].copy_from_slice(&new_size.to_be_bytes());
-        }
-    }
-    Ok(out)
-}
-
-/// Size-field offsets for every box that strictly contains `at`.
-fn ancestor_size_offsets(buf: &[u8], at: usize) -> Result<Vec<(usize, usize)>> {
-    let mut out = Vec::new();
-    let mut pos = 0usize;
-    let mut end = buf.len();
-    loop {
-        let mut found = None;
-        let mut child_pos = pos;
-        while child_pos + 8 <= end {
-            let size =
-                u32::from_be_bytes(buf[child_pos..child_pos + 4].try_into().unwrap()) as usize;
-            if size < 8 || child_pos + size > end {
-                break;
-            }
-            let kind = &buf[child_pos + 4..child_pos + 8];
-            let box_end = child_pos + size;
-            if at > child_pos && at < box_end {
-                out.push((child_pos, size));
-                let content = match kind {
-                    b"meta" => child_pos + 12,
-                    // stsd FullBox + entry_count
-                    b"stsd" => child_pos + 16,
-                    // AudioSampleEntry fixed header after size+type
-                    b"enca" | b"mp4a" | b"aavd" => child_pos + 36,
-                    _ => child_pos + 8,
-                };
-                found = Some((content, box_end, kind.to_vec()));
-                break;
-            }
-            child_pos = box_end;
-        }
-        let Some((content, box_end, kind)) = found else {
-            break;
-        };
-        if !matches!(
-            kind.as_slice(),
-            b"moov"
-                | b"trak"
-                | b"mdia"
-                | b"minf"
-                | b"stbl"
-                | b"udta"
-                | b"meta"
-                | b"stsd"
-                | b"enca"
-                | b"mp4a"
-                | b"aavd"
-                | b"sinf"
-                | b"schi"
-        ) {
-            break;
-        }
-        pos = content;
-        end = box_end;
-    }
-    Ok(out)
-}
-
-pub(super) fn find_box_range(buf: &[u8], fourcc: &[u8; 4]) -> Result<Option<(usize, usize)>> {
-    let mut stack = vec![(0usize, buf.len())];
-    while let Some((start, end)) = stack.pop() {
-        let mut pos = start;
-        while pos + 8 <= end {
-            let size = u32::from_be_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
-            if size < 8 || pos + size > end {
-                break;
-            }
-            let kind = &buf[pos + 4..pos + 8];
-            let content_start = pos + 8;
-            let box_end = pos + size;
-            if kind == fourcc {
-                return Ok(Some((pos, box_end)));
-            }
-            if matches!(
-                kind,
-                b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" | b"udta"
-            ) {
-                stack.push((content_start, box_end));
-            } else if kind == b"meta" {
-                stack.push((content_start + 4, box_end));
-            }
-            pos = box_end;
-        }
-    }
-    Ok(None)
-}
-
-pub(super) fn find_direct_child(
-    buf: &[u8],
-    parent_start: usize,
-    parent_end: usize,
-    fourcc: &[u8; 4],
-) -> Result<Option<(usize, usize)>> {
-    let kind = &buf[parent_start + 4..parent_start + 8];
-    let mut pos = parent_start + 8;
-    if kind == b"meta" {
-        pos += 4;
-    }
-    while pos + 8 <= parent_end {
-        let size = u32::from_be_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
-        if size < 8 || pos + size > parent_end {
-            break;
-        }
-        let child_kind = &buf[pos + 4..pos + 8];
-        let end = pos + size;
-        if child_kind == fourcc {
-            return Ok(Some((pos, end)));
-        }
-        pos = end;
-    }
-    Ok(None)
+    Err(Mp4Error::container("stbl missing stco/co64"))
 }
 
 fn patch_duration_fields(moov: &mut [u8], media_duration: u64, movie_duration: u64) -> Result<()> {

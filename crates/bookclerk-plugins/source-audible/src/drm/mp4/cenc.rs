@@ -3,10 +3,11 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
-use super::boxutil::{
-    find_child, read_full_box_version_flags, read_u32, read_u64, read_u8, walk_children, BoxHeader,
-    FourCC, SAIO, SAIZ, SCHI, SCHM, SINF, STBL, TENC,
+use bookclerk_mp4::boxutil::{
+    find_child, read_full_box_version_flags, read_u32, read_u64, read_u8, BoxHeader, FourCC, MDIA,
+    MINF, SAIO, SAIZ, SCHI, SCHM, SINF, STBL, TENC,
 };
+
 use crate::drm::crypto::expand_cenc_iv;
 use crate::drm::error::{DrmError, Result};
 
@@ -218,24 +219,12 @@ fn parse_saio(file: &mut File, saio: &BoxHeader) -> Result<Vec<u64>> {
 
 /// Locate the `stbl` box under a track's `minf`.
 pub fn find_stbl_in_trak(file: &mut File, trak: &BoxHeader) -> Result<BoxHeader> {
-    let mut stbl = None;
-    walk_children(file, trak.content_start(), trak.end(), |f, child| {
-        if child.kind.0 == *b"mdia" {
-            walk_children(f, child.content_start(), child.end(), |f2, c2| {
-                if c2.kind.0 == *b"minf" {
-                    walk_children(f2, c2.content_start(), c2.end(), |_f3, c3| {
-                        if c3.kind == STBL {
-                            stbl = Some(c3.clone());
-                        }
-                        Ok(())
-                    })?;
-                }
-                Ok(())
-            })?;
-        }
-        Ok(())
-    })?;
-    stbl.ok_or_else(|| DrmError::Mp4("trak missing stbl".into()))
+    let mdia = find_child(file, trak.content_start(), trak.end(), MDIA)?
+        .ok_or_else(|| DrmError::Mp4("trak missing mdia".into()))?;
+    let minf = find_child(file, mdia.content_start(), mdia.end(), MINF)?
+        .ok_or_else(|| DrmError::Mp4("mdia missing minf".into()))?;
+    find_child(file, minf.content_start(), minf.end(), STBL)?
+        .ok_or_else(|| DrmError::Mp4("minf missing stbl".into()))
 }
 
 /// Absolute end offset of the first sample entry in `stsd` (for `enca` child walk).

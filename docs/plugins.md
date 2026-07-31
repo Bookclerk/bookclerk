@@ -42,9 +42,11 @@ with the same guest SDK contract. The **plugin host** crate
 `cargo run` without staging binaries — host binaries never name store crates.
 In-process source **and** Audiobookshelf crates are optional Cargo features
 named after the plugin packages (`bookclerk-plugin-source-audible`,
-`bookclerk-plugin-integration-audiobookshelf`, …); `--no-default-features`
-builds an external-guest-only host. Discovered external copies of the same id
-are skipped. After registration, hosts talk **only** through `ContentSource` /
+`bookclerk-plugin-integration-audiobookshelf`, …), carried by the same names on
+both hosts; `--no-default-features` builds an external-guest-only host (see
+[Shipping without a store](#shipping-without-a-store)). Discovered external
+copies of the same id are skipped. After registration, hosts talk **only**
+through `ContentSource` /
 `Integration` (login, scan, fetch, import, revoke, inspect, plus catalog
 `search_catalog` / `expand_candidates` / `purchase_hint` / `list_deals` for
 Discover). Sources always return `PlainFetch` (`SourceFetch` is an alias) —
@@ -54,6 +56,39 @@ the JSON-RPC wire for external guests.
 
 Enabling a third-party plugin still means running that binary as the Bookclerk
 user, inside the jail below — review plugins before enabling them.
+
+## Shipping without a store
+
+Both hosts carry one feature per in-process plugin, all on by default, so a build
+can leave any of them out:
+
+```bash
+# External guests only: no store linked into either host.
+cargo build --release -p bookclerk-cli -p bookclerkd --no-default-features
+
+# Everything except Audible.
+cargo build --release -p bookclerk-cli -p bookclerkd --no-default-features \
+  --features bookclerk-plugin-source-libro,bookclerk-plugin-source-chirp,bookclerk-plugin-source-graphicaudio,bookclerk-plugin-integration-audiobookshelf
+```
+
+This exists for Audible specifically. Adrm and Widevine CENC decrypt live in that
+plugin, and some regions restrict distributing a binary that can circumvent
+DRM — so whoever packages Bookclerk needs the option to ship hosts that contain
+no such code at all, rather than a build flag that merely disables it at runtime.
+Omitting the feature omits the crate, and with it the ciphers, the content-key
+handling, and the CDM.
+
+Nothing else has to move for that to hold. The shared MP4 plumbing
+(`bookclerk-mp4`) parses and rewrites containers and takes a `SampleTransform`
+from its caller; the Audible plugin's transform is the only one that decrypts.
+`scripts/check-store-free-hosts.sh` asserts it in CI: a `--no-default-features`
+host must link no plugin package and reach no cipher crate, and a default build
+must still link Audible — otherwise the first check would pass for the wrong
+reason. A shared crate that grew an `aes` dependency fails that job.
+
+Users of a store-free build can still add any storefront back as an external
+guest, since discovery is independent of these features. That is a deployment
+choice made by whoever installs the plugin, not by whoever shipped the binary.
 
 ## The guest jail
 

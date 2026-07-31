@@ -2,7 +2,7 @@
 
 use std::io::{Read, Seek, SeekFrom};
 
-use crate::error::{MediaError, Result};
+use crate::error::{Mp4Error, Result};
 
 /// Four-character code.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,6 +50,24 @@ pub const HDLR: FourCC = FourCC::new(b"hdlr");
 pub const AAVD: FourCC = FourCC::new(b"aavd");
 pub const MP4A: FourCC = FourCC::new(b"mp4a");
 pub const ENCA: FourCC = FourCC::new(b"enca");
+
+// Fragmented (DASH) and Common Encryption boxes. Naming the box types costs
+// nothing here and keeps every reader in the workspace spelling them the same
+// way; the schemes themselves are a caller's business.
+pub const SIDX: FourCC = FourCC::new(b"sidx");
+pub const MOOF: FourCC = FourCC::new(b"moof");
+pub const TRAF: FourCC = FourCC::new(b"traf");
+pub const TFHD: FourCC = FourCC::new(b"tfhd");
+pub const TRUN: FourCC = FourCC::new(b"trun");
+pub const SENC: FourCC = FourCC::new(b"senc");
+pub const SINF: FourCC = FourCC::new(b"sinf");
+pub const SCHM: FourCC = FourCC::new(b"schm");
+pub const SCHI: FourCC = FourCC::new(b"schi");
+pub const TENC: FourCC = FourCC::new(b"tenc");
+pub const SAIZ: FourCC = FourCC::new(b"saiz");
+pub const SAIO: FourCC = FourCC::new(b"saio");
+pub const MVEX: FourCC = FourCC::new(b"mvex");
+pub const DASH: FourCC = FourCC::new(b"dash");
 
 /// Header for one ISO-BMFF box.
 #[derive(Debug, Clone)]
@@ -114,7 +132,7 @@ pub fn read_box_header(r: &mut (impl Read + Seek)) -> Result<BoxHeader> {
         (u64::from(size32), 8u64)
     };
     if size < header_len {
-        return Err(MediaError::Mp4(format!(
+        return Err(Mp4Error::container(format!(
             "box {kind} at {start} has size {size} < header {header_len}"
         )));
     }
@@ -128,24 +146,43 @@ pub fn read_box_header(r: &mut (impl Read + Seek)) -> Result<BoxHeader> {
 
 /// Iterate immediate children of a container box whose content starts at `start`
 /// and ends at `end`.
-pub fn walk_children<R, F>(r: &mut R, start: u64, end: u64, mut visit: F) -> Result<()>
+///
+/// The visitor keeps its own error type, so a caller reading boxes this crate
+/// knows nothing about can fail in its own vocabulary.
+pub fn walk_children<R, F, E>(
+    r: &mut R,
+    start: u64,
+    end: u64,
+    mut visit: F,
+) -> std::result::Result<(), E>
 where
     R: Read + Seek,
-    F: FnMut(&mut R, &BoxHeader) -> Result<()>,
+    F: FnMut(&mut R, &BoxHeader) -> std::result::Result<(), E>,
+    E: From<Mp4Error>,
 {
-    r.seek(SeekFrom::Start(start))?;
-    while r.stream_position()? + 8 <= end {
-        let header = read_box_header(r)?;
+    let seek = |r: &mut R, to: u64| -> std::result::Result<u64, E> {
+        r.seek(SeekFrom::Start(to))
+            .map_err(|err| E::from(Mp4Error::from(err)))
+    };
+    seek(r, start)?;
+    loop {
+        let pos = r
+            .stream_position()
+            .map_err(|err| E::from(Mp4Error::from(err)))?;
+        if pos + 8 > end {
+            break;
+        }
+        let header = read_box_header(r).map_err(E::from)?;
         if header.end() > end {
-            return Err(MediaError::Mp4(format!(
+            return Err(E::from(Mp4Error::container(format!(
                 "box {} overflows parent (end {} > {end})",
                 header.kind,
                 header.end()
-            )));
+            ))));
         }
         let next = header.end();
         visit(r, &header)?;
-        r.seek(SeekFrom::Start(next))?;
+        seek(r, next)?;
     }
     Ok(())
 }
@@ -157,7 +194,7 @@ pub fn find_child<R: Read + Seek>(
     want: FourCC,
 ) -> Result<Option<BoxHeader>> {
     let mut found = None;
-    walk_children(r, start, end, |_, header| {
+    walk_children(r, start, end, |_, header| -> Result<()> {
         if header.kind == want && found.is_none() {
             found = Some(header.clone());
         }

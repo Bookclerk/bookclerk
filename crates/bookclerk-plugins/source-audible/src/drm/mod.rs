@@ -3,15 +3,14 @@
 //! Host acquire never sees ciphertext keys — [`ContentSource::fetch_title`]
 //! decrypts here and returns [`bookclerk_source::PlainFetch`].
 
-#![allow(dead_code)] // ISO-BMFF helpers shared across Adrm / CENC paths
-
 mod crypto;
+mod decrypt;
 mod error;
 mod mp4;
 mod native;
 
+pub use bookclerk_mp4::TrimRange;
 pub use error::{DrmError, Result};
-pub use mp4::TrimRange;
 pub use native::{decrypt_adrm_native, decrypt_cenc_native};
 
 use std::path::PathBuf;

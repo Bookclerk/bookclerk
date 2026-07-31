@@ -12,6 +12,29 @@ authors.workspace = true
 name = "bookclerkd"
 path = "src/main.rs"
 
+[features]
+# Which first-party plugins are linked in-process, named after their packages and
+# forwarded to the host crate that links them. `--no-default-features` builds an
+# external-guest-only daemon; add back only the stores you want to ship. This is
+# how a build omits the Audible plugin, and with it every cipher and content-key
+# path — see docs/plugins.md#shipping-without-a-store.
+default = [
+    "bookclerk-plugin-source-audible",
+    "bookclerk-plugin-source-libro",
+    "bookclerk-plugin-source-chirp",
+    "bookclerk-plugin-source-graphicaudio",
+    "bookclerk-plugin-integration-audiobookshelf",
+]
+bookclerk-plugin-source-audible = ["bookclerk-plugin/bookclerk-plugin-source-audible"]
+bookclerk-plugin-source-libro = ["bookclerk-plugin/bookclerk-plugin-source-libro"]
+bookclerk-plugin-source-chirp = ["bookclerk-plugin/bookclerk-plugin-source-chirp"]
+bookclerk-plugin-source-graphicaudio = [
+    "bookclerk-plugin/bookclerk-plugin-source-graphicaudio",
+]
+bookclerk-plugin-integration-audiobookshelf = [
+    "bookclerk-plugin/bookclerk-plugin-integration-audiobookshelf",
+]
+
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true

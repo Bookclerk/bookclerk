@@ -1,16 +1,15 @@
 //! Build per-sample offset / timing tables from stbl boxes.
 
-use crate::error::{MediaError, Result};
+use crate::error::{Mp4Error, Result};
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ChunkMapEntry {
     pub first_chunk: u32,
     pub samples_per_chunk: u32,
     pub sample_description_index: u32,
 }
 
-/// One audio sample ready for decrypt / remux.
+/// One audio sample, located and timed.
 #[derive(Debug, Clone)]
 pub struct SampleInfo {
     /// Absolute file offset of the sample payload.
@@ -30,10 +29,10 @@ pub fn build_samples(
     chunk_offsets: &[u64],
 ) -> Result<Vec<SampleInfo>> {
     if stsc.is_empty() {
-        return Err(MediaError::Mp4("stsc is empty".into()));
+        return Err(Mp4Error::container("stsc is empty"));
     }
     if chunk_offsets.is_empty() {
-        return Err(MediaError::Mp4("no chunk offsets".into()));
+        return Err(Mp4Error::container("no chunk offsets"));
     }
 
     let mut durations = Vec::with_capacity(sample_sizes.len());
@@ -46,7 +45,7 @@ pub fn build_samples(
         // Some files use a single stts entry covering all samples; if stts is short,
         // pad with the last delta. If longer, truncate.
         if durations.is_empty() {
-            return Err(MediaError::Mp4("stts produced no sample durations".into()));
+            return Err(Mp4Error::container("stts produced no sample durations"));
         }
         if durations.len() < sample_sizes.len() {
             let last = *durations.last().unwrap();
@@ -73,7 +72,7 @@ pub fn build_samples(
 
     let total_from_chunks: u64 = samples_per_chunk.iter().map(|n| u64::from(*n)).sum();
     if total_from_chunks != sample_sizes.len() as u64 {
-        return Err(MediaError::Mp4(format!(
+        return Err(Mp4Error::container(format!(
             "sample count mismatch: stsz={} vs stsc/chunks={total_from_chunks}",
             sample_sizes.len()
         )));
@@ -103,22 +102,26 @@ pub fn build_samples(
     Ok(samples)
 }
 
-/// Select samples whose media time range overlaps `[start_ms, end_ms)`.
+/// Indices of the samples whose media time overlaps `[start_ms, end_ms)`.
+///
+/// Indices rather than clones: a long audiobook has millions of samples, and the
+/// caller needs the original positions anyway to line up any per-sample state it
+/// keeps of its own. Output composition times are rebased by the writer.
 #[must_use]
-pub fn filter_samples_by_ms(
+pub fn select_samples_by_ms(
     samples: &[SampleInfo],
     timescale: u32,
     start_ms: u64,
     end_ms: Option<u64>,
-) -> Vec<SampleInfo> {
+) -> Vec<usize> {
     if timescale == 0 {
-        return samples.to_vec();
+        return (0..samples.len()).collect();
     }
     let start_ticks = start_ms.saturating_mul(u64::from(timescale)) / 1000;
     let end_ticks = end_ms.map(|ms| ms.saturating_mul(u64::from(timescale)) / 1000);
 
-    let mut out = Vec::new();
-    for sample in samples {
+    let mut kept = Vec::new();
+    for (index, sample) in samples.iter().enumerate() {
         let sample_end = sample.start_cts.saturating_add(u64::from(sample.duration));
         if sample_end <= start_ticks {
             continue;
@@ -128,18 +131,9 @@ pub fn filter_samples_by_ms(
                 break;
             }
         }
-        let mut adjusted = sample.clone();
-        // Rebase composition time so the first kept sample starts at 0.
-        adjusted.start_cts = sample.start_cts.saturating_sub(start_ticks);
-        out.push(adjusted);
+        kept.push(index);
     }
-    // Ensure contiguous rebase from 0.
-    let mut cts = 0u64;
-    for sample in &mut out {
-        sample.start_cts = cts;
-        cts = cts.saturating_add(u64::from(sample.duration));
-    }
-    out
+    kept
 }
 
 #[cfg(test)]
@@ -165,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn filters_by_time() {
+    fn selects_by_time() {
         let samples: Vec<_> = (0..10)
             .map(|i| SampleInfo {
                 offset: i * 100,
@@ -176,9 +170,16 @@ mod tests {
             })
             .collect();
         // timescale 1000 → 1 tick = 1 ms. Keep 2000..5000 ms.
-        let kept = filter_samples_by_ms(&samples, 1000, 2000, Some(5000));
-        assert_eq!(kept.len(), 3);
-        assert_eq!(kept[0].start_cts, 0);
-        assert_eq!(kept[2].start_cts, 2000);
+        assert_eq!(
+            select_samples_by_ms(&samples, 1000, 2000, Some(5000)),
+            vec![2, 3, 4]
+        );
+        // An open end runs to the last sample.
+        assert_eq!(select_samples_by_ms(&samples, 1000, 8000, None), vec![8, 9]);
+        // A timescale of zero cannot be converted, so nothing is dropped.
+        assert_eq!(
+            select_samples_by_ms(&samples, 0, 2000, Some(5000)).len(),
+            10
+        );
     }
 }

@@ -1,6 +1,8 @@
 //! Clear-media packaging: remux, metadata fix-up, and MP3 encode.
 //!
-//! DRM (Adrm / CENC) lives in store plugins (e.g. Audible), not here.
+//! DRM (Adrm / CENC) lives in store plugins (e.g. Audible), not here. The
+//! ISO-BMFF reading and writing underneath is [`bookclerk_mp4`], which both this
+//! crate and those plugins share; the keys and ciphers stay with the plugin.
 //!
 //! # Where the work runs
 //!
@@ -23,11 +25,16 @@ mod error;
 mod job;
 mod metadata;
 mod mp3;
-mod mp4;
+mod mux_aac;
 mod native;
 mod package_m4b;
 mod pool;
 
+/// Container plumbing lives in [`bookclerk_mp4`]; these are re-exported so
+/// callers of this crate do not need a second dependency to read an M4B.
+pub use bookclerk_mp4::{
+    extract_mp4a_config, parse_mp4, track_duration_ms, Mp4aConfig, SampleEntryKind, TrimRange,
+};
 pub use brand::{
     brand_durations_from_chapter_info, brand_trim_range, rebase_chapters_after_brand_trim,
     runtime_length_ms_from_chapter_info, BrandDurations,
@@ -36,10 +43,6 @@ pub use chapter_align::{align_chapter_starts, scale_chapters_to_duration, Chapte
 pub use error::{MediaError, Result};
 pub use job::{MediaJob, MediaJobOutput, MediaJobReply};
 pub use metadata::{bookclerk_tool_tag, fixup_audiobook, FixupRequest, BOOKCLERK_TOOL_NAME};
-pub use mp4::{
-    extract_mp4a_config, parse_mp4, remux_progressive, track_duration_ms, Mp4aConfig, RemuxOptions,
-    SampleEntryKind, TrimRange,
-};
 pub use native::remux_trimmed;
 pub use package_m4b::{package_m4b_from_mp3, package_m4b_from_pcm, PackageM4bRequest};
 pub use pool::{

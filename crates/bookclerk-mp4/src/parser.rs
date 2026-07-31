@@ -1,16 +1,17 @@
-//! Progressive MP4 structure parsing for Audible Adrm / CENC files.
+//! Progressive (non-fragmented) MP4 structure parsing.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-use super::boxutil::{
+use crate::boxutil::{
     find_child, read_box_header, read_fourcc, read_full_box_version_flags, read_u32, read_u64,
     walk_children, BoxHeader, FourCC, AAVD, CO64, ENCA, FTYP, HDLR, MDAT, MDHD, MDIA, MINF, MOOV,
-    MP4A, STBL, STCO, STSC, STSD, STSZ, STTS, STZ2, TRAK,
+    MP4A, MVHD, STBL, STCO, STSC, STSD, STSZ, STTS, STZ2, TRAK,
 };
-use super::samples::{build_samples, ChunkMapEntry, SampleInfo};
-use crate::drm::error::{DrmError, Result};
+use crate::edit::find_child_in_range;
+use crate::error::{Mp4Error, Result};
+use crate::samples::{build_samples, ChunkMapEntry, SampleInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SampleEntryKind {
@@ -23,9 +24,8 @@ pub enum SampleEntryKind {
     Other(FourCC),
 }
 
-/// Parsed progressive (non-fragmented) MP4 relevant to decrypt/remux.
+/// Parsed progressive (non-fragmented) MP4 relevant to remux.
 #[derive(Debug)]
-#[allow(dead_code)] // structural fields retained for diagnostics / future CENC work
 pub struct Mp4File {
     pub path: std::path::PathBuf,
     pub file_size: u64,
@@ -77,9 +77,9 @@ pub fn parse_mp4(path: &Path) -> Result<Mp4File> {
         pos = header.end();
     }
 
-    let ftyp = ftyp.ok_or_else(|| DrmError::Mp4("missing ftyp box".into()))?;
-    let moov = moov.ok_or_else(|| DrmError::Mp4("missing moov box".into()))?;
-    let mdat = mdat.ok_or_else(|| DrmError::Mp4("missing mdat box".into()))?;
+    let ftyp = ftyp.ok_or_else(|| Mp4Error::container("missing ftyp box"))?;
+    let moov = moov.ok_or_else(|| Mp4Error::container("missing moov box"))?;
+    let mdat = mdat.ok_or_else(|| Mp4Error::container("missing mdat box"))?;
 
     let (major_brand, compatible_brands) = parse_ftyp(&mut file, &ftyp)?;
     let (mvhd_timescale, mvhd_duration) = parse_mvhd(&mut file, &moov)?;
@@ -88,7 +88,7 @@ pub fn parse_mp4(path: &Path) -> Result<Mp4File> {
     let mut ftyp_bytes = vec![
         0u8;
         usize::try_from(ftyp.size).map_err(|_| {
-            DrmError::Mp4(format!("ftyp too large: {}", ftyp.size))
+            Mp4Error::container(format!("ftyp too large: {}", ftyp.size))
         })?
     ];
     file.seek(SeekFrom::Start(ftyp.start))?;
@@ -97,7 +97,7 @@ pub fn parse_mp4(path: &Path) -> Result<Mp4File> {
     let mut moov_bytes = vec![
         0u8;
         usize::try_from(moov.size).map_err(|_| {
-            DrmError::Mp4(format!("moov too large: {}", moov.size))
+            Mp4Error::container(format!("moov too large: {}", moov.size))
         })?
     ];
     file.seek(SeekFrom::Start(moov.start))?;
@@ -132,8 +132,8 @@ fn parse_ftyp(file: &mut File, ftyp: &BoxHeader) -> Result<(FourCC, Vec<FourCC>)
 }
 
 fn parse_mvhd(file: &mut File, moov: &BoxHeader) -> Result<(u32, u64)> {
-    let mvhd = find_child(file, moov.content_start(), moov.end(), super::boxutil::MVHD)?
-        .ok_or_else(|| DrmError::Mp4("missing mvhd".into()))?;
+    let mvhd = find_child(file, moov.content_start(), moov.end(), MVHD)?
+        .ok_or_else(|| Mp4Error::container("missing mvhd"))?;
     file.seek(SeekFrom::Start(mvhd.content_start()))?;
     let (version, _) = read_full_box_version_flags(file)?;
     let (timescale, duration) = if version == 1 {
@@ -154,16 +154,21 @@ fn parse_mvhd(file: &mut File, moov: &BoxHeader) -> Result<(u32, u64)> {
 
 fn parse_audio_track(file: &mut File, moov: &BoxHeader) -> Result<AudioTrack> {
     let mut audio = None;
-    walk_children(file, moov.content_start(), moov.end(), |file, header| {
-        if header.kind != TRAK || audio.is_some() {
-            return Ok(());
-        }
-        if let Some(track) = try_parse_audio_trak(file, header)? {
-            audio = Some(track);
-        }
-        Ok(())
-    })?;
-    audio.ok_or_else(|| DrmError::Mp4("no audio track found in moov".into()))
+    walk_children(
+        file,
+        moov.content_start(),
+        moov.end(),
+        |file, header| -> Result<()> {
+            if header.kind != TRAK || audio.is_some() {
+                return Ok(());
+            }
+            if let Some(track) = try_parse_audio_trak(file, header)? {
+                audio = Some(track);
+            }
+            Ok(())
+        },
+    )?;
+    audio.ok_or_else(|| Mp4Error::container("no audio track found in moov"))
 }
 
 fn try_parse_audio_trak(file: &mut File, trak: &BoxHeader) -> Result<Option<AudioTrack>> {
@@ -184,7 +189,7 @@ fn try_parse_audio_trak(file: &mut File, trak: &BoxHeader) -> Result<Option<Audi
     }
 
     let mdhd = find_child(file, mdia.content_start(), mdia.end(), MDHD)?
-        .ok_or_else(|| DrmError::Mp4("audio track missing mdhd".into()))?;
+        .ok_or_else(|| Mp4Error::container("audio track missing mdhd"))?;
     file.seek(SeekFrom::Start(mdhd.content_start()))?;
     let (version, _) = read_full_box_version_flags(file)?;
     let (timescale, duration) = if version == 1 {
@@ -198,9 +203,9 @@ fn try_parse_audio_trak(file: &mut File, trak: &BoxHeader) -> Result<Option<Audi
     };
 
     let minf = find_child(file, mdia.content_start(), mdia.end(), MINF)?
-        .ok_or_else(|| DrmError::Mp4("audio track missing minf".into()))?;
+        .ok_or_else(|| Mp4Error::container("audio track missing minf"))?;
     let stbl = find_child(file, minf.content_start(), minf.end(), STBL)?
-        .ok_or_else(|| DrmError::Mp4("audio track missing stbl".into()))?;
+        .ok_or_else(|| Mp4Error::container("audio track missing stbl"))?;
 
     let (sample_entry_kind, sample_entry_type_offset) = parse_stsd(file, &stbl)?;
     let stts = parse_stts(file, &stbl)?;
@@ -222,15 +227,14 @@ fn try_parse_audio_trak(file: &mut File, trak: &BoxHeader) -> Result<Option<Audi
 
 fn parse_stsd(file: &mut File, stbl: &BoxHeader) -> Result<(SampleEntryKind, u64)> {
     let stsd = find_child(file, stbl.content_start(), stbl.end(), STSD)?
-        .ok_or_else(|| DrmError::Mp4("missing stsd".into()))?;
+        .ok_or_else(|| Mp4Error::container("missing stsd"))?;
     file.seek(SeekFrom::Start(stsd.content_start()))?;
     let (_version, _) = read_full_box_version_flags(file)?;
     let entry_count = read_u32(file)?;
     if entry_count == 0 {
-        return Err(DrmError::Mp4("stsd has no sample entries".into()));
+        return Err(Mp4Error::container("stsd has no sample entries"));
     }
     // First sample entry header.
-    let entry_start = file.stream_position()?;
     let _entry_size = read_u32(file)?;
     let type_offset = file.stream_position()?;
     let entry_type = read_fourcc(file)?;
@@ -240,13 +244,12 @@ fn parse_stsd(file: &mut File, stbl: &BoxHeader) -> Result<(SampleEntryKind, u64
         ENCA => SampleEntryKind::Enca,
         other => SampleEntryKind::Other(other),
     };
-    let _ = entry_start;
     Ok((kind, type_offset))
 }
 
 fn parse_stts(file: &mut File, stbl: &BoxHeader) -> Result<Vec<(u32, u32)>> {
     let stts = find_child(file, stbl.content_start(), stbl.end(), STTS)?
-        .ok_or_else(|| DrmError::Mp4("missing stts".into()))?;
+        .ok_or_else(|| Mp4Error::container("missing stts"))?;
     file.seek(SeekFrom::Start(stts.content_start()))?;
     let (_version, _) = read_full_box_version_flags(file)?;
     let entry_count = read_u32(file)?;
@@ -261,7 +264,7 @@ fn parse_stts(file: &mut File, stbl: &BoxHeader) -> Result<Vec<(u32, u32)>> {
 
 fn parse_stsc(file: &mut File, stbl: &BoxHeader) -> Result<Vec<ChunkMapEntry>> {
     let stsc = find_child(file, stbl.content_start(), stbl.end(), STSC)?
-        .ok_or_else(|| DrmError::Mp4("missing stsc".into()))?;
+        .ok_or_else(|| Mp4Error::container("missing stsc"))?;
     file.seek(SeekFrom::Start(stsc.content_start()))?;
     let (_version, _) = read_full_box_version_flags(file)?;
     let entry_count = read_u32(file)?;
@@ -292,11 +295,11 @@ fn parse_stsz(file: &mut File, stbl: &BoxHeader) -> Result<Vec<u32>> {
         return Ok(sizes);
     }
     if find_child(file, stbl.content_start(), stbl.end(), STZ2)?.is_some() {
-        return Err(DrmError::Mp4(
-            "compact sample size (stz2) is not supported yet".into(),
+        return Err(Mp4Error::container(
+            "compact sample size (stz2) is not supported yet",
         ));
     }
-    Err(DrmError::Mp4("missing stsz".into()))
+    Err(Mp4Error::container("missing stsz"))
 }
 
 fn parse_chunk_offsets(file: &mut File, stbl: &BoxHeader) -> Result<Vec<u64>> {
@@ -320,7 +323,7 @@ fn parse_chunk_offsets(file: &mut File, stbl: &BoxHeader) -> Result<Vec<u64>> {
         }
         return Ok(out);
     }
-    Err(DrmError::Mp4("missing stco/co64".into()))
+    Err(Mp4Error::container("missing stco/co64"))
 }
 
 /// Absolute duration of the audio track in milliseconds.
@@ -348,7 +351,7 @@ pub struct Mp4aConfig {
 /// Read sample-rate / channel count / ASC from a clear `mp4a` sample entry.
 pub fn extract_mp4a_config(mp4: &Mp4File) -> Result<Mp4aConfig> {
     if mp4.audio.sample_entry_kind != SampleEntryKind::Mp4a {
-        return Err(DrmError::Mp4(format!(
+        return Err(Mp4Error::container(format!(
             "expected clear mp4a sample entry, found {:?}",
             mp4.audio.sample_entry_kind
         )));
@@ -358,18 +361,18 @@ pub fn extract_mp4a_config(mp4: &Mp4File) -> Result<Mp4aConfig> {
         mp4.audio
             .sample_entry_type_offset
             .checked_sub(mp4.moov.start)
-            .ok_or_else(|| DrmError::Mp4("sample entry outside moov".into()))?,
+            .ok_or_else(|| Mp4Error::container("sample entry outside moov"))?,
     )
-    .map_err(|_| DrmError::Mp4("sample entry offset overflow".into()))?;
+    .map_err(|_| Mp4Error::container("sample entry offset overflow"))?;
     if type_rel < 4 || type_rel + 4 > moov.len() {
-        return Err(DrmError::Mp4("mp4a type offset invalid".into()));
+        return Err(Mp4Error::container("mp4a type offset invalid"));
     }
     let entry_pos = type_rel - 4;
     let entry_size =
         u32::from_be_bytes(moov[entry_pos..entry_pos + 4].try_into().unwrap()) as usize;
     let entry_end = entry_pos + entry_size;
     if entry_end > moov.len() || entry_size < 36 {
-        return Err(DrmError::Mp4("mp4a sample entry truncated".into()));
+        return Err(Mp4Error::container("mp4a sample entry truncated"));
     }
     // AudioSampleEntry: after size(4)+type(4)+reserved(6)+data_ref(2)+reserved(8)
     // → channelcount(2) + samplesize(2) + pre(2) + reserved(2) + samplerate(4)
@@ -391,13 +394,13 @@ pub fn extract_mp4a_config(mp4: &Mp4File) -> Result<Mp4aConfig> {
     };
 
     let children_start = entry_pos + 36;
-    let esds = find_child_fourcc(moov, children_start, entry_end, b"esds")?
-        .ok_or_else(|| DrmError::Mp4("mp4a missing esds".into()))?;
+    let esds = find_child_in_range(moov, children_start, entry_end, b"esds")?
+        .ok_or_else(|| Mp4Error::container("mp4a missing esds"))?;
     let asc = parse_asc_from_esds(&moov[esds.0..esds.1])?;
     let channels = channels_from_asc(&asc).unwrap_or(channels.max(1));
     if sample_rate == 0 || channels == 0 {
-        return Err(DrmError::Mp4(
-            "mp4a config missing sample rate or channels".into(),
+        return Err(Mp4Error::container(
+            "mp4a config missing sample rate or channels",
         ));
     }
     Ok(Mp4aConfig {
@@ -407,31 +410,9 @@ pub fn extract_mp4a_config(mp4: &Mp4File) -> Result<Mp4aConfig> {
     })
 }
 
-fn find_child_fourcc(
-    buf: &[u8],
-    start: usize,
-    end: usize,
-    fourcc: &[u8; 4],
-) -> Result<Option<(usize, usize)>> {
-    let mut pos = start;
-    while pos + 8 <= end {
-        let size = u32::from_be_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
-        if size < 8 || pos + size > end {
-            break;
-        }
-        let kind = &buf[pos + 4..pos + 8];
-        let box_end = pos + size;
-        if kind == fourcc {
-            return Ok(Some((pos, box_end)));
-        }
-        pos = box_end;
-    }
-    Ok(None)
-}
-
 fn parse_asc_from_esds(esds_box: &[u8]) -> Result<Vec<u8>> {
     if esds_box.len() < 12 {
-        return Err(DrmError::Mp4("esds too small".into()));
+        return Err(Mp4Error::container("esds too small"));
     }
     // size(4)+type(4)+version/flags(4) + descriptors
     let mut i = 12;
@@ -443,14 +424,14 @@ fn parse_asc_from_esds(esds_box: &[u8]) -> Result<Vec<u8>> {
         let end = i
             .checked_add(len)
             .filter(|e| *e <= esds_box.len())
-            .ok_or_else(|| DrmError::Mp4("esds descriptor truncated".into()))?;
+            .ok_or_else(|| Mp4Error::container("esds descriptor truncated"))?;
         if tag == 0x05 {
             return Ok(esds_box[i..end].to_vec());
         }
         if tag == 0x03 {
             // ES_Descriptor: ES_ID(2) + flags(1) [+ optional] then nested descriptors.
             if end - i < 3 {
-                return Err(DrmError::Mp4("ES_Descriptor truncated".into()));
+                return Err(Mp4Error::container("ES_Descriptor truncated"));
             }
             let flags = esds_box[i + 2];
             let mut nest = i + 3;
@@ -459,12 +440,12 @@ fn parse_asc_from_esds(esds_box: &[u8]) -> Result<Vec<u8>> {
             }
             if flags & 0x40 != 0 {
                 if nest >= end {
-                    return Err(DrmError::Mp4("ES_Descriptor URL truncated".into()));
+                    return Err(Mp4Error::container("ES_Descriptor URL truncated"));
                 }
                 let url_len = esds_box[nest] as usize;
                 nest = nest
                     .checked_add(1 + url_len)
-                    .ok_or_else(|| DrmError::Mp4("ES_Descriptor URL overflow".into()))?;
+                    .ok_or_else(|| Mp4Error::container("ES_Descriptor URL overflow"))?;
             }
             if flags & 0x20 != 0 {
                 nest += 2; // OCR ES_ID
@@ -482,8 +463,8 @@ fn parse_asc_from_esds(esds_box: &[u8]) -> Result<Vec<u8>> {
         }
         i = end;
     }
-    Err(DrmError::Mp4(
-        "esds missing DecoderSpecificInfo (tag 0x05)".into(),
+    Err(Mp4Error::container(
+        "esds missing DecoderSpecificInfo (tag 0x05)",
     ))
 }
 
@@ -497,7 +478,7 @@ fn find_desc_tag(buf: &[u8], want: u8) -> Result<Option<Vec<u8>>> {
         let end = i
             .checked_add(len)
             .filter(|e| *e <= buf.len())
-            .ok_or_else(|| DrmError::Mp4("descriptor truncated".into()))?;
+            .ok_or_else(|| Mp4Error::container("descriptor truncated"))?;
         if tag == want {
             return Ok(Some(buf[i..end].to_vec()));
         }
@@ -515,7 +496,7 @@ fn read_expandable_len(buf: &[u8], mut i: usize) -> Result<(usize, usize)> {
     let mut length = 0usize;
     for _ in 0..4 {
         if i >= buf.len() {
-            return Err(DrmError::Mp4("expandable length truncated".into()));
+            return Err(Mp4Error::container("expandable length truncated"));
         }
         let b = buf[i];
         i += 1;
@@ -524,7 +505,7 @@ fn read_expandable_len(buf: &[u8], mut i: usize) -> Result<(usize, usize)> {
             return Ok((length, i));
         }
     }
-    Err(DrmError::Mp4("expandable length too long".into()))
+    Err(Mp4Error::container("expandable length too long"))
 }
 
 fn channels_from_asc(asc: &[u8]) -> Option<u16> {

@@ -14,6 +14,7 @@ bookclerk-config.workspace = true
 # Capability probe only: the pool reports at startup whether this platform can
 # confine a worker at all, instead of letting the first acquire discover it.
 bookclerk-sandbox.workspace = true
+bookclerk-mp4.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util"] }

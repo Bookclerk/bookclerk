@@ -5,6 +5,7 @@ members = [
     "crates/bookclerk-enrich",
     "crates/bookclerk-sandbox",
     "crates/bookclerk-jail",
+    "crates/bookclerk-mp4",
     "crates/bookclerk-media",
     "crates/bookclerk-media-worker",
     "crates/bookclerk-storage",
@@ -60,6 +61,7 @@ bookclerk-plugin-integration-audiobookshelf = { path = "crates/bookclerk-plugins
 bookclerk-enrich = { path = "crates/bookclerk-enrich" }
 bookclerk-sandbox = { path = "crates/bookclerk-sandbox" }
 bookclerk-jail = { path = "crates/bookclerk-jail" }
+bookclerk-mp4 = { path = "crates/bookclerk-mp4" }
 bookclerk-media = { path = "crates/bookclerk-media" }
 bookclerk-media-worker = { path = "crates/bookclerk-media-worker" }
 bookclerk-storage = { path = "crates/bookclerk-storage" }
@@ -72,7 +74,9 @@ bookclerk-search = { path = "crates/bookclerk-search" }
 bookclerk-integrations = { path = "crates/bookclerk-integrations" }
 bookclerk-discover = { path = "crates/bookclerk-discover" }
 bookclerk-plugin-sdk = { path = "crates/bookclerk-plugin-sdk" }
-bookclerk-plugin = { path = "crates/bookclerk-plugin" }
+# Off by default so the hosts decide which stores they link; a member cannot turn
+# an inherited dependency's default features back off.
+bookclerk-plugin = { path = "crates/bookclerk-plugin", default-features = false }
 
 # Async / runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "io-std", "sync", "time", "process", "signal"] }

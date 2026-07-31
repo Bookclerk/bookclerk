@@ -4,15 +4,16 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-use super::boxutil::{
+use bookclerk_mp4::boxutil::{
     find_child, read_box_header, read_fourcc, read_full_box_version_flags, read_u32, read_u64,
     read_u8, walk_children, BoxHeader, FourCC, DASH, ENCA, FTYP, HDLR, MDAT, MDHD, MDIA, MINF,
     MOOF, MOOV, MVEX, MVHD, SCHI, SCHM, SENC, SIDX, SINF, STBL, STSD, TENC, TFHD, TRAF, TRAK, TRUN,
 };
-use super::remux::{
-    find_box_range, find_direct_child, splice_replace, write_progressive_m4b, ProgressiveWriteInput,
+use bookclerk_mp4::edit::{find_box_range, find_direct_child, splice_replace};
+use bookclerk_mp4::{
+    write_progressive_m4b, Mp4Error, ProgressiveWriteInput, SampleReader, TrimRange,
 };
-use super::TrimRange;
+
 use crate::drm::crypto::{decrypt_cenc_sample_in_place, expand_cenc_iv, parse_aes128_hex};
 use crate::drm::error::{DrmError, Result};
 use crate::drm::DecryptOutcome;
@@ -100,7 +101,7 @@ pub fn decrypt_dash_cenc(
     let sample_sizes: Vec<u32> = selected.iter().map(|s| s.size).collect();
     let durations: Vec<u32> = selected.iter().map(|s| s.duration).collect();
     let moov = patch_dash_moov(&dash.moov_bytes)?;
-    let mut sample_src = File::open(input)?;
+    let mut sample_src = SampleReader::open(input)?;
 
     write_progressive_m4b(
         output,
@@ -113,15 +114,12 @@ pub fn decrypt_dash_cenc(
             mvhd_timescale: dash.mvhd_timescale,
             sample_sizes: &sample_sizes,
             durations: &durations,
-            rewrite_ftyp: true,
         },
         |i, buf| {
             let sample = &selected[i];
-            buf.resize(sample.size as usize, 0);
-            sample_src.seek(SeekFrom::Start(sample.offset))?;
-            sample_src.read_exact(buf)?;
+            sample_src.read_sample(sample.offset, sample.size as usize, buf)?;
             let iv = sample.iv.ok_or_else(|| {
-                DrmError::Mp4(format!(
+                Mp4Error::transform(format!(
                     "DASH sample {i} (offset {}) missing CENC IV — refusing to copy encrypted bytes",
                     sample.offset
                 ))
@@ -311,15 +309,20 @@ fn parse_mvhd(file: &mut File, moov: &BoxHeader) -> Result<(u32, u64)> {
 
 fn parse_dash_audio_track(file: &mut File, moov: &BoxHeader) -> Result<DashAudioMeta> {
     let mut result = None;
-    walk_children(file, moov.content_start(), moov.end(), |file, header| {
-        if header.kind != TRAK || result.is_some() {
-            return Ok(());
-        }
-        if let Some(v) = try_parse_dash_audio_trak(file, header)? {
-            result = Some(v);
-        }
-        Ok(())
-    })?;
+    walk_children(
+        file,
+        moov.content_start(),
+        moov.end(),
+        |file, header| -> Result<()> {
+            if header.kind != TRAK || result.is_some() {
+                return Ok(());
+            }
+            if let Some(v) = try_parse_dash_audio_trak(file, header)? {
+                result = Some(v);
+            }
+            Ok(())
+        },
+    )?;
 
     let trex = parse_trex_defaults(file, moov)?;
     let track = result.ok_or_else(|| DrmError::Mp4("DASH: no audio track".into()))?;
@@ -352,19 +355,24 @@ fn parse_trex_defaults(file: &mut File, moov: &BoxHeader) -> Result<(Option<u32>
     };
     let mut duration = None;
     let mut size = None;
-    walk_children(file, mvex.content_start(), mvex.end(), |file, header| {
-        if header.kind.0 != *b"trex" {
-            return Ok(());
-        }
-        file.seek(SeekFrom::Start(header.content_start()))?;
-        let (_v, _) = read_full_box_version_flags(file)?;
-        let _track_id = read_u32(file)?;
-        let _desc = read_u32(file)?;
-        duration = Some(read_u32(file)?);
-        size = Some(read_u32(file)?);
-        let _flags = read_u32(file)?;
-        Ok(())
-    })?;
+    walk_children(
+        file,
+        mvex.content_start(),
+        mvex.end(),
+        |file, header| -> Result<()> {
+            if header.kind.0 != *b"trex" {
+                return Ok(());
+            }
+            file.seek(SeekFrom::Start(header.content_start()))?;
+            let (_v, _) = read_full_box_version_flags(file)?;
+            let _track_id = read_u32(file)?;
+            let _desc = read_u32(file)?;
+            duration = Some(read_u32(file)?);
+            size = Some(read_u32(file)?);
+            let _flags = read_u32(file)?;
+            Ok(())
+        },
+    )?;
     Ok((duration, size))
 }
 

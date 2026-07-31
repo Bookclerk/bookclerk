@@ -55,6 +55,16 @@ jobs:
       - name: Plugin host without in-process sources
         run: cargo check -p bookclerk-plugin --no-default-features
 
+      # A packager who may not ship DRM code needs the hosts themselves to build
+      # without a store, not just the plugin host crate. The script also asserts
+      # no cipher survives in that graph, which is the part a refactor can break
+      # silently.
+      - name: Hosts build store-free, and stay cipher-free
+        run: |
+          cargo clippy -p bookclerk-cli -p bookclerkd --no-default-features \
+            --all-targets -- -D warnings
+          ./scripts/check-store-free-hosts.sh
+
       - name: Build first-party plugin artifacts
         run: |
           cargo build -p bookclerk-plugin-echo-integration \

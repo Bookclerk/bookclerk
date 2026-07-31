@@ -132,14 +132,19 @@ fn build_profile(policy: &Policy) -> String {
 
     if policy.exec_allowed() {
         out.push_str("(allow process-exec)\n");
-        // dyld boots by locating the shared cache, and that begins with reading
-        // the root directory. Without this, `exec` dies inside
-        // `dyld4::CacheFinder` on `deny(1) file-read-data /` — and says nothing,
-        // because dyld reports through the crash log rather than stderr.
+        // Mapping an executable image is a distinct operation from reading the
+        // file, and `(deny default)` refuses it. Reading `/bin/sh` is therefore
+        // not enough to run it: the kernel maps the image and the dyld shared
+        // cache before any user code exists to report a problem, so the exec'd
+        // program dies silently instead of returning EPERM. That is invisible to
+        // a process that finished its own dyld work *before* confining itself,
+        // which is why only the launcher's hand-off hits it.
         //
-        // `literal` rather than `subpath`: the latter spelling of "/" would grant
-        // the entire filesystem. This permits listing the root directory, whose
-        // top-level names are not a secret, and nothing below it.
+        // Scoped to the paths already readable, so this grants no new visibility
+        // — only the right to treat what is readable as an executable image.
+        push_paths(&mut out, "file-map-executable", &reads, &writes);
+        // dyld still needs to list "/" to locate the shared cache before the
+        // handoff target runs; without this the exec'd program SIGABRTs silently.
         out.push_str("(allow file-read-data (literal \"/\"))\n");
     }
 
@@ -161,25 +166,25 @@ fn build_profile(policy: &Policy) -> String {
         }
     }
 
-    push_paths(&mut out, "file-read*", &reads);
+    push_paths(&mut out, "file-read*", &reads, &[]);
     // Writable paths must also be readable; SBPL treats the two separately.
-    push_paths(&mut out, "file-read* file-write*", &writes);
+    push_paths(&mut out, "file-read* file-write*", &writes, &[]);
 
     out
 }
 
-/// Emit `(allow <operations> …paths)`, or nothing when there are no paths.
+/// Emit `(allow <operations> …paths)`, or nothing when no path qualifies.
 ///
-/// An operation with no filter allows it everywhere, so an empty allowlist has to
+/// An operation with no filter allows it everywhere, so an empty allowlist must
 /// produce no rule at all rather than an unfiltered grant.
-fn push_paths(out: &mut String, operations: &str, paths: &[PathBuf]) {
-    if paths.is_empty() {
+fn push_paths(out: &mut String, operations: &str, first: &[PathBuf], second: &[PathBuf]) {
+    if first.is_empty() && second.is_empty() {
         return;
     }
     out.push_str("(allow ");
     out.push_str(operations);
     out.push('\n');
-    for path in paths {
+    for path in first.iter().chain(second) {
         push_path(out, path);
     }
     out.push_str(")\n");
@@ -221,6 +226,20 @@ fn escape_sbpl(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The path filters of one `(allow …)` rule.
+    ///
+    /// Path lines end in `")` , so the rule's own closing paren is the only one
+    /// sitting alone on a line.
+    fn rule_body<'a>(profile: &'a str, operations: &str) -> &'a str {
+        let marker = format!("(allow {operations}\n");
+        let start = profile
+            .find(&marker)
+            .unwrap_or_else(|| panic!("no {operations} rule in:\n{profile}"))
+            + marker.len();
+        let body = &profile[start..];
+        &body[..body.find("\n)\n").expect("rule should close")]
+    }
 
     #[test]
     fn profile_is_deny_default() {
@@ -321,9 +340,30 @@ mod tests {
         assert!(with.contains("(allow process-exec)"));
     }
 
-    /// dyld cannot find the shared cache without reading the root directory, so
-    /// an exec'd program aborts before it runs. The grant has to be `literal`:
-    /// `(subpath "/")` would hand over the whole filesystem.
+    /// Reading a program is not enough to run it: the kernel maps the image
+    /// before any user code exists, so a missing `file-map-executable` kills the
+    /// exec'd program with no diagnostic at all. The grant must cover the system
+    /// set, since that is where `/bin/sh` and the dyld cache live.
+    #[test]
+    fn exec_also_grants_mapping_the_images_it_will_run() {
+        let profile = build_profile(&Policy::new("test").allow_exec(true));
+        let mapping = rule_body(&profile, "file-map-executable");
+        for needed in ["/usr", "/bin"] {
+            assert!(
+                mapping.contains(&format!("\"{needed}\"")),
+                "{needed} should be mappable: {mapping}"
+            );
+        }
+    }
+
+    /// Without exec there is nothing to map, and an unscoped grant would be the
+    /// widest rule in the profile.
+    #[test]
+    fn mapping_is_not_granted_without_exec() {
+        let profile = build_profile(&Policy::new("test"));
+        assert!(!profile.contains("file-map-executable"), "{profile}");
+    }
+
     #[test]
     fn exec_grants_reading_the_root_directory_and_not_its_contents() {
         let profile = build_profile(&Policy::new("test").allow_exec(true));
@@ -334,12 +374,6 @@ mod tests {
         assert!(!profile.contains("(subpath \"/\")"), "{profile}");
     }
 
-    #[test]
-    fn the_root_directory_is_not_readable_without_exec() {
-        let profile = build_profile(&Policy::new("test"));
-        assert!(!profile.contains("(literal \"/\")"), "{profile}");
-    }
-
     /// An operation with no path filter allows it everywhere, which would turn
     /// an empty allowlist into the opposite of what it says.
     #[test]
@@ -347,5 +381,6 @@ mod tests {
         let profile = build_profile(&Policy::new("test").system_paths(false).allow_exec(true));
         assert!(!profile.contains("file-read*"), "{profile}");
         assert!(!profile.contains("file-write*"), "{profile}");
+        assert!(!profile.contains("file-map-executable"), "{profile}");
     }
 }

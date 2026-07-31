@@ -74,6 +74,7 @@ discovered but not loaded yet.
 | Store adapters (plugins) | `bookclerk-plugins/source-{audible,libro,chirp,graphicaudio}` (lib + guest bin) |
 | ABS integration (plugin) | `bookclerk-plugins/integration-audiobookshelf` (lib + guest bin) |
 | Clear-media packaging | `bookclerk-media` (remux / fixup / MP3; no DRM) |
+| MP4 container plumbing | `bookclerk-mp4` (shared with store plugins; no cryptography) |
 | Process confinement | `bookclerk-sandbox` (Landlock+seccomp / Seatbelt / AppContainer) |
 | Guest jail launcher | `bookclerk-jail` (applies a policy, then `exec`s the guest) |
 | Acquire orchestration | `bookclerk-acquire` |

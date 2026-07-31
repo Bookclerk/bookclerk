@@ -1,10 +1,15 @@
 //! Minimal progressive AAC-LC → M4B muxer (single audio track).
 
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use crate::error::{MediaError, Result};
+
+/// Buffer for the access-unit copy. An AU is a few hundred bytes and an
+/// audiobook has a couple of million of them, so an unbuffered handle would
+/// spend the run in `write`/`read` syscalls.
+pub(crate) const IO_BUFFER_BYTES: usize = 1 << 20;
 
 /// Parameters for writing a single-track AAC-LC M4B while streaming AU payloads.
 #[derive(Debug, Clone)]
@@ -104,7 +109,7 @@ where
         media_duration,
     )?;
 
-    let mut out = File::create(output)?;
+    let mut out = BufWriter::with_capacity(IO_BUFFER_BYTES, File::create(output)?);
     out.write_all(&ftyp)?;
 
     let mdat_size = mdat_header_len + payload_total;
@@ -129,7 +134,9 @@ where
         out.write_all(&au_buf)?;
     }
     out.write_all(&moov)?;
-    out.sync_all()?;
+    out.into_inner()
+        .map_err(std::io::IntoInnerError::into_error)?
+        .sync_all()?;
     Ok(())
 }
 
@@ -137,8 +144,9 @@ where
 pub fn write_aac_m4b_from_reader(
     output: &Path,
     req: &MuxAacStreamRequest<'_>,
-    mut reader: impl Read,
+    reader: impl Read,
 ) -> Result<()> {
+    let mut reader = BufReader::with_capacity(IO_BUFFER_BYTES, reader);
     write_aac_m4b_streaming(output, req, |size, buf| {
         buf.resize(size as usize, 0);
         reader

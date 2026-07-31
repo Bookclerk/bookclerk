@@ -9,9 +9,7 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::drm::{
-    decrypt_adrm, decrypt_cenc, CencDecryptRequest, DecryptRequest, TrimRange as DrmTrimRange,
-};
+use crate::drm::{decrypt_adrm, decrypt_cenc, CencDecryptRequest, DecryptRequest};
 use audible_rs::api::client::Client;
 use audible_rs::auth::login::{self as login_flow, LoginServer};
 use audible_rs::auth::Authenticator;
@@ -312,10 +310,7 @@ pub async fn guest_fetch_title(
                 }
             }
         }
-        brand_trim_range(brand, runtime_ms).map(|t| DrmTrimRange {
-            start_ms: t.start_ms,
-            end_ms: t.end_ms,
-        })
+        brand_trim_range(brand, runtime_ms)
     } else {
         None
     };

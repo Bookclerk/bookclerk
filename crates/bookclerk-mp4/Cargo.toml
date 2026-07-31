@@ -1,0 +1,25 @@
+[package]
+name = "bookclerk-mp4"
+description = "ISO-BMFF container plumbing shared by media packaging and store plugins (no cryptography)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+# Synthetic MP4 writer for tests. Enabled as a dev-dependency by this crate and
+# by the store plugins, never by a release build.
+fixtures = []
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+bookclerk-mp4 = { workspace = true, features = ["fixtures"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::mp4::TrimRange;
+use bookclerk_mp4::TrimRange;
 
 /// Brand intro/outro durations from Audible `chapter_info`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

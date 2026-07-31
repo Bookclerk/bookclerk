@@ -3,9 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::drm::{
-    decrypt_adrm, decrypt_cenc, CencDecryptRequest, DecryptRequest, TrimRange as DrmTrimRange,
-};
+use crate::drm::{decrypt_adrm, decrypt_cenc, CencDecryptRequest, DecryptRequest};
 use async_trait::async_trait;
 use bookclerk_config::{AudioQuality, Config};
 use bookclerk_library::{secret_kind, SourceScope};
@@ -384,10 +382,7 @@ impl ContentSource for AudibleSource {
                     }
                 }
             }
-            brand_trim_range(brand, runtime_ms).map(|t| DrmTrimRange {
-                start_ms: t.start_ms,
-                end_ms: t.end_ms,
-            })
+            brand_trim_range(brand, runtime_ms)
         } else {
             None
         };

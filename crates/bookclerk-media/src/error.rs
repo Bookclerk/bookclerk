@@ -48,3 +48,14 @@ pub enum MediaError {
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
+
+impl From<bookclerk_mp4::Mp4Error> for MediaError {
+    fn from(err: bookclerk_mp4::Mp4Error) -> Self {
+        use bookclerk_mp4::Mp4Error;
+        match err {
+            Mp4Error::Io(io) => Self::Io(io),
+            Mp4Error::Container(detail) => Self::Mp4(detail),
+            Mp4Error::Transform(detail) => Self::Native(detail),
+        }
+    }
+}
