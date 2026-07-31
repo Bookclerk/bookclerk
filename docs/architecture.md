@@ -121,6 +121,7 @@ Relative `output.local.root` values resolve under this directory.
 ## Control plane (`bookclerkd`)
 
 Default listen: `127.0.0.1:8787` (`BOOKCLERK_DAEMON_LISTEN` / `daemon.listen`).
+IPv6 loopback uses bracketed form: `[::1]:8787`.
 
 Operator auth (`[daemon.auth]`, token file / `BOOKCLERK_OPERATOR_TOKEN`) gates
 the API. See [gui.md](gui.md) and [operations.md](operations.md).

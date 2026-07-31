@@ -83,7 +83,8 @@ pub async fn login(
     Json(body): Json<LoginRequest>,
 ) -> Result<Response, StatusCode> {
     let auth = state.auth.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let default_view = default_view_for_subject(&state.library, OPERATOR_PREFS_KEY, None).await;
+    let library = state.library_snapshot().await;
+    let default_view = default_view_for_subject(&library, OPERATOR_PREFS_KEY, None).await;
     if !auth.enabled {
         return Ok((
             StatusCode::OK,
@@ -161,7 +162,8 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
     };
 
     if !auth.enabled {
-        let default_view = default_view_for_subject(&state.library, OPERATOR_PREFS_KEY, None).await;
+        let library = state.library_snapshot().await;
+        let default_view = default_view_for_subject(&library, OPERATOR_PREFS_KEY, None).await;
         return (
             StatusCode::OK,
             Json(AuthMeResponse {
@@ -175,7 +177,8 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
     }
 
     if authorize_operator(auth, &headers).await {
-        let default_view = default_view_for_subject(&state.library, OPERATOR_PREFS_KEY, None).await;
+        let library = state.library_snapshot().await;
+        let default_view = default_view_for_subject(&library, OPERATOR_PREFS_KEY, None).await;
         return (
             StatusCode::OK,
             Json(AuthMeResponse {
@@ -188,9 +191,10 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
         );
     }
 
-    if let Some(identity) = portal_identity_from_headers(&state.library, &headers).await {
+    let library = state.library_snapshot().await;
+    if let Some(identity) = portal_identity_from_headers(&library, &headers).await {
         let key = portal_prefs_key(identity.id);
-        let default_view = default_view_for_subject(&state.library, &key, Some(identity.id)).await;
+        let default_view = default_view_for_subject(&library, &key, Some(identity.id)).await;
         return (
             StatusCode::OK,
             Json(AuthMeResponse {
@@ -253,7 +257,8 @@ pub async fn require_operator_or_portal_auth(
     if authorize_operator(auth, req.headers()).await {
         return Ok(next.run(req).await);
     }
-    if portal_identity_from_headers(&state.library, req.headers())
+    let library = state.library_snapshot().await;
+    if portal_identity_from_headers(&library, req.headers())
         .await
         .is_some()
     {
@@ -274,7 +279,8 @@ pub async fn caller_portal_identity(
     if authorize_operator(auth, headers).await {
         return None;
     }
-    portal_identity_from_headers(&state.library, headers).await
+    let library = state.library_snapshot().await;
+    portal_identity_from_headers(&library, headers).await
 }
 
 /// Subject key + optional portal identity id for the caller's preferences row.
@@ -289,7 +295,8 @@ pub async fn prefs_subject_for_caller(
     } else {
         return (OPERATOR_PREFS_KEY.to_string(), None);
     }
-    if let Some(identity) = portal_identity_from_headers(&state.library, headers).await {
+    let library = state.library_snapshot().await;
+    if let Some(identity) = portal_identity_from_headers(&library, headers).await {
         return (portal_prefs_key(identity.id), Some(identity.id));
     }
     (OPERATOR_PREFS_KEY.to_string(), None)

@@ -15,13 +15,9 @@ use crate::api::{AppState, JobInfo};
 use crate::registry::default_registry_with_plugins;
 
 async fn notify_integrations(state: &AppState, asin: &str, storage_key: &str) {
-    bookclerk_integrations::emit_book_acquired(
-        &state.integrations,
-        &state.library,
-        asin,
-        storage_key,
-    )
-    .await;
+    let library = state.library.read().await.clone();
+    bookclerk_integrations::emit_book_acquired(&state.integrations, &library, asin, storage_key)
+        .await;
 }
 
 /// Enqueue a library scan and run it in the background.
@@ -109,10 +105,11 @@ pub async fn run_scan(state: &AppState, account: Option<&str>) -> anyhow::Result
     let cfg = state.config.read().await.clone();
     let paths = cfg.paths();
     paths.ensure_dirs()?;
+    let library = state.library.read().await.clone();
     let registry = default_registry_with_plugins(&cfg).await?;
     let summary = registry
         .scan_all(
-            &state.library,
+            &library,
             ScanOptions {
                 accounts: account.map(|a| vec![a.to_string()]).unwrap_or_default(),
                 page_size: 50,
@@ -122,11 +119,9 @@ pub async fn run_scan(state: &AppState, account: Option<&str>) -> anyhow::Result
         )
         .await?;
     if cfg.library.enrich_from_audible {
-        if let Err(err) = bookclerk_enrich::enrich_books_from_audible(
-            &state.library,
-            cfg.library.enrich_min_confidence,
-        )
-        .await
+        if let Err(err) =
+            bookclerk_enrich::enrich_books_from_audible(&library, cfg.library.enrich_min_confidence)
+                .await
         {
             warn!(error = %err, "Audible enrichment failed");
         }
@@ -147,9 +142,10 @@ pub async fn run_acquire(
     let cfg = state.config.read().await.clone();
     let paths = cfg.paths();
     paths.ensure_dirs()?;
+    let library = state.library.read().await.clone();
     let destinations = bookclerk_plugin::build_acquire_destinations(
         &cfg,
-        Some(&state.library),
+        Some(&library),
         &*state.destinations.read().await,
     )
     .await?;
@@ -159,7 +155,7 @@ pub async fn run_acquire(
 
     // Match existing media first so auto-acquire does not re-download.
     let _ = match_storage_to_library(
-        &state.library,
+        &library,
         storage.as_ref(),
         MatchStorageOptions {
             account: account.map(str::to_string),
@@ -171,7 +167,7 @@ pub async fn run_acquire(
     )
     .await?;
 
-    let books = state.library.list_books(account).await?;
+    let books = library.list_books(account).await?;
     let targets: Vec<_> = books
         .into_iter()
         .filter(|b| {
@@ -224,7 +220,7 @@ pub async fn run_acquire(
         loop {
             attempts += 1;
             match acquire_book_indexed(
-                &state.library,
+                &library,
                 &destinations,
                 req.clone(),
                 Some(&mut index),

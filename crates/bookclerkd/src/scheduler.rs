@@ -78,9 +78,10 @@ fn spawn_listen_sync_loop(state: Arc<AppState>) {
             info!(?sleep_for, "scheduler sleeping until next listening sync");
             tokio::time::sleep(sleep_for).await;
 
+            let library = state.library.read().await.clone();
             let summary = state
                 .integrations
-                .sync_listening_progress_all(&state.library)
+                .sync_listening_progress_all(&library)
                 .await;
             if summary.by_provider.is_empty() {
                 info!("scheduled listening sync skipped (no capable integrations)");

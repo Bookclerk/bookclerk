@@ -8,16 +8,18 @@ mod scheduler;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use bookclerk_config::{
     init_tracing_with, read_or_create_operator_token, Config, LogFormat, TracingOptions,
 };
 use bookclerk_library::configure_master_key_with;
 use clap::Parser;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 
-use crate::api::{reload_daemon_config, resolve_ui_dist, router, AppState};
+use crate::api::{reload_daemon_config, resolve_ui_dist, router, validate_daemon_listen, AppState};
 use crate::auth::OperatorAuthState;
 use crate::registry::default_registry_with_plugins;
 use crate::scheduler::spawn_scheduler;
@@ -90,23 +92,19 @@ async fn main() -> anyhow::Result<()> {
     configure_master_key_with(&paths.files_dir, config.auth_password().as_deref())?;
 
     let database_registry = bookclerk_plugin::load_external_database(&config).await?;
-    let library = bookclerk_plugin::open_library_store(&config, &database_registry).await?;
+    let library_store = bookclerk_plugin::open_library_store(&config, &database_registry).await?;
     let integrations = bookclerk_plugin::load_integrations(&config).await?;
     let destinations =
-        bookclerk_plugin::load_external_destinations(&config, Some(library.db())).await?;
+        bookclerk_plugin::load_external_destinations(&config, Some(library_store.db())).await?;
+    let library = Arc::new(RwLock::new(library_store));
+    let database_registry = Arc::new(RwLock::new(database_registry));
     let sources = {
         let cfg = config.clone();
         default_registry_with_plugins(&cfg).await?
     };
     let auth_cfg = {
-        let listen = config.daemon.listen.clone();
         let auth = config.daemon.auth.clone();
-        if !auth.enabled && !listen_is_loopback(&listen) {
-            anyhow::bail!(
-                "daemon.auth.enabled=false is unsafe when listen is not loopback ({listen}); \
-                 enable operator auth or bind 127.0.0.1"
-            );
-        }
+        validate_daemon_listen(&config)?;
         auth
     };
     let operator_auth = if auth_cfg.enabled {
@@ -126,15 +124,19 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let config = Arc::new(RwLock::new(config));
+    let listen_reload = Arc::new(Notify::new());
+    let process_shutdown = Arc::new(AtomicBool::new(false));
     let state = Arc::new(AppState {
         config: config.clone(),
         library: library.clone(),
+        database_registry: database_registry.clone(),
         jobs: Arc::new(RwLock::new(Vec::new())),
         work_lock: Mutex::new(()),
         integrations: integrations.clone(),
         sources,
         destinations: Arc::new(RwLock::new(destinations)),
         auth: operator_auth,
+        listen_reload: listen_reload.clone(),
     });
 
     // Start integration watchers; mint claim tickets on new ABS users.
@@ -147,8 +149,9 @@ async fn main() -> anyhow::Result<()> {
                 let config_for_tickets = config_for_tickets.clone();
                 tokio::spawn(async move {
                     let cfg = config_for_tickets.read().await;
+                    let lib = library_for_tickets.read().await.clone();
                     match bookclerk_integrations::mint_for_external_user(
-                        &library_for_tickets,
+                        &lib,
                         &cfg,
                         &user,
                         "abs_watcher",
@@ -179,31 +182,67 @@ async fn main() -> anyhow::Result<()> {
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 
-    let cfg_snapshot = config.read().await;
-    let listen = cfg_snapshot.daemon.listen.clone();
-    drop(cfg_snapshot);
-
-    let addr: SocketAddr = listen
-        .parse()
-        .map_err(|err| anyhow::anyhow!("invalid daemon.listen '{listen}': {err}"))?;
-
     let ui_dist = resolve_ui_dist();
-    let app = router(state, ui_dist);
-    tracing::info!(%addr, "bookclerkd listening");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let app = router(state.clone(), ui_dist);
+
+    loop {
+        if process_shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+
+        let listener = loop {
+            if process_shutdown.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+
+            let listen = config.read().await.daemon.listen.clone();
+            let addr: SocketAddr = listen
+                .parse()
+                .map_err(|err| anyhow::anyhow!("invalid daemon.listen '{listen}': {err}"))?;
+
+            match tokio::net::TcpListener::bind(addr).await {
+                Ok(listener) => break listener,
+                Err(err) => {
+                    tracing::error!(
+                        %addr,
+                        error = %err,
+                        "failed to bind daemon.listen; retrying in 5s or on config reload"
+                    );
+                    tokio::select! {
+                        () = tokio::time::sleep(Duration::from_secs(5)) => {}
+                        () = listen_reload.notified() => {
+                            tracing::info!("daemon.listen changed during bind retry; re-reading address");
+                        }
+                    }
+                }
+            }
+        };
+
+        let addr = listener.local_addr()?;
+        tracing::info!(%addr, "bookclerkd listening");
+        axum::serve(listener, app.clone())
+            .with_graceful_shutdown(serve_shutdown(
+                listen_reload.clone(),
+                process_shutdown.clone(),
+            ))
+            .await?;
+
+        if process_shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+        tracing::info!(%addr, "HTTP listener shut down for rebind");
+    }
     Ok(())
 }
 
-fn listen_is_loopback(listen: &str) -> bool {
-    let host = listen
-        .strip_prefix("http://")
-        .or_else(|| listen.strip_prefix("https://"))
-        .unwrap_or(listen);
-    let host = host.split(':').next().unwrap_or(host);
-    matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
+async fn serve_shutdown(listen_reload: Arc<Notify>, process_shutdown: Arc<AtomicBool>) {
+    let process = shutdown_signal();
+    tokio::select! {
+        () = process => {
+            process_shutdown.store(true, Ordering::SeqCst);
+        }
+        () = listen_reload.notified() => {}
+    }
 }
 
 fn spawn_config_reload_signals(state: Arc<AppState>) {

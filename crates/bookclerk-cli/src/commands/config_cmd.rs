@@ -55,6 +55,35 @@ pub enum ConfigCommand {
         #[command(subcommand)]
         command: TemplateCommand,
     },
+    /// Database backend helpers (plugin switch / migration).
+    Database {
+        #[command(subcommand)]
+        command: DatabaseCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DatabaseCommand {
+    /// Copy library data from one `[database].plugin` backend to another.
+    ///
+    /// Does not change `config.toml` unless `--apply` is passed after a successful copy.
+    Migrate {
+        /// Source plugin id (`sqlite`, `d1`, `postgres`). Default: current `[database].plugin`.
+        #[arg(long)]
+        from: Option<String>,
+        /// Destination plugin id.
+        #[arg(long)]
+        to: String,
+        /// Report row counts only; do not write to the destination.
+        #[arg(long)]
+        dry_run: bool,
+        /// Allow copying into a destination that already has library rows.
+        #[arg(long)]
+        force: bool,
+        /// After a successful migrate, set `[database].plugin` to `--to` and write config.toml.
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -335,6 +364,7 @@ pub async fn run(
         }
         ConfigCommand::MasterKey { command } => run_master_key(command, config, format),
         ConfigCommand::Template { command } => run_template(command, config).await,
+        ConfigCommand::Database { command } => run_database(command, config, format).await,
     }
 }
 
@@ -577,6 +607,83 @@ async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Resu
             }
             println!("storage_key\t{key}");
             Ok(())
+        }
+    }
+}
+
+async fn run_database(
+    command: DatabaseCommand,
+    config: &Config,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    match command {
+        DatabaseCommand::Migrate {
+            from,
+            to,
+            dry_run,
+            force,
+            apply,
+        } => {
+            let from_plugin = from
+                .unwrap_or_else(|| config.database.plugin.clone())
+                .trim()
+                .to_string();
+            let to_plugin = to.trim().to_string();
+            bookclerk_config::DatabasePluginKind::parse(&from_plugin)
+                .ok_or_else(|| anyhow::anyhow!("unknown source database plugin `{from_plugin}`"))?;
+            bookclerk_config::DatabasePluginKind::parse(&to_plugin).ok_or_else(|| {
+                anyhow::anyhow!("unknown destination database plugin `{to_plugin}`")
+            })?;
+
+            let summary = bookclerk_plugin::migrate_database_plugin(
+                config,
+                &from_plugin,
+                &to_plugin,
+                &bookclerk_library::BackendMigrateOptions { dry_run, force },
+            )
+            .await?;
+
+            let mut message = if dry_run {
+                format!(
+                    "dry-run: would copy {} row(s) from `{from_plugin}` to `{to_plugin}`",
+                    summary.total_rows()
+                )
+            } else {
+                format!(
+                    "copied {} row(s) from `{from_plugin}` to `{to_plugin}`",
+                    summary.total_rows()
+                )
+            };
+
+            if apply && !dry_run {
+                let mut cfg = config.clone();
+                cfg.database.plugin = to_plugin.clone();
+                let path = cfg.paths().config_file.clone();
+                cfg.write_toml_file(&path)?;
+                message.push_str(&format!(
+                    "; updated [database].plugin and wrote {}",
+                    path.display()
+                ));
+                message.push_str(
+                    " — reload bookclerkd config (SIGHUP or POST /api/config/reload) to switch backends live",
+                );
+            } else if !dry_run {
+                message.push_str(
+                    "; [database].plugin unchanged — pass --apply to update config.toml, \
+                     then reload bookclerkd config or POST /api/database/migrate with apply",
+                );
+            }
+
+            let payload = serde_json::json!({
+                "from": from_plugin,
+                "to": to_plugin,
+                "dry_run": dry_run,
+                "apply": apply,
+                "tables": summary.tables,
+                "total_rows": summary.total_rows(),
+                "message": message,
+            });
+            emit(format, &payload, || println!("{message}"))
         }
     }
 }

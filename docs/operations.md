@@ -25,7 +25,13 @@ HTTP control plane (default `127.0.0.1:8787`):
 | `GET /api/jobs` (also `/jobs`) | yes | Job list |
 | `/` static UI | no | Built React SPA when `ui/dist` is present |
 
-Override listen with `BOOKCLERK_DAEMON_LISTEN` or `daemon.listen`. Operator auth
+Override listen with `BOOKCLERK_DAEMON_LISTEN` or `daemon.listen`. The Web UI and
+API share this bind address. IPv4 and IPv6 are supported — use bracketed form for
+IPv6 (e.g. `[::1]:8787`). Changing `daemon.listen` in config and reloading
+(`POST /api/config/reload` or SIGHUP) **rebinds the HTTP listener without
+restarting** the process.
+
+Operator auth
 defaults **on** (`[daemon.auth]`); token at `$BOOKCLERK_FILES_DIR/operator.token`
 or `BOOKCLERK_OPERATOR_TOKEN`. Do not expose publicly without TLS (reverse
 proxy) and a protected token. Details: [gui.md](gui.md).

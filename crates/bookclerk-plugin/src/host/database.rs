@@ -151,6 +151,36 @@ pub async fn open_library_store(
     bookclerk_library::LibraryStore::open_from_config(config).await
 }
 
+/// Open the library for a specific `[database].plugin` id (ignoring the active config value).
+pub async fn open_library_store_for_plugin(
+    config: &Config,
+    plugin_id: &str,
+) -> bookclerk_library::Result<bookclerk_library::LibraryStore> {
+    let mut cfg = config.clone();
+    cfg.database.plugin = plugin_id.trim().to_string();
+    let registry = load_external_database(&cfg)
+        .await
+        .map_err(|err| bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string())))?;
+    open_library_store(&cfg, &registry).await
+}
+
+/// Copy library data from one database plugin backend to another.
+pub async fn migrate_database_plugin(
+    config: &Config,
+    from_plugin: &str,
+    to_plugin: &str,
+    opts: &bookclerk_library::BackendMigrateOptions,
+) -> bookclerk_library::Result<bookclerk_library::BackendMigrateSummary> {
+    if from_plugin.eq_ignore_ascii_case(to_plugin) {
+        return Err(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+            "source and destination database plugins are both `{from_plugin}`"
+        )));
+    }
+    let source = open_library_store_for_plugin(config, from_plugin).await?;
+    let dest = open_library_store_for_plugin(config, to_plugin).await?;
+    bookclerk_library::migrate_library_backend(source.db(), dest.db(), opts).await
+}
+
 #[derive(Clone)]
 struct RpcDatabaseProxy {
     client: Arc<PluginClient>,

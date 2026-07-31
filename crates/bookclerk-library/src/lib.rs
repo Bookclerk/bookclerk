@@ -9,6 +9,7 @@
 //! [`migrations`] bootstrap for D1/Postgres. The schema is a single greenfield
 //! definition in [`migrations`]. See `docs/database.md`.
 
+mod backend_migrate;
 mod db;
 pub mod entities;
 mod error;
@@ -19,6 +20,7 @@ pub mod scope;
 pub mod secrets;
 mod store;
 
+pub use backend_migrate::{migrate_library_backend, BackendMigrateOptions, BackendMigrateSummary};
 pub use db::{
     apply_pending_migrations, connect_d1, connect_from_config, connect_postgres, connect_sqlite,
     connect_sqlite_memory, resolve_d1_api_token, resolve_postgres_url, D1Proxy, SqliteProxy,
