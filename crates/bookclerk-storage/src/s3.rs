@@ -6,7 +6,10 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::config::{Credentials, Region};
+use aws_sdk_s3::operation::create_multipart_upload::builders::CreateMultipartUploadFluentBuilder;
+use aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder;
 use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::Client;
 use bookclerk_config::OutputS3Config;
 use bytes::Bytes;
@@ -15,6 +18,15 @@ use sea_orm::DatabaseConnection;
 use crate::error::{Result, StorageError};
 use crate::s3_credentials::load_s3_credentials;
 use crate::traits::{ObjectInfo, ObjectMeta, ObjectProbe, StorageBackend};
+
+/// Below this size a single `PutObject` is enough. Above it, upload in fixed-size
+/// parts so memory stays bounded and objects larger than the single-PUT limit
+/// (5 GiB on AWS) still work.
+pub(crate) const MULTIPART_THRESHOLD: u64 = 100 * 1024 * 1024;
+
+/// Each part is read into a buffer this large at most. S3 requires 5 MiB minimum
+/// per part except the last.
+pub(crate) const MULTIPART_PART_SIZE: usize = 8 * 1024 * 1024;
 
 /// S3-compatible object storage.
 #[derive(Debug, Clone)]
@@ -106,43 +118,128 @@ impl S3Backend {
     }
 
     async fn put_body(&self, key: &str, body: ByteStream, meta: ObjectMeta) -> Result<()> {
-        let mut req = self
-            .client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(self.full_key(key))
-            .body(body);
-
-        if let Some(ct) = meta.content_type {
-            req = req.content_type(ct);
-        }
-        if let Some(len) = meta.content_length {
-            req = req.content_length(len as i64);
-        }
-        if let Some(asin) = meta.asin {
-            req = req.metadata("asin", asin);
-        }
-        if let Some(title) = meta.title {
-            req = req.metadata("title", title);
-        }
-        // Logical timestamps as user-defined metadata (x-amz-meta-*). AWS S3 and
-        // most compatible providers refuse to set system Last-Modified; this is
-        // the only cost-free way to record purchased/published times at upload.
-        // Also set `mtime` (unix secs) for s3fs/rclone-style mounts.
-        if let Some(created) = meta.creation_time.clone() {
-            req = req.metadata("creation-time", created);
-        }
-        if let Some(modified) = meta.last_write_time.clone() {
-            req = req.metadata("last-write-time", modified.clone());
-            if let Some(secs) = rfc3339_unix_secs(&modified) {
-                req = req.metadata("mtime", secs.to_string());
-            }
-        }
+        let req = apply_meta_put(
+            self.client
+                .put_object()
+                .bucket(&self.bucket)
+                .key(self.full_key(key))
+                .body(body),
+            &meta,
+        );
 
         req.send()
             .await
             .map_err(|err| StorageError::S3(err.to_string()))?;
         Ok(())
+    }
+
+    async fn put_file_multipart(&self, key: &str, path: &Path, meta: ObjectMeta) -> Result<()> {
+        use tokio::io::AsyncReadExt;
+
+        let full_key = self.full_key(key);
+        let created = apply_meta_multipart(
+            self.client
+                .create_multipart_upload()
+                .bucket(&self.bucket)
+                .key(&full_key),
+            &meta,
+        )
+        .send()
+        .await
+        .map_err(|err| StorageError::S3(err.to_string()))?;
+
+        let upload_id = created.upload_id().ok_or_else(|| {
+            StorageError::S3("CreateMultipartUpload returned no upload id".into())
+        })?;
+
+        let upload = async {
+            let mut file = tokio::fs::File::open(path).await?;
+            let mut part_number: i32 = 1;
+            let mut completed = Vec::new();
+            let mut buffer = vec![0u8; MULTIPART_PART_SIZE];
+
+            loop {
+                let mut filled = 0usize;
+                while filled < MULTIPART_PART_SIZE {
+                    let n = file.read(&mut buffer[filled..]).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    filled += n;
+                }
+                if filled == 0 {
+                    break;
+                }
+
+                let uploaded = self
+                    .client
+                    .upload_part()
+                    .bucket(&self.bucket)
+                    .key(&full_key)
+                    .upload_id(upload_id)
+                    .part_number(part_number)
+                    .body(ByteStream::from(Bytes::copy_from_slice(&buffer[..filled])))
+                    .send()
+                    .await
+                    .map_err(|err| StorageError::S3(err.to_string()))?;
+
+                let etag = uploaded.e_tag().ok_or_else(|| {
+                    StorageError::S3(format!("UploadPart {part_number} returned no ETag"))
+                })?;
+                completed.push(
+                    CompletedPart::builder()
+                        .part_number(part_number)
+                        .e_tag(etag)
+                        .build(),
+                );
+                part_number += 1;
+            }
+
+            if completed.is_empty() {
+                return Err(StorageError::S3(format!(
+                    "refusing empty multipart upload for {}",
+                    path.display()
+                )));
+            }
+
+            self.client
+                .complete_multipart_upload()
+                .bucket(&self.bucket)
+                .key(&full_key)
+                .upload_id(upload_id)
+                .multipart_upload(
+                    CompletedMultipartUpload::builder()
+                        .set_parts(Some(completed))
+                        .build(),
+                )
+                .send()
+                .await
+                .map_err(|err| StorageError::S3(err.to_string()))?;
+            Ok(())
+        };
+
+        match upload.await {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                if let Err(abort_err) = self
+                    .client
+                    .abort_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(&full_key)
+                    .upload_id(upload_id)
+                    .send()
+                    .await
+                {
+                    tracing::warn!(
+                        key = %full_key,
+                        upload_id,
+                        error = %abort_err,
+                        "failed to abort multipart upload after error"
+                    );
+                }
+                Err(err)
+            }
+        }
     }
 }
 
@@ -166,11 +263,25 @@ impl StorageBackend for S3Backend {
 
     async fn put_file(&self, key: &str, path: &Path, meta: ObjectMeta) -> Result<()> {
         let mut meta = meta;
-        if meta.content_length.is_none() {
-            if let Ok(stat) = tokio::fs::metadata(path).await {
+        let len = match meta.content_length {
+            Some(len) => len,
+            None => {
+                let stat = tokio::fs::metadata(path).await?;
                 meta.content_length = Some(stat.len());
+                stat.len()
             }
+        };
+
+        if use_multipart(len) {
+            tracing::debug!(
+                key,
+                bytes = len,
+                part_size = MULTIPART_PART_SIZE,
+                "uploading large object via S3 multipart"
+            );
+            return self.put_file_multipart(key, path, meta).await;
         }
+
         let body = ByteStream::from_path(path)
             .await
             .map_err(|err| StorageError::S3(format!("failed to open {}: {err}", path.display())))?;
@@ -336,6 +447,62 @@ impl StorageBackend for S3Backend {
     }
 }
 
+/// True when a file should be uploaded in parts rather than one `PutObject`.
+#[must_use]
+pub(crate) fn use_multipart(content_length: u64) -> bool {
+    content_length >= MULTIPART_THRESHOLD
+}
+
+fn apply_meta_put(mut req: PutObjectFluentBuilder, meta: &ObjectMeta) -> PutObjectFluentBuilder {
+    if let Some(ct) = &meta.content_type {
+        req = req.content_type(ct.clone());
+    }
+    if let Some(len) = meta.content_length {
+        req = req.content_length(len as i64);
+    }
+    if let Some(asin) = &meta.asin {
+        req = req.metadata("asin", asin.clone());
+    }
+    if let Some(title) = &meta.title {
+        req = req.metadata("title", title.clone());
+    }
+    if let Some(created) = &meta.creation_time {
+        req = req.metadata("creation-time", created.clone());
+    }
+    if let Some(modified) = &meta.last_write_time {
+        req = req.metadata("last-write-time", modified.clone());
+        if let Some(secs) = rfc3339_unix_secs(modified) {
+            req = req.metadata("mtime", secs.to_string());
+        }
+    }
+    req
+}
+
+fn apply_meta_multipart(
+    mut req: CreateMultipartUploadFluentBuilder,
+    meta: &ObjectMeta,
+) -> CreateMultipartUploadFluentBuilder {
+    if let Some(ct) = &meta.content_type {
+        req = req.content_type(ct.clone());
+    }
+    if let Some(asin) = &meta.asin {
+        req = req.metadata("asin", asin.clone());
+    }
+    if let Some(title) = &meta.title {
+        req = req.metadata("title", title.clone());
+    }
+    if let Some(created) = &meta.creation_time {
+        req = req.metadata("creation-time", created.clone());
+    }
+    if let Some(modified) = &meta.last_write_time {
+        req = req.metadata("last-write-time", modified.clone());
+        if let Some(secs) = rfc3339_unix_secs(modified) {
+            req = req.metadata("mtime", secs.to_string());
+        }
+    }
+    req
+}
+
 /// Prepend `https://` when `endpoint` looks like a bare hostname (no scheme).
 #[must_use]
 pub(crate) fn normalize_s3_endpoint(endpoint: &str) -> String {
@@ -379,5 +546,12 @@ mod tests {
             "http://minio:9000"
         );
         assert_eq!(normalize_s3_endpoint("   "), "");
+    }
+
+    #[test]
+    fn multipart_is_used_from_one_hundred_mebibytes_up() {
+        assert!(!use_multipart(MULTIPART_THRESHOLD - 1));
+        assert!(use_multipart(MULTIPART_THRESHOLD));
+        assert!(use_multipart(5 * 1024 * 1024 * 1024));
     }
 }
