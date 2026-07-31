@@ -28,6 +28,7 @@ mod crates_io;
 mod discover;
 mod error;
 mod host;
+mod jail;
 mod manifest;
 mod registry;
 mod rpc;
@@ -52,7 +53,8 @@ pub use error::{PluginError, Result};
 pub use host::{
     load_external_integrations, load_external_sources, ExternalIntegration, ExternalSource,
 };
-pub use manifest::{PluginKind, PluginManifest};
+pub use jail::plugin_data_dir;
+pub use manifest::{NetworkNeed, PluginKind, PluginManifest, SandboxManifest};
 pub use registry::{
     host_target_triple, kind_keyword, validate_plugin_id, BookclerkPackageMetadata,
     PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, PRODUCT_KEYWORD, REGISTRY_KEYWORD,

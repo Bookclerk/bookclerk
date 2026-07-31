@@ -20,10 +20,13 @@
 FROM rust:1.85-bookworm AS builder
 WORKDIR /src
 COPY . .
-# bookclerk-media-worker is not optional: codec work runs in it, and both
-# binaries refuse media jobs when it is missing.
-RUN cargo build --release -p bookclerk-cli -p bookclerkd -p bookclerk-media-worker \
-    && strip target/release/bookclerk target/release/bookclerkd target/release/bookclerk-media-worker
+# Neither helper is optional. Codec work runs in bookclerk-media-worker and
+# plugin guests are started by bookclerk-jail; a host without them refuses media
+# jobs and plugins respectively rather than running either unconfined.
+RUN cargo build --release -p bookclerk-cli -p bookclerkd \
+      -p bookclerk-media-worker -p bookclerk-jail \
+    && strip target/release/bookclerk target/release/bookclerkd \
+      target/release/bookclerk-media-worker target/release/bookclerk-jail
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
@@ -34,8 +37,10 @@ RUN apt-get update \
     && chown -R bookclerk:bookclerk /data
 COPY --from=builder /src/target/release/bookclerk /usr/local/bin/bookclerk
 COPY --from=builder /src/target/release/bookclerkd /usr/local/bin/bookclerkd
-# Must land beside the host binaries: that is where the pool looks for it.
+# Both must land beside the host binaries: that is where the pool and the plugin
+# host look for them.
 COPY --from=builder /src/target/release/bookclerk-media-worker /usr/local/bin/bookclerk-media-worker
+COPY --from=builder /src/target/release/bookclerk-jail /usr/local/bin/bookclerk-jail
 COPY config/config.example.toml /etc/bookclerk/config.example.toml
 ENV BOOKCLERK_FILES_DIR=/config \
     BOOKCLERK_CONFIG=/config/config.toml \

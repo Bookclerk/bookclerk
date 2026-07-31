@@ -1395,6 +1395,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-jail"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-sandbox",
+ "libc",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "bookclerk-library"
 version = "0.1.0"
 dependencies = [
@@ -1494,6 +1504,7 @@ dependencies = [
  "bookclerk-plugin-source-chirp",
  "bookclerk-plugin-source-graphicaudio",
  "bookclerk-plugin-source-libro",
+ "bookclerk-sandbox",
  "bookclerk-source",
  "serde",
  "serde_json",
@@ -1658,6 +1669,7 @@ dependencies = [
  "libc",
  "seccompiler",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "tracing",

@@ -45,9 +45,14 @@ bookclerk daemon acquire [--asin <id>] [--account <id>]
 Sample unit: [`packaging/systemd/bookclerkd.service`](../packaging/systemd/bookclerkd.service).
 
 ```bash
-# after installing bookclerkd to /usr/local/bin and creating user/dirs:
+# after installing bookclerkd, bookclerk-media-worker, and bookclerk-jail to
+# /usr/local/bin and creating user/dirs:
 sudo systemctl enable --now bookclerkd
 ```
+
+Install all three from the same directory. `bookclerkd` looks for its helpers
+beside itself and, by default, refuses media work or declines to load an external
+plugin rather than running either unconfined.
 
 Highlights from the sample unit:
 
@@ -89,6 +94,13 @@ docker run … -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 \
 ```
 
 Copy `/etc/bookclerk/config.example.toml` from the image as a starting config.
+
+Both confined tiers work under the default Docker seccomp profile, which has
+allowed the `landlock_*` syscalls since Docker 20.10.14. On an older engine the
+syscalls are refused, and `bookclerkd` says so at startup instead of quietly
+running codecs and plugin guests unconfined. Do not reach for
+`--security-opt seccomp=unconfined` to fix it: that removes a boundary rather
+than restoring one. Upgrade the engine, or lower `isolation` deliberately.
 
 ## Logging
 

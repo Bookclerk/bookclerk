@@ -4,6 +4,7 @@ mod database;
 mod diagnostics;
 mod error;
 mod extras;
+mod isolation;
 mod journal;
 mod logging;
 mod media;
@@ -34,9 +35,10 @@ pub use extras::{
     windows_replacement_characters, FileTimestampMode, LameConfig, PathSanitizationMode,
     ReplacementRule, RECONCILE_WILDCARD,
 };
+pub use isolation::Isolation;
 pub use journal::{journald_available, os_log_available, OsLogFacility, OsLogLayer};
 pub use logging::{init_tracing, init_tracing_with, LogFormat, LoggingHandle, TracingOptions};
-pub use media::{MediaConfig, MediaIsolation};
+pub use media::MediaConfig;
 pub use naming_profile::{NamingProfile, NamingProfileTemplates, ResolvedNamingTemplates};
 pub use operator_auth::{
     operator_token_path, read_operator_token, read_or_create_operator_token, ResolveOperatorToken,
@@ -53,7 +55,7 @@ pub use path_limits::{
 pub use paths::{resolve_config_path, resolve_files_dir, Paths};
 pub use pipeline_opts::{ChapterJsonMode, OutputFormat};
 pub use platform::detect_distro;
-pub use plugins::{AudiobookshelfConfig, IntegrationsConfig, SourcesConfig};
+pub use plugins::{AudiobookshelfConfig, IntegrationsConfig, PluginsConfig, SourcesConfig};
 pub use redact::{
     contains_registered_secret, is_sensitive_field, is_upload_identifying_field,
     redact_field_value, redact_str, register_secret, register_secrets, register_secrets_from_env,

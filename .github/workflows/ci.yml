@@ -100,22 +100,28 @@ jobs:
           npm ci
           npm run build
 
-      # bookclerk-media-worker ships with the hosts, not alongside them as an
-      # extra: both binaries refuse media jobs when it is not installed.
+      # bookclerk-media-worker and bookclerk-jail ship with the hosts, not
+      # alongside them as extras: media jobs are refused without the worker, and
+      # plugins are refused without the launcher.
       - name: Build release binaries
         env:
           BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
-        run: cargo build --release -p bookclerk-cli -p bookclerkd -p bookclerk-media-worker
+        run: >
+          cargo build --release -p bookclerk-cli -p bookclerkd
+          -p bookclerk-media-worker -p bookclerk-jail
 
-      - name: Media worker is present beside the hosts
-        run: test -x target/release/bookclerk-media-worker
+      - name: Helper binaries are present beside the hosts
+        run: |
+          test -x target/release/bookclerk-media-worker
+          test -x target/release/bookclerk-jail
 
   # The confinement backends are entirely per-OS, so an ubuntu-only run says
-  # nothing about Seatbelt or the Windows path. This also exercises the media
-  # worker's negative tests, which are what prove a job cannot reach anything
-  # it did not declare.
+  # nothing about Seatbelt or the Windows path. This also exercises the negative
+  # tests for both jailed tiers — the media worker's per-job allowlist and the
+  # launcher's hand-off to a plugin guest — which are what prove neither can
+  # reach anything it did not declare.
   confinement:
-    name: sandbox + media worker (${{ matrix.os }})
+    name: sandbox + jailed tiers (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -139,7 +145,7 @@ jobs:
       - name: Clippy
         run: >
           cargo clippy -p bookclerk-sandbox -p bookclerk-media
-          -p bookclerk-media-worker --all-targets -- -D warnings
+          -p bookclerk-media-worker -p bookclerk-jail --all-targets -- -D warnings
 
       # Every enforcement test no-ops without a backend, so a runner that lost
       # Landlock would report green while proving nothing. Demand enforcement
@@ -152,7 +158,9 @@ jobs:
           # in a GitHub expression, so `os == 'windows' && '' || '1'` collapses
           # to '1' everywhere and silently demands enforcement on Windows too.
           BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: ${{ matrix.os != 'windows-latest' && '1' || '' }}
-        run: cargo test -p bookclerk-sandbox -p bookclerk-media -p bookclerk-media-worker
+        run: >
+          cargo test -p bookclerk-sandbox -p bookclerk-media -p bookclerk-media-worker
+          -p bookclerk-jail
 
   # Explicit tray matrix so each OS backend is compiled (ksni on Linux,
   # tray-icon without GTK features on Windows/macOS).

@@ -40,14 +40,7 @@ impl ExternalIntegration {
             .get("allow_credential_login")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        let client = PluginClient::spawn(
-            &plugin.manifest.id,
-            &plugin.command,
-            &plugin.manifest.args,
-            &plugin.root,
-            config_json,
-        )
-        .await?;
+        let client = PluginClient::spawn(plugin, config, config_json).await?;
         let hs = client.handshake().clone();
         let display_name = hs
             .display_name

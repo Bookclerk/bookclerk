@@ -12,6 +12,10 @@ pub fn system_read_paths() -> &'static [&'static str] {
     &[]
 }
 
+pub fn system_write_paths() -> &'static [&'static str] {
+    &[]
+}
+
 pub fn capabilities() -> Capabilities {
     Capabilities {
         backend: BACKEND,

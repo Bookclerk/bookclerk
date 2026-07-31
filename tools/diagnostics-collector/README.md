@@ -53,7 +53,8 @@ Bake the collector URL at build time (CI does this automatically):
 
 ```bash
 BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL="https://diagnostics.bookclerk.app" \
-  cargo build --release -p bookclerk-cli -p bookclerkd -p bookclerk-media-worker
+  cargo build --release -p bookclerk-cli -p bookclerkd \
+    -p bookclerk-media-worker -p bookclerk-jail
 ```
 
 Then enable sharing without a config URL:

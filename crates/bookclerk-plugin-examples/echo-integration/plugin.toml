@@ -4,6 +4,11 @@ name = "Echo Integration"
 kind = "integration"
 command = "./bookclerk-plugin-echo-integration"
 
+# Echoes what it is handed and talks to nothing, so it gets no sockets at all.
+# Worth declaring: a plugin that does not need the network should say so.
+[sandbox]
+network = "none"
+
 [cli]
 [[cli.commands]]
 name = "ping"

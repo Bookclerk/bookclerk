@@ -25,6 +25,7 @@ use bookclerk_source::{
 use serde_json::Value;
 
 use crate::discover::DiscoveredPlugin;
+use crate::jail::plugin_data_dir;
 use crate::protocol::{
     methods, CatalogHitDto, ExpandCandidatesParams, FetchTitleParams, LoginCompleteParams,
     LoginParams, LoginResultDto, LoginStartResultDto, PurchaseHintDto, PurchaseHintParams,
@@ -53,14 +54,7 @@ impl ExternalSource {
     pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> Result<Self> {
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
-        let client = PluginClient::spawn(
-            &plugin.manifest.id,
-            &plugin.command,
-            &plugin.manifest.args,
-            &plugin.root,
-            config_json.clone(),
-        )
-        .await?;
+        let client = PluginClient::spawn(plugin, config, config_json.clone()).await?;
         let hs = client.handshake().clone();
         let display_name = hs
             .display_name
@@ -77,13 +71,8 @@ impl ExternalSource {
             .password_env_var
             .as_deref()
             .map(|s| Box::leak(s.to_string().into_boxed_str()) as &'static str);
+        // Created while the jail was being planned, since the allowlist names it.
         let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id);
-        std::fs::create_dir_all(&plugin_data_dir).map_err(|e| {
-            crate::PluginError::message(format!(
-                "failed to create plugin data dir {}: {e}",
-                plugin_data_dir.display()
-            ))
-        })?;
         Ok(Self {
             client,
             display_name,
@@ -546,15 +535,6 @@ fn purchase_hint_from_dto(dto: PurchaseHintDto) -> SourcePurchaseHint {
         currency: dto.currency,
         price_label: dto.price_label,
     }
-}
-
-fn plugin_data_dir(config: &Config, plugin_id: &str) -> PathBuf {
-    config
-        .paths()
-        .files_dir
-        .join("plugins")
-        .join(plugin_id)
-        .join("data")
 }
 
 /// Load host-sealed credentials for the accounts a scan will cover.

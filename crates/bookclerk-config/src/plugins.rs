@@ -124,6 +124,41 @@ fn parse_bool_loose(raw: &str) -> Option<bool> {
     }
 }
 
+/// `[plugins]` — how external plugin guests are run.
+///
+/// Separate from `[sources.*]` / `[integrations.*]`, which say *which* plugins
+/// to load and pass them their own knobs. This says how the host runs whichever
+/// ones it loads.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PluginsConfig {
+    /// How strictly guest processes must be confined.
+    pub isolation: crate::Isolation,
+    /// Explicit path to `bookclerk-jail`. Normally left unset, in which case the
+    /// launcher is found beside the running executable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jail_bin: Option<std::path::PathBuf>,
+}
+
+impl PluginsConfig {
+    /// Apply `BOOKCLERK_PLUGIN_*` environment overrides.
+    ///
+    /// Environment wins over TOML, matching every other section.
+    pub fn apply_env_overrides(&mut self) {
+        if let Ok(value) = std::env::var("BOOKCLERK_PLUGIN_ISOLATION") {
+            if let Some(isolation) = crate::Isolation::parse(&value) {
+                self.isolation = isolation;
+            }
+        }
+        if let Ok(value) = std::env::var("BOOKCLERK_PLUGIN_JAIL") {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                self.jail_bin = Some(std::path::PathBuf::from(trimmed));
+            }
+        }
+    }
+}
+
 /// Optional third-party integrations under `[integrations]`.
 ///
 /// Typed portal knobs live alongside opaque `[integrations.<id>]` tables in

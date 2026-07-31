@@ -12,15 +12,21 @@ integrations), not an Audible-only Libation fork.
 
 ### Services / binaries
 
-Three binaries (the workspace `default-members`):
+Four binaries (the workspace `default-members`):
 
 - `bookclerk-cli` (binary `bookclerk`) — headless library manager CLI
   (Audible, Libro.fm, Chirp, GraphicAudio, plugins).
 - `bookclerkd` — long-running daemon with an authenticated HTTP API / GUI.
 - `bookclerk-media-worker` — confined child process that runs one codec job.
-  Ship it beside the other two: both hosts look for it there and, with the
-  default `media.isolation = "required"`, refuse media work when it is missing
-  rather than decode untrusted audio in-process. See `docs/media.md`.
+  Ship it beside the hosts: both look for it there and, with the default
+  `media.isolation = "required"`, refuse media work when it is missing rather
+  than decode untrusted audio in-process. See `docs/media.md`.
+- `bookclerk-jail` — launcher that applies a confinement policy to itself and
+  then `exec`s an external plugin guest, so the jail is host-imposed rather than
+  requested from the plugin. Also ships beside the hosts; with the default
+  `plugins.isolation = "required"` a plugin that cannot be jailed is not loaded.
+  Policy travels as JSON in `BOOKCLERK_JAIL_SPEC`. See
+  `docs/plugins.md#the-guest-jail`.
 
 Optional companion (workspace member, not a default-member):
 
@@ -38,8 +44,14 @@ RUSTSEC advisories remain (tracked in `#44`).
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings` (CI treats
   warnings as errors via `RUSTFLAGS="-D warnings"`).
 - Test: `cargo test --workspace`
-- Release binaries: `cargo build --release -p bookclerk-cli -p bookclerkd -p bookclerk-media-worker`
- (the worker is not optional — see below)
+- Release binaries: `cargo build --release -p bookclerk-cli -p bookclerkd
+  -p bookclerk-media-worker -p bookclerk-jail` (neither helper is optional — see
+  above)
+- Confinement tests no-op without a backend, so demand enforcement when it is
+  expected: `BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT=1 cargo test --workspace`
+  (CI does this on Linux and macOS; Windows is exempt until AppContainer lands).
+  A plugin-host test also needs `target/debug/bookclerk-jail`, which
+  `cargo test --workspace` builds but `cargo test -p bookclerk-plugin` does not.
 
 ### Running the apps
 
@@ -49,7 +61,10 @@ Set `BOOKCLERK_FILES_DIR` to a writable dir; on first use the app creates
 (reserved; Bookclerk does not rotate log files), `search_index/`, and `plugins/`
 under it. Third-party plugins are discovered from `plugin.toml` under
 `plugins/` (and `BOOKCLERK_PLUGIN_DIRS`); enablement and knobs live in
-`config.toml` (see `docs/plugins.md`).
+`config.toml` (see `docs/plugins.md`). A guest is confined to its install
+directory (read-only), `plugins/<id>/data` (its `HOME`), `plugins/<id>/tmp` (its
+`TMPDIR`), and the download cache root; `plugin.toml` may declare
+`[sandbox] network = "none"|"outbound"|"listen"` and nothing else.
 Logging goes to stderr and, when available, the OS facility (journald /
 macOS os_log / Windows Event Log); secrets are always redacted (exact values
 from config/env/auth including percent-encoded forms, plus patterns; uploads

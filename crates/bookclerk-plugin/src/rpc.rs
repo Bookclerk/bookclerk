@@ -1,17 +1,19 @@
 //! JSON-RPC 2.0 over newline-delimited stdio.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use bookclerk_config::Config;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex};
 
+use crate::discover::DiscoveredPlugin;
+use crate::jail::{GuestJail, Start};
 use crate::protocol::{methods, HandshakeResult, PLUGIN_API_VERSION};
 use crate::{PluginError, Result};
 
@@ -48,17 +50,53 @@ pub struct PluginClient {
 }
 
 impl PluginClient {
-    /// Spawn `command` with `args`, working directory `cwd`, then handshake.
+    /// Spawn `plugin` inside its jail, then handshake.
+    ///
+    /// Takes the whole [`DiscoveredPlugin`] and [`Config`] rather than a command
+    /// line so there is no way to start a guest without deciding how it is
+    /// confined. `config_table` is the plugin's own settings, sent at handshake.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the jail cannot be applied and `[plugins].isolation` is
+    /// `required`, and when the guest does not answer the handshake.
     pub async fn spawn(
-        id: &str,
-        command: &Path,
-        args: &[String],
-        cwd: &Path,
+        plugin: &DiscoveredPlugin,
+        config: &Config,
         config_table: Value,
     ) -> Result<Self> {
-        let mut cmd = Command::new(command);
-        cmd.args(args)
-            .current_dir(cwd)
+        let id = plugin.manifest.id.as_str();
+        let jail = GuestJail::plan(config, plugin)?;
+
+        let mut cmd = match &jail.start {
+            Start::Confined { launcher, .. } => {
+                tracing::debug!(
+                    plugin = %id,
+                    launcher = %launcher.display(),
+                    "starting plugin guest under a jail"
+                );
+                let mut cmd = Command::new(launcher);
+                // `--` keeps a guest path that looks like an option from being
+                // read as one.
+                cmd.arg("--")
+                    .arg(&plugin.command)
+                    .args(&plugin.manifest.args);
+                cmd
+            }
+            Start::Unconfined { reason } => {
+                tracing::warn!(
+                    plugin = %id,
+                    %reason,
+                    "starting plugin guest WITHOUT a jail; it can reach everything \
+                     this user can"
+                );
+                let mut cmd = Command::new(&plugin.command);
+                cmd.args(&plugin.manifest.args);
+                cmd
+            }
+        };
+
+        cmd.current_dir(&plugin.root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -66,12 +104,28 @@ impl PluginClient {
             // Do not inherit host secrets (BOOKCLERK_AUTH_PASSWORD, AWS keys,
             // operator token, DB URLs, …). Allowlist only non-sensitive vars.
             .env_clear();
-        for (key, value) in std::env::vars() {
-            if plugin_env_allowed(&key) {
+        for (key, value) in std::env::vars_os() {
+            if plugin_env_allowed(&key.to_string_lossy()) {
                 cmd.env(key, value);
             }
         }
         cmd.env("BOOKCLERK_PLUGIN_ID", id);
+        // Redirect the directories a program reaches for without being told.
+        // Inherited values name paths outside the jail, so a guest writing a
+        // temp file would fail on a permission error unrelated to its own work.
+        for key in ["TMPDIR", "TEMP", "TMP"] {
+            cmd.env(key, &jail.scratch);
+        }
+        cmd.env("HOME", &jail.data);
+        if let Start::Confined { spec, .. } = &jail.start {
+            cmd.env(
+                bookclerk_sandbox::SPEC_ENV,
+                serde_json::to_string(spec.as_ref()).map_err(|err| {
+                    PluginError::message(format!("could not encode the jail spec: {err}"))
+                })?,
+            );
+        }
+
         let mut child = cmd.spawn()?;
 
         let stdin = child
@@ -270,6 +324,12 @@ impl Drop for PluginClient {
 /// Env keys safe to inherit into a plugin child.
 ///
 /// Explicitly excludes Bookclerk/AWS/Cloudflare secrets and DB URLs.
+///
+/// `HOME` and the temp-directory variables are listed because a guest needs
+/// *some* value for them, but the inherited one names a path outside the jail.
+/// [`PluginClient::spawn`] overwrites all four with the guest's own directories
+/// after this filter runs. `XDG_RUNTIME_DIR` is absent for the same reason and
+/// has no per-guest equivalent to point at.
 fn plugin_env_allowed(key: &str) -> bool {
     const ALLOW: &[&str] = &[
         "PATH",
@@ -283,7 +343,6 @@ fn plugin_env_allowed(key: &str) -> bool {
         "TMPDIR",
         "TEMP",
         "TMP",
-        "XDG_RUNTIME_DIR",
         "TERM",
         "COLORTERM",
         "RUST_BACKTRACE",

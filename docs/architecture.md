@@ -7,6 +7,7 @@ Bookclerk is a Cargo workspace of library crates plus binaries:
 | `bookclerk` | `bookclerk-cli` | One-shot operator CLI |
 | `bookclerkd` | `bookclerkd` | Scheduled jobs + authenticated HTTP API / GUI |
 | `bookclerk-media-worker` | `bookclerk-media-worker` | Confined child process running one codec job |
+| `bookclerk-jail` | `bookclerk-jail` | Applies a confinement policy, then `exec`s a plugin guest |
 | `bookclerk-tray` | `bookclerk-tray` | Optional tray → system browser (not a default-member) |
 
 Both share the same core: sources, library DB, acquire pipeline, storage, and
@@ -56,7 +57,10 @@ Bookclerk uses four first-class plugin roles (in-process and/or external):
 | **Integration** | `Integration` | `audiobookshelf`, SPA portal claim helpers |
 
 Third-party plugins are separate executables discovered via `plugin.toml` and
-spoken to over newline-delimited JSON-RPC on stdio. See [plugins.md](plugins.md).
+spoken to over newline-delimited JSON-RPC on stdio. Each guest is started by
+`bookclerk-jail`, which confines it to its own install, data, scratch, and cache
+directories before becoming the plugin, so a storefront parsing hostile input
+cannot reach `master.key` or `library.db`. See [plugins.md](plugins.md).
 Database backends today are selected in-process via `[database].plugin` (see
 [database.md](database.md)); external `kind = "database"` manifests are
 discovered but not loaded yet.
@@ -70,7 +74,8 @@ discovered but not loaded yet.
 | Store adapters (plugins) | `bookclerk-plugins/source-{audible,libro,chirp,graphicaudio}` (lib + guest bin) |
 | ABS integration (plugin) | `bookclerk-plugins/integration-audiobookshelf` (lib + guest bin) |
 | Clear-media packaging | `bookclerk-media` (remux / fixup / MP3; no DRM) |
-| Codec confinement | `bookclerk-sandbox` (Landlock+seccomp / Seatbelt / AppContainer) |
+| Process confinement | `bookclerk-sandbox` (Landlock+seccomp / Seatbelt / AppContainer) |
+| Guest jail launcher | `bookclerk-jail` (applies a policy, then `exec`s the guest) |
 | Acquire orchestration | `bookclerk-acquire` |
 | Naming templates | `bookclerk-naming` |
 | Library DB | `bookclerk-library` (SeaORM plugins + rusqlite store) |
@@ -93,6 +98,8 @@ BookclerkFiles/
   cache/
   search_index/
   plugins/            # third-party plugin installs (see plugin-registry.md)
+    <id>/data/        # one guest's state (its HOME inside the jail)
+    <id>/tmp/         # one guest's scratch (its TMPDIR inside the jail)
   logs/               # reserved (Bookclerk does not rotate log files)
 ```
 

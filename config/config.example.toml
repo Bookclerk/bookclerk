@@ -54,6 +54,19 @@ isolation = "required"
 # Normally unset: the worker is found beside the running executable.
 # worker_bin = "/usr/local/bin/bookclerk-media-worker"
 
+# How external plugin guests are run. `bookclerk-jail` confines a guest to its
+# install directory (read-only), its own data and scratch directories, and the
+# download cache — then becomes the plugin. See docs/plugins.md.
+[plugins]
+# required    — do not load a plugin that cannot be jailed (default)
+# best-effort — start it unconfined when the platform cannot jail, and warn
+# off         — no jail (development only)
+# Windows has no plugin jail yet, so "required" refuses external plugins there;
+# first-party sources still run in-process.
+isolation = "required"
+# Normally unset: the launcher is found beside the running executable.
+# jail_bin = "/usr/local/bin/bookclerk-jail"
+
 [output]
 # Packaging format: enriched_m4b | single_mp3 | split_mp3_by_chapter | split_mp3_by_size | opus | none
 format = "enriched_m4b"

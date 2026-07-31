@@ -12,16 +12,19 @@ metadata fix-up, and chapter split are native Rust.
 ## Build
 
 ```bash
-cargo build --release -p bookclerk-cli -p bookclerkd -p bookclerk-media-worker
+cargo build --release -p bookclerk-cli -p bookclerkd \
+  -p bookclerk-media-worker -p bookclerk-jail
 export PATH="$PWD/target/release:$PATH"
 # binaries: target/release/bookclerk  target/release/bookclerkd
-#           target/release/bookclerk-media-worker
+#           target/release/bookclerk-media-worker  target/release/bookclerk-jail
 ```
 
-`bookclerk-media-worker` runs every decode, encode, and packaging step in a
-confined child process. Install it beside the other two binaries: that is where
-both hosts look for it, and by default they refuse media work rather than run
-codecs unconfined. See [media.md](media.md).
+The two helpers are not optional extras. `bookclerk-media-worker` runs every
+decode, encode, and packaging step in a confined child process
+([media.md](media.md)); `bookclerk-jail` starts each external plugin guest inside
+its own jail ([plugins.md](plugins.md#the-guest-jail)). Install both beside the
+host binaries — that is where they are looked for, and by default a host refuses
+media work or declines to load a plugin rather than run either unconfined.
 
 Or run from the workspace without installing:
 

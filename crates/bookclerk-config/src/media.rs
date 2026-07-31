@@ -2,37 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// How strictly media worker processes must be confined.
-///
-/// Codec work runs in a child process that restricts itself to the paths its
-/// job declared. This picks what happens when the host cannot enforce that.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum MediaIsolation {
-    /// Refuse to process media when the jail does not engage. The default: a
-    /// host that cannot sandbox should not decode untrusted audio in the same
-    /// process as the master key.
-    #[default]
-    Required,
-    /// Confine where the platform allows and log what did not engage. Use on
-    /// kernels without Landlock, accepting that codecs run unconfined there.
-    BestEffort,
-    /// Run codec work in-process with no jail. Development only.
-    Off,
-}
-
-impl MediaIsolation {
-    /// Parse a config or environment value.
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "required" | "on" | "true" => Some(Self::Required),
-            "best-effort" | "best_effort" | "besteffort" => Some(Self::BestEffort),
-            "off" | "false" | "none" => Some(Self::Off),
-            _ => None,
-        }
-    }
-}
+use crate::isolation::Isolation;
 
 /// `[media]` — decode, encode, and packaging worker pool.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,7 +13,7 @@ pub struct MediaConfig {
     /// dozens of memory-hungry encoders at the same time.
     pub workers: usize,
     /// How strictly workers must be confined.
-    pub isolation: MediaIsolation,
+    pub isolation: Isolation,
     /// Explicit path to `bookclerk-media-worker`. Normally left unset, in which
     /// case the worker is found beside the running executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,7 +31,7 @@ impl MediaConfig {
             }
         }
         if let Ok(value) = std::env::var("BOOKCLERK_MEDIA_ISOLATION") {
-            if let Some(isolation) = MediaIsolation::parse(&value) {
+            if let Some(isolation) = Isolation::parse(&value) {
                 self.isolation = isolation;
             }
         }
@@ -80,25 +50,7 @@ mod tests {
 
     #[test]
     fn isolation_defaults_to_required() {
-        assert_eq!(MediaConfig::default().isolation, MediaIsolation::Required);
-    }
-
-    #[test]
-    fn isolation_parses_the_documented_spellings() {
-        assert_eq!(
-            MediaIsolation::parse("required"),
-            Some(MediaIsolation::Required)
-        );
-        assert_eq!(
-            MediaIsolation::parse("best-effort"),
-            Some(MediaIsolation::BestEffort)
-        );
-        assert_eq!(
-            MediaIsolation::parse(" BEST_EFFORT "),
-            Some(MediaIsolation::BestEffort)
-        );
-        assert_eq!(MediaIsolation::parse("off"), Some(MediaIsolation::Off));
-        assert_eq!(MediaIsolation::parse("maybe"), None);
+        assert_eq!(MediaConfig::default().isolation, Isolation::Required);
     }
 
     #[test]
@@ -110,7 +62,7 @@ mod tests {
     fn section_round_trips_through_toml() {
         let config = MediaConfig {
             workers: 4,
-            isolation: MediaIsolation::BestEffort,
+            isolation: Isolation::BestEffort,
             worker_bin: None,
         };
         let encoded = toml::to_string(&config).expect("serialize");

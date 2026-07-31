@@ -3,3 +3,9 @@ id = "audible"
 name = "Audible"
 kind = "source"
 command = "./bookclerk-plugin-source-audible"
+
+# Interactive sign-in receives the OAuth authorization code on a local callback
+# server, so this guest needs to listen as well as connect. Only a
+# kernel-assigned port is granted; see docs/plugins.md.
+[sandbox]
+network = "listen"

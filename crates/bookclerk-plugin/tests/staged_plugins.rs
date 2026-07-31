@@ -52,15 +52,9 @@ async fn staged_first_party_plugins_handshake() {
     }
 
     for plugin in &plugins {
-        let client = PluginClient::spawn(
-            &plugin.manifest.id,
-            &plugin.command,
-            &plugin.manifest.args,
-            &plugin.root,
-            serde_json::json!({}),
-        )
-        .await
-        .unwrap_or_else(|e| panic!("spawn {}: {e}", plugin.manifest.id));
+        let client = PluginClient::spawn(plugin, &config, serde_json::json!({}))
+            .await
+            .unwrap_or_else(|e| panic!("spawn {}: {e}", plugin.manifest.id));
         let hs = client.handshake();
         assert_eq!(hs.id, plugin.manifest.id);
         assert_eq!(hs.api_version, bookclerk_plugin::PLUGIN_API_VERSION);

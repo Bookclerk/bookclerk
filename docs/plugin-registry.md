@@ -127,7 +127,7 @@ Prefer **Option A** when your files follow the recommended names below. Use
 `{base}/{crate}-{version}-{target}.{ext}`.
 
 The crate’s `readme` / crate description should summarize trust/scope (what
-accounts it talks to). Enabling still means running that binary — see the
+accounts it talks to). Enabling still means running that binary, jailed — see the
 trust model in [plugins.md](plugins.md).
 
 ## Artifact naming (install without Rust)
@@ -138,6 +138,17 @@ Windows) containing at least:
 ```text
 plugin.toml
 bookclerk-plugin-{kind}-{id}    # or .exe on Windows
+```
+
+Two consequences of [the guest jail](plugins.md#the-guest-jail) for what an
+archive may assume. The install directory is **read-only** at runtime, so a
+plugin that wants to keep state must use the `plugin_data_dir` it is given (also
+its `HOME`) or `TMPDIR` — not a path beside its own binary. And a plugin that
+needs more than outbound HTTPS has to say so in `plugin.toml`:
+
+```toml
+[sandbox]
+network = "listen"   # only for an OAuth callback on loopback
 ```
 
 Recommended asset names (cargo-dist / cargo-binstall friendly):
@@ -295,6 +306,8 @@ or publish a thin “manifest-only” crate that only carries
 - [ ] `[package.metadata.bookclerk]` `kind` / `id` / `api_version` match the name and `plugin.toml`
 - [ ] Release assets for each supported target with checksums
 - [ ] `plugin.toml` `command` points at the binary inside the archive
+- [ ] `[sandbox] network` declared when outbound-only is not enough; state kept in
+      `plugin_data_dir` / `TMPDIR`, never beside the binary
 - [ ] Document required config keys and any password env vars
 
 ## Related

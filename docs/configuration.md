@@ -24,6 +24,7 @@ Classic Libation setting names are accepted as aliases where documented in
 | `[database]` / `[database.sqlite]` / `[database.d1]` | Library DB plugin (`sqlite` default, Cloudflare D1) |
 | `[auth]` | Optional `[auth].password` wrapping `master.key` (prefer `BOOKCLERK_AUTH_PASSWORD`) |
 | `[media]` | Codec worker pool: concurrency and confinement (see [media.md](media.md)) |
+| `[plugins]` | How external plugin guests are jailed (see [plugins.md](plugins.md)) |
 | `[output]` | Format, Widevine, naming, sidecars, multi-destination policy |
 | `[output.local]` / `[output.s3]` | Destination plugins (`enabled`, roots, per-dest naming) |
 | `[sources.<id>]` | Per-storefront enable + store knobs |
@@ -61,6 +62,8 @@ Classic Libation setting names are accepted as aliases where documented in
 | `BOOKCLERK_AWS_ACCESS_KEY_ID` / `BOOKCLERK_AWS_SECRET_ACCESS_KEY` | S3 credentials env override (optional `BOOKCLERK_AWS_SESSION_TOKEN`; wins over `encrypted_secrets` and SDK chain) |
 | `BOOKCLERK_SOURCE_<ID>_ENABLED` | Force-enable/disable any source/plugin id (`<ID>` uppercased; e.g. `BOOKCLERK_SOURCE_ECHO_ENABLED=0`) |
 | `BOOKCLERK_PLUGIN_DIRS` | Extra plugin search roots (OS path list) |
+| `BOOKCLERK_PLUGIN_ISOLATION` | `required` / `best-effort` / `off` for plugin guests |
+| `BOOKCLERK_PLUGIN_JAIL` | Path to `bookclerk-jail` |
 | `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` | Diagnostics collector (build-time or runtime) |
 
 ## Library
@@ -88,6 +91,26 @@ confined to the paths each job declared. `required` refuses media work when the
 jail does not engage, including when the worker binary is not installed. A reload
 applies changes here to subsequent jobs and lets the previous pool drain, so no
 restart is needed. See [media.md](media.md).
+
+## Plugin guests
+
+```toml
+[plugins]
+isolation = "required"  # required | best-effort | off
+# jail_bin = "/usr/local/bin/bookclerk-jail"
+```
+
+External plugin guests are started by `bookclerk-jail`, which confines them to
+their own install, data, scratch, and cache directories before becoming the
+plugin. `required` refuses to load a plugin it cannot jail, including when the
+launcher is not installed. This is about *how* guests run; which plugins load and
+what they are configured with stays in `[sources.<id>]` /
+`[integrations.<id>]`. See [plugins.md](plugins.md).
+
+Both confinement tiers are visible in `bookclerk config show`
+(`media.isolation`, `media.worker_bin`, `plugins.isolation`, `plugins.jail_bin`);
+a helper path reads `-` when it is found beside the running executable rather
+than configured.
 
 ## Output (shared)
 

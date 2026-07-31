@@ -15,7 +15,7 @@
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{Capabilities, LayerStatus, NetPolicy, Policy, Report, SandboxError};
 
@@ -45,6 +45,13 @@ pub fn system_read_paths() -> &'static [&'static str] {
         "/opt/local",
         "/usr/local",
     ]
+}
+
+/// Paths from the system set that must be writable, not just readable.
+///
+/// See the Linux backend for why `/dev/null` is the only entry.
+pub fn system_write_paths() -> &'static [&'static str] {
+    &["/dev/null"]
 }
 
 pub fn capabilities() -> Capabilities {
@@ -83,7 +90,7 @@ pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> 
 
     let network = match policy.net_policy() {
         NetPolicy::Full => LayerStatus::NotRequested,
-        NetPolicy::Deny | NetPolicy::Outbound => LayerStatus::Enforced,
+        NetPolicy::Deny | NetPolicy::Outbound | NetPolicy::OutboundListen => LayerStatus::Enforced,
     };
 
     Ok(Report {
@@ -120,13 +127,33 @@ fn build_profile(policy: &Policy) -> String {
     out.push_str("(allow file-read-metadata)\n");
     out.push_str("(allow file-ioctl (subpath \"/dev\"))\n");
 
+    let reads = policy.resolved_reads();
+    let writes = policy.resolved_writes();
+
     if policy.exec_allowed() {
         out.push_str("(allow process-exec)\n");
+        // dyld boots by locating the shared cache, and that begins with reading
+        // the root directory. Without this, `exec` dies inside
+        // `dyld4::CacheFinder` on `deny(1) file-read-data /` — and says nothing,
+        // because dyld reports through the crash log rather than stderr.
+        //
+        // `literal` rather than `subpath`: the latter spelling of "/" would grant
+        // the entire filesystem. This permits listing the root directory, whose
+        // top-level names are not a secret, and nothing below it.
+        out.push_str("(allow file-read-data (literal \"/\"))\n");
     }
 
     match policy.net_policy() {
         NetPolicy::Deny => {}
         NetPolicy::Outbound => out.push_str("(allow network-outbound)\n"),
+        // Seatbelt filters by address where Landlock filters by port, so the
+        // listener is pinned to loopback here rather than to the ephemeral
+        // range. An OAuth callback server only ever wants loopback.
+        NetPolicy::OutboundListen => {
+            out.push_str("(allow network-outbound)\n");
+            out.push_str("(allow network-bind (local ip \"localhost:*\"))\n");
+            out.push_str("(allow network-inbound (local ip \"localhost:*\"))\n");
+        }
         NetPolicy::Full => {
             out.push_str("(allow network-outbound)\n");
             out.push_str("(allow network-inbound)\n");
@@ -134,26 +161,28 @@ fn build_profile(policy: &Policy) -> String {
         }
     }
 
-    let reads = policy.resolved_reads();
-    if !reads.is_empty() {
-        out.push_str("(allow file-read*\n");
-        for path in &reads {
-            push_path(&mut out, path);
-        }
-        out.push_str(")\n");
-    }
-
-    let writes = policy.resolved_writes();
-    if !writes.is_empty() {
-        // Writable paths must also be readable; SBPL treats the two separately.
-        out.push_str("(allow file-read* file-write*\n");
-        for path in &writes {
-            push_path(&mut out, path);
-        }
-        out.push_str(")\n");
-    }
+    push_paths(&mut out, "file-read*", &reads);
+    // Writable paths must also be readable; SBPL treats the two separately.
+    push_paths(&mut out, "file-read* file-write*", &writes);
 
     out
+}
+
+/// Emit `(allow <operations> …paths)`, or nothing when there are no paths.
+///
+/// An operation with no filter allows it everywhere, so an empty allowlist has to
+/// produce no rule at all rather than an unfiltered grant.
+fn push_paths(out: &mut String, operations: &str, paths: &[PathBuf]) {
+    if paths.is_empty() {
+        return;
+    }
+    out.push_str("(allow ");
+    out.push_str(operations);
+    out.push('\n');
+    for path in paths {
+        push_path(out, path);
+    }
+    out.push_str(")\n");
 }
 
 /// Emit a filter for one allowlist entry.
@@ -216,6 +245,28 @@ mod tests {
         assert!(!profile.contains("network-inbound"));
     }
 
+    /// The callback listener must be reachable from loopback and nowhere else,
+    /// so both bind and inbound carry a `local ip` filter.
+    #[test]
+    fn outbound_listen_pins_the_listener_to_loopback() {
+        let profile = build_profile(
+            &Policy::new("test")
+                .system_paths(false)
+                .net(NetPolicy::OutboundListen),
+        );
+        assert!(profile.contains("(allow network-outbound)"), "{profile}");
+        assert!(
+            profile.contains("(allow network-bind (local ip \"localhost:*\"))"),
+            "{profile}"
+        );
+        assert!(
+            profile.contains("(allow network-inbound (local ip \"localhost:*\"))"),
+            "{profile}"
+        );
+        // An unfiltered grant would make this indistinguishable from `Full`.
+        assert!(!profile.contains("(allow network-bind)\n"), "{profile}");
+    }
+
     #[test]
     fn writable_paths_are_also_readable() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -268,5 +319,33 @@ mod tests {
         assert!(!without.contains("process-exec"));
         let with = build_profile(&Policy::new("test").system_paths(false).allow_exec(true));
         assert!(with.contains("(allow process-exec)"));
+    }
+
+    /// dyld cannot find the shared cache without reading the root directory, so
+    /// an exec'd program aborts before it runs. The grant has to be `literal`:
+    /// `(subpath "/")` would hand over the whole filesystem.
+    #[test]
+    fn exec_grants_reading_the_root_directory_and_not_its_contents() {
+        let profile = build_profile(&Policy::new("test").allow_exec(true));
+        assert!(
+            profile.contains("(allow file-read-data (literal \"/\"))"),
+            "{profile}"
+        );
+        assert!(!profile.contains("(subpath \"/\")"), "{profile}");
+    }
+
+    #[test]
+    fn the_root_directory_is_not_readable_without_exec() {
+        let profile = build_profile(&Policy::new("test"));
+        assert!(!profile.contains("(literal \"/\")"), "{profile}");
+    }
+
+    /// An operation with no path filter allows it everywhere, which would turn
+    /// an empty allowlist into the opposite of what it says.
+    #[test]
+    fn an_empty_allowlist_emits_no_rule_rather_than_an_unfiltered_one() {
+        let profile = build_profile(&Policy::new("test").system_paths(false).allow_exec(true));
+        assert!(!profile.contains("file-read*"), "{profile}");
+        assert!(!profile.contains("file-write*"), "{profile}");
     }
 }

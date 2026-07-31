@@ -14,6 +14,10 @@ Environment=BOOKCLERK_DAEMON_LISTEN=127.0.0.1:8787
 # Relative output.local.root resolves under BOOKCLERK_FILES_DIR.
 # Prefer an absolute Books path in config.toml if media lives elsewhere,
 # and add that path to ReadWritePaths.
+# Install bookclerk-media-worker and bookclerk-jail in this same directory:
+# bookclerkd looks for them beside itself and, by default, refuses media work
+# (media.isolation) or declines to load external plugins (plugins.isolation)
+# rather than running either unconfined.
 ExecStart=/usr/local/bin/bookclerkd
 Restart=on-failure
 RestartSec=5

@@ -28,6 +28,36 @@ impl PluginKind {
     }
 }
 
+/// What a plugin needs from the network.
+///
+/// A plugin declares this; the host grants it. Nothing here can widen the
+/// filesystem allowlist, which the host derives on its own — a manifest ships
+/// with the plugin, so anything it can ask for is something a hostile plugin can
+/// ask for too. Unrestricted access is deliberately not expressible.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkNeed {
+    /// No network at all. For a plugin that only transforms what it is handed.
+    None,
+    /// Outbound connections only. The default, and all a storefront needs to
+    /// call an API and download a file.
+    #[default]
+    Outbound,
+    /// Outbound plus a local callback listener on a kernel-assigned port.
+    ///
+    /// Only for an interactive OAuth login that receives its authorization code
+    /// over loopback, which is how Audible's sign-in works.
+    Listen,
+}
+
+/// `[sandbox]` — what a plugin needs from its jail.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SandboxManifest {
+    /// Network reachability this plugin needs.
+    pub network: NetworkNeed,
+}
+
 /// On-disk plugin descriptor (`plugin.toml`).
 ///
 /// Installed by the plugin (or its installer) under a search root. User settings
@@ -53,6 +83,9 @@ pub struct PluginManifest {
     /// Optional CLI schema for help without spawning (handshake / `cli.describe` win at invoke).
     #[serde(default)]
     pub cli: Option<CliSchema>,
+    /// What this plugin needs from its jail. Omitted means outbound-only.
+    #[serde(default)]
+    pub sandbox: SandboxManifest,
 }
 
 impl PluginManifest {
@@ -90,6 +123,61 @@ command = "./echo-integration"
         assert_eq!(m.kind, PluginKind::Integration);
         assert!(m.args.is_empty());
         assert!(m.cli.is_none());
+        // A manifest that says nothing about the network gets the narrowest
+        // grant a storefront can actually work with.
+        assert_eq!(m.sandbox.network, NetworkNeed::Outbound);
+    }
+
+    #[test]
+    fn parse_sandbox_network_need() {
+        let m = PluginManifest::parse(
+            r#"
+api_version = 1
+id = "audible"
+kind = "source"
+command = "./bookclerk-plugin-source-audible"
+
+[sandbox]
+network = "listen"
+"#,
+        )
+        .unwrap();
+        assert_eq!(m.sandbox.network, NetworkNeed::Listen);
+    }
+
+    /// A typo in a security-relevant field must not read as a default.
+    #[test]
+    fn unknown_sandbox_keys_are_rejected() {
+        let err = PluginManifest::parse(
+            r#"
+api_version = 1
+id = "sneaky"
+kind = "source"
+command = "./x"
+
+[sandbox]
+netwrok = "listen"
+"#,
+        )
+        .expect_err("unknown key must fail");
+        assert!(err.to_string().contains("netwrok"), "got: {err}");
+    }
+
+    #[test]
+    fn unknown_network_values_are_rejected() {
+        let err = PluginManifest::parse(
+            r#"
+api_version = 1
+id = "sneaky"
+kind = "source"
+command = "./x"
+
+[sandbox]
+network = "full"
+"#,
+        )
+        .expect_err("`full` must not be expressible from a manifest");
+        assert!(err.to_string().contains("full"), "got: {err}");
     }
 
     #[test]

@@ -264,6 +264,19 @@ pub async fn run(
                 "library.scan_interval_minutes = {}",
                 config.library.scan_interval_minutes
             );
+            // Both confinement tiers, so an operator can confirm what is jailed
+            // without reading the startup log.
+            println!("media.workers = {}", config.media.workers);
+            println!("media.isolation = {}", config.media.isolation.as_str());
+            println!(
+                "media.worker_bin = {}",
+                helper_bin(&config.media.worker_bin)
+            );
+            println!("plugins.isolation = {}", config.plugins.isolation.as_str());
+            println!(
+                "plugins.jail_bin = {}",
+                helper_bin(&config.plugins.jail_bin)
+            );
             println!("daemon.listen = {}", config.daemon.listen);
             println!("daemon.json_logs = {}", config.daemon.json_logs);
             println!(
@@ -722,6 +735,14 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
                 String::new()
             }
         }
+        // A confinement helper is normally unset, in which case it is found
+        // beside the running executable — a path only the host resolving it can
+        // report, so this shows what was configured rather than guessing.
+        "media.workers" => config.media.workers.to_string(),
+        "media.isolation" => config.media.isolation.as_str().to_string(),
+        "media.worker_bin" => helper_bin(&config.media.worker_bin),
+        "plugins.isolation" => config.plugins.isolation.as_str().to_string(),
+        "plugins.jail_bin" => helper_bin(&config.plugins.jail_bin),
         "daemon.listen" => config.daemon.listen.clone(),
         "daemon.json_logs" => config.daemon.json_logs.to_string(),
         "diagnostics.share_reports" => config.diagnostics.share_reports.to_string(),
@@ -759,4 +780,11 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
         }
         _ => return None,
     })
+}
+
+/// Render a configured helper-binary path, or `-` when it is found by search.
+fn helper_bin(path: &Option<std::path::PathBuf>) -> String {
+    path.as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "-".into())
 }

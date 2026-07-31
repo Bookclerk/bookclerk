@@ -21,7 +21,7 @@ portal for services like [Audiobookshelf](https://www.audiobookshelf.org/).
 | **Acquire** | Native Adrm + Widevine/CENC decrypt, optional MP3, covers/PDFs/cues/chapters |
 | **Destinations** | Local filesystem and/or S3/MinIO (write to every enabled destination) |
 | **Integrations** | Audiobookshelf scan notify, claim tickets, SPA Accounts |
-| **Plugins** | External source/integration plugins over JSON-RPC stdio |
+| **Plugins** | External source/integration plugins over JSON-RPC stdio, each in a host-imposed jail |
 | **Ops** | `bookclerk` CLI + `bookclerkd` daemon, Docker, systemd |
 | **GUI** | Shared React web UI served by `bookclerkd` (native/tray deferred) |
 
@@ -50,7 +50,8 @@ See [docs/architecture.md](docs/architecture.md) for crate layout and data flow.
 ## Quick start
 
 ```bash
-cargo build --release -p bookclerk-cli -p bookclerkd -p bookclerk-media-worker
+cargo build --release -p bookclerk-cli -p bookclerkd \
+  -p bookclerk-media-worker -p bookclerk-jail
 export PATH="$PWD/target/release:$PATH"
 
 export BOOKCLERK_FILES_DIR=./BookclerkFiles
@@ -85,7 +86,7 @@ First-time setup, auth notes, and “existing files” workflows:
 | [docs/sources.md](docs/sources.md) | Storefront plugins and login |
 | [docs/destinations.md](docs/destinations.md) | Local + S3 output, naming |
 | [docs/integrations.md](docs/integrations.md) | Audiobookshelf, SPA Accounts |
-| [docs/plugins.md](docs/plugins.md) | Third-party plugin protocol |
+| [docs/plugins.md](docs/plugins.md) | Third-party plugin protocol and the guest jail |
 | [docs/operations.md](docs/operations.md) | Daemon, Docker, systemd |
 | [docs/configuration.md](docs/configuration.md) | `config.toml` and env overrides |
 | [docs/migration.md](docs/migration.md) | Move from classic Libation |
@@ -147,7 +148,12 @@ S3 credentials resolve as: env `BOOKCLERK_AWS_ACCESS_KEY_ID` /
 | --- | --- |
 | `bookclerk` | One-shot CLI (`auth`, `library`, `integrations`, `plugins`, …) |
 | `bookclerkd` | Long-running daemon: scheduled scan/acquire + HTTP API / GUI |
+| `bookclerk-media-worker` | Confined child process for one codec job ([docs/media.md](docs/media.md)) |
+| `bookclerk-jail` | Confines a plugin guest, then becomes it ([docs/plugins.md](docs/plugins.md#the-guest-jail)) |
 | `bookclerk-tray` | Optional tray companion (opens web UI in the system browser) |
+
+The two helpers ship beside the hosts. Without them, a host refuses media work
+and declines to load external plugins rather than running either unconfined.
 
 Default listen: `127.0.0.1:8787`. Public routes: `GET /health`, static UI,
 `POST /api/auth/login`. Authenticated: `/api/status`, `/api/jobs`,

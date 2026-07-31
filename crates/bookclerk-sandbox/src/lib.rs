@@ -18,12 +18,17 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 mod platform;
+mod spec;
 
 pub use platform::BACKEND;
+pub use spec::{Spec, SPEC_ENV};
 
 /// What to do when a confinement layer cannot be enforced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Enforcement {
     /// Fail the call when any requested layer does not engage.
     #[default]
@@ -35,14 +40,28 @@ pub enum Enforcement {
 }
 
 /// Network reachability granted to the confined process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum NetPolicy {
     /// No IP sockets at all. Media workers only touch local files.
     #[default]
     Deny,
-    /// Outbound connections allowed, inbound listeners refused. Storefront
-    /// plugins fetch over HTTPS but never need to listen.
+    /// Outbound connections allowed, inbound listeners refused. Enough for a
+    /// storefront plugin that only fetches over HTTPS.
     Outbound,
+    /// Outbound connections plus a listener on a kernel-assigned port.
+    ///
+    /// This exists for one flow: an OAuth login that sends the authorization
+    /// code back to a short-lived local callback server. The grant is narrower
+    /// than [`Full`](Self::Full) in that no fixed port can be claimed, so a
+    /// confined process cannot stand up a service on a port anything else would
+    /// know to connect to.
+    ///
+    /// What "kernel-assigned" buys differs by backend: Landlock rules are
+    /// per-port, so Linux allows binds within `ip_local_port_range` and refuses
+    /// every fixed port, while Seatbelt filters by address and restricts the
+    /// listener to loopback. Neither confines it to both at once.
+    OutboundListen,
     /// Unrestricted. The daemon binds its own control-plane listener.
     Full,
 }
@@ -167,11 +186,23 @@ impl Policy {
         )
     }
 
-    /// Write allowlist. Missing paths are filtered out and the rest are
-    /// resolved to their physical location; see [`resolve`].
+    /// Write allowlist, including the few system paths that have to be writable
+    /// when the system set is enabled.
+    ///
+    /// Missing paths are filtered out and the rest are resolved to their
+    /// physical location; see [`resolve`].
     #[must_use]
     pub fn resolved_writes(&self) -> Vec<PathBuf> {
-        resolve_all(self.writes.iter().map(PathBuf::as_path))
+        let system = self
+            .system_paths
+            .then(platform::system_write_paths)
+            .unwrap_or(&[]);
+        resolve_all(
+            system
+                .iter()
+                .map(Path::new)
+                .chain(self.writes.iter().map(PathBuf::as_path)),
+        )
     }
 
     /// Network policy.
@@ -486,6 +517,24 @@ mod tests {
             .write("/also/not/real");
         assert!(policy.resolved_reads().is_empty());
         assert!(policy.resolved_writes().is_empty());
+    }
+
+    /// `/dev/null` is in the read set as well, but a read-only grant makes an
+    /// ordinary output redirect fail, so the system set has to widen it.
+    #[cfg(unix)]
+    #[test]
+    fn the_system_set_makes_dev_null_writable() {
+        let with = Policy::new("test");
+        assert!(
+            with.resolved_writes()
+                .iter()
+                .any(|path| path == Path::new("/dev/null")),
+            "expected /dev/null among {:?}",
+            with.resolved_writes()
+        );
+
+        let without = Policy::new("test").system_paths(false);
+        assert!(without.resolved_writes().is_empty());
     }
 
     #[test]

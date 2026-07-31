@@ -21,6 +21,7 @@ default = [
 anyhow.workspace = true
 async-trait.workspace = true
 bookclerk-config.workspace = true
+bookclerk-sandbox.workspace = true
 bookclerk-integrations.workspace = true
 bookclerk-library.workspace = true
 bookclerk-plugin-sdk.workspace = true

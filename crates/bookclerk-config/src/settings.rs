@@ -39,6 +39,9 @@ pub struct Config {
     /// Media decode / encode worker pool (`[media]`).
     #[serde(default)]
     pub media: crate::MediaConfig,
+    /// How external plugin guests are run (`[plugins]`).
+    #[serde(default)]
+    pub plugins: crate::PluginsConfig,
 }
 
 /// Auth encryption settings (`[auth]` section).
@@ -428,6 +431,7 @@ impl Config {
                 parse_bool(&v).unwrap_or(self.output.s3.force_path_style);
         }
         self.media.apply_env_overrides();
+        self.plugins.apply_env_overrides();
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_LISTEN") {
             self.daemon.listen = v;
         }

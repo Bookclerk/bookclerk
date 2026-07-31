@@ -105,9 +105,9 @@ impl From<&bookclerk_config::MediaConfig> for MediaPoolConfig {
         Self {
             workers: config.workers,
             confinement: match config.isolation {
-                bookclerk_config::MediaIsolation::Required => Confinement::Required,
-                bookclerk_config::MediaIsolation::BestEffort => Confinement::BestEffort,
-                bookclerk_config::MediaIsolation::Off => Confinement::Off,
+                bookclerk_config::Isolation::Required => Confinement::Required,
+                bookclerk_config::Isolation::BestEffort => Confinement::BestEffort,
+                bookclerk_config::Isolation::Off => Confinement::Off,
             },
             worker_bin: config.worker_bin.clone(),
         }

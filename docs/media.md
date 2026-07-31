@@ -101,19 +101,36 @@ DRM decrypt is the other path that parses attacker-influenced ISO-BMFF, and it
 does not run in a media worker. Audible's Adrm and Widevine CENC decrypt run on
 a blocking thread inside whichever process hosts the source plugin.
 
-That is a boundary choice rather than an oversight. Decrypt needs the per-title
-content key, and the host is built so it never holds one: `fetch_title` decrypts
-inside the source and hands back plaintext paths. Routing decrypt through the
-pool would mean writing content keys to a worker's stdin, which trades a parser
-boundary for a key-handling one.
+Two reasons keep it there, and only one of them is technical. Decrypt needs the
+per-title content key, and the host is built so it never holds one: `fetch_title`
+decrypts inside the source and hands back plaintext paths. Routing decrypt
+through the pool would mean writing content keys to a worker's stdin, which
+trades a parser boundary for a key-handling one. The other reason is
+distribution: the decrypt code lives in a plugin that can be omitted from a build
+or a package, which some regions may require of anyone shipping the core
+binaries. Rolling it into `bookclerk-media` would remove that option.
 
-Confining the plugin process is the answer instead, and it covers everything
-else a storefront does at the same time. Because first-party sources now ship as
-guest binaries as well as in-process adapters ([plugins](plugins.md)), a single
-jail there reaches Audible, Libro.fm, Chirp, and GraphicAudio together. Default
-builds still register those adapters in-process, so decrypt runs inside
-`bookclerkd` today; that jail only becomes load-bearing once external guests are
-the packaged default.
+The trim is split along the same line, and deliberately. Where Audible's brand
+intro and outro sit is arithmetic on `chapter_info`, so
+`bookclerk_media::brand_trim_range` computes the window and the plugin applies it
+during the decrypt pass it was already making. Branding therefore never lands on
+disk and no second copy of the file is made for it. Chapter splitting, which
+operates on clear media, is a `remux_trimmed` job in the pool like any other.
+
+What is *not* shared yet is the ISO-BMFF plumbing underneath: `bookclerk-media`
+and the Audible plugin each carry a near-identical MP4 parser, sample table, and
+progressive remuxer, because the plugin's version threads a per-sample decrypt
+through the copy. Consolidating on one muxer with a pluggable sample transform
+would leave the boundary exactly where it is — decrypt still only in the plugin —
+while removing the duplicate. That is a refactor, not a policy change.
+
+Confining the plugin process is what covers the decrypt parser, and it covers
+everything else a storefront does at the same time. Because first-party sources
+ship as guest binaries as well as in-process adapters, a single jail reaches
+Audible, Libro.fm, Chirp, and GraphicAudio together; see [the guest
+jail](plugins.md#the-guest-jail). Default builds still register those adapters
+in-process, so decrypt runs inside `bookclerkd` today, and that jail becomes
+load-bearing when external guests are the packaged default.
 
 ## Configuration
 
@@ -175,10 +192,11 @@ The pool looks for the worker in this order:
 
 Each candidate is checked for existence, so a stale configured path fails
 loudly instead of degrading to an unconfined encode. Build and ship it with the
-hosts:
+hosts, alongside the plugin jail's launcher, which is found the same way:
 
 ```bash
-cargo build --release -p bookclerk-cli -p bookclerkd -p bookclerk-media-worker
+cargo build --release -p bookclerk-cli -p bookclerkd \
+  -p bookclerk-media-worker -p bookclerk-jail
 ```
 
 The Docker images copy it into `/usr/local/bin` alongside `bookclerk` and
@@ -219,5 +237,7 @@ lock; the pool bounds codec concurrency within an acquire, not across them.
 ## Related
 
 - [Architecture](architecture.md) — where the pool sits in the acquire pipeline
+- [The guest jail](plugins.md#the-guest-jail) — the other confined tier, for
+  plugin processes: longer-lived, wider grant, applied by a launcher
 - [Configuration](configuration.md) — the full `config.toml` surface
 - [Operations](operations.md) — running `bookclerkd`

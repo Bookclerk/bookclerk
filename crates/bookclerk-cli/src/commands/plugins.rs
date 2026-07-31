@@ -254,14 +254,7 @@ pub async fn run_plugin_cli(
             );
         }
         let settings = bookclerk_plugin::settings_table(config, &plugin);
-        let client = PluginClient::spawn(
-            &plugin.manifest.id,
-            &plugin.command,
-            &plugin.manifest.args,
-            &plugin.root,
-            toml_table_to_json(&settings),
-        )
-        .await?;
+        let client = PluginClient::spawn(&plugin, config, toml_table_to_json(&settings)).await?;
         let schema = resolve_schema(&client, &plugin).await?;
         (schema, Some(client))
     };
@@ -398,14 +391,7 @@ async fn diagnose_plugin(
     plugin: &DiscoveredPlugin,
 ) -> anyhow::Result<Vec<String>> {
     let settings = bookclerk_plugin::settings_table(config, plugin);
-    let client = PluginClient::spawn(
-        &plugin.manifest.id,
-        &plugin.command,
-        &plugin.manifest.args,
-        &plugin.root,
-        toml_table_to_json(&settings),
-    )
-    .await?;
+    let client = PluginClient::spawn(plugin, config, toml_table_to_json(&settings)).await?;
     if !client.has_capability("diagnose") {
         return Ok(vec![format!(
             "plugin `{}` has no diagnose capability",
