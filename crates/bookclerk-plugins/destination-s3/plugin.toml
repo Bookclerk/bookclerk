@@ -1,0 +1,8 @@
+api_version = 1
+id = "s3"
+name = "S3 / MinIO"
+kind = "output"
+command = "./bookclerk-plugin-destination-s3"
+
+[sandbox]
+network = "outbound"

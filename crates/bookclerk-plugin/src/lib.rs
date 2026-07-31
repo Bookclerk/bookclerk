@@ -25,6 +25,7 @@
 
 mod builtins;
 mod crates_io;
+mod destinations;
 mod discover;
 mod error;
 #[cfg(unix)]
@@ -50,10 +51,12 @@ pub use builtins::{
     load_integrations, load_sources, register_builtin_integrations, register_builtin_sources,
 };
 pub use crates_io::search_crates_io;
+pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{discover_plugins, plugin_search_dirs, settings_table, DiscoveredPlugin};
 pub use error::{PluginError, Result};
 pub use host::{
-    load_external_integrations, load_external_sources, ExternalIntegration, ExternalSource,
+    load_external_destinations, load_external_integrations, load_external_sources,
+    DestinationRegistry, ExternalDestination, ExternalIntegration, ExternalSource,
 };
 pub use jail::plugin_data_dir;
 pub use manifest::{NetworkNeed, PluginKind, PluginManifest, SandboxManifest};
@@ -141,9 +144,16 @@ pub async fn register_discovered(
                 }
             }
             PluginKind::Output => {
-                tracing::warn!(
+                if !config.output.s3.enabled || plugin.manifest.id != "s3" {
+                    tracing::debug!(
+                        id = %plugin.manifest.id,
+                        "external output plugin skipped (enable [output.s3] for id=s3)"
+                    );
+                    continue;
+                }
+                tracing::info!(
                     id = %plugin.manifest.id,
-                    "output plugins are discovered but not yet loaded (coming soon)"
+                    "discovered output plugin (loaded via load_external_destinations at startup)"
                 );
             }
             PluginKind::Database => {

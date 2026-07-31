@@ -1506,6 +1506,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
+ "bookclerk-acquire",
  "bookclerk-config",
  "bookclerk-integrations",
  "bookclerk-library",
@@ -1517,7 +1519,11 @@ dependencies = [
  "bookclerk-plugin-source-libro",
  "bookclerk-sandbox",
  "bookclerk-source",
+ "bookclerk-storage",
+ "bytes",
+ "chrono",
  "libc",
+ "sea-orm",
  "serde",
  "serde_json",
  "tempfile",
@@ -1527,6 +1533,22 @@ dependencies = [
  "tracing",
  "ureq",
  "uuid",
+]
+
+[[package]]
+name = "bookclerk-plugin-destination-s3"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bookclerk-config",
+ "bookclerk-plugin-sdk",
+ "bookclerk-storage",
+ "bytes",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

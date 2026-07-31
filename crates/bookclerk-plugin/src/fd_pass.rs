@@ -37,6 +37,22 @@ pub fn send_fetch_dir(channel: &UnixStream, dir: &Path) -> Result<()> {
     })
 }
 
+/// Send an open file handle for `path` to the guest's side channel.
+pub fn send_upload_file(channel: &UnixStream, path: &Path) -> Result<()> {
+    let file = OpenOptions::new().read(true).open(path).map_err(|err| {
+        PluginError::message(format!(
+            "could not open upload file {}: {err}",
+            path.display()
+        ))
+    })?;
+    send_one_fd(channel.as_raw_fd(), file.as_raw_fd()).map_err(|err| {
+        PluginError::message(format!(
+            "could not pass upload file {} to the guest: {err}",
+            path.display()
+        ))
+    })
+}
+
 fn send_one_fd(socket: RawFd, fd: RawFd) -> io::Result<()> {
     let mut byte = [0u8];
     let iov = [libc::iovec {

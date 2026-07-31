@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use bookclerk_acquire::{
-    acquire_book_indexed, match_storage_to_library, AcquireDestinations, AcquireRequest,
-    MatchStorageOptions, StorageIndex,
+    acquire_book_indexed, match_storage_to_library, AcquireRequest, MatchStorageOptions,
+    StorageIndex,
 };
 use bookclerk_config::BadBookAction;
 use bookclerk_library::AcquireStatus;
@@ -147,7 +147,12 @@ pub async fn run_acquire(
     let cfg = state.config.read().await.clone();
     let paths = cfg.paths();
     paths.ensure_dirs()?;
-    let destinations = AcquireDestinations::from_config(&cfg, Some(&state.library)).await?;
+    let destinations = bookclerk_plugin::build_acquire_destinations(
+        &cfg,
+        Some(&state.library),
+        &*state.destinations.read().await,
+    )
+    .await?;
     let storage = destinations.listing_backend()?;
     let options = DownloadOptions::from(&cfg);
     let registry = default_registry_with_plugins(&cfg).await?;

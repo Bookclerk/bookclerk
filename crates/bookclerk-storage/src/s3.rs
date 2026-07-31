@@ -16,7 +16,7 @@ use bytes::Bytes;
 use sea_orm::DatabaseConnection;
 
 use crate::error::{Result, StorageError};
-use crate::s3_credentials::load_s3_credentials;
+use crate::s3_credentials::{load_s3_credentials, S3Credentials};
 use crate::traits::{ObjectInfo, ObjectMeta, ObjectProbe, StorageBackend};
 
 /// Below this size a single `PutObject` is enough. Above it, upload in fixed-size
@@ -52,6 +52,16 @@ impl S3Backend {
         prefix: &str,
         db: Option<&DatabaseConnection>,
     ) -> Result<Self> {
+        let creds = resolve_s3_credentials(db).await?;
+        Self::from_parts(cfg, prefix, creds.as_ref()).await
+    }
+
+    /// Build with explicit credentials (external output guests).
+    pub async fn from_parts(
+        cfg: &OutputS3Config,
+        prefix: &str,
+        creds: Option<&S3Credentials>,
+    ) -> Result<Self> {
         if cfg.bucket.is_empty() {
             return Err(StorageError::S3("bucket must not be empty".into()));
         }
@@ -59,33 +69,19 @@ impl S3Backend {
         let mut loader =
             aws_config::defaults(BehaviorVersion::latest()).region(Region::new(cfg.region.clone()));
 
-        if let (Ok(access), Ok(secret)) = (
-            std::env::var(crate::s3_credentials::ENV_AWS_ACCESS_KEY_ID),
-            std::env::var(crate::s3_credentials::ENV_AWS_SECRET_ACCESS_KEY),
-        ) {
-            bookclerk_config::register_secret(&access);
-            bookclerk_config::register_secret(&secret);
-            let session = std::env::var(crate::s3_credentials::ENV_AWS_SESSION_TOKEN).ok();
-            if let Some(ref token) = session {
+        if let Some(creds) = creds {
+            bookclerk_config::register_secret(&creds.access_key_id);
+            bookclerk_config::register_secret(&creds.secret_access_key);
+            if let Some(token) = &creds.session_token {
                 bookclerk_config::register_secret(token);
             }
             loader = loader.credentials_provider(Credentials::new(
-                access,
-                secret,
-                session,
+                creds.access_key_id.clone(),
+                creds.secret_access_key.clone(),
+                creds.session_token.clone(),
                 None,
-                "bookclerk-env",
+                "bookclerk-injected",
             ));
-        } else if let Some(db) = db {
-            if let Some(creds) = load_s3_credentials(db).await? {
-                loader = loader.credentials_provider(Credentials::new(
-                    creds.access_key_id,
-                    creds.secret_access_key,
-                    creds.session_token,
-                    None,
-                    "bookclerk-encrypted-secrets",
-                ));
-            }
         }
 
         let shared = loader.load().await;
@@ -529,6 +525,28 @@ fn meta_get(map: Option<&std::collections::HashMap<String, String>>, key: &str) 
             .cloned()
             .or_else(|| m.get(&key.to_ascii_lowercase()).cloned())
     })
+}
+
+/// Resolve S3 credentials for the in-process backend (env → DB → SDK chain).
+pub(crate) async fn resolve_s3_credentials(
+    db: Option<&DatabaseConnection>,
+) -> Result<Option<S3Credentials>> {
+    if let (Ok(access), Ok(secret)) = (
+        std::env::var(crate::s3_credentials::ENV_AWS_ACCESS_KEY_ID),
+        std::env::var(crate::s3_credentials::ENV_AWS_SECRET_ACCESS_KEY),
+    ) {
+        let session = std::env::var(crate::s3_credentials::ENV_AWS_SESSION_TOKEN).ok();
+        return Ok(Some(S3Credentials {
+            access_key_id: access,
+            secret_access_key: secret,
+            session_token: session,
+            label: None,
+        }));
+    }
+    if let Some(db) = db {
+        return load_s3_credentials(db).await;
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

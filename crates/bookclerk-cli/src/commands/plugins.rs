@@ -416,7 +416,15 @@ fn set_plugin_enabled(
     match plugin.manifest.kind {
         PluginKind::Source => cfg.sources.set_enabled(&plugin.manifest.id, enabled),
         PluginKind::Integration => cfg.integrations.set_enabled(&plugin.manifest.id, enabled),
-        PluginKind::Output => anyhow::bail!("output plugins cannot be enabled yet"),
+        PluginKind::Output if plugin.manifest.id == "s3" => {
+            cfg.output.s3.enabled = enabled;
+        }
+        PluginKind::Output => {
+            anyhow::bail!(
+                "output plugin `{}` is not configurable yet",
+                plugin.manifest.id
+            );
+        }
         PluginKind::Database => anyhow::bail!(
             "database plugins are selected via [database].plugin in config.toml (sqlite|d1)"
         ),
@@ -450,6 +458,7 @@ fn is_enabled(config: &Config, plugin: &DiscoveredPlugin) -> bool {
     match plugin.manifest.kind {
         PluginKind::Source => config.sources.is_enabled(&plugin.manifest.id),
         PluginKind::Integration => config.integrations.is_enabled(&plugin.manifest.id),
+        PluginKind::Output if plugin.manifest.id == "s3" => config.output.s3.enabled,
         PluginKind::Output => false,
         PluginKind::Database => config
             .database

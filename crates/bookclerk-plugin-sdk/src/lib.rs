@@ -16,17 +16,21 @@
 mod error;
 mod fetch_dir;
 mod guest;
+mod pass_fd;
 pub mod protocol;
 
 pub use error::{Result, SdkError};
-pub use fetch_dir::{fetch_work_dir, FetchWorkDir};
+pub use fetch_dir::{fetch_work_dir, upload_file_path, FetchWorkDir, UploadFile};
 pub use guest::PluginGuest;
+pub use pass_fd::{fd_proc_path, recv_passed_fd, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV};
 pub use protocol::{
     methods, BookAcquiredDto, BrandDto, CatalogHitDto, CliArgKind, CliArgSpec, CliCommandSpec,
-    CliInvokeParams, CliInvokeResult, CliSchema, ConfigOptionDto, ConfigOptionValueDto,
+    CliInvokeParams, CliInvokeResult, CliSchema, ConfigOptionDto, ConfigOptionValueDto, CopyParams,
     CredentialsUpdateParams, EventPollResultDto, ExpandCandidatesParams, ExternalUserDto,
-    FetchTitleParams, HandshakeResult, HealthDto, ListeningProgressDto, LoginCompleteParams,
-    LoginParams, LoginResultDto, LoginStartResultDto, PlainPartDto, PurchaseHintDto,
-    PurchaseHintParams, ScanBookDto, ScanParams, ScanSummaryDto, SearchCatalogParams,
-    SourceAccountDto, SourceFetchDto, SyncListeningResultDto, PLUGIN_API_VERSION,
+    FetchTitleParams, GetParams, GetResultDto, HandshakeResult, HealthDto, KeyParams, ListParams,
+    ListeningProgressDto, LoginCompleteParams, LoginParams, LoginResultDto, LoginStartResultDto,
+    ObjectInfoDto, ObjectMetaDto, ObjectProbeDto, OutputS3ContextDto, PlainPartDto,
+    PurchaseHintDto, PurchaseHintParams, PutFileParams, PutParams, S3CredentialsDto, ScanBookDto,
+    ScanParams, ScanSummaryDto, SearchCatalogParams, SourceAccountDto, SourceFetchDto,
+    SyncListeningResultDto, TouchFileParams, PLUGIN_API_VERSION,
 };

@@ -161,7 +161,17 @@ pub fn settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::Table
             inject_abs_api_key_from_env(&plugin.manifest.id, &mut table);
             table
         }
+        crate::PluginKind::Output if plugin.manifest.id == "s3" => {
+            output_s3_settings_table(&config.output.s3)
+        }
         crate::PluginKind::Output | crate::PluginKind::Database => toml::Table::new(),
+    }
+}
+
+fn output_s3_settings_table(cfg: &bookclerk_config::OutputS3Config) -> toml::Table {
+    match toml::Value::try_from(cfg) {
+        Ok(toml::Value::Table(table)) => table,
+        _ => toml::Table::new(),
     }
 }
 

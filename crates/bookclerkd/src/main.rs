@@ -91,6 +91,8 @@ async fn main() -> anyhow::Result<()> {
 
     let library = LibraryStore::open_from_config(&config).await?;
     let integrations = bookclerk_plugin::load_integrations(&config).await?;
+    let destinations =
+        bookclerk_plugin::load_external_destinations(&config, Some(library.db())).await?;
     let sources = {
         let cfg = config.clone();
         default_registry_with_plugins(&cfg).await?
@@ -130,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
         work_lock: Mutex::new(()),
         integrations: integrations.clone(),
         sources,
+        destinations: Arc::new(RwLock::new(destinations)),
         auth: operator_auth,
     });
 

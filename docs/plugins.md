@@ -459,7 +459,25 @@ content keys on the wire — decrypt in the guest when needed.
 
 ### Output plugins
 
-`kind = "output"` is discovered and logged; loading is not implemented yet.
+`kind = "output"` guests implement [`StorageBackend`] over JSON-RPC. The host
+never grants them the acquire cache or output library: `put_file` delivers the
+local media file over the same side channel as source `fetch_title` directories
+(fd 3 is the preserved `SCM_RIGHTS` socket; the open file descriptor arrives
+over that socket immediately before the RPC). When no side channel is wired
+(unconfined / best-effort), the host sends an absolute `local_path` in the RPC
+params instead. S3 credentials and bucket config are injected on each RPC —
+guests do not inherit `BOOKCLERK_AWS_*` or read `encrypted_secrets`.
+
+| Method | Notes |
+| --- | --- |
+| `put` | Small objects (covers, sidecars): `{ key, data_base64, meta }` |
+| `put_file` | Large audiobooks: host passes file fd, then RPC `{ key, meta }` |
+| `get` / `exists` / `list` / `probe` / `copy` / `delete` / `touch_file` | Mirror in-process storage |
+
+First-party S3 ships as `bookclerk-plugin-destination-s3`. When the guest is
+discovered under `plugins/s3/` and `[output.s3].enabled = true`, the host
+loads it at startup via [`load_external_destinations`] instead of the in-process
+[`S3Backend`].
 
 ## Example
 

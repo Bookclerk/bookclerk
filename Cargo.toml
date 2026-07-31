@@ -25,6 +25,7 @@ members = [
     "crates/bookclerk-plugins/source-chirp",
     "crates/bookclerk-plugins/source-graphicaudio",
     "crates/bookclerk-plugins/integration-audiobookshelf",
+    "crates/bookclerk-plugins/destination-s3",
     "crates/bookclerk-cli",
     "crates/bookclerkd",
     "crates/bookclerk-tray",
@@ -58,6 +59,7 @@ bookclerk-plugin-source-libro = { path = "crates/bookclerk-plugins/source-libro"
 bookclerk-plugin-source-chirp = { path = "crates/bookclerk-plugins/source-chirp" }
 bookclerk-plugin-source-graphicaudio = { path = "crates/bookclerk-plugins/source-graphicaudio" }
 bookclerk-plugin-integration-audiobookshelf = { path = "crates/bookclerk-plugins/integration-audiobookshelf" }
+bookclerk-plugin-destination-s3 = { path = "crates/bookclerk-plugins/destination-s3" }
 bookclerk-enrich = { path = "crates/bookclerk-enrich" }
 bookclerk-sandbox = { path = "crates/bookclerk-sandbox" }
 bookclerk-jail = { path = "crates/bookclerk-jail" }

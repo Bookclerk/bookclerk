@@ -1,14 +1,14 @@
 //! `bookclerk library` — scan, acquire, set-status, get-license, search, export.
 
 use bookclerk_acquire::{
-    acquire_book_indexed, acquire_pdf_only, convert_book, match_storage_to_library,
-    AcquireDestinations, AcquireRequest, ConvertRequest, MatchStorageOptions, StorageIndex,
+    acquire_book_indexed, acquire_pdf_only, convert_book, match_storage_to_library, AcquireRequest,
+    ConvertRequest, MatchStorageOptions, StorageIndex,
 };
 use bookclerk_config::{apply_setting_overrides, AudioQuality, BadBookAction, Config};
 use bookclerk_library::{AcquireStatus, LibraryStore};
 use bookclerk_search::SearchEngine;
 use bookclerk_source::{DownloadOptions, FetchOptions, ScanOptions};
-use bookclerk_storage::from_config;
+use bookclerk_storage::StorageBackend;
 use clap::Subcommand;
 
 use crate::commands::export::{export_csv, export_json, export_xlsx, filter_books, load_books};
@@ -229,7 +229,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 }
             }
             if match_storage {
-                let storage = from_config(config, Some(store.db())).await?;
+                let storage = storage_for_config(config, &store).await?;
                 let recon = match_storage_to_library(
                     &store,
                     storage.as_ref(),
@@ -274,7 +274,11 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 .map(|(k, v)| (k.trim(), v.trim()))
                 .collect();
             apply_setting_overrides(&mut cfg, &pairs);
-            let destinations = AcquireDestinations::from_config(&cfg, Some(&store)).await?;
+            let destinations =
+                bookclerk_plugin::load_external_destinations(&cfg, Some(store.db())).await?;
+            let destinations =
+                bookclerk_plugin::build_acquire_destinations(&cfg, Some(&store), &destinations)
+                    .await?;
             let storage = destinations.listing_backend()?;
             let registry = default_registry_with_plugins(&cfg).await?;
 
@@ -479,7 +483,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 println!("force-updated {n} book(s) to {}", status.as_str());
                 return Ok(());
             }
-            let storage = from_config(config, Some(store.db())).await?;
+            let storage = storage_for_config(config, &store).await?;
             let summary = match_storage_to_library(
                 &store,
                 storage.as_ref(),
@@ -679,7 +683,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             force,
             asins,
         } => {
-            let storage = from_config(config, Some(store.db())).await?;
+            let storage = storage_for_config(config, &store).await?;
             let filter: Vec<String> = asins.into_iter().map(|a| a.to_ascii_uppercase()).collect();
             let targets: Vec<_> = store
                 .list_books(account.as_deref())
@@ -846,4 +850,13 @@ fn title_id_matches(book: &bookclerk_library::BookRecord, id: &str) -> bool {
             .asin
             .as_ref()
             .is_some_and(|a| id.eq_ignore_ascii_case(a))
+}
+
+async fn storage_for_config(
+    config: &Config,
+    store: &LibraryStore,
+) -> anyhow::Result<Box<dyn StorageBackend>> {
+    let destinations =
+        bookclerk_plugin::load_external_destinations(config, Some(store.db())).await?;
+    Ok(bookclerk_plugin::build_storage_backend(config, Some(store), &destinations).await?)
 }

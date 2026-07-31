@@ -43,6 +43,11 @@ struct RpcErrorObject {
     message: String,
 }
 
+enum SidePass<'a> {
+    FetchDir(&'a Path),
+    UploadFile(&'a Path),
+}
+
 /// Host-side client that owns a plugin child process.
 pub struct PluginClient {
     id: String,
@@ -263,6 +268,19 @@ impl PluginClient {
             .any(|c| c.eq_ignore_ascii_case(cap))
     }
 
+    /// Whether the host can pass fetch/upload descriptors over the side channel.
+    #[must_use]
+    pub fn has_side_channel(&self) -> bool {
+        #[cfg(unix)]
+        {
+            self.fd_channel.is_some()
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+
     /// Call a JSON-RPC method and deserialize the result.
     pub async fn call<T: DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {
         let value = self.call_raw(method, params).await?;
@@ -270,7 +288,7 @@ impl PluginClient {
     }
 
     pub async fn call_raw(&self, method: &str, params: Value) -> Result<Value> {
-        self.call_raw_with_fetch_dir(method, params, None).await
+        self.call_raw_with_side_pass(method, params, None).await
     }
 
     /// Like [`Self::call_raw`], but passes an open fetch work directory first when
@@ -281,13 +299,41 @@ impl PluginClient {
         params: Value,
         fetch_dir: Option<&Path>,
     ) -> Result<Value> {
-        if method == methods::FETCH_TITLE {
-            if let Some(dir) = fetch_dir {
-                #[cfg(unix)]
-                if let Some(channel) = self.fd_channel.as_ref() {
-                    crate::fd_pass::send_fetch_dir(channel, dir)?;
+        self.call_raw_with_side_pass(method, params, fetch_dir.map(SidePass::FetchDir))
+            .await
+    }
+
+    /// Like [`Self::call_raw`], but passes an open local file before `put_file`.
+    pub async fn call_raw_with_upload_file(
+        &self,
+        method: &str,
+        params: Value,
+        upload_path: &Path,
+    ) -> Result<Value> {
+        self.call_raw_with_side_pass(method, params, Some(SidePass::UploadFile(upload_path)))
+            .await
+    }
+
+    async fn call_raw_with_side_pass(
+        &self,
+        method: &str,
+        params: Value,
+        side: Option<SidePass<'_>>,
+    ) -> Result<Value> {
+        if let Some(side) = side {
+            #[cfg(unix)]
+            if let Some(channel) = self.fd_channel.as_ref() {
+                match side {
+                    SidePass::FetchDir(dir) if method == methods::FETCH_TITLE => {
+                        crate::fd_pass::send_fetch_dir(channel, dir)?;
+                    }
+                    SidePass::UploadFile(path) if method == methods::PUT_FILE => {
+                        crate::fd_pass::send_upload_file(channel, path)?;
+                    }
+                    SidePass::FetchDir(_) | SidePass::UploadFile(_) => {}
                 }
             }
+            let _ = side;
         }
         self.call_raw_inner(method, params).await
     }

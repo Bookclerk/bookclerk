@@ -11,8 +11,9 @@ Built-in destinations today:
 | Local filesystem | `[output.local]` | none |
 | S3 / MinIO | `[output.s3]` | `AWS_*` env override → `encrypted_secrets` → SDK chain |
 
-External `kind = "output"` plugins are discovered; loading is not implemented
-yet ([plugins.md](plugins.md)).
+External `kind = "output"` plugins are loaded when discovered. The first-party
+S3 guest (`id = "s3"`) replaces the in-process backend when staged under
+`plugins/s3/` and `[output.s3].enabled = true` ([plugins.md](plugins.md)).
 
 ## Local filesystem
 

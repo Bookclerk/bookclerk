@@ -518,6 +518,157 @@ pub struct ListeningProgressDto {
     pub last_listened_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Object metadata for output plugins (mirrors host [`bookclerk_storage::ObjectMeta`]).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObjectMetaDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_length: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_write_time: Option<String>,
+}
+
+/// Listing entry for output plugins.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObjectInfoDto {
+    pub key: String,
+    pub size: u64,
+}
+
+/// Probe result for output plugins.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObjectProbeDto {
+    pub key: String,
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    pub meta: ObjectMetaDto,
+}
+
+/// Static AWS-style credentials injected by the host (never read from guest env).
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct S3CredentialsDto {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+}
+
+impl std::fmt::Debug for S3CredentialsDto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3CredentialsDto")
+            .field("access_key_id", &"***")
+            .field("secret_access_key", &"***")
+            .field("session_token", &self.session_token.as_ref().map(|_| "***"))
+            .finish()
+    }
+}
+
+/// S3 destination knobs the host injects on every output RPC.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutputS3ContextDto {
+    /// Scoped writable directory for this plugin only (`…/plugins/<id>/data`).
+    pub plugin_data_dir: String,
+    pub bucket: String,
+    pub prefix: String,
+    pub region: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub force_path_style: bool,
+    /// When absent the guest may use the AWS SDK default provider chain (unconfined dev only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<S3CredentialsDto>,
+}
+
+/// Params for [`methods::PUT`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutParams {
+    #[serde(flatten)]
+    pub ctx: OutputS3ContextDto,
+    pub key: String,
+    /// Base64-encoded object body (sidecars and small objects).
+    pub data_base64: String,
+    #[serde(default)]
+    pub meta: ObjectMetaDto,
+}
+
+/// Params for [`methods::PUT_FILE`].
+///
+/// Jailed guests receive the local file over the side channel (`SCM_RIGHTS` on
+/// the socket at fd 3) immediately before this RPC. When no side channel is
+/// wired (e.g. unconfined / best-effort), the host sets [`Self::local_path`]
+/// instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutFileParams {
+    #[serde(flatten)]
+    pub ctx: OutputS3ContextDto,
+    pub key: String,
+    #[serde(default)]
+    pub meta: ObjectMetaDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
+}
+
+/// Params for [`methods::GET`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetParams {
+    #[serde(flatten)]
+    pub ctx: OutputS3ContextDto,
+    pub key: String,
+}
+
+/// Result of [`methods::GET`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetResultDto {
+    pub data_base64: String,
+}
+
+/// Params for key-scoped output methods.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyParams {
+    #[serde(flatten)]
+    pub ctx: OutputS3ContextDto,
+    pub key: String,
+}
+
+/// Params for [`methods::LIST`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListParams {
+    #[serde(flatten)]
+    pub ctx: OutputS3ContextDto,
+    pub prefix: String,
+}
+
+/// Params for [`methods::COPY`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyParams {
+    #[serde(flatten)]
+    pub ctx: OutputS3ContextDto,
+    pub from: String,
+    pub to: String,
+}
+
+/// Params for [`methods::TOUCH_FILE`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TouchFileParams {
+    #[serde(flatten)]
+    pub ctx: OutputS3ContextDto,
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<String>,
+}
+
 /// Method names (keep stable).
 pub mod methods {
     pub const HANDSHAKE: &str = "handshake";
@@ -553,4 +704,22 @@ pub mod methods {
     pub const CLI_DESCRIBE: &str = "cli.describe";
     /// Run a declared plugin CLI command ([`CliInvokeParams`] → [`CliInvokeResult`]).
     pub const CLI_INVOKE: &str = "cli.invoke";
+    /// Write bytes under a key ([`PutParams`]).
+    pub const PUT: &str = "put";
+    /// Stream a local file from the side channel ([`PutFileParams`]).
+    pub const PUT_FILE: &str = "put_file";
+    /// Read an object ([`GetParams`] → [`GetResultDto`]).
+    pub const GET: &str = "get";
+    /// Probe object metadata ([`KeyParams`] → [`ObjectProbeDto`]).
+    pub const PROBE: &str = "probe";
+    /// True when the object exists ([`KeyParams`] → `{ "exists": bool }`).
+    pub const EXISTS: &str = "exists";
+    /// List objects under a prefix ([`ListParams`] → `Vec<ObjectInfoDto>`).
+    pub const LIST: &str = "list";
+    /// Server-side copy ([`CopyParams`]).
+    pub const COPY: &str = "copy";
+    /// Delete an object ([`KeyParams`]).
+    pub const DELETE: &str = "delete";
+    /// Best-effort logical timestamp update ([`TouchFileParams`]).
+    pub const TOUCH_FILE: &str = "touch_file";
 }
