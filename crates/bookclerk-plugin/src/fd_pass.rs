@@ -53,6 +53,28 @@ pub fn send_upload_file(channel: &UnixStream, path: &Path) -> Result<()> {
     })
 }
 
+/// Send an open SQLite database file (read+write, created if missing).
+#[allow(clippy::suspicious_open_options)] // create(true) is required on first library open
+pub fn send_database_file(channel: &UnixStream, path: &Path) -> Result<()> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)
+        .map_err(|err| {
+            PluginError::message(format!(
+                "could not open database file {}: {err}",
+                path.display()
+            ))
+        })?;
+    send_one_fd(channel.as_raw_fd(), file.as_raw_fd()).map_err(|err| {
+        PluginError::message(format!(
+            "could not pass database file {} to the guest: {err}",
+            path.display()
+        ))
+    })
+}
+
 fn send_one_fd(socket: RawFd, fd: RawFd) -> io::Result<()> {
     let mut byte = [0u8];
     let iov = [libc::iovec {

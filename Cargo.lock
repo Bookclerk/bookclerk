@@ -1536,6 +1536,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-plugin-database"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bookclerk-config",
+ "bookclerk-library",
+ "bookclerk-plugin-sdk",
+ "sea-orm",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "bookclerk-plugin-destination-s3"
 version = "0.1.0"
 dependencies = [
@@ -1582,8 +1597,10 @@ dependencies = [
 name = "bookclerk-plugin-sdk"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "libc",
+ "sea-orm",
  "serde",
  "serde_json",
  "thiserror 2.0.19",

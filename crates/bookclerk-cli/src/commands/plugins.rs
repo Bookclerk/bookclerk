@@ -425,9 +425,23 @@ fn set_plugin_enabled(
                 plugin.manifest.id
             );
         }
-        PluginKind::Database => anyhow::bail!(
-            "database plugins are selected via [database].plugin in config.toml (sqlite|d1)"
-        ),
+        PluginKind::Database => {
+            if enabled {
+                cfg.database.plugin = plugin.manifest.id.clone();
+            } else if matches_plugin_id(&plugin.manifest.id, &config.database.plugin) {
+                anyhow::bail!(
+                    "cannot disable the active database plugin `{}`; \
+                     enable another backend first with `bookclerk plugins enable <id>`",
+                    plugin.manifest.id
+                );
+            } else {
+                anyhow::bail!(
+                    "database plugin `{}` is not active ([database].plugin = `{}`)",
+                    plugin.manifest.id,
+                    config.database.plugin
+                );
+            }
+        }
     }
     let path = cfg.paths().config_file.clone();
     cfg.write_toml_file(&path)?;
@@ -444,6 +458,10 @@ fn set_plugin_enabled(
             path.display()
         );
     })
+}
+
+fn matches_plugin_id(manifest_id: &str, active: &str) -> bool {
+    manifest_id.eq_ignore_ascii_case(active)
 }
 
 fn find_plugin(config: &Config, id: &str) -> anyhow::Result<DiscoveredPlugin> {

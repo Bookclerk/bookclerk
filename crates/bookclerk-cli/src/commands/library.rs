@@ -180,7 +180,7 @@ pub(crate) enum FilterCommand {
 
 pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()> {
     let paths = config.paths();
-    let store = LibraryStore::open_from_config(config).await?;
+    let store = crate::registry::open_library(config).await?;
 
     match command {
         LibraryCommand::Scan {

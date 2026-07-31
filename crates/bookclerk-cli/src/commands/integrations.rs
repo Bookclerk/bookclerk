@@ -6,7 +6,6 @@
 
 use bookclerk_config::Config;
 use bookclerk_integrations::{mint_for_external_user, ExternalUser};
-use bookclerk_library::LibraryStore;
 use clap::Subcommand;
 
 #[derive(Debug, Subcommand)]
@@ -56,7 +55,7 @@ pub enum TicketsCommand {
 pub async fn run(command: IntegrationsCommand, config: &Config) -> anyhow::Result<()> {
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
-    let library = LibraryStore::open_from_config(config).await?;
+    let library = crate::registry::open_library(config).await?;
     let registry = bookclerk_plugin::load_integrations(config).await?;
 
     match command {

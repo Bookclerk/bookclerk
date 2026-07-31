@@ -46,6 +46,7 @@ struct RpcErrorObject {
 enum SidePass<'a> {
     FetchDir(&'a Path),
     UploadFile(&'a Path),
+    DbFile(&'a Path),
 }
 
 /// Host-side client that owns a plugin child process.
@@ -314,6 +315,17 @@ impl PluginClient {
             .await
     }
 
+    /// Like [`Self::call_raw`], but passes an open database file before `db.connect`.
+    pub async fn call_raw_with_db_file(
+        &self,
+        method: &str,
+        params: Value,
+        db_path: &Path,
+    ) -> Result<Value> {
+        self.call_raw_with_side_pass(method, params, Some(SidePass::DbFile(db_path)))
+            .await
+    }
+
     async fn call_raw_with_side_pass(
         &self,
         method: &str,
@@ -330,7 +342,10 @@ impl PluginClient {
                     SidePass::UploadFile(path) if method == methods::PUT_FILE => {
                         crate::fd_pass::send_upload_file(channel, path)?;
                     }
-                    SidePass::FetchDir(_) | SidePass::UploadFile(_) => {}
+                    SidePass::DbFile(path) if method == methods::DB_CONNECT => {
+                        crate::fd_pass::send_database_file(channel, path)?;
+                    }
+                    SidePass::FetchDir(_) | SidePass::UploadFile(_) | SidePass::DbFile(_) => {}
                 }
             }
             let _ = side;

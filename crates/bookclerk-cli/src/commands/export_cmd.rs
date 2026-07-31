@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 
 use bookclerk_config::Config;
-use bookclerk_library::LibraryStore;
 use bookclerk_migrate::{
     export_libation, export_native, LibationExportOptions, NativeExportOptions,
 };
@@ -125,7 +124,7 @@ pub async fn run(
             asins,
             account,
         } => {
-            let store = LibraryStore::open_from_config(config).await?;
+            let store = crate::registry::open_library(config).await?;
             let books = filter_books(
                 load_books(&store, account.as_deref()).await?,
                 if asins.is_empty() { None } else { Some(&asins) },

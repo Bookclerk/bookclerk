@@ -55,8 +55,9 @@ pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{discover_plugins, plugin_search_dirs, settings_table, DiscoveredPlugin};
 pub use error::{PluginError, Result};
 pub use host::{
-    load_external_destinations, load_external_integrations, load_external_sources,
-    DestinationRegistry, ExternalDestination, ExternalIntegration, ExternalSource,
+    load_external_database, load_external_destinations, load_external_integrations,
+    load_external_sources, open_library_store, DatabaseRegistry, DestinationRegistry,
+    ExternalDatabase, ExternalDestination, ExternalIntegration, ExternalSource,
 };
 pub use jail::plugin_data_dir;
 pub use manifest::{NetworkNeed, PluginKind, PluginManifest, SandboxManifest};
@@ -157,11 +158,22 @@ pub async fn register_discovered(
                 );
             }
             PluginKind::Database => {
-                tracing::warn!(
-                    id = %plugin.manifest.id,
-                    "external database plugins are discovered but not yet loaded; \
-                     use built-in [database].plugin = \"sqlite\"|\"d1\""
-                );
+                if plugin
+                    .manifest
+                    .id
+                    .eq_ignore_ascii_case(&config.database.plugin)
+                {
+                    tracing::info!(
+                        id = %plugin.manifest.id,
+                        "discovered database plugin (loaded via load_external_database at startup)"
+                    );
+                } else {
+                    tracing::debug!(
+                        id = %plugin.manifest.id,
+                        active = %config.database.plugin,
+                        "external database plugin skipped (not [database].plugin)"
+                    );
+                }
             }
         }
     }

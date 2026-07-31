@@ -164,7 +164,22 @@ pub fn settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::Table
         crate::PluginKind::Output if plugin.manifest.id == "s3" => {
             output_s3_settings_table(&config.output.s3)
         }
-        crate::PluginKind::Output | crate::PluginKind::Database => toml::Table::new(),
+        crate::PluginKind::Database => database_settings_table(config, plugin),
+        crate::PluginKind::Output => toml::Table::new(),
+    }
+}
+
+fn database_settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::Table {
+    let id = plugin.manifest.id.to_ascii_lowercase();
+    let value = match id.as_str() {
+        "sqlite" => toml::Value::try_from(&config.database.sqlite),
+        "d1" => toml::Value::try_from(&config.database.d1),
+        "postgres" => toml::Value::try_from(&config.database.postgres),
+        _ => return toml::Table::new(),
+    };
+    match value {
+        Ok(toml::Value::Table(table)) => table,
+        _ => toml::Table::new(),
     }
 }
 

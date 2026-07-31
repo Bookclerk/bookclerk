@@ -4,7 +4,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use bookclerk_config::Config;
-use bookclerk_library::LibraryStore;
 use bookclerk_source::{ImportCredentialsOptions, LoginOptions, OAuthProgress, PortalAuthMode};
 use clap::Subcommand;
 
@@ -162,7 +161,7 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
             let registry = default_registry_with_plugins(config).await?;
             let source_id = resolve_source_id(&registry, &source)?;
             let content = registry.require(&source_id)?;
-            let store = LibraryStore::open_from_config(config).await?;
+            let store = crate::registry::open_library(config).await?;
             let scope = store.scope(content.id());
             let accounts = content
                 .import_credentials(
@@ -191,7 +190,7 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
             list_all_accounts(config, source.as_deref(), bare).await
         }
         AuthCommand::SetScan { account, scan } => {
-            let store = LibraryStore::open_from_config(config).await?;
+            let store = crate::registry::open_library(config).await?;
             let account_id = if let Some(acct) = store.find_account(&account).await? {
                 acct.account_id
             } else {
@@ -250,7 +249,7 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
             Ok(())
         }
         AuthCommand::Status { source } => {
-            let store = LibraryStore::open_from_config(config).await?;
+            let store = crate::registry::open_library(config).await?;
             let registry = default_registry_with_plugins(config).await?;
             let sources: Vec<_> = match source.as_deref() {
                 Some(needle) => {
@@ -276,7 +275,7 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
             Ok(())
         }
         AuthCommand::Revoke { account } => {
-            let store = LibraryStore::open_from_config(config).await?;
+            let store = crate::registry::open_library(config).await?;
             let acct = store
                 .find_account(&account)
                 .await?
@@ -321,7 +320,7 @@ async fn login_oauth(
     no_qr: bool,
     ascii_qr: bool,
 ) -> anyhow::Result<()> {
-    let store = LibraryStore::open_from_config(config).await?;
+    let store = crate::registry::open_library(config).await?;
     let scope = store.scope(source.id());
     let mut extra = serde_json::Map::new();
     if audible_username {
@@ -405,7 +404,7 @@ async fn login_password(
         .ok_or_else(|| anyhow::anyhow!("{display_name} has no password env var configured"))?;
     let password = resolve_password(password_env, display_name)?;
 
-    let store = LibraryStore::open_from_config(config).await?;
+    let store = crate::registry::open_library(config).await?;
     let scope = store.scope(source.id());
     let acct = source
         .login(
@@ -462,7 +461,7 @@ async fn list_all_accounts(
     bare: bool,
 ) -> anyhow::Result<()> {
     let registry = default_registry_with_plugins(config).await?;
-    let store = LibraryStore::open_from_config(config).await?;
+    let store = crate::registry::open_library(config).await?;
     let db_accounts = store.list_accounts().await?;
 
     let filter_id = match source_filter {

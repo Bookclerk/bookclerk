@@ -722,4 +722,12 @@ pub mod methods {
     pub const DELETE: &str = "delete";
     /// Best-effort logical timestamp update ([`TouchFileParams`]).
     pub const TOUCH_FILE: &str = "touch_file";
+    /// Open the library database ([`DbConnectParams`]; SQLite receives fd 3).
+    pub const DB_CONNECT: &str = "db.connect";
+    /// Ping the database connection.
+    pub const DB_PING: &str = "db.ping";
+    /// Run a query ([`StatementDto`] → [`QueryResultDto`]).
+    pub const DB_QUERY: &str = "db.query";
+    /// Execute a statement ([`StatementDto`] → [`ExecResultDto`]).
+    pub const DB_EXECUTE: &str = "db.execute";
 }

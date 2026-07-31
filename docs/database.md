@@ -104,9 +104,16 @@ Environment overrides:
 Built-in backends are selected by `[database].plugin` (in-process), similar to
 `[output.local]` / `[output.s3]`.
 
-External `plugin.toml` may declare `kind = "database"` for discovery; host
-loading of third-party database plugins is reserved for a follow-up (same
-pattern as external output plugins).
+External `kind = "database"` plugins are loaded when discovered and
+`[database].plugin` matches the plugin id (`sqlite`, `d1`, or `postgres`). The
+host passes `library.db` as an open file descriptor for SQLite, or injects
+remote credentials (D1 API token, Postgres URL) per RPC. SeaORM proxy calls
+(`db.query` / `db.execute`) forward through the guest; `master.key` never
+leaves the host.
+
+First-party guests ship as `bookclerk-plugin-database` (one binary, three
+manifest ids). When not staged under `plugins/<id>/`, built-in in-process
+backends are used unchanged.
 
 ## Postgres plugin
 

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use bookclerk_config::{
     init_tracing_with, read_or_create_operator_token, Config, LogFormat, TracingOptions,
 };
-use bookclerk_library::{configure_master_key_with, LibraryStore};
+use bookclerk_library::configure_master_key_with;
 use clap::Parser;
 use tokio::sync::{Mutex, RwLock};
 
@@ -89,7 +89,8 @@ async fn main() -> anyhow::Result<()> {
     paths.ensure_dirs()?;
     configure_master_key_with(&paths.files_dir, config.auth_password().as_deref())?;
 
-    let library = LibraryStore::open_from_config(&config).await?;
+    let database_registry = bookclerk_plugin::load_external_database(&config).await?;
+    let library = bookclerk_plugin::open_library_store(&config, &database_registry).await?;
     let integrations = bookclerk_plugin::load_integrations(&config).await?;
     let destinations =
         bookclerk_plugin::load_external_destinations(&config, Some(library.db())).await?;

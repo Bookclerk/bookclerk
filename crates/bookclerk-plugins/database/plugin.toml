@@ -1,0 +1,8 @@
+api_version = 1
+id = "sqlite"
+name = "SQLite"
+kind = "database"
+command = "./bookclerk-plugin-database"
+
+[sandbox]
+network = "none"

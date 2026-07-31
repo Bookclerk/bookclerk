@@ -67,7 +67,7 @@ pub enum WishlistCommand {
 }
 
 pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -> Result<()> {
-    let library = LibraryStore::open_from_config(cfg).await?;
+    let library = crate::registry::open_library(cfg).await?;
     let registry = crate::registry::default_registry_with_plugins(cfg).await?;
 
     match command {

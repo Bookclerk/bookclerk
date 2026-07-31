@@ -403,7 +403,7 @@ async fn run_s3_credentials(
     config: &Config,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let store = LibraryStore::open_from_config(config).await?;
+    let store = crate::registry::open_library(config).await?;
     match command {
         S3CredentialsCommand::Set { label } => {
             let access_key_id = std::env::var(ENV_AWS_ACCESS_KEY_ID).map_err(|_| {
@@ -509,7 +509,7 @@ async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Resu
             file,
             ext,
         } => {
-            let store = LibraryStore::open_from_config(config).await?;
+            let store = crate::registry::open_library(config).await?;
             let book = resolve_book_for_preview(&store, &asin, account.as_deref()).await?;
             let ctx = NamingContext {
                 asin: book.asin_or_isbn().to_string(),

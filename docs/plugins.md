@@ -479,6 +479,20 @@ discovered under `plugins/s3/` and `[output.s3].enabled = true`, the host
 loads it at startup via [`load_external_destinations`] instead of the in-process
 [`S3Backend`].
 
+### Database plugins
+
+`kind = "database"` guests implement the SeaORM proxy boundary over JSON-RPC.
+The host opens the library through [`load_external_database`] /
+[`open_library_store`]; SQLite receives `library.db` on fd 3 at `db.connect`.
+
+| Method | Notes |
+| --- | --- |
+| `db.connect` | Open backend (SQLite: fd 3; D1/Postgres: injected credentials) |
+| `db.ping` | Verify connectivity |
+| `db.query` / `db.execute` | Forward SeaORM [`Statement`] payloads |
+
+Built-in ids: `sqlite`, `d1`, `postgres` (match `[database].plugin`).
+
 ## Example
 
 ```bash

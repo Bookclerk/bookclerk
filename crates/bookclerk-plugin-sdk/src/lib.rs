@@ -13,11 +13,19 @@
 //!
 //! See `docs/plugin-registry.md`.
 
+mod db;
 mod error;
 mod fetch_dir;
 mod guest;
 mod pass_fd;
 pub mod protocol;
+
+pub use db::{
+    b64_string_to_bytes, bytes_to_b64_string, exec_result_from_dto, exec_result_to_dto,
+    json_to_sea_value, proxy_rows_from_dto, proxy_rows_to_dto, sea_value_to_json,
+    statement_from_dto, statement_to_dto, DbConnectParams, ExecResultDto, ProxyRowDto,
+    QueryResultDto, StatementDto,
+};
 
 pub use error::{Result, SdkError};
 pub use fetch_dir::{fetch_work_dir, upload_file_path, FetchWorkDir, UploadFile};
