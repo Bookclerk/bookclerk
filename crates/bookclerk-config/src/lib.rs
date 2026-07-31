@@ -6,6 +6,7 @@ mod error;
 mod extras;
 mod journal;
 mod logging;
+mod media;
 mod naming_profile;
 mod operator_auth;
 mod output;
@@ -35,6 +36,7 @@ pub use extras::{
 };
 pub use journal::{journald_available, os_log_available, OsLogFacility, OsLogLayer};
 pub use logging::{init_tracing, init_tracing_with, LogFormat, LoggingHandle, TracingOptions};
+pub use media::{MediaConfig, MediaIsolation};
 pub use naming_profile::{NamingProfile, NamingProfileTemplates, ResolvedNamingTemplates};
 pub use operator_auth::{
     operator_token_path, read_operator_token, read_or_create_operator_token, ResolveOperatorToken,

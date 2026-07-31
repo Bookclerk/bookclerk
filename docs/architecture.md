@@ -6,6 +6,7 @@ Bookclerk is a Cargo workspace of library crates plus binaries:
 | --- | --- | --- |
 | `bookclerk` | `bookclerk-cli` | One-shot operator CLI |
 | `bookclerkd` | `bookclerkd` | Scheduled jobs + authenticated HTTP API / GUI |
+| `bookclerk-media-worker` | `bookclerk-media-worker` | Confined child process running one codec job |
 | `bookclerk-tray` | `bookclerk-tray` | Optional tray → system browser (not a default-member) |
 
 Both share the same core: sources, library DB, acquire pipeline, storage, and
@@ -34,7 +35,11 @@ integrations.
 1. **Scan** — each enabled source upserts owned titles into `library.db`.
 2. **Enrich** (optional) — non-Audible rows may gain an Audible ASIN via public
    catalog search (`library.enrich_from_audible`).
-3. **Acquire** — fetch Plain → package/encode → name → write every enabled destination.
+3. **Acquire** — fetch Plain → package/encode → name → write every enabled
+   destination. Decode, encode, and packaging do not run in the host: they are
+   dispatched to a bounded pool of `bookclerk-media-worker` processes, each
+   confined to the paths its job declared, so the C codecs never share an
+   address space with the master key or `library.db`. See [media.md](media.md).
 4. **Integrations** — receive `book_acquired` (and related) events; may trigger
    remote library scans or portal identity flows.
 5. **Daemon** — runs scan/auto-acquire on an interval and exposes the control plane.
@@ -65,6 +70,7 @@ discovered but not loaded yet.
 | Store adapters (plugins) | `bookclerk-plugins/source-{audible,libro,chirp,graphicaudio}` (lib + guest bin) |
 | ABS integration (plugin) | `bookclerk-plugins/integration-audiobookshelf` (lib + guest bin) |
 | Clear-media packaging | `bookclerk-media` (remux / fixup / MP3; no DRM) |
+| Codec confinement | `bookclerk-sandbox` (Landlock+seccomp / Seatbelt / AppContainer) |
 | Acquire orchestration | `bookclerk-acquire` |
 | Naming templates | `bookclerk-naming` |
 | Library DB | `bookclerk-library` (SeaORM plugins + rusqlite store) |

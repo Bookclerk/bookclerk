@@ -12,10 +12,16 @@ metadata fix-up, and chapter split are native Rust.
 ## Build
 
 ```bash
-cargo build --release -p bookclerk-cli -p bookclerkd
+cargo build --release -p bookclerk-cli -p bookclerkd -p bookclerk-media-worker
 export PATH="$PWD/target/release:$PATH"
 # binaries: target/release/bookclerk  target/release/bookclerkd
+#           target/release/bookclerk-media-worker
 ```
+
+`bookclerk-media-worker` runs every decode, encode, and packaging step in a
+confined child process. Install it beside the other two binaries: that is where
+both hosts look for it, and by default they refuse media work rather than run
+codecs unconfined. See [media.md](media.md).
 
 Or run from the workspace without installing:
 

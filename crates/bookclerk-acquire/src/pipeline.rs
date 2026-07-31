@@ -9,8 +9,9 @@ use bookclerk_config::{FileTimestampMode, MultiDestinationMode, OutputBackendKin
 use bookclerk_enrich::{fetch_audnexus_book, fetch_public_chapter_info};
 use bookclerk_library::{AcquireStatus, LibraryStore};
 use bookclerk_media::{
-    align_chapter_starts, bookclerk_tool_tag, encode_to_mp3, fixup_audiobook, package_m4b_from_mp3,
-    parse_mp4, track_duration_ms, ChapterAlignOptions, FixupRequest, PackageM4bRequest,
+    align_chapter_starts_async, bookclerk_tool_tag, encode_to_mp3, fixup_audiobook,
+    package_m4b_from_mp3, parse_mp4, track_duration_ms, ChapterAlignOptions, FixupRequest,
+    PackageM4bRequest,
 };
 use bookclerk_source::{ContentSource, DownloadOptions, FetchOptions, PlainFetch};
 use bookclerk_storage::{ObjectMeta, StorageBackend};
@@ -775,8 +776,12 @@ async fn store_plain_fetch(
             // Local ±5s speech-band snap: cheap (decode only small windows),
             // places markers up to 2s before the spoken-title onset without
             // crossing prior vocal energy (helps with music beds too).
-            let aligned =
-                align_chapter_starts(&acquired_path, &overlaid, ChapterAlignOptions::default());
+            let aligned = align_chapter_starts_async(
+                &acquired_path,
+                &overlaid,
+                ChapterAlignOptions::default(),
+            )
+            .await;
             let mut start_map = std::collections::HashMap::new();
             for ((_, old), (_, new)) in overlaid.iter().zip(aligned.iter()) {
                 start_map.insert(*old, *new);

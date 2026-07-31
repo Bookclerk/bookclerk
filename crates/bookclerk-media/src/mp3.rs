@@ -223,6 +223,9 @@ pub fn encode_to_mp3_native(
         encode_pcm.clear();
     }
 
+    // Same contract as encode_pcm_chunk: the flush needs real spare capacity,
+    // at minimum one whole MP3 frame.
+    mp3_chunk.reserve(mp3lame_encoder::max_required_buffer_size(0));
     encoder
         .flush_to_vec::<FlushNoGap>(&mut mp3_chunk)
         .map_err(|err| MediaError::Native(format!("lame flush: {err:?}")))?;
@@ -345,12 +348,20 @@ impl LinearResampler {
     }
 }
 
+/// Encode one PCM chunk, appending MP3 bytes to `out`.
+///
+/// `encode_to_vec` writes into `out`'s *spare capacity* and passes that length
+/// to LAME. LAME reads a length of zero as "caller guarantees the buffer is big
+/// enough" and writes regardless, so calling it on a `Vec` with no spare room
+/// corrupts the heap instead of returning an error. Reserving up front is not
+/// an optimisation here — it is what keeps the call in bounds.
 fn encode_pcm_chunk(
     encoder: &mut Encoder,
     pcm: &[i16],
     channels: u32,
     out: &mut Vec<u8>,
 ) -> Result<()> {
+    out.reserve(mp3lame_encoder::max_required_buffer_size(pcm.len()));
     if channels == 1 {
         encoder
             .encode_to_vec(InterleavedPcm(pcm), out)
@@ -446,5 +457,86 @@ mod tests {
     fn linear_resampler_step_for_identity() {
         let rs = LinearResampler::new(44100, 44100, 2);
         assert!((rs.step - 1.0).abs() < f64::EPSILON);
+    }
+
+    /// Encoding into a `Vec` with no spare capacity used to hand LAME a buffer
+    /// length of zero, which it reads as "no bounds check" — the encoder then
+    /// wrote past the allocation and the process died with SIGSEGV. Nothing
+    /// covered a full encode, so it went unnoticed.
+    ///
+    /// A regression here aborts the test process rather than failing an
+    /// assertion, which is exactly the signal we want.
+    #[test]
+    fn encodes_a_full_file_without_overrunning_the_output_buffer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.m4b");
+        let encoded = dir.path().join("encoded.mp3");
+
+        let sample_rate = 44_100usize;
+        let pcm: Vec<i16> = (0..sample_rate * 2)
+            .map(|n| {
+                #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                let value = ((n as f32 / 40.0).sin() * 2_000.0) as i16;
+                value
+            })
+            .collect();
+        crate::package_m4b_from_pcm(
+            &pcm,
+            u32::try_from(sample_rate).expect("sample rate fits u32"),
+            1,
+            &source,
+            &[("One".to_string(), 0)],
+        )
+        .expect("build source audiobook");
+
+        encode_to_mp3_native(
+            &source,
+            &encoded,
+            &bookclerk_config::LameConfig::default(),
+            None,
+        )
+        .expect("encode to mp3");
+
+        let size = std::fs::metadata(&encoded).expect("encoded file").len();
+        assert!(
+            size > 1_000,
+            "encoded MP3 is implausibly small: {size} bytes"
+        );
+    }
+
+    /// The buffer contract also has to hold when the resampler is in play,
+    /// since that path feeds differently-sized chunks to the encoder.
+    #[test]
+    fn encodes_with_downsampling_without_overrunning_the_output_buffer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.m4b");
+        let encoded = dir.path().join("encoded.mp3");
+
+        let sample_rate = 44_100usize;
+        let pcm: Vec<i16> = (0..sample_rate)
+            .map(|n| {
+                #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                let value = ((n as f32 / 40.0).sin() * 2_000.0) as i16;
+                value
+            })
+            .collect();
+        crate::package_m4b_from_pcm(
+            &pcm,
+            u32::try_from(sample_rate).expect("sample rate fits u32"),
+            1,
+            &source,
+            &[("One".to_string(), 0)],
+        )
+        .expect("build source audiobook");
+
+        encode_to_mp3_native(
+            &source,
+            &encoded,
+            &bookclerk_config::LameConfig::default(),
+            Some(22_050),
+        )
+        .expect("encode to mp3 at a lower rate");
+
+        assert!(std::fs::metadata(&encoded).expect("encoded file").len() > 500);
     }
 }

@@ -155,6 +155,8 @@ async fn main() -> ExitCode {
         enable_journald: true,
     });
     config.warn_unsupported_options();
+    // Before any acquire can start, so codec work never runs unconfined.
+    bookclerk_media::init_pool_from_config(&config.media);
 
     let format = early
         .as_ref()

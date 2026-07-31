@@ -846,6 +846,11 @@ mod tests {
 
     #[tokio::test]
     async fn writes_ffmpeg_like_chapter_track_once() {
+        // This exercises the chapter muxer, not the jail, and unit tests have
+        // no worker binary to spawn. Without this the default pool refuses the
+        // job, which is the behaviour production wants.
+        crate::init_pool(crate::MediaPool::in_process()).ok();
+
         let sample_rate = 16_000u32;
         let pcm = vec![0i16; sample_rate as usize * 2];
         let dir = tempfile::tempdir().unwrap();

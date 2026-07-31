@@ -50,7 +50,7 @@ See [docs/architecture.md](docs/architecture.md) for crate layout and data flow.
 ## Quick start
 
 ```bash
-cargo build --release -p bookclerk-cli -p bookclerkd
+cargo build --release -p bookclerk-cli -p bookclerkd -p bookclerk-media-worker
 export PATH="$PWD/target/release:$PATH"
 
 export BOOKCLERK_FILES_DIR=./BookclerkFiles

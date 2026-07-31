@@ -23,6 +23,7 @@ Classic Libation setting names are accepted as aliases where documented in
 | `[library]` | Auto-acquire, scan interval, enrichment, storage layout fix |
 | `[database]` / `[database.sqlite]` / `[database.d1]` | Library DB plugin (`sqlite` default, Cloudflare D1) |
 | `[auth]` | Optional `[auth].password` wrapping `master.key` (prefer `BOOKCLERK_AUTH_PASSWORD`) |
+| `[media]` | Codec worker pool: concurrency and confinement (see [media.md](media.md)) |
 | `[output]` | Format, Widevine, naming, sidecars, multi-destination policy |
 | `[output.local]` / `[output.s3]` | Destination plugins (`enabled`, roots, per-dest naming) |
 | `[sources.<id>]` | Per-storefront enable + store knobs |
@@ -52,6 +53,9 @@ Classic Libation setting names are accepted as aliases where documented in
 | `BOOKCLERK_DISCOVERY_EMBEDDINGS_ENABLED` | Local ONNX embeddings on/off |
 | `BOOKCLERK_DISCOVERY_OPENLIBRARY_ENABLED` | Open Library enrichment on/off |
 | `BOOKCLERK_DISCOVERY_RECOMMEND_LIMIT` | Default recommendation count |
+| `BOOKCLERK_MEDIA_WORKERS` | Concurrent codec jobs (`0` = one per core, capped at 8) |
+| `BOOKCLERK_MEDIA_ISOLATION` | `required` / `best-effort` / `off` |
+| `BOOKCLERK_MEDIA_WORKER` | Path to `bookclerk-media-worker` |
 | `BOOKCLERK_OUTPUT_LOCAL_ROOT` | Local destination root |
 | `BOOKCLERK_OUTPUT_S3_*` / `BOOKCLERK_S3_*` | S3 destination settings (bucket/region/endpoint/…) |
 | `BOOKCLERK_AWS_ACCESS_KEY_ID` / `BOOKCLERK_AWS_SECRET_ACCESS_KEY` | S3 credentials env override (optional `BOOKCLERK_AWS_SESSION_TOKEN`; wins over `encrypted_secrets` and SDK chain) |
@@ -69,6 +73,21 @@ enrich_from_audible = true
 enrich_min_confidence = 90
 # fix_storage_layout = false
 ```
+
+## Media worker pool
+
+```toml
+[media]
+workers = 0             # 0 derives one per core, capped at 8
+isolation = "required"  # required | best-effort | off
+# worker_bin = "/usr/local/bin/bookclerk-media-worker"
+```
+
+Decode, encode, and packaging run in `bookclerk-media-worker` child processes
+confined to the paths each job declared. `required` refuses media work when the
+jail does not engage, including when the worker binary is not installed. A reload
+applies changes here to subsequent jobs and lets the previous pool drain, so no
+restart is needed. See [media.md](media.md).
 
 ## Output (shared)
 

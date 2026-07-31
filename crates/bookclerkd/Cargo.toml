@@ -20,6 +20,7 @@ bookclerk-config.workspace = true
 bookclerk-enrich.workspace = true
 bookclerk-acquire.workspace = true
 bookclerk-library.workspace = true
+bookclerk-media.workspace = true
 bookclerk-search.workspace = true
 bookclerk-source.workspace = true
 bookclerk-storage.workspace = true

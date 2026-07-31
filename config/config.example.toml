@@ -38,6 +38,22 @@ plugin = "sqlite"   # sqlite | d1 | postgres
 # or set auth.password / env and reload bookclerkd (SIGHUP or POST /api/config/reload).
 # password_file is no longer supported.
 
+# Codec worker pool. Decode, encode, and packaging run in short-lived
+# `bookclerk-media-worker` processes that confine themselves to the paths each
+# job declared. See docs/media.md.
+[media]
+# Reloadable: a change applies to new jobs and the previous pool drains.
+# Concurrent codec jobs. 0 derives one per core, capped at 8.
+workers = 0
+# required    — refuse media work when the jail does not engage (default)
+# best-effort — confine what the platform supports, log the rest
+# off         — run codecs in-process with no jail (development only)
+# Windows cannot confine a running process, so "required" refuses media work
+# there until spawn-side AppContainer lands; set "best-effort" to acquire.
+isolation = "required"
+# Normally unset: the worker is found beside the running executable.
+# worker_bin = "/usr/local/bin/bookclerk-media-worker"
+
 [output]
 # Packaging format: enriched_m4b | single_mp3 | split_mp3_by_chapter | split_mp3_by_size | opus | none
 format = "enriched_m4b"

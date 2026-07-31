@@ -24,7 +24,7 @@ const BOOKCLERK_MEAN: &str = "org.bookclerk";
 const ITUNES_MEAN: &str = "com.apple.iTunes";
 
 /// Request to fix up audiobook metadata after decrypt / download.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FixupRequest {
     pub input: PathBuf,
     pub output: PathBuf,
@@ -61,18 +61,24 @@ pub fn bookclerk_tool_tag() -> String {
 }
 
 /// Apply metadata tags, optional cover embed, and optional chapters.
+///
+/// Runs in a confined media worker; see the [crate] documentation.
+///
+/// # Errors
+///
+/// Returns [`MediaError::InputMissing`] when the input does not exist,
+/// [`MediaError::OutputMissing`] when the worker reported success but wrote
+/// nothing, and propagates tag-writing and worker failures otherwise.
 pub async fn fixup_audiobook(req: FixupRequest) -> Result<MediaOutcome> {
     if !req.input.exists() {
         return Err(MediaError::InputMissing(req.input));
     }
-    if let Some(parent) = req.output.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-
     let output = req.output.clone();
-    tokio::task::spawn_blocking(move || fixup_audiobook_sync(&req))
-        .await
-        .map_err(|err| MediaError::Native(format!("fixup task join error: {err}")))??;
+    let pool = crate::pool();
+    pool.run(crate::MediaJob::Fixup {
+        request: Box::new(req),
+    })
+    .await?;
 
     if !output.exists() {
         return Err(MediaError::OutputMissing(output));
@@ -80,7 +86,7 @@ pub async fn fixup_audiobook(req: FixupRequest) -> Result<MediaOutcome> {
     Ok(MediaOutcome { output })
 }
 
-fn fixup_audiobook_sync(req: &FixupRequest) -> Result<()> {
+pub(crate) fn fixup_audiobook_sync(req: &FixupRequest) -> Result<()> {
     tracing::info!(
         input = %req.input.display(),
         output = %req.output.display(),

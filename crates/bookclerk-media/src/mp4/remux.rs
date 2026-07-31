@@ -10,7 +10,7 @@ use super::samples::{filter_samples_by_ms, SampleInfo};
 use crate::error::{MediaError, Result};
 
 /// Optional media-time trim window in milliseconds (absolute, pre-rebase).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct TrimRange {
     pub start_ms: u64,
     /// Exclusive end; `None` means "through end of media".

@@ -65,6 +65,8 @@ async fn main() -> anyhow::Result<()> {
     });
     // After subscriber install so startup guidance is not dropped.
     config.warn_unsupported_options();
+    // Before any acquire can start, so codec work never runs unconfined.
+    bookclerk_media::init_pool_from_config(&config.media);
     if logging.journald {
         let facility = match logging.os_facility {
             Some(bookclerk_config::OsLogFacility::Journald) => "journald",

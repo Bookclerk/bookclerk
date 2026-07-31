@@ -19,6 +19,7 @@ bookclerk-config.workspace = true
 bookclerk-enrich.workspace = true
 bookclerk-acquire.workspace = true
 bookclerk-library.workspace = true
+bookclerk-media.workspace = true
 bookclerk-migrate.workspace = true
 bookclerk-naming.workspace = true
 bookclerk-search.workspace = true

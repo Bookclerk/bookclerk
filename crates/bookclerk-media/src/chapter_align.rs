@@ -21,7 +21,7 @@ use symphonia::core::units::Time;
 use crate::error::{MediaError, Result};
 
 /// Tunables for silence / speech-onset chapter snapping.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct ChapterAlignOptions {
     /// Search window on each side of the expected chapter start.
     pub window_ms: u64,

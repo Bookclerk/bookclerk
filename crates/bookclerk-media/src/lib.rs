@@ -1,16 +1,32 @@
 //! Clear-media packaging: remux, metadata fix-up, and MP3 encode.
 //!
 //! DRM (Adrm / CENC) lives in store plugins (e.g. Audible), not here.
+//!
+//! # Where the work runs
+//!
+//! The async entry points in this module do not decode anything themselves.
+//! They build a [`MediaJob`] and hand it to a [`MediaPool`], which runs it in a
+//! short-lived child process confined to the paths that job declared. Hosts
+//! install the pool once at startup with [`init_pool`]; anything that skips
+//! that gets a default pool, which still isolates as long as the worker binary
+//! is installed alongside the host.
+//!
+//! The synchronous functions ([`remux_trimmed`], [`align_chapter_starts`],
+//! [`package_m4b_from_pcm`], and the MP4 parsing helpers) run in-process by
+//! design. They are cheap, take already-parsed input, or are the implementation
+//! the worker itself calls.
 
 mod brand;
 mod chapter_align;
 mod chapters_mp4;
 mod error;
+mod job;
 mod metadata;
 mod mp3;
 mod mp4;
 mod native;
 mod package_m4b;
+mod pool;
 
 pub use brand::{
     brand_durations_from_chapter_info, brand_trim_range, rebase_chapters_after_brand_trim,
@@ -18,6 +34,7 @@ pub use brand::{
 };
 pub use chapter_align::{align_chapter_starts, scale_chapters_to_duration, ChapterAlignOptions};
 pub use error::{MediaError, Result};
+pub use job::{MediaJob, MediaJobOutput, MediaJobReply};
 pub use metadata::{bookclerk_tool_tag, fixup_audiobook, FixupRequest, BOOKCLERK_TOOL_NAME};
 pub use mp4::{
     extract_mp4a_config, parse_mp4, remux_progressive, track_duration_ms, Mp4aConfig, RemuxOptions,
@@ -25,6 +42,10 @@ pub use mp4::{
 };
 pub use native::remux_trimmed;
 pub use package_m4b::{package_m4b_from_mp3, package_m4b_from_pcm, PackageM4bRequest};
+pub use pool::{
+    init_pool, init_pool_from_config, pool, replace_pool, Confinement, MediaPool, MediaPoolConfig,
+    WORKER_BIN_ENV, WORKER_BIN_NAME, WORKER_ENFORCEMENT_ENV,
+};
 
 use std::path::{Path, PathBuf};
 
@@ -35,6 +56,13 @@ pub struct MediaOutcome {
 }
 
 /// Re-encode audio to MP3 via Symphonia + LAME (classic Libation `DecryptToLossy`).
+///
+/// Runs in a confined media worker; see the module documentation.
+///
+/// # Errors
+///
+/// Returns [`MediaError::InputMissing`] when `input` does not exist, and
+/// propagates encode and worker failures otherwise.
 pub async fn encode_to_mp3(
     input: &Path,
     output: &Path,
@@ -44,20 +72,31 @@ pub async fn encode_to_mp3(
     if !input.exists() {
         return Err(MediaError::InputMissing(input.to_path_buf()));
     }
-    if let Some(parent) = output.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let input = input.to_path_buf();
     let output = output.to_path_buf();
-    let lame = lame.clone();
-    tokio::task::spawn_blocking(move || {
-        mp3::encode_to_mp3_native(&input, &output, &lame, max_sample_rate)
+    // Bound rather than used inline: holding the handle for the whole job is
+    // what lets a config reload swap the pool without disturbing this one.
+    let pool = pool();
+    pool.run(MediaJob::EncodeMp3 {
+        input: input.to_path_buf(),
+        output: output.clone(),
+        lame: Box::new(lame.clone()),
+        max_sample_rate,
     })
-    .await
-    .map_err(|err| MediaError::Native(format!("mp3 encode task join error: {err}")))?
+    .await?;
+    if !output.exists() {
+        return Err(MediaError::OutputMissing(output));
+    }
+    Ok(MediaOutcome { output })
 }
 
 /// Copy/trim a progressive M4B/M4A into a new file (chapter split helper).
+///
+/// Runs in a confined media worker; see the module documentation.
+///
+/// # Errors
+///
+/// Returns [`MediaError::InputMissing`] when `input` does not exist, and
+/// propagates remux and worker failures otherwise.
 pub async fn remux_trimmed_async(
     input: &Path,
     output: &Path,
@@ -66,12 +105,51 @@ pub async fn remux_trimmed_async(
     if !input.exists() {
         return Err(MediaError::InputMissing(input.to_path_buf()));
     }
-    if let Some(parent) = output.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let input = input.to_path_buf();
     let output = output.to_path_buf();
-    tokio::task::spawn_blocking(move || remux_trimmed(&input, &output, trim))
-        .await
-        .map_err(|err| MediaError::Native(format!("remux task join error: {err}")))?
+    let pool = pool();
+    pool.run(MediaJob::RemuxTrimmed {
+        input: input.to_path_buf(),
+        output: output.clone(),
+        trim,
+    })
+    .await?;
+    if !output.exists() {
+        return Err(MediaError::OutputMissing(output));
+    }
+    Ok(MediaOutcome { output })
+}
+
+/// Snap chapter starts to spoken-title onsets by local waveform analysis.
+///
+/// The synchronous [`align_chapter_starts`] decodes audio on the calling
+/// thread, which on an async runtime blocks a worker for the length of the
+/// analysis. Prefer this from async code.
+///
+/// Analysis never fails the acquire: a decode problem leaves the original
+/// chapter starts in place, matching the synchronous behaviour.
+pub async fn align_chapter_starts_async(
+    path: &Path,
+    chapters: &[(String, u64)],
+    options: ChapterAlignOptions,
+) -> Vec<(String, u64)> {
+    let job = MediaJob::AlignChapters {
+        path: path.to_path_buf(),
+        chapters: chapters.to_vec(),
+        options,
+    };
+    let pool = pool();
+    match pool.run(job).await {
+        Ok(output) => output
+            .chapters()
+            .map(<[(String, u64)]>::to_vec)
+            .unwrap_or_else(|| chapters.to_vec()),
+        Err(err) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "chapter align failed; keeping original chapter starts"
+            );
+            chapters.to_vec()
+        }
+    }
 }

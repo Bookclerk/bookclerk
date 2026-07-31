@@ -3,7 +3,9 @@ resolver = "2"
 members = [
     "crates/bookclerk-config",
     "crates/bookclerk-enrich",
+    "crates/bookclerk-sandbox",
     "crates/bookclerk-media",
+    "crates/bookclerk-media-worker",
     "crates/bookclerk-storage",
     "crates/bookclerk-library",
     "crates/bookclerk-source",
@@ -28,6 +30,7 @@ members = [
 default-members = [
     "crates/bookclerk-cli",
     "crates/bookclerkd",
+    "crates/bookclerk-media-worker",
 ]
 # Vendored fork is a path dep only — do not fmt/clippy/test it as a workspace member
 # (upstream tests need fixtures we do not ship).
@@ -53,7 +56,9 @@ bookclerk-plugin-source-chirp = { path = "crates/bookclerk-plugins/source-chirp"
 bookclerk-plugin-source-graphicaudio = { path = "crates/bookclerk-plugins/source-graphicaudio" }
 bookclerk-plugin-integration-audiobookshelf = { path = "crates/bookclerk-plugins/integration-audiobookshelf" }
 bookclerk-enrich = { path = "crates/bookclerk-enrich" }
+bookclerk-sandbox = { path = "crates/bookclerk-sandbox" }
 bookclerk-media = { path = "crates/bookclerk-media" }
+bookclerk-media-worker = { path = "crates/bookclerk-media-worker" }
 bookclerk-storage = { path = "crates/bookclerk-storage" }
 bookclerk-library = { path = "crates/bookclerk-library" }
 bookclerk-source = { path = "crates/bookclerk-source" }

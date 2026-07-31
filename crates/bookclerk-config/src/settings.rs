@@ -36,6 +36,9 @@ pub struct Config {
     /// Opt-in crash / error-burst report upload (`[diagnostics]`).
     #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
+    /// Media decode / encode worker pool (`[media]`).
+    #[serde(default)]
+    pub media: crate::MediaConfig,
 }
 
 /// Auth encryption settings (`[auth]` section).
@@ -424,6 +427,7 @@ impl Config {
             self.output.s3.force_path_style =
                 parse_bool(&v).unwrap_or(self.output.s3.force_path_style);
         }
+        self.media.apply_env_overrides();
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_LISTEN") {
             self.daemon.listen = v;
         }

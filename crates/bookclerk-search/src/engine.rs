@@ -1,6 +1,6 @@
 //! Tantivy index build and search.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
 use tantivy::collector::TopDocs;
@@ -147,7 +147,31 @@ impl SearchEngine {
         Ok(())
     }
 
+    /// Open an index and search it without blocking the caller's task.
+    ///
+    /// Both [`SearchEngine::open`] and [`SearchEngine::search`] do synchronous
+    /// disk work — opening builds the schema and touches the index directory,
+    /// and querying reads and scores segments. Calling them directly from an
+    /// async handler stalls a runtime worker for the whole query, which on the
+    /// daemon's `/api/library/books?q=` path meant one search could hold up
+    /// unrelated requests.
+    ///
+    /// # Errors
+    ///
+    /// Propagates index-open and query failures.
+    pub async fn open_and_search(
+        dir: PathBuf,
+        query: String,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>> {
+        tokio::task::spawn_blocking(move || Self::open(&dir)?.search(&query, limit))
+            .await
+            .map_err(|err| SearchError::Index(format!("search task join error: {err}")))?
+    }
+
     /// Search the index. `limit` of 0 returns all matches (classic `-n 0`).
+    ///
+    /// Blocking. Prefer [`SearchEngine::open_and_search`] from async code.
     pub fn search(&self, raw_query: &str, limit: usize) -> Result<Vec<SearchHit>> {
         let query_str = normalize_lucene_query(raw_query);
         if query_str.is_empty() {

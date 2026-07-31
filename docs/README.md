@@ -14,9 +14,10 @@ Start here if you are new:
 6. [Integrations](integrations.md) — Audiobookshelf and SPA claim / Accounts
 7. [Discovery](discovery.md) — recommendations, embeddings, wishlist / global queue
 8. [Configuration](configuration.md) — `config.toml` and environment variables
-9. [Operations](operations.md) — `bookclerkd`, Docker, systemd
-10. [GUI](gui.md) — web UI, operator auth, tray companion
-11. [Desktop path](gui-desktop-path.md) — tray vs deferred Tauri / OSV constraints
+9. [Media worker pool](media.md) — confined codecs, concurrency, isolation modes
+10. [Operations](operations.md) — `bookclerkd`, Docker, systemd
+11. [GUI](gui.md) — web UI, operator auth, tray companion
+12. [Desktop path](gui-desktop-path.md) — tray vs deferred Tauri / OSV constraints
 
 ## Extending Bookclerk
 

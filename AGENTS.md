@@ -12,11 +12,15 @@ integrations), not an Audible-only Libation fork.
 
 ### Services / binaries
 
-Two runnable binaries (the workspace `default-members`):
+Three binaries (the workspace `default-members`):
 
 - `bookclerk-cli` (binary `bookclerk`) — headless library manager CLI
   (Audible, Libro.fm, Chirp, GraphicAudio, plugins).
 - `bookclerkd` — long-running daemon with an authenticated HTTP API / GUI.
+- `bookclerk-media-worker` — confined child process that runs one codec job.
+  Ship it beside the other two: both hosts look for it there and, with the
+  default `media.isolation = "required"`, refuse media work when it is missing
+  rather than decode untrusted audio in-process. See `docs/media.md`.
 
 Optional companion (workspace member, not a default-member):
 
@@ -34,7 +38,8 @@ RUSTSEC advisories remain (tracked in `#44`).
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings` (CI treats
   warnings as errors via `RUSTFLAGS="-D warnings"`).
 - Test: `cargo test --workspace`
-- Release binaries: `cargo build --release -p bookclerk-cli -p bookclerkd`
+- Release binaries: `cargo build --release -p bookclerk-cli -p bookclerkd -p bookclerk-media-worker`
+ (the worker is not optional — see below)
 
 ### Running the apps
 
