@@ -1,11 +1,15 @@
 //! JSON-RPC 2.0 over newline-delimited stdio.
 
+#![cfg_attr(unix, allow(unsafe_code))]
+
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bookclerk_config::Config;
+use bookclerk_sandbox::{PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -47,6 +51,9 @@ pub struct PluginClient {
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>,
     next_id: AtomicU64,
     handshake: HandshakeResult,
+    /// Host end of the fetch-directory side channel, when the guest is jailed.
+    #[cfg(unix)]
+    fd_channel: Option<std::os::unix::net::UnixStream>,
 }
 
 impl PluginClient {
@@ -124,9 +131,36 @@ impl PluginClient {
                     PluginError::message(format!("could not encode the jail spec: {err}"))
                 })?,
             );
+            #[cfg(unix)]
+            if jail.guest_channel_raw.is_some() {
+                cmd.env(PLUGIN_FD_CHANNEL_ENV, PLUGIN_FD_CHANNEL.to_string());
+            }
+        }
+
+        #[cfg(unix)]
+        if let Some(guest_raw) = jail.guest_channel_raw {
+            unsafe {
+                cmd.pre_exec(move || {
+                    if guest_raw != PLUGIN_FD_CHANNEL {
+                        if libc::dup2(guest_raw, PLUGIN_FD_CHANNEL) < 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        libc::close(guest_raw);
+                    }
+                    Ok(())
+                });
+            }
         }
 
         let mut child = cmd.spawn()?;
+
+        #[cfg(unix)]
+        if let Some(guest_raw) = jail.guest_channel_raw {
+            // SAFETY: the child owns its copy; the parent's is unused after spawn.
+            unsafe {
+                libc::close(guest_raw);
+            }
+        }
 
         let stdin = child
             .stdin
@@ -187,6 +221,8 @@ impl PluginClient {
                 config_options: vec![],
                 cli: None,
             },
+            #[cfg(unix)]
+            fd_channel: jail.fd_channel,
         };
 
         let hs: HandshakeResult = client
@@ -234,6 +270,29 @@ impl PluginClient {
     }
 
     pub async fn call_raw(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_raw_with_fetch_dir(method, params, None).await
+    }
+
+    /// Like [`Self::call_raw`], but passes an open fetch work directory first when
+    /// the guest is jailed.
+    pub async fn call_raw_with_fetch_dir(
+        &self,
+        method: &str,
+        params: Value,
+        fetch_dir: Option<&Path>,
+    ) -> Result<Value> {
+        if method == methods::FETCH_TITLE {
+            if let Some(dir) = fetch_dir {
+                #[cfg(unix)]
+                if let Some(channel) = self.fd_channel.as_ref() {
+                    crate::fd_pass::send_fetch_dir(channel, dir)?;
+                }
+            }
+        }
+        self.call_raw_inner(method, params).await
+    }
+
+    async fn call_raw_inner(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         {

@@ -27,6 +27,8 @@ mod builtins;
 mod crates_io;
 mod discover;
 mod error;
+#[cfg(unix)]
+mod fd_pass;
 mod host;
 mod jail;
 mod manifest;

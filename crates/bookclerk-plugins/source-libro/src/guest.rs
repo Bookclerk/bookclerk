@@ -254,14 +254,9 @@ pub async fn guest_fetch_title_rpc(
         .credentials
         .as_ref()
         .ok_or_else(|| LibroError::auth("fetch_title requires host credentials"))?;
-    let plain = guest_fetch_title(
-        base_url,
-        creds,
-        &params.title_id,
-        Path::new(&params.cache_dir),
-        container,
-    )
-    .await?;
+    let work_dir = bookclerk_plugin_sdk::fetch_work_dir(params)
+        .map_err(|err| LibroError::api(format!("fetch work directory: {err}")))?;
+    let plain = guest_fetch_title(base_url, creds, &params.title_id, &work_dir, container).await?;
     Ok(plain_to_dto(plain))
 }
 

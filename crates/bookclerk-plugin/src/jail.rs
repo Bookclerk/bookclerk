@@ -7,7 +7,8 @@
 //! - its own install directory, read-only — the binary and `plugin.toml`
 //! - `…/plugins/<id>/data`, its private state, also exported as `HOME`
 //! - `…/plugins/<id>/tmp`, its scratch, exported as `TMPDIR`
-//! - the download cache root, where fetched media is staged for the host
+//! - one fetch work directory at a time, passed over the side channel on fd 3
+//!   (`SCM_RIGHTS` delivers the directory as a separate descriptor)
 //!
 //! That leaves out everything that matters: `master.key`, `library.db`, the
 //! operator token, the output library, the config file, and every other plugin's
@@ -16,24 +17,26 @@
 //! parameters and scan results go back the same way, so a guest has never had a
 //! reason to open the database.
 //!
-//! # Why the cache root and not one book's directory
+//! # Why a descriptor per fetch rather than the cache root
 //!
 //! A guest is long-lived: one process per plugin, serving every call for the
-//! life of the daemon. The `cache_dir` a fetch works in arrives as an RPC
-//! parameter, so it is not known when the jail is built, and confinement cannot
-//! be narrowed later. The grant is therefore the cache root rather than one
-//! book's subdirectory. A media job, which gets exactly one book and one output,
-//! is confined far more tightly — see `docs/media.md`.
+//! life of the daemon. Filesystem confinement is fixed at spawn and cannot be
+//! narrowed when `fetch_title` names a work directory, so granting the whole
+//! cache would let one fetch read or overwrite every other fetch's scratch.
+//! The host therefore opens exactly one work directory per fetch and passes it
+//! over a side channel; the guest writes through that descriptor alone.
 //!
 //! # Why a launcher
 //!
 //! The guest cannot be asked to confine itself; see the `bookclerk-jail` crate
 //! docs for why, and for what permitting `execve` costs.
 
+#![cfg_attr(unix, allow(unsafe_code))]
+
 use std::path::{Path, PathBuf};
 
 use bookclerk_config::{Config, Isolation};
-use bookclerk_sandbox::{Enforcement, NetPolicy, Spec};
+use bookclerk_sandbox::{Enforcement, NetPolicy, Spec, PLUGIN_FD_CHANNEL};
 
 use crate::discover::DiscoveredPlugin;
 use crate::manifest::NetworkNeed;
@@ -90,6 +93,12 @@ pub(crate) struct GuestJail {
     /// Scratch directory, the guest's `TMPDIR`.
     pub scratch: PathBuf,
     pub start: Start,
+    /// Side channel for passing one fetch directory at a time (host end).
+    #[cfg(unix)]
+    pub fd_channel: Option<std::os::unix::net::UnixStream>,
+    /// Guest end of the side channel, installed on [`PLUGIN_FD_CHANNEL`] at spawn.
+    #[cfg(unix)]
+    pub guest_channel_raw: Option<std::os::fd::RawFd>,
 }
 
 impl GuestJail {
@@ -105,15 +114,18 @@ impl GuestJail {
         let id = &plugin.manifest.id;
         let data = plugin_data_dir(config, id);
         let scratch = plugin_scratch_dir(config, id);
-        let cache = config.download_cache_dir();
 
-        for dir in [&data, &scratch, &cache] {
+        for dir in [&data, &scratch] {
             std::fs::create_dir_all(dir).map_err(|err| {
                 PluginError::message(format!("could not create {}: {err}", dir.display()))
             })?;
         }
 
         let isolation = config.plugins.isolation;
+        #[cfg(unix)]
+        let mut fd_channel = None;
+        #[cfg(unix)]
+        let mut guest_channel_raw = None;
         let start = match isolation {
             Isolation::Off => Start::Unconfined {
                 reason: "[plugins].isolation = off".to_string(),
@@ -125,10 +137,52 @@ impl GuestJail {
                     Enforcement::BestEffort
                 };
                 match resolve_launcher(config, isolation) {
-                    Ok(launcher) => Start::Confined {
-                        launcher,
-                        spec: Box::new(build_spec(plugin, &data, &scratch, &cache, enforcement)),
-                    },
+                    Ok(launcher) => {
+                        #[cfg(unix)]
+                        let preserve_fds = {
+                            use std::os::fd::IntoRawFd;
+                            use std::os::unix::net::UnixStream;
+
+                            let (host, guest) = UnixStream::pair().map_err(|err| {
+                                PluginError::message(format!(
+                                    "could not open fetch-directory side channel: {err}"
+                                ))
+                            })?;
+                            let guest_raw = guest.into_raw_fd();
+                            let flags = unsafe { libc::fcntl(guest_raw, libc::F_GETFD) };
+                            if flags < 0 {
+                                return Err(PluginError::message(format!(
+                                    "could not inspect fetch-directory socket: {}",
+                                    std::io::Error::last_os_error()
+                                )));
+                            }
+                            if unsafe {
+                                libc::fcntl(guest_raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC)
+                            } < 0
+                            {
+                                return Err(PluginError::message(format!(
+                                    "could not clear CLOEXEC on fetch-directory socket: {}",
+                                    std::io::Error::last_os_error()
+                                )));
+                            }
+                            fd_channel = Some(host);
+                            guest_channel_raw = Some(guest_raw);
+                            vec![PLUGIN_FD_CHANNEL]
+                        };
+                        #[cfg(not(unix))]
+                        let preserve_fds: Vec<i32> = Vec::new();
+
+                        Start::Confined {
+                            launcher,
+                            spec: Box::new(build_spec(
+                                plugin,
+                                &data,
+                                &scratch,
+                                preserve_fds,
+                                enforcement,
+                            )),
+                        }
+                    }
                     Err(reason) if isolation == Isolation::BestEffort => {
                         Start::Unconfined { reason }
                     }
@@ -146,6 +200,10 @@ impl GuestJail {
             data,
             scratch,
             start,
+            #[cfg(unix)]
+            fd_channel,
+            #[cfg(unix)]
+            guest_channel_raw,
         })
     }
 }
@@ -155,7 +213,7 @@ fn build_spec(
     plugin: &DiscoveredPlugin,
     data: &Path,
     scratch: &Path,
-    cache: &Path,
+    preserve_fds: Vec<i32>,
     enforcement: Enforcement,
 ) -> Spec {
     Spec {
@@ -164,11 +222,7 @@ fn build_spec(
         // the binary. A manifest may name an absolute `command` elsewhere, so
         // grant that too rather than relying on the two coinciding.
         reads: vec![plugin.root.clone(), plugin.command.clone()],
-        writes: vec![
-            data.to_path_buf(),
-            scratch.to_path_buf(),
-            cache.to_path_buf(),
-        ],
+        writes: vec![data.to_path_buf(), scratch.to_path_buf()],
         net: match plugin.manifest.sandbox.network {
             NetworkNeed::None => NetPolicy::Deny,
             NetworkNeed::Outbound => NetPolicy::Outbound,
@@ -179,6 +233,7 @@ fn build_spec(
         allow_exec: true,
         system_paths: true,
         enforcement,
+        preserve_fds,
     }
 }
 
@@ -311,7 +366,7 @@ mod tests {
             &plugin,
             &plugin_data_dir(&config, "libro"),
             &plugin_scratch_dir(&config, "libro"),
-            &config.download_cache_dir(),
+            vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
             Enforcement::Required,
         );
 
@@ -353,7 +408,7 @@ mod tests {
             &plugin,
             &plugin_data_dir(&config, "libro"),
             &plugin_scratch_dir(&config, "libro"),
-            &config.download_cache_dir(),
+            vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
             Enforcement::Required,
         );
         assert!(!spec.writes.contains(&config.paths().files_dir));
@@ -385,7 +440,7 @@ mod tests {
                 &plugin,
                 &plugin_data_dir(&config, "x"),
                 &plugin_scratch_dir(&config, "x"),
-                &config.download_cache_dir(),
+                vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
                 Enforcement::Required,
             );
             assert_eq!(spec.net, expected, "{need:?}");
@@ -409,6 +464,27 @@ mod tests {
         }
     }
 
+    /// The download cache root is never granted; fetch scratch arrives one directory
+    /// at a time over a side channel.
+    #[test]
+    fn the_cache_root_is_never_granted() {
+        let files = tempfile::tempdir().expect("tempdir");
+        let install = tempfile::tempdir().expect("tempdir");
+        let config = config_at(files.path());
+        let plugin = plugin_at(install.path(), "libro", NetworkNeed::Outbound);
+        let spec = build_spec(
+            &plugin,
+            &plugin_data_dir(&config, "libro"),
+            &plugin_scratch_dir(&config, "libro"),
+            vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
+            Enforcement::Required,
+        );
+        assert!(!spec
+            .writes
+            .iter()
+            .any(|path| path == &config.download_cache_dir()));
+    }
+
     #[test]
     fn planning_creates_the_directories_it_grants() {
         let files = tempfile::tempdir().expect("tempdir");
@@ -422,7 +498,6 @@ mod tests {
         let jail = GuestJail::plan(&config, &plugin).expect("plan");
         assert!(jail.data.is_dir(), "{}", jail.data.display());
         assert!(jail.scratch.is_dir(), "{}", jail.scratch.display());
-        assert!(config.download_cache_dir().is_dir());
         assert!(matches!(jail.start, Start::Unconfined { .. }));
     }
 

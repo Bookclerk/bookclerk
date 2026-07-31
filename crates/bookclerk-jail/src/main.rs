@@ -48,7 +48,7 @@ fn main() -> ExitCode {
     // Before confining rather than after: the sweep reads the kernel's own
     // listing of this process's descriptors, and that listing lives at a path
     // the allowlist has no reason to name.
-    if let Err(err) = fds::close_inherited() {
+    if let Err(err) = fds::close_inherited(&spec.preserve_fds) {
         return fail(&err);
     }
 

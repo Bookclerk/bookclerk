@@ -344,12 +344,14 @@ pub async fn guest_fetch_title_rpc(
         .credentials
         .as_ref()
         .ok_or_else(|| GraphicAudioError::auth("fetch_title requires host credentials"))?;
+    let work_dir = bookclerk_plugin_sdk::fetch_work_dir(params)
+        .map_err(|err| GraphicAudioError::api(format!("fetch work directory: {err}")))?;
     let plain = guest_fetch_title(
         access_base_url,
         store_base_url,
         creds,
         &params.title_id,
-        Path::new(&params.cache_dir),
+        &work_dir,
         access,
         bitrate,
         container,

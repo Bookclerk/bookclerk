@@ -17,6 +17,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Enforcement, NetPolicy, Policy};
 
+/// Descriptor the host leaves open for the fetch-directory side channel.
+pub const PLUGIN_FD_CHANNEL: i32 = 3;
+
+/// Environment variable naming [`PLUGIN_FD_CHANNEL`].
+pub const PLUGIN_FD_CHANNEL_ENV: &str = "BOOKCLERK_PLUGIN_FD_CHANNEL";
+
 /// Environment variable carrying the JSON [`Spec`] to `bookclerk-jail`.
 ///
 /// The launcher drops it before handing off, so a guest never sees the shape of
@@ -58,6 +64,11 @@ pub struct Spec {
     /// What to do when a layer does not engage.
     #[serde(default)]
     pub enforcement: Enforcement,
+    /// Descriptors the host wired up deliberately and the launcher must not
+    /// close before the hand-off — typically a Unix socket for passing a fetch
+    /// directory one RPC at a time.
+    #[serde(default)]
+    pub preserve_fds: Vec<i32>,
 }
 
 fn default_system_paths() -> bool {
@@ -76,6 +87,7 @@ impl Spec {
             allow_exec: false,
             system_paths: true,
             enforcement: Enforcement::default(),
+            preserve_fds: Vec::new(),
         }
     }
 
@@ -106,6 +118,7 @@ mod tests {
             allow_exec: true,
             system_paths: true,
             enforcement: Enforcement::Required,
+            preserve_fds: Vec::new(),
         };
         let json = serde_json::to_string(&spec).expect("encode");
         assert_eq!(

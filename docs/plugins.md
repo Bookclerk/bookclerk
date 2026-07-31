@@ -103,15 +103,16 @@ A guest gets four paths and nothing else:
 | its install directory | read-only | `cwd` |
 | `…/plugins/<id>/data` | read/write | `HOME`, and `plugin_data_dir` on the wire |
 | `…/plugins/<id>/tmp` | read/write | `TMPDIR` / `TEMP` / `TMP` |
-| the download cache root | read/write | `cache_dir` on the wire, per fetch |
+| one fetch work directory at a time | write (via descriptor) | passed on fd 3 immediately before each `fetch_title` |
 
 Plus the system read paths every process needs to start (the loader, shared
 libraries, the CA bundle, resolver config) and a writable `/dev/null`.
 
 That leaves out `master.key`, `library.db`, `config.toml`, the operator token,
-the finished library, and every *other* plugin's data directory. None of it is a
-loss: credentials arrive as RPC parameters and scan results go back the same way,
-so a guest has never had a reason to open the database.
+the finished library, the download cache root, and every *other* plugin's data
+directory. None of it is a loss: credentials arrive as RPC parameters and scan
+results go back the same way, so a guest has never had a reason to open the
+database.
 
 `TMPDIR` and `HOME` are **replaced**, not inherited. The values a host process
 carries name directories outside every jail, so a guest reaching for a temp file
@@ -119,16 +120,21 @@ the ordinary way would fail on a permission error unrelated to anything it was
 denied. `XDG_RUNTIME_DIR` is dropped for the same reason and has no per-guest
 equivalent to point at.
 
-### Why the cache root rather than one book's directory
+### Why a descriptor per fetch rather than the cache root
 
 A guest is long-lived — one process per plugin, serving every call for the life
-of the daemon — and the `cache_dir` a fetch works in arrives as an RPC parameter,
-after confinement is already fixed. Filesystem confinement cannot be narrowed
-later, so the grant is the cache root.
+of the daemon — and filesystem confinement is fixed at spawn. Granting the whole
+cache would let one fetch read or overwrite every other fetch's scratch.
+
+The host therefore opens exactly one work directory per `fetch_title`, sends it
+over a Unix socket with `SCM_RIGHTS` on fd 3 (preserved through
+`bookclerk-jail`), and the guest resolves `/proc/self/fd/N` (or `/dev/fd/N` on
+macOS), where `N` is the received directory descriptor. The `cache_dir` string
+on the wire remains for logging and for unconfined development; jailed guests
+must use the descriptor.
 
 A media job is confined far more tightly: one input file, one output directory,
-per job, in a process that exits when the job does. See
-[media.md](media.md) for that tier.
+per job, in a process that exits when the job does. See [media.md](media.md).
 
 ### Why a launcher and not self-confinement
 

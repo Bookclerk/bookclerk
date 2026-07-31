@@ -15,20 +15,23 @@
 
 #![cfg_attr(unix, allow(unsafe_code))] // close, and the close_range syscall.
 
-/// Close every descriptor above stdio.
+/// Close every descriptor above stdio except those the host wired deliberately.
 ///
 /// A sweep that could not be performed is not a sweep that can be assumed, so
 /// this fails closed like the rest of the launcher.
 #[cfg(unix)]
-pub fn close_inherited() -> Result<(), String> {
-    if close_range_above_stdio() {
+pub fn close_inherited(preserve: &[i32]) -> Result<(), String> {
+    if preserve.is_empty() && close_range_above_stdio() {
         return Ok(());
     }
 
     let listed = list_open().ok_or_else(|| {
         "cannot enumerate open descriptors, so cannot promise the guest inherits none".to_string()
     })?;
-    for fd in listed.into_iter().filter(|fd| *fd > libc::STDERR_FILENO) {
+    for fd in listed
+        .into_iter()
+        .filter(|fd| *fd > libc::STDERR_FILENO && !preserve.contains(fd))
+    {
         // SAFETY: closing a descriptor this process owns. A number that is
         // already closed just answers `EBADF`, and nothing reopens between the
         // listing and here.
@@ -39,14 +42,10 @@ pub fn close_inherited() -> Result<(), String> {
 
 /// Windows inherits only the handles a spawn names, and this one names stdio.
 #[cfg(not(unix))]
-pub fn close_inherited() -> Result<(), String> {
+pub fn close_inherited(_preserve: &[i32]) -> Result<(), String> {
     Ok(())
 }
 
-/// Close everything above stderr in one call.
-///
-/// `close_range` arrived in Linux 5.9. It is exact and needs no listing, so it
-/// is worth asking for before reaching into the filesystem for one.
 #[cfg(target_os = "linux")]
 fn close_range_above_stdio() -> bool {
     let first = libc::c_uint::try_from(libc::STDERR_FILENO).unwrap_or(2) + 1;

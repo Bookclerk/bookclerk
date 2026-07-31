@@ -24,7 +24,7 @@ mod platform;
 mod spec;
 
 pub use platform::BACKEND;
-pub use spec::{Spec, SPEC_ENV};
+pub use spec::{Spec, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV, SPEC_ENV};
 
 /// What to do when a confinement layer cannot be enforced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

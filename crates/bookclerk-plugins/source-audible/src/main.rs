@@ -1,7 +1,5 @@
 //! External Audible source plugin for Bookclerk.
 
-use std::path::PathBuf;
-
 use bookclerk_plugin_sdk::{
     methods, BrandDto, ConfigOptionDto, ConfigOptionValueDto, ExpandCandidatesParams,
     FetchTitleParams, HandshakeResult, HealthDto, LoginCompleteParams, LoginParams,
@@ -102,13 +100,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             methods::FETCH_TITLE => {
                 let p: FetchTitleParams = serde_json::from_value(params)
                     .map_err(|e| format!("fetch_title params: {e}"))?;
+                let work_dir =
+                    bookclerk_plugin_sdk::fetch_work_dir(&p).map_err(|e| e.to_string())?;
                 let creds = p
                     .credentials
                     .ok_or_else(|| "fetch_title requires host credentials".to_string())?;
                 let dto = bookclerk_plugin_source_audible::guest_fetch_title(
                     &creds,
                     &p.title_id,
-                    &PathBuf::from(p.cache_dir),
+                    &work_dir,
                     &p.source_config,
                     &p.download,
                 )

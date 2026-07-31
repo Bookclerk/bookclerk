@@ -255,13 +255,9 @@ pub async fn guest_fetch_title_rpc(
         .credentials
         .as_ref()
         .ok_or_else(|| ChirpError::auth("fetch_title requires host credentials"))?;
-    let plain = guest_fetch_title(
-        graphql_url,
-        creds,
-        &params.title_id,
-        Path::new(&params.cache_dir),
-    )
-    .await?;
+    let work_dir = bookclerk_plugin_sdk::fetch_work_dir(params)
+        .map_err(|err| ChirpError::api(format!("fetch work directory: {err}")))?;
+    let plain = guest_fetch_title(graphql_url, creds, &params.title_id, &work_dir).await?;
     Ok(plain_to_dto(plain))
 }
 

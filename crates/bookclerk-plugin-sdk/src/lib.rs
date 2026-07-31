@@ -14,10 +14,12 @@
 //! See `docs/plugin-registry.md`.
 
 mod error;
+mod fetch_dir;
 mod guest;
 pub mod protocol;
 
 pub use error::{Result, SdkError};
+pub use fetch_dir::{fetch_work_dir, FetchWorkDir};
 pub use guest::PluginGuest;
 pub use protocol::{
     methods, BookAcquiredDto, BrandDto, CatalogHitDto, CliArgKind, CliArgSpec, CliCommandSpec,

@@ -331,9 +331,9 @@ impl ContentSource for ExternalSource {
             .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?;
         let download = serde_json::to_value(&opts.download)
             .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
-        let dto: SourceFetchDto = self
+        let value = self
             .client
-            .call(
+            .call_raw_with_fetch_dir(
                 methods::FETCH_TITLE,
                 serde_json::to_value(FetchTitleParams {
                     plugin_data_dir: self.plugin_data_dir.display().to_string(),
@@ -345,8 +345,12 @@ impl ContentSource for ExternalSource {
                     download,
                 })
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
+                Some(&opts.cache_dir),
             )
-            .await?;
+            .await
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        let dto: SourceFetchDto = serde_json::from_value(value)
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
         Ok(source_fetch_from_dto(dto))
     }
 

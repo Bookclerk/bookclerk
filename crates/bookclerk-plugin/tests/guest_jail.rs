@@ -259,7 +259,7 @@ async fn a_jailed_guest_reaches_its_own_directories_and_nothing_else() {
             ("rewrite_manifest", "denied"),
             ("own_home", "allowed"),
             ("own_tmpdir", "allowed"),
-            ("download_cache", "allowed"),
+            ("download_cache", "denied"),
         ],
     );
 
@@ -269,7 +269,6 @@ async fn a_jailed_guest_reaches_its_own_directories_and_nothing_else() {
     let state = paths.files_dir.join("plugins").join("probe");
     assert!(state.join("data").join("state").is_file());
     assert!(state.join("tmp").join("scratch").is_file());
-    assert!(paths.cache_dir.join("staged.part").is_file());
 }
 
 /// `required` must refuse at the point a guest would start, not merely warn.

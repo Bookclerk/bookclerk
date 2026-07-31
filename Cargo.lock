@@ -1517,6 +1517,7 @@ dependencies = [
  "bookclerk-plugin-source-libro",
  "bookclerk-sandbox",
  "bookclerk-source",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
@@ -1560,6 +1561,7 @@ name = "bookclerk-plugin-sdk"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
