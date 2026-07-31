@@ -4,17 +4,14 @@ pub type Result<T> = std::result::Result<T, AcquireError>;
 
 #[derive(Debug, Error)]
 pub enum AcquireError {
-    #[error("audible error: {0}")]
-    Audible(#[from] bookclerk_audible::AudibleError),
-
     #[error("source error: {0}")]
     Source(#[from] bookclerk_source::SourceError),
 
     #[error("storage error: {0}")]
     Storage(#[from] bookclerk_storage::StorageError),
 
-    #[error("decrypt error: {0}")]
-    Decrypt(#[from] bookclerk_decrypt::DecryptError),
+    #[error("media error: {0}")]
+    Media(#[from] bookclerk_media::MediaError),
 
     #[error("library error: {0}")]
     Library(#[from] bookclerk_library::LibraryError),

@@ -2,7 +2,8 @@
 
 use bookclerk_config::Config;
 use bookclerk_plugin::{
-    methods, CliInvokeParams, CliSchema, DiscoveredPlugin, PluginClient, PluginKind,
+    host_target_triple, methods, search_crates_io, CliInvokeParams, CliSchema, DiscoveredPlugin,
+    PluginClient, PluginKind, CRATE_NAME_PREFIX,
 };
 use clap::Subcommand;
 use serde::Serialize;
@@ -17,6 +18,19 @@ use crate::format_out::{emit, OutputFormat};
 pub enum PluginsCommand {
     /// List plugins found under plugin search directories.
     List,
+    /// Search crates.io for publishable Bookclerk plugins.
+    Search {
+        /// Free-text query (combined with the `bookclerk-plugin` keyword).
+        query: Option<String>,
+        /// Max crates.io hits to fetch (1–100).
+        #[arg(long, default_value_t = 25)]
+        limit: u32,
+    },
+    /// Install a plugin from the registry (prebuilt archive — no Rust required).
+    Install {
+        /// Crate name (`bookclerk-plugin-{kind}-{id}`) or plugin id.
+        crate_or_id: String,
+    },
     /// Show details for one discovered plugin.
     Info {
         /// Plugin id.
@@ -93,6 +107,47 @@ pub async fn run(
                     }
                 },
             )
+        }
+        PluginsCommand::Search { query, limit } => {
+            let hits = search_crates_io(query.as_deref(), limit)?;
+            emit(
+                format,
+                &json!({
+                    "prefix": CRATE_NAME_PREFIX,
+                    "host_target": host_target_triple(),
+                    "plugins": hits,
+                }),
+                || {
+                    if hits.is_empty() {
+                        println!(
+                            "no crates.io plugins matching `{CRATE_NAME_PREFIX}*` yet \
+                             (see docs/plugin-registry.md)"
+                        );
+                        return;
+                    }
+                    for h in &hits {
+                        let kind = h.parsed.as_ref().map(|p| p.kind.as_str()).unwrap_or("?");
+                        let id = h.parsed.as_ref().map(|p| p.id.as_str()).unwrap_or("?");
+                        println!(
+                            "{}  kind={kind} id={id} v{} downloads={}",
+                            h.crate_name, h.version, h.downloads
+                        );
+                        if let Some(desc) = &h.description {
+                            println!("  {desc}");
+                        }
+                    }
+                },
+            )
+        }
+        PluginsCommand::Install { crate_or_id } => {
+            // Phase C: download+verify+unpack prebuilt archives (no rustc).
+            anyhow::bail!(
+                "`bookclerk plugins install` is not implemented yet \
+                 (crate_or_id={crate_or_id}, host_target={}). \
+                 Unpack a release archive under $BOOKCLERK_FILES_DIR/plugins/<id>/ \
+                 for now — see docs/plugin-registry.md",
+                host_target_triple()
+            );
         }
         PluginsCommand::Info { id } => {
             let plugin = find_plugin(config, &id)?;

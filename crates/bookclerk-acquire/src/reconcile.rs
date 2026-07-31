@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use bookclerk_audible::DownloadOptions;
 use bookclerk_config::{key_matches_reconcile_pattern, reconciliation_wildcard_rules};
 use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
+use bookclerk_source::DownloadOptions;
 use bookclerk_storage::StorageBackend;
 
 use crate::error::Result;
@@ -352,9 +352,7 @@ pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -
         files_dir: PathBuf::new(),
         cache_dir: PathBuf::new(),
         force: false,
-        preloaded_license: None,
         write_destinations: None,
-        audible_client: None,
     }
 }
 

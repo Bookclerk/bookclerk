@@ -20,10 +20,10 @@ integrations.
 └──────┬───────┘               └─────┬──────┘
        │ fetch_title                 │ title ids / status
        ▼                             ▼
-┌──────────────┐   decrypt/pack   ┌────────────┐   put    ┌──────────────┐
+┌──────────────┐   pack (plain)   ┌────────────┐   put    ┌──────────────┐
 │ cache/ temp  │ ───────────────► │  acquire   │ ───────► │ Destinations │
-└──────────────┘                  │  pipeline  │          │ local / S3   │
-                                  └─────┬──────┘          └──────────────┘
+│ (plugin DRM) │                  │  pipeline  │          │ local / S3   │
+└──────────────┘                  └─────┬──────┘          └──────────────┘
                                         │ book_acquired
                                         ▼
                                   ┌────────────┐
@@ -34,7 +34,7 @@ integrations.
 1. **Scan** — each enabled source upserts owned titles into `library.db`.
 2. **Enrich** (optional) — non-Audible rows may gain an Audible ASIN via public
    catalog search (`library.enrich_from_audible`).
-3. **Acquire** — fetch → decrypt/encode → name → write every enabled destination.
+3. **Acquire** — fetch Plain → package/encode → name → write every enabled destination.
 4. **Integrations** — receive `book_acquired` (and related) events; may trigger
    remote library scans or portal identity flows.
 5. **Daemon** — runs scan/auto-acquire on an interval and exposes the control plane.
@@ -62,16 +62,17 @@ discovered but not loaded yet.
 | --- | --- |
 | Config / paths / logging | `bookclerk-config` |
 | Source trait + registry | `bookclerk-source` |
-| Store adapters | `bookclerk-audible`, `bookclerk-libro`, `bookclerk-chirp`, `bookclerk-graphicaudio` |
-| Decrypt / remux / MP3 | `bookclerk-decrypt` |
+| Store adapters (plugins) | `bookclerk-plugins/source-{audible,libro,chirp,graphicaudio}` (lib + guest bin) |
+| ABS integration (plugin) | `bookclerk-plugins/integration-audiobookshelf` (lib + guest bin) |
+| Clear-media packaging | `bookclerk-media` (remux / fixup / MP3; no DRM) |
 | Acquire orchestration | `bookclerk-acquire` |
 | Naming templates | `bookclerk-naming` |
 | Library DB | `bookclerk-library` (SeaORM plugins + rusqlite store) |
 | Search | `bookclerk-search` |
-| Discovery / recommendations | `bookclerk-discover` |
+| Discovery / recommendations | `bookclerk-discover` (via registered `ContentSource` catalog APIs) |
 | Storage backends | `bookclerk-storage` |
-| Catalog enrichment | `bookclerk-enrich` |
-| Integrations + portal | `bookclerk-integrations` |
+| Catalog enrichment | `bookclerk-enrich` (shared HTTP helpers; Audible plugin owns Discover catalog) |
+| Integrations framework + portal | `bookclerk-integrations` (traits / registry / portal; ABS lives in its plugin) |
 | External plugin host | `bookclerk-plugin` |
 | Libation migrate/export | `bookclerk-migrate` |
 
@@ -85,7 +86,7 @@ BookclerkFiles/
   library.db          # incl. encrypted_secrets (auth + Widevine CDM + S3 keys)
   cache/
   search_index/
-  plugins/            # third-party plugin installs
+  plugins/            # third-party plugin installs (see plugin-registry.md)
   logs/               # reserved (Bookclerk does not rotate log files)
 ```
 

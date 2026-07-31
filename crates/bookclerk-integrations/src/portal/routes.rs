@@ -277,6 +277,7 @@ async fn source_password_login(
                 email: Some(body.email.trim().to_string()),
                 password: Some(body.password),
                 force: true,
+                ..Default::default()
             },
         )
         .await
@@ -318,13 +319,7 @@ async fn source_oauth_start(
             "this source uses password login; call /login instead",
         ));
     }
-    // Interactive OAuth callback flow is currently implemented for Audible only.
-    if source.id() != "audible" {
-        return Err(PortalError::bad(
-            "OAuth start is only implemented for Audible",
-        ));
-    }
-    let url = start_audible_login_session(&state, identity.id).await?;
+    let url = start_source_oauth_session(&state, source, identity.id).await?;
     Ok(Json(serde_json::json!({ "url": url })))
 }
 
@@ -343,60 +338,58 @@ async fn audible_start(
     source_oauth_start(State(state), headers, Path("audible".into())).await
 }
 
-/// Start Audible LoginServer bound for reverse-proxy use; return the browser URL.
+/// Start interactive OAuth via [`ContentSource::login_with_oauth_progress`].
 ///
 /// Uses `0.0.0.0:0` so the daemon accepts remote callbacks when published behind
 /// a reverse proxy. The printed URL may still show a container-local host; set
 /// `integrations.public_origin` and rewrite as needed at the proxy layer.
-async fn start_audible_login_session(
+async fn start_source_oauth_session(
     state: &PortalState,
+    source: Arc<dyn ContentSource>,
     identity_id: i64,
 ) -> Result<String, PortalError> {
-    use bookclerk_audible::{begin_login, AuthLoginOptions, LoginProgress};
+    use bookclerk_source::{LoginOptions, OAuthProgress};
     use tokio::sync::mpsc;
 
     let library = state.library.clone();
+    let source_id = source.id().to_string();
     let (url_tx, mut url_rx) = mpsc::channel::<String>(1);
 
     tokio::spawn(async move {
-        let scope = library.scope("audible");
-        let opts = AuthLoginOptions {
-            scope: Some(scope.clone()),
-            show_qr: false,
-            callback_bind: "0.0.0.0:0".parse().expect("bind"),
+        let scope = library.scope(&source_id);
+        let opts = LoginOptions {
+            force: true,
+            callback_bind: Some("0.0.0.0:0".into()),
             ..Default::default()
         };
         let url_tx2 = url_tx.clone();
-        let result = begin_login(opts, move |progress| {
-            if let LoginProgress::LoginUrl { url, .. } = &progress {
-                let _ = url_tx2.try_send(url.clone());
-            }
-        })
-        .await;
+        let result = source
+            .login_with_oauth_progress(&scope, opts, &move |progress| {
+                if let OAuthProgress::LoginUrl { url, .. } = &progress {
+                    let _ = url_tx2.try_send(url.clone());
+                }
+            })
+            .await;
         match result {
-            Ok(session) => {
-                let _ = scope
-                    .upsert_account(
-                        &session.account_id,
-                        &session.marketplace,
-                        session.label.as_deref(),
-                        true,
-                    )
-                    .await;
-                let _ = library.mark_connection_active(&session.account_id).await;
+            Ok(account) => {
+                let _ = library.mark_connection_active(&account.account_id).await;
                 let _ = library
-                    .link_account(identity_id, &session.account_id, "audible")
+                    .link_account(identity_id, &account.account_id, &source_id)
                     .await;
-                info!(account = %session.account_id, "portal Audible login completed");
+                info!(
+                    account = %account.account_id,
+                    source = %source_id,
+                    "portal OAuth login completed"
+                );
             }
-            Err(err) => warn!(%err, "portal Audible login failed"),
+            Err(err) => warn!(%err, source = %source_id, "portal OAuth login failed"),
         }
     });
 
     let url = tokio::time::timeout(std::time::Duration::from_secs(5), url_rx.recv())
         .await
-        .map_err(|_| PortalError::bad("timed out waiting for Audible login URL"))?
-        .ok_or_else(|| PortalError::bad("Audible login URL channel closed"))?;
+        .map_err(|_| PortalError::bad("timed out waiting for OAuth login URL"))?
+        .ok_or_else(|| PortalError::bad("OAuth login URL channel closed"))?;
     Ok(url)
 }
 

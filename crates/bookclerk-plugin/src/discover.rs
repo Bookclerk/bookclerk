@@ -152,12 +152,39 @@ pub fn settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::Table
             .table(&plugin.manifest.id)
             .cloned()
             .unwrap_or_default(),
-        crate::PluginKind::Integration => config
-            .integrations
-            .plugin_table(&plugin.manifest.id)
-            .cloned()
-            .unwrap_or_default(),
+        crate::PluginKind::Integration => {
+            let mut table = config
+                .integrations
+                .plugin_table(&plugin.manifest.id)
+                .cloned()
+                .unwrap_or_default();
+            inject_abs_api_key_from_env(&plugin.manifest.id, &mut table);
+            table
+        }
         crate::PluginKind::Output | crate::PluginKind::Database => toml::Table::new(),
+    }
+}
+
+/// When ABS config lacks `api_key`, inject `BOOKCLERK_ABS_API_KEY` into the
+/// handshake table (plugin processes do not inherit Bookclerk env secrets).
+fn inject_abs_api_key_from_env(plugin_id: &str, table: &mut toml::Table) {
+    match plugin_id.trim().to_ascii_lowercase().as_str() {
+        "audiobookshelf" | "abs" => {}
+        _ => return,
+    }
+    let missing = table
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true);
+    if !missing {
+        return;
+    }
+    if let Ok(v) = std::env::var("BOOKCLERK_ABS_API_KEY") {
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            table.insert("api_key".into(), toml::Value::String(trimmed.to_string()));
+        }
     }
 }
 

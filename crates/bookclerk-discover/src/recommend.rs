@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use bookclerk_library::{
     AcquireStatus, BookRecord, GlobalQueueEntry, LibraryStore, ListeningProgressRecord,
 };
+use bookclerk_source::SourceRegistry;
 
 use crate::candidates::{gather_storefront_candidates, select_taste_seeds, CandidateFetchOptions};
 use crate::embed::{bytes_to_vector, cosine, open_embedder, Embedder};
@@ -184,9 +185,10 @@ struct SeriesAffinity {
 /// Build ranked recommendations for the operator (or a specific external user).
 pub async fn recommend(
     library: &LibraryStore,
+    registry: &SourceRegistry,
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
-    let mut recs = recommend_all(library, opts).await?;
+    let mut recs = recommend_all(library, registry, opts).await?;
     recs.truncate(opts.limit);
     Ok(recs)
 }
@@ -194,9 +196,10 @@ pub async fn recommend(
 /// Personalized Discover feed (Netflix-style shelves) from the same candidate pool.
 pub async fn recommend_feed(
     library: &LibraryStore,
+    registry: &SourceRegistry,
     opts: &RecommendOptions,
 ) -> Result<crate::shelves::DiscoverFeed> {
-    let recs = recommend_all(library, opts).await?;
+    let recs = recommend_all(library, registry, opts).await?;
     let books = library.list_books(None).await?;
     let listening = load_listening(library, opts).await?;
     let taste = build_shelf_taste(&books, &listening);
@@ -218,6 +221,7 @@ pub async fn recommend_feed(
 /// Wishlist rows keyed as ASIN vs ISBN for the same work are merged first.
 pub async fn rank_global_request_queue(
     library: &LibraryStore,
+    _registry: &SourceRegistry,
     opts: &RecommendOptions,
 ) -> Result<Vec<RankedQueueEntry>> {
     let mut opts = opts.clone();
@@ -285,6 +289,7 @@ async fn load_listening(
 /// Full scored candidate pool (not truncated) used by flat list + shelves.
 async fn recommend_all(
     library: &LibraryStore,
+    registry: &SourceRegistry,
     opts: &RecommendOptions,
 ) -> Result<Vec<Recommendation>> {
     let books = library.list_books(None).await?;
@@ -341,6 +346,7 @@ async fn recommend_all(
         };
         let candidates = gather_storefront_candidates(
             library,
+            registry,
             &seeds,
             &owned_asins,
             &owned_isbns,
@@ -468,7 +474,7 @@ async fn recommend_all(
     let mut recs: Vec<Recommendation> = scored.into_values().collect();
 
     if opts.include_purchase_hints {
-        attach_purchase_hints(&mut recs, opts).await;
+        attach_purchase_hints(&mut recs, registry, opts).await;
     }
 
     // Sort flat list for callers that still want a single ranking.
@@ -650,7 +656,11 @@ fn wishlist_embed_text(
     parts.join("\n")
 }
 
-async fn attach_purchase_hints(recs: &mut [Recommendation], opts: &RecommendOptions) {
+async fn attach_purchase_hints(
+    recs: &mut [Recommendation],
+    registry: &SourceRegistry,
+    opts: &RecommendOptions,
+) {
     for rec in recs.iter_mut() {
         // Seed every known storefront edition so the card can price them at view time.
         let mut editions = rec.store_editions.clone();
@@ -680,6 +690,7 @@ async fn attach_purchase_hints(recs: &mut [Recommendation], opts: &RecommendOpti
 
         if rec.purchase_hints.is_empty() {
             match purchase_hints_for(
+                registry,
                 &rec.title,
                 rec.authors.as_deref(),
                 rec.asin.as_deref(),

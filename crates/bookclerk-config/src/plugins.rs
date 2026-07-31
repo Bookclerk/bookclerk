@@ -2,8 +2,8 @@
 //!
 //! Source plugins are opaque TOML tables under `[sources.<id>]`. Host code
 //! never names store-specific knobs — each content-source crate parses its
-//! own table at registration time. Integrations remain typed for first-party
-//! ABS; additional ids land in opaque tables.
+//! own table at registration time. Integrations use the same opaque-table
+//! pattern; first-party ABS is read via [`IntegrationsConfig::audiobookshelf`].
 //!
 //! External (subprocess) plugins are *discovered* via `plugin.toml` under
 //! plugin search dirs; these tables hold enablement and opaque knobs passed
@@ -126,16 +126,15 @@ fn parse_bool_loose(raw: &str) -> Option<bool> {
 
 /// Optional third-party integrations under `[integrations]`.
 ///
-/// First-party Audiobookshelf stays typed; additional `[integrations.<id>]`
-/// tables (including dynamically discovered plugins) land in [`Self::plugins`].
+/// Typed portal knobs live alongside opaque `[integrations.<id>]` tables in
+/// [`Self::plugins`] (including first-party Audiobookshelf).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct IntegrationsConfig {
     pub claim_ticket_ttl_hours: u64,
     pub public_origin: Option<String>,
     pub portal_session_ttl_hours: u64,
-    pub audiobookshelf: AudiobookshelfConfig,
-    /// Opaque tables for external / discovered integration plugins.
+    /// Opaque tables for integration plugins (including `audiobookshelf`).
     #[serde(flatten)]
     pub plugins: BTreeMap<String, toml::Value>,
 }
@@ -146,37 +145,65 @@ impl Default for IntegrationsConfig {
             claim_ticket_ttl_hours: 72,
             public_origin: None,
             portal_session_ttl_hours: 12,
-            audiobookshelf: AudiobookshelfConfig::default(),
             plugins: BTreeMap::new(),
         }
     }
 }
 
 impl IntegrationsConfig {
-    /// Whether an integration plugin id is enabled.
-    ///
-    /// Built-in ABS uses its typed flag. External plugins default to **disabled**
-    /// unless `[integrations.<id>] enabled = true`.
-    #[must_use]
-    pub fn is_enabled(&self, integration: &str) -> bool {
+    /// Canonical table id for Audiobookshelf (`audiobookshelf`; `abs` is an alias).
+    fn abs_table_id(integration: &str) -> Option<&'static str> {
         match integration.trim().to_ascii_lowercase().as_str() {
-            "audiobookshelf" | "abs" => self.audiobookshelf.enabled,
-            other => self
-                .plugin_table(other)
-                .and_then(|t| t.get("enabled"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
+            "audiobookshelf" | "abs" => Some("audiobookshelf"),
+            _ => None,
         }
     }
 
-    /// Borrow an external plugin table when present.
+    /// Parse `[integrations.audiobookshelf]` from the opaque plugins map.
+    #[must_use]
+    pub fn audiobookshelf(&self) -> AudiobookshelfConfig {
+        self.plugin_table("audiobookshelf")
+            .and_then(|t| toml::Value::Table(t.clone()).try_into().ok())
+            .unwrap_or_default()
+    }
+
+    /// Set a string field on `[integrations.audiobookshelf]`.
+    pub fn set_audiobookshelf_string(&mut self, key: &str, value: impl Into<String>) {
+        self.plugin_table_mut("audiobookshelf")
+            .insert(key.into(), toml::Value::String(value.into()));
+    }
+
+    /// Set a boolean field on `[integrations.audiobookshelf]`.
+    pub fn set_audiobookshelf_bool(&mut self, key: &str, value: bool) {
+        self.plugin_table_mut("audiobookshelf")
+            .insert(key.into(), toml::Value::Boolean(value));
+    }
+
+    /// Whether an integration plugin id is enabled.
+    ///
+    /// Missing tables default to **disabled** unless
+    /// `[integrations.<id>] enabled = true`. `abs` aliases `audiobookshelf`.
+    #[must_use]
+    pub fn is_enabled(&self, integration: &str) -> bool {
+        let id = Self::abs_table_id(integration).unwrap_or(integration);
+        self.plugin_table(id)
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Borrow an opaque plugin table when present.
     #[must_use]
     pub fn plugin_table(&self, id: &str) -> Option<&toml::Table> {
+        let id = Self::abs_table_id(id).unwrap_or(id);
         self.plugins.get(id)?.as_table()
     }
 
-    /// Mutable external plugin table (creates empty table if needed).
+    /// Mutable opaque plugin table (creates empty table if needed).
+    ///
+    /// `abs` writes to the `audiobookshelf` table.
     pub fn plugin_table_mut(&mut self, id: &str) -> &mut toml::Table {
+        let id = Self::abs_table_id(id).unwrap_or(id);
         let entry = self
             .plugins
             .entry(id.to_string())
@@ -190,15 +217,11 @@ impl IntegrationsConfig {
         }
     }
 
-    /// Set `enabled` for an integration id (typed ABS or opaque plugin table).
+    /// Set `enabled` for an integration id (opaque plugin table).
     pub fn set_enabled(&mut self, integration: &str, enabled: bool) {
-        match integration.trim().to_ascii_lowercase().as_str() {
-            "audiobookshelf" | "abs" => self.audiobookshelf.enabled = enabled,
-            other => {
-                self.plugin_table_mut(other)
-                    .insert("enabled".into(), toml::Value::Boolean(enabled));
-            }
-        }
+        let id = Self::abs_table_id(integration).unwrap_or(integration);
+        self.plugin_table_mut(id)
+            .insert("enabled".into(), toml::Value::Boolean(enabled));
     }
 }
 

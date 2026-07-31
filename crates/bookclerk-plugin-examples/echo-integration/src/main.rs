@@ -14,7 +14,7 @@
 //! bookclerk plugins echo ping --message hi
 //! ```
 
-use bookclerk_plugin::{
+use bookclerk_plugin_sdk::{
     methods, CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
     HandshakeResult, HealthDto, PluginGuest, PLUGIN_API_VERSION,
 };

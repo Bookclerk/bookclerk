@@ -1,0 +1,5 @@
+api_version = 1
+id = "audible"
+name = "Audible"
+kind = "source"
+command = "./bookclerk-plugin-source-audible"

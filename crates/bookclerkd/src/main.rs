@@ -88,12 +88,10 @@ async fn main() -> anyhow::Result<()> {
     configure_master_key_with(&paths.files_dir, config.auth_password().as_deref())?;
 
     let library = LibraryStore::open_from_config(&config).await?;
-    let mut integrations = bookclerk_integrations::from_config(&config)?;
-    bookclerk_plugin::load_external_integrations(&config, &mut integrations).await?;
+    let integrations = bookclerk_plugin::load_integrations(&config).await?;
     let sources = {
         let cfg = config.clone();
-        let reg = default_registry_with_plugins(&cfg).await?;
-        reg.all()
+        default_registry_with_plugins(&cfg).await?
     };
     let auth_cfg = {
         let listen = config.daemon.listen.clone();

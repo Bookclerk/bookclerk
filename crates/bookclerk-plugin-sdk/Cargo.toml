@@ -1,0 +1,22 @@
+[package]
+name = "bookclerk-plugin-sdk"
+description = "Guest-only Bookclerk plugin SDK (JSON-RPC protocol + stdio helper)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Intended for crates.io later; keep unpublished until the public SDK surface stabilizes.
+publish = false
+
+[dependencies]
+chrono = { workspace = true, features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "io-std", "macros", "rt", "sync"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

@@ -68,6 +68,10 @@ Values: `discover` | `wishlist` | `library` | `accounts`. Stored in
 - **Accounts** — link bookstore sources, revoke connections, manage portal identity
   connections (claim ticket / credential login on the sign-in screen)
 
+A future **plugin browser** (install/configure third-party plugins from the
+operator dashboard) is sketched in [plugin-registry.md](plugin-registry.md);
+today plugins are managed via CLI / `config.toml` ([plugins.md](plugins.md)).
+
 ## Run
 
 ```bash

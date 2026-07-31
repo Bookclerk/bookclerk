@@ -35,9 +35,10 @@ pub struct MigrateOptions {
     pub source: std::path::PathBuf,
     /// Destination files dir (auth, library.db, config.toml).
     pub dest_files_dir: std::path::PathBuf,
-    /// Overwrite existing auth files / config.toml.
+    /// Overwrite existing config.toml.
     pub force: bool,
-    /// Skip writing `*.audible.auth` files (still upserts account metadata).
+    /// Retained for CLI compatibility; credentials are never imported by migrate
+    /// (use the Audible plugin: `auth login` / `auth import`).
     pub skip_auth: bool,
     /// Report only; do not write.
     pub dry_run: bool,

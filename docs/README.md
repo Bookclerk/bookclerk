@@ -23,6 +23,7 @@ Start here if you are new:
 | Doc | When to read |
 | --- | --- |
 | [Plugins](plugins.md) | Ship or host a third-party source/integration |
+| [Plugin registry](plugin-registry.md) | crates.io taxonomy, prebuilt install, catalog roadmap |
 | [Source candidates](source-candidates.md) | Research notes for stores not yet implemented |
 | [Diagnostics](diagnostics.md) | Opt-in crash/error reporting pipeline |
 

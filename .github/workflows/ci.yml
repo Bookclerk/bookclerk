@@ -52,7 +52,22 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Plugin host without in-process sources
+        run: cargo check -p bookclerk-plugin --no-default-features
+
+      - name: Build first-party plugin artifacts
+        run: |
+          cargo build -p bookclerk-plugin-echo-integration \
+            -p bookclerk-plugin-source-audible \
+            -p bookclerk-plugin-source-libro \
+            -p bookclerk-plugin-source-chirp \
+            -p bookclerk-plugin-source-graphicaudio \
+            -p bookclerk-plugin-integration-audiobookshelf
+          ./scripts/stage-first-party-plugins.sh debug "$RUNNER_TEMP/bookclerk-plugins"
+
       - name: Test
+        env:
+          BOOKCLERK_PLUGIN_ARTIFACTS: ${{ runner.temp }}/bookclerk-plugins
         run: cargo test --workspace
 
   release:

@@ -8,10 +8,7 @@ pub type Result<T> = std::result::Result<T, IntegrationError>;
 /// Errors from outbound integrations and the connect portal.
 #[derive(Debug, Error)]
 pub enum IntegrationError {
-    #[error(transparent)]
-    Http(#[from] reqwest::Error),
-
-    #[error("audiobookshelf API error ({status}): {message}")]
+    #[error("integration API error ({status}): {message}")]
     Api { status: u16, message: String },
 
     #[error(transparent)]

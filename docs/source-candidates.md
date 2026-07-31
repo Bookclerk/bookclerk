@@ -17,9 +17,9 @@ community tooling ([audiobook-dl](https://github.com/jo1gi/audiobook-dl),
 
 | Concern | Notes |
 | --- | --- |
-| Trait surface | `login` / `list_accounts` / `scan` / `fetch_title` → `SourceFetch::Plain` or `Encrypted` |
-| Plain path | Matches Libro.fm today (no `bookclerk-decrypt`) |
-| Encrypted path | Today: Adrm + Widevine only; new DRM kinds need decrypt work |
+| Trait surface | `login` / `list_accounts` / `scan` / `fetch_title` → `PlainFetch` (decrypt inside plugin) |
+| Plain path | Matches Libro.fm today (no `bookclerk-media`) |
+| DRM | Owned by the source plugin (Audible: Adrm/Widevine); host never sees keys |
 | Auth storage | Per-account tokens in `encrypted_secrets` (DB), keyed by account id |
 | Config plugins | `[sources.<id>]` enable + source knobs; `[integrations.*]` reserved for third-party hooks |
 | Diagnostics | Top-level `[diagnostics]` only (not an integration plugin) |
@@ -72,7 +72,7 @@ URLs (m4a in-app). No Widevine/MediaDrm usage in app code beyond ExoPlayer
 boilerplate.
 
 **Bookclerk mapping:** GraphicAudio content-source plugin (`id = "graphicaudio"`),
-`SourceFetch::Plain`, credentials stored in `encrypted_secrets`. Optional: also scrape
+`PlainFetch`, credentials stored in `encrypted_secrets`. Optional: also scrape
 Magento “My Downloadable Products” for ZIP MP3/M4B/FLAC purchases.
 
 **Risks:** Niche catalog (dramatized productions). Device activation may
@@ -103,7 +103,7 @@ plain part files. Treat as **plain for typical audiobooks**; verify live
 before committing.
 
 **Bookclerk mapping:** Device-activation login (browser code, like Audible
-QR/OAuth UX), `SourceFetch::Plain` for spine parts (ZIP/M4B packaging in
+QR/OAuth UX), `PlainFetch` for spine parts (ZIP/M4B packaging in
 acquire). Do **not** need KDRM remover unless we also want ebooks.
 
 **Risks:** Activation UX; API churn; regional audiobook availability.
@@ -355,7 +355,7 @@ device-slot language in FAQ). Magento ZIP links live under
 2. **Magento ZIP (opt-in: `access = "zip"`)** — **implemented**  
    Magento customer session → My Downloadable Products → follow download
    link (307 → signed CloudFront ZIP) → extract M4B/MP3/FLAC →
-   `SourceFetch::Plain` (`m4b_path` when M4B). No Access App device slot.
+   `PlainFetch` (`m4b_path` when M4B). No Access App device slot.
    Each Magento link hit consumes one of ≤3 download attempts — transfer
    must complete after resolve. Same password env as Browser Player.
 

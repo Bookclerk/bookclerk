@@ -1,53 +1,63 @@
-//! Dynamic third-party plugins for Bookclerk.
+//! Dynamic plugins for Bookclerk (host side).
 //!
-//! Plugins are **separate executables** discovered from install directories
-//! (`plugin.toml` + binary) and spoken to over newline-delimited JSON-RPC on
-//! stdio. They are **untrusted** relative to the host: the host never passes
-//! `library.db` / `master.key` / the files-dir root, clears secret-bearing env
-//! on spawn, and mediates credentials + library upserts.
+//! Two load paths share the same registries:
 //!
-//! User settings stay in the main `config.toml` under matching
-//! `[sources.<id>]` / `[integrations.<id>]` tables and are passed at handshake.
+//! 1. **In-process builtins** — [`register_builtin_sources`] /
+//!    [`register_builtin_integrations`] link first-party library crates so
+//!    `cargo run` works without staging binaries.
+//! 2. **External guests** — separate executables discovered from install
+//!    directories (`plugin.toml` + binary) over newline-delimited JSON-RPC on
+//!    stdio.
 //!
-//! # Layout
+//! External plugins are **untrusted** relative to the host: the host never
+//! passes `library.db` / `master.key` / the files-dir root, clears
+//! secret-bearing env on spawn, and mediates credentials + library upserts.
 //!
-//! ```text
-//! $BOOKCLERK_FILES_DIR/plugins/
-//!   my-plugin/
-//!     plugin.toml          # install metadata (id, kind, command)
-//!     my-plugin            # executable
-//! ```
+//! Host binaries should depend on **this** crate for registration — not on
+//! individual store crates.
 //!
-//! Additional search roots: `BOOKCLERK_PLUGIN_DIRS` (path-list, OS-separated).
+//! # Guest SDK
 //!
-//! ```toml
-//! # config.toml — enable + opaque knobs only
-//! [integrations.echo]
-//! enabled = true
-//! # greeting = "hi"
-//! ```
+//! Third-party Rust plugins should depend on [`bookclerk_plugin_sdk`], not this
+//! crate. This host crate re-exports the protocol types for in-tree convenience.
 //!
-//! See `docs/plugins.md`.
+//! See `docs/plugins.md` and `docs/plugin-registry.md`.
 
+mod builtins;
+mod crates_io;
 mod discover;
 mod error;
 mod host;
 mod manifest;
-pub mod protocol;
+mod registry;
 mod rpc;
 
+pub use bookclerk_plugin_sdk::protocol;
+pub use bookclerk_plugin_sdk::{
+    methods, BookAcquiredDto, CatalogHitDto, CliArgKind, CliArgSpec, CliCommandSpec,
+    CliInvokeParams, CliInvokeResult, CliSchema, CredentialsUpdateParams, EventPollResultDto,
+    ExpandCandidatesParams, ExternalUserDto, FetchTitleParams, HandshakeResult, HealthDto,
+    ListeningProgressDto, LoginCompleteParams, LoginParams, LoginResultDto, LoginStartResultDto,
+    PlainPartDto, PluginGuest, PurchaseHintDto, PurchaseHintParams, ScanBookDto, ScanParams,
+    ScanSummaryDto, SearchCatalogParams, SourceAccountDto, SourceFetchDto, SyncListeningResultDto,
+    PLUGIN_API_VERSION,
+};
+
+pub use builtins::{
+    load_integrations, load_sources, register_builtin_integrations, register_builtin_sources,
+};
+pub use crates_io::search_crates_io;
 pub use discover::{discover_plugins, plugin_search_dirs, settings_table, DiscoveredPlugin};
 pub use error::{PluginError, Result};
 pub use host::{
     load_external_integrations, load_external_sources, ExternalIntegration, ExternalSource,
 };
 pub use manifest::{PluginKind, PluginManifest};
-pub use protocol::{
-    methods, CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-    HandshakeResult, HealthDto, LoginResultDto, ScanBookDto, SyncListeningResultDto,
-    PLUGIN_API_VERSION,
+pub use registry::{
+    host_target_triple, kind_keyword, validate_plugin_id, BookclerkPackageMetadata,
+    PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, PRODUCT_KEYWORD, REGISTRY_KEYWORD,
 };
-pub use rpc::{PluginClient, PluginGuest};
+pub use rpc::PluginClient;
 
 /// Register discovered external plugins into the in-process registries.
 pub async fn register_discovered(
@@ -67,11 +77,12 @@ pub async fn register_discovered(
                     continue;
                 }
                 if sources.get(&plugin.manifest.id).is_some() {
-                    return Err(PluginError::message(format!(
-                        "external source plugin id `{}` conflicts with an already registered source ({})",
-                        plugin.manifest.id,
-                        plugin.root.join("plugin.toml").display()
-                    )));
+                    tracing::debug!(
+                        id = %plugin.manifest.id,
+                        path = %plugin.root.join("plugin.toml").display(),
+                        "skipping external source — already registered in-process"
+                    );
+                    continue;
                 }
                 match ExternalSource::spawn(&plugin, config).await {
                     Ok(source) => {
@@ -100,11 +111,12 @@ pub async fn register_discovered(
                     continue;
                 }
                 if integrations.get(&plugin.manifest.id).is_some() {
-                    return Err(PluginError::message(format!(
-                        "external integration plugin id `{}` conflicts with an already registered integration ({})",
-                        plugin.manifest.id,
-                        plugin.root.join("plugin.toml").display()
-                    )));
+                    tracing::debug!(
+                        id = %plugin.manifest.id,
+                        path = %plugin.root.join("plugin.toml").display(),
+                        "skipping external integration — already registered in-process"
+                    );
+                    continue;
                 }
                 match ExternalIntegration::spawn(&plugin, config).await {
                     Ok(integration) => {

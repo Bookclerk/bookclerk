@@ -68,6 +68,7 @@ pub enum WishlistCommand {
 
 pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -> Result<()> {
     let library = LibraryStore::open_from_config(cfg).await?;
+    let registry = crate::registry::default_registry_with_plugins(cfg).await?;
 
     match command {
         DiscoverCommand::RebuildWorks => {
@@ -157,7 +158,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                 embed_intra_threads: cfg.discovery.embed_intra_threads,
                 embeddings_enabled: cfg.discovery.embeddings_enabled,
             };
-            let feed = bookclerk_discover::recommend_feed(&library, &opts).await?;
+            let feed = bookclerk_discover::recommend_feed(&library, &registry, &opts).await?;
             format_out::emit(format, &feed, || {
                 if feed.shelves.is_empty() {
                     println!("(no recommendations)");
@@ -263,7 +264,6 @@ async fn sync_listening(
     cfg: &Config,
     library: &LibraryStore,
 ) -> Result<bookclerk_integrations::SyncListeningSummary> {
-    let mut registry = bookclerk_integrations::from_config(cfg)?;
-    bookclerk_plugin::load_external_integrations(cfg, &mut registry).await?;
+    let registry = bookclerk_plugin::load_integrations(cfg).await?;
     Ok(registry.sync_listening_progress_all(library).await)
 }

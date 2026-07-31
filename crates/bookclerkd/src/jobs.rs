@@ -6,10 +6,9 @@ use bookclerk_acquire::{
     acquire_book_indexed, match_storage_to_library, AcquireDestinations, AcquireRequest,
     MatchStorageOptions, StorageIndex,
 };
-use bookclerk_audible::DownloadOptions;
 use bookclerk_config::BadBookAction;
 use bookclerk_library::AcquireStatus;
-use bookclerk_source::ScanOptions;
+use bookclerk_source::{DownloadOptions, ScanOptions};
 use tracing::{error, info, warn};
 
 use crate::api::{AppState, JobInfo};
@@ -193,7 +192,13 @@ pub async fn run_acquire(
     let mut failed = 0u32;
     let bad_book = cfg.output.bad_book_action;
     for book in targets {
-        let content_source = registry.get(&book.source);
+        let content_source = registry.get(&book.source).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no content source registered for `{}` (title {})",
+                book.source,
+                book.asin_or_isbn()
+            )
+        })?;
         let req = AcquireRequest {
             asin: book.download_product_id().to_string(),
             book_uuid: Some(book.uuid.clone()),
@@ -208,10 +213,7 @@ pub async fn run_acquire(
             files_dir: paths.files_dir.clone(),
             cache_dir: cfg.download_cache_dir(),
             force: false,
-            preloaded_license: None,
             write_destinations: None,
-            // AccountClient cache lives in bookclerk-audible::open_account_client.
-            audible_client: None,
         };
         let mut attempts = 0u32;
         loop {
@@ -221,7 +223,7 @@ pub async fn run_acquire(
                 &destinations,
                 req.clone(),
                 Some(&mut index),
-                content_source.as_deref(),
+                content_source.as_ref(),
             )
             .await
             {

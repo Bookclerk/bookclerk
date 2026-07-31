@@ -2,7 +2,7 @@
 //!
 //! Host commands are integration-agnostic: they go through
 //! [`bookclerk_integrations::IntegrationRegistry`] capabilities. Adapter-specific
-//! clients (e.g. AbsApiClient) stay inside the integrations crate.
+//! clients (e.g. AbsApiClient) stay inside integration plugin packages.
 
 use bookclerk_config::Config;
 use bookclerk_integrations::{mint_for_external_user, ExternalUser};
@@ -57,8 +57,7 @@ pub async fn run(command: IntegrationsCommand, config: &Config) -> anyhow::Resul
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
     let library = LibraryStore::open_from_config(config).await?;
-    let mut registry = bookclerk_integrations::from_config(config)?;
-    bookclerk_plugin::load_external_integrations(config, &mut registry).await?;
+    let registry = bookclerk_plugin::load_integrations(config).await?;
 
     match command {
         IntegrationsCommand::Status => {

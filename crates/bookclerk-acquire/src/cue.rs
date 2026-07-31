@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use bookclerk_decrypt::{
+use bookclerk_media::{
     brand_durations_from_chapter_info, rebase_chapters_after_brand_trim,
     runtime_length_ms_from_chapter_info, scale_chapters_to_duration,
 };
@@ -79,7 +79,7 @@ pub fn process_chapter_titles(
 /// as `plain_audio_duration_ms` so outro chapters can still be trimmed
 /// (`plain + intro + outro` reconstructs the Audible timeline).
 #[must_use]
-pub fn chapters_from_audible_info_for_plain_audio(
+pub fn chapters_from_catalog_info_for_plain_audio(
     info: &Value,
     combine_nested: bool,
     merge_credits: bool,
@@ -433,7 +433,7 @@ mod tests {
             ]
         });
         let out =
-            chapters_from_audible_info_for_plain_audio(&info, false, false, false, false, None);
+            chapters_from_catalog_info_for_plain_audio(&info, false, false, false, false, None);
         assert_eq!(out[0], ("Opening Credits".into(), 0));
         // Part heading kept (distinct start from child chapters).
         assert!(
@@ -495,7 +495,7 @@ mod tests {
         });
         // Plain file duration = Audible runtime - intro - outro = 3_600_000 - 4k - 5k.
         let plain_ms = 3_600_000u64 - 4_000 - 5_000;
-        let out = chapters_from_audible_info_for_plain_audio(
+        let out = chapters_from_catalog_info_for_plain_audio(
             &info,
             false,
             false,

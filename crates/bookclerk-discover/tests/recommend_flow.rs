@@ -85,7 +85,8 @@ mod integration {
             embed_intra_threads: 1,
             embeddings_enabled: true,
         };
-        let recs = recommend(&store, &opts).await.unwrap();
+        let registry = bookclerk_source::SourceRegistry::new();
+        let recs = recommend(&store, &registry, &opts).await.unwrap();
         assert!(
             recs.iter()
                 .any(|r| r.from_request && r.title.contains("Book 3")),

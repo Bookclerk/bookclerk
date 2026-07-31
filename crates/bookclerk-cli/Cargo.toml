@@ -15,14 +15,10 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-bookclerk-audible.workspace = true
 bookclerk-config.workspace = true
 bookclerk-enrich.workspace = true
 bookclerk-acquire.workspace = true
 bookclerk-library.workspace = true
-bookclerk-libro.workspace = true
-bookclerk-graphicaudio.workspace = true
-bookclerk-chirp.workspace = true
 bookclerk-migrate.workspace = true
 bookclerk-naming.workspace = true
 bookclerk-search.workspace = true

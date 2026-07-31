@@ -4,14 +4,10 @@ use bookclerk_acquire::{
     acquire_book_indexed, acquire_pdf_only, convert_book, match_storage_to_library,
     AcquireDestinations, AcquireRequest, ConvertRequest, MatchStorageOptions, StorageIndex,
 };
-use bookclerk_audible::{
-    license_full_json, open_account_client, parse_license_json, request_content_license,
-    summarize_license, DownloadOptions,
-};
 use bookclerk_config::{apply_setting_overrides, AudioQuality, BadBookAction, Config};
 use bookclerk_library::{AcquireStatus, LibraryStore};
 use bookclerk_search::SearchEngine;
-use bookclerk_source::ScanOptions;
+use bookclerk_source::{DownloadOptions, FetchOptions, ScanOptions};
 use bookclerk_storage::from_config;
 use clap::Subcommand;
 
@@ -322,12 +318,11 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 return Ok(());
             }
 
-            let preloaded_license = if let Some(path) = license {
-                let text = read_license_input(&path).await?;
-                Some(parse_license_json(&text)?)
-            } else {
-                None
-            };
+            if license.is_some() {
+                anyhow::bail!(
+                    "preloaded license vouchers (--license) are not supported on the host path yet"
+                );
+            }
 
             paths.ensure_dirs()?;
             let options = DownloadOptions::from(&cfg);
@@ -337,10 +332,13 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 Some(StorageIndex::from_storage(storage.as_ref()).await?)
             };
 
-            let mut integrations = bookclerk_integrations::from_config(&cfg)?;
-            if !dry_run {
-                bookclerk_plugin::load_external_integrations(&cfg, &mut integrations).await?;
-            }
+            let integrations = if dry_run {
+                let mut registry = bookclerk_integrations::IntegrationRegistry::new();
+                bookclerk_plugin::register_builtin_integrations(&cfg, &mut registry)?;
+                registry
+            } else {
+                bookclerk_plugin::load_integrations(&cfg).await?
+            };
 
             let mut ok = 0u32;
             let mut matched = 0u32;
@@ -352,7 +350,13 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
 
             for (idx, book) in targets.into_iter().enumerate() {
                 batch.set(idx + 1, book.asin_or_isbn());
-                let content_source = registry.get(&book.source);
+                let content_source = registry.get(&book.source).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no content source registered for `{}` (title {})",
+                        book.source,
+                        book.asin_or_isbn()
+                    )
+                })?;
                 let req = AcquireRequest {
                     asin: book.download_product_id().to_string(),
                     book_uuid: Some(book.uuid.clone()),
@@ -367,10 +371,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     files_dir: paths.files_dir.clone(),
                     cache_dir: cfg.download_cache_dir(),
                     force,
-                    preloaded_license: preloaded_license.clone(),
                     write_destinations: None,
-                    // AccountClient cache lives in bookclerk-audible::open_account_client.
-                    audible_client: None,
                 };
                 if dry_run {
                     let key = if pdf {
@@ -389,14 +390,14 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 loop {
                     attempts += 1;
                     let result = if pdf {
-                        acquire_pdf_only(&store, &destinations, &req).await
+                        acquire_pdf_only(&store, &destinations, &req, content_source.as_ref()).await
                     } else {
                         acquire_book_indexed(
                             &store,
                             &destinations,
                             req.clone(),
                             index.as_mut(),
-                            content_source.as_deref(),
+                            content_source.as_ref(),
                         )
                         .await
                     };
@@ -505,9 +506,10 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             json,
             full,
         } => {
+            let registry = default_registry_with_plugins(config).await?;
+            let source = registry.require("audible")?;
             let (account_key, license_asin) =
-                resolve_audible_license_target(&store, &asin, account.as_deref()).await?;
-            let client = open_account_client(&store.scope("audible"), &account_key).await?;
+                resolve_license_target(&store, &asin, account.as_deref()).await?;
             let quality = match config
                 .sources
                 .get_string("audible", "bitrate")
@@ -518,40 +520,93 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 "normal" => AudioQuality::Normal,
                 _ => AudioQuality::High,
             };
-            let license = request_content_license(
-                &client.client,
-                &client.marketplace,
-                &license_asin,
-                quality,
-            )
-            .await?;
+            let mut download = DownloadOptions::from(config);
+            download.quality = quality;
+            let inspected = source
+                .inspect_title(
+                    &store.scope(source.id()),
+                    &account_key,
+                    &license_asin,
+                    &FetchOptions {
+                        download,
+                        cache_dir: paths.cache_dir.clone(),
+                        files_dir: paths.files_dir.clone(),
+                    },
+                )
+                .await?;
             if full {
-                println!("{}", license_full_json(&license));
+                let full_json = inspected
+                    .get("full")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                println!("{}", serde_json::to_string_pretty(&full_json)?);
                 return Ok(());
             }
-            let summary = summarize_license(&license);
+            let summary = inspected
+                .get("summary")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             if json {
                 println!("{}", serde_json::to_string_pretty(&summary)?);
                 return Ok(());
             }
-            println!("asin\t{}", summary.asin);
-            println!("status\t{}", summary.status_code);
-            println!("drm_type\t{}", summary.drm_type.as_deref().unwrap_or("-"));
+            println!(
+                "asin\t{}",
+                summary
+                    .get("asin")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&license_asin)
+            );
+            println!(
+                "status\t{}",
+                summary
+                    .get("status_code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-")
+            );
+            println!(
+                "drm_type\t{}",
+                summary
+                    .get("drm_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-")
+            );
             println!(
                 "content_format\t{}",
-                summary.content_format.as_deref().unwrap_or("-")
+                summary
+                    .get("content_format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-")
             );
             println!(
                 "content_size\t{}",
                 summary
-                    .content_size
-                    .map(|n| n.to_string())
+                    .get("content_size")
+                    .map(|v| v.to_string())
                     .unwrap_or_else(|| "-".into())
             );
-            println!("granted\t{}", summary.granted);
-            println!("has_voucher\t{}", summary.has_voucher);
-            println!("offline_url\t{}", summary.offline_url_present);
-            if let Some(msg) = &summary.denial_message {
+            println!(
+                "granted\t{}",
+                summary
+                    .get("granted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            );
+            println!(
+                "has_voucher\t{}",
+                summary
+                    .get("has_voucher")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            );
+            println!(
+                "offline_url\t{}",
+                summary
+                    .get("offline_url_present")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            );
+            if let Some(msg) = summary.get("denial_message").and_then(|v| v.as_str()) {
                 println!("denial\t{msg}");
             }
             Ok(())
@@ -706,23 +761,12 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
     }
 }
 
-async fn read_license_input(path: &std::path::Path) -> anyhow::Result<String> {
-    if path.as_os_str() == "-" {
-        use tokio::io::AsyncReadExt;
-        let mut buf = String::new();
-        tokio::io::stdin().read_to_string(&mut buf).await?;
-        Ok(buf)
-    } else {
-        Ok(tokio::fs::read_to_string(path).await?)
-    }
-}
-
-/// Resolve an Audible account + real Audible ASIN for `get-license`.
+/// Resolve an account + Audible ASIN for `library get-license`.
 ///
 /// Accepts uuid / product_id / isbn / asin. Never sends a Libro ISBN or library
-/// UUID to Audible's license API. Enriched Libro rows may supply an ASIN, but
-/// the account must still be an Audible auth identity.
-async fn resolve_audible_license_target(
+/// UUID as the license title id. Enriched non-Audible rows may supply an ASIN,
+/// but the account must still be an Audible auth identity.
+async fn resolve_license_target(
     store: &LibraryStore,
     id: &str,
     account: Option<&str>,

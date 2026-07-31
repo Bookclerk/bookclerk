@@ -1,0 +1,5 @@
+api_version = 1
+id = "chirp"
+name = "Chirp"
+kind = "source"
+command = "./bookclerk-plugin-source-chirp"

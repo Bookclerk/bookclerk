@@ -18,15 +18,17 @@ use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_library::{NewBook, SourceScope};
 use bookclerk_source::{
-    ContentSource, FetchOptions, LoginOptions, PlainAudioPart, PlainFetch, PortalAuthMode,
-    ScanOptions, ScanSummary, SourceAccount, SourceBrand, SourceFetch, SourceRegistry,
+    CatalogHit, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions, LoginOptions,
+    OAuthProgress, PlainAudioPart, PlainFetch, PortalAuthMode, PurchaseHintOpts, ScanOptions,
+    ScanSummary, SourceAccount, SourceBrand, SourceFetch, SourcePurchaseHint, SourceRegistry,
 };
 use serde_json::Value;
 
 use crate::discover::DiscoveredPlugin;
 use crate::protocol::{
-    methods, FetchTitleParams, LoginParams, LoginResultDto, ScanBookDto, ScanParams,
-    ScanSummaryDto, SourceAccountDto, SourceFetchDto,
+    methods, CatalogHitDto, ExpandCandidatesParams, FetchTitleParams, LoginCompleteParams,
+    LoginParams, LoginResultDto, LoginStartResultDto, PurchaseHintDto, PurchaseHintParams,
+    ScanBookDto, ScanParams, ScanSummaryDto, SearchCatalogParams, SourceAccountDto, SourceFetchDto,
 };
 use crate::rpc::PluginClient;
 use crate::Result;
@@ -94,13 +96,95 @@ impl ExternalSource {
             source_config: config_json,
         })
     }
+
+    fn supports_oauth_rpc(&self) -> bool {
+        self.auth_mode == PortalAuthMode::Oauth
+            && self.client.has_capability("login.start")
+            && self.client.has_capability("login.complete")
+    }
+
+    fn login_params(plugin_data_dir: String, opts: LoginOptions) -> LoginParams {
+        LoginParams {
+            plugin_data_dir,
+            marketplace: opts.marketplace,
+            label: opts.label,
+            email: opts.email,
+            password: opts.password,
+            force: opts.force,
+            callback_bind: opts.callback_bind,
+            external: opts.external,
+            response_url: opts.response_url,
+            show_qr: opts.show_qr,
+            timeout_secs: opts.timeout_secs,
+            extra: opts.extra,
+        }
+    }
+
+    async fn password_login(
+        &self,
+        scope: &SourceScope,
+        opts: LoginOptions,
+    ) -> bookclerk_source::Result<SourceAccount> {
+        let result: LoginResultDto = self
+            .client
+            .call(
+                methods::LOGIN,
+                serde_json::to_value(Self::login_params(
+                    self.plugin_data_dir.display().to_string(),
+                    opts,
+                ))
+                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
+            )
+            .await?;
+        seal_login_result(scope, self.id(), result).await
+    }
+
+    async fn oauth_login(
+        &self,
+        scope: &SourceScope,
+        opts: LoginOptions,
+        on_progress: &(dyn Fn(OAuthProgress) + Send + Sync),
+    ) -> bookclerk_source::Result<SourceAccount> {
+        let start: LoginStartResultDto = self
+            .client
+            .call(
+                methods::LOGIN_START,
+                serde_json::to_value(Self::login_params(
+                    self.plugin_data_dir.display().to_string(),
+                    opts,
+                ))
+                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
+            )
+            .await?;
+        on_progress(OAuthProgress::LoginUrl {
+            url: start.url.clone(),
+            qr: None,
+        });
+        on_progress(OAuthProgress::WaitingForCallback);
+        let result: LoginResultDto = self
+            .client
+            .call(
+                methods::LOGIN_COMPLETE,
+                serde_json::to_value(LoginCompleteParams {
+                    session_id: start.session_id,
+                })
+                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
+            )
+            .await?;
+        let account = seal_login_result(scope, self.id(), result).await?;
+        on_progress(OAuthProgress::Completed {
+            account_id: account.account_id.clone(),
+        });
+        Ok(account)
+    }
 }
 
 /// Discover and register external source plugins.
 ///
 /// Duplicate `(kind, id)` claims among discovered manifests are a hard error
-/// (from [`crate::discover_plugins`]). An external id that collides with an
-/// already-registered source is also fatal.
+/// (from [`crate::discover_plugins`]). When an external id is already registered
+/// in-process (dual-load `register()` path), the external copy is skipped so
+/// `cargo run` keeps the linked adapter.
 pub async fn load_external_sources(config: &Config, registry: &mut SourceRegistry) -> Result<()> {
     for plugin in crate::discover_plugins(config)? {
         if plugin.manifest.kind != crate::PluginKind::Source {
@@ -110,11 +194,12 @@ pub async fn load_external_sources(config: &Config, registry: &mut SourceRegistr
             continue;
         }
         if registry.get(&plugin.manifest.id).is_some() {
-            return Err(crate::PluginError::message(format!(
-                "external source plugin id `{}` conflicts with an already registered source ({})",
-                plugin.manifest.id,
-                plugin.root.join("plugin.toml").display()
-            )));
+            tracing::debug!(
+                id = %plugin.manifest.id,
+                path = %plugin.root.join("plugin.toml").display(),
+                "skipping external source — already registered in-process"
+            );
+            continue;
         }
         match ExternalSource::spawn(&plugin, config).await {
             Ok(s) => {
@@ -164,40 +249,22 @@ impl ContentSource for ExternalSource {
         scope: &SourceScope,
         opts: LoginOptions,
     ) -> bookclerk_source::Result<SourceAccount> {
-        let result: LoginResultDto = self
-            .client
-            .call(
-                methods::LOGIN,
-                serde_json::to_value(LoginParams {
-                    plugin_data_dir: self.plugin_data_dir.display().to_string(),
-                    marketplace: opts.marketplace,
-                    label: opts.label,
-                    email: opts.email,
-                    password: opts.password,
-                    force: opts.force,
-                })
-                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
-            )
-            .await?;
-        let mut account = account_from_dto(result.account);
-        // Force source id to the plugin id — plugins cannot claim another storefront.
-        account.source = self.id().to_string();
-        scope
-            .upsert_account(
-                &account.account_id,
-                &account.marketplace,
-                account.label.as_deref(),
-                account.scan_enabled,
-            )
-            .await
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
-        if let Some(creds) = result.credentials {
-            scope
-                .save_credentials_json(&account.account_id, &creds)
-                .await
-                .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?;
+        if self.supports_oauth_rpc() {
+            return self.oauth_login(scope, opts, &|_| {}).await;
         }
-        Ok(account)
+        self.password_login(scope, opts).await
+    }
+
+    async fn login_with_oauth_progress(
+        &self,
+        scope: &SourceScope,
+        opts: LoginOptions,
+        on_progress: &(dyn Fn(OAuthProgress) + Send + Sync),
+    ) -> bookclerk_source::Result<SourceAccount> {
+        if self.supports_oauth_rpc() {
+            return self.oauth_login(scope, opts, on_progress).await;
+        }
+        self.password_login(scope, opts).await
     }
 
     async fn list_accounts(
@@ -273,6 +340,8 @@ impl ContentSource for ExternalSource {
             .load_credentials_json(account_id)
             .await
             .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?;
+        let download = serde_json::to_value(&opts.download)
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
         let dto: SourceFetchDto = self
             .client
             .call(
@@ -284,30 +353,198 @@ impl ContentSource for ExternalSource {
                     cache_dir: opts.cache_dir.display().to_string(),
                     credentials,
                     source_config: self.source_config.clone(),
+                    download,
                 })
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
             )
             .await?;
-        match dto {
-            SourceFetchDto::Plain {
-                parts,
-                m4b_path,
-                cover_path,
-                chapters,
-            } => Ok(SourceFetch::Plain(PlainFetch {
-                parts: parts
-                    .into_iter()
-                    .map(|p| PlainAudioPart {
-                        path: PathBuf::from(p.path),
-                        title: p.title,
-                        duration_ms: p.duration_ms,
-                    })
-                    .collect(),
-                m4b_path: m4b_path.map(PathBuf::from),
-                cover_path: cover_path.map(PathBuf::from),
-                chapters,
-            })),
+        Ok(source_fetch_from_dto(dto))
+    }
+
+    async fn search_catalog(
+        &self,
+        opts: &CatalogSearchOpts,
+    ) -> bookclerk_source::Result<Vec<CatalogHit>> {
+        if !self.client.has_capability(methods::SEARCH_CATALOG) {
+            return Ok(Vec::new());
         }
+        let params = SearchCatalogParams {
+            query: opts.query.clone(),
+            region: opts.region.clone(),
+            limit: opts.limit,
+        };
+        match self
+            .client
+            .call::<Vec<CatalogHitDto>>(
+                methods::SEARCH_CATALOG,
+                serde_json::to_value(params)
+                    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
+            )
+            .await
+        {
+            Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_dto).collect()),
+            Err(err) => {
+                tracing::debug!(
+                    plugin = %self.id(),
+                    error = %err,
+                    "external search_catalog soft-failed"
+                );
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    async fn expand_candidates(
+        &self,
+        seed: &ExpandSeed,
+        limit: usize,
+    ) -> bookclerk_source::Result<Vec<CatalogHit>> {
+        if !self.client.has_capability(methods::EXPAND_CANDIDATES) {
+            return Ok(Vec::new());
+        }
+        let params = ExpandCandidatesParams {
+            source: seed.source.clone(),
+            product_id: seed.product_id.clone(),
+            title: seed.title.clone(),
+            authors: seed.authors.clone(),
+            narrators: seed.narrators.clone(),
+            series: seed.series.clone(),
+            series_asin: seed.series_asin.clone(),
+            asin: seed.asin.clone(),
+            isbn: seed.isbn.clone(),
+            region: seed.region.clone(),
+            limit,
+        };
+        match self
+            .client
+            .call::<Vec<CatalogHitDto>>(
+                methods::EXPAND_CANDIDATES,
+                serde_json::to_value(params)
+                    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
+            )
+            .await
+        {
+            Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_dto).collect()),
+            Err(err) => {
+                tracing::debug!(
+                    plugin = %self.id(),
+                    error = %err,
+                    "external expand_candidates soft-failed"
+                );
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    async fn purchase_hint(
+        &self,
+        opts: &PurchaseHintOpts,
+    ) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
+        if !self.client.has_capability(methods::PURCHASE_HINT) {
+            return Ok(None);
+        }
+        let params = PurchaseHintParams {
+            product_id: opts.product_id.clone(),
+            title: opts.title.clone(),
+            authors: opts.authors.clone(),
+            asin: opts.asin.clone(),
+            isbn: opts.isbn.clone(),
+            region: opts.region.clone(),
+            with_price: opts.with_price,
+        };
+        match self
+            .client
+            .call::<Option<PurchaseHintDto>>(
+                methods::PURCHASE_HINT,
+                serde_json::to_value(params)
+                    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
+            )
+            .await
+        {
+            Ok(hint) => Ok(hint.map(purchase_hint_from_dto)),
+            Err(err) => {
+                tracing::debug!(
+                    plugin = %self.id(),
+                    error = %err,
+                    "external purchase_hint soft-failed"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    async fn list_deals(&self, limit: usize) -> bookclerk_source::Result<Vec<CatalogHit>> {
+        if !self.client.has_capability(methods::LIST_DEALS) {
+            return Ok(Vec::new());
+        }
+        match self
+            .client
+            .call::<Vec<CatalogHitDto>>(methods::LIST_DEALS, serde_json::json!({ "limit": limit }))
+            .await
+        {
+            Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_dto).collect()),
+            Err(err) => {
+                tracing::debug!(
+                    plugin = %self.id(),
+                    error = %err,
+                    "external list_deals soft-failed"
+                );
+                Ok(Vec::new())
+            }
+        }
+    }
+}
+
+/// Map a protocol [`SourceFetchDto`] to the host [`SourceFetch`] (`PlainFetch`).
+#[must_use]
+pub(crate) fn source_fetch_from_dto(dto: SourceFetchDto) -> SourceFetch {
+    match dto {
+        SourceFetchDto::Plain {
+            parts,
+            m4b_path,
+            cover_path,
+            chapters,
+            pdf_url,
+        } => PlainFetch {
+            parts: parts
+                .into_iter()
+                .map(|p| PlainAudioPart {
+                    path: PathBuf::from(p.path),
+                    title: p.title,
+                    duration_ms: p.duration_ms,
+                })
+                .collect(),
+            m4b_path: m4b_path.map(PathBuf::from),
+            cover_path: cover_path.map(PathBuf::from),
+            chapters,
+            pdf_url,
+        },
+    }
+}
+
+fn catalog_hit_from_dto(dto: CatalogHitDto) -> CatalogHit {
+    CatalogHit {
+        product_id: dto.product_id,
+        title: dto.title,
+        authors: dto.authors,
+        narrators: dto.narrators,
+        series: dto.series,
+        series_index: dto.series_index,
+        asin: dto.asin,
+        isbn: dto.isbn,
+        url: dto.url,
+        origin: dto.origin,
+    }
+}
+
+fn purchase_hint_from_dto(dto: PurchaseHintDto) -> SourcePurchaseHint {
+    SourcePurchaseHint {
+        product_id: dto.product_id,
+        title: dto.title,
+        url: dto.url,
+        price_cents: dto.price_cents,
+        currency: dto.currency,
+        price_label: dto.price_label,
     }
 }
 
@@ -396,6 +633,32 @@ fn account_from_dto(dto: SourceAccountDto) -> SourceAccount {
         label: dto.label,
         scan_enabled: dto.scan_enabled,
     }
+}
+
+async fn seal_login_result(
+    scope: &SourceScope,
+    plugin_id: &str,
+    result: LoginResultDto,
+) -> bookclerk_source::Result<SourceAccount> {
+    let mut account = account_from_dto(result.account);
+    // Force source id to the plugin id — plugins cannot claim another storefront.
+    account.source = plugin_id.to_string();
+    scope
+        .upsert_account(
+            &account.account_id,
+            &account.marketplace,
+            account.label.as_deref(),
+            account.scan_enabled,
+        )
+        .await
+        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+    if let Some(creds) = result.credentials {
+        scope
+            .save_credentials_json(&account.account_id, &creds)
+            .await
+            .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?;
+    }
+    Ok(account)
 }
 
 fn leak_str_slice(owned: &[String], fallback: &[&'static str]) -> &'static [&'static str] {
@@ -520,5 +783,42 @@ mod tests {
         };
         let new = scan_book_to_new("echo", book);
         assert_eq!(new.source, "echo");
+    }
+
+    #[test]
+    fn source_fetch_dto_maps_pdf_url() {
+        let dto = SourceFetchDto::Plain {
+            parts: vec![],
+            m4b_path: Some("/tmp/book.m4b".into()),
+            cover_path: None,
+            chapters: vec![("Ch 1".into(), 0)],
+            pdf_url: Some("https://cdn.example/book.pdf".into()),
+        };
+        let plain = source_fetch_from_dto(dto);
+        assert_eq!(
+            plain.pdf_url.as_deref(),
+            Some("https://cdn.example/book.pdf")
+        );
+        assert_eq!(
+            plain.m4b_path.as_deref().map(|p| p.to_string_lossy()),
+            Some("/tmp/book.m4b".into())
+        );
+        assert_eq!(plain.chapters.len(), 1);
+    }
+
+    #[test]
+    fn source_fetch_dto_pdf_url_roundtrip_serde() {
+        let dto = SourceFetchDto::Plain {
+            parts: vec![],
+            m4b_path: None,
+            cover_path: None,
+            chapters: vec![],
+            pdf_url: Some("https://x/y.pdf".into()),
+        };
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["pdf_url"], "https://x/y.pdf");
+        let back: SourceFetchDto = serde_json::from_value(json).unwrap();
+        let plain = source_fetch_from_dto(back);
+        assert_eq!(plain.pdf_url.as_deref(), Some("https://x/y.pdf"));
     }
 }

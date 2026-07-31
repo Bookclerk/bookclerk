@@ -574,35 +574,43 @@ impl Config {
             }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_ABS_BASE_URL") {
-            self.integrations.audiobookshelf.base_url = v;
+            self.integrations.set_audiobookshelf_string("base_url", v);
         }
         if let Ok(v) = std::env::var("BOOKCLERK_ABS_API_KEY") {
             let trimmed = v.trim();
             if !trimmed.is_empty() {
-                self.integrations.audiobookshelf.api_key = Some(trimmed.to_string());
+                self.integrations
+                    .set_audiobookshelf_string("api_key", trimmed);
             }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_ABS_LIBRARY_ID") {
             let trimmed = v.trim();
             if !trimmed.is_empty() {
-                self.integrations.audiobookshelf.library_id = Some(trimmed.to_string());
+                self.integrations
+                    .set_audiobookshelf_string("library_id", trimmed);
             }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_ABS_ENABLED") {
-            self.integrations.audiobookshelf.enabled =
-                parse_bool(&v).unwrap_or(self.integrations.audiobookshelf.enabled);
+            if let Some(b) = parse_bool(&v) {
+                self.integrations.set_audiobookshelf_bool("enabled", b);
+            }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_ABS_WATCH_USERS") {
-            self.integrations.audiobookshelf.watch_users =
-                parse_bool(&v).unwrap_or(self.integrations.audiobookshelf.watch_users);
+            if let Some(b) = parse_bool(&v) {
+                self.integrations.set_audiobookshelf_bool("watch_users", b);
+            }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_ABS_NOTIFY_SCAN_ON_ACQUIRE") {
-            self.integrations.audiobookshelf.notify_scan_on_acquire =
-                parse_bool(&v).unwrap_or(self.integrations.audiobookshelf.notify_scan_on_acquire);
+            if let Some(b) = parse_bool(&v) {
+                self.integrations
+                    .set_audiobookshelf_bool("notify_scan_on_acquire", b);
+            }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_ABS_ALLOW_CREDENTIAL_LOGIN") {
-            self.integrations.audiobookshelf.allow_credential_login =
-                parse_bool(&v).unwrap_or(self.integrations.audiobookshelf.allow_credential_login);
+            if let Some(b) = parse_bool(&v) {
+                self.integrations
+                    .set_audiobookshelf_bool("allow_credential_login", b);
+            }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_WIDEVINE")
             .or_else(|_| std::env::var("BOOKCLERK_WIDEVINE"))
@@ -748,7 +756,6 @@ impl Config {
             "claim_ticket_ttl_hours",
             "public_origin",
             "portal_session_ttl_hours",
-            "audiobookshelf",
         ] {
             if self.integrations.plugins.contains_key(reserved) {
                 return Err(ConfigError::Invalid(format!(
@@ -783,7 +790,7 @@ impl Config {
         if let Some(pw) = self.auth_password() {
             crate::redact::register_secret(&pw);
         }
-        if let Some(key) = &self.integrations.audiobookshelf.api_key {
+        if let Some(key) = self.integrations.audiobookshelf().api_key {
             let trimmed = key.trim();
             if !trimmed.is_empty() {
                 crate::redact::register_secret(trimmed);

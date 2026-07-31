@@ -75,7 +75,7 @@ When exercising real store credentials in this cloud environment:
   a pre-baked `.auth` file, when the goal is to test Audible login itself.
 - Amazon accounts with **2FA/MFA require OTP** during the browser OAuth step
   (audible-rs has no password CLI). Use a TOTP seed or complete the challenge
-  in the Desktop pane; see README / `crates/bookclerk-audible/README.md`.
+  in the Desktop pane; see README / `crates/bookclerk-plugins/source-audible/README.md`.
 - Password stores (never put passwords on argv):
   - Libro.fm: `auth login --source libro --email <addr>` + `BOOKCLERK_LIBRO_PASSWORD`
   - Chirp: `auth login --source chirp --email <addr>` + `BOOKCLERK_CHIRP_PASSWORD`
@@ -106,12 +106,13 @@ When exercising real store credentials in this cloud environment:
   (preferred) or `[auth].password` to wrap `master.key` at rest — strongly
   recommended for production. A later password wraps existing BCK1 via
   `bookclerk config master-key wrap` or daemon config reload.
-- Acquire decrypt/encode is fully native in `bookclerk-decrypt` (Adrm aaxc,
-  Widevine DASH/CENC, MP3 via Symphonia+LAME, metadata fix-up, chapter split).
-  No `ffmpeg` or `aaxclean-cli` is required. Widevine L3 CDMs auto-provision via
-  classic Libation AudibleCdm (`auth login` registers as Android);
-  optional BYO `.wvd` still works. Spatial/Atmos (L1) is not available. Neither
-  a CDM nor ffmpeg is required to build, test, or run non-acquire commands.
+- Audible Adrm/Widevine decrypt is native inside the Audible plugin (sources
+  always return Plain). Host packaging is `bookclerk-media` (MP3 via
+  Symphonia+LAME, metadata fix-up, chapter remux). No `ffmpeg` or
+  `aaxclean-cli` is required. Widevine L3 CDMs auto-provision via classic
+  Libation AudibleCdm (`auth login` registers as Android); optional BYO `.wvd`
+  still works. Spatial/Atmos (L1) is not available. Neither a CDM nor ffmpeg is
+  required to build, test, or run non-acquire commands.
 - S3/MinIO credentials: `BOOKCLERK_AWS_ACCESS_KEY_ID` /
   `BOOKCLERK_AWS_SECRET_ACCESS_KEY` (optional `BOOKCLERK_AWS_SESSION_TOKEN`)
   override when both are set; otherwise `encrypted_secrets` (`kind=s3`,

@@ -1,26 +1,14 @@
 //! Storefront candidate discovery (titles not yet owned).
 //!
-//! Seeds from local taste (finished / rated / listening), then expands via:
-//! - Libro.fm `explore/audiobook_details` → `related_audiobooks`
-//! - Audible public catalog (author / series keyword / series ASIN / narrator)
-//! - Chirp GraphQL (related, series, author summary, catalog search)
-//! - GraphicAudio Magento (product related + series pages + catalog search)
+//! Seeds from local taste (finished / rated / listening), then expands via
+//! registered [`ContentSource`] plugins only (`expand_candidates` / `list_deals`).
 //!
 //! Local embeddings and ownership filters evaluate those remote hits.
 
 use std::collections::{HashMap, HashSet};
 
-use bookclerk_chirp::ChirpClient;
-use bookclerk_enrich::{
-    public_http_client, search_catalog_by_narrator, search_catalog_by_series_asin,
-    search_catalog_products, CatalogProduct,
-};
-use bookclerk_graphicaudio::{
-    catalog_http_client, expand_from_product_id, expand_from_search, MagentoCatalogProduct,
-};
 use bookclerk_library::{BookRecord, LibraryStore};
-use serde::Deserialize;
-use serde_json::Value;
+use bookclerk_source::{CatalogHit, ExpandSeed, SourceRegistry};
 
 use crate::error::Result;
 use crate::identity::{
@@ -58,15 +46,16 @@ pub struct CandidateFetchOptions {
     pub seed_limit: usize,
     /// Cap remote HTTP calls across all storefronts.
     pub max_remote_calls: usize,
-    pub include_libro_related: bool,
-    pub include_audible_author_search: bool,
-    pub include_audible_series_search: bool,
-    pub include_audible_series_asin: bool,
-    pub include_audible_narrator_search: bool,
+    /// Call [`ContentSource::expand_candidates`] on registered Audible.
+    pub include_audible: bool,
+    /// Call [`ContentSource::expand_candidates`] on registered Libro.fm.
+    pub include_libro: bool,
+    /// Call [`ContentSource::expand_candidates`] on registered Chirp.
     pub include_chirp: bool,
+    /// Call [`ContentSource::expand_candidates`] on registered GraphicAudio.
     pub include_graphicaudio: bool,
-    /// Fetch Chirp top/free deals into the candidate pool.
-    pub include_chirp_deals: bool,
+    /// Fetch deals via [`ContentSource::list_deals`] on all registered sources.
+    pub include_deals: bool,
     /// When true, drop GraphicAudio Magento series-set SKUs from candidates.
     /// Default is false (sets are kept).
     pub exclude_graphicaudio_series_sets: bool,
@@ -78,14 +67,11 @@ impl Default for CandidateFetchOptions {
             region: String::from("us"),
             seed_limit: 8,
             max_remote_calls: 32,
-            include_libro_related: true,
-            include_audible_author_search: true,
-            include_audible_series_search: true,
-            include_audible_series_asin: true,
-            include_audible_narrator_search: false,
+            include_audible: true,
+            include_libro: true,
             include_chirp: true,
             include_graphicaudio: true,
-            include_chirp_deals: true,
+            include_deals: true,
             exclude_graphicaudio_series_sets: false,
         }
     }
@@ -94,15 +80,13 @@ impl Default for CandidateFetchOptions {
 /// Expand storefront catalogs from local taste seeds; drop already-owned ids.
 pub async fn gather_storefront_candidates(
     _library: &LibraryStore,
+    registry: &SourceRegistry,
     seeds: &[BookRecord],
     owned_asins: &HashSet<String>,
     owned_isbns: &HashSet<String>,
     owned_product_keys: &HashSet<String>,
     opts: &CandidateFetchOptions,
 ) -> Result<Vec<StorefrontCandidate>> {
-    let http = public_http_client()?;
-    let chirp = ChirpClient::default();
-    let ga_http = catalog_http_client().ok();
     let mut by_key: HashMap<String, StorefrontCandidate> = HashMap::new();
     let mut remote_calls = 0usize;
 
@@ -113,237 +97,82 @@ pub async fn gather_storefront_candidates(
             break;
         }
 
-        // Libro related titles (best signal when we have an ISBN).
-        if opts.include_libro_related {
-            if let Some(isbn) = seed
-                .isbn
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                if remote_calls < opts.max_remote_calls {
-                    match libro_related(&http, isbn).await {
-                        Ok(related) => {
-                            remote_calls += 1;
-                            for mut c in related {
-                                c.origin = format!("libro related to “{}”", seed.title);
-                                insert_candidate(
-                                    &mut by_key,
-                                    apply_seed(c, seed),
-                                    owned_asins,
-                                    owned_isbns,
-                                    owned_product_keys,
-                                );
-                            }
+        let expand_seed = ExpandSeed {
+            source: seed.source.clone(),
+            product_id: seed.product_id.clone(),
+            title: seed.title.clone(),
+            authors: seed.authors.clone(),
+            narrators: seed.narrators.clone(),
+            series: seed.series.clone(),
+            series_asin: seed.series_asin.clone(),
+            asin: seed.asin.clone(),
+            isbn: seed.isbn.clone(),
+            region: opts.region.clone(),
+        };
+
+        for source in registry.all() {
+            if remote_calls >= opts.max_remote_calls {
+                break;
+            }
+            let id = source.id();
+            if !source_enabled(id, opts) {
+                continue;
+            }
+            let hit_limit = opts.max_remote_calls.saturating_sub(remote_calls).min(24);
+            match source.expand_candidates(&expand_seed, hit_limit).await {
+                Ok(hits) => {
+                    remote_calls += 1;
+                    for hit in hits {
+                        if opts.exclude_graphicaudio_series_sets
+                            && id.eq_ignore_ascii_case("graphicaudio")
+                            && looks_like_series_set(&hit)
+                        {
+                            continue;
                         }
-                        Err(err) => {
-                            remote_calls += 1;
-                            tracing::debug!(isbn, error = %err, "libro related lookup failed");
-                        }
+                        insert_candidate(
+                            &mut by_key,
+                            apply_seed(hit_to_candidate(id, hit), seed),
+                            owned_asins,
+                            owned_isbns,
+                            owned_product_keys,
+                        );
                     }
                 }
-            }
-        }
-
-        // Audible: exact series ASIN listing (strongest series signal).
-        if opts.include_audible_series_asin {
-            if let Some(series_asin) = seed
-                .series_asin
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                if remote_calls < opts.max_remote_calls {
-                    match search_catalog_by_series_asin(&http, &opts.region, series_asin).await {
-                        Ok(products) => {
-                            remote_calls += 1;
-                            let series_label = seed
-                                .series
-                                .clone()
-                                .unwrap_or_else(|| series_asin.to_string());
-                            for p in products {
-                                let c = audible_candidate(
-                                    p,
-                                    format!("audible series ASIN ({series_asin})"),
-                                    Some(series_label.clone()),
-                                    seed.authors.clone(),
-                                );
-                                insert_candidate(
-                                    &mut by_key,
-                                    apply_seed(c, seed),
-                                    owned_asins,
-                                    owned_isbns,
-                                    owned_product_keys,
-                                );
-                            }
-                        }
-                        Err(err) => {
-                            remote_calls += 1;
-                            tracing::debug!(
-                                series_asin,
-                                error = %err,
-                                "audible series_asin search failed"
-                            );
-                        }
-                    }
+                Err(err) => {
+                    remote_calls += 1;
+                    tracing::debug!(source = %id, error = %err, "source expand_candidates failed");
                 }
-            }
-        }
-
-        // Audible: more by same author.
-        if opts.include_audible_author_search {
-            if let Some(author) = primary_author(seed.authors.as_deref()) {
-                if remote_calls < opts.max_remote_calls {
-                    match search_catalog_products(&http, &opts.region, "", Some(author), None).await
-                    {
-                        Ok(products) => {
-                            remote_calls += 1;
-                            for p in products {
-                                let c = audible_candidate(
-                                    p,
-                                    format!("audible author search ({author})"),
-                                    seed.series.clone(),
-                                    Some(author.to_string()),
-                                );
-                                insert_candidate(
-                                    &mut by_key,
-                                    apply_seed(c, seed),
-                                    owned_asins,
-                                    owned_isbns,
-                                    owned_product_keys,
-                                );
-                            }
-                        }
-                        Err(err) => {
-                            remote_calls += 1;
-                            tracing::debug!(author, error = %err, "audible author search failed");
-                        }
-                    }
-                }
-            }
-        }
-
-        // Audible: series keyword expansion (when we lack series_asin).
-        if opts.include_audible_series_search
-            && seed.series_asin.as_deref().is_none_or(str::is_empty)
-        {
-            if let Some(series) = seed
-                .series
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                if remote_calls < opts.max_remote_calls {
-                    match search_catalog_products(&http, &opts.region, "", None, Some(series)).await
-                    {
-                        Ok(products) => {
-                            remote_calls += 1;
-                            for p in products {
-                                let c = audible_candidate(
-                                    p,
-                                    format!("audible series search (“{series}”)"),
-                                    Some(series.to_string()),
-                                    seed.authors.clone(),
-                                );
-                                insert_candidate(
-                                    &mut by_key,
-                                    apply_seed(c, seed),
-                                    owned_asins,
-                                    owned_isbns,
-                                    owned_product_keys,
-                                );
-                            }
-                        }
-                        Err(err) => {
-                            remote_calls += 1;
-                            tracing::debug!(series, error = %err, "audible series search failed");
-                        }
-                    }
-                }
-            }
-        }
-
-        // Audible: narrator search (opt-in; noisier).
-        if opts.include_audible_narrator_search {
-            if let Some(narrator) = primary_author(seed.narrators.as_deref()) {
-                if remote_calls < opts.max_remote_calls {
-                    match search_catalog_by_narrator(&http, &opts.region, narrator).await {
-                        Ok(products) => {
-                            remote_calls += 1;
-                            for p in products {
-                                let c = audible_candidate(
-                                    p,
-                                    format!("audible narrator search ({narrator})"),
-                                    seed.series.clone(),
-                                    seed.authors.clone(),
-                                );
-                                insert_candidate(
-                                    &mut by_key,
-                                    apply_seed(c, seed),
-                                    owned_asins,
-                                    owned_isbns,
-                                    owned_product_keys,
-                                );
-                            }
-                        }
-                        Err(err) => {
-                            remote_calls += 1;
-                            tracing::debug!(
-                                narrator,
-                                error = %err,
-                                "audible narrator search failed"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Chirp: related / series / author / search (public GraphQL).
-        if opts.include_chirp && remote_calls < opts.max_remote_calls {
-            remote_calls += expand_chirp(
-                &chirp,
-                seed,
-                &mut by_key,
-                owned_asins,
-                owned_isbns,
-                owned_product_keys,
-                opts.max_remote_calls.saturating_sub(remote_calls),
-            )
-            .await;
-        }
-
-        // GraphicAudio: Magento related + series / search.
-        if opts.include_graphicaudio && remote_calls < opts.max_remote_calls {
-            if let Some(ga_http) = ga_http.as_ref() {
-                remote_calls += expand_graphicaudio(
-                    ga_http,
-                    seed,
-                    &mut by_key,
-                    &OwnedFilters {
-                        asins: owned_asins,
-                        isbns: owned_isbns,
-                        product_keys: owned_product_keys,
-                    },
-                    opts.exclude_graphicaudio_series_sets,
-                    opts.max_remote_calls.saturating_sub(remote_calls),
-                )
-                .await;
             }
         }
     }
 
-    // Chirp deals / promos (once per run; not per-seed).
-    if opts.include_chirp_deals && remote_calls < opts.max_remote_calls {
-        remote_calls += gather_chirp_deals(
-            &chirp,
-            &mut by_key,
-            owned_asins,
-            owned_isbns,
-            owned_product_keys,
-            opts.max_remote_calls.saturating_sub(remote_calls),
-        )
-        .await;
+    // Deals / promos (once per run; not per-seed).
+    if opts.include_deals && remote_calls < opts.max_remote_calls {
+        for source in registry.all() {
+            if remote_calls >= opts.max_remote_calls {
+                break;
+            }
+            let id = source.id();
+            let deal_limit = opts.max_remote_calls.saturating_sub(remote_calls).min(32);
+            match source.list_deals(deal_limit).await {
+                Ok(hits) => {
+                    remote_calls += 1;
+                    for hit in hits {
+                        insert_candidate(
+                            &mut by_key,
+                            hit_to_candidate(id, hit),
+                            owned_asins,
+                            owned_isbns,
+                            owned_product_keys,
+                        );
+                    }
+                }
+                Err(err) => {
+                    remote_calls += 1;
+                    tracing::debug!(source = %id, error = %err, "source list_deals failed");
+                }
+            }
+        }
     }
 
     tracing::info!(
@@ -355,424 +184,43 @@ pub async fn gather_storefront_candidates(
     Ok(by_key.into_values().collect())
 }
 
-fn audible_candidate(
-    p: CatalogProduct,
-    origin: String,
-    series_fallback: Option<String>,
-    authors_fallback: Option<String>,
-) -> StorefrontCandidate {
+fn source_enabled(id: &str, opts: &CandidateFetchOptions) -> bool {
+    if id.eq_ignore_ascii_case("audible") {
+        return opts.include_audible;
+    }
+    if id.eq_ignore_ascii_case("libro") {
+        return opts.include_libro;
+    }
+    if id.eq_ignore_ascii_case("chirp") {
+        return opts.include_chirp;
+    }
+    if id.eq_ignore_ascii_case("graphicaudio") {
+        return opts.include_graphicaudio;
+    }
+    true
+}
+
+fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCandidate {
     StorefrontCandidate {
-        source: String::from("audible"),
-        product_id: p.asin.clone(),
-        title: p.title.unwrap_or_else(|| p.asin.clone()),
-        authors: p.authors.or(authors_fallback),
-        narrators: p.narrators,
-        series: p.series.or(series_fallback),
-        series_index: p.series_sequence,
-        asin: Some(p.asin),
-        isbn: None,
+        source: source_id.to_string(),
+        product_id: hit.product_id,
+        title: hit.title,
+        authors: hit.authors,
+        narrators: hit.narrators,
+        series: hit.series,
+        series_index: hit.series_index,
+        asin: hit.asin,
+        isbn: hit.isbn,
         seed_categories: None,
-        origin,
+        origin: hit.origin,
         seed_title: None,
         store_editions: Vec::new(),
     }
 }
 
-async fn expand_chirp(
-    client: &ChirpClient,
-    seed: &BookRecord,
-    by_key: &mut HashMap<String, StorefrontCandidate>,
-    owned_asins: &HashSet<String>,
-    owned_isbns: &HashSet<String>,
-    owned_product_keys: &HashSet<String>,
-    budget: usize,
-) -> usize {
-    let mut used = 0usize;
-    if budget == 0 {
-        return 0;
-    }
-
-    // Chirp-owned seeds: related titles + series siblings via product id.
-    if seed.source == "chirp" && !seed.product_id.is_empty() && used < budget {
-        match client.related_audiobooks(&seed.product_id).await {
-            Ok(related) => {
-                used += 1;
-                for book in related.related {
-                    insert_candidate(
-                        by_key,
-                        apply_seed(
-                            chirp_candidate(&book, format!("chirp related to “{}”", seed.title)),
-                            seed,
-                        ),
-                        owned_asins,
-                        owned_isbns,
-                        owned_product_keys,
-                    );
-                }
-                if let Some(series) = related.series {
-                    if used < budget {
-                        match client.series_catalog(&series.slug).await {
-                            Ok(Some(catalog)) => {
-                                used += 1;
-                                for book in catalog.audiobooks {
-                                    insert_candidate(
-                                        by_key,
-                                        apply_seed(
-                                            chirp_candidate(
-                                                &book,
-                                                format!("chirp series (“{}”)", catalog.series.name),
-                                            ),
-                                            seed,
-                                        ),
-                                        owned_asins,
-                                        owned_isbns,
-                                        owned_product_keys,
-                                    );
-                                }
-                            }
-                            Ok(None) => used += 1,
-                            Err(err) => {
-                                used += 1;
-                                tracing::debug!(
-                                    slug = %series.slug,
-                                    error = %err,
-                                    "chirp series catalog failed"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            Err(err) => {
-                used += 1;
-                tracing::debug!(
-                    id = %seed.product_id,
-                    error = %err,
-                    "chirp related lookup failed"
-                );
-            }
-        }
-    }
-
-    // Series title → Chirp series slug guesses (any seed source).
-    if used < budget {
-        if let Some(series) = seed
-            .series
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            match client.resolve_series_catalog(series).await {
-                Ok(Some(catalog)) => {
-                    used += 1;
-                    for book in catalog.audiobooks {
-                        insert_candidate(
-                            by_key,
-                            apply_seed(
-                                chirp_candidate(
-                                    &book,
-                                    format!("chirp series (“{}”)", catalog.series.name),
-                                ),
-                                seed,
-                            ),
-                            owned_asins,
-                            owned_isbns,
-                            owned_product_keys,
-                        );
-                    }
-                }
-                Ok(None) => used += 1,
-                Err(err) => {
-                    used += 1;
-                    tracing::debug!(series, error = %err, "chirp series resolve failed");
-                }
-            }
-        }
-    }
-
-    // Author → typeahead slug → summary titles.
-    if used < budget {
-        if let Some(author) = primary_author(seed.authors.as_deref()) {
-            match client.resolve_author_slug(author).await {
-                Ok(Some(slug)) => {
-                    used += 1;
-                    if used < budget {
-                        match client.author_summary(&slug).await {
-                            Ok(Some(catalog)) => {
-                                used += 1;
-                                for book in catalog.audiobooks {
-                                    insert_candidate(
-                                        by_key,
-                                        apply_seed(
-                                            chirp_candidate(
-                                                &book,
-                                                format!("chirp author ({})", catalog.author.name),
-                                            ),
-                                            seed,
-                                        ),
-                                        owned_asins,
-                                        owned_isbns,
-                                        owned_product_keys,
-                                    );
-                                }
-                            }
-                            Ok(None) => used += 1,
-                            Err(err) => {
-                                used += 1;
-                                tracing::debug!(
-                                    slug,
-                                    error = %err,
-                                    "chirp author summary failed"
-                                );
-                            }
-                        }
-                    }
-                }
-                Ok(None) => used += 1,
-                Err(err) => {
-                    used += 1;
-                    tracing::debug!(author, error = %err, "chirp author resolve failed");
-                }
-            }
-        }
-    }
-
-    // Fallback catalog search by title (useful for non-Chirp seeds).
-    if used < budget && seed.source != "chirp" {
-        let q = match primary_author(seed.authors.as_deref()) {
-            Some(a) => format!("{} {a}", seed.title),
-            None => seed.title.clone(),
-        };
-        match client.search_catalog(&q, 1, 8).await {
-            Ok(books) => {
-                used += 1;
-                for book in books {
-                    insert_candidate(
-                        by_key,
-                        apply_seed(
-                            chirp_candidate(
-                                &book,
-                                format!("chirp catalog search (“{}”)", seed.title),
-                            ),
-                            seed,
-                        ),
-                        owned_asins,
-                        owned_isbns,
-                        owned_product_keys,
-                    );
-                }
-            }
-            Err(err) => {
-                used += 1;
-                tracing::debug!(error = %err, "chirp catalog search failed");
-            }
-        }
-    }
-
-    used
-}
-
-async fn gather_chirp_deals(
-    client: &ChirpClient,
-    by_key: &mut HashMap<String, StorefrontCandidate>,
-    owned_asins: &HashSet<String>,
-    owned_isbns: &HashSet<String>,
-    owned_product_keys: &HashSet<String>,
-    budget: usize,
-) -> usize {
-    let mut used = 0usize;
-    if budget == 0 {
-        return 0;
-    }
-
-    match client.top_deals(16).await {
-        Ok(books) => {
-            used += 1;
-            for book in books {
-                insert_candidate(
-                    by_key,
-                    chirp_candidate(&book, String::from("chirp top deals")),
-                    owned_asins,
-                    owned_isbns,
-                    owned_product_keys,
-                );
-            }
-        }
-        Err(err) => {
-            used += 1;
-            tracing::debug!(error = %err, "chirp top deals failed");
-        }
-    }
-
-    if used < budget {
-        match client.free_deals().await {
-            Ok(books) => {
-                used += 1;
-                for book in books.into_iter().take(16) {
-                    insert_candidate(
-                        by_key,
-                        chirp_candidate(&book, String::from("chirp free deals")),
-                        owned_asins,
-                        owned_isbns,
-                        owned_product_keys,
-                    );
-                }
-            }
-            Err(err) => {
-                used += 1;
-                tracing::debug!(error = %err, "chirp free deals failed");
-            }
-        }
-    }
-
-    used
-}
-
-fn chirp_candidate(
-    book: &bookclerk_chirp::CatalogAudiobook,
-    origin: String,
-) -> StorefrontCandidate {
-    StorefrontCandidate {
-        source: String::from("chirp"),
-        product_id: book.id.clone(),
-        title: book.title(),
-        authors: book.display_authors.clone(),
-        narrators: book.display_narrators.clone(),
-        series: book.series_name(),
-        series_index: book.series_audiobook.as_ref().and_then(|s| {
-            s.display_number
-                .clone()
-                .or_else(|| s.number.map(|n| n.to_string()))
-        }),
-        asin: None,
-        isbn: None,
-        seed_categories: None,
-        origin,
-        seed_title: None,
-        store_editions: Vec::new(),
-    }
-}
-
-/// Already-owned identifiers used to drop storefront hits.
-struct OwnedFilters<'a> {
-    asins: &'a HashSet<String>,
-    isbns: &'a HashSet<String>,
-    product_keys: &'a HashSet<String>,
-}
-
-async fn expand_graphicaudio(
-    http: &reqwest::Client,
-    seed: &BookRecord,
-    by_key: &mut HashMap<String, StorefrontCandidate>,
-    owned: &OwnedFilters<'_>,
-    exclude_series_sets: bool,
-    budget: usize,
-) -> usize {
-    let mut used = 0usize;
-    if budget == 0 {
-        return 0;
-    }
-
-    if seed.source == "graphicaudio" && !seed.product_id.is_empty() && used < budget {
-        match expand_from_product_id(http, None, &seed.product_id).await {
-            Ok(products) => {
-                used += 1;
-                for p in products {
-                    if exclude_series_sets && p.is_series_set() {
-                        continue;
-                    }
-                    insert_candidate(
-                        by_key,
-                        apply_seed(
-                            ga_candidate(
-                                &p,
-                                format!("graphicaudio related/series for “{}”", seed.title),
-                            ),
-                            seed,
-                        ),
-                        owned.asins,
-                        owned.isbns,
-                        owned.product_keys,
-                    );
-                }
-            }
-            Err(err) => {
-                used += 1;
-                tracing::debug!(
-                    id = %seed.product_id,
-                    error = %err,
-                    "graphicaudio product expand failed"
-                );
-            }
-        }
-    }
-
-    // Series / title Magento search (works for GA seeds and cross-store taste).
-    if used < budget {
-        let query = seed
-            .series
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(seed.title.as_str());
-        // Prefer GA-flavored seeds or explicit series; skip noisy Audible-only titles
-        // unless the seed already came from GraphicAudio.
-        let worth = seed.source == "graphicaudio"
-            || seed
-                .series
-                .as_deref()
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-        if worth {
-            match expand_from_search(http, None, query).await {
-                Ok(products) => {
-                    used += 1;
-                    for p in products {
-                        if exclude_series_sets && p.is_series_set() {
-                            continue;
-                        }
-                        insert_candidate(
-                            by_key,
-                            apply_seed(
-                                ga_candidate(
-                                    &p,
-                                    format!("graphicaudio catalog search (“{query}”)"),
-                                ),
-                                seed,
-                            ),
-                            owned.asins,
-                            owned.isbns,
-                            owned.product_keys,
-                        );
-                    }
-                }
-                Err(err) => {
-                    used += 1;
-                    tracing::debug!(query, error = %err, "graphicaudio search failed");
-                }
-            }
-        }
-    }
-
-    used
-}
-
-fn ga_candidate(p: &MagentoCatalogProduct, origin: String) -> StorefrontCandidate {
-    StorefrontCandidate {
-        source: String::from("graphicaudio"),
-        product_id: p.product_id.clone(),
-        title: p.title.clone(),
-        authors: None,
-        narrators: None,
-        series: p.series.clone(),
-        series_index: None,
-        asin: None,
-        isbn: None,
-        seed_categories: None,
-        origin,
-        seed_title: None,
-        store_editions: Vec::new(),
-    }
+fn looks_like_series_set(hit: &CatalogHit) -> bool {
+    let title = hit.title.to_ascii_lowercase();
+    title.contains("series set") || title.ends_with(" set")
 }
 
 fn apply_seed(mut c: StorefrontCandidate, seed: &BookRecord) -> StorefrontCandidate {
@@ -893,96 +341,6 @@ fn insert_candidate(
     map.insert(key, c);
 }
 
-fn primary_author(authors: Option<&str>) -> Option<&str> {
-    authors?
-        .split([',', ';', '&'])
-        .map(str::trim)
-        .find(|s| !s.is_empty())
-}
-
-#[derive(Debug, Deserialize)]
-struct LibroDetailsResponse {
-    #[serde(default)]
-    data: Option<LibroDetailsData>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LibroDetailsData {
-    #[serde(default)]
-    related_audiobooks: Vec<Value>,
-}
-
-async fn libro_related(http: &reqwest::Client, isbn: &str) -> Result<Vec<StorefrontCandidate>> {
-    let url = format!("https://libro.fm/explore/audiobook_details/{isbn}");
-    let resp = http.get(&url).send().await?;
-    if !resp.status().is_success() {
-        return Ok(Vec::new());
-    }
-    let body: LibroDetailsResponse = resp
-        .json()
-        .await
-        .map_err(|e| crate::error::DiscoverError::message(format!("libro related parse: {e}")))?;
-    let related = body.data.map(|d| d.related_audiobooks).unwrap_or_default();
-    Ok(related.iter().filter_map(parse_libro_book).collect())
-}
-
-fn parse_libro_book(v: &Value) -> Option<StorefrontCandidate> {
-    let isbn = v
-        .get("isbn")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())?
-        .to_string();
-    let title = v
-        .get("title")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())?
-        .to_string();
-    let authors = v
-        .get("authors")
-        .and_then(|a| {
-            if let Some(s) = a.as_str() {
-                Some(s.to_string())
-            } else if let Some(arr) = a.as_array() {
-                let names: Vec<&str> = arr
-                    .iter()
-                    .filter_map(|x| x.as_str().or_else(|| x.get("name").and_then(Value::as_str)))
-                    .collect();
-                if names.is_empty() {
-                    None
-                } else {
-                    Some(names.join(", "))
-                }
-            } else {
-                None
-            }
-        })
-        .or_else(|| v.get("author").and_then(Value::as_str).map(str::to_string));
-    let narrators = v
-        .get("narrators")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let series = v.get("series").and_then(|s| {
-        s.as_str()
-            .map(str::to_string)
-            .or_else(|| s.get("name").and_then(Value::as_str).map(str::to_string))
-    });
-    Some(StorefrontCandidate {
-        source: String::from("libro"),
-        product_id: isbn.clone(),
-        title,
-        authors,
-        narrators,
-        series,
-        series_index: None,
-        asin: None,
-        isbn: Some(isbn),
-        seed_categories: None,
-        origin: String::from("libro related"),
-        seed_title: None,
-        store_editions: Vec::new(),
-    })
-}
-
 /// Pick local seed books for storefront expansion (finished / high-rated first).
 #[must_use]
 pub fn select_taste_seeds(
@@ -1034,21 +392,6 @@ pub fn select_taste_seeds(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn parse_libro_related_object() {
-        let v = json!({
-            "isbn": "9781234567890",
-            "title": "Next Title",
-            "authors": [{"name": "Ada Author"}],
-            "series": {"name": "Test Series"}
-        });
-        let c = parse_libro_book(&v).unwrap();
-        assert_eq!(c.isbn.as_deref(), Some("9781234567890"));
-        assert_eq!(c.authors.as_deref(), Some("Ada Author"));
-        assert_eq!(c.series.as_deref(), Some("Test Series"));
-    }
 
     #[test]
     fn insert_candidate_consolidates_isbn_and_soft_match() {

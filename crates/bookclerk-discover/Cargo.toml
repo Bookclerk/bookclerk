@@ -13,11 +13,10 @@ default = []
 
 [dependencies]
 anyhow.workspace = true
-bookclerk-chirp.workspace = true
 bookclerk-config.workspace = true
 bookclerk-enrich.workspace = true
-bookclerk-graphicaudio.workspace = true
 bookclerk-library.workspace = true
+bookclerk-source.workspace = true
 chrono.workspace = true
 # Always compiled in: try MiniLM ONNX at runtime, fall back to local-hash.
 # - no image-models (drops rav1e/image weight)

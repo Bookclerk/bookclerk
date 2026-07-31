@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use bookclerk_decrypt::encode_to_mp3;
 use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
+use bookclerk_media::encode_to_mp3;
 use bookclerk_storage::{ObjectMeta, StorageBackend};
 
 use crate::error::{AcquireError, Result};

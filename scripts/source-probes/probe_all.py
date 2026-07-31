@@ -299,7 +299,7 @@ def probe_graphicaudio(report: Report) -> None:
 
 
 def probe_chirp(report: Report) -> None:
-    # Matches crates/bookclerk-chirp/src/client.rs DEFAULT_GRAPHQL_URL.
+    # Matches crates/bookclerk-plugins/source-chirp/src/client.rs DEFAULT_GRAPHQL_URL.
     gql = "https://api.chirpbooks.com/api/graphql"
     status, _, body = http(
         gql,

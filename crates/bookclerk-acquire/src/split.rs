@@ -2,8 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use bookclerk_audible::DownloadOptions;
-use bookclerk_decrypt::{remux_trimmed_async, TrimRange};
+use bookclerk_media::{remux_trimmed_async, TrimRange};
+use bookclerk_source::DownloadOptions;
 
 use crate::cue::FlatChapter;
 use crate::error::{AcquireError, Result};
@@ -89,7 +89,7 @@ pub async fn split_audio_by_chapters(
             },
         )
         .await
-        .map_err(AcquireError::Decrypt)?;
+        .map_err(AcquireError::Media)?;
         outputs.push(SplitChapterFile {
             path: out_path,
             title,

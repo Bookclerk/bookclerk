@@ -27,10 +27,10 @@ pub enum ImportCommand {
         /// Classic Libation Files directory (or `BOOKCLERK_CLASSIC_FILES`).
         #[arg(long = "from", env = "BOOKCLERK_CLASSIC_FILES")]
         from: PathBuf,
-        /// Overwrite existing `config.toml` and `.auth` files.
+        /// Overwrite existing `config.toml`.
         #[arg(long)]
         force: bool,
-        /// Import account metadata / library without writing `.auth` files.
+        /// No-op retained for compatibility (credentials are never imported by migrate).
         #[arg(long)]
         skip_auth: bool,
         /// Print what would be imported without writing.

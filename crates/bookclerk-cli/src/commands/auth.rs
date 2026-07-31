@@ -3,24 +3,19 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use bookclerk_audible::{
-    begin_login, delete_audible_account_from_db, import_auth_file, import_libation_accounts_json,
-    import_mkb79_auth_json, load_widevine_cdm_from_db, AuthLoginOptions, LoginMode, LoginProgress,
-    QrRenderMode,
-};
 use bookclerk_config::Config;
 use bookclerk_library::LibraryStore;
-use bookclerk_source::{LoginOptions, PortalAuthMode};
+use bookclerk_source::{ImportCredentialsOptions, LoginOptions, OAuthProgress, PortalAuthMode};
 use clap::Subcommand;
 
 use crate::registry::{default_registry_with_plugins, resolve_source_id};
 
 #[derive(Debug, Subcommand)]
 pub enum AuthCommand {
-    /// Log in to a content source (Audible OAuth or email/password stores).
+    /// Log in to a content source (OAuth or email/password stores).
     ///
-    /// Audible: Amazon accounts with 2FA/MFA must complete OTP (or another
-    /// challenge) in the browser — audible-rs OAuth has no username/password flags.
+    /// OAuth: Amazon accounts with 2FA/MFA must complete OTP (or another
+    /// challenge) in the browser — store OAuth has no username/password flags.
     ///
     /// Password sources: require `--email`; password from the source's env var
     /// (e.g. `BOOKCLERK_LIBRO_PASSWORD`) or an interactive prompt — never on argv.
@@ -64,10 +59,13 @@ pub enum AuthCommand {
         #[arg(long)]
         ascii_qr: bool,
     },
-    /// Import audible auth file or classic Libation AccountsSettings.json.
+    /// Import store auth file or classic Libation AccountsSettings.json.
     Import {
         /// Path to auth file or AccountsSettings.json.
         path: PathBuf,
+        /// Content source that understands this import format.
+        #[arg(long, default_value = "audible")]
+        source: String,
         /// Treat input as classic Libation AccountsSettings.json.
         #[arg(long)]
         libation_accounts: bool,
@@ -132,17 +130,9 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
             let content = registry.require(&source_id)?;
             match content.portal_auth_mode() {
                 PortalAuthMode::Oauth => {
-                    // Interactive OAuth callback flow is currently Audible-only
-                    // (same guard as the connect portal).
-                    if content.id() != "audible" {
-                        anyhow::bail!(
-                            "OAuth login is only implemented for Audible \
-                             (source `{}` advertises oauth)",
-                            content.id()
-                        );
-                    }
-                    login_audible(
+                    login_oauth(
                         config,
+                        content.as_ref(),
                         marketplace,
                         label,
                         external,
@@ -163,67 +153,39 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
         }
         AuthCommand::Import {
             path,
+            source,
             libation_accounts,
             mkb79,
             label,
             force,
         } => {
+            let registry = default_registry_with_plugins(config).await?;
+            let source_id = resolve_source_id(&registry, &source)?;
+            let content = registry.require(&source_id)?;
             let store = LibraryStore::open_from_config(config).await?;
-            if libation_accounts || path.ends_with("AccountsSettings.json") {
-                let accounts = import_libation_accounts_json(&path)?;
-                let scope = store.scope("audible");
-                for acct in &accounts {
-                    scope
-                        .upsert_account(
-                            &acct.account_id,
-                            &acct.marketplace,
-                            acct.label.as_deref(),
-                            true,
-                        )
-                        .await?;
-                    println!("imported {} ({})", acct.account_id, acct.marketplace);
-                }
-                if accounts.is_empty() {
-                    eprintln!("no accounts found in {}", path.display());
-                }
-                Ok(())
-            } else if mkb79 {
-                let scope = store.scope("audible");
-                let acct = import_mkb79_auth_json(&scope, &path, label.as_deref(), force).await?;
-                scope
-                    .upsert_account(
-                        &acct.account_id,
-                        &acct.marketplace,
-                        acct.label.as_deref(),
-                        true,
-                    )
-                    .await?;
-                println!(
-                    "imported mkb79 account {} ({}) → {}",
-                    acct.account_id,
-                    acct.marketplace,
-                    acct.auth_file.as_deref().unwrap_or("encrypted_secrets")
-                );
-                Ok(())
-            } else {
-                let scope = store.scope("audible");
-                let acct = import_auth_file(&scope, &path, label.as_deref(), force).await?;
-                scope
-                    .upsert_account(
-                        &acct.account_id,
-                        &acct.marketplace,
-                        acct.label.as_deref(),
-                        true,
-                    )
-                    .await?;
-                println!(
-                    "imported auth {} ({}) → {}",
-                    acct.account_id,
-                    acct.marketplace,
-                    acct.auth_file.as_deref().unwrap_or("encrypted_secrets")
-                );
-                Ok(())
+            let scope = store.scope(content.id());
+            let accounts = content
+                .import_credentials(
+                    &scope,
+                    &path,
+                    ImportCredentialsOptions {
+                        libation_accounts,
+                        mkb79,
+                        label,
+                        force,
+                    },
+                )
+                .await?;
+            if accounts.is_empty() {
+                eprintln!("no accounts found in {}", path.display());
             }
+            for acct in accounts {
+                println!(
+                    "imported {} ({}) source={}",
+                    acct.account_id, acct.marketplace, acct.source
+                );
+            }
+            Ok(())
         }
         AuthCommand::List { source, bare } => {
             list_all_accounts(config, source.as_deref(), bare).await
@@ -319,56 +281,20 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
                 .find_account(&account)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("account `{account}` not found in library DB"))?;
-            // Delete credentials from encrypted_secrets by source.
+            let registry = default_registry_with_plugins(config).await?;
             let scope = store.scope(acct.source.as_str());
-            match acct.source.as_str() {
-                "audible" => {
-                    if let Err(e) = delete_audible_account_from_db(&scope, &acct.account_id).await {
-                        tracing::warn!(error = %e, account = %acct.account_id, "failed to delete audible secret");
-                    }
-                    // Also delete Widevine CDM if one was provisioned for this account.
-                    let name = format!("{}.wvd", acct.account_id);
-                    if let Ok(Some(_)) = load_widevine_cdm_from_db(&scope, &acct.account_id).await {
-                        if let Err(e) = scope
-                            .delete_secret(
-                                bookclerk_library::secret_kind::WIDEVINE,
-                                &acct.account_id,
-                                &name,
-                            )
-                            .await
-                        {
-                            tracing::warn!(error = %e, account = %acct.account_id, "failed to delete widevine cdm");
-                        }
-                    }
+            if let Ok(content) = registry.require(acct.source.as_str()) {
+                if let Err(e) = content.revoke_credentials(&scope, &acct.account_id).await {
+                    tracing::warn!(
+                        error = %e,
+                        source = %acct.source,
+                        account = %acct.account_id,
+                        "failed to revoke source credentials"
+                    );
                 }
-                "libro" => {
-                    if let Err(e) =
-                        bookclerk_libro::delete_auth_from_db(&scope, &acct.account_id).await
-                    {
-                        tracing::warn!(error = %e, account = %acct.account_id, "failed to delete libro secret");
-                    }
-                }
-                "chirp" => {
-                    if let Err(e) =
-                        bookclerk_chirp::delete_auth_from_db(&scope, &acct.account_id).await
-                    {
-                        tracing::warn!(error = %e, account = %acct.account_id, "failed to delete chirp secret");
-                    }
-                }
-                "graphicaudio" => {
-                    if let Err(e) =
-                        bookclerk_graphicaudio::delete_auth_from_db(&scope, &acct.account_id).await
-                    {
-                        tracing::warn!(error = %e, account = %acct.account_id, "failed to delete graphicaudio secret");
-                    }
-                }
-                other => {
-                    // External / unknown: drop opaque plugin.auth credentials when present.
-                    let name = format!("{}.plugin.auth", acct.account_id);
-                    if let Err(e) = scope.delete_source_auth(&acct.account_id, &name).await {
-                        tracing::warn!(error = %e, source = %other, "failed to delete plugin secret");
-                    }
-                }
+            } else {
+                // Unknown / disabled source — still clear common secret patterns.
+                bookclerk_source::revoke_credentials_default(&scope, &acct.account_id).await?;
             }
             store.revoke_credentials(&acct.account_id).await?;
             println!(
@@ -381,8 +307,9 @@ pub async fn run(command: AuthCommand, config: &Config) -> anyhow::Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn login_audible(
+async fn login_oauth(
     config: &Config,
+    source: &dyn bookclerk_source::ContentSource,
     marketplace: String,
     label: Option<String>,
     external: bool,
@@ -395,68 +322,67 @@ async fn login_audible(
     ascii_qr: bool,
 ) -> anyhow::Result<()> {
     let store = LibraryStore::open_from_config(config).await?;
-    let mode = if external || response_url.is_some() {
-        LoginMode::External
-    } else {
-        LoginMode::Server
-    };
-    let scope = store.scope("audible");
-    let opts = AuthLoginOptions {
+    let scope = store.scope(source.id());
+    let mut extra = serde_json::Map::new();
+    if audible_username {
+        extra.insert("audible_username".into(), serde_json::Value::Bool(true));
+    }
+    if ascii_qr {
+        extra.insert("ascii_qr".into(), serde_json::Value::Bool(true));
+    }
+    let opts = LoginOptions {
         marketplace,
         label,
-        callback_bind,
+        force,
+        callback_bind: Some(callback_bind.to_string()),
+        external: external || response_url.is_some(),
         response_url,
         show_qr: !no_qr,
-        qr_mode: if ascii_qr {
-            QrRenderMode::Ascii
-        } else {
-            QrRenderMode::Unicode
-        },
-        mode,
-        timeout_secs: timeout,
-        audible_username,
-        force,
-        scope: Some(scope.clone()),
+        timeout_secs: Some(timeout),
+        extra: serde_json::Value::Object(extra),
+        ..Default::default()
     };
 
-    let session = begin_login(opts, |progress| match progress {
-        LoginProgress::LoginUrl { url, qr } => {
-            if let Some(qr) = qr {
-                println!("{qr}");
-            } else {
-                println!("{url}");
+    let acct = source
+        .login_with_oauth_progress(&scope, opts, &|progress| match progress {
+            OAuthProgress::LoginUrl { url, qr } => {
+                if let Some(qr) = qr {
+                    println!("{qr}");
+                } else {
+                    println!("{url}");
+                }
             }
-        }
-        LoginProgress::CallbackListening { addr } => {
-            eprintln!("callback server listening on {addr}");
-            if addr.ip().is_loopback() {
-                eprintln!(
-                    "On a remote host, forward the port: ssh -L {port}:localhost:{port} user@host",
-                    port = addr.port()
-                );
+            OAuthProgress::CallbackListening { addr } => {
+                eprintln!("callback server listening on {addr}");
+                if let Ok(sock) = addr.parse::<SocketAddr>() {
+                    if sock.ip().is_loopback() {
+                        eprintln!(
+                            "On a remote host, forward the port: ssh -L {port}:localhost:{port} user@host",
+                            port = sock.port()
+                        );
+                    }
+                }
             }
-        }
-        LoginProgress::WaitingForCallback => {
-            eprintln!("waiting for browser sign-in…");
-        }
-        LoginProgress::Completed { account_id } => {
-            eprintln!("login completed for {account_id}");
-        }
-    })
-    .await?;
+            OAuthProgress::WaitingForCallback => {
+                eprintln!("waiting for browser sign-in…");
+            }
+            OAuthProgress::Completed { account_id } => {
+                eprintln!("login completed for {account_id}");
+            }
+        })
+        .await?;
 
-    // Credentials are already keyed by customer id in persist_account.
     scope
         .upsert_account(
-            &session.account_id,
-            &session.marketplace,
-            session.label.as_deref(),
+            &acct.account_id,
+            &acct.marketplace,
+            acct.label.as_deref(),
             true,
         )
         .await?;
     println!(
         "authenticated {} ({}) → encrypted_secrets",
-        session.account_id, session.marketplace,
+        acct.account_id, acct.marketplace,
     );
     Ok(())
 }
@@ -490,6 +416,7 @@ async fn login_password(
                 email: Some(email),
                 password: Some(password),
                 force,
+                ..Default::default()
             },
         )
         .await?;

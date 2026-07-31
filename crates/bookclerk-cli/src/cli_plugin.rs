@@ -5,8 +5,9 @@ use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 use serde_json::{Map, Value};
 
 /// Reserved host subcommands under `bookclerk plugins` (cannot be plugin ids).
-pub const RESERVED_PLUGIN_SUBCOMMANDS: &[&str] =
-    &["list", "info", "diagnose", "enable", "disable", "help"];
+pub const RESERVED_PLUGIN_SUBCOMMANDS: &[&str] = &[
+    "list", "info", "diagnose", "enable", "disable", "search", "install", "help",
+];
 
 /// Convert a plugin CLI schema into a clap command named `plugin_id`.
 #[must_use]

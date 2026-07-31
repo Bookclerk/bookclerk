@@ -19,7 +19,8 @@ fn integrations_is_enabled_defaults_off_for_abs() {
     let mut cfg = Config::default();
     assert!(!cfg.integrations.is_enabled("audiobookshelf"));
     assert!(!cfg.integrations.is_enabled("abs"));
-    cfg.integrations.audiobookshelf.enabled = true;
+    cfg.integrations.set_enabled("audiobookshelf", true);
     assert!(cfg.integrations.is_enabled("audiobookshelf"));
+    assert!(cfg.integrations.is_enabled("abs"));
     assert!(!cfg.integrations.is_enabled("unknown"));
 }

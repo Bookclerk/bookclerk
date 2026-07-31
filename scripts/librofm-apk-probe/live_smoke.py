@@ -79,7 +79,7 @@ class Profile:
 
 def load_client_profile(repo: Path) -> Profile:
     # Import constants by parsing client.rs (avoid compiling Rust for a smoke).
-    text = (repo / "crates/bookclerk-libro/src/client.rs").read_text(encoding="utf-8")
+    text = (repo / "crates/bookclerk-plugins/source-libro/src/client.rs").read_text(encoding="utf-8")
     consts: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
@@ -92,7 +92,7 @@ def load_client_profile(repo: Path) -> Profile:
             consts[name] = value
         except IndexError:
             continue
-    # Mirror crates/bookclerk-libro/src/client.rs AuthInterceptor-equivalent
+    # Mirror crates/bookclerk-plugins/source-libro/src/client.rs AuthInterceptor-equivalent
     # headers and DownloadApi client_version query (not separate pub consts).
     return Profile(
         name="current-client",
@@ -1164,7 +1164,7 @@ def main(argv: list[str] | None = None) -> int:
     results: list[dict[str, Any]] = []
 
     if public_wanted:
-        if (args.repo_root / "crates/bookclerk-libro/src/client.rs").exists():
+        if (args.repo_root / "crates/bookclerk-plugins/source-libro/src/client.rs").exists():
             pub_profile = load_client_profile(args.repo_root)
         elif report.exists():
             pub_profile = load_apk_profile(report)

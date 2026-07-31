@@ -7,12 +7,16 @@ uppercased plugin id — e.g. `BOOKCLERK_SOURCE_ECHO_ENABLED=0`).
 
 | Id | Auth | Media path | Notes |
 | --- | --- | --- | --- |
-| `audible` | Amazon OAuth (QR / callback / external) | Adrm aaxc or Widevine DASH/CENC | Built on [audible-rs](https://github.com/mkb79/audible-rs) |
-| `libro` | Email + password | DRM-free M4B/ZIP | Password: `BOOKCLERK_LIBRO_PASSWORD` |
-| `chirp` | Email + password (GraphQL) | Plain MP3 after URL decrypt | Password: `BOOKCLERK_CHIRP_PASSWORD` |
-| `graphicaudio` | Email + password | Plain web / ZIP / device stream | Password: `BOOKCLERK_GA_PASSWORD` |
+| `audible` | Amazon OAuth (QR / callback / external) | Adrm / Widevine; guest decrypt → Plain | Dual load; [audible-rs](https://github.com/mkb79/audible-rs) |
+| `libro` | Email + password | DRM-free M4B/ZIP | Dual load; password: `BOOKCLERK_LIBRO_PASSWORD` |
+| `chirp` | Email + password (GraphQL) | Plain MP3 after URL decrypt | Dual load; password: `BOOKCLERK_CHIRP_PASSWORD` |
+| `graphicaudio` | Email + password | Plain web / ZIP / device stream | Dual load; password: `BOOKCLERK_GA_PASSWORD` |
 
-External source plugins use the same config table shape; see [plugins.md](plugins.md).
+First-party source binaries live under `crates/bookclerk-plugins/`. Workspace
+builds also `register()` them in-process; distributed installs use the plugin
+search path (`$BOOKCLERK_FILES_DIR/plugins` or `BOOKCLERK_PLUGIN_DIRS`). See
+[plugins.md](plugins.md). External third-party source plugins use the same
+config table shape.
 
 ## Common CLI
 
@@ -39,7 +43,8 @@ bookclerk auth login --force            # refresh / re-register (Android)
 
 ### Decrypt / formats
 
-Acquire decrypt is native (`bookclerk-decrypt`):
+Audible DRM decrypt is native inside the Audible plugin. Host packaging
+(`bookclerk-media`) handles remux / metadata / MP3 encode only:
 
 | Path | When |
 | --- | --- |
@@ -59,10 +64,11 @@ bring-your-own only. Login registers as an Android device.
 Optional brand-audio trim: `output.strip_audible_brand_audio = true`.
 
 Credentials are stored in `encrypted_secrets` (DB-backed). Classic Libation import
-converts `AccountsSettings.json` account metadata; token material is imported via
-`bookclerk auth import`.
+(`import libation`) converts `AccountsSettings.json` account metadata only;
+IdentityTokens are not converted. Re-authenticate with `auth login`, or import an
+audible-rs auth file via `bookclerk auth import`.
 
-Low-level auth/download notes: [`crates/bookclerk-audible/README.md`](../crates/bookclerk-audible/README.md).
+Low-level auth/download notes: [`crates/bookclerk-plugins/source-audible/README.md`](../crates/bookclerk-plugins/source-audible/README.md).
 
 ### Example
 

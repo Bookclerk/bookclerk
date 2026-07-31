@@ -1,14 +1,17 @@
 # Dynamic plugins
 
 Bookclerk is built around pluggable **sources**, **destinations**, and
-**integrations**. First-party adapters ship in-process. This document covers
-**third-party plugins**: separate executables discovered at runtime and talked
-to over newline-delimited [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
+**integrations**. First-party adapters live under `crates/bookclerk-plugins/`
+as a **single package per plugin** with dual targets: a library (`register()` for
+an easy `cargo run`) and a JSON-RPC guest binary for distribution / staging.
+This document covers the **external** (subprocess) model — also used by
+third-party plugins — over newline-delimited [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
 on stdio (any language).
 
 For the product overview see the [documentation index](README.md). Built-in
 storefronts: [sources.md](sources.md). Audiobookshelf / Connect:
-[integrations.md](integrations.md).
+[integrations.md](integrations.md). Publishing / crates.io taxonomy and
+standalone author repos: [plugin-registry.md](plugin-registry.md).
 
 ## Why subprocesses?
 
@@ -31,14 +34,22 @@ sandbox by themselves. Bookclerk hardens the host boundary:
 | Host-mediated library writes | `scan` returns book DTOs; host upserts with `source` forced to the plugin id. `list_accounts` is answered from the host accounts table |
 | Scoped identity | Plugin cannot claim another storefront’s `source` / `provider` |
 
-First-party sources (Audible, Libro.fm, Chirp, GraphicAudio) ship **in-process**
-for ease of development, but they use the same host-enforced `SourceScope`
-boundary as third-party plugins: `source` / `provider` is forced to the plugin
-id, and secrets for other plugins are invisible. Audible is not a separate
-privilege class; its DRM pipeline is just richer (`Encrypted` fetch / licenses).
-Client reuse for Audible lives in `open_account_client`, same idea as the library
-unseal cache. Packaging may later omit first-party adapters from the binary;
-scoping will remain identical.
+First-party sources and Audiobookshelf all ship under `crates/bookclerk-plugins/`
+with the same guest SDK contract. The **plugin host** crate
+(`bookclerk-plugin`) also calls `register_builtin_sources` /
+`register_builtin_integrations` so in-process library crates work for
+`cargo run` without staging binaries — host binaries never name store crates.
+In-process source **and** Audiobookshelf crates are optional Cargo features
+named after the plugin packages (`bookclerk-plugin-source-audible`,
+`bookclerk-plugin-integration-audiobookshelf`, …); `--no-default-features`
+builds an external-guest-only host. Discovered external copies of the same id
+are skipped. After registration, hosts talk **only** through `ContentSource` /
+`Integration` (login, scan, fetch, import, revoke, inspect, plus catalog
+`search_catalog` / `expand_candidates` / `purchase_hint` / `list_deals` for
+Discover). Sources always return `PlainFetch` (`SourceFetch` is an alias) —
+DRM (Adrm/CENC) is decrypted inside the Audible plugin before the host sees
+media. Guest `fetch_title` carries optional `pdf_url`; catalog methods are on
+the JSON-RPC wire for external guests.
 
 Enabling a third-party plugin still means running that binary as the Bookclerk
 user — review plugins before enabling them.
@@ -182,18 +193,20 @@ Advertise in `handshake.capabilities`: `start`, `on_event`, `health`,
 | `scan_library` | `{ "force": bool }` |
 | `sync_listening` | Return `{ "items": [ ListeningProgressSnapshot, … ] }`; host upserts tagged with plugin id |
 | `authenticate_user` | `{ "username", "password" }` → `ExternalUser` |
+| `event_poll` | Return `{ "users": [ ExternalUserDto, … ] }` — host polls after `start` and kicks off **core** workflows (e.g. claim tickets). The plugin stays oblivious to portal/tickets |
 
 ### Source capabilities
 
 | Method | Notes |
 | --- | --- |
-| `login` | Params: `plugin_data_dir`, marketplace/label/email/password. Result: `{ account, credentials? }` — host seals credentials (`provider = plugin id`) and upserts the account row |
+| `login` | Password sources. Params: `plugin_data_dir`, marketplace/label/email/password. Result: `{ account, credentials? }` — host seals credentials (`provider = plugin id`) and upserts the account row |
+| `login.start` / `login.complete` | OAuth sources (Audible). Start returns `{ session_id, url }`; complete returns `LoginResultDto` |
 | `list_accounts` | Host-only (accounts table for this plugin id); plugin is not called |
 | `scan` | Params: `plugin_data_dir`, filters, and host-injected `credentials` map (`account_id` → opaque JSON; **no** `library_db`). Result includes `books[]` DTOs; host upserts with `source` forced to plugin id |
-| `fetch_title` | Host injects `credentials` from `encrypted_secrets`; plugin writes media under `cache_dir` and returns `plain` paths |
+| `fetch_title` | Host injects `credentials` from `encrypted_secrets`; plugin writes media under `cache_dir` and returns **`plain`** paths (DRM guests decrypt before return) |
 
-Encrypted/DRM fetch is not in the v1 external protocol yet (first-party only).
-Plugins must not open `library.db` or read `master.key`.
+Plugins must not open `library.db` or read `master.key`. Do not put Encrypted
+content keys on the wire — decrypt in the guest when needed.
 
 ### Output plugins
 
@@ -245,3 +258,38 @@ Ship a directory (or archive) containing `plugin.toml` + binary for the target
 OS/arch. Users unpack under `plugins/` (or a `BOOKCLERK_PLUGIN_DIRS` root) and set
 `enabled = true` in `config.toml`. No rebuild of Bookclerk is required when the
 protocol version matches.
+
+### First-party plugins (dual load via plugin host)
+
+Audible, Libro.fm, Chirp, GraphicAudio, and Audiobookshelf ship as **external
+plugins** under `crates/bookclerk-plugins/`. The host crate
+`bookclerk-plugin` also registers the same adapters **in-process**
+(`register_builtin_*` / `load_sources` / `load_integrations`) so `cargo run`
+works without staging binaries. CLI/daemon call only those host helpers —
+never store crates by name. Discovery skips an id that is already registered.
+
+Guest binaries depend on **`bookclerk-plugin-sdk`** (+ their private store crate
+for first-party). Third-party authors should depend on the SDK only — not
+`bookclerk-plugin`, `bookclerk-library`, or `bookclerk-source`.
+
+CI builds those plugin binaries and stages them with
+`scripts/stage-first-party-plugins.sh` for integration tests (`BOOKCLERK_PLUGIN_ARTIFACTS`).
+Artifacts are **not** published to crates.io / GitHub Releases yet.
+
+Locally:
+
+```bash
+cargo build -p bookclerk-plugin-source-audible \
+  -p bookclerk-plugin-source-libro \
+  -p bookclerk-plugin-source-chirp \
+  -p bookclerk-plugin-source-graphicaudio \
+  -p bookclerk-plugin-integration-audiobookshelf \
+  -p bookclerk-plugin-echo-integration
+./scripts/stage-first-party-plugins.sh debug /tmp/bc-plugins
+export BOOKCLERK_PLUGIN_DIRS=/tmp/bc-plugins
+# or copy into $BOOKCLERK_FILES_DIR/plugins/
+```
+
+For **crates.io naming**, release-asset conventions, and install-without-Rust
+(planned `bookclerk plugins search|install` + dashboard browser), see
+[plugin-registry.md](plugin-registry.md).

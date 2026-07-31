@@ -10,9 +10,7 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-audible-rs.workspace = true
 chrono.workspace = true
-bookclerk-audible.workspace = true
 bookclerk-config.workspace = true
 bookclerk-library.workspace = true
 rusqlite.workspace = true

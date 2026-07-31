@@ -1,36 +1,26 @@
-//! Acquire pipeline: license → download → decrypt → metadata → storage.
+//! Acquire pipeline: fetch (plain) → package / metadata → storage.
+//!
+//! DRM decrypt happens inside content-source plugins; this crate never sees keys.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::SystemTime;
 
-use bookclerk_audible::{
-    download_companion_pdf, download_cover_jpeg, download_licensed_audio,
-    fetch_and_download_with_client, fetch_and_download_with_options, fetch_chapter_info,
-    fetch_clips_bookmarks, fetch_product_metadata, open_account_client, summarize_license,
-    AccountClient, DownloadLicense, DownloadOptions, DrmKind,
-};
 use bookclerk_config::{FileTimestampMode, MultiDestinationMode, OutputBackendKind};
-use bookclerk_decrypt::{
-    align_chapter_starts, bookclerk_tool_tag, brand_durations_from_chapter_info, brand_trim_range,
-    decrypt_adrm, decrypt_cenc, encode_to_mp3, fixup_audiobook, package_m4b_from_mp3, parse_mp4,
-    rebase_chapters_after_brand_trim, runtime_length_ms_from_chapter_info, track_duration_ms,
-    CencDecryptRequest, ChapterAlignOptions, DecryptRequest, FixupRequest, PackageM4bRequest,
-    TrimRange,
-};
 use bookclerk_enrich::{fetch_audnexus_book, fetch_public_chapter_info};
 use bookclerk_library::{AcquireStatus, LibraryStore};
-use bookclerk_source::{
-    ContentSource, EncryptedDrmKind, EncryptedFetch, FetchOptions, PlainFetch, SourceFetch,
+use bookclerk_media::{
+    align_chapter_starts, bookclerk_tool_tag, encode_to_mp3, fixup_audiobook, package_m4b_from_mp3,
+    parse_mp4, track_duration_ms, ChapterAlignOptions, FixupRequest, PackageM4bRequest,
 };
+use bookclerk_source::{ContentSource, DownloadOptions, FetchOptions, PlainFetch};
 use bookclerk_storage::{ObjectMeta, StorageBackend};
 use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::cue::{
-    apply_start_map_to_chapter_tree, chapters_from_audible_info_for_plain_audio, flatten_chapters,
-    process_chapter_titles, rebase_chapter_tree_for_plain_audio, write_cue, FlatChapter,
+    apply_start_map_to_chapter_tree, chapters_from_catalog_info_for_plain_audio,
+    rebase_chapter_tree_for_plain_audio, write_cue, FlatChapter,
 };
 use crate::destinations::{AcquireDestination, AcquireDestinations};
 use crate::error::{AcquireError, Result};
@@ -63,14 +53,9 @@ pub struct AcquireRequest {
     pub cache_dir: PathBuf,
     /// When true, download even if matching media already exists in storage.
     pub force: bool,
-    /// Pre-parsed license (classic `acquire --license`). Skips license API call.
-    pub preloaded_license: Option<DownloadLicense>,
     /// When set, only write prepared audio to these destination kinds
     /// (`output.multi_destination = refetch_missing`).
     pub write_destinations: Option<Vec<OutputBackendKind>>,
-    /// Pre-opened Audible client for this account (avoids repeated DB decryption
-    /// when acquiring multiple titles for the same account in one job).
-    pub audible_client: Option<Arc<AccountClient>>,
 }
 
 /// Result after a successful acquire.
@@ -89,24 +74,23 @@ pub async fn acquire_book(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
     req: AcquireRequest,
+    source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
-    acquire_book_indexed(library, destinations, req, None, None).await
+    acquire_book_indexed(library, destinations, req, None, source).await
 }
 
 /// Acquire with an optional pre-built [`StorageIndex`] (avoids re-listing storage
 /// when liberating many titles). On success, newly written keys are inserted into
 /// the index so later books in the same batch can match them.
 ///
-/// When `source` is `Some`, fetch goes through [`ContentSource::fetch_title`]
-/// (Encrypted → decrypt path, Plain → M4B packaging / MP3 handling).
-/// When `None`, Audible titles use the legacy direct Audible download path;
-/// non-Audible titles require a `source`.
+/// Fetch always goes through [`ContentSource::fetch_title`] (Plain only;
+/// Audible decrypts Adrm/CENC inside the plugin before returning).
 pub async fn acquire_book_indexed(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
     mut req: AcquireRequest,
     mut index: Option<&mut StorageIndex>,
-    source: Option<&dyn ContentSource>,
+    source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
     req.options = destinations.primary_destination().options.clone();
     tracing::info!(
@@ -633,7 +617,7 @@ async fn run_pipeline(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
     req: &AcquireRequest,
-    source: Option<&dyn ContentSource>,
+    source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
     library
         .set_acquire_status(
@@ -645,29 +629,7 @@ async fn run_pipeline(
         )
         .await?;
 
-    // Prefer ContentSource when provided. For sources that support a preloaded
-    // Audible-style license voucher, keep the legacy license path when one is set
-    // (ContentSource does not accept vouchers).
-    if let Some(source) = source {
-        if req.preloaded_license.is_none() {
-            return run_source_pipeline(library, destinations, req, source).await;
-        }
-        if !source.supports_preloaded_license() {
-            return Err(AcquireError::Other(anyhow::anyhow!(
-                "content source `{}` does not support preloaded licenses for title {}",
-                source.id(),
-                req.asin
-            )));
-        }
-    } else if !req.source.eq_ignore_ascii_case("audible") {
-        return Err(AcquireError::Other(anyhow::anyhow!(
-            "content source `{}` required to acquire title {}",
-            req.source,
-            req.asin
-        )));
-    }
-
-    run_audible_pipeline(library, destinations, req).await
+    run_source_pipeline(library, destinations, req, source).await
 }
 
 async fn run_source_pipeline(
@@ -693,271 +655,7 @@ async fn run_source_pipeline(
         )
         .await?;
 
-    match fetch {
-        SourceFetch::Plain(plain) => {
-            store_plain_fetch(library, destinations, req, &work_dir, plain).await
-        }
-        SourceFetch::Encrypted(enc) => {
-            store_encrypted_fetch(library, destinations, req, &work_dir, enc).await
-        }
-    }
-}
-
-async fn store_encrypted_fetch(
-    library: &LibraryStore,
-    destinations: &AcquireDestinations,
-    req: &AcquireRequest,
-    work_dir: &Path,
-    download: EncryptedFetch,
-) -> Result<AcquireResult> {
-    let brand = download
-        .chapter_info
-        .as_ref()
-        .map(brand_durations_from_chapter_info)
-        .unwrap_or_default();
-    let mut runtime_ms = download
-        .chapter_info
-        .as_ref()
-        .and_then(runtime_length_ms_from_chapter_info);
-    if req.options.strip_audible_brand_audio && brand.outro_ms > 0 && runtime_ms.is_none() {
-        if let Ok(mp4) = parse_mp4(&download.path) {
-            let probed = track_duration_ms(&mp4.audio);
-            if probed > 0 {
-                runtime_ms = Some(probed);
-            }
-        }
-    }
-    let trim = if req.options.strip_audible_brand_audio {
-        brand_trim_range(brand, runtime_ms)
-    } else {
-        None
-    };
-
-    let mut acquired_path = if download.needs_decrypt {
-        match download.drm_kind {
-            EncryptedDrmKind::Adrm => {
-                let (Some(key), Some(iv)) = (&download.key, &download.iv) else {
-                    return Err(AcquireError::Other(anyhow::anyhow!(
-                        "aaxc download missing key/iv"
-                    )));
-                };
-                let out = work_dir.join(format!("{}.m4b", status_key(req)));
-                decrypt_adrm(DecryptRequest {
-                    input: download.path.clone(),
-                    output: out.clone(),
-                    audible_key: Some(key.clone()),
-                    audible_iv: Some(iv.clone()),
-                    activation_bytes: None,
-                    trim,
-                })
-                .await?;
-                out
-            }
-            EncryptedDrmKind::Widevine => {
-                let (Some(kid), Some(key)) = (&download.kid, &download.cenc_key) else {
-                    return Err(AcquireError::Other(anyhow::anyhow!(
-                        "Widevine download missing kid/key"
-                    )));
-                };
-                let out = work_dir.join(format!("{}.m4b", status_key(req)));
-                decrypt_cenc(CencDecryptRequest {
-                    input: download.path.clone(),
-                    output: out.clone(),
-                    kid: kid.clone(),
-                    key: key.clone(),
-                    trim,
-                })
-                .await?;
-                out
-            }
-            EncryptedDrmKind::Mpeg => download.path.clone(),
-        }
-    } else {
-        download.path.clone()
-    };
-
-    let flat_chapters = download
-        .chapter_info
-        .as_ref()
-        .map(flatten_chapters)
-        .map(|ch| {
-            process_chapter_titles(
-                ch,
-                req.options.combine_nested_chapter_titles,
-                req.options.merge_opening_and_end_credits,
-                req.options.strip_unabridged,
-                req.options.strip_audible_brand_audio,
-            )
-        })
-        .map(|ch| {
-            if req.options.strip_audible_brand_audio && !brand.is_empty() {
-                let pairs: Vec<(String, u64)> =
-                    ch.iter().map(|c| (c.title.clone(), c.start_ms)).collect();
-                rebase_chapters_after_brand_trim(&pairs, brand, runtime_ms)
-                    .into_iter()
-                    .map(|(title, start_ms)| crate::cue::FlatChapter { title, start_ms })
-                    .collect()
-            } else {
-                ch
-            }
-        })
-        .unwrap_or_default();
-
-    let want_mp3 = req.options.wants_mp3();
-    let will_split = req.options.wants_split_by_chapter() && flat_chapters.len() > 1;
-    if want_mp3 && !will_split {
-        let ext = acquired_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        if !ext.eq_ignore_ascii_case("mp3") {
-            let mp3_out = work_dir.join(format!("{}.mp3", status_key(req)));
-            encode_to_mp3(
-                &acquired_path,
-                &mp3_out,
-                &req.options.lame,
-                req.options.max_sample_rate,
-            )
-            .await?;
-            acquired_path = mp3_out;
-        }
-    }
-
-    let chapters: Vec<(String, u64)> = flat_chapters
-        .iter()
-        .map(|c| (c.title.clone(), c.start_ms))
-        .collect();
-    let cover_path = download.cover_path.clone();
-    let ext = acquired_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("m4b")
-        .to_string();
-
-    if req.options.fixup_metadata && !will_split {
-        let fixed = work_dir.join(format!("{}.fixed.{}", status_key(req), ext));
-        // Audible chapters are rebased/title-processed; always replace embedded
-        // chpl/tracks so brand-trim alignment reaches the stored file.
-        match fixup_audiobook(
-            build_fixup_request(
-                library,
-                req,
-                acquired_path.clone(),
-                fixed.clone(),
-                cover_path.clone(),
-                chapters,
-                None,
-                !flat_chapters.is_empty(),
-                &PlainAudibleCatalog::default(),
-            )
-            .await,
-        )
-        .await
-        {
-            Ok(outcome) => acquired_path = outcome.output,
-            Err(err) => {
-                tracing::warn!(
-                    id = %status_key(req),
-                    error = %err,
-                    "metadata fixup failed; storing pre-fixup audio"
-                );
-            }
-        }
-    }
-
-    let stored_keys = if will_split {
-        let total_ms = runtime_ms
-            .or_else(|| {
-                flat_chapters
-                    .last()
-                    .map(|c| c.start_ms.saturating_add(600_000))
-            })
-            .unwrap_or(3_600_000);
-        let split_dir = work_dir.join("chapters");
-        let enc_folder_ctx = folder_naming_ctx(library, req).await;
-        let enc_file_ctx = naming_ctx(library, req).await;
-        let chapters = split_audio_by_chapters(
-            &acquired_path,
-            &split_dir,
-            &flat_chapters,
-            total_ms,
-            &enc_folder_ctx,
-            &enc_file_ctx,
-            &req.options,
-            "m4b",
-        )
-        .await?;
-        let mut prepared = Vec::new();
-        for ch in chapters {
-            let mut chapter_path = ch.path;
-            let mut chapter_ext = "m4b".to_string();
-            if want_mp3 {
-                let mp3_path = chapter_path.with_extension("mp3");
-                encode_to_mp3(
-                    &chapter_path,
-                    &mp3_path,
-                    &req.options.lame,
-                    req.options.max_sample_rate,
-                )
-                .await?;
-                chapter_path = mp3_path;
-                chapter_ext = "mp3".to_string();
-            }
-            prepared.push(PreparedAudioFile {
-                path: chapter_path,
-                title: ch.title,
-                ext: chapter_ext,
-            });
-        }
-        store_prepared_audio_files(
-            library,
-            destinations,
-            req,
-            &prepared,
-            AudioKeyPlan::SplitChapters,
-        )
-        .await?
-    } else {
-        let prepared = [PreparedAudioFile {
-            path: acquired_path.clone(),
-            title: req.title.clone(),
-            ext: ext.clone(),
-        }];
-        store_prepared_audio_files(library, destinations, req, &prepared, AudioKeyPlan::Single)
-            .await?
-    };
-
-    if let Some(cover) = cover_path.as_ref() {
-        for stored in &stored_keys.keys {
-            if let Some(dest) = destinations.destination(stored.kind) {
-                let dest_req = request_for_destination(req, dest);
-                if dest_req.options.download_cover {
-                    let cover_key = sidecar_key(&stored.key, "jpg");
-                    let asin_str = object_asin_for(library, &dest_req).await;
-                    let meta =
-                        sidecar_meta(asin_str.as_str(), &dest_req.title, "image/jpeg", cover).await;
-                    if let Err(err) = dest.backend.put_file(&cover_key, cover, meta).await {
-                        tracing::warn!(id = %status_key(req), error = %err, "cover store failed");
-                    }
-                }
-            }
-        }
-    }
-
-    if let Err(err) = tokio::fs::remove_dir_all(work_dir).await {
-        tracing::warn!(
-            path = %work_dir.display(),
-            error = %err,
-            "failed to clean acquire cache dir"
-        );
-    }
-
-    Ok(AcquireResult {
-        asin: req.asin.clone(),
-        storage_key: stored_keys.primary_key.clone(),
-        written_keys: stored_keys.all_keys(),
-        matched_existing: false,
-    })
+    store_plain_fetch(library, destinations, req, &work_dir, fetch).await
 }
 
 async fn store_plain_fetch(
@@ -974,7 +672,7 @@ async fn store_plain_fetch(
     // No-op output: keep store-delivered bytes (no remux/transcode).
     if req.options.is_noop_output() {
         if multi {
-            return store_plain_parts(library, destinations, req, plain).await;
+            return store_plain_parts(library, destinations, req, work_dir, plain).await;
         }
         let path = plain
             .m4b_path
@@ -991,6 +689,7 @@ async fn store_plain_fetch(
             library,
             destinations,
             req,
+            work_dir,
             PlainFetch {
                 parts: vec![bookclerk_source::PlainAudioPart {
                     path,
@@ -1000,6 +699,7 @@ async fn store_plain_fetch(
                 m4b_path: None,
                 cover_path: plain.cover_path,
                 chapters: plain.chapters,
+                pdf_url: plain.pdf_url,
             },
         )
         .await;
@@ -1009,7 +709,7 @@ async fn store_plain_fetch(
     // When an Audible ASIN enrichment is available, package first so we can embed /
     // split by the literary chapter tree instead of track-boundary placeholders.
     if multi && req.options.wants_split_by_chapter() && !audible_overlay_possible {
-        return store_plain_parts(library, destinations, req, plain).await;
+        return store_plain_parts(library, destinations, req, work_dir, plain).await;
     }
 
     let mut chapters = plain.chapters.clone();
@@ -1057,7 +757,7 @@ async fn store_plain_fetch(
     let mut plain_chapter_tree: Option<Value> = None;
     if audible_overlay_possible {
         let plain_duration = probe_audio_duration_ms(&acquired_path);
-        catalog = fetch_plain_audible_catalog(library, req, work_dir).await;
+        catalog = fetch_plain_catalog_overlay(library, req, work_dir).await;
         if let Some((overlaid, tree)) =
             overlay_audible_chapters_for_plain(library, req, plain_duration).await
         {
@@ -1294,6 +994,19 @@ async fn store_plain_fetch(
         }
     }
 
+    let mut written_keys = stored_keys.all_keys();
+    if let Ok(pdf_keys) = store_companion_pdf_sidecars(
+        library,
+        destinations,
+        req,
+        work_dir,
+        plain.pdf_url.as_deref(),
+    )
+    .await
+    {
+        written_keys.extend(pdf_keys);
+    }
+
     if let Err(err) = tokio::fs::remove_dir_all(work_dir).await {
         tracing::warn!(
             path = %work_dir.display(),
@@ -1305,7 +1018,7 @@ async fn store_plain_fetch(
     Ok(AcquireResult {
         asin: req.asin.clone(),
         storage_key: stored_keys.primary_key.clone(),
-        written_keys: stored_keys.all_keys(),
+        written_keys,
         matched_existing: false,
     })
 }
@@ -1314,6 +1027,7 @@ async fn store_plain_parts(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
     req: &AcquireRequest,
+    work_dir: &Path,
     plain: PlainFetch,
 ) -> Result<AcquireResult> {
     let mut prepared = Vec::new();
@@ -1361,473 +1075,117 @@ async fn store_plain_parts(
         }
     }
 
+    let mut written_keys = stored_keys.all_keys();
+    if let Ok(pdf_keys) = store_companion_pdf_sidecars(
+        library,
+        destinations,
+        req,
+        work_dir,
+        plain.pdf_url.as_deref(),
+    )
+    .await
+    {
+        written_keys.extend(pdf_keys);
+    }
+
     Ok(AcquireResult {
         asin: req.asin.clone(),
         storage_key: stored_keys.primary_key.clone(),
-        written_keys: stored_keys.all_keys(),
+        written_keys,
         matched_existing: false,
     })
 }
 
-async fn run_audible_pipeline(
+/// Download + store companion PDF sidecars when `output.download_pdf` is enabled.
+///
+/// Soft-fails (logs + returns `Ok(empty)`) when the URL is missing or HTTP fails so
+/// audio acquire still succeeds. Skips when a PDF is already marked acquired unless
+/// `req.force`. Uses the planned single-book audio key per destination (not every
+/// chapter file when splitting).
+async fn store_companion_pdf_sidecars(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
     req: &AcquireRequest,
-) -> Result<AcquireResult> {
-    // AcquireRequest.asin is a title lookup id (uuid / product_id / asin / isbn);
-    // Audible APIs need the store product ASIN when that differs.
-    let audible_asin = audible_asin_for(library, req).await;
-
-    let work_dir = req.cache_dir.join("acquire").join(&req.asin);
-    tokio::fs::create_dir_all(&work_dir).await?;
-
-    let (_account, download, _summary) = if let Some(license) = &req.preloaded_license {
-        let account_client = if let Some(cached) = req.audible_client.as_ref() {
-            (**cached).clone()
-        } else {
-            open_account_client(&library.scope("audible"), &req.account_id).await?
-        };
-        let dest = work_dir.join(format!("{}.encrypted", req.asin));
-        let download = download_licensed_audio(
-            &account_client.client,
-            license,
-            &dest,
-            req.options.download_speed_limit_kbps,
-        )
-        .await?;
-        let summary = summarize_license(license);
-        (account_client, download, summary)
-    } else if let Some(cached) = req.audible_client.as_ref() {
-        let scope = library.scope("audible");
-        fetch_and_download_with_client(
-            (**cached).clone(),
-            &req.files_dir,
-            &audible_asin,
-            &req.options,
-            &work_dir,
-            Some(&scope),
-        )
-        .await?
-    } else {
-        fetch_and_download_with_options(
-            &library.scope("audible"),
-            &req.files_dir,
-            &req.account_id,
-            &audible_asin,
-            &req.options,
-            &work_dir,
-        )
-        .await?
+    work_dir: &Path,
+    pdf_url: Option<&str>,
+) -> Result<Vec<String>> {
+    if !req.options.download_pdf {
+        return Ok(Vec::new());
+    }
+    let Some(pdf_url) = pdf_url.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(Vec::new());
     };
 
-    let account_client = _account;
-
-    // Chapter metadata is needed for cues/fixup/split, and also up-front when
-    // stripping Audible brand intro/outro so decrypt can trim the media.
-    let need_chapters = req.options.create_cue
-        || req.options.fixup_metadata
-        || req.options.wants_chapter_json()
-        || req.options.split_files_by_chapter
-        || req.options.strip_audible_brand_audio;
-    let chapter_info = if need_chapters {
-        match fetch_chapter_info(
-            &account_client.client,
-            &account_client.marketplace,
-            &audible_asin,
-            req.options.quality,
-            &req.options.chapter_layout,
-        )
-        .await
-        {
-            Ok(info) => Some(info),
-            Err(err) => {
-                tracing::warn!(asin = %req.asin, error = %err, "chapter metadata fetch failed");
-                None
+    if !req.force {
+        if let Some(book) = resolve_book(library, req).await {
+            if book.pdf_status == AcquireStatus::Acquired && book.pdf_storage_key.is_some() {
+                return Ok(Vec::new());
             }
         }
-    } else {
-        None
-    };
+    }
 
-    let brand = chapter_info
-        .as_ref()
-        .map(brand_durations_from_chapter_info)
-        .unwrap_or_default();
-    let mut runtime_ms = chapter_info
-        .as_ref()
-        .and_then(runtime_length_ms_from_chapter_info);
-    // Prefer chapter_info runtime; if outro trim needs length and it's missing,
-    // probe the downloaded media before decrypt.
-    let needs_runtime_probe =
-        req.options.strip_audible_brand_audio && brand.outro_ms > 0 && runtime_ms.is_none();
-
-    // Download first when we may need a duration probe for brand outro.
-    // (fetch already happened above into `download`.)
-    if needs_runtime_probe {
-        match parse_mp4(&download.path) {
-            Ok(mp4) => {
-                let probed = track_duration_ms(&mp4.audio);
-                if probed > 0 {
-                    tracing::info!(
-                        asin = %req.asin,
-                        runtime_ms = probed,
-                        "probed media duration for brand outro trim"
-                    );
-                    runtime_ms = Some(probed);
+    let pdf_path = work_dir.join(format!("{}.pdf", req.asin));
+    let client = reqwest::Client::new();
+    let bytes = match client.get(pdf_url).send().await {
+        Ok(resp) => match resp.error_for_status() {
+            Ok(ok) => match ok.bytes().await {
+                Ok(b) => b,
+                Err(err) => {
+                    tracing::warn!(id = %status_key(req), error = %err, "PDF download body failed");
+                    return Ok(Vec::new());
                 }
-            }
+            },
             Err(err) => {
-                tracing::warn!(
-                    asin = %req.asin,
-                    error = %err,
-                    "could not probe media duration for brand outro trim"
-                );
+                tracing::warn!(id = %status_key(req), error = %err, "PDF download failed");
+                return Ok(Vec::new());
             }
+        },
+        Err(err) => {
+            tracing::warn!(id = %status_key(req), error = %err, "PDF download failed");
+            return Ok(Vec::new());
         }
+    };
+    if let Err(err) = tokio::fs::write(&pdf_path, &bytes).await {
+        tracing::warn!(id = %status_key(req), error = %err, "PDF write failed");
+        return Ok(Vec::new());
     }
 
-    let trim: Option<TrimRange> = if req.options.strip_audible_brand_audio {
-        brand_trim_range(brand, runtime_ms)
-    } else {
-        None
-    };
-    if let Some(trim) = trim {
-        tracing::info!(
-            asin = %req.asin,
-            start_ms = trim.start_ms,
-            end_ms = ?trim.end_ms,
-            intro_ms = brand.intro_ms,
-            outro_ms = brand.outro_ms,
-            "stripping Audible brand audio during decrypt"
-        );
-    }
-
-    let mut acquired_path = if download.needs_decrypt {
-        match download.drm_kind {
-            DrmKind::Adrm => {
-                let (Some(key), Some(iv)) = (&download.key, &download.iv) else {
-                    return Err(AcquireError::Other(anyhow::anyhow!(
-                        "aaxc download missing key/iv"
-                    )));
-                };
-                let out = work_dir.join(format!("{}.m4b", req.asin));
-                decrypt_adrm(DecryptRequest {
-                    input: download.path.clone(),
-                    output: out.clone(),
-                    audible_key: Some(key.clone()),
-                    audible_iv: Some(iv.clone()),
-                    activation_bytes: None,
-                    trim,
-                })
-                .await?;
-                out
-            }
-            DrmKind::Widevine => {
-                let (Some(kid), Some(key)) = (&download.kid, &download.cenc_key) else {
-                    return Err(AcquireError::Other(anyhow::anyhow!(
-                        "Widevine download missing kid/key"
-                    )));
-                };
-                let out = work_dir.join(format!("{}.m4b", req.asin));
-                decrypt_cenc(CencDecryptRequest {
-                    input: download.path.clone(),
-                    output: out.clone(),
-                    kid: kid.clone(),
-                    key: key.clone(),
-                    trim,
-                })
-                .await?;
-                out
-            }
-            DrmKind::Mpeg => download.path.clone(),
-        }
-    } else {
-        download.path.clone()
-    };
-
-    let flat_chapters = chapter_info
-        .as_ref()
-        .map(flatten_chapters)
-        .map(|ch| {
-            process_chapter_titles(
-                ch,
-                req.options.combine_nested_chapter_titles,
-                req.options.merge_opening_and_end_credits,
-                req.options.strip_unabridged,
-                req.options.strip_audible_brand_audio,
-            )
-        })
-        .map(|ch| {
-            if req.options.strip_audible_brand_audio && !brand.is_empty() {
-                let pairs: Vec<(String, u64)> =
-                    ch.iter().map(|c| (c.title.clone(), c.start_ms)).collect();
-                rebase_chapters_after_brand_trim(&pairs, brand, runtime_ms)
-                    .into_iter()
-                    .map(|(title, start_ms)| crate::cue::FlatChapter { title, start_ms })
-                    .collect()
-            } else {
-                ch
-            }
-        })
-        .unwrap_or_default();
-
-    let want_cover = req.options.download_cover || req.options.fixup_metadata;
-    let cover_path = if want_cover {
-        let dest = work_dir.join(format!("{}.cover.jpg", req.asin));
-        match download_cover_jpeg(
-            &account_client.client,
-            &account_client.marketplace,
-            &audible_asin,
-            &req.options.cover_size,
-            &dest,
-        )
-        .await
-        {
-            Ok(path) => path,
-            Err(err) => {
-                tracing::warn!(asin = %req.asin, error = %err, "cover download failed");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let want_mp3 = req.options.wants_mp3();
-    let will_split = req.options.wants_split_by_chapter() && flat_chapters.len() > 1;
-
-    // Chapter split remuxes progressive M4B; when format=mp3, encode after split.
-    // For single-file acquire, encode the whole book before fixup/store.
-    if want_mp3 && !will_split {
-        let ext = acquired_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        if !ext.eq_ignore_ascii_case("mp3") {
-            let mp3_out = work_dir.join(format!("{}.mp3", req.asin));
-            encode_to_mp3(
-                &acquired_path,
-                &mp3_out,
-                &req.options.lame,
-                req.options.max_sample_rate,
-            )
-            .await?;
-            acquired_path = mp3_out;
-        }
-    }
-
-    let ext = if will_split && want_mp3 {
-        "mp3".to_string()
-    } else {
-        acquired_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or_else(|| fallback_audio_ext(&req.options))
-            .to_string()
-    };
-
-    if req.options.fixup_metadata && !will_split {
-        let chapters: Vec<(String, u64)> = flat_chapters
-            .iter()
-            .map(|c| (c.title.clone(), c.start_ms))
-            .collect();
-        let fixed = work_dir.join(format!("{}.fixed.{}", req.asin, ext));
-        // Audible chapters are rebased/title-processed; always replace embedded
-        // chpl/tracks so brand-trim alignment reaches the stored file.
-        match fixup_audiobook(
-            build_fixup_request(
-                library,
-                req,
-                acquired_path.clone(),
-                fixed.clone(),
-                cover_path.clone(),
-                chapters,
-                None,
-                !flat_chapters.is_empty(),
-                &PlainAudibleCatalog::default(),
-            )
-            .await,
-        )
-        .await
-        {
-            Ok(outcome) => acquired_path = outcome.output,
-            Err(err) => {
-                tracing::warn!(
-                    asin = %req.asin,
-                    error = %err,
-                    "metadata fixup failed; storing pre-fixup audio"
-                );
-            }
-        }
-    }
-
-    let stored_keys = if will_split {
-        let total_ms = runtime_ms
-            .or_else(|| {
-                flat_chapters
-                    .last()
-                    .map(|c| c.start_ms.saturating_add(600_000))
-            })
-            .unwrap_or(3_600_000);
-        // Brand trim already applied during decrypt; runtime_ms is pre-trim.
-        let total_ms = if req.options.strip_audible_brand_audio && !brand.is_empty() {
-            brand_trim_range(brand, runtime_ms)
-                .and_then(|t| t.end_ms.map(|end| end.saturating_sub(t.start_ms)))
-                .unwrap_or(total_ms.saturating_sub(brand.intro_ms + brand.outro_ms))
-        } else {
-            total_ms
-        };
-        let split_dir = work_dir.join("chapters");
-        let file_ctx = naming_ctx(library, req).await;
-        let folder_ctx = folder_naming_ctx(library, req).await;
-        // Always split the progressive M4B (before any whole-file MP3 encode).
-        let split_ext = "m4b";
-        let chapters = split_audio_by_chapters(
-            &acquired_path,
-            &split_dir,
-            &flat_chapters,
-            total_ms,
-            &folder_ctx,
-            &file_ctx,
-            &req.options,
-            split_ext,
-        )
-        .await?;
-        let mut prepared = Vec::new();
-        for (idx, ch) in chapters.into_iter().enumerate() {
-            let mut chapter_path = ch.path;
-            let mut chapter_ext = split_ext.to_string();
-            if want_mp3 {
-                let mp3_path = chapter_path.with_extension("mp3");
-                encode_to_mp3(
-                    &chapter_path,
-                    &mp3_path,
-                    &req.options.lame,
-                    req.options.max_sample_rate,
-                )
-                .await?;
-                chapter_path = mp3_path;
-                chapter_ext = "mp3".to_string();
-            }
-            if req.options.fixup_metadata {
-                let fixed = chapter_path.with_extension(format!("fixed.{}", ext));
-                // Per-chapter files: rebase chapter title only (start at 0).
-                let chapter_chapters = vec![(ch.title.clone(), 0u64)];
-                match fixup_audiobook(
-                    build_fixup_request(
-                        library,
-                        req,
-                        chapter_path.clone(),
-                        fixed.clone(),
-                        cover_path.clone(),
-                        chapter_chapters,
-                        Some(format!("{} — {}", req.title, ch.title)),
-                        true,
-                        &PlainAudibleCatalog::default(),
-                    )
-                    .await,
-                )
-                .await
-                {
-                    Ok(outcome) => chapter_path = outcome.output,
-                    Err(err) => {
-                        tracing::warn!(
-                            asin = %req.asin,
-                            chapter = idx + 1,
-                            error = %err,
-                            "chapter metadata fixup failed"
-                        );
-                    }
+    let mut primary_pdf_key = None;
+    let mut written = Vec::new();
+    for dest in &destinations.items {
+        let dest_req = request_for_destination(req, dest);
+        let audio_key = planned_storage_key(library, &dest_req).await;
+        let pdf_key = sidecar_key(&audio_key, "pdf");
+        let asin_str = object_asin_for(library, &dest_req).await;
+        let meta = sidecar_meta(&asin_str, &dest_req.title, "application/pdf", &pdf_path).await;
+        match dest.backend.put_file(&pdf_key, &pdf_path, meta).await {
+            Ok(()) => {
+                if dest.kind == destinations.primary {
+                    primary_pdf_key = Some(pdf_key.clone());
                 }
+                written.push(pdf_key);
             }
-            prepared.push(PreparedAudioFile {
-                path: chapter_path,
-                title: ch.title,
-                ext: chapter_ext,
-            });
-        }
-        store_prepared_audio_files(
-            library,
-            destinations,
-            req,
-            &prepared,
-            AudioKeyPlan::SplitChapters,
-        )
-        .await?
-    } else {
-        let prepared = [PreparedAudioFile {
-            path: acquired_path.clone(),
-            title: req.title.clone(),
-            ext: ext.clone(),
-        }];
-        store_prepared_audio_files(library, destinations, req, &prepared, AudioKeyPlan::Single)
-            .await?
-    };
-
-    if req.options.retain_aax_file && download.needs_decrypt {
-        for stored in &stored_keys.keys {
-            if let Some(dest) = destinations.destination(stored.kind) {
-                let dest_req = request_for_destination(req, dest);
-                let aax_key = sidecar_key(&stored.key, "aaxc");
-                let meta = sidecar_meta(
-                    &dest_req.asin,
-                    &dest_req.title,
-                    "audio/vnd.audible.aax",
-                    &download.path,
-                )
-                .await;
-                if let Err(err) = dest.backend.put_file(&aax_key, &download.path, meta).await {
-                    tracing::warn!(asin = %req.asin, error = %err, "retain aax store failed");
-                }
+            Err(err) => {
+                tracing::warn!(id = %status_key(req), error = %err, "PDF store failed");
             }
         }
     }
 
-    for stored in &stored_keys.keys {
-        if let Some(dest) = destinations.destination(stored.kind) {
-            let dest_req = request_for_destination(req, dest);
-            store_artifacts(
-                dest.backend.as_ref(),
-                &ArtifactContext {
-                    req: &dest_req,
-                    account: &account_client,
-                    audio_key: &stored.key,
-                    work_dir: &work_dir,
-                    cover_path: cover_path.as_deref(),
-                    chapter_info: chapter_info.as_ref(),
-                    flat_chapters: &flat_chapters,
-                    license: &_summary,
-                },
+    if let Some(pdf_key) = primary_pdf_key.or_else(|| written.first().cloned()) {
+        if let Err(err) = library
+            .set_pdf_status(
+                &req.asin,
+                &req.account_id,
+                AcquireStatus::Acquired,
+                Some(&pdf_key),
             )
-            .await;
+            .await
+        {
+            tracing::warn!(id = %status_key(req), error = %err, "PDF status update failed");
         }
     }
 
-    if let Err(err) = tokio::fs::remove_dir_all(&work_dir).await {
-        tracing::warn!(
-            path = %work_dir.display(),
-            error = %err,
-            "failed to clean acquire cache dir"
-        );
-    }
-
-    Ok(AcquireResult {
-        asin: req.asin.clone(),
-        storage_key: stored_keys.primary_key.clone(),
-        written_keys: stored_keys.all_keys(),
-        matched_existing: false,
-    })
-}
-
-struct ArtifactContext<'a> {
-    req: &'a AcquireRequest,
-    account: &'a AccountClient,
-    audio_key: &'a str,
-    work_dir: &'a Path,
-    cover_path: Option<&'a Path>,
-    chapter_info: Option<&'a Value>,
-    flat_chapters: &'a [crate::cue::FlatChapter],
-    license: &'a bookclerk_audible::LicenseSummary,
+    Ok(written)
 }
 
 /// Persist nested `chapters.tree.json` (Audnexus layout with adjusted timestamps).
@@ -1939,144 +1297,6 @@ async fn store_flat_chapter_sidecars(
     }
 }
 
-async fn store_artifacts(storage: &dyn StorageBackend, ctx: &ArtifactContext<'_>) {
-    let req = ctx.req;
-    let account = ctx.account;
-    let audio_key = ctx.audio_key;
-    let work_dir = ctx.work_dir;
-    let cover_path = ctx.cover_path;
-    let chapter_info = ctx.chapter_info;
-    let flat_chapters = ctx.flat_chapters;
-
-    if req.options.download_cover {
-        if let Some(cover) = cover_path {
-            let key = sidecar_key(audio_key, "jpg");
-            let meta = sidecar_meta(&req.asin, &req.title, "image/jpeg", cover).await;
-            if let Err(err) = storage.put_file(&key, cover, meta).await {
-                tracing::warn!(asin = %req.asin, key = %key, error = %err, "cover store failed");
-            }
-        }
-    }
-
-    // Nero/QuickTime are embedded in the M4B; also emit flat cue/JSON sidecars
-    // for players that prefer an external marker list over chapter trees.
-    store_flat_chapter_sidecars(storage, req, audio_key, work_dir, flat_chapters, &req.asin).await;
-
-    if req.options.chapter_json_tree() {
-        if let Some(info) = chapter_info {
-            let json_path = work_dir.join(format!("{}.chapters.tree.json", req.asin));
-            match tokio::fs::write(
-                &json_path,
-                serde_json::to_vec_pretty(info).unwrap_or_default(),
-            )
-            .await
-            {
-                Ok(()) => {
-                    let key = sidecar_key(audio_key, "chapters.tree.json");
-                    let meta =
-                        sidecar_meta(&req.asin, &req.title, "application/json", &json_path).await;
-                    if let Err(err) = storage.put_file(&key, &json_path, meta).await {
-                        tracing::warn!(
-                            asin = %req.asin,
-                            key = %key,
-                            error = %err,
-                            "chapter json store failed"
-                        );
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(asin = %req.asin, error = %err, "chapter json write failed");
-                }
-            }
-        }
-    }
-
-    if req.options.save_metadata_json {
-        match fetch_product_metadata(
-            &account.client,
-            &account.marketplace,
-            &req.asin,
-            req.options.quality,
-        )
-        .await
-        {
-            Ok(meta) => {
-                let json_path = work_dir.join(format!("{}.metadata.json", req.asin));
-                if tokio::fs::write(
-                    &json_path,
-                    serde_json::to_vec_pretty(&meta).unwrap_or_default(),
-                )
-                .await
-                .is_ok()
-                {
-                    let key = sidecar_key(audio_key, "metadata.json");
-                    let file_meta =
-                        sidecar_meta(&req.asin, &req.title, "application/json", &json_path).await;
-                    if let Err(err) = storage.put_file(&key, &json_path, file_meta).await {
-                        tracing::warn!(asin = %req.asin, key = %key, error = %err, "metadata.json store failed");
-                    }
-                }
-            }
-            Err(err) => {
-                tracing::warn!(asin = %req.asin, error = %err, "catalog metadata fetch failed");
-            }
-        }
-    }
-
-    if req.options.download_clips_bookmarks {
-        match fetch_clips_bookmarks(
-            &account.client,
-            &req.asin,
-            None,
-            None,
-            ctx.license.content_format.as_deref(),
-        )
-        .await
-        {
-            Ok(Some(doc)) => {
-                let json_path = work_dir.join(format!("{}.clips.json", req.asin));
-                if tokio::fs::write(
-                    &json_path,
-                    serde_json::to_vec_pretty(&doc).unwrap_or_default(),
-                )
-                .await
-                .is_ok()
-                {
-                    let key = sidecar_key(audio_key, "clips.json");
-                    let file_meta =
-                        sidecar_meta(&req.asin, &req.title, "application/json", &json_path).await;
-                    if let Err(err) = storage.put_file(&key, &json_path, file_meta).await {
-                        tracing::warn!(asin = %req.asin, key = %key, error = %err, "clips store failed");
-                    }
-                }
-            }
-            Ok(None) => tracing::debug!(asin = %req.asin, "no clips/bookmarks for title"),
-            Err(err) => {
-                tracing::warn!(asin = %req.asin, error = %err, "clips/bookmarks fetch failed");
-            }
-        }
-    }
-
-    if req.options.download_pdf {
-        let pdf_path = work_dir.join(format!("{}.pdf", req.asin));
-        match download_companion_pdf(&account.client, &account.marketplace, &req.asin, &pdf_path)
-            .await
-        {
-            Ok(Some(path)) => {
-                let key = sidecar_key(audio_key, "pdf");
-                let meta = sidecar_meta(&req.asin, &req.title, "application/pdf", &path).await;
-                if let Err(err) = storage.put_file(&key, &path, meta).await {
-                    tracing::warn!(asin = %req.asin, key = %key, error = %err, "pdf store failed");
-                }
-            }
-            Ok(None) => tracing::debug!(asin = %req.asin, "no companion PDF for title"),
-            Err(err) => {
-                tracing::warn!(asin = %req.asin, error = %err, "companion PDF download failed");
-            }
-        }
-    }
-}
-
 async fn object_meta_for(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -2183,7 +1403,7 @@ async fn plain_source_has_audible_asin(library: &LibraryStore, req: &AcquireRequ
 }
 
 /// Fetch Audnexus catalog extras for plain acquire (chapters fetched separately).
-async fn fetch_plain_audible_catalog(
+async fn fetch_plain_catalog_overlay(
     library: &LibraryStore,
     req: &AcquireRequest,
     work_dir: &Path,
@@ -2488,7 +1708,7 @@ async fn overlay_audible_chapters_for_plain(
             return None;
         }
     };
-    let chapters = chapters_from_audible_info_for_plain_audio(
+    let chapters = chapters_from_catalog_info_for_plain_audio(
         &info,
         req.options.combine_nested_chapter_titles,
         req.options.merge_opening_and_end_credits,
@@ -2554,14 +1774,6 @@ async fn naming_ctx(library: &LibraryStore, req: &AcquireRequest) -> NamingConte
         content_kind: book.as_ref().map(|b| b.content_kind.clone()),
         ..Default::default()
     }
-}
-
-/// Resolve the Audible product ASIN for license/download APIs.
-async fn audible_asin_for(library: &LibraryStore, req: &AcquireRequest) -> String {
-    resolve_book(library, req)
-        .await
-        .and_then(|b| b.audible_asin().map(str::to_string))
-        .unwrap_or_else(|| req.asin.clone())
 }
 
 /// Folder naming context: when saving podcasts to the parent folder, evaluate
@@ -2643,10 +1855,13 @@ pub async fn planned_storage_key(library: &LibraryStore, req: &AcquireRequest) -
 }
 
 /// Download and store companion PDF only (classic `acquire --pdf`).
+///
+/// Fetches via [`ContentSource::fetch_title`]; requires `PlainFetch.pdf_url`, then HTTP GETs that URL.
 pub async fn acquire_pdf_only(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
     req: &AcquireRequest,
+    source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
     let primary_req = request_for_destination(req, destinations.primary_destination());
 
@@ -2670,37 +1885,55 @@ pub async fn acquire_pdf_only(
         .join("acquire-pdf")
         .join(&primary_req.asin);
     tokio::fs::create_dir_all(&work_dir).await?;
-    let account = if let Some(cached) = primary_req.audible_client.as_ref() {
-        (**cached).clone()
-    } else {
-        bookclerk_audible::open_account_client(&library.scope("audible"), &primary_req.account_id)
-            .await?
-    };
-    let audible_asin = audible_asin_for(library, &primary_req).await;
-    let pdf_path = work_dir.join(format!("{}.pdf", audible_asin));
 
-    let Some(path) = bookclerk_audible::download_companion_pdf(
-        &account.client,
-        &account.marketplace,
-        &audible_asin,
-        &pdf_path,
-    )
-    .await?
-    else {
+    let mut download_opts = primary_req.options.clone();
+    download_opts.download_pdf = true;
+
+    let scope = library.scope(source.id());
+    let fetch = source
+        .fetch_title(
+            &scope,
+            &primary_req.account_id,
+            &primary_req.asin,
+            &FetchOptions {
+                download: download_opts,
+                cache_dir: work_dir.clone(),
+                files_dir: primary_req.files_dir.clone(),
+            },
+        )
+        .await?;
+
+    let pdf_url = fetch.pdf_url;
+    let Some(pdf_url) = pdf_url else {
         return Err(AcquireError::Other(anyhow::anyhow!(
             "no companion PDF available for {}",
-            audible_asin
+            primary_req.asin
         )));
     };
 
+    let pdf_path = work_dir.join(format!("{}.pdf", primary_req.asin));
+    let client = reqwest::Client::new();
+    let bytes = client
+        .get(&pdf_url)
+        .send()
+        .await
+        .map_err(|e| AcquireError::Other(anyhow::anyhow!("PDF download failed: {e}")))?
+        .error_for_status()
+        .map_err(|e| AcquireError::Other(anyhow::anyhow!("PDF download failed: {e}")))?
+        .bytes()
+        .await
+        .map_err(|e| AcquireError::Other(anyhow::anyhow!("PDF download body failed: {e}")))?;
+    tokio::fs::write(&pdf_path, &bytes).await?;
+
+    let asin_str = object_asin_for(library, &primary_req).await;
     let mut primary_pdf_key = None;
     let mut written_keys = Vec::new();
     for dest in &destinations.items {
         let dest_req = request_for_destination(&primary_req, dest);
         let audio_key = planned_storage_key(library, &dest_req).await;
         let pdf_key = sidecar_key(&audio_key, "pdf");
-        let meta = sidecar_meta(&audible_asin, &dest_req.title, "application/pdf", &path).await;
-        dest.backend.put_file(&pdf_key, &path, meta).await?;
+        let meta = sidecar_meta(&asin_str, &dest_req.title, "application/pdf", &pdf_path).await;
+        dest.backend.put_file(&pdf_key, &pdf_path, meta).await?;
         if dest.kind == destinations.primary {
             primary_pdf_key = Some(pdf_key.clone());
         }

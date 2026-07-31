@@ -1,25 +1,28 @@
 //! Build integration registry from config.
-
-use std::sync::Arc;
+//!
+//! First-party adapters register through
+//! [`bookclerk_plugin::register_builtin_integrations`] (feature-gated plugin
+//! crates). This module keeps [`from_config`] / [`register_builtins`] as
+//! stable no-ops so older call sites still compile.
 
 use bookclerk_config::Config;
-use tracing::info;
 
-use crate::abs::AbsIntegration;
 use crate::error::Result;
 use crate::registry::IntegrationRegistry;
 
-/// Construct enabled first-party integrations from config.
+/// Register first-party integrations into an existing registry.
 ///
-/// When ABS is enabled but misconfigured (e.g. missing API key), it is still
-/// registered so health/diagnose/calls surface the error instead of silently
-/// omitting the adapter.
-pub fn from_config(config: &Config) -> Result<IntegrationRegistry> {
-    let mut registry = IntegrationRegistry::new();
-    let abs = &config.integrations.audiobookshelf;
-    if abs.enabled {
-        info!("enabling audiobookshelf integration");
-        registry.register(Arc::new(AbsIntegration::from_config(abs.clone())));
-    }
-    Ok(registry)
+/// Prefer [`bookclerk_plugin::register_builtin_integrations`] from hosts.
+/// This function is intentionally a no-op; ABS and other adapters register
+/// from their plugin packages.
+pub fn register_builtins(_config: &Config, _registry: &mut IntegrationRegistry) -> Result<()> {
+    Ok(())
+}
+
+/// Construct an empty registry (no in-process adapters).
+///
+/// Hosts that also load plugins should prefer
+/// [`bookclerk_plugin::load_integrations`].
+pub fn from_config(_config: &Config) -> Result<IntegrationRegistry> {
+    Ok(IntegrationRegistry::new())
 }

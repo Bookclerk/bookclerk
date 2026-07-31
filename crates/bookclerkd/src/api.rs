@@ -18,7 +18,7 @@ use bookclerk_library::{
     RequestStatus, TitleRequestRecord,
 };
 use bookclerk_search::{SearchEngine, SearchHit};
-use bookclerk_source::ContentSource;
+use bookclerk_source::SourceRegistry;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tower_http::normalize_path::NormalizePathLayer;
@@ -36,7 +36,7 @@ pub struct AppState {
     /// Serialize scan/acquire work so jobs do not thrash the same accounts.
     pub work_lock: Mutex<()>,
     pub integrations: IntegrationRegistry,
-    pub sources: Vec<Arc<dyn ContentSource>>,
+    pub sources: SourceRegistry,
     pub auth: Option<Arc<OperatorAuthState>>,
 }
 
@@ -117,7 +117,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         config: state.config.clone(),
         library: state.library.clone(),
         integrations: state.integrations.clone(),
-        sources: state.sources.clone(),
+        sources: state.sources.all(),
     };
 
     let operator_only = Router::new()
@@ -681,7 +681,7 @@ async fn discover_recommendations(
         embed_intra_threads: cfg.discovery.embed_intra_threads,
         embeddings_enabled: cfg.discovery.embeddings_enabled,
     };
-    let feed = bookclerk_discover::recommend_feed(&library, &opts)
+    let feed = bookclerk_discover::recommend_feed(&library, &state.sources, &opts)
         .await
         .map_err(internal_err)?;
     Ok(Json(feed))
@@ -695,7 +695,7 @@ async fn discover_purchase_hints(
     validate_purchase_hints_query(&body)?;
     // Always derive linked stores server-side (ignore client-supplied overrides).
     body.preferred_sources = preferred_sources_for_caller(&state, &headers).await;
-    let response = bookclerk_discover::resolve_purchase_hints(&body)
+    let response = bookclerk_discover::resolve_purchase_hints(&state.sources, &body)
         .await
         .map_err(internal_err)?;
     Ok(Json(response))
@@ -730,7 +730,8 @@ async fn discover_purchase_hints_batch(
         q.preferred_sources = preferred.clone();
         queries.push(q);
     }
-    let resolved = bookclerk_discover::resolve_purchase_hints_batch(&queries, 4).await;
+    let resolved =
+        bookclerk_discover::resolve_purchase_hints_batch(&state.sources, &queries, 4).await;
     let mut results = Vec::with_capacity(resolved.len());
     for item in resolved {
         results.push(item.map_err(internal_err)?);
@@ -794,6 +795,7 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
 }
 
 async fn discover_catalog_search(
+    State(state): State<Arc<AppState>>,
     Query(q): Query<CatalogSearchQuery>,
 ) -> Result<Json<Vec<bookclerk_discover::CatalogSearchHit>>, (StatusCode, String)> {
     let query = q.q.unwrap_or_default();
@@ -802,7 +804,7 @@ async fn discover_catalog_search(
     }
     let region = q.region.unwrap_or_else(|| String::from("us"));
     let limit = q.limit.unwrap_or(12).clamp(1, 24);
-    let hits = bookclerk_discover::catalog_search(&query, &region, limit)
+    let hits = bookclerk_discover::catalog_search(&state.sources, &query, &region, limit)
         .await
         .map_err(internal_err)?;
     Ok(Json(hits))
@@ -940,7 +942,7 @@ async fn list_request_queue(
         embed_intra_threads: cfg.discovery.embed_intra_threads,
         embeddings_enabled: cfg.discovery.embeddings_enabled,
     };
-    let rows = bookclerk_discover::rank_global_request_queue(&state.library, &opts)
+    let rows = bookclerk_discover::rank_global_request_queue(&state.library, &state.sources, &opts)
         .await
         .map_err(internal_err)?;
     Ok(Json(rows))

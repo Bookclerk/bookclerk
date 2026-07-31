@@ -12,8 +12,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use bookclerk_audible::DownloadOptions;
 use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
+use bookclerk_source::DownloadOptions;
 use bookclerk_storage::{bookclerk_meta_sidecar_key, is_audio_key, ObjectProbe, StorageBackend};
 use tracing::{debug, info, warn};
 
