@@ -1,4 +1,8 @@
-//! Dynamic plugins for Bookclerk (host side).
+//! External plugin host for Bookclerk (`bookclerk-plugin-host`).
+//!
+//! Discovers staged guests under `$BOOKCLERK_FILES_DIR/plugins/`, spawns them
+//! over JSON-RPC, and optionally links first-party adapters in-process when the
+//! `bundled-plugins` feature is enabled on the host binary.
 //!
 //! Two load paths share the same registries:
 //!

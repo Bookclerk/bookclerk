@@ -13,23 +13,25 @@ name = "bookclerk"
 path = "src/main.rs"
 
 [features]
-# Mirrors `bookclerkd`: the two hosts must be buildable from the same feature set,
-# or a packager could omit a store from one binary and not the other.
-default = [
+# Hosts default to external guests only (stage under plugins/ or set
+# BOOKCLERK_PLUGIN_DIRS). Enable `bundled-plugins` to link storefronts
+# in-process for faster local iteration without staging binaries.
+default = []
+bundled-plugins = [
     "bookclerk-plugin-source-audible",
     "bookclerk-plugin-source-libro",
     "bookclerk-plugin-source-chirp",
     "bookclerk-plugin-source-graphicaudio",
     "bookclerk-plugin-integration-audiobookshelf",
 ]
-bookclerk-plugin-source-audible = ["bookclerk-plugin/bookclerk-plugin-source-audible"]
-bookclerk-plugin-source-libro = ["bookclerk-plugin/bookclerk-plugin-source-libro"]
-bookclerk-plugin-source-chirp = ["bookclerk-plugin/bookclerk-plugin-source-chirp"]
+bookclerk-plugin-source-audible = ["bookclerk-plugin-host/bookclerk-plugin-source-audible"]
+bookclerk-plugin-source-libro = ["bookclerk-plugin-host/bookclerk-plugin-source-libro"]
+bookclerk-plugin-source-chirp = ["bookclerk-plugin-host/bookclerk-plugin-source-chirp"]
 bookclerk-plugin-source-graphicaudio = [
-    "bookclerk-plugin/bookclerk-plugin-source-graphicaudio",
+    "bookclerk-plugin-host/bookclerk-plugin-source-graphicaudio",
 ]
 bookclerk-plugin-integration-audiobookshelf = [
-    "bookclerk-plugin/bookclerk-plugin-integration-audiobookshelf",
+    "bookclerk-plugin-host/bookclerk-plugin-integration-audiobookshelf",
 ]
 
 [dependencies]
@@ -47,7 +49,7 @@ bookclerk-source.workspace = true
 bookclerk-storage.workspace = true
 bookclerk-integrations.workspace = true
 bookclerk-discover.workspace = true
-bookclerk-plugin.workspace = true
+bookclerk-plugin-host.workspace = true
 rusqlite.workspace = true
 chrono.workspace = true
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }

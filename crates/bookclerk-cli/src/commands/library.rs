@@ -275,10 +275,13 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 .collect();
             apply_setting_overrides(&mut cfg, &pairs);
             let destinations =
-                bookclerk_plugin::load_external_destinations(&cfg, Some(store.db())).await?;
-            let destinations =
-                bookclerk_plugin::build_acquire_destinations(&cfg, Some(&store), &destinations)
-                    .await?;
+                bookclerk_plugin_host::load_external_destinations(&cfg, Some(store.db())).await?;
+            let destinations = bookclerk_plugin_host::build_acquire_destinations(
+                &cfg,
+                Some(&store),
+                &destinations,
+            )
+            .await?;
             let storage = destinations.listing_backend()?;
             let registry = default_registry_with_plugins(&cfg).await?;
 
@@ -338,10 +341,10 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
 
             let integrations = if dry_run {
                 let mut registry = bookclerk_integrations::IntegrationRegistry::new();
-                bookclerk_plugin::register_builtin_integrations(&cfg, &mut registry)?;
+                bookclerk_plugin_host::register_builtin_integrations(&cfg, &mut registry)?;
                 registry
             } else {
-                bookclerk_plugin::load_integrations(&cfg).await?
+                bookclerk_plugin_host::load_integrations(&cfg).await?
             };
 
             let mut ok = 0u32;
@@ -857,6 +860,6 @@ async fn storage_for_config(
     store: &LibraryStore,
 ) -> anyhow::Result<Box<dyn StorageBackend>> {
     let destinations =
-        bookclerk_plugin::load_external_destinations(config, Some(store.db())).await?;
-    Ok(bookclerk_plugin::build_storage_backend(config, Some(store), &destinations).await?)
+        bookclerk_plugin_host::load_external_destinations(config, Some(store.db())).await?;
+    Ok(bookclerk_plugin_host::build_storage_backend(config, Some(store), &destinations).await?)
 }

@@ -1,6 +1,6 @@
 [package]
-name = "bookclerk-plugin"
-description = "Dynamic plugin discovery and JSON-RPC host/guest protocol for Bookclerk"
+name = "bookclerk-plugin-host"
+description = "External plugin host: discovery, spawn, JSON-RPC, and optional in-process builtins"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

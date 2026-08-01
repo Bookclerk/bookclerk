@@ -1,16 +1,8 @@
-//! In-process registration of first-party plugins.
+//! In-process registration of first-party plugins (optional `bundled-plugins` feature).
 //!
 //! Hosts (`bookclerk` / `bookclerkd`) call these helpers instead of naming
-//! store crates. That keeps binaries store-agnostic while still allowing
-//! `cargo run` without staging external plugin binaries — first-party plugin
-//! packages under `crates/bookclerk-plugins/` expose a library (`register`)
-//! linked through this host crate when the matching Cargo feature is enabled.
-//!
-//! Feature names match plugin package names (`bookclerk-plugin-source-audible`,
-//! `bookclerk-plugin-integration-audiobookshelf`, …). Build with
-//! `--no-default-features` for external-guest-only hosts.
-//! [`crate::load_external_sources`] / [`crate::load_external_integrations`]
-//! always run and skip ids already registered here.
+//! store crates. Default host builds do **not** enable this — use staged external
+//! guests from `plugins/` (see `docs/plugins.md`).
 
 use bookclerk_config::Config;
 use bookclerk_integrations::IntegrationRegistry;

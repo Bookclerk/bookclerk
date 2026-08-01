@@ -1,7 +1,7 @@
 //! Guest-only Bookclerk plugin SDK.
 //!
 //! Third-party Rust plugins depend on **this** crate (path/git today; crates.io
-//! later) — not the host `bookclerk-plugin` crate, which pulls library/config
+//! later) — not the host `bookclerk-plugin-host` crate, which pulls library/config
 //! and other Bookclerk internals.
 //!
 //! ```toml
@@ -36,9 +36,11 @@ pub use protocol::{
     CliInvokeParams, CliInvokeResult, CliSchema, ConfigOptionDto, ConfigOptionValueDto, CopyParams,
     CredentialsUpdateParams, EventPollResultDto, ExpandCandidatesParams, ExternalUserDto,
     FetchTitleParams, GetParams, GetResultDto, HandshakeResult, HealthDto, KeyParams, ListParams,
-    ListeningProgressDto, LoginCompleteParams, LoginParams, LoginResultDto, LoginStartResultDto,
-    ObjectInfoDto, ObjectMetaDto, ObjectProbeDto, OutputS3ContextDto, PlainPartDto,
-    PurchaseHintDto, PurchaseHintParams, PutFileParams, PutParams, S3CredentialsDto, ScanBookDto,
-    ScanParams, ScanSummaryDto, SearchCatalogParams, SourceAccountDto, SourceFetchDto,
-    SyncListeningResultDto, TouchFileParams, PLUGIN_API_VERSION,
+    ListeningProgressDto, LocalCopyParams, LocalGetParams, LocalKeyParams, LocalListParams,
+    LocalPutFileParams, LocalPutParams, LocalTouchFileParams, LoginCompleteParams, LoginParams,
+    LoginResultDto, LoginStartResultDto, ObjectInfoDto, ObjectMetaDto, ObjectProbeDto,
+    OutputLocalContextDto, OutputS3ContextDto, PlainPartDto, PurchaseHintDto, PurchaseHintParams,
+    PutFileParams, PutParams, S3CredentialsDto, ScanBookDto, ScanParams, ScanSummaryDto,
+    SearchCatalogParams, SourceAccountDto, SourceFetchDto, SyncListeningResultDto, TouchFileParams,
+    PLUGIN_API_VERSION,
 };

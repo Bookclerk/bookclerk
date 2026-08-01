@@ -1,0 +1,8 @@
+api_version = 1
+id = "local"
+name = "Local filesystem"
+kind = "output"
+command = "./bookclerk-plugin-destination-local"
+
+[sandbox]
+network = "none"

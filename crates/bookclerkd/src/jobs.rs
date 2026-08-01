@@ -143,7 +143,7 @@ pub async fn run_acquire(
     let paths = cfg.paths();
     paths.ensure_dirs()?;
     let library = state.library.read().await.clone();
-    let destinations = bookclerk_plugin::build_acquire_destinations(
+    let destinations = bookclerk_plugin_host::build_acquire_destinations(
         &cfg,
         Some(&library),
         &*state.destinations.read().await,

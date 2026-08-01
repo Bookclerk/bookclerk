@@ -1,6 +1,6 @@
 //! Build clap subcommands from plugin [`CliSchema`] and map matches → invoke args.
 
-use bookclerk_plugin::{CliArgKind, CliArgSpec, CliCommandSpec, CliSchema};
+use bookclerk_plugin_host::{CliArgKind, CliArgSpec, CliCommandSpec, CliSchema};
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 use serde_json::{Map, Value};
 
@@ -136,7 +136,7 @@ pub fn find_command<'a>(schema: &'a CliSchema, name: &str) -> Option<&'a CliComm
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bookclerk_plugin::CliArgSpec;
+    use bookclerk_plugin_host::CliArgSpec;
 
     #[test]
     fn builds_and_parses_ping() {

@@ -1,7 +1,7 @@
 //! Guest-process helpers for the external Libro.fm source plugin.
 //!
 //! These APIs do **not** open the library DB — the host seals credentials and
-//! upserts scan DTOs via [`bookclerk_plugin::ExternalSource`].
+//! upserts scan DTOs via [`bookclerk_plugin_host::ExternalSource`].
 
 use std::collections::BTreeMap;
 use std::path::Path;

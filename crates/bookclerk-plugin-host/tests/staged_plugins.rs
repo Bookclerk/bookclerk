@@ -1,12 +1,11 @@
 //! Host↔guest handshake against staged first-party plugin artifacts.
 //!
-//! Requires binaries under `BOOKCLERK_PLUGIN_ARTIFACTS` (CI stages them via
-//! `scripts/stage-first-party-plugins.sh`). When unset, the test is skipped.
+//! Requires binaries under `BOOKCLERK_PLUGIN_ARTIFACTS` (CI: `cargo stage-plugins`).
 
 use std::path::PathBuf;
 
 use bookclerk_config::{Config, Paths};
-use bookclerk_plugin::{
+use bookclerk_plugin_host::{
     discover_plugins, methods, CatalogHitDto, HealthDto, PluginClient, PluginKind,
     SearchCatalogParams,
 };
@@ -18,7 +17,7 @@ fn artifacts_dir() -> Option<PathBuf> {
 #[tokio::test]
 async fn staged_first_party_plugins_handshake() {
     let Some(artifacts) = artifacts_dir() else {
-        eprintln!("skipping: set BOOKCLERK_PLUGIN_ARTIFACTS after stage-first-party-plugins.sh");
+        eprintln!("skipping: set BOOKCLERK_PLUGIN_ARTIFACTS after `cargo stage-plugins`");
         return;
     };
     assert!(
@@ -44,6 +43,11 @@ async fn staged_first_party_plugins_handshake() {
         "chirp",
         "graphicaudio",
         "audiobookshelf",
+        "s3",
+        "local",
+        "sqlite",
+        "d1",
+        "postgres",
     ] {
         assert!(
             ids.contains(&expected),
@@ -57,11 +61,12 @@ async fn staged_first_party_plugins_handshake() {
             .unwrap_or_else(|e| panic!("spawn {}: {e}", plugin.manifest.id));
         let hs = client.handshake();
         assert_eq!(hs.id, plugin.manifest.id);
-        assert_eq!(hs.api_version, bookclerk_plugin::PLUGIN_API_VERSION);
+        assert_eq!(hs.api_version, bookclerk_plugin_host::PLUGIN_API_VERSION);
         match plugin.manifest.kind {
             PluginKind::Source => assert_eq!(hs.kind, "source"),
             PluginKind::Integration => assert_eq!(hs.kind, "integration"),
-            other => panic!("unexpected kind {other:?}"),
+            PluginKind::Output => assert_eq!(hs.kind, "output"),
+            PluginKind::Database => assert_eq!(hs.kind, "database"),
         }
         let health: HealthDto = client
             .call(methods::HEALTH, serde_json::json!({}))

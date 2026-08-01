@@ -4,16 +4,16 @@ use bookclerk_source::SourceRegistry;
 
 /// Content sources via the plugin host (in-process builtins + externals).
 ///
-/// Host binaries do not name store crates — [`bookclerk_plugin::load_sources`]
+/// Host binaries do not name store crates — [`bookclerk_plugin_host::load_sources`]
 /// registers first-party adapters in-process and loads discovered guests.
 pub async fn default_registry_with_plugins(config: &Config) -> anyhow::Result<SourceRegistry> {
-    Ok(bookclerk_plugin::load_sources(config).await?)
+    Ok(bookclerk_plugin_host::load_sources(config).await?)
 }
 
 /// Open the library database (in-process or external database plugin).
 pub async fn open_library(config: &Config) -> anyhow::Result<LibraryStore> {
-    let registry = bookclerk_plugin::load_external_database(config).await?;
-    Ok(bookclerk_plugin::open_library_store(config, &registry).await?)
+    let registry = bookclerk_plugin_host::load_external_database(config).await?;
+    Ok(bookclerk_plugin_host::open_library_store(config, &registry).await?)
 }
 
 /// Resolve `--source` against registered plugin ids / aliases.

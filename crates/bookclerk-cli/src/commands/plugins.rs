@@ -1,7 +1,7 @@
 //! `bookclerk plugins` — discover, manage, and invoke dynamic plugin CLI.
 
 use bookclerk_config::Config;
-use bookclerk_plugin::{
+use bookclerk_plugin_host::{
     host_target_triple, methods, search_crates_io, CliInvokeParams, CliSchema, DiscoveredPlugin,
     PluginClient, PluginKind, CRATE_NAME_PREFIX,
 };
@@ -70,8 +70,8 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     match command {
         PluginsCommand::List => {
-            let dirs = bookclerk_plugin::plugin_search_dirs(config);
-            let plugins = bookclerk_plugin::discover_plugins(config)?;
+            let dirs = bookclerk_plugin_host::plugin_search_dirs(config);
+            let plugins = bookclerk_plugin_host::discover_plugins(config)?;
             let items: Vec<PluginListItem> = plugins
                 .iter()
                 .map(|p| PluginListItem {
@@ -182,7 +182,7 @@ pub async fn run(
             })
         }
         PluginsCommand::Diagnose { id } => {
-            let plugins = bookclerk_plugin::discover_plugins(config)?;
+            let plugins = bookclerk_plugin_host::discover_plugins(config)?;
             let targets: Vec<_> = if let Some(id) = id {
                 let p = plugins
                     .into_iter()
@@ -253,7 +253,7 @@ pub async fn run_plugin_cli(
                 plugin.manifest.id
             );
         }
-        let settings = bookclerk_plugin::settings_table(config, &plugin);
+        let settings = bookclerk_plugin_host::settings_table(config, &plugin);
         let client = PluginClient::spawn(&plugin, config, toml_table_to_json(&settings)).await?;
         let schema = resolve_schema(&client, &plugin).await?;
         (schema, Some(client))
@@ -339,7 +339,7 @@ pub async fn run_plugin_cli(
 
 /// Augment the `plugins` clap command with discovered plugin ids (manifest CLI).
 pub fn augment_plugins_command(mut plugins_cmd: clap::Command, config: &Config) -> clap::Command {
-    let Ok(discovered) = bookclerk_plugin::discover_plugins(config) else {
+    let Ok(discovered) = bookclerk_plugin_host::discover_plugins(config) else {
         return plugins_cmd;
     };
     for plugin in discovered {
@@ -390,7 +390,7 @@ async fn diagnose_plugin(
     config: &Config,
     plugin: &DiscoveredPlugin,
 ) -> anyhow::Result<Vec<String>> {
-    let settings = bookclerk_plugin::settings_table(config, plugin);
+    let settings = bookclerk_plugin_host::settings_table(config, plugin);
     let client = PluginClient::spawn(plugin, config, toml_table_to_json(&settings)).await?;
     if !client.has_capability("diagnose") {
         return Ok(vec![format!(
@@ -465,7 +465,7 @@ fn matches_plugin_id(manifest_id: &str, active: &str) -> bool {
 }
 
 fn find_plugin(config: &Config, id: &str) -> anyhow::Result<DiscoveredPlugin> {
-    let plugins = bookclerk_plugin::discover_plugins(config)?;
+    let plugins = bookclerk_plugin_host::discover_plugins(config)?;
     plugins
         .into_iter()
         .find(|p| p.manifest.id == id)

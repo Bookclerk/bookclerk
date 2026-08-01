@@ -104,6 +104,11 @@ impl DatabaseRegistry {
 }
 
 /// Discover and spawn the external database plugin matching `[database].plugin`.
+///
+/// Local SQLite (`plugin = "sqlite"`) is normally loaded from a platform-shipped
+/// guest under `plugins/sqlite/` (fd-pass for `library.db`). When the guest is
+/// missing or fails to start, [`open_library_store`] falls back to in-process
+/// [`bookclerk_library::LibraryStore::open_from_config`].
 pub async fn load_external_database(config: &Config) -> PluginResult<DatabaseRegistry> {
     let mut registry = DatabaseRegistry::default();
     let active = config.database.plugin.trim().to_ascii_lowercase();

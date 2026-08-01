@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use bookclerk_config::{Config, Isolation, Paths};
-use bookclerk_plugin::{discover_plugins, plugin_data_dir, DiscoveredPlugin, PluginClient};
+use bookclerk_plugin_host::{discover_plugins, plugin_data_dir, DiscoveredPlugin, PluginClient};
 
 /// Where cargo left the launcher for this test run.
 ///

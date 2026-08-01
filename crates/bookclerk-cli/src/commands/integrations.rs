@@ -56,7 +56,7 @@ pub async fn run(command: IntegrationsCommand, config: &Config) -> anyhow::Resul
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
     let library = crate::registry::open_library(config).await?;
-    let registry = bookclerk_plugin::load_integrations(config).await?;
+    let registry = bookclerk_plugin_host::load_integrations(config).await?;
 
     match command {
         IntegrationsCommand::Status => {

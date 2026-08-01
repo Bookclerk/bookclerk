@@ -5,22 +5,43 @@ Third-party plugins remain **prebuilt executables** + `plugin.toml` (see
 on [crates.io](https://crates.io) so Bookclerk can **discover** and **install**
 them from a packaged binary — without the operator having a Rust toolchain.
 
-> Status: **taxonomy + metadata contract are stable to implement against**.
-> Catalog search / one-click install / dashboard browser are phased (below).
+> Status: crate naming taxonomy is **draft-stable for discovery**. Install
+> metadata, digest requirements, and federated registry identity will evolve
+> until CLI install lands (Phase C). Catalog search works today; one-click
+> install / dashboard browser remain phased (below).
+
+### Out of scope for the host-rename / external-default PR
+
+The following are **follow-up work**, not part of the Phase 1–2 host/packaging
+landing:
+
+- `bookclerk plugins install` / `update` / `remove` and install receipts
+- Federated discovery beyond crates.io search (npm, PyPI, static registries)
+- Windows AppContainer spawn-time confinement
+- Publisher code signing / notarization as a hard requirement
+- TypeScript / Python guest SDKs and packaging templates
 
 ## Design principle
 
 | Layer | Role |
 | --- | --- |
-| crates.io crate | **Discovery index** + source for plugin *authors* |
+| crates.io crate | **Discovery index** + install URL metadata for plugin *authors* |
 | HTTPS downloadable archive | **Prebuilt binaries** for each OS/arch (any host) |
 | `$BOOKCLERK_FILES_DIR/plugins/<id>/` | **Installed** layout Bookclerk already loads |
+| Platform installer / `cargo package-platform` | **Hosts + sqlite + local** — always bundled, not pulled from crates.io |
 
 Bookclerk never runs `cargo build` on the user’s machine. Installing a plugin
 downloads a release asset over HTTPS, verifies it, and unpacks `plugin.toml` +
 binary — the same layout as a manual drop-in. The asset host is **not** tied to
 GitHub: S3/R2, GitLab/Forgejo/Codeberg releases, a CDN, or a self-hosted static
 directory all work as long as the URL is a direct download.
+
+**Automatic pull today:** nothing from crates.io. Platform plugins ship inside
+the host installer. Optional storefronts install later via
+`bookclerk plugins install` (planned) or manual archive unpack.
+
+See [packaging.md](packaging.md) for `cargo package-*` aliases and GitHub Actions
+signing notes.
 
 ```text
 crates.io ──search / metadata──► bookclerk plugins search|install
@@ -228,7 +249,7 @@ host binary discovers whatever lands under `plugins/`.
 
 ### Guest SDK crate (`bookclerk-plugin-sdk`)
 
-Use the slim **guest-only** crate — not the host `bookclerk-plugin` (that pulls
+Use the slim **guest-only** crate — not the host `bookclerk-plugin-host` (that pulls
 config/library/source and is for Bookclerk itself):
 
 ```toml
@@ -252,7 +273,7 @@ artifact_base_url = "https://cdn.example.com/…/{version}"
 In-tree first-party plugins: `crates/bookclerk-plugins/source-{audible,libro,chirp,graphicaudio}`
 (each package is lib + guest bin) and `crates/bookclerk-plugin-examples/echo-integration`.
 CI builds those binaries and
-stages them with `scripts/stage-first-party-plugins.sh` for host integration tests
+stages them with `cargo stage-plugins` for host integration tests
 (`BOOKCLERK_PLUGIN_ARTIFACTS`) — no public artifact release yet.
 
 Cargo only builds the SDK’s small dependency graph (`serde`, `tokio` I/O,
@@ -273,13 +294,13 @@ Author loop:
 | Option | Verdict |
 | --- | --- |
 | **`bookclerk-plugin-sdk`** (chosen) | Clear guest surface; host cannot leak into author builds; publishable later without renaming |
-| Features on `bookclerk-plugin` (`guest` / `host`) | Easy to enable the wrong feature; git dep still documents the host package name |
+| Features on `bookclerk-plugin-host` (`bundled-plugins`) | Opt-in in-process dev; release hosts omit storefront features |
 | `bookclerk-plugin-dev` | Sounds like build tooling; authors would think it’s test-only |
 
 ### What you never need
 
 - A mirror of `fritz-fritz/bookclerk`
-- Linking against `bookclerkd` / `bookclerk-cli` / host `bookclerk-plugin`
+- Linking against `bookclerkd` / `bookclerk-cli` / host `bookclerk-plugin-host`
 - Matching our workspace `Cargo.toml` beyond the SDK’s MSRV
 - Rust at all (Go/Python/Node/… binary that speaks the protocol is valid; crates.io
   is then optional discovery sugar)

@@ -1,7 +1,7 @@
 //! Audiobookshelf integration plugin: in-process [`Integration`] + JSON-RPC guest.
 //!
 //! Host binaries should register via [`register`] through
-//! `bookclerk_plugin::register_builtin_integrations` (feature-gated), not by
+//! `bookclerk_plugin_host::register_builtin_integrations` (feature-gated), not by
 //! depending on this crate directly.
 
 mod brand;

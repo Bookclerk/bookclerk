@@ -18,7 +18,7 @@ use bookclerk_library::{
     configure_master_key_with, AcquireStatus, BookRecord, LibraryStore, NewTitleRequest,
     RequestStatus, TitleRequestRecord,
 };
-use bookclerk_plugin::{DatabaseRegistry, DestinationRegistry};
+use bookclerk_plugin_host::{DatabaseRegistry, DestinationRegistry};
 use bookclerk_search::{SearchEngine, SearchHit};
 use bookclerk_source::SourceRegistry;
 use serde::{Deserialize, Serialize};
@@ -255,10 +255,10 @@ async fn health() -> Json<HealthResponse> {
 
 /// Re-open the library connection for the active `[database].plugin` and refresh destinations.
 pub async fn reload_library_store(state: &AppState, config: &Config) -> anyhow::Result<()> {
-    let registry = bookclerk_plugin::load_external_database(config).await?;
-    let library = bookclerk_plugin::open_library_store(config, &registry).await?;
+    let registry = bookclerk_plugin_host::load_external_database(config).await?;
+    let library = bookclerk_plugin_host::open_library_store(config, &registry).await?;
     let destinations =
-        bookclerk_plugin::load_external_destinations(config, Some(library.db())).await?;
+        bookclerk_plugin_host::load_external_destinations(config, Some(library.db())).await?;
     *state.database_registry.write().await = registry;
     *state.library.write().await = library;
     *state.destinations.write().await = destinations;
@@ -296,7 +296,7 @@ pub async fn reload_daemon_config(state: &AppState) -> anyhow::Result<String> {
     } else {
         let library = state.library_snapshot().await;
         let destinations =
-            bookclerk_plugin::load_external_destinations(&new_cfg, Some(library.db())).await?;
+            bookclerk_plugin_host::load_external_destinations(&new_cfg, Some(library.db())).await?;
         *state.destinations.write().await = destinations;
     }
     let listen_changed = old_listen != new_cfg.daemon.listen;
@@ -363,7 +363,7 @@ async fn migrate_database(
         .trim()
         .to_string();
     let to_plugin = body.to.trim().to_string();
-    match bookclerk_plugin::migrate_database_plugin(
+    match bookclerk_plugin_host::migrate_database_plugin(
         &cfg,
         &from_plugin,
         &to_plugin,

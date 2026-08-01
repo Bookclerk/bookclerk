@@ -635,7 +635,7 @@ async fn run_database(
                 anyhow::anyhow!("unknown destination database plugin `{to_plugin}`")
             })?;
 
-            let summary = bookclerk_plugin::migrate_database_plugin(
+            let summary = bookclerk_plugin_host::migrate_database_plugin(
                 config,
                 &from_plugin,
                 &to_plugin,

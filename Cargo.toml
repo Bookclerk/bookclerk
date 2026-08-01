@@ -18,7 +18,7 @@ members = [
     "crates/bookclerk-integrations",
     "crates/bookclerk-discover",
     "crates/bookclerk-plugin-sdk",
-    "crates/bookclerk-plugin",
+    "crates/bookclerk-plugin-host",
     "crates/bookclerk-plugin-examples/echo-integration",
     "crates/bookclerk-plugins/source-audible",
     "crates/bookclerk-plugins/source-libro",
@@ -26,7 +26,9 @@ members = [
     "crates/bookclerk-plugins/source-graphicaudio",
     "crates/bookclerk-plugins/integration-audiobookshelf",
     "crates/bookclerk-plugins/destination-s3",
+    "crates/bookclerk-plugins/destination-local",
     "crates/bookclerk-plugins/database",
+    "crates/bookclerk-dev",
     "crates/bookclerk-cli",
     "crates/bookclerkd",
     "crates/bookclerk-tray",
@@ -61,6 +63,7 @@ bookclerk-plugin-source-chirp = { path = "crates/bookclerk-plugins/source-chirp"
 bookclerk-plugin-source-graphicaudio = { path = "crates/bookclerk-plugins/source-graphicaudio" }
 bookclerk-plugin-integration-audiobookshelf = { path = "crates/bookclerk-plugins/integration-audiobookshelf" }
 bookclerk-plugin-destination-s3 = { path = "crates/bookclerk-plugins/destination-s3" }
+bookclerk-plugin-destination-local = { path = "crates/bookclerk-plugins/destination-local" }
 bookclerk-plugin-database = { path = "crates/bookclerk-plugins/database" }
 bookclerk-enrich = { path = "crates/bookclerk-enrich" }
 bookclerk-sandbox = { path = "crates/bookclerk-sandbox" }
@@ -80,7 +83,7 @@ bookclerk-discover = { path = "crates/bookclerk-discover" }
 bookclerk-plugin-sdk = { path = "crates/bookclerk-plugin-sdk" }
 # Off by default so the hosts decide which stores they link; a member cannot turn
 # an inherited dependency's default features back off.
-bookclerk-plugin = { path = "crates/bookclerk-plugin", default-features = false }
+bookclerk-plugin-host = { path = "crates/bookclerk-plugin-host", default-features = false }
 
 # Async / runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "io-std", "sync", "time", "process", "signal"] }

@@ -25,6 +25,7 @@ Start here if you are new:
 | --- | --- |
 | [Plugins](plugins.md) | Ship or host a third-party source/integration, and the jail guests run in |
 | [Plugin registry](plugin-registry.md) | crates.io taxonomy, prebuilt install, catalog roadmap |
+| [Packaging](packaging.md) | `cargo package-*` aliases, platform bundles, release CI |
 | [Source candidates](source-candidates.md) | Research notes for stores not yet implemented |
 | [Diagnostics](diagnostics.md) | Opt-in crash/error reporting pipeline |
 

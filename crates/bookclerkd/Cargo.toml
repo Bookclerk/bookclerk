@@ -13,26 +13,23 @@ name = "bookclerkd"
 path = "src/main.rs"
 
 [features]
-# Which first-party plugins are linked in-process, named after their packages and
-# forwarded to the host crate that links them. `--no-default-features` builds an
-# external-guest-only daemon; add back only the stores you want to ship. This is
-# how a build omits the Audible plugin, and with it every cipher and content-key
-# path — see docs/plugins.md#shipping-without-a-store.
-default = [
+# External guests only by default — see `bundled-plugins` on bookclerk-cli.
+default = []
+bundled-plugins = [
     "bookclerk-plugin-source-audible",
     "bookclerk-plugin-source-libro",
     "bookclerk-plugin-source-chirp",
     "bookclerk-plugin-source-graphicaudio",
     "bookclerk-plugin-integration-audiobookshelf",
 ]
-bookclerk-plugin-source-audible = ["bookclerk-plugin/bookclerk-plugin-source-audible"]
-bookclerk-plugin-source-libro = ["bookclerk-plugin/bookclerk-plugin-source-libro"]
-bookclerk-plugin-source-chirp = ["bookclerk-plugin/bookclerk-plugin-source-chirp"]
+bookclerk-plugin-source-audible = ["bookclerk-plugin-host/bookclerk-plugin-source-audible"]
+bookclerk-plugin-source-libro = ["bookclerk-plugin-host/bookclerk-plugin-source-libro"]
+bookclerk-plugin-source-chirp = ["bookclerk-plugin-host/bookclerk-plugin-source-chirp"]
 bookclerk-plugin-source-graphicaudio = [
-    "bookclerk-plugin/bookclerk-plugin-source-graphicaudio",
+    "bookclerk-plugin-host/bookclerk-plugin-source-graphicaudio",
 ]
 bookclerk-plugin-integration-audiobookshelf = [
-    "bookclerk-plugin/bookclerk-plugin-integration-audiobookshelf",
+    "bookclerk-plugin-host/bookclerk-plugin-integration-audiobookshelf",
 ]
 
 [dependencies]
@@ -49,7 +46,7 @@ bookclerk-source.workspace = true
 bookclerk-storage.workspace = true
 bookclerk-integrations.workspace = true
 bookclerk-discover.workspace = true
-bookclerk-plugin.workspace = true
+bookclerk-plugin-host.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

@@ -91,11 +91,13 @@ async fn main() -> anyhow::Result<()> {
     paths.ensure_dirs()?;
     configure_master_key_with(&paths.files_dir, config.auth_password().as_deref())?;
 
-    let database_registry = bookclerk_plugin::load_external_database(&config).await?;
-    let library_store = bookclerk_plugin::open_library_store(&config, &database_registry).await?;
-    let integrations = bookclerk_plugin::load_integrations(&config).await?;
+    let database_registry = bookclerk_plugin_host::load_external_database(&config).await?;
+    let library_store =
+        bookclerk_plugin_host::open_library_store(&config, &database_registry).await?;
+    let integrations = bookclerk_plugin_host::load_integrations(&config).await?;
     let destinations =
-        bookclerk_plugin::load_external_destinations(&config, Some(library_store.db())).await?;
+        bookclerk_plugin_host::load_external_destinations(&config, Some(library_store.db()))
+            .await?;
     let library = Arc::new(RwLock::new(library_store));
     let database_registry = Arc::new(RwLock::new(database_registry));
     let sources = {

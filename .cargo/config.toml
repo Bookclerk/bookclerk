@@ -1,0 +1,12 @@
+# Local development helpers (external plugin workflow).
+# See crates/bookclerk-dev/README.md.
+[alias]
+build-plugins = "run -p bookclerk-dev -- build-plugins"
+stage-plugins = "run -p bookclerk-dev -- stage-plugins"
+dev-daemon = "run -p bookclerk-dev -- dev-daemon"
+dev-cli = "run -p bookclerk-dev -- dev-cli"
+test-staged = "run -p bookclerk-dev -- test-staged"
+package-plugins = "run -p bookclerk-dev -- package-plugins"
+package-hosts = "run -p bookclerk-dev -- package-hosts"
+package-platform = "run -p bookclerk-dev -- package-platform"
+check-plugin-host = "check -p bookclerk-plugin-host --no-default-features"

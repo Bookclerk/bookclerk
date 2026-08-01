@@ -6,14 +6,15 @@ be enabled at once** — Bookclerk writes to every enabled destination.
 
 Built-in destinations today:
 
-| Id | Config table | Credentials |
-| --- | --- | --- |
-| Local filesystem | `[output.local]` | none |
-| S3 / MinIO | `[output.s3]` | `AWS_*` env override → `encrypted_secrets` → SDK chain |
+| Id | Config table | Credentials | Default load |
+| --- | --- | --- | --- |
+| Local filesystem | `[output.local]` | none | Platform guest `plugins/local/` (sandboxed); in-process fallback |
+| S3 / MinIO | `[output.s3]` | `AWS_*` env override → `encrypted_secrets` → SDK chain | Platform guest `plugins/s3/` when staged |
 
-External `kind = "output"` plugins are loaded when discovered. The first-party
-S3 guest (`id = "s3"`) replaces the in-process backend when staged under
-`plugins/s3/` and `[output.s3].enabled = true` ([plugins.md](plugins.md)).
+External `kind = "output"` plugins are loaded when discovered. First-party
+guests replace the in-process backend when staged and enabled
+([plugins.md](plugins.md)). The local guest is granted write access only to
+`[output.local].root` (plus its private `plugins/local/data` and `tmp`).
 
 ## Local filesystem
 

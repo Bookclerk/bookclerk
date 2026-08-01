@@ -53,7 +53,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Plugin host without in-process sources
-        run: cargo check -p bookclerk-plugin --no-default-features
+        run: cargo check -p bookclerk-plugin-host --no-default-features
 
       # A packager who may not ship DRM code needs the hosts themselves to build
       # without a store, not just the plugin host crate. The script also asserts
@@ -65,15 +65,10 @@ jobs:
             --all-targets -- -D warnings
           ./scripts/check-store-free-hosts.sh
 
-      - name: Build first-party plugin artifacts
-        run: |
-          cargo build -p bookclerk-plugin-echo-integration \
-            -p bookclerk-plugin-source-audible \
-            -p bookclerk-plugin-source-libro \
-            -p bookclerk-plugin-source-chirp \
-            -p bookclerk-plugin-source-graphicaudio \
-            -p bookclerk-plugin-integration-audiobookshelf
-          ./scripts/stage-first-party-plugins.sh debug "$RUNNER_TEMP/bookclerk-plugins"
+      - name: Stage first-party plugin artifacts
+        env:
+          BOOKCLERK_PLUGIN_ARTIFACTS: ${{ runner.temp }}/bookclerk-plugins
+        run: cargo stage-plugins
 
       - name: Test
         env:

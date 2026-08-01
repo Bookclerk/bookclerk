@@ -1,0 +1,33 @@
+[package]
+name = "bookclerk-dev"
+description = "Cargo alias dispatcher: build, stage, and run Bookclerk with external plugins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "bookclerk-dev"
+path = "src/main.rs"
+
+[lib]
+name = "bookclerk_dev"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+flate2 = "1"
+sha2 = "0.10"
+tar = "0.4"
+walkdir = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

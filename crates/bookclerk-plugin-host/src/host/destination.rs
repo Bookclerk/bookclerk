@@ -304,12 +304,25 @@ impl StorageBackend for ExternalDestination {
 #[derive(Default, Clone)]
 pub struct DestinationRegistry {
     s3: Option<Arc<ExternalDestination>>,
+    local: Option<Arc<super::destination_local::ExternalLocalDestination>>,
 }
 
 impl DestinationRegistry {
     #[must_use]
     pub fn s3(&self) -> Option<Arc<ExternalDestination>> {
         self.s3.clone()
+    }
+
+    #[must_use]
+    pub fn local(&self) -> Option<Arc<super::destination_local::ExternalLocalDestination>> {
+        self.local.clone()
+    }
+
+    pub(crate) fn set_local(
+        &mut self,
+        dest: Arc<super::destination_local::ExternalLocalDestination>,
+    ) {
+        self.local = Some(dest);
     }
 }
 
@@ -323,34 +336,31 @@ pub async fn load_external_destinations(
         if plugin.manifest.kind != crate::PluginKind::Output {
             continue;
         }
-        if plugin.manifest.id != S3_PLUGIN_ID {
-            tracing::warn!(
-                id = %plugin.manifest.id,
-                "unknown output plugin id; only `s3` is supported today"
-            );
+        if plugin.manifest.id == S3_PLUGIN_ID {
+            if !config.output.s3.enabled {
+                tracing::debug!(id = %plugin.manifest.id, "S3 output disabled in config; skipping external plugin");
+                continue;
+            }
+            match ExternalDestination::spawn(&plugin, config, db).await {
+                Ok(dest) => {
+                    tracing::info!(
+                        id = %plugin.manifest.id,
+                        path = %plugin.command.display(),
+                        "loaded external S3 output plugin"
+                    );
+                    registry.s3 = Some(Arc::new(dest));
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        id = %plugin.manifest.id,
+                        %err,
+                        "failed to start external S3 output plugin; falling back to in-process backend"
+                    );
+                }
+            }
             continue;
         }
-        if !config.output.s3.enabled {
-            tracing::debug!(id = %plugin.manifest.id, "S3 output disabled in config; skipping external plugin");
-            continue;
-        }
-        match ExternalDestination::spawn(&plugin, config, db).await {
-            Ok(dest) => {
-                tracing::info!(
-                    id = %plugin.manifest.id,
-                    path = %plugin.command.display(),
-                    "loaded external S3 output plugin"
-                );
-                registry.s3 = Some(Arc::new(dest));
-            }
-            Err(err) => {
-                tracing::warn!(
-                    id = %plugin.manifest.id,
-                    %err,
-                    "failed to start external S3 output plugin; falling back to in-process backend"
-                );
-            }
-        }
+        super::destination_local::try_load_local(&plugin, config, &mut registry).await;
     }
     Ok(registry)
 }

@@ -1,17 +1,57 @@
 # Dynamic plugins
 
 Bookclerk is built around pluggable **sources**, **destinations**, and
-**integrations**. First-party adapters live under `crates/bookclerk-plugins/`
-as a **single package per plugin** with dual targets: a library (`register()` for
-an easy `cargo run`) and a JSON-RPC guest binary for distribution / staging.
-This document covers the **external** (subprocess) model — also used by
-third-party plugins — over newline-delimited [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
-on stdio (any language).
+**integrations**. First-party **guest** implementations live under
+`crates/bookclerk-plugins/` (one package per plugin, JSON-RPC binary + optional
+in-process `register()` library). The **host** runtime is
+[`bookclerk-plugin-host`](../crates/bookclerk-plugin-host) — discovery, spawn,
+jail, and JSON-RPC — distinct from the runtime install tree
+`$BOOKCLERK_FILES_DIR/plugins/`.
+
+## Terminology
+
+| Term | Meaning |
+| --- | --- |
+| **Plugin host** | Crate `bookclerk-plugin-host`; loads guests, never ships storefront logic by default |
+| **Guest / external plugin** | Separate executable + `plugin.toml` under `plugins/<id>/` |
+| **Plugin package** | Rust crate under `crates/bookclerk-plugins/` (or third-party repo) |
+| **Platform-shipped guest** | First-party external plugin bundled in the install package (`plugins/sqlite/`, `plugins/local/`, storefronts, …) — sandboxed subprocess, not linked in-process |
+| **In-process fallback** | When a platform guest is missing or fails to start, hosts fall back to the same logic in `bookclerk-library` (SQLite) or `bookclerk-storage` (local output) |
+| **`bundled-plugins`** | Optional host feature linking storefronts in-process (dev only; omit for release packaging) |
+
+This document covers the **external** (subprocess) model over newline-delimited
+[JSON-RPC 2.0](https://www.jsonrpc.org/specification) on stdio (any language).
 
 For the product overview see the [documentation index](README.md). Built-in
 storefronts: [sources.md](sources.md). Audiobookshelf / Connect:
 [integrations.md](integrations.md). Publishing / crates.io taxonomy and
 standalone author repos: [plugin-registry.md](plugin-registry.md).
+
+## Local development (external guests)
+
+Hosts default to **external guests only** (no storefronts linked in-process).
+One command builds, stages, and runs with sandboxed platform guests (sqlite, local,
+storefronts):
+
+```bash
+export BOOKCLERK_FILES_DIR=/tmp/BookclerkFiles   # optional; this is the default
+cargo dev-daemon                                 # daemon with staged guests
+cargo dev-cli -- version                         # CLI with staged guests
+```
+
+Granular aliases (same dispatcher — see `crates/bookclerk-dev/README.md`):
+
+```bash
+cargo build-plugins          # guest binaries only
+cargo stage-plugins          # build + copy to target/plugin-artifacts
+cargo test-staged            # build + stage + handshake integration test
+```
+
+Add `--release` to any alias for release builds. Override staging dir with
+`BOOKCLERK_PLUGIN_ARTIFACTS`. Forward host args after `--` (e.g. `cargo dev-daemon -- --help`).
+
+Optional in-process iteration (no staging): build hosts with
+`--features bundled-plugins` on `bookclerk-cli` / `bookclerkd`.
 
 ## Why subprocesses?
 
@@ -28,24 +68,21 @@ boundary is narrow on top of that:
 
 | Host guarantees | Detail |
 | --- | --- |
-| No library DB path | `library.db` is never passed on the wire — and not reachable if it were |
-| No files-dir root | Plugins get `plugin_data_dir` (`…/plugins/<id>/data`) and fetch `cache_dir` only — not `master.key` |
+| No library DB path (sources / integrations / outputs) | `library.db` is never passed on the wire to those kinds — and not reachable if it were. **Database** guests receive the SQLite file only via the fd-3 side channel (or `sqlite_path` when unconfined) at `db.connect` |
+| No files-dir root | Plugins get `plugin_data_dir` (`…/plugins/<id>/data`) and a per-fetch work directory (descriptor) — not `master.key` or the download cache root |
 | Env scrub | Child spawn uses `env_clear` + a small allowlist (`PATH`, locale, …). `BOOKCLERK_*`, `AWS_*`, tokens, and DB URLs are not inherited; `HOME` and `TMPDIR` are replaced with the guest's own directories |
 | Host-mediated secrets | `login` returns `{ account, credentials }`; host seals into `encrypted_secrets` with `provider = plugin id`. `scan` and `fetch_title` receive those blobs from the host |
 | Host-mediated library writes | `scan` returns book DTOs; host upserts with `source` forced to the plugin id. `list_accounts` is answered from the host accounts table |
 | Scoped identity | Plugin cannot claim another storefront’s `source` / `provider` |
 
-First-party sources and Audiobookshelf all ship under `crates/bookclerk-plugins/`
-with the same guest SDK contract. The **plugin host** crate
-(`bookclerk-plugin`) also calls `register_builtin_sources` /
-`register_builtin_integrations` so in-process library crates work for
-`cargo run` without staging binaries — host binaries never name store crates.
-In-process source **and** Audiobookshelf crates are optional Cargo features
-named after the plugin packages (`bookclerk-plugin-source-audible`,
-`bookclerk-plugin-integration-audiobookshelf`, …), carried by the same names on
-both hosts; `--no-default-features` builds an external-guest-only host (see
-[Shipping without a store](#shipping-without-a-store)). Discovered external
-copies of the same id are skipped. After registration, hosts talk **only**
+First-party guests ship under `crates/bookclerk-plugins/` with the guest SDK
+contract. Host binaries (`bookclerk`, `bookclerkd`) depend on
+**`bookclerk-plugin-host`** only — not on individual store crates. Optional
+`bundled-plugins` features on the hosts call `register_builtin_*` to link
+first-party libraries in-process for faster Rust iteration; release builds omit
+that feature and load staged guests from `plugins/` instead. Discovered
+external copies of the same id are skipped when an in-process adapter is already
+registered. After registration, hosts talk **only**
 through `ContentSource` /
 `Integration` (login, scan, fetch, import, revoke, inspect, plus catalog
 `search_catalog` / `expand_candidates` / `purchase_hint` / `list_deals` for
@@ -59,15 +96,17 @@ user, inside the jail below — review plugins before enabling them.
 
 ## Shipping without a store
 
-Both hosts carry one feature per in-process plugin, all on by default, so a build
-can leave any of them out:
+Both hosts carry one optional feature per in-process plugin (`bundled-plugins`
+enables the full set). **Default builds link no storefront** (external guests
+only):
 
 ```bash
-# External guests only: no store linked into either host.
-cargo build --release -p bookclerk-cli -p bookclerkd --no-default-features
+# Default: external guests only (release packaging).
+cargo build --release -p bookclerk-cli -p bookclerkd
 
-# Everything except Audible.
-cargo build --release -p bookclerk-cli -p bookclerkd --no-default-features \
+# Everything except Audible (still in-process, opt-in).
+cargo build -p bookclerk-cli -p bookclerkd --features bundled-plugins \
+  --no-default-features \
   --features bookclerk-plugin-source-libro,bookclerk-plugin-source-chirp,bookclerk-plugin-source-graphicaudio,bookclerk-plugin-integration-audiobookshelf
 ```
 
@@ -81,10 +120,10 @@ handling, and the CDM.
 Nothing else has to move for that to hold. The shared MP4 plumbing
 (`bookclerk-mp4`) parses and rewrites containers and takes a `SampleTransform`
 from its caller; the Audible plugin's transform is the only one that decrypts.
-`scripts/check-store-free-hosts.sh` asserts it in CI: a `--no-default-features`
-host must link no plugin package and reach no cipher crate, and a default build
-must still link Audible — otherwise the first check would pass for the wrong
-reason. A shared crate that grew an `aes` dependency fails that job.
+`scripts/check-store-free-hosts.sh` asserts it in CI: default hosts must link
+no plugin package and reach no cipher crate. Opt-in `--features bundled-plugins`
+must still link Audible for in-process dev. A shared crate that grew an `aes`
+dependency fails the default-host check.
 
 Users of a store-free build can still add any storefront back as an external
 guest, since discovery is independent of these features. That is a deployment
@@ -544,31 +583,24 @@ protocol version matches.
 
 Audible, Libro.fm, Chirp, GraphicAudio, and Audiobookshelf ship as **external
 plugins** under `crates/bookclerk-plugins/`. The host crate
-`bookclerk-plugin` also registers the same adapters **in-process**
+`bookclerk-plugin-host` also registers the same adapters **in-process**
 (`register_builtin_*` / `load_sources` / `load_integrations`) so `cargo run`
 works without staging binaries. CLI/daemon call only those host helpers —
 never store crates by name. Discovery skips an id that is already registered.
 
 Guest binaries depend on **`bookclerk-plugin-sdk`** (+ their private store crate
 for first-party). Third-party authors should depend on the SDK only — not
-`bookclerk-plugin`, `bookclerk-library`, or `bookclerk-source`.
+`bookclerk-plugin-host`, `bookclerk-library`, or `bookclerk-source`.
 
-CI builds those plugin binaries and stages them with
-`scripts/stage-first-party-plugins.sh` for integration tests (`BOOKCLERK_PLUGIN_ARTIFACTS`).
-Artifacts are **not** published to crates.io / GitHub Releases yet.
+CI builds and stages plugin artifacts with `cargo stage-plugins` (same as local
+dev). Artifacts are **not** published to crates.io / GitHub Releases yet.
 
 Locally:
 
 ```bash
-cargo build -p bookclerk-plugin-source-audible \
-  -p bookclerk-plugin-source-libro \
-  -p bookclerk-plugin-source-chirp \
-  -p bookclerk-plugin-source-graphicaudio \
-  -p bookclerk-plugin-integration-audiobookshelf \
-  -p bookclerk-plugin-echo-integration
-./scripts/stage-first-party-plugins.sh debug /tmp/bc-plugins
-export BOOKCLERK_PLUGIN_DIRS=/tmp/bc-plugins
-# or copy into $BOOKCLERK_FILES_DIR/plugins/
+cargo stage-plugins                    # build + stage to target/plugin-artifacts
+cargo dev-daemon                       # stage + run bookclerkd
+# or: BOOKCLERK_PLUGIN_ARTIFACTS=/tmp/bc-plugins cargo stage-plugins
 ```
 
 For **crates.io naming**, release-asset conventions, and install-without-Rust

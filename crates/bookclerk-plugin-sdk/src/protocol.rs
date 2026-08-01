@@ -589,6 +589,85 @@ pub struct OutputS3ContextDto {
     pub credentials: Option<S3CredentialsDto>,
 }
 
+/// Local filesystem destination knobs the host injects on every output RPC.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutputLocalContextDto {
+    /// Scoped writable directory for this plugin only (`…/plugins/<id>/data`).
+    pub plugin_data_dir: String,
+    /// Library output root (`[output.local].root`).
+    pub root: String,
+    /// Key prefix under `root` (`[output.local].prefix`).
+    pub prefix: String,
+}
+
+/// Params for [`methods::PUT`] (local filesystem output).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalPutParams {
+    #[serde(flatten)]
+    pub ctx: OutputLocalContextDto,
+    pub key: String,
+    pub data_base64: String,
+    #[serde(default)]
+    pub meta: ObjectMetaDto,
+}
+
+/// Params for [`methods::PUT_FILE`] (local filesystem output).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalPutFileParams {
+    #[serde(flatten)]
+    pub ctx: OutputLocalContextDto,
+    pub key: String,
+    #[serde(default)]
+    pub meta: ObjectMetaDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
+}
+
+/// Params for [`methods::GET`] (local filesystem output).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalGetParams {
+    #[serde(flatten)]
+    pub ctx: OutputLocalContextDto,
+    pub key: String,
+}
+
+/// Params for key-scoped local output methods.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalKeyParams {
+    #[serde(flatten)]
+    pub ctx: OutputLocalContextDto,
+    pub key: String,
+}
+
+/// Params for [`methods::LIST`] (local filesystem output).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalListParams {
+    #[serde(flatten)]
+    pub ctx: OutputLocalContextDto,
+    pub prefix: String,
+}
+
+/// Params for [`methods::COPY`] (local filesystem output).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalCopyParams {
+    #[serde(flatten)]
+    pub ctx: OutputLocalContextDto,
+    pub from: String,
+    pub to: String,
+}
+
+/// Params for [`methods::TOUCH_FILE`] (local filesystem output).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalTouchFileParams {
+    #[serde(flatten)]
+    pub ctx: OutputLocalContextDto,
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<String>,
+}
+
 /// Params for [`methods::PUT`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PutParams {

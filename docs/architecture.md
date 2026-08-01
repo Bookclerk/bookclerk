@@ -58,12 +58,14 @@ Bookclerk uses four first-class plugin roles (in-process and/or external):
 
 Third-party plugins are separate executables discovered via `plugin.toml` and
 spoken to over newline-delimited JSON-RPC on stdio. Each guest is started by
-`bookclerk-jail`, which confines it to its own install, data, scratch, and cache
-directories before becoming the plugin, so a storefront parsing hostile input
-cannot reach `master.key` or `library.db`. See [plugins.md](plugins.md).
-Database backends today are selected in-process via `[database].plugin` (see
-[database.md](database.md)); external `kind = "database"` manifests are
-discovered but not loaded yet.
+`bookclerk-jail`, which confines it to its own install directory (read-only),
+`plugins/<id>/data`, `plugins/<id>/tmp`, and — for source/output/database
+operations — a **per-call** filesystem grant (Unix descriptor on fd 3; never the
+download cache root) before becoming the plugin, so a storefront parsing hostile
+input cannot reach `master.key` or the files-dir root. See [plugins.md](plugins.md).
+Database backends are selected via `[database].plugin` (see [database.md](database.md));
+external `kind = "database"` guests are loaded when staged under `plugins/`, with
+in-process fallback when a platform guest is missing.
 
 ## Workspace crates (by concern)
 
@@ -85,7 +87,7 @@ discovered but not loaded yet.
 | Storage backends | `bookclerk-storage` |
 | Catalog enrichment | `bookclerk-enrich` (shared HTTP helpers; Audible plugin owns Discover catalog) |
 | Integrations framework + portal | `bookclerk-integrations` (traits / registry / portal; ABS lives in its plugin) |
-| External plugin host | `bookclerk-plugin` |
+| External plugin host | `bookclerk-plugin-host` |
 | Libation migrate/export | `bookclerk-migrate` |
 
 ## Files directory layout

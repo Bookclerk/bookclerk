@@ -1,0 +1,8 @@
+api_version = 1
+id = "d1"
+name = "Cloudflare D1"
+kind = "database"
+command = "./bookclerk-plugin-database"
+
+[sandbox]
+network = "outbound"

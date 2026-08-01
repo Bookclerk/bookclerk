@@ -2,6 +2,7 @@
 
 mod database;
 mod destination;
+mod destination_local;
 mod integration;
 mod source;
 

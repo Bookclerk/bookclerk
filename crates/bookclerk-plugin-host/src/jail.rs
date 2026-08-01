@@ -120,6 +120,20 @@ impl GuestJail {
                 PluginError::message(format!("could not create {}: {err}", dir.display()))
             })?;
         }
+        // Fail closed while planning: a missing/unwritable local output root
+        // must not become a late, opaque guest IO failure after jail start.
+        if plugin.manifest.kind == crate::PluginKind::Output
+            && plugin.manifest.id == "local"
+            && config.output.local.enabled
+        {
+            let root = resolved_local_output_root(config);
+            std::fs::create_dir_all(&root).map_err(|err| {
+                PluginError::message(format!(
+                    "could not create local output root {}: {err}",
+                    root.display()
+                ))
+            })?;
+        }
 
         let isolation = config.plugins.isolation;
         #[cfg(unix)]
@@ -176,6 +190,7 @@ impl GuestJail {
                             launcher,
                             spec: Box::new(build_spec(
                                 plugin,
+                                config,
                                 &data,
                                 &scratch,
                                 preserve_fds,
@@ -211,18 +226,29 @@ impl GuestJail {
 /// Build the allowlist for one guest.
 fn build_spec(
     plugin: &DiscoveredPlugin,
+    config: &Config,
     data: &Path,
     scratch: &Path,
     preserve_fds: Vec<i32>,
     enforcement: Enforcement,
 ) -> Spec {
+    let mut writes = vec![data.to_path_buf(), scratch.to_path_buf()];
+    // Local output writes under `[output.local].root`; grant only that tree.
+    // Require kind == Output so a non-output plugin cannot claim id "local".
+    if plugin.manifest.kind == crate::PluginKind::Output
+        && plugin.manifest.id == "local"
+        && config.output.local.enabled
+    {
+        // Directory creation happens in [`GuestJail::plan`] (hard error).
+        writes.push(resolved_local_output_root(config));
+    }
     Spec {
         label: format!("plugin:{}", plugin.manifest.id),
         // The install directory covers `plugin.toml` and, in the usual layout,
         // the binary. A manifest may name an absolute `command` elsewhere, so
         // grant that too rather than relying on the two coinciding.
         reads: vec![plugin.root.clone(), plugin.command.clone()],
-        writes: vec![data.to_path_buf(), scratch.to_path_buf()],
+        writes,
         net: match plugin.manifest.sandbox.network {
             NetworkNeed::None => NetPolicy::Deny,
             NetworkNeed::Outbound => NetPolicy::Outbound,
@@ -295,11 +321,15 @@ fn check_launcher(path: &Path, source: &str) -> std::result::Result<PathBuf, Str
     }
 }
 
-/// Keep a plugin id from escaping its own directory.
-///
-/// Ids come from a `plugin.toml` that an attacker may have written, and they are
-/// used as a path component. `../../..` would otherwise place a guest's writable
-/// data directory wherever it liked.
+fn resolved_local_output_root(config: &Config) -> PathBuf {
+    let root = &config.output.local.root;
+    if root.is_absolute() {
+        root.clone()
+    } else {
+        config.paths().files_dir.join(root)
+    }
+}
+
 fn sanitize_id(id: &str) -> std::borrow::Cow<'_, str> {
     if !id.is_empty()
         && id
@@ -364,6 +394,7 @@ mod tests {
 
         let spec = build_spec(
             &plugin,
+            &config,
             &plugin_data_dir(&config, "libro"),
             &plugin_scratch_dir(&config, "libro"),
             vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
@@ -406,6 +437,7 @@ mod tests {
         let plugin = plugin_at(install.path(), "libro", NetworkNeed::Outbound);
         let spec = build_spec(
             &plugin,
+            &config,
             &plugin_data_dir(&config, "libro"),
             &plugin_scratch_dir(&config, "libro"),
             vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
@@ -438,6 +470,7 @@ mod tests {
             let plugin = plugin_at(install.path(), "x", need);
             let spec = build_spec(
                 &plugin,
+                &config,
                 &plugin_data_dir(&config, "x"),
                 &plugin_scratch_dir(&config, "x"),
                 vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
@@ -474,6 +507,7 @@ mod tests {
         let plugin = plugin_at(install.path(), "libro", NetworkNeed::Outbound);
         let spec = build_spec(
             &plugin,
+            &config,
             &plugin_data_dir(&config, "libro"),
             &plugin_scratch_dir(&config, "libro"),
             vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
