@@ -101,6 +101,8 @@ impl ExternalSource {
             password: opts.password,
             force: opts.force,
             callback_bind: opts.callback_bind,
+            callback_ipc: None,
+            callback_public_base: None,
             external: opts.external,
             response_url: opts.response_url,
             show_qr: opts.show_qr,
@@ -134,20 +136,34 @@ impl ExternalSource {
         opts: LoginOptions,
         on_progress: &(dyn Fn(OAuthProgress) + Send + Sync),
     ) -> bookclerk_source::Result<SourceAccount> {
+        // Host owns the browser TCP listener and forwards bytes to the guest
+        // over IPC — required under Windows AppContainer loopback isolation.
+        let proxy = crate::callback_proxy::CallbackProxy::start(
+            opts.callback_bind.as_deref(),
+            self.client.scratch_dir(),
+            self.client.package_sid(),
+        )
+        .await
+        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+
+        let mut params = Self::login_params(self.plugin_data_dir.display().to_string(), opts);
+        params.callback_ipc = Some(proxy.ipc_endpoint.clone());
+        params.callback_public_base = Some(proxy.public_base.clone());
+
         let start: LoginStartResultDto = self
             .client
             .call(
                 methods::LOGIN_START,
-                serde_json::to_value(Self::login_params(
-                    self.plugin_data_dir.display().to_string(),
-                    opts,
-                ))
-                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
+                serde_json::to_value(params)
+                    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
             )
             .await?;
         on_progress(OAuthProgress::LoginUrl {
             url: start.url.clone(),
             qr: None,
+        });
+        on_progress(OAuthProgress::CallbackListening {
+            addr: proxy.bind_addr().to_string(),
         });
         on_progress(OAuthProgress::WaitingForCallback);
         let result: LoginResultDto = self
@@ -160,6 +176,7 @@ impl ExternalSource {
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
             )
             .await?;
+        drop(proxy);
         let account = seal_login_result(scope, self.id(), result).await?;
         on_progress(OAuthProgress::Completed {
             account_id: account.account_id.clone(),

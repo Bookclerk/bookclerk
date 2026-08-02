@@ -88,7 +88,7 @@ bookclerk-plugin-catalog = { path = "crates/bookclerk-plugin-catalog" }
 bookclerk-plugin-host = { path = "crates/bookclerk-plugin-host", default-features = false }
 
 # Async / runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "io-std", "sync", "time", "process", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "io-std", "sync", "time", "process", "signal", "net"] }
 async-trait = "0.1"
 futures = "0.3"
 

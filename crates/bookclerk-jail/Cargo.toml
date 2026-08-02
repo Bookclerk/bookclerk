@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "bookclerk-ac-probe"
 path = "src/bin/bookclerk-ac-probe.rs"
 
+[[bin]]
+name = "bookclerk-acl-race"
+path = "src/bin/bookclerk-acl-race.rs"
+
 [dependencies]
 bookclerk-sandbox.workspace = true
 serde_json.workspace = true

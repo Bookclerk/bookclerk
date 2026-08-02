@@ -1,10 +1,8 @@
 //! Windows AppContainer probe used by jail integration tests.
 //!
-//! Reports TokenIsAppContainer, attempts path read/write, and prints cwd / temp
-//! environment as JSON. On non-Windows hosts this binary exits with an error.
-//!
-//! Ordering: optional initial wait → probes → JSON report → optional signal →
-//! optional post-work wait / peer-exit wait.
+//! Reports TokenIsAppContainer, path read/write, cwd/temp, optional TEMP
+//! create/read/delete, and child-spawn helpers for Job Object tests. On
+//! non-Windows hosts this binary exits with an error.
 
 #![cfg_attr(windows, allow(unsafe_code))]
 
@@ -34,6 +32,7 @@ fn run() -> Result<(), String> {
     use std::fs;
     use std::io::{self, Write};
     use std::path::PathBuf;
+    use std::process::Command;
     use std::time::Duration;
 
     let mut args = env::args().skip(1);
@@ -43,7 +42,12 @@ fn run() -> Result<(), String> {
     let mut wait_timeout = Duration::from_secs(45);
     let mut reads: Vec<PathBuf> = Vec::new();
     let mut writes: Vec<PathBuf> = Vec::new();
+    let mut deny_reads: Vec<PathBuf> = Vec::new();
     let mut signal: Option<PathBuf> = None;
+    let mut temp_roundtrip = false;
+    let mut spawn_child = false;
+    let mut exit_immediately = false;
+    let mut hold_ms: Option<u64> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -76,11 +80,37 @@ fn run() -> Result<(), String> {
             "--write" => {
                 writes.push(PathBuf::from(args.next().ok_or("--write needs a path")?));
             }
+            "--deny-read" => {
+                deny_reads.push(PathBuf::from(
+                    args.next().ok_or("--deny-read needs a path")?,
+                ));
+            }
             "--signal" => {
                 signal = Some(PathBuf::from(args.next().ok_or("--signal needs a path")?));
             }
+            "--temp-roundtrip" => {
+                temp_roundtrip = true;
+            }
+            "--spawn-child" => {
+                spawn_child = true;
+            }
+            "--exit-immediately" => {
+                exit_immediately = true;
+            }
+            "--hold-ms" => {
+                hold_ms = Some(
+                    args.next()
+                        .ok_or("--hold-ms needs a value")?
+                        .parse()
+                        .map_err(|err| format!("bad --hold-ms: {err}"))?,
+                );
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
+    }
+
+    if exit_immediately {
+        return Ok(());
     }
 
     if let Some(path) = &wait_before {
@@ -118,14 +148,54 @@ fn run() -> Result<(), String> {
         }));
     }
 
+    let mut deny_results = Vec::new();
+    for path in &deny_reads {
+        deny_results.push(serde_json::json!({
+            "path": path.display().to_string(),
+            "ok": fs::read(path).is_ok(),
+        }));
+    }
+
+    let mut temp_ok = None;
+    if temp_roundtrip {
+        let dir = temp
+            .clone()
+            .ok_or_else(|| "TEMP unset for --temp-roundtrip".to_string())?;
+        fs::create_dir_all(&dir)
+            .map_err(|err| format!("TEMP create_dir_all {}: {err}", dir.display()))?;
+        let marker = dir.join("bookclerk-temp-roundtrip.txt");
+        fs::write(&marker, b"temp-ok")
+            .map_err(|err| format!("TEMP write {}: {err}", marker.display()))?;
+        let body = fs::read(&marker).map_err(|err| format!("TEMP read: {err}"))?;
+        fs::remove_file(&marker).map_err(|err| format!("TEMP delete: {err}"))?;
+        temp_ok = Some(body == b"temp-ok");
+    }
+
+    let mut child_pid = None;
+    if spawn_child {
+        let child = Command::new(env::current_exe().map_err(|err| err.to_string())?)
+            .arg("--hold-ms")
+            .arg("5000")
+            .spawn()
+            .map_err(|err| format!("spawn child: {err}"))?;
+        child_pid = Some(child.id());
+        // Intentionally leak the Child handle so the descendant stays alive for
+        // Job membership checks by the host test.
+        std::mem::forget(child);
+    }
+
     let report = serde_json::json!({
         "is_app_container": is_app_container,
+        "pid": std::process::id(),
         "cwd": cwd.display().to_string(),
         "localappdata": localappdata.as_ref().map(|p| p.display().to_string()),
         "temp": temp.as_ref().map(|p| p.display().to_string()),
         "tmp": tmp.as_ref().map(|p| p.display().to_string()),
         "reads": read_results,
         "writes": write_results,
+        "deny_reads": deny_results,
+        "temp_roundtrip_ok": temp_ok,
+        "child_pid": child_pid,
     });
 
     let mut stdout = io::stdout().lock();
@@ -137,6 +207,10 @@ fn run() -> Result<(), String> {
             let _ = fs::create_dir_all(parent);
         }
         fs::write(path, b"ready").map_err(|err| format!("signal {}: {err}", path.display()))?;
+    }
+
+    if let Some(ms) = hold_ms {
+        std::thread::sleep(Duration::from_millis(ms));
     }
 
     if let Some(path) = &wait_after {

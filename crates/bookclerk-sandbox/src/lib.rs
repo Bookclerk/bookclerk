@@ -34,6 +34,7 @@ pub use spec::{Spec, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV, SPEC_ENV};
 /// `bookclerk_sandbox::spawn` path on every OS. Non-Windows builds keep the
 /// planning helpers and return a clear error from launch/ACL entry points.
 pub mod spawn {
+    pub use crate::platform::windows_pipe::NamedPipeSecurity;
     pub use crate::platform::windows_spawn::{
         grant_path_access, is_os_managed_path, plan_appcontainer, profile_name_for_label,
         run_appcontainer, unique_profile_moniker, AclGrant, AppContainerLaunch,

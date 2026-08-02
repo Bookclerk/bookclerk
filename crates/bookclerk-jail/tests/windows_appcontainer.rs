@@ -5,6 +5,7 @@
 //! cmd.exe log scraping.
 
 #![cfg(windows)]
+#![allow(unsafe_code)] // process_alive uses OpenProcess / GetExitCodeProcess
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -116,6 +117,15 @@ fn appcontainer_token_and_path_allowlist_hold() {
     let secret_s = secret.display().to_string();
     let forbidden_s = forbidden.display().to_string();
 
+    let host_local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let host_temp = std::env::var("TEMP").unwrap_or_default();
+    let host_local_marker = PathBuf::from(&host_local).join("bookclerk-host-local-probe.txt");
+    let host_temp_marker = PathBuf::from(&host_temp).join("bookclerk-host-temp-probe.txt");
+    let _ = std::fs::write(&host_local_marker, b"host-local");
+    let _ = std::fs::write(&host_temp_marker, b"host-temp");
+    let host_local_s = host_local_marker.display().to_string();
+    let host_temp_s = host_temp_marker.display().to_string();
+
     let report = assert_probe_ok(&run_jailed_probe(
         &spec,
         &[
@@ -127,8 +137,15 @@ fn appcontainer_token_and_path_allowlist_hold() {
             &allowed_s,
             "--write",
             &forbidden_s,
+            "--temp-roundtrip",
+            "--deny-read",
+            &host_local_s,
+            "--deny-read",
+            &host_temp_s,
         ],
     ));
+    let _ = std::fs::remove_file(&host_local_marker);
+    let _ = std::fs::remove_file(&host_temp_marker);
 
     assert_eq!(report["is_app_container"], true);
     let reads = report["reads"].as_array().expect("reads");
@@ -142,6 +159,10 @@ fn appcontainer_token_and_path_allowlist_hold() {
     assert_eq!(
         writes[1]["ok"], false,
         "undeclared sibling must not be writable"
+    );
+    assert_eq!(
+        report["temp_roundtrip_ok"], true,
+        "TEMP create/read/delete must work inside the profile"
     );
 
     let cwd = report["cwd"].as_str().expect("cwd");
@@ -157,31 +178,40 @@ fn appcontainer_token_and_path_allowlist_hold() {
     );
     assert!(
         cwd_l.contains("\\packages\\"),
-        "cwd should be under AppContainer Packages: {cwd}"
+        "cwd must be under LocalAppData\\Packages: {cwd}"
     );
     assert!(
         local_l.contains("\\packages\\"),
-        "LOCALAPPDATA should be AppContainer-scoped: {local}"
+        "LOCALAPPDATA must be under Packages (API may return Packages\\SID or ...\\AC): {local}"
     );
     assert!(
-        temp_l.contains("temp"),
-        "TEMP should be AppContainer-local: {temp}"
+        temp_l.contains("\\temp") || temp_l.ends_with("\\temp"),
+        "TEMP must be under the profile folder: {temp}"
     );
     assert_eq!(temp, tmp);
-    if let Ok(host_temp) = std::env::var("TEMP") {
+    if !host_temp.is_empty() {
         assert_ne!(
             temp_l,
             host_temp.to_ascii_lowercase(),
             "guest TEMP must not be the host user temp"
         );
     }
-    if let Ok(host_local) = std::env::var("LOCALAPPDATA") {
+    if !host_local.is_empty() {
         assert_ne!(
             local_l,
             host_local.to_ascii_lowercase(),
             "guest LOCALAPPDATA must not be the host user LocalAppData"
         );
     }
+    let deny = report["deny_reads"].as_array().expect("deny_reads");
+    assert_eq!(
+        deny[0]["ok"], false,
+        "host LOCALAPPDATA marker must be inaccessible"
+    );
+    assert_eq!(
+        deny[1]["ok"], false,
+        "host TEMP marker must be inaccessible"
+    );
 }
 
 #[test]
@@ -455,4 +485,203 @@ fn long_label_monikers_do_not_collide() {
         .expect("session b");
     assert_ne!(sa.package_sid(), sb.package_sid());
     assert_ne!(sa.profile_name(), sb.profile_name());
+}
+
+#[test]
+fn forced_job_assign_failure_leaves_no_guest() {
+    assert_spawn_capable();
+    let root = tempfile::tempdir().expect("tempdir");
+    let allowed = root.path().join("allowed");
+    std::fs::create_dir_all(&allowed).expect("allowed");
+    let spec = base_spec("test:job-assign-fail", vec![], vec![allowed]);
+
+    let mut cmd = Command::new(JAIL);
+    cmd.arg(PROBE)
+        .arg("--hold-ms")
+        .arg("30000")
+        .env(
+            bookclerk_sandbox::SPEC_ENV,
+            serde_json::to_string(&spec).expect("encode"),
+        )
+        .env("BOOKCLERK_TEST_FAIL_JOB_ASSIGN", "1");
+    let output = cmd.output().expect("run jail");
+    assert!(
+        !output.status.success(),
+        "forced Assign failure must fail closed"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("AssignProcessToJobObject")
+            || stderr.contains("BOOKCLERK_TEST_FAIL_JOB_ASSIGN")
+            || stderr.contains("CreateProcess AppContainer failed"),
+        "stderr should mention job assign failure: {stderr}"
+    );
+}
+
+#[test]
+fn jail_exits_promptly_when_guest_exits_with_stdin_held_open() {
+    assert_spawn_capable();
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let allowed = root.path().join("allowed");
+    std::fs::create_dir_all(&allowed).expect("allowed");
+    let mut session =
+        bookclerk_sandbox::spawn::AppContainerSession::create("test:stdin-exit").expect("session");
+    let sid = session.package_sid().to_string();
+    let profile = session.profile_name().to_string();
+    let mut spec = base_spec("test:stdin-exit", vec![], vec![allowed.clone()]);
+    spec.windows_profile_name = Some(profile.clone());
+
+    let mut child = Command::new(JAIL)
+        .arg(PROBE)
+        .arg("--exit-immediately")
+        .env(
+            bookclerk_sandbox::SPEC_ENV,
+            serde_json::to_string(&spec).expect("encode"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn jail");
+
+    // Keep the write end open (do not drop stdin) — this is the plugin-host lifecycle.
+    let mut stdin = child.stdin.take().expect("stdin");
+    let _ = writeln!(stdin, "still-open");
+
+    // Drain pipes so a full unread buffer cannot deadlock the jail's stdio
+    // proxies (the production path also times out those joins).
+    let stdout = child.stdout.take().expect("stdout");
+    let stderr = child.stderr.take().expect("stderr");
+    let drain_out = thread::spawn(move || {
+        let mut sink = std::io::sink();
+        let _ = std::io::copy(&mut std::io::BufReader::new(stdout), &mut sink);
+    });
+    let drain_err = thread::spawn(move || {
+        let mut sink = std::io::sink();
+        let _ = std::io::copy(&mut std::io::BufReader::new(stderr), &mut sink);
+    });
+
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait().expect("try_wait") {
+            Some(status) => break status,
+            None => {
+                assert!(
+                    start.elapsed() < Duration::from_secs(90),
+                    "jail must exit after guest exit even with stdin held open \
+                     (allowing AppContainer/ACL setup under parallel CI load)"
+                );
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
+    let _ = drain_out.join();
+    let _ = drain_err.join();
+    assert!(status.success(), "jail should succeed: {status:?}");
+    // Profile owned by this test session should still exist until we drop it;
+    // ACL grants from the jail launch should already be revoked.
+    assert!(
+        !bookclerk_sandbox::spawn::dacl_mentions_sid(&allowed, &sid).expect("dacl"),
+        "ACL grants must be cleaned after jail exit"
+    );
+    drop(stdin);
+    session.arm_delete();
+    drop(session);
+}
+
+#[test]
+fn job_kill_on_close_terminates_spawned_descendant() {
+    assert_spawn_capable();
+    // Guest spawns a long-lived child then exits. Jail drop of the Job
+    // (KILL_ON_JOB_CLOSE) must terminate the descendant before ACL/profile cleanup.
+    let root = tempfile::tempdir().expect("tempdir");
+    let allowed = root.path().join("allowed");
+    std::fs::create_dir_all(&allowed).expect("allowed");
+    let spec = base_spec("test:job-kill-tree", vec![], vec![allowed]);
+    let output = run_jailed_probe(&spec, &["--spawn-child"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "jail/probe failed: status={:?}\nstderr={stderr}\nstdout={stdout}",
+        output.status.code()
+    );
+    let report = first_json_line(&stdout);
+    let child_pid = report["child_pid"].as_u64().expect("child_pid") as u32;
+    // After jail exit the Job is closed; grandchild must not remain running.
+    let start = std::time::Instant::now();
+    while process_alive(child_pid) {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "descendant pid {child_pid} still alive after Job close"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn process_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code).is_ok();
+        let _ = CloseHandle(handle);
+        // STILL_ACTIVE == 259
+        ok && code == 259
+    }
+}
+
+#[test]
+fn named_acl_mutex_serializes_cross_process_grant_revoke() {
+    assert_spawn_capable();
+    use std::process::Stdio;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join("shared");
+    std::fs::create_dir_all(&dir).expect("dir");
+
+    // Capture the original DACL mention state for two fresh SIDs (should be absent).
+    let sa = bookclerk_sandbox::spawn::AppContainerSession::create("test:acl-race-a").expect("a");
+    let sb = bookclerk_sandbox::spawn::AppContainerSession::create("test:acl-race-b").expect("b");
+    let sid_a = sa.package_sid().to_string();
+    let sid_b = sb.package_sid().to_string();
+    assert!(!bookclerk_sandbox::spawn::dacl_mentions_sid(&dir, &sid_a).unwrap());
+    assert!(!bookclerk_sandbox::spawn::dacl_mentions_sid(&dir, &sid_b).unwrap());
+
+    let helper = env!("CARGO_BIN_EXE_bookclerk-acl-race");
+    let dir_s = dir.display().to_string();
+    let mut children = Vec::new();
+    for sid in [&sid_a, &sid_b] {
+        let child = Command::new(helper)
+            .args(["--dir", &dir_s, "--sid", sid, "--rounds", "8"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn acl-race helper");
+        children.push(child);
+    }
+    for mut child in children {
+        let status = child.wait().expect("wait helper");
+        assert!(status.success(), "acl-race helper failed: {status:?}");
+    }
+
+    // Both SIDs must be absent after helpers finish (each revokes its own grant).
+    assert!(
+        !bookclerk_sandbox::spawn::dacl_mentions_sid(&dir, &sid_a).unwrap(),
+        "sid A must not remain"
+    );
+    assert!(
+        !bookclerk_sandbox::spawn::dacl_mentions_sid(&dir, &sid_b).unwrap(),
+        "sid B must not remain"
+    );
+    drop(sa);
+    drop(sb);
 }

@@ -13,6 +13,7 @@
 //!
 //! See `docs/plugin-registry.md`.
 
+pub mod callback_tunnel;
 mod db;
 mod error;
 mod fetch_dir;
@@ -27,6 +28,7 @@ pub use db::{
     QueryResultDto, StatementDto,
 };
 
+pub use callback_tunnel::{TunnelGuest, TunnelHost, TunnelStream};
 pub use error::{Result, SdkError};
 pub use fetch_dir::{fetch_work_dir, upload_file_path, FetchWorkDir, UploadFile};
 pub use guest::PluginGuest;

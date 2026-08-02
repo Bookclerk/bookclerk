@@ -16,7 +16,7 @@ mod server;
 
 pub use challenge::{ChallengePrompt, MfaDevice};
 pub use internal::login_internal;
-pub use server::{LoginDefaults, LoginServer};
+pub use server::{LoginDefaults, LoginServer, ServerLogin};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};

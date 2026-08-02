@@ -28,6 +28,7 @@ Start here if you are new:
 | [Packaging](packaging.md) | `cargo package-*` aliases, platform bundles, release CI |
 | [Source candidates](source-candidates.md) | Research notes for stores not yet implemented |
 | [Diagnostics](diagnostics.md) | Opt-in crash/error reporting pipeline |
+| [Windows AppContainer](windows-appcontainer.md) | Job ordering, ACL sync, OAuth callback IPC, availability |
 
 ## Compatibility
 

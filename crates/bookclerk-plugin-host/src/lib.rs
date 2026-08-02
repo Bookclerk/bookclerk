@@ -28,6 +28,7 @@
 //! See `docs/plugins.md` and `docs/plugin-registry.md`.
 
 mod builtins;
+mod callback_proxy;
 mod crates_io;
 mod destinations;
 mod discover;

@@ -3,9 +3,9 @@
 #![cfg_attr(unix, allow(unsafe_code))]
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bookclerk_config::Config;
@@ -66,6 +66,11 @@ pub struct PluginClient {
     /// Serializes side-channel / ACL setup with the matching JSON-RPC write so
     /// concurrent calls cannot reorder FDs or revoke grants early.
     call_gate: Mutex<()>,
+    /// Set after a serious timeout or protocol violation; client must be dropped
+    /// and the plugin restarted under operator control.
+    quarantined: Arc<AtomicBool>,
+    /// Plugin scratch directory (`…/plugins/<id>/tmp`) for callback IPC sockets.
+    scratch: PathBuf,
     /// Host end of the fetch-directory side channel, when the guest is jailed.
     #[cfg(unix)]
     fd_channel: Option<std::os::unix::net::UnixStream>,
@@ -81,6 +86,25 @@ pub struct PluginClient {
 }
 
 impl PluginClient {
+    /// Scratch directory for this guest (`TMPDIR` inside the jail).
+    #[must_use]
+    pub fn scratch_dir(&self) -> &Path {
+        &self.scratch
+    }
+
+    /// AppContainer package SID when the guest is confined on Windows.
+    #[must_use]
+    pub fn package_sid(&self) -> Option<&str> {
+        #[cfg(windows)]
+        {
+            self.package_sid.as_deref()
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
     /// Spawn `plugin` inside its jail, then handshake.
     ///
     /// Takes the whole [`DiscoveredPlugin`] and [`Config`] rather than a command
@@ -195,9 +219,13 @@ impl PluginClient {
             .take()
             .ok_or_else(|| PluginError::message("plugin stdout missing"))?;
 
+        let child = Arc::new(Mutex::new(child));
+        let quarantined = Arc::new(AtomicBool::new(false));
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_reader = pending.clone();
+        let quarantine_flag = Arc::clone(&quarantined);
+        let child_reader = Arc::clone(&child);
         let reader_plugin_id = id.to_string();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
@@ -213,6 +241,19 @@ impl PluginClient {
                             %err,
                             "plugin response stream closed or exceeded MAX_RPC_LINE_BYTES"
                         );
+                        // Oversized / corrupt framing is a protocol violation —
+                        // fail pending waiters, quarantine, and kill the guest.
+                        quarantine_flag.store(true, Ordering::SeqCst);
+                        {
+                            let mut map = pending_reader.lock().await;
+                            for (_, tx) in map.drain() {
+                                let _ = tx.send(Err(PluginError::message(format!(
+                                    "plugin `{reader_plugin_id}` protocol violation: {err}"
+                                ))));
+                            }
+                        }
+                        let mut child = child_reader.lock().await;
+                        let _ = child.start_kill();
                         break;
                     }
                 }
@@ -249,7 +290,7 @@ impl PluginClient {
 
         let client = Self {
             id: id.to_string(),
-            child: Arc::new(Mutex::new(child)),
+            child,
             stdin: Arc::new(Mutex::new(stdin)),
             pending,
             next_id: AtomicU64::new(1),
@@ -268,6 +309,8 @@ impl PluginClient {
                 cli: None,
             },
             call_gate: Mutex::new(()),
+            quarantined,
+            scratch: jail.scratch.clone(),
             #[cfg(unix)]
             fd_channel: jail.fd_channel,
             #[cfg(windows)]
@@ -457,6 +500,13 @@ impl PluginClient {
     }
 
     async fn call_raw_inner(&self, method: &str, params: Value) -> Result<Value> {
+        if self.quarantined.load(Ordering::SeqCst) {
+            return Err(PluginError::message(format!(
+                "plugin `{}` is quarantined after a prior timeout or protocol violation; \
+                 restart the plugin before retrying `{method}`",
+                self.id
+            )));
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         {
@@ -493,13 +543,37 @@ impl PluginClient {
             Err(_) => {
                 let mut map = self.pending.lock().await;
                 map.remove(&id);
+                self.quarantine_and_kill(&format!(
+                    "timed out after {}s waiting for `{method}`",
+                    RPC_TIMEOUT.as_secs()
+                ))
+                .await;
                 Err(PluginError::message(format!(
-                    "plugin `{}` timed out after {}s waiting for `{method}`",
+                    "plugin `{}` timed out after {}s waiting for `{method}` \
+                     (guest killed and quarantined)",
                     self.id,
                     RPC_TIMEOUT.as_secs()
                 )))
             }
         }
+    }
+
+    /// Kill the guest and refuse further RPCs until this client is dropped.
+    async fn quarantine_and_kill(&self, reason: &str) {
+        self.quarantined.store(true, Ordering::SeqCst);
+        tracing::error!(
+            plugin = %self.id,
+            %reason,
+            "quarantining plugin guest after serious failure"
+        );
+        let mut child = self.child.lock().await;
+        let _ = child.start_kill();
+    }
+
+    /// Whether this client was killed after a timeout or protocol violation.
+    #[must_use]
+    pub fn is_quarantined(&self) -> bool {
+        self.quarantined.load(Ordering::SeqCst)
     }
 
     /// Ask the guest to shut down gracefully (optional method).

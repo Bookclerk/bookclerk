@@ -56,11 +56,13 @@ AppContainer after it has started; isolation is granted at `CreateProcess`.
 The media pool therefore launches `bookclerk-media-worker` through
 `bookclerk-jail` on Windows (same launcher plugins use), which applies a
 **per-job** AppContainer profile and ACL allowlist derived from the job's
-read/write paths (never mutating OS-managed DACLs). The worker skips
-self-confine and relies on that outer jail. Ship `bookclerk-jail` beside the
-worker; with the default `isolation = "required"`, a missing jail refuses media
-work rather than decoding unconfined. Missing allowlist paths fail closed in
-the launcher before the worker starts.
+read/write paths (Bookclerk never mutates DACLs under protected OS-managed
+roots). The guest is assigned to a kill-on-close Job Object before it runs
+(Bookclerk-owned launcher; higher memory/process limits than plugin guests).
+The worker skips self-confine and relies on that outer jail. Ship
+`bookclerk-jail` beside the worker; with the default `isolation = "required"`,
+a missing jail refuses media work rather than decoding unconfined. Missing
+allowlist paths fail closed in the launcher before the worker starts.
 
 What a job declares:
 

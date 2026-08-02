@@ -100,24 +100,22 @@ struct ProxyState {
     session: Mutex<Option<ActiveSession>>,
 }
 
-/// A bound login proxy. Build it with [`LoginServer::bind`], show the user the
-/// [`LoginServer::landing_path`] under the bound port, then drive it with
-/// [`LoginServer::run`].
+/// A login proxy. Build with [`LoginServer::bind`] (guest TCP) or
+/// [`LoginServer::prepare`] + [`LoginServer::run_with_accept`] (host-forwarded
+/// streams / callback tunnel).
 pub struct LoginServer {
-    listener: TcpListener,
+    listener: Option<TcpListener>,
+    local_port: u16,
     state: Arc<ProxyState>,
     code_rx: mpsc::Receiver<String>,
 }
 
 impl LoginServer {
-    /// Binds the proxy. No Amazon session is created yet — that happens when
-    /// the user submits the config page.
-    pub async fn bind(addr: SocketAddr, defaults: LoginDefaults) -> Result<Self, LoginError> {
-        // Unguessable session token: the proxy only serves under this path.
+    /// Prepare proxy state without binding a socket (host owns TCP / tunnel).
+    pub fn prepare(defaults: LoginDefaults) -> Self {
         let mut token = [0u8; 16];
         OsRng.fill_bytes(&mut token);
         let proxy_prefix = format!("/{}", hex::encode(token));
-
         let (code_tx, code_rx) = mpsc::channel(1);
         let state = Arc::new(ProxyState {
             proxy_prefix,
@@ -125,20 +123,27 @@ impl LoginServer {
             defaults,
             session: Mutex::new(None),
         });
-        let listener = TcpListener::bind(addr).await?;
-        Ok(Self {
-            listener,
+        Self {
+            listener: None,
+            local_port: 0,
             state,
             code_rx,
-        })
+        }
+    }
+
+    /// Binds the proxy. No Amazon session is created yet — that happens when
+    /// the user submits the config page.
+    pub async fn bind(addr: SocketAddr, defaults: LoginDefaults) -> Result<Self, LoginError> {
+        let mut server = Self::prepare(defaults);
+        let listener = TcpListener::bind(addr).await?;
+        server.local_port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+        server.listener = Some(listener);
+        Ok(server)
     }
 
     /// The actually bound port (relevant when binding to port 0).
     pub fn local_port(&self) -> u16 {
-        self.listener
-            .local_addr()
-            .map(|addr| addr.port())
-            .unwrap_or(0)
+        self.local_port
     }
 
     /// The path to open in the browser — the config page.
@@ -146,22 +151,29 @@ impl LoginServer {
         format!("{}/", self.state.proxy_prefix)
     }
 
-    /// Serves the proxy until the login completes (code captured) or the
-    /// timeout elapses; returns the chosen config + captured code.
-    pub async fn run(self, timeout: Duration) -> Result<ServerLogin, LoginError> {
+    /// Serves until login completes or `timeout`, accepting from `accept`.
+    ///
+    /// `accept` should yield the next duplex stream (TCP or tunnel). It is
+    /// polled until capture/timeout; failed accepts are logged and retried.
+    pub async fn run_with_accept<F, Fut, S>(
+        self,
+        timeout: Duration,
+        mut accept: F,
+    ) -> Result<ServerLogin, LoginError>
+    where
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::io::Result<S>> + Send,
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         let LoginServer {
-            listener,
-            state,
-            mut code_rx,
+            state, mut code_rx, ..
         } = self;
 
-        // The accept loop runs in the background; per-connection tasks are
-        // detached so an in-flight success page still flushes after we stop.
         let accept_state = Arc::clone(&state);
-        let accept = tokio::spawn(async move {
+        let accept_loop = tokio::spawn(async move {
             loop {
-                let stream = match listener.accept().await {
-                    Ok((stream, _)) => stream,
+                let stream = match accept().await {
+                    Ok(stream) => stream,
                     Err(error) => {
                         tracing::debug!(%error, "login server accept failed");
                         continue;
@@ -180,7 +192,6 @@ impl LoginServer {
 
         let captured = tokio::select! {
             captured = code_rx.recv() => {
-                // Let the browser's success page flush before we tear down.
                 tokio::time::sleep(FLUSH_GRACE).await;
                 captured.ok_or(LoginError::Cancelled)
             }
@@ -188,7 +199,7 @@ impl LoginServer {
                 "no sign-in completed within the time limit".to_owned(),
             )),
         };
-        accept.abort();
+        accept_loop.abort();
 
         let code = captured?;
         let session = state
@@ -208,6 +219,38 @@ impl LoginServer {
             default_marketplaces: session.default_marketplaces,
             plain: session.plain,
         })
+    }
+
+    /// Serves the bound TCP listener until login completes or `timeout`.
+    pub async fn run(mut self, timeout: Duration) -> Result<ServerLogin, LoginError> {
+        let listener = self.listener.take().ok_or_else(|| {
+            LoginError::LoginFailed(
+                "LoginServer::run requires bind(); use run_with_accept for tunnels".into(),
+            )
+        })?;
+        // Re-wrap so run_with_accept can move state; port already cached.
+        let LoginServer {
+            state,
+            code_rx,
+            local_port,
+            ..
+        } = self;
+        let server = LoginServer {
+            listener: None,
+            local_port,
+            state,
+            code_rx,
+        };
+        let listener = Arc::new(listener);
+        server
+            .run_with_accept(timeout, move || {
+                let listener = Arc::clone(&listener);
+                async move {
+                    let (stream, _) = listener.accept().await?;
+                    Ok(stream)
+                }
+            })
+            .await
     }
 }
 

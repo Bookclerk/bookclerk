@@ -52,6 +52,10 @@ fn pending_logins() -> &'static Mutex<HashMap<String, PendingGuestLogin>> {
 /// Start LoginServer OAuth; return `(session_id, browser_url)`.
 ///
 /// Completes later via [`guest_login_complete`].
+///
+/// When the host sets `callback_ipc` + `callback_public_base`, the guest does
+/// **not** bind TCP — it connects to the host IPC tunnel and serves LoginServer
+/// on forwarded streams (required under Windows AppContainer).
 pub async fn guest_login_start(params: &LoginParams) -> Result<(String, String)> {
     let marketplace = if params.marketplace.trim().is_empty() {
         String::from("us")
@@ -66,32 +70,56 @@ pub async fn guest_login_start(params: &LoginParams) -> Result<(String, String)>
         show_qr: false,
         scope: None,
         force: params.force,
+        timeout_secs: params.timeout_secs.unwrap_or(300),
         ..AuthLoginOptions::default()
     };
 
     let defaults = login_defaults(&opts);
-    let server = LoginServer::bind(opts.callback_bind, defaults).await?;
-    let (url, _addr) = login_server_url(&server, opts.callback_bind);
     let timeout = Duration::from_secs(opts.timeout_secs);
     let label = opts.label.clone();
 
-    let handle = tokio::spawn(async move {
-        let login = server.run(timeout).await?;
-        let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|err| AudibleError::Auth(err.to_string()))?;
-        let auth = login_flow::register(
-            &http,
-            &login.locale,
-            &login.device,
-            &login.pkce,
-            &login.code,
-            login.with_username,
-        )
-        .await?;
-        Ok(auth)
-    });
+    let (url, handle) = if let (Some(ipc), Some(public_base)) = (
+        params.callback_ipc.as_deref(),
+        params.callback_public_base.as_deref(),
+    ) {
+        let server = LoginServer::prepare(defaults);
+        let url = format!(
+            "{}{}",
+            public_base.trim_end_matches('/'),
+            server.landing_path()
+        );
+        let ipc = ipc.to_string();
+        let handle = tokio::spawn(async move {
+            let stream = connect_callback_ipc(&ipc).await?;
+            let (reader, writer) = tokio::io::split(stream);
+            let tunnel = std::sync::Arc::new(tokio::sync::Mutex::new(
+                bookclerk_plugin_sdk::TunnelGuest::new(reader, writer),
+            ));
+            let login = server
+                .run_with_accept(timeout, move || {
+                    let tunnel = std::sync::Arc::clone(&tunnel);
+                    async move {
+                        tunnel
+                            .lock()
+                            .await
+                            .accept()
+                            .await
+                            .map_err(|err| std::io::Error::other(err.to_string()))
+                    }
+                })
+                .await?;
+            register_after_login(login).await
+        });
+        (url, handle)
+    } else {
+        let server = LoginServer::bind(opts.callback_bind, defaults).await?;
+        let (url, _addr) = login_server_url(&server, opts.callback_bind);
+        let handle = tokio::spawn(async move {
+            let login = server.run(timeout).await?;
+            register_after_login(login).await
+        });
+        (url, handle)
+    };
 
     let session_id = Uuid::new_v4().to_string();
     pending_logins()
@@ -100,6 +128,42 @@ pub async fn guest_login_start(params: &LoginParams) -> Result<(String, String)>
         .insert(session_id.clone(), PendingGuestLogin { label, handle });
 
     Ok((session_id, url))
+}
+
+async fn register_after_login(
+    login: audible_rs::auth::login::ServerLogin,
+) -> Result<Authenticator> {
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|err| AudibleError::Auth(err.to_string()))?;
+    let auth = login_flow::register(
+        &http,
+        &login.locale,
+        &login.device,
+        &login.pkce,
+        &login.code,
+        login.with_username,
+    )
+    .await?;
+    Ok(auth)
+}
+
+#[cfg(unix)]
+async fn connect_callback_ipc(endpoint: &str) -> Result<tokio::net::UnixStream> {
+    tokio::net::UnixStream::connect(endpoint)
+        .await
+        .map_err(|err| AudibleError::Auth(format!("callback IPC connect {endpoint}: {err}")))
+}
+
+#[cfg(windows)]
+async fn connect_callback_ipc(
+    endpoint: &str,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    ClientOptions::new()
+        .open(endpoint)
+        .map_err(|err| AudibleError::Auth(format!("callback IPC open {endpoint}: {err}")))
 }
 
 /// Await a pending OAuth session and return account + credential JSON.

@@ -75,6 +75,32 @@ fn plugin_state_root(config: &Config, plugin_id: &str) -> PathBuf {
         .join(sanitize_id(plugin_id).as_ref())
 }
 
+/// Shallow recursive size used for availability budgets (best-effort).
+///
+/// Uses `symlink_metadata` so a guest cannot force the host to walk outside
+/// `data/` / `tmp/` via directory symlinks.
+fn dir_size_bytes(root: &Path) -> std::io::Result<u64> {
+    let mut total = 0u64;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let meta = std::fs::symlink_metadata(&path)?;
+            let ft = meta.file_type();
+            if ft.is_symlink() {
+                // Count the symlink node itself; do not follow.
+                total = total.saturating_add(meta.len());
+            } else if ft.is_dir() {
+                stack.push(path);
+            } else {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    Ok(total)
+}
+
 /// How a guest will be started.
 #[derive(Debug)]
 pub(crate) enum Start {
@@ -125,6 +151,19 @@ impl GuestJail {
             std::fs::create_dir_all(dir).map_err(|err| {
                 PluginError::message(format!("could not create {}: {err}", dir.display()))
             })?;
+        }
+        // Best-effort availability: refuse to start if plugin state already grew
+        // past the host budget (runaway cache / tmp from a previous session).
+        const PLUGIN_STATE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
+        for dir in [&data, &scratch] {
+            let used = dir_size_bytes(dir).unwrap_or(0);
+            if used > PLUGIN_STATE_BUDGET_BYTES {
+                return Err(PluginError::message(format!(
+                    "plugin `{id}` state directory {} is {used} bytes \
+                     (limit {PLUGIN_STATE_BUDGET_BYTES}); clear it before reload",
+                    dir.display()
+                )));
+            }
         }
         // Fail closed while planning: a missing/unwritable local output root
         // must not become a late, opaque guest IO failure after jail start.

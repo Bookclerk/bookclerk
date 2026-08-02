@@ -203,8 +203,20 @@ pub struct LoginParams {
     #[serde(default)]
     pub force: bool,
     /// Optional bind address for OAuth callback servers (`host:port`).
+    /// Ignored when [`Self::callback_ipc`] is set (host owns the TCP listener).
     #[serde(default)]
     pub callback_bind: Option<String>,
+    /// Host-owned callback IPC endpoint the guest must connect to.
+    ///
+    /// When set (with [`Self::callback_public_base`]), the guest must **not**
+    /// bind a TCP listener. The host accepts browser connections and forwards
+    /// raw bytes over this duplex IPC (Unix socket path or Windows pipe name).
+    #[serde(default)]
+    pub callback_ipc: Option<String>,
+    /// Public base URL for the host TCP listener, e.g. `http://127.0.0.1:12345`.
+    /// Combined with the guest's landing path to form the browser URL.
+    #[serde(default)]
+    pub callback_public_base: Option<String>,
     /// External / paste-redirect OAuth instead of a local callback server.
     #[serde(default)]
     pub external: bool,
