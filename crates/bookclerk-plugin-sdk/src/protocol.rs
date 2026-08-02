@@ -14,6 +14,18 @@ use serde_json::Value;
 /// Current host↔plugin protocol version.
 pub const PLUGIN_API_VERSION: u32 = 1;
 
+/// Wire framing name for newline-delimited JSON-RPC over stdio.
+pub const PROTOCOL_NAME: &str = "jsonrpc-stdio-v1";
+
+/// Maximum length of one JSON-RPC request/response line (including newline).
+pub const MAX_RPC_LINE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Oldest host API version a guest may speak.
+pub const HOST_API_VERSION_MIN: u32 = 1;
+
+/// Newest host API version a guest may speak.
+pub const HOST_API_VERSION_MAX: u32 = 1;
+
 /// Result of `handshake`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HandshakeResult {
@@ -751,6 +763,8 @@ pub struct TouchFileParams {
 /// Method names (keep stable).
 pub mod methods {
     pub const HANDSHAKE: &str = "handshake";
+    /// Graceful guest teardown; host may call before killing the child.
+    pub const SHUTDOWN: &str = "shutdown";
     pub const HEALTH: &str = "health";
     pub const DIAGNOSE: &str = "diagnose";
     pub const START: &str = "start";

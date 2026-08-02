@@ -42,5 +42,6 @@ pub use protocol::{
     OutputLocalContextDto, OutputS3ContextDto, PlainPartDto, PurchaseHintDto, PurchaseHintParams,
     PutFileParams, PutParams, S3CredentialsDto, ScanBookDto, ScanParams, ScanSummaryDto,
     SearchCatalogParams, SourceAccountDto, SourceFetchDto, SyncListeningResultDto, TouchFileParams,
-    PLUGIN_API_VERSION,
+    HOST_API_VERSION_MAX, HOST_API_VERSION_MIN, MAX_RPC_LINE_BYTES, PLUGIN_API_VERSION,
+    PROTOCOL_NAME,
 };

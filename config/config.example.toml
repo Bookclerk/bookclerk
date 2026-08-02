@@ -48,8 +48,8 @@ workers = 0
 # required    — refuse media work when the jail does not engage (default)
 # best-effort — confine what the platform supports, log the rest
 # off         — run codecs in-process with no jail (development only)
-# Windows cannot confine a running process, so "required" refuses media work
-# there until spawn-side AppContainer lands; set "best-effort" to acquire.
+# On Windows the pool launches workers through bookclerk-jail (AppContainer).
+# Keep the jail binary beside the worker (or set BOOKCLERK_PLUGIN_JAIL).
 isolation = "required"
 # Normally unset: the worker is found beside the running executable.
 # worker_bin = "/usr/local/bin/bookclerk-media-worker"
@@ -61,8 +61,8 @@ isolation = "required"
 # required    — do not load a plugin that cannot be jailed (default)
 # best-effort — start it unconfined when the platform cannot jail, and warn
 # off         — no jail (development only)
-# Windows has no plugin jail yet, so "required" refuses external plugins there;
-# first-party sources still run in-process.
+# Plugin guests are jailed on every platform (Landlock/Seatbelt/AppContainer).
+# First-party sources still run in-process when built into the host.
 isolation = "required"
 # Normally unset: the launcher is found beside the running executable.
 # jail_bin = "/usr/local/bin/bookclerk-jail"

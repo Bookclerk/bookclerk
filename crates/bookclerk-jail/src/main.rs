@@ -19,12 +19,12 @@
 //! would stay unconfined. This binary is single-threaded, so it has neither
 //! problem.
 //!
-//! # What this costs
+//! # Windows
 //!
-//! The policy must permit `execve`, since that is how control is handed over.
-//! The guest can therefore run other binaries inside its read allowlist, but it
-//! gains nothing by doing so: the restrictions are inherited, irreversible, and
-//! `no_new_privs` is set, so setuid is already neutral.
+//! Windows has no self-confinement primitive. The launcher therefore
+//! `CreateProcess`es the guest into an AppContainer (via
+//! [`bookclerk_sandbox::spawn::run_appcontainer`]) and proxies stdio until the
+//! guest exits, instead of confining itself and `exec`ing.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -52,11 +52,85 @@ fn main() -> ExitCode {
         return fail(&err);
     }
 
-    if let Err(err) = confine(&spec) {
-        return fail(&err);
+    #[cfg(windows)]
+    {
+        windows_run(&spec, &program, &args)
     }
 
-    exec(&program, &args)
+    #[cfg(not(windows))]
+    {
+        if let Err(err) = confine(&spec) {
+            return fail(&err);
+        }
+        exec(&program, &args)
+    }
+}
+
+/// Launch the guest inside an AppContainer and forward its exit status.
+#[cfg(windows)]
+fn windows_run(spec: &Spec, program: &Path, args: &[OsString]) -> ExitCode {
+    use bookclerk_sandbox::Enforcement;
+
+    let missing = missing_paths(spec);
+    if !missing.is_empty() {
+        return fail(&format!(
+            "these allowlist paths do not exist: {}",
+            missing
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    let policy = spec.policy();
+    match policy.enforcement_mode() {
+        Enforcement::Disabled => {
+            eprintln!("bookclerk-jail: AppContainer disabled; running guest unconfined");
+            return exec_status(program, args);
+        }
+        Enforcement::Required | Enforcement::BestEffort => {}
+    }
+
+    match bookclerk_sandbox::spawn::plan_appcontainer(&policy) {
+        Ok(plan) => eprintln!(
+            "bookclerk-jail: windows AppContainer plan: profile={} package_sid={:?} capabilities={:?}",
+            plan.profile_name, plan.package_sid, plan.capability_names
+        ),
+        Err(err) => {
+            return match policy.enforcement_mode() {
+                Enforcement::Required => fail(&err.to_string()),
+                Enforcement::BestEffort | Enforcement::Disabled => {
+                    eprintln!(
+                        "bookclerk-jail: warning: AppContainer plan failed ({err}); \
+                         continuing unconfined"
+                    );
+                    exec_status(program, args)
+                }
+            };
+        }
+    }
+
+    // Do not hand the guest the shape of its own jail (mirrors Unix `exec`
+    // which drops SPEC_ENV). CreateProcess inherits this process's environment.
+    std::env::remove_var(SPEC_ENV);
+
+    match bookclerk_sandbox::spawn::run_appcontainer(&policy, program, args) {
+        Ok(code) => {
+            eprintln!("bookclerk-jail: AppContainer guest exited with status {code}");
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Err(err) => match policy.enforcement_mode() {
+            Enforcement::Required => fail(&err.to_string()),
+            Enforcement::BestEffort | Enforcement::Disabled => {
+                eprintln!(
+                    "bookclerk-jail: warning: AppContainer launch failed ({err}); \
+                     continuing unconfined"
+                );
+                exec_status(program, args)
+            }
+        },
+    }
 }
 
 /// Split `bookclerk-jail [--] <program> [args…]`.
@@ -84,6 +158,7 @@ fn read_spec(raw: Result<String, std::env::VarError>) -> Result<Spec, String> {
 }
 
 /// Apply the policy to this process.
+#[cfg(not(windows))]
 fn confine(spec: &Spec) -> Result<(), String> {
     // A rule naming a path that is not there is an error to both backends, so
     // the policy quietly drops missing entries. That is the right default for a
@@ -139,11 +214,8 @@ fn exec(program: &Path, args: &[OsString]) -> ExitCode {
 
 /// Fallback for targets without `exec`: stay in the middle and forward the
 /// exit status.
-///
-/// Confinement has already been applied and is inherited, so the child is
-/// jailed either way. This costs one extra process for the run.
 #[cfg(not(unix))]
-fn exec(program: &Path, args: &[OsString]) -> ExitCode {
+fn exec_status(program: &Path, args: &[OsString]) -> ExitCode {
     let status = match Command::new(program)
         .args(args)
         .env_remove(SPEC_ENV)
@@ -210,6 +282,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn a_vanished_allowlist_path_is_named() {
         let dir = tempfile::tempdir().expect("tempdir");
         let spec = Spec {
@@ -223,5 +296,18 @@ mod tests {
         let err = confine(&spec).expect_err("must fail");
         assert!(err.contains("do not exist"), "{err}");
         assert!(err.contains("nope"), "{err}");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_vanished_allowlist_path_is_named() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let spec = Spec {
+            reads: vec![dir.path().to_path_buf()],
+            writes: vec![dir.path().join("nope")],
+            ..Spec::new("probe")
+        };
+        let missing = missing_paths(&spec);
+        assert_eq!(missing, vec![dir.path().join("nope").as_path()]);
     }
 }

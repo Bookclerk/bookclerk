@@ -108,6 +108,8 @@ pub fn capabilities() -> Capabilities {
     Capabilities {
         backend: BACKEND,
         filesystem,
+        // Guests are confined by self-confine + exec in bookclerk-jail.
+        spawn_filesystem: false,
         // seccomp-bpf has been unconditional on supported kernels for a decade.
         syscall: true,
         network: filesystem,

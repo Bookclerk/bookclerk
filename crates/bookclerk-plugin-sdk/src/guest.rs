@@ -2,9 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::error::Result;
+use crate::error::{Result, SdkError};
+use crate::protocol::{methods, MAX_RPC_LINE_BYTES};
 
 /// Guest-side helper: read requests from stdin, write responses to stdout.
 ///
@@ -19,9 +20,13 @@ impl PluginGuest {
         Fut: std::future::Future<Output = std::result::Result<Value, String>>,
     {
         let stdin = tokio::io::stdin();
-        let mut lines = BufReader::new(stdin).lines();
+        let mut reader = BufReader::new(stdin);
         let mut stdout = tokio::io::stdout();
-        while let Some(line) = lines.next_line().await? {
+        loop {
+            let line = match read_rpc_line(&mut reader).await? {
+                Some(line) => line,
+                None => break,
+            };
             if line.trim().is_empty() {
                 continue;
             }
@@ -32,7 +37,15 @@ impl PluginGuest {
                     continue;
                 }
             };
-            let outcome = handler(req.method.clone(), req.params.unwrap_or(Value::Null)).await;
+            let is_shutdown = req.method == methods::SHUTDOWN;
+            // Call the handler first so a guest can flush work; shutdown still
+            // acks even when the handler does not implement the method.
+            let outcome = match handler(req.method.clone(), req.params.unwrap_or(Value::Null)).await
+            {
+                Ok(result) => Ok(result),
+                Err(_) if is_shutdown => Ok(Value::Null),
+                Err(message) => Err(message),
+            };
             let resp = match outcome {
                 Ok(result) => GuestResponse {
                     jsonrpc: "2.0",
@@ -54,9 +67,57 @@ impl PluginGuest {
             out.push('\n');
             stdout.write_all(out.as_bytes()).await?;
             stdout.flush().await?;
+            if is_shutdown {
+                break;
+            }
         }
         Ok(())
     }
+}
+
+/// Read one newline-delimited RPC line, rejecting oversize frames.
+async fn read_rpc_line<R: AsyncBufRead + AsyncBufReadExt + Unpin>(
+    reader: &mut R,
+) -> Result<Option<String>> {
+    let mut buf = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if buf.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            let end = pos + 1;
+            if buf.len() + end > MAX_RPC_LINE_BYTES {
+                return Err(SdkError::message(format!(
+                    "RPC line exceeds MAX_RPC_LINE_BYTES ({MAX_RPC_LINE_BYTES})"
+                )));
+            }
+            buf.extend_from_slice(&available[..end]);
+            reader.consume(end);
+            break;
+        }
+        if buf.len() + available.len() > MAX_RPC_LINE_BYTES {
+            return Err(SdkError::message(format!(
+                "RPC line exceeds MAX_RPC_LINE_BYTES ({MAX_RPC_LINE_BYTES})"
+            )));
+        }
+        let n = available.len();
+        buf.extend_from_slice(available);
+        reader.consume(n);
+    }
+    // Strip trailing newline (and optional CR).
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+        if buf.last() == Some(&b'\r') {
+            buf.pop();
+        }
+    }
+    String::from_utf8(buf)
+        .map(Some)
+        .map_err(|err| SdkError::message(format!("RPC line is not valid UTF-8: {err}")))
 }
 
 #[derive(Debug, Deserialize)]

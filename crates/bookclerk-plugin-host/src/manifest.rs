@@ -68,6 +68,9 @@ pub struct SandboxManifest {
 pub struct PluginManifest {
     /// Protocol version this plugin speaks (`1` today).
     pub api_version: u32,
+    /// Wire framing name. Absent means [`bookclerk_plugin_sdk::PROTOCOL_NAME`].
+    #[serde(default)]
+    pub protocol: Option<String>,
     /// Stable plugin id (must match `[sources.<id>]` / `[integrations.<id>]`).
     pub id: String,
     /// Human-facing name (fallback if handshake omits `display_name`).
@@ -100,6 +103,14 @@ impl PluginManifest {
                 "plugin.toml: `api_version` must be >= 1",
             ));
         }
+        if let Some(protocol) = m.protocol.as_deref() {
+            if protocol != bookclerk_plugin_sdk::PROTOCOL_NAME {
+                return Err(crate::PluginError::message(format!(
+                    "plugin.toml: unsupported `protocol` {protocol:?}; only {:?} is supported",
+                    bookclerk_plugin_sdk::PROTOCOL_NAME
+                )));
+            }
+        }
         Ok(m)
     }
 }
@@ -123,9 +134,43 @@ command = "./echo-integration"
         assert_eq!(m.kind, PluginKind::Integration);
         assert!(m.args.is_empty());
         assert!(m.cli.is_none());
+        assert!(m.protocol.is_none());
         // A manifest that says nothing about the network gets the narrowest
         // grant a storefront can actually work with.
         assert_eq!(m.sandbox.network, NetworkNeed::Outbound);
+    }
+
+    #[test]
+    fn unsupported_protocol_is_rejected() {
+        let err = PluginManifest::parse(
+            r#"
+api_version = 1
+id = "echo"
+kind = "integration"
+command = "./echo-integration"
+protocol = "something-else"
+"#,
+        )
+        .expect_err("unsupported protocol must fail");
+        assert!(
+            err.to_string().contains("unsupported `protocol`"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn known_protocol_is_accepted() {
+        let m = PluginManifest::parse(
+            r#"
+api_version = 1
+id = "echo"
+kind = "integration"
+command = "./echo-integration"
+protocol = "jsonrpc-stdio-v1"
+"#,
+        )
+        .unwrap();
+        assert_eq!(m.protocol.as_deref(), Some("jsonrpc-stdio-v1"));
     }
 
     #[test]

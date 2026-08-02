@@ -60,7 +60,7 @@ impl ExternalDatabase {
             }
             let value =
                 serde_json::to_value(&params).map_err(|err| DbErr::Custom(err.to_string()))?;
-            if self.client.has_side_channel() {
+            if self.client.has_side_channel() || self.client.has_acl_grants() {
                 self.client
                     .call_raw_with_db_file(methods::DB_CONNECT, value, &path)
                     .await

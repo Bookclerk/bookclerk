@@ -74,6 +74,7 @@ jobs:
         env:
           BOOKCLERK_PLUGIN_ARTIFACTS: ${{ runner.temp }}/bookclerk-plugins
           BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: "1"
+          BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
         run: cargo test --workspace
 
   release:
@@ -154,15 +155,16 @@ jobs:
 
       # Every enforcement test no-ops without a backend, so a runner that lost
       # Landlock would report green while proving nothing. Demand enforcement
-      # where we expect it. Windows is exempt: a process cannot confine itself
-      # there, so those tests are meant to skip until AppContainer is applied
-      # at CreateProcess.
+      # where we expect it:
+      # - REQUIRE_ENFORCEMENT — self-confine (Landlock/Seatbelt); empty on Windows
+      # - REQUIRE_SPAWN_ENFORCEMENT — CreateProcess AppContainer (jail + media)
       - name: Test
         env:
           # Written the "true" way round on purpose: an empty string is falsy
           # in a GitHub expression, so `os == 'windows' && '' || '1'` collapses
-          # to '1' everywhere and silently demands enforcement on Windows too.
+          # to '1' everywhere and silently demands self-confine on Windows too.
           BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: ${{ matrix.os != 'windows-latest' && '1' || '' }}
+          BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
         run: >
           cargo test -p bookclerk-sandbox -p bookclerk-media -p bookclerk-media-worker
           -p bookclerk-jail

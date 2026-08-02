@@ -48,7 +48,7 @@ pub use native::remux_trimmed;
 pub use package_m4b::{package_m4b_from_mp3, package_m4b_from_pcm, PackageM4bRequest};
 pub use pool::{
     init_pool, init_pool_from_config, pool, replace_pool, Confinement, MediaPool, MediaPoolConfig,
-    WORKER_BIN_ENV, WORKER_BIN_NAME, WORKER_ENFORCEMENT_ENV,
+    JAIL_BIN_ENV, JAIL_BIN_NAME, WORKER_BIN_ENV, WORKER_BIN_NAME, WORKER_ENFORCEMENT_ENV,
 };
 
 use std::path::{Path, PathBuf};

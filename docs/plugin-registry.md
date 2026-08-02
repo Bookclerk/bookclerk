@@ -6,20 +6,48 @@ on [crates.io](https://crates.io) so Bookclerk can **discover** and **install**
 them from a packaged binary — without the operator having a Rust toolchain.
 
 > Status: crate naming taxonomy is **draft-stable for discovery**. Install
-> metadata, digest requirements, and federated registry identity will evolve
-> until CLI install lands (Phase C). Catalog search works today; one-click
-> install / dashboard browser remain phased (below).
+> metadata, digest requirements, and federated registry identity live in
+> [`bookclerk-plugin-catalog`](../crates/bookclerk-plugin-catalog/) and continue
+> to evolve with CLI install. Catalog search works today; one-click install /
+> dashboard browser remain phased (below).
 
-### Out of scope for the host-rename / external-default PR
+### Catalog crate (`bookclerk-plugin-catalog`)
 
-The following are **follow-up work**, not part of the Phase 1–2 host/packaging
-landing:
+Registry-neutral types and adapters live in
+[`crates/bookclerk-plugin-catalog`](../crates/bookclerk-plugin-catalog/):
 
-- `bookclerk plugins install` / `update` / `remove` and install receipts
-- Federated discovery beyond crates.io search (npm, PyPI, static registries)
-- Windows AppContainer spawn-time confinement
+| Concept | Notes |
+| --- | --- |
+| **Source-qualified coordinates** | `cargo:name@version`, `npm:name@version`, `pypi:name==version`, `registry:<index_url>#name@version`, `local:/path/to/archive` — search hits never merge by bare plugin id |
+| **Digest-required artifacts** | Install-grade manifests use an explicit `artifacts[]` array; each entry needs `url` + `archive_sha256` (64 hex). URL templates alone are discovery-only |
+| **Static registry** | HTTPS/local JSON index (`schema_version`, `packages[].name` → `versions` → manifest). Fixture: [`fixtures/static-index.example.json`](../crates/bookclerk-plugin-catalog/fixtures/static-index.example.json) |
+| **PyPI** | **Exact-only** — no general search API; use `pypi:project==version` or a static registry for discovery |
+
+Publisher / experimental packaging examples:
+
+- [`examples/plugin-publisher/`](../examples/plugin-publisher/) — reusable GHA workflow docs
+- [`examples/plugins-echo-ts/`](../examples/plugins-echo-ts/) — Node SEA Echo (experimental)
+- [`examples/plugins-echo-py/`](../examples/plugins-echo-py/) — PyInstaller Echo (experimental)
+
+### Trust (staged)
+
+Unattended install **requires** `archive_sha256`. Publisher signatures /
+notarization are optional; Bookclerk never re-signs third-party binaries.
+
+| Flag / config | Effect |
+| --- | --- |
+| `--allow-unsigned` / `[plugins] allow_unsigned` | Permit packages without publisher signatures (digest still required) |
+| Yanked versions | Refused by install-grade validation |
+| macOS / Windows code signatures | Warn via `plugins doctor` when tooling is available; interactive override only |
+
+### Out of scope for the host-rename / external-default PR (#74)
+
+These landed on the follow-up ecosystem track instead of expanding #74:
+
+- Full `bookclerk plugins install` / `update` / `remove` / `doctor` / `registry`
+- Windows AppContainer spawn-time confinement (`run_appcontainer` + path ACLs)
 - Publisher code signing / notarization as a hard requirement
-- TypeScript / Python guest SDKs and packaging templates
+- First-class TypeScript / Python guest SDKs (experimental Echo templates only)
 
 ## Design principle
 
@@ -172,32 +200,42 @@ needs more than outbound HTTPS has to say so in `plugin.toml`:
 network = "listen"   # only for an OAuth callback on loopback
 ```
 
-Recommended asset names (cargo-dist / cargo-binstall friendly):
+Recommended asset names use **Bookclerk targets** (not raw rustc triples):
 
 ```text
-{crate}-{version}-{target}.tar.gz
-{crate}-{version}-{target}.zip
+{crate}-{version}-{bookclerk_target}.tar.gz
+{crate}-{version}-{bookclerk_target}.zip
 ```
+
+| Bookclerk target | Legacy rustc triple (still accepted when selecting) |
+| --- | --- |
+| `linux-x64-gnu` | `x86_64-unknown-linux-gnu` |
+| `linux-arm64-gnu` | `aarch64-unknown-linux-gnu` |
+| `macos-x64` | `x86_64-apple-darwin` |
+| `macos-arm64` | `aarch64-apple-darwin` |
+| `windows-x64` | `x86_64-pc-windows-msvc` |
+| `windows-arm64` | `aarch64-pc-windows-msvc` |
 
 Examples:
 
 ```text
-bookclerk-plugin-source-example-0.1.0-x86_64-unknown-linux-gnu.tar.gz
-bookclerk-plugin-source-example-0.1.0-aarch64-apple-darwin.tar.gz
-bookclerk-plugin-source-example-0.1.0-x86_64-pc-windows-msvc.zip
+bookclerk-plugin-source-example-0.1.0-linux-x64-gnu.tar.gz
+bookclerk-plugin-source-example-0.1.0-macos-arm64.tar.gz
+bookclerk-plugin-source-example-0.1.0-windows-x64.zip
 ```
 
 With Option A, `{ext}` is `tar.gz` or `zip` (Windows targets). `{tag}` is
 usually `v{version}` when the host uses git-style tags; hosts that key only by
-version can omit `{tag}` from the template.
+version can omit `{tag}` from the template. Prefer inlining digests in
+`artifacts[]` (static registry or Cargo metadata) over templates alone.
 
 The install client issues a plain `GET` (following redirects). No GitHub,
 GitLab, or cloud API tokens are required for public assets. Private/authenticated
 buckets are out of scope for v1 (operators can still unpack manually).
 
-**Checksums:** publish `SHA256SUMS` (or per-asset `.sha256`) next to assets, or
-embed digests in a curated index later. Future install will require a matching
-digest before enabling by default.
+**Checksums:** publish `SHA256SUMS` (or per-asset `.sha256`) next to assets.
+Unattended install **requires** a matching `archive_sha256` on each artifact
+entry before enabling by default.
 
 **Signing (later):** optional minisign/cosign; dashboard can surface “signed by
 publisher” vs “crates.io metadata only”.
@@ -220,9 +258,9 @@ No `cargo` / `rustc` on PATH is required.
 
 | Phase | What |
 | --- | --- |
-| **A — Taxonomy (this doc + types)** | Stable crate names, metadata schema, validation helpers |
+| **A — Taxonomy (this doc + types)** | Draft-stable crate names; metadata schema continues to evolve with digests / federation |
 | **B — CLI catalog** | `bookclerk plugins search [query]` against crates.io; `info` shows registry metadata |
-| **C — CLI install** | Download/verify/unpack; `plugins update` / `remove` |
+| **C — CLI install** | Download/verify/unpack with digests; `plugins update` / `remove` |
 | **D — Daemon API** | Authenticated `/api/plugins/catalog`, `/api/plugins/install` |
 | **E — Dashboard browser** | Browse / configure / enable in the operator SPA |
 
@@ -334,5 +372,8 @@ or publish a thin “manifest-only” crate that only carries
 ## Related
 
 - Runtime discovery & protocol: [plugins.md](plugins.md)
+- Catalog crate: [`bookclerk-plugin-catalog`](../crates/bookclerk-plugin-catalog/)
+- Publisher reusable workflow: [`examples/plugin-publisher/`](../examples/plugin-publisher/)
+- Experimental non-Rust Echo: [`examples/plugins-echo-ts/`](../examples/plugins-echo-ts/), [`examples/plugins-echo-py/`](../examples/plugins-echo-py/)
 - Architecture overview: [architecture.md](architecture.md)
 - Operator GUI surfaces: [gui.md](gui.md) (plugin browser = future)

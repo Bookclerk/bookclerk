@@ -20,6 +20,7 @@ pub fn capabilities() -> Capabilities {
     Capabilities {
         backend: BACKEND,
         filesystem: false,
+        spawn_filesystem: false,
         syscall: false,
         network: false,
         detail: format!("no confinement backend for {}", std::env::consts::OS),

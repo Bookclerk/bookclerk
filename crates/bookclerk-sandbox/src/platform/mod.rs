@@ -3,6 +3,12 @@
 //! Each backend exposes the same items so [`crate::Policy`] stays
 //! platform-agnostic: `BACKEND`, `system_read_paths`, `system_write_paths`,
 //! `confine_current_process`, and `capabilities`.
+//!
+//! Windows spawn-side AppContainer launch lives in [`windows_spawn`] (also
+//! re-exported as [`crate::spawn`]).
+
+/// Windows AppContainer spawn (plan capabilities, ACL paths, CreateProcess).
+pub mod windows_spawn;
 
 #[cfg(target_os = "linux")]
 mod linux;

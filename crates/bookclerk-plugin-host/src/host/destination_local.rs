@@ -145,7 +145,7 @@ impl StorageBackend for ExternalLocalDestination {
             },
         };
         let params_json = serde_json::to_value(params).map_err(map_json_err)?;
-        if self.client.has_side_channel() {
+        if self.client.has_side_channel() || self.client.has_acl_grants() {
             self.client
                 .call_raw_with_upload_file(methods::PUT_FILE, params_json, path)
                 .await

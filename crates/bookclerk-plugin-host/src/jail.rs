@@ -99,6 +99,9 @@ pub(crate) struct GuestJail {
     /// Guest end of the side channel, installed on [`PLUGIN_FD_CHANNEL`] at spawn.
     #[cfg(unix)]
     pub guest_channel_raw: Option<std::os::fd::RawFd>,
+    /// AppContainer Package SID (SDDL) when the guest will run confined on Windows.
+    #[cfg(windows)]
+    pub package_sid: Option<String>,
 }
 
 impl GuestJail {
@@ -140,6 +143,8 @@ impl GuestJail {
         let mut fd_channel = None;
         #[cfg(unix)]
         let mut guest_channel_raw = None;
+        #[cfg(windows)]
+        let mut package_sid = None;
         let start = match isolation {
             Isolation::Off => Start::Unconfined {
                 reason: "[plugins].isolation = off".to_string(),
@@ -152,6 +157,30 @@ impl GuestJail {
                 };
                 match resolve_launcher(config, isolation) {
                     Ok(launcher) => {
+                        #[cfg(windows)]
+                        {
+                            let label = format!("plugin:{id}");
+                            match bookclerk_sandbox::spawn::package_sid_for_label(&label) {
+                                Ok(sid) => package_sid = Some(sid),
+                                Err(err) if isolation == Isolation::BestEffort => {
+                                    return Ok(Self {
+                                        data,
+                                        scratch,
+                                        start: Start::Unconfined {
+                                            reason: format!(
+                                                "AppContainer profile unavailable: {err}"
+                                            ),
+                                        },
+                                        package_sid: None,
+                                    });
+                                }
+                                Err(err) => {
+                                    return Err(PluginError::message(format!(
+                                        "could not resolve AppContainer SID for `{id}`: {err}"
+                                    )));
+                                }
+                            }
+                        }
                         #[cfg(unix)]
                         let preserve_fds = {
                             use std::os::fd::IntoRawFd;
@@ -219,6 +248,8 @@ impl GuestJail {
             fd_channel,
             #[cfg(unix)]
             guest_channel_raw,
+            #[cfg(windows)]
+            package_sid,
         })
     }
 }
@@ -268,7 +299,9 @@ fn build_spec(
 fn resolve_launcher(config: &Config, isolation: Isolation) -> std::result::Result<PathBuf, String> {
     if isolation == Isolation::Required {
         let caps = bookclerk_sandbox::capabilities();
-        if !caps.filesystem {
+        // Linux/macOS self-confine (`filesystem`); Windows AppContainer at
+        // CreateProcess (`spawn_filesystem`).
+        if !caps.can_confine_guest() {
             return Err(format!(
                 "this host cannot confine a process ({}) [{}]",
                 caps.detail, caps.backend
@@ -372,6 +405,7 @@ mod tests {
         DiscoveredPlugin {
             manifest: crate::PluginManifest {
                 api_version: 1,
+                protocol: None,
                 id: id.to_string(),
                 name: None,
                 kind: crate::PluginKind::Source,

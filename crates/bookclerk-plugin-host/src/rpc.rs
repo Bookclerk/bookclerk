@@ -14,12 +14,18 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, MutexGuard};
 
 use crate::discover::DiscoveredPlugin;
 use crate::jail::{GuestJail, Start};
-use crate::protocol::{methods, HandshakeResult, PLUGIN_API_VERSION};
+use crate::protocol::{
+    methods, HandshakeResult, HOST_API_VERSION_MAX, HOST_API_VERSION_MIN, MAX_RPC_LINE_BYTES,
+    PLUGIN_API_VERSION,
+};
 use crate::{PluginError, Result};
+
+/// Default wait for one JSON-RPC round-trip before the host gives up.
+const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 #[derive(Debug, Serialize)]
 struct Request {
@@ -57,9 +63,15 @@ pub struct PluginClient {
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>,
     next_id: AtomicU64,
     handshake: HandshakeResult,
+    /// Serializes side-channel / ACL setup with the matching JSON-RPC write so
+    /// concurrent calls cannot reorder FDs or revoke grants early.
+    call_gate: Mutex<()>,
     /// Host end of the fetch-directory side channel, when the guest is jailed.
     #[cfg(unix)]
     fd_channel: Option<std::os::unix::net::UnixStream>,
+    /// AppContainer Package SID for per-op ACL grants (Windows confined guests).
+    #[cfg(windows)]
+    package_sid: Option<String>,
 }
 
 impl PluginClient {
@@ -180,13 +192,35 @@ impl PluginClient {
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_reader = pending.clone();
+        let reader_plugin_id = id.to_string();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut reader = BufReader::new(stdout);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match read_rpc_line(&mut reader, &mut buf, MAX_RPC_LINE_BYTES).await {
+                    Ok(None) => break,
+                    Ok(Some(())) => {}
+                    Err(err) => {
+                        tracing::warn!(
+                            plugin = %reader_plugin_id,
+                            %err,
+                            "plugin response stream closed or exceeded MAX_RPC_LINE_BYTES"
+                        );
+                        break;
+                    }
+                }
+                let line = match std::str::from_utf8(&buf) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        tracing::warn!(%err, "plugin returned non-UTF8 JSON-RPC line");
+                        continue;
+                    }
+                };
                 if line.trim().is_empty() {
                     continue;
                 }
-                match serde_json::from_str::<Response>(&line) {
+                match serde_json::from_str::<Response>(line) {
                     Ok(resp) => {
                         if let Some(id) = resp.id {
                             let mut map = pending_reader.lock().await;
@@ -227,8 +261,11 @@ impl PluginClient {
                 config_options: vec![],
                 cli: None,
             },
+            call_gate: Mutex::new(()),
             #[cfg(unix)]
             fd_channel: jail.fd_channel,
+            #[cfg(windows)]
+            package_sid: jail.package_sid,
         };
 
         let hs: HandshakeResult = client
@@ -240,6 +277,13 @@ impl PluginClient {
                 }),
             )
             .await?;
+        if hs.api_version < HOST_API_VERSION_MIN || hs.api_version > HOST_API_VERSION_MAX {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` handshake api_version {} is outside supported range \
+                 {HOST_API_VERSION_MIN}..={HOST_API_VERSION_MAX}",
+                hs.api_version
+            )));
+        }
         if hs.id != id {
             tracing::warn!(
                 manifest_id = %id,
@@ -270,6 +314,9 @@ impl PluginClient {
     }
 
     /// Whether the host can pass fetch/upload descriptors over the side channel.
+    ///
+    /// Unix: `SCM_RIGHTS` on fd 3. Windows uses path-in-params plus temporary
+    /// AppContainer ACL grants instead ([`Self::has_acl_grants`]).
     #[must_use]
     pub fn has_side_channel(&self) -> bool {
         #[cfg(unix)]
@@ -277,6 +324,19 @@ impl PluginClient {
             self.fd_channel.is_some()
         }
         #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+
+    /// Whether the host can temporarily ACL paths for a confined Windows guest.
+    #[must_use]
+    pub fn has_acl_grants(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.package_sid.is_some()
+        }
+        #[cfg(not(windows))]
         {
             false
         }
@@ -332,6 +392,15 @@ impl PluginClient {
         params: Value,
         side: Option<SidePass<'_>>,
     ) -> Result<Value> {
+        // Hold the call gate across side-channel/ACL setup, the request write,
+        // and the response wait so concurrent Unix FD passes stay ordered with
+        // their requests and Windows ACL grants are not revoked early.
+        let _gate: MutexGuard<'_, ()> = self.call_gate.lock().await;
+
+        // Hold ACL grants until the RPC returns (Windows AppContainer).
+        #[cfg(windows)]
+        let mut _acl_guards: Vec<crate::windows_acl::AclGuard> = Vec::new();
+
         if let Some(side) = side {
             #[cfg(unix)]
             if let Some(channel) = self.fd_channel.as_ref() {
@@ -348,6 +417,32 @@ impl PluginClient {
                     SidePass::FetchDir(_) | SidePass::UploadFile(_) | SidePass::DbFile(_) => {}
                 }
             }
+            #[cfg(windows)]
+            if let Some(sid) = self.package_sid.as_deref() {
+                match side {
+                    SidePass::FetchDir(dir) if method == methods::FETCH_TITLE => {
+                        let _ = std::fs::create_dir_all(dir);
+                        _acl_guards.push(crate::windows_acl::grant_path_for_guest(sid, dir, true)?);
+                    }
+                    SidePass::UploadFile(path) if method == methods::PUT_FILE => {
+                        _acl_guards
+                            .push(crate::windows_acl::grant_path_for_guest(sid, path, false)?);
+                    }
+                    SidePass::DbFile(path) if method == methods::DB_CONNECT => {
+                        if let Some(parent) = path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                            _acl_guards
+                                .push(crate::windows_acl::grant_path_for_guest(sid, parent, true)?);
+                        }
+                        if path.exists() {
+                            _acl_guards
+                                .push(crate::windows_acl::grant_path_for_guest(sid, path, true)?);
+                        }
+                    }
+                    SidePass::FetchDir(_) | SidePass::UploadFile(_) | SidePass::DbFile(_) => {}
+                }
+            }
+            #[cfg(not(any(unix, windows)))]
             let _ = side;
         }
         self.call_raw_inner(method, params).await
@@ -368,18 +463,44 @@ impl PluginClient {
         };
         let mut line = serde_json::to_string(&req)?;
         line.push('\n');
+        if line.len() > MAX_RPC_LINE_BYTES {
+            let mut map = self.pending.lock().await;
+            map.remove(&id);
+            return Err(PluginError::message(format!(
+                "plugin `{}` request for `{method}` exceeds MAX_RPC_LINE_BYTES ({MAX_RPC_LINE_BYTES})",
+                self.id
+            )));
+        }
         {
             let mut stdin = self.stdin.lock().await;
             stdin.write_all(line.as_bytes()).await?;
             stdin.flush().await?;
         }
-        match rx.await {
-            Ok(outcome) => outcome,
-            Err(_) => Err(PluginError::message(format!(
+        match tokio::time::timeout(RPC_TIMEOUT, rx).await {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(_)) => Err(PluginError::message(format!(
                 "plugin `{}` closed while waiting for `{method}`",
                 self.id
             ))),
+            Err(_) => {
+                let mut map = self.pending.lock().await;
+                map.remove(&id);
+                Err(PluginError::message(format!(
+                    "plugin `{}` timed out after {}s waiting for `{method}`",
+                    self.id,
+                    RPC_TIMEOUT.as_secs()
+                )))
+            }
         }
+    }
+
+    /// Ask the guest to shut down gracefully (optional method).
+    ///
+    /// Missing / unsupported methods are ignored; [`Drop`] still kills the child.
+    pub async fn shutdown(&self) {
+        let _ = self
+            .call_optional::<Value>(methods::SHUTDOWN, Value::Null)
+            .await;
     }
 
     /// Notify-style call that ignores a missing method (optional capability).
@@ -439,6 +560,57 @@ impl Drop for PluginClient {
             let _ = child.start_kill();
         }
     }
+}
+
+/// Read one newline-delimited RPC line, refusing payloads over `max` bytes.
+async fn read_rpc_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<Option<()>> {
+    loop {
+        let (done, used) = {
+            let available = reader.fill_buf().await?;
+            if available.is_empty() {
+                return if buf.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(()))
+                };
+            }
+            if let Some(i) = memchr_newline(available) {
+                let take = i; // exclude newline
+                if buf.len().saturating_add(take) > max {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("RPC line exceeds {max} bytes"),
+                    ));
+                }
+                buf.extend_from_slice(&available[..take]);
+                (true, i + 1)
+            } else {
+                if buf.len().saturating_add(available.len()) > max {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("RPC line exceeds {max} bytes"),
+                    ));
+                }
+                buf.extend_from_slice(available);
+                (false, available.len())
+            }
+        };
+        reader.consume(used);
+        if done {
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+            return Ok(Some(()));
+        }
+    }
+}
+
+fn memchr_newline(bytes: &[u8]) -> Option<usize> {
+    bytes.iter().position(|&b| b == b'\n')
 }
 
 /// Env keys safe to inherit into a plugin child.

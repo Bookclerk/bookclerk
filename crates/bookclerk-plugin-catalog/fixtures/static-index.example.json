@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "packages": [
+    {
+      "name": "community/echo",
+      "versions": {
+        "0.1.0": {
+          "schema_version": 1,
+          "protocol": "jsonrpc-stdio-v1",
+          "api_version": 1,
+          "kind": "integration",
+          "id": "echo",
+          "display_name": "Echo Integration",
+          "description": "Example Echo plugin for digest-complete static registry installs",
+          "artifacts": [
+            {
+              "target": "linux-x64-gnu",
+              "url": "https://cdn.example.com/bookclerk-plugins/echo/0.1.0/bookclerk-plugin-echo-integration-0.1.0-linux-x64-gnu.tar.gz",
+              "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "archive_root": ".",
+              "executable": "bookclerk-plugin-echo-integration"
+            },
+            {
+              "target": "macos-arm64",
+              "url": "https://cdn.example.com/bookclerk-plugins/echo/0.1.0/bookclerk-plugin-echo-integration-0.1.0-macos-arm64.tar.gz",
+              "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "archive_root": ".",
+              "executable": "bookclerk-plugin-echo-integration"
+            },
+            {
+              "target": "windows-x64",
+              "url": "https://cdn.example.com/bookclerk-plugins/echo/0.1.0/bookclerk-plugin-echo-integration-0.1.0-windows-x64.zip",
+              "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "archive_root": ".",
+              "executable": "bookclerk-plugin-echo-integration.exe"
+            }
+          ],
+          "sandbox": {
+            "network": "none"
+          },
+          "links": {
+            "repository": "https://github.com/example/bookclerk-plugin-echo",
+            "documentation": "https://example.com/docs/echo"
+          },
+          "yanked": false
+        }
+      }
+    }
+  ]
+}

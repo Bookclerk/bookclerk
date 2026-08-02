@@ -1,0 +1,162 @@
+# Reusable workflow for third-party Bookclerk plugin publishers.
+#
+# Callers copy this file into their repo or reference it via workflow_call from
+# a fork / `fritz-fritz/bookclerk` (path may move to a dedicated workflows repo).
+# Bookclerk CI never builds foreign plugin source — publishers own the run.
+#
+# Permissions when `attest: true` (set on the *caller* job and inherited here):
+#   permissions:
+#     contents: read
+#     id-token: write      # OIDC for Sigstore
+#     attestations: write  # persist GitHub artifact attestation
+#
+# Artifact naming: `{crate}-{version}-{bookclerk_target}.{tar.gz|zip}`
+# Bookclerk targets: linux-x64-gnu | macos-arm64 | windows-x64 (this matrix).
+
+name: Plugin publisher (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      plugin_package:
+        description: Cargo package / binary name (e.g. bookclerk-plugin-integration-echo)
+        required: true
+        type: string
+      plugin_id:
+        description: plugin.toml id (e.g. echo)
+        required: true
+        type: string
+      kind:
+        description: Plugin kind (source | integration | output | database)
+        required: true
+        type: string
+      plugin_toml:
+        description: Path to plugin.toml relative to repository root
+        required: false
+        type: string
+        default: plugin.toml
+      version:
+        description: Override version (default read from Cargo.toml package version)
+        required: false
+        type: string
+        default: ""
+      attest:
+        description: Run actions/attest@v4 on the packed archive (requires permissions above)
+        required: false
+        type: boolean
+        default: false
+      rust_toolchain:
+        description: Rust toolchain channel
+        required: false
+        type: string
+        default: stable
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+jobs:
+  package:
+    name: ${{ matrix.bookclerk_target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bookclerk_target: linux-x64-gnu
+            archive_ext: tar.gz
+          - os: macos-latest
+            bookclerk_target: macos-arm64
+            archive_ext: tar.gz
+          - os: windows-latest
+            bookclerk_target: windows-x64
+            archive_ext: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust_toolchain }}
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.version }}" ]]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            v=$(cargo metadata --no-deps --format-version 1 \
+              | python3 -c "import json,sys; d=json.load(sys.stdin); \
+                print(next(p['version'] for p in d['packages'] if p['name']=='${{ inputs.plugin_package }}'))")
+            echo "version=$v" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build release plugin
+        shell: bash
+        run: cargo build --release -p "${{ inputs.plugin_package }}"
+
+      - name: Pack archive + SHA256SUMS
+        id: pack
+        shell: bash
+        env:
+          PKG: ${{ inputs.plugin_package }}
+          PLUGIN_ID: ${{ inputs.plugin_id }}
+          KIND: ${{ inputs.kind }}
+          PLUGIN_TOML: ${{ inputs.plugin_toml }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          TARGET: ${{ matrix.bookclerk_target }}
+          EXT: ${{ matrix.archive_ext }}
+        run: |
+          set -euo pipefail
+          out=dist/plugins
+          mkdir -p "$out" staging
+          bin_name="$PKG"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            bin_src="target/release/${PKG}.exe"
+            bin_name="${PKG}.exe"
+          else
+            bin_src="target/release/${PKG}"
+          fi
+          test -f "$bin_src"
+          test -f "$PLUGIN_TOML"
+          cp "$PLUGIN_TOML" staging/plugin.toml
+          cp "$bin_src" "staging/${bin_name}"
+          if [[ "${{ runner.os }}" != "Windows" ]]; then
+            chmod +x "staging/${bin_name}"
+          fi
+          archive="${PKG}-${VERSION}-${TARGET}.${EXT}"
+          archive_path="${out}/${archive}"
+          # Portable: GNU/bsdtar on all GitHub-hosted runners (zip via -a / --format).
+          if [[ "$EXT" == "zip" ]]; then
+            tar -a -C staging -cf "${archive_path}" .
+          else
+            tar -C staging -czf "${archive_path}" .
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd "$out" && sha256sum "$archive" > SHA256SUMS)
+          else
+            (cd "$out" && shasum -a 256 "$archive" > SHA256SUMS)
+          fi
+          echo "archive_path=${archive_path}" >> "$GITHUB_OUTPUT"
+          echo "archive_name=${archive}" >> "$GITHUB_OUTPUT"
+          echo "Packed ${archive} (kind=${KIND} id=${PLUGIN_ID})"
+
+      - name: Attest archive
+        if: inputs.attest
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ steps.pack.outputs.archive_path }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.plugin_package }}-${{ matrix.bookclerk_target }}
+          path: |
+            dist/plugins/${{ steps.pack.outputs.archive_name }}
+            dist/plugins/SHA256SUMS
+          if-no-files-found: error

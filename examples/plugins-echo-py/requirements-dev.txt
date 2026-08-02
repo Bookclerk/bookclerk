@@ -1,0 +1,3 @@
+# Dev / packaging only — operators never install this.
+# Build onefile guests per OS runner; PyInstaller does not cross-compile.
+pyinstaller>=6.3,<7

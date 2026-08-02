@@ -9,7 +9,8 @@
 //! - **Windows** — AppContainer applied at `CreateProcess`; see
 //!   [`spawn`](crate::spawn). A process cannot confine *itself* on Windows, so
 //!   [`Policy::confine_current_process`] reports the filesystem layer as
-//!   [`LayerStatus::Unsupported`] there.
+//!   [`LayerStatus::Unsupported`] there. Children are confined by
+//!   [`spawn::run_appcontainer`] (used by `bookclerk-jail`).
 //!
 //! Callers pick the failure mode with [`Enforcement`]. `Required` turns a
 //! backend that cannot enforce into an error, which is what production paths
@@ -25,6 +26,22 @@ mod spec;
 
 pub use platform::BACKEND;
 pub use spec::{Spec, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV, SPEC_ENV};
+
+/// Windows AppContainer spawn API ([`plan_appcontainer`](spawn::plan_appcontainer),
+/// [`run_appcontainer`](spawn::run_appcontainer)).
+///
+/// Re-exports [`platform::windows_spawn`] so callers can depend on a stable
+/// `bookclerk_sandbox::spawn` path on every OS. Non-Windows builds keep the
+/// planning helpers and return a clear error from launch/ACL entry points.
+pub mod spawn {
+    pub use crate::platform::windows_spawn::{
+        grant_path_access, package_sid_for_label, plan_appcontainer, profile_name_for_label,
+        run_appcontainer, AclGrant, AppContainerLaunch,
+    };
+
+    /// Former name of [`run_appcontainer`]; kept as a thin alias for callers.
+    pub use run_appcontainer as spawn_appcontainer;
+}
 
 /// What to do when a confinement layer cannot be enforced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -423,14 +440,30 @@ impl Report {
 pub struct Capabilities {
     /// Backend name for this platform.
     pub backend: &'static str,
-    /// Whether a filesystem allowlist is available.
+    /// Whether a process can confine *itself* (Landlock / Seatbelt).
+    ///
+    /// False on Windows: isolation is granted only at `CreateProcess`. Media
+    /// workers that self-confine check this field.
     pub filesystem: bool,
+    /// Whether a child can be confined at spawn (AppContainer).
+    ///
+    /// True on Windows once AppContainer launch is wired. Plugin jails that
+    /// start guests through `bookclerk-jail` check this (or [`Self::filesystem`]).
+    pub spawn_filesystem: bool,
     /// Whether syscall filtering is available.
     pub syscall: bool,
     /// Whether network restriction is available.
     pub network: bool,
     /// Human-readable detail, e.g. the Landlock ABI level found.
     pub detail: String,
+}
+
+impl Capabilities {
+    /// Whether this host can confine a guest somehow (self-confine or spawn-time).
+    #[must_use]
+    pub fn can_confine_guest(&self) -> bool {
+        self.filesystem || self.spawn_filesystem
+    }
 }
 
 /// Probe what this host supports. Applies nothing; safe to call at any time.

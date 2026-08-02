@@ -22,7 +22,11 @@ const HOST_BINARIES: &[(&str, &str)] = &[
     ("bookclerk-media-worker", "bookclerk-media-worker"),
 ];
 
-/// Host target triple for the machine running the packager.
+/// Host rustc target triple for the machine running the packager.
+///
+/// Prefer [`bookclerk_target`] for new archive filenames. This remains for
+/// callers that still speak rustc triples; [`normalize_bookclerk_target`] maps
+/// either form onto a Bookclerk target name.
 #[must_use]
 pub fn host_target_triple() -> &'static str {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
@@ -42,12 +46,41 @@ pub fn host_target_triple() -> &'static str {
     }
 }
 
+/// Canonical Bookclerk artifact target for the host (e.g. `linux-x64-gnu`).
+#[must_use]
+pub fn bookclerk_target() -> &'static str {
+    normalize_bookclerk_target(host_target_triple()).unwrap_or("unknown")
+}
+
+/// Map a Bookclerk target or legacy rustc triple to a Bookclerk target name.
+#[must_use]
+pub fn normalize_bookclerk_target(triple_or_target: &str) -> Option<&'static str> {
+    match triple_or_target {
+        "linux-x64-gnu" | "x86_64-unknown-linux-gnu" => Some("linux-x64-gnu"),
+        "linux-arm64-gnu" | "aarch64-unknown-linux-gnu" => Some("linux-arm64-gnu"),
+        "macos-x64" | "x86_64-apple-darwin" => Some("macos-x64"),
+        "macos-arm64" | "aarch64-apple-darwin" => Some("macos-arm64"),
+        "windows-x64" | "x86_64-pc-windows-msvc" => Some("windows-x64"),
+        "windows-arm64" | "aarch64-pc-windows-msvc" => Some("windows-arm64"),
+        _ => None,
+    }
+}
+
+/// Whether archives for this Bookclerk target (or rustc triple) use `.zip`.
+#[must_use]
+pub fn uses_zip_archive(triple_or_target: &str) -> bool {
+    match normalize_bookclerk_target(triple_or_target) {
+        Some(t) => t.starts_with("windows-"),
+        None => cfg!(target_os = "windows"),
+    }
+}
+
 pub fn package_plugins(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     let staged = root.join("target").join("plugin-artifacts-pack");
     plugins::stage(root, true, &staged)?;
     fs::create_dir_all(out_dir).with_context(|| format!("create {}", out_dir.display()))?;
 
-    let target = host_target_triple();
+    let target = bookclerk_target();
     let mut checksums = String::new();
     for spec in STAGE_SPECS {
         let plugin_dir = staged.join(spec.id);
@@ -86,13 +119,13 @@ pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
         eprintln!("copied {} -> {}", src.display(), dest.display());
     }
 
-    let archive = archive_path(out_dir, "bookclerk", version, host_target_triple());
+    let archive = archive_path(out_dir, "bookclerk", version, bookclerk_target());
     write_dir_archive(&bundle, &archive)?;
     let digest = sha256_file(&archive)?;
     let sums_path = out_dir.join(format!(
         "SHA256SUMS-bookclerk-{}-{}",
         version,
-        host_target_triple()
+        bookclerk_target()
     ));
     fs::write(
         &sums_path,
@@ -135,13 +168,13 @@ pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()
         eprintln!("bundled platform plugin `{id}`");
     }
 
-    let archive = archive_path(out_dir, "bookclerk-platform", version, host_target_triple());
+    let archive = archive_path(out_dir, "bookclerk-platform", version, bookclerk_target());
     write_dir_archive(&bundle, &archive)?;
     let digest = sha256_file(&archive)?;
     let sums_path = out_dir.join(format!(
         "SHA256SUMS-bookclerk-platform-{}-{}",
         version,
-        host_target_triple()
+        bookclerk_target()
     ));
     fs::write(
         &sums_path,
@@ -156,11 +189,16 @@ pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()
 }
 
 fn bundle_dir_name(version: &str) -> String {
-    format!("bookclerk-{}-{}", version, host_target_triple())
+    format!("bookclerk-{}-{}", version, bookclerk_target())
 }
 
+/// Archive path using a Bookclerk target or legacy rustc triple in the filename.
+///
+/// New packaging prefers Bookclerk names (`linux-x64-gnu`); legacy triples are
+/// still accepted so older docs/CI keep working during the transition.
 fn archive_path(out_dir: &Path, crate_name: &str, version: &str, target: &str) -> PathBuf {
-    let ext = if cfg!(target_os = "windows") {
+    let target = normalize_bookclerk_target(target).unwrap_or(target);
+    let ext = if uses_zip_archive(target) {
         "zip"
     } else {
         "tar.gz"
@@ -323,7 +361,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn archive_names_follow_registry() {
+    fn archive_names_prefer_bookclerk_target() {
+        let path = archive_path(
+            Path::new("/out"),
+            "bookclerk-plugin-source-audible",
+            "0.1.0",
+            "linux-x64-gnu",
+        );
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert_eq!(
+            name.as_ref(),
+            "bookclerk-plugin-source-audible-0.1.0-linux-x64-gnu.tar.gz"
+        );
+    }
+
+    #[test]
+    fn archive_names_normalize_legacy_rust_triples() {
         let path = archive_path(
             Path::new("/out"),
             "bookclerk-plugin-source-audible",
@@ -331,11 +384,32 @@ mod tests {
             "x86_64-unknown-linux-gnu",
         );
         let name = path.file_name().unwrap().to_string_lossy();
-        if cfg!(target_os = "windows") {
-            assert!(name.ends_with(".zip"));
-        } else {
-            assert!(name.ends_with(".tar.gz"));
-        }
-        assert!(name.contains("bookclerk-plugin-source-audible-0.1.0-"));
+        assert!(name.ends_with("linux-x64-gnu.tar.gz"));
+
+        let win = archive_path(
+            Path::new("/out"),
+            "bookclerk-plugin-source-audible",
+            "0.1.0",
+            "x86_64-pc-windows-msvc",
+        );
+        assert!(win
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with("windows-x64.zip"));
+    }
+
+    #[test]
+    fn maps_host_triple_to_bookclerk_target() {
+        assert_eq!(
+            normalize_bookclerk_target("x86_64-unknown-linux-gnu"),
+            Some("linux-x64-gnu")
+        );
+        assert_eq!(
+            normalize_bookclerk_target("linux-x64-gnu"),
+            Some("linux-x64-gnu")
+        );
+        assert!(uses_zip_archive("windows-x64"));
+        assert!(!uses_zip_archive("linux-x64-gnu"));
     }
 }

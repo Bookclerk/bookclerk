@@ -1,0 +1,22 @@
+{
+  "name": "bookclerk-plugin-echo-ts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Experimental TypeScript Echo plugin (Node SEA) for Bookclerk",
+  "type": "module",
+  "main": "src/echo.mjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/echo.mjs",
+    "sea:blob": "node --experimental-sea-config sea-config.json",
+    "sea:build": "node scripts/build-sea.mjs"
+  },
+  "keywords": [
+    "bookclerk",
+    "bookclerk-plugin",
+    "bookclerk-integration"
+  ],
+  "license": "MIT"
+}

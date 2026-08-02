@@ -7,8 +7,8 @@
 //!
 //! So [`confine_current_process`] reports the filesystem layer as
 //! [`LayerStatus::Unsupported`] here, which under [`crate::Enforcement::Required`]
-//! is an error — callers on Windows must confine children at spawn instead.
-//! The spawn-side implementation lands with the plugin and media-worker jails.
+//! is an error for self-confine callers (media workers). Plugin guests are
+//! confined at spawn via [`super::windows_spawn::run_appcontainer`].
 
 use crate::{Capabilities, LayerStatus, NetPolicy, Policy, Report, SandboxError};
 
@@ -18,8 +18,11 @@ pub const BACKEND: &str = "appcontainer";
 /// Read-only paths a Windows process needs to load.
 ///
 /// Unlike Unix, these are not applied as an allowlist by
-/// [`confine_current_process`]; they describe what a spawn-side AppContainer
-/// profile must grant.
+/// [`confine_current_process`]. On Windows this stays empty on purpose:
+/// Bookclerk must not put `System32` (or other OS trees) on the AppContainer
+/// allowlist or try to ACE them. Guests load system binaries through the OS
+/// ALL APPLICATION PACKAGES defaults; confinement is the explicit ACL grants
+/// for plugin/user paths only. See [`super::windows_spawn`].
 pub fn system_read_paths() -> &'static [&'static str] {
     &[]
 }
@@ -34,10 +37,12 @@ pub fn capabilities() -> Capabilities {
         backend: BACKEND,
         // True for children spawned into an AppContainer, not for self-confinement.
         filesystem: false,
+        spawn_filesystem: true,
         syscall: false,
-        network: false,
-        detail: "AppContainer applies at process creation; Windows has no \
-                 self-confinement primitive"
+        network: true,
+        detail: "AppContainer at CreateProcess (no self-confinement); \
+                 plugin guests are confined by bookclerk-jail via \
+                 windows_spawn::run_appcontainer"
             .to_string(),
     }
 }

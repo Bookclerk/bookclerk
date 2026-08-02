@@ -2,37 +2,75 @@
 //!
 //! `bookclerk-sandbox` already tests that an enforced policy blocks undeclared
 //! paths. What matters here is the composition: that the worker actually
-//! applies a policy, that the policy is narrow enough to exclude paths the job
-//! did not declare, and — just as important — that it is wide enough for LAME,
-//! FDK-AAC, and the MP4 muxer to finish the job.
+//! applies a policy (self-confine or spawn-time AppContainer), that the policy
+//! is narrow enough to exclude paths the job did not declare, and — just as
+//! important — that it is wide enough for LAME, FDK-AAC, and the MP4 muxer to
+//! finish the job.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use bookclerk_media::{
-    package_m4b_from_pcm, Confinement, FixupRequest, MediaJob, MediaJobReply,
-    WORKER_ENFORCEMENT_ENV,
+    package_m4b_from_pcm, Confinement, FixupRequest, MediaJob, MediaJobReply, JAIL_BIN_ENV,
+    JAIL_BIN_NAME, WORKER_ENFORCEMENT_ENV,
 };
+use bookclerk_sandbox::{Enforcement, NetPolicy, Spec, SPEC_ENV};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_bookclerk-media-worker");
 
-/// Whether this host can enforce a filesystem allowlist.
+/// Whether this host can confine a media worker (self-confine or spawn-time).
 ///
-/// Setting `BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT` to a non-empty value turns
-/// the skip into a failure, so a runner that is expected to confine cannot
-/// report green by quietly opting out of every assertion here.
+/// `BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT` demands self-confine (`filesystem`).
+/// `BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT` demands any guest confinement
+/// (`can_confine_guest`), which is what Windows AppContainer satisfies.
 fn confinement_available() -> bool {
     let caps = bookclerk_sandbox::capabilities();
-    let demanded = std::env::var("BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT")
+    let self_demanded = std::env::var("BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT")
+        .is_ok_and(|value| !value.trim().is_empty());
+    let spawn_demanded = std::env::var("BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT")
         .is_ok_and(|value| !value.trim().is_empty());
     assert!(
-        caps.filesystem || !demanded,
+        caps.filesystem || !self_demanded,
         "BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT is set but this host cannot \
-         enforce a filesystem allowlist: {} [{}]",
+         self-confine: {} [{}]",
         caps.detail,
         caps.backend
     );
+    assert!(
+        caps.can_confine_guest() || !spawn_demanded,
+        "BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT is set but this host cannot \
+         confine a guest: {} [{}]",
+        caps.detail,
+        caps.backend
+    );
+    if needs_spawn_jail() {
+        assert!(
+            jail_bin().is_some() || !spawn_demanded,
+            "spawn enforcement demanded but {JAIL_BIN_NAME} was not found beside the worker"
+        );
+        return jail_bin().is_some();
+    }
     caps.filesystem
+}
+
+fn needs_spawn_jail() -> bool {
+    let caps = bookclerk_sandbox::capabilities();
+    caps.spawn_filesystem && !caps.filesystem
+}
+
+fn jail_bin() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(JAIL_BIN_ENV) {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let worker = PathBuf::from(WORKER);
+    let dir = worker.parent()?;
+    let name = format!("{JAIL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
+    [dir.join(&name), dir.join("..").join(&name)]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
 }
 
 /// Write a small but genuine M4B so the codecs have real work to do.
@@ -58,16 +96,54 @@ fn make_audiobook(path: &Path) {
     .expect("build fixture audiobook");
 }
 
+fn media_spec(job: &MediaJob, confinement: Confinement) -> Spec {
+    let enforcement = match confinement {
+        Confinement::Required => Enforcement::Required,
+        Confinement::BestEffort => Enforcement::BestEffort,
+        Confinement::Off => Enforcement::Disabled,
+    };
+    Spec {
+        label: format!("media-worker:{}", job.label()),
+        reads: job.read_paths(),
+        writes: job.write_dirs(),
+        net: NetPolicy::Deny,
+        allow_exec: true,
+        system_paths: true,
+        enforcement,
+        preserve_fds: vec![],
+    }
+}
+
 /// Run one job through the worker binary, exactly as the pool does.
+///
+/// On Windows this goes through `bookclerk-jail` so AppContainer is applied at
+/// CreateProcess; elsewhere the worker self-confines.
 fn run_worker(job: &MediaJob, confinement: Confinement) -> (MediaJobReply, String) {
     let request = serde_json::to_vec(job).expect("serialize job");
-    let mut child = Command::new(WORKER)
-        .env(WORKER_ENFORCEMENT_ENV, confinement.as_env_value())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn worker");
+    let mut child = if needs_spawn_jail() {
+        let jail = jail_bin().expect("bookclerk-jail beside worker for spawn-time confinement");
+        Command::new(jail)
+            .arg("--")
+            .arg(WORKER)
+            .env(WORKER_ENFORCEMENT_ENV, confinement.as_env_value())
+            .env(
+                SPEC_ENV,
+                serde_json::to_string(&media_spec(job, confinement)).expect("encode spec"),
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn jailed worker")
+    } else {
+        Command::new(WORKER)
+            .env(WORKER_ENFORCEMENT_ENV, confinement.as_env_value())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn worker")
+    };
     {
         use std::io::Write;
         child
@@ -117,7 +193,7 @@ fn fixup_job(input: &Path, output: &Path) -> MediaJob {
 #[test]
 fn worker_completes_real_codec_work_under_required_confinement() {
     if !confinement_available() {
-        eprintln!("skipping: no filesystem confinement on this host");
+        eprintln!("skipping: no guest confinement on this host");
         return;
     }
 
@@ -137,11 +213,14 @@ fn worker_completes_real_codec_work_under_required_confinement() {
     }
     assert!(output.exists(), "worker did not write {}", output.display());
 
-    // The worker reports what engaged. A jail that quietly did nothing would
-    // still let the job succeed, so assert on the report as well.
+    // Self-confine reports filesystem=enforced; spawn-time AppContainer logs
+    // that it is relying on the outer jail. Either proves a jail engaged.
     assert!(
-        stderr.contains("filesystem=enforced") || stderr.contains("filesystem=partial"),
-        "worker did not report an active filesystem jail\nstderr: {stderr}"
+        stderr.contains("filesystem=enforced")
+            || stderr.contains("filesystem=partial")
+            || stderr.contains("spawn-time AppContainer")
+            || stderr.contains("AppContainer"),
+        "worker/jail did not report an active filesystem jail\nstderr: {stderr}"
     );
 }
 
@@ -150,13 +229,12 @@ fn worker_completes_real_codec_work_under_required_confinement() {
 /// checks. Worth pinning down: it means the host, which chooses these paths
 /// from its own cache and output roots, is what keeps the grant honest.
 ///
-/// Unix-only because creating the symlink needs privileges on Windows, which
-/// cannot self-confine anyway.
+/// Unix-only because creating the symlink needs privileges on Windows.
 #[cfg(unix)]
 #[test]
 fn declared_paths_are_granted_at_their_resolved_target() {
     if !confinement_available() {
-        eprintln!("skipping: no filesystem confinement on this host");
+        eprintln!("skipping: no guest confinement on this host");
         return;
     }
 
@@ -203,6 +281,11 @@ fn worker_reports_a_failure_rather_than_dying_silently() {
 /// fails on the declared path instead of falling back to an unconfined read.
 #[test]
 fn worker_fails_closed_when_a_declared_input_is_unreachable() {
+    if !confinement_available() {
+        eprintln!("skipping: no guest confinement on this host");
+        return;
+    }
+
     let cache = tempfile::tempdir().expect("tempdir");
     let out = tempfile::tempdir().expect("tempdir");
     let input = cache.path().join("book.m4b");

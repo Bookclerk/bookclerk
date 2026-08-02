@@ -1,0 +1,34 @@
+[package]
+name = "bookclerk-plugin-catalog"
+description = "Registry-neutral plugin discovery, manifests, and secure install"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+flate2.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+ureq.workspace = true
+url = { version = "2", features = ["serde"] }
+walkdir.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

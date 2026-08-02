@@ -124,6 +124,20 @@ fn parse_bool_loose(raw: &str) -> Option<bool> {
     }
 }
 
+/// One configured plugin registry source (`[[plugins.registries]]`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PluginRegistryEntry {
+    /// Adapter kind: `static`, `cargo`, `npm`, or `pypi`.
+    pub kind: String,
+    /// Index / registry URL (required for `static`; optional overrides for others).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Optional operator-facing name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 /// `[plugins]` — how external plugin guests are run.
 ///
 /// Separate from `[sources.*]` / `[integrations.*]`, which say *which* plugins
@@ -138,6 +152,15 @@ pub struct PluginsConfig {
     /// launcher is found beside the running executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jail_bin: Option<std::path::PathBuf>,
+    /// Federated discovery sources (static indexes, cargo, npm, pypi).
+    ///
+    /// Search order is list order; default when empty is crates.io only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub registries: Vec<PluginRegistryEntry>,
+    /// When true, unsigned community plugins may be installed without
+    /// `--allow-unsigned` (digests are still required).
+    #[serde(default)]
+    pub allow_unsigned: bool,
 }
 
 impl PluginsConfig {
@@ -154,6 +177,11 @@ impl PluginsConfig {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
                 self.jail_bin = Some(std::path::PathBuf::from(trimmed));
+            }
+        }
+        if let Ok(value) = std::env::var("BOOKCLERK_PLUGIN_ALLOW_UNSIGNED") {
+            if let Some(b) = parse_bool_loose(&value) {
+                self.allow_unsigned = b;
             }
         }
     }

@@ -11,27 +11,62 @@ use std::sync::Arc;
 
 use bookclerk_media::{
     package_m4b_from_pcm, Confinement, MediaJob, MediaPool, MediaPoolConfig, PackageM4bRequest,
+    JAIL_BIN_ENV, JAIL_BIN_NAME,
 };
 
 const WORKER: &str = env!("CARGO_BIN_EXE_bookclerk-media-worker");
 
-/// See `isolation.rs`: `BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT` makes an
-/// unexpected skip a failure rather than silent green.
+/// See `isolation.rs`: REQUIRE envs turn an unexpected skip into a failure.
 fn confinement_available() -> bool {
     let caps = bookclerk_sandbox::capabilities();
-    let demanded = std::env::var("BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT")
+    let self_demanded = std::env::var("BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT")
+        .is_ok_and(|value| !value.trim().is_empty());
+    let spawn_demanded = std::env::var("BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT")
         .is_ok_and(|value| !value.trim().is_empty());
     assert!(
-        caps.filesystem || !demanded,
+        caps.filesystem || !self_demanded,
         "BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT is set but this host cannot \
-         enforce a filesystem allowlist: {} [{}]",
+         self-confine: {} [{}]",
         caps.detail,
         caps.backend
     );
+    assert!(
+        caps.can_confine_guest() || !spawn_demanded,
+        "BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT is set but this host cannot \
+         confine a guest: {} [{}]",
+        caps.detail,
+        caps.backend
+    );
+    if caps.spawn_filesystem && !caps.filesystem {
+        let jail = locate_jail();
+        assert!(
+            jail.is_some() || !spawn_demanded,
+            "spawn enforcement demanded but {JAIL_BIN_NAME} was not found"
+        );
+        return jail.is_some();
+    }
     caps.filesystem
 }
 
+fn locate_jail() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(JAIL_BIN_ENV) {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let worker = PathBuf::from(WORKER);
+    let dir = worker.parent()?;
+    let name = format!("{JAIL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
+    [dir.join(&name), dir.join("..").join(&name)]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+}
+
 fn confined_pool(workers: usize, confinement: Confinement) -> MediaPool {
+    if let Some(jail) = locate_jail() {
+        std::env::set_var(JAIL_BIN_ENV, &jail);
+    }
     MediaPool::new(MediaPoolConfig {
         workers,
         confinement,
@@ -40,13 +75,8 @@ fn confined_pool(workers: usize, confinement: Confinement) -> MediaPool {
 }
 
 /// The strictest mode this host can actually satisfy.
-///
-/// `Required` refuses every job where the platform has no self-confinement
-/// primitive, which on Windows would turn a test of pool mechanics into a test
-/// of the refusal path. Dropping to `best-effort` there keeps the real worker
-/// process — spawn, reply parsing, permit accounting — under test.
 fn supported_confinement() -> Confinement {
-    if bookclerk_sandbox::capabilities().filesystem {
+    if confinement_available() {
         Confinement::Required
     } else {
         Confinement::BestEffort
@@ -75,7 +105,7 @@ fn make_audiobook(path: &Path, seconds: usize) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pool_runs_a_real_encode_in_a_confined_worker() {
     if !confinement_available() {
-        eprintln!("skipping: no filesystem confinement on this host");
+        eprintln!("skipping: no guest confinement on this host");
         return;
     }
 
@@ -113,7 +143,7 @@ async fn pool_runs_a_real_encode_in_a_confined_worker() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pool_runs_jobs_concurrently_up_to_its_capacity() {
     if !confinement_available() {
-        eprintln!("skipping: no filesystem confinement on this host");
+        eprintln!("skipping: no guest confinement on this host");
         return;
     }
 
@@ -178,7 +208,7 @@ async fn pool_runs_jobs_concurrently_up_to_its_capacity() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pool_packages_m4b_in_a_confined_worker() {
     if !confinement_available() {
-        eprintln!("skipping: no filesystem confinement on this host");
+        eprintln!("skipping: no guest confinement on this host");
         return;
     }
 
@@ -267,7 +297,7 @@ async fn pool_packages_m4b_in_a_confined_worker() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_retired_pool_still_finishes_the_work_it_was_holding() {
     if !confinement_available() {
-        eprintln!("skipping: no filesystem confinement on this host");
+        eprintln!("skipping: no guest confinement on this host");
         return;
     }
 

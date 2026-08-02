@@ -58,6 +58,8 @@ pub fn capabilities() -> Capabilities {
     Capabilities {
         backend: BACKEND,
         filesystem: true,
+        // Guests are confined by self-confine + exec in bookclerk-jail.
+        spawn_filesystem: false,
         // Seatbelt gates operations, not syscall numbers. There is no seccomp
         // equivalent, so we do not claim one.
         syscall: false,

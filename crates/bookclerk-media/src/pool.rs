@@ -6,11 +6,16 @@
 //! LAME (`mp3lame-sys`) and FDK-AAC (`fdk-aac-sys`) — are C libraries parsing
 //! attacker-influenced audio.
 //!
-//! Jobs now run in short-lived child processes that confine themselves to the
-//! paths their job declared before touching any media. That buys three things
-//! at once: the codecs cannot reach the key material, a codec crash fails one
-//! book instead of the daemon, and concurrency becomes an explicit bound rather
-//! than however many blocking threads tokio happened to grow.
+//! Jobs now run in short-lived child processes confined to the paths their job
+//! declared before touching any media. That buys three things at once: the
+//! codecs cannot reach the key material, a codec crash fails one book instead
+//! of the daemon, and concurrency becomes an explicit bound rather than however
+//! many blocking threads tokio happened to grow.
+//!
+//! On Linux and macOS the worker confines *itself* (Landlock / Seatbelt) at
+//! startup. On Windows there is no self-confinement primitive, so the pool
+//! launches the worker through `bookclerk-jail`, which `CreateProcess`es it
+//! into an AppContainer with an ACL allowlist derived from the same job paths.
 //!
 //! Workers are per-job rather than long-lived on purpose. Filesystem
 //! confinement is irreversible and process-wide, so a reused worker would need
@@ -22,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, RwLock};
 
+use bookclerk_sandbox::{Enforcement, NetPolicy, Spec, SPEC_ENV};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 
@@ -34,6 +40,10 @@ pub const WORKER_BIN_ENV: &str = "BOOKCLERK_MEDIA_WORKER";
 pub const WORKER_ENFORCEMENT_ENV: &str = "BOOKCLERK_MEDIA_WORKER_ENFORCEMENT";
 /// File name of the worker binary when it sits beside the host executable.
 pub const WORKER_BIN_NAME: &str = "bookclerk-media-worker";
+/// Environment variable naming the jail launcher (shared with plugin hosts).
+pub const JAIL_BIN_ENV: &str = "BOOKCLERK_PLUGIN_JAIL";
+/// File name of the jail launcher when it sits beside the host / worker.
+pub const JAIL_BIN_NAME: &str = "bookclerk-jail";
 
 /// How strictly a worker must be confined before it will process a job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -114,11 +124,20 @@ impl From<&bookclerk_config::MediaConfig> for MediaPoolConfig {
     }
 }
 
+/// Worker binary plus optional spawn-time jail launcher.
+#[derive(Debug, Clone)]
+struct WorkerLaunch {
+    bin: PathBuf,
+    /// When set, the pool runs `jail -- worker` so AppContainer can be applied
+    /// at CreateProcess (Windows). Absent on platforms that self-confine.
+    jail: Option<PathBuf>,
+}
+
 /// Where a pool sends its jobs.
 #[derive(Debug)]
 enum Runner {
-    /// Spawn the worker binary at this path, one process per job.
-    Worker(PathBuf),
+    /// Spawn the worker binary (optionally through `bookclerk-jail`) per job.
+    Worker(WorkerLaunch),
     /// Run on a blocking thread in this process, unconfined. Only reached when
     /// the operator turned isolation off.
     InProcess,
@@ -164,7 +183,7 @@ impl MediaPool {
             // since that is a packaging error and would put codecs back in the
             // host process either way.
             mode => match resolve_runner(mode, config.worker_bin.as_deref()) {
-                Ok(bin) => Runner::Worker(bin),
+                Ok(launch) => Runner::Worker(launch),
                 Err(detail) => {
                     tracing::error!(
                         confinement = mode.as_env_value(),
@@ -214,7 +233,7 @@ impl MediaPool {
     #[must_use]
     pub fn worker_bin(&self) -> Option<&PathBuf> {
         match &self.runner {
-            Runner::Worker(bin) => Some(bin),
+            Runner::Worker(launch) => Some(&launch.bin),
             Runner::InProcess | Runner::Refuse(_) => None,
         }
     }
@@ -223,12 +242,21 @@ impl MediaPool {
     #[must_use]
     pub fn summary(&self) -> String {
         match &self.runner {
-            Runner::Worker(bin) => format!(
-                "media pool: {} workers, confinement={}, worker={}",
-                self.config.workers,
-                self.config.confinement.as_env_value(),
-                bin.display()
-            ),
+            Runner::Worker(launch) => match &launch.jail {
+                Some(jail) => format!(
+                    "media pool: {} workers, confinement={}, worker={}, jail={}",
+                    self.config.workers,
+                    self.config.confinement.as_env_value(),
+                    launch.bin.display(),
+                    jail.display()
+                ),
+                None => format!(
+                    "media pool: {} workers, confinement={}, worker={}",
+                    self.config.workers,
+                    self.config.confinement.as_env_value(),
+                    launch.bin.display()
+                ),
+            },
             Runner::InProcess => format!(
                 "media pool: {} workers, in-process (no confinement)",
                 self.config.workers
@@ -273,7 +301,7 @@ impl MediaPool {
             })?;
 
         match &self.runner {
-            Runner::Worker(bin) => self.run_in_worker(&bin.clone(), job).await,
+            Runner::Worker(launch) => self.run_in_worker(launch.clone(), job).await,
             Runner::InProcess => run_in_process(job).await,
             Runner::Refuse(detail) => Err(MediaError::NotIsolated {
                 job: label,
@@ -282,14 +310,21 @@ impl MediaPool {
         }
     }
 
-    async fn run_in_worker(&self, bin: &PathBuf, job: MediaJob) -> Result<MediaJobOutput> {
+    async fn run_in_worker(&self, launch: WorkerLaunch, job: MediaJob) -> Result<MediaJobOutput> {
         let label = job.label();
         let request = serde_json::to_vec(&job).map_err(|err| MediaError::Worker {
             job: label,
             detail: format!("could not serialize job: {err}"),
         })?;
 
-        let mut command = tokio::process::Command::new(bin);
+        let mut command = match &launch.jail {
+            Some(jail) => {
+                let mut command = tokio::process::Command::new(jail);
+                command.arg("--").arg(&launch.bin);
+                command
+            }
+            None => tokio::process::Command::new(&launch.bin),
+        };
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -310,10 +345,24 @@ impl MediaPool {
             WORKER_ENFORCEMENT_ENV,
             self.config.confinement.as_env_value(),
         );
+        if launch.jail.is_some() {
+            let spec = media_job_spec(&job, self.config.confinement);
+            command.env(
+                SPEC_ENV,
+                serde_json::to_string(&spec).map_err(|err| MediaError::Worker {
+                    job: label,
+                    detail: format!("could not encode jail spec: {err}"),
+                })?,
+            );
+        }
 
+        let spawned = match &launch.jail {
+            Some(jail) => format!("{} -- {}", jail.display(), launch.bin.display()),
+            None => launch.bin.display().to_string(),
+        };
         let mut child = command.spawn().map_err(|err| MediaError::Worker {
             job: label,
-            detail: format!("could not spawn {}: {err}", bin.display()),
+            detail: format!("could not spawn {spawned}: {err}"),
         })?;
 
         // Close stdin after the single request so the worker sees EOF and does
@@ -426,23 +475,102 @@ fn default_worker_count() -> usize {
 /// Decide where jobs will run, or explain why they cannot run at all.
 ///
 /// Both failures are reported at construction so they show up in the startup
-/// summary. Otherwise a Windows host — where a process cannot confine itself
-/// and `Required` therefore can never be satisfied — would look healthy until
-/// the first acquire, then fail every book with an error from a child process.
+/// summary. Otherwise a host that cannot confine would look healthy until the
+/// first acquire, then fail every book with an error from a child process.
 fn resolve_runner(
     confinement: Confinement,
     configured: Option<&Path>,
-) -> std::result::Result<PathBuf, String> {
-    if confinement == Confinement::Required {
-        let caps = bookclerk_sandbox::capabilities();
-        if !caps.filesystem {
-            return Err(format!(
-                "this host cannot confine a worker process ({}) [{}]",
-                caps.detail, caps.backend
-            ));
+) -> std::result::Result<WorkerLaunch, String> {
+    let caps = bookclerk_sandbox::capabilities();
+    if confinement == Confinement::Required && !caps.can_confine_guest() {
+        return Err(format!(
+            "this host cannot confine a worker process ({}) [{}]",
+            caps.detail, caps.backend
+        ));
+    }
+    let bin = resolve_worker_bin(configured)?;
+    let jail = if needs_spawn_jail(&caps) {
+        match resolve_jail_bin(Some(&bin)) {
+            Ok(jail) => Some(jail),
+            Err(err) if confinement == Confinement::Required => {
+                return Err(format!(
+                    "{err}; Windows AppContainer confinement requires {JAIL_BIN_NAME} \
+                     beside the worker (or {JAIL_BIN_ENV})"
+                ));
+            }
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    "media pool: spawn-time jail unavailable; workers will run unconfined \
+                     under best-effort"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    Ok(WorkerLaunch { bin, jail })
+}
+
+/// Windows (and any future spawn-only backend): self-confine is unavailable, so
+/// the pool must launch through `bookclerk-jail`.
+fn needs_spawn_jail(caps: &bookclerk_sandbox::Capabilities) -> bool {
+    caps.spawn_filesystem && !caps.filesystem
+}
+
+/// Build the jail [`Spec`] for one media job (Windows AppContainer path).
+fn media_job_spec(job: &MediaJob, confinement: Confinement) -> Spec {
+    let enforcement = match confinement {
+        Confinement::Required => Enforcement::Required,
+        Confinement::BestEffort => Enforcement::BestEffort,
+        Confinement::Off => Enforcement::Disabled,
+    };
+    Spec {
+        label: format!("media-worker:{}", job.label()),
+        reads: job.read_paths(),
+        writes: job.write_dirs(),
+        net: NetPolicy::Deny,
+        // The launcher CreateProcess/es the worker binary.
+        allow_exec: true,
+        system_paths: true,
+        enforcement,
+        preserve_fds: vec![],
+    }
+}
+
+/// Locate `bookclerk-jail`: env, beside the worker, then beside the current exe.
+fn resolve_jail_bin(worker: Option<&Path>) -> std::result::Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os(JAIL_BIN_ENV) {
+        return check_bin(Path::new(&path), JAIL_BIN_ENV);
+    }
+    let name = format!("{JAIL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
+    if let Some(worker) = worker {
+        if let Some(dir) = worker.parent() {
+            let candidate = dir.join(&name);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
         }
     }
-    resolve_worker_bin(configured)
+    let exe = std::env::current_exe()
+        .map_err(|err| format!("could not locate the current executable: {err}"))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", exe.display()))?;
+    if dir.join(&name).is_file() {
+        return Ok(dir.join(&name));
+    }
+    if dir.file_name().is_some_and(|last| last == "deps") {
+        if let Some(parent) = dir.parent() {
+            if parent.join(&name).is_file() {
+                return Ok(parent.join(name));
+            }
+        }
+    }
+    Err(format!(
+        "{JAIL_BIN_NAME} not found beside the worker/host and {JAIL_BIN_ENV} is unset"
+    ))
 }
 
 /// Locate the worker binary: the configured path, then [`WORKER_BIN_ENV`], then
@@ -478,6 +606,10 @@ fn resolve_worker_bin(configured: Option<&Path>) -> std::result::Result<PathBuf,
 }
 
 fn check_worker_bin(path: &Path, source: &str) -> std::result::Result<PathBuf, String> {
+    check_bin(path, source)
+}
+
+fn check_bin(path: &Path, source: &str) -> std::result::Result<PathBuf, String> {
     if path.is_file() {
         Ok(path.to_path_buf())
     } else {
@@ -1003,9 +1135,8 @@ mod tests {
         );
     }
 
-    /// Windows has no self-confinement primitive, so `Required` can never be
-    /// satisfied there. That has to surface when the pool is built, not as a
-    /// per-book failure from a child process on the first acquire.
+    /// When the platform cannot confine a guest at all, `Required` must refuse
+    /// at construction rather than fail per-book on the first acquire.
     #[test]
     fn a_platform_that_cannot_confine_refuses_at_construction() {
         let pool = MediaPool::new(MediaPoolConfig {
@@ -1013,10 +1144,10 @@ mod tests {
             confinement: Confinement::Required,
             worker_bin: None,
         });
-        if bookclerk_sandbox::capabilities().filesystem {
-            // Nothing to assert beyond "this host is not the failing case";
-            // discovery may still fail in a test binary, which the sibling
-            // tests cover.
+        if bookclerk_sandbox::capabilities().can_confine_guest() {
+            // Host can confine (self or spawn). Discovery may still fail in a
+            // test binary without a worker/jail beside it — sibling tests cover
+            // that packaging error path.
             return;
         }
         assert!(pool.is_refusing());

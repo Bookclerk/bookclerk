@@ -5,11 +5,13 @@
 //! One job per process, so the allowlist is only ever as wide as a single
 //! book's inputs and one output directory.
 //!
-//! Confinement happens before any media is touched and while the process is
-//! still single-threaded, which is why this is a separate binary rather than a
-//! thread in the host: a `pre_exec` hook in a threaded parent cannot allocate
-//! safely, and confining after a runtime has started leaves a window where the
-//! codecs run unjailed.
+//! On Linux and macOS confinement happens here, before any media is touched and
+//! while the process is still single-threaded — which is why this is a separate
+//! binary rather than a thread in the host.
+//!
+//! On Windows the host launches this binary through `bookclerk-jail`, which
+//! applies an AppContainer at `CreateProcess`. This process then skips
+//! self-confine (unsupported) and relies on that spawn-time jail.
 //!
 //! Everything this binary needs is already resolved by the time it confines
 //! itself, so the jail can deny the rest of the filesystem — including the
@@ -69,6 +71,18 @@ fn confine(job: &MediaJob) -> Result<(), String> {
             return Ok(());
         }
     };
+
+    let caps = bookclerk_sandbox::capabilities();
+    // Spawn-time AppContainer (Windows): the host already launched us through
+    // bookclerk-jail. Self-confine would only report Unsupported and fail
+    // Required, so trust the outer jail.
+    if !caps.filesystem && caps.spawn_filesystem {
+        eprintln!(
+            "bookclerk-media-worker: relying on spawn-time AppContainer \
+             (no self-confinement on this host)"
+        );
+        return Ok(());
+    }
 
     let policy = Policy::new(format!("media-worker:{}", job.label()))
         .reads(job.read_paths())

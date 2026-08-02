@@ -18,6 +18,7 @@ members = [
     "crates/bookclerk-integrations",
     "crates/bookclerk-discover",
     "crates/bookclerk-plugin-sdk",
+    "crates/bookclerk-plugin-catalog",
     "crates/bookclerk-plugin-host",
     "crates/bookclerk-plugin-examples/echo-integration",
     "crates/bookclerk-plugins/source-audible",
@@ -81,6 +82,7 @@ bookclerk-search = { path = "crates/bookclerk-search" }
 bookclerk-integrations = { path = "crates/bookclerk-integrations" }
 bookclerk-discover = { path = "crates/bookclerk-discover" }
 bookclerk-plugin-sdk = { path = "crates/bookclerk-plugin-sdk" }
+bookclerk-plugin-catalog = { path = "crates/bookclerk-plugin-catalog" }
 # Off by default so the hosts decide which stores they link; a member cannot turn
 # an inherited dependency's default features back off.
 bookclerk-plugin-host = { path = "crates/bookclerk-plugin-host", default-features = false }
@@ -155,6 +157,10 @@ filetime = "0.2"
 rust_xlsxwriter = "0.96"
 tar = "0.4"
 flate2 = "1"
+hex = "0.4"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+walkdir = "2"
 
 # audible-rs — path-patched fork (rusqlite 0.37). Upstream rev documented in
 # third_party/audible-rs/BOOKCLERK_PATCH.md.
