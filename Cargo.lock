@@ -1426,6 +1426,7 @@ dependencies = [
  "libc",
  "serde_json",
  "tempfile",
+ "windows",
 ]
 
 [[package]]
@@ -1781,6 +1782,7 @@ version = "0.1.0"
 dependencies = [
  "landlock",
  "libc",
+ "rand 0.8.7",
  "rappct",
  "seccompiler",
  "serde",

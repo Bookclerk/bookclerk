@@ -267,19 +267,35 @@ what is in effect with `bookclerk config get plugins.isolation`.
 
 Windows cannot confine a process after it has started. `bookclerk-jail` therefore
 `CreateProcess`es the guest into an AppContainer (via
-`bookclerk_sandbox::spawn::run_appcontainer`), ACLs the policy's read/write
-paths for the Package SID, maps `NetPolicy` to capability names
-(`internetClient`, `privateNetworkClientServer`, …), and proxies stdio until the
-guest exits.
+`bookclerk_sandbox::spawn::run_appcontainer`), ACLs the policy's **explicit**
+read/write paths for a **per-launch** Package SID, maps `NetPolicy` to
+capability names (`internetClient`, `privateNetworkClientServer`, …), places the
+guest in a kill-on-close Job Object, and proxies stdio until the guest exits.
+
+Ambient OS runtime access (loading system DLLs / `cmd.exe`) comes from existing
+OS ACLs such as ALL APPLICATION PACKAGES. Bookclerk never calls
+`SetNamedSecurityInfo` / `grant_to_package` on Windows, System32, WinSxS,
+Program Files, or other OS-managed trees; requested writes under those roots
+fail closed before any ACL API. The child working directory and `TEMP`/`TMP` are
+the AppContainer profile folder from `GetAppContainerFolderPath`, not System32.
+
+Plugin hosts create the AppContainer profile up front, put
+`windows_profile_name` on the jail `Spec`, and delete the profile when the
+plugin client drops. Media jobs leave that field unset so the jail creates a
+unique profile per job.
 
 Per-fetch / upload / sqlite paths are not in the spawn allowlist. On Unix the
 host passes an open descriptor over `SCM_RIGHTS`; on Windows it temporarily ACLs
 the path for the Package SID, puts the path on the JSON-RPC wire, and revokes
 the ACE when the RPC returns.
 
+`allow_exec` is not separately enforceable at CreateProcess on Windows; path
+ACLs and low integrity remain the boundary. Descendants inherit the AppContainer
+token and Job Object membership.
+
 Self-confinement (`Policy::confine_current_process`) remains unsupported on
-Windows — that path is for media workers, which still need a separate
-spawn-side AppContainer wiring. Plugin guests use the jail launcher above.
+Windows — media workers use the same spawn-side AppContainer path through
+`bookclerk-jail`.
 
 In containers, Landlock needs a runtime that permits the `landlock_*` syscalls.
 Docker's default seccomp profile has allowed them since 20.10.14; on an older

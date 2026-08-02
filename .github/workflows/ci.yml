@@ -165,6 +165,8 @@ jobs:
           # to '1' everywhere and silently demands self-confine on Windows too.
           BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: ${{ matrix.os != 'windows-latest' && '1' || '' }}
           BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
+        # DACL mutations are serialized in-process / cross-process via
+        # Local\bookclerk-dacl-tx; cargo can run these tests in parallel.
         run: >
           cargo test -p bookclerk-sandbox -p bookclerk-media -p bookclerk-media-worker
           -p bookclerk-jail

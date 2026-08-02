@@ -72,6 +72,12 @@ pub struct PluginClient {
     /// AppContainer Package SID for per-op ACL grants (Windows confined guests).
     #[cfg(windows)]
     package_sid: Option<String>,
+    /// Host-owned AppContainer profile; must outlive the jailed child.
+    ///
+    /// Declared after `child` so the child (and its Job Object tree) is killed
+    /// before DeleteAppContainerProfile runs.
+    #[cfg(windows)]
+    _appcontainer: Option<bookclerk_sandbox::spawn::AppContainerSession>,
 }
 
 impl PluginClient {
@@ -266,6 +272,8 @@ impl PluginClient {
             fd_channel: jail.fd_channel,
             #[cfg(windows)]
             package_sid: jail.package_sid,
+            #[cfg(windows)]
+            _appcontainer: jail.appcontainer,
         };
 
         let hs: HandshakeResult = client
@@ -625,8 +633,11 @@ fn memchr_newline(bytes: &[u8]) -> Option<usize> {
 fn plugin_env_allowed(key: &str) -> bool {
     const ALLOW: &[&str] = &[
         "PATH",
+        "PATHEXT",
         "HOME",
         "USER",
+        "USERNAME",
+        "USERPROFILE",
         "LOGNAME",
         "LANG",
         "LC_ALL",
@@ -640,6 +651,12 @@ fn plugin_env_allowed(key: &str) -> bool {
         "RUST_BACKTRACE",
         "NO_COLOR",
         "FORCE_COLOR",
+        // Windows AppContainer launch / DLL load.
+        "SystemRoot",
+        "SystemDrive",
+        "windir",
+        "LOCALAPPDATA",
+        "ComSpec",
     ];
     if ALLOW.iter().any(|k| key.eq_ignore_ascii_case(k)) {
         return true;

@@ -12,12 +12,23 @@ authors.workspace = true
 name = "bookclerk-jail"
 path = "src/main.rs"
 
+[[bin]]
+name = "bookclerk-ac-probe"
+path = "src/bin/bookclerk-ac-probe.rs"
+
 [dependencies]
 bookclerk-sandbox.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true

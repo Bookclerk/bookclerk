@@ -92,44 +92,66 @@ fn windows_run(spec: &Spec, program: &Path, args: &[OsString]) -> ExitCode {
         Enforcement::Required | Enforcement::BestEffort => {}
     }
 
-    match bookclerk_sandbox::spawn::plan_appcontainer(&policy) {
-        Ok(plan) => eprintln!(
-            "bookclerk-jail: windows AppContainer plan: profile={} package_sid={:?} capabilities={:?}",
-            plan.profile_name, plan.package_sid, plan.capability_names
-        ),
+    let plan = bookclerk_sandbox::spawn::plan_appcontainer(&policy);
+    eprintln!(
+        "bookclerk-jail: windows AppContainer plan: stem={} capabilities={:?}",
+        plan.label_stem, plan.capability_names
+    );
+
+    // Host-owned profile (plugins) vs per-launch unique profile (media / tests).
+    let session = match &spec.windows_profile_name {
+        Some(name) => bookclerk_sandbox::spawn::AppContainerSession::attach(name),
+        None => bookclerk_sandbox::spawn::AppContainerSession::create(policy.label()),
+    };
+    let session = match session {
+        Ok(session) => {
+            eprintln!(
+                "bookclerk-jail: AppContainer session: profile={} package_sid={}",
+                session.profile_name(),
+                session.package_sid()
+            );
+            session
+        }
         Err(err) => {
             return match policy.enforcement_mode() {
                 Enforcement::Required => fail(&err.to_string()),
                 Enforcement::BestEffort | Enforcement::Disabled => {
                     eprintln!(
-                        "bookclerk-jail: warning: AppContainer plan failed ({err}); \
+                        "bookclerk-jail: warning: AppContainer session failed ({err}); \
                          continuing unconfined"
                     );
                     exec_status(program, args)
                 }
             };
         }
-    }
+    };
 
     // Do not hand the guest the shape of its own jail (mirrors Unix `exec`
-    // which drops SPEC_ENV). CreateProcess inherits this process's environment.
+    // which drops SPEC_ENV). CreateProcess with an explicit env block also
+    // omits this; remove it from the jail process for the Disabled fallback.
     std::env::remove_var(SPEC_ENV);
 
-    match bookclerk_sandbox::spawn::run_appcontainer(&policy, program, args) {
+    match bookclerk_sandbox::spawn::run_appcontainer(&policy, program, args, Some(&session)) {
         Ok(code) => {
             eprintln!("bookclerk-jail: AppContainer guest exited with status {code}");
+            // Drop session after the guest (and Job Object) so a jail-owned
+            // profile is deleted only once the process tree is gone.
+            drop(session);
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
-        Err(err) => match policy.enforcement_mode() {
-            Enforcement::Required => fail(&err.to_string()),
-            Enforcement::BestEffort | Enforcement::Disabled => {
-                eprintln!(
-                    "bookclerk-jail: warning: AppContainer launch failed ({err}); \
-                     continuing unconfined"
-                );
-                exec_status(program, args)
+        Err(err) => {
+            drop(session);
+            match policy.enforcement_mode() {
+                Enforcement::Required => fail(&err.to_string()),
+                Enforcement::BestEffort | Enforcement::Disabled => {
+                    eprintln!(
+                        "bookclerk-jail: warning: AppContainer launch failed ({err}); \
+                         continuing unconfined"
+                    );
+                    exec_status(program, args)
+                }
             }
-        },
+        }
     }
 }
 

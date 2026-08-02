@@ -8,7 +8,7 @@
 //! finish the job.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
 use bookclerk_media::{
     package_m4b_from_pcm, Confinement, FixupRequest, MediaJob, MediaJobReply, JAIL_BIN_ENV,
@@ -111,16 +111,34 @@ fn media_spec(job: &MediaJob, confinement: Confinement) -> Spec {
         system_paths: true,
         enforcement,
         preserve_fds: vec![],
+        windows_profile_name: None,
     }
 }
 
-/// Run one job through the worker binary, exactly as the pool does.
+/// Outcome of one worker invocation (JSON reply is optional — launcher may fail closed).
+struct WorkerRun {
+    status: ExitStatus,
+    reply: Option<MediaJobReply>,
+    stdout: String,
+    stderr: String,
+}
+
+/// Run one job through the worker binary, matching production pool routing.
 ///
-/// On Windows this goes through `bookclerk-jail` so AppContainer is applied at
-/// CreateProcess; elsewhere the worker self-confines.
-fn run_worker(job: &MediaJob, confinement: Confinement) -> (MediaJobReply, String) {
+/// - [`Confinement::Off`]: invoke the worker directly (production uses
+///   `Runner::InProcess` and does not require a sandbox allowlist).
+/// - Required/BestEffort on spawn-only hosts: route through `bookclerk-jail`.
+fn run_worker(job: &MediaJob, confinement: Confinement) -> WorkerRun {
     let request = serde_json::to_vec(job).expect("serialize job");
-    let mut child = if needs_spawn_jail() {
+    let mut child = if confinement == Confinement::Off {
+        Command::new(WORKER)
+            .env(WORKER_ENFORCEMENT_ENV, confinement.as_env_value())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn worker")
+    } else if needs_spawn_jail() {
         let jail = jail_bin().expect("bookclerk-jail beside worker for spawn-time confinement");
         Command::new(jail)
             .arg("--")
@@ -154,14 +172,21 @@ fn run_worker(job: &MediaJob, confinement: Confinement) -> (MediaJobReply, Strin
             .expect("send job");
     }
     let output = child.wait_with_output().expect("await worker");
-    let reply: MediaJobReply = serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
-        panic!(
-            "unparseable reply ({err})\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        )
-    });
-    (reply, String::from_utf8_lossy(&output.stderr).into_owned())
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let reply = if stdout.trim().is_empty() {
+        None
+    } else {
+        Some(serde_json::from_str(&stdout).unwrap_or_else(|err| {
+            panic!("unparseable reply ({err})\nstdout: {stdout}\nstderr: {stderr}")
+        }))
+    };
+    WorkerRun {
+        status: output.status,
+        reply,
+        stdout,
+        stderr,
+    }
 }
 
 fn fixup_job(input: &Path, output: &Path) -> MediaJob {
@@ -203,12 +228,16 @@ fn worker_completes_real_codec_work_under_required_confinement() {
     make_audiobook(&input);
     let output = out.path().join("tagged.m4b");
 
-    let (reply, stderr) = run_worker(&fixup_job(&input, &output), Confinement::Required);
+    let run = run_worker(&fixup_job(&input, &output), Confinement::Required);
+    let reply = run.reply.expect("worker should emit a JSON reply");
 
     match reply {
         MediaJobReply::Ok(_) => {}
         MediaJobReply::Err { message } => {
-            panic!("job failed inside the jail: {message}\nstderr: {stderr}")
+            panic!(
+                "job failed inside the jail: {message}\nstderr: {}",
+                run.stderr
+            )
         }
     }
     assert!(output.exists(), "worker did not write {}", output.display());
@@ -216,11 +245,12 @@ fn worker_completes_real_codec_work_under_required_confinement() {
     // Self-confine reports filesystem=enforced; spawn-time AppContainer logs
     // that it is relying on the outer jail. Either proves a jail engaged.
     assert!(
-        stderr.contains("filesystem=enforced")
-            || stderr.contains("filesystem=partial")
-            || stderr.contains("spawn-time AppContainer")
-            || stderr.contains("AppContainer"),
-        "worker/jail did not report an active filesystem jail\nstderr: {stderr}"
+        run.stderr.contains("filesystem=enforced")
+            || run.stderr.contains("filesystem=partial")
+            || run.stderr.contains("spawn-time AppContainer")
+            || run.stderr.contains("AppContainer"),
+        "worker/jail did not report an active filesystem jail\nstderr: {}",
+        run.stderr
     );
 }
 
@@ -248,10 +278,12 @@ fn declared_paths_are_granted_at_their_resolved_target() {
     std::os::unix::fs::symlink(&real, &link).expect("symlink");
 
     let output = out.path().join("tagged.m4b");
-    let (reply, stderr) = run_worker(&fixup_job(&link, &output), Confinement::Required);
+    let run = run_worker(&fixup_job(&link, &output), Confinement::Required);
+    let reply = run.reply.expect("JSON reply");
     assert!(
         matches!(reply, MediaJobReply::Ok(_)),
-        "declaring a link should grant its target\nreply: {reply:?}\nstderr: {stderr}"
+        "declaring a link should grant its target\nreply: {reply:?}\nstderr: {}",
+        run.stderr
     );
 }
 
@@ -262,7 +294,10 @@ fn worker_reports_a_failure_rather_than_dying_silently() {
     let missing = cache.path().join("does-not-exist.m4b");
     let output = out.path().join("tagged.m4b");
 
-    let (reply, stderr) = run_worker(&fixup_job(&missing, &output), Confinement::Off);
+    // Confinement::Off must not route through bookclerk-jail: production uses
+    // Runner::InProcess and never builds a sandbox allowlist for Off.
+    let run = run_worker(&fixup_job(&missing, &output), Confinement::Off);
+    let reply = run.reply.expect("unconfined worker should emit JSON");
     match reply {
         MediaJobReply::Err { message } => {
             assert!(
@@ -270,15 +305,19 @@ fn worker_reports_a_failure_rather_than_dying_silently() {
                 "error should name the missing input, got: {message}"
             );
         }
-        MediaJobReply::Ok(_) => panic!("expected failure for a missing input\nstderr: {stderr}"),
+        MediaJobReply::Ok(_) => panic!(
+            "expected failure for a missing input\nstderr: {}",
+            run.stderr
+        ),
     }
 }
 
 /// A job whose input the jail will not cover must fail rather than proceed.
 ///
-/// The worker resolves its allowlist before confining, so an input that is
-/// unreachable at that moment is simply absent from the jail. The job then
-/// fails on the declared path instead of falling back to an unconfined read.
+/// On spawn-time hosts the launcher rejects missing allowlist paths before
+/// CreateProcess (fail closed). On self-confine hosts the worker reports a
+/// JSON error. Either way: nonzero failure, no output file, worker not run
+/// unconfined past a vanished required path.
 #[test]
 fn worker_fails_closed_when_a_declared_input_is_unreachable() {
     if !confinement_available() {
@@ -297,13 +336,41 @@ fn worker_fails_closed_when_a_declared_input_is_unreachable() {
     // the worker meets exactly the state a jailed-away path produces.
     std::fs::remove_file(&input).expect("remove input");
 
-    let (reply, stderr) = run_worker(&job, Confinement::Required);
-    assert!(
-        matches!(reply, MediaJobReply::Err { .. }),
-        "expected failure, got {reply:?}\nstderr: {stderr}"
-    );
+    let run = run_worker(&job, Confinement::Required);
     assert!(
         !output.exists(),
         "worker wrote output despite a failed input"
     );
+
+    if needs_spawn_jail() {
+        // Launcher-level fail-closed: no JSON reply, stderr names the path.
+        assert!(
+            !run.status.success(),
+            "expected nonzero status from jail, got {:?}\nstderr: {}",
+            run.status.code(),
+            run.stderr
+        );
+        assert!(
+            run.reply.is_none(),
+            "launcher should not start the worker; stdout was: {}",
+            run.stdout
+        );
+        assert!(
+            run.stderr.contains("do not exist") || run.stderr.contains("book.m4b"),
+            "stderr should name the missing allowlist path\nstderr: {}",
+            run.stderr
+        );
+        assert!(
+            !run.stderr.contains("continuing unconfined"),
+            "Required must not fall back to an unconfined worker\nstderr: {}",
+            run.stderr
+        );
+    } else {
+        let reply = run.reply.expect("self-confine worker emits JSON");
+        assert!(
+            matches!(reply, MediaJobReply::Err { .. }),
+            "expected failure, got {reply:?}\nstderr: {}",
+            run.stderr
+        );
+    }
 }

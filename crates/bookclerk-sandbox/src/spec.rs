@@ -69,6 +69,13 @@ pub struct Spec {
     /// directory one RPC at a time.
     #[serde(default)]
     pub preserve_fds: Vec<i32>,
+    /// Pre-created AppContainer profile moniker (Windows).
+    ///
+    /// When set, `bookclerk-jail` attaches to this host-owned profile and does
+    /// not delete it. When absent, the jail creates a unique per-launch profile
+    /// and deletes it after the guest (and its Job Object) exits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows_profile_name: Option<String>,
 }
 
 fn default_system_paths() -> bool {
@@ -88,6 +95,7 @@ impl Spec {
             system_paths: true,
             enforcement: Enforcement::default(),
             preserve_fds: Vec::new(),
+            windows_profile_name: None,
         }
     }
 
@@ -119,6 +127,7 @@ mod tests {
             system_paths: true,
             enforcement: Enforcement::Required,
             preserve_fds: Vec::new(),
+            windows_profile_name: None,
         };
         let json = serde_json::to_string(&spec).expect("encode");
         assert_eq!(

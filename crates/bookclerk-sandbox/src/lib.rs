@@ -35,9 +35,13 @@ pub use spec::{Spec, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV, SPEC_ENV};
 /// planning helpers and return a clear error from launch/ACL entry points.
 pub mod spawn {
     pub use crate::platform::windows_spawn::{
-        grant_path_access, package_sid_for_label, plan_appcontainer, profile_name_for_label,
-        run_appcontainer, AclGrant, AppContainerLaunch,
+        grant_path_access, is_os_managed_path, plan_appcontainer, profile_name_for_label,
+        run_appcontainer, unique_profile_moniker, AclGrant, AppContainerLaunch,
+        AppContainerSession,
     };
+
+    #[cfg(windows)]
+    pub use crate::platform::windows_spawn::dacl_mentions_sid;
 
     /// Former name of [`run_appcontainer`]; kept as a thin alias for callers.
     pub use run_appcontainer as spawn_appcontainer;

@@ -1,20 +1,22 @@
 //! Proof that `bookclerk-jail` on Windows launches the guest inside an
 //! AppContainer whose filesystem allowlist actually holds.
 //!
-//! Self-confine helpers cannot prove this (Windows has no post-start jail), so
-//! the assertions run in a `cmd.exe` guest started through the launcher.
-//!
-//! Scripts are inlined on the `/C` command line (same pattern as rappct's
-//! examples) so the guest does not need to open a `.bat` under `%TEMP%`.
+//! Uses `bookclerk-ac-probe` (TokenIsAppContainer + path probes) rather than
+//! cmd.exe log scraping.
 
 #![cfg(windows)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Barrier};
+use std::thread;
+use std::time::Duration;
 
 use bookclerk_sandbox::{Enforcement, NetPolicy, Spec};
+use serde_json::Value;
 
 const JAIL: &str = env!("CARGO_BIN_EXE_bookclerk-jail");
+const PROBE: &str = env!("CARGO_BIN_EXE_bookclerk-ac-probe");
 
 fn spawn_enforcement_demanded() -> bool {
     std::env::var("BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT")
@@ -43,29 +45,55 @@ fn write_secret(dir: &Path) -> PathBuf {
     secret
 }
 
-fn comspec() -> PathBuf {
-    PathBuf::from(
-        std::env::var_os("ComSpec").unwrap_or_else(|| r"C:\Windows\System32\cmd.exe".into()),
-    )
+fn base_spec(label: &str, reads: Vec<PathBuf>, writes: Vec<PathBuf>) -> Spec {
+    Spec {
+        label: label.into(),
+        reads,
+        writes,
+        net: NetPolicy::Deny,
+        allow_exec: true,
+        system_paths: false,
+        enforcement: Enforcement::Required,
+        preserve_fds: vec![],
+        windows_profile_name: None,
+    }
 }
 
-/// Run `cmd.exe /D /C <script>` inside the jail.
-fn run_jailed_cmd(spec: &Spec, script: &str) -> std::process::Output {
-    Command::new(JAIL)
-        .arg(comspec())
-        .arg("/D")
-        .arg("/C")
-        .arg(script)
-        .env(
-            bookclerk_sandbox::SPEC_ENV,
-            serde_json::to_string(spec).expect("encode"),
-        )
-        .output()
-        .expect("run bookclerk-jail")
+fn run_jailed_probe(spec: &Spec, probe_args: &[&str]) -> std::process::Output {
+    let mut cmd = Command::new(JAIL);
+    cmd.arg(PROBE);
+    for arg in probe_args {
+        cmd.arg(arg);
+    }
+    cmd.env(
+        bookclerk_sandbox::SPEC_ENV,
+        serde_json::to_string(spec).expect("encode"),
+    )
+    .output()
+    .expect("run bookclerk-jail + probe")
+}
+
+fn first_json_line(stdout: &str) -> Value {
+    let line = stdout
+        .lines()
+        .find(|line| line.trim().starts_with('{'))
+        .unwrap_or_else(|| panic!("no JSON line in stdout:\n{stdout}"));
+    serde_json::from_str(line).unwrap_or_else(|err| panic!("bad JSON ({err}): {line}"))
+}
+
+fn assert_probe_ok(output: &std::process::Output) -> Value {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "jail/probe failed: status={:?}\nstderr={stderr}\nstdout={stdout}",
+        output.status.code()
+    );
+    first_json_line(&stdout)
 }
 
 #[test]
-fn appcontainer_guest_cannot_read_outside_allowlist() {
+fn appcontainer_token_and_path_allowlist_hold() {
     assert_spawn_capable();
 
     let root = tempfile::tempdir().expect("tempdir");
@@ -74,94 +102,151 @@ fn appcontainer_guest_cannot_read_outside_allowlist() {
     std::fs::create_dir_all(&allowed).expect("allowed");
     std::fs::create_dir_all(&forbidden).expect("forbidden");
     let secret = write_secret(&forbidden);
+    let readable = allowed.join("readable.txt");
+    std::fs::write(&readable, b"hello").expect("readable");
 
-    let spec = Spec {
-        label: "test:windows-ac-read".into(),
-        reads: vec![],
-        writes: vec![allowed.clone()],
-        net: NetPolicy::Deny,
-        allow_exec: true,
-        // Do not put System32 on the allowlist. AppContainers load system
-        // binaries via OS ALL APPLICATION PACKAGES defaults; Bookclerk only
-        // ACL-grants the plugin/user paths above.
-        system_paths: false,
-        enforcement: Enforcement::Required,
-        preserve_fds: vec![],
-    };
-
-    // Inline script: write under allowlist, fail closed if secret is readable.
-    let script = format!(
-        "echo ok> \"{allowed}\\out.txt\" \
-         && if not exist \"{allowed}\\out.txt\" exit /b 11 \
-         && (type \"{secret}\" >nul 2>&1 && exit /b 22 || exit /b 0)",
-        allowed = allowed.display(),
-        secret = secret.display(),
+    let spec = base_spec(
+        "test:windows-ac-paths",
+        vec![readable.clone()],
+        vec![allowed.clone()],
     );
 
-    let output = run_jailed_cmd(&spec, &script);
+    let allowed_s = allowed.display().to_string();
+    let readable_s = readable.display().to_string();
+    let secret_s = secret.display().to_string();
+    let forbidden_s = forbidden.display().to_string();
+
+    let report = assert_probe_ok(&run_jailed_probe(
+        &spec,
+        &[
+            "--read",
+            &readable_s,
+            "--read",
+            &secret_s,
+            "--write",
+            &allowed_s,
+            "--write",
+            &forbidden_s,
+        ],
+    ));
+
+    assert_eq!(report["is_app_container"], true);
+    let reads = report["reads"].as_array().expect("reads");
+    assert_eq!(reads[0]["ok"], true, "explicit readable file");
+    assert_eq!(
+        reads[1]["ok"], false,
+        "undeclared sibling must not be readable"
+    );
+    let writes = report["writes"].as_array().expect("writes");
+    assert_eq!(writes[0]["ok"], true, "explicit writable dir");
+    assert_eq!(
+        writes[1]["ok"], false,
+        "undeclared sibling must not be writable"
+    );
+
+    let cwd = report["cwd"].as_str().expect("cwd");
+    let local = report["localappdata"].as_str().expect("localappdata");
+    let temp = report["temp"].as_str().expect("temp");
+    let tmp = report["tmp"].as_str().expect("tmp");
+    let cwd_l = cwd.to_ascii_lowercase();
+    let local_l = local.to_ascii_lowercase();
+    let temp_l = temp.to_ascii_lowercase();
+    assert!(
+        !cwd_l.contains("\\system32"),
+        "cwd must not be System32: {cwd}"
+    );
+    assert!(
+        cwd_l.contains("\\packages\\"),
+        "cwd should be under AppContainer Packages: {cwd}"
+    );
+    assert!(
+        local_l.contains("\\packages\\"),
+        "LOCALAPPDATA should be AppContainer-scoped: {local}"
+    );
+    assert!(
+        temp_l.contains("temp"),
+        "TEMP should be AppContainer-local: {temp}"
+    );
+    assert_eq!(temp, tmp);
+    if let Ok(host_temp) = std::env::var("TEMP") {
+        assert_ne!(
+            temp_l,
+            host_temp.to_ascii_lowercase(),
+            "guest TEMP must not be the host user temp"
+        );
+    }
+    if let Ok(host_local) = std::env::var("LOCALAPPDATA") {
+        assert_ne!(
+            local_l,
+            host_local.to_ascii_lowercase(),
+            "guest LOCALAPPDATA must not be the host user LocalAppData"
+        );
+    }
+}
+
+#[test]
+fn os_managed_write_grant_is_rejected_before_acl_mutation() {
+    assert_spawn_capable();
+
+    let system_root = std::env::var("SystemRoot").expect("SystemRoot");
+    let target = PathBuf::from(&system_root).join("Temp");
+    let spec = base_spec("test:windows-os-write", vec![], vec![target]);
+
+    let output = run_jailed_probe(&spec, &[]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "jail/guest failed: status={:?}\nstderr={stderr}\nstdout={}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stdout)
+        !output.status.success(),
+        "OS-managed write grant must fail closed"
     );
     assert!(
-        allowed.join("out.txt").is_file(),
-        "guest should write inside allowlist; stderr={stderr}"
-    );
-    assert!(
-        stderr.contains("AppContainer"),
-        "expected AppContainer log line, got: {stderr}"
+        stderr.contains("OS-managed") || stderr.contains("refusing ACL write"),
+        "expected OS-managed rejection, got: {stderr}"
     );
 }
 
 #[test]
-fn appcontainer_guest_cannot_write_outside_allowlist() {
+fn temporary_aces_are_cleaned_after_exit() {
     assert_spawn_capable();
 
     let root = tempfile::tempdir().expect("tempdir");
     let allowed = root.path().join("allowed");
-    let forbidden = root.path().join("forbidden");
     std::fs::create_dir_all(&allowed).expect("allowed");
-    std::fs::create_dir_all(&forbidden).expect("forbidden");
+    let readable = allowed.join("readable.txt");
+    std::fs::write(&readable, b"hello").expect("readable");
 
-    let spec = Spec {
-        label: "test:windows-ac-write".into(),
-        reads: vec![],
-        writes: vec![allowed.clone()],
-        net: NetPolicy::Deny,
-        allow_exec: true,
-        system_paths: false,
-        enforcement: Enforcement::Required,
-        preserve_fds: vec![],
-    };
+    // Host creates the profile so we know the Package SID for DACL checks.
+    // Jail attaches (no delete); we arm delete after the probe returns.
+    let mut session = bookclerk_sandbox::spawn::AppContainerSession::create("test:dacl-cleanup")
+        .expect("session");
+    let sid = session.package_sid().to_string();
+    let profile = session.profile_name().to_string();
+    session.disarm_delete();
 
-    let script = format!(
-        "echo ok> \"{allowed}\\out.txt\" \
-         && if not exist \"{allowed}\\out.txt\" exit /b 11 \
-         && (echo leaked> \"{forbidden}\\pwned.txt\" 2>nul) \
-         && if exist \"{forbidden}\\pwned.txt\" (exit /b 22) else (exit /b 0)",
-        allowed = allowed.display(),
-        forbidden = forbidden.display(),
+    let mut spec = base_spec(
+        "test:dacl-cleanup",
+        vec![readable.clone()],
+        vec![allowed.clone()],
     );
+    spec.windows_profile_name = Some(profile);
 
-    let output = run_jailed_cmd(&spec, &script);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let readable_s = readable.display().to_string();
+    let allowed_s = allowed.display().to_string();
+    let _ = assert_probe_ok(&run_jailed_probe(
+        &spec,
+        &["--read", &readable_s, "--write", &allowed_s],
+    ));
+
     assert!(
-        output.status.success(),
-        "jail/guest failed: status={:?}\nstderr={stderr}\nstdout={}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(
-        allowed.join("out.txt").is_file(),
-        "guest should write inside allowlist; stderr={stderr}"
+        !bookclerk_sandbox::spawn::dacl_mentions_sid(&allowed, &sid).expect("dacl allowed"),
+        "Package SID must not remain on allowed dir DACL after revoke"
     );
     assert!(
-        !forbidden.join("pwned.txt").exists(),
-        "guest wrote outside the allowlist"
+        !bookclerk_sandbox::spawn::dacl_mentions_sid(&readable, &sid).expect("dacl file"),
+        "Package SID must not remain on readable file DACL after revoke"
     );
+
+    session.arm_delete();
+    drop(session);
 }
 
 #[test]
@@ -170,19 +255,9 @@ fn required_refuses_missing_allowlist_path() {
 
     let root = tempfile::tempdir().expect("tempdir");
     let missing = root.path().join("nope");
-    let spec = Spec {
-        label: "test:windows-missing".into(),
-        reads: vec![missing],
-        writes: vec![],
-        net: NetPolicy::Deny,
-        allow_exec: true,
-        system_paths: false,
-        enforcement: Enforcement::Required,
-        preserve_fds: vec![],
-    };
+    let spec = base_spec("test:windows-missing", vec![missing], vec![]);
 
-    let output = run_jailed_cmd(&spec, "echo hi");
-
+    let output = run_jailed_probe(&spec, &[]);
     assert!(
         !output.status.success(),
         "missing allowlist path must fail closed"
@@ -195,37 +270,28 @@ fn required_refuses_missing_allowlist_path() {
 }
 
 #[test]
-fn plan_appcontainer_populates_package_sid_on_windows() {
+fn plan_appcontainer_is_pure_on_windows() {
     assert_spawn_capable();
     let plan = bookclerk_sandbox::spawn::plan_appcontainer(
         &bookclerk_sandbox::Policy::new("test:sid").net(NetPolicy::Outbound),
-    )
-    .expect("plan");
-    assert!(
-        plan.package_sid.is_some(),
-        "Windows plan should ensure a profile SID"
     );
     assert_eq!(plan.capability_names, ["internetClient"]);
-    assert!(plan.profile_name.starts_with("bookclerk."));
+    assert_eq!(plan.label_stem, "test.sid");
+
+    let session =
+        bookclerk_sandbox::spawn::AppContainerSession::create("test:sid").expect("create session");
+    assert!(!session.package_sid().is_empty());
+    assert!(session.profile_name().len() <= 64);
 }
 
 #[test]
 fn disabled_enforcement_runs_guest_unconfined() {
     assert_spawn_capable();
 
-    let spec = Spec {
-        label: "test:windows-disabled".into(),
-        reads: vec![],
-        writes: vec![],
-        net: NetPolicy::Deny,
-        allow_exec: true,
-        system_paths: false,
-        enforcement: Enforcement::Disabled,
-        preserve_fds: vec![],
-    };
+    let mut spec = base_spec("test:windows-disabled", vec![], vec![]);
+    spec.enforcement = Enforcement::Disabled;
 
-    let output = run_jailed_cmd(&spec, "echo hi");
-
+    let output = run_jailed_probe(&spec, &[]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
@@ -235,4 +301,158 @@ fn disabled_enforcement_runs_guest_unconfined() {
         stderr.contains("disabled") || stderr.contains("unconfined"),
         "expected disabled/unconfined notice, got: {stderr}"
     );
+    let report = first_json_line(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(report["is_app_container"], false);
+}
+
+#[test]
+fn overlapping_launches_with_same_label_stay_isolated() {
+    assert_spawn_capable();
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir_a = root.path().join("a");
+    let dir_b = root.path().join("b");
+    std::fs::create_dir_all(&dir_a).expect("a");
+    std::fs::create_dir_all(&dir_b).expect("b");
+    let file_a = dir_a.join("a.txt");
+    let file_b = dir_b.join("b.txt");
+    std::fs::write(&file_a, b"secret-a").expect("a.txt");
+    std::fs::write(&file_b, b"secret-b").expect("b.txt");
+
+    // Signal files live inside each guest's own allowlisted dir so concurrent
+    // launches do not fight over SetNamedSecurityInfo on a shared sync tree.
+    let ready_a = dir_a.join("ready");
+    let ready_b = dir_b.join("ready");
+    let release_a = dir_a.join("release");
+    let release_b = dir_b.join("release");
+
+    // Same policy label (the historical Package SID collision), different dirs.
+    let label = "media-worker:fixup";
+    let spec_a = base_spec(label, vec![file_a.clone()], vec![dir_a.clone()]);
+    let spec_b = base_spec(label, vec![file_b.clone()], vec![dir_b.clone()]);
+
+    let file_a_s = file_a.display().to_string();
+    let file_b_s = file_b.display().to_string();
+    let dir_a_s = dir_a.display().to_string();
+    let dir_b_s = dir_b.display().to_string();
+    let ready_a_s = ready_a.display().to_string();
+    let ready_b_s = ready_b.display().to_string();
+    let release_a_s = release_a.display().to_string();
+    let release_b_s = release_b.display().to_string();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier_a = barrier.clone();
+    let barrier_b = barrier.clone();
+
+    let a_file_a = file_a_s.clone();
+    let a_file_b = file_b_s.clone();
+    let a_dir_a = dir_a_s.clone();
+    let a_dir_b = dir_b_s.clone();
+    let a_ready = ready_a_s;
+    let a_release = release_a_s;
+    let handle_a = thread::spawn(move || {
+        barrier_a.wait();
+        run_jailed_probe(
+            &spec_a,
+            &[
+                "--read",
+                &a_file_a,
+                "--read",
+                &a_file_b,
+                "--write",
+                &a_dir_a,
+                "--write",
+                &a_dir_b,
+                "--signal",
+                &a_ready,
+                "--wait-after",
+                &a_release,
+            ],
+        )
+    });
+    let handle_b = thread::spawn(move || {
+        barrier_b.wait();
+        run_jailed_probe(
+            &spec_b,
+            &[
+                "--read",
+                &file_b_s,
+                "--read",
+                &file_a_s,
+                "--write",
+                &dir_b_s,
+                "--write",
+                &dir_a_s,
+                "--signal",
+                &ready_b_s,
+                "--wait-after",
+                &release_b_s,
+            ],
+        )
+    });
+
+    // Both probes finish isolation checks and signal before either is released,
+    // so both ACL grant sets are active during the cross-access attempts.
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    while !(ready_a.exists() && ready_b.exists()) {
+        if std::time::Instant::now() >= deadline {
+            // Prefer surfacing guest stderr over a bare timeout.
+            let _ = std::fs::write(&release_a, b"go");
+            let _ = std::fs::write(&release_b, b"go");
+            let out_a = handle_a.join().expect("thread a");
+            let out_b = handle_b.join().expect("thread b");
+            panic!(
+                "timed out waiting for both guests to become ready\n--- A ---\nstatus={:?}\nstderr={}\nstdout={}\n--- B ---\nstatus={:?}\nstderr={}\nstdout={}",
+                out_a.status.code(),
+                String::from_utf8_lossy(&out_a.stderr),
+                String::from_utf8_lossy(&out_a.stdout),
+                out_b.status.code(),
+                String::from_utf8_lossy(&out_b.stderr),
+                String::from_utf8_lossy(&out_b.stdout),
+            );
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    // Prove cross-isolation while both grants are live, then let A exit first.
+    std::fs::write(&release_a, b"go").expect("release a");
+    let out_a = handle_a.join().expect("thread a");
+    let report_a = assert_probe_ok(&out_a);
+    assert_eq!(report_a["is_app_container"], true);
+    assert_eq!(report_a["reads"][0]["ok"], true);
+    assert_eq!(report_a["reads"][1]["ok"], false);
+    assert_eq!(report_a["writes"][0]["ok"], true);
+    assert_eq!(report_a["writes"][1]["ok"], false);
+
+    // A has fully exited (ACEs revoked, profile deleted). B must still work.
+    std::fs::write(&release_b, b"go").expect("release b");
+    let out_b = handle_b.join().expect("thread b");
+    let report_b = assert_probe_ok(&out_b);
+    assert_eq!(report_b["is_app_container"], true);
+    assert_eq!(report_b["reads"][0]["ok"], true);
+    assert_eq!(report_b["reads"][1]["ok"], false);
+    assert_eq!(report_b["writes"][0]["ok"], true);
+    assert_eq!(report_b["writes"][1]["ok"], false);
+
+    // Host can still use the fixture dirs (no sticky broken DACLs).
+    std::fs::write(dir_a.join("host.txt"), b"ok").expect("host write a");
+    std::fs::write(dir_b.join("host.txt"), b"ok").expect("host write b");
+}
+
+#[test]
+fn long_label_monikers_do_not_collide() {
+    assert_spawn_capable();
+    let shared = "z".repeat(80);
+    let a = bookclerk_sandbox::spawn::unique_profile_moniker(&format!("{shared}-alpha"));
+    let b = bookclerk_sandbox::spawn::unique_profile_moniker(&format!("{shared}-beta"));
+    assert_ne!(a, b);
+    assert!(a.len() <= 64);
+    assert!(b.len() <= 64);
+
+    let sa = bookclerk_sandbox::spawn::AppContainerSession::create(&format!("{shared}-alpha"))
+        .expect("session a");
+    let sb = bookclerk_sandbox::spawn::AppContainerSession::create(&format!("{shared}-beta"))
+        .expect("session b");
+    assert_ne!(sa.package_sid(), sb.package_sid());
+    assert_ne!(sa.profile_name(), sb.profile_name());
 }

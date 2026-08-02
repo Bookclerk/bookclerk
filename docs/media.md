@@ -54,11 +54,13 @@ operations, so nothing is lost.
 **Windows cannot self-confine.** A process cannot drop itself into an
 AppContainer after it has started; isolation is granted at `CreateProcess`.
 The media pool therefore launches `bookclerk-media-worker` through
-`bookclerk-jail` on Windows (same launcher plugins use), which applies an
-AppContainer ACL allowlist derived from the job's read/write paths. The worker
-skips self-confine and relies on that outer jail. Ship `bookclerk-jail` beside
-the worker; with the default `isolation = "required"`, a missing jail refuses
-media work rather than decoding unconfined.
+`bookclerk-jail` on Windows (same launcher plugins use), which applies a
+**per-job** AppContainer profile and ACL allowlist derived from the job's
+read/write paths (never mutating OS-managed DACLs). The worker skips
+self-confine and relies on that outer jail. Ship `bookclerk-jail` beside the
+worker; with the default `isolation = "required"`, a missing jail refuses media
+work rather than decoding unconfined. Missing allowlist paths fail closed in
+the launcher before the worker starts.
 
 What a job declares:
 

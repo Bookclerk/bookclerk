@@ -35,10 +35,12 @@ fn spawn_capability_matches_platform_expectations() {
         );
         let plan = bookclerk_sandbox::spawn::plan_appcontainer(
             &Policy::new("spawn-test").net(NetPolicy::Outbound),
-        )
-        .expect("plan_appcontainer");
+        );
+        assert_eq!(plan.capability_names, ["internetClient"]);
+        let session = bookclerk_sandbox::spawn::AppContainerSession::create("spawn-test")
+            .expect("AppContainerSession::create");
         assert!(
-            plan.package_sid.is_some(),
+            !session.package_sid().is_empty(),
             "profile SID required on Windows"
         );
     }

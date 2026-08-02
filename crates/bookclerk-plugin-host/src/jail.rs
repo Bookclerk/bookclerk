@@ -102,6 +102,9 @@ pub(crate) struct GuestJail {
     /// AppContainer Package SID (SDDL) when the guest will run confined on Windows.
     #[cfg(windows)]
     pub package_sid: Option<String>,
+    /// Host-owned AppContainer profile; deleted when the plugin client drops.
+    #[cfg(windows)]
+    pub appcontainer: Option<bookclerk_sandbox::spawn::AppContainerSession>,
 }
 
 impl GuestJail {
@@ -145,6 +148,8 @@ impl GuestJail {
         let mut guest_channel_raw = None;
         #[cfg(windows)]
         let mut package_sid = None;
+        #[cfg(windows)]
+        let mut appcontainer = None;
         let start = match isolation {
             Isolation::Off => Start::Unconfined {
                 reason: "[plugins].isolation = off".to_string(),
@@ -160,8 +165,11 @@ impl GuestJail {
                         #[cfg(windows)]
                         {
                             let label = format!("plugin:{id}");
-                            match bookclerk_sandbox::spawn::package_sid_for_label(&label) {
-                                Ok(sid) => package_sid = Some(sid),
+                            match bookclerk_sandbox::spawn::AppContainerSession::create(&label) {
+                                Ok(session) => {
+                                    package_sid = Some(session.package_sid().to_string());
+                                    appcontainer = Some(session);
+                                }
                                 Err(err) if isolation == Isolation::BestEffort => {
                                     return Ok(Self {
                                         data,
@@ -172,11 +180,12 @@ impl GuestJail {
                                             ),
                                         },
                                         package_sid: None,
+                                        appcontainer: None,
                                     });
                                 }
                                 Err(err) => {
                                     return Err(PluginError::message(format!(
-                                        "could not resolve AppContainer SID for `{id}`: {err}"
+                                        "could not create AppContainer session for `{id}`: {err}"
                                     )));
                                 }
                             }
@@ -215,6 +224,12 @@ impl GuestJail {
                         #[cfg(not(unix))]
                         let preserve_fds: Vec<i32> = Vec::new();
 
+                        #[cfg(windows)]
+                        let windows_profile_name =
+                            appcontainer.as_ref().map(|s| s.profile_name().to_string());
+                        #[cfg(not(windows))]
+                        let windows_profile_name = None;
+
                         Start::Confined {
                             launcher,
                             spec: Box::new(build_spec(
@@ -224,6 +239,7 @@ impl GuestJail {
                                 &scratch,
                                 preserve_fds,
                                 enforcement,
+                                windows_profile_name,
                             )),
                         }
                     }
@@ -250,6 +266,8 @@ impl GuestJail {
             guest_channel_raw,
             #[cfg(windows)]
             package_sid,
+            #[cfg(windows)]
+            appcontainer,
         })
     }
 }
@@ -262,6 +280,7 @@ fn build_spec(
     scratch: &Path,
     preserve_fds: Vec<i32>,
     enforcement: Enforcement,
+    windows_profile_name: Option<String>,
 ) -> Spec {
     let mut writes = vec![data.to_path_buf(), scratch.to_path_buf()];
     // Local output writes under `[output.local].root`; grant only that tree.
@@ -287,10 +306,13 @@ fn build_spec(
         },
         // The launcher has to exec the guest to hand over. See the
         // `bookclerk-jail` crate docs on why this is close to free.
+        // On Windows, `allow_exec` is not separately enforceable at CreateProcess;
+        // path ACLs and low integrity remain the boundary (see windows_spawn docs).
         allow_exec: true,
         system_paths: true,
         enforcement,
         preserve_fds,
+        windows_profile_name,
     }
 }
 
@@ -433,6 +455,7 @@ mod tests {
             &plugin_scratch_dir(&config, "libro"),
             vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
             Enforcement::Required,
+            None,
         );
 
         assert_eq!(spec.label, "plugin:libro");
@@ -476,6 +499,7 @@ mod tests {
             &plugin_scratch_dir(&config, "libro"),
             vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
             Enforcement::Required,
+            None,
         );
         assert!(!spec.writes.contains(&config.paths().files_dir));
         assert!(!spec.reads.contains(&config.paths().files_dir));
@@ -509,6 +533,7 @@ mod tests {
                 &plugin_scratch_dir(&config, "x"),
                 vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
                 Enforcement::Required,
+                None,
             );
             assert_eq!(spec.net, expected, "{need:?}");
         }
@@ -546,6 +571,7 @@ mod tests {
             &plugin_scratch_dir(&config, "libro"),
             vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
             Enforcement::Required,
+            None,
         );
         assert!(!spec
             .writes

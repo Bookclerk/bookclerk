@@ -3,7 +3,13 @@
 //! Windows has no self-confinement primitive: a process cannot drop itself into
 //! an AppContainer after it has started. Isolation is granted at process
 //! creation, by giving the child a token with an AppContainer SID and ACLing the
-//! paths it may reach.
+//! **explicit** policy paths it may reach. Ambient OS runtime access (System32
+//! DLLs, etc.) comes from existing OS ACLs such as ALL APPLICATION PACKAGES —
+//! Bookclerk never mutates DACLs under OS-managed roots.
+//!
+//! Each launch uses a unique AppContainer profile/SID so concurrent jobs cannot
+//! share ACL allowlists or race on `REVOKE_ACCESS`. See
+//! [`super::windows_spawn`].
 //!
 //! So [`confine_current_process`] reports the filesystem layer as
 //! [`LayerStatus::Unsupported`] here, which under [`crate::Enforcement::Required`]
