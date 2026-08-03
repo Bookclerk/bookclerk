@@ -46,7 +46,14 @@ pub async fn connect_sqlite(path: &Path) -> Result<DatabaseConnection> {
         std::fs::create_dir_all(parent)?;
     }
     let mut conn = rusqlite::Connection::open(path)?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    // TRUNCATE keeps a durable rollback journal without unlinking it on commit.
+    // The jailed sqlite guest only has file-level Landlock grants for the DB and
+    // sidecars (not the files-dir parent), so DELETE journal mode fails with
+    // SQLITE_IOERR_DELETE when it tries to remove `*-journal`.
+    conn.execute_batch(
+        "PRAGMA journal_mode = TRUNCATE;
+         PRAGMA foreign_keys = ON;",
+    )?;
     migrations::migrations().to_latest(&mut conn)?;
     let db = Database::connect_proxy(
         DbBackend::Sqlite,

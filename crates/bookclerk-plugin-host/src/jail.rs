@@ -10,12 +10,15 @@
 //! - one fetch work directory at a time, passed over the side channel on fd 3
 //!   (`SCM_RIGHTS` delivers the directory as a separate descriptor)
 //!
-//! That leaves out everything that matters: `master.key`, `library.db`, the
-//! operator token, the output library, the config file, and every other plugin's
-//! data directory. None of it is a loss, because the host already mediates the
-//! things a guest would otherwise need those for — credentials arrive as RPC
-//! parameters and scan results go back the same way, so a guest has never had a
-//! reason to open the database.
+//! That leaves out everything that matters: `master.key`, the operator token,
+//! the output library, the config file, and every other plugin's data directory.
+//! The **sqlite** database guest is the exception: on Linux, Landlock re-checks
+//! the real path when the guest reopens a passed FD via `/proc/self/fd/N`; on
+//! Windows, AppContainer ACLs enforce the same constraint. Either way, that
+//! guest gets file-level write grants for `library.db` and its
+//! `-wal`/`-shm`/`-journal` sidecars — never the files-dir parent (which would
+//! expose `master.key`). Other guests never see the database; credentials and
+//! scan results stay on RPC.
 //!
 //! # Why a descriptor per fetch rather than the cache root
 //!
@@ -179,6 +182,14 @@ impl GuestJail {
                 ))
             })?;
         }
+        // SQLite needs the DB + journal sidecars to exist before the confinement
+        // backend attaches file rules: Landlock opens each path with O_PATH at
+        // confine time; AppContainer ACLs are likewise set on existing paths.
+        if is_sqlite_database_plugin(plugin) {
+            ensure_sqlite_library_files(config).map_err(|err| {
+                PluginError::message(format!("could not prepare sqlite library files: {err}"))
+            })?;
+        }
 
         let isolation = config.plugins.isolation;
         #[cfg(unix)]
@@ -331,6 +342,10 @@ fn build_spec(
         // Directory creation happens in [`GuestJail::plan`] (hard error).
         writes.push(resolved_local_output_root(config));
     }
+    // File-level grants only — never the files-dir parent (see module docs).
+    if is_sqlite_database_plugin(plugin) {
+        writes.extend(sqlite_library_paths(config));
+    }
     Spec {
         label: format!("plugin:{}", plugin.manifest.id),
         // The install directory covers `plugin.toml` and, in the usual layout,
@@ -353,6 +368,55 @@ fn build_spec(
         preserve_fds,
         windows_profile_name,
     }
+}
+
+fn is_sqlite_database_plugin(plugin: &DiscoveredPlugin) -> bool {
+    plugin.manifest.kind == crate::PluginKind::Database
+        && plugin.manifest.id.eq_ignore_ascii_case("sqlite")
+}
+
+/// `library.db` plus the journal sidecars SQLite opens beside it.
+///
+/// The library connection uses `PRAGMA journal_mode=TRUNCATE` so commits
+/// truncate `*-journal` instead of unlinking it (Landlock would deny
+/// `RemoveFile` on the files-dir parent; AppContainer ACLs apply the same
+/// constraint on Windows). `-wal`/`-shm` are included for completeness if a
+/// connection ever switches to WAL.
+fn sqlite_library_paths(config: &Config) -> Vec<PathBuf> {
+    let db = config.database.sqlite_path(&config.paths().files_dir);
+    let wal = {
+        let mut s = db.as_os_str().to_os_string();
+        s.push("-wal");
+        PathBuf::from(s)
+    };
+    let shm = {
+        let mut s = db.as_os_str().to_os_string();
+        s.push("-shm");
+        PathBuf::from(s)
+    };
+    let journal = {
+        let mut s = db.as_os_str().to_os_string();
+        s.push("-journal");
+        PathBuf::from(s)
+    };
+    vec![db, wal, shm, journal]
+}
+
+/// Touch the SQLite DB and sidecars so the confinement backend can attach
+/// per-file rules (Landlock opens each path with `O_PATH`; AppContainer ACLs
+/// are set on existing paths).
+fn ensure_sqlite_library_files(config: &Config) -> std::io::Result<()> {
+    let paths = sqlite_library_paths(config);
+    if let Some(parent) = paths[0].parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    for path in &paths {
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+    }
+    Ok(())
 }
 
 /// Locate the launcher: the configured path, then [`JAIL_BIN_ENV`], then beside
@@ -480,6 +544,12 @@ mod tests {
         }
     }
 
+    fn sqlite_plugin_at(root: &Path) -> DiscoveredPlugin {
+        let mut plugin = plugin_at(root, "sqlite", NetworkNeed::None);
+        plugin.manifest.kind = crate::PluginKind::Database;
+        plugin
+    }
+
     #[test]
     fn the_allowlist_covers_the_guest_dirs_and_nothing_else() {
         let files = tempfile::tempdir().expect("tempdir");
@@ -520,6 +590,67 @@ mod tests {
                 forbidden.display(),
                 spec.reads
             );
+        }
+    }
+
+    /// The sqlite guest needs file-level write grants for the DB and journal
+    /// sidecars on all platforms (Landlock re-checks `/proc/self/fd/N` on Linux;
+    /// AppContainer ACLs apply the same constraint on Windows) — without
+    /// handing over the files-dir parent (`master.key`, config).
+    #[test]
+    fn sqlite_guest_gets_library_db_files_but_not_secrets() {
+        let files = tempfile::tempdir().expect("tempdir");
+        let install = tempfile::tempdir().expect("tempdir");
+        let config = config_at(files.path());
+        let plugin = sqlite_plugin_at(install.path());
+        ensure_sqlite_library_files(&config).expect("touch sqlite files");
+
+        let spec = build_spec(
+            &plugin,
+            &config,
+            &plugin_data_dir(&config, "sqlite"),
+            &plugin_scratch_dir(&config, "sqlite"),
+            vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
+            Enforcement::Required,
+            None,
+        );
+
+        let db_files = sqlite_library_paths(&config);
+        for path in &db_files {
+            assert!(
+                spec.writes.contains(path),
+                "missing write grant for {}",
+                path.display()
+            );
+        }
+
+        let paths = config.paths();
+        for forbidden in [
+            paths.files_dir.join("master.key"),
+            paths.config_file.clone(),
+        ] {
+            assert!(
+                !spec.writes.iter().any(|w| forbidden.starts_with(w)),
+                "{} is under a writable grant: {:?}",
+                forbidden.display(),
+                spec.writes
+            );
+        }
+        // Parent directory grant would expose secrets; only the files themselves.
+        assert!(!spec.writes.contains(&paths.files_dir));
+    }
+
+    #[test]
+    fn planning_sqlite_precreates_library_sidecars() {
+        let files = tempfile::tempdir().expect("tempdir");
+        let install = tempfile::tempdir().expect("tempdir");
+        let mut config = config_at(files.path());
+        config.plugins.isolation = Isolation::Off;
+        let plugin = sqlite_plugin_at(install.path());
+
+        let _jail = GuestJail::plan(&config, &plugin).expect("plan");
+        for path in sqlite_library_paths(&config) {
+            assert!(path.is_file(), "expected {}", path.display());
         }
     }
 
