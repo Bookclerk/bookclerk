@@ -37,12 +37,37 @@ export interface BookRecord {
   narrators: string | null;
   series: string | null;
   series_index: string | null;
+  /** Audible series / podcast-parent ASIN when known. */
+  series_asin: string | null;
   acquire_status: AcquireStatus;
   storage_key: string | null;
   error_message: string | null;
+  purchased_at: string | null;
+  /** Space-separated user tags. */
+  tags: string | null;
+  rating_overall: number | null;
+  rating_performance: number | null;
+  rating_story: number | null;
+  is_finished: boolean;
+  pdf_status: AcquireStatus;
+  pdf_storage_key: string | null;
+  publisher: string | null;
   length_minutes: number | null;
+  is_abridged: boolean;
   content_kind: string;
+  /** Genre / category list from the store (often `;`- or `,`-separated). */
+  categories: string | null;
   subtitle: string | null;
+  published_at: string | null;
+  description: string | null;
+  language: string | null;
+  cover_url: string | null;
+  subjects: string | null;
+  enrich_source: string | null;
+  enrich_confidence: number | null;
+  enrich_updated_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface BooksResponse {

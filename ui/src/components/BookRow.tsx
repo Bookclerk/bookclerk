@@ -20,11 +20,13 @@ const statusStyles: Record<AcquireStatus, string> = {
 export function BookRow({
   book,
   onAcquire,
+  onOpen,
   busy,
   showAcquire = true,
 }: {
   book: BookRecord;
   onAcquire: (book: BookRecord) => void;
+  onOpen?: (book: BookRecord) => void;
   busy: boolean;
   showAcquire?: boolean;
 }) {
@@ -38,7 +40,12 @@ export function BookRow({
 
   return (
     <div className="group grid grid-cols-[56px_1fr_auto] items-center gap-3 border-b border-ink/10 px-3 py-2.5 transition-colors hover:bg-white/50 sm:grid-cols-[64px_1fr_auto] sm:gap-4 sm:px-4">
-      <div className="relative h-14 w-14 overflow-hidden rounded-sm bg-fold shadow-sm sm:h-16 sm:w-16">
+      <button
+        type="button"
+        className="relative h-14 w-14 overflow-hidden rounded-sm bg-fold shadow-sm sm:h-16 sm:w-16"
+        onClick={() => onOpen?.(book)}
+        aria-label={`Open details for ${book.title}`}
+      >
         {coverFailed ? (
           <img
             src="/bookclerk-mark.svg"
@@ -53,11 +60,21 @@ export function BookRow({
             onError={() => setCoverFailed(true)}
           />
         )}
-      </div>
+      </button>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="truncate font-display text-base font-semibold leading-tight text-ink sm:text-lg">
-            {book.title}
+            {onOpen ? (
+              <button
+                type="button"
+                className="text-left hover:underline"
+                onClick={() => onOpen(book)}
+              >
+                {book.title}
+              </button>
+            ) : (
+              book.title
+            )}
           </h2>
           <Badge className={cn(statusStyles[book.acquire_status])}>
             {book.acquire_status.replaceAll("_", " ")}

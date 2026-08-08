@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LogOut, RefreshCw, ScanSearch } from "lucide-react";
 import { AppNav, type AppNavProps } from "@/components/AppNav";
+import { BookDetailModal } from "@/components/BookDetailModal";
 import { BookRow } from "@/components/BookRow";
 import { JobsStrip } from "@/components/JobsStrip";
 import { Button } from "@/components/ui/button";
@@ -17,17 +18,20 @@ import {
   type JobInfo,
   type StatusResponse,
 } from "@/lib/api";
-
-const STATUS_OPTIONS = [
-  { value: "all", label: "All statuses" },
-  { value: "not_acquired", label: "Not acquired" },
-  { value: "queued", label: "Queued" },
-  { value: "downloading", label: "Downloading" },
-  { value: "acquired", label: "Acquired" },
-  { value: "error", label: "Error" },
-] as const;
+import {
+  FILTER_KINDS,
+  SORT_OPTIONS,
+  bookMatchesFilter,
+  filterValuesForKind,
+  sortBooks,
+  type FilterKind,
+  type SortKey,
+} from "@/lib/libraryFilters";
 
 const PAGE_SIZE = 40;
+
+const selectClassName =
+  "rounded-md border border-ink/15 bg-white/80 px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
 
 export function LibraryPage({
   onLogout,
@@ -46,12 +50,18 @@ export function LibraryPage({
   const [jobs, setJobs] = useState<JobInfo[]>([]);
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [filterKind, setFilterKind] = useState<FilterKind>("all");
+  const [filterValue, setFilterValue] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("title");
+  const [selected, setSelected] = useState<BookRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef(false);
+
+  const serverStatus =
+    filterKind === "status" && filterValue ? filterValue : "all";
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -66,7 +76,7 @@ export function LibraryPage({
       try {
         const booksRes = await fetchBooks({
           q: debouncedQ || undefined,
-          status: statusFilter,
+          status: serverStatus,
           limit: PAGE_SIZE,
           offset,
         });
@@ -82,7 +92,7 @@ export function LibraryPage({
         setLoadingMore(false);
       }
     },
-    [debouncedQ, statusFilter],
+    [debouncedQ, serverStatus],
   );
 
   const refreshMeta = useCallback(async () => {
@@ -126,6 +136,21 @@ export function LibraryPage({
     return () => obs.disconnect();
   }, [books.length, total, loadPage]);
 
+  const filterValueOptions = useMemo(
+    () => filterValuesForKind(books, filterKind),
+    [books, filterKind],
+  );
+
+  const visibleBooks = useMemo(() => {
+    const filtered =
+      filterKind === "all" || filterKind === "status" || !filterValue
+        ? books
+        : books.filter((book) =>
+            bookMatchesFilter(book, { kind: filterKind, value: filterValue }),
+          );
+    return sortBooks(filtered, sortKey);
+  }, [books, filterKind, filterValue, sortKey]);
+
   const pendingCount = useMemo(
     () => status?.pending ?? books.filter((b) => b.acquire_status === "not_acquired").length,
     [status, books],
@@ -160,6 +185,7 @@ export function LibraryPage({
     try {
       await triggerAcquire({ uuid: book.uuid });
       await refresh();
+      setSelected((prev) => (prev?.uuid === book.uuid ? { ...book, acquire_status: "queued" } : prev));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Acquire failed");
     } finally {
@@ -220,24 +246,58 @@ export function LibraryPage({
               </Button>
             </div>
           </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
+          <div className="flex flex-col gap-2 lg:flex-row">
             <Input
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Search title, author, series, tags…"
-              className="sm:flex-1"
+              className="lg:flex-1"
             />
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="rounded-md border border-ink/15 bg-white/80 px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
-            >
-              {STATUS_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <select
+                value={filterKind}
+                onChange={(e) => {
+                  setFilterKind(e.target.value as FilterKind);
+                  setFilterValue("");
+                }}
+                className={selectClassName}
+                aria-label="Filter by"
+              >
+                {FILTER_KINDS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={filterValue}
+                onChange={(e) => setFilterValue(e.target.value)}
+                className={selectClassName}
+                aria-label="Filter value"
+                disabled={filterKind === "all" || filterValueOptions.length === 0}
+              >
+                <option value="">
+                  {filterKind === "all" ? "Any value" : "Select value"}
                 </option>
-              ))}
-            </select>
+                {filterValueOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={sortKey}
+                onChange={(e) => setSortKey(e.target.value as SortKey)}
+                className={selectClassName}
+                aria-label="Sort by"
+              >
+                {SORT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    Sort: {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
           {error ? (
             <p className="text-sm font-medium text-brick" role="alert">
@@ -245,8 +305,11 @@ export function LibraryPage({
             </p>
           ) : (
             <p className="text-xs text-ink/50">
-              Showing {books.length} of {total} titles
+              Showing {visibleBooks.length} of {total} loaded titles
               {loadingMore ? " · loading more…" : ""}
+              {filterKind !== "all" && filterKind !== "status" && filterValue
+                ? " · client filter on loaded pages"
+                : ""}
             </p>
           )}
         </div>
@@ -254,18 +317,19 @@ export function LibraryPage({
 
       <main className="mx-auto w-full max-w-6xl flex-1 overflow-auto">
         <div className="animate-[rowIn_500ms_ease-out] bg-white/35 shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
-          {books.length === 0 ? (
+          {visibleBooks.length === 0 ? (
             <p className="px-4 py-16 text-center text-sm text-ink/60">
               No books match this view.
               {canAcquire ? " Run a scan or adjust filters." : " Link a store under Accounts."}
             </p>
           ) : (
-            books.map((book) => (
+            visibleBooks.map((book) => (
               <BookRow
                 key={book.uuid}
                 book={book}
                 busy={busyKey !== null}
                 showAcquire={canAcquire}
+                onOpen={setSelected}
                 onAcquire={(b) => void onAcquireBook(b)}
               />
             ))
@@ -273,6 +337,16 @@ export function LibraryPage({
           <div ref={sentinelRef} className="h-8" aria-hidden />
         </div>
       </main>
+
+      {selected ? (
+        <BookDetailModal
+          book={selected}
+          busy={busyKey !== null}
+          showAcquire={canAcquire}
+          onClose={() => setSelected(null)}
+          onAcquire={(b) => void onAcquireBook(b)}
+        />
+      ) : null}
 
       {canAcquire ? <JobsStrip status={status} jobs={jobs} /> : null}
       <style>{`
