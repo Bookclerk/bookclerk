@@ -173,6 +173,12 @@ pub struct DaemonConfig {
     pub listen: String,
     /// Emit JSON logs on stderr when true (journald sink is always structured).
     pub json_logs: bool,
+    /// When true, `bookclerkd` starts an in-process system tray in a graphical
+    /// session (opens the web UI in the system browser).
+    ///
+    /// Headless hosts (no `DISPLAY`/`WAYLAND_DISPLAY`, no session bus) skip the
+    /// tray. Override with `BOOKCLERK_NO_TRAY=1` or `BOOKCLERK_DAEMON_TRAY=0`.
+    pub tray: bool,
     /// Operator authentication for the HTTP API / GUI.
     pub auth: DaemonAuthConfig,
 }
@@ -182,6 +188,7 @@ impl Default for DaemonConfig {
         Self {
             listen: String::from("127.0.0.1:8787"),
             json_logs: true,
+            tray: true,
             auth: DaemonAuthConfig::default(),
         }
     }
@@ -197,6 +204,10 @@ pub struct DaemonAuthConfig {
     pub token_file: String,
     /// Browser session lifetime in hours after `POST /api/auth/login`.
     pub session_ttl_hours: u64,
+    /// Failed `POST /api/auth/login` attempts (per client IP) before a lockout.
+    pub login_max_failures: u32,
+    /// How long a client stays locked out after exceeding [`Self::login_max_failures`].
+    pub login_lockout_secs: u64,
 }
 
 impl Default for DaemonAuthConfig {
@@ -205,6 +216,8 @@ impl Default for DaemonAuthConfig {
             enabled: true,
             token_file: String::from("operator.token"),
             session_ttl_hours: 12,
+            login_max_failures: 5,
+            login_lockout_secs: 60,
         }
     }
 }
@@ -438,6 +451,13 @@ impl Config {
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_JSON_LOGS") {
             self.daemon.json_logs = parse_bool(&v).unwrap_or(self.daemon.json_logs);
         }
+        if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_TRAY") {
+            self.daemon.tray = parse_bool(&v).unwrap_or(self.daemon.tray);
+        }
+        // Explicit kill-switch wins over BOOKCLERK_DAEMON_TRAY / config.toml.
+        if std::env::var_os("BOOKCLERK_NO_TRAY").is_some() {
+            self.daemon.tray = false;
+        }
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_AUTH_ENABLED") {
             self.daemon.auth.enabled = parse_bool(&v).unwrap_or(self.daemon.auth.enabled);
         }
@@ -450,6 +470,16 @@ impl Config {
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_AUTH_SESSION_TTL_HOURS") {
             if let Ok(hours) = v.trim().parse::<u64>() {
                 self.daemon.auth.session_ttl_hours = hours.max(1);
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_AUTH_LOGIN_MAX_FAILURES") {
+            if let Ok(n) = v.trim().parse::<u32>() {
+                self.daemon.auth.login_max_failures = n.max(1);
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_AUTH_LOGIN_LOCKOUT_SECS") {
+            if let Ok(secs) = v.trim().parse::<u64>() {
+                self.daemon.auth.login_lockout_secs = secs.max(1);
             }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_SHARE_REPORTS")

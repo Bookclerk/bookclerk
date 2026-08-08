@@ -147,10 +147,9 @@ S3 credentials resolve as: env `BOOKCLERK_AWS_ACCESS_KEY_ID` /
 | Binary | Role |
 | --- | --- |
 | `bookclerk` | One-shot CLI (`auth`, `library`, `integrations`, `plugins`, …) |
-| `bookclerkd` | Long-running daemon: scheduled scan/acquire + HTTP API / GUI |
+| `bookclerkd` | Long-running daemon: scheduled scan/acquire + HTTP API / GUI (optional in-process tray) |
 | `bookclerk-media-worker` | Confined child process for one codec job ([docs/media.md](docs/media.md)) |
 | `bookclerk-jail` | Confines a plugin guest, then becomes it ([docs/plugins.md](docs/plugins.md#the-guest-jail)) |
-| `bookclerk-tray` | Optional tray companion (opens web UI in the system browser) |
 
 The two helpers ship beside the hosts. Without them, a host refuses media work
 and declines to load external plugins rather than running either unconfined.
@@ -164,8 +163,8 @@ JSON POST bodies need `Content-Type: application/json`.
 
 Headless multi-source acquire, daemon, destinations, Audiobookshelf
 integration, the plugin host, an MVP web library GUI, and an optional
-tray→browser companion are in active development. An embedded Tauri window is
-deferred until an OSV-clean GTK4 graph is available (see
+in-process tray→browser companion are in active development. An embedded Tauri
+window is deferred until an OSV-clean GTK4 graph is available (see
 [docs/gui.md](docs/gui.md)). Libation Classic/Chardonnay CLI parity for the
 Audible acquire surface is tracked in
 [docs/libation-parity.md](docs/libation-parity.md).

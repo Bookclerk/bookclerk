@@ -6,7 +6,7 @@ wrappers are optional.
 | Path | Status |
 | --- | --- |
 | Web UI (`bookclerkd` + `ui/`) | Supported |
-| `bookclerk-tray` (tray → system browser) | Supported on Linux (`ksni`), Windows, and macOS (`tray-icon` without GTK features) |
+| In-process tray (`bookclerkd` via `bookclerk-tray` lib → system browser) | Supported on Linux (`ksni`), Windows, and macOS (`tray-icon` without GTK features); skipped on headless hosts |
 | Tauri embedded window + tray | Tracked in [#44](https://github.com/fritz-fritz/bookclerk/pull/44); blocked until an OSV-clean GTK4 / WebKitGTK 6 graph lands (**no** advisory ignores, **no** OSV path excludes) |
 
 Monitor upstream: [tauri#12563](https://github.com/tauri-apps/tauri/issues/12563),

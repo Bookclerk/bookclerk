@@ -8,7 +8,7 @@ Bookclerk is a Cargo workspace of library crates plus binaries:
 | `bookclerkd` | `bookclerkd` | Scheduled jobs + authenticated HTTP API / GUI |
 | `bookclerk-media-worker` | `bookclerk-media-worker` | Confined child process running one codec job |
 | `bookclerk-jail` | `bookclerk-jail` | Applies a confinement policy, then `exec`s a plugin guest |
-| `bookclerk-tray` | `bookclerk-tray` | Optional tray → system browser (not a default-member) |
+| *(lib)* | `bookclerk-tray` | In-process tray linked into `bookclerkd` (not a default-member) |
 
 Both share the same core: sources, library DB, acquire pipeline, storage, and
 integrations.

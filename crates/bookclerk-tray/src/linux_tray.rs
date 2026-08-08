@@ -1,42 +1,53 @@
 //! StatusNotifierItem tray via `ksni` (no GTK).
 
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 
-use bookclerk_config::Config;
 use ksni::blocking::TrayMethods;
 use ksni::menu::StandardItem;
 use ksni::{MenuItem, ToolTip, Tray};
 
-use crate::daemon::DaemonHandle;
+use crate::client::{SharedTrayConfig, TrayConfig};
 use crate::icon;
 
 pub struct BookclerkTray {
-    daemon: Arc<Mutex<DaemonHandle>>,
-    config: Arc<Config>,
+    client: SharedTrayConfig,
     icon: ksni::Icon,
+    quit_tx: Arc<Mutex<Option<SyncSender<()>>>>,
 }
 
 impl BookclerkTray {
-    pub fn new(daemon: DaemonHandle, config: Config) -> Self {
+    pub fn new(config: SharedTrayConfig) -> Self {
         Self {
-            daemon: Arc::new(Mutex::new(daemon)),
-            config: Arc::new(config),
+            client: config,
             icon: icon::tray_icon(),
+            quit_tx: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn run(self) -> anyhow::Result<()> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        *self.quit_tx.lock().expect("quit lock") = Some(tx);
         let _handle = self.spawn()?;
-        // Keep the process (and any daemon we spawned) alive until Quit.
-        loop {
-            std::thread::park();
+        // Block until Quit tray — do not exit the daemon process.
+        let _ = rx.recv();
+        Ok(())
+    }
+
+    fn with_client<R>(&self, f: impl FnOnce(&TrayConfig) -> R) -> Option<R> {
+        match self.client.lock() {
+            Ok(guard) => Some(f(&guard)),
+            Err(err) => {
+                eprintln!("bookclerk: tray config lock poisoned: {err}");
+                None
+            }
         }
     }
 }
 
 impl Tray for BookclerkTray {
     fn id(&self) -> String {
-        "bookclerk-tray".into()
+        "bookclerk".into()
     }
 
     fn title(&self) -> String {
@@ -56,28 +67,24 @@ impl Tray for BookclerkTray {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        if let Ok(daemon) = self.daemon.lock() {
-            if let Err(err) = daemon.open_ui() {
-                eprintln!("bookclerk-tray: open UI failed: {err}");
-            }
+        if let Some(Err(err)) = self.with_client(TrayConfig::open_ui) {
+            eprintln!("bookclerk: open UI failed: {err}");
         }
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let daemon_open = Arc::clone(&self.daemon);
-        let daemon_scan = Arc::clone(&self.daemon);
-        let config_scan = Arc::clone(&self.config);
-        let daemon_token = Arc::clone(&self.daemon);
-        let config_token = Arc::clone(&self.config);
-        let daemon_quit = Arc::clone(&self.daemon);
+        let open = Arc::clone(&self.client);
+        let scan = Arc::clone(&self.client);
+        let token = Arc::clone(&self.client);
+        let quit_tx = Arc::clone(&self.quit_tx);
 
         vec![
             StandardItem {
                 label: "Open Bookclerk".into(),
                 activate: Box::new(move |_| {
-                    if let Ok(daemon) = daemon_open.lock() {
-                        if let Err(err) = daemon.open_ui() {
-                            eprintln!("bookclerk-tray: open UI failed: {err}");
+                    if let Ok(guard) = open.lock() {
+                        if let Err(err) = guard.open_ui() {
+                            eprintln!("bookclerk: open UI failed: {err}");
                         }
                     }
                 }),
@@ -87,9 +94,9 @@ impl Tray for BookclerkTray {
             StandardItem {
                 label: "Scan library".into(),
                 activate: Box::new(move |_| {
-                    if let Ok(daemon) = daemon_scan.lock() {
-                        if let Err(err) = daemon.trigger_scan(&config_scan) {
-                            eprintln!("bookclerk-tray: scan failed: {err}");
+                    if let Ok(guard) = scan.lock() {
+                        if let Err(err) = guard.trigger_scan() {
+                            eprintln!("bookclerk: scan failed: {err}");
                         }
                     }
                 }),
@@ -99,8 +106,8 @@ impl Tray for BookclerkTray {
             StandardItem {
                 label: "Print operator token".into(),
                 activate: Box::new(move |_| {
-                    if let Ok(daemon) = daemon_token.lock() {
-                        daemon.print_operator_token(&config_token);
+                    if let Ok(guard) = token.lock() {
+                        guard.print_operator_token();
                     }
                 }),
                 ..Default::default()
@@ -108,13 +115,14 @@ impl Tray for BookclerkTray {
             .into(),
             MenuItem::Separator,
             StandardItem {
-                label: "Quit".into(),
-                icon_name: "application-exit".into(),
+                label: "Hide tray".into(),
+                icon_name: "window-close".into(),
                 activate: Box::new(move |_| {
-                    if let Ok(mut daemon) = daemon_quit.lock() {
-                        daemon.shutdown();
+                    if let Ok(guard) = quit_tx.lock() {
+                        if let Some(tx) = guard.as_ref() {
+                            let _ = tx.try_send(());
+                        }
                     }
-                    std::process::exit(0);
                 }),
                 ..Default::default()
             }

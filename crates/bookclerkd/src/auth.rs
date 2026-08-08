@@ -1,12 +1,15 @@
 //! Operator and portal session authentication for the daemon HTTP API.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::extract::connect_info::ConnectInfo;
 use axum::extract::Request;
-use axum::extract::State;
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::extract::{FromRequestParts, State};
+use axum::http::request::Parts;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -20,26 +23,112 @@ use crate::api::AppState;
 
 pub const SESSION_COOKIE: &str = "bookclerk_operator_session";
 
+/// Peer IP for login throttling (`ConnectInfo` when available, else `"unknown"`).
+pub(crate) struct ClientIp(String);
+
+impl<S> FromRequestParts<S> for ClientIp
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        if let Some(ConnectInfo(addr)) = parts.extensions.get::<ConnectInfo<SocketAddr>>() {
+            return Ok(Self(addr.ip().to_string()));
+        }
+        Ok(Self("unknown".into()))
+    }
+}
+
+#[derive(Debug)]
+struct LoginThrottleBucket {
+    failures: u32,
+    window_start: Instant,
+    locked_until: Option<Instant>,
+}
+
 #[derive(Debug)]
 pub struct OperatorAuthState {
     pub token: String,
     pub sessions: Mutex<HashMap<String, Instant>>,
     pub session_ttl: Duration,
     pub enabled: bool,
+    login_max_failures: u32,
+    login_window: Duration,
+    login_lockout: Duration,
+    login_attempts: Mutex<HashMap<String, LoginThrottleBucket>>,
 }
 
 impl OperatorAuthState {
-    pub fn new(token: String, session_ttl_hours: u64, enabled: bool) -> Self {
+    pub fn new(
+        token: String,
+        session_ttl_hours: u64,
+        enabled: bool,
+        login_max_failures: u32,
+        login_lockout_secs: u64,
+    ) -> Self {
+        let login_lockout = Duration::from_secs(login_lockout_secs.max(1));
         Self {
             token,
             sessions: Mutex::new(HashMap::new()),
             session_ttl: Duration::from_secs(session_ttl_hours.saturating_mul(3600).max(3600)),
             enabled,
+            login_max_failures: login_max_failures.max(1),
+            // Failures count within the same period as the lockout by default.
+            login_window: login_lockout,
+            login_lockout,
+            login_attempts: Mutex::new(HashMap::new()),
         }
     }
 
     fn token_matches(&self, candidate: &str) -> bool {
         constant_time_eq(self.token.as_bytes(), candidate.as_bytes())
+    }
+
+    /// `None` = allowed; `Some(retry_after)` = locked out.
+    async fn login_throttle_check(&self, client_key: &str) -> Option<Duration> {
+        let mut map = self.login_attempts.lock().await;
+        prune_login_attempts(&mut map, self.login_window, self.login_lockout);
+        let bucket = map.get_mut(client_key)?;
+        if let Some(until) = bucket.locked_until {
+            let now = Instant::now();
+            if now < until {
+                return Some((until - now).max(Duration::from_secs(1)));
+            }
+            // Lockout expired — reset the window.
+            bucket.failures = 0;
+            bucket.locked_until = None;
+            bucket.window_start = now;
+        }
+        None
+    }
+
+    async fn record_login_failure(&self, client_key: &str) -> Option<Duration> {
+        let mut map = self.login_attempts.lock().await;
+        prune_login_attempts(&mut map, self.login_window, self.login_lockout);
+        let now = Instant::now();
+        let bucket = map
+            .entry(client_key.to_string())
+            .or_insert_with(|| LoginThrottleBucket {
+                failures: 0,
+                window_start: now,
+                locked_until: None,
+            });
+        if bucket.window_start.elapsed() >= self.login_window {
+            bucket.failures = 0;
+            bucket.window_start = now;
+            bucket.locked_until = None;
+        }
+        bucket.failures = bucket.failures.saturating_add(1);
+        if bucket.failures >= self.login_max_failures {
+            bucket.locked_until = Some(now + self.login_lockout);
+            return Some(self.login_lockout);
+        }
+        None
+    }
+
+    async fn clear_login_failures(&self, client_key: &str) {
+        self.login_attempts.lock().await.remove(client_key);
     }
 }
 
@@ -80,6 +169,7 @@ struct LoginResponse {
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
+    ClientIp(client_key): ClientIp,
     Json(body): Json<LoginRequest>,
 ) -> Result<Response, StatusCode> {
     let auth = state.auth.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
@@ -100,9 +190,28 @@ pub async fn login(
         )
             .into_response());
     }
-    if !auth.token_matches(body.token.trim()) {
-        return Err(StatusCode::UNAUTHORIZED);
+    // Locked-out clients are refused before the token is even compared.
+    if let Some(retry_after) = auth.login_throttle_check(&client_key).await {
+        return Ok(too_many_requests(retry_after));
     }
+
+    if !auth.token_matches(body.token.trim()) {
+        if let Some(retry_after) = auth.record_login_failure(&client_key).await {
+            return Ok(too_many_requests(retry_after));
+        }
+        // Explicit JSON so the brand-error middleware keeps a precise message.
+        return Ok((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "error": "unauthorized",
+                "message": "Invalid operator token.",
+                "status": 401
+            })),
+        )
+            .into_response());
+    }
+
+    auth.clear_login_failures(&client_key).await;
     let session_id = Uuid::new_v4().to_string();
     {
         let mut sessions = auth.sessions.lock().await;
@@ -122,6 +231,27 @@ pub async fn login(
         }),
     )
         .into_response())
+}
+
+fn too_many_requests(retry_after: Duration) -> Response {
+    let secs = retry_after.as_secs().max(1);
+    let mut res = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(serde_json::json!({
+            "error": "too_many_requests",
+            "message": format!(
+                "Too many failed login attempts. Try again in {secs} second{}.",
+                if secs == 1 { "" } else { "s" }
+            ),
+            "status": 429,
+            "retry_after_secs": secs
+        })),
+    )
+        .into_response();
+    if let Ok(value) = HeaderValue::from_str(&secs.to_string()) {
+        res.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    res
 }
 
 pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -361,6 +491,22 @@ fn prune_sessions(sessions: &mut HashMap<String, Instant>, ttl: Duration) {
     sessions.retain(|_, created| created.elapsed() < ttl);
 }
 
+fn prune_login_attempts(
+    attempts: &mut HashMap<String, LoginThrottleBucket>,
+    window: Duration,
+    lockout: Duration,
+) {
+    let now = Instant::now();
+    attempts.retain(|_, bucket| {
+        if let Some(until) = bucket.locked_until {
+            if now < until {
+                return true;
+            }
+        }
+        bucket.window_start.elapsed() < window.max(lockout)
+    });
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -379,5 +525,38 @@ pub fn normalize_default_view(raw: &str) -> String {
         "accounts" => String::from("accounts"),
         "wishlist" => String::from("wishlist"),
         _ => String::from("discover"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn login_throttle_locks_after_max_failures() {
+        let auth = OperatorAuthState::new("secret-token".into(), 12, true, 3, 30);
+        assert!(auth.login_throttle_check("127.0.0.1").await.is_none());
+        assert!(auth.record_login_failure("127.0.0.1").await.is_none());
+        assert!(auth.record_login_failure("127.0.0.1").await.is_none());
+        let locked = auth.record_login_failure("127.0.0.1").await;
+        assert!(locked.is_some());
+        // A locked bucket refuses further attempts even with a valid token.
+        let retry = auth.login_throttle_check("127.0.0.1").await;
+        assert!(retry.is_some());
+        // Throttling is per client key.
+        assert!(auth.login_throttle_check("10.0.0.2").await.is_none());
+        auth.clear_login_failures("127.0.0.1").await;
+        assert!(auth.login_throttle_check("127.0.0.1").await.is_none());
+    }
+
+    #[test]
+    fn too_many_requests_sets_retry_after_and_json() {
+        let res = too_many_requests(Duration::from_secs(45));
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(res.headers().get(header::RETRY_AFTER).unwrap(), "45");
+        assert_eq!(
+            res.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
     }
 }

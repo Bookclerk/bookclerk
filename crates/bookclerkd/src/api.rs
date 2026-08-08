@@ -28,6 +28,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::auth::{self, OperatorAuthState};
+use crate::http_error;
 use crate::jobs::{enqueue_acquire, enqueue_scan};
 
 /// Shared daemon state.
@@ -152,6 +153,9 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         sources: state.sources.all(),
     };
 
+    // Use `route_layer` (not `layer`) so auth never wraps the router's fallback.
+    // `.layer(auth)` made unmatched paths — including `/` when the GUI dist was
+    // missing — return a bare 401 instead of serving the SPA / branded 404.
     let operator_only = Router::new()
         .route("/status", get(status))
         .route("/scan", post(trigger_scan))
@@ -165,7 +169,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route("/api/library/scan", post(trigger_scan))
         .route("/api/library/acquire", post(trigger_acquire))
         .route("/api/discover/sync-listening", post(sync_listening))
-        .layer(middleware::from_fn_with_state(
+        .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_operator_auth,
         ))
@@ -192,20 +196,23 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route("/api/wishlist/{uuid}", delete(delete_wishlist))
         .route("/api/request-queue", get(list_request_queue))
         .route("/api/auth/logout", post(auth::logout))
-        .route("/api/auth/me", get(auth::me))
         .route(
             "/api/preferences",
             get(get_preferences).patch(patch_preferences),
         )
-        .layer(middleware::from_fn_with_state(
+        .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_operator_or_portal_auth,
         ))
         .with_state(state.clone());
 
+    // `/api/auth/me` stays public so the SPA bootstrap can probe session state
+    // without a bare middleware 401 (which some browsers render as an error
+    // document). The handler itself reports operator / portal / anonymous.
     let mut app = Router::new()
         .route("/health", get(health))
         .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/me", get(auth::me))
         .merge(operator_only)
         .merge(shared)
         .with_state(state);
@@ -216,9 +223,14 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     if let Some(dist) = ui_dist {
         if dist.is_dir() {
             let index = dist.join("index.html");
-            let service = ServeDir::new(dist.clone()).not_found_service(ServeFile::new(index));
+            // Only `/` is an SPA document route. Real files under dist (assets,
+            // favicons, …) are served by ServeDir; everything else stays a 404
+            // so the brand-error middleware can render HTML/JSON — do not map
+            // unknown paths onto index.html.
             tracing::info!(path = %dist.display(), "serving GUI static assets");
-            app = app.fallback_service(service);
+            app = app
+                .route_service("/", ServeFile::new(index))
+                .fallback_service(ServeDir::new(dist));
         } else {
             tracing::warn!(
                 path = %dist.display(),
@@ -227,26 +239,52 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         }
     }
 
-    // Outermost: normalize trailing slashes before route matching.
-    app.layer(NormalizePathLayer::trim_trailing_slash())
+    // Brand empty 4xx/5xx bodies (auth, missing routes, handler StatusCode).
+    // Normalize trailing slashes before route matching. Trace outermost.
+    app.layer(middleware::from_fn(http_error::brand_error_responses))
+        .layer(NormalizePathLayer::trim_trailing_slash())
         .layer(TraceLayer::new_for_http())
 }
 
 /// Resolve the Vite build output directory for the GUI.
+///
+/// Prefer `BOOKCLERK_UI_DIST`, then paths beside the running binary (desktop
+/// launches often have cwd=`$HOME`), then cwd-relative / compile-time paths.
 #[must_use]
 pub fn resolve_ui_dist() -> Option<PathBuf> {
     if let Ok(v) = std::env::var("BOOKCLERK_UI_DIST") {
         let path = PathBuf::from(v.trim());
         if path.is_dir() {
-            return Some(path);
+            return Some(path.canonicalize().unwrap_or(path));
+        }
+        tracing::warn!(
+            path = %path.display(),
+            "BOOKCLERK_UI_DIST is set but not a directory"
+        );
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.extend([
+                dir.join("ui-dist"),
+                dir.join("ui/dist"),
+                dir.join("../ui/dist"),
+                dir.join("../../ui/dist"),
+            ]);
         }
     }
-    let candidates = [
+    candidates.extend([
         PathBuf::from("ui/dist"),
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"),
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui-dist"),
-    ];
-    candidates.into_iter().find(|p| p.is_dir())
+    ]);
+
+    candidates.into_iter().find_map(|p| {
+        p.is_dir()
+            .then(|| p.canonicalize().unwrap_or(p))
+            .filter(|p| p.is_dir())
+    })
 }
 
 async fn health() -> Json<HealthResponse> {

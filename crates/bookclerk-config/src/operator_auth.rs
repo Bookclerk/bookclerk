@@ -35,8 +35,9 @@ pub fn read_operator_token(config: &Config) -> Result<Option<(String, ResolveOpe
     if let Ok(v) = std::env::var("BOOKCLERK_OPERATOR_TOKEN") {
         let trimmed = v.trim();
         if !trimmed.is_empty() {
-            register_secret(trimmed);
-            return Ok(Some((trimmed.to_string(), ResolveOperatorToken::Env)));
+            let token = validate_operator_token(trimmed, "BOOKCLERK_OPERATOR_TOKEN")?;
+            register_secret(&token);
+            return Ok(Some((token, ResolveOperatorToken::Env)));
         }
     }
     let path = operator_token_path(config);
@@ -55,8 +56,9 @@ pub fn read_or_create_operator_token(config: &Config) -> Result<(String, bool)> 
     if let Ok(v) = std::env::var("BOOKCLERK_OPERATOR_TOKEN") {
         let trimmed = v.trim();
         if !trimmed.is_empty() {
-            register_secret(trimmed);
-            return Ok((trimmed.to_string(), false));
+            let token = validate_operator_token(trimmed, "BOOKCLERK_OPERATOR_TOKEN")?;
+            register_secret(&token);
+            return Ok((token, false));
         }
     }
 
@@ -107,7 +109,33 @@ fn read_token_file(path: &Path) -> Result<String> {
             path.display()
         )));
     }
-    Ok(trimmed.to_string())
+    validate_operator_token(trimmed, &format!("operator token file {}", path.display()))
+}
+
+/// Reject tokens that can break URL fragments, HTTP headers, or shell pastes.
+///
+/// Generated tokens are hex. Env overrides must stay printable single-line and
+/// free of whitespace / control characters so they cannot inject into
+/// `#token=…` fragments or `Authorization` headers.
+fn validate_operator_token(token: &str, source: &str) -> Result<String> {
+    if token.is_empty() {
+        return Err(ConfigError::Invalid(format!("{source} is empty")));
+    }
+    if token.len() > 512 {
+        return Err(ConfigError::Invalid(format!(
+            "{source} is too long (max 512 bytes)"
+        )));
+    }
+    if !token
+        .chars()
+        .all(|c| c.is_ascii_graphic() && c != '"' && c != '\'' && c != '`' && c != '\\')
+    {
+        return Err(ConfigError::Invalid(format!(
+            "{source} contains whitespace, quotes, or non-printable characters; \
+             use a single-line URL-safe secret"
+        )));
+    }
+    Ok(token.to_string())
 }
 
 fn write_token_file(path: &Path, token: &str) -> Result<()> {
@@ -180,10 +208,17 @@ fn set_mode(path: &Path, mode: u32) {
 mod tests {
     use super::*;
     use crate::Paths;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn creates_and_reads_token_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os("BOOKCLERK_OPERATOR_TOKEN");
+        std::env::remove_var("BOOKCLERK_OPERATOR_TOKEN");
+
         let dir = tempdir().unwrap();
         let mut cfg = Config {
             paths: Some(Paths::from_files_dir(dir.path().to_path_buf())),
@@ -202,5 +237,28 @@ mod tests {
         let read = read_operator_token(&cfg).unwrap().unwrap();
         assert_eq!(read.0, token);
         assert_eq!(read.1, ResolveOperatorToken::File);
+
+        match prev {
+            Some(v) => std::env::set_var("BOOKCLERK_OPERATOR_TOKEN", v),
+            None => std::env::remove_var("BOOKCLERK_OPERATOR_TOKEN"),
+        }
+    }
+
+    #[test]
+    fn rejects_env_token_with_injection_chars() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempdir().unwrap();
+        let cfg = Config {
+            paths: Some(Paths::from_files_dir(dir.path().to_path_buf())),
+            ..Config::default()
+        };
+        let prev = std::env::var_os("BOOKCLERK_OPERATOR_TOKEN");
+        std::env::set_var("BOOKCLERK_OPERATOR_TOKEN", "bad token with spaces");
+        let err = read_operator_token(&cfg).unwrap_err().to_string();
+        assert!(err.contains("whitespace") || err.contains("non-printable"));
+        match prev {
+            Some(v) => std::env::set_var("BOOKCLERK_OPERATOR_TOKEN", v),
+            None => std::env::remove_var("BOOKCLERK_OPERATOR_TOKEN"),
+        }
     }
 }

@@ -134,7 +134,9 @@ async function parseJson<T>(res: Response): Promise<T> {
     let message = text || `${res.status} ${res.statusText}`;
     try {
       const body = JSON.parse(text) as { error?: string; message?: string };
-      message = body.error || body.message || message;
+      // Prefer the human-readable `message` (branded errors, login throttle)
+      // over the machine slug in `error`.
+      message = body.message?.trim() || body.error?.trim() || message;
     } catch {
       // keep raw text
     }

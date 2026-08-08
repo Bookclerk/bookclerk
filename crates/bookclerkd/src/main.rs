@@ -2,9 +2,11 @@
 
 mod api;
 mod auth;
+mod http_error;
 mod jobs;
 mod registry;
 mod scheduler;
+mod tray_companion;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -115,6 +117,8 @@ async fn main() -> anyhow::Result<()> {
             token,
             auth_cfg.session_ttl_hours,
             true,
+            auth_cfg.login_max_failures,
+            auth_cfg.login_lockout_secs,
         )))
     } else {
         tracing::warn!("daemon.auth.enabled=false — HTTP API is unauthenticated");
@@ -122,6 +126,8 @@ async fn main() -> anyhow::Result<()> {
             String::new(),
             auth_cfg.session_ttl_hours,
             false,
+            auth_cfg.login_max_failures,
+            auth_cfg.login_lockout_secs,
         )))
     };
 
@@ -186,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
 
     let ui_dist = resolve_ui_dist();
     let app = router(state.clone(), ui_dist);
+    let mut tray: Option<bookclerk_tray::SharedTrayConfig> = None;
 
     loop {
         if process_shutdown.load(Ordering::SeqCst) {
@@ -222,12 +229,24 @@ async fn main() -> anyhow::Result<()> {
 
         let addr = listener.local_addr()?;
         tracing::info!(%addr, "bookclerkd listening");
-        axum::serve(listener, app.clone())
-            .with_graceful_shutdown(serve_shutdown(
-                listen_reload.clone(),
-                process_shutdown.clone(),
-            ))
-            .await?;
+
+        // After bind so the tray's first browser open reaches a live listener.
+        let cfg = config.read().await.clone();
+        match &tray {
+            Some(handle) => tray_companion::update_tray_listen(handle, &cfg.daemon.listen),
+            None => tray = tray_companion::maybe_spawn_tray(&cfg),
+        }
+
+        axum::serve(
+            listener,
+            app.clone()
+                .into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(serve_shutdown(
+            listen_reload.clone(),
+            process_shutdown.clone(),
+        ))
+        .await?;
 
         if process_shutdown.load(Ordering::SeqCst) {
             break;

@@ -3,8 +3,10 @@ import { AccountsPage } from "@/components/AccountsPage";
 import { DiscoverPage } from "@/components/DiscoverPage";
 import { LibraryPage } from "@/components/LibraryPage";
 import { LoginPage } from "@/components/LoginPage";
+import { NotFoundPage } from "@/components/NotFoundPage";
 import { WishlistPage } from "@/components/WishlistPage";
 import { authMe, type AppView, type AuthSession } from "@/lib/api";
+import { isAppPath } from "@/lib/routes";
 
 type AuthState = "loading" | "anon" | "authed";
 
@@ -19,8 +21,10 @@ export default function App() {
   const [auth, setAuth] = useState<AuthState>("loading");
   const [session, setSession] = useState<AuthSession | null>(null);
   const [view, setView] = useState<AppView>("discover");
+  const knownPath = isAppPath(window.location.pathname);
 
   useEffect(() => {
+    if (!knownPath) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -40,7 +44,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [knownPath]);
 
   function onLoginSuccess(next: AuthSession) {
     setSession(next);
@@ -51,6 +55,12 @@ export default function App() {
   function onLogout() {
     setSession(null);
     setAuth("anon");
+  }
+
+  // `bookclerkd` only serves index.html at `/`, but a dev server (or a stale
+  // bookmark) can still land here on an unknown path.
+  if (!knownPath) {
+    return <NotFoundPage />;
   }
 
   if (auth === "loading") {

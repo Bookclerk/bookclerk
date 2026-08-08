@@ -81,6 +81,7 @@ bookclerk-migrate = { path = "crates/bookclerk-migrate" }
 bookclerk-search = { path = "crates/bookclerk-search" }
 bookclerk-integrations = { path = "crates/bookclerk-integrations" }
 bookclerk-discover = { path = "crates/bookclerk-discover" }
+bookclerk-tray = { path = "crates/bookclerk-tray" }
 bookclerk-plugin-sdk = { path = "crates/bookclerk-plugin-sdk" }
 bookclerk-plugin-catalog = { path = "crates/bookclerk-plugin-catalog" }
 # Off by default so the hosts decide which stores they link; a member cannot turn

@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-tray"
-description = "System tray companion that opens the Bookclerk web UI in a browser"
+description = "In-process system tray for bookclerkd (opens the web UI in a browser)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,15 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-[[bin]]
-name = "bookclerk-tray"
-path = "src/main.rs"
-
 [dependencies]
 anyhow.workspace = true
-bookclerk-config.workspace = true
 open = "5"
 png = "0.18"
+tracing.workspace = true
 ureq.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
