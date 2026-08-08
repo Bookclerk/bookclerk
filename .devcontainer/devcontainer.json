@@ -1,0 +1,53 @@
+{
+  "name": "Bookclerk",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "remoteUser": "bookclerk",
+  "updateRemoteUserUID": true,
+  "forwardPorts": [8787, 5173],
+  "portsAttributes": {
+    "8787": {
+      "label": "bookclerkd",
+      "onAutoForward": "openPreview"
+    },
+    "5173": {
+      "label": "Vite UI",
+      "onAutoForward": "silent"
+    }
+  },
+  "mounts": [
+    "source=bookclerk-cargo-registry,target=/home/bookclerk/.cargo/registry,type=volume",
+    "source=bookclerk-cargo-git,target=/home/bookclerk/.cargo/git,type=volume"
+  ],
+  "containerEnv": {
+    "CARGO_TERM_COLOR": "always",
+    "CARGO_HOME": "/home/bookclerk/.cargo"
+  },
+  "remoteEnv": {
+    "PATH": "${containerWorkspaceFolder}/target/debug:${containerWorkspaceFolder}/target/release:${containerEnv:PATH}",
+    "BOOKCLERK_FILES_DIR": "/tmp/BookclerkFiles"
+  },
+  "postCreateCommand": "bash -lc 'cargo fetch && (cd ui && npm ci)'",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "fill-labs.dependi",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "rust-analyzer.check.command": "clippy",
+        "rust-analyzer.cargo.allFeatures": false,
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        }
+      }
+    }
+  }
+}

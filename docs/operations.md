@@ -76,6 +76,10 @@ If acquired media lives outside the files dir, set an absolute
 Dockerfile: [`packaging/docker/Dockerfile`](../packaging/docker/Dockerfile)
 (repo-root convenience symlink: `Dockerfile`).
 
+For day-to-day compile/test with a controlled OpenSSL/Node toolchain (and host-
+runnable `target/` binaries), use the [Dev Container](devcontainer.md) instead
+of fighting missing `libssl-dev` on the host.
+
 ```bash
 docker build -f packaging/docker/Dockerfile -t bookclerkd .
 docker run --rm \
