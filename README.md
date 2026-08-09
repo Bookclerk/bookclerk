@@ -154,7 +154,7 @@ S3 credentials resolve as: env `BOOKCLERK_AWS_ACCESS_KEY_ID` /
 The two helpers ship beside the hosts. Without them, a host refuses media work
 and declines to load external plugins rather than running either unconfined.
 
-Default listen: `127.0.0.1:8787`. Public routes: `GET /health`, static UI,
+Default listen: `127.0.0.1:8787` and `[::1]:8787`. Public routes: `GET /health`, static UI,
 `POST /api/auth/login`. Authenticated: `/api/status`, `/api/jobs`,
 `/api/library/*`, plus legacy `/status` `/scan` `/acquire` `/jobs`.
 JSON POST bodies need `Content-Type: application/json`.

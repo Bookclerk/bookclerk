@@ -48,6 +48,8 @@ pub struct WorkIdentity<'a> {
     pub isbn: Option<&'a str>,
     pub title: &'a str,
     pub authors: Option<&'a str>,
+    pub series: Option<&'a str>,
+    pub series_index: Option<&'a str>,
 }
 
 impl<'a> WorkIdentity<'a> {
@@ -63,53 +65,71 @@ impl<'a> WorkIdentity<'a> {
             isbn,
             title,
             authors,
+            series: None,
+            series_index: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_series(mut self, series: Option<&'a str>) -> Self {
+        self.series = series;
+        self
+    }
+
+    #[must_use]
+    pub fn with_series_index(mut self, series_index: Option<&'a str>) -> Self {
+        self.series_index = series_index;
+        self
     }
 }
 
 /// Whether two bibliographic identities refer to the same work.
 #[must_use]
 pub fn identities_match(a: WorkIdentity<'_>, b: WorkIdentity<'_>) -> bool {
-    let key_a = hard_work_key(a.asin, a.isbn);
-    let key_b = hard_work_key(b.asin, b.isbn);
-    if let (Some(ka), Some(kb)) = (&key_a, &key_b) {
-        if ka == kb {
-            return true;
-        }
-        // Same work can be keyed as isbn:… in one place and asin:… in another.
-        // Only soft-merge when titles agree — never collapse unrelated hard keys.
-        let cross = (ka.starts_with("isbn:") && kb.starts_with("asin:"))
-            || (ka.starts_with("asin:") && kb.starts_with("isbn:"));
-        if cross {
-            return works_match(a.title, a.authors, b.title, b.authors);
-        }
+    let isbn_a = a.isbn.map(canonicalize_isbn).filter(|s| !s.is_empty());
+    let isbn_b = b.isbn.map(canonicalize_isbn).filter(|s| !s.is_empty());
+    // When both sides publish an ISBN, that decides — never soft-merge across
+    // distinct ISBNs (series volumes often share author + stripped title).
+    if let (Some(ia), Some(ib)) = (&isbn_a, &isbn_b) {
+        return ia == ib;
+    }
+
+    let asin_a = a.asin.map(str::trim).filter(|s| !s.is_empty());
+    let asin_b = b.asin.map(str::trim).filter(|s| !s.is_empty());
+    if let (Some(aa), Some(ab)) = (asin_a, asin_b) {
+        return aa.eq_ignore_ascii_case(ab);
+    }
+
+    // Distinct series positions never soft-merge when they name the *same*
+    // series (Infinity Blade #1 vs #2). Crossover novels often carry two
+    // series labels with different indexes (Beaumont #19 vs Brady #14) — those
+    // must still merge on title+author.
+    if series_indices_conflict(a.series_index, b.series_index)
+        && series_names_compatible(a.series, b.series)
+    {
         return false;
     }
-    // One or both sides lack a hard key — soft title+author match.
-    // Also merge when ASINs match exactly even if titles differ slightly.
-    if let (Some(aa), Some(ab)) = (
-        a.asin.map(str::trim).filter(|s| !s.is_empty()),
-        b.asin.map(str::trim).filter(|s| !s.is_empty()),
-    ) {
-        if aa.eq_ignore_ascii_case(ab) {
-            return true;
-        }
+
+    // Bare "Infinity Blade" vs "Infinity Blade: Redemption" shares a stripped
+    // base title — only allow when both sides agree on series index (e.g. #1
+    // with "…: Awakening"). Without indexes, keep them separate.
+    if bare_vs_volume_title_ambiguity(a.title, b.title) {
+        return series_indices_agree(a.series_index, b.series_index)
+            && works_match_base(a.title, a.authors, b.title, b.authors);
     }
-    if let (Some(ia), Some(ib)) = (
-        a.isbn.map(canonicalize_isbn).filter(|s| !s.is_empty()),
-        b.isbn.map(canonicalize_isbn).filter(|s| !s.is_empty()),
-    ) {
-        if ia == ib {
-            return true;
-        }
-    }
+
+    // asin↔isbn (or missing hard id): soft title+author, with subtitle guards.
     works_match(a.title, a.authors, b.title, b.authors)
 }
 
 /// Soft key from cleaned title + primary author (exact string match only).
+///
+/// Keeps subtitles so series volumes (`Infinity Blade: Awakening` vs
+/// `…: Redemption`) do not share a HashMap bucket when hard ids are absent.
+/// Soft [`identities_match`] still joins edition variants (e.g. `A Novel`).
 #[must_use]
 pub fn soft_work_key(title: &str, authors: Option<&str>) -> String {
-    let t = clean_title_for_compares(title, false);
+    let t = clean_title_for_compares(title, true);
     let a = primary_author_cleaned(authors).unwrap_or_default();
     format!("soft:{t}|{a}")
 }
@@ -173,6 +193,26 @@ pub fn works_match(
     title_b: &str,
     authors_b: Option<&str>,
 ) -> bool {
+    // "Infinity Blade: Awakening" vs "Infinity Blade: Redemption" share a base
+    // title after subtitle stripping — reject when both sides have distinct,
+    // non-generic subtitles. Bare vs volume is handled in [`identities_match`]
+    // (needs series_index); refuse here so direct `works_match` callers stay safe.
+    if distinguishing_subtitles_conflict(title_a, title_b)
+        || bare_vs_volume_title_ambiguity(title_a, title_b)
+    {
+        return false;
+    }
+
+    works_match_base(title_a, authors_a, title_b, authors_b)
+}
+
+/// Title+author soft match without subtitle-volume guards (caller already gated).
+fn works_match_base(
+    title_a: &str,
+    authors_a: Option<&str>,
+    title_b: &str,
+    authors_b: Option<&str>,
+) -> bool {
     let ta = clean_title_for_compares(title_a, false);
     let tb = clean_title_for_compares(title_b, false);
     if ta.is_empty() || tb.is_empty() {
@@ -180,23 +220,155 @@ pub fn works_match(
     }
     let title_sim = levenshtein_similarity(&ta, &tb);
     let contained = title_contains_other(&ta, &tb);
-    let authors = (
-        primary_author_cleaned(authors_a),
-        primary_author_cleaned(authors_b),
-    );
-    match authors {
-        (Some(a), Some(b)) => {
-            let author_ok = a == b || levenshtein_similarity(&a, &b) >= 0.85;
-            if !author_ok {
+    let authors_a = cleaned_author_list(authors_a);
+    let authors_b = cleaned_author_list(authors_b);
+    match (authors_a.is_empty(), authors_b.is_empty()) {
+        (false, false) => {
+            if !authors_match_lists(&authors_a, &authors_b) {
                 return false;
             }
             // Exact / near-exact titles, or short/long variants ("Hail Mary" /
             // "Project Hail Mary") when the author is the same.
             title_sim >= 0.90 || contained
         }
-        // One side missing author: require a tighter title match.
-        (None, None) => title_sim >= 0.96 || (contained && title_sim >= 0.75),
-        _ => title_sim >= 0.95 || (contained && title_sim >= 0.70),
+        // Both authors missing: near-exact titles only (no loose containment —
+        // Magento/Chirp first hits often share a short token with the query).
+        (true, true) => title_sim >= 0.96,
+        // One side missing author (common for GraphicAudio catalog hits): require
+        // near-exact title equality — do not soft-merge on substring containment.
+        _ => title_sim >= 0.96,
+    }
+}
+
+/// Subtitle after `: ` or ` - `, when present.
+fn subtitle_portion(title: &str) -> Option<&str> {
+    for sep in [": ", " - "] {
+        if let Some((_, right)) = title.split_once(sep) {
+            let t = right.trim();
+            if !t.is_empty() {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
+fn is_generic_subtitle(cleaned: &str) -> bool {
+    matches!(
+        cleaned,
+        "a novel"
+            | "an novel"
+            | "the novel"
+            | "a memoir"
+            | "a thriller"
+            | "a romance"
+            | "a mystery"
+            | "unabridged"
+            | "abridged"
+    )
+}
+
+/// Meaningful (non-generic) subtitle, if any.
+fn distinguishing_subtitle(title: &str) -> Option<String> {
+    let raw = subtitle_portion(title)?;
+    let cleaned = clean_title_for_compares(raw, true);
+    if cleaned.is_empty() || is_generic_subtitle(&cleaned) {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// True when both titles carry different meaningful subtitles (series volumes).
+fn distinguishing_subtitles_conflict(title_a: &str, title_b: &str) -> bool {
+    let (Some(ca), Some(cb)) = (
+        distinguishing_subtitle(title_a),
+        distinguishing_subtitle(title_b),
+    ) else {
+        return false;
+    };
+    ca != cb && levenshtein_similarity(&ca, &cb) < 0.90
+}
+
+/// Bare series name vs a volume with a distinguishing subtitle (same base).
+fn bare_vs_volume_title_ambiguity(title_a: &str, title_b: &str) -> bool {
+    match (
+        distinguishing_subtitle(title_a),
+        distinguishing_subtitle(title_b),
+    ) {
+        (Some(_), None) | (None, Some(_)) => {
+            let ta = clean_title_for_compares(title_a, false);
+            let tb = clean_title_for_compares(title_b, false);
+            !ta.is_empty() && ta == tb
+        }
+        _ => false,
+    }
+}
+
+/// Parse Audible/Chirp-style series indexes (`"1"`, `"1.5"`, `"Book 2"`, `"02"`).
+#[must_use]
+pub fn parse_series_index(raw: Option<&str>) -> Option<f64> {
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Ok(n) = raw.parse::<f64>() {
+        return Some(n);
+    }
+    // Pull the first number-like token.
+    let mut num = String::new();
+    let mut seen_digit = false;
+    let mut seen_dot = false;
+    for c in raw.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+            seen_digit = true;
+        } else if c == '.' && seen_digit && !seen_dot {
+            num.push(c);
+            seen_dot = true;
+        } else if seen_digit {
+            break;
+        }
+    }
+    if num.is_empty() || num == "." {
+        None
+    } else {
+        num.parse().ok()
+    }
+}
+
+fn series_indices_conflict(a: Option<&str>, b: Option<&str>) -> bool {
+    match (parse_series_index(a), parse_series_index(b)) {
+        (Some(x), Some(y)) => (x - y).abs() > 0.001,
+        _ => false,
+    }
+}
+
+fn series_indices_agree(a: Option<&str>, b: Option<&str>) -> bool {
+    match (parse_series_index(a), parse_series_index(b)) {
+        (Some(x), Some(y)) => (x - y).abs() <= 0.001,
+        _ => false,
+    }
+}
+
+/// True when both sides name the same series (or either side omits a name).
+///
+/// Missing names stay compatible so index-only guards still apply. Distinct
+/// series labels (crossover editions) are *not* compatible — index mismatches
+/// between them must not block a title+author soft merge.
+fn series_names_compatible(a: Option<&str>, b: Option<&str>) -> bool {
+    let a = a.map(str::trim).filter(|s| !s.is_empty());
+    let b = b.map(str::trim).filter(|s| !s.is_empty());
+    match (a, b) {
+        (None, _) | (_, None) => true,
+        (Some(sa), Some(sb)) => {
+            let ca = clean_title_for_compares(sa, true);
+            let cb = clean_title_for_compares(sb, true);
+            if ca.is_empty() || cb.is_empty() {
+                return true;
+            }
+            ca == cb || levenshtein_similarity(&ca, &cb) >= 0.85 || title_contains_other(&ca, &cb)
+        }
     }
 }
 
@@ -220,16 +392,78 @@ fn title_contains_other(a: &str, b: &str) -> bool {
 }
 
 fn primary_author_cleaned(authors: Option<&str>) -> Option<String> {
-    let raw = authors?
-        .split([',', ';', '&', '/'])
-        .map(str::trim)
-        .find(|s| !s.is_empty())?;
-    let cleaned = clean_author_for_compares(raw);
-    if cleaned.is_empty() {
-        None
-    } else {
-        Some(cleaned)
+    cleaned_author_list(authors).into_iter().next()
+}
+
+/// Split a storefront author string into cleaned people (order preserved).
+///
+/// Strips role suffixes (`Name - editor`, `Name (foreword)`) so Audible's
+/// contributor roles do not block set / subset compares.
+fn cleaned_author_list(authors: Option<&str>) -> Vec<String> {
+    let Some(raw) = authors.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for part in raw.split([',', ';', '&', '/']) {
+        let part = strip_author_role_suffix(part.trim());
+        if part.is_empty() {
+            continue;
+        }
+        let cleaned = clean_author_for_compares(part);
+        if cleaned.is_empty() {
+            continue;
+        }
+        if !out.iter().any(|e| e == &cleaned) {
+            out.push(cleaned);
+        }
     }
+    out
+}
+
+fn strip_author_role_suffix(name: &str) -> &str {
+    let name = name.trim();
+    if let Some((left, _)) = name.split_once(" - ") {
+        let left = left.trim();
+        if !left.is_empty() {
+            return left;
+        }
+    }
+    if let Some((left, _)) = name.split_once(" – ") {
+        let left = left.trim();
+        if !left.is_empty() {
+            return left;
+        }
+    }
+    if let Some((left, rest)) = name.split_once(" (") {
+        if rest.contains(')') {
+            let left = left.trim();
+            if !left.is_empty() {
+                return left;
+            }
+        }
+    }
+    name
+}
+
+/// Order-independent author match: equal sets, subset (editor/foreword extras),
+/// or fuzzy primary-author equality.
+fn authors_match_lists(a: &[String], b: &[String]) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    use std::collections::HashSet;
+    let set_a: HashSet<&str> = a.iter().map(String::as_str).collect();
+    let set_b: HashSet<&str> = b.iter().map(String::as_str).collect();
+    if set_a == set_b {
+        return true;
+    }
+    // "Travis Langley" ⊆ "Travis Langley; Kyle Maddock - foreword"
+    if set_a.is_subset(&set_b) || set_b.is_subset(&set_a) {
+        return true;
+    }
+    let pa = a[0].as_str();
+    let pb = b[0].as_str();
+    pa == pb || levenshtein_similarity(pa, pb) >= 0.85
 }
 
 /// Merge storefront metadata into `into`, preferring filled fields / richer text.
@@ -260,6 +494,46 @@ pub fn merge_candidate_metadata(into: &mut StorefrontCandidate, from: &Storefron
     fill_opt_string(&mut into.narrators, from.narrators.as_deref());
     fill_opt_string(&mut into.series, from.series.as_deref());
     fill_opt_string(&mut into.series_index, from.series_index.as_deref());
+    fill_opt_string(&mut into.cover_url, from.cover_url.as_deref());
+    fill_opt_string(&mut into.subtitle, from.subtitle.as_deref());
+    fill_opt_string(&mut into.description, from.description.as_deref());
+    fill_opt_string(&mut into.publisher, from.publisher.as_deref());
+    fill_opt_string(&mut into.published_at, from.published_at.as_deref());
+    fill_opt_string(&mut into.categories, from.categories.as_deref());
+    fill_opt_string(&mut into.language, from.language.as_deref());
+    if into.length_minutes.is_none() {
+        into.length_minutes = from.length_minutes;
+    }
+    if into.price_cents.is_none() {
+        into.price_cents = from.price_cents;
+        into.currency = from.currency.clone();
+        into.price_label = from.price_label.clone();
+    }
+    if into.rating_overall.is_none() {
+        into.rating_overall = from.rating_overall;
+    }
+    // Prefer the rating backed by more votes when both sides have counts.
+    match (into.rating_count, from.rating_count) {
+        (None, Some(n)) => {
+            into.rating_count = Some(n);
+            if from.rating_overall.is_some() {
+                into.rating_overall = from.rating_overall;
+            }
+        }
+        (Some(a), Some(b)) if b > a => {
+            into.rating_count = Some(b);
+            if from.rating_overall.is_some() {
+                into.rating_overall = from.rating_overall;
+            }
+        }
+        _ => {}
+    }
+    if into.audible_rank.is_none() {
+        into.audible_rank = from.audible_rank;
+    }
+    if into.is_abridged.is_none() {
+        into.is_abridged = from.is_abridged;
+    }
     if from.title.len() > into.title.len() && !from.title.is_empty() {
         // Prefer the longer title when both exist (often includes subtitle).
         into.title = from.title.clone();
@@ -320,6 +594,16 @@ pub fn merge_recommendation(into: &mut Recommendation, mut from: Recommendation)
     fill_opt_string(&mut into.series, from.series.as_deref());
     fill_opt_string(&mut into.series_index, from.series_index.as_deref());
     fill_opt_string(&mut into.seed_categories, from.seed_categories.as_deref());
+    fill_opt_string(&mut into.cover_url, from.cover_url.as_deref());
+    fill_opt_string(&mut into.subtitle, from.subtitle.as_deref());
+    fill_opt_string(&mut into.description, from.description.as_deref());
+    fill_opt_string(&mut into.publisher, from.publisher.as_deref());
+    fill_opt_string(&mut into.published_at, from.published_at.as_deref());
+    fill_opt_string(&mut into.genres, from.genres.as_deref());
+    fill_opt_string(&mut into.language, from.language.as_deref());
+    if into.length_minutes.is_none() {
+        into.length_minutes = from.length_minutes;
+    }
     if into.work_id.is_none() {
         into.work_id = from.work_id.clone();
     }
@@ -396,13 +680,17 @@ pub fn merge_global_queue_entries(entries: Vec<GlobalQueueEntry>) -> Vec<GlobalQ
                     e.isbn.as_deref(),
                     &e.title,
                     e.authors.as_deref(),
-                ),
+                )
+                .with_series(e.series.as_deref())
+                .with_series_index(e.series_index.as_deref()),
                 WorkIdentity::new(
                     entry.asin.as_deref(),
                     entry.isbn.as_deref(),
                     &entry.title,
                     entry.authors.as_deref(),
-                ),
+                )
+                .with_series(entry.series.as_deref())
+                .with_series_index(entry.series_index.as_deref()),
             )
         }) {
             existing.wish_count += entry.wish_count;
@@ -455,6 +743,10 @@ pub fn merge_global_queue_entries(entries: Vec<GlobalQueueEntry>) -> Vec<GlobalQ
                     *isbn = n;
                 }
             }
+            existing.description = bookclerk_library::pick_better_description(
+                existing.description.as_deref(),
+                entry.description.as_deref(),
+            );
             for ed in entry.store_editions {
                 push_wishlist_edition(&mut existing.store_editions, ed);
             }
@@ -717,12 +1009,214 @@ mod tests {
     }
 
     #[test]
+    fn soft_match_decodes_html_entities_in_title() {
+        // Libro.fm often returns `Memory&#39;s Blade` while Audible uses a real apostrophe.
+        assert!(works_match(
+            "Memory's Blade",
+            Some("Eric Warren"),
+            "Memory&#39;s Blade",
+            Some("Eric Warren"),
+        ));
+        assert!(identities_match(
+            WorkIdentity::new(
+                Some("B0FAKEASIN"),
+                None,
+                "Memory's Blade",
+                Some("Eric Warren"),
+            ),
+            WorkIdentity::new(
+                None,
+                Some("9781664936256"),
+                "Memory&#39;s Blade",
+                Some("Eric Warren"),
+            ),
+        ));
+    }
+
+    #[test]
+    fn soft_match_rejects_series_volume_subtitles() {
+        assert!(!works_match(
+            "Infinity Blade: Awakening",
+            Some("Brandon Sanderson"),
+            "Infinity Blade: Redemption",
+            Some("Brandon Sanderson"),
+        ));
+        // Audible often ships the first volume as the bare series name.
+        assert!(!works_match(
+            "Infinity Blade",
+            Some("Brandon Sanderson"),
+            "Infinity Blade: Redemption",
+            Some("Brandon Sanderson"),
+        ));
+        // Without series indexes, bare vs volume stays unmerged (safe).
+        assert!(!identities_match(
+            WorkIdentity::new(
+                Some("B07933B798"),
+                None,
+                "Infinity Blade",
+                Some("Brandon Sanderson"),
+            ),
+            WorkIdentity::new(
+                None,
+                Some("9781501992032"),
+                "Infinity Blade: Redemption",
+                Some("Brandon Sanderson"),
+            ),
+        ));
+        // #1 bare Audible title may join #1 "…: Awakening" from another store.
+        assert!(identities_match(
+            WorkIdentity::new(
+                Some("B07933B798"),
+                None,
+                "Infinity Blade",
+                Some("Brandon Sanderson"),
+            )
+            .with_series_index(Some("1")),
+            WorkIdentity::new(
+                None,
+                Some("9781501992049"),
+                "Infinity Blade: Awakening",
+                Some("Brandon Sanderson"),
+            )
+            .with_series_index(Some("1")),
+        ));
+        // #1 must not absorb #2 Redemption even with soft title containment.
+        assert!(!identities_match(
+            WorkIdentity::new(
+                Some("B07933B798"),
+                None,
+                "Infinity Blade",
+                Some("Brandon Sanderson"),
+            )
+            .with_series(Some("Infinity Blade"))
+            .with_series_index(Some("1")),
+            WorkIdentity::new(
+                None,
+                Some("9781501992032"),
+                "Infinity Blade: Redemption",
+                Some("Brandon Sanderson"),
+            )
+            .with_series(Some("Infinity Blade"))
+            .with_series_index(Some("2")),
+        ));
+        // Crossover novels: same title/author, different series labels+indexes
+        // (Audible Beaumont #19 vs Chirp/Libro Brady #14) must still merge.
+        assert!(identities_match(
+            WorkIdentity::new(
+                Some("B002V1M2XE"),
+                None,
+                "Fire and Ice",
+                Some("J. A. Jance"),
+            )
+            .with_series(Some("J. P. Beaumont"))
+            .with_series_index(Some("19")),
+            WorkIdentity::new(
+                None,
+                Some("9780061776670"),
+                "Fire and Ice",
+                Some("J. A. Jance"),
+            )
+            .with_series(Some("Joanna Brady Mysteries"))
+            .with_series_index(Some("14")),
+        ));
+        assert!(!identities_match(
+            WorkIdentity::new(
+                Some("B07933B798"),
+                Some("9781501992049"),
+                "Infinity Blade: Awakening",
+                Some("Brandon Sanderson"),
+            ),
+            WorkIdentity::new(
+                Some("B0798QRTTK"),
+                Some("9781501992032"),
+                "Infinity Blade: Redemption",
+                Some("Brandon Sanderson"),
+            ),
+        ));
+        assert_ne!(
+            soft_work_key("Infinity Blade: Awakening", Some("Brandon Sanderson")),
+            soft_work_key("Infinity Blade: Redemption", Some("Brandon Sanderson")),
+        );
+    }
+
+    #[test]
     fn soft_match_rejects_different_author() {
         assert!(!works_match(
             "Project Hail Mary",
             Some("Andy Weir"),
             "Project Hail Mary",
             Some("Someone Else")
+        ));
+    }
+
+    #[test]
+    fn soft_match_authors_order_independent() {
+        // Chirp/Libro often emit the same co-authors in opposite order as one string.
+        assert!(works_match(
+            "Game of Thrones and Philosophy",
+            Some("William Irwin & Henry Jacoby"),
+            "Game of Thrones and Philosophy",
+            Some("Henry Jacoby & William Irwin"),
+        ));
+        assert!(identities_match(
+            WorkIdentity::new(
+                None,
+                Some("9781118160930"),
+                "Game of Thrones and Philosophy",
+                Some("William Irwin; Henry Jacoby"),
+            ),
+            WorkIdentity::new(
+                None,
+                None,
+                "Game of Thrones and Philosophy",
+                Some("Henry Jacoby & William Irwin"),
+            ),
+        ));
+    }
+
+    #[test]
+    fn soft_match_author_role_suffix_and_subset() {
+        // Audible lists editor + foreword; Libro may only list the editor.
+        assert!(works_match(
+            "Game of Thrones Psychology",
+            Some("Travis Langley - editor, Kyle Maddock - foreword"),
+            "Game of Thrones Psychology",
+            Some("Travis Langley"),
+        ));
+        // Distinct primary authors with no shared set still refuse (sparse metadata).
+        assert!(!works_match(
+            "Game of Thrones Psychology",
+            Some("Travis Langley"),
+            "Game of Thrones Psychology",
+            Some("Kyle Maddock"),
+        ));
+    }
+
+    #[test]
+    fn soft_match_rejects_authorless_loose_containment() {
+        // GraphicAudio / Magento often return authorless hits; a shared token must
+        // not collapse unrelated titles onto a Ruocchio wishlist item.
+        assert!(!works_match(
+            "Ashes of Man",
+            Some("Christopher Ruocchio"),
+            "Red Rising Saga 1: Red Rising 1 of 2",
+            None
+        ));
+        assert!(!works_match(
+            "Ashes of Man",
+            Some("Christopher Ruocchio"),
+            "The Sun Eater Saga (Series Set)",
+            None
+        ));
+    }
+
+    #[test]
+    fn soft_match_allows_authorless_near_exact_title() {
+        assert!(works_match(
+            "Ashes of Man",
+            Some("Christopher Ruocchio"),
+            "Ashes of Man",
+            None
         ));
     }
 

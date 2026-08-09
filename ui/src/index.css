@@ -33,3 +33,30 @@ body {
 ::selection {
   background: color-mix(in srgb, var(--color-teal) 35%, white);
 }
+
+/* Logo waveform bars — used by WaveformThrobber during catalog search. */
+@keyframes wavePulse {
+  0%,
+  100% {
+    transform: scaleY(0.42);
+    opacity: 0.72;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+.waveform-bar {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: wavePulse 1.05s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .waveform-bar {
+    animation: none;
+    opacity: 0.9;
+    transform: none;
+  }
+}

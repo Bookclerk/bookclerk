@@ -111,12 +111,7 @@ pub async fn run(
 }
 
 fn daemon_base_url(config: &Config) -> String {
-    let listen = config.daemon.listen.trim();
-    if listen.starts_with("http://") || listen.starts_with("https://") {
-        listen.trim_end_matches('/').to_string()
-    } else {
-        format!("http://{listen}")
-    }
+    config.daemon.listen.tray_base_url()
 }
 
 fn operator_bearer(config: &Config) -> anyhow::Result<Option<String>> {

@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import type { AppView } from "@/lib/api";
+import { pathForView } from "@/lib/routes";
 
 export interface AppNavProps {
   view: AppView;
@@ -18,10 +19,24 @@ export function AppNav({ view, onNavigate }: AppNavProps) {
   return (
     <nav className="flex flex-wrap items-center gap-1 text-sm sm:gap-2">
       {LINKS.map((link) => (
-        <button
+        <a
           key={link.id}
-          type="button"
-          onClick={() => onNavigate(link.id)}
+          href={pathForView(link.id)}
+          onClick={(e) => {
+            // Keep in-app navigation instant; allow modified clicks to open a tab.
+            if (
+              e.defaultPrevented ||
+              e.button !== 0 ||
+              e.metaKey ||
+              e.ctrlKey ||
+              e.shiftKey ||
+              e.altKey
+            ) {
+              return;
+            }
+            e.preventDefault();
+            onNavigate(link.id);
+          }}
           className={cn(
             "rounded-md px-2 py-1 transition-colors",
             view === link.id
@@ -31,7 +46,7 @@ export function AppNav({ view, onNavigate }: AppNavProps) {
           aria-current={view === link.id ? "page" : undefined}
         >
           {link.label}
-        </button>
+        </a>
       ))}
     </nav>
   );

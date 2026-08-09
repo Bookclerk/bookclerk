@@ -6,12 +6,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::connect_info::ConnectInfo;
+use axum::extract::Query;
 use axum::extract::Request;
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::Json;
 use bookclerk_integrations::portal_identity_from_headers;
 use bookclerk_library::{portal_prefs_key, PortalIdentity, OPERATOR_PREFS_KEY};
@@ -139,6 +140,11 @@ pub struct LoginRequest {
     pub token: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TrayHandoffQuery {
+    pub token: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AuthMeResponse {
     pub authenticated: bool,
@@ -214,6 +220,50 @@ pub async fn login(
     }
 
     auth.clear_login_failures(&client_key).await;
+    Ok(issue_operator_session(auth, default_view).await)
+}
+
+/// Browser handoff from the system tray.
+///
+/// Linux `xdg-open` often strips URL fragments, so the tray opens this loopback
+/// GET with the operator token as a query param. On success we set the session
+/// cookie and redirect to `/` — the SPA never needs to parse a fragment.
+pub async fn tray_handoff(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ClientIp(client_key): ClientIp,
+    Query(query): Query<TrayHandoffQuery>,
+) -> Result<Response, StatusCode> {
+    if !addr.ip().is_loopback() {
+        tracing::warn!(%addr, "tray handoff refused from non-loopback peer");
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let auth = state.auth.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    if !auth.enabled {
+        let mut res = Redirect::temporary("/").into_response();
+        res.headers_mut().insert(
+            header::SET_COOKIE,
+            HeaderValue::from_static(
+                "bookclerk_operator_session=disabled; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+            ),
+        );
+        return Ok(res);
+    }
+
+    if let Some(retry_after) = auth.login_throttle_check(&client_key).await {
+        return Ok(too_many_requests(retry_after));
+    }
+
+    if !auth.token_matches(query.token.trim()) {
+        if let Some(retry_after) = auth.record_login_failure(&client_key).await {
+            return Ok(too_many_requests(retry_after));
+        }
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    auth.clear_login_failures(&client_key).await;
     let session_id = Uuid::new_v4().to_string();
     {
         let mut sessions = auth.sessions.lock().await;
@@ -223,7 +273,25 @@ pub async fn login(
     let max_age = auth.session_ttl.as_secs();
     let cookie =
         format!("{SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}");
-    Ok((
+    let mut res = Redirect::temporary("/").into_response();
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        res.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    tracing::info!("tray handoff accepted; session cookie set");
+    Ok(res)
+}
+
+async fn issue_operator_session(auth: &OperatorAuthState, default_view: String) -> Response {
+    let session_id = Uuid::new_v4().to_string();
+    {
+        let mut sessions = auth.sessions.lock().await;
+        prune_sessions(&mut sessions, auth.session_ttl);
+        sessions.insert(session_id.clone(), Instant::now());
+    }
+    let max_age = auth.session_ttl.as_secs();
+    let cookie =
+        format!("{SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}");
+    (
         StatusCode::OK,
         [(header::SET_COOKIE, cookie)],
         Json(LoginResponse {
@@ -232,7 +300,7 @@ pub async fn login(
             default_view,
         }),
     )
-        .into_response())
+        .into_response()
 }
 
 fn too_many_requests(retry_after: Duration) -> Response {

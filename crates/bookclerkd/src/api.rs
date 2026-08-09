@@ -1,6 +1,5 @@
 //! HTTP control plane for `bookclerkd` (operator API + static GUI).
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,17 +18,19 @@ use bookclerk_config::Config;
 use bookclerk_integrations::{portal_spa_router, IntegrationRegistry, PortalState};
 use bookclerk_library::{
     configure_master_key_with, AcquireStatus, BookRecord, LibraryStore, NewTitleRequest,
-    RequestStatus, TitleRequestRecord,
+    NewTitleRequestSource, RequestStatus, TitleRequestRecord,
 };
 use bookclerk_plugin_host::{DatabaseRegistry, DestinationRegistry};
 use bookclerk_search::{SearchEngine, SearchHit};
 use bookclerk_source::SourceRegistry;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tokio::time::timeout;
+use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::normalize_path::NormalizePathLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
+use tracing::Level;
 
 use crate::auth::{self, OperatorAuthState};
 use crate::http_error;
@@ -48,6 +49,9 @@ pub struct AppState {
     /// Letting independent books acquire in parallel needs a concurrency-safe
     /// storage index first.
     pub work_lock: Mutex<()>,
+    /// Cap concurrent discover/embed work so ONNX load + inference cannot saturate
+    /// the Tokio blocking pool (and starve accept / `/health`) under page refresh.
+    pub discover_gate: Arc<Semaphore>,
     pub integrations: IntegrationRegistry,
     pub sources: SourceRegistry,
     pub destinations: Arc<RwLock<DestinationRegistry>>,
@@ -122,6 +126,9 @@ struct PluginSettingOption {
 struct PluginSettingsGroup {
     id: String,
     kind: String,
+    /// Google favicon (or portal brand) URL for Settings list rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logo: Option<String>,
     settings: Vec<PluginSettingOption>,
 }
 
@@ -237,6 +244,12 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             post(discover_purchase_hints_batch),
         )
         .route("/api/discover/search", get(discover_catalog_search))
+        .route("/api/discover/title-meta", post(discover_title_meta))
+        .route(
+            "/api/discover/title-meta/batch",
+            post(discover_title_meta_batch),
+        )
+        .route("/api/discover/title-reviews", post(discover_title_reviews))
         .route("/api/wishlist", get(list_wishlist).post(create_wishlist))
         .route("/api/wishlist/{uuid}", delete(delete_wishlist))
         .route("/api/request-queue", get(list_request_queue))
@@ -257,6 +270,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     let mut app = Router::new()
         .route("/health", get(health))
         .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/tray-handoff", get(auth::tray_handoff))
         .route("/api/auth/me", get(auth::me))
         .merge(operator_only)
         .merge(shared)
@@ -268,14 +282,23 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     if let Some(dist) = ui_dist {
         if dist.is_dir() {
             let index = dist.join("index.html");
-            // Only `/` is an SPA document route. Real files under dist (assets,
-            // favicons, …) are served by ServeDir; everything else stays a 404
-            // so the brand-error middleware can render HTML/JSON — do not map
-            // unknown paths onto index.html.
+            // SPA document routes (History API). Real files under dist (assets,
+            // favicons, …) are served by ServeDir; unknown paths stay a 404 so
+            // the brand-error middleware can render HTML/JSON — do not map every
+            // path onto index.html.
             tracing::info!(path = %dist.display(), "serving GUI static assets");
-            app = app
-                .route_service("/", ServeFile::new(index))
-                .fallback_service(ServeDir::new(dist));
+            const SPA_DOC_PATHS: &[&str] = &[
+                "/",
+                "/discover",
+                "/library",
+                "/wishlist",
+                "/accounts",
+                "/settings",
+            ];
+            for path in SPA_DOC_PATHS {
+                app = app.route_service(path, ServeFile::new(index.clone()));
+            }
+            app = app.fallback_service(ServeDir::new(dist));
         } else {
             tracing::warn!(
                 path = %dist.display(),
@@ -290,17 +313,104 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     app.layer(middleware::from_fn(api_timeout_middleware))
         .layer(middleware::from_fn(http_error::brand_error_responses))
         .layer(NormalizePathLayer::trim_trailing_slash())
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request| {
+                    tracing::span!(
+                        Level::INFO,
+                        "http.request",
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                    )
+                })
+                .on_response(
+                    |response: &Response, latency: Duration, _span: &tracing::Span| {
+                        let status = response.status();
+                        let latency_ms = latency.as_millis() as u64;
+                        if status.is_server_error() || latency_ms >= 1_000 {
+                            tracing::warn!(
+                                status = status.as_u16(),
+                                latency_ms,
+                                "request completed with elevated latency or server error"
+                            );
+                        } else if latency_ms >= 250 {
+                            tracing::info!(
+                                status = status.as_u16(),
+                                latency_ms,
+                                "request completed"
+                            );
+                        }
+                    },
+                )
+                .on_failure(
+                    |failure: ServerErrorsFailureClass,
+                     latency: Duration,
+                     _span: &tracing::Span| {
+                        tracing::error!(
+                            failure = ?failure,
+                            latency_ms = latency.as_millis() as u64,
+                            "request failed"
+                        );
+                    },
+                ),
+        )
+}
+
+async fn open_embedder_blocking(
+    models_dir: PathBuf,
+    embed_intra_threads: usize,
+    embeddings_enabled: bool,
+) -> Result<Box<dyn bookclerk_discover::Embedder>, (StatusCode, String)> {
+    tokio::task::spawn_blocking(move || {
+        bookclerk_discover::open_embedder(&models_dir, embed_intra_threads, embeddings_enabled)
+    })
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("embedder task failed: {err}"),
+        )
+    })?
+    .map_err(internal_err)
 }
 
 async fn api_timeout_middleware(req: Request, next: Next) -> Response {
-    let path = req.uri().path();
-    if !path.starts_with("/api/") && path != "/health" {
+    let path = req.uri().path().to_string();
+    let method = req.method().to_string();
+    // Keep `/health` free of the API timeout so liveness probes stay cheap.
+    if path == "/health" || !path.starts_with("/api/") {
         return next.run(req).await;
     }
-    match timeout(Duration::from_secs(8), next.run(req)).await {
+    // Multi-store purchase / Audnexus detail work is intentionally slower than
+    // the default control-plane budget; shelf cards batch these in the viewport.
+    let budget = api_timeout_for_path(&path);
+    let started = std::time::Instant::now();
+    match timeout(budget, next.run(req)).await {
         Ok(res) => res,
-        Err(_) => (StatusCode::GATEWAY_TIMEOUT, "request timed out").into_response(),
+        Err(_) => {
+            tracing::warn!(
+                %method,
+                path,
+                budget_secs = budget.as_secs(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "request timed out in api timeout middleware"
+            );
+            (StatusCode::GATEWAY_TIMEOUT, "request timed out").into_response()
+        }
+    }
+}
+
+fn api_timeout_for_path(path: &str) -> Duration {
+    match path {
+        "/api/discover/purchase-hints"
+        | "/api/discover/purchase-hints/batch"
+        | "/api/discover/title-meta"
+        | "/api/discover/title-meta/batch"
+        | "/api/discover/title-reviews" => Duration::from_secs(25),
+        "/api/discover/recommendations" => Duration::from_secs(20),
+        // Parallel store searches (~7s each) + optional page enrich (~3.5s).
+        "/api/discover/search" => Duration::from_secs(16),
+        _ => Duration::from_secs(8),
     }
 }
 
@@ -410,8 +520,9 @@ pub async fn reload_daemon_config(state: &AppState) -> anyhow::Result<String> {
     }
     if listen_changed {
         detail.push_str(&format!(
-            "; rebinding HTTP listener `{old_listen}` → `{}`",
-            new_cfg.daemon.listen
+            "; rebinding HTTP listeners `{}` → `{}`",
+            old_listen.join_comma(),
+            new_cfg.daemon.listen.join_comma()
         ));
         state.listen_reload.notify_waiters();
     }
@@ -420,14 +531,23 @@ pub async fn reload_daemon_config(state: &AppState) -> anyhow::Result<String> {
 
 /// Parse `daemon.listen` and reject unsafe auth/listen combinations.
 pub fn validate_daemon_listen(config: &Config) -> anyhow::Result<()> {
-    let addr = config.daemon.listen.parse::<SocketAddr>().map_err(|err| {
-        anyhow::anyhow!("invalid daemon.listen '{}': {err}", config.daemon.listen)
-    })?;
-    if !config.daemon.auth.enabled && !addr.ip().is_loopback() {
-        anyhow::bail!(
-            "daemon.auth.enabled=false is unsafe when listen is not loopback ({})",
-            config.daemon.listen
-        );
+    let addrs = config
+        .daemon
+        .listen
+        .socket_addrs()
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
+    if addrs.is_empty() {
+        anyhow::bail!("daemon.listen must not be empty");
+    }
+    if !config.daemon.auth.enabled {
+        for addr in &addrs {
+            if !addr.ip().is_loopback() {
+                anyhow::bail!(
+                    "daemon.auth.enabled=false is unsafe when listen is not loopback ({})",
+                    config.daemon.listen.join_comma()
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -477,15 +597,8 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
             }
         }
         "daemon.listen" => {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                return Err("daemon.listen must not be empty".into());
-            }
-            // Reject invalid socket addresses before writing config.toml.
-            trimmed
-                .parse::<SocketAddr>()
-                .map_err(|err| format!("invalid daemon.listen '{trimmed}': {err}"))?;
-            Ok(trimmed.to_string())
+            // Validate listen list before writing config.toml (supports multi-bind).
+            bookclerk_config::ListenAddrs::parse_list(value).map(|addrs| addrs.join_comma())
         }
         _ if (key.starts_with("sources.")
             || key.starts_with("integrations.")
@@ -511,7 +624,7 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
 
 fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<String, String> {
     let mut settings = std::collections::BTreeMap::new();
-    settings.insert("daemon.listen".into(), config.daemon.listen.clone());
+    settings.insert("daemon.listen".into(), config.daemon.listen.join_comma());
     settings.insert(
         "daemon.auth.enabled".into(),
         config.daemon.auth.enabled.to_string(),
@@ -588,6 +701,23 @@ fn plugin_kind_label(kind: bookclerk_plugin_host::PluginKind) -> &'static str {
         bookclerk_plugin_host::PluginKind::Output => "output",
         bookclerk_plugin_host::PluginKind::Database => "database",
     }
+}
+
+/// Google favicon for first-party plugins when `plugin.toml` has no `outbound_urls`.
+fn first_party_google_favicon(kind: bookclerk_plugin_host::PluginKind, id: &str) -> Option<String> {
+    let domain = match (kind, id) {
+        (bookclerk_plugin_host::PluginKind::Source, "audible") => "audible.com",
+        (bookclerk_plugin_host::PluginKind::Source, "chirp") => "chirpbooks.com",
+        (bookclerk_plugin_host::PluginKind::Source, "libro") => "libro.fm",
+        (bookclerk_plugin_host::PluginKind::Source, "graphicaudio") => "graphicaudio.com",
+        (bookclerk_plugin_host::PluginKind::Integration, "audiobookshelf") => "audiobookshelf.org",
+        (bookclerk_plugin_host::PluginKind::Database, "d1") => "cloudflare.com",
+        (bookclerk_plugin_host::PluginKind::Database, "postgres") => "postgresql.org",
+        _ => return None,
+    };
+    Some(format!(
+        "https://www.google.com/s2/favicons?domain={domain}&sz=128"
+    ))
 }
 
 fn plugin_setting_option(
@@ -1018,6 +1148,7 @@ fn build_source_settings_group(
     PluginSettingsGroup {
         id: id.to_string(),
         kind: plugin_kind_label(bookclerk_plugin_host::PluginKind::Source).to_string(),
+        logo: Some(source.portal_brand().icon_url.to_string()),
         settings: options,
     }
 }
@@ -1090,6 +1221,7 @@ fn build_plugin_settings_group(
     PluginSettingsGroup {
         id: id.to_string(),
         kind: plugin_kind_label(kind).to_string(),
+        logo: first_party_google_favicon(kind, id),
         settings: options,
     }
 }
@@ -1158,7 +1290,7 @@ fn plugin_settings_snapshot(
 
     for plugin in discovered_plugins {
         let table = bookclerk_plugin_host::settings_table(config, plugin);
-        let group = if plugin.manifest.kind == bookclerk_plugin_host::PluginKind::Source {
+        let mut group = if plugin.manifest.kind == bookclerk_plugin_host::PluginKind::Source {
             if let Some(source) = sources.get(&plugin.manifest.id) {
                 build_source_settings_group(config, source.as_ref(), table)
             } else {
@@ -1172,6 +1304,14 @@ fn plugin_settings_snapshot(
         } else {
             build_plugin_settings_group(config, plugin.manifest.kind, &plugin.manifest.id, table)
         };
+        // Prefer manifest outbound_urls → Google favicon; keep portal brand as fallback.
+        if let Some(logo) = plugin.manifest.google_favicon_url() {
+            group.logo = Some(logo);
+        } else if group.logo.is_none() {
+            if let Some(source) = sources.get(&plugin.manifest.id) {
+                group.logo = Some(source.portal_brand().icon_url.to_string());
+            }
+        }
         groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
     }
 
@@ -1548,7 +1688,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         let cfg = state.config.read().await;
         let names = cfg.output.enabled_backend_names();
         (
-            cfg.daemon.listen.clone(),
+            cfg.daemon.listen.join_comma(),
             if names.is_empty() {
                 "none".into()
             } else {
@@ -1840,17 +1980,62 @@ struct CreateRequestBody {
     asin: Option<String>,
     isbn: Option<String>,
     notes: Option<String>,
-    /// Optional known storefront editions (for work_key / metadata only).
+    /// Known storefront editions to persist as `title_request_sources`.
     #[serde(default)]
     store_editions: Vec<bookclerk_discover::StoreEdition>,
+    /// Optional priced storefront links snapshotted at wishlist time.
+    #[serde(default)]
+    purchase_hints: Vec<bookclerk_discover::PurchaseHint>,
     work_key: Option<String>,
+    cover_url: Option<String>,
+    description: Option<String>,
+    subtitle: Option<String>,
+    narrators: Option<String>,
+    series: Option<String>,
+    series_index: Option<String>,
+    publisher: Option<String>,
+    length_minutes: Option<i64>,
+    published_at: Option<String>,
+    genres: Option<String>,
+    language: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct CatalogSearchQuery {
     q: Option<String>,
+    /// Alias for [`Self::page_size`] (typeahead / legacy).
     limit: Option<usize>,
+    page_size: Option<usize>,
+    /// Opaque cursor from a previous [`CatalogSearchPage`].
+    cursor: Option<String>,
+    /// `relevance` / `popularity` / `rating` / `title` / `author` / `price` / `length`.
+    sort: Option<String>,
+    /// `asc` / `desc` (defaults per sort when omitted).
+    sort_dir: Option<String>,
     region: Option<String>,
+    /// Optional facet scope: `author` / `narrator` / `series` / `genre`.
+    field: Option<String>,
+    /// Preferred / default content language (BCP-47 primary). When `language`
+    /// is omitted and `all_languages` is not set, applied as a hard include.
+    lang: Option<String>,
+    /// Comma-separated language codes to include (`en`, `zh`, …).
+    language: Option<String>,
+    /// When true, do not hard-filter by language (soft prefer via `lang` only).
+    all_languages: Option<bool>,
+    /// Comma-separated include filters (OR within a kind).
+    author: Option<String>,
+    narrator: Option<String>,
+    series: Option<String>,
+    genre: Option<String>,
+    source: Option<String>,
+    /// Comma-separated store ids to exclude.
+    exclude_source: Option<String>,
+    /// Comma-separated narrator substrings to exclude (e.g. `Virtual Voice`).
+    exclude_narrator: Option<String>,
+    /// Minimum overall rating (0–5); missing ratings still pass.
+    min_rating: Option<f64>,
+    min_length_minutes: Option<i64>,
+    max_length_minutes: Option<i64>,
 }
 
 async fn discover_recommendations(
@@ -1876,18 +2061,42 @@ async fn discover_recommendations(
         }));
     }
 
-    let _ = bookclerk_discover::rebuild_works_from_library(&library)
-        .await
-        .map_err(internal_err)?;
+    // Wishlist-only (no library books): skip ONNX warm-up. MiniLM load routinely
+    // exceeds the 8s API timeout, and with no owned titles there is no taste
+    // centroid / storefront seed work that needs real embeddings.
+    let use_onnx = has_books && cfg.discovery.embeddings_enabled;
 
-    let mut embedder = bookclerk_discover::open_embedder(
-        &cfg.paths().models_dir,
-        cfg.discovery.embed_intra_threads,
-        cfg.discovery.embeddings_enabled,
-    )
-    .map_err(internal_err)?;
-    let model_id = embedder.model_id().to_string();
-    let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut()).await;
+    if has_books {
+        let _ = bookclerk_discover::rebuild_works_from_library(&library)
+            .await
+            .map_err(internal_err)?;
+    }
+
+    let _discover = state
+        .discover_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "discover gate closed".into(),
+            )
+        })?;
+
+    let model_id = if use_onnx {
+        let mut embedder = open_embedder_blocking(
+            cfg.paths().models_dir.clone(),
+            cfg.discovery.embed_intra_threads,
+            true,
+        )
+        .await?;
+        let model_id = embedder.model_id().to_string();
+        let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut()).await;
+        model_id
+    } else {
+        String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1)
+    };
 
     let listening_providers = q
         .listening_providers
@@ -1925,14 +2134,14 @@ async fn discover_recommendations(
         external_user_id,
         include_listening: !q.no_listening.unwrap_or(false),
         listening_providers,
-        fetch_storefront_candidates: cfg.discovery.storefront_candidates,
+        fetch_storefront_candidates: has_books && cfg.discovery.storefront_candidates,
         storefront_seed_limit: cfg.discovery.storefront_seed_limit,
         storefront_max_remote_calls: cfg.discovery.storefront_max_remote_calls,
         exclude_graphicaudio_series_sets: cfg.discovery.exclude_graphicaudio_series_sets,
         disabled_shelves,
-        models_dir: Some(cfg.paths().models_dir.clone()),
+        models_dir: use_onnx.then(|| cfg.paths().models_dir.clone()),
         embed_intra_threads: cfg.discovery.embed_intra_threads,
-        embeddings_enabled: cfg.discovery.embeddings_enabled,
+        embeddings_enabled: use_onnx,
     };
     let feed = bookclerk_discover::recommend_feed(&library, &state.sources, &opts)
         .await
@@ -2013,6 +2222,85 @@ fn validate_purchase_hints_query(
     Ok(())
 }
 
+async fn discover_title_meta(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<bookclerk_discover::TitleMetaQuery>,
+) -> Result<Json<Option<bookclerk_discover::TitleMeta>>, (StatusCode, String)> {
+    validate_title_meta_query(&body)?;
+    let meta = bookclerk_discover::resolve_title_meta(&body, Some(&state.sources))
+        .await
+        .map_err(internal_err)?;
+    Ok(Json(meta))
+}
+
+async fn discover_title_reviews(
+    Json(body): Json<bookclerk_discover::TitleReviewsQuery>,
+) -> Result<Json<bookclerk_discover::TitleReviewsPage>, (StatusCode, String)> {
+    if body.asin.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "asin is required".into()));
+    }
+    let page = bookclerk_discover::resolve_title_reviews(&body)
+        .await
+        .map_err(internal_err)?;
+    Ok(Json(page))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct TitleMetaBatchBody {
+    #[serde(default)]
+    queries: Vec<bookclerk_discover::TitleMetaQuery>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct TitleMetaBatchResponse {
+    results: Vec<Option<bookclerk_discover::TitleMeta>>,
+}
+
+async fn discover_title_meta_batch(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TitleMetaBatchBody>,
+) -> Result<Json<TitleMetaBatchResponse>, (StatusCode, String)> {
+    if body.queries.len() > 24 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "at most 24 title-meta queries per batch".into(),
+        ));
+    }
+    for q in &body.queries {
+        validate_title_meta_query(q)?;
+    }
+    let resolved =
+        bookclerk_discover::resolve_title_meta_batch(&body.queries, 4, Some(&state.sources)).await;
+    // Per-query enrichment failures must not 500 the whole batch — Discover
+    // search already has hits; missing meta is optional.
+    let results = resolved
+        .into_iter()
+        .map(|item| match item {
+            Ok(meta) => meta,
+            Err(err) => {
+                tracing::debug!(error = %err, "title-meta batch item failed");
+                None
+            }
+        })
+        .collect();
+    Ok(Json(TitleMetaBatchResponse { results }))
+}
+
+fn validate_title_meta_query(
+    body: &bookclerk_discover::TitleMetaQuery,
+) -> Result<(), (StatusCode, String)> {
+    if body.title.trim().is_empty()
+        && body.asin.as_deref().unwrap_or("").trim().is_empty()
+        && body.isbn.as_deref().unwrap_or("").trim().is_empty()
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "title, asin, or isbn is required".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Storefronts the caller is associated with (portal links, or all operator accounts).
 async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> Vec<String> {
     let library = state.library_snapshot().await;
@@ -2049,17 +2337,92 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
 async fn discover_catalog_search(
     State(state): State<Arc<AppState>>,
     Query(q): Query<CatalogSearchQuery>,
-) -> Result<Json<Vec<bookclerk_discover::CatalogSearchHit>>, (StatusCode, String)> {
+) -> Result<Json<bookclerk_discover::CatalogSearchPage>, (StatusCode, String)> {
+    // Wall budget for parallel multi-store search (each store capped ~7s;
+    // optional Libro page enrich ~3.5s; over-fetch may need a few rounds).
+    const CATALOG_SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
     let query = q.q.unwrap_or_default();
     if query.trim().len() < 2 {
-        return Ok(Json(Vec::new()));
+        return Ok(Json(bookclerk_discover::CatalogSearchPage {
+            items: Vec::new(),
+            page_size: 0,
+            has_more: false,
+            next_cursor: None,
+            sort: String::from("relevance"),
+            sort_dir: String::from("desc"),
+        }));
     }
     let region = q.region.unwrap_or_else(|| String::from("us"));
-    let limit = q.limit.unwrap_or(12).clamp(1, 24);
-    let hits = bookclerk_discover::catalog_search(&state.sources, &query, &region, limit)
-        .await
-        .map_err(internal_err)?;
-    Ok(Json(hits))
+    let page_size = q.page_size.or(q.limit).unwrap_or(24).clamp(1, 48);
+    let sort = q
+        .sort
+        .as_deref()
+        .map(bookclerk_discover::CatalogSearchSort::from_wire)
+        .unwrap_or_default();
+    let sort_dir = q
+        .sort_dir
+        .as_deref()
+        .map(bookclerk_discover::CatalogSortDir::from_wire)
+        .unwrap_or_else(|| bookclerk_discover::CatalogSortDir::default_for_sort(sort));
+    let field = q
+        .field
+        .as_deref()
+        .and_then(bookclerk_discover::CatalogSearchField::from_wire);
+    let filters = bookclerk_discover::CatalogSearchFilters {
+        authors: split_csv_query(q.author.as_deref()),
+        narrators: split_csv_query(q.narrator.as_deref()),
+        series: split_csv_query(q.series.as_deref()),
+        genres: split_csv_query(q.genre.as_deref()),
+        sources: split_csv_query(q.source.as_deref()),
+        exclude_sources: split_csv_query(q.exclude_source.as_deref()),
+        languages: split_csv_query(q.language.as_deref()),
+        exclude_narrators: split_csv_query(q.exclude_narrator.as_deref()),
+        min_rating: q.min_rating.filter(|r| *r > 0.0),
+        min_length_minutes: q.min_length_minutes.filter(|n| *n > 0),
+        max_length_minutes: q.max_length_minutes.filter(|n| *n > 0),
+    };
+    let page = timeout(
+        CATALOG_SEARCH_TIMEOUT,
+        bookclerk_discover::catalog_search_page(
+            &state.sources,
+            bookclerk_discover::CatalogSearchPageOpts {
+                query: &query,
+                region: &region,
+                page_size,
+                cursor: q.cursor.as_deref(),
+                sort,
+                sort_dir,
+                field,
+                language: q.lang.as_deref(),
+                all_languages: q.all_languages.unwrap_or(false),
+                filters,
+            },
+        ),
+    )
+    .await
+    .map_err(|_| {
+        tracing::warn!(
+            query_len = query.len(),
+            %region,
+            page_size,
+            "catalog search timed out"
+        );
+        (
+            StatusCode::GATEWAY_TIMEOUT,
+            "catalog search timed out".into(),
+        )
+    })?
+    .map_err(internal_err)?;
+    Ok(Json(page))
+}
+
+fn split_csv_query(raw: Option<&str>) -> Vec<String> {
+    raw.unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn work_key_for_request(body: &CreateRequestBody) -> String {
@@ -2166,19 +2529,35 @@ async fn list_request_queue(
     let cfg = state.config.read().await.clone();
     let library = state.library_snapshot().await;
 
-    let mut embedder = bookclerk_discover::open_embedder(
-        &cfg.paths().models_dir,
-        cfg.discovery.embed_intra_threads,
-        cfg.discovery.embeddings_enabled,
-    )
-    .map_err(internal_err)?;
-    let model_id = embedder.model_id().to_string();
-    let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut()).await;
+    // Empty shared queue: skip discover_gate + ONNX. Opening the embedder alone
+    // often exceeds the 8s API timeout and surfaces as a Wishlist 504.
+    let open_requests = library
+        .list_title_requests(Some(RequestStatus::Open))
+        .await
+        .map_err(internal_err)?;
+    if open_requests.is_empty() {
+        return Ok(Json(Vec::new()));
+    }
 
-    // Shared queue: overall / operator taste only (no portal personalization).
+    let _discover = state
+        .discover_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "discover gate closed".into(),
+            )
+        })?;
+
+    // Do not warm ONNX here. Wish-count already dominates ranking, and MiniLM
+    // cold-start alone blows the global 8s API timeout (Wishlist 504 after the
+    // first title is wishlisted). Author/category taste still applies without
+    // embeddings when a library exists.
     let opts = bookclerk_discover::RecommendOptions {
         limit: cfg.discovery.recommend_limit.max(24),
-        embedding_model: model_id,
+        embedding_model: String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1),
         region: String::from("us"),
         include_purchase_hints: false,
         external_user_id: None,
@@ -2189,9 +2568,9 @@ async fn list_request_queue(
         storefront_max_remote_calls: 0,
         exclude_graphicaudio_series_sets: cfg.discovery.exclude_graphicaudio_series_sets,
         disabled_shelves: Vec::new(),
-        models_dir: Some(cfg.paths().models_dir.clone()),
+        models_dir: None,
         embed_intra_threads: cfg.discovery.embed_intra_threads,
-        embeddings_enabled: cfg.discovery.embeddings_enabled,
+        embeddings_enabled: false,
     };
     let rows = bookclerk_discover::rank_global_request_queue(&library, &state.sources, &opts)
         .await
@@ -2212,24 +2591,161 @@ async fn create_request_inner(
         .map(|identity| identity.id);
     let work_key = work_key_for_request(&body);
     let library = state.library_snapshot().await;
-    let row = library
+    let mut row = library
         .create_title_request(&NewTitleRequest {
             uuid: None,
             identity_id,
-            title: body.title,
-            authors: body.authors,
-            asin: body.asin,
-            isbn: body.isbn,
-            notes: body.notes,
+            title: body.title.clone(),
+            authors: body.authors.clone(),
+            asin: body.asin.clone(),
+            isbn: body.isbn.clone(),
+            notes: body.notes.clone(),
             status: RequestStatus::Open,
             work_key,
             work_id: None,
             resolved_book_uuid: None,
-            cover_url: None,
+            cover_url: body.cover_url.clone(),
         })
         .await
         .map_err(internal_err)?;
+
+    let mut sources = wishlist_sources_from_body(&body);
+    // Soft-resolve live prices / additional storefronts and merge into snapshots.
+    let hint_query = bookclerk_discover::PurchaseHintsQuery {
+        title: body.title.clone(),
+        authors: body.authors.clone(),
+        asin: body.asin.clone(),
+        isbn: body.isbn.clone(),
+        candidate_source: None,
+        candidate_product_id: None,
+        store_editions: body.store_editions.clone(),
+        region: Some(String::from("us")),
+        preferred_sources: Vec::new(),
+    };
+    match bookclerk_discover::resolve_purchase_hints(&state.sources, &hint_query).await {
+        Ok(resolved) => {
+            for hint in resolved.hints {
+                sources.push(source_from_purchase_hint(&hint, &body));
+            }
+        }
+        Err(err) => {
+            tracing::debug!(error = %err, "wishlist purchase-hint resolve soft-failed");
+        }
+    }
+
+    if !sources.is_empty() {
+        row = library
+            .upsert_title_request_sources(row.id, &sources)
+            .await
+            .map_err(internal_err)?;
+    }
     Ok(Json(row))
+}
+
+fn wishlist_sources_from_body(body: &CreateRequestBody) -> Vec<NewTitleRequestSource> {
+    let mut out: Vec<NewTitleRequestSource> = Vec::new();
+    for ed in &body.store_editions {
+        let source = ed.source.trim().to_ascii_lowercase();
+        let product_id = ed.product_id.trim();
+        if source.is_empty() || product_id.is_empty() {
+            continue;
+        }
+        out.push(NewTitleRequestSource {
+            source,
+            product_id: product_id.to_string(),
+            title: Some(body.title.clone()),
+            subtitle: body.subtitle.clone(),
+            authors: body.authors.clone(),
+            narrators: body.narrators.clone(),
+            series: body.series.clone(),
+            series_index: body.series_index.clone(),
+            asin: body.asin.clone(),
+            isbn: body.isbn.clone(),
+            description: body.description.clone(),
+            publisher: body.publisher.clone(),
+            length_minutes: body.length_minutes,
+            published_at: body.published_at.clone(),
+            categories: body.genres.clone(),
+            language: body.language.clone(),
+            cover_url: body.cover_url.clone(),
+            ..Default::default()
+        });
+    }
+    for hint in &body.purchase_hints {
+        out.push(source_from_purchase_hint(hint, body));
+    }
+    // If the client sent bib fields but no editions, keep a soft identity row
+    // so description still persists under a stable key when resolve finds stores.
+    if out.is_empty()
+        && body
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_some()
+    {
+        if let Some(asin) = body
+            .asin
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            out.push(NewTitleRequestSource {
+                source: String::from("audible"),
+                product_id: asin.to_string(),
+                title: Some(body.title.clone()),
+                subtitle: body.subtitle.clone(),
+                authors: body.authors.clone(),
+                narrators: body.narrators.clone(),
+                series: body.series.clone(),
+                series_index: body.series_index.clone(),
+                asin: body.asin.clone(),
+                isbn: body.isbn.clone(),
+                description: body.description.clone(),
+                publisher: body.publisher.clone(),
+                length_minutes: body.length_minutes,
+                published_at: body.published_at.clone(),
+                categories: body.genres.clone(),
+                language: body.language.clone(),
+                cover_url: body.cover_url.clone(),
+                ..Default::default()
+            });
+        }
+    }
+    out
+}
+
+fn source_from_purchase_hint(
+    hint: &bookclerk_discover::PurchaseHint,
+    body: &CreateRequestBody,
+) -> NewTitleRequestSource {
+    NewTitleRequestSource {
+        source: hint.source.trim().to_ascii_lowercase(),
+        product_id: hint.product_id.trim().to_string(),
+        title: hint.title.clone().or_else(|| Some(body.title.clone())),
+        subtitle: body.subtitle.clone(),
+        authors: body.authors.clone(),
+        narrators: body.narrators.clone(),
+        series: body.series.clone(),
+        series_index: body.series_index.clone(),
+        asin: body.asin.clone(),
+        isbn: body.isbn.clone(),
+        description: body.description.clone(),
+        publisher: body.publisher.clone(),
+        length_minutes: body.length_minutes,
+        published_at: body.published_at.clone(),
+        categories: body.genres.clone(),
+        language: body.language.clone(),
+        cover_url: body.cover_url.clone(),
+        url: hint.url.clone(),
+        price_cents: hint.price_cents,
+        currency: hint.currency.clone(),
+        price_label: hint.price_label.clone(),
+        list_price_cents: hint.list_price_cents,
+        list_price_label: hint.list_price_label.clone(),
+        member_price_cents: hint.member_price_cents,
+        member_price_label: hint.member_price_label.clone(),
+    }
 }
 
 async fn sync_listening(
@@ -2253,12 +2769,31 @@ async fn sync_listening(
 struct PreferencesResponse {
     default_view: String,
     disabled_shelves: Vec<String>,
+    discover_sort: String,
+    discover_sort_dir: String,
+    /// `null` = use browser language on the client.
+    discover_language: Option<String>,
+    discover_excluded_sources: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PatchPreferencesBody {
     default_view: Option<String>,
     disabled_shelves: Option<Vec<String>>,
+    discover_sort: Option<String>,
+    discover_sort_dir: Option<String>,
+    /// Present + value sets language; present + `null` clears to browser default;
+    /// omitted leaves unchanged.
+    #[serde(default, deserialize_with = "deserialize_patch_opt_string")]
+    discover_language: Option<Option<String>>,
+    discover_excluded_sources: Option<Vec<String>>,
+}
+
+fn deserialize_patch_opt_string<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(deserializer)?))
 }
 
 async fn get_preferences(
@@ -2282,10 +2817,7 @@ async fn get_preferences(
         )
     })?
     .map_err(internal_err)?;
-    Ok(Json(PreferencesResponse {
-        default_view: auth::normalize_default_view(&prefs.default_view),
-        disabled_shelves: prefs.disabled_shelves,
-    }))
+    Ok(Json(preferences_response(&prefs)))
 }
 
 async fn patch_preferences(
@@ -2322,6 +2854,25 @@ async fn patch_preferences(
         .map(normalize_disabled_shelves)
         .unwrap_or(current.disabled_shelves);
 
+    let discover_sort = body
+        .discover_sort
+        .as_deref()
+        .map(normalize_discover_sort_pref)
+        .unwrap_or_else(|| normalize_discover_sort_pref(&current.discover_sort));
+    let discover_sort_dir = body
+        .discover_sort_dir
+        .as_deref()
+        .map(normalize_discover_sort_dir_pref)
+        .unwrap_or_else(|| normalize_discover_sort_dir_pref(&current.discover_sort_dir));
+    let discover_language = match body.discover_language {
+        Some(v) => v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        None => current.discover_language,
+    };
+    let discover_excluded_sources = body
+        .discover_excluded_sources
+        .map(normalize_disabled_shelves)
+        .unwrap_or(current.discover_excluded_sources);
+
     let saved = timeout(
         PREFERENCES_TIMEOUT,
         library.upsert_user_preferences(
@@ -2329,10 +2880,10 @@ async fn patch_preferences(
             identity_id,
             &default_view,
             &disabled_shelves,
-            &current.discover_sort,
-            &current.discover_sort_dir,
-            current.discover_language.as_deref(),
-            &current.discover_excluded_sources,
+            &discover_sort,
+            &discover_sort_dir,
+            discover_language.as_deref(),
+            &discover_excluded_sources,
         ),
     )
     .await
@@ -2344,10 +2895,37 @@ async fn patch_preferences(
     })?
     .map_err(internal_err)?;
 
-    Ok(Json(PreferencesResponse {
-        default_view: auth::normalize_default_view(&saved.default_view),
-        disabled_shelves: saved.disabled_shelves,
-    }))
+    Ok(Json(preferences_response(&saved)))
+}
+
+fn preferences_response(prefs: &bookclerk_library::UserPreferences) -> PreferencesResponse {
+    PreferencesResponse {
+        default_view: auth::normalize_default_view(&prefs.default_view),
+        disabled_shelves: prefs.disabled_shelves.clone(),
+        discover_sort: normalize_discover_sort_pref(&prefs.discover_sort),
+        discover_sort_dir: normalize_discover_sort_dir_pref(&prefs.discover_sort_dir),
+        discover_language: prefs.discover_language.clone(),
+        discover_excluded_sources: prefs.discover_excluded_sources.clone(),
+    }
+}
+
+fn normalize_discover_sort_pref(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "popularity" => String::from("popularity"),
+        "rating" => String::from("rating"),
+        "title" => String::from("title"),
+        "author" => String::from("author"),
+        "price" => String::from("price"),
+        "length" | "runtime" => String::from("length"),
+        _ => String::from("relevance"),
+    }
+}
+
+fn normalize_discover_sort_dir_pref(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "asc" | "ascending" => String::from("asc"),
+        _ => String::from("desc"),
+    }
 }
 
 fn normalize_disabled_shelves(raw: Vec<String>) -> Vec<String> {
@@ -2514,6 +3092,10 @@ mod tests {
         assert_eq!(
             normalize_setting_value("daemon.listen", " 127.0.0.1:8787 ").expect("listen"),
             "127.0.0.1:8787"
+        );
+        assert_eq!(
+            normalize_setting_value("daemon.listen", "127.0.0.1:1,[::1]:1").expect("multi"),
+            "127.0.0.1:1,[::1]:1"
         );
         assert!(normalize_setting_value("daemon.listen", "   ").is_err());
         assert!(normalize_setting_value("daemon.listen", "not-a-socket").is_err());

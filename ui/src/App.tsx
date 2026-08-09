@@ -4,30 +4,26 @@ import { DiscoverPage } from "@/components/DiscoverPage";
 import { LibraryPage } from "@/components/LibraryPage";
 import { LoginPage } from "@/components/LoginPage";
 import { NotFoundPage } from "@/components/NotFoundPage";
+import { PreferencesProvider } from "@/components/PreferencesDialog";
 import { SettingsPage } from "@/components/SettingsPage";
 import { WishlistPage } from "@/components/WishlistPage";
 import { authMe, type AppView, type AuthSession } from "@/lib/api";
-import { isAppPath } from "@/lib/routes";
+import {
+  isAppPath,
+  normalizeAppView,
+  resolveView,
+  syncUrlToView,
+  viewFromPath,
+} from "@/lib/routes";
 
 type AuthState = "loading" | "anon" | "authed";
-
-function normalizeView(v: string | undefined): AppView {
-  if (
-    v === "library" ||
-    v === "accounts" ||
-    v === "discover" ||
-    v === "wishlist" ||
-    v === "settings"
-  ) {
-    return v;
-  }
-  return "discover";
-}
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState>("loading");
   const [session, setSession] = useState<AuthSession | null>(null);
-  const [view, setView] = useState<AppView>("discover");
+  const [view, setView] = useState<AppView>(
+    () => viewFromPath(window.location.pathname) ?? "discover",
+  );
   const knownPath = isAppPath(window.location.pathname);
 
   useEffect(() => {
@@ -38,8 +34,10 @@ export default function App() {
         const me = await authMe();
         if (cancelled) return;
         if (me.authenticated) {
+          const next = resolveView(window.location.pathname, me.default_view);
           setSession(me);
-          setView(normalizeView(me.default_view));
+          setView(next);
+          syncUrlToView(next, "replace");
           setAuth("authed");
         } else {
           setAuth("anon");
@@ -53,9 +51,33 @@ export default function App() {
     };
   }, [knownPath]);
 
+  useEffect(() => {
+    if (!knownPath || auth !== "authed") return;
+    const onPopState = () => {
+      const pathView = viewFromPath(window.location.pathname);
+      if (pathView) {
+        setView(pathView);
+        return;
+      }
+      // `/` or other app root → fall back to the signed-in default.
+      const fallback = normalizeAppView(session?.default_view);
+      setView(fallback);
+      syncUrlToView(fallback, "replace");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [knownPath, auth, session?.default_view]);
+
+  function navigate(next: AppView) {
+    setView(next);
+    syncUrlToView(next, "push");
+  }
+
   function onLoginSuccess(next: AuthSession) {
+    const resolved = resolveView(window.location.pathname, next.default_view);
     setSession(next);
-    setView(normalizeView(next.default_view));
+    setView(resolved);
+    syncUrlToView(resolved, "replace");
     setAuth("authed");
   }
 
@@ -64,8 +86,7 @@ export default function App() {
     setAuth("anon");
   }
 
-  // `bookclerkd` only serves index.html at `/`, but a dev server (or a stale
-  // bookmark) can still land here on an unknown path.
+  // Unknown paths stay a branded 404 (API/static assets are not SPA routes).
   if (!knownPath) {
     return <NotFoundPage />;
   }
@@ -82,22 +103,25 @@ export default function App() {
     return <LoginPage onSuccess={onLoginSuccess} />;
   }
 
-  const nav = { view, onNavigate: setView };
+  const nav = { view, onNavigate: navigate };
   const canAcquire = session.can_acquire;
   const role = session.role;
 
+  let page = (
+    <LibraryPage
+      onLogout={onLogout}
+      canAcquire={canAcquire}
+      nav={nav}
+      role={role}
+    />
+  );
+
   if (view === "accounts") {
-    return (
-      <AccountsPage onLogout={onLogout} nav={nav} role={role} />
-    );
-  }
-
-  if (view === "wishlist") {
-    return <WishlistPage onLogout={onLogout} nav={nav} role={role} />;
-  }
-
-  if (view === "settings") {
-    return (
+    page = <AccountsPage onLogout={onLogout} nav={nav} role={role} />;
+  } else if (view === "wishlist") {
+    page = <WishlistPage onLogout={onLogout} nav={nav} role={role} />;
+  } else if (view === "settings") {
+    page = (
       <SettingsPage
         onLogout={onLogout}
         onSessionExpired={onLogout}
@@ -105,28 +129,18 @@ export default function App() {
         role={role}
       />
     );
-  }
-
-  if (view === "discover") {
-    return (
-      <DiscoverPage
-        onLogout={onLogout}
-        nav={nav}
-        role={role}
-        defaultView={session.default_view}
-        onDefaultViewChange={(v) =>
-          setSession((s) => (s ? { ...s, default_view: v } : s))
-        }
-      />
-    );
+  } else if (view === "discover") {
+    page = <DiscoverPage onLogout={onLogout} nav={nav} role={role} />;
   }
 
   return (
-    <LibraryPage
-      onLogout={onLogout}
-      canAcquire={canAcquire}
-      nav={nav}
-      role={role}
-    />
+    <PreferencesProvider
+      defaultView={session.default_view}
+      onDefaultViewChange={(v) =>
+        setSession((s) => (s ? { ...s, default_view: v } : s))
+      }
+    >
+      {page}
+    </PreferencesProvider>
   );
 }

@@ -12,8 +12,8 @@ use bookclerk_source::{CatalogHit, ExpandSeed, SourceRegistry};
 
 use crate::error::Result;
 use crate::identity::{
-    candidate_map_key, hard_work_key, merge_candidate_metadata, push_edition, works_match,
-    StoreEdition,
+    candidate_map_key, hard_work_key, identities_match, merge_candidate_metadata, push_edition,
+    StoreEdition, WorkIdentity,
 };
 
 /// A purchase candidate discovered from a storefront catalog (not owned locally).
@@ -28,6 +28,9 @@ pub struct StorefrontCandidate {
     pub series_index: Option<String>,
     pub asin: Option<String>,
     pub isbn: Option<String>,
+    /// Public cover image URL when a storefront provided one.
+    #[serde(default)]
+    pub cover_url: Option<String>,
     /// Categories/subjects copied from the taste seed that produced this hit.
     pub seed_categories: Option<String>,
     /// How this candidate was found (related-to seed, author search, …).
@@ -36,6 +39,39 @@ pub struct StorefrontCandidate {
     /// Known storefront editions of this work (including the primary source).
     #[serde(default)]
     pub store_editions: Vec<StoreEdition>,
+    /// Bibliographic extras from the storefront catalog payload (optional).
+    #[serde(default)]
+    pub subtitle: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub length_minutes: Option<i64>,
+    #[serde(default)]
+    pub published_at: Option<String>,
+    #[serde(default)]
+    pub categories: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub price_cents: Option<i64>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub price_label: Option<String>,
+    /// Community overall rating when a storefront provided one.
+    #[serde(default)]
+    pub rating_overall: Option<f64>,
+    /// Number of ratings backing [`Self::rating_overall`] when known.
+    #[serde(default)]
+    pub rating_count: Option<i64>,
+    /// Abridged flag when the storefront provided one.
+    #[serde(default)]
+    pub is_abridged: Option<bool>,
+    /// Position within the Audible page that produced this hit (for merge rank).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audible_rank: Option<u32>,
 }
 
 /// Options for storefront candidate expansion.
@@ -200,7 +236,8 @@ fn source_enabled(id: &str, opts: &CandidateFetchOptions) -> bool {
     true
 }
 
-fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCandidate {
+pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCandidate {
+    let hit = hit.decode_html_entities();
     StorefrontCandidate {
         source: source_id.to_string(),
         product_id: hit.product_id,
@@ -211,10 +248,25 @@ fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCandidate {
         series_index: hit.series_index,
         asin: hit.asin,
         isbn: hit.isbn,
+        cover_url: hit.cover_url,
         seed_categories: None,
         origin: hit.origin,
         seed_title: None,
         store_editions: Vec::new(),
+        subtitle: hit.subtitle,
+        description: hit.description,
+        publisher: hit.publisher,
+        length_minutes: hit.length_minutes,
+        published_at: hit.published_at,
+        categories: hit.categories,
+        language: hit.language,
+        price_cents: hit.price_cents,
+        currency: hit.currency,
+        price_label: hit.price_label,
+        rating_overall: hit.rating_overall,
+        rating_count: hit.rating_count,
+        is_abridged: hit.is_abridged,
+        audible_rank: None,
     }
 }
 
@@ -312,11 +364,23 @@ fn insert_candidate(
                 return Some(key.clone());
             }
         }
-        if works_match(
-            &c.title,
-            c.authors.as_deref(),
-            &existing.title,
-            existing.authors.as_deref(),
+        if identities_match(
+            WorkIdentity::new(
+                c.asin.as_deref(),
+                c.isbn.as_deref(),
+                &c.title,
+                c.authors.as_deref(),
+            )
+            .with_series(c.series.as_deref())
+            .with_series_index(c.series_index.as_deref()),
+            WorkIdentity::new(
+                existing.asin.as_deref(),
+                existing.isbn.as_deref(),
+                &existing.title,
+                existing.authors.as_deref(),
+            )
+            .with_series(existing.series.as_deref())
+            .with_series_index(existing.series_index.as_deref()),
         ) {
             return Some(key.clone());
         }
@@ -349,6 +413,11 @@ pub fn select_taste_seeds(
 ) -> Vec<BookRecord> {
     let mut scored: Vec<(i32, &BookRecord)> = books
         .iter()
+        // Podcasts are out of v1 Discover (no expand / suggestion seeds).
+        .filter(|b| {
+            !bookclerk_library::is_podcast_parent(&b.content_kind)
+                && !bookclerk_library::is_episode(&b.content_kind)
+        })
         .map(|b| {
             let mut s = 0;
             if b.is_finished {
@@ -412,10 +481,25 @@ mod tests {
                 series_index: None,
                 asin: Some("B00HAIL".into()),
                 isbn: None,
+                cover_url: None,
                 seed_categories: None,
                 origin: "audible author".into(),
                 seed_title: None,
                 store_editions: Vec::new(),
+                subtitle: None,
+                description: None,
+                publisher: None,
+                length_minutes: None,
+                published_at: None,
+                categories: None,
+                language: None,
+                price_cents: None,
+                currency: None,
+                price_label: None,
+                rating_overall: None,
+                rating_count: None,
+                is_abridged: None,
+                audible_rank: None,
             },
             &owned_asins,
             &owned_isbns,
@@ -433,10 +517,25 @@ mod tests {
                 series_index: None,
                 asin: None,
                 isbn: Some("978-1234567890".into()),
+                cover_url: None,
                 seed_categories: None,
                 origin: "libro related".into(),
                 seed_title: None,
                 store_editions: Vec::new(),
+                subtitle: None,
+                description: None,
+                publisher: None,
+                length_minutes: None,
+                published_at: None,
+                categories: None,
+                language: None,
+                price_cents: None,
+                currency: None,
+                price_label: None,
+                rating_overall: None,
+                rating_count: None,
+                is_abridged: None,
+                audible_rank: None,
             },
             &owned_asins,
             &owned_isbns,
@@ -454,10 +553,25 @@ mod tests {
                 series_index: None,
                 asin: None,
                 isbn: None,
+                cover_url: None,
                 seed_categories: None,
                 origin: "chirp search".into(),
                 seed_title: None,
                 store_editions: Vec::new(),
+                subtitle: None,
+                description: None,
+                publisher: None,
+                length_minutes: None,
+                published_at: None,
+                categories: None,
+                language: None,
+                price_cents: None,
+                currency: None,
+                price_label: None,
+                rating_overall: None,
+                rating_count: None,
+                is_abridged: None,
+                audible_rank: None,
             },
             &owned_asins,
             &owned_isbns,

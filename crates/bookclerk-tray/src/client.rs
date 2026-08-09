@@ -27,18 +27,17 @@ impl TrayConfig {
         }
     }
 
-    /// Embed the operator token in the URL fragment only when it is URL-safe.
+    /// Open the UI via a loopback handoff URL that sets the session cookie.
     ///
-    /// Generated file tokens are hex. Env overrides (`BOOKCLERK_OPERATOR_TOKEN`)
-    /// are validated when read; anything that still fails the safe charset is
-    /// percent-encoded so fragment parsing cannot split on `&` / `=` / `+`.
+    /// Prefer `/api/auth/tray-handoff?token=…` over a `#token=` fragment: Linux
+    /// `xdg-open` commonly strips fragments before the browser sees them.
     #[must_use]
     pub fn ui_url(&self) -> String {
         let base = self.base_url.trim_end_matches('/');
         if self.auth_enabled {
             if let Some(token) = self.operator_token.as_deref().filter(|t| !t.is_empty()) {
                 let encoded = encode_token_fragment(token);
-                return format!("{base}/#token={encoded}");
+                return format!("{base}/api/auth/tray-handoff?token={encoded}");
             }
         }
         format!("{base}/")
@@ -87,6 +86,10 @@ impl TrayConfig {
 
     pub fn set_listen(&mut self, listen: &str) {
         self.base_url = Self::base_url(listen);
+    }
+
+    pub fn set_base_url(&mut self, base_url: impl Into<String>) {
+        self.base_url = base_url.into();
     }
 }
 
@@ -140,7 +143,10 @@ mod tests {
             operator_token: Some("abc".into()),
             token_path: None,
         };
-        assert_eq!(cfg.ui_url(), "http://127.0.0.1:8787/#token=abc");
+        assert_eq!(
+            cfg.ui_url(),
+            "http://127.0.0.1:8787/api/auth/tray-handoff?token=abc"
+        );
     }
 
     #[test]
@@ -151,7 +157,10 @@ mod tests {
             operator_token: Some("a&b=c+d".into()),
             token_path: None,
         };
-        assert_eq!(cfg.ui_url(), "http://127.0.0.1:8787/#token=a%26b%3Dc%2Bd");
+        assert_eq!(
+            cfg.ui_url(),
+            "http://127.0.0.1:8787/api/auth/tray-handoff?token=a%26b%3Dc%2Bd"
+        );
         assert!(!token_is_url_safe("a&b=c+d"));
         assert_eq!(encode_token_fragment("a&b=c+d"), "a%26b%3Dc%2Bd");
     }

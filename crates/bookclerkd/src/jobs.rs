@@ -101,6 +101,7 @@ pub async fn enqueue_acquire(
 
 /// Run a scan synchronously (scheduler / tests).
 pub async fn run_scan(state: &AppState, account: Option<&str>) -> anyhow::Result<String> {
+    let started = std::time::Instant::now();
     let _guard = state.work_lock.lock().await;
     let cfg = state.config.read().await.clone();
     let paths = cfg.paths();
@@ -118,6 +119,15 @@ pub async fn run_scan(state: &AppState, account: Option<&str>) -> anyhow::Result
             },
         )
         .await?;
+    info!(
+        account = account.unwrap_or("*"),
+        accounts = summary.accounts,
+        books_upserted = summary.books_upserted,
+        pages = summary.pages,
+        skipped_disabled = summary.skipped_disabled,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "run_scan finished"
+    );
     if cfg.library.enrich_from_audible {
         if let Err(err) =
             bookclerk_enrich::enrich_books_from_audible(&library, cfg.library.enrich_min_confidence)
@@ -138,6 +148,7 @@ pub async fn run_acquire(
     asin: Option<&str>,
     account: Option<&str>,
 ) -> anyhow::Result<String> {
+    let started = std::time::Instant::now();
     let _guard = state.work_lock.lock().await;
     let cfg = state.config.read().await.clone();
     let paths = cfg.paths();
@@ -184,6 +195,12 @@ pub async fn run_acquire(
         .collect();
 
     if targets.is_empty() {
+        info!(
+            asin = asin.unwrap_or("*"),
+            account = account.unwrap_or("*"),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "run_acquire finished: nothing to acquire"
+        );
         return Ok("nothing to acquire".into());
     }
 
@@ -256,6 +273,15 @@ pub async fn run_acquire(
         }
     }
     let detail = format!("acquired={ok} matched={matched} failed={failed}");
+    info!(
+        asin = asin.unwrap_or("*"),
+        account = account.unwrap_or("*"),
+        acquired = ok,
+        matched,
+        failed,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "run_acquire finished"
+    );
     if failed > 0 && bad_book == BadBookAction::Retry {
         anyhow::bail!("{detail}");
     }

@@ -185,6 +185,26 @@ async function parseJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  ms: number,
+  label: string,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new ApiError(504, `${label} timed out`);
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 function toAuthSession(body: {
   authenticated: boolean;
   role?: string;
@@ -202,7 +222,12 @@ function toAuthSession(body: {
 }
 
 export async function authMe(): Promise<AuthSession> {
-  const res = await fetch("/api/auth/me", { credentials: "include" });
+  const res = await fetchWithTimeout(
+    "/api/auth/me",
+    { credentials: "include" },
+    8_000,
+    "Session check",
+  );
   if (res.status === 401) return ANON_SESSION;
   const body = await parseJson<{
     authenticated: boolean;
@@ -215,12 +240,17 @@ export async function authMe(): Promise<AuthSession> {
 }
 
 export async function login(token: string): Promise<AuthSession> {
-  const res = await fetch("/api/auth/login", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token }),
-  });
+  const res = await fetchWithTimeout(
+    "/api/auth/login",
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    },
+    8_000,
+    "Login",
+  );
   const body = await parseJson<{
     ok: boolean;
     role?: string;
@@ -246,6 +276,12 @@ export async function logout(): Promise<void> {
 export interface UserPreferences {
   default_view: AppView;
   disabled_shelves: string[];
+  discover_sort: CatalogSearchSort;
+  discover_sort_dir: "asc" | "desc";
+  /** `null` / omitted = browser language; `__all__` = no hard filter. */
+  discover_language: string | null;
+  /** Store ids hidden in Discover. Empty = all sources including future. */
+  discover_excluded_sources: string[];
 }
 
 export interface SettingsUpdate {
@@ -269,6 +305,8 @@ export interface PluginSettingOption {
 export interface PluginSettingsGroup {
   id: string;
   kind: string;
+  /** Google favicon (or portal brand) URL for Settings list rows. */
+  logo?: string;
   settings: PluginSettingOption[];
 }
 
@@ -277,40 +315,85 @@ export interface SettingsResponse {
   plugins: PluginSettingsGroup[];
 }
 
-export async function fetchPreferences(): Promise<UserPreferences> {
-  const res = await fetch("/api/preferences", { credentials: "include" });
-  const body = await parseJson<{
-    default_view?: string;
-    disabled_shelves?: string[];
-  }>(res);
+function normalizeCatalogSort(raw: unknown): CatalogSearchSort {
+  const s = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (
+    s === "popularity" ||
+    s === "rating" ||
+    s === "title" ||
+    s === "author" ||
+    s === "price" ||
+    s === "length"
+  ) {
+    return s;
+  }
+  return "relevance";
+}
+
+function normalizeCatalogSortDir(raw: unknown): "asc" | "desc" {
+  return typeof raw === "string" && raw.trim().toLowerCase() === "asc"
+    ? "asc"
+    : "desc";
+}
+
+function parsePreferencesBody(body: {
+  default_view?: string;
+  disabled_shelves?: string[];
+  discover_sort?: string;
+  discover_sort_dir?: string;
+  discover_language?: string | null;
+  discover_excluded_sources?: string[];
+}): UserPreferences {
   return {
     default_view: normalizeView(body.default_view),
     disabled_shelves: Array.isArray(body.disabled_shelves)
       ? body.disabled_shelves.filter((x): x is string => typeof x === "string")
       : [],
+    discover_sort: normalizeCatalogSort(body.discover_sort),
+    discover_sort_dir: normalizeCatalogSortDir(body.discover_sort_dir),
+    discover_language:
+      typeof body.discover_language === "string" && body.discover_language.trim()
+        ? body.discover_language.trim()
+        : null,
+    discover_excluded_sources: Array.isArray(body.discover_excluded_sources)
+      ? body.discover_excluded_sources.filter(
+          (x): x is string => typeof x === "string",
+        )
+      : [],
   };
+}
+
+export async function fetchPreferences(): Promise<UserPreferences> {
+  const res = await fetchWithTimeout(
+    "/api/preferences",
+    { credentials: "include" },
+    8_000,
+    "Preferences",
+  );
+  return parsePreferencesBody(await parseJson(res));
 }
 
 export async function patchPreferences(body: {
   default_view?: AppView;
   disabled_shelves?: string[];
+  discover_sort?: CatalogSearchSort;
+  discover_sort_dir?: "asc" | "desc";
+  /** Pass `null` to clear to browser default. */
+  discover_language?: string | null;
+  discover_excluded_sources?: string[];
 }): Promise<UserPreferences> {
-  const res = await fetch("/api/preferences", {
-    method: "PATCH",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const out = await parseJson<{
-    default_view?: string;
-    disabled_shelves?: string[];
-  }>(res);
-  return {
-    default_view: normalizeView(out.default_view),
-    disabled_shelves: Array.isArray(out.disabled_shelves)
-      ? out.disabled_shelves.filter((x): x is string => typeof x === "string")
-      : [],
-  };
+  const res = await fetchWithTimeout(
+    "/api/preferences",
+    {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    8_000,
+    "Save preferences",
+  );
+  return parsePreferencesBody(await parseJson(res));
 }
 
 export async function fetchSettings(): Promise<SettingsResponse> {
@@ -497,6 +580,10 @@ export interface PurchaseHint {
   price_cents?: number | null;
   currency?: string | null;
   price_label?: string | null;
+  list_price_cents?: number | null;
+  list_price_label?: string | null;
+  member_price_cents?: number | null;
+  member_price_label?: string | null;
 }
 
 export interface PurchaseHintsResponse {
@@ -526,6 +613,14 @@ export interface Recommendation {
   seed_categories?: string | null;
   /** Stable bibliographic key (`isbn:` / `asin:` / `soft:`…). */
   work_key?: string;
+  cover_url?: string | null;
+  subtitle?: string | null;
+  description?: string | null;
+  publisher?: string | null;
+  length_minutes?: number | null;
+  published_at?: string | null;
+  genres?: string | null;
+  language?: string | null;
 }
 
 export interface PurchaseHintsQuery {
@@ -569,6 +664,19 @@ export interface TitleRequest {
   work_key: string;
   work_id: string | null;
   resolved_book_uuid: string | null;
+  cover_url?: string | null;
+  description?: string | null;
+  subtitle?: string | null;
+  narrators?: string | null;
+  series?: string | null;
+  series_index?: string | null;
+  publisher?: string | null;
+  length_minutes?: number | null;
+  published_at?: string | null;
+  genres?: string | null;
+  language?: string | null;
+  store_editions?: StoreEdition[];
+  purchase_hints?: PurchaseHint[];
   created_at: string;
   updated_at: string;
 }
@@ -579,6 +687,19 @@ export interface GlobalQueueEntry {
   authors: string | null;
   asin: string | null;
   isbn: string | null;
+  cover_url?: string | null;
+  description?: string | null;
+  subtitle?: string | null;
+  narrators?: string | null;
+  series?: string | null;
+  series_index?: string | null;
+  publisher?: string | null;
+  length_minutes?: number | null;
+  published_at?: string | null;
+  genres?: string | null;
+  language?: string | null;
+  store_editions?: StoreEdition[];
+  purchase_hints?: PurchaseHint[];
   wish_count: number;
   sample_uuids: string[];
   first_requested_at: string;
@@ -595,17 +716,67 @@ export interface CatalogSearchHit {
   authors: string | null;
   narrators: string | null;
   series: string | null;
+  series_index?: string | null;
   asin: string | null;
   isbn: string | null;
+  cover_url?: string | null;
   store_editions: StoreEdition[];
   sources: string[];
+  subtitle?: string | null;
+  description?: string | null;
+  publisher?: string | null;
+  length_minutes?: number | null;
+  published_at?: string | null;
+  genres?: string | null;
+  language?: string | null;
+  is_abridged?: boolean | null;
+  rating_overall?: number | null;
+  rating_count?: number | null;
+  price_cents?: number | null;
+  purchase_hints?: PurchaseHint[];
+}
+
+export type CatalogSearchSort =
+  | "relevance"
+  | "popularity"
+  | "rating"
+  | "title"
+  | "author"
+  | "price"
+  | "length";
+
+export type CatalogSortDir = "asc" | "desc";
+
+export type CatalogSearchFilters = {
+  authors?: string[];
+  narrators?: string[];
+  series?: string[];
+  genres?: string[];
+  sources?: string[];
+  exclude_sources?: string[];
+  languages?: string[];
+  exclude_narrators?: string[];
+  min_rating?: number;
+  min_length_minutes?: number;
+  max_length_minutes?: number;
+};
+
+export interface CatalogSearchPage {
+  items: CatalogSearchHit[];
+  page_size: number;
+  has_more: boolean;
+  next_cursor?: string | null;
+  sort: string;
+  sort_dir?: string;
 }
 
 export async function fetchDiscoverFeed(limit = 36): Promise<DiscoverFeed> {
   // Seed storefront URLs in the feed; live prices load viewport-gated per card.
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `/api/discover/recommendations?limit=${limit}&no_purchase_hints=true`,
     { credentials: "include" },
+    20_000,
+    "Discover feed",
   );
   return parseJson(res);
 }
@@ -641,14 +812,19 @@ async function flushPurchaseHintsQueue() {
   for (let i = 0; i < batch.length; i += 24) {
     const chunk = batch.slice(i, i + 24);
     try {
-      const res = await fetch("/api/discover/purchase-hints/batch", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          queries: chunk.map((w) => serializePurchaseHintsQuery(w.query)),
-        }),
-      });
+      const res = await fetchWithTimeout(
+        "/api/discover/purchase-hints/batch",
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            queries: chunk.map((w) => serializePurchaseHintsQuery(w.query)),
+          }),
+        },
+        25_000,
+        "Purchase hints batch",
+      );
       const data = (await parseJson(res)) as { results: PurchaseHintsResponse[] };
       chunk.forEach((waiter, idx) => {
         const result = data.results[idx] ?? { hints: [], best: null };
@@ -659,12 +835,17 @@ async function flushPurchaseHintsQueue() {
       await Promise.all(
         chunk.map(async (waiter) => {
           try {
-            const res = await fetch("/api/discover/purchase-hints", {
-              method: "POST",
-              credentials: "include",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(serializePurchaseHintsQuery(waiter.query)),
-            });
+            const res = await fetchWithTimeout(
+              "/api/discover/purchase-hints",
+              {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(serializePurchaseHintsQuery(waiter.query)),
+              },
+              25_000,
+              "Purchase hints",
+            );
             waiter.resolve(await parseJson(res));
           } catch (singleErr) {
             waiter.reject(singleErr);
@@ -676,12 +857,125 @@ async function flushPurchaseHintsQueue() {
   }
 }
 
+/** One Audible customer review for title detail. */
+export interface TitleReview {
+  id?: string | null;
+  title?: string | null;
+  body: string;
+  author_name?: string | null;
+  overall_rating?: number | null;
+  performance_rating?: number | null;
+  story_rating?: number | null;
+  submitted_at?: string | null;
+}
+
+/** Public Audnexus / Audible catalog fields for detail dialogs. */
+export interface TitleMeta {
+  asin?: string | null;
+  title?: string | null;
+  subtitle?: string | null;
+  authors?: string | null;
+  narrators?: string | null;
+  series?: string | null;
+  series_index?: string | null;
+  isbn?: string | null;
+  cover_url?: string | null;
+  description?: string | null;
+  publisher?: string | null;
+  length_minutes?: number | null;
+  published_at?: string | null;
+  categories?: string | null;
+  language?: string | null;
+  /** `true` abridged / `false` unabridged when the storefront said so. */
+  is_abridged?: boolean | null;
+  /** Audible community ratings (detail fetch only). */
+  rating_overall?: number | null;
+  rating_performance?: number | null;
+  rating_story?: number | null;
+  rating_count?: number | null;
+  review_count?: number | null;
+  /** @deprecated Prefer [`fetchTitleReviews`]. Title-meta no longer embeds reviews. */
+  reviews?: TitleReview[];
+}
+
+export type TitleReviewsSort = "MostHelpful" | "MostRecent";
+
+export type TitleReviewsQuery = {
+  asin: string;
+  region?: string;
+  page?: number;
+  page_size?: number;
+  sort_by?: TitleReviewsSort;
+};
+
+export type TitleReviewsPage = {
+  asin: string;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+  sort_by?: string;
+  reviews: TitleReview[];
+};
+
+type CacheEntry<T> = { value: T; expires: number };
+
+const purchaseHintsClientCache = new Map<string, CacheEntry<PurchaseHintsResponse>>();
+const titleMetaClientCache = new Map<string, CacheEntry<TitleMeta | null>>();
+const PURCHASE_HINTS_CLIENT_TTL_MS = 10 * 60_000;
+const TITLE_META_CLIENT_TTL_MS = 6 * 60 * 60_000;
+
+function clientCacheGet<T>(map: Map<string, CacheEntry<T>>, key: string): T | undefined {
+  const hit = map.get(key);
+  if (!hit) return undefined;
+  if (hit.expires <= Date.now()) {
+    map.delete(key);
+    return undefined;
+  }
+  return hit.value;
+}
+
+function clientCacheSet<T>(
+  map: Map<string, CacheEntry<T>>,
+  key: string,
+  value: T,
+  ttlMs: number,
+) {
+  map.set(key, { value, expires: Date.now() + ttlMs });
+}
+
+function purchaseHintsClientKey(q: PurchaseHintsQuery): string {
+  const editions = (q.store_editions ?? [])
+    .map((e) => `${e.source}:${e.product_id}`)
+    .sort()
+    .join(",");
+  return [
+    q.title,
+    q.authors ?? "",
+    q.asin ?? "",
+    q.isbn ?? "",
+    q.candidate_source ?? "",
+    q.candidate_product_id ?? "",
+    editions,
+    q.region ?? "us",
+  ].join("|");
+}
+
 /** Viewport-gated cards coalesce into a short batch window. */
 export function fetchPurchaseHints(
   body: PurchaseHintsQuery,
 ): Promise<PurchaseHintsResponse> {
+  const key = purchaseHintsClientKey(body);
+  const cached = clientCacheGet(purchaseHintsClientCache, key);
+  if (cached) return Promise.resolve(cached);
   return new Promise((resolve, reject) => {
-    purchaseHintsQueue.push({ query: body, resolve, reject });
+    purchaseHintsQueue.push({
+      query: body,
+      resolve: (value) => {
+        clientCacheSet(purchaseHintsClientCache, key, value, PURCHASE_HINTS_CLIENT_TTL_MS);
+        resolve(value);
+      },
+      reject,
+    });
     if (purchaseHintsTimer == null) {
       purchaseHintsTimer = setTimeout(() => {
         void flushPurchaseHintsQueue();
@@ -690,21 +984,262 @@ export function fetchPurchaseHints(
   });
 }
 
+export type TitleMetaQuery = {
+  title: string;
+  authors?: string | null;
+  asin?: string | null;
+  isbn?: string | null;
+  narrators?: string | null;
+  length_minutes?: number | null;
+  region?: string;
+};
+
+function titleMetaClientKey(body: TitleMetaQuery): string {
+  return [
+    body.title,
+    body.authors ?? "",
+    body.asin ?? "",
+    body.isbn ?? "",
+    body.region ?? "us",
+  ].join("|");
+}
+
+function serializeTitleMetaQuery(body: TitleMetaQuery) {
+  return {
+    title: body.title,
+    authors: body.authors ?? undefined,
+    asin: body.asin ?? undefined,
+    isbn: body.isbn ?? undefined,
+    narrators: body.narrators ?? undefined,
+    length_minutes: body.length_minutes ?? undefined,
+    region: body.region ?? "us",
+  };
+}
+
+type TitleMetaWaiter = {
+  query: TitleMetaQuery;
+  resolve: (value: TitleMeta | null) => void;
+  reject: (err: unknown) => void;
+};
+
+let titleMetaQueue: TitleMetaWaiter[] = [];
+let titleMetaTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function flushTitleMetaQueue() {
+  const batch = titleMetaQueue.splice(0, titleMetaQueue.length);
+  titleMetaTimer = null;
+  if (batch.length === 0) return;
+  for (let i = 0; i < batch.length; i += 24) {
+    const chunk = batch.slice(i, i + 24);
+    try {
+      const res = await fetchWithTimeout(
+        "/api/discover/title-meta/batch",
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            queries: chunk.map((w) => serializeTitleMetaQuery(w.query)),
+          }),
+        },
+        25_000,
+        "Title metadata batch",
+      );
+      const data = (await parseJson(res)) as { results: (TitleMeta | null)[] };
+      chunk.forEach((waiter, idx) => {
+        const meta = data.results[idx] ?? null;
+        clientCacheSet(
+          titleMetaClientCache,
+          titleMetaClientKey(waiter.query),
+          meta,
+          TITLE_META_CLIENT_TTL_MS,
+        );
+        waiter.resolve(meta);
+      });
+    } catch (err) {
+      chunk.forEach((waiter) => waiter.reject(err));
+    }
+  }
+}
+
+/** Viewport-gated cards coalesce into a short batch window. */
+export function fetchTitleMeta(body: TitleMetaQuery): Promise<TitleMeta | null> {
+  const key = titleMetaClientKey(body);
+  const cached = clientCacheGet(titleMetaClientCache, key);
+  if (cached !== undefined) return Promise.resolve(cached);
+  return new Promise((resolve, reject) => {
+    titleMetaQueue.push({ query: body, resolve, reject });
+    if (titleMetaTimer == null) {
+      titleMetaTimer = setTimeout(() => {
+        void flushTitleMetaQueue();
+      }, 40);
+    }
+  });
+}
+
+/** Paginated Audible customer reviews for title detail infinite scroll. */
+export async function fetchTitleReviews(
+  body: TitleReviewsQuery,
+): Promise<TitleReviewsPage> {
+  const asin = body.asin.trim();
+  const page = Math.max(1, body.page ?? 1);
+  const page_size = Math.min(20, Math.max(1, body.page_size ?? 5));
+  const sort_by = body.sort_by ?? "MostHelpful";
+  const res = await fetchWithTimeout(
+    "/api/discover/title-reviews",
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        asin,
+        region: body.region?.trim() || "us",
+        page,
+        page_size,
+        sort_by,
+      }),
+    },
+    25_000,
+    "Title reviews",
+  );
+  return (await parseJson(res)) as TitleReviewsPage;
+}
+
+/** Batch title-meta (order preserved); uses the same client TTL cache as singles. */
+export async function fetchTitleMetaBatch(
+  queries: TitleMetaQuery[],
+): Promise<(TitleMeta | null)[]> {
+  if (queries.length === 0) return [];
+  const results: (TitleMeta | null)[] = new Array(queries.length).fill(null);
+  const pending: { index: number; query: TitleMetaQuery }[] = [];
+  queries.forEach((query, index) => {
+    const cached = clientCacheGet(titleMetaClientCache, titleMetaClientKey(query));
+    if (cached !== undefined) {
+      results[index] = cached;
+    } else {
+      pending.push({ index, query });
+    }
+  });
+  for (let i = 0; i < pending.length; i += 24) {
+    const chunk = pending.slice(i, i + 24);
+    const res = await fetchWithTimeout(
+      "/api/discover/title-meta/batch",
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          queries: chunk.map((c) => serializeTitleMetaQuery(c.query)),
+        }),
+      },
+      25_000,
+      "Title metadata batch",
+    );
+    const data = (await parseJson(res)) as { results: (TitleMeta | null)[] };
+    chunk.forEach((item, idx) => {
+      const meta = data.results[idx] ?? null;
+      clientCacheSet(
+        titleMetaClientCache,
+        titleMetaClientKey(item.query),
+        meta,
+        TITLE_META_CLIENT_TTL_MS,
+      );
+      results[item.index] = meta;
+    });
+  }
+  return results;
+}
+
+function browserCatalogLanguage(): string {
+  try {
+    const raw =
+      (typeof navigator !== "undefined" &&
+        (navigator.languages?.[0] || navigator.language)) ||
+      "en";
+    const primary = String(raw).trim().toLowerCase().split(/[-_]/)[0];
+    if (primary && /^[a-z]{2,3}$/.test(primary)) return primary;
+  } catch {
+    /* ignore */
+  }
+  return "en";
+}
+
 export async function searchCatalog(
   q: string,
-  limit = 12,
-): Promise<CatalogSearchHit[]> {
+  opts?: {
+    page_size?: number;
+    /** @deprecated use page_size */
+    limit?: number;
+    cursor?: string | null;
+    sort?: CatalogSearchSort;
+    sort_dir?: CatalogSortDir;
+    field?: "author" | "narrator" | "series" | "genre";
+    lang?: string;
+    /** When true, do not hard-filter by language. */
+    allLanguages?: boolean;
+    filters?: CatalogSearchFilters;
+  },
+): Promise<CatalogSearchPage> {
   const trimmed = q.trim();
-  if (trimmed.length < 2) return [];
-  const sp = new URLSearchParams({ q: trimmed, limit: String(limit) });
-  const res = await fetch(`/api/discover/search?${sp}`, {
-    credentials: "include",
+  if (trimmed.length < 2) {
+    return {
+      items: [],
+      page_size: 0,
+      has_more: false,
+      next_cursor: null,
+      sort: opts?.sort ?? "relevance",
+      sort_dir: opts?.sort_dir ?? "desc",
+    };
+  }
+  const pageSize = opts?.page_size ?? opts?.limit ?? 24;
+  const sp = new URLSearchParams({
+    q: trimmed,
+    page_size: String(pageSize),
   });
+  if (opts?.cursor) sp.set("cursor", opts.cursor);
+  if (opts?.sort) sp.set("sort", opts.sort);
+  if (opts?.sort_dir) sp.set("sort_dir", opts.sort_dir);
+  if (opts?.field) sp.set("field", opts.field);
+  sp.set("lang", opts?.lang?.trim() || browserCatalogLanguage());
+  if (opts?.allLanguages) sp.set("all_languages", "true");
+  const f = opts?.filters;
+  if (f?.authors?.length) sp.set("author", f.authors.join(","));
+  if (f?.narrators?.length) sp.set("narrator", f.narrators.join(","));
+  if (f?.series?.length) sp.set("series", f.series.join(","));
+  if (f?.genres?.length) sp.set("genre", f.genres.join(","));
+  if (f?.sources?.length) sp.set("source", f.sources.join(","));
+  if (f?.exclude_sources?.length) {
+    sp.set("exclude_source", f.exclude_sources.join(","));
+  }
+  if (f?.languages?.length) sp.set("language", f.languages.join(","));
+  if (f?.exclude_narrators?.length) {
+    sp.set("exclude_narrator", f.exclude_narrators.join(","));
+  }
+  if (f?.min_rating != null && f.min_rating > 0) {
+    sp.set("min_rating", String(f.min_rating));
+  }
+  if (f?.min_length_minutes != null && f.min_length_minutes > 0) {
+    sp.set("min_length_minutes", String(f.min_length_minutes));
+  }
+  if (f?.max_length_minutes != null && f.max_length_minutes > 0) {
+    sp.set("max_length_minutes", String(f.max_length_minutes));
+  }
+  const res = await fetchWithTimeout(
+    `/api/discover/search?${sp}`,
+    { credentials: "include" },
+    14_000,
+    "Catalog search",
+  );
   return parseJson(res);
 }
 
 export async function fetchWishlist(): Promise<TitleRequest[]> {
-  const res = await fetch("/api/wishlist", { credentials: "include" });
+  const res = await fetchWithTimeout(
+    "/api/wishlist",
+    { credentials: "include" },
+    8_000,
+    "Wishlist",
+  );
   return parseJson(res);
 }
 
@@ -721,6 +1256,18 @@ export async function createWishlistItem(body: {
   notes?: string;
   work_key?: string;
   store_editions?: StoreEdition[];
+  purchase_hints?: PurchaseHint[];
+  cover_url?: string | null;
+  description?: string | null;
+  subtitle?: string | null;
+  narrators?: string | null;
+  series?: string | null;
+  series_index?: string | null;
+  publisher?: string | null;
+  length_minutes?: number | null;
+  published_at?: string | null;
+  genres?: string | null;
+  language?: string | null;
 }): Promise<TitleRequest> {
   const res = await fetch("/api/wishlist", {
     method: "POST",

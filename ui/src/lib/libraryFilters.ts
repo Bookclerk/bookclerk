@@ -165,6 +165,31 @@ export function bookMatchesFilter(
   }
 }
 
+/** Parse a series position like `3`, `#3`, `3.5`, or `Book 3` for numeric sort. */
+export function parseSeriesIndex(raw: string | null | undefined): number | null {
+  if (!raw?.trim()) return null;
+  const m = raw.trim().match(/(\d+(?:\.\d+)?)/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Ascending series-number compare; missing indexes sort last. */
+export function compareSeriesIndex(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): number {
+  const na = parseSeriesIndex(a);
+  const nb = parseSeriesIndex(b);
+  if (na != null && nb != null && na !== nb) return na - nb;
+  if (na != null && nb == null) return -1;
+  if (na == null && nb != null) return 1;
+  return (a ?? "").localeCompare(b ?? "", undefined, {
+    sensitivity: "base",
+    numeric: true,
+  });
+}
+
 export function sortBooks(books: BookRecord[], sort: SortKey): BookRecord[] {
   const out = [...books];
   const cmp = (a: string, b: string) =>
@@ -178,7 +203,7 @@ export function sortBooks(books: BookRecord[], sort: SortKey): BookRecord[] {
       case "series":
         return (
           cmp(a.series ?? "\uffff", b.series ?? "\uffff") ||
-          cmp(a.series_index ?? "", b.series_index ?? "") ||
+          compareSeriesIndex(a.series_index, b.series_index) ||
           cmp(a.title, b.title)
         );
       case "purchased": {

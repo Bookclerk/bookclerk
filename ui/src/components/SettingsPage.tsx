@@ -1,21 +1,242 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { LogOut, RefreshCw } from "lucide-react";
-import { AppNav, type AppNavProps } from "@/components/AppNav";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import type { AppNavProps } from "@/components/AppNav";
+import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  fetchPreferences,
   fetchSettings,
   isApiError,
-  patchPreferences,
   patchSettings,
   type PluginSettingOption,
+  type PluginSettingsGroup,
   signOut,
   type AuthRole,
   type SettingsResponse,
-  type UserPreferences,
 } from "@/lib/api";
+import { googleFaviconUrl, storeFaviconUrl } from "@/lib/catalogTitle";
+import { cn, pageWidthClass } from "@/lib/utils";
+
+const KIND_LABELS: Record<string, string> = {
+  source: "Sources",
+  destination: "Destinations",
+  database: "Database",
+  integration: "Integrations",
+  other: "Other",
+};
+
+function kindLabel(kind: string): string {
+  const key = kind.trim().toLowerCase();
+  if (KIND_LABELS[key]) return KIND_LABELS[key];
+  if (!key) return "Other";
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+const DEFAULT_DAEMON_PORT = "8787";
+
+type ListenExposure = "localhost" | "all" | "custom";
+type ListenRow = { host: string; port: string };
+
+/** Split one `daemon.listen` entry (`127.0.0.1:8787` / `[::1]:8787`) into host + port. */
+function splitDaemonListen(listen: string): ListenRow {
+  const trimmed = listen.trim();
+  if (!trimmed) {
+    return { host: "127.0.0.1", port: DEFAULT_DAEMON_PORT };
+  }
+  const bracketed = trimmed.match(/^\[([^\]]+)\]:(\d+)$/);
+  if (bracketed) {
+    return { host: bracketed[1], port: bracketed[2] };
+  }
+  const idx = trimmed.lastIndexOf(":");
+  if (idx > 0) {
+    const host = trimmed.slice(0, idx);
+    const port = trimmed.slice(idx + 1);
+    if (/^\d+$/.test(port) && !host.includes(":")) {
+      return { host, port };
+    }
+  }
+  return { host: trimmed, port: DEFAULT_DAEMON_PORT };
+}
+
+/** Join host + port into a Rust `SocketAddr` string (IPv6 bracketed). */
+function joinDaemonListen(host: string, port: string): string {
+  const h = host.trim() || "127.0.0.1";
+  const p = port.trim() || DEFAULT_DAEMON_PORT;
+  const normalized =
+    h.toLowerCase() === "localhost" || h.toLowerCase() === "localhost."
+      ? "127.0.0.1"
+      : h.replace(/^\[|\]$/g, "");
+  if (normalized.includes(":")) {
+    return `[${normalized}]:${p}`;
+  }
+  return `${normalized}:${p}`;
+}
+
+function parseListenList(raw: string): ListenRow[] {
+  const parts = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (parts.length === 0) {
+    return [
+      { host: "127.0.0.1", port: DEFAULT_DAEMON_PORT },
+      { host: "::1", port: DEFAULT_DAEMON_PORT },
+    ];
+  }
+  return parts.map(splitDaemonListen);
+}
+
+function detectListenExposure(rows: ListenRow[]): ListenExposure {
+  if (rows.length === 2) {
+    const ports = new Set(rows.map((r) => r.port.trim()));
+    if (ports.size === 1) {
+      const hosts = new Set(rows.map((r) => r.host.trim()));
+      if (hosts.has("127.0.0.1") && hosts.has("::1")) return "localhost";
+      if (hosts.has("0.0.0.0") && hosts.has("::")) return "all";
+    }
+  }
+  return "custom";
+}
+
+function listenListFromExposure(exposure: Exclude<ListenExposure, "custom">, port: string): string {
+  const p = port.trim() || DEFAULT_DAEMON_PORT;
+  if (exposure === "localhost") {
+    return `${joinDaemonListen("127.0.0.1", p)},${joinDaemonListen("::1", p)}`;
+  }
+  return `${joinDaemonListen("0.0.0.0", p)},${joinDaemonListen("::", p)}`;
+}
+
+function joinListenRows(rows: ListenRow[]): string {
+  return rows
+    .filter((r) => r.host.trim())
+    .map((r) => joinDaemonListen(r.host, r.port))
+    .join(",");
+}
+
+function daemonPortError(port: string): string | null {
+  const trimmed = port.trim();
+  if (!trimmed) return "Port is required";
+  if (!/^\d+$/.test(trimmed)) return "Port must be a number";
+  const n = Number(trimmed);
+  if (n < 1 || n > 65535) return "Port must be between 1 and 65535";
+  return null;
+}
+
+function pluginRowKey(plugin: PluginSettingsGroup): string {
+  return `${plugin.kind}:${plugin.id}`;
+}
+
+/** Prefer the standard `*.enabled` knob; fall back to an "Enabled" label. */
+function findEnabledOption(plugin: PluginSettingsGroup): PluginSettingOption | null {
+  const byKey = plugin.settings.find((option) => option.key.endsWith(".enabled"));
+  if (byKey) return byKey;
+  return plugin.settings.find((option) => option.label.trim().toLowerCase() === "enabled") ?? null;
+}
+
+/** Extra domains when the API omits `logo` (stale daemon / missing outbound_urls). */
+const PLUGIN_FAVICON_DOMAINS: Record<string, string> = {
+  "database:d1": "cloudflare.com",
+  "database:postgres": "postgresql.org",
+};
+
+function resolvePluginLogo(plugin: PluginSettingsGroup): string | undefined {
+  if (plugin.logo?.trim()) return plugin.logo.trim();
+  if (plugin.kind === "source" || plugin.kind === "integration") {
+    const fromStore = storeFaviconUrl(plugin.id);
+    if (fromStore) return fromStore;
+  }
+  const domain = PLUGIN_FAVICON_DOMAINS[pluginRowKey(plugin)];
+  return domain ? googleFaviconUrl(domain) : undefined;
+}
+
+function PluginLogo({ plugin }: { plugin: PluginSettingsGroup }) {
+  const [failed, setFailed] = useState(false);
+  const src = resolvePluginLogo(plugin);
+  if (!src || failed) {
+    return (
+      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-fold text-[10px] font-semibold uppercase text-ink/70">
+        {plugin.id.slice(0, 2)}
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      className="h-7 w-7 shrink-0 rounded bg-white object-contain p-0.5"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function ToggleRow({
+  id,
+  label,
+  description,
+  checked,
+  onChange,
+  disabled,
+}: {
+  id: string;
+  label: string;
+  description?: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-3">
+      <div className="min-w-0 space-y-0.5">
+        <label htmlFor={id} className="text-sm font-medium text-ink">
+          {label}
+        </label>
+        {description ? <p className="text-xs text-ink/50">{description}</p> : null}
+      </div>
+      <input
+        id={id}
+        type="checkbox"
+        className="mt-1 h-4 w-4 shrink-0 accent-teal"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+    </div>
+  );
+}
+
+function FieldBlock({
+  label,
+  htmlFor,
+  hint,
+  error,
+  children,
+}: {
+  label: string;
+  htmlFor?: string;
+  hint?: string;
+  error?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label htmlFor={htmlFor} className="block text-sm font-medium text-ink">
+        {label}
+      </label>
+      {children}
+      {hint && !error ? <p className="text-xs text-ink/50">{hint}</p> : null}
+      {error ? (
+        <p className="text-xs text-brick" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+const selectClassName =
+  "w-full rounded-md border border-ink/15 bg-white/80 px-3 py-2 text-sm text-ink shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
 
 export function SettingsPage({
   onLogout,
@@ -28,25 +249,43 @@ export function SettingsPage({
   nav: AppNavProps;
   role?: AuthRole;
 }) {
-  const [preferences, setPreferences] = useState<UserPreferences | null>(null);
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [preferencesLoadError, setPreferencesLoadError] = useState<string | null>(null);
   const [operatorLoadError, setOperatorLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [daemonListen, setDaemonListen] = useState("");
+  const [listenExposure, setListenExposure] = useState<ListenExposure>("localhost");
+  const [daemonPort, setDaemonPort] = useState(DEFAULT_DAEMON_PORT);
+  const [advancedRows, setAdvancedRows] = useState<ListenRow[]>([
+    { host: "127.0.0.1", port: DEFAULT_DAEMON_PORT },
+    { host: "::1", port: DEFAULT_DAEMON_PORT },
+  ]);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [daemonAuthEnabled, setDaemonAuthEnabled] = useState(true);
   const [autoAcquire, setAutoAcquire] = useState(false);
   const [pluginValues, setPluginValues] = useState<Record<string, string>>({});
   const [pluginErrors, setPluginErrors] = useState<Record<string, string>>({});
-  const [preferencesBaseline, setPreferencesBaseline] = useState<UserPreferences | null>(null);
+  /** Plugins start collapsed; keys are `${kind}:${id}`. */
+  const [expandedPlugins, setExpandedPlugins] = useState<Set<string>>(() => new Set());
   const [operatorBaseline, setOperatorBaseline] = useState<{
     daemonListen: string;
     daemonAuthEnabled: boolean;
     autoAcquire: boolean;
     pluginValues: Record<string, string>;
   } | null>(null);
+
+  const daemonListen =
+    listenExposure === "custom"
+      ? joinListenRows(advancedRows)
+      : listenListFromExposure(listenExposure, daemonPort);
+  const daemonListenError =
+    listenExposure === "custom"
+      ? advancedRows.some((r) => r.host.trim() && daemonPortError(r.port))
+        ? "Each bind needs a valid port (1–65535)."
+        : advancedRows.every((r) => !r.host.trim())
+          ? "Add at least one listen address."
+          : null
+      : daemonPortError(daemonPort);
 
   function buildPluginValues(nextSettings: SettingsResponse): Record<string, string> {
     const out: Record<string, string> = {};
@@ -72,17 +311,6 @@ export function SettingsPage({
     }
   }
 
-  function validatePluginValue(): string | null {
-    return null;
-  }
-
-  function normalizePreferences(preferences: UserPreferences): UserPreferences {
-    return {
-      default_view: preferences.default_view,
-      disabled_shelves: preferences.disabled_shelves.map((item) => item.trim()).filter(Boolean),
-    };
-  }
-
   function parseBooleanLike(value: string): boolean {
     const normalized = value.trim().toLowerCase();
     return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
@@ -106,13 +334,33 @@ export function SettingsPage({
       }
       return null;
     }
-    return validatePluginValue();
+    return null;
   }
 
-  const operatorHasValidationErrors = Object.keys(pluginErrors).length > 0;
+  function setPluginValue(option: PluginSettingOption, nextValue: string) {
+    const settingKey = option.key;
+    setPluginValues((current) => ({
+      ...current,
+      [settingKey]: nextValue,
+    }));
+    const validation = pluginValidationForOption(nextValue, option);
+    setPluginErrors((current) => {
+      if (!validation) {
+        const { [settingKey]: _removed, ...rest } = current;
+        return rest;
+      }
+      return {
+        ...current,
+        [settingKey]: validation,
+      };
+    });
+  }
+
+  const operatorHasValidationErrors =
+    Object.keys(pluginErrors).length > 0 || daemonListenError !== null;
 
   const pluginsByKind = useMemo(() => {
-    const buckets = new Map<string, SettingsResponse["plugins"]>();
+    const buckets = new Map<string, PluginSettingsGroup[]>();
     if (!settings) {
       return buckets;
     }
@@ -124,21 +372,6 @@ export function SettingsPage({
     }
     return buckets;
   }, [settings]);
-
-  const preferencesDirty = useMemo(() => {
-    if (!preferences || !preferencesBaseline) {
-      return false;
-    }
-    const current = normalizePreferences(preferences);
-    const baseline = normalizePreferences(preferencesBaseline);
-    if (current.default_view !== baseline.default_view) {
-      return true;
-    }
-    if (current.disabled_shelves.length !== baseline.disabled_shelves.length) {
-      return true;
-    }
-    return current.disabled_shelves.some((item, index) => item !== baseline.disabled_shelves[index]);
-  }, [preferences, preferencesBaseline]);
 
   const operatorDirty = useMemo(() => {
     if (!operatorBaseline) {
@@ -163,73 +396,52 @@ export function SettingsPage({
 
   async function refresh() {
     setError(null);
-    setPreferencesLoadError(null);
     setOperatorLoadError(null);
     setLoading(true);
     try {
-      if (role === "operator") {
-        const [prefsResult, settingsResult] = await Promise.allSettled([
-          withRequestTimeout(fetchPreferences(), "Preferences request"),
-          withRequestTimeout(fetchSettings(), "Operator settings request"),
-        ]);
-
-        const sessionExpired = [prefsResult, settingsResult].some((result) =>
-          result.status === "rejected" && isApiError(result.reason) && result.reason.status === 401,
-        );
-        if (sessionExpired) {
-          onSessionExpired();
-          return;
-        }
-
-        if (prefsResult.status === "fulfilled") {
-          setPreferences(prefsResult.value);
-          setPreferencesBaseline(normalizePreferences(prefsResult.value));
-        } else {
-          setPreferences(null);
-          setPreferencesLoadError(
-            prefsResult.reason instanceof Error
-              ? prefsResult.reason.message
-              : "Failed to load preferences",
-          );
-        }
-
-        if (settingsResult.status === "fulfilled") {
-          const nextSettings = settingsResult.value;
-          const nextPluginValues = buildPluginValues(nextSettings);
-          setSettings(nextSettings);
-          setDaemonListen(nextSettings.settings["daemon.listen"] ?? "");
-          setDaemonAuthEnabled(nextSettings.settings["daemon.auth.enabled"] === "true");
-          setAutoAcquire(nextSettings.settings["library.auto_acquire"] === "true");
-          setPluginValues(nextPluginValues);
-          setPluginErrors({});
-          setOperatorBaseline({
-            daemonListen: nextSettings.settings["daemon.listen"] ?? "",
-            daemonAuthEnabled: nextSettings.settings["daemon.auth.enabled"] === "true",
-            autoAcquire: nextSettings.settings["library.auto_acquire"] === "true",
-            pluginValues: nextPluginValues,
-          });
-        } else {
-          setSettings(null);
-          setOperatorLoadError(
-            settingsResult.reason instanceof Error
-              ? settingsResult.reason.message
-              : "Failed to load operator settings",
-          );
-        }
-      } else {
-        const prefs = await withRequestTimeout(fetchPreferences(), "Preferences request");
-        setPreferences(prefs);
-        setPreferencesBaseline(normalizePreferences(prefs));
+      if (role !== "operator") {
         setSettings(null);
         setPluginValues({});
         setPluginErrors({});
         setOperatorBaseline(null);
+        return;
       }
+
+      const nextSettings = await withRequestTimeout(
+        fetchSettings(),
+        "Operator settings request",
+      );
+      const nextPluginValues = buildPluginValues(nextSettings);
+      setSettings(nextSettings);
+      const listen = nextSettings.settings["daemon.listen"] ?? "";
+      const rows = parseListenList(listen);
+      const exposure = detectListenExposure(rows);
+      setListenExposure(exposure);
+      setDaemonPort(rows[0]?.port ?? DEFAULT_DAEMON_PORT);
+      setAdvancedRows(rows);
+      setAdvancedOpen(exposure === "custom");
+      setDaemonAuthEnabled(nextSettings.settings["daemon.auth.enabled"] === "true");
+      setAutoAcquire(nextSettings.settings["library.auto_acquire"] === "true");
+      setPluginValues(nextPluginValues);
+      setPluginErrors({});
+      setOperatorBaseline({
+        daemonListen:
+          exposure === "custom"
+            ? joinListenRows(rows)
+            : listenListFromExposure(exposure, rows[0]?.port ?? DEFAULT_DAEMON_PORT),
+        daemonAuthEnabled: nextSettings.settings["daemon.auth.enabled"] === "true",
+        autoAcquire: nextSettings.settings["library.auto_acquire"] === "true",
+        pluginValues: nextPluginValues,
+      });
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         onSessionExpired();
         return;
       }
+      setSettings(null);
+      setOperatorLoadError(
+        err instanceof Error ? err.message : "Failed to load operator settings",
+      );
       setError(
         err instanceof Error
           ? err.message
@@ -244,30 +456,6 @@ export function SettingsPage({
     void refresh();
   }, []);
 
-  async function onPreferencesSave(e: FormEvent) {
-    e.preventDefault();
-    if (!preferences || !preferencesDirty) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const payload = normalizePreferences(preferences);
-      const next = await withRequestTimeout(patchPreferences({
-        default_view: payload.default_view,
-        disabled_shelves: payload.disabled_shelves,
-      }), "Save preferences");
-      setPreferences(next);
-      setPreferencesBaseline(normalizePreferences(next));
-    } catch (err) {
-      if (isApiError(err) && err.status === 401) {
-        onSessionExpired();
-        return;
-      }
-      setError(err instanceof Error ? err.message : "Failed to save preferences");
-    } finally {
-      setSaving(false);
-    }
-  }
-
   async function onOperatorSave(e: FormEvent) {
     e.preventDefault();
     if (!operatorDirty || operatorHasValidationErrors) {
@@ -277,9 +465,10 @@ export function SettingsPage({
     setError(null);
     try {
       const pluginUpdates = Object.entries(pluginValues).map(([key, value]) => ({ key, value }));
+      const nextListen = daemonListen;
       const next = await withRequestTimeout(patchSettings({
         settings: [
-          { key: "daemon.listen", value: daemonListen },
+          { key: "daemon.listen", value: nextListen },
           { key: "daemon.auth.enabled", value: String(daemonAuthEnabled) },
           { key: "library.auto_acquire", value: String(autoAcquire) },
           ...pluginUpdates,
@@ -287,10 +476,20 @@ export function SettingsPage({
       }), "Save operator settings");
       const nextPluginValues = buildPluginValues(next);
       setSettings(next);
+      const savedListen = next.settings["daemon.listen"] ?? nextListen;
+      const rows = parseListenList(savedListen);
+      const exposure = detectListenExposure(rows);
+      setListenExposure(exposure);
+      setDaemonPort(rows[0]?.port ?? DEFAULT_DAEMON_PORT);
+      setAdvancedRows(rows);
+      setAdvancedOpen(exposure === "custom");
       setPluginValues(nextPluginValues);
       setPluginErrors({});
       setOperatorBaseline({
-        daemonListen: next.settings["daemon.listen"] ?? daemonListen,
+        daemonListen:
+          exposure === "custom"
+            ? joinListenRows(rows)
+            : listenListFromExposure(exposure, rows[0]?.port ?? DEFAULT_DAEMON_PORT),
         daemonAuthEnabled: next.settings["daemon.auth.enabled"] === "true",
         autoAcquire: next.settings["library.auto_acquire"] === "true",
         pluginValues: nextPluginValues,
@@ -311,37 +510,89 @@ export function SettingsPage({
     onLogout();
   }
 
+  function renderPluginOption(plugin: PluginSettingsGroup, option: PluginSettingOption) {
+    const fieldId = `${plugin.kind}-${plugin.id}-${option.key}`;
+    const value = pluginValues[option.key] ?? option.value;
+    const error = pluginErrors[option.key];
+
+    if (option.value_type === "boolean") {
+      return (
+        <ToggleRow
+          key={fieldId}
+          id={fieldId}
+          label={option.label}
+          checked={parseBooleanLike(value)}
+          onChange={(checked) => setPluginValue(option, String(checked))}
+        />
+      );
+    }
+
+    if (option.choices?.length) {
+      return (
+        <FieldBlock key={fieldId} label={option.label} htmlFor={fieldId} error={error}>
+          <select
+            id={fieldId}
+            value={value}
+            onChange={(e) => setPluginValue(option, e.target.value)}
+            className={selectClassName}
+          >
+            {option.choices.map((choice) => (
+              <option key={`${option.key}-${choice.value}`} value={choice.value}>
+                {choice.label}
+              </option>
+            ))}
+          </select>
+        </FieldBlock>
+      );
+    }
+
+    return (
+      <FieldBlock key={fieldId} label={option.label} htmlFor={fieldId} error={error}>
+        <Input
+          id={fieldId}
+          type={option.value_type === "number" ? "number" : "text"}
+          value={value}
+          onChange={(e) => setPluginValue(option, e.target.value)}
+        />
+      </FieldBlock>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col">
       <header className="sticky top-0 z-10 border-b border-ink/10 bg-paper/85 px-3 py-3 backdrop-blur-md sm:px-5">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
-          <div className="flex items-center gap-3 sm:gap-5">
-            <img src="/bookclerk-logo.svg" alt="Bookclerk" className="h-8 w-auto sm:h-9" />
-            <AppNav {...nav} />
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={() => void refresh()} disabled={loading || saving}>
-              <RefreshCw className="h-4 w-4" />
-              Refresh
-            </Button>
-            <Button variant="ghost" onClick={() => void onSignOut()} aria-label="Sign out">
-              <LogOut className="h-4 w-4" />
-            </Button>
-          </div>
+        <div className={pageWidthClass}>
+          <AppTopBar
+            nav={nav}
+            onSignOut={onSignOut}
+            actions={
+              role === "operator" ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => void refresh()}
+                  disabled={loading || saving}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Refresh
+                </Button>
+              ) : undefined
+            }
+          />
         </div>
       </header>
 
-      <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-8 overflow-auto px-4 py-6">
+      <div className="min-h-0 flex-1 overflow-auto">
+      <main className={cn("flex w-full flex-col gap-8 px-4 py-6 sm:px-5", pageWidthClass)}>
         <div className="space-y-1">
           <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">Settings</h1>
           <p className="text-sm text-ink/60">
             {role === "operator"
-              ? "Manage your preferences and operator configuration."
-              : "Manage your preferences."}
+              ? "Daemon, library, and plugin knobs for this Bookclerk host."
+              : "User preferences are under Preferences in the header menu."}
           </p>
         </div>
 
-        {error ? (
+        {error && role !== "operator" ? (
           <ErrorStatePage
             title="Settings request failed"
             message={error}
@@ -349,205 +600,384 @@ export function SettingsPage({
           />
         ) : null}
 
-        <section className="space-y-3 rounded-lg border border-ink/10 bg-white/40 p-4">
-          <h2 className="text-lg font-semibold text-ink">Preferences</h2>
-          {loading ? (
-            <p className="text-sm text-ink/50">Loading preferences...</p>
-          ) : preferences ? (
-            <form className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => void onPreferencesSave(e)}>
-              <label className="space-y-1 text-sm text-ink/70">
-                <span>Default view</span>
-                <select
-                  className="w-full rounded-md border border-ink/10 bg-paper px-3 py-2"
-                  value={preferences.default_view}
-                  onChange={(e) =>
-                    setPreferences((current) => current ? { ...current, default_view: e.target.value as UserPreferences["default_view"] } : current)
-                  }
-                >
-                  <option value="discover">Discover</option>
-                  <option value="library">Library</option>
-                  <option value="wishlist">Wishlist</option>
-                  <option value="accounts">Accounts</option>
-                </select>
-              </label>
-              <label className="space-y-1 text-sm text-ink/70">
-                <span>Disabled shelves</span>
-                <Input
-                  value={preferences.disabled_shelves.join(",")}
-                  onChange={(e) =>
-                    setPreferences((current) => current ? { ...current, disabled_shelves: e.target.value.split(",").map((item) => item.trim()).filter(Boolean) } : current)
-                  }
-                  placeholder="shelf-a,shelf-b"
-                />
-              </label>
-              <div className="sm:col-span-2">
-                <Button type="submit" disabled={saving || !preferencesDirty}>
-                  Save preferences
-                </Button>
-                {!preferencesDirty ? (
-                  <p className="mt-1 text-xs text-ink/50">No unsaved preference changes.</p>
-                ) : null}
-              </div>
+        {role === "operator" ? (
+          loading ? (
+            <p className="text-sm text-ink/50">Loading operator settings…</p>
+          ) : settings ? (
+            <form
+              id="operator-settings-form"
+              className="flex flex-col gap-10"
+              onSubmit={(e) => void onOperatorSave(e)}
+            >
+              {error ? (
+                <p className="text-sm font-medium text-brick" role="alert">
+                  {error}
+                </p>
+              ) : null}
+
+              <section className="space-y-3">
+                <div className="space-y-1">
+                  <h2 className="text-lg font-semibold text-ink">Daemon</h2>
+                  <p className="text-sm text-ink/55">
+                    How bookclerkd listens and whether operator auth is required.
+                  </p>
+                </div>
+                <div className="divide-y divide-ink/10 bg-white/35 px-3">
+                  <div className="space-y-4 py-3">
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-ink">Listen on</p>
+                      <div className="flex flex-wrap gap-2">
+                        {(
+                          [
+                            ["localhost", "Localhost"],
+                            ["all", "All interfaces"],
+                          ] as const
+                        ).map(([id, label]) => (
+                          <Button
+                            key={id}
+                            type="button"
+                            variant={listenExposure === id ? "secondary" : "ghost"}
+                            className="px-3 py-1.5 text-sm"
+                            onClick={() => {
+                              setListenExposure(id);
+                              setAdvancedOpen(false);
+                              const p = daemonPort.trim() || DEFAULT_DAEMON_PORT;
+                              setAdvancedRows(
+                                id === "localhost"
+                                  ? [
+                                      { host: "127.0.0.1", port: p },
+                                      { host: "::1", port: p },
+                                    ]
+                                  : [
+                                      { host: "0.0.0.0", port: p },
+                                      { host: "::", port: p },
+                                    ],
+                              );
+                            }}
+                          >
+                            {label}
+                          </Button>
+                        ))}
+                        {listenExposure === "custom" ? (
+                          <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">
+                            Custom
+                          </Badge>
+                        ) : null}
+                      </div>
+                      <p className="text-xs text-ink/50">
+                        Localhost binds both 127.0.0.1 and ::1. All interfaces binds 0.0.0.0 and ::.
+                        The tray opens {"http://localhost:<port>"}.
+                      </p>
+                    </div>
+
+                    {listenExposure !== "custom" ? (
+                      <FieldBlock
+                        label="Port"
+                        htmlFor="daemon-port"
+                        error={daemonListenError ?? undefined}
+                      >
+                        <Input
+                          id="daemon-port"
+                          className="max-w-[8rem]"
+                          inputMode="numeric"
+                          value={daemonPort}
+                          onChange={(e) => {
+                            const p = e.target.value;
+                            setDaemonPort(p);
+                            setAdvancedRows((rows) =>
+                              rows.map((r) => ({ ...r, port: p || DEFAULT_DAEMON_PORT })),
+                            );
+                          }}
+                          placeholder={DEFAULT_DAEMON_PORT}
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      </FieldBlock>
+                    ) : null}
+
+                    <details
+                      className="rounded-md border border-ink/10 bg-paper/40"
+                      open={advancedOpen}
+                      onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}
+                    >
+                      <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-ink">
+                        Advanced bind addresses
+                      </summary>
+                      <div className="space-y-3 border-t border-ink/10 px-3 py-3">
+                        <p className="text-xs text-ink/50">
+                          Bind each address separately. Editing here switches to a custom listen list.
+                        </p>
+                        {advancedRows.map((row, index) => (
+                          <div
+                            key={`listen-row-${index}`}
+                            className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_7rem_auto]"
+                          >
+                            <Input
+                              aria-label={`Listen address ${index + 1}`}
+                              value={row.host}
+                              onChange={(e) => {
+                                const host = e.target.value;
+                                setListenExposure("custom");
+                                setAdvancedRows((rows) =>
+                                  rows.map((r, i) => (i === index ? { ...r, host } : r)),
+                                );
+                              }}
+                              placeholder="127.0.0.1"
+                              autoComplete="off"
+                              spellCheck={false}
+                            />
+                            <Input
+                              aria-label={`Listen port ${index + 1}`}
+                              inputMode="numeric"
+                              value={row.port}
+                              onChange={(e) => {
+                                const port = e.target.value;
+                                setListenExposure("custom");
+                                setAdvancedRows((rows) =>
+                                  rows.map((r, i) => (i === index ? { ...r, port } : r)),
+                                );
+                              }}
+                              placeholder={DEFAULT_DAEMON_PORT}
+                              autoComplete="off"
+                              spellCheck={false}
+                            />
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              className="px-2"
+                              disabled={advancedRows.length <= 1}
+                              onClick={() => {
+                                setListenExposure("custom");
+                                setAdvancedRows((rows) => rows.filter((_, i) => i !== index));
+                              }}
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        ))}
+                        {daemonListenError && listenExposure === "custom" ? (
+                          <p className="text-xs text-brick" role="alert">
+                            {daemonListenError}
+                          </p>
+                        ) : null}
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="text-sm"
+                          onClick={() => {
+                            setListenExposure("custom");
+                            setAdvancedRows((rows) => [
+                              ...rows,
+                              {
+                                host: "",
+                                port: rows[0]?.port || DEFAULT_DAEMON_PORT,
+                              },
+                            ]);
+                          }}
+                        >
+                          Add address
+                        </Button>
+                      </div>
+                    </details>
+
+                    <p className="text-xs text-ink/45">
+                      Saves as <span className="font-mono text-ink/60">{daemonListen}</span>
+                    </p>
+                  </div>
+                  <ToggleRow
+                    id="daemon-auth"
+                    label="Require operator auth"
+                    description="When off, the control plane accepts unauthenticated requests."
+                    checked={daemonAuthEnabled}
+                    onChange={setDaemonAuthEnabled}
+                  />
+                </div>
+              </section>
+
+              <section className="space-y-3">
+                <div className="space-y-1">
+                  <h2 className="text-lg font-semibold text-ink">Library</h2>
+                  <p className="text-sm text-ink/55">
+                    Behavior for scheduled scans and pending titles.
+                  </p>
+                </div>
+                <div className="divide-y divide-ink/10 bg-white/35 px-3">
+                  <ToggleRow
+                    id="auto-acquire"
+                    label="Auto acquire"
+                    description="Acquire pending titles after scans without a manual trigger."
+                    checked={autoAcquire}
+                    onChange={setAutoAcquire}
+                  />
+                </div>
+              </section>
+
+              <section className="space-y-5">
+                <div className="space-y-1">
+                  <h2 className="text-lg font-semibold text-ink">Plugins</h2>
+                  <p className="text-sm text-ink/55">
+                    Editable knobs exposed by loaded plugins. Empty groups have nothing to configure here.
+                  </p>
+                </div>
+
+                {pluginsByKind.size === 0 ? (
+                  <p className="text-sm text-ink/50">No plugins discovered.</p>
+                ) : (
+                  Array.from(pluginsByKind.entries()).map(([kind, plugins]) => (
+                    <div key={kind} className="space-y-2">
+                      <h3 className="text-sm font-semibold text-ink/70">{kindLabel(kind)}</h3>
+                      <ul className="divide-y divide-ink/10 bg-white/35">
+                        {plugins.map((plugin) => {
+                          const rowKey = pluginRowKey(plugin);
+                          const expanded = expandedPlugins.has(rowKey);
+                          const enabledOption = findEnabledOption(plugin);
+                          const enabled = enabledOption
+                            ? parseBooleanLike(
+                                pluginValues[enabledOption.key] ?? enabledOption.value,
+                              )
+                            : null;
+                          const detailSettings = plugin.settings.filter(
+                            (option) => option.key !== enabledOption?.key,
+                          );
+                          const canExpand =
+                            detailSettings.length > 0 || plugin.settings.length === 0;
+
+                          return (
+                            <li key={rowKey} className="px-3 py-2.5">
+                              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                                <button
+                                  type="button"
+                                  className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left hover:bg-ink/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
+                                  aria-expanded={expanded}
+                                  aria-controls={`plugin-settings-${rowKey}`}
+                                  disabled={!canExpand}
+                                  onClick={() => {
+                                    setExpandedPlugins((current) => {
+                                      const next = new Set(current);
+                                      if (next.has(rowKey)) next.delete(rowKey);
+                                      else next.add(rowKey);
+                                      return next;
+                                    });
+                                  }}
+                                >
+                                  {canExpand ? (
+                                    expanded ? (
+                                      <ChevronDown className="h-4 w-4 shrink-0 text-ink/45" />
+                                    ) : (
+                                      <ChevronRight className="h-4 w-4 shrink-0 text-ink/45" />
+                                    )
+                                  ) : (
+                                    <span className="inline-block h-4 w-4 shrink-0" />
+                                  )}
+                                  <PluginLogo plugin={plugin} />
+                                  <span className="truncate font-medium text-ink">{plugin.id}</span>
+                                  <span className="hidden text-xs text-ink/45 sm:inline">
+                                    {plugin.kind}
+                                  </span>
+                                </button>
+
+                                {enabled !== null && enabledOption ? (
+                                  <div className="ml-auto flex items-center gap-2">
+                                    <Badge
+                                      className={
+                                        enabled
+                                          ? "bg-teal/15 text-ink normal-case tracking-normal"
+                                          : "bg-ink/5 text-ink/55 normal-case tracking-normal"
+                                      }
+                                    >
+                                      {enabled ? "Enabled" : "Disabled"}
+                                    </Badge>
+                                    <input
+                                      id={`plugin-enabled-${rowKey}`}
+                                      type="checkbox"
+                                      className="h-4 w-4 accent-teal"
+                                      aria-label={`${plugin.id} enabled`}
+                                      checked={enabled}
+                                      onChange={(e) =>
+                                        setPluginValue(enabledOption, String(e.target.checked))
+                                      }
+                                      onClick={(e) => e.stopPropagation()}
+                                    />
+                                  </div>
+                                ) : (
+                                  <span className="ml-auto text-xs text-ink/45">{plugin.kind}</span>
+                                )}
+                              </div>
+
+                              {expanded ? (
+                                <div
+                                  id={`plugin-settings-${rowKey}`}
+                                  className="mt-3 border-t border-ink/10 pt-3"
+                                >
+                                  {detailSettings.length === 0 ? (
+                                    <p className="text-xs text-ink/50">
+                                      {plugin.settings.length === 0
+                                        ? "No editable settings exposed for this plugin."
+                                        : "No additional settings beyond Enabled."}
+                                    </p>
+                                  ) : (
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                      {detailSettings.map((option) => {
+                                        const control = renderPluginOption(plugin, option);
+                                        if (option.value_type === "boolean") {
+                                          return (
+                                            <div
+                                              key={`${plugin.kind}-${plugin.id}-${option.key}`}
+                                              className="border-t border-ink/10 sm:col-span-2"
+                                            >
+                                              {control}
+                                            </div>
+                                          );
+                                        }
+                                        return control;
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : null}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  ))
+                )}
+              </section>
             </form>
           ) : (
             <ErrorStatePage
-              title="Preferences unavailable"
-              message={preferencesLoadError ?? "Preferences could not be loaded. Verify bookclerkd is running, then try Refresh."}
+              title="Operator settings unavailable"
+              message={
+                operatorLoadError ??
+                "Operator settings could not be loaded. Check your operator session, verify bookclerkd is running, then try Refresh."
+              }
               onRetry={() => void refresh()}
             />
-          )}
-        </section>
-
-        {role === "operator" ? (
-          <section className="space-y-3 rounded-lg border border-ink/10 bg-white/40 p-4">
-            <h2 className="text-lg font-semibold text-ink">Operator configuration</h2>
-            {loading ? (
-              <p className="text-sm text-ink/50">Loading operator settings...</p>
-            ) : settings ? (
-              <form className="grid gap-3" onSubmit={(e) => void onOperatorSave(e)}>
-                <label className="space-y-1 text-sm text-ink/70">
-                  <span>Daemon listen address</span>
-                  <Input value={daemonListen} onChange={(e) => setDaemonListen(e.target.value)} />
-                </label>
-                <label className="flex items-center gap-2 text-sm text-ink/70">
-                  <input
-                    type="checkbox"
-                    checked={daemonAuthEnabled}
-                    onChange={(e) => setDaemonAuthEnabled(e.target.checked)}
-                  />
-                  Enable daemon auth
-                </label>
-                <label className="flex items-center gap-2 text-sm text-ink/70">
-                  <input
-                    type="checkbox"
-                    checked={autoAcquire}
-                    onChange={(e) => setAutoAcquire(e.target.checked)}
-                  />
-                  Auto acquire
-                </label>
-                <div className="space-y-2">
-                  <p className="text-sm font-medium text-ink">Plugin settings</p>
-                  {Array.from(pluginsByKind.entries()).map(([kind, plugins]) => (
-                    <div key={kind} className="space-y-2">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-ink/60">{kind}</p>
-                      {plugins.map((plugin) => (
-                        <div key={`${plugin.kind}-${plugin.id}`} className="rounded-md border border-ink/10 bg-paper/50 p-3">
-                          <p className="text-sm font-semibold text-ink">{plugin.id}</p>
-                          {plugin.settings.length === 0 ? (
-                            <p className="mt-2 text-xs text-ink/50">No editable settings exposed for this plugin.</p>
-                          ) : null}
-                          {plugin.settings.map((option) => (
-                            <label key={`${plugin.kind}-${plugin.id}-${option.key}`} className="mt-2 flex flex-col gap-1 text-sm text-ink/70">
-                              <span>{option.label}</span>
-                              {option.value_type === "boolean" ? (
-                                <label className="flex items-center gap-2 text-sm text-ink/70">
-                                  <input
-                                    type="checkbox"
-                                    checked={parseBooleanLike(pluginValues[option.key] ?? option.value)}
-                                    onChange={(e) => {
-                                      const settingKey = option.key;
-                                      const nextValue = String(e.target.checked);
-                                      setPluginValues((current) => ({
-                                        ...current,
-                                        [settingKey]: nextValue,
-                                      }));
-                                      setPluginErrors((current) => {
-                                        const { [settingKey]: _removed, ...rest } = current;
-                                        return rest;
-                                      });
-                                    }}
-                                  />
-                                  Enabled
-                                </label>
-                              ) : option.choices?.length ? (
-                                <select
-                                  value={pluginValues[option.key] ?? option.value}
-                                  onChange={(e) => {
-                                    const settingKey = option.key;
-                                    const nextValue = e.target.value;
-                                    setPluginValues((current) => ({
-                                      ...current,
-                                      [settingKey]: nextValue,
-                                    }));
-                                    const validation = pluginValidationForOption(nextValue, option);
-                                    setPluginErrors((current) => {
-                                      if (!validation) {
-                                        const { [settingKey]: _removed, ...rest } = current;
-                                        return rest;
-                                      }
-                                      return {
-                                        ...current,
-                                        [settingKey]: validation,
-                                      };
-                                    });
-                                  }}
-                                  className="rounded-md border border-ink/15 bg-white/80 px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
-                                >
-                                  {option.choices.map((choice) => (
-                                    <option key={`${option.key}-${choice.value}`} value={choice.value}>
-                                      {choice.label}
-                                    </option>
-                                  ))}
-                                </select>
-                              ) : (
-                                <Input
-                                  type={option.value_type === "number" ? "number" : "text"}
-                                  value={pluginValues[option.key] ?? option.value}
-                                  onChange={(e) => {
-                                    const settingKey = option.key;
-                                    const nextValue = e.target.value;
-                                    setPluginValues((current) => ({
-                                      ...current,
-                                      [settingKey]: nextValue,
-                                    }));
-                                    const validation = pluginValidationForOption(nextValue, option);
-                                    setPluginErrors((current) => {
-                                      if (!validation) {
-                                        const { [settingKey]: _removed, ...rest } = current;
-                                        return rest;
-                                      }
-                                      return {
-                                        ...current,
-                                        [settingKey]: validation,
-                                      };
-                                    });
-                                  }}
-                                />
-                              )}
-                              {pluginErrors[option.key] ? (
-                                <span className="text-xs text-brick" role="alert">
-                                  {pluginErrors[option.key]}
-                                </span>
-                              ) : null}
-                            </label>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-                <div className="space-y-1">
-                  <Button type="submit" disabled={saving || !operatorDirty || operatorHasValidationErrors}>
-                    Save operator settings
-                  </Button>
-                  {!operatorDirty ? (
-                    <p className="text-xs text-ink/50">No unsaved operator changes.</p>
-                  ) : null}
-                  {operatorHasValidationErrors ? (
-                    <p className="text-xs text-brick">Fix plugin field errors before saving.</p>
-                  ) : null}
-                </div>
-              </form>
-            ) : (
-              <ErrorStatePage
-                title="Operator settings unavailable"
-                message={operatorLoadError ?? "Operator settings could not be loaded. Check your operator session, verify bookclerkd is running, then try Refresh."}
-                onRetry={() => void refresh()}
-              />
-            )}
-          </section>
+          )
         ) : null}
       </main>
+      </div>
+
+      {role === "operator" && settings && !loading ? (
+        <div className="shrink-0 border-t border-ink/10 bg-paper/90 px-4 py-3 backdrop-blur-md">
+          <div className={cn("flex flex-wrap items-center justify-between gap-3", pageWidthClass)}>
+            <p className={`text-xs ${operatorHasValidationErrors ? "text-brick" : "text-ink/50"}`}>
+              {operatorHasValidationErrors
+                ? "Fix plugin field errors before saving."
+                : operatorDirty
+                  ? "You have unsaved changes."
+                  : "No unsaved changes."}
+            </p>
+            <Button
+              type="submit"
+              form="operator-settings-form"
+              disabled={saving || !operatorDirty || operatorHasValidationErrors}
+            >
+              {saving ? "Saving…" : "Save settings"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

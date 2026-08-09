@@ -339,6 +339,17 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 Some(PathBuf::from(trimmed))
             };
         }
+        "daemon.listen" => match crate::ListenAddrs::parse_list(v) {
+            Ok(addrs) => config.daemon.listen = addrs,
+            Err(err) => {
+                tracing::warn!(key, value = v, error = %err, "invalid daemon.listen; ignoring")
+            }
+        },
+        "daemon.auth.enabled" => {
+            if let Some(b) = parse_bool(v) {
+                config.daemon.auth.enabled = b;
+            }
+        }
         "library.auto_acquire" => config.library.auto_acquire = parse_bool(v).unwrap_or(false),
         "library.import_episodes" => {
             config.library.import_episodes = parse_bool(v).unwrap_or(true);
@@ -470,6 +481,20 @@ mod tests {
         let mut cfg = Config::default();
         apply_setting_overrides(&mut cfg, &[("output.widevine", "true")]);
         assert!(cfg.output.widevine);
+    }
+
+    #[test]
+    fn dotted_override_sets_daemon_listen_and_auth() {
+        let mut cfg = Config::default();
+        apply_setting_overrides(
+            &mut cfg,
+            &[
+                ("daemon.listen", "[::1]:8787"),
+                ("daemon.auth.enabled", "false"),
+            ],
+        );
+        assert_eq!(cfg.daemon.listen.as_slice(), ["[::1]:8787"]);
+        assert!(!cfg.daemon.auth.enabled);
     }
 
     #[test]

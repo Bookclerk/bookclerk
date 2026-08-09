@@ -169,8 +169,10 @@ pub enum AudioQuality {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DaemonConfig {
-    /// Bind address for the HTTP control plane.
-    pub listen: String,
+    /// Bind addresses for the HTTP control plane (string or array in TOML).
+    ///
+    /// Default binds both IPv4 and IPv6 loopback on port 8787.
+    pub listen: crate::ListenAddrs,
     /// Emit JSON logs on stderr when true (journald sink is always structured).
     pub json_logs: bool,
     /// When true, `bookclerkd` starts an in-process system tray in a graphical
@@ -186,7 +188,7 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            listen: String::from("127.0.0.1:8787"),
+            listen: crate::ListenAddrs::default(),
             json_logs: true,
             tray: true,
             auth: DaemonAuthConfig::default(),
@@ -446,7 +448,14 @@ impl Config {
         self.media.apply_env_overrides();
         self.plugins.apply_env_overrides();
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_LISTEN") {
-            self.daemon.listen = v;
+            match crate::ListenAddrs::parse_list(&v) {
+                Ok(addrs) => self.daemon.listen = addrs,
+                Err(err) => tracing::warn!(
+                    value = %v,
+                    error = %err,
+                    "ignoring invalid BOOKCLERK_DAEMON_LISTEN"
+                ),
+            }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_JSON_LOGS") {
             self.daemon.json_logs = parse_bool(&v).unwrap_or(self.daemon.json_logs);
@@ -1043,7 +1052,7 @@ json_logs = true
         assert_eq!(cfg.library.scan_interval_minutes, 30);
         assert_eq!(cfg.output.enabled_backend_names(), vec!["local"]);
         assert_eq!(cfg.output.local.root, PathBuf::from("/data/audiobooks"));
-        assert_eq!(cfg.daemon.listen, "0.0.0.0:8787");
+        assert_eq!(cfg.daemon.listen.as_slice(), ["0.0.0.0:8787"]);
         assert!(!cfg.diagnostics.share_reports);
     }
 

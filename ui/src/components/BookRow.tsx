@@ -34,15 +34,15 @@ export function BookRow({
   const meta = [book.authors, book.narrators ? `narr. ${book.narrators}` : null]
     .filter(Boolean)
     .join(" · ");
-  const series =
-    book.series &&
-    `${book.series}${book.series_index ? ` #${book.series_index}` : ""}`;
+  const series = book.series
+    ? `${book.series}${book.series_index ? ` #${book.series_index}` : ""}`
+    : null;
 
   return (
     <div className="group grid grid-cols-[56px_1fr_auto] items-center gap-3 border-b border-ink/10 px-3 py-2.5 transition-colors hover:bg-white/50 sm:grid-cols-[64px_1fr_auto] sm:gap-4 sm:px-4">
       <button
         type="button"
-        className="relative h-14 w-14 overflow-hidden rounded-sm bg-fold shadow-sm sm:h-16 sm:w-16"
+        className="relative h-14 w-14 overflow-hidden rounded-md bg-fold shadow-sm sm:h-16 sm:w-16"
         onClick={() => onOpen?.(book)}
         aria-label={`Open details for ${book.title}`}
       >

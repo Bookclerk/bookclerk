@@ -522,30 +522,75 @@ pub fn unseal_with_dek(ciphertext: &[u8], nonce: &[u8], dek: &MasterKey) -> Resu
         })
 }
 
-/// Serialize tests that mutate the process-wide DEK / auth-password env.
+/// Process-wide DEK coordination for unit tests.
 ///
-/// `configure_master_key*` installs a global DEK used by sealed-v1 unseal; parallel
-/// tests that mint distinct keys otherwise race and fail with "wrong master key".
-/// Hold this guard for the full arrange/act/assert window.
+/// Sealed-v1 helpers share one minted DEK ([`ensure_shared_test_dek`]) under a
+/// **read** lock so they stay parallel. Tests that swap `master.key`, mutate
+/// [`AUTH_PASSWORD_ENV`], or otherwise reconfigure the process DEK take a
+/// **write** lock (and restore the shared DEK on drop).
 ///
-/// Uses `tokio::sync::Mutex` so async tests can keep the guard across `.await`
-/// without tripping `clippy::await_holding_lock` (std `MutexGuard` is banned).
+/// Uses `tokio::sync::RwLock` so guards may span `.await` without tripping
+/// `clippy::await_holding_lock`.
 #[cfg(test)]
-fn master_key_test_lock_mutex() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+struct SharedTestDek {
+    dir: tempfile::TempDir,
 }
 
-/// Sync tests: block until the process DEK lock is held.
 #[cfg(test)]
-pub(crate) fn master_key_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
-    master_key_test_lock_mutex().blocking_lock()
+fn shared_test_dek_slot() -> &'static OnceLock<SharedTestDek> {
+    static SHARED: OnceLock<SharedTestDek> = OnceLock::new();
+    &SHARED
 }
 
-/// Async tests: await the process DEK lock (safe to hold across `.await`).
 #[cfg(test)]
-pub(crate) async fn master_key_test_lock_async() -> tokio::sync::MutexGuard<'static, ()> {
-    master_key_test_lock_mutex().lock().await
+fn master_key_test_rwlock() -> &'static tokio::sync::RwLock<()> {
+    static LOCK: OnceLock<tokio::sync::RwLock<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::RwLock::new(()))
+}
+
+/// Install (or reinstall) the shared process DEK used by sealed-v1 tests.
+#[cfg(test)]
+pub(crate) fn ensure_shared_test_dek() {
+    let shared = shared_test_dek_slot().get_or_init(|| {
+        let dir = tempfile::tempdir().expect("shared test DEK tempdir");
+        configure_master_key(dir.path()).expect("mint shared test DEK");
+        SharedTestDek { dir }
+    });
+    configure_master_key(shared.dir.path()).expect("reinstall shared test DEK");
+}
+
+#[cfg(test)]
+fn restore_shared_test_dek() {
+    if let Some(shared) = shared_test_dek_slot().get() {
+        let _ = configure_master_key(shared.dir.path());
+    }
+}
+
+/// Write-lock guard: exclusive DEK / auth-password mutation; restores shared DEK.
+#[cfg(test)]
+pub(crate) struct MasterKeyWriteGuard {
+    _guard: tokio::sync::RwLockWriteGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for MasterKeyWriteGuard {
+    fn drop(&mut self) {
+        restore_shared_test_dek();
+    }
+}
+
+/// Sync write lock for tests that reconfigure the process DEK or auth env.
+#[cfg(test)]
+pub(crate) fn master_key_test_lock() -> MasterKeyWriteGuard {
+    MasterKeyWriteGuard {
+        _guard: master_key_test_rwlock().blocking_write(),
+    }
+}
+
+/// Async read lock — shared sealed-v1 tests hold this across `.await`.
+#[cfg(test)]
+pub(crate) async fn master_key_test_read_lock_async() -> tokio::sync::RwLockReadGuard<'static, ()> {
+    master_key_test_rwlock().read().await
 }
 
 #[cfg(test)]

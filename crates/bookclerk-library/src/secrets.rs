@@ -704,7 +704,8 @@ fn model_to_record(model: encrypted_secrets::Model) -> EncryptedSecretRecord {
 mod tests {
     use super::*;
     use crate::master_key::{
-        configure_master_key, master_key_test_lock, master_key_test_lock_async,
+        configure_master_key, ensure_shared_test_dek, master_key_test_lock,
+        master_key_test_read_lock_async,
     };
     use tempfile::tempdir;
 
@@ -712,14 +713,10 @@ mod tests {
         format!("unit-{tag}-{}", std::process::id())
     }
 
-    /// Set up process DEK from a temp dir for tests that use sealed-v1.
-    ///
-    /// Returns the process DEK test lock — keep it for the whole test so parallel
-    /// suites cannot swap the global key mid-flight.
-    async fn setup_dek() -> tokio::sync::MutexGuard<'static, ()> {
-        let guard = master_key_test_lock_async().await;
-        let dir = tempdir().unwrap();
-        configure_master_key(dir.path()).unwrap();
+    /// Shared process DEK for sealed-v1 tests (read-locked so mutators wait).
+    async fn setup_dek() -> tokio::sync::RwLockReadGuard<'static, ()> {
+        let guard = master_key_test_read_lock_async().await;
+        ensure_shared_test_dek();
         guard
     }
 

@@ -42,10 +42,28 @@ The SPA supports two session types:
 `GET /api/auth/me` returns `{ authenticated, role, default_view, can_acquire, portal? }`
 with `default_view` from the caller's SQLite preferences row.
 
+## Client routes
+
+The SPA keeps the URL bar in sync with the active screen via the History API:
+
+| Path | View |
+| --- | --- |
+| `/` | Uses the signed-in user's `default_view` (then rewrites to that path) |
+| `/discover` | Discover |
+| `/library` | Library |
+| `/wishlist` | Wishlist |
+| `/accounts` | Accounts |
+| `/settings` | Settings |
+
+`bookclerkd` serves `index.html` for those document paths (assets still come
+from `ui/dist`). A hard refresh on `/library` therefore loads the SPA, not a
+404. Unknown paths remain branded 404s.
+
 ## Default view
 
-After auth the SPA opens the signed-in user's **`default_view`** (default
-**`discover`**). Change it in Discover → settings, or:
+After auth on `/`, the SPA opens the signed-in user's **`default_view`** (default
+**`discover`**). Deep links like `/library` win over the default. Change the
+default via the Preferences control in the header (any signed-in page), or:
 
 ```http
 PATCH /api/preferences

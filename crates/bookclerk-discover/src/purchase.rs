@@ -1,9 +1,12 @@
 //! Suggest storefronts where a title might be purchased (with live pricing).
 
+use std::time::Duration;
+
 use bookclerk_enrich::normalize_region;
 use bookclerk_source::{PurchaseHintOpts, SourcePurchaseHint, SourceRegistry};
 
 use crate::error::Result;
+use crate::identity::works_match;
 
 /// A purchase / catalog availability hint (optionally priced at view time).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -12,7 +15,8 @@ pub struct PurchaseHint {
     pub product_id: String,
     pub title: Option<String>,
     pub url: Option<String>,
-    /// Lowest known sell price in minor units (cents). `0` = free.
+    /// Primary / best known sell price in minor units (prefer member when dual).
+    /// `0` = free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_cents: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -20,6 +24,14 @@ pub struct PurchaseHint {
     /// Display string from the store (`$2.99`, `FREE`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_price_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_price_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_price_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_price_label: Option<String>,
 }
 
 impl PurchaseHint {
@@ -39,6 +51,10 @@ impl PurchaseHint {
             price_cents: None,
             currency: None,
             price_label: None,
+            list_price_cents: None,
+            list_price_label: None,
+            member_price_cents: None,
+            member_price_label: None,
         }
     }
 
@@ -50,7 +66,30 @@ impl PurchaseHint {
         self
     }
 
+    #[cfg(test)]
+    fn with_dual_price(
+        mut self,
+        member_cents: i64,
+        list_cents: i64,
+        currency: &str,
+        member_label: impl Into<String>,
+        list_label: impl Into<String>,
+    ) -> Self {
+        let member_label = member_label.into();
+        let list_label = list_label.into();
+        self.currency = Some(currency.to_string());
+        self.member_price_cents = Some(member_cents.max(0));
+        self.member_price_label = Some(member_label.clone());
+        self.list_price_cents = Some(list_cents.max(0));
+        self.list_price_label = Some(list_label);
+        // Primary / “best known” mirrors store dual-price helpers (member first).
+        self.price_cents = Some(member_cents.max(0));
+        self.price_label = Some(member_label);
+        self
+    }
+
     fn from_source_hint(source: &str, hint: SourcePurchaseHint) -> Self {
+        let hint = hint.decode_html_entities();
         Self {
             source: source.to_string(),
             product_id: hint.product_id,
@@ -59,6 +98,10 @@ impl PurchaseHint {
             price_cents: hint.price_cents,
             currency: hint.currency,
             price_label: hint.price_label,
+            list_price_cents: hint.list_price_cents,
+            list_price_label: hint.list_price_label,
+            member_price_cents: hint.member_price_cents,
+            member_price_label: hint.member_price_label,
         }
     }
 }
@@ -76,8 +119,9 @@ pub struct PurchaseHintsQuery {
     #[serde(default)]
     pub store_editions: Vec<crate::identity::StoreEdition>,
     pub region: Option<String>,
-    /// Storefronts the caller has accounts for — used to pick “best” price
-    /// among linked stores while still returning every catalog match.
+    /// Storefronts the caller has linked accounts for. Treated as **member**
+    /// pricing when picking `best`; other stores are compared at list /
+    /// non-member price. Every catalog match is still returned in `hints`.
     #[serde(default)]
     pub preferred_sources: Vec<String>,
 }
@@ -152,12 +196,60 @@ pub fn seed_purchase_hint(
     }
 }
 
+fn purchase_hints_cache() -> &'static crate::ttl_cache::TtlCache<PurchaseHintsResponse> {
+    use std::sync::OnceLock;
+    use std::time::Duration;
+    static CACHE: OnceLock<crate::ttl_cache::TtlCache<PurchaseHintsResponse>> = OnceLock::new();
+    CACHE.get_or_init(|| crate::ttl_cache::TtlCache::new(Duration::from_secs(10 * 60), 256))
+}
+
+fn purchase_hints_cache_key(query: &PurchaseHintsQuery, region: &str) -> String {
+    let mut editions: Vec<_> = query
+        .store_editions
+        .iter()
+        .map(|e| format!("{}:{}", e.source.to_ascii_lowercase(), e.product_id))
+        .collect();
+    editions.sort();
+    let preferred: Vec<_> = query
+        .preferred_sources
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    crate::ttl_cache::cache_key(&[
+        "purchase-hints",
+        region,
+        query.title.as_str(),
+        query.authors.as_deref().unwrap_or(""),
+        query.asin.as_deref().unwrap_or(""),
+        query.isbn.as_deref().unwrap_or(""),
+        query.candidate_source.as_deref().unwrap_or(""),
+        query.candidate_product_id.as_deref().unwrap_or(""),
+        &editions.join(","),
+        &preferred.join(","),
+    ])
+}
+
 /// Resolve every catalog match and attach live prices (view-time).
 pub async fn resolve_purchase_hints(
     registry: &SourceRegistry,
     query: &PurchaseHintsQuery,
 ) -> Result<PurchaseHintsResponse> {
     let region = normalize_region(query.region.as_deref().unwrap_or("us"));
+    let cache_key = purchase_hints_cache_key(query, &region);
+    if let Some(cached) = purchase_hints_cache().get(&cache_key) {
+        return Ok(cached);
+    }
+    let response = resolve_purchase_hints_uncached(registry, query, &region).await?;
+    purchase_hints_cache().insert(cache_key, response.clone());
+    Ok(response)
+}
+
+async fn resolve_purchase_hints_uncached(
+    registry: &SourceRegistry,
+    query: &PurchaseHintsQuery,
+    region: &str,
+) -> Result<PurchaseHintsResponse> {
+    let region = region.to_string();
     let title = query.title.trim();
     let authors = query
         .authors
@@ -177,7 +269,14 @@ pub async fn resolve_purchase_hints(
 
     let mut hints: Vec<PurchaseHint> = Vec::new();
 
+    // Only seed Audible from ASIN/product id. Libro ISBN≠catalog membership
+    // (Audible exclusives often carry a bibliographic ISBN that 404s on
+    // libro.fm) — Libro rows come only from a live purchase_hint that verified
+    // the product page. Chirp/GA Magento ids stay soft (title-matched).
     for ed in &query.store_editions {
+        if !seed_source_is_trusted(&ed.source) {
+            continue;
+        }
         if let Some(seed) =
             seed_purchase_hint(&ed.source, &ed.product_id, Some(title.to_string()), &region)
         {
@@ -189,10 +288,12 @@ pub async fn resolve_purchase_hints(
         query.candidate_source.as_deref(),
         query.candidate_product_id.as_deref(),
     ) {
-        if let Some(seed) = seed_purchase_hint(source, pid, Some(title.to_string()), &region) {
-            push_dedupe(&mut hints, seed);
+        if seed_source_is_trusted(source) {
+            if let Some(seed) = seed_purchase_hint(source, pid, Some(title.to_string()), &region) {
+                push_dedupe(&mut hints, seed);
+            }
         }
-        // Candidate ASIN/ISBN may differ from product id.
+        // Candidate ASIN may differ from product id.
         if source.eq_ignore_ascii_case("audible") {
             // already seeded
         } else if let Some(a) = asin {
@@ -201,34 +302,15 @@ pub async fn resolve_purchase_hints(
                 audible_hint(a, Some(title.to_string()), &region),
             );
         }
-        if source.eq_ignore_ascii_case("libro") {
-            // already seeded
-        } else if let Some(i) = isbn {
-            push_dedupe(&mut hints, libro_hint(i, Some(title.to_string())));
-        }
-    } else {
-        if let Some(a) = asin {
-            push_dedupe(
-                &mut hints,
-                audible_hint(a, Some(title.to_string()), &region),
-            );
-        }
-        if let Some(i) = isbn {
-            push_dedupe(&mut hints, libro_hint(i, Some(title.to_string())));
-        }
+    } else if let Some(a) = asin {
+        push_dedupe(
+            &mut hints,
+            audible_hint(a, Some(title.to_string()), &region),
+        );
     }
 
-    // Cross-store catalog expansion via registered sources (URL-only).
-    match purchase_hints_for(registry, title, authors, asin, isbn, &region).await {
-        Ok(extra) => {
-            for h in extra {
-                push_dedupe(&mut hints, h);
-            }
-        }
-        Err(err) => tracing::debug!(error = %err, "purchase catalog expand failed"),
-    }
-
-    // Live prices from every registered source (including Audible / Libro).
+    // One parallel priced pass across storefronts (replaces the old URL-only
+    // expand + sequential priced expand, which doubled wall time).
     let priced_opts = PurchaseHintOpts {
         product_id: query.candidate_product_id.clone(),
         title: Some(title.to_string()).filter(|s| !s.is_empty()),
@@ -246,10 +328,26 @@ pub async fn resolve_purchase_hints(
     )
     .await;
 
-    // Also price known editions via registry when we already have a product id.
+    // Price known editions that the registry pass did not already cover.
+    let mut edition_set = tokio::task::JoinSet::new();
     for ed in &query.store_editions {
+        let source_id = ed.source.trim().to_ascii_lowercase();
+        let product_id = ed.product_id.trim().to_string();
+        if product_id.is_empty() {
+            continue;
+        }
+        if hints.iter().any(|h| {
+            h.source.eq_ignore_ascii_case(&source_id)
+                && h.product_id == product_id
+                && h.price_cents.is_some()
+        }) {
+            continue;
+        }
+        let Some(source) = registry.get(&ed.source) else {
+            continue;
+        };
         let opts = PurchaseHintOpts {
-            product_id: Some(ed.product_id.clone()),
+            product_id: Some(product_id),
             title: Some(title.to_string()).filter(|s| !s.is_empty()),
             authors: authors.map(str::to_string),
             asin: asin.map(str::to_string),
@@ -257,25 +355,42 @@ pub async fn resolve_purchase_hints(
             region: region.clone(),
             with_price: true,
         };
-        if let Some(source) = registry.get(&ed.source) {
-            match source.purchase_hint(&opts).await {
-                Ok(Some(hint)) => {
-                    merge_or_push(
-                        &mut hints,
-                        PurchaseHint::from_source_hint(source.id(), hint),
-                    );
-                }
-                Ok(None) => {}
+        let trusted = seed_source_is_trusted(&ed.source);
+        let q_title = title.to_string();
+        let q_authors = authors.map(str::to_string);
+        edition_set.spawn(async move {
+            let mapped = match source.purchase_hint(&opts).await {
+                Ok(Some(hint)) => PurchaseHint::from_source_hint(source.id(), hint),
+                Ok(None) => return None,
                 Err(err) => {
-                    tracing::debug!(source = %ed.source, error = %err, "purchase_hint failed")
+                    tracing::debug!(source = %source.id(), error = %err, "purchase_hint failed");
+                    return None;
                 }
+            };
+            if trusted || catalog_hint_matches_query(&q_title, q_authors.as_deref(), &mapped) {
+                Some(mapped)
+            } else {
+                tracing::debug!(
+                    source = %mapped.source,
+                    product_id = %mapped.product_id,
+                    hint_title = ?mapped.title,
+                    query_title = %q_title,
+                    "dropping stored edition purchase hint that failed title match"
+                );
+                None
             }
+        });
+    }
+    while let Some(joined) = edition_set.join_next().await {
+        if let Ok(Some(mapped)) = joined {
+            merge_or_push(&mut hints, mapped);
         }
     }
 
     let preferred = preferred_source_set(&query.preferred_sources);
     sort_hints_for_display(&mut hints, &preferred);
-    let best = best_purchase_hint_preferring(&hints, &preferred).cloned();
+    let best = best_purchase_hint_preferring(&hints, &preferred)
+        .map(|h| best_hint_for_caller(h, &preferred));
     Ok(PurchaseHintsResponse { hints, best })
 }
 
@@ -285,31 +400,87 @@ pub fn best_purchase_hint(hints: &[PurchaseHint]) -> Option<&PurchaseHint> {
     hints.iter().min_by(|a, b| cmp_hint_price(a, b))
 }
 
-/// Prefer lowest **priced** offer among linked storefronts; otherwise global lowest.
+/// Pick the offer the caller would actually pay least for.
 ///
-/// Unpriced linked stores do not beat a cheaper priced offer elsewhere — we still
-/// search every store and only bias the “best” highlight toward accounts the
-/// caller can actually use when prices are known.
+/// Linked storefronts (`preferred`) are compared at **member** price; every
+/// other store is compared at **list / non-member** price. That way a Libro-only
+/// member still sees Audible on the shelf when Audible’s non-member price beats
+/// Libro’s member price. When nothing is linked, all stores are compared as
+/// non-members. Hints with no usable price for that role sort last.
 #[must_use]
 pub fn best_purchase_hint_preferring<'a>(
     hints: &'a [PurchaseHint],
     preferred: &std::collections::HashSet<String>,
 ) -> Option<&'a PurchaseHint> {
-    if !preferred.is_empty() {
-        let among_linked_priced: Vec<_> = hints
-            .iter()
-            .filter(|h| {
-                preferred.contains(&h.source.to_ascii_lowercase()) && h.price_cents.is_some()
-            })
-            .collect();
-        if let Some(best) = among_linked_priced
-            .into_iter()
-            .min_by(|a, b| cmp_hint_price(a, b))
-        {
-            return Some(best);
+    hints.iter().min_by(|a, b| {
+        let a_pref = source_is_preferred(&a.source, preferred);
+        let b_pref = source_is_preferred(&b.source, preferred);
+        match (
+            effective_price_cents(a, a_pref),
+            effective_price_cents(b, b_pref),
+        ) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
         }
+    })
+}
+
+fn source_is_preferred(source: &str, preferred: &std::collections::HashSet<String>) -> bool {
+    !preferred.is_empty() && preferred.contains(&source.to_ascii_lowercase())
+}
+
+/// Price used when ranking `best` for a caller.
+///
+/// - Linked (member): member → primary → list
+/// - Unlinked / no accounts: list → primary (when not a dual member-only primary) → member
+fn effective_price_cents(hint: &PurchaseHint, as_member: bool) -> Option<i64> {
+    if as_member {
+        return hint
+            .member_price_cents
+            .or(hint.price_cents)
+            .or(hint.list_price_cents)
+            .map(|c| c.max(0));
     }
-    best_purchase_hint(hints)
+    if let Some(list) = hint.list_price_cents {
+        return Some(list.max(0));
+    }
+    // Single-price stores (Chirp, …): `price_cents` is what anyone pays.
+    // Dual-price rows always set list when member is present (see store helpers).
+    hint.price_cents
+        .or(hint.member_price_cents)
+        .map(|c| c.max(0))
+}
+
+/// Shape `best` so shelf/UI primary fields match what the caller would pay.
+fn best_hint_for_caller(
+    hint: &PurchaseHint,
+    preferred: &std::collections::HashSet<String>,
+) -> PurchaseHint {
+    let as_member = source_is_preferred(&hint.source, preferred);
+    let mut out = hint.clone();
+    if as_member {
+        if let Some(member) = out.member_price_cents {
+            out.price_cents = Some(member);
+            if let Some(label) = out.member_price_label.clone() {
+                out.price_label = Some(label);
+            }
+        }
+        return out;
+    }
+    // Non-member: surface list as primary and drop member so shelf formatters
+    // do not prefer a coupon the caller cannot use.
+    if let Some(list) = out.list_price_cents {
+        out.price_cents = Some(list);
+        out.price_label = out
+            .list_price_label
+            .clone()
+            .or_else(|| out.price_label.clone());
+        out.member_price_cents = None;
+        out.member_price_label = None;
+    }
+    out
 }
 
 /// Resolve many purchase-hint queries with bounded concurrency (order preserved).
@@ -352,24 +523,107 @@ async fn append_registry_hints(
     opts: &PurchaseHintOpts,
     prefer_source: Option<&str>,
 ) {
+    const PER_SOURCE_HINT_TIMEOUT: Duration = Duration::from_secs(8);
+    let prefer = prefer_source.map(str::to_string);
+    let mut set = tokio::task::JoinSet::new();
     for source in registry.all() {
-        let id = source.id();
         let mut call_opts = opts.clone();
+        let id = source.id().to_string();
         // When the candidate is for this source, prefer its product id.
-        if prefer_source.is_some_and(|s| s.eq_ignore_ascii_case(id)) {
+        if prefer
+            .as_deref()
+            .is_some_and(|s| s.eq_ignore_ascii_case(&id))
+        {
             // product_id already set from query
-        } else if prefer_source.is_some() {
+        } else if prefer.is_some() {
             // Candidate belongs to another store — still search by title.
             call_opts.product_id = None;
         }
-        match source.purchase_hint(&call_opts).await {
-            Ok(Some(hint)) => {
-                merge_or_push(hints, PurchaseHint::from_source_hint(id, hint));
+        set.spawn(async move {
+            let outcome =
+                tokio::time::timeout(PER_SOURCE_HINT_TIMEOUT, source.purchase_hint(&call_opts))
+                    .await;
+            (id, call_opts, outcome)
+        });
+    }
+
+    while let Some(joined) = set.join_next().await {
+        let (id, call_opts, outcome) = match joined {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::debug!(error = %err, "purchase_hint task join failed");
+                continue;
             }
-            Ok(None) => {}
-            Err(err) => tracing::debug!(source = %id, error = %err, "purchase_hint failed"),
+        };
+        let hint = match outcome {
+            Ok(Ok(Some(hint))) => hint,
+            Ok(Ok(None)) => continue,
+            Ok(Err(err)) => {
+                tracing::debug!(source = %id, error = %err, "purchase_hint failed");
+                continue;
+            }
+            Err(_) => {
+                tracing::debug!(source = %id, "purchase_hint timed out");
+                continue;
+            }
+        };
+        let mapped = PurchaseHint::from_source_hint(&id, hint);
+        // Audible ASINs are trusted. Libro and soft Magento/Chirp ids need a
+        // title match — ISBN alone is not proof of Libro membership.
+        let trusted_product = seed_source_is_trusted(&id)
+            && call_opts
+                .product_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some();
+        if trusted_product
+            || catalog_hint_matches_query(
+                call_opts.title.as_deref().unwrap_or(""),
+                call_opts.authors.as_deref(),
+                &mapped,
+            )
+        {
+            merge_or_push(hints, mapped);
+        } else {
+            tracing::debug!(
+                source = %id,
+                product_id = %mapped.product_id,
+                hint_title = ?mapped.title,
+                "dropping registry purchase hint that failed title match"
+            );
         }
     }
+}
+
+/// Storefronts that may be URL-seeded from product id alone (no live check).
+///
+/// Libro is intentionally excluded: `libro.fm/audiobooks/{isbn}` 404s for many
+/// ISBNs that appear on Audible-only titles.
+pub(crate) fn seed_source_is_trusted(source: &str) -> bool {
+    matches!(source.trim().to_ascii_lowercase().as_str(), "audible")
+}
+
+/// Whether a title-searched purchase hint is bibliographic enough to keep.
+fn catalog_hint_matches_query(
+    query_title: &str,
+    query_authors: Option<&str>,
+    hint: &PurchaseHint,
+) -> bool {
+    let query_title = query_title.trim();
+    if query_title.is_empty() {
+        return false;
+    }
+    let Some(hint_title) = hint
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        // No title on the hit — cannot validate Magento/Chirp first-rank noise.
+        return false;
+    };
+    works_match(query_title, query_authors, hint_title, None)
 }
 
 fn merge_or_push(hints: &mut Vec<PurchaseHint>, hint: PurchaseHint) {
@@ -382,8 +636,16 @@ fn merge_or_push(hints: &mut Vec<PurchaseHint>, hint: PurchaseHint) {
     }) {
         if existing.price_cents.is_none() && hint.price_cents.is_some() {
             existing.price_cents = hint.price_cents;
-            existing.currency = hint.currency;
-            existing.price_label = hint.price_label;
+            existing.currency = hint.currency.clone();
+            existing.price_label = hint.price_label.clone();
+        }
+        if existing.list_price_cents.is_none() && hint.list_price_cents.is_some() {
+            existing.list_price_cents = hint.list_price_cents;
+            existing.list_price_label = hint.list_price_label.clone();
+        }
+        if existing.member_price_cents.is_none() && hint.member_price_cents.is_some() {
+            existing.member_price_cents = hint.member_price_cents;
+            existing.member_price_label = hint.member_price_label.clone();
         }
         if existing.url.is_none() {
             existing.url = hint.url;
@@ -558,13 +820,48 @@ mod tests {
     }
 
     #[test]
-    fn best_hint_prefers_priced_linked_store() {
+    fn best_hint_uses_member_price_on_linked_store() {
+        // Libro linked at $14.99 member; Audible unlinked list $31.62 (member $5.99).
+        // Non-member Audible is worse than Libro member → Libro wins.
         let hints = vec![
-            PurchaseHint::link("audible", "A", None, None).with_price(1999, "USD", "$19.99"),
-            PurchaseHint::link("chirp", "C", None, None).with_price(299, "USD", "$2.99"),
-            PurchaseHint::link("libro", "L", None, None).with_price(999, "USD", "$9.99"),
+            PurchaseHint::link("audible", "A", None, None)
+                .with_dual_price(599, 3162, "USD", "$5.99", "$31.62"),
+            PurchaseHint::link("libro", "L", None, None)
+                .with_dual_price(1499, 3254, "USD", "$14.99", "$32.54"),
         ];
-        let preferred = std::collections::HashSet::from([String::from("audible")]);
+        let preferred = std::collections::HashSet::from([String::from("libro")]);
+        let best = best_purchase_hint_preferring(&hints, &preferred).unwrap();
+        assert_eq!(best.source, "libro");
+    }
+
+    #[test]
+    fn cheaper_nonmember_beats_linked_member() {
+        // Libro linked at $14.99 member; Audible unlinked list $9.99 → Audible.
+        let hints = vec![
+            PurchaseHint::link("audible", "A", None, None)
+                .with_dual_price(599, 999, "USD", "$5.99", "$9.99"),
+            PurchaseHint::link("libro", "L", None, None)
+                .with_dual_price(1499, 3254, "USD", "$14.99", "$32.54"),
+        ];
+        let preferred = std::collections::HashSet::from([String::from("libro")]);
+        let best = best_purchase_hint_preferring(&hints, &preferred).unwrap();
+        assert_eq!(best.source, "audible");
+        let display = best_hint_for_caller(best, &preferred);
+        assert_eq!(display.price_cents, Some(999));
+        assert_eq!(display.price_label.as_deref(), Some("$9.99"));
+        assert!(display.member_price_cents.is_none());
+    }
+
+    #[test]
+    fn linked_member_beats_other_linked_list() {
+        let hints = vec![
+            PurchaseHint::link("audible", "A", None, None)
+                .with_dual_price(599, 3162, "USD", "$5.99", "$31.62"),
+            PurchaseHint::link("libro", "L", None, None)
+                .with_dual_price(1499, 3254, "USD", "$14.99", "$32.54"),
+        ];
+        let preferred =
+            std::collections::HashSet::from([String::from("audible"), String::from("libro")]);
         let best = best_purchase_hint_preferring(&hints, &preferred).unwrap();
         assert_eq!(best.source, "audible");
     }
@@ -578,5 +875,43 @@ mod tests {
         let preferred = std::collections::HashSet::from([String::from("audible")]);
         let best = best_purchase_hint_preferring(&hints, &preferred).unwrap();
         assert_eq!(best.source, "chirp");
+    }
+
+    #[test]
+    fn no_preferred_compares_as_nonmember() {
+        let hints = vec![
+            PurchaseHint::link("audible", "A", None, None)
+                .with_dual_price(599, 3162, "USD", "$5.99", "$31.62"),
+            PurchaseHint::link("chirp", "C", None, None).with_price(2899, "USD", "$28.99"),
+        ];
+        let preferred = std::collections::HashSet::new();
+        let best = best_purchase_hint_preferring(&hints, &preferred).unwrap();
+        // Chirp $28.99 < Audible list $31.62
+        assert_eq!(best.source, "chirp");
+    }
+
+    #[test]
+    fn soft_storefronts_are_not_trusted_seeds() {
+        assert!(seed_source_is_trusted("audible"));
+        assert!(!seed_source_is_trusted("libro"));
+        assert!(!seed_source_is_trusted("graphicaudio"));
+        assert!(!seed_source_is_trusted("chirp"));
+    }
+
+    #[test]
+    fn catalog_hint_rejects_unrelated_ga_title() {
+        let hint = PurchaseHint::link(
+            "graphicaudio",
+            "123",
+            Some(String::from("Red Rising Saga 1: Red Rising 1 of 2")),
+            Some(String::from(
+                "https://www.graphicaudio.net/catalog/product/view/id/123",
+            )),
+        );
+        assert!(!catalog_hint_matches_query(
+            "Ashes of Man",
+            Some("Christopher Ruocchio"),
+            &hint
+        ));
     }
 }

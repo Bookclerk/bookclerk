@@ -125,6 +125,21 @@ title is **not** in the household library.
 - Identity merge: canonical ISBN-10↔13 when present, else ASIN, else soft
   title+author; ASIN-keyed and ISBN-keyed rows for the same work are merged
   (ISBN is **not** universal across Chirp / GA / Audible public search)
+- **Per-source snapshots:** `POST /api/wishlist` persists storefront editions,
+  HTML description, and purchase hints into `title_request_sources` (one row per
+  `source` + `product_id`), then soft-resolves live prices to fill additional
+  stores. `GET /api/wishlist` / request-queue merge those rows for the richest
+  blurb and multi-store Where-to-buy links (legacy thin rows still fall back to
+  Audnexus title-meta). Title detail loads Audible reviews via paginated
+  `POST /api/discover/title-reviews` (`sort_by=MostHelpful|MostRecent`,
+  infinite scroll seeds helpful then continues recent); title-meta carries
+  ratings/counts only.   For ISBN-only storefront hits (notably Libro.fm),
+  title-meta gap-fills via source `catalog_detail` (explore audiobook payload
+  or product-page JSON-LD / `.audiobook-genres`: narrator, runtime, description,
+  publisher, genres, abridged). After multi-store search ranks a page, Discover
+  may call Libro `catalog_detail` on lean ISBN-bearing rows (bounded timeout)
+  so list cards get genres/runtime without N+1 product fetches inside each
+  store’s `search_catalog`.
 
 Multi-region storefronts are deferred (US default for now).
 
@@ -151,17 +166,63 @@ Listening sync fans out through `IntegrationRegistry` (every integration with
 `discover sync-listening` and `POST /api/discover/sync-listening` do the same.
 
 Shelf visibility is **per-user** (SQLite `user_preferences`, not TOML). Use
-Discover → settings in the GUI, or `GET` / `PATCH /api/preferences` with
+the Preferences dialog in the GUI header, or `GET` / `PATCH /api/preferences` with
 `{ "disabled_shelves": ["chirp_deals", "genre"] }`. Empty list = all shelves on.
 CLI `discover recommend` applies the operator prefs row.
+
+## Catalog search vs shelves
+
+**Discover shelves** stay taste-ranked (library, listening, embeddings).
+
+**Catalog search** (`GET /api/discover/search`) is a **non-personalized multi-store
+browser**: one page per connected storefront in parallel, identity-merge, then
+server-side include/exclude filters and sort. By default results are hard-filtered
+to the client language (`lang` / `language=`). Chirp catalog hits carry Chirp’s
+`language` field (`English` / `Spanish` / …) plus `promotedTags` as genres, so
+non-matching languages are dropped; unknown/missing language metadata (e.g.
+sparse GraphicAudio rows) still passes. **All languages** (`all_languages=1`)
+disables the hard filter
+(soft prefer remains a weak tie-break).
+
+| Param | Notes |
+| --- | --- |
+| `q` | Query (min 2 chars) |
+| `page_size` | Default 24, clamp 1–48 (`limit` still accepted) |
+| `cursor` | Opaque hex cursor (per-source page counters + query fingerprint) |
+| `sort` | `relevance` (default) / `popularity` / `rating` / `title` / `author` / `price` / `length` — Audible page order for relevance/popularity; host re-ranks price/length/rating/title/author. Rating sort uses a Bayesian average of `rating_overall` with `rating_count` (prior mean 4.0, strength 100) so tiny sample 5.0s do not outrank high-volume 4.8s |
+| `sort_dir` | `asc` / `desc` (defaults: desc for relevance/popularity/rating/price; asc for title/author/length). Relevance ignores direction for ranking |
+| `field` | Optional scoped search: `author` / `narrator` / `series` / `genre` |
+| `lang` | Default language (BCP-47); hard-include when `language` omitted |
+| `language` | Comma-separated language codes to include |
+| `all_languages` | `1` / `true` — no hard language filter |
+| `author`, `narrator`, `series`, `genre`, `source` | Comma-separated includes (OR within a kind, AND across kinds) |
+| `exclude_source` | Comma-separated store ids to hide (empty = all sources, including future) |
+| `exclude_narrator` | Comma-separated substrings; GUI **Hide Virtual Voice** sends `Virtual Voice` |
+| `min_rating` | Keep hits with `rating_overall >= min` or missing rating |
+| `min_length_minutes` / `max_length_minutes` | Runtime bounds; missing length still passes |
+
+Response envelope: `{ items, page_size, has_more, next_cursor?, sort, sort_dir }`.
+Hits may include catalog `price_cents` when the storefront provided it (no
+purchase-hints round-trip). The UI infinite-scrolls with `next_cursor` and
+dedupes rare cross-page `work_key`s. Facet option lists grow from loaded pages
+(not full upstream facet counts). Typeahead still uses a small first page
+(`page_size=10`).
+
+Per-user Discover defaults live on `GET`/`PATCH /api/preferences`:
+`discover_sort`, `discover_sort_dir`, `discover_language` (`null` = browser
+language), `discover_excluded_sources` (empty = all stores including future).
+
+Audible Discover browse uses public `GET /1.0/catalog/search` (website index).
+The older `GET /1.0/catalog/products?keywords=` filter often omits titles that
+still resolve by ASIN (e.g. English *A Game of Thrones* `B002UZZ93G`).
 
 ## Surfaces
 
 | Surface | Commands / routes |
 | --- | --- |
 | CLI | `bookclerk discover recommend` (prints shelves), `embed`, `sync-listening`, `wishlist …` |
-| Daemon | `GET /api/discover/recommendations`, `GET /api/discover/search?q=` (multi-store catalog autocomplete), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
-| GUI | **Discover** — shelves + top catalog search (wishlist from cards or suggestions); **Wishlist** — personal list with global queue sidebar |
+| Daemon | `GET /api/discover/recommendations`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
+| GUI | **Discover** — personalized shelves + catalog search (filter rail, sort + direction, language, Hide Virtual Voice); **Wishlist** — personal list with global queue sidebar |
 
 Wishlists are **store-agnostic**. Rows share a `work_key` plus runtime identity
 merge (ISBN/ASIN aliases and soft title+author). The global queue ranks with
@@ -210,9 +271,10 @@ loads with `no_purchase_hints=true`; the GUI:
 3. **Batches** visible cards into `POST /api/discover/purchase-hints/batch`
 
 The daemon still searches **all** stores, then highlights `best` using the
-caller’s associated accounts (portal account links, or all operator accounts):
-lowest priced offer among linked storefronts when priced, otherwise the global
-lowest known price. Client-supplied `preferred_sources` are ignored.
+caller’s associated accounts (portal account links, or all operator accounts)
+as a **membership** signal: linked stores are compared at member price; other
+stores at list / non-member price; the shelf shows the global cheapest of those
+effective prices. Client-supplied `preferred_sources` are ignored.
 
 ## Non-goals (this iteration)
 

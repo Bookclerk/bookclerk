@@ -15,11 +15,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_config::{
-    init_tracing_with, read_or_create_operator_token, Config, LogFormat, TracingOptions,
+    init_tracing_with, read_or_create_operator_token, Config, ListenAddrs, LogFormat,
+    TracingOptions,
 };
 use bookclerk_library::configure_master_key_with;
 use clap::Parser;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 
 use crate::api::{reload_daemon_config, resolve_ui_dist, router, validate_daemon_listen, AppState};
 use crate::auth::OperatorAuthState;
@@ -41,7 +42,8 @@ struct Args {
     #[arg(long, env = "BOOKCLERK_CONFIG")]
     config: Option<PathBuf>,
 
-    /// Override HTTP listen address.
+    /// Override HTTP listen address(es), comma-separated
+    /// (`127.0.0.1:8787,[::1]:8787`).
     #[arg(long, env = "BOOKCLERK_DAEMON_LISTEN")]
     listen: Option<String>,
 }
@@ -51,7 +53,8 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let mut config = Config::load(args.bookclerk_files, args.config)?;
     if let Some(listen) = args.listen {
-        config.daemon.listen = listen;
+        config.daemon.listen = ListenAddrs::parse_list(&listen)
+            .map_err(|err| anyhow::anyhow!("invalid --listen / BOOKCLERK_DAEMON_LISTEN: {err}"))?;
     }
 
     let log_format = if config.daemon.json_logs {
@@ -140,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
         database_registry: database_registry.clone(),
         jobs: Arc::new(RwLock::new(Vec::new())),
         work_lock: Mutex::new(()),
+        discover_gate: Arc::new(Semaphore::new(1)),
         integrations: integrations.clone(),
         sources,
         destinations: Arc::new(RwLock::new(destinations)),
@@ -199,23 +203,18 @@ async fn main() -> anyhow::Result<()> {
             break;
         }
 
-        let listener = loop {
+        let listeners = loop {
             if process_shutdown.load(Ordering::SeqCst) {
                 return Ok(());
             }
 
             let listen = config.read().await.daemon.listen.clone();
-            let addr: SocketAddr = listen
-                .parse()
-                .map_err(|err| anyhow::anyhow!("invalid daemon.listen '{listen}': {err}"))?;
-
-            match tokio::net::TcpListener::bind(addr).await {
-                Ok(listener) => break listener,
+            match bind_listen_addrs(&listen).await {
+                Ok(listeners) => break listeners,
                 Err(err) => {
                     tracing::error!(
-                        %addr,
                         error = %err,
-                        "failed to bind daemon.listen; retrying in 5s or on config reload"
+                        "failed to bind any daemon.listen address; retrying in 5s or on config reload"
                     );
                     tokio::select! {
                         () = tokio::time::sleep(Duration::from_secs(5)) => {}
@@ -227,8 +226,11 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
-        let addr = listener.local_addr()?;
-        tracing::info!(%addr, "bookclerkd listening");
+        for listener in &listeners {
+            if let Ok(addr) = listener.local_addr() {
+                tracing::info!(%addr, "bookclerkd listening");
+            }
+        }
 
         // After bind so the tray's first browser open reaches a live listener.
         let cfg = config.read().await.clone();
@@ -237,23 +239,64 @@ async fn main() -> anyhow::Result<()> {
             None => tray = tray_companion::maybe_spawn_tray(&cfg),
         }
 
-        axum::serve(
-            listener,
-            app.clone()
-                .into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(serve_shutdown(
-            listen_reload.clone(),
-            process_shutdown.clone(),
-        ))
-        .await?;
+        let mut set = tokio::task::JoinSet::new();
+        for listener in listeners {
+            let app = app.clone();
+            let reload = listen_reload.clone();
+            let shutdown_flag = process_shutdown.clone();
+            set.spawn(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(serve_shutdown(reload, shutdown_flag))
+                .await
+            });
+        }
+
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => tracing::error!(error = %err, "HTTP listener exited with error"),
+                Err(err) => tracing::error!(error = %err, "HTTP listener task panicked"),
+            }
+        }
 
         if process_shutdown.load(Ordering::SeqCst) {
             break;
         }
-        tracing::info!(%addr, "HTTP listener shut down for rebind");
+        tracing::info!("HTTP listeners shut down for rebind");
     }
     Ok(())
+}
+
+/// Bind every configured listen address; skip failures unless none succeed.
+async fn bind_listen_addrs(listen: &ListenAddrs) -> anyhow::Result<Vec<tokio::net::TcpListener>> {
+    let addrs = listen
+        .socket_addrs()
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
+    let mut listeners = Vec::new();
+    let mut errors = Vec::new();
+    for addr in addrs {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => listeners.push(listener),
+            Err(err) => {
+                tracing::warn!(
+                    %addr,
+                    error = %err,
+                    "failed to bind daemon.listen address; skipping"
+                );
+                errors.push(format!("{addr}: {err}"));
+            }
+        }
+    }
+    if listeners.is_empty() {
+        anyhow::bail!(
+            "could not bind any daemon.listen address ({})",
+            errors.join("; ")
+        );
+    }
+    Ok(listeners)
 }
 
 async fn serve_shutdown(listen_reload: Arc<Notify>, process_shutdown: Arc<AtomicBool>) {

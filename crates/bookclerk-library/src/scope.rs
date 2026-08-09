@@ -282,14 +282,12 @@ impl LibraryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::master_key::{configure_master_key, master_key_test_lock_async};
-    use tempfile::tempdir;
+    use crate::master_key::{ensure_shared_test_dek, master_key_test_read_lock_async};
 
     #[tokio::test]
     async fn scope_isolates_secrets_and_books() {
-        let _dek = master_key_test_lock_async().await;
-        let dir = tempdir().unwrap();
-        configure_master_key(dir.path()).unwrap();
+        let _dek = master_key_test_read_lock_async().await;
+        ensure_shared_test_dek();
         let store = LibraryStore::from_connection(
             bookclerk_plugin_database::sqlite::open_memory()
                 .await

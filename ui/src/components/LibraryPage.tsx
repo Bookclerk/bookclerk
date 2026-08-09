@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LogOut, RefreshCw, ScanSearch } from "lucide-react";
-import { AppNav, type AppNavProps } from "@/components/AppNav";
-import { BookDetailModal } from "@/components/BookDetailModal";
+import { RefreshCw, ScanSearch } from "lucide-react";
+import type { AppNavProps } from "@/components/AppNav";
+import { AppTopBar } from "@/components/AppTopBar";
+import {
+  TitleDetailModal,
+  titleDetailFromBook,
+  type TitleMetaSearchKind,
+} from "@/components/TitleDetailModal";
 import { BookRow } from "@/components/BookRow";
 import { JobsStrip } from "@/components/JobsStrip";
 import { Button } from "@/components/ui/button";
@@ -27,6 +32,7 @@ import {
   type FilterKind,
   type SortKey,
 } from "@/lib/libraryFilters";
+import { cn, pageWidthClass } from "@/lib/utils";
 
 const PAGE_SIZE = 40;
 
@@ -201,18 +207,12 @@ export function LibraryPage({
   return (
     <div className="flex h-full flex-col">
       <header className="sticky top-0 z-10 border-b border-ink/10 bg-paper/85 px-3 py-3 backdrop-blur-md sm:px-5">
-        <div className="mx-auto flex max-w-6xl flex-col gap-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3 sm:gap-5">
-              <img
-                src="/bookclerk-logo.svg"
-                alt="Bookclerk"
-                className="h-8 w-auto sm:h-9"
-              />
-              <AppNav {...nav} />
-            </div>
-            <div className="flex items-center gap-2">
-              {canAcquire ? (
+        <div className={cn("flex flex-col gap-3", pageWidthClass)}>
+          <AppTopBar
+            nav={nav}
+            onSignOut={onSignOut}
+            actions={
+              canAcquire ? (
                 <>
                   <Button
                     variant="secondary"
@@ -228,7 +228,8 @@ export function LibraryPage({
                     title="Acquire all pending"
                   >
                     <RefreshCw className="h-4 w-4" />
-                    Acquire pending
+                    <span className="sm:hidden">Acquire</span>
+                    <span className="hidden sm:inline">Acquire pending</span>
                   </Button>
                 </>
               ) : (
@@ -240,12 +241,9 @@ export function LibraryPage({
                   <RefreshCw className="h-4 w-4" />
                   Refresh
                 </Button>
-              )}
-              <Button variant="ghost" onClick={() => void onSignOut()} aria-label="Sign out">
-                <LogOut className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
+              )
+            }
+          />
           <div className="flex flex-col gap-2 lg:flex-row">
             <Input
               value={q}
@@ -315,7 +313,8 @@ export function LibraryPage({
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-6xl flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto">
+      <main className={cn("w-full", pageWidthClass)}>
         <div className="animate-[rowIn_500ms_ease-out] bg-white/35 shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
           {visibleBooks.length === 0 ? (
             <p className="px-4 py-16 text-center text-sm text-ink/60">
@@ -337,14 +336,25 @@ export function LibraryPage({
           <div ref={sentinelRef} className="h-8" aria-hidden />
         </div>
       </main>
+      </div>
 
       {selected ? (
-        <BookDetailModal
-          book={selected}
+        <TitleDetailModal
+          key={selected.uuid}
+          detail={titleDetailFromBook(selected)}
           busy={busyKey !== null}
           showAcquire={canAcquire}
           onClose={() => setSelected(null)}
-          onAcquire={(b) => void onAcquireBook(b)}
+          onAcquire={() => void onAcquireBook(selected)}
+          onMetaSearch={(kind: TitleMetaSearchKind, value: string) => {
+            setSelected(null);
+            setFilterKind(kind);
+            setFilterValue(value);
+            setQ("");
+            if (kind === "series") {
+              setSortKey("series");
+            }
+          }}
         />
       ) : null}
 

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link2, LogOut, RefreshCw, Unlink } from "lucide-react";
-import { AppNav, type AppNavProps } from "@/components/AppNav";
+import { Link2, RefreshCw, Unlink } from "lucide-react";
+import type { AppNavProps } from "@/components/AppNav";
+import { AppTopBar } from "@/components/AppTopBar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -14,6 +15,7 @@ import {
   type PortalConnection,
   type PortalSource,
 } from "@/lib/api";
+import { cn, pageWidthClass } from "@/lib/utils";
 
 export function AccountsPage({
   onLogout,
@@ -121,32 +123,26 @@ export function AccountsPage({
   return (
     <div className="flex h-full flex-col">
       <header className="sticky top-0 z-10 border-b border-ink/10 bg-paper/85 px-3 py-3 backdrop-blur-md sm:px-5">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
-          <div className="flex items-center gap-3 sm:gap-5">
-            <img
-              src="/bookclerk-logo.svg"
-              alt="Bookclerk"
-              className="h-8 w-auto sm:h-9"
-            />
-            <AppNav {...nav} />
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              onClick={() => void refresh()}
-              disabled={busy}
-            >
-              <RefreshCw className="h-4 w-4" />
-              Refresh
-            </Button>
-            <Button variant="ghost" onClick={() => void onSignOut()} aria-label="Sign out">
-              <LogOut className="h-4 w-4" />
-            </Button>
-          </div>
+        <div className={pageWidthClass}>
+          <AppTopBar
+            nav={nav}
+            onSignOut={onSignOut}
+            actions={
+              <Button
+                variant="secondary"
+                onClick={() => void refresh()}
+                disabled={busy}
+              >
+                <RefreshCw className="h-4 w-4" />
+                Refresh
+              </Button>
+            }
+          />
         </div>
       </header>
 
-      <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-8 overflow-auto px-4 py-6">
+      <div className="min-h-0 flex-1 overflow-auto">
+      <main className={cn("flex w-full flex-col gap-8 px-4 py-6 sm:px-5", pageWidthClass)}>
         <div className="space-y-1">
           <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
             Accounts
@@ -300,6 +296,7 @@ export function AccountsPage({
           )}
         </section>
       </main>
+      </div>
     </div>
   );
 }

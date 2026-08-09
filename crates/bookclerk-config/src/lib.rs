@@ -7,6 +7,7 @@ mod error;
 mod extras;
 mod isolation;
 mod journal;
+mod listen;
 mod logging;
 mod media;
 mod naming_profile;
@@ -39,6 +40,7 @@ pub use extras::{
 };
 pub use isolation::Isolation;
 pub use journal::{journald_available, os_log_available, OsLogFacility, OsLogLayer};
+pub use listen::ListenAddrs;
 pub use logging::{init_tracing, init_tracing_with, LogFormat, LoggingHandle, TracingOptions};
 pub use media::MediaConfig;
 pub use naming_profile::{NamingProfile, NamingProfileTemplates, ResolvedNamingTemplates};

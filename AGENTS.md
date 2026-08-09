@@ -97,8 +97,9 @@ diagnostics ring always keeps TRACE+; stderr/OS facility honor `BOOKCLERK_LOG` /
 - CLI: `BOOKCLERK_FILES_DIR=/tmp/BookclerkFiles cargo run -p bookclerk-cli -- <cmd>`
   (e.g. `version`, `auth list`, `library list`).
 - Daemon: `BOOKCLERK_FILES_DIR=/tmp/BookclerkFiles cargo run -p bookclerkd`.
-  It listens on `127.0.0.1:8787` by default (override with
-  `BOOKCLERK_DAEMON_LISTEN` or `daemon.listen` in `config.toml`). Operator auth
+  It listens on `127.0.0.1:8787` and `[::1]:8787` by default (override with
+  `BOOKCLERK_DAEMON_LISTEN` or `daemon.listen` in `config.toml`; string, array,
+  or comma-separated). Operator auth
   defaults on (`operator.token` under the files dir, or
   `BOOKCLERK_OPERATOR_TOKEN`). Control plane: `GET /health`,
   `POST /api/auth/login`, authenticated `/api/status`, `/api/jobs`,

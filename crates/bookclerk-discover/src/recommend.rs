@@ -21,7 +21,9 @@ use crate::identity::{
     identities_match, merge_global_queue_entries, merge_recommendation, push_edition,
     push_shelf_category, recommendation_map_key, works_match, StoreEdition, WorkIdentity,
 };
-use crate::purchase::{purchase_hints_for, seed_purchase_hint, PurchaseHint};
+use crate::purchase::{
+    purchase_hints_for, seed_purchase_hint, seed_source_is_trusted, PurchaseHint,
+};
 
 /// Per open wish on the global queue. Large enough that multi-user demand
 /// dominates typical local taste scores (~1–25) while recommend signals still
@@ -82,7 +84,7 @@ impl Default for RecommendOptions {
 }
 
 /// One ranked recommendation (typically an unowned storefront title).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Recommendation {
     pub work_id: Option<String>,
     pub title: String,
@@ -113,6 +115,25 @@ pub struct Recommendation {
     /// Stable bibliographic key for wishlist / merge (`isbn:` / `asin:` / `soft:`…).
     #[serde(default)]
     pub work_key: String,
+    /// Cover art URL when known from a storefront catalog hit or wishlist row.
+    #[serde(default)]
+    pub cover_url: Option<String>,
+    /// Optional bibliographic extras from storefront catalog / Audnexus.
+    #[serde(default)]
+    pub subtitle: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub length_minutes: Option<i64>,
+    #[serde(default)]
+    pub published_at: Option<String>,
+    /// Candidate genres (not taste-seed `seed_categories`).
+    #[serde(default)]
+    pub genres: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 /// Global wishlist queue entry ranked by overall/operator recommend taste +
@@ -124,6 +145,7 @@ pub struct RankedQueueEntry {
     pub authors: Option<String>,
     pub asin: Option<String>,
     pub isbn: Option<String>,
+    pub cover_url: Option<String>,
     pub wish_count: i64,
     pub sample_uuids: Vec<String>,
     pub first_requested_at: chrono::DateTime<chrono::Utc>,
@@ -149,6 +171,7 @@ impl RankedQueueEntry {
             authors: entry.authors,
             asin: entry.asin,
             isbn: entry.isbn,
+            cover_url: entry.cover_url,
             wish_count: entry.wish_count,
             sample_uuids: entry.sample_uuids,
             first_requested_at: entry.first_requested_at,
@@ -227,12 +250,16 @@ pub async fn rank_global_request_queue(
     let mut opts = opts.clone();
     opts.external_user_id = None;
 
+    let queue = merge_global_queue_entries(library.list_global_request_queue().await?);
+    if queue.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let books = library.list_books(None).await?;
     let listening = load_listening(library, &opts).await?;
     let profile = build_taste_profile(library, &books, &listening, &opts).await?;
     let mut embedder = open_candidate_embedder(&opts)?;
 
-    let queue = merge_global_queue_entries(library.list_global_request_queue().await?);
     let mut ranked = Vec::new();
     for entry in queue {
         if library_owns_identity(
@@ -392,6 +419,26 @@ async fn recommend_all(
                 StoreEdition::new(&c.source, &c.product_id),
             );
 
+            let mut purchase_hints = Vec::new();
+            // Card seeds must match resolve_purchase_hints: Audible-only URL
+            // seeds. Soft Magento/Chirp ids need live title-matched verification.
+            if seed_source_is_trusted(&c.source) {
+                if let Some(label) = c.price_label.clone().filter(|s| !s.is_empty()) {
+                    if let Some(hint) = seed_purchase_hint(
+                        &c.source,
+                        &c.product_id,
+                        Some(c.title.clone()),
+                        &opts.region,
+                    ) {
+                        purchase_hints.push(PurchaseHint {
+                            price_cents: c.price_cents,
+                            currency: c.currency.clone(),
+                            price_label: Some(label),
+                            ..hint
+                        });
+                    }
+                }
+            }
             let mut rec = Recommendation {
                 work_id: None,
                 title: c.title,
@@ -403,7 +450,7 @@ async fn recommend_all(
                 isbn: c.isbn.clone(),
                 score,
                 reasons,
-                purchase_hints: Vec::new(),
+                purchase_hints,
                 from_request: false,
                 request_uuid: None,
                 candidate_source: Some(c.source),
@@ -412,6 +459,14 @@ async fn recommend_all(
                 seed_categories: c.seed_categories,
                 categories,
                 work_key: String::new(),
+                cover_url: c.cover_url,
+                subtitle: c.subtitle,
+                description: c.description,
+                publisher: c.publisher,
+                length_minutes: c.length_minutes,
+                published_at: c.published_at,
+                genres: c.categories,
+                language: c.language,
             };
             rec.work_key = recommendation_map_key(&rec);
             upsert_recommendation(&mut scored, rec);
@@ -444,26 +499,53 @@ async fn recommend_all(
             reasons.push(String::from("on the wishlist"));
         }
         push_shelf_category(&mut categories, "requests");
+        let store_editions: Vec<StoreEdition> = entry
+            .store_editions
+            .into_iter()
+            .map(|e| StoreEdition::new(&e.source, &e.product_id))
+            .collect();
+        let purchase_hints: Vec<PurchaseHint> = entry
+            .purchase_hints
+            .into_iter()
+            .map(|h| PurchaseHint {
+                source: h.source,
+                product_id: h.product_id,
+                title: h.title,
+                url: h.url,
+                price_cents: h.price_cents,
+                currency: h.currency,
+                price_label: h.price_label,
+                list_price_cents: h.list_price_cents,
+                list_price_label: h.list_price_label,
+                member_price_cents: h.member_price_cents,
+                member_price_label: h.member_price_label,
+            })
+            .collect();
         let mut rec = Recommendation {
-            work_id: None,
             title: entry.title,
             authors: entry.authors,
-            narrators: None,
-            series: None,
-            series_index: None,
+            narrators: entry.narrators,
+            series: entry.series,
+            series_index: entry.series_index,
             asin: entry.asin,
             isbn: entry.isbn,
             score: combine_wishlist_score(taste_score, entry.wish_count),
             reasons,
-            purchase_hints: Vec::new(),
             from_request: true,
             request_uuid: entry.sample_uuids.first().cloned(),
-            candidate_source: None,
-            candidate_product_id: None,
-            store_editions: Vec::new(),
-            seed_categories: None,
             categories,
             work_key: entry.work_key.clone(),
+            cover_url: entry.cover_url,
+            description: entry.description,
+            subtitle: entry.subtitle,
+            publisher: entry.publisher,
+            length_minutes: entry.length_minutes,
+            published_at: entry.published_at,
+            genres: entry.genres,
+            language: entry.language,
+            store_editions,
+            purchase_hints,
+            ..Default::default()
         };
         if rec.work_key.trim().is_empty() {
             rec.work_key = recommendation_map_key(&rec);
@@ -673,6 +755,12 @@ async fn attach_purchase_hints(
         rec.store_editions = editions.clone();
 
         for ed in &editions {
+            // Align with resolve_purchase_hints: only Audible is a trusted URL
+            // seed. Libro ISBN≠membership (404s); Chirp/GA need title-matched
+            // live purchase_hint verification before advertising a link.
+            if !seed_source_is_trusted(&ed.source) {
+                continue;
+            }
             if let Some(hint) = seed_purchase_hint(
                 &ed.source,
                 &ed.product_id,
@@ -723,7 +811,9 @@ fn library_owns_identity(
                 b.isbn.as_deref(),
                 &b.title,
                 b.authors.as_deref(),
-            ),
+            )
+            .with_series(b.series.as_deref())
+            .with_series_index(b.series_index.as_deref()),
         ) || (asin.is_none()
             && isbn.is_none()
             && works_match(title, authors, &b.title, b.authors.as_deref()))
@@ -738,13 +828,17 @@ fn upsert_recommendation(map: &mut HashMap<String, Recommendation>, rec: Recomme
                 rec.isbn.as_deref(),
                 &rec.title,
                 rec.authors.as_deref(),
-            ),
+            )
+            .with_series(rec.series.as_deref())
+            .with_series_index(rec.series_index.as_deref()),
             WorkIdentity::new(
                 existing.asin.as_deref(),
                 existing.isbn.as_deref(),
                 &existing.title,
                 existing.authors.as_deref(),
-            ),
+            )
+            .with_series(existing.series.as_deref())
+            .with_series_index(existing.series_index.as_deref()),
         ) {
             Some(key.clone())
         } else {
@@ -1016,37 +1110,7 @@ pub fn listening_engagement(row: &ListeningProgressRecord) -> f64 {
     (from_hours + from_completion).clamp(0.0, 6.0)
 }
 
-/// Parse Audible/Chirp-style series indexes (`"1"`, `"1.5"`, `"Book 2"`, `"02"`).
-#[must_use]
-pub fn parse_series_index(raw: Option<&str>) -> Option<f64> {
-    let raw = raw?.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    if let Ok(n) = raw.parse::<f64>() {
-        return Some(n);
-    }
-    // Pull the first number-like token.
-    let mut num = String::new();
-    let mut seen_digit = false;
-    let mut seen_dot = false;
-    for c in raw.chars() {
-        if c.is_ascii_digit() {
-            num.push(c);
-            seen_digit = true;
-        } else if c == '.' && seen_digit && !seen_dot {
-            num.push(c);
-            seen_dot = true;
-        } else if seen_digit {
-            break;
-        }
-    }
-    if num.is_empty() || num == "." {
-        None
-    } else {
-        num.parse().ok()
-    }
-}
+pub use crate::identity::parse_series_index;
 
 async fn seed_embedding_centroid(
     library: &LibraryStore,

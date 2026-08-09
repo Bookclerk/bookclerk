@@ -489,25 +489,16 @@ mod tests {
 
     fn rec(title: &str, score: f64, categories: &[&str]) -> Recommendation {
         let mut r = Recommendation {
-            work_id: None,
             title: title.into(),
             authors: Some("Ada Author".into()),
-            narrators: None,
             series: Some("Test Series".into()),
             series_index: Some("3".into()),
             asin: Some(title.into()),
-            isbn: None,
             score,
-            reasons: Vec::new(),
-            purchase_hints: Vec::new(),
-            from_request: false,
-            request_uuid: None,
             candidate_source: Some("audible".into()),
             candidate_product_id: Some(title.into()),
-            store_editions: Vec::new(),
-            seed_categories: None,
             categories: categories.iter().map(|s| (*s).to_string()).collect(),
-            work_key: String::new(),
+            ..Default::default()
         };
         r.work_key = recommendation_map_key(&r);
         r

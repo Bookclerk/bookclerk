@@ -32,10 +32,19 @@ fn spawn_scan_loop(state: Arc<AppState>) {
             info!(?sleep_for, "scheduler sleeping until next scan");
             tokio::time::sleep(sleep_for).await;
 
+            let started = std::time::Instant::now();
             match run_scan(&state, None).await {
-                Ok(detail) => info!(%detail, "scheduled scan complete"),
+                Ok(detail) => info!(
+                    %detail,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "scheduled scan complete"
+                ),
                 Err(err) => {
-                    error!(error = %err, "scheduled scan failed");
+                    error!(
+                        error = %err,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "scheduled scan failed"
+                    );
                     if let Some(diag) = bookclerk_config::diagnostics_global() {
                         diag.request_upload("job_failed");
                     }
@@ -47,10 +56,19 @@ fn spawn_scan_loop(state: Arc<AppState>) {
                 cfg.library.auto_acquire
             };
             if auto {
+                let started = std::time::Instant::now();
                 match run_acquire(&state, None, None).await {
-                    Ok(detail) => info!(%detail, "scheduled auto-acquire complete"),
+                    Ok(detail) => info!(
+                        %detail,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "scheduled auto-acquire complete"
+                    ),
                     Err(err) => {
-                        error!(error = %err, "scheduled auto-acquire failed");
+                        error!(
+                            error = %err,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "scheduled auto-acquire failed"
+                        );
                         if let Some(diag) = bookclerk_config::diagnostics_global() {
                             diag.request_upload("job_failed");
                         }
@@ -78,18 +96,23 @@ fn spawn_listen_sync_loop(state: Arc<AppState>) {
             info!(?sleep_for, "scheduler sleeping until next listening sync");
             tokio::time::sleep(sleep_for).await;
 
+            let started = std::time::Instant::now();
             let library = state.library.read().await.clone();
             let summary = state
                 .integrations
                 .sync_listening_progress_all(&library)
                 .await;
             if summary.by_provider.is_empty() {
-                info!("scheduled listening sync skipped (no capable integrations)");
+                info!(
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "scheduled listening sync skipped (no capable integrations)"
+                );
                 continue;
             }
             info!(
                 upserted = summary.upserted,
                 providers = summary.by_provider.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
                 "scheduled listening sync complete"
             );
             for p in &summary.by_provider {
