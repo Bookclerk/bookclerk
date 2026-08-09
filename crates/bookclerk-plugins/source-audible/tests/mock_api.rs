@@ -3,7 +3,7 @@
 use audible_rs::api::client::Client;
 use audible_rs::auth::Authenticator;
 use bookclerk_config::AudioQuality;
-use bookclerk_library::LibraryStore;
+
 use bookclerk_plugin_source_audible::{
     fetch_chapter_info, request_content_license, scan_account_into_library, summarize_license,
 };
@@ -139,7 +139,9 @@ async fn scan_account_upserts_library_rows() {
         .mount(&server)
         .await;
 
-    let library = LibraryStore::open_in_memory().await.unwrap();
+    let library = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     let scope = library.scope("audible");
     library
         .upsert_account("amzn1.account.TEST", "us", Some("Main"), true, "audible")

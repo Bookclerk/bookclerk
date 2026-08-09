@@ -12,6 +12,10 @@ pub struct Model {
     pub identity_id: Option<i64>,
     pub default_view: String,
     pub disabled_shelves_json: String,
+    pub discover_sort: String,
+    pub discover_sort_dir: String,
+    pub discover_language: Option<String>,
+    pub discover_excluded_sources_json: String,
     pub updated_at: String,
 }
 

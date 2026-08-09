@@ -22,8 +22,8 @@ mod redact;
 mod settings;
 
 pub use database::{
-    DatabaseConfig, DatabaseD1Config, DatabasePluginKind, DatabasePostgresConfig,
-    DatabaseSqliteConfig,
+    resolve_d1_api_token, resolve_postgres_url, DatabaseConfig, DatabaseD1Config,
+    DatabasePluginKind, DatabasePostgresConfig, DatabaseSqliteConfig,
 };
 pub use desktop::graphical_session_available;
 pub use diagnostics::{

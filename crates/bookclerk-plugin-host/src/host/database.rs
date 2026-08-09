@@ -1,18 +1,17 @@
 //! [`ProxyDatabaseTrait`] adapter over an external database plugin process.
 //!
-//! The host opens `library.db` (SQLite) or injects remote credentials (D1 /
-//! Postgres), then forwards SeaORM proxy calls over JSON-RPC. The guest never
-//! receives `master.key` or the files-dir root listing.
+//! The host mediates credentials and forwards SeaORM proxy calls over JSON-RPC.
+//! Engine connect / migrate / proxy quirks live entirely in the database guest.
+//! There is no in-process fallback.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bookclerk_config::{Config, DatabasePluginKind};
-use bookclerk_library::{resolve_d1_api_token, resolve_postgres_url};
+use bookclerk_config::{resolve_d1_api_token, resolve_postgres_url, Config, DatabasePluginKind};
 use bookclerk_plugin_sdk::{
     exec_result_from_dto, methods, proxy_rows_from_dto, statement_to_dto, DbConnectParams,
-    ExecResultDto, QueryResultDto,
+    DbConnectResult, ExecResultDto, QueryResultDto,
 };
 use sea_orm::{
     Database, DatabaseConnection, DbBackend, DbErr, ProxyDatabaseTrait, ProxyExecResult, ProxyRow,
@@ -29,7 +28,6 @@ use crate::{PluginError, Result as PluginResult};
 #[derive(Clone)]
 pub struct ExternalDatabase {
     client: Arc<PluginClient>,
-    backend: DbBackend,
     plugin_id: String,
     plugin_data_dir: std::path::PathBuf,
 }
@@ -40,11 +38,8 @@ impl ExternalDatabase {
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
         let client = Arc::new(PluginClient::spawn(plugin, config, config_json).await?);
-        let backend = db_backend_for_id(&plugin.manifest.id)
-            .map_err(|err| PluginError::Other(anyhow::anyhow!(err.to_string())))?;
         Ok(Self {
             client,
-            backend,
             plugin_id: plugin.manifest.id.clone(),
             plugin_data_dir: plugin_data_dir(config, &plugin.manifest.id),
         })
@@ -52,41 +47,41 @@ impl ExternalDatabase {
 
     /// Open the library connection through the guest (`db.connect` + optional fd pass).
     pub async fn connect(&self, config: &Config) -> Result<DatabaseConnection, DbErr> {
-        let mut params = connect_params(config, &self.plugin_id, &self.plugin_data_dir)?;
-        if self.plugin_id.eq_ignore_ascii_case("sqlite") {
+        let params = connect_params(config, &self.plugin_id, &self.plugin_data_dir)?;
+        let value = serde_json::to_value(&params).map_err(|err| DbErr::Custom(err.to_string()))?;
+
+        let connect_result: DbConnectResult = if self.plugin_id.eq_ignore_ascii_case("sqlite") {
             let path = config.database.sqlite_path(&config.paths().files_dir);
-            if !self.client.has_side_channel() {
-                params.sqlite_path = Some(path.display().to_string());
-            }
-            let value =
-                serde_json::to_value(&params).map_err(|err| DbErr::Custom(err.to_string()))?;
-            if self.client.has_side_channel() || self.client.has_acl_grants() {
+            let raw = if self.client.has_side_channel() || self.client.has_acl_grants() {
                 self.client
                     .call_raw_with_db_file(methods::DB_CONNECT, value, &path)
                     .await
-                    .map_err(map_rpc_err)?;
+                    .map_err(map_rpc_err)?
             } else {
                 self.client
                     .call_raw(methods::DB_CONNECT, value)
                     .await
-                    .map_err(map_rpc_err)?;
-            }
+                    .map_err(map_rpc_err)?
+            };
+            serde_json::from_value(raw)
+                .map_err(|err| DbErr::Custom(format!("db.connect result: {err}")))?
         } else {
-            let value =
-                serde_json::to_value(&params).map_err(|err| DbErr::Custom(err.to_string()))?;
             self.client
-                .call_raw(methods::DB_CONNECT, value)
+                .call(methods::DB_CONNECT, value)
                 .await
-                .map_err(map_rpc_err)?;
-        }
+                .map_err(map_rpc_err)?
+        };
+
         self.client
             .call::<Value>(methods::DB_PING, Value::Null)
             .await
             .map_err(map_rpc_err)?;
+
+        let backend = dialect_to_backend(&connect_result.dialect)?;
         let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(RpcDatabaseProxy {
             client: self.client.clone(),
         }));
-        Database::connect_proxy(self.backend, proxy).await
+        Database::connect_proxy(backend, proxy).await
     }
 }
 
@@ -105,10 +100,8 @@ impl DatabaseRegistry {
 
 /// Discover and spawn the external database plugin matching `[database].plugin`.
 ///
-/// Local SQLite (`plugin = "sqlite"`) is normally loaded from a platform-shipped
-/// guest under `plugins/sqlite/` (fd-pass for `library.db`). When the guest is
-/// missing or fails to start, [`open_library_store`] falls back to in-process
-/// [`bookclerk_library::LibraryStore::open_from_config`].
+/// Guests are required: when the matching database plugin is missing or fails to
+/// start, [`open_library_store`] returns an error (no in-process engine).
 pub async fn load_external_database(config: &Config) -> PluginResult<DatabaseRegistry> {
     let mut registry = DatabaseRegistry::default();
     let active = config.database.plugin.trim().to_ascii_lowercase();
@@ -129,31 +122,37 @@ pub async fn load_external_database(config: &Config) -> PluginResult<DatabaseReg
                 registry.active = Some(Arc::new(db));
             }
             Err(err) => {
-                tracing::warn!(
-                    id = %plugin.manifest.id,
-                    %err,
-                    "failed to start external database plugin; falling back to in-process backend"
-                );
+                return Err(PluginError::Other(anyhow::anyhow!(
+                    "failed to start database plugin `{active}`: {err}"
+                )));
             }
         }
         break;
     }
+    if registry.active.is_none() {
+        return Err(PluginError::Other(anyhow::anyhow!(
+            "database plugin `{active}` not found — stage plugins/{} (see docs/database.md)",
+            active
+        )));
+    }
     Ok(registry)
 }
 
-/// Open [`LibraryStore`] via external plugin or built-in backend.
+/// Open [`LibraryStore`] via the external database guest (required).
 pub async fn open_library_store(
     config: &Config,
     registry: &DatabaseRegistry,
 ) -> bookclerk_library::Result<bookclerk_library::LibraryStore> {
-    if let Some(ext) = registry.active() {
-        let db = ext
-            .connect(config)
-            .await
-            .map_err(bookclerk_library::LibraryError::Orm)?;
-        return Ok(bookclerk_library::LibraryStore::from_connection(db));
-    }
-    bookclerk_library::LibraryStore::open_from_config(config).await
+    let ext = registry.active().ok_or_else(|| {
+        bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+            "no active database plugin — stage and enable [database].plugin"
+        ))
+    })?;
+    let db = ext
+        .connect(config)
+        .await
+        .map_err(bookclerk_library::LibraryError::Orm)?;
+    Ok(bookclerk_library::LibraryStore::from_connection(db))
 }
 
 /// Open the library for a specific `[database].plugin` id (ignoring the active config value).
@@ -239,41 +238,39 @@ fn connect_params(
     plugin_id: &str,
     plugin_data_dir: &Path,
 ) -> Result<DbConnectParams, DbErr> {
-    let backend = plugin_id.to_ascii_lowercase();
-    let mut params = DbConnectParams {
-        plugin_data_dir: plugin_data_dir.display().to_string(),
-        backend: backend.clone(),
-        account_id: None,
-        database_id: None,
-        api_base: None,
-        d1_api_token: None,
-        postgres_url: None,
-        sqlite_path: None,
-    };
-    match DatabasePluginKind::parse(&backend) {
-        Some(DatabasePluginKind::Sqlite) => Ok(params),
-        Some(DatabasePluginKind::D1) => {
-            params.account_id = Some(config.database.d1.account_id.clone());
-            params.database_id = Some(config.database.d1.database_id.clone());
-            params.api_base = Some(config.database.d1.api_base.clone());
-            params.d1_api_token = Some(resolve_d1_api_token(config).map_err(map_library_err)?);
-            Ok(params)
+    let data_dir = plugin_data_dir.display().to_string();
+    match DatabasePluginKind::parse(plugin_id) {
+        Some(DatabasePluginKind::Sqlite) => {
+            let path = config.database.sqlite_path(&config.paths().files_dir);
+            Ok(DbConnectParams::Sqlite {
+                plugin_data_dir: data_dir,
+                sqlite_path: Some(path.display().to_string()),
+            })
         }
-        Some(DatabasePluginKind::Postgres) => {
-            params.postgres_url = Some(resolve_postgres_url(config).map_err(map_library_err)?);
-            Ok(params)
-        }
+        Some(DatabasePluginKind::D1) => Ok(DbConnectParams::D1 {
+            plugin_data_dir: data_dir,
+            account_id: config.database.d1.account_id.clone(),
+            database_id: config.database.d1.database_id.clone(),
+            api_base: config.database.d1.api_base.clone(),
+            api_token: resolve_d1_api_token().map_err(map_config_err)?,
+        }),
+        Some(DatabasePluginKind::Postgres) => Ok(DbConnectParams::Postgres {
+            plugin_data_dir: data_dir,
+            url: resolve_postgres_url(config).map_err(map_config_err)?,
+        }),
         None => Err(DbErr::Custom(format!(
             "unknown database plugin `{plugin_id}`"
         ))),
     }
 }
 
-fn db_backend_for_id(id: &str) -> Result<DbBackend, DbErr> {
-    match DatabasePluginKind::parse(id) {
-        Some(DatabasePluginKind::Postgres) => Ok(DbBackend::Postgres),
-        Some(DatabasePluginKind::Sqlite) | Some(DatabasePluginKind::D1) => Ok(DbBackend::Sqlite),
-        None => Err(DbErr::Custom(format!("unknown database plugin `{id}`"))),
+fn dialect_to_backend(dialect: &str) -> Result<DbBackend, DbErr> {
+    match dialect.trim().to_ascii_lowercase().as_str() {
+        "sqlite" => Ok(DbBackend::Sqlite),
+        "postgres" | "postgresql" => Ok(DbBackend::Postgres),
+        other => Err(DbErr::Custom(format!(
+            "database plugin returned unknown dialect `{other}`"
+        ))),
     }
 }
 
@@ -285,7 +282,7 @@ fn map_json_err(err: serde_json::Error) -> DbErr {
     DbErr::Custom(format!("serialize database RPC params: {err}"))
 }
 
-fn map_library_err(err: bookclerk_library::LibraryError) -> DbErr {
+fn map_config_err(err: bookclerk_config::ConfigError) -> DbErr {
     DbErr::Custom(err.to_string())
 }
 
@@ -298,9 +295,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_plugin_ids_to_backends() {
-        assert_eq!(db_backend_for_id("sqlite").unwrap(), DbBackend::Sqlite);
-        assert_eq!(db_backend_for_id("d1").unwrap(), DbBackend::Sqlite);
-        assert_eq!(db_backend_for_id("postgres").unwrap(), DbBackend::Postgres);
+    fn maps_dialects() {
+        assert_eq!(dialect_to_backend("sqlite").unwrap(), DbBackend::Sqlite);
+        assert_eq!(dialect_to_backend("postgres").unwrap(), DbBackend::Postgres);
     }
 }

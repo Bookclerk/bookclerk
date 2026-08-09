@@ -716,14 +716,16 @@ fn toml_to_json(value: &toml::Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bookclerk_library::{configure_master_key, LibraryStore};
+    use bookclerk_library::configure_master_key;
     use tempfile::tempdir;
 
     #[tokio::test]
     async fn scan_credentials_only_from_this_scope() {
         let dir = tempdir().unwrap();
         configure_master_key(dir.path()).unwrap();
-        let store = LibraryStore::open_in_memory().await.unwrap();
+        let store = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         let echo = store.scope("echo");
         let other = store.scope("other");
 
@@ -752,7 +754,9 @@ mod tests {
     async fn scan_credentials_skips_scan_disabled_unless_explicit() {
         let dir = tempdir().unwrap();
         configure_master_key(dir.path()).unwrap();
-        let store = LibraryStore::open_in_memory().await.unwrap();
+        let store = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         let echo = store.scope("echo");
         echo.upsert_account("a1", "us", None, false).await.unwrap();
         echo.save_credentials_json("a1", &serde_json::json!({"t": 1}))

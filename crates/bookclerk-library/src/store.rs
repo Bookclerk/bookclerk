@@ -1,15 +1,12 @@
 //! SeaORM-backed, async library store.
 //!
-//! [`LibraryStore`] holds a [`DatabaseConnection`] (local rusqlite `sqlite`
-//! proxy, Cloudflare `d1` proxy, or native `postgres`) and drives the majority
-//! of CRUD through the typed SeaORM [`entities`](crate::entities)
-//! (`Entity::find`, `ActiveModel`, `QueryFilter`). A handful of upserts with
-//! COALESCE/precedence semantics are expressed as load-then-merge over the same
-//! entities so they stay backend-portable. Timestamps live in the DB as RFC
-//! 3339 `TEXT`; records expose `chrono::DateTime<Utc>` and conversions happen at
-//! the record boundary.
-
-use std::path::Path;
+//! [`LibraryStore`] holds a [`DatabaseConnection`] opened by the database plugin
+//! (SQLite / D1 / Postgres guest) and drives the majority of CRUD through the
+//! typed SeaORM [`entities`](crate::entities) (`Entity::find`, `ActiveModel`,
+//! `QueryFilter`). A handful of upserts with COALESCE/precedence semantics are
+//! expressed as load-then-merge over the same entities so they stay
+//! backend-portable. Timestamps live in the DB as RFC 3339 `TEXT`; records
+//! expose `chrono::DateTime<Utc>` and conversions happen at the record boundary.
 
 use chrono::Utc;
 use sea_orm::{
@@ -20,17 +17,17 @@ use sea_orm::{
 };
 use uuid::Uuid;
 
-use crate::db::{connect_from_config, connect_sqlite, connect_sqlite_memory};
 use crate::entities::{
     account_links, accounts, books, claim_tickets, embeddings, ignored_titles, listening_progress,
-    portal_identities, portal_sessions, saved_filters, title_requests, user_preferences,
-    work_editions, works,
+    portal_identities, portal_sessions, saved_filters, title_request_sources, title_requests,
+    user_preferences, work_editions, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
     AccountRecord, AcquireStatus, BookRecord, GlobalQueueEntry, ListeningProgressRecord,
-    RequestStatus, TitleRequestRecord, UserPreferences, WorkRecord,
+    RequestStatus, TitleRequestRecord, TitleRequestSourceRecord, UserPreferences, WorkRecord,
 };
+use crate::wishlist_merge::apply_merged_sources;
 
 /// Handle to the Bookclerk library database.
 ///
@@ -48,28 +45,11 @@ impl std::fmt::Debug for LibraryStore {
 }
 
 impl LibraryStore {
-    /// Open (or create) the SQLite database at `path` and run migrations.
-    pub async fn open(path: &Path) -> Result<Self> {
-        let db = connect_sqlite(path).await?;
-        Ok(Self { db })
-    }
-
-    /// Open the library using `[database]` plugin settings.
+    /// Wrap an already-opened (and migrated) SeaORM connection.
     ///
-    /// Works for `sqlite`, Cloudflare `d1`, and `postgres`; the store query API
-    /// is identical because every backend is a SeaORM [`DatabaseConnection`].
-    pub async fn open_from_config(config: &bookclerk_config::Config) -> Result<Self> {
-        let db = connect_from_config(config).await?;
-        Ok(Self { db })
-    }
-
-    /// In-memory database (tests).
-    pub async fn open_in_memory() -> Result<Self> {
-        let db = connect_sqlite_memory().await?;
-        Ok(Self { db })
-    }
-
-    /// Wrap an already-opened SeaORM connection.
+    /// Prefer the database plugin host (`open_library_store`) or, in tests,
+    /// `bookclerk_plugin_database::sqlite::open_memory` — this crate does not
+    /// open engine-specific connections.
     #[must_use]
     pub fn from_connection(db: DatabaseConnection) -> Self {
         Self { db }
@@ -604,6 +584,18 @@ impl LibraryStore {
     /// ASIN must not wipe Audible enrichment). Expressed as load-then-merge over
     /// the `books` entity so the precedence logic is explicit and portable.
     pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
+        // Only clone when HTML entities are present — hot scan paths stay allocation-light.
+        let decoded;
+        let book = if book.needs_html_entity_decode() {
+            decoded = {
+                let mut b = book.clone();
+                b.decode_html_entities();
+                b
+            };
+            &decoded
+        } else {
+            book
+        };
         let now = now_str();
         let existing = books::Entity::find()
             .filter(books::Column::Source.eq(book.source.as_str()))
@@ -1356,6 +1348,17 @@ impl LibraryStore {
     }
 
     pub async fn create_title_request(&self, req: &NewTitleRequest) -> Result<TitleRequestRecord> {
+        let decoded;
+        let req = if req.needs_html_entity_decode() {
+            decoded = {
+                let mut r = req.clone();
+                r.decode_html_entities();
+                r
+            };
+            &decoded
+        } else {
+            req
+        };
         let now = now_str();
         let uuid = req
             .uuid
@@ -1375,7 +1378,9 @@ impl LibraryStore {
         // Idempotent wishlist: same wisher + exact work_key, or same bibliographic
         // identity under a different key (e.g. soft:… vs asin:… / isbn:…).
         if let Some(existing) = self.find_open_wishlist(req.identity_id, &work_key).await? {
-            return Ok(existing);
+            return self
+                .backfill_title_request_cover(&existing, req.cover_url.as_deref())
+                .await;
         }
         if let Some(existing) = self
             .find_open_wishlist_matching(
@@ -1388,7 +1393,9 @@ impl LibraryStore {
             )
             .await?
         {
-            return Ok(existing);
+            return self
+                .backfill_title_request_cover(&existing, req.cover_url.as_deref())
+                .await;
         }
 
         let am = title_requests::ActiveModel {
@@ -1405,11 +1412,243 @@ impl LibraryStore {
             work_id: Set(req.work_id.clone()),
             work_key: Set(work_key),
             resolved_book_uuid: Set(req.resolved_book_uuid.clone()),
+            cover_url: Set(req.cover_url.clone()),
             created_at: Set(now.clone()),
             updated_at: Set(now),
         };
         let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(map_request(model))
+        self.get_title_request_by_id(model.id)
+            .await?
+            .ok_or_else(|| LibraryError::NotFound(model.uuid))
+    }
+
+    /// Upsert per-storefront snapshots for a wishlist row, then return the merged record.
+    pub async fn upsert_title_request_sources(
+        &self,
+        title_request_id: i64,
+        sources: &[NewTitleRequestSource],
+    ) -> Result<TitleRequestRecord> {
+        let now = now_str();
+        for src in sources {
+            let decoded;
+            let src = if src.needs_html_entity_decode() {
+                decoded = {
+                    let mut s = src.clone();
+                    s.decode_html_entities();
+                    s
+                };
+                &decoded
+            } else {
+                src
+            };
+            let source = src.source.trim().to_ascii_lowercase();
+            let product_id = src.product_id.trim();
+            if source.is_empty() || product_id.is_empty() {
+                continue;
+            }
+            let existing = title_request_sources::Entity::find()
+                .filter(title_request_sources::Column::TitleRequestId.eq(title_request_id))
+                .filter(title_request_sources::Column::Source.eq(&source))
+                .filter(title_request_sources::Column::ProductId.eq(product_id))
+                .one(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            if let Some(model) = existing {
+                let am = merged_source_active(model, src, &now);
+                am.update(&self.db).await.map_err(LibraryError::Orm)?;
+            } else {
+                let am = title_request_sources::ActiveModel {
+                    id: NotSet,
+                    title_request_id: Set(title_request_id),
+                    source: Set(source),
+                    product_id: Set(product_id.to_string()),
+                    title: Set(trim_opt(src.title.as_deref())),
+                    subtitle: Set(trim_opt(src.subtitle.as_deref())),
+                    authors: Set(trim_opt(src.authors.as_deref())),
+                    narrators: Set(trim_opt(src.narrators.as_deref())),
+                    series: Set(trim_opt(src.series.as_deref())),
+                    series_index: Set(trim_opt(src.series_index.as_deref())),
+                    asin: Set(trim_opt(src.asin.as_deref())),
+                    isbn: Set(trim_opt(src.isbn.as_deref())),
+                    description: Set(trim_opt(src.description.as_deref())),
+                    publisher: Set(trim_opt(src.publisher.as_deref())),
+                    length_minutes: Set(src.length_minutes),
+                    published_at: Set(trim_opt(src.published_at.as_deref())),
+                    categories: Set(trim_opt(src.categories.as_deref())),
+                    language: Set(trim_opt(src.language.as_deref())),
+                    cover_url: Set(trim_opt(src.cover_url.as_deref())),
+                    url: Set(trim_opt(src.url.as_deref())),
+                    price_cents: Set(src.price_cents),
+                    currency: Set(trim_opt(src.currency.as_deref())),
+                    price_label: Set(trim_opt(src.price_label.as_deref())),
+                    list_price_cents: Set(src.list_price_cents),
+                    list_price_label: Set(trim_opt(src.list_price_label.as_deref())),
+                    member_price_cents: Set(src.member_price_cents),
+                    member_price_label: Set(trim_opt(src.member_price_label.as_deref())),
+                    observed_at: Set(Some(now.clone())),
+                    created_at: Set(now.clone()),
+                    updated_at: Set(now.clone()),
+                };
+                am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+            }
+        }
+        let mut row = self
+            .get_title_request_by_id(title_request_id)
+            .await?
+            .ok_or_else(|| LibraryError::NotFound(title_request_id.to_string()))?;
+        // Persist merged identity fields onto the parent when still blank.
+        if let Some(model) = title_requests::Entity::find_by_id(title_request_id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        {
+            let mut am: title_requests::ActiveModel = model.clone().into();
+            let mut dirty = false;
+            if model
+                .cover_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_none()
+            {
+                if let Some(c) = row
+                    .cover_url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    am.cover_url = Set(Some(c.to_string()));
+                    dirty = true;
+                }
+            }
+            if model
+                .asin
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_none()
+            {
+                if let Some(a) = row.asin.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    am.asin = Set(Some(a.to_string()));
+                    dirty = true;
+                }
+            }
+            if model
+                .isbn
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_none()
+            {
+                if let Some(i) = row.isbn.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    am.isbn = Set(Some(i.to_string()));
+                    dirty = true;
+                }
+            }
+            if dirty {
+                am.updated_at = Set(now_str());
+                am.update(&self.db).await.map_err(LibraryError::Orm)?;
+                row = self
+                    .get_title_request_by_id(title_request_id)
+                    .await?
+                    .unwrap_or(row);
+            }
+        }
+        Ok(row)
+    }
+
+    pub async fn list_title_request_sources(
+        &self,
+        title_request_id: i64,
+    ) -> Result<Vec<TitleRequestSourceRecord>> {
+        Ok(title_request_sources::Entity::find()
+            .filter(title_request_sources::Column::TitleRequestId.eq(title_request_id))
+            .order_by_asc(title_request_sources::Column::Source)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_source)
+            .collect())
+    }
+
+    async fn get_title_request_by_id(&self, id: i64) -> Result<Option<TitleRequestRecord>> {
+        let Some(model) = title_requests::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        let mut row = map_request(model);
+        row.sources = self.list_title_request_sources(id).await?;
+        apply_merged_sources(&mut row);
+        Ok(Some(row))
+    }
+
+    async fn attach_sources_batch(
+        &self,
+        rows: Vec<TitleRequestRecord>,
+    ) -> Result<Vec<TitleRequestRecord>> {
+        if rows.is_empty() {
+            return Ok(rows);
+        }
+        let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        let all = title_request_sources::Entity::find()
+            .filter(title_request_sources::Column::TitleRequestId.is_in(ids))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let mut by_id: std::collections::HashMap<i64, Vec<TitleRequestSourceRecord>> =
+            std::collections::HashMap::new();
+        for m in all {
+            by_id
+                .entry(m.title_request_id)
+                .or_default()
+                .push(map_source(m));
+        }
+        Ok(rows
+            .into_iter()
+            .map(|mut row| {
+                row.sources = by_id.remove(&row.id).unwrap_or_default();
+                apply_merged_sources(&mut row);
+                row
+            })
+            .collect())
+    }
+
+    /// Fill `cover_url` on an open wishlist row when the client later supplies one.
+    async fn backfill_title_request_cover(
+        &self,
+        existing: &TitleRequestRecord,
+        cover_url: Option<&str>,
+    ) -> Result<TitleRequestRecord> {
+        let cover = cover_url.map(str::trim).filter(|s| !s.is_empty());
+        let Some(cover) = cover else {
+            return Ok(existing.clone());
+        };
+        if existing
+            .cover_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_some()
+        {
+            return Ok(existing.clone());
+        }
+        let model = title_requests::Entity::find_by_id(existing.id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound(existing.uuid.clone()))?;
+        let mut am: title_requests::ActiveModel = model.into();
+        am.cover_url = Set(Some(cover.to_string()));
+        am.updated_at = Set(now_str());
+        let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        let mut row = map_request(model);
+        row.sources = self.list_title_request_sources(row.id).await?;
+        apply_merged_sources(&mut row);
+        Ok(row)
     }
 
     /// Open wishlist row for this identity + work key, if any.
@@ -1430,11 +1669,13 @@ impl LibraryStore {
             Some(id) => query.filter(title_requests::Column::IdentityId.eq(id)),
             None => query.filter(title_requests::Column::IdentityId.is_null()),
         };
-        Ok(query
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(map_request))
+        let Some(model) = query.one(&self.db).await.map_err(LibraryError::Orm)? else {
+            return Ok(None);
+        };
+        let mut row = map_request(model);
+        row.sources = self.list_title_request_sources(row.id).await?;
+        apply_merged_sources(&mut row);
+        Ok(Some(row))
     }
 
     /// Open wishlist row that matches bibliographic identity even when `work_key` differs.
@@ -1475,13 +1716,14 @@ impl LibraryStore {
             Some(id) => query.filter(title_requests::Column::IdentityId.eq(id)),
             None => query.filter(title_requests::Column::IdentityId.is_null()),
         };
-        Ok(query
+        let rows = query
             .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?
             .into_iter()
             .map(map_request)
-            .collect())
+            .collect();
+        self.attach_sources_batch(rows).await
     }
 
     /// Global request queue: open wishes grouped by `work_key`.
@@ -1511,6 +1753,19 @@ impl LibraryStore {
                         authors: row.authors,
                         asin: row.asin,
                         isbn: row.isbn,
+                        cover_url: row.cover_url,
+                        description: row.description,
+                        subtitle: row.subtitle,
+                        narrators: row.narrators,
+                        series: row.series,
+                        series_index: row.series_index,
+                        publisher: row.publisher,
+                        length_minutes: row.length_minutes,
+                        published_at: row.published_at,
+                        genres: row.genres,
+                        language: row.language,
+                        store_editions: row.store_editions,
+                        purchase_hints: row.purchase_hints,
                         wish_count: 1,
                         sample_uuids: vec![row.uuid],
                         first_requested_at: row.created_at,
@@ -1522,6 +1777,55 @@ impl LibraryStore {
                     entry.wish_count += 1;
                     if entry.sample_uuids.len() < 8 {
                         entry.sample_uuids.push(row.uuid);
+                    }
+                    if entry.cover_url.as_deref().unwrap_or("").trim().is_empty()
+                        && !row.cover_url.as_deref().unwrap_or("").trim().is_empty()
+                    {
+                        entry.cover_url = row.cover_url.clone();
+                    }
+                    entry.description = crate::wishlist_merge::pick_better_description(
+                        entry.description.as_deref(),
+                        row.description.as_deref(),
+                    );
+                    for ed in row.store_editions {
+                        if !entry
+                            .store_editions
+                            .iter()
+                            .any(|e| e.source == ed.source && e.product_id == ed.product_id)
+                        {
+                            entry.store_editions.push(ed);
+                        }
+                    }
+                    for hint in row.purchase_hints {
+                        if let Some(existing) = entry
+                            .purchase_hints
+                            .iter_mut()
+                            .find(|h| h.source == hint.source && h.product_id == hint.product_id)
+                        {
+                            if existing.price_cents.is_none() {
+                                existing.price_cents = hint.price_cents;
+                            }
+                            if existing
+                                .url
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .is_none()
+                            {
+                                existing.url = hint.url;
+                            }
+                            if existing.price_label.is_none() {
+                                existing.price_label = hint.price_label;
+                            }
+                            if existing.list_price_cents.is_none() {
+                                existing.list_price_cents = hint.list_price_cents;
+                            }
+                            if existing.member_price_cents.is_none() {
+                                existing.member_price_cents = hint.member_price_cents;
+                            }
+                        } else {
+                            entry.purchase_hints.push(hint);
+                        }
                     }
                     if row.created_at < entry.first_requested_at {
                         entry.first_requested_at = row.created_at;
@@ -1538,6 +1842,36 @@ impl LibraryStore {
                         }
                         if row.isbn.is_some() {
                             entry.isbn = row.isbn;
+                        }
+                        if !row.cover_url.as_deref().unwrap_or("").trim().is_empty() {
+                            entry.cover_url = row.cover_url;
+                        }
+                        if row.subtitle.is_some() {
+                            entry.subtitle = row.subtitle;
+                        }
+                        if row.narrators.is_some() {
+                            entry.narrators = row.narrators;
+                        }
+                        if row.series.is_some() {
+                            entry.series = row.series;
+                        }
+                        if row.series_index.is_some() {
+                            entry.series_index = row.series_index;
+                        }
+                        if row.publisher.is_some() {
+                            entry.publisher = row.publisher;
+                        }
+                        if row.length_minutes.is_some() {
+                            entry.length_minutes = row.length_minutes;
+                        }
+                        if row.published_at.is_some() {
+                            entry.published_at = row.published_at;
+                        }
+                        if row.genres.is_some() {
+                            entry.genres = row.genres;
+                        }
+                        if row.language.is_some() {
+                            entry.language = row.language;
                         }
                     }
                 }
@@ -1556,12 +1890,18 @@ impl LibraryStore {
         &self,
         uuid: &str,
     ) -> Result<Option<TitleRequestRecord>> {
-        Ok(title_requests::Entity::find()
+        let Some(model) = title_requests::Entity::find()
             .filter(title_requests::Column::Uuid.eq(uuid))
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
-            .map(map_request))
+        else {
+            return Ok(None);
+        };
+        let mut row = map_request(model);
+        row.sources = self.list_title_request_sources(row.id).await?;
+        apply_merged_sources(&mut row);
+        Ok(Some(row))
     }
 
     pub async fn list_title_requests(
@@ -1573,13 +1913,14 @@ impl LibraryStore {
         if let Some(status) = status {
             query = query.filter(title_requests::Column::Status.eq(status.as_str()));
         }
-        Ok(query
+        let rows = query
             .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?
             .into_iter()
             .map(map_request)
-            .collect())
+            .collect();
+        self.attach_sources_batch(rows).await
     }
 
     pub async fn update_title_request_status(
@@ -1716,16 +2057,29 @@ impl LibraryStore {
     }
 
     /// Insert or replace preferences for a subject (operator or portal identity).
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_user_preferences(
         &self,
         subject_key: &str,
         identity_id: Option<i64>,
         default_view: &str,
         disabled_shelves: &[String],
+        discover_sort: &str,
+        discover_sort_dir: &str,
+        discover_language: Option<&str>,
+        discover_excluded_sources: &[String],
     ) -> Result<UserPreferences> {
         let now = now_str();
         let shelves_json =
             serde_json::to_string(disabled_shelves).unwrap_or_else(|_| String::from("[]"));
+        let excluded_json =
+            serde_json::to_string(discover_excluded_sources).unwrap_or_else(|_| String::from("[]"));
+        let sort = normalize_discover_sort(discover_sort);
+        let sort_dir = normalize_discover_sort_dir(discover_sort_dir);
+        let language = discover_language
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let existing = user_preferences::Entity::find()
             .filter(user_preferences::Column::SubjectKey.eq(subject_key))
             .one(&self.db)
@@ -1738,6 +2092,10 @@ impl LibraryStore {
             }
             am.default_view = Set(default_view.to_string());
             am.disabled_shelves_json = Set(shelves_json);
+            am.discover_sort = Set(sort);
+            am.discover_sort_dir = Set(sort_dir);
+            am.discover_language = Set(language);
+            am.discover_excluded_sources_json = Set(excluded_json);
             am.updated_at = Set(now);
             am.update(&self.db).await.map_err(LibraryError::Orm)?
         } else {
@@ -1747,6 +2105,10 @@ impl LibraryStore {
                 identity_id: Set(identity_id),
                 default_view: Set(default_view.to_string()),
                 disabled_shelves_json: Set(shelves_json),
+                discover_sort: Set(sort),
+                discover_sort_dir: Set(sort_dir),
+                discover_language: Set(language),
+                discover_excluded_sources_json: Set(excluded_json),
                 updated_at: Set(now),
             };
             am.insert(&self.db).await.map_err(LibraryError::Orm)?
@@ -1836,6 +2198,47 @@ pub struct NewBook {
 }
 
 impl NewBook {
+    /// True when any human-readable field may contain an HTML entity.
+    #[must_use]
+    pub fn needs_html_entity_decode(&self) -> bool {
+        crate::str_maybe_html_entity(&self.title)
+            || self
+                .authors
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .narrators
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .series
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .publisher
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .categories
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .subtitle
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+    }
+
+    /// Decode HTML entities in human-readable metadata fields (titles, etc.).
+    pub fn decode_html_entities(&mut self) {
+        crate::decode_html_entities_in_place(&mut self.title);
+        crate::decode_html_entities_opt_in_place(&mut self.authors);
+        crate::decode_html_entities_opt_in_place(&mut self.narrators);
+        crate::decode_html_entities_opt_in_place(&mut self.series);
+        crate::decode_html_entities_opt_in_place(&mut self.publisher);
+        crate::decode_html_entities_opt_in_place(&mut self.categories);
+        crate::decode_html_entities_opt_in_place(&mut self.subtitle);
+    }
+
     /// Minimal Audible book row with scan metadata defaults.
     ///
     /// Sets `product_id` from the first argument, `asin = Some(product_id)`,
@@ -1961,6 +2364,123 @@ pub struct NewTitleRequest {
     pub work_key: String,
     pub work_id: Option<String>,
     pub resolved_book_uuid: Option<String>,
+    pub cover_url: Option<String>,
+}
+
+impl NewTitleRequest {
+    #[must_use]
+    pub fn needs_html_entity_decode(&self) -> bool {
+        crate::str_maybe_html_entity(&self.title)
+            || self
+                .authors
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .notes
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+    }
+
+    /// Decode HTML entities in human-readable fields.
+    pub fn decode_html_entities(&mut self) {
+        crate::decode_html_entities_in_place(&mut self.title);
+        crate::decode_html_entities_opt_in_place(&mut self.authors);
+        crate::decode_html_entities_opt_in_place(&mut self.notes);
+    }
+}
+
+/// Input for upserting a per-storefront wishlist snapshot.
+#[derive(Debug, Clone, Default)]
+pub struct NewTitleRequestSource {
+    pub source: String,
+    pub product_id: String,
+    pub title: Option<String>,
+    pub subtitle: Option<String>,
+    pub authors: Option<String>,
+    pub narrators: Option<String>,
+    pub series: Option<String>,
+    pub series_index: Option<String>,
+    pub asin: Option<String>,
+    pub isbn: Option<String>,
+    pub description: Option<String>,
+    pub publisher: Option<String>,
+    pub length_minutes: Option<i64>,
+    pub published_at: Option<String>,
+    pub categories: Option<String>,
+    pub language: Option<String>,
+    pub cover_url: Option<String>,
+    pub url: Option<String>,
+    pub price_cents: Option<i64>,
+    pub currency: Option<String>,
+    pub price_label: Option<String>,
+    pub list_price_cents: Option<i64>,
+    pub list_price_label: Option<String>,
+    pub member_price_cents: Option<i64>,
+    pub member_price_label: Option<String>,
+}
+
+impl NewTitleRequestSource {
+    #[must_use]
+    pub fn needs_html_entity_decode(&self) -> bool {
+        self.title
+            .as_deref()
+            .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .subtitle
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .authors
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .narrators
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .series
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .description
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .publisher
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .categories
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .price_label
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .list_price_label
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+            || self
+                .member_price_label
+                .as_deref()
+                .is_some_and(crate::str_maybe_html_entity)
+    }
+
+    /// Decode HTML entities in human-readable metadata fields.
+    pub fn decode_html_entities(&mut self) {
+        crate::decode_html_entities_opt_in_place(&mut self.title);
+        crate::decode_html_entities_opt_in_place(&mut self.subtitle);
+        crate::decode_html_entities_opt_in_place(&mut self.authors);
+        crate::decode_html_entities_opt_in_place(&mut self.narrators);
+        crate::decode_html_entities_opt_in_place(&mut self.series);
+        crate::decode_html_entities_opt_in_place(&mut self.description);
+        crate::decode_html_entities_opt_in_place(&mut self.publisher);
+        crate::decode_html_entities_opt_in_place(&mut self.categories);
+        crate::decode_html_entities_opt_in_place(&mut self.price_label);
+        crate::decode_html_entities_opt_in_place(&mut self.list_price_label);
+        crate::decode_html_entities_opt_in_place(&mut self.member_price_label);
+    }
 }
 
 /// Bibliographic slice used for wishlist dedupe.
@@ -2171,13 +2691,38 @@ fn map_account_link(m: account_links::Model) -> crate::models::AccountLinkRecord
 fn map_user_preferences(m: user_preferences::Model) -> UserPreferences {
     let disabled_shelves: Vec<String> =
         serde_json::from_str(&m.disabled_shelves_json).unwrap_or_default();
+    let discover_excluded_sources: Vec<String> =
+        serde_json::from_str(&m.discover_excluded_sources_json).unwrap_or_default();
     UserPreferences {
         id: m.id,
         subject_key: m.subject_key,
         identity_id: m.identity_id,
         default_view: m.default_view,
         disabled_shelves,
+        discover_sort: normalize_discover_sort(&m.discover_sort),
+        discover_sort_dir: normalize_discover_sort_dir(&m.discover_sort_dir),
+        discover_language: m.discover_language.filter(|s| !s.trim().is_empty()),
+        discover_excluded_sources,
         updated_at: parse_dt(&m.updated_at),
+    }
+}
+
+fn normalize_discover_sort(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "popularity" => String::from("popularity"),
+        "rating" => String::from("rating"),
+        "title" => String::from("title"),
+        "author" => String::from("author"),
+        "price" => String::from("price"),
+        "length" | "runtime" => String::from("length"),
+        _ => String::from("relevance"),
+    }
+}
+
+fn normalize_discover_sort_dir(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "asc" | "ascending" => String::from("asc"),
+        _ => String::from("desc"),
     }
 }
 
@@ -2248,8 +2793,125 @@ fn map_request(m: title_requests::Model) -> TitleRequestRecord {
         work_key: m.work_key,
         work_id: m.work_id,
         resolved_book_uuid: m.resolved_book_uuid,
+        cover_url: m.cover_url,
+        sources: Vec::new(),
+        description: None,
+        subtitle: None,
+        narrators: None,
+        series: None,
+        series_index: None,
+        publisher: None,
+        length_minutes: None,
+        published_at: None,
+        genres: None,
+        language: None,
+        store_editions: Vec::new(),
+        purchase_hints: Vec::new(),
         created_at: parse_dt(&m.created_at),
         updated_at: parse_dt(&m.updated_at),
+    }
+}
+
+fn map_source(m: title_request_sources::Model) -> TitleRequestSourceRecord {
+    TitleRequestSourceRecord {
+        id: m.id,
+        title_request_id: m.title_request_id,
+        source: m.source,
+        product_id: m.product_id,
+        title: m.title,
+        subtitle: m.subtitle,
+        authors: m.authors,
+        narrators: m.narrators,
+        series: m.series,
+        series_index: m.series_index,
+        asin: m.asin,
+        isbn: m.isbn,
+        description: m.description,
+        publisher: m.publisher,
+        length_minutes: m.length_minutes,
+        published_at: m.published_at,
+        categories: m.categories,
+        language: m.language,
+        cover_url: m.cover_url,
+        url: m.url,
+        price_cents: m.price_cents,
+        currency: m.currency,
+        price_label: m.price_label,
+        list_price_cents: m.list_price_cents,
+        list_price_label: m.list_price_label,
+        member_price_cents: m.member_price_cents,
+        member_price_label: m.member_price_label,
+        observed_at: parse_dt_opt(m.observed_at.as_deref()),
+        created_at: parse_dt(&m.created_at),
+        updated_at: parse_dt(&m.updated_at),
+    }
+}
+
+fn trim_opt(s: Option<&str>) -> Option<String> {
+    s.map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+}
+
+fn prefer_opt(current: Option<String>, incoming: Option<&str>) -> Option<String> {
+    let next = trim_opt(incoming);
+    match (current, next) {
+        (None, n) => n,
+        (c, None) => c,
+        (Some(c), Some(n)) => Some(n).filter(|s| !s.is_empty()).or(Some(c)),
+    }
+}
+
+fn merged_source_active(
+    model: title_request_sources::Model,
+    src: &NewTitleRequestSource,
+    now: &str,
+) -> title_request_sources::ActiveModel {
+    let id = model.id;
+    let title_request_id = model.title_request_id;
+    let source = model.source.clone();
+    let product_id = model.product_id.clone();
+    let created_at = model.created_at.clone();
+    title_request_sources::ActiveModel {
+        id: Set(id),
+        title_request_id: Set(title_request_id),
+        source: Set(source),
+        product_id: Set(product_id),
+        title: Set(prefer_opt(model.title, src.title.as_deref())),
+        subtitle: Set(prefer_opt(model.subtitle, src.subtitle.as_deref())),
+        authors: Set(prefer_opt(model.authors, src.authors.as_deref())),
+        narrators: Set(prefer_opt(model.narrators, src.narrators.as_deref())),
+        series: Set(prefer_opt(model.series, src.series.as_deref())),
+        series_index: Set(prefer_opt(model.series_index, src.series_index.as_deref())),
+        asin: Set(prefer_opt(model.asin, src.asin.as_deref())),
+        isbn: Set(prefer_opt(model.isbn, src.isbn.as_deref())),
+        description: Set(crate::wishlist_merge::pick_better_description(
+            model.description.as_deref(),
+            src.description.as_deref(),
+        )),
+        publisher: Set(prefer_opt(model.publisher, src.publisher.as_deref())),
+        length_minutes: Set(src.length_minutes.or(model.length_minutes)),
+        published_at: Set(prefer_opt(model.published_at, src.published_at.as_deref())),
+        categories: Set(prefer_opt(model.categories, src.categories.as_deref())),
+        language: Set(prefer_opt(model.language, src.language.as_deref())),
+        cover_url: Set(prefer_opt(model.cover_url, src.cover_url.as_deref())),
+        url: Set(prefer_opt(model.url, src.url.as_deref())),
+        price_cents: Set(src.price_cents.or(model.price_cents)),
+        currency: Set(prefer_opt(model.currency, src.currency.as_deref())),
+        price_label: Set(prefer_opt(model.price_label, src.price_label.as_deref())),
+        list_price_cents: Set(src.list_price_cents.or(model.list_price_cents)),
+        list_price_label: Set(prefer_opt(
+            model.list_price_label,
+            src.list_price_label.as_deref(),
+        )),
+        member_price_cents: Set(src.member_price_cents.or(model.member_price_cents)),
+        member_price_label: Set(prefer_opt(
+            model.member_price_label,
+            src.member_price_label.as_deref(),
+        )),
+        observed_at: Set(Some(now.to_string())),
+        created_at: Set(created_at),
+        updated_at: Set(now.to_string()),
     }
 }
 

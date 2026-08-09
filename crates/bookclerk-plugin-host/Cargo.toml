@@ -50,6 +50,7 @@ uuid.workspace = true
 libc = "0.2"
 
 [dev-dependencies]
+bookclerk-plugin-database.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util"] }
 

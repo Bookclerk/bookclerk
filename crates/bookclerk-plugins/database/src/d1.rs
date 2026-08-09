@@ -3,34 +3,32 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use base64::Engine as _;
-use bookclerk_config::Config;
-use sea_orm::{DbErr, ProxyDatabaseTrait, ProxyExecResult, ProxyRow, Statement, Value};
+use bookclerk_library::{b64_string_to_bytes, bytes_to_b64_string, LibraryError, Result};
+use sea_orm::{
+    Database, DatabaseConnection, DbBackend, DbErr, ProxyDatabaseTrait, ProxyExecResult, ProxyRow,
+    Statement, Value,
+};
 use serde_json::{json, Value as JsonValue};
 
-use crate::error::{LibraryError, Result};
-
-/// Resolve the D1 API token from the environment.
-///
-/// Uses `BOOKCLERK_D1_API_TOKEN`, falling back to `CLOUDFLARE_API_TOKEN`.
-pub fn resolve_d1_api_token(_config: &Config) -> Result<String> {
-    if let Ok(v) = std::env::var("BOOKCLERK_D1_API_TOKEN") {
-        let t = v.trim();
-        if !t.is_empty() {
-            return Ok(t.to_string());
-        }
-    }
-    if let Ok(v) = std::env::var("CLOUDFLARE_API_TOKEN") {
-        let t = v.trim();
-        if !t.is_empty() {
-            return Ok(t.to_string());
-        }
-    }
-    Err(LibraryError::Other(anyhow::anyhow!(
-        "D1 API token not configured — set BOOKCLERK_D1_API_TOKEN or CLOUDFLARE_API_TOKEN \
-         (see docs/database.md)"
-    )))
+/// Open Cloudflare D1 with an explicit API token (host-mediated).
+pub async fn open(
+    api_base: String,
+    account_id: String,
+    database_id: String,
+    token: String,
+) -> Result<DatabaseConnection> {
+    let proxy = D1Proxy::new(api_base, account_id, database_id, token);
+    let db = Database::connect_proxy(DbBackend::Sqlite, Arc::new(Box::new(proxy)))
+        .await
+        .map_err(LibraryError::Orm)?;
+    db.ping().await.map_err(LibraryError::Orm)?;
+    crate::migrate::apply_pending_migrations(&db).await?;
+    tracing::debug!(plugin = "d1", "opened library database");
+    Ok(db)
 }
 
 /// SeaORM proxy that executes statements against Cloudflare D1's HTTP API.
@@ -208,7 +206,7 @@ fn sea_value_to_json(v: &Value) -> JsonValue {
         Value::String(Some(s)) => JsonValue::String(s.to_string()),
         Value::Bytes(Some(b)) => {
             // D1 does not have a native binary type; encode as b64:… string.
-            JsonValue::String(crate::secrets::bytes_to_b64_string(b))
+            JsonValue::String(bytes_to_b64_string(b))
         }
         Value::ChronoDateTimeUtc(Some(dt)) => JsonValue::String(dt.to_rfc3339()),
         Value::ChronoDateTime(Some(dt)) => JsonValue::String(dt.and_utc().to_rfc3339()),
@@ -231,7 +229,7 @@ fn is_binary_column(column: &str) -> bool {
 
 fn json_to_sea_value(v: &JsonValue, column: &str) -> Value {
     match v {
-        JsonValue::Null => crate::db::typed_null(None, column),
+        JsonValue::Null => crate::migrate::typed_null(None, column),
         JsonValue::Bool(b) => Value::Bool(Some(*b)),
         JsonValue::Number(n) => {
             if let Some(i) = n.as_i64() {
@@ -244,7 +242,7 @@ fn json_to_sea_value(v: &JsonValue, column: &str) -> Value {
         }
         JsonValue::String(s) => {
             // Decode b64:-prefixed strings or known binary columns.
-            if let Some(bytes) = crate::secrets::b64_string_to_bytes(s) {
+            if let Some(bytes) = b64_string_to_bytes(s) {
                 return Value::Bytes(Some(bytes));
             }
             if is_binary_column(column) {

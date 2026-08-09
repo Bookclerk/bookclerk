@@ -48,13 +48,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 methods::DB_CONNECT => {
                     let p: DbConnectParams = serde_json::from_value(params)
                         .map_err(|e| format!("db.connect params: {e}"))?;
-                    bookclerk_plugin_database::guest::guest_connect(p)
-                        .await
-                        .map(|_| json!(null))
+                    let result = bookclerk_plugin_database::guest::guest_connect(p).await?;
+                    Ok(serde_json::to_value(result).unwrap())
                 }
                 methods::DB_PING => bookclerk_plugin_database::guest::guest_ping()
                     .await
-                    .map(|_| json!(null)),
+                    .map(|_| serde_json::Value::Null),
                 methods::DB_QUERY => {
                     let p: StatementDto = serde_json::from_value(params)
                         .map_err(|e| format!("db.query params: {e}"))?;

@@ -25,7 +25,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use bookclerk_config::Config;
-use bookclerk_library::LibraryStore;
 use serde::{Deserialize, Serialize};
 
 /// Options for a full classic Libation Files directory import.
@@ -122,9 +121,9 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
     if let Some(db_path) = &source.library_db {
         let library_db = opts.dest_files_dir.join("library.db");
         let store = if opts.dry_run {
-            LibraryStore::open_in_memory().await?
+            bookclerk_plugin_database::sqlite::open_store_memory().await?
         } else {
-            LibraryStore::open(&library_db).await?
+            bookclerk_plugin_database::sqlite::open_store(&library_db).await?
         };
         let lib = import_library_db(
             db_path,

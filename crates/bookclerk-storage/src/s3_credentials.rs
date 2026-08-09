@@ -164,7 +164,7 @@ pub async fn delete_s3_credentials(db: &DatabaseConnection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bookclerk_library::{configure_master_key, connect_sqlite_memory, list_secrets};
+    use bookclerk_library::{configure_master_key, list_secrets};
     use tempfile::tempdir;
 
     fn setup_dek() {
@@ -176,7 +176,9 @@ mod tests {
     #[tokio::test]
     async fn roundtrip_sealed_v1() {
         setup_dek();
-        let db = connect_sqlite_memory().await.unwrap();
+        let db = bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap();
         let creds = S3Credentials {
             access_key_id: "AKIAEXAMPLE".into(),
             secret_access_key: "secret".into(),

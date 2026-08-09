@@ -43,6 +43,7 @@ tracing.workspace = true
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+bookclerk-plugin-database.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 wiremock.workspace = true

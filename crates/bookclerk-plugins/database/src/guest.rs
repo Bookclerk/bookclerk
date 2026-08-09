@@ -1,70 +1,53 @@
 //! Guest-side database plugin: holds one SeaORM connection per process.
 
-use std::collections::BTreeMap;
-
-use bookclerk_config::Config;
-use bookclerk_library::{apply_pending_migrations, connect_postgres, connect_sqlite, D1Proxy};
 use bookclerk_plugin_sdk::{
-    statement_from_dto, upload_file_path, DbConnectParams, ExecResultDto, ProxyRowDto,
-    QueryResultDto, StatementDto,
+    proxy_rows_to_dto, statement_from_dto, upload_file_path, DbConnectParams, DbConnectResult,
+    ExecResultDto, ProxyRowDto, QueryResultDto, StatementDto,
 };
-use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend};
+use sea_orm::{from_query_result_to_proxy_row, ConnectionTrait, DatabaseConnection};
 use tokio::sync::Mutex;
 
 type Result<T> = std::result::Result<T, String>;
 
 static DB: Mutex<Option<DatabaseConnection>> = Mutex::const_new(None);
 
-pub async fn guest_connect(params: DbConnectParams) -> Result<()> {
-    let backend = params.backend.to_ascii_lowercase();
-    let conn = match backend.as_str() {
-        "sqlite" => {
-            let path =
-                upload_file_path(params.sqlite_path.as_deref()).map_err(|e| e.to_string())?;
-            connect_sqlite(path.as_ref())
-                .await
-                .map_err(|e| e.to_string())?
-        }
-        "d1" => {
-            let account_id = params
-                .account_id
-                .filter(|s| !s.trim().is_empty())
-                .ok_or_else(|| "d1 connect requires account_id".to_string())?;
-            let database_id = params
-                .database_id
-                .filter(|s| !s.trim().is_empty())
-                .ok_or_else(|| "d1 connect requires database_id".to_string())?;
-            let token = params
-                .d1_api_token
-                .filter(|s| !s.trim().is_empty())
-                .ok_or_else(|| "d1 connect requires api token from host".to_string())?;
-            let api_base = params
-                .api_base
-                .unwrap_or_else(|| "https://api.cloudflare.com/client/v4".into());
-            let proxy = D1Proxy::new(api_base, account_id, database_id, token);
-            let db =
-                Database::connect_proxy(DbBackend::Sqlite, std::sync::Arc::new(Box::new(proxy)))
-                    .await
-                    .map_err(|e| e.to_string())?;
-            apply_pending_migrations(&db)
+/// Open the engine matching `params` and return the SeaORM dialect for the host.
+pub async fn guest_connect(params: DbConnectParams) -> Result<DbConnectResult> {
+    let (conn, dialect) = match params {
+        DbConnectParams::Sqlite {
+            plugin_data_dir: _,
+            sqlite_path,
+        } => {
+            let path = upload_file_path(sqlite_path.as_deref()).map_err(|e| e.to_string())?;
+            let db = crate::sqlite::open(path.as_ref())
                 .await
                 .map_err(|e| e.to_string())?;
-            db
+            (db, DbConnectResult::sqlite())
         }
-        "postgres" => {
-            let url = params
-                .postgres_url
-                .filter(|s| !s.trim().is_empty())
-                .ok_or_else(|| "postgres connect requires url from host".to_string())?;
-            let mut config = Config::default();
-            config.database.plugin = "postgres".into();
-            config.database.postgres.url = Some(url);
-            connect_postgres(&config).await.map_err(|e| e.to_string())?
+        DbConnectParams::D1 {
+            plugin_data_dir: _,
+            account_id,
+            database_id,
+            api_base,
+            api_token,
+        } => {
+            let db = crate::d1::open(api_base, account_id, database_id, api_token)
+                .await
+                .map_err(|e| e.to_string())?;
+            (db, DbConnectResult::sqlite())
         }
-        other => return Err(format!("unsupported database backend `{other}`")),
+        DbConnectParams::Postgres {
+            plugin_data_dir: _,
+            url,
+        } => {
+            let db = crate::postgres::open(&url)
+                .await
+                .map_err(|e| e.to_string())?;
+            (db, DbConnectResult::postgres())
+        }
     };
     *DB.lock().await = Some(conn);
-    Ok(())
+    Ok(dialect)
 }
 
 pub async fn guest_ping() -> Result<()> {
@@ -79,7 +62,7 @@ pub async fn guest_query(dto: StatementDto) -> Result<QueryResultDto> {
     let rows = conn.query_all_raw(stmt).await.map_err(|e| e.to_string())?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        out.push(row_to_dto(&row)?);
+        out.push(row_to_dto(&row));
     }
     Ok(QueryResultDto { rows: out })
 }
@@ -102,25 +85,15 @@ async fn connection() -> Result<DatabaseConnection> {
         .ok_or_else(|| "database not connected — call db.connect first".into())
 }
 
-fn row_to_dto(row: &sea_orm::QueryResult) -> Result<ProxyRowDto> {
-    let mut values = BTreeMap::new();
-    for column in row.column_names() {
-        let json = if let Ok(v) = row.try_get::<Option<i64>>("", &column) {
-            v.map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null)
-        } else if let Ok(v) = row.try_get::<Option<f64>>("", &column) {
-            v.map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null)
-        } else if let Ok(v) = row.try_get::<Option<String>>("", &column) {
-            v.map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null)
-        } else if let Ok(v) = row.try_get::<Option<Vec<u8>>>("", &column) {
-            v.map(|b| serde_json::Value::String(bookclerk_plugin_sdk::bytes_to_b64_string(&b)))
-                .unwrap_or(serde_json::Value::Null)
-        } else {
-            serde_json::Value::Null
-        };
-        values.insert(column.to_string(), json);
-    }
-    Ok(ProxyRowDto { values })
+/// Convert a SeaORM query row into the JSON-RPC DTO (also used by integration tests).
+#[must_use]
+pub fn row_to_dto(row: &sea_orm::QueryResult) -> ProxyRowDto {
+    // Prefer SeaORM's typed ProxyRow map. Decoding via `try_get::<Option<i64>>`
+    // first is wrong: TEXT columns succeed as `Ok(None)` and get serialized as
+    // JSON null, which the host then fails to decode (e.g. missing `uuid`).
+    let proxy = from_query_result_to_proxy_row(row);
+    proxy_rows_to_dto(vec![proxy])
+        .into_iter()
+        .next()
+        .expect("proxy_rows_to_dto preserves one row")
 }

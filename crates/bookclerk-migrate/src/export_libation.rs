@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use bookclerk_config::Config;
-use bookclerk_library::{content_kind_to_classic, LibraryStore};
+use bookclerk_library::content_kind_to_classic;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -67,12 +67,12 @@ pub async fn export_libation(opts: LibationExportOptions) -> Result<LibationExpo
 
     let library_db = opts.files_dir.join("library.db");
     let store = if library_db.exists() {
-        LibraryStore::open(&library_db).await?
+        bookclerk_plugin_database::sqlite::open_store(&library_db).await?
     } else {
         summary
             .warnings
             .push("library.db missing — accounts/books empty".into());
-        LibraryStore::open_in_memory().await?
+        bookclerk_plugin_database::sqlite::open_store_memory().await?
     };
 
     let accounts = store.list_accounts().await?;

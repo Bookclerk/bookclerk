@@ -220,6 +220,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                         work_key,
                         work_id: None,
                         resolved_book_uuid: None,
+                        cover_url: None,
                     })
                     .await?;
                 format_out::emit(format, &row, || {

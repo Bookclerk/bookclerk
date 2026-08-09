@@ -377,7 +377,9 @@ mod tests {
             .unwrap();
         }
 
-        let store = LibraryStore::open_in_memory().await.unwrap();
+        let store = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         let mut paths = AudioPathMap::new();
         paths.insert(
             "B00TEST".into(),

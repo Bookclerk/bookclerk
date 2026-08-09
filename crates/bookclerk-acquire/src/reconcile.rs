@@ -496,7 +496,7 @@ mod tests {
 #[cfg(test)]
 mod reconcile_integration {
     use super::*;
-    use bookclerk_library::{LibraryStore, NewBook};
+    use bookclerk_library::NewBook;
     use bookclerk_storage::{LocalFsBackend, ObjectMeta, StorageBackend};
     use bytes::Bytes;
     use tempfile::tempdir;
@@ -515,7 +515,9 @@ mod reconcile_integration {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().await.unwrap();
+        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         library
             .upsert_account("acct", "us", None, true, "audible")
             .await
@@ -560,7 +562,9 @@ mod reconcile_integration {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().await.unwrap();
+        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         library
             .upsert_account("acct", "us", None, true, "audible")
             .await
@@ -613,7 +617,9 @@ mod reconcile_integration {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().await.unwrap();
+        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         library
             .upsert_account("acct", "us", None, true, "audible")
             .await

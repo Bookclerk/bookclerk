@@ -20,6 +20,7 @@ tracing.workspace = true
 unicode-normalization = "0.1"
 
 [dev-dependencies]
+bookclerk-plugin-database.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 bookclerk-library.workspace = true
 serde_json.workspace = true

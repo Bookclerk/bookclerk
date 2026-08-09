@@ -19,6 +19,7 @@ pub mod listening_progress;
 pub mod portal_identities;
 pub mod portal_sessions;
 pub mod saved_filters;
+pub mod title_request_sources;
 pub mod title_requests;
 pub mod user_preferences;
 pub mod work_editions;

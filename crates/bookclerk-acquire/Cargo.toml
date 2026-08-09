@@ -30,3 +30,6 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+bookclerk-plugin-database.workspace = true

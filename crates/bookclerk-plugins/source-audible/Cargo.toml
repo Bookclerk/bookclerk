@@ -55,6 +55,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+bookclerk-plugin-database.workspace = true
 # `fixtures` writes the synthetic aaxc-shaped MP4s the decrypt tests parse.
 bookclerk-mp4 = { workspace = true, features = ["fixtures"] }
 tempfile.workspace = true

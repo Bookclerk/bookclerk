@@ -703,7 +703,6 @@ fn model_to_record(model: encrypted_secrets::Model) -> EncryptedSecretRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::connect_sqlite_memory;
     use crate::master_key::configure_master_key;
     use tempfile::tempdir;
 
@@ -744,7 +743,9 @@ mod tests {
     #[tokio::test]
     async fn upsert_sealed_v1_and_get() {
         setup_dek();
-        let db = connect_sqlite_memory().await.unwrap();
+        let db = bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap();
         let plaintext = b"test-sealed-payload";
         let record = build_sealed_record(
             plaintext,
@@ -808,7 +809,9 @@ mod tests {
     async fn unseal_cache_invalidates_on_upsert() {
         setup_dek();
         clear_plaintext_cache_for_tests();
-        let db = connect_sqlite_memory().await.unwrap();
+        let db = bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap();
         let first = build_sealed_record(
             b"v1",
             secret_kind::SOURCE_AUTH,
@@ -859,7 +862,9 @@ mod tests {
     #[tokio::test]
     async fn upsert_replaces_same_composite_key() {
         setup_dek();
-        let db = connect_sqlite_memory().await.unwrap();
+        let db = bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap();
         for i in 0u8..2 {
             let rec = build_sealed_record(
                 &[i],
@@ -881,7 +886,9 @@ mod tests {
     #[tokio::test]
     async fn list_secrets_by_kind() {
         setup_dek();
-        let db = connect_sqlite_memory().await.unwrap();
+        let db = bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap();
         for (provider, account_id, name) in &[
             ("libro", "alice", "alice.libro.auth"),
             ("chirp", "bob", "bob.chirp.auth"),
@@ -904,7 +911,9 @@ mod tests {
     #[tokio::test]
     async fn delete_secret_test() {
         setup_dek();
-        let db = connect_sqlite_memory().await.unwrap();
+        let db = bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap();
         let rec = build_sealed_record(
             b"{}",
             secret_kind::S3,
@@ -943,7 +952,9 @@ mod tests {
     #[tokio::test]
     async fn delete_secrets_for_account_only_integration() {
         setup_dek();
-        let db = connect_sqlite_memory().await.unwrap();
+        let db = bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap();
 
         let auth_rec = build_sealed_record(
             b"auth",

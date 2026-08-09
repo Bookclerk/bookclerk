@@ -1,6 +1,6 @@
 //! Wiremock fixtures for Chirp GraphQL login, library, and single audiobook.
 
-use bookclerk_library::{configure_master_key, LibraryStore};
+use bookclerk_library::configure_master_key;
 use bookclerk_plugin_source_chirp::{
     fetch_title_materials, load_auth_from_db, save_auth_to_db, ChirpAuthFile, ChirpClient,
     ChirpSource,
@@ -59,7 +59,9 @@ async fn signin_saves_auth_to_db() {
         .mount(&server)
         .await;
 
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     let source = ChirpSource::with_graphql_url(server.uri());
     let account = source
         .login(
@@ -109,7 +111,9 @@ async fn empty_library_scan_upserts_zero() {
         .await;
 
     // Credentials are now stored in the DB (not files).
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     save_auth_to_db(
         &ChirpAuthFile {
             access_token: "tok".into(),
@@ -169,7 +173,9 @@ async fn library_scan_upserts_books() {
         .await;
 
     // Credentials are now stored in the DB (not files).
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     save_auth_to_db(
         &ChirpAuthFile {
             access_token: "tok".into(),
@@ -271,7 +277,9 @@ async fn fetch_via_content_source() {
         .await;
 
     // Credentials are now stored in the DB (not files).
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     save_auth_to_db(
         &ChirpAuthFile {
             access_token: "tok".into(),

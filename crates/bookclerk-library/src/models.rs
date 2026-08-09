@@ -286,6 +286,97 @@ impl RequestStatus {
     }
 }
 
+/// Per-storefront catalog/pricing snapshot attached to a wishlist row.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TitleRequestSourceRecord {
+    pub id: i64,
+    pub title_request_id: i64,
+    pub source: String,
+    pub product_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authors: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrators: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_index: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isbn: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_minutes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub categories: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_price_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_price_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_price_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_price_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Storefront edition key for wishlist / queue payloads.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WishlistStoreEdition {
+    pub source: String,
+    pub product_id: String,
+}
+
+/// Snapshotted purchase link/price for a wishlist title.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WishlistPurchaseHint {
+    pub source: String,
+    pub product_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_price_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_price_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_price_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_price_label: Option<String>,
+}
+
 /// Personal wishlist row (also contributes to the shared global queue while open).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TitleRequestRecord {
@@ -304,6 +395,35 @@ pub struct TitleRequestRecord {
     pub work_key: String,
     pub work_id: Option<String>,
     pub resolved_book_uuid: Option<String>,
+    pub cover_url: Option<String>,
+    /// Per-storefront snapshots (empty for legacy rows).
+    #[serde(default)]
+    pub sources: Vec<TitleRequestSourceRecord>,
+    /// Merged from [`Self::sources`] (HTML preferred).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrators: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_index: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_minutes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genres: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub store_editions: Vec<WishlistStoreEdition>,
+    #[serde(default)]
+    pub purchase_hints: Vec<WishlistPurchaseHint>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -316,6 +436,31 @@ pub struct GlobalQueueEntry {
     pub authors: Option<String>,
     pub asin: Option<String>,
     pub isbn: Option<String>,
+    pub cover_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrators: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_index: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_minutes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genres: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub store_editions: Vec<WishlistStoreEdition>,
+    #[serde(default)]
+    pub purchase_hints: Vec<WishlistPurchaseHint>,
     pub wish_count: i64,
     pub sample_uuids: Vec<String>,
     pub first_requested_at: DateTime<Utc>,
@@ -346,6 +491,14 @@ pub struct UserPreferences {
     pub default_view: String,
     /// Shelf kind ids to hide (`author`, `chirp_deals`, …). Empty = all on.
     pub disabled_shelves: Vec<String>,
+    /// Catalog search sort key (`relevance`, `popularity`, …).
+    pub discover_sort: String,
+    /// `asc` | `desc`.
+    pub discover_sort_dir: String,
+    /// Preferred content language (`en`, `__all__`, …). `None` = browser default.
+    pub discover_language: Option<String>,
+    /// Store ids to hide in Discover. Empty = all sources (including future).
+    pub discover_excluded_sources: Vec<String>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -359,6 +512,10 @@ impl UserPreferences {
             identity_id,
             default_view: String::from("discover"),
             disabled_shelves: Vec::new(),
+            discover_sort: String::from("relevance"),
+            discover_sort_dir: String::from("desc"),
+            discover_language: None,
+            discover_excluded_sources: Vec::new(),
             updated_at: Utc::now(),
         }
     }

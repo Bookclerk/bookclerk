@@ -382,7 +382,9 @@ pub fn push_shelf_category(categories: &mut Vec<String>, kind: &str) {
 
 /// Merge wishlist queue rows that share ISBN/ASIN or soft title+author identity.
 ///
-/// Sums `wish_count` and prefers ISBN-keyed `work_key` when available.
+/// Sums `wish_count`, unions store editions / purchase hints, and prefers
+/// richer bibliographic metadata (longer strings / filled optionals). ISBN-keyed
+/// `work_key` wins when available.
 #[must_use]
 pub fn merge_global_queue_entries(entries: Vec<GlobalQueueEntry>) -> Vec<GlobalQueueEntry> {
     let mut merged: Vec<GlobalQueueEntry> = Vec::new();
@@ -417,10 +419,23 @@ pub fn merge_global_queue_entries(entries: Vec<GlobalQueueEntry>) -> Vec<GlobalQ
             }
             if entry.last_requested_at > existing.last_requested_at {
                 existing.last_requested_at = entry.last_requested_at;
+            }
+            if entry.title.len() > existing.title.len() && !entry.title.is_empty() {
                 existing.title = entry.title;
-                if entry.authors.is_some() {
-                    existing.authors = entry.authors;
-                }
+            }
+            fill_opt_string(&mut existing.authors, entry.authors.as_deref());
+            fill_opt_string(&mut existing.cover_url, entry.cover_url.as_deref());
+            fill_opt_string(&mut existing.description, entry.description.as_deref());
+            fill_opt_string(&mut existing.subtitle, entry.subtitle.as_deref());
+            fill_opt_string(&mut existing.narrators, entry.narrators.as_deref());
+            fill_opt_string(&mut existing.series, entry.series.as_deref());
+            fill_opt_string(&mut existing.series_index, entry.series_index.as_deref());
+            fill_opt_string(&mut existing.publisher, entry.publisher.as_deref());
+            fill_opt_string(&mut existing.genres, entry.genres.as_deref());
+            fill_opt_string(&mut existing.language, entry.language.as_deref());
+            fill_opt_string(&mut existing.published_at, entry.published_at.as_deref());
+            if existing.length_minutes.is_none() {
+                existing.length_minutes = entry.length_minutes;
             }
             if existing.asin.is_none() {
                 existing.asin = entry.asin;
@@ -439,6 +454,12 @@ pub fn merge_global_queue_entries(entries: Vec<GlobalQueueEntry>) -> Vec<GlobalQ
                 if !n.is_empty() {
                     *isbn = n;
                 }
+            }
+            for ed in entry.store_editions {
+                push_wishlist_edition(&mut existing.store_editions, ed);
+            }
+            for hint in entry.purchase_hints {
+                push_wishlist_purchase_hint(&mut existing.purchase_hints, hint);
             }
             // Prefer the strongest bibliographic key.
             existing.work_key = work_map_key(
@@ -469,6 +490,66 @@ pub fn merge_global_queue_entries(entries: Vec<GlobalQueueEntry>) -> Vec<GlobalQ
         }
     }
     merged
+}
+
+fn push_wishlist_edition(
+    editions: &mut Vec<bookclerk_library::WishlistStoreEdition>,
+    edition: bookclerk_library::WishlistStoreEdition,
+) {
+    if edition.source.trim().is_empty() || edition.product_id.trim().is_empty() {
+        return;
+    }
+    if editions.iter().any(|e| {
+        e.source.eq_ignore_ascii_case(&edition.source)
+            && e.product_id.eq_ignore_ascii_case(&edition.product_id)
+    }) {
+        return;
+    }
+    if editions
+        .iter()
+        .any(|e| e.source.eq_ignore_ascii_case(&edition.source))
+    {
+        return;
+    }
+    editions.push(edition);
+}
+
+fn push_wishlist_purchase_hint(
+    hints: &mut Vec<bookclerk_library::WishlistPurchaseHint>,
+    hint: bookclerk_library::WishlistPurchaseHint,
+) {
+    if hint.source.trim().is_empty() || hint.product_id.trim().is_empty() {
+        return;
+    }
+    if let Some(existing) = hints.iter_mut().find(|h| {
+        h.source.eq_ignore_ascii_case(&hint.source)
+            && h.product_id.eq_ignore_ascii_case(&hint.product_id)
+    }) {
+        // Richest-wins for overlapping hint fields.
+        fill_opt_string(&mut existing.title, hint.title.as_deref());
+        fill_opt_string(&mut existing.url, hint.url.as_deref());
+        fill_opt_string(&mut existing.currency, hint.currency.as_deref());
+        fill_opt_string(&mut existing.price_label, hint.price_label.as_deref());
+        fill_opt_string(
+            &mut existing.list_price_label,
+            hint.list_price_label.as_deref(),
+        );
+        fill_opt_string(
+            &mut existing.member_price_label,
+            hint.member_price_label.as_deref(),
+        );
+        if existing.price_cents.is_none() {
+            existing.price_cents = hint.price_cents;
+        }
+        if existing.list_price_cents.is_none() {
+            existing.list_price_cents = hint.list_price_cents;
+        }
+        if existing.member_price_cents.is_none() {
+            existing.member_price_cents = hint.member_price_cents;
+        }
+        return;
+    }
+    hints.push(hint);
 }
 
 fn fill_opt_string(slot: &mut Option<String>, incoming: Option<&str>) {
@@ -531,6 +612,7 @@ mod tests {
 
     #[test]
     fn merge_queue_sums_wish_counts_across_asin_isbn() {
+        use bookclerk_library::{WishlistPurchaseHint, WishlistStoreEdition};
         use chrono::Utc;
         let now = Utc::now();
         let merged = merge_global_queue_entries(vec![
@@ -540,6 +622,28 @@ mod tests {
                 authors: Some("Andy Weir".into()),
                 asin: Some("B00HAIL".into()),
                 isbn: None,
+                cover_url: Some("https://img.example/a.jpg".into()),
+                description: Some("Short".into()),
+                subtitle: None,
+                narrators: Some("Ray Porter".into()),
+                series: None,
+                series_index: None,
+                publisher: None,
+                length_minutes: Some(960),
+                published_at: None,
+                genres: Some("Sci-Fi".into()),
+                language: Some("en".into()),
+                store_editions: vec![WishlistStoreEdition {
+                    source: "audible".into(),
+                    product_id: "B00HAIL".into(),
+                }],
+                purchase_hints: vec![WishlistPurchaseHint {
+                    source: "audible".into(),
+                    product_id: "B00HAIL".into(),
+                    title: Some("Hail Mary".into()),
+                    url: Some("https://audible.example/B00HAIL".into()),
+                    ..Default::default()
+                }],
                 wish_count: 1,
                 sample_uuids: vec!["a".into()],
                 first_requested_at: now,
@@ -551,6 +655,31 @@ mod tests {
                 authors: Some("Andy Weir".into()),
                 asin: None,
                 isbn: Some("9781234567890".into()),
+                cover_url: Some("https://img.example/longer-cover-path.jpg".into()),
+                description: Some("A much longer description of the novel.".into()),
+                subtitle: Some("A Novel".into()),
+                narrators: None,
+                series: None,
+                series_index: None,
+                publisher: Some("Ballantine".into()),
+                length_minutes: None,
+                published_at: Some("2021-05-04".into()),
+                genres: None,
+                language: None,
+                store_editions: vec![WishlistStoreEdition {
+                    source: "libro".into(),
+                    product_id: "9781234567890".into(),
+                }],
+                purchase_hints: vec![WishlistPurchaseHint {
+                    source: "libro".into(),
+                    product_id: "9781234567890".into(),
+                    title: Some("Project Hail Mary".into()),
+                    url: Some("https://libro.example/9781234567890".into()),
+                    price_cents: Some(1499),
+                    currency: Some("USD".into()),
+                    price_label: Some("$14.99".into()),
+                    ..Default::default()
+                }],
                 wish_count: 2,
                 sample_uuids: vec!["b".into()],
                 first_requested_at: now,
@@ -560,6 +689,21 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].wish_count, 3);
         assert!(merged[0].work_key.starts_with("isbn:"));
+        assert_eq!(merged[0].title, "Project Hail Mary");
+        assert_eq!(
+            merged[0].cover_url.as_deref(),
+            Some("https://img.example/longer-cover-path.jpg")
+        );
+        assert_eq!(
+            merged[0].description.as_deref(),
+            Some("A much longer description of the novel.")
+        );
+        assert_eq!(merged[0].subtitle.as_deref(), Some("A Novel"));
+        assert_eq!(merged[0].narrators.as_deref(), Some("Ray Porter"));
+        assert_eq!(merged[0].publisher.as_deref(), Some("Ballantine"));
+        assert_eq!(merged[0].length_minutes, Some(960));
+        assert_eq!(merged[0].store_editions.len(), 2);
+        assert_eq!(merged[0].purchase_hints.len(), 2);
     }
 
     #[test]

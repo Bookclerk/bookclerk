@@ -2,7 +2,7 @@
 
 use std::io::{Cursor, Write};
 
-use bookclerk_library::{configure_master_key, LibraryStore};
+use bookclerk_library::configure_master_key;
 use bookclerk_plugin_source_libro::{
     fetch_title_materials, load_auth_from_db, save_auth_to_db, scan_account_into_library,
     LibroAuthFile, LibroClient, LibroSource, APP_VER, DOWNLOAD_MANIFEST_PATH, LIBRARY_PATH,
@@ -86,7 +86,9 @@ async fn oauth_token_login_saves_auth_to_db() {
         .mount(&server)
         .await;
 
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     let source = LibroSource::with_base_url(server.uri());
     let account = source
         .login(
@@ -141,7 +143,9 @@ async fn library_page_upserts_libro_books() {
         .mount(&server)
         .await;
 
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     store
         .upsert_account("reader@example.com", "us", Some("Main"), true, "libro")
         .await
@@ -404,7 +408,9 @@ async fn content_source_scan_and_fetch_title() {
         .await;
 
     // Credentials are now stored in the DB (not files).
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     let auth = LibroAuthFile {
         access_token: "tok".into(),
         token_type: "Bearer".into(),

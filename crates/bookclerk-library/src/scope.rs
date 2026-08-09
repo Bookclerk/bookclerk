@@ -289,7 +289,11 @@ mod tests {
     async fn scope_isolates_secrets_and_books() {
         let dir = tempdir().unwrap();
         configure_master_key(dir.path()).unwrap();
-        let store = LibraryStore::open_in_memory().await.unwrap();
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database::sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
         let audible = store.scope("audible");
         let libro = store.scope("libro");
 

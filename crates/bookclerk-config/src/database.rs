@@ -221,6 +221,60 @@ impl Default for DatabasePostgresConfig {
     }
 }
 
+/// Resolve the D1 API token from the environment (host-mediated secret).
+///
+/// Uses `BOOKCLERK_D1_API_TOKEN`, falling back to `CLOUDFLARE_API_TOKEN`.
+pub fn resolve_d1_api_token() -> Result<String> {
+    if let Ok(v) = std::env::var("BOOKCLERK_D1_API_TOKEN") {
+        let t = v.trim();
+        if !t.is_empty() {
+            return Ok(t.to_string());
+        }
+    }
+    if let Ok(v) = std::env::var("CLOUDFLARE_API_TOKEN") {
+        let t = v.trim();
+        if !t.is_empty() {
+            return Ok(t.to_string());
+        }
+    }
+    Err(ConfigError::Invalid(
+        "D1 API token not configured — set BOOKCLERK_D1_API_TOKEN or CLOUDFLARE_API_TOKEN \
+         (see docs/database.md)"
+            .into(),
+    ))
+}
+
+/// Resolve the Postgres connection URL from config (env already applied).
+///
+/// `url_file` takes precedence over `url`.
+pub fn resolve_postgres_url(config: &crate::Config) -> Result<String> {
+    if let Some(path) = &config.database.postgres.url_file {
+        let raw = std::fs::read_to_string(path).map_err(|e| {
+            ConfigError::Invalid(format!("reading postgres url_file {}: {e}", path.display()))
+        })?;
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+        return Err(ConfigError::Invalid(format!(
+            "postgres url_file {} is empty",
+            path.display()
+        )));
+    }
+    if let Some(url) = &config.database.postgres.url {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    Err(ConfigError::Invalid(
+        "Postgres URL not configured — set [database.postgres].url, \
+         [database.postgres].url_file, BOOKCLERK_DATABASE_POSTGRES_URL, \
+         or BOOKCLERK_DATABASE_POSTGRES_URL_FILE (see docs/database.md)"
+            .into(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

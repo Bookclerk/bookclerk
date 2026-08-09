@@ -3,11 +3,13 @@ mod integration {
     use bookclerk_discover::{
         embed_dirty_works, rebuild_works_from_library, recommend, HashEmbedder, RecommendOptions,
     };
-    use bookclerk_library::{LibraryStore, NewBook, NewTitleRequest, RequestStatus};
+    use bookclerk_library::{NewBook, NewTitleRequest, RequestStatus};
 
     #[tokio::test]
     async fn works_embed_and_recommend_series_gap() {
-        let store = LibraryStore::open_in_memory().await.unwrap();
+        let store = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         store
             .upsert_account("acct", "us", Some("Main"), true, "audible")
             .await
@@ -57,6 +59,7 @@ mod integration {
                 work_key: String::new(),
                 work_id: None,
                 resolved_book_uuid: None,
+                cover_url: None,
             })
             .await
             .unwrap();

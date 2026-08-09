@@ -2,7 +2,7 @@
 
 use std::io::{Cursor, Write};
 
-use bookclerk_library::{configure_master_key, LibraryStore};
+use bookclerk_library::configure_master_key;
 use bookclerk_plugin_source_graphicaudio::{
     fetch_title_materials, load_auth_from_db, save_auth_to_db, GraphicAudioAccess,
     GraphicAudioAuthFile, GraphicAudioClient, GraphicAudioSource, LOGIN_PATH, PRODUCTS_PATH,
@@ -41,7 +41,9 @@ async fn login_saves_auth_to_db() {
         .mount(&server)
         .await;
 
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     let source =
         GraphicAudioSource::with_base_url(server.uri()).with_access(GraphicAudioAccess::Device);
     let account = source
@@ -102,7 +104,9 @@ async fn scan_skips_samples_upserts_owned() {
         .await;
 
     // Credentials are now stored in the DB (not files).
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     save_auth_to_db(
         &GraphicAudioAuthFile {
             token: "tok".into(),
@@ -190,7 +194,9 @@ async fn fetch_title_via_content_source() {
         .await;
 
     // Credentials are now stored in the DB (not files).
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     save_auth_to_db(
         &GraphicAudioAuthFile {
             token: "tok".into(),
@@ -324,7 +330,9 @@ async fn magento_zip_fetch_via_content_source() {
         .await;
 
     // Credentials are now stored in the DB (not files).
-    let db_store = LibraryStore::open_in_memory().await.unwrap();
+    let db_store = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     save_auth_to_db(
         &GraphicAudioAuthFile {
             token: "tok".into(),
@@ -428,7 +436,9 @@ async fn browser_player_fetch_via_content_source() {
         .await;
 
     // Credentials are now stored in the DB (not files).
-    let db_store = LibraryStore::open_in_memory().await.unwrap();
+    let db_store = bookclerk_plugin_database::sqlite::open_store_memory()
+        .await
+        .unwrap();
     save_auth_to_db(
         &GraphicAudioAuthFile {
             token: "tok".into(),

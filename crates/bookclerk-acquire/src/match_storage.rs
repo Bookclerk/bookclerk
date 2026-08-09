@@ -472,7 +472,9 @@ mod tests {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().await.unwrap();
+        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         library
             .upsert_account("acct", "us", None, true, "audible")
             .await
@@ -532,7 +534,9 @@ mod tests {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().await.unwrap();
+        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         library
             .upsert_account("acct", "us", None, true, "audible")
             .await
@@ -592,7 +596,9 @@ mod tests {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().await.unwrap();
+        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         library
             .upsert_account("acct", "us", None, true, "audible")
             .await
@@ -642,7 +648,9 @@ mod tests {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().await.unwrap();
+        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         library
             .upsert_account("acct", "us", None, true, "audible")
             .await
@@ -727,7 +735,9 @@ mod tests {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().await.unwrap();
+        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         library
             .upsert_account("acct", "us", None, true, "audible")
             .await
@@ -778,7 +788,9 @@ mod tests {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().await.unwrap();
+        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         library
             .upsert_account("acct", "us", None, true, "audible")
             .await
@@ -821,7 +833,9 @@ mod tests {
                 .unwrap();
         }
 
-        let library = LibraryStore::open_in_memory().await.unwrap();
+        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         library
             .upsert_account("acct", "us", None, true, "audible")
             .await
@@ -888,7 +902,9 @@ mod tests {
             .await
             .unwrap();
 
-        let library = LibraryStore::open_in_memory().await.unwrap();
+        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         library
             .upsert_account("acct", "us", None, true, "audible")
             .await

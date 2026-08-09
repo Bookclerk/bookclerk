@@ -101,21 +101,23 @@ Environment overrides:
 
 ## Plugin kinds
 
-Built-in **local SQLite** is normally a **platform-shipped guest**
+Built-in **local SQLite** is a **platform-shipped guest**
 (`plugins/sqlite/`, default `[database].plugin = "sqlite"`). The host passes
 `library.db` over the side channel (fd 3); the guest runs with
-`[sandbox].network = none`. When the guest is missing or fails to start, the
-host falls back to in-process `bookclerk-library`.
+`[sandbox].network = none`. The matching guest is **required** — there is no
+in-process engine fallback.
 
 External `kind = "database"` guests also load for **D1** and **Postgres** when
 discovered and `[database].plugin` matches the plugin id. SeaORM proxy calls
 (`db.query` / `db.execute`) forward through the guest; `master.key` never leaves
-the host.
+the host. Connect params are a tagged `DbConnectParams` shape; the guest returns
+`{ "dialect": "sqlite" | "postgres" }` so the host builds the RPC proxy without
+hardcoding backends.
 
 First-party guest: `bookclerk-plugin-database` — stage as `plugins/sqlite/`,
 `plugins/d1/`, or `plugins/postgres/` (see `plugin.toml`, `plugin-d1.toml`,
-`plugin-postgres.toml`). When a remote plugin is not staged, the host falls back
-to in-process code in `bookclerk-library`.
+`plugin-postgres.toml`). Each id shares one binary; engine modules inside the
+plugin own SQLite / D1 / Postgres quirks.
 
 ### Switching backends (opt-in migration)
 
@@ -185,49 +187,57 @@ avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
 - Cloudflare D1 does not provide full interactive transaction semantics the
   way a local SQLite file does; prefer short statements and avoid relying on
   multi-statement ACID across the proxy.
-- Schema migrations run via `apply_pending_migrations` (tracked in `schema_migrations`).
+- Schema migrations run in the D1 plugin module via
+  `bookclerk_plugin_database::migrate::apply_pending_migrations` (tracked in
+  `schema_migrations`).
+
+### Boundary: core vs database plugins
+
+| Crate | Owns |
+| --- | --- |
+| [`bookclerk-library`](../crates/bookclerk-library) | Greenfield DDL ([`migrations`](../crates/bookclerk-library/src/migrations.rs)), SeaORM entities, [`LibraryStore`](../crates/bookclerk-library) CRUD (`from_connection` only) |
+| `bookclerk-plugin-database` | Engine connect/migrate/proxy quirks (`sqlite` / `d1` / `postgres` modules) and the jailed JSON-RPC guest |
+| Host (`bookclerk-plugin-host`) | Spawn guest, mediate secrets into tagged `DbConnectParams`, forward SeaORM via RPC proxy |
+
+Core stays database-agnostic: it only sees a migrated `DatabaseConnection`.
+Hosts must stage the active database guest; missing guests are hard errors.
 
 ### LibraryStore status
 
 The operator-facing [`LibraryStore`](../crates/bookclerk-library) is
-**SeaORM-backed and async**: it holds a `DatabaseConnection` (proxy backend) and
-every method is an `async fn` returning `Result<…>`. `open`, `open_in_memory`,
-and `open_from_config` are async too; callers `.await` them.
+**SeaORM-backed and async**: it holds a `DatabaseConnection` and every method is
+an `async fn` returning `Result<…>`. Production opens go through
+`bookclerk_plugin_host::open_library_store` (external guest required). Tests may
+use `bookclerk_plugin_database::sqlite::open_memory` /
+`open_store_memory` (dev-dependency on the plugin crate), then
+`LibraryStore::from_connection` when needed.
 
 CRUD runs on typed **SeaORM entities** (see
 [`crate::entities`](../crates/bookclerk-library/src/entities)): one
 `DeriveEntityModel` per table (`accounts`, `books`, `works`, `title_requests`,
-`encrypted_secrets`, …). Reads use `Entity::find()` + `QueryFilter` / `QueryOrder`;
+`title_request_sources`, `encrypted_secrets`, …). Reads use `Entity::find()` + `QueryFilter` / `QueryOrder`;
 writes use `ActiveModel` insert/update. Upserts that previously relied on
 `ON CONFLICT … COALESCE(…)` are load-then-merge in Rust so the same behavior
 holds on every backend. All entity integer columns are `i64`, reals `f64`, blobs
 `Vec<u8>`, and text (including RFC 3339 timestamps) `String`.
 
-Connections come from `bookclerk_library::connect_from_config` / `connect_sqlite`
-/ `connect_sqlite_memory` / `connect_d1` / `connect_postgres`, and
-`LibraryStore::open_from_config` selects the right backend (SQLite, D1, or
-Postgres) automatically.
-
-The SQLite proxy ([`db::sqlite`](../crates/bookclerk-library/src/db/sqlite.rs))
-returns **typed** SQL `NULL`s so SeaORM `Option<T>` decoding works: it reads each
-column's declared type (rusqlite `decl_type`) and emits the matching
-`Value::*(None)` (`BigInt(None)`, `Double(None)`, `Bytes(None)`, `String(None)`)
-via [`db::typed_null`](../crates/bookclerk-library/src/db/mod.rs). D1 (JSON, no
-type metadata) falls back to a column-name heuristic. rusqlite remains only for
-the local SQLite proxy driver and the `rusqlite_migration` runner used on local
-`library.db` files.
+The SQLite proxy in the database plugin returns **typed** SQL `NULL`s so SeaORM
+`Option<T>` decoding works: it reads each column's declared type (rusqlite
+`decl_type`) and emits the matching `Value::*(None)`. D1 (JSON, no type
+metadata) falls back to a column-name heuristic.
 
 ### Single greenfield schema
 
-Bookclerk is greenfield: there is **one** current schema, not an ordered
-M1…M10 chain. [`migrations.rs`](../crates/bookclerk-library/src/migrations.rs)
-exposes `latest_schema_sqlite()` (also the single `rusqlite_migration` entry ⇒
-`PRAGMA user_version = 1`) and `latest_schema_postgres()`. Every statement uses
-`CREATE TABLE/INDEX IF NOT EXISTS`, so re-applying is idempotent. Tables:
+Bookclerk is mostly greenfield: [`migrations.rs`](../crates/bookclerk-library/src/migrations.rs)
+exposes `latest_schema_sqlite()` / `latest_schema_postgres()` as the base DDL,
+plus a short ordered list (`migration_sql` / `migration_sql_postgres`) so
+additive columns (e.g. Discover preference fields on `user_preferences`) can
+bump `PRAGMA user_version` / `schema_migrations` without wiping data. Base
+statements use `CREATE TABLE/INDEX IF NOT EXISTS`. Tables:
 `accounts`, `books`, `ignored_titles`, `saved_filters`, `portal_identities`,
 `claim_tickets`, `portal_sessions`, `account_links`, `works`, `work_editions`,
-`listening_progress`, `title_requests`, `embeddings`, `user_preferences`,
-`encrypted_secrets`.
+`listening_progress`, `title_requests`, `title_request_sources`, `embeddings`,
+`user_preferences`, `encrypted_secrets`.
 
 ## Encrypted secrets
 

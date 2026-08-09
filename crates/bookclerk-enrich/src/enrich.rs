@@ -485,7 +485,9 @@ mod tests {
 
     #[tokio::test]
     async fn enrichment_keeps_libro_runtime_over_audible() {
-        let store = LibraryStore::open_in_memory().await.unwrap();
+        let store = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         store
             .upsert_account("user@example.com", "us", None, true, "libro")
             .await
@@ -535,7 +537,9 @@ mod tests {
 
     #[tokio::test]
     async fn enrichment_preserves_existing_asin() {
-        let store = LibraryStore::open_in_memory().await.unwrap();
+        let store = bookclerk_plugin_database::sqlite::open_store_memory()
+            .await
+            .unwrap();
         store
             .upsert_account("user@example.com", "us", None, true, "libro")
             .await

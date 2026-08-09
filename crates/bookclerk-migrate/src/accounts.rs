@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use bookclerk_library::LibraryStore;
 use serde_json::Value;
 
 use crate::error::{MigrateError, Result};
@@ -49,9 +48,9 @@ pub async fn import_accounts(
         })?;
 
     let store = if dry_run {
-        LibraryStore::open_in_memory().await?
+        bookclerk_plugin_database::sqlite::open_store_memory().await?
     } else {
-        LibraryStore::open(&dest_files_dir.join("library.db")).await?
+        bookclerk_plugin_database::sqlite::open_store(&dest_files_dir.join("library.db")).await?
     };
 
     let mut summary = AccountsImportSummary::default();

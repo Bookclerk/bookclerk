@@ -2,7 +2,11 @@ use super::*;
 
 #[tokio::test]
 async fn account_and_book_roundtrip() {
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
     let acct = store
         .upsert_account("user-1", "us", Some("Main"), true, "audible")
         .await
@@ -58,7 +62,11 @@ async fn account_and_book_roundtrip() {
 
 #[tokio::test]
 async fn same_isbn_multi_account_and_source() {
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
     store
         .upsert_account("user-1", "us", None, true, "audible")
         .await
@@ -116,7 +124,11 @@ async fn same_isbn_multi_account_and_source() {
 
 #[tokio::test]
 async fn libro_rescan_preserves_audible_enrichment() {
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
     store
         .upsert_account("libro-1", "us", None, true, "libro")
         .await
@@ -193,7 +205,11 @@ async fn libro_rescan_preserves_audible_enrichment() {
 
 #[tokio::test]
 async fn download_product_id_is_source_native() {
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
     store
         .upsert_account("libro-1", "us", None, true, "libro")
         .await
@@ -230,7 +246,11 @@ async fn download_product_id_is_source_native() {
 
 #[tokio::test]
 async fn ensure_account_preserves_scan_enabled() {
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
     store
         .upsert_account("user-1", "us", Some("Main"), false, "audible")
         .await
@@ -245,7 +265,11 @@ async fn ensure_account_preserves_scan_enabled() {
 
 #[tokio::test]
 async fn upsert_account_source_persists() {
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
     let acct = store
         .upsert_account("libro-1", "us", Some("Libro"), true, "libro")
         .await
@@ -257,7 +281,11 @@ async fn upsert_account_source_persists() {
 
 #[tokio::test]
 async fn remap_account_moves_books() {
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
     store
         .upsert_account("email@example.com", "us", Some("Main"), true, "audible")
         .await
@@ -296,7 +324,11 @@ async fn remap_account_moves_books() {
 
 #[tokio::test]
 async fn ignored_titles_roundtrip() {
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
     store
         .upsert_account("user-1", "us", None, true, "audible")
         .await
@@ -320,7 +352,11 @@ async fn ignored_titles_roundtrip() {
 
 #[tokio::test]
 async fn revoke_keeps_books_and_portal_tickets_work() {
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
     store
         .upsert_account("user-1", "us", Some("Main"), true, "audible")
         .await
@@ -379,7 +415,11 @@ async fn revoke_keeps_books_and_portal_tickets_work() {
 async fn user_preferences_roundtrip_operator_and_portal() {
     use crate::models::{portal_prefs_key, OPERATOR_PREFS_KEY};
 
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
     let defaults = store
         .get_user_preferences_or_default(OPERATOR_PREFS_KEY, None)
         .await
@@ -398,11 +438,19 @@ async fn user_preferences_roundtrip_operator_and_portal() {
             None,
             "library",
             &["chirp_deals".into(), "genre".into()],
+            "rating",
+            "asc",
+            Some("en"),
+            &["chirp".into()],
         )
         .await
         .unwrap();
     assert_eq!(saved.default_view, "library");
     assert_eq!(saved.disabled_shelves, vec!["chirp_deals", "genre"]);
+    assert_eq!(saved.discover_sort, "rating");
+    assert_eq!(saved.discover_sort_dir, "asc");
+    assert_eq!(saved.discover_language.as_deref(), Some("en"));
+    assert_eq!(saved.discover_excluded_sources, vec!["chirp"]);
 
     let again = store
         .get_user_preferences(OPERATOR_PREFS_KEY)
@@ -411,6 +459,7 @@ async fn user_preferences_roundtrip_operator_and_portal() {
         .unwrap();
     assert_eq!(again.default_view, "library");
     assert_eq!(again.disabled_shelves.len(), 2);
+    assert_eq!(again.discover_excluded_sources, vec!["chirp"]);
 
     let identity = store
         .upsert_portal_identity("audiobookshelf", "usr_prefs", Some("alice"))
@@ -418,12 +467,23 @@ async fn user_preferences_roundtrip_operator_and_portal() {
         .unwrap();
     let key = portal_prefs_key(identity.id);
     let portal = store
-        .upsert_user_preferences(&key, Some(identity.id), "accounts", &["narrator".into()])
+        .upsert_user_preferences(
+            &key,
+            Some(identity.id),
+            "accounts",
+            &["narrator".into()],
+            "relevance",
+            "desc",
+            None,
+            &[],
+        )
         .await
         .unwrap();
     assert_eq!(portal.identity_id, Some(identity.id));
     assert_eq!(portal.default_view, "accounts");
     assert_eq!(portal.disabled_shelves, vec!["narrator"]);
+    assert!(portal.discover_language.is_none());
+    assert!(portal.discover_excluded_sources.is_empty());
 
     // Operator prefs stay independent.
     assert_eq!(
@@ -439,7 +499,11 @@ async fn user_preferences_roundtrip_operator_and_portal() {
 
 #[tokio::test]
 async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
-    let store = LibraryStore::open_in_memory().await.unwrap();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
     let a = store
         .upsert_portal_identity("audiobookshelf", "u1", Some("alice"))
         .await
@@ -463,6 +527,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             work_key: work.clone(),
             work_id: None,
             resolved_book_uuid: None,
+            cover_url: None,
         })
         .await
         .unwrap();
@@ -479,6 +544,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             work_key: work.clone(),
             work_id: None,
             resolved_book_uuid: None,
+            cover_url: None,
         })
         .await
         .unwrap();
@@ -496,6 +562,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             work_key: String::new(),
             work_id: None,
             resolved_book_uuid: None,
+            cover_url: None,
         })
         .await
         .unwrap();
@@ -514,6 +581,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             work_key: work.clone(),
             work_id: None,
             resolved_book_uuid: None,
+            cover_url: None,
         })
         .await
         .unwrap();
@@ -535,6 +603,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             work_key: String::from("soft:the martian|andy weir"),
             work_id: None,
             resolved_book_uuid: None,
+            cover_url: None,
         })
         .await
         .unwrap();
@@ -551,6 +620,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
             work_key: String::from("asin:B00MARTIAN"),
             work_id: None,
             resolved_book_uuid: None,
+            cover_url: None,
         })
         .await
         .unwrap();
@@ -569,4 +639,98 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
     assert!(queue
         .iter()
         .any(|e| e.wish_count == 1 && e.title.contains("Solo")));
+}
+
+#[tokio::test]
+async fn wishlist_sources_merge_description_and_editions() {
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database::sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let row = store
+        .create_title_request(&NewTitleRequest {
+            uuid: None,
+            identity_id: None,
+            title: "Ashes of Man".into(),
+            authors: Some("Christopher Ruocchio".into()),
+            asin: Some("B09ASHES".into()),
+            isbn: Some("9781984811234".into()),
+            notes: None,
+            status: RequestStatus::Open,
+            work_key: String::from("asin:B09ASHES"),
+            work_id: None,
+            resolved_book_uuid: None,
+            cover_url: None,
+        })
+        .await
+        .unwrap();
+
+    let merged = store
+        .upsert_title_request_sources(
+            row.id,
+            &[
+                NewTitleRequestSource {
+                    source: "audible".into(),
+                    product_id: "B09ASHES".into(),
+                    title: Some("Ashes of Man".into()),
+                    authors: Some("Christopher Ruocchio".into()),
+                    asin: Some("B09ASHES".into()),
+                    description: Some("Short teaser...".into()),
+                    url: Some("https://www.audible.com/pd/B09ASHES".into()),
+                    price_cents: Some(1499),
+                    currency: Some("USD".into()),
+                    price_label: Some("$14.99".into()),
+                    cover_url: Some("https://example.com/cover.jpg".into()),
+                    ..Default::default()
+                },
+                NewTitleRequestSource {
+                    source: "chirp".into(),
+                    product_id: "chirp-ashes".into(),
+                    title: Some("Ashes of Man".into()),
+                    description: Some(
+                        "<p>The <b>fifth</b> novel of the galaxy-spanning Sun Eater series.</p>"
+                            .into(),
+                    ),
+                    url: Some("https://www.chirpbooks.com/audiobooks/chirp-ashes".into()),
+                    price_cents: Some(499),
+                    currency: Some("USD".into()),
+                    price_label: Some("$4.99".into()),
+                    ..Default::default()
+                },
+                NewTitleRequestSource {
+                    source: "libro".into(),
+                    product_id: "9781984811234".into(),
+                    isbn: Some("9781984811234".into()),
+                    url: Some("https://libro.fm/audiobooks/9781984811234".into()),
+                    ..Default::default()
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(merged.sources.len(), 3);
+    assert_eq!(merged.store_editions.len(), 3);
+    assert!(
+        merged.description.as_deref().unwrap_or("").contains("<p>"),
+        "HTML description should win over plain teaser"
+    );
+    assert_eq!(
+        merged.cover_url.as_deref(),
+        Some("https://example.com/cover.jpg")
+    );
+    assert_eq!(merged.purchase_hints.len(), 3);
+    assert!(merged
+        .purchase_hints
+        .iter()
+        .any(|h| h.source == "audible" && h.price_cents == Some(1499)));
+    assert!(merged
+        .purchase_hints
+        .iter()
+        .any(|h| h.source == "libro" && h.url.is_some()));
+
+    let listed = store.list_wishlist(None).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].store_editions.len(), 3);
 }

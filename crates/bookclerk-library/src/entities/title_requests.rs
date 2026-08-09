@@ -20,6 +20,7 @@ pub struct Model {
     pub work_id: Option<String>,
     pub work_key: String,
     pub resolved_book_uuid: Option<String>,
+    pub cover_url: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
