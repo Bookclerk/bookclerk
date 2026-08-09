@@ -300,9 +300,10 @@ pub fn encrypt_secret(plaintext: &[u8], password: &str) -> Result<EncryptedBlob>
     let key = derive_key(password, &salt)?;
     let cipher = XChaCha20Poly1305::new_from_slice(&key)
         .map_err(|e| LibraryError::Other(anyhow::anyhow!("cipher init: {e}")))?;
-    let nonce = XNonce::from_slice(&nonce_bytes);
+    let nonce = XNonce::try_from(nonce_bytes.as_slice())
+        .map_err(|_| LibraryError::Other(anyhow::anyhow!("invalid encryption nonce length")))?;
     let ciphertext = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(&nonce, plaintext)
         .map_err(|_| LibraryError::Other(anyhow::anyhow!("xchacha20poly1305 encryption failed")))?;
 
     Ok(EncryptedBlob {
@@ -324,8 +325,9 @@ pub fn decrypt_secret(
     let key = derive_key(password, kdf_salt)?;
     let cipher = XChaCha20Poly1305::new_from_slice(&key)
         .map_err(|e| LibraryError::Other(anyhow::anyhow!("cipher init: {e}")))?;
-    let nonce = XNonce::from_slice(cipher_nonce);
-    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+    let nonce = XNonce::try_from(cipher_nonce)
+        .map_err(|_| LibraryError::Other(anyhow::anyhow!("invalid decryption nonce length")))?;
+    let plaintext = cipher.decrypt(&nonce, ciphertext).map_err(|_| {
         LibraryError::Other(anyhow::anyhow!(
             "decryption failed — wrong password or corrupted ciphertext"
         ))

@@ -354,8 +354,10 @@ fn encode_wrapped_master_key(dek: &MasterKey, password: &str) -> Result<Vec<u8>>
     let key = derive_wrapping_key(password, &salt)?;
     let cipher = XChaCha20Poly1305::new_from_slice(&key)
         .map_err(|e| LibraryError::Other(anyhow::anyhow!("cipher init: {e}")))?;
+    let nonce = XNonce::try_from(nonce.as_slice())
+        .map_err(|_| LibraryError::Other(anyhow::anyhow!("invalid wrapping nonce length")))?;
     let ct = cipher
-        .encrypt(XNonce::from_slice(&nonce), dek.as_bytes().as_slice())
+        .encrypt(&nonce, dek.as_bytes().as_slice())
         .map_err(|_| LibraryError::Other(anyhow::anyhow!("failed to wrap master key")))?;
     let mut out = Vec::with_capacity(4 + SALT_LEN + NONCE_LEN + ct.len());
     out.extend_from_slice(MAGIC_WRAPPED);
@@ -385,7 +387,13 @@ fn decode_wrapped_master_key(body: &[u8], password: &str, path: &Path) -> Result
     let key = derive_wrapping_key(password, salt)?;
     let cipher = XChaCha20Poly1305::new_from_slice(&key)
         .map_err(|e| LibraryError::Other(anyhow::anyhow!("cipher init: {e}")))?;
-    let plain = cipher.decrypt(XNonce::from_slice(nonce), ct).map_err(|_| {
+    let nonce = XNonce::try_from(nonce).map_err(|_| {
+        LibraryError::Other(anyhow::anyhow!(
+            "invalid wrapping nonce length in master key {}",
+            path.display()
+        ))
+    })?;
+    let plain = cipher.decrypt(&nonce, ct).map_err(|_| {
         LibraryError::Other(anyhow::anyhow!(
             "failed to unwrap master key {} — wrong auth password?",
             path.display()
@@ -503,8 +511,10 @@ pub fn seal_with_dek(plaintext: &[u8], dek: &MasterKey) -> Result<(Vec<u8>, Vec<
     let nonce = random_bytes(NONCE_LEN);
     let cipher = XChaCha20Poly1305::new_from_slice(dek.as_bytes())
         .map_err(|e| LibraryError::Other(anyhow::anyhow!("cipher init: {e}")))?;
+    let nonce_arr = XNonce::try_from(nonce.as_slice())
+        .map_err(|_| LibraryError::Other(anyhow::anyhow!("invalid seal nonce length")))?;
     let ciphertext = cipher
-        .encrypt(XNonce::from_slice(&nonce), plaintext)
+        .encrypt(&nonce_arr, plaintext)
         .map_err(|_| LibraryError::Other(anyhow::anyhow!("seal failed")))?;
     Ok((ciphertext, nonce))
 }
@@ -513,13 +523,13 @@ pub fn seal_with_dek(plaintext: &[u8], dek: &MasterKey) -> Result<(Vec<u8>, Vec<
 pub fn unseal_with_dek(ciphertext: &[u8], nonce: &[u8], dek: &MasterKey) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new_from_slice(dek.as_bytes())
         .map_err(|e| LibraryError::Other(anyhow::anyhow!("cipher init: {e}")))?;
-    cipher
-        .decrypt(XNonce::from_slice(nonce), ciphertext)
-        .map_err(|_| {
-            LibraryError::Other(anyhow::anyhow!(
-                "unseal failed — wrong master key or corrupted ciphertext"
-            ))
-        })
+    let nonce = XNonce::try_from(nonce)
+        .map_err(|_| LibraryError::Other(anyhow::anyhow!("invalid unseal nonce length")))?;
+    cipher.decrypt(&nonce, ciphertext).map_err(|_| {
+        LibraryError::Other(anyhow::anyhow!(
+            "unseal failed — wrong master key or corrupted ciphertext"
+        ))
+    })
 }
 
 /// Process-wide DEK coordination for unit tests.

@@ -266,7 +266,7 @@ fn write_zip_dir(src_dir: &Path, archive: &Path) -> Result<()> {
 
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(hex::encode(Sha256::digest(bytes)))
 }
 
 fn ensure_ui_built(root: &Path) -> Result<()> {

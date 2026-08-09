@@ -21,7 +21,8 @@ path = "src/lib.rs"
 anyhow.workspace = true
 clap.workspace = true
 flate2 = "1"
-sha2 = "0.10"
+hex.workspace = true
+sha2.workspace = true
 tar = "0.4"
 walkdir = "2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
