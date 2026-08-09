@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_library::SourceScope;
 use bookclerk_source::{
-    CatalogHit, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions, LoginOptions,
-    PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount, SourceBrand,
-    SourceFetch, SourcePurchaseHint, SourceRegistry,
+    CatalogHit, CatalogSearchField, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions,
+    LoginOptions, PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount,
+    SourceBrand, SourceFetch, SourcePurchaseHint, SourceRegistry,
 };
 
 use crate::auth::ChirpAuthFile;
@@ -219,11 +219,40 @@ impl ContentSource for ChirpSource {
         if q.is_empty() || opts.limit == 0 {
             return Ok(Vec::new());
         }
+        let preferred_lang = opts
+            .language
+            .as_deref()
+            .and_then(bookclerk_source::normalize_language);
+        // Slight over-fetch when filtering by language so dropped Spanish
+        // (etc.) rows don't starve the page — keep this modest for latency.
+        let fetch_limit = if preferred_lang.is_some() {
+            (opts.limit + 8).clamp(opts.limit, 40)
+        } else {
+            opts.limit
+        };
         let client = ChirpClient::new(&self.graphql_url);
-        let tip = client.typeahead(q).await.unwrap_or_default();
-        let mut books = tip.audiobooks;
-        if books.len() < opts.limit {
-            if let Ok(more) = client.search_catalog(q, 1, opts.limit as u32).await {
+        if opts.field == Some(CatalogSearchField::Series) {
+            if let Ok(Some(catalog)) = client.resolve_series_catalog(q).await {
+                let origin = format!("chirp series (“{}”)", catalog.series.name);
+                return Ok(catalog
+                    .audiobooks
+                    .into_iter()
+                    .map(|b| catalog_hit(&b, origin.clone()))
+                    .filter(|h| language_matches(h.language.as_deref(), preferred_lang.as_deref()))
+                    .take(opts.limit)
+                    .collect());
+            }
+            // Fall through to typeahead/search when slug resolve misses.
+        }
+        let page = opts.page.max(1);
+        let mut books = Vec::new();
+        // Typeahead is page-1 only; deeper pages use GraphQL search.
+        if page <= 1 {
+            let tip = client.typeahead(q).await.unwrap_or_default();
+            books = tip.audiobooks;
+        }
+        if books.len() < fetch_limit {
+            if let Ok(more) = client.search_catalog(q, page, fetch_limit as u32).await {
                 for b in more {
                     if !books.iter().any(|x| x.id == b.id) {
                         books.push(b);
@@ -233,8 +262,9 @@ impl ContentSource for ChirpSource {
         }
         Ok(books
             .into_iter()
-            .take(opts.limit)
             .map(|b| catalog_hit(&b, String::from("search")))
+            .filter(|h| language_matches(h.language.as_deref(), preferred_lang.as_deref()))
+            .take(opts.limit)
             .collect())
     }
 
@@ -394,9 +424,7 @@ impl ContentSource for ChirpSource {
                 product_id: pid.to_string(),
                 title: opts.title.clone(),
                 url: Some(format!("https://www.chirpbooks.com/audiobooks/{pid}")),
-                price_cents: None,
-                currency: None,
-                price_label: None,
+                ..Default::default()
             })
         } else {
             let title = opts.title.as_deref().unwrap_or("").trim();
@@ -413,28 +441,34 @@ impl ContentSource for ChirpSource {
                     None => title.to_string(),
                 };
                 let tip = client.typeahead(&q).await.unwrap_or_default();
-                tip.audiobooks.into_iter().next().map(|hit| {
-                    let url = hit
-                        .url
-                        .map(|u| {
-                            if u.starts_with("http") {
-                                u
-                            } else {
-                                format!("https://www.chirpbooks.com{u}")
-                            }
-                        })
-                        .or_else(|| {
-                            Some(format!("https://www.chirpbooks.com/audiobooks/{}", hit.id))
-                        });
-                    SourcePurchaseHint {
-                        product_id: hit.id,
-                        title: hit.display_title.or_else(|| opts.title.clone()),
-                        url,
-                        price_cents: None,
-                        currency: None,
-                        price_label: None,
-                    }
-                })
+                tip.audiobooks
+                    .into_iter()
+                    .find(|hit| {
+                        chirp_purchase_title_matches(
+                            title,
+                            hit.display_title.as_deref().unwrap_or(""),
+                        )
+                    })
+                    .map(|hit| {
+                        let url = hit
+                            .url
+                            .map(|u| {
+                                if u.starts_with("http") {
+                                    u
+                                } else {
+                                    format!("https://www.chirpbooks.com{u}")
+                                }
+                            })
+                            .or_else(|| {
+                                Some(format!("https://www.chirpbooks.com/audiobooks/{}", hit.id))
+                            });
+                        SourcePurchaseHint {
+                            product_id: hit.id,
+                            title: hit.display_title.or_else(|| opts.title.clone()),
+                            url,
+                            ..Default::default()
+                        }
+                    })
             }
         };
 
@@ -486,7 +520,46 @@ impl ContentSource for ChirpSource {
     }
 }
 
+fn chirp_purchase_title_matches(query: &str, hit_title: &str) -> bool {
+    let norm = |s: &str| -> String {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    ' '
+                }
+            })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let q = norm(query);
+    let h = norm(hit_title);
+    if q.is_empty() || h.is_empty() {
+        return false;
+    }
+    if q == h {
+        return true;
+    }
+    let (shorter, longer) = if q.chars().count() <= h.chars().count() {
+        (q.as_str(), h.as_str())
+    } else {
+        (h.as_str(), q.as_str())
+    };
+    if shorter.chars().count() < 8 {
+        return false;
+    }
+    let ratio = shorter.chars().count() as f32 / longer.chars().count() as f32;
+    ratio >= 0.55
+        && (longer.starts_with(&format!("{shorter} "))
+            || longer.ends_with(&format!(" {shorter}"))
+            || longer.contains(&format!(" {shorter} ")))
+}
+
 fn catalog_hit(book: &CatalogAudiobook, origin: String) -> CatalogHit {
+    let categories = chirp_genres(book);
     CatalogHit {
         product_id: book.id.clone(),
         title: book.title(),
@@ -498,8 +571,6 @@ fn catalog_hit(book: &CatalogAudiobook, origin: String) -> CatalogHit {
                 .clone()
                 .or_else(|| s.number.map(|n| n.to_string()))
         }),
-        asin: None,
-        isbn: None,
         url: book.url.clone().map(|u| {
             if u.starts_with("http") {
                 u
@@ -507,7 +578,56 @@ fn catalog_hit(book: &CatalogAudiobook, origin: String) -> CatalogHit {
                 format!("https://www.chirpbooks.com{u}")
             }
         }),
+        cover_url: book
+            .cover_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
         origin,
+        subtitle: book.sub_title.clone().filter(|s| !s.trim().is_empty()),
+        description: book.description.clone().filter(|s| !s.trim().is_empty()),
+        publisher: book.publisher.clone().filter(|s| !s.trim().is_empty()),
+        length_minutes: book
+            .duration_ms
+            .map(|ms| (ms / 60_000) as i64)
+            .filter(|n| *n > 0),
+        published_at: book.released_on.clone().filter(|s| !s.trim().is_empty()),
+        categories,
+        language: book
+            .language
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        is_abridged: book.abridged,
+        ..Default::default()
+    }
+}
+
+fn chirp_genres(book: &CatalogAudiobook) -> Option<String> {
+    let names: Vec<&str> = book
+        .promoted_tags
+        .iter()
+        .filter_map(|t| t.display_name.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if names.is_empty() {
+        None
+    } else {
+        Some(names.join("; "))
+    }
+}
+
+/// Keep preferred language; drop known others; keep unknown/missing.
+fn language_matches(hit_language: Option<&str>, preferred: Option<&str>) -> bool {
+    let Some(pref) = preferred else {
+        return true;
+    };
+    match hit_language.and_then(bookclerk_source::normalize_language) {
+        None => true,
+        Some(code) => code == pref,
     }
 }
 
@@ -602,5 +722,55 @@ pub fn from_config(config: &Config) -> ChirpSource {
 pub fn register(registry: &mut SourceRegistry, config: &Config) {
     if config.sources.is_enabled(ID) {
         registry.register(Arc::new(from_config(config)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::{CatalogAudiobook, CatalogTag};
+
+    #[test]
+    fn catalog_hit_maps_genres_language_abridged() {
+        let book = CatalogAudiobook {
+            id: "249058".into(),
+            display_title: Some("The Black Ice".into()),
+            display_authors: Some("Michael Connelly".into()),
+            display_narrators: Some("Dick Hill".into()),
+            url: Some("/audiobooks/249058".into()),
+            cover_url: None,
+            series_audiobook: None,
+            sub_title: None,
+            description: None,
+            publisher: Some("Brilliance Audio".into()),
+            duration_ms: Some(40_260_000),
+            released_on: None,
+            language: Some("English".into()),
+            abridged: Some(false),
+            promoted_tags: vec![
+                CatalogTag {
+                    display_name: Some("Thrillers".into()),
+                },
+                CatalogTag {
+                    display_name: Some("Crime Fiction & Mysteries".into()),
+                },
+            ],
+        };
+        let hit = catalog_hit(&book, "search".into());
+        assert_eq!(
+            hit.categories.as_deref(),
+            Some("Thrillers; Crime Fiction & Mysteries")
+        );
+        assert_eq!(hit.language.as_deref(), Some("English"));
+        assert_eq!(hit.is_abridged, Some(false));
+        assert_eq!(hit.length_minutes, Some(671));
+    }
+
+    #[test]
+    fn language_matches_drops_spanish_when_english_preferred() {
+        assert!(language_matches(Some("English"), Some("en")));
+        assert!(!language_matches(Some("Spanish"), Some("en")));
+        assert!(language_matches(None, Some("en")));
+        assert!(language_matches(Some("Spanish"), None));
     }
 }

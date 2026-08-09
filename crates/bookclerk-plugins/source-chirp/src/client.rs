@@ -74,6 +74,9 @@ query AndroidSingleAudiobook($id: ID!) {
 }
 "#;
 
+// Catalog queries below also select `language`, `abridged`, and `promotedTags`
+// (Chirp genre chips) so Discover can filter language and show genres.
+
 const CATALOG_SEARCH: &str = r#"
 query BookclerkCatalogSearch($query: String!, $page: Int!, $pageSize: Int!) {
   audiobooks(query: $query, page: $page, pageSize: $pageSize) {
@@ -82,9 +85,18 @@ query BookclerkCatalogSearch($query: String!, $page: Int!, $pageSize: Int!) {
       ... on Audiobook {
         id
         displayTitle
+        subTitle
         displayAuthors
         displayNarrators
         url
+        coverUrl: optimizedCoverUrl(format: "f_jpg", quality: "q_auto:eco", sizePixels: 200)
+        durationMs
+        description
+        publisher
+        releasedOn
+        language
+        abridged
+        promotedTags { displayName }
         seriesAudiobook {
           number
           displayNumber
@@ -109,6 +121,10 @@ query BookclerkRelatedAudiobooks($id: ID!) {
       displayAuthors
       displayNarrators
       url
+      coverUrl: optimizedCoverUrl(format: "f_jpg", quality: "q_auto:eco", sizePixels: 200)
+      language
+      abridged
+      promotedTags { displayName }
       seriesAudiobook {
         number
         displayNumber
@@ -139,6 +155,10 @@ query BookclerkSeriesAudiobooks($slug: String!) {
           displayAuthors
           displayNarrators
           url
+          coverUrl: optimizedCoverUrl(format: "f_jpg", quality: "q_auto:eco", sizePixels: 200)
+          language
+          abridged
+          promotedTags { displayName }
           seriesAudiobook {
             number
             displayNumber
@@ -163,6 +183,10 @@ query BookclerkAuthorSummary($slug: String!) {
       displayAuthors
       displayNarrators
       url
+      coverUrl: optimizedCoverUrl(format: "f_jpg", quality: "q_auto:eco", sizePixels: 200)
+      language
+      abridged
+      promotedTags { displayName }
       seriesAudiobook {
         number
         displayNumber
@@ -182,6 +206,10 @@ query BookclerkTypeahead($searchTerm: String!) {
       displayAuthors
       displayNarrators
       url
+      coverUrl: optimizedCoverUrl(format: "f_jpg", quality: "q_auto:eco", sizePixels: 200)
+      language
+      abridged
+      promotedTags { displayName }
     }
     authors { id name slug }
   }
@@ -196,6 +224,10 @@ query BookclerkTopDeals($count: Int!) {
     displayAuthors
     displayNarrators
     url
+    coverUrl: optimizedCoverUrl(format: "f_jpg", quality: "q_auto:eco", sizePixels: 200)
+    language
+    abridged
+    promotedTags { displayName }
     seriesAudiobook {
       number
       displayNumber
@@ -213,6 +245,10 @@ query BookclerkFreeDeals {
     displayAuthors
     displayNarrators
     url
+    coverUrl: optimizedCoverUrl(format: "f_jpg", quality: "q_auto:eco", sizePixels: 200)
+    language
+    abridged
+    promotedTags { displayName }
     seriesAudiobook {
       number
       displayNumber
@@ -792,8 +828,35 @@ pub struct CatalogAudiobook {
     pub display_narrators: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
+    #[serde(default, rename = "coverUrl")]
+    pub cover_url: Option<String>,
     #[serde(default, rename = "seriesAudiobook")]
     pub series_audiobook: Option<SeriesAudiobookRef>,
+    #[serde(default, rename = "subTitle")]
+    pub sub_title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default, rename = "durationMs")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, rename = "releasedOn")]
+    pub released_on: Option<String>,
+    /// Chirp display language (`English`, `Spanish`, …).
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub abridged: Option<bool>,
+    /// Storefront genre chips (`Thrillers`, `Crime Fiction & Mysteries`, …).
+    #[serde(default, rename = "promotedTags")]
+    pub promoted_tags: Vec<CatalogTag>,
+}
+
+/// Chirp `Tag` used as a promoted genre chip on catalog audiobooks.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CatalogTag {
+    #[serde(default, rename = "displayName")]
+    pub display_name: Option<String>,
 }
 
 impl CatalogAudiobook {

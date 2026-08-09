@@ -4,15 +4,22 @@
 
 use bookclerk_enrich::{
     is_valid_asin, normalize_region, public_http_client, region_tld, search_catalog_asins,
-    search_catalog_by_narrator, search_catalog_by_series_asin, search_catalog_keywords,
-    search_catalog_products, CatalogProduct,
+    search_catalog_by_genre_name, search_catalog_by_narrator, search_catalog_by_series_asin,
+    search_catalog_keywords, search_catalog_products, search_catalog_products_paged,
+    search_catalog_storefront, CatalogProduct,
 };
 use bookclerk_source::{
-    CatalogHit, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts, SourcePurchaseHint,
+    CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts,
+    SourcePurchaseHint,
 };
 use serde_json::Value;
 
-/// Search the public Audible catalog (title + keyword overlap, like Discover typeahead).
+/// Search the public Audible catalog for Discover typeahead / paged browse.
+///
+/// When [`CatalogSearchOpts::field`] is set, uses storefront-native filters
+/// (`author=` / `narrator=` / series-name filter / Genres `category_id`) so facet
+/// links return the right catalog slice. General queries use `keywords=` only
+/// and preserve Audible relevance order (host merge soft-prefers language).
 pub async fn search_catalog(opts: &CatalogSearchOpts) -> bookclerk_source::Result<Vec<CatalogHit>> {
     let q = opts.query.trim();
     if q.is_empty() || opts.limit == 0 {
@@ -21,13 +28,103 @@ pub async fn search_catalog(opts: &CatalogSearchOpts) -> bookclerk_source::Resul
     let http =
         public_http_client().map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
     let region = normalize_region(&opts.region);
-    let products = search_catalog_products(&http, &region, q, None, Some(q))
-        .await
-        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+    let fetch_limit = (opts.limit.saturating_mul(2)).clamp(opts.limit, 50);
+    let page = opts.page.max(1);
+    let products_sort = opts.sort.audible_products_sort_by();
+    let storefront_sort = opts.sort.audible_catalog_search_sort();
+    // Always request ratings so Discover can filter (min_rating) and sort by
+    // rating without a second round-trip.
+    let with_rating = true;
+
+    let products = match opts.field {
+        Some(CatalogSearchField::Author) => {
+            // Author facet: keep products `author=` filter (storefront search
+            // ignores lone author= and returns unrelated bestsellers).
+            search_catalog_products_paged(
+                &http,
+                &region,
+                "",
+                Some(q),
+                None,
+                None,
+                None,
+                None,
+                page,
+                products_sort,
+                true,
+                fetch_limit,
+                with_rating,
+            )
+            .await
+        }
+        Some(CatalogSearchField::Narrator) => {
+            search_catalog_products_paged(
+                &http,
+                &region,
+                "",
+                None,
+                None,
+                Some(q),
+                None,
+                None,
+                page,
+                products_sort,
+                true,
+                fetch_limit,
+                with_rating,
+            )
+            .await
+        }
+        Some(CatalogSearchField::Series) => {
+            // Storefront search recalls series volumes that `/catalog/products`
+            // keyword filters miss (e.g. A Song of Ice and Fire).
+            search_catalog_storefront(
+                &http,
+                &region,
+                q,
+                page,
+                storefront_sort,
+                true,
+                fetch_limit,
+                with_rating,
+            )
+            .await
+        }
+        Some(CatalogSearchField::Genre) => {
+            search_catalog_by_genre_name(
+                &http,
+                &region,
+                q,
+                page,
+                products_sort,
+                fetch_limit,
+                with_rating,
+            )
+            .await
+        }
+        None => {
+            // Website-equivalent storefront search. `/catalog/products?keywords=`
+            // does not surface many purchasable titles that still resolve by ASIN
+            // (verified: B002UZZ93G *A Game of Thrones*).
+            search_catalog_storefront(
+                &http,
+                &region,
+                q,
+                page,
+                storefront_sort,
+                true,
+                fetch_limit,
+                with_rating,
+            )
+            .await
+        }
+    }
+    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+
     Ok(products
         .into_iter()
-        .take(opts.limit)
         .filter(|p| !p.asin.trim().is_empty())
+        .take(opts.limit)
         .map(|p| product_to_hit(p, String::from("search")))
         .collect())
 }
@@ -297,16 +394,12 @@ pub async fn purchase_hint(
             region_host_suffix(&region),
             asin
         )),
-        price_cents: None,
-        currency: None,
-        price_label: None,
+        ..Default::default()
     };
 
     if opts.with_price {
         if let Some(priced) = fetch_audible_price(&asin, &region).await {
-            hint.price_cents = Some(priced.cents.max(0));
-            hint.currency = Some(priced.currency);
-            hint.price_label = Some(priced.label);
+            apply_dual_price(&mut hint, &priced);
         }
     }
 
@@ -322,9 +415,21 @@ fn product_to_hit(p: CatalogProduct, origin: String) -> CatalogHit {
         series: p.series,
         series_index: p.series_sequence,
         asin: Some(p.asin),
-        isbn: None,
-        url: None,
+        cover_url: p.cover_url,
         origin,
+        subtitle: p.subtitle,
+        description: p.description,
+        publisher: p.publisher,
+        length_minutes: p.length_minutes,
+        published_at: p.published_at,
+        categories: p.categories,
+        language: p.language,
+        price_cents: p.price_cents,
+        currency: p.currency,
+        price_label: p.price_label,
+        rating_overall: p.rating_overall,
+        rating_count: p.rating_count,
+        ..Default::default()
     }
 }
 
@@ -350,13 +455,30 @@ fn region_host_suffix(region: &str) -> &'static str {
     }
 }
 
-struct Priced {
-    cents: i64,
+struct DualPriced {
     currency: String,
-    label: String,
+    list_cents: Option<i64>,
+    list_label: Option<String>,
+    member_cents: Option<i64>,
+    member_label: Option<String>,
 }
 
-async fn fetch_audible_price(asin: &str, region: &str) -> Option<Priced> {
+fn apply_dual_price(hint: &mut SourcePurchaseHint, priced: &DualPriced) {
+    hint.currency = Some(priced.currency.clone());
+    hint.list_price_cents = priced.list_cents;
+    hint.list_price_label = priced.list_label.clone();
+    hint.member_price_cents = priced.member_cents;
+    hint.member_price_label = priced.member_label.clone();
+    let primary_cents = priced.member_cents.or(priced.list_cents);
+    let primary_label = priced
+        .member_label
+        .clone()
+        .or_else(|| priced.list_label.clone());
+    hint.price_cents = primary_cents;
+    hint.price_label = primary_label;
+}
+
+async fn fetch_audible_price(asin: &str, region: &str) -> Option<DualPriced> {
     let http = public_http_client().ok()?;
     let region = normalize_region(region);
     let url = format!(
@@ -386,20 +508,69 @@ async fn fetch_audible_price(asin: &str, region: &str) -> Option<Priced> {
     parse_audible_price_value(product.get("price")?)
 }
 
-fn parse_audible_price_value(price: &Value) -> Option<Priced> {
-    let lowest = price
-        .get("lowest_price")
-        .or_else(|| price.get("list_price"))?;
-    let amount = lowest.get("base")?.as_f64()?;
-    let currency = lowest
+fn audible_amount_node(node: &Value) -> Option<(i64, String)> {
+    let amount = node.get("base")?.as_f64()?;
+    let currency = node
         .get("currency_code")
         .and_then(Value::as_str)
-        .unwrap_or("USD");
+        .unwrap_or("USD")
+        .to_string();
     let cents = (amount * 100.0).round() as i64;
-    Some(Priced {
-        cents: cents.max(0),
-        currency: currency.to_string(),
-        label: format_money_label(cents, currency),
+    Some((cents.max(0), currency))
+}
+
+fn parse_audible_price_value(price: &Value) -> Option<DualPriced> {
+    let list = price.get("list_price").and_then(audible_amount_node);
+    let lowest = price.get("lowest_price").and_then(|node| {
+        let (cents, currency) = audible_amount_node(node)?;
+        let kind = node
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        Some((cents, currency, kind))
+    });
+
+    let currency = list
+        .as_ref()
+        .map(|(_, c)| c.clone())
+        .or_else(|| lowest.as_ref().map(|(_, c, _)| c.clone()))
+        .unwrap_or_else(|| String::from("USD"));
+
+    let list_cents = list.map(|(c, _)| c);
+    let list_label = list_cents.map(|c| format_money_label(c, &currency));
+
+    let member_cents = lowest.as_ref().and_then(|(cents, _, kind)| {
+        let distinct_from_list = list_cents.is_none_or(|list| list != *cents);
+        let memberish = kind == "member" || kind.is_empty() || kind == "member_price";
+        if distinct_from_list && (memberish || list_cents.is_some()) {
+            Some(*cents)
+        } else {
+            None
+        }
+    });
+    let member_label = member_cents.map(|c| format_money_label(c, &currency));
+
+    if list_cents.is_none() && member_cents.is_none() {
+        let (cents, cur) = price
+            .get("lowest_price")
+            .or_else(|| price.get("list_price"))
+            .and_then(audible_amount_node)?;
+        return Some(DualPriced {
+            currency: cur.clone(),
+            list_cents: Some(cents),
+            list_label: Some(format_money_label(cents, &cur)),
+            member_cents: None,
+            member_label: None,
+        });
+    }
+
+    Some(DualPriced {
+        currency,
+        list_cents,
+        list_label,
+        member_cents,
+        member_label,
     })
 }
 
@@ -423,7 +594,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn audible_price_json() {
+    fn audible_price_json_member_and_list() {
         let price = json!({
             "credit_price": 1.0,
             "list_price": {
@@ -438,7 +609,9 @@ mod tests {
             }
         });
         let priced = parse_audible_price_value(&price).unwrap();
-        assert_eq!(priced.cents, 1495);
-        assert_eq!(priced.label, "$14.95");
+        assert_eq!(priced.member_cents, Some(1495));
+        assert_eq!(priced.member_label.as_deref(), Some("$14.95"));
+        assert_eq!(priced.list_cents, Some(2522));
+        assert_eq!(priced.list_label.as_deref(), Some("$25.22"));
     }
 }

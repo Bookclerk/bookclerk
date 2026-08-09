@@ -34,16 +34,16 @@ pub use fetch_dir::{fetch_work_dir, upload_file_path, FetchWorkDir, UploadFile};
 pub use guest::PluginGuest;
 pub use pass_fd::{fd_proc_path, recv_passed_fd, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV};
 pub use protocol::{
-    methods, BookAcquiredDto, BrandDto, CatalogHitDto, CliArgKind, CliArgSpec, CliCommandSpec,
-    CliInvokeParams, CliInvokeResult, CliSchema, ConfigOptionDto, ConfigOptionValueDto, CopyParams,
-    CredentialsUpdateParams, EventPollResultDto, ExpandCandidatesParams, ExternalUserDto,
-    FetchTitleParams, GetParams, GetResultDto, HandshakeResult, HealthDto, KeyParams, ListParams,
-    ListeningProgressDto, LocalCopyParams, LocalGetParams, LocalKeyParams, LocalListParams,
-    LocalPutFileParams, LocalPutParams, LocalTouchFileParams, LoginCompleteParams, LoginParams,
-    LoginResultDto, LoginStartResultDto, ObjectInfoDto, ObjectMetaDto, ObjectProbeDto,
-    OutputLocalContextDto, OutputS3ContextDto, PlainPartDto, PurchaseHintDto, PurchaseHintParams,
-    PutFileParams, PutParams, S3CredentialsDto, ScanBookDto, ScanParams, ScanSummaryDto,
-    SearchCatalogParams, SourceAccountDto, SourceFetchDto, SyncListeningResultDto, TouchFileParams,
-    HOST_API_VERSION_MAX, HOST_API_VERSION_MIN, MAX_RPC_LINE_BYTES, PLUGIN_API_VERSION,
-    PROTOCOL_NAME,
+    methods, BookAcquiredDto, BrandDto, CatalogDetailParams, CatalogHitDto, CliArgKind, CliArgSpec,
+    CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema, ConfigOptionDto,
+    ConfigOptionValueDto, CopyParams, CredentialsUpdateParams, EventPollResultDto,
+    ExpandCandidatesParams, ExternalUserDto, FetchTitleParams, GetParams, GetResultDto,
+    HandshakeResult, HealthDto, KeyParams, ListParams, ListeningProgressDto, LocalCopyParams,
+    LocalGetParams, LocalKeyParams, LocalListParams, LocalPutFileParams, LocalPutParams,
+    LocalTouchFileParams, LoginCompleteParams, LoginParams, LoginResultDto, LoginStartResultDto,
+    ObjectInfoDto, ObjectMetaDto, ObjectProbeDto, OutputLocalContextDto, OutputS3ContextDto,
+    PlainPartDto, PurchaseHintDto, PurchaseHintParams, PutFileParams, PutParams, S3CredentialsDto,
+    ScanBookDto, ScanParams, ScanSummaryDto, SearchCatalogParams, SourceAccountDto, SourceFetchDto,
+    SyncListeningResultDto, TouchFileParams, HOST_API_VERSION_MAX, HOST_API_VERSION_MIN,
+    MAX_RPC_LINE_BYTES, PLUGIN_API_VERSION, PROTOCOL_NAME,
 };

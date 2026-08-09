@@ -89,9 +89,24 @@ pub struct PluginManifest {
     /// What this plugin needs from its jail. Omitted means outbound-only.
     #[serde(default)]
     pub sandbox: SandboxManifest,
+    /// Public site / API URLs this plugin talks to.
+    ///
+    /// Informational (UI brand / docs) — not a sandbox host allowlist. The first
+    /// parseable URL's host is used to build a Google favicon URL for Settings.
+    #[serde(default)]
+    pub outbound_urls: Vec<String>,
 }
 
 impl PluginManifest {
+    /// Google `s2/favicons` URL derived from the first usable [`Self::outbound_urls`] entry.
+    #[must_use]
+    pub fn google_favicon_url(&self) -> Option<String> {
+        self.outbound_urls
+            .iter()
+            .find_map(|raw| host_from_outbound_url(raw))
+            .map(|host| format!("https://www.google.com/s2/favicons?domain={host}&sz=128"))
+    }
+
     /// Parse manifest TOML text.
     pub fn parse(text: &str) -> crate::Result<Self> {
         let m: Self = toml::from_str(text)?;
@@ -113,6 +128,39 @@ impl PluginManifest {
         }
         Ok(m)
     }
+}
+
+/// Extract a hostname suitable for Google's favicon service.
+fn host_from_outbound_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    let rest = with_scheme.split_once("://")?.1;
+    let host_port = rest.split(['/', '?', '#']).next()?.trim();
+    if host_port.is_empty() {
+        return None;
+    }
+    let host = host_port
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(host_port);
+    // Drop brackets / port from `[::1]:443` or `example.com:443`.
+    let host = if let Some(inner) = host.strip_prefix('[') {
+        inner.split(']').next().unwrap_or(inner)
+    } else {
+        host.split(':').next().unwrap_or(host)
+    };
+    let host = host.trim().trim_start_matches("www.").to_ascii_lowercase();
+    if host.is_empty() || host.contains(' ') {
+        return None;
+    }
+    Some(host)
 }
 
 #[cfg(test)]
@@ -223,6 +271,33 @@ network = "full"
         )
         .expect_err("`full` must not be expressible from a manifest");
         assert!(err.to_string().contains("full"), "got: {err}");
+    }
+
+    #[test]
+    fn outbound_urls_drive_google_favicon() {
+        let m = PluginManifest::parse(
+            r#"
+api_version = 1
+id = "audible"
+kind = "source"
+command = "./x"
+outbound_urls = ["https://www.audible.com/", "https://api.audible.com"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            m.google_favicon_url().as_deref(),
+            Some("https://www.google.com/s2/favicons?domain=audible.com&sz=128")
+        );
+    }
+
+    #[test]
+    fn host_from_outbound_url_accepts_bare_hosts() {
+        assert_eq!(
+            host_from_outbound_url("chirpbooks.com"),
+            Some("chirpbooks.com".into())
+        );
+        assert_eq!(host_from_outbound_url(""), None);
     }
 
     #[test]

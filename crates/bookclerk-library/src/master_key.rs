@@ -522,13 +522,36 @@ pub fn unseal_with_dek(ciphertext: &[u8], nonce: &[u8], dek: &MasterKey) -> Resu
         })
 }
 
+/// Serialize tests that mutate the process-wide DEK / auth-password env.
+///
+/// `configure_master_key*` installs a global DEK used by sealed-v1 unseal; parallel
+/// tests that mint distinct keys otherwise race and fail with "wrong master key".
+/// Hold this guard for the full arrange/act/assert window.
+///
+/// Uses `tokio::sync::Mutex` so async tests can keep the guard across `.await`
+/// without tripping `clippy::await_holding_lock` (std `MutexGuard` is banned).
+#[cfg(test)]
+fn master_key_test_lock_mutex() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Sync tests: block until the process DEK lock is held.
+#[cfg(test)]
+pub(crate) fn master_key_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    master_key_test_lock_mutex().blocking_lock()
+}
+
+/// Async tests: await the process DEK lock (safe to hold across `.await`).
+#[cfg(test)]
+pub(crate) async fn master_key_test_lock_async() -> tokio::sync::MutexGuard<'static, ()> {
+    master_key_test_lock_mutex().lock().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tempfile::tempdir;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Dynamic passphrase so CodeQL does not flag a hard-coded crypto secret.
     fn test_passphrase(tag: &str) -> String {
@@ -537,7 +560,7 @@ mod tests {
 
     #[test]
     fn mint_raw_and_reload() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = master_key_test_lock();
         let dir = tempdir().unwrap();
         std::env::remove_var(AUTH_PASSWORD_ENV);
         let a = resolve_master_key(dir.path()).unwrap();
@@ -552,7 +575,7 @@ mod tests {
 
     #[test]
     fn wrap_with_password() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = master_key_test_lock();
         let dir = tempdir().unwrap();
         let pass = test_passphrase("master-wrap");
         std::env::set_var(AUTH_PASSWORD_ENV, &pass);
@@ -573,7 +596,7 @@ mod tests {
 
     #[test]
     fn later_password_wraps_bck1() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = master_key_test_lock();
         let dir = tempdir().unwrap();
         std::env::remove_var(AUTH_PASSWORD_ENV);
         let a = resolve_master_key(dir.path()).unwrap();

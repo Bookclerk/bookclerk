@@ -1,4 +1,4 @@
-//! Shared JSON-RPC method names and payload types (api_version = 1).
+//! Shared JSON-RPC method names and payload types (api_version = 2).
 //!
 //! # Trust boundary
 //!
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Current host↔plugin protocol version.
-pub const PLUGIN_API_VERSION: u32 = 1;
+pub const PLUGIN_API_VERSION: u32 = 2;
 
 /// Wire framing name for newline-delimited JSON-RPC over stdio.
 pub const PROTOCOL_NAME: &str = "jsonrpc-stdio-v1";
@@ -21,10 +21,10 @@ pub const PROTOCOL_NAME: &str = "jsonrpc-stdio-v1";
 pub const MAX_RPC_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Oldest host API version a guest may speak.
-pub const HOST_API_VERSION_MIN: u32 = 1;
+pub const HOST_API_VERSION_MIN: u32 = 2;
 
 /// Newest host API version a guest may speak.
-pub const HOST_API_VERSION_MAX: u32 = 1;
+pub const HOST_API_VERSION_MAX: u32 = 2;
 
 /// Result of `handshake`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -396,6 +396,16 @@ pub enum SourceFetchDto {
     },
 }
 
+/// Params for [`methods::CATALOG_DETAIL`].
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CatalogDetailParams {
+    /// Store product id (Libro ISBN or ISBN-slug).
+    pub product_id: String,
+    /// Optional ISBN when it differs from [`Self::product_id`].
+    #[serde(default)]
+    pub isbn: Option<String>,
+}
+
 /// Params for [`methods::SEARCH_CATALOG`].
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SearchCatalogParams {
@@ -404,10 +414,26 @@ pub struct SearchCatalogParams {
     pub region: String,
     #[serde(default = "default_catalog_limit")]
     pub limit: usize,
+    /// 1-based page for storefronts that page (default 1).
+    #[serde(default = "default_catalog_page")]
+    pub page: u32,
+    /// `relevance` / `popularity` / `rating` / `title` / `author`.
+    #[serde(default)]
+    pub sort: Option<String>,
+    /// Optional facet (`author` / `narrator` / `series` / `genre`).
+    #[serde(default)]
+    pub field: Option<String>,
+    /// Preferred content language (soft-prioritize; e.g. `en`).
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 fn default_catalog_limit() -> usize {
     20
+}
+
+fn default_catalog_page() -> u32 {
+    1
 }
 
 /// Params for [`methods::EXPAND_CANDIDATES`].
@@ -476,7 +502,35 @@ pub struct CatalogHitDto {
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
+    pub cover_url: Option<String>,
+    #[serde(default)]
     pub origin: String,
+    #[serde(default)]
+    pub subtitle: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub length_minutes: Option<i64>,
+    #[serde(default)]
+    pub published_at: Option<String>,
+    #[serde(default)]
+    pub categories: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub price_cents: Option<i64>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub price_label: Option<String>,
+    #[serde(default)]
+    pub rating_overall: Option<f64>,
+    #[serde(default)]
+    pub rating_count: Option<i64>,
+    #[serde(default)]
+    pub is_abridged: Option<bool>,
 }
 
 /// Wire form of [`SourcePurchaseHint`].
@@ -493,6 +547,14 @@ pub struct PurchaseHintDto {
     pub currency: Option<String>,
     #[serde(default)]
     pub price_label: Option<String>,
+    #[serde(default)]
+    pub list_price_cents: Option<i64>,
+    #[serde(default)]
+    pub list_price_label: Option<String>,
+    #[serde(default)]
+    pub member_price_cents: Option<i64>,
+    #[serde(default)]
+    pub member_price_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -799,6 +861,8 @@ pub mod methods {
     pub const FETCH_TITLE: &str = "fetch_title";
     /// Public catalog typeahead ([`SearchCatalogParams`] → `Vec<CatalogHitDto>`).
     pub const SEARCH_CATALOG: &str = "search_catalog";
+    /// Rich metadata for one catalog product ([`CatalogDetailParams`] → `Option<CatalogHitDto>`).
+    pub const CATALOG_DETAIL: &str = "catalog_detail";
     /// Expand related / series / author candidates ([`ExpandCandidatesParams`]).
     pub const EXPAND_CANDIDATES: &str = "expand_candidates";
     /// Purchase / catalog URL (+ optional price) ([`PurchaseHintParams`]).

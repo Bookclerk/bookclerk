@@ -282,11 +282,12 @@ impl LibraryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::master_key::configure_master_key;
+    use crate::master_key::{configure_master_key, master_key_test_lock_async};
     use tempfile::tempdir;
 
     #[tokio::test]
     async fn scope_isolates_secrets_and_books() {
+        let _dek = master_key_test_lock_async().await;
         let dir = tempdir().unwrap();
         configure_master_key(dir.path()).unwrap();
         let store = LibraryStore::from_connection(

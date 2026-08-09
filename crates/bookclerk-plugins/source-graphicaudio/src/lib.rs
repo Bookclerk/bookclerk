@@ -23,7 +23,7 @@ pub use auth::GraphicAudioAuthFile;
 pub use catalog::{
     catalog_http_client, expand_from_product_id, expand_from_search, fetch_product_by_id,
     fetch_series_page, parse_catalog_grid, parse_related_products, search_catalog,
-    MagentoCatalogProduct,
+    search_catalog_page, MagentoCatalogProduct,
 };
 pub use client::{
     DownloadLinks, GraphicAudioClient, Product, DEFAULT_BASE_URL, LOGIN_PATH, PRODUCTS_PATH,

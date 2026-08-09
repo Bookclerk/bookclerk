@@ -85,8 +85,9 @@ external copies of the same id are skipped when an in-process adapter is already
 registered. After registration, hosts talk **only**
 through `ContentSource` /
 `Integration` (login, scan, fetch, import, revoke, inspect, plus catalog
-`search_catalog` / `expand_candidates` / `purchase_hint` / `list_deals` for
-Discover). Sources always return `PlainFetch` (`SourceFetch` is an alias) —
+`search_catalog` / `catalog_detail` / `expand_candidates` / `purchase_hint` /
+`list_deals` for Discover). Sources always return `PlainFetch` (`SourceFetch` is
+an alias) —
 DRM (Adrm/CENC) is decrypted inside the Audible plugin before the host sees
 media. Guest `fetch_title` carries optional `pdf_url`; catalog methods are on
 the JSON-RPC wire for external guests.
@@ -145,7 +146,9 @@ A guest gets four paths and nothing else:
 | one fetch work directory at a time | write (via descriptor) | passed on fd 3 immediately before each `fetch_title` |
 
 Plus the system read paths every process needs to start (the loader, shared
-libraries, the CA bundle, resolver config) and a writable `/dev/null`.
+libraries, the CA bundle — including `/var/lib/ca-certificates` on
+openSUSE/SLE where `/etc/ssl` only symlinks there — resolver config) and a
+writable `/dev/null`.
 
 That leaves out `master.key`, `library.db`, `config.toml`, the operator token,
 the finished library, the download cache root, and every *other* plugin's data
@@ -438,12 +441,14 @@ the staging tree does not take the plugin's state with it.
 ### `plugin.toml`
 
 ```toml
-api_version = 1
+api_version = 2
 id = "echo"
 name = "Echo Integration"
 kind = "integration"          # source | integration | output | database
 command = "./bookclerk-plugin-echo-integration"
 # args = ["--verbose"]
+# Public site/API URLs (informational). Settings derives a Google favicon from the first host.
+# outbound_urls = ["https://example.com/"]
 
 # Optional: what this plugin needs from its jail. Omitted means outbound-only.
 [sandbox]
@@ -490,11 +495,13 @@ enabled = true
 # … opaque knobs …
 ```
 
-## Protocol (api_version = 1)
+## Protocol (api_version = 2)
 
 Host → plugin: one JSON object per line on stdin.  
 Plugin → host: one JSON-RPC response per line on stdout.  
-Stderr is free for logging.
+Stderr is free for logging. Guests outside
+`HOST_API_VERSION_MIN..=HOST_API_VERSION_MAX` (currently both `2`) fail
+handshake cleanly.
 
 ### Common
 
@@ -506,7 +513,7 @@ Stderr is free for logging.
 | `cli.describe` | Declared CLI command schema (`CliSchema`) |
 | `cli.invoke` | Run a declared command (`CliInvokeParams` → `CliInvokeResult`) |
 
-Handshake params include `{ "api_version": 1, "config": {…} }` — the plugin’s
+Handshake params include `{ "api_version": 2, "config": {…} }` — the plugin’s
 `[sources.<id>]` / `[integrations.<id>]` table from **main** `config.toml` as JSON
 (empty object if the table is missing).
 
@@ -603,12 +610,15 @@ loads it at startup via [`load_external_destinations`] instead of the in-process
 ### Database plugins
 
 `kind = "database"` guests implement the SeaORM proxy boundary over JSON-RPC.
+Engine connect/migrate/proxy code lives in the guest
+(`bookclerk-plugin-database` modules); the host does not link SQL engines.
 The host opens the library through [`load_external_database`] /
-[`open_library_store`]; SQLite receives `library.db` on fd 3 at `db.connect`.
+[`open_library_store`] (guest required — no in-process fallback). SQLite
+receives `library.db` on fd 3 at `db.connect`.
 
 | Method | Notes |
 | --- | --- |
-| `db.connect` | Open backend (SQLite: fd 3; D1/Postgres: injected credentials) |
+| `db.connect` | Open backend via tagged `DbConnectParams` (`backend`: `sqlite` / `d1` / `postgres`); returns `{ "dialect": "sqlite" \| "postgres" }` (SQLite: fd 3; D1/Postgres: host-injected credentials) |
 | `db.ping` | Verify connectivity |
 | `db.query` / `db.execute` | Forward SeaORM [`Statement`] payloads |
 
@@ -622,7 +632,7 @@ mkdir -p "$BOOKCLERK_FILES_DIR/plugins/echo"
 cp target/debug/bookclerk-plugin-echo-integration \
    "$BOOKCLERK_FILES_DIR/plugins/echo/"
 cat > "$BOOKCLERK_FILES_DIR/plugins/echo/plugin.toml" <<'EOF'
-api_version = 1
+api_version = 2
 id = "echo"
 kind = "integration"
 command = "./bookclerk-plugin-echo-integration"

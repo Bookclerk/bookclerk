@@ -162,6 +162,15 @@ pub trait ContentSource: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Fetch rich bibliographic metadata for one catalog product (no account).
+    ///
+    /// Default: none. Used when search/expand hits are lean (e.g. HTML scrape)
+    /// and a title detail dialog needs narrator, runtime, description, etc.
+    async fn catalog_detail(&self, product_id: &str) -> Result<Option<CatalogHit>> {
+        let _ = product_id;
+        Ok(None)
+    }
+
     /// Expand related / series / author candidates from a taste seed.
     ///
     /// Default: empty. `limit` caps returned hits (sources may also budget HTTP).

@@ -308,6 +308,27 @@ pub fn confidence_percent_to_fraction(percent: u8) -> f64 {
     f64::from(percent.min(100)) / 100.0
 }
 
+/// Fetch Audnexus metadata for a known ASIN (no confidence scoring).
+///
+/// Used by Discover / Wishlist / Library detail views to surface description,
+/// runtime, publisher, and related fields without requiring a library row.
+pub async fn enrichment_for_asin(asin: &str, region: &str) -> Result<Option<Enrichment>> {
+    let http = public_http_client()?;
+    enrichment_for_asin_with_client(&http, asin, region).await
+}
+
+/// Same as [`enrichment_for_asin`] with a shared HTTP client.
+pub async fn enrichment_for_asin_with_client(
+    http: &reqwest::Client,
+    asin: &str,
+    region: &str,
+) -> Result<Option<Enrichment>> {
+    let Some(item) = fetch_audnexus_book(http, asin, region).await? else {
+        return Ok(None);
+    };
+    Ok(enrichment_from_audnexus(&item).map(|(e, _)| e))
+}
+
 fn enrichment_from_audnexus(item: &serde_json::Value) -> Option<(Enrichment, Option<String>)> {
     let asin = item.get("asin")?.as_str()?.to_string();
     let title = item

@@ -3,6 +3,7 @@ id = "audible"
 name = "Audible"
 kind = "source"
 command = "./bookclerk-plugin-source-audible"
+outbound_urls = ["https://www.audible.com/", "https://api.audible.com"]
 
 # Interactive sign-in receives the OAuth authorization code on a local callback
 # server, so this guest needs to listen as well as connect. Only a

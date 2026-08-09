@@ -1,11 +1,13 @@
 //! External Libro.fm source plugin for Bookclerk.
 
 use bookclerk_plugin_sdk::{
-    methods, BrandDto, ConfigOptionDto, ConfigOptionValueDto, ExpandCandidatesParams,
-    FetchTitleParams, HandshakeResult, HealthDto, LoginParams, PluginGuest, PurchaseHintParams,
-    ScanParams, SearchCatalogParams, PLUGIN_API_VERSION,
+    methods, BrandDto, CatalogDetailParams, ConfigOptionDto, ConfigOptionValueDto,
+    ExpandCandidatesParams, FetchTitleParams, HandshakeResult, HealthDto, LoginParams, PluginGuest,
+    PurchaseHintParams, ScanParams, SearchCatalogParams, PLUGIN_API_VERSION,
 };
-use bookclerk_source::{CatalogSearchOpts, ContentSource, ExpandSeed, PurchaseHintOpts};
+use bookclerk_source::{
+    CatalogSearchOpts, CatalogSearchSort, ContentSource, ExpandSeed, PurchaseHintOpts,
+};
 use serde_json::{json, Value};
 
 #[tokio::main]
@@ -24,6 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "scan".into(),
                     "fetch_title".into(),
                     "search_catalog".into(),
+                    "catalog_detail".into(),
                     "expand_candidates".into(),
                     "purchase_hint".into(),
                     "list_deals".into(),
@@ -103,6 +106,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         query: p.query,
                         region: p.region,
                         limit: p.limit,
+                        page: p.page.max(1),
+                        sort: p
+                            .sort
+                            .as_deref()
+                            .map(CatalogSearchSort::from_wire)
+                            .unwrap_or_default(),
+                        field: p
+                            .field
+                            .as_deref()
+                            .and_then(bookclerk_source::CatalogSearchField::from_wire),
+                        language: p.language,
                     })
                     .await
                     .map_err(|e| e.to_string())?;
@@ -111,6 +125,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(bookclerk_plugin_source_libro::catalog_hit_to_dto)
                     .collect();
                 Ok(serde_json::to_value(dtos).unwrap())
+            }
+            methods::CATALOG_DETAIL => {
+                let p: CatalogDetailParams = serde_json::from_value(params)
+                    .map_err(|e| format!("catalog_detail params: {e}"))?;
+                let key = p
+                    .isbn
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(p.product_id.trim());
+                let source = bookclerk_plugin_source_libro::LibroSource::new();
+                let hit = source
+                    .catalog_detail(key)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let dto = hit.map(bookclerk_plugin_source_libro::catalog_hit_to_dto);
+                Ok(serde_json::to_value(dto).unwrap())
             }
             methods::EXPAND_CANDIDATES => {
                 let p: ExpandCandidatesParams = serde_json::from_value(params)

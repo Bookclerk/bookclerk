@@ -19,8 +19,8 @@ mod sync;
 
 pub use auth::LibroAuthFile;
 pub use catalog::{
-    expand_candidates as catalog_expand_candidates, purchase_hint as catalog_purchase_hint,
-    search_catalog as catalog_search,
+    catalog_detail, expand_candidates as catalog_expand_candidates,
+    purchase_hint as catalog_purchase_hint, search_catalog as catalog_search,
 };
 pub use client::{
     Audiobook, DownloadManifest, DownloadPart, LibraryPage, LibroClient, ManifestFormat,

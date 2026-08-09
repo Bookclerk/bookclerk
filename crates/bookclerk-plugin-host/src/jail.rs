@@ -529,7 +529,7 @@ mod tests {
         std::fs::write(&command, b"#!/bin/sh\n").expect("write guest");
         DiscoveredPlugin {
             manifest: crate::PluginManifest {
-                api_version: 1,
+                api_version: 2,
                 protocol: None,
                 id: id.to_string(),
                 name: None,
@@ -538,6 +538,7 @@ mod tests {
                 args: vec![],
                 cli: None,
                 sandbox: crate::manifest::SandboxManifest { network },
+                outbound_urls: vec![],
             },
             root: root.to_path_buf(),
             command,

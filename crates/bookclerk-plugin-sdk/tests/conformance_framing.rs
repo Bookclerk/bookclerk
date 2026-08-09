@@ -17,9 +17,9 @@ fn max_rpc_line_bytes_is_16_mib() {
 
 #[test]
 fn host_api_version_range_covers_current() {
-    assert_eq!(HOST_API_VERSION_MIN, 1);
-    assert_eq!(HOST_API_VERSION_MAX, 1);
-    assert_eq!(PLUGIN_API_VERSION, 1);
+    assert_eq!(HOST_API_VERSION_MIN, 2);
+    assert_eq!(HOST_API_VERSION_MAX, 2);
+    assert_eq!(PLUGIN_API_VERSION, 2);
     const {
         assert!(PLUGIN_API_VERSION >= HOST_API_VERSION_MIN);
         assert!(PLUGIN_API_VERSION <= HOST_API_VERSION_MAX);

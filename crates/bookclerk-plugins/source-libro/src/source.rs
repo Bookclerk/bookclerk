@@ -261,6 +261,13 @@ impl ContentSource for LibroSource {
         crate::catalog::search_catalog(opts).await
     }
 
+    async fn catalog_detail(
+        &self,
+        product_id: &str,
+    ) -> bookclerk_source::Result<Option<CatalogHit>> {
+        crate::catalog::catalog_detail(product_id).await
+    }
+
     async fn expand_candidates(
         &self,
         seed: &ExpandSeed,

@@ -79,7 +79,21 @@ pub fn catalog_hit_to_dto(hit: CatalogHit) -> CatalogHitDto {
         asin: hit.asin,
         isbn: hit.isbn,
         url: hit.url,
+        cover_url: hit.cover_url,
         origin: hit.origin,
+        subtitle: hit.subtitle,
+        description: hit.description,
+        publisher: hit.publisher,
+        length_minutes: hit.length_minutes,
+        published_at: hit.published_at,
+        categories: hit.categories,
+        language: hit.language,
+        price_cents: hit.price_cents,
+        currency: hit.currency,
+        price_label: hit.price_label,
+        rating_overall: hit.rating_overall,
+        rating_count: hit.rating_count,
+        is_abridged: hit.is_abridged,
     }
 }
 
@@ -93,6 +107,10 @@ pub fn purchase_hint_to_dto(hint: SourcePurchaseHint) -> PurchaseHintDto {
         price_cents: hint.price_cents,
         currency: hint.currency,
         price_label: hint.price_label,
+        list_price_cents: hint.list_price_cents,
+        list_price_label: hint.list_price_label,
+        member_price_cents: hint.member_price_cents,
+        member_price_label: hint.member_price_label,
     }
 }
 

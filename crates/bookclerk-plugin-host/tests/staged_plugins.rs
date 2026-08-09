@@ -93,6 +93,10 @@ async fn staged_first_party_plugins_handshake() {
                         query: "test".into(),
                         region: "us".into(),
                         limit: 1,
+                        page: 1,
+                        sort: None,
+                        field: None,
+                        language: None,
                     })
                     .expect("search params"),
                 )

@@ -5,7 +5,9 @@ use bookclerk_plugin_sdk::{
     LoginParams, PluginGuest, PurchaseHintParams, ScanParams, SearchCatalogParams,
     PLUGIN_API_VERSION,
 };
-use bookclerk_source::{CatalogSearchOpts, ContentSource, ExpandSeed, PurchaseHintOpts};
+use bookclerk_source::{
+    CatalogSearchOpts, CatalogSearchSort, ContentSource, ExpandSeed, PurchaseHintOpts,
+};
 use serde_json::{json, Value};
 
 #[tokio::main]
@@ -89,6 +91,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         query: p.query,
                         region: p.region,
                         limit: p.limit,
+                        page: p.page.max(1),
+                        sort: p
+                            .sort
+                            .as_deref()
+                            .map(CatalogSearchSort::from_wire)
+                            .unwrap_or_default(),
+                        field: p
+                            .field
+                            .as_deref()
+                            .and_then(bookclerk_source::CatalogSearchField::from_wire),
+                        language: p.language,
                     })
                     .await
                     .map_err(|e| e.to_string())?;

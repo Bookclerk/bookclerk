@@ -407,13 +407,15 @@ impl ContentSource for GraphicAudioSource {
             Ok(c) => c,
             Err(_) => return Ok(Vec::new()),
         };
-        let products = match crate::catalog::search_catalog(&http, &self.store_url, q).await {
-            Ok(p) => p,
-            Err(err) => {
-                tracing::debug!(error = %err, "graphicaudio catalog search failed");
-                return Ok(Vec::new());
-            }
-        };
+        let page = opts.page.max(1);
+        let products =
+            match crate::catalog::search_catalog_page(&http, &self.store_url, q, page).await {
+                Ok(p) => p,
+                Err(err) => {
+                    tracing::debug!(error = %err, "graphicaudio catalog search failed");
+                    return Ok(Vec::new());
+                }
+            };
         Ok(products
             .into_iter()
             .take(opts.limit)
@@ -508,9 +510,7 @@ impl ContentSource for GraphicAudioSource {
                     "{}/catalog/product/view/id/{pid}",
                     self.store_url.trim_end_matches('/')
                 )),
-                price_cents: None,
-                currency: None,
-                price_label: None,
+                ..Default::default()
             })
         } else {
             let title = opts.title.as_deref().unwrap_or("").trim();
@@ -531,8 +531,8 @@ impl ContentSource for GraphicAudioSource {
                     None => title.to_string(),
                 };
                 match crate::catalog::search_catalog(&http, &self.store_url, &q).await {
-                    Ok(hits) => hits.into_iter().next().map(|hit| {
-                        let url = hit.url.or_else(|| {
+                    Ok(hits) => pick_ga_purchase_hit(title, &hits).map(|hit| {
+                        let url = hit.url.clone().or_else(|| {
                             Some(format!(
                                 "{}/catalog/product/view/id/{}",
                                 self.store_url.trim_end_matches('/'),
@@ -540,12 +540,10 @@ impl ContentSource for GraphicAudioSource {
                             ))
                         });
                         SourcePurchaseHint {
-                            product_id: hit.product_id,
-                            title: Some(hit.title),
+                            product_id: hit.product_id.clone(),
+                            title: Some(hit.title.clone()),
                             url,
-                            price_cents: None,
-                            currency: None,
-                            price_label: None,
+                            ..Default::default()
                         }
                     }),
                     Err(err) => {
@@ -575,14 +573,86 @@ fn ga_catalog_hit(p: &MagentoCatalogProduct, origin: String) -> CatalogHit {
     CatalogHit {
         product_id: p.product_id.clone(),
         title: p.title.clone(),
-        authors: None,
-        narrators: None,
         series: p.series.clone(),
-        series_index: None,
-        asin: None,
-        isbn: None,
         url: p.url.clone(),
+        cover_url: p.cover_url.clone(),
         origin,
+        ..Default::default()
+    }
+}
+
+/// Pick a Magento hit that actually matches the queried title (not the first rank).
+fn pick_ga_purchase_hit<'a>(
+    query_title: &str,
+    hits: &'a [MagentoCatalogProduct],
+) -> Option<&'a MagentoCatalogProduct> {
+    let q = normalize_ga_title(query_title);
+    if q.is_empty() {
+        return None;
+    }
+    hits.iter()
+        .filter(|h| !h.is_series_set())
+        .filter(|h| ga_titles_match(&q, &normalize_ga_title(&h.title)))
+        .max_by(|a, b| {
+            let sa = ga_title_score(&q, &normalize_ga_title(&a.title));
+            let sb = ga_title_score(&q, &normalize_ga_title(&b.title));
+            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+fn normalize_ga_title(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn ga_titles_match(query: &str, hit: &str) -> bool {
+    if query.is_empty() || hit.is_empty() {
+        return false;
+    }
+    if query == hit {
+        return true;
+    }
+    // Contiguous phrase match only when the shorter is a large fraction of the longer
+    // (avoids "man" / "ashes" token collisions with unrelated Magento series).
+    let (shorter, longer) = if query.chars().count() <= hit.chars().count() {
+        (query, hit)
+    } else {
+        (hit, query)
+    };
+    if shorter.chars().count() < 8 {
+        return false;
+    }
+    let ratio = shorter.chars().count() as f32 / longer.chars().count() as f32;
+    ratio >= 0.55
+        && (longer == shorter
+            || longer.starts_with(&format!("{shorter} "))
+            || longer.ends_with(&format!(" {shorter}"))
+            || longer.contains(&format!(" {shorter} ")))
+}
+
+fn ga_title_score(query: &str, hit: &str) -> f32 {
+    if query == hit {
+        return 1.0;
+    }
+    let (shorter, longer) = if query.len() <= hit.len() {
+        (query, hit)
+    } else {
+        (hit, query)
+    };
+    if longer.contains(shorter) {
+        shorter.len() as f32 / longer.len() as f32
+    } else {
+        0.0
     }
 }
 

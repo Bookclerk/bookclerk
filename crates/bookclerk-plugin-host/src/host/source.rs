@@ -27,9 +27,10 @@ use serde_json::Value;
 use crate::discover::DiscoveredPlugin;
 use crate::jail::plugin_data_dir;
 use crate::protocol::{
-    methods, CatalogHitDto, ExpandCandidatesParams, FetchTitleParams, LoginCompleteParams,
-    LoginParams, LoginResultDto, LoginStartResultDto, PurchaseHintDto, PurchaseHintParams,
-    ScanBookDto, ScanParams, ScanSummaryDto, SearchCatalogParams, SourceAccountDto, SourceFetchDto,
+    methods, CatalogDetailParams, CatalogHitDto, ExpandCandidatesParams, FetchTitleParams,
+    LoginCompleteParams, LoginParams, LoginResultDto, LoginStartResultDto, PurchaseHintDto,
+    PurchaseHintParams, ScanBookDto, ScanParams, ScanSummaryDto, SearchCatalogParams,
+    SourceAccountDto, SourceFetchDto,
 };
 use crate::rpc::PluginClient;
 use crate::Result;
@@ -382,6 +383,10 @@ impl ContentSource for ExternalSource {
             query: opts.query.clone(),
             region: opts.region.clone(),
             limit: opts.limit,
+            page: opts.page.max(1),
+            sort: Some(opts.sort.as_wire().to_string()),
+            field: opts.field.map(|f| f.as_wire().to_string()),
+            language: opts.language.clone(),
         };
         match self
             .client
@@ -394,12 +399,46 @@ impl ContentSource for ExternalSource {
         {
             Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_dto).collect()),
             Err(err) => {
-                tracing::debug!(
+                // Discover typeahead depends on this path; keep failures visible at warn
+                // so empty UI results are diagnosable (debug is often off in daemon runs).
+                tracing::warn!(
                     plugin = %self.id(),
                     error = %err,
                     "external search_catalog soft-failed"
                 );
                 Ok(Vec::new())
+            }
+        }
+    }
+
+    async fn catalog_detail(
+        &self,
+        product_id: &str,
+    ) -> bookclerk_source::Result<Option<CatalogHit>> {
+        if !self.client.has_capability(methods::CATALOG_DETAIL) {
+            return Ok(None);
+        }
+        let params = CatalogDetailParams {
+            product_id: product_id.to_string(),
+            isbn: None,
+        };
+        match self
+            .client
+            .call::<Option<CatalogHitDto>>(
+                methods::CATALOG_DETAIL,
+                serde_json::to_value(params)
+                    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
+            )
+            .await
+        {
+            Ok(hit) => Ok(hit.map(catalog_hit_from_dto)),
+            Err(err) => {
+                tracing::debug!(
+                    plugin = %self.id(),
+                    error = %err,
+                    "external catalog_detail soft-failed"
+                );
+                Ok(None)
             }
         }
     }
@@ -543,8 +582,23 @@ fn catalog_hit_from_dto(dto: CatalogHitDto) -> CatalogHit {
         asin: dto.asin,
         isbn: dto.isbn,
         url: dto.url,
+        cover_url: dto.cover_url,
         origin: dto.origin,
+        subtitle: dto.subtitle,
+        description: dto.description,
+        publisher: dto.publisher,
+        length_minutes: dto.length_minutes,
+        published_at: dto.published_at,
+        categories: dto.categories,
+        language: dto.language,
+        price_cents: dto.price_cents,
+        currency: dto.currency,
+        price_label: dto.price_label,
+        rating_overall: dto.rating_overall,
+        rating_count: dto.rating_count,
+        is_abridged: dto.is_abridged,
     }
+    .decode_html_entities()
 }
 
 fn purchase_hint_from_dto(dto: PurchaseHintDto) -> SourcePurchaseHint {
@@ -555,7 +609,12 @@ fn purchase_hint_from_dto(dto: PurchaseHintDto) -> SourcePurchaseHint {
         price_cents: dto.price_cents,
         currency: dto.currency,
         price_label: dto.price_label,
+        list_price_cents: dto.list_price_cents,
+        list_price_label: dto.list_price_label,
+        member_price_cents: dto.member_price_cents,
+        member_price_label: dto.member_price_label,
     }
+    .decode_html_entities()
 }
 
 /// Load host-sealed credentials for the accounts a scan will cover.

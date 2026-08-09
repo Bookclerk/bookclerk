@@ -274,7 +274,9 @@ pub fn clean_title_for_compares(title: &str, keep_subtitle: bool) -> String {
     if title.is_empty() {
         return String::new();
     }
-    let title = strip_redundant_spaces(title);
+    // Libro (and others) may ship entity-encoded titles; decode before compare.
+    let title = bookclerk_library::decode_html_entities_cow(title);
+    let title = strip_redundant_spaces(title.as_ref());
     let stripped = if keep_subtitle {
         title
     } else {
@@ -304,7 +306,8 @@ pub fn clean_author_for_compares(author: &str) -> String {
     if author.is_empty() {
         return String::new();
     }
-    let author = strip_redundant_spaces(author);
+    let author = bookclerk_library::decode_html_entities_cow(author);
+    let author = strip_redundant_spaces(author.as_ref());
     let mut clean = replace_accented_chars(&author).to_ascii_lowercase();
     clean = separate_initials(&clean);
     clean = strip_middle_initials(&clean);

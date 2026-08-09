@@ -52,6 +52,7 @@ pub async fn catalog_search(
         query: q.to_string(),
         region: region.clone(),
         limit: per_store,
+        ..Default::default()
     };
 
     let mut by_key: HashMap<String, StorefrontCandidate> = HashMap::new();

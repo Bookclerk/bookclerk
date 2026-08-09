@@ -19,6 +19,7 @@ pub struct MagentoCatalogProduct {
     pub title: String,
     pub url: Option<String>,
     pub series: Option<String>,
+    pub cover_url: Option<String>,
 }
 
 impl MagentoCatalogProduct {
@@ -69,24 +70,50 @@ pub async fn fetch_product_by_id(
 }
 
 /// Search Magento catalog; often redirects to a matching series page.
+///
+/// `page` > 1 tries Magento `?p=` once; when that yields nothing the source is
+/// treated as exhausted by the host cursor (empty page).
 pub async fn search_catalog(
     http: &Client,
     store_base: &str,
     query: &str,
 ) -> Result<Vec<MagentoCatalogProduct>> {
+    search_catalog_page(http, store_base, query, 1).await
+}
+
+/// Like [`search_catalog`] with an optional Magento page index.
+pub async fn search_catalog_page(
+    http: &Client,
+    store_base: &str,
+    query: &str,
+    page: u32,
+) -> Result<Vec<MagentoCatalogProduct>> {
     let query = query.trim();
     if query.is_empty() {
         return Ok(Vec::new());
     }
+    let page = page.max(1);
     let base = store_base.trim_end_matches('/');
-    let url = format!(
-        "{base}/catalogsearch/result/?q={}",
-        urlencoding_minimal(query)
-    );
+    let url = if page <= 1 {
+        format!(
+            "{base}/catalogsearch/result/?q={}",
+            urlencoding_minimal(query)
+        )
+    } else {
+        format!(
+            "{base}/catalogsearch/result/?q={}&p={}",
+            urlencoding_minimal(query),
+            page
+        )
+    };
     let html = fetch_catalog_html(http, &url).await?;
     let series_name = extract_series_name_from_page(&html);
     let mut products = parse_catalog_grid(&html);
     if products.is_empty() {
+        if page > 1 {
+            // Magento `p` unsupported or past the end — signal exhaustion.
+            return Ok(Vec::new());
+        }
         // Search may land on a product page — pull related + primary.
         if let Some(primary) = parse_primary_product(&html, &url) {
             products.push(primary);
@@ -192,12 +219,14 @@ pub fn parse_catalog_grid(html: &str) -> Vec<MagentoCatalogProduct> {
                 .unwrap_or_else(|| format!("GraphicAudio {product_id}"))
         });
         let url = extract_item_url(item);
+        let cover_url = extract_item_cover_url(item);
         out.push(MagentoCatalogProduct {
             product_id,
             sku,
             title,
             url,
             series: None,
+            cover_url,
         });
     }
     out
@@ -275,6 +304,7 @@ fn parse_primary_product(html: &str, page_url: &str) -> Option<MagentoCatalogPro
         title,
         url: Some(page_url.to_string()),
         series: None,
+        cover_url: None,
     })
 }
 
@@ -410,6 +440,28 @@ fn extract_item_url(el: scraper::ElementRef<'_>) -> Option<String> {
         .filter_map(|a| a.value().attr("href"))
         .map(str::trim)
         .find(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn extract_item_cover_url(el: scraper::ElementRef<'_>) -> Option<String> {
+    let Ok(sel) = scraper::Selector::parse(
+        "img.product-image-photo, .product-item-photo img, .product-image-wrapper img, img",
+    ) else {
+        return None;
+    };
+    el.select(&sel)
+        .filter_map(|img| {
+            img.value()
+                .attr("data-src")
+                .or_else(|| img.value().attr("src"))
+        })
+        .map(str::trim)
+        .find(|s| {
+            !s.is_empty()
+                && !s.starts_with("data:")
+                && !s.contains("placeholder")
+                && !s.contains("blank.gif")
+        })
         .map(str::to_string)
 }
 
