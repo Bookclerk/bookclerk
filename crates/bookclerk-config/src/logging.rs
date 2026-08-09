@@ -6,7 +6,16 @@
 //!   same configured filter; Bookclerk does not manage log files or rotation
 //! - **diagnostics ring buffer** (always): retains **all** levels through TRACE so
 //!   crash / burst uploads include deep context even when stderr is quieter
+//!
+//! Stderr is written through a **non-blocking** worker thread. When the consumer
+//! of stderr stalls (full pipe to a parent IDE/terminal capture), logging must
+//! not park Tokio worker threads — that freezes accept and makes even `/health`
+//! time out.
 
+use std::io;
+use std::sync::Mutex;
+
+use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
@@ -60,7 +69,9 @@ impl Default for TracingOptions {
 }
 
 /// Result of installing the global subscriber.
-#[derive(Clone)]
+///
+/// Keep this value alive for the process lifetime so the stderr worker thread
+/// stays running ([`WorkerGuard`]).
 pub struct LoggingHandle {
     /// Diagnostics ring buffer / upload handle.
     pub diagnostics: DiagnosticsHandle,
@@ -68,6 +79,8 @@ pub struct LoggingHandle {
     pub journald: bool,
     /// Which facility was attached (if any).
     pub os_facility: Option<OsLogFacility>,
+    /// Keeps the non-blocking stderr worker alive.
+    _stderr_guard: WorkerGuard,
 }
 
 /// Install a global tracing subscriber (stderr + optional OS facility + diagnostics).
@@ -111,11 +124,15 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
     // Ring buffer sees everything; stderr/OS facility honor EnvFilter.
     let diag_layer = DiagnosticsLayer::new(diag_handle.clone()).with_filter(LevelFilter::TRACE);
 
+    // Non-blocking stderr: a full pipe to a parent process must not stall Tokio.
+    let (nb_stderr, stderr_guard) = tracing_appender::non_blocking(std::io::stderr());
+    let stderr_writer = SharedRedactingWriter::new(nb_stderr);
+
     let result = match (opts.format, os_layer) {
         (LogFormat::Text, Some(os)) => {
             let fmt_layer = fmt::layer()
                 .with_target(false)
-                .with_writer(|| RedactingWriter::new(std::io::stderr()))
+                .with_writer(stderr_writer.clone())
                 .with_filter(filter.clone());
             let os = os.with_filter(filter);
             tracing_subscriber::registry()
@@ -127,7 +144,7 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
         (LogFormat::Text, None) => {
             let fmt_layer = fmt::layer()
                 .with_target(false)
-                .with_writer(|| RedactingWriter::new(std::io::stderr()))
+                .with_writer(stderr_writer)
                 .with_filter(filter);
             tracing_subscriber::registry()
                 .with(diag_layer)
@@ -138,7 +155,7 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
             let fmt_layer = fmt::layer()
                 .json()
                 .with_current_span(true)
-                .with_writer(|| RedactingWriter::new(std::io::stderr()))
+                .with_writer(stderr_writer.clone())
                 .with_filter(filter.clone());
             let os = os.with_filter(filter);
             tracing_subscriber::registry()
@@ -151,7 +168,7 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
             let fmt_layer = fmt::layer()
                 .json()
                 .with_current_span(true)
-                .with_writer(|| RedactingWriter::new(std::io::stderr()))
+                .with_writer(stderr_writer)
                 .with_filter(filter);
             tracing_subscriber::registry()
                 .with(diag_layer)
@@ -165,6 +182,7 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
         diagnostics: diag_handle,
         journald: journald_active,
         os_facility,
+        _stderr_guard: stderr_guard,
     }
 }
 
@@ -175,4 +193,48 @@ pub fn init_tracing(format: LogFormat, default_level: &str) -> LoggingHandle {
         default_level: default_level.to_string(),
         ..TracingOptions::default()
     })
+}
+
+/// `MakeWriter` adapter: redact then hand bytes to the non-blocking stderr worker.
+#[derive(Clone)]
+struct SharedRedactingWriter {
+    inner: std::sync::Arc<Mutex<RedactingWriter<NonBlocking>>>,
+}
+
+impl SharedRedactingWriter {
+    fn new(nb: NonBlocking) -> Self {
+        Self {
+            inner: std::sync::Arc::new(Mutex::new(RedactingWriter::new(nb))),
+        }
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedRedactingWriter {
+    type Writer = SharedRedactingWriterGuard<'a>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SharedRedactingWriterGuard { inner: &self.inner }
+    }
+}
+
+struct SharedRedactingWriterGuard<'a> {
+    inner: &'a Mutex<RedactingWriter<NonBlocking>>,
+}
+
+impl io::Write for SharedRedactingWriterGuard<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.flush()
+    }
 }

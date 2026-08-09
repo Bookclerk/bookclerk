@@ -1273,6 +1273,7 @@ dependencies = [
  "bookclerk-library",
  "bookclerk-media",
  "bookclerk-naming",
+ "bookclerk-plugin-database",
  "bookclerk-source",
  "bookclerk-storage",
  "bytes",
@@ -1301,6 +1302,7 @@ dependencies = [
  "bookclerk-migrate",
  "bookclerk-naming",
  "bookclerk-plugin-catalog",
+ "bookclerk-plugin-database",
  "bookclerk-plugin-host",
  "bookclerk-search",
  "bookclerk-source",
@@ -1336,6 +1338,7 @@ dependencies = [
  "thiserror 2.0.19",
  "toml",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
  "ureq",
  "windows-sys 0.61.2",
@@ -1363,6 +1366,7 @@ dependencies = [
  "bookclerk-config",
  "bookclerk-enrich",
  "bookclerk-library",
+ "bookclerk-plugin-database",
  "bookclerk-source",
  "chrono",
  "fastembed",
@@ -1384,6 +1388,7 @@ name = "bookclerk-enrich"
 version = "0.1.0"
 dependencies = [
  "bookclerk-library",
+ "bookclerk-plugin-database",
  "chrono",
  "reqwest 0.13.4",
  "serde",
@@ -1438,10 +1443,11 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bookclerk-config",
+ "bookclerk-plugin-database",
  "chacha20poly1305",
  "chrono",
+ "html-escape",
  "rand 0.8.7",
- "reqwest 0.13.4",
  "rusqlite",
  "rusqlite_migration",
  "sea-orm",
@@ -1494,6 +1500,7 @@ dependencies = [
  "anyhow",
  "bookclerk-config",
  "bookclerk-library",
+ "bookclerk-plugin-database",
  "chrono",
  "flate2",
  "rusqlite",
@@ -1551,13 +1558,18 @@ dependencies = [
 name = "bookclerk-plugin-database"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
- "bookclerk-config",
+ "base64 0.22.1",
  "bookclerk-library",
  "bookclerk-plugin-sdk",
+ "reqwest 0.13.4",
+ "rusqlite",
+ "rusqlite_migration",
  "sea-orm",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]
@@ -1613,6 +1625,7 @@ dependencies = [
  "bookclerk-config",
  "bookclerk-integrations",
  "bookclerk-library",
+ "bookclerk-plugin-database",
  "bookclerk-plugin-integration-audiobookshelf",
  "bookclerk-plugin-sdk",
  "bookclerk-plugin-source-audible",
@@ -1684,6 +1697,7 @@ dependencies = [
  "bookclerk-library",
  "bookclerk-media",
  "bookclerk-mp4",
+ "bookclerk-plugin-database",
  "bookclerk-plugin-sdk",
  "bookclerk-source",
  "cbc 0.2.1",
@@ -1713,6 +1727,7 @@ dependencies = [
  "async-trait",
  "bookclerk-config",
  "bookclerk-library",
+ "bookclerk-plugin-database",
  "bookclerk-plugin-sdk",
  "bookclerk-source",
  "bytes",
@@ -1735,6 +1750,7 @@ dependencies = [
  "async-trait",
  "bookclerk-config",
  "bookclerk-library",
+ "bookclerk-plugin-database",
  "bookclerk-plugin-sdk",
  "bookclerk-source",
  "bytes",
@@ -1761,6 +1777,7 @@ dependencies = [
  "async-trait",
  "bookclerk-config",
  "bookclerk-library",
+ "bookclerk-plugin-database",
  "bookclerk-plugin-sdk",
  "bookclerk-source",
  "bytes",
@@ -1799,6 +1816,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bookclerk-library",
+ "bookclerk-plugin-database",
  "serde",
  "tantivy",
  "tempfile",
@@ -1834,6 +1852,7 @@ dependencies = [
  "aws-sdk-s3",
  "bookclerk-config",
  "bookclerk-library",
+ "bookclerk-plugin-database",
  "bookclerk-source",
  "bytes",
  "chrono",
@@ -1888,6 +1907,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "tower",
  "tower-http",
  "tracing",
@@ -7542,6 +7562,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+name = "symlink"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
+
+[[package]]
 name = "symphonia"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8278,6 +8304,19 @@ dependencies = [
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-appender"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "050686193eb999b4bb3bc2acfa891a13da00f79734704c4b8b4ef1a10b368a3c"
+dependencies = [
+ "crossbeam-channel",
+ "symlink",
+ "thiserror 2.0.19",
+ "time",
+ "tracing-subscriber",
 ]
 
 [[package]]

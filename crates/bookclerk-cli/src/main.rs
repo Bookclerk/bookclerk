@@ -146,7 +146,7 @@ async fn main() -> ExitCode {
         1 => "bookclerk=debug,info",
         _ => "bookclerk=trace,debug",
     };
-    init_tracing_with(TracingOptions {
+    let _logging = init_tracing_with(TracingOptions {
         format: LogFormat::Text,
         default_level: default_level.to_string(),
         syslog_identifier: "bookclerk".into(),
@@ -154,6 +154,8 @@ async fn main() -> ExitCode {
         version: env!("CARGO_PKG_VERSION").into(),
         enable_journald: true,
     });
+    // Keep the non-blocking stderr worker alive for the process lifetime.
+    let _stderr_guard = &_logging;
     config.warn_unsupported_options();
     // Before any acquire can start, so codec work never runs unconfined.
     bookclerk_media::init_pool_from_config(&config.media);
