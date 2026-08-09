@@ -62,6 +62,7 @@ import {
   removeWishlistItem,
   searchCatalog,
   signOut,
+  userFacingApiError,
   type AuthRole,
   type CatalogSearchHit,
   type CatalogSortDir,
@@ -220,7 +221,9 @@ export function DiscoverPage({
     try {
       await refreshFeed();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load discovery");
+      setError(
+        userFacingApiError(err, "Couldn't load Discover shelves. Try again."),
+      );
     } finally {
       setBusy(false);
     }
@@ -468,7 +471,12 @@ export function DiscoverPage({
       if (seq !== resultsSeq.current) return;
       setResults([]);
       setResultMeta({});
-      setError(err instanceof Error ? err.message : "Catalog search failed");
+      setError(
+        userFacingApiError(
+          err,
+          "Couldn't search the catalog. Try again, or narrow your filters.",
+        ),
+      );
     } finally {
       if (seq === resultsSeq.current) setResultsBusy(false);
     }
@@ -521,7 +529,12 @@ export function DiscoverPage({
       void enrichResultMeta(appended);
     } catch (err) {
       if (seq !== resultsSeq.current) return;
-      setError(err instanceof Error ? err.message : "Catalog search failed");
+      setError(
+        userFacingApiError(
+          err,
+          "Couldn't load more results. Try narrowing with filters, or start a new search.",
+        ),
+      );
     } finally {
       if (seq === resultsSeq.current) setResultsLoadingMore(false);
     }
@@ -601,7 +614,9 @@ export function DiscoverPage({
           : prev,
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to wishlist title");
+      setError(
+        userFacingApiError(err, "Couldn't add that title to your wishlist."),
+      );
     } finally {
       setBusy(false);
     }
@@ -620,7 +635,9 @@ export function DiscoverPage({
           : prev,
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to remove wishlist item");
+      setError(
+        userFacingApiError(err, "Couldn't remove that title from your wishlist."),
+      );
     } finally {
       setBusy(false);
     }
@@ -980,18 +997,14 @@ export function DiscoverPage({
 
       <div className="min-h-0 flex-1 overflow-auto">
         <main className={cn("flex flex-col gap-8 px-4 py-6 sm:px-5", pageWidthClass)}>
-          {error ? (
-            <p className="text-sm font-medium text-brick" role="alert">
-              {error}
-            </p>
-          ) : null}
-
           {panel === "results" ? (
             <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
               <div
                 className={cn(
                   // Header sits outside this scrollport (~13–15rem); keep the
                   // rail inside the visible area so overflow-y can scroll it.
+                  // Keep alerts out of this column so they cannot shrink the
+                  // sticky height and clip the bottom of the filter rail.
                   "min-h-0 lg:sticky lg:top-3 lg:block lg:h-[calc(100dvh-15rem)] lg:max-h-[calc(100dvh-15rem)] lg:self-start lg:w-56 xl:w-64",
                   filtersOpen ? "block max-h-[min(70vh,32rem)]" : "hidden lg:block",
                 )}
@@ -1041,6 +1054,14 @@ export function DiscoverPage({
               </div>
 
               <div className="min-w-0 flex-1 space-y-4">
+                {error ? (
+                  <p
+                    className="rounded-md border border-brick/25 bg-brick/5 px-3 py-2 text-sm text-brick"
+                    role="alert"
+                  >
+                    {error}
+                  </p>
+                ) : null}
                 <div className="space-y-1">
                   <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
                     Results for “{resultsQ}”
@@ -1118,6 +1139,14 @@ export function DiscoverPage({
             </div>
           ) : (
             <>
+              {error ? (
+                <p
+                  className="rounded-md border border-brick/25 bg-brick/5 px-3 py-2 text-sm text-brick"
+                  role="alert"
+                >
+                  {error}
+                </p>
+              ) : null}
               <div className="space-y-1">
                 <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
                   Discover

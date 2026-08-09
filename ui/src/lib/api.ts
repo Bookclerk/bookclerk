@@ -150,6 +150,42 @@ export function isApiError(error: unknown): error is ApiError {
   return error instanceof ApiError;
 }
 
+/**
+ * Map API / network failures to short copy for non-technical users.
+ * Keeps branded daemon messages when they already read as plain language.
+ */
+export function userFacingApiError(error: unknown, fallback: string): string {
+  if (isApiError(error)) {
+    switch (error.status) {
+      case 414:
+        return "This search got too large to continue. Try narrowing with filters, or start a more specific search.";
+      case 408:
+      case 504:
+        return error.message.trim() || "That took too long. Try again in a moment.";
+      case 429:
+        return "Too many requests right now — wait a moment and try again.";
+      case 503:
+        return "The catalog is temporarily unavailable. Try again shortly.";
+      default:
+        break;
+    }
+    const msg = error.message.trim();
+    // Bare HTTP status lines ("414 URI Too Long") are not useful in the UI.
+    if (!msg || /^\d{3}\b/.test(msg) || /URI Too Long/i.test(msg)) {
+      return fallback;
+    }
+    if (msg.length <= 160) return msg;
+    return fallback;
+  }
+  if (error instanceof Error) {
+    const msg = error.message.trim();
+    if (msg && !/^\d{3}\b/.test(msg) && !/URI Too Long/i.test(msg) && msg.length <= 160) {
+      return msg;
+    }
+  }
+  return fallback;
+}
+
 function normalizeView(raw: string | undefined): AppView {
   if (
     raw === "library" ||

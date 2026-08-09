@@ -6,6 +6,7 @@
 //! ranking stays on Discover shelves.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use bookclerk_source::{
@@ -23,6 +24,7 @@ use crate::identity::{
     hard_work_key, identities_match, merge_candidate_metadata, push_edition, work_map_key,
     StoreEdition, WorkIdentity,
 };
+use crate::ttl_cache::TtlCache;
 
 /// Cap a single storefront so one slow guest cannot burn the whole search budget.
 /// Keep this under the daemon `/api/discover/search` wall clock so parallel
@@ -36,6 +38,22 @@ const PAGE_ENRICH_CONCURRENCY: usize = 6;
 
 /// Max over-fetch rounds when filters starve a page.
 const MAX_OVERFETCH_ITERS: usize = 3;
+
+/// Prefix for opaque server-side cursors (`s1:<uuid>`). Pending leftovers are
+/// stored in-process so the wire token stays short — embedding full candidates
+/// in a GET `?cursor=` hex blob overflows URI limits (HTTP 414) on broad queries.
+const CURSOR_TOKEN_PREFIX: &str = "s1:";
+
+/// How long a search cursor may sit idle between "load more" requests.
+const CURSOR_TTL: Duration = Duration::from_secs(30 * 60);
+
+/// Cap concurrent in-flight / paused search cursors.
+const CURSOR_CACHE_CAP: usize = 256;
+
+fn cursor_cache() -> &'static TtlCache<SearchCursorV1> {
+    static CACHE: OnceLock<TtlCache<SearchCursorV1>> = OnceLock::new();
+    CACHE.get_or_init(|| TtlCache::new(CURSOR_TTL, CURSOR_CACHE_CAP))
+}
 
 /// One autocomplete / results-page hit (possibly spanning multiple storefronts).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -972,11 +990,19 @@ fn sorted_norm(v: &[String]) -> Vec<String> {
 }
 
 fn encode_cursor(c: &SearchCursorV1) -> String {
-    hex::encode(serde_json::to_vec(c).unwrap_or_default())
+    let id = uuid::Uuid::new_v4().to_string();
+    cursor_cache().insert(id.clone(), c.clone());
+    format!("{CURSOR_TOKEN_PREFIX}{id}")
 }
 
 fn decode_cursor(raw: &str) -> Option<SearchCursorV1> {
-    let bytes = hex::decode(raw.trim()).ok()?;
+    let raw = raw.trim();
+    if let Some(id) = raw.strip_prefix(CURSOR_TOKEN_PREFIX) {
+        return cursor_cache().get(id);
+    }
+    // Legacy clients may still send hex-encoded cursors from before the
+    // server-side token change; accept them when they decode cleanly.
+    let bytes = hex::decode(raw).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -1350,6 +1376,16 @@ mod tests {
             }],
         };
         let enc = encode_cursor(&c);
+        assert!(
+            enc.starts_with(CURSOR_TOKEN_PREFIX),
+            "wire cursor must be a short opaque token, got len={}",
+            enc.len()
+        );
+        assert!(
+            enc.len() < 80,
+            "opaque cursor must stay well under URI limits, got {}",
+            enc.len()
+        );
         let dec = decode_cursor(&enc).expect("decode");
         assert_eq!(dec.v, 1);
         assert_eq!(dec.fp, "abc");
@@ -1357,5 +1393,10 @@ mod tests {
         assert!(dec.exhausted.contains("graphicaudio"));
         assert_eq!(dec.pending.len(), 1);
         assert_eq!(dec.pending[0].work_key, "asin:B00TEST");
+
+        // Legacy hex cursors still decode for in-flight sessions.
+        let legacy = hex::encode(serde_json::to_vec(&c).unwrap());
+        let legacy_dec = decode_cursor(&legacy).expect("legacy hex");
+        assert_eq!(legacy_dec.pending[0].work_key, "asin:B00TEST");
     }
 }
