@@ -30,6 +30,12 @@ const VETTED_ABI: ABI = ABI::V6;
 /// Read-only paths every Linux process needs: the loader, shared libraries, the
 /// CA bundle, and resolver configuration.
 ///
+/// `/etc/ssl` alone is not enough on openSUSE/SLE: `ca-bundle.pem` and `certs/`
+/// are symlinks into `/var/lib/ca-certificates`, and Landlock evaluates the
+/// symlink target. Without that directory, `reqwest`/`rustls` fail at
+/// `Client::build()` with a opaque "builder error", which breaks Discover
+/// catalog search (and any other HTTPS) inside the guest jail.
+///
 /// `/proc` is deliberately absent. A same-uid process that can read
 /// `/proc/<pid>/environ` or `/proc/<pid>/fd` defeats the environment scrub and
 /// can reach the daemon's open database handle, so only `/proc/self` is
@@ -46,6 +52,8 @@ pub fn system_read_paths() -> &'static [&'static str] {
         "/etc/ca-certificates",
         "/etc/ca-certificates.conf",
         "/etc/pki",
+        // openSUSE / SLE (and some others): real CA bundle lives here.
+        "/var/lib/ca-certificates",
         "/etc/resolv.conf",
         "/etc/hosts",
         "/etc/nsswitch.conf",
@@ -359,6 +367,17 @@ mod tests {
         assert_eq!(caps.backend, BACKEND);
         assert!(caps.detail.contains("landlock"), "detail: {}", caps.detail);
         assert!(caps.syscall, "seccomp should always be reported available");
+    }
+
+    /// openSUSE/SLE symlink the CA bundle under `/etc/ssl` into this directory;
+    /// Landlock checks the target, so HTTPS guests need an explicit grant.
+    #[test]
+    fn system_reads_include_var_lib_ca_certificates() {
+        let paths = system_read_paths();
+        assert!(
+            paths.contains(&"/var/lib/ca-certificates"),
+            "missing /var/lib/ca-certificates in {paths:?}"
+        );
     }
 
     /// `Deny` is enforced by seccomp, not Landlock, and used to be reported as
