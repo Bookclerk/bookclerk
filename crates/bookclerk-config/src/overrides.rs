@@ -1,10 +1,10 @@
 //! Runtime setting overrides (classic `acquire -o Key=value`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::extras::{classic_key_aliases, FileTimestampMode, PathSanitizationMode};
 use crate::pipeline_opts::{ChapterJsonMode, OutputFormat};
-use crate::{BadBookAction, Config};
+use crate::{BadBookAction, Config, Result};
 
 /// Apply classic-style `-o Setting=value` overrides onto `config`.
 ///
@@ -15,6 +15,25 @@ pub fn apply_setting_overrides(config: &mut Config, pairs: &[(&str, &str)]) {
         let dotted = classic_key_aliases().get(*key).copied().unwrap_or(key);
         apply_dotted_override(config, dotted, value);
     }
+}
+
+pub fn apply_config_updates(
+    files_dir: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+    pairs: &[(&str, &str)],
+) -> Result<Config> {
+    let mut cfg = Config::load(files_dir, config_path.clone())?;
+    apply_setting_overrides(&mut cfg, pairs);
+    let path = cfg.paths().config_file.clone();
+    cfg.write_toml_file(&path)?;
+    Ok(cfg)
+}
+
+pub fn apply_config_updates_from_path(path: &Path, pairs: &[(&str, &str)]) -> Result<Config> {
+    let mut cfg = Config::from_toml_file(path)?;
+    apply_setting_overrides(&mut cfg, pairs);
+    cfg.write_toml_file(path)?;
+    Ok(cfg)
 }
 
 fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
@@ -28,6 +47,34 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
             config.output.local.enabled = true;
         }
         "output.local.prefix" => config.output.local.prefix = v.to_string(),
+        "output.local.naming_profile" => {
+            config.output.local.naming.naming_profile = if v.is_empty() {
+                None
+            } else {
+                crate::NamingProfile::parse(v)
+            };
+        }
+        "output.local.folder_template" => {
+            config.output.local.naming.folder_template = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            };
+        }
+        "output.local.file_template" => {
+            config.output.local.naming.file_template = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            };
+        }
+        "output.local.chapter_file_template" => {
+            config.output.local.naming.chapter_file_template = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            };
+        }
         "output.s3.enabled" => {
             config.output.s3.enabled = parse_bool(v).unwrap_or(false);
         }
@@ -37,6 +84,34 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         "output.s3.endpoint" => config.output.s3.endpoint = Some(v.to_string()),
         "output.s3.force_path_style" => {
             config.output.s3.force_path_style = parse_bool(v).unwrap_or(false);
+        }
+        "output.s3.naming_profile" => {
+            config.output.s3.naming.naming_profile = if v.is_empty() {
+                None
+            } else {
+                crate::NamingProfile::parse(v)
+            };
+        }
+        "output.s3.folder_template" => {
+            config.output.s3.naming.folder_template = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            };
+        }
+        "output.s3.file_template" => {
+            config.output.s3.naming.file_template = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            };
+        }
+        "output.s3.chapter_file_template" => {
+            config.output.s3.naming.chapter_file_template = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            };
         }
         "sources.audible.bitrate" | "sources.audible.quality" => {
             // Classic FileDownloadQuality maps onto Audible store bitrate.
@@ -228,6 +303,42 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         }
         "output.cover_size" => config.output.cover_size = v.to_string(),
         "output.chapter_layout" => config.output.chapter_layout = v.to_string(),
+        "database.plugin" => {
+            config.database.plugin = v.trim().to_string();
+        }
+        "database.sqlite.path" => {
+            let trimmed = v.trim();
+            config.database.sqlite.path = if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            };
+        }
+        "database.d1.account_id" => {
+            config.database.d1.account_id = v.trim().to_string();
+        }
+        "database.d1.database_id" => {
+            config.database.d1.database_id = v.trim().to_string();
+        }
+        "database.d1.api_base" => {
+            config.database.d1.api_base = v.trim().to_string();
+        }
+        "database.postgres.url" => {
+            let trimmed = v.trim();
+            config.database.postgres.url = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
+        "database.postgres.url_file" => {
+            let trimmed = v.trim();
+            config.database.postgres.url_file = if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            };
+        }
         "library.auto_acquire" => config.library.auto_acquire = parse_bool(v).unwrap_or(false),
         "library.import_episodes" => {
             config.library.import_episodes = parse_bool(v).unwrap_or(true);
@@ -290,6 +401,39 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 tracing::warn!(key, value = v, "unknown sources override; ignoring");
             }
         }
+        other if let Some(rest) = other.strip_prefix("integrations.") => {
+            if let Some((id, field)) = rest.split_once('.') {
+                if !id.is_empty() && !field.is_empty() {
+                    if field == "enabled" {
+                        if let Some(b) = parse_bool(v) {
+                            config.integrations.set_enabled(id, b);
+                        }
+                    } else if matches!(
+                        field,
+                        "watch_users" | "notify_scan_on_acquire" | "allow_credential_login"
+                    ) {
+                        if let Some(b) = parse_bool(v) {
+                            config
+                                .integrations
+                                .plugin_table_mut(id)
+                                .insert(field.into(), toml::Value::Boolean(b));
+                        }
+                    } else {
+                        // Keep other integration fields as strings. Values like
+                        // "1" / "on" / "yes" are valid for URL/ID settings and must
+                        // not be coerced into TOML booleans.
+                        config
+                            .integrations
+                            .plugin_table_mut(id)
+                            .insert(field.into(), toml::Value::String(v.to_string()));
+                    }
+                } else {
+                    tracing::warn!(key, value = v, "unknown integrations override; ignoring");
+                }
+            } else {
+                tracing::warn!(key, value = v, "unknown integrations override; ignoring");
+            }
+        }
         _ => tracing::warn!(key, value = v, "unknown setting override; ignoring"),
     }
 }
@@ -338,5 +482,104 @@ mod tests {
         assert!(!cfg.library.enrich_from_audible);
         apply_setting_overrides(&mut cfg, &[("library.enrich_min_confidence", "85")]);
         assert_eq!(cfg.library.enrich_min_confidence, 85);
+    }
+
+    #[test]
+    fn shared_config_update_persists_plugin_settings() {
+        let mut cfg = Config::default();
+        apply_setting_overrides(&mut cfg, &[("sources.audible.bitrate", "normal")]);
+        assert_eq!(cfg.sources.get_string("audible", "bitrate"), Some("normal"));
+    }
+
+    #[test]
+    fn output_destination_naming_overrides() {
+        let mut cfg = Config::default();
+        apply_setting_overrides(
+            &mut cfg,
+            &[
+                ("output.local.naming_profile", "classic"),
+                ("output.local.folder_template", "Local/{author}"),
+                ("output.s3.naming_profile", "audiobookshelf"),
+                ("output.s3.file_template", "{title}"),
+                ("output.s3.chapter_file_template", "{n}-{title}"),
+            ],
+        );
+        assert_eq!(
+            cfg.output.local.naming.naming_profile,
+            Some(crate::NamingProfile::Classic)
+        );
+        assert_eq!(
+            cfg.output.local.naming.folder_template.as_deref(),
+            Some("Local/{author}")
+        );
+        assert_eq!(
+            cfg.output.s3.naming.naming_profile,
+            Some(crate::NamingProfile::Audiobookshelf)
+        );
+        assert_eq!(
+            cfg.output.s3.naming.file_template.as_deref(),
+            Some("{title}")
+        );
+        assert_eq!(
+            cfg.output.s3.naming.chapter_file_template.as_deref(),
+            Some("{n}-{title}")
+        );
+
+        apply_setting_overrides(&mut cfg, &[("output.local.folder_template", "")]);
+        assert_eq!(cfg.output.local.naming.folder_template, None);
+    }
+
+    #[test]
+    fn integration_non_enabled_fields_stay_strings() {
+        let mut cfg = Config::default();
+        apply_setting_overrides(
+            &mut cfg,
+            &[
+                ("integrations.audiobookshelf.library_id", "1"),
+                ("integrations.audiobookshelf.base_url", "on"),
+                ("integrations.audiobookshelf.watch_users", "false"),
+                ("integrations.audiobookshelf.enabled", "true"),
+            ],
+        );
+        let table = cfg
+            .integrations
+            .plugin_table("audiobookshelf")
+            .expect("audiobookshelf table");
+        assert_eq!(
+            table.get("library_id"),
+            Some(&toml::Value::String("1".into()))
+        );
+        assert_eq!(
+            table.get("base_url"),
+            Some(&toml::Value::String("on".into()))
+        );
+        assert_eq!(table.get("watch_users"), Some(&toml::Value::Boolean(false)));
+        assert!(cfg.integrations.is_enabled("audiobookshelf"));
+    }
+
+    #[test]
+    fn database_connection_overrides_persist() {
+        let mut cfg = Config::default();
+        apply_setting_overrides(
+            &mut cfg,
+            &[
+                ("database.sqlite.path", "custom.db"),
+                ("database.d1.account_id", "acc"),
+                ("database.d1.database_id", "dbid"),
+                ("database.postgres.url", "postgres://localhost/bookclerk"),
+                ("database.plugin", ""),
+            ],
+        );
+        assert_eq!(
+            cfg.database.sqlite.path.as_deref(),
+            Some(std::path::Path::new("custom.db"))
+        );
+        assert_eq!(cfg.database.d1.account_id, "acc");
+        assert_eq!(cfg.database.d1.database_id, "dbid");
+        assert_eq!(
+            cfg.database.postgres.url.as_deref(),
+            Some("postgres://localhost/bookclerk")
+        );
+        assert_eq!(cfg.database.plugin, "");
     }
 }

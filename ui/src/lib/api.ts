@@ -5,7 +5,7 @@ export type AcquireStatus =
   | "acquired"
   | "error";
 
-export type AppView = "discover" | "library" | "accounts" | "wishlist";
+export type AppView = "discover" | "library" | "accounts" | "wishlist" | "settings";
 export type AuthRole = "operator" | "portal";
 
 export interface PortalInfo {
@@ -136,12 +136,27 @@ const ANON_SESSION: AuthSession = {
   can_acquire: false,
 };
 
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+export function isApiError(error: unknown): error is ApiError {
+  return error instanceof ApiError;
+}
+
 function normalizeView(raw: string | undefined): AppView {
   if (
     raw === "library" ||
     raw === "accounts" ||
     raw === "discover" ||
-    raw === "wishlist"
+    raw === "wishlist" ||
+    raw === "settings"
   ) {
     return raw;
   }
@@ -165,7 +180,7 @@ async function parseJson<T>(res: Response): Promise<T> {
     } catch {
       // keep raw text
     }
-    throw new Error(message);
+    throw new ApiError(res.status, message);
   }
   return res.json() as Promise<T>;
 }
@@ -233,6 +248,35 @@ export interface UserPreferences {
   disabled_shelves: string[];
 }
 
+export interface SettingsUpdate {
+  key: string;
+  value: string;
+}
+
+export interface PluginSettingChoice {
+  value: string;
+  label: string;
+}
+
+export interface PluginSettingOption {
+  key: string;
+  label: string;
+  value: string;
+  value_type: "string" | "boolean" | "number";
+  choices?: PluginSettingChoice[];
+}
+
+export interface PluginSettingsGroup {
+  id: string;
+  kind: string;
+  settings: PluginSettingOption[];
+}
+
+export interface SettingsResponse {
+  settings: Record<string, string>;
+  plugins: PluginSettingsGroup[];
+}
+
 export async function fetchPreferences(): Promise<UserPreferences> {
   const res = await fetch("/api/preferences", { credentials: "include" });
   const body = await parseJson<{
@@ -267,6 +311,21 @@ export async function patchPreferences(body: {
       ? out.disabled_shelves.filter((x): x is string => typeof x === "string")
       : [],
   };
+}
+
+export async function fetchSettings(): Promise<SettingsResponse> {
+  const res = await fetch("/api/settings", { credentials: "include" });
+  return parseJson<SettingsResponse>(res);
+}
+
+export async function patchSettings(body: { settings: SettingsUpdate[] }): Promise<SettingsResponse> {
+  const res = await fetch("/api/settings", {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson<SettingsResponse>(res);
 }
 
 export async function portalRedeem(ticket: string): Promise<void> {

@@ -11,6 +11,7 @@ const LINKS: { id: AppView; label: string }[] = [
   { id: "wishlist", label: "Wishlist" },
   { id: "library", label: "Library" },
   { id: "accounts", label: "Accounts" },
+  { id: "settings", label: "Settings" },
 ];
 
 export function AppNav({ view, onNavigate }: AppNavProps) {

@@ -4,6 +4,7 @@ import { DiscoverPage } from "@/components/DiscoverPage";
 import { LibraryPage } from "@/components/LibraryPage";
 import { LoginPage } from "@/components/LoginPage";
 import { NotFoundPage } from "@/components/NotFoundPage";
+import { SettingsPage } from "@/components/SettingsPage";
 import { WishlistPage } from "@/components/WishlistPage";
 import { authMe, type AppView, type AuthSession } from "@/lib/api";
 import { isAppPath } from "@/lib/routes";
@@ -11,7 +12,13 @@ import { isAppPath } from "@/lib/routes";
 type AuthState = "loading" | "anon" | "authed";
 
 function normalizeView(v: string | undefined): AppView {
-  if (v === "library" || v === "accounts" || v === "discover" || v === "wishlist") {
+  if (
+    v === "library" ||
+    v === "accounts" ||
+    v === "discover" ||
+    v === "wishlist" ||
+    v === "settings"
+  ) {
     return v;
   }
   return "discover";
@@ -87,6 +94,17 @@ export default function App() {
 
   if (view === "wishlist") {
     return <WishlistPage onLogout={onLogout} nav={nav} role={role} />;
+  }
+
+  if (view === "settings") {
+    return (
+      <SettingsPage
+        onLogout={onLogout}
+        onSessionExpired={onLogout}
+        nav={nav}
+        role={role}
+      />
+    );
   }
 
   if (view === "discover") {

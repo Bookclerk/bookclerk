@@ -164,6 +164,9 @@ pub fn settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::Table
         crate::PluginKind::Output if plugin.manifest.id == "s3" => {
             output_s3_settings_table(&config.output.s3)
         }
+        crate::PluginKind::Output if plugin.manifest.id == "local" => {
+            output_local_settings_table(&config.output.local)
+        }
         crate::PluginKind::Database => database_settings_table(config, plugin),
         crate::PluginKind::Output => toml::Table::new(),
     }
@@ -184,6 +187,13 @@ fn database_settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::
 }
 
 fn output_s3_settings_table(cfg: &bookclerk_config::OutputS3Config) -> toml::Table {
+    match toml::Value::try_from(cfg) {
+        Ok(toml::Value::Table(table)) => table,
+        _ => toml::Table::new(),
+    }
+}
+
+fn output_local_settings_table(cfg: &bookclerk_config::OutputLocalConfig) -> toml::Table {
     match toml::Value::try_from(cfg) {
         Ok(toml::Value::Table(table)) => table,
         _ => toml::Table::new(),

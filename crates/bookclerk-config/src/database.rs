@@ -100,6 +100,11 @@ impl DatabaseConfig {
 
     /// Soft validation for the selected plugin.
     pub fn validate(&self) -> Result<()> {
+        // Empty plugin means no backend is selected (Settings can clear the
+        // active database by unchecking the enabled toggle).
+        if self.plugin.trim().is_empty() {
+            return Ok(());
+        }
         match self.active_plugin()? {
             DatabasePluginKind::Sqlite => Ok(()),
             DatabasePluginKind::D1 => {

@@ -3,10 +3,13 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
+use axum::extract::Request;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware;
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::Json;
@@ -23,6 +26,7 @@ use bookclerk_search::{SearchEngine, SearchHit};
 use bookclerk_source::SourceRegistry;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::time::timeout;
 use tower_http::normalize_path::NormalizePathLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -85,6 +89,46 @@ struct StatusResponse {
     in_progress: i64,
     listen: String,
     storage_backend: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SettingsUpdate {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchSettingsRequest {
+    settings: Vec<SettingsUpdate>,
+}
+
+#[derive(Debug, Serialize)]
+struct PluginSettingChoice {
+    value: String,
+    label: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PluginSettingOption {
+    key: String,
+    label: String,
+    value: String,
+    value_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    choices: Option<Vec<PluginSettingChoice>>,
+}
+
+#[derive(Debug, Serialize)]
+struct PluginSettingsGroup {
+    id: String,
+    kind: String,
+    settings: Vec<PluginSettingOption>,
+}
+
+#[derive(Debug, Serialize)]
+struct SettingsResponse {
+    settings: std::collections::BTreeMap<String, String>,
+    plugins: Vec<PluginSettingsGroup>,
 }
 
 #[derive(Debug, Serialize)]
@@ -164,6 +208,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route("/integrations/{id}/scan", post(trigger_integration_scan))
         .route("/api/status", get(status))
         .route("/api/config/reload", post(reload_config))
+        .route("/api/settings", get(get_settings).patch(patch_settings))
         .route("/api/database/migrate", post(migrate_database))
         .route("/api/jobs", get(list_jobs))
         .route("/api/library/scan", post(trigger_scan))
@@ -240,10 +285,23 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     }
 
     // Brand empty 4xx/5xx bodies (auth, missing routes, handler StatusCode).
-    // Normalize trailing slashes before route matching. Trace outermost.
-    app.layer(middleware::from_fn(http_error::brand_error_responses))
+    // Timeout wraps API handlers; normalize trailing slashes before matching.
+    // Trace outermost.
+    app.layer(middleware::from_fn(api_timeout_middleware))
+        .layer(middleware::from_fn(http_error::brand_error_responses))
         .layer(NormalizePathLayer::trim_trailing_slash())
         .layer(TraceLayer::new_for_http())
+}
+
+async fn api_timeout_middleware(req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    if !path.starts_with("/api/") && path != "/health" {
+        return next.run(req).await;
+    }
+    match timeout(Duration::from_secs(8), next.run(req)).await {
+        Ok(res) => res,
+        Err(_) => (StatusCode::GATEWAY_TIMEOUT, "request timed out").into_response(),
+    }
 }
 
 /// Resolve the Vite build output directory for the GUI.
@@ -372,6 +430,1008 @@ pub fn validate_daemon_listen(config: &Config) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+fn allowed_setting_key(key: &str) -> bool {
+    if matches!(
+        key,
+        "daemon.listen"
+            | "daemon.auth.enabled"
+            | "library.auto_acquire"
+            | "library.scan_interval_minutes"
+            | "database.plugin"
+    ) {
+        return true;
+    }
+
+    fn valid_scoped_key(key: &str, prefix: &str) -> bool {
+        let Some(rest) = key.strip_prefix(prefix) else {
+            return false;
+        };
+        let mut parts = rest.split('.');
+        let Some(id) = parts.next() else {
+            return false;
+        };
+        let Some(field) = parts.next() else {
+            return false;
+        };
+        !id.is_empty() && !field.is_empty() && parts.next().is_none()
+    }
+
+    valid_scoped_key(key, "sources.")
+        || valid_scoped_key(key, "integrations.")
+        || valid_scoped_key(key, "output.")
+        || valid_scoped_key(key, "database.")
+}
+
+fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
+    match key {
+        "library.scan_interval_minutes" => value
+            .parse::<u64>()
+            .map(|_| value.to_string())
+            .map_err(|_| "library.scan_interval_minutes must be a non-negative integer".into()),
+        "library.auto_acquire" | "daemon.auth.enabled" => {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off" => Ok(value.to_string()),
+                _ => Err(format!("{key} must be a boolean value")),
+            }
+        }
+        "daemon.listen" => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Err("daemon.listen must not be empty".into());
+            }
+            // Reject invalid socket addresses before writing config.toml.
+            trimmed
+                .parse::<SocketAddr>()
+                .map_err(|err| format!("invalid daemon.listen '{trimmed}': {err}"))?;
+            Ok(trimmed.to_string())
+        }
+        _ if (key.starts_with("sources.")
+            || key.starts_with("integrations.")
+            || key.starts_with("output."))
+            && key.ends_with(".enabled") =>
+        {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => Ok("true".into()),
+                "0" | "false" | "no" | "off" => Ok("false".into()),
+                _ => Err(format!("{key} must be a boolean value")),
+            }
+        }
+        _ if key.starts_with("database.") && key.ends_with(".enabled") => {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => Ok("true".into()),
+                "0" | "false" | "no" | "off" => Ok("false".into()),
+                _ => Err(format!("{key} must be a boolean value")),
+            }
+        }
+        _ => Ok(value.trim().to_string()),
+    }
+}
+
+fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<String, String> {
+    let mut settings = std::collections::BTreeMap::new();
+    settings.insert("daemon.listen".into(), config.daemon.listen.clone());
+    settings.insert(
+        "daemon.auth.enabled".into(),
+        config.daemon.auth.enabled.to_string(),
+    );
+    settings.insert(
+        "library.auto_acquire".into(),
+        config.library.auto_acquire.to_string(),
+    );
+    settings.insert(
+        "library.scan_interval_minutes".into(),
+        config.library.scan_interval_minutes.to_string(),
+    );
+    for source in config.sources.plugins.keys() {
+        settings.insert(
+            format!("sources.{source}.enabled"),
+            config.sources.is_enabled(source).to_string(),
+        );
+    }
+    for (id, value) in &config.sources.plugins {
+        let Some(table) = value.as_table() else {
+            continue;
+        };
+        for (key, entry) in table {
+            let value_text = entry
+                .as_str()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| entry.to_string());
+            settings.insert(format!("sources.{id}.{key}"), value_text);
+        }
+    }
+    settings
+}
+
+fn setting_label(key: &str) -> String {
+    key.replace('_', " ")
+        .split_whitespace()
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn plugin_enabled(config: &Config, kind: bookclerk_plugin_host::PluginKind, id: &str) -> bool {
+    match kind {
+        bookclerk_plugin_host::PluginKind::Source => config.sources.is_enabled(id),
+        bookclerk_plugin_host::PluginKind::Integration => config.integrations.is_enabled(id),
+        bookclerk_plugin_host::PluginKind::Output if id == "s3" => config.output.s3.enabled,
+        bookclerk_plugin_host::PluginKind::Output if id == "local" => config.output.local.enabled,
+        bookclerk_plugin_host::PluginKind::Output => false,
+        bookclerk_plugin_host::PluginKind::Database => {
+            config.database.plugin.eq_ignore_ascii_case(id)
+        }
+    }
+}
+
+fn plugin_prefix(kind: bookclerk_plugin_host::PluginKind, id: &str) -> String {
+    match kind {
+        bookclerk_plugin_host::PluginKind::Source => format!("sources.{id}"),
+        bookclerk_plugin_host::PluginKind::Integration => format!("integrations.{id}"),
+        bookclerk_plugin_host::PluginKind::Output => format!("output.{id}"),
+        bookclerk_plugin_host::PluginKind::Database => format!("database.{id}"),
+    }
+}
+
+fn plugin_kind_label(kind: bookclerk_plugin_host::PluginKind) -> &'static str {
+    match kind {
+        bookclerk_plugin_host::PluginKind::Source => "source",
+        bookclerk_plugin_host::PluginKind::Integration => "integration",
+        bookclerk_plugin_host::PluginKind::Output => "output",
+        bookclerk_plugin_host::PluginKind::Database => "database",
+    }
+}
+
+fn plugin_setting_option(
+    key: String,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    value_type: &'static str,
+) -> PluginSettingOption {
+    PluginSettingOption {
+        key,
+        label: label.into(),
+        value: value.into(),
+        value_type: value_type.into(),
+        choices: None,
+    }
+}
+
+fn plugin_setting_choice(
+    value: impl Into<String>,
+    label: impl Into<String>,
+) -> PluginSettingChoice {
+    PluginSettingChoice {
+        value: value.into(),
+        label: label.into(),
+    }
+}
+
+fn plugin_setting_option_with_choices(
+    key: String,
+    label: impl Into<String>,
+    value: impl Into<String>,
+    value_type: &'static str,
+    choices: Vec<PluginSettingChoice>,
+) -> PluginSettingOption {
+    PluginSettingOption {
+        key,
+        label: label.into(),
+        value: value.into(),
+        value_type: value_type.into(),
+        choices: if choices.is_empty() {
+            None
+        } else {
+            Some(choices)
+        },
+    }
+}
+
+fn plugin_choices_with_default(
+    default_label: &str,
+    values: impl IntoIterator<Item = (&'static str, &'static str)>,
+) -> Vec<PluginSettingChoice> {
+    let mut out = vec![plugin_setting_choice("", default_label)];
+    out.extend(
+        values
+            .into_iter()
+            .map(|(value, label)| plugin_setting_choice(value, label)),
+    );
+    out
+}
+
+fn built_in_plugin_settings(
+    config: &Config,
+    kind: bookclerk_plugin_host::PluginKind,
+    id: &str,
+) -> Vec<PluginSettingOption> {
+    let prefix = plugin_prefix(kind, id);
+    match (kind, id) {
+        (bookclerk_plugin_host::PluginKind::Source, "audible") => {
+            vec![plugin_setting_option_with_choices(
+                format!("{prefix}.bitrate"),
+                "Bitrate",
+                config
+                    .sources
+                    .get_string("audible", "bitrate")
+                    .unwrap_or_default(),
+                "string",
+                plugin_choices_with_default("Default", [("high", "High"), ("normal", "Normal")]),
+            )]
+        }
+        (bookclerk_plugin_host::PluginKind::Source, "libro") => {
+            vec![plugin_setting_option_with_choices(
+                format!("{prefix}.container"),
+                "Container",
+                config
+                    .sources
+                    .get_string("libro", "container")
+                    .unwrap_or_default(),
+                "string",
+                plugin_choices_with_default(
+                    "Default",
+                    [("m4b", "M4B"), ("zip", "ZIP (MP3 parts)")],
+                ),
+            )]
+        }
+        (bookclerk_plugin_host::PluginKind::Source, "graphicaudio") => vec![
+            plugin_setting_option_with_choices(
+                format!("{prefix}.access"),
+                "Access",
+                config
+                    .sources
+                    .get_string("graphicaudio", "access")
+                    .unwrap_or_default(),
+                "string",
+                plugin_choices_with_default(
+                    "Default",
+                    [
+                        ("web", "Browser Player"),
+                        ("zip", "Magento ZIP"),
+                        ("device", "Access App"),
+                    ],
+                ),
+            ),
+            plugin_setting_option_with_choices(
+                format!("{prefix}.bitrate"),
+                "Bitrate",
+                config
+                    .sources
+                    .get_string("graphicaudio", "bitrate")
+                    .unwrap_or_default(),
+                "string",
+                plugin_choices_with_default("Default", [("hi", "Hi"), ("lo", "Lo")]),
+            ),
+            plugin_setting_option_with_choices(
+                format!("{prefix}.container"),
+                "Container",
+                config
+                    .sources
+                    .get_string("graphicaudio", "container")
+                    .unwrap_or_default(),
+                "string",
+                plugin_choices_with_default(
+                    "Default",
+                    [
+                        ("auto", "Auto"),
+                        ("m4b", "M4B"),
+                        ("mp3", "MP3"),
+                        ("flac", "FLAC"),
+                    ],
+                ),
+            ),
+        ],
+        (bookclerk_plugin_host::PluginKind::Integration, "audiobookshelf") => {
+            let cfg = config.integrations.audiobookshelf();
+            vec![
+                plugin_setting_option(
+                    format!("{prefix}.base_url"),
+                    "Base URL",
+                    cfg.base_url,
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.api_key"),
+                    "API Key",
+                    cfg.api_key.unwrap_or_default(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.library_id"),
+                    "Library ID",
+                    cfg.library_id.unwrap_or_default(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.watch_users"),
+                    "Watch Users",
+                    cfg.watch_users.to_string(),
+                    "boolean",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.notify_scan_on_acquire"),
+                    "Notify Scan On Acquire",
+                    cfg.notify_scan_on_acquire.to_string(),
+                    "boolean",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.allow_credential_login"),
+                    "Allow Credential Login",
+                    cfg.allow_credential_login.to_string(),
+                    "boolean",
+                ),
+            ]
+        }
+        (bookclerk_plugin_host::PluginKind::Output, "local") => {
+            let cfg = &config.output.local;
+            vec![
+                plugin_setting_option(
+                    format!("{prefix}.root"),
+                    "Root",
+                    cfg.root.to_string_lossy().into_owned(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.prefix"),
+                    "Prefix",
+                    cfg.prefix.clone(),
+                    "string",
+                ),
+                plugin_setting_option_with_choices(
+                    format!("{prefix}.naming_profile"),
+                    "Naming Profile",
+                    cfg.naming
+                        .naming_profile
+                        .map(bookclerk_config::NamingProfile::as_str)
+                        .unwrap_or_default(),
+                    "string",
+                    plugin_choices_with_default(
+                        "Default (global)",
+                        bookclerk_config::NamingProfile::all()
+                            .iter()
+                            .copied()
+                            .map(|profile| (profile.as_str(), profile.as_str())),
+                    ),
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.folder_template"),
+                    "Folder Template",
+                    cfg.naming.folder_template.clone().unwrap_or_default(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.file_template"),
+                    "File Template",
+                    cfg.naming.file_template.clone().unwrap_or_default(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.chapter_file_template"),
+                    "Chapter File Template",
+                    cfg.naming.chapter_file_template.clone().unwrap_or_default(),
+                    "string",
+                ),
+            ]
+        }
+        (bookclerk_plugin_host::PluginKind::Output, "s3") => {
+            let cfg = &config.output.s3;
+            vec![
+                plugin_setting_option(
+                    format!("{prefix}.bucket"),
+                    "Bucket",
+                    cfg.bucket.clone(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.prefix"),
+                    "Prefix",
+                    cfg.prefix.clone(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.region"),
+                    "Region",
+                    cfg.region.clone(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.endpoint"),
+                    "Endpoint",
+                    cfg.endpoint.clone().unwrap_or_default(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.force_path_style"),
+                    "Force Path Style",
+                    cfg.force_path_style.to_string(),
+                    "boolean",
+                ),
+                plugin_setting_option_with_choices(
+                    format!("{prefix}.naming_profile"),
+                    "Naming Profile",
+                    cfg.naming
+                        .naming_profile
+                        .map(bookclerk_config::NamingProfile::as_str)
+                        .unwrap_or_default(),
+                    "string",
+                    plugin_choices_with_default(
+                        "Default (global)",
+                        bookclerk_config::NamingProfile::all()
+                            .iter()
+                            .copied()
+                            .map(|profile| (profile.as_str(), profile.as_str())),
+                    ),
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.folder_template"),
+                    "Folder Template",
+                    cfg.naming.folder_template.clone().unwrap_or_default(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.file_template"),
+                    "File Template",
+                    cfg.naming.file_template.clone().unwrap_or_default(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.chapter_file_template"),
+                    "Chapter File Template",
+                    cfg.naming.chapter_file_template.clone().unwrap_or_default(),
+                    "string",
+                ),
+            ]
+        }
+        (bookclerk_plugin_host::PluginKind::Database, "sqlite") => {
+            let cfg = &config.database.sqlite;
+            vec![plugin_setting_option(
+                format!("{prefix}.path"),
+                "Path",
+                cfg.path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                "string",
+            )]
+        }
+        (bookclerk_plugin_host::PluginKind::Database, "d1") => {
+            let cfg = &config.database.d1;
+            vec![
+                plugin_setting_option(
+                    format!("{prefix}.account_id"),
+                    "Account ID",
+                    cfg.account_id.clone(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.database_id"),
+                    "Database ID",
+                    cfg.database_id.clone(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.api_base"),
+                    "API Base",
+                    cfg.api_base.clone(),
+                    "string",
+                ),
+            ]
+        }
+        (bookclerk_plugin_host::PluginKind::Database, "postgres") => {
+            let cfg = &config.database.postgres;
+            vec![
+                plugin_setting_option(
+                    format!("{prefix}.url"),
+                    "URL",
+                    cfg.url.clone().unwrap_or_default(),
+                    "string",
+                ),
+                plugin_setting_option(
+                    format!("{prefix}.url_file"),
+                    "URL File",
+                    cfg.url_file
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    "string",
+                ),
+            ]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn build_source_settings_group(
+    config: &Config,
+    source: &dyn bookclerk_source::ContentSource,
+    table: toml::Table,
+) -> PluginSettingsGroup {
+    let id = source.id();
+    let prefix = plugin_prefix(bookclerk_plugin_host::PluginKind::Source, id);
+    let mut options = Vec::new();
+    let mut seen_keys = std::collections::BTreeSet::new();
+
+    let enabled_key = format!("{prefix}.enabled");
+    seen_keys.insert(enabled_key.clone());
+    options.push(plugin_setting_option(
+        enabled_key,
+        "Enabled",
+        plugin_enabled(config, bookclerk_plugin_host::PluginKind::Source, id).to_string(),
+        "boolean",
+    ));
+
+    for option in source.config_options() {
+        let key = format!("{prefix}.{}", option.key);
+        seen_keys.insert(key.clone());
+        let value = table
+            .get(option.key)
+            .and_then(|entry| entry.as_str().map(ToOwned::to_owned))
+            .unwrap_or_default();
+        let choices = plugin_choices_with_default(
+            "Default",
+            option.values.iter().map(|value| (value.id, value.label)),
+        );
+        options.push(plugin_setting_option_with_choices(
+            key,
+            option.label,
+            value,
+            "string",
+            choices,
+        ));
+    }
+
+    for (key, entry) in &table {
+        if key == "enabled" {
+            continue;
+        }
+        let full_key = format!("{prefix}.{key}");
+        if seen_keys.contains(&full_key) {
+            continue;
+        }
+        let value_text = entry
+            .as_str()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| entry.to_string());
+        let value_type = if entry.as_bool().is_some() {
+            "boolean"
+        } else if entry.as_integer().is_some() || entry.as_float().is_some() {
+            "number"
+        } else {
+            "string"
+        };
+        options.push(plugin_setting_option(
+            full_key,
+            setting_label(key),
+            value_text,
+            value_type,
+        ));
+    }
+
+    PluginSettingsGroup {
+        id: id.to_string(),
+        kind: plugin_kind_label(bookclerk_plugin_host::PluginKind::Source).to_string(),
+        settings: options,
+    }
+}
+
+fn build_plugin_settings_group(
+    config: &Config,
+    kind: bookclerk_plugin_host::PluginKind,
+    id: &str,
+    table: toml::Table,
+) -> PluginSettingsGroup {
+    let prefix = plugin_prefix(kind, id);
+    let mut options = Vec::new();
+    let mut seen_keys = std::collections::BTreeSet::new();
+
+    match kind {
+        bookclerk_plugin_host::PluginKind::Database => {
+            let key = format!("database.{id}.enabled");
+            seen_keys.insert(key.clone());
+            options.push(plugin_setting_option(
+                key,
+                "Enabled",
+                plugin_enabled(config, kind, id).to_string(),
+                "boolean",
+            ));
+        }
+        _ => {
+            let key = format!("{prefix}.enabled");
+            seen_keys.insert(key.clone());
+            options.push(plugin_setting_option(
+                key,
+                "Enabled",
+                plugin_enabled(config, kind, id).to_string(),
+                "boolean",
+            ));
+        }
+    }
+
+    for option in built_in_plugin_settings(config, kind, id) {
+        seen_keys.insert(option.key.clone());
+        options.push(option);
+    }
+
+    for (key, entry) in &table {
+        if key == "enabled" {
+            continue;
+        }
+        let full_key = format!("{prefix}.{key}");
+        if seen_keys.contains(&full_key) {
+            continue;
+        }
+        let value_text = entry
+            .as_str()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| entry.to_string());
+        let value_type = if entry.as_bool().is_some() {
+            "boolean"
+        } else if entry.as_integer().is_some() || entry.as_float().is_some() {
+            "number"
+        } else {
+            "string"
+        };
+        options.push(plugin_setting_option(
+            full_key,
+            setting_label(key),
+            value_text,
+            value_type,
+        ));
+    }
+
+    PluginSettingsGroup {
+        id: id.to_string(),
+        kind: plugin_kind_label(kind).to_string(),
+        settings: options,
+    }
+}
+
+fn fallback_plugin_table(
+    config: &Config,
+    kind: bookclerk_plugin_host::PluginKind,
+    id: &str,
+) -> toml::Table {
+    match kind {
+        bookclerk_plugin_host::PluginKind::Source => {
+            config.sources.table(id).cloned().unwrap_or_default()
+        }
+        bookclerk_plugin_host::PluginKind::Integration => config
+            .integrations
+            .plugin_table(id)
+            .cloned()
+            .unwrap_or_default(),
+        bookclerk_plugin_host::PluginKind::Output if id == "local" => {
+            match toml::Value::try_from(&config.output.local) {
+                Ok(toml::Value::Table(table)) => table,
+                _ => toml::Table::new(),
+            }
+        }
+        bookclerk_plugin_host::PluginKind::Output if id == "s3" => {
+            match toml::Value::try_from(&config.output.s3) {
+                Ok(toml::Value::Table(table)) => table,
+                _ => toml::Table::new(),
+            }
+        }
+        bookclerk_plugin_host::PluginKind::Output => toml::Table::new(),
+        bookclerk_plugin_host::PluginKind::Database if id == "sqlite" => {
+            match toml::Value::try_from(&config.database.sqlite) {
+                Ok(toml::Value::Table(table)) => table,
+                _ => toml::Table::new(),
+            }
+        }
+        bookclerk_plugin_host::PluginKind::Database if id == "d1" => {
+            match toml::Value::try_from(&config.database.d1) {
+                Ok(toml::Value::Table(table)) => table,
+                _ => toml::Table::new(),
+            }
+        }
+        bookclerk_plugin_host::PluginKind::Database if id == "postgres" => {
+            match toml::Value::try_from(&config.database.postgres) {
+                Ok(toml::Value::Table(table)) => table,
+                _ => toml::Table::new(),
+            }
+        }
+        bookclerk_plugin_host::PluginKind::Database => toml::Table::new(),
+    }
+}
+
+fn plugin_settings_snapshot(
+    config: &Config,
+    sources: &SourceRegistry,
+    discovered_plugins: &[bookclerk_plugin_host::DiscoveredPlugin],
+) -> Vec<PluginSettingsGroup> {
+    const DEFAULT_SOURCE_IDS: &[&str] = &["audible", "libro", "chirp", "graphicaudio"];
+    const DEFAULT_INTEGRATION_IDS: &[&str] = &["audiobookshelf"];
+    const DEFAULT_OUTPUT_IDS: &[&str] = &["local", "s3"];
+    const DEFAULT_DATABASE_IDS: &[&str] = &["sqlite", "d1", "postgres"];
+
+    let mut groups_by_key: std::collections::BTreeMap<(String, String), PluginSettingsGroup> =
+        std::collections::BTreeMap::new();
+
+    for plugin in discovered_plugins {
+        let table = bookclerk_plugin_host::settings_table(config, plugin);
+        let group = if plugin.manifest.kind == bookclerk_plugin_host::PluginKind::Source {
+            if let Some(source) = sources.get(&plugin.manifest.id) {
+                build_source_settings_group(config, source.as_ref(), table)
+            } else {
+                build_plugin_settings_group(
+                    config,
+                    plugin.manifest.kind,
+                    &plugin.manifest.id,
+                    table,
+                )
+            }
+        } else {
+            build_plugin_settings_group(config, plugin.manifest.kind, &plugin.manifest.id, table)
+        };
+        groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
+    }
+
+    for source in sources.all() {
+        let id = source.id().to_string();
+        let key = (String::from("source"), id.clone());
+        if !groups_by_key.contains_key(&key) {
+            let table = config.sources.table(&id).cloned().unwrap_or_default();
+            let group = build_source_settings_group(config, source.as_ref(), table);
+            groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
+        }
+    }
+
+    for id in DEFAULT_SOURCE_IDS {
+        let key = (String::from("source"), (*id).to_string());
+        if !groups_by_key.contains_key(&key) {
+            let table =
+                fallback_plugin_table(config, bookclerk_plugin_host::PluginKind::Source, id);
+            let group = build_plugin_settings_group(
+                config,
+                bookclerk_plugin_host::PluginKind::Source,
+                id,
+                table,
+            );
+            groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
+        }
+    }
+
+    for id in DEFAULT_INTEGRATION_IDS {
+        let key = (String::from("integration"), (*id).to_string());
+        if !groups_by_key.contains_key(&key) {
+            let table =
+                fallback_plugin_table(config, bookclerk_plugin_host::PluginKind::Integration, id);
+            let group = build_plugin_settings_group(
+                config,
+                bookclerk_plugin_host::PluginKind::Integration,
+                id,
+                table,
+            );
+            groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
+        }
+    }
+
+    for id in DEFAULT_OUTPUT_IDS {
+        let key = (String::from("output"), (*id).to_string());
+        if !groups_by_key.contains_key(&key) {
+            let table =
+                fallback_plugin_table(config, bookclerk_plugin_host::PluginKind::Output, id);
+            let group = build_plugin_settings_group(
+                config,
+                bookclerk_plugin_host::PluginKind::Output,
+                id,
+                table,
+            );
+            groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
+        }
+    }
+
+    for id in DEFAULT_DATABASE_IDS {
+        let key = (String::from("database"), (*id).to_string());
+        if !groups_by_key.contains_key(&key) {
+            let table =
+                fallback_plugin_table(config, bookclerk_plugin_host::PluginKind::Database, id);
+            let group = build_plugin_settings_group(
+                config,
+                bookclerk_plugin_host::PluginKind::Database,
+                id,
+                table,
+            );
+            groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
+        }
+    }
+
+    groups_by_key.into_values().collect()
+}
+
+async fn discover_plugins_for_settings(
+    config: &Config,
+) -> Vec<bookclerk_plugin_host::DiscoveredPlugin> {
+    const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
+    let cfg = config.clone();
+    let task = tokio::task::spawn_blocking(move || bookclerk_plugin_host::discover_plugins(&cfg));
+
+    match timeout(DISCOVERY_TIMEOUT, task).await {
+        Ok(Ok(Ok(plugins))) => plugins,
+        Ok(Ok(Err(err))) => {
+            tracing::warn!(error = %err, "failed to discover plugins for settings");
+            Vec::new()
+        }
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, "settings plugin discovery task failed");
+            Vec::new()
+        }
+        Err(_) => {
+            tracing::warn!("settings plugin discovery timed out");
+            Vec::new()
+        }
+    }
+}
+
+fn apply_database_enable_updates(
+    config: &mut Config,
+    updates: &[(String, String)],
+) -> Result<(), String> {
+    let mut enabled_targets = Vec::new();
+    let mut disabled_targets = Vec::new();
+    for (key, value) in updates {
+        let Some(rest) = key.strip_prefix("database.") else {
+            continue;
+        };
+        let Some(id) = rest.strip_suffix(".enabled") else {
+            continue;
+        };
+        if id.is_empty() || id.contains('.') {
+            continue;
+        }
+        match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => enabled_targets.push(id.to_string()),
+            "0" | "false" | "no" | "off" => disabled_targets.push(id.to_string()),
+            _ => {}
+        }
+    }
+    enabled_targets.sort();
+    enabled_targets.dedup();
+    if enabled_targets.len() > 1 {
+        return Err("only one database plugin can be enabled at a time".into());
+    }
+    if let Some(id) = enabled_targets.into_iter().next() {
+        config.database.plugin = id;
+        return Ok(());
+    }
+    // Unchecking the active backend with no replacement clears `database.plugin`
+    // so the prior plugin does not stay selected after save.
+    for id in disabled_targets {
+        if config.database.plugin.eq_ignore_ascii_case(&id) {
+            config.database.plugin.clear();
+            break;
+        }
+    }
+    Ok(())
+}
+
+async fn get_settings(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<SettingsResponse>, StatusCode> {
+    let cfg = state.config.read().await.clone();
+    let discovered_plugins = discover_plugins_for_settings(&cfg).await;
+    Ok(Json(SettingsResponse {
+        settings: current_settings_snapshot(&cfg),
+        plugins: plugin_settings_snapshot(&cfg, &state.sources, &discovered_plugins),
+    }))
+}
+
+async fn patch_settings(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PatchSettingsRequest>,
+) -> Result<Json<SettingsResponse>, StatusCode> {
+    if body.settings.is_empty() {
+        return get_settings(State(state.clone())).await;
+    }
+
+    let updates: Vec<(String, String)> = body
+        .settings
+        .into_iter()
+        .map(|update| {
+            let key = update.key.trim().to_string();
+            let normalized = normalize_setting_value(&key, &update.value)?;
+            if !allowed_setting_key(&key) {
+                return Err(format!("unsupported setting key: {key}"));
+            }
+            Ok((key, normalized))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| {
+            tracing::warn!(error = %err, "rejected invalid settings update");
+            StatusCode::BAD_REQUEST
+        })?;
+
+    let editable = get_settings(State(state.clone())).await?.0;
+    let editable_keys: std::collections::HashSet<&str> = editable
+        .plugins
+        .iter()
+        .flat_map(|plugin| plugin.settings.iter().map(|setting| setting.key.as_str()))
+        .chain(editable.settings.keys().map(String::as_str))
+        .collect();
+    let editable_plugin_options: std::collections::HashMap<&str, &PluginSettingOption> = editable
+        .plugins
+        .iter()
+        .flat_map(|plugin| plugin.settings.iter())
+        .map(|setting| (setting.key.as_str(), setting))
+        .collect();
+    if let Some((key, _)) = updates
+        .iter()
+        .find(|(key, _)| !editable_keys.contains(key.as_str()) && key != "database.plugin")
+    {
+        tracing::warn!(%key, "rejected unsupported settings update key");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if let Some((key, value)) = updates.iter().find(|(key, value)| {
+        editable_plugin_options
+            .get(key.as_str())
+            .and_then(|setting| setting.choices.as_ref())
+            .is_some_and(|choices| !choices.iter().any(|choice| choice.value == *value))
+    }) {
+        tracing::warn!(%key, %value, "rejected invalid enum settings update value");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let files_dir = {
+        let cfg = state.config.read().await;
+        cfg.paths().files_dir.clone()
+    };
+    let config_path = {
+        let cfg = state.config.read().await;
+        cfg.paths().config_file.clone()
+    };
+
+    let mut normalized_pairs = Vec::<(String, String)>::new();
+    for (key, value) in &updates {
+        if key.starts_with("database.") && key.ends_with(".enabled") {
+            // Exclusive enablement is applied via `apply_database_enable_updates`.
+            continue;
+        }
+        normalized_pairs.push((key.clone(), value.clone()));
+    }
+
+    let mut cfg = Config::load(Some(files_dir), Some(config_path.clone())).map_err(|err| {
+        tracing::error!(error = %err, "failed to load config for settings update");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    apply_database_enable_updates(&mut cfg, &updates).map_err(|err| {
+        tracing::warn!(error = %err, "rejected database settings update");
+        StatusCode::BAD_REQUEST
+    })?;
+
+    let pairs = normalized_pairs
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect::<Vec<_>>();
+    bookclerk_config::apply_setting_overrides(&mut cfg, &pairs);
+
+    // Validate listen (and auth/listen pairing) before touching disk so a bad
+    // address cannot leave config.toml half-updated.
+    if let Err(err) = validate_daemon_listen(&cfg) {
+        tracing::warn!(error = %err, "rejected daemon.listen settings update");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    cfg.write_toml_file(&config_path).map_err(|err| {
+        tracing::error!(error = %err, "settings update write failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    reload_daemon_config(&state).await.map_err(|err| {
+        tracing::error!(error = %err, "settings reload failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    get_settings(State(state)).await
 }
 
 async fn reload_config(
@@ -800,6 +1860,22 @@ async fn discover_recommendations(
 ) -> Result<Json<bookclerk_discover::DiscoverFeed>, (StatusCode, String)> {
     let cfg = state.config.read().await.clone();
     let library = state.library_snapshot().await;
+
+    // Fast path: skip embedding/recommendation work when there is no library or
+    // wishlist data yet. This keeps initial GUI loads responsive in empty setups.
+    let has_books = library.count_books(None).await.map_err(internal_err)? > 0;
+    let has_open_requests = !library
+        .list_title_requests(Some(RequestStatus::Open))
+        .await
+        .map_err(internal_err)?
+        .is_empty();
+    if !has_books && !has_open_requests {
+        return Ok(Json(bookclerk_discover::DiscoverFeed {
+            shelves: Vec::new(),
+            shelf_kinds: bookclerk_discover::shelf_kind_catalog(),
+        }));
+    }
+
     let _ = bookclerk_discover::rebuild_works_from_library(&library)
         .await
         .map_err(internal_err)?;
@@ -832,7 +1908,9 @@ async fn discover_recommendations(
         None
     };
 
-    let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers).await;
+    let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
+        .await
+        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
     let disabled_shelves = library
         .get_user_preferences_or_default(&subject_key, identity_id)
         .await
@@ -1186,12 +2264,23 @@ async fn get_preferences(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<PreferencesResponse>, (StatusCode, String)> {
-    let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers).await;
-    let library = state.library_snapshot().await;
-    let prefs = library
-        .get_user_preferences_or_default(&subject_key, identity_id)
+    const PREFERENCES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+    let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
         .await
-        .map_err(internal_err)?;
+        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+    let library = state.library_snapshot().await;
+    let prefs = timeout(
+        PREFERENCES_TIMEOUT,
+        library.get_user_preferences_or_default(&subject_key, identity_id),
+    )
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::GATEWAY_TIMEOUT,
+            "preferences lookup timed out".into(),
+        )
+    })?
+    .map_err(internal_err)?;
     Ok(Json(PreferencesResponse {
         default_view: auth::normalize_default_view(&prefs.default_view),
         disabled_shelves: prefs.disabled_shelves,
@@ -1203,12 +2292,23 @@ async fn patch_preferences(
     headers: HeaderMap,
     Json(body): Json<PatchPreferencesBody>,
 ) -> Result<Json<PreferencesResponse>, (StatusCode, String)> {
-    let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers).await;
-    let library = state.library_snapshot().await;
-    let current = library
-        .get_user_preferences_or_default(&subject_key, identity_id)
+    const PREFERENCES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+    let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
         .await
-        .map_err(internal_err)?;
+        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+    let library = state.library_snapshot().await;
+    let current = timeout(
+        PREFERENCES_TIMEOUT,
+        library.get_user_preferences_or_default(&subject_key, identity_id),
+    )
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::GATEWAY_TIMEOUT,
+            "preferences lookup timed out".into(),
+        )
+    })?
+    .map_err(internal_err)?;
 
     let default_view = body
         .default_view
@@ -1221,10 +2321,23 @@ async fn patch_preferences(
         .map(normalize_disabled_shelves)
         .unwrap_or(current.disabled_shelves);
 
-    let saved = library
-        .upsert_user_preferences(&subject_key, identity_id, &default_view, &disabled_shelves)
-        .await
-        .map_err(internal_err)?;
+    let saved = timeout(
+        PREFERENCES_TIMEOUT,
+        library.upsert_user_preferences(
+            &subject_key,
+            identity_id,
+            &default_view,
+            &disabled_shelves,
+        ),
+    )
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::GATEWAY_TIMEOUT,
+            "preferences update timed out".into(),
+        )
+    })?
+    .map_err(internal_err)?;
 
     Ok(Json(PreferencesResponse {
         default_view: auth::normalize_default_view(&saved.default_view),
@@ -1252,7 +2365,11 @@ fn internal_err(err: impl std::fmt::Display) -> (StatusCode, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::title_id_candidates;
+    use super::{
+        allowed_setting_key, apply_database_enable_updates, build_plugin_settings_group,
+        normalize_disabled_shelves, normalize_setting_value, title_id_candidates,
+    };
+    use bookclerk_config::Config;
 
     #[test]
     fn title_id_candidates_dedupes_case_folds() {
@@ -1263,5 +2380,186 @@ mod tests {
         assert_eq!(title_id_candidates("b00test"), vec!["b00test", "B00TEST"]);
         assert_eq!(title_id_candidates("B00TEST"), vec!["B00TEST", "b00test"]);
         assert!(title_id_candidates("").is_empty());
+    }
+
+    #[test]
+    fn settings_allowlist_accepts_expected_keys() {
+        assert!(allowed_setting_key("daemon.listen"));
+        assert!(allowed_setting_key("daemon.auth.enabled"));
+        assert!(allowed_setting_key("library.auto_acquire"));
+        assert!(allowed_setting_key("library.scan_interval_minutes"));
+        assert!(allowed_setting_key("sources.audible.region"));
+        assert!(allowed_setting_key("sources.libro.enabled_mode"));
+        assert!(!allowed_setting_key("sources"));
+        assert!(!allowed_setting_key("sources..region"));
+        assert!(!allowed_setting_key("sources.audible"));
+        assert!(!allowed_setting_key("sources.audible.region.extra"));
+        assert!(allowed_setting_key("integrations.audiobookshelf.enabled"));
+        assert!(allowed_setting_key("output.s3.bucket"));
+        assert!(allowed_setting_key("database.plugin"));
+        assert!(allowed_setting_key("database.sqlite.enabled"));
+        assert!(!allowed_setting_key("database"));
+        assert!(!allowed_setting_key("database..enabled"));
+    }
+
+    #[test]
+    fn built_in_plugin_groups_include_registered_optional_settings() {
+        let cfg = Config::default();
+
+        let audible = build_plugin_settings_group(
+            &cfg,
+            bookclerk_plugin_host::PluginKind::Source,
+            "audible",
+            toml::Table::new(),
+        );
+        assert!(audible
+            .settings
+            .iter()
+            .find(|option| option.key == "sources.audible.bitrate")
+            .and_then(|option| option.choices.as_ref())
+            .is_some());
+
+        let abs = build_plugin_settings_group(
+            &cfg,
+            bookclerk_plugin_host::PluginKind::Integration,
+            "audiobookshelf",
+            toml::Table::new(),
+        );
+        assert!(abs
+            .settings
+            .iter()
+            .any(|option| option.key == "integrations.audiobookshelf.base_url"));
+        assert!(abs
+            .settings
+            .iter()
+            .any(|option| option.key == "integrations.audiobookshelf.api_key"));
+        assert!(abs
+            .settings
+            .iter()
+            .any(|option| option.key == "integrations.audiobookshelf.library_id"));
+
+        let s3 = build_plugin_settings_group(
+            &cfg,
+            bookclerk_plugin_host::PluginKind::Output,
+            "s3",
+            toml::Table::new(),
+        );
+        assert!(s3
+            .settings
+            .iter()
+            .any(|option| option.key == "output.s3.endpoint"));
+        assert!(s3
+            .settings
+            .iter()
+            .any(|option| option.key == "output.s3.bucket"));
+
+        let d1 = build_plugin_settings_group(
+            &cfg,
+            bookclerk_plugin_host::PluginKind::Database,
+            "d1",
+            toml::Table::new(),
+        );
+        assert!(d1
+            .settings
+            .iter()
+            .any(|option| option.key == "database.d1.account_id"));
+        assert!(d1
+            .settings
+            .iter()
+            .any(|option| option.key == "database.d1.database_id"));
+        assert!(d1
+            .settings
+            .iter()
+            .any(|option| option.key == "database.d1.api_base"));
+
+        let postgres = build_plugin_settings_group(
+            &cfg,
+            bookclerk_plugin_host::PluginKind::Database,
+            "postgres",
+            toml::Table::new(),
+        );
+        assert!(postgres
+            .settings
+            .iter()
+            .any(|option| option.key == "database.postgres.url"));
+        assert!(postgres
+            .settings
+            .iter()
+            .any(|option| option.key == "database.postgres.url_file"));
+    }
+
+    #[test]
+    fn normalize_setting_value_validates_core_fields() {
+        assert_eq!(
+            normalize_setting_value("library.scan_interval_minutes", "15").expect("int"),
+            "15"
+        );
+        assert!(normalize_setting_value("library.scan_interval_minutes", "nope").is_err());
+
+        assert_eq!(
+            normalize_setting_value("daemon.auth.enabled", "true").expect("bool"),
+            "true"
+        );
+        assert_eq!(
+            normalize_setting_value("library.auto_acquire", "0").expect("bool"),
+            "0"
+        );
+        assert!(normalize_setting_value("daemon.auth.enabled", "maybe").is_err());
+
+        assert_eq!(
+            normalize_setting_value("daemon.listen", " 127.0.0.1:8787 ").expect("listen"),
+            "127.0.0.1:8787"
+        );
+        assert!(normalize_setting_value("daemon.listen", "   ").is_err());
+        assert!(normalize_setting_value("daemon.listen", "not-a-socket").is_err());
+
+        assert_eq!(
+            normalize_setting_value("sources.audible.region", " us ").expect("plugin"),
+            "us"
+        );
+        assert_eq!(
+            normalize_setting_value("sources.audible.enabled", "yes").expect("enabled bool"),
+            "true"
+        );
+        assert!(normalize_setting_value("sources.audible.enabled", "sometimes").is_err());
+    }
+
+    #[test]
+    fn database_enable_updates_clear_active_on_disable() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.database.plugin, "sqlite");
+        apply_database_enable_updates(
+            &mut cfg,
+            &[("database.sqlite.enabled".into(), "false".into())],
+        )
+        .expect("disable");
+        assert_eq!(cfg.database.plugin, "");
+
+        apply_database_enable_updates(&mut cfg, &[("database.d1.enabled".into(), "true".into())])
+            .expect("enable d1");
+        assert_eq!(cfg.database.plugin, "d1");
+
+        apply_database_enable_updates(
+            &mut cfg,
+            &[
+                ("database.d1.enabled".into(), "false".into()),
+                ("database.postgres.enabled".into(), "true".into()),
+            ],
+        )
+        .expect("switch");
+        assert_eq!(cfg.database.plugin, "postgres");
+    }
+
+    #[test]
+    fn normalize_disabled_shelves_trims_dedupes_and_lowercases() {
+        let normalized = normalize_disabled_shelves(vec![
+            "  Requests ".into(),
+            "requests".into(),
+            " Continue-Series ".into(),
+            "".into(),
+            "   ".into(),
+            "continue-series".into(),
+        ]);
+        assert_eq!(normalized, vec!["requests", "continue-series"]);
     }
 }

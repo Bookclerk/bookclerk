@@ -17,11 +17,13 @@ use bookclerk_integrations::portal_identity_from_headers;
 use bookclerk_library::{portal_prefs_key, PortalIdentity, OPERATOR_PREFS_KEY};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::api::AppState;
 
 pub const SESSION_COOKIE: &str = "bookclerk_operator_session";
+const AUTH_DB_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Peer IP for login throttling (`ConnectInfo` when available, else `"unknown"`).
 pub(crate) struct ClientIp(String);
@@ -322,7 +324,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
     }
 
     let library = state.library_snapshot().await;
-    if let Some(identity) = portal_identity_from_headers(&library, &headers).await {
+    if let Some(identity) = timed_portal_identity_from_headers(&library, &headers).await {
         let key = portal_prefs_key(identity.id);
         let default_view = default_view_for_subject(&library, &key, Some(identity.id)).await;
         return (
@@ -388,7 +390,7 @@ pub async fn require_operator_or_portal_auth(
         return Ok(next.run(req).await);
     }
     let library = state.library_snapshot().await;
-    if portal_identity_from_headers(&library, req.headers())
+    if timed_portal_identity_from_headers(&library, req.headers())
         .await
         .is_some()
     {
@@ -410,26 +412,42 @@ pub async fn caller_portal_identity(
         return None;
     }
     let library = state.library_snapshot().await;
-    portal_identity_from_headers(&library, headers).await
+    timed_portal_identity_from_headers(&library, headers).await
 }
 
 /// Subject key + optional portal identity id for the caller's preferences row.
+///
+/// Portal callers must resolve to their own prefs key. If the portal-identity
+/// lookup times out or fails after portal auth, this returns an error instead of
+/// falling back to [`OPERATOR_PREFS_KEY`].
 pub async fn prefs_subject_for_caller(
     state: &AppState,
     headers: &HeaderMap,
-) -> (String, Option<i64>) {
+) -> Result<(String, Option<i64>), StatusCode> {
     if let Some(auth) = state.auth.as_ref() {
         if !auth.enabled || authorize_operator(auth, headers).await {
-            return (OPERATOR_PREFS_KEY.to_string(), None);
+            return Ok((OPERATOR_PREFS_KEY.to_string(), None));
         }
     } else {
-        return (OPERATOR_PREFS_KEY.to_string(), None);
+        return Ok((OPERATOR_PREFS_KEY.to_string(), None));
     }
     let library = state.library_snapshot().await;
-    if let Some(identity) = portal_identity_from_headers(&library, headers).await {
-        return (portal_prefs_key(identity.id), Some(identity.id));
+    match timeout(
+        AUTH_DB_TIMEOUT,
+        portal_identity_from_headers(&library, headers),
+    )
+    .await
+    {
+        Ok(Some(identity)) => Ok((portal_prefs_key(identity.id), Some(identity.id))),
+        Ok(None) => {
+            tracing::warn!("portal identity missing for prefs subject");
+            Err(StatusCode::UNAUTHORIZED)
+        }
+        Err(_) => {
+            tracing::warn!("portal identity lookup timed out for prefs subject");
+            Err(StatusCode::GATEWAY_TIMEOUT)
+        }
     }
-    (OPERATOR_PREFS_KEY.to_string(), None)
 }
 
 async fn default_view_for_subject(
@@ -437,11 +455,40 @@ async fn default_view_for_subject(
     subject_key: &str,
     identity_id: Option<i64>,
 ) -> String {
-    library
-        .get_user_preferences_or_default(subject_key, identity_id)
-        .await
-        .map(|p| normalize_default_view(&p.default_view))
-        .unwrap_or_else(|_| String::from("discover"))
+    match timeout(
+        AUTH_DB_TIMEOUT,
+        library.get_user_preferences_or_default(subject_key, identity_id),
+    )
+    .await
+    {
+        Ok(Ok(prefs)) => normalize_default_view(&prefs.default_view),
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, "default view lookup failed");
+            String::from("discover")
+        }
+        Err(_) => {
+            tracing::warn!("default view lookup timed out");
+            String::from("discover")
+        }
+    }
+}
+
+async fn timed_portal_identity_from_headers(
+    library: &bookclerk_library::LibraryStore,
+    headers: &HeaderMap,
+) -> Option<PortalIdentity> {
+    match timeout(
+        AUTH_DB_TIMEOUT,
+        portal_identity_from_headers(library, headers),
+    )
+    .await
+    {
+        Ok(identity) => identity,
+        Err(_) => {
+            tracing::warn!("portal identity lookup timed out");
+            None
+        }
+    }
 }
 
 async fn authorize_operator(auth: &OperatorAuthState, headers: &HeaderMap) -> bool {

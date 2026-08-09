@@ -49,7 +49,9 @@ pub use output::{
     normalize_storage_prefix, BadBookAction, DestinationNaming, MultiDestinationMode,
     OutputBackendKind, OutputConfig, OutputLocalConfig, OutputS3Config,
 };
-pub use overrides::apply_setting_overrides;
+pub use overrides::{
+    apply_config_updates, apply_config_updates_from_path, apply_setting_overrides,
+};
 pub use path_limits::{
     enforce_storage_key_limits, path_len, truncate_filename_stem, truncate_path_component,
     PathLengthMeasure, PathLimits, DEFAULT_MAX_FILENAME_LENGTH, S3_MAX_OBJECT_KEY_BYTES,
