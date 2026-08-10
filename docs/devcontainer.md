@@ -4,15 +4,16 @@ Bookclerk’s Dev Container gives a controlled Linux build environment (Debian
 Bookworm + Rust + OpenSSL headers + Node) so local hosts without `libssl-dev`
 (or with mismatched toolchains) can still compile.
 
-The workspace is **bind-mounted**. Cargo writes into the repo’s `target/` (and
-Vite into `ui/dist/`). `target/debug` and `target/release` are prepended to
-`PATH`, and `BOOKCLERK_FILES_DIR` defaults to `/tmp/BookclerkFiles`, so after a
-build you can exercise the CLI in-container:
+The workspace is **bind-mounted**. Cargo writes into the repo’s `target/` and
+`.cargo-home/` (registry/git), and Vite into `ui/dist/`. `target/debug` and
+`target/release` are prepended to `PATH`, and `BOOKCLERK_FILES_DIR` defaults to
+`<workspace>/BookclerkFiles`, so after a build you can exercise the CLI
+in-container:
 
 ```bash
 cargo build -p bookclerk-cli -p bookclerkd -p bookclerk-jail -p bookclerk-media-worker
 bookclerk version
-cargo stage-plugins   # or: cargo dev-daemon / cargo dev-cli -- …
+cargo stage-plugins   # or: cargo dev / cargo dev-cli -- …
 ```
 
 On a **Linux desktop host**, reopen with the alternate config
@@ -38,7 +39,7 @@ cargo build -p bookclerkd -p bookclerk-cli
 cd ui && npm run build
 
 # on the host (same checkout)
-BOOKCLERK_FILES_DIR=/tmp/BookclerkFiles \
+BOOKCLERK_FILES_DIR="$PWD/BookclerkFiles" \
 BOOKCLERK_UI_DIST="$PWD/ui/dist" \
 ./target/debug/bookclerkd
 ```
@@ -62,7 +63,7 @@ Definition: [`.devcontainer/`](../.devcontainer/).
 | `pkg-config` + `libssl-dev` | Fixes the local OpenSSL / `openssl-sys` failure mode |
 | `libdbus-1-dev` + `xdg-utils` | Linux tray (`ksni` / zbus) and `xdg-open` for “Open Bookclerk” |
 | Node.js 22 | `ui/` Vite build |
-| Cargo registry/git volumes | Mounted under `$CARGO_HOME` (`/home/bookclerk/.cargo/{registry,git}`) |
+| Cargo registry/git | Workspace `.cargo-home/` (`CARGO_HOME` on the bind mount) |
 | Linux desktop + tray | Optional [`devcontainer.linux-desktop.json`](../.devcontainer/devcontainer.linux-desktop.json) |
 | `PATH` | `target/debug` then `target/release` (via `remoteEnv`) |
 

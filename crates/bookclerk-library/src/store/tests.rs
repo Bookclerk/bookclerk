@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn account_and_book_roundtrip() {
     let store = LibraryStore::from_connection(
-        bookclerk_plugin_database::sqlite::open_memory()
+        bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap(),
     );
@@ -63,7 +63,7 @@ async fn account_and_book_roundtrip() {
 #[tokio::test]
 async fn same_isbn_multi_account_and_source() {
     let store = LibraryStore::from_connection(
-        bookclerk_plugin_database::sqlite::open_memory()
+        bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap(),
     );
@@ -125,7 +125,7 @@ async fn same_isbn_multi_account_and_source() {
 #[tokio::test]
 async fn libro_rescan_preserves_audible_enrichment() {
     let store = LibraryStore::from_connection(
-        bookclerk_plugin_database::sqlite::open_memory()
+        bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap(),
     );
@@ -206,7 +206,7 @@ async fn libro_rescan_preserves_audible_enrichment() {
 #[tokio::test]
 async fn download_product_id_is_source_native() {
     let store = LibraryStore::from_connection(
-        bookclerk_plugin_database::sqlite::open_memory()
+        bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap(),
     );
@@ -247,7 +247,7 @@ async fn download_product_id_is_source_native() {
 #[tokio::test]
 async fn ensure_account_preserves_scan_enabled() {
     let store = LibraryStore::from_connection(
-        bookclerk_plugin_database::sqlite::open_memory()
+        bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap(),
     );
@@ -266,7 +266,7 @@ async fn ensure_account_preserves_scan_enabled() {
 #[tokio::test]
 async fn upsert_account_source_persists() {
     let store = LibraryStore::from_connection(
-        bookclerk_plugin_database::sqlite::open_memory()
+        bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap(),
     );
@@ -282,7 +282,7 @@ async fn upsert_account_source_persists() {
 #[tokio::test]
 async fn remap_account_moves_books() {
     let store = LibraryStore::from_connection(
-        bookclerk_plugin_database::sqlite::open_memory()
+        bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap(),
     );
@@ -325,7 +325,7 @@ async fn remap_account_moves_books() {
 #[tokio::test]
 async fn ignored_titles_roundtrip() {
     let store = LibraryStore::from_connection(
-        bookclerk_plugin_database::sqlite::open_memory()
+        bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap(),
     );
@@ -353,7 +353,7 @@ async fn ignored_titles_roundtrip() {
 #[tokio::test]
 async fn revoke_keeps_books_and_portal_tickets_work() {
     let store = LibraryStore::from_connection(
-        bookclerk_plugin_database::sqlite::open_memory()
+        bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap(),
     );
@@ -416,7 +416,7 @@ async fn user_preferences_roundtrip_operator_and_portal() {
     use crate::models::{portal_prefs_key, OPERATOR_PREFS_KEY};
 
     let store = LibraryStore::from_connection(
-        bookclerk_plugin_database::sqlite::open_memory()
+        bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap(),
     );
@@ -500,7 +500,7 @@ async fn user_preferences_roundtrip_operator_and_portal() {
 #[tokio::test]
 async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
     let store = LibraryStore::from_connection(
-        bookclerk_plugin_database::sqlite::open_memory()
+        bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap(),
     );
@@ -644,7 +644,7 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
 #[tokio::test]
 async fn wishlist_sources_merge_description_and_editions() {
     let store = LibraryStore::from_connection(
-        bookclerk_plugin_database::sqlite::open_memory()
+        bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap(),
     );

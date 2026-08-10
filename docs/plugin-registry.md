@@ -1,8 +1,23 @@
 # Plugin registry (crates.io taxonomy + install without Rust)
 
-Third-party plugins remain **prebuilt executables** + `plugin.toml` (see
-[plugins.md](plugins.md)). This document defines how publishers advertise them
-on [crates.io](https://crates.io) so Bookclerk can **discover** and **install**
+Third-party plugins install as archives under `$BOOKCLERK_FILES_DIR/plugins/<id>/`
+(see [plugins.md](plugins.md) and the ADR
+[plugin-workers-rpc-workerd.md](adr/plugin-workers-rpc-workerd.md)):
+
+| Runtime | Archive contents |
+| --- | --- |
+| **`workerd` / script** | `plugin.toml` + `modules/` — **no** per-OS binary required; host runs `bookclerk-workerd` under jail |
+| **`native`** | `plugin.toml` + per-OS/arch executable (`command`) |
+
+Authors implement branded **`BookclerkPlugin`** via language SDKs
+([`@bookclerk/plugin-sdk`](../packages/plugin-sdk/),
+[`packages/plugin-sdk-python`](../packages/plugin-sdk-python/),
+[`bookclerk-plugin-sdk`](../crates/bookclerk-plugin-sdk/)). Each SDK ships the
+same `check` / `fmt` / `package` helpers for local and CI packaging. Workerd Echo:
+[`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/).
+
+This document defines how publishers advertise plugins on
+[crates.io](https://crates.io) so Bookclerk can **discover** and **install**
 them from a packaged binary — without the operator having a Rust toolchain.
 
 > Status: crate naming taxonomy is **draft-stable for discovery**. Install
@@ -23,11 +38,15 @@ Registry-neutral types and adapters live in
 | **Static registry** | HTTPS/local JSON index (`schema_version`, `packages[].name` → `versions` → manifest). Fixture: [`fixtures/static-index.example.json`](../crates/bookclerk-plugin-catalog/fixtures/static-index.example.json) |
 | **PyPI** | **Exact-only** — no general search API; use `pypi:project==version` or a static registry for discovery |
 
-Publisher / experimental packaging examples:
+Publisher / packaging examples (reference only — never in `package-plugins`):
 
+- [`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/) — workerd / `@bookclerk/plugin-sdk`
+- [`examples/plugins-echo-workerd-python/`](../examples/plugins-echo-workerd-python/) — workerd Python Workers
+- [`examples/plugins-echo-workerd-rust/`](../examples/plugins-echo-workerd-rust/) — workerd Rust/Wasm
+- [`examples/plugins-echo-native-rust/`](../examples/plugins-echo-native-rust/) — native Rust `BookclerkPlugin`
+- [`examples/plugins-echo-native-node/`](../examples/plugins-echo-native-node/) — native Node SEA
+- [`examples/plugins-echo-native-python/`](../examples/plugins-echo-native-python/) — native PyInstaller
 - [`examples/plugin-publisher/`](../examples/plugin-publisher/) — reusable GHA workflow docs
-- [`examples/plugins-echo-ts/`](../examples/plugins-echo-ts/) — Node SEA Echo (experimental)
-- [`examples/plugins-echo-py/`](../examples/plugins-echo-py/) — PyInstaller Echo (experimental)
 
 ### Trust (staged)
 
@@ -46,23 +65,24 @@ These landed on the follow-up ecosystem track instead of expanding #74:
 
 - Full `bookclerk plugins install` / `update` / `remove` / `doctor` / `registry`
 - Windows AppContainer spawn-time confinement (`run_appcontainer` + path ACLs)
+  (shipped on the confinement track; see [plugins.md](plugins.md))
 - Publisher code signing / notarization as a hard requirement
-- First-class TypeScript / Python guest SDKs (experimental Echo templates only)
+- Python guest SDK (still experimental; TypeScript `@bookclerk/plugin-sdk` is first-class)
 
 ## Design principle
 
 | Layer | Role |
 | --- | --- |
 | crates.io crate | **Discovery index** + install URL metadata for plugin *authors* |
-| HTTPS downloadable archive | **Prebuilt binaries** for each OS/arch (any host) |
+| HTTPS downloadable archive | **Native:** per OS/arch binary + `plugin.toml`. **Workerd:** `plugin.toml` + `modules/` (portable) |
 | `$BOOKCLERK_FILES_DIR/plugins/<id>/` | **Installed** layout Bookclerk already loads |
-| Platform installer / `cargo package-platform` | **Hosts + sqlite + local** — always bundled, not pulled from crates.io |
+| Platform installer / `cargo package-platform` | **Hosts + jail + workerd + sqlite + local** — always bundled, not pulled from crates.io |
 
-Bookclerk never runs `cargo build` on the user’s machine. Installing a plugin
-downloads a release asset over HTTPS, verifies it, and unpacks `plugin.toml` +
-binary — the same layout as a manual drop-in. The asset host is **not** tied to
-GitHub: S3/R2, GitLab/Forgejo/Codeberg releases, a CDN, or a self-hosted static
-directory all work as long as the URL is a direct download.
+Bookclerk never runs `cargo build` / `npm install` on the user’s machine to
+install a plugin. Installing downloads a release asset over HTTPS, verifies it,
+and unpacks the layout above — the same as a manual drop-in. The asset host is
+**not** tied to GitHub: S3/R2, GitLab/Forgejo/Codeberg releases, a CDN, or a
+self-hosted static directory all work as long as the URL is a direct download.
 
 **Automatic pull today:** nothing from crates.io. Platform plugins ship inside
 the host installer. Optional storefronts install later via
@@ -76,10 +96,10 @@ crates.io ──search / metadata──► bookclerk plugins search|install
                                         │
                                         ▼
                               HTTPS archive URL
-                              (any host; per OS/arch)
+                              (native: per OS/arch; workerd: portable)
                                         │
                                         ▼
-                              plugins/<id>/{plugin.toml, binary}
+                    plugins/<id>/{plugin.toml, binary and/or modules/}
 ```
 
 ## Crate naming taxonomy
@@ -176,29 +196,59 @@ Prefer **Option A** when your files follow the recommended names below. Use
 `{base}/{crate}-{version}-{target}.{ext}`.
 
 The crate’s `readme` / crate description should summarize trust/scope (what
-accounts it talks to). Enabling still means running that binary, jailed — see the
-trust model in [plugins.md](plugins.md).
+accounts it talks to). Enabling still means running that guest jailed (after
+`bookclerk plugins approve`) — see the trust model in [plugins.md](plugins.md).
 
 ## Artifact naming (install without Rust)
 
-Release each version as a **per-target archive** (`.tar.gz` on Unix, `.zip` on
-Windows) containing at least:
+**Native** — release each version as a **per-target archive** (`.tar.gz` on Unix,
+`.zip` on Windows) containing at least:
 
 ```text
 plugin.toml
 bookclerk-plugin-{kind}-{id}    # or .exe on Windows
 ```
 
+**Workerd / script** — a single portable archive is enough:
+
+```text
+plugin.toml
+modules/…                       # main_module and deps
+```
+
 Two consequences of [the guest jail](plugins.md#the-guest-jail) for what an
 archive may assume. The install directory is **read-only** at runtime, so a
 plugin that wants to keep state must use the `plugin_data_dir` it is given (also
 its `HOME`) or `TMPDIR` — not a path beside its own binary. And a plugin that
-needs more than outbound HTTPS has to say so in `plugin.toml`:
+needs outbound HTTPS (and optional OAuth) declares it in `plugin.toml`.
+
+**Workerd** (hostname allowlist enforced in the isolate):
 
 ```toml
-[sandbox]
-network = "listen"   # only for an OAuth callback on loopback
+runtime = "workerd"
+# …
+
+[capabilities.network]
+mode = "outbound"
+domains = ["api.example.com"]
 ```
+
+**Native** (coarse jail internet — do **not** declare `domains`):
+
+```toml
+runtime = "native"
+command = "./my-plugin"
+
+[capabilities.network]
+mode = "outbound"
+
+[capabilities.bindings]
+oauth = true   # only when an OAuth callback on loopback is required
+```
+
+Operators must `bookclerk plugins approve` before enable. Native outbound
+approvals warn that networking is not hostname-filtered. Workerd redirect hops
+do not need re-allowlist membership.
 
 Recommended asset names use **Bookclerk targets** (not raw rustc triples):
 
@@ -282,13 +332,30 @@ even when not featured.
 ## Standalone plugin development (no Bookclerk mirror)
 
 Third-party authors keep **their own repo**. They do **not** fork or vendor the
-Bookclerk monorepo. The contract is the JSON-RPC protocol + install layout; the
-host binary discovers whatever lands under `plugins/`.
+Bookclerk monorepo. The contract is the Workers RPC ABI (`api_version = 1`,
+`BookclerkPlugin`) + install layout; the host discovers whatever lands under
+`plugins/`. See [plugins.md](plugins.md) and
+[adr/plugin-workers-rpc-workerd.md](adr/plugin-workers-rpc-workerd.md).
+
+### TypeScript / workerd (`@bookclerk/plugin-sdk`)
+
+Preferred portable path: extend `BookclerkPlugin`, ship `plugin.toml` +
+`modules/`. Start from
+[`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/).
+
+```ts
+import { BookclerkPlugin } from "@bookclerk/plugin-sdk";
+
+export default class MyPlugin extends BookclerkPlugin {
+  async handshake(params) { /* … */ }
+}
+```
 
 ### Guest SDK crate (`bookclerk-plugin-sdk`)
 
-Use the slim **guest-only** crate — not the host `bookclerk-plugin-host` (that pulls
-config/library/source and is for Bookclerk itself):
+For **native** Rust guests, use the slim **guest-only** crate — not the host
+`bookclerk-plugin-host` (that pulls config/library/source and is for Bookclerk
+itself):
 
 ```toml
 # In the author's standalone crate (their repo / workspace)
@@ -308,8 +375,8 @@ id = "example"
 artifact_base_url = "https://cdn.example.com/…/{version}"
 ```
 
-In-tree first-party plugins: `crates/bookclerk-plugins/source-{audible,libro,chirp,graphicaudio}`
-(each package is lib + guest bin) and `crates/bookclerk-plugin-examples/echo-integration`.
+In-tree first-party plugins: `crates/bookclerk-plugins/optional/source-{audible,libro,chirp,graphicaudio}`
+(each package is lib + guest bin) and `examples/plugins-echo-native-rust`.
 CI builds those binaries and
 stages them with `cargo stage-plugins` for host integration tests
 (`BOOKCLERK_PLUGIN_ARTIFACTS`) — no public artifact release yet.
@@ -317,11 +384,11 @@ stages them with `cargo stage-plugins` for host integration tests
 Cargo only builds the SDK’s small dependency graph (`serde`, `tokio` I/O,
 `chrono`, …) — not the rest of the Bookclerk workspace.
 
-Author loop:
+Author loop (native):
 
 1. New git repo with one binary crate named per the taxonomy
 2. Depend on `bookclerk-plugin-sdk` (path or git)
-3. Implement handshake / source|integration methods via `PluginGuest::serve`
+3. Implement `BookclerkPlugin` and run via `BookclerkPluginGuest::serve`
 4. CI builds release archives per target; upload wherever `artifact_*` points
 5. Later: `cargo publish` the plugin crate (and eventually the SDK) for
    `bookclerk plugins search`
@@ -340,22 +407,20 @@ Author loop:
 - A mirror of `fritz-fritz/bookclerk`
 - Linking against `bookclerkd` / `bookclerk-cli` / host `bookclerk-plugin-host`
 - Matching our workspace `Cargo.toml` beyond the SDK’s MSRV
-- Rust at all (Go/Python/Node/… binary that speaks the protocol is valid; crates.io
-  is then optional discovery sugar)
-- crates.io today (path/git SDK is enough)
+- A per-OS binary when shipping `runtime = "workerd"` (`plugin.toml` + `modules/`)
+- crates.io today (path/git / npm workspace SDK is enough)
 
 ## Non-goals
 
 - Compiling plugins from crates.io source on the operator machine
-- Loading `cdylib` / WASM into the host process (subprocess RPC stays the ABI)
-- Requiring plugin authors to use Rust (any language that ships the archive +
-  speaks JSON-RPC is fine; crates.io is optional for non-Rust publishers — they
-  can still ship archives and be listed on a curated index)
+- Loading `cdylib` / WASM into the host process (jailed subprocess / workerd isolate stays the model)
+- Requiring plugin authors to use Rust (TypeScript via `@bookclerk/plugin-sdk` is first-class; crates.io is optional for non-Rust publishers)
 - Requiring authors to fork or mirror the Bookclerk monorepo
+- Dual-stack legacy JSON-RPC as a product ABI (see the ADR)
 
-Non-Rust publishers: use the same `plugin.toml` + asset naming; omit the crate
-or publish a thin “manifest-only” crate that only carries
-`[package.metadata.bookclerk]` and documentation.
+Non-Rust / workerd publishers: ship `plugin.toml` + `modules/` with
+`runtime = "workerd"`; omit the crate or publish a thin “manifest-only” crate
+that only carries `[package.metadata.bookclerk]` and documentation.
 
 ## Validation checklist for publishers
 
@@ -363,17 +428,22 @@ or publish a thin “manifest-only” crate that only carries
 - [ ] Crate name = `bookclerk-plugin-{kind}-{id}`
 - [ ] `keywords` include `bookclerk` and `bookclerk-plugin`
 - [ ] `[package.metadata.bookclerk]` `kind` / `id` / `api_version` match the name and `plugin.toml`
-- [ ] Release assets for each supported target with checksums
-- [ ] `plugin.toml` `command` points at the binary inside the archive
-- [ ] `[sandbox] network` declared when outbound-only is not enough; state kept in
+- [ ] Release assets: native per target, or one portable workerd archive, with checksums
+- [ ] `plugin.toml`: `api_version = 1`, `runtime`, and either `command` (native) or `[workerd]` + `modules/`
+- [ ] `[capabilities.network]` / `[capabilities.bindings]` declared honestly; state kept in
       `plugin_data_dir` / `TMPDIR`, never beside the binary
 - [ ] Document required config keys and any password env vars
 
 ## Related
 
-- Runtime discovery & protocol: [plugins.md](plugins.md)
+- Runtime discovery & ABI: [plugins.md](plugins.md)
+- ADR: [plugin-workers-rpc-workerd.md](adr/plugin-workers-rpc-workerd.md)
+- ABI schema: [`crates/bookclerk-plugin-abi/schema/abi.json`](../crates/bookclerk-plugin-abi/schema/abi.json)
 - Catalog crate: [`bookclerk-plugin-catalog`](../crates/bookclerk-plugin-catalog/)
+- Workerd Echo: [`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/),
+  [`plugins-echo-workerd-python/`](../examples/plugins-echo-workerd-python/),
+  [`plugins-echo-workerd-rust/`](../examples/plugins-echo-workerd-rust/)
 - Publisher reusable workflow: [`examples/plugin-publisher/`](../examples/plugin-publisher/)
-- Experimental non-Rust Echo: [`examples/plugins-echo-ts/`](../examples/plugins-echo-ts/), [`examples/plugins-echo-py/`](../examples/plugins-echo-py/)
+- Experimental non-Rust Echo: [`examples/plugins-echo-native-node/`](../examples/plugins-echo-native-node/), [`examples/plugins-echo-native-python/`](../examples/plugins-echo-native-python/)
 - Architecture overview: [architecture.md](architecture.md)
 - Operator GUI surfaces: [gui.md](gui.md) (plugin browser = future)

@@ -6,11 +6,12 @@ use bookclerk_config::{Config, PluginRegistryEntry};
 use bookclerk_plugin_catalog::{
     federated_search, host_bookclerk_target, CargoAdapter, InstallOptions, InstallReceipt,
     Installer, NpmAdapter, PackageCoordinate, PypiAdapter, RegistryAdapter, SearchQuery,
-    StaticAdapter, TrustPolicy, PROTOCOL_JSONRPC_STDIO_V1,
+    StaticAdapter, TrustPolicy,
 };
 use bookclerk_plugin_host::{
-    host_target_triple, methods, search_crates_io, CliInvokeParams, CliSchema, DiscoveredPlugin,
-    PluginClient, PluginKind, CRATE_NAME_PREFIX,
+    consent_request, consent_summary, host_target_triple, methods, require_grant, search_crates_io,
+    CliInvokeParams, CliSchema, DiscoveredPlugin, PluginClient, PluginGrantStore, PluginKind,
+    CRATE_NAME_PREFIX,
 };
 use clap::{Subcommand, ValueEnum};
 use serde::Serialize;
@@ -108,6 +109,17 @@ pub enum PluginsCommand {
     Disable {
         /// Plugin id.
         id: String,
+    },
+    /// Approve network domains and host bindings for a plugin.
+    ///
+    /// Grants cover the plugin's declared outbound domains and bindings.
+    /// Redirect hops after an allowed initial host do not require re-approval.
+    Approve {
+        /// Plugin id.
+        id: String,
+        /// Approve without interactive confirmation (required when stdin is not a TTY).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Manage configured plugin registries.
     Registry {
@@ -267,7 +279,7 @@ pub async fn run(
                 "cli": schema,
                 "receipt": receipt,
                 "host_target": host_bookclerk_target(),
-                "protocol": plugin.manifest.protocol.clone().unwrap_or_else(|| PROTOCOL_JSONRPC_STDIO_V1.into()),
+                "runtime": plugin.manifest.runtime,
             });
             emit(format, &payload, || {
                 println!("id={}", plugin.manifest.id);
@@ -336,6 +348,7 @@ pub async fn run(
         PluginsCommand::Doctor { id } => run_doctor(config, id, format).await,
         PluginsCommand::Enable { id } => set_plugin_enabled(config, &id, true, format),
         PluginsCommand::Disable { id } => set_plugin_enabled(config, &id, false, format),
+        PluginsCommand::Approve { id, yes } => run_approve(config, &id, yes, format),
         PluginsCommand::Registry { command } => run_registry(config, command, format),
     }
 }
@@ -664,14 +677,7 @@ async fn run_doctor(
     for plugin in targets {
         let mut lines = Vec::new();
         lines.push(format!("target_host={}", host_bookclerk_target()));
-        lines.push(format!(
-            "protocol={}",
-            plugin
-                .manifest
-                .protocol
-                .as_deref()
-                .unwrap_or(PROTOCOL_JSONRPC_STDIO_V1)
-        ));
+        lines.push(format!("runtime={:?}", plugin.manifest.runtime));
         match InstallReceipt::load(&plugin.root) {
             Ok(r) => {
                 lines.push(format!("coordinate={}", r.coordinate));
@@ -988,11 +994,63 @@ async fn diagnose_plugin(
             plugin.manifest.id
         )]);
     }
-    let lines: Vec<String> = client
-        .call(methods::DIAGNOSE, json!({}))
+    let lines = client
+        .diagnose()
         .await
         .unwrap_or_else(|err| vec![format!("diagnose failed: {err:#}")]);
     Ok(lines)
+}
+
+fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> anyhow::Result<()> {
+    use std::io::{self, IsTerminal, Write};
+
+    let plugin = find_plugin(config, id)?;
+    let grant = consent_request(&plugin.manifest);
+    let summary = consent_summary(&grant);
+
+    for line in &summary {
+        println!("{line}");
+    }
+
+    if !yes {
+        if !io::stdin().is_terminal() {
+            anyhow::bail!(
+                "stdin is not a TTY; pass --yes to approve plugin `{}` non-interactively",
+                plugin.manifest.id
+            );
+        }
+        eprint!(
+            "Approve these permissions for `{}`? [y/N] ",
+            plugin.manifest.id
+        );
+        io::stderr().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        let ok = matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+        if !ok {
+            anyhow::bail!("approval cancelled");
+        }
+    }
+
+    let files_dir = &config.paths().files_dir;
+    let mut store = PluginGrantStore::load(files_dir)?;
+    store.upsert(grant.clone());
+    store.save(files_dir)?;
+
+    let payload = json!({
+        "id": plugin.manifest.id,
+        "approved": true,
+        "grant": grant,
+        "summary": summary,
+        "grants_file": PluginGrantStore::path(files_dir),
+    });
+    emit(format, &payload, || {
+        println!(
+            "approved permissions for plugin `{}` (wrote {})",
+            plugin.manifest.id,
+            PluginGrantStore::path(files_dir).display()
+        );
+    })
 }
 
 fn set_plugin_enabled(
@@ -1002,6 +1060,14 @@ fn set_plugin_enabled(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let plugin = find_plugin(config, id)?;
+    if enabled {
+        require_grant(&config.paths().files_dir, &plugin.manifest).map_err(|err| {
+            anyhow::anyhow!(
+                "{err}\nRun `bookclerk plugins approve {}` first.",
+                plugin.manifest.id
+            )
+        })?;
+    }
     let mut cfg = config.clone();
     match plugin.manifest.kind {
         PluginKind::Source => cfg.sources.set_enabled(&plugin.manifest.id, enabled),

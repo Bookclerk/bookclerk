@@ -1,47 +1,49 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/bookclerk-acquire",
+    "crates/bookclerk-cli",
     "crates/bookclerk-config",
+    "crates/bookclerk-db-guest",
+    "crates/bookclerk-dev",
+    "crates/bookclerk-discover",
     "crates/bookclerk-enrich",
-    "crates/bookclerk-sandbox",
+    "crates/bookclerk-integrations",
     "crates/bookclerk-jail",
-    "crates/bookclerk-mp4",
+    "crates/bookclerk-library",
     "crates/bookclerk-media",
     "crates/bookclerk-media-worker",
-    "crates/bookclerk-storage",
-    "crates/bookclerk-library",
-    "crates/bookclerk-source",
-    "crates/bookclerk-acquire",
-    "crates/bookclerk-naming",
     "crates/bookclerk-migrate",
-    "crates/bookclerk-search",
-    "crates/bookclerk-integrations",
-    "crates/bookclerk-discover",
-    "crates/bookclerk-plugin-sdk",
+    "crates/bookclerk-mp4",
+    "crates/bookclerk-naming",
+    "crates/bookclerk-plugin-abi",
     "crates/bookclerk-plugin-catalog",
     "crates/bookclerk-plugin-host",
-    "crates/bookclerk-plugin-examples/echo-integration",
-    "crates/bookclerk-plugins/source-audible",
-    "crates/bookclerk-plugins/source-libro",
-    "crates/bookclerk-plugins/source-chirp",
-    "crates/bookclerk-plugins/source-graphicaudio",
-    "crates/bookclerk-plugins/integration-audiobookshelf",
-    "crates/bookclerk-plugins/destination-s3",
-    "crates/bookclerk-plugins/destination-local",
-    "crates/bookclerk-plugins/database",
-    "crates/bookclerk-dev",
-    "crates/bookclerk-cli",
-    "crates/bookclerkd",
+    "crates/bookclerk-plugin-manifest",
+    "crates/bookclerk-plugin-sdk",
+    "crates/bookclerk-sandbox",
+    "crates/bookclerk-search",
+    "crates/bookclerk-source",
+    "crates/bookclerk-storage",
     "crates/bookclerk-tray",
+    "crates/bookclerk-workerd",
+    "crates/bookclerkd",
+    # Auto-pickup: new guests under these trees need only Cargo.toml + plugin.toml.
+    "crates/bookclerk-plugins/platform/*",
+    "crates/bookclerk-plugins/optional/*",
+    "examples/plugins-echo-native-rust",
+    "examples/plugins-echo-workerd-rust",
 ]
 default-members = [
     "crates/bookclerk-cli",
     "crates/bookclerkd",
     "crates/bookclerk-media-worker",
     "crates/bookclerk-jail",
+    "crates/bookclerk-workerd",
 ]
 # Vendored fork is a path dep only — do not fmt/clippy/test it as a workspace member
-# (upstream tests need fixtures we do not ship).
+# (upstream tests need fixtures we do not ship). Non-Cargo examples are discovered
+# by bookclerk-dev staging, not as workspace members.
 exclude = ["third_party/audible-rs"]
 
 [workspace.package]
@@ -57,15 +59,18 @@ description = "Multi-storefront audiobook library manager with pluggable integra
 [workspace.dependencies]
 # Internal crates
 bookclerk-config = { path = "crates/bookclerk-config" }
-# First-party source plugins (lib + JSON-RPC bin under bookclerk-plugins/).
-bookclerk-plugin-source-audible = { path = "crates/bookclerk-plugins/source-audible" }
-bookclerk-plugin-source-libro = { path = "crates/bookclerk-plugins/source-libro" }
-bookclerk-plugin-source-chirp = { path = "crates/bookclerk-plugins/source-chirp" }
-bookclerk-plugin-source-graphicaudio = { path = "crates/bookclerk-plugins/source-graphicaudio" }
-bookclerk-plugin-integration-audiobookshelf = { path = "crates/bookclerk-plugins/integration-audiobookshelf" }
-bookclerk-plugin-destination-s3 = { path = "crates/bookclerk-plugins/destination-s3" }
-bookclerk-plugin-destination-local = { path = "crates/bookclerk-plugins/destination-local" }
-bookclerk-plugin-database = { path = "crates/bookclerk-plugins/database" }
+bookclerk-db-guest = { path = "crates/bookclerk-db-guest" }
+# First-party plugins under bookclerk-plugins/{platform,optional}/.
+bookclerk-plugin-source-audible = { path = "crates/bookclerk-plugins/optional/source-audible" }
+bookclerk-plugin-source-libro = { path = "crates/bookclerk-plugins/optional/source-libro" }
+bookclerk-plugin-source-chirp = { path = "crates/bookclerk-plugins/optional/source-chirp" }
+bookclerk-plugin-source-graphicaudio = { path = "crates/bookclerk-plugins/optional/source-graphicaudio" }
+bookclerk-plugin-integration-audiobookshelf = { path = "crates/bookclerk-plugins/optional/integration-audiobookshelf" }
+bookclerk-plugin-destination-s3 = { path = "crates/bookclerk-plugins/optional/destination-s3" }
+bookclerk-plugin-destination-local = { path = "crates/bookclerk-plugins/platform/destination-local" }
+bookclerk-plugin-database-sqlite = { path = "crates/bookclerk-plugins/platform/database-sqlite" }
+bookclerk-plugin-database-d1 = { path = "crates/bookclerk-plugins/optional/database-d1" }
+bookclerk-plugin-database-postgres = { path = "crates/bookclerk-plugins/optional/database-postgres" }
 bookclerk-enrich = { path = "crates/bookclerk-enrich" }
 bookclerk-sandbox = { path = "crates/bookclerk-sandbox" }
 bookclerk-jail = { path = "crates/bookclerk-jail" }
@@ -82,8 +87,11 @@ bookclerk-search = { path = "crates/bookclerk-search" }
 bookclerk-integrations = { path = "crates/bookclerk-integrations" }
 bookclerk-discover = { path = "crates/bookclerk-discover" }
 bookclerk-tray = { path = "crates/bookclerk-tray" }
-bookclerk-plugin-sdk = { path = "crates/bookclerk-plugin-sdk" }
+bookclerk-plugin-abi = { path = "crates/bookclerk-plugin-abi" }
+bookclerk-plugin-manifest = { path = "crates/bookclerk-plugin-manifest" }
+bookclerk-plugin-sdk = { path = "crates/bookclerk-plugin-sdk", default-features = false }
 bookclerk-plugin-catalog = { path = "crates/bookclerk-plugin-catalog" }
+bookclerk-workerd = { path = "crates/bookclerk-workerd" }
 # Off by default so the hosts decide which stores they link; a member cannot turn
 # an inherited dependency's default features back off.
 bookclerk-plugin-host = { path = "crates/bookclerk-plugin-host", default-features = false }

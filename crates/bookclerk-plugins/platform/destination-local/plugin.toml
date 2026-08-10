@@ -1,0 +1,15 @@
+api_version = 1
+id = "local"
+name = "Local output"
+kind = "output"
+version = "0.1.0"
+logo = "assets/logo.svg"
+runtime = "native"
+command = "./bookclerk-plugin-destination-local"
+
+[capabilities.network]
+mode = "deny"
+
+[capabilities.bindings]
+config = true
+work_fs = true

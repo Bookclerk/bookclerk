@@ -100,7 +100,7 @@ jobs:
         shell: bash
         run: cargo build --release -p "${{ inputs.plugin_package }}"
 
-      - name: Pack archive + SHA256SUMS
+      - name: Check + pack archive (SDK tools when present)
         id: pack
         shell: bash
         env:
@@ -129,9 +129,25 @@ jobs:
           if [[ "${{ runner.os }}" != "Windows" ]]; then
             chmod +x "staging/${bin_name}"
           fi
+
+          # Prefer in-language SDK author tools (Rust bin) when this repo
+          # depends on bookclerk-plugin-sdk — same check/package as local CI.
+          if cargo metadata --no-deps --format-version 1 2>/dev/null \
+            | grep -q '"name":"bookclerk-plugin-sdk"'; then
+            cargo run -q -p bookclerk-plugin-sdk --features tools --bin bookclerk-plugin -- check staging
+            # package emits bookclerk-plugin-<id>-<ver>-<target>.tar.gz + SHA256SUMS
+            cargo run -q -p bookclerk-plugin-sdk --features tools --bin bookclerk-plugin -- \
+              package --out "$out" staging
+            archive="$(ls -1 "$out"/bookclerk-plugin-"${PLUGIN_ID}"-*.tar.gz | head -1)"
+            archive_name="$(basename "$archive")"
+            echo "archive_path=${archive}" >> "$GITHUB_OUTPUT"
+            echo "archive_name=${archive_name}" >> "$GITHUB_OUTPUT"
+            echo "Packed ${archive_name} via bookclerk-plugin (kind=${KIND} id=${PLUGIN_ID})"
+            exit 0
+          fi
+
           archive="${PKG}-${VERSION}-${TARGET}.${EXT}"
           archive_path="${out}/${archive}"
-          # Portable: GNU/bsdtar on all GitHub-hosted runners (zip via -a / --format).
           if [[ "$EXT" == "zip" ]]; then
             tar -a -C staging -cf "${archive_path}" .
           else

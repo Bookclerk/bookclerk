@@ -1,0 +1,17 @@
+api_version = 1
+id = "echo-workerd-tools"
+kind = "integration"
+version = "0.1.0"
+runtime = "workerd"
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[capabilities.network]
+mode = "deny"
+
+[capabilities.bindings]
+config = true

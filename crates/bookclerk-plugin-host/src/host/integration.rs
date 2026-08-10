@@ -13,7 +13,7 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::discover::DiscoveredPlugin;
-use crate::protocol::{methods, BookAcquiredDto, EventPollResultDto, HealthDto};
+use crate::protocol::{methods, EventPollResultDto, HealthDto};
 use crate::rpc::PluginClient;
 use crate::Result;
 
@@ -118,7 +118,7 @@ impl Integration for ExternalIntegration {
         }
         // Host polls `event_poll` and kicks off core workflows (e.g. claim tickets).
         // The plugin remains oblivious to what the host does with the signal.
-        if self.client.has_capability("event_poll") {
+        if self.client.has_capability("pollEvents") {
             if let Some(on_user) = ctx.on_external_user {
                 let client = self.client.clone();
                 let plugin_id = self.id().to_string();
@@ -158,32 +158,45 @@ impl Integration for ExternalIntegration {
     }
 
     async fn on_event(&self, event: &IntegrationEvent) -> bookclerk_integrations::Result<()> {
-        if !self.client.has_capability("on_event") {
+        if !self.client.has_capability("onEvent") {
             return Ok(());
         }
         let params = match event {
             IntegrationEvent::BookAcquired {
                 book,
                 storage_key,
-                absolute_path,
-            } => serde_json::json!({
-                "event": "book_acquired",
-                "payload": BookAcquiredDto {
-                    book: serde_json::to_value(book.as_ref()).unwrap_or(Value::Null),
-                    storage_key: storage_key.clone(),
-                    absolute_path: absolute_path.as_ref().map(|p| p.display().to_string()),
-                }
-            }),
+                absolute_path: _,
+            } => {
+                let title_id = if !book.uuid.is_empty() {
+                    book.uuid.clone()
+                } else {
+                    book.product_id.clone()
+                };
+                serde_json::json!({
+                    "type": "book_acquired",
+                    "payload": {
+                        "titleId": title_id,
+                        "source": book.source.clone(),
+                        "asin": book.asin,
+                        "isbn": book.isbn,
+                        "pathKeys": vec![storage_key.clone()],
+                    }
+                })
+            }
             IntegrationEvent::ExternalUserObserved {
                 provider,
                 external_user_id,
                 display_name,
             } => serde_json::json!({
-                "event": "external_user_observed",
+                "type": "config_changed",
                 "payload": {
-                    "provider": provider,
-                    "external_user_id": external_user_id,
-                    "display_name": display_name,
+                    "config": {
+                        "externalUserObserved": {
+                            "provider": provider,
+                            "externalUserId": external_user_id,
+                            "displayName": display_name,
+                        }
+                    }
                 }
             }),
         };
@@ -213,7 +226,7 @@ impl Integration for ExternalIntegration {
     }
 
     fn supports_library_scan(&self) -> bool {
-        self.client.has_capability("scan_library")
+        self.client.has_capability("scanLibrary")
     }
 
     async fn scan_library(&self, force: bool) -> bookclerk_integrations::Result<()> {
@@ -225,7 +238,7 @@ impl Integration for ExternalIntegration {
     }
 
     fn supports_listening_sync(&self) -> bool {
-        self.client.has_capability("sync_listening")
+        self.client.has_capability("syncListening")
     }
 
     async fn sync_listening_progress(
@@ -268,15 +281,12 @@ impl Integration for ExternalIntegration {
                 h.detail.unwrap_or_default()
             )]);
         }
-        let lines: Vec<String> = self
-            .client
-            .call(methods::DIAGNOSE, Value::Object(Default::default()))
-            .await?;
+        let lines = self.client.diagnose().await?;
         Ok(lines)
     }
 
     fn supports_credential_login(&self) -> bool {
-        self.allow_credential_login && self.client.has_capability("authenticate_user")
+        self.allow_credential_login && self.client.has_capability("authenticateUser")
     }
 
     async fn authenticate_user(

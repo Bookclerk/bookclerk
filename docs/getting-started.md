@@ -13,13 +13,14 @@ metadata fix-up, and chapter split are native Rust.
 
 ```bash
 cargo build --release -p bookclerk-cli -p bookclerkd \
-  -p bookclerk-media-worker -p bookclerk-jail
+  -p bookclerk-media-worker -p bookclerk-jail -p bookclerk-workerd
 export PATH="$PWD/target/release:$PATH"
 # binaries: target/release/bookclerk  target/release/bookclerkd
 #           target/release/bookclerk-media-worker  target/release/bookclerk-jail
+#           target/release/bookclerk-workerd
 ```
 
-The two helpers are not optional extras. `bookclerk-media-worker` runs every
+The helpers are not optional extras. `bookclerk-media-worker` runs every
 decode, encode, and packaging step in a confined child process
 ([media.md](media.md)); `bookclerk-jail` starts each external plugin guest inside
 its own jail ([plugins.md](plugins.md#the-guest-jail)). Install both beside the

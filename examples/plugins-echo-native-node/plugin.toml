@@ -1,0 +1,26 @@
+api_version = 1
+id = "echo-native-node"
+name = "Echo Integration (native Node)"
+kind = "integration"
+version = "0.1.0"
+runtime = "native"
+command = "./bookclerk-plugin-echo-native-node"
+
+[capabilities.network]
+mode = "deny"
+
+[capabilities.bindings]
+config = true
+
+[capabilities.methods]
+list = ["handshake", "health", "diagnose", "onEvent", "cli"]
+
+[cli]
+[[cli.commands]]
+name = "ping"
+about = "Probe echo plugin"
+[[cli.commands.args]]
+name = "message"
+long = "message"
+kind = "string"
+default = "hi"

@@ -18,3 +18,10 @@ RUN apt-get update \
 RUN rustup component add rustfmt clippy
 
 WORKDIR /workspace
+
+# Workspace-local Cargo cache + Bookclerk data (bind-mounted checkout).
+ENV CARGO_HOME=/workspace/.cargo-home \
+    CARGO_TARGET_DIR=/workspace/target \
+    TMPDIR=/workspace/.tmp \
+    BOOKCLERK_FILES_DIR=/workspace/BookclerkFiles
+

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Local disk">
+  <!-- Front panel -->
+  <path
+    fill="#d1d7e2"
+    d="M5 13.5h22a2.2 2.2 0 0 1 2.2 2.2v9.1A2.2 2.2 0 0 1 27 27H5a2.2 2.2 0 0 1-2.2-2.2v-9.1A2.2 2.2 0 0 1 5 13.5z"
+  />
+  <!-- Top lid (three-quarter) -->
+  <path
+    fill="#5b5656"
+    d="M8.4 5.5c.35-.55.95-.9 1.6-.9h12c.65 0 1.25.35 1.6.9l4.9 8.1c.2.35-.05.8-.45.8H4c-.4 0-.65-.45-.45-.8l4.85-8.1z"
+  />
+  <!-- Port / status pill -->
+  <rect x="7.2" y="21.4" width="7" height="2.4" rx="1.2" fill="#8b8989"/>
+  <!-- Twin indicator lights -->
+  <circle cx="21" cy="22.6" r="1.25" fill="#8b8989"/>
+  <circle cx="24.6" cy="22.6" r="1.25" fill="#8b8989"/>
+</svg>

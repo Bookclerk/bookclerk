@@ -1,6 +1,0 @@
-api_version = 1
-id = "libro"
-name = "Libro.fm"
-kind = "source"
-command = "./bookclerk-plugin-source-libro"
-outbound_urls = ["https://libro.fm/"]

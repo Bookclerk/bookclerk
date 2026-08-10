@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 CONTRACTS = {
     "graphicaudio": {
-        "client": ROOT / "crates/bookclerk-plugins/source-graphicaudio/src/client.rs",
+        "client": ROOT / "crates/bookclerk-plugins/optional/source-graphicaudio/src/client.rs",
         "must_contain": [
             "https://www.graphicaudio.net/access",
             "/activation/login",
@@ -24,7 +24,7 @@ CONTRACTS = {
             "/api/products",
             "/api/links",
         ],
-        "magento": ROOT / "crates/bookclerk-plugins/source-graphicaudio/src/magento.rs",
+        "magento": ROOT / "crates/bookclerk-plugins/optional/source-graphicaudio/src/magento.rs",
         "magento_must_contain": [
             "https://www.graphicaudio.net",
             "/downloadable/customer/products/",
@@ -32,7 +32,7 @@ CONTRACTS = {
         ],
     },
     "chirp": {
-        "client": ROOT / "crates/bookclerk-plugins/source-chirp/src/client.rs",
+        "client": ROOT / "crates/bookclerk-plugins/optional/source-chirp/src/client.rs",
         "must_contain": [
             "https://api.chirpbooks.com/api/graphql",
             "mutation signIn",

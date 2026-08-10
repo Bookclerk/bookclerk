@@ -18,12 +18,19 @@ Per matrix runner (`ubuntu-latest` → `linux-x64-gnu`, `macos-latest` →
 `macos-arm64`, `windows-latest` → `windows-x64`):
 
 1. `cargo build --release -p <plugin_package>`
-2. Packs `plugin.toml` + the release binary into
+2. Stages `plugin.toml` + the release binary
+3. When the repo depends on `bookclerk-plugin-sdk`, runs
+   `bookclerk-plugin check` + `package` (same tools as local authoring).
+   Otherwise packs with `tar` into
    `{crate}-{version}-{bookclerk_target}.tar.gz` (Unix) or `.zip` (Windows)
-3. Writes `SHA256SUMS` next to the archive
-4. Optionally runs [`actions/attest@v4`](https://github.com/actions/attest)
+4. Writes `SHA256SUMS` next to the archive
+5. Optionally runs [`actions/attest@v4`](https://github.com/actions/attest)
    when `attest: true`
-5. Uploads the archive + checksums as workflow artifacts
+6. Uploads the archive + checksums as workflow artifacts
+
+Node / Python publishers can call the same commands via
+`npx bookclerk-plugin` or `python -m bookclerk_plugin_sdk` in their own
+workflows (see [packaging.md](../../docs/packaging.md#plugin-author-tools-check--fmt--package)).
 
 ## Caller permissions (attestations)
 
@@ -87,5 +94,7 @@ Release (or upload to S3/R2/CDN), and pin digests in your static registry /
 
 ## Related experimental templates
 
-- TypeScript (Node SEA): [`../plugins-echo-ts/`](../plugins-echo-ts/)
-- Python (PyInstaller): [`../plugins-echo-py/`](../plugins-echo-py/)
+- TypeScript (Node SEA): [`../plugins-echo-native-node/`](../plugins-echo-native-node/)
+- Python (PyInstaller): [`../plugins-echo-native-python/`](../plugins-echo-native-python/)
+- Workerd TypeScript: [`../plugins-echo-workerd-ts/`](../plugins-echo-workerd-ts/)
+- Native Rust: [`../plugins-echo-native-rust/`](../plugins-echo-native-rust/)

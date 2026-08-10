@@ -3,7 +3,6 @@
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use flate2::write::GzEncoder;
@@ -13,14 +12,35 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
-use crate::plugins::{self, PLATFORM_PLUGIN_IDS, STAGE_SPECS};
+use crate::plugins::{self, BuildSelection};
 
-const HOST_BINARIES: &[(&str, &str)] = &[
-    ("bookclerk-cli", "bookclerk"),
-    ("bookclerkd", "bookclerkd"),
-    ("bookclerk-jail", "bookclerk-jail"),
-    ("bookclerk-media-worker", "bookclerk-media-worker"),
-];
+/// `(cargo package, on-disk binary name)` for host + helper archives from default-members.
+fn host_binaries(root: &Path) -> Result<Vec<(String, String)>> {
+    let pkgs = plugins::packages_for(
+        root,
+        BuildSelection {
+            platform: true,
+            ..Default::default()
+        },
+    )?;
+    // Only hosts/helpers — not platform plugin guest packages.
+    let guest_pkgs: std::collections::HashSet<_> = plugins::discover_platform(root)?
+        .into_iter()
+        .filter_map(|g| g.package)
+        .collect();
+    let mut out = Vec::new();
+    for pkg in pkgs {
+        if guest_pkgs.contains(&pkg) {
+            continue;
+        }
+        let bin = match pkg.as_str() {
+            "bookclerk-cli" => "bookclerk".to_string(),
+            other => other.to_string(),
+        };
+        out.push((pkg, bin));
+    }
+    Ok(out)
+}
 
 /// Host rustc target triple for the machine running the packager.
 ///
@@ -77,14 +97,17 @@ pub fn uses_zip_archive(triple_or_target: &str) -> bool {
 
 pub fn package_plugins(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     let staged = root.join("target").join("plugin-artifacts-pack");
-    plugins::stage(root, true, &staged)?;
+    plugins::stage_optional_for_pack(root, &staged, true)?;
     fs::create_dir_all(out_dir).with_context(|| format!("create {}", out_dir.display()))?;
 
     let target = bookclerk_target();
     let mut checksums = String::new();
-    for spec in STAGE_SPECS {
-        let plugin_dir = staged.join(spec.id);
-        let crate_name = plugins::crate_name(spec);
+    for guest in plugins::discover_optional(root)? {
+        let plugin_dir = staged.join(&guest.id);
+        let crate_name = guest
+            .package
+            .clone()
+            .unwrap_or_else(|| format!("bookclerk-plugin-{}", guest.id));
         let archive = archive_path(out_dir, &crate_name, version, target);
         write_plugin_archive(&plugin_dir, &archive)?;
         let digest = sha256_file(&archive)?;
@@ -110,14 +133,15 @@ pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     fs::create_dir_all(&bundle).with_context(|| format!("create {}", bundle.display()))?;
 
     let bin_dir = root.join("target").join("release");
-    for (_pkg, dest_name) in HOST_BINARIES {
-        let src = resolve_host_binary(&bin_dir, dest_name)?;
-        let dest = bundle.join(exe_name(dest_name));
+    for (_pkg, dest_name) in host_binaries(root)? {
+        let src = resolve_host_binary(&bin_dir, &dest_name)?;
+        let dest = bundle.join(exe_name(&dest_name));
         fs::copy(&src, &dest)
             .with_context(|| format!("copy {} -> {}", src.display(), dest.display()))?;
         set_executable(&dest)?;
         eprintln!("copied {} -> {}", src.display(), dest.display());
     }
+    copy_pinned_workerd(root, &bundle)?;
 
     let archive = archive_path(out_dir, "bookclerk", version, bookclerk_target());
     write_dir_archive(&bundle, &archive)?;
@@ -141,9 +165,16 @@ pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
 
 pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     ensure_ui_built(root)?;
-    build_hosts(root)?;
-    let staged = root.join("target").join("plugin-artifacts-pack");
-    plugins::stage(root, true, &staged)?;
+    plugins::build_selection(
+        root,
+        true,
+        BuildSelection {
+            platform: true,
+            ..Default::default()
+        },
+    )?;
+    let staged = root.join("target").join("plugin-artifacts-pack-platform");
+    plugins::stage_platform_for_pack(root, &staged, true, true)?;
 
     let bundle = out_dir.join(bundle_dir_name(version));
     if bundle.exists() {
@@ -152,20 +183,21 @@ pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()
     fs::create_dir_all(&bundle).with_context(|| format!("create {}", bundle.display()))?;
 
     let bin_dir = root.join("target").join("release");
-    for (_pkg, dest_name) in HOST_BINARIES {
-        let src = resolve_host_binary(&bin_dir, dest_name)?;
-        let dest = bundle.join(exe_name(dest_name));
+    for (_pkg, dest_name) in host_binaries(root)? {
+        let src = resolve_host_binary(&bin_dir, &dest_name)?;
+        let dest = bundle.join(exe_name(&dest_name));
         fs::copy(&src, &dest)
             .with_context(|| format!("copy {} -> {}", src.display(), dest.display()))?;
         set_executable(&dest)?;
     }
+    copy_pinned_workerd(root, &bundle)?;
 
     let plugins_root = bundle.join("plugins");
     fs::create_dir_all(&plugins_root)
         .with_context(|| format!("create {}", plugins_root.display()))?;
-    for id in PLATFORM_PLUGIN_IDS {
-        copy_dir_all(&staged.join(id), &plugins_root.join(id))?;
-        eprintln!("bundled platform plugin `{id}`");
+    for guest in plugins::discover_platform(root)? {
+        copy_dir_all(&staged.join(&guest.id), &plugins_root.join(&guest.id))?;
+        eprintln!("bundled platform plugin `{}`", guest.id);
     }
 
     let archive = archive_path(out_dir, "bookclerk-platform", version, bookclerk_target());
@@ -190,6 +222,25 @@ pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()
 
 fn bundle_dir_name(version: &str) -> String {
     format!("bookclerk-{}-{}", version, bookclerk_target())
+}
+
+fn copy_pinned_workerd(root: &Path, bundle: &Path) -> Result<()> {
+    let workerd = crate::ensure_workerd_for_profile(root, true)?;
+    let dest_name = bookclerk_workerd::binary_name();
+    let dest = bundle.join(dest_name);
+    fs::copy(&workerd, &dest)
+        .with_context(|| format!("copy {} -> {}", workerd.display(), dest.display()))?;
+    set_executable(&dest)?;
+    let stamp_src = workerd
+        .parent()
+        .map(|d| d.join(bookclerk_workerd::WORKERD_VERSION_STAMP));
+    if let Some(src) = stamp_src {
+        if src.is_file() {
+            let _ = fs::copy(&src, bundle.join(bookclerk_workerd::WORKERD_VERSION_STAMP));
+        }
+    }
+    eprintln!("copied pinned workerd -> {}", dest.display());
+    Ok(())
 }
 
 /// Archive path using a Bookclerk target or legacy rustc triple in the filename.
@@ -281,22 +332,14 @@ fn ensure_ui_built(root: &Path) -> Result<()> {
 }
 
 fn build_hosts(root: &Path) -> Result<()> {
-    let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    cmd.current_dir(root);
-    cmd.arg("build");
-    cmd.arg("--release");
-    for (pkg, _) in HOST_BINARIES {
-        cmd.args(["-p", pkg]);
-    }
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    let status = cmd.status().context("cargo build release hosts")?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("cargo build release hosts exited with {status}");
-    }
+    plugins::build_selection(
+        root,
+        true,
+        BuildSelection {
+            platform: true,
+            ..Default::default()
+        },
+    )
 }
 
 fn resolve_host_binary(bin_dir: &Path, name: &str) -> Result<PathBuf> {

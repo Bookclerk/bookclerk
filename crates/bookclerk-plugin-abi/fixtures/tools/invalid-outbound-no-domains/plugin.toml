@@ -1,0 +1,11 @@
+api_version = 1
+id = "bad"
+kind = "source"
+runtime = "workerd"
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+
+[capabilities.network]
+mode = "outbound"

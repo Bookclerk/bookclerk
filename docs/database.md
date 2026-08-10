@@ -114,10 +114,11 @@ the host. Connect params are a tagged `DbConnectParams` shape; the guest returns
 `{ "dialect": "sqlite" | "postgres" }` so the host builds the RPC proxy without
 hardcoding backends.
 
-First-party guest: `bookclerk-plugin-database` — stage as `plugins/sqlite/`,
-`plugins/d1/`, or `plugins/postgres/` (see `plugin.toml`, `plugin-d1.toml`,
-`plugin-postgres.toml`). Each id shares one binary; engine modules inside the
-plugin own SQLite / D1 / Postgres quirks.
+First-party guests: `bookclerk-plugin-database-sqlite` (platform),
+`bookclerk-plugin-database-d1` and `bookclerk-plugin-database-postgres` (optional).
+Each is a full Workers-RPC guest with its own binary and `plugin.toml`. Install
+platform sqlite under `$BOOKCLERK_FILES_DIR/plugins/sqlite/`; stage optional DB
+guests with `cargo stage-plugins --optional`.
 
 ### Switching backends (opt-in migration)
 
@@ -188,7 +189,7 @@ avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
   way a local SQLite file does; prefer short statements and avoid relying on
   multi-statement ACID across the proxy.
 - Schema migrations run in the D1 plugin module via
-  `bookclerk_plugin_database::migrate::apply_pending_migrations` (tracked in
+  `bookclerk_db_guest::apply_pending_migrations` (tracked in
   `schema_migrations`).
 
 ### Boundary: core vs database plugins
@@ -196,11 +197,11 @@ avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
 | Crate | Owns |
 | --- | --- |
 | [`bookclerk-library`](../crates/bookclerk-library) | Greenfield DDL ([`migrations`](../crates/bookclerk-library/src/migrations.rs)), SeaORM entities, [`LibraryStore`](../crates/bookclerk-library) CRUD (`from_connection` only) |
-| `bookclerk-plugin-database` | Engine connect/migrate/proxy quirks (`sqlite` / `d1` / `postgres` modules) and the jailed JSON-RPC guest |
+| `bookclerk-plugin-database-{sqlite,d1,postgres}` | Per-engine connect/migrate/proxy quirks and the jailed Workers-RPC guest |
 | Host (`bookclerk-plugin-host`) | Spawn guest, mediate secrets into tagged `DbConnectParams`, forward SeaORM via RPC proxy |
 
 Core stays database-agnostic: it only sees a migrated `DatabaseConnection`.
-Hosts must stage the active database guest; missing guests are hard errors.
+Hosts must install/stage the active database guest; missing guests are hard errors.
 
 ### LibraryStore status
 
@@ -208,7 +209,7 @@ The operator-facing [`LibraryStore`](../crates/bookclerk-library) is
 **SeaORM-backed and async**: it holds a `DatabaseConnection` and every method is
 an `async fn` returning `Result<…>`. Production opens go through
 `bookclerk_plugin_host::open_library_store` (external guest required). Tests may
-use `bookclerk_plugin_database::sqlite::open_memory` /
+use `bookclerk_plugin_database_sqlite::open_memory` /
 `open_store_memory` (dev-dependency on the plugin crate), then
 `LibraryStore::from_connection` when needed.
 

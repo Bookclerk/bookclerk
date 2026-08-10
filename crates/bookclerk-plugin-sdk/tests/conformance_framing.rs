@@ -6,8 +6,8 @@ use bookclerk_plugin_sdk::{
 };
 
 #[test]
-fn protocol_name_is_jsonrpc_stdio_v1() {
-    assert_eq!(PROTOCOL_NAME, "jsonrpc-stdio-v1");
+fn protocol_name_is_workers_rpc() {
+    assert_eq!(PROTOCOL_NAME, "workers-rpc");
 }
 
 #[test]
@@ -17,9 +17,9 @@ fn max_rpc_line_bytes_is_16_mib() {
 
 #[test]
 fn host_api_version_range_covers_current() {
-    assert_eq!(HOST_API_VERSION_MIN, 2);
-    assert_eq!(HOST_API_VERSION_MAX, 2);
-    assert_eq!(PLUGIN_API_VERSION, 2);
+    assert_eq!(HOST_API_VERSION_MIN, 1);
+    assert_eq!(HOST_API_VERSION_MAX, 1);
+    assert_eq!(PLUGIN_API_VERSION, 1);
     const {
         assert!(PLUGIN_API_VERSION >= HOST_API_VERSION_MIN);
         assert!(PLUGIN_API_VERSION <= HOST_API_VERSION_MAX);
@@ -29,4 +29,12 @@ fn host_api_version_range_covers_current() {
 #[test]
 fn shutdown_method_name_is_stable() {
     assert_eq!(methods::SHUTDOWN, "shutdown");
+}
+
+#[test]
+fn camel_case_method_names() {
+    assert_eq!(methods::ON_EVENT, "onEvent");
+    assert_eq!(methods::FETCH_TITLE, "fetchTitle");
+    assert_eq!(methods::CLI_INVOKE, "cliInvoke");
+    assert_eq!(methods::LOGIN_START, "loginStart");
 }

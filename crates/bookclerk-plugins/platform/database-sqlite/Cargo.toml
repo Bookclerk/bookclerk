@@ -1,0 +1,43 @@
+[package]
+name = "bookclerk-plugin-database-sqlite"
+description = "Platform SQLite library database plugin (Workers RPC guest)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-database"]
+
+[package.metadata.bookclerk]
+api_version = 1
+kind = "database"
+id = "sqlite"
+display_name = "SQLite"
+
+[[bin]]
+name = "bookclerk-plugin-database-sqlite"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bookclerk-db-guest.workspace = true
+bookclerk-library.workspace = true
+bookclerk-plugin-sdk = { workspace = true, features = ["db"] }
+rusqlite.workspace = true
+rusqlite_migration.workspace = true
+sea-orm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+bookclerk-db-guest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

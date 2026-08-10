@@ -2,13 +2,13 @@
 """Download the Libro.fm Android APK and extract unofficial API surface.
 
 The official mobile client is the source of truth for community reverse-
-engineered clients (including crates/bookclerk-plugins/source-libro). This script:
+engineered clients (including crates/bookclerk-plugins/optional/source-libro). This script:
 
   1. Fetches the latest APK via apkeep (APKPure by default — no credentials)
   2. Decompiles with jadx
   3. Extracts Retrofit endpoints, auth headers, base URL / API version,
      OkHttp user-agent, and app version metadata
-  4. Diffs against the constants in crates/bookclerk-plugins/source-libro/src/client.rs
+  4. Diffs against the constants in crates/bookclerk-plugins/optional/source-libro/src/client.rs
 
 Exit codes:
   0 — extraction succeeded and tracked constants match
@@ -521,7 +521,7 @@ def render_markdown(
     lines.append(f"- OkHttp UA: `{surface.okhttp_user_agent}`")
     lines.append(f"- Source archive: `{meta.get('source_archive')}`")
     lines.append("")
-    lines.append("## Drift vs `crates/bookclerk-plugins/source-libro/src/client.rs` + `expected_shapes.json`")
+    lines.append("## Drift vs `crates/bookclerk-plugins/optional/source-libro/src/client.rs` + `expected_shapes.json`")
     lines.append("")
     errors = [d for d in drifts if d["severity"] == "error"]
     infos = [d for d in drifts if d["severity"] != "error"]
@@ -672,7 +672,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     repo = args.repo_root.resolve()
-    client_rs = repo / "crates" / "bookclerk-plugins" / "source-libro" / "src" / "client.rs"
+    client_rs = (
+        repo / "crates" / "bookclerk-plugins" / "optional" / "source-libro" / "src" / "client.rs"
+    )
     if not client_rs.exists():
         log(f"error: missing {client_rs}")
         return 2

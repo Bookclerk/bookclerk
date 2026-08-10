@@ -1,0 +1,1213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bookclerk.dev/schemas/plugin-abi/v1/abi.json",
+  "title": "BookclerkPluginAbi",
+  "description": "Authoritative host↔plugin Workers RPC contract (api_version = 1). Generates Rust and TypeScript SDKs.",
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "const": 1
+    },
+    "methods": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "handshake": {
+          "$ref": "#/$defs/HandshakeParams"
+        },
+        "shutdown": {
+          "type": "null"
+        },
+        "health": {
+          "type": "null"
+        },
+        "diagnose": {
+          "type": "null"
+        },
+        "start": {
+          "type": "null"
+        },
+        "onEvent": {
+          "$ref": "#/$defs/HostToPluginEvent"
+        },
+        "pollEvents": {
+          "type": "null"
+        },
+        "scanLibrary": {
+          "$ref": "#/$defs/ScanLibraryParams"
+        },
+        "syncListening": {
+          "type": "null"
+        },
+        "authenticateUser": {
+          "$ref": "#/$defs/AuthenticateUserParams"
+        },
+        "cliDescribe": {
+          "type": "null"
+        },
+        "cliInvoke": {
+          "$ref": "#/$defs/CliInvokeParams"
+        },
+        "login": {
+          "$ref": "#/$defs/LoginParams"
+        },
+        "loginStart": {
+          "$ref": "#/$defs/LoginStartParams"
+        },
+        "loginComplete": {
+          "$ref": "#/$defs/LoginCompleteParams"
+        },
+        "credentialsUpdate": {
+          "$ref": "#/$defs/CredentialsUpdateParams"
+        },
+        "scan": {
+          "$ref": "#/$defs/ScanParams"
+        },
+        "fetchTitle": {
+          "$ref": "#/$defs/FetchTitleParams"
+        },
+        "searchCatalog": {
+          "$ref": "#/$defs/SearchCatalogParams"
+        },
+        "expandCandidates": {
+          "$ref": "#/$defs/ExpandCandidatesParams"
+        },
+        "purchaseHint": {
+          "$ref": "#/$defs/PurchaseHintParams"
+        },
+        "listDeals": {
+          "$ref": "#/$defs/ListDealsParams"
+        },
+        "listAccounts": {
+          "$ref": "#/$defs/ListAccountsParams"
+        },
+        "catalogDetail": {
+          "$ref": "#/$defs/CatalogDetailParams"
+        },
+        "put": {
+          "$ref": "#/$defs/PutParams"
+        },
+        "putFile": {
+          "$ref": "#/$defs/PutFileParams"
+        },
+        "get": {
+          "$ref": "#/$defs/KeyParams"
+        },
+        "exists": {
+          "$ref": "#/$defs/KeyParams"
+        },
+        "list": {
+          "$ref": "#/$defs/ListParams"
+        },
+        "probe": {
+          "$ref": "#/$defs/KeyParams"
+        },
+        "copy": {
+          "$ref": "#/$defs/CopyParams"
+        },
+        "delete": {
+          "$ref": "#/$defs/KeyParams"
+        },
+        "touchFile": {
+          "$ref": "#/$defs/TouchFileParams"
+        },
+        "dbConnect": {
+          "$ref": "#/$defs/DbConnectParams"
+        },
+        "dbPing": {
+          "type": "null"
+        },
+        "dbQuery": {
+          "$ref": "#/$defs/StatementDto"
+        },
+        "dbExecute": {
+          "$ref": "#/$defs/StatementDto"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "PluginError": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "invalid_params",
+            "unauthorized",
+            "forbidden",
+            "not_found",
+            "unavailable",
+            "unsupported",
+            "internal"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object"
+        }
+      }
+    },
+    "HandshakeParams": {
+      "type": "object",
+      "required": [
+        "apiVersion",
+        "config"
+      ],
+      "properties": {
+        "apiVersion": {
+          "const": 1
+        },
+        "config": {
+          "type": "object"
+        }
+      }
+    },
+    "HandshakeResult": {
+      "type": "object",
+      "required": [
+        "apiVersion",
+        "id",
+        "kind",
+        "capabilities"
+      ],
+      "properties": {
+        "apiVersion": {
+          "const": 1
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "source",
+            "integration",
+            "output",
+            "database"
+          ]
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "brand": {
+          "$ref": "#/$defs/BrandDto"
+        },
+        "configOptions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConfigOptionDto"
+          }
+        },
+        "cli": {
+          "$ref": "#/$defs/CliSchema"
+        },
+        "portalAuthMode": {
+          "type": "string",
+          "enum": [
+            "oauth",
+            "password"
+          ]
+        },
+        "passwordEnvVar": {
+          "type": "string"
+        }
+      }
+    },
+    "CliSchema": {
+      "type": "object",
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CliCommandSpec"
+          }
+        }
+      }
+    },
+    "CliCommandSpec": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "about": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CliArgSpec"
+          }
+        }
+      }
+    },
+    "CliArgSpec": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "long": {
+          "type": "string"
+        },
+        "short": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "string",
+            "bool",
+            "int",
+            "path"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "default": {
+          "type": "string"
+        },
+        "about": {
+          "type": "string"
+        },
+        "positional": {
+          "type": "boolean"
+        }
+      }
+    },
+    "CliInvokeParams": {
+      "type": "object",
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "args": {
+          "type": "object"
+        }
+      }
+    },
+    "HostToPluginEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "book_acquired"
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "titleId",
+                "source",
+                "pathKeys"
+              ],
+              "properties": {
+                "titleId": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "asin": {
+                  "type": "string"
+                },
+                "isbn": {
+                  "type": "string"
+                },
+                "pathKeys": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "library_scan_completed"
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "source",
+                "upserted"
+              ],
+              "properties": {
+                "source": {
+                  "type": "string"
+                },
+                "upserted": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "config_changed"
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "PluginToHostEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "external_users"
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "users"
+              ],
+              "properties": {
+                "users": {
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "listening_progress"
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "items"
+              ],
+              "properties": {
+                "items": {
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "plugin_log"
+            },
+            "payload": {
+              "type": "object",
+              "required": [
+                "level",
+                "message"
+              ],
+              "properties": {
+                "level": {
+                  "type": "string",
+                  "enum": [
+                    "debug",
+                    "info",
+                    "warn",
+                    "error"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ScanLibraryParams": {
+      "type": "object",
+      "properties": {
+        "force": {
+          "type": "boolean"
+        }
+      }
+    },
+    "AuthenticateUserParams": {
+      "type": "object",
+      "required": [
+        "username",
+        "password"
+      ],
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        }
+      }
+    },
+    "LoginParams": {
+      "type": "object",
+      "required": [
+        "pluginDataDir"
+      ],
+      "properties": {
+        "pluginDataDir": {
+          "type": "string"
+        },
+        "marketplace": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "force": {
+          "type": "boolean"
+        },
+        "callbackBind": {
+          "type": "string"
+        },
+        "callbackIpc": {
+          "type": "string"
+        },
+        "callbackPublicBase": {
+          "type": "string"
+        },
+        "external": {
+          "type": "boolean"
+        },
+        "responseUrl": {
+          "type": "string"
+        },
+        "showQr": {
+          "type": "boolean"
+        },
+        "timeoutSecs": {
+          "type": "integer"
+        },
+        "extra": {
+          "type": "object"
+        }
+      }
+    },
+    "LoginStartParams": {
+      "$ref": "#/$defs/LoginParams"
+    },
+    "LoginCompleteParams": {
+      "type": "object",
+      "required": [
+        "sessionId"
+      ],
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      }
+    },
+    "CredentialsUpdateParams": {
+      "type": "object",
+      "required": [
+        "accountId",
+        "credentials"
+      ],
+      "properties": {
+        "accountId": {
+          "type": "string"
+        },
+        "credentials": {
+          "type": "object"
+        }
+      }
+    },
+    "ScanParams": {
+      "type": "object",
+      "required": [
+        "pluginDataDir"
+      ],
+      "properties": {
+        "pluginDataDir": {
+          "type": "string"
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pageSize": {
+          "type": "integer"
+        },
+        "importEpisodes": {
+          "type": "boolean"
+        },
+        "importPlusTitles": {
+          "type": "boolean"
+        },
+        "credentials": {
+          "type": "object"
+        }
+      }
+    },
+    "FetchTitleParams": {
+      "type": "object",
+      "required": [
+        "pluginDataDir",
+        "accountId",
+        "titleId",
+        "cacheDir"
+      ],
+      "properties": {
+        "pluginDataDir": {
+          "type": "string"
+        },
+        "accountId": {
+          "type": "string"
+        },
+        "titleId": {
+          "type": "string"
+        },
+        "cacheDir": {
+          "type": "string"
+        },
+        "credentials": {
+          "type": "object"
+        },
+        "sourceConfig": {
+          "type": "object"
+        },
+        "download": {
+          "type": "object"
+        }
+      }
+    },
+    "SearchCatalogParams": {
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "page": {
+          "type": "integer"
+        },
+        "sort": {
+          "type": "string"
+        },
+        "field": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        }
+      }
+    },
+    "ExpandCandidatesParams": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "productId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "authors": {
+          "type": "string"
+        },
+        "narrators": {
+          "type": "string"
+        },
+        "series": {
+          "type": "string"
+        },
+        "seriesAsin": {
+          "type": "string"
+        },
+        "asin": {
+          "type": "string"
+        },
+        "isbn": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      }
+    },
+    "PurchaseHintParams": {
+      "type": "object",
+      "properties": {
+        "productId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "authors": {
+          "type": "string"
+        },
+        "asin": {
+          "type": "string"
+        },
+        "isbn": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "withPrice": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ListDealsParams": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer"
+        }
+      }
+    },
+    "ListAccountsParams": {
+      "type": "object",
+      "properties": {}
+    },
+    "CatalogDetailParams": {
+      "type": "object",
+      "required": [
+        "productId"
+      ],
+      "properties": {
+        "productId": {
+          "type": "string"
+        },
+        "isbn": {
+          "type": "string"
+        }
+      }
+    },
+    "PutParams": {
+      "type": "object",
+      "required": [
+        "pluginDataDir",
+        "bucket",
+        "prefix",
+        "region",
+        "key",
+        "dataBase64"
+      ],
+      "properties": {
+        "pluginDataDir": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "forcePathStyle": {
+          "type": "boolean"
+        },
+        "credentials": {
+          "type": "object"
+        },
+        "key": {
+          "type": "string"
+        },
+        "dataBase64": {
+          "type": "string"
+        },
+        "meta": {
+          "$ref": "#/$defs/ObjectMetaDto"
+        }
+      }
+    },
+    "PutFileParams": {
+      "type": "object",
+      "required": [
+        "pluginDataDir",
+        "bucket",
+        "prefix",
+        "region",
+        "key"
+      ],
+      "properties": {
+        "pluginDataDir": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "forcePathStyle": {
+          "type": "boolean"
+        },
+        "credentials": {
+          "type": "object"
+        },
+        "key": {
+          "type": "string"
+        },
+        "meta": {
+          "$ref": "#/$defs/ObjectMetaDto"
+        },
+        "localPath": {
+          "type": "string"
+        }
+      }
+    },
+    "KeyParams": {
+      "type": "object",
+      "required": [
+        "pluginDataDir",
+        "bucket",
+        "prefix",
+        "region",
+        "key"
+      ],
+      "properties": {
+        "pluginDataDir": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "forcePathStyle": {
+          "type": "boolean"
+        },
+        "credentials": {
+          "type": "object"
+        },
+        "key": {
+          "type": "string"
+        }
+      }
+    },
+    "ListParams": {
+      "type": "object",
+      "required": [
+        "pluginDataDir",
+        "bucket",
+        "prefix",
+        "region"
+      ],
+      "properties": {
+        "pluginDataDir": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "forcePathStyle": {
+          "type": "boolean"
+        },
+        "credentials": {
+          "type": "object"
+        }
+      }
+    },
+    "CopyParams": {
+      "type": "object",
+      "required": [
+        "pluginDataDir",
+        "bucket",
+        "prefix",
+        "region",
+        "from",
+        "to"
+      ],
+      "properties": {
+        "pluginDataDir": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "forcePathStyle": {
+          "type": "boolean"
+        },
+        "credentials": {
+          "type": "object"
+        },
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      }
+    },
+    "TouchFileParams": {
+      "type": "object",
+      "required": [
+        "pluginDataDir",
+        "bucket",
+        "prefix",
+        "region",
+        "key"
+      ],
+      "properties": {
+        "pluginDataDir": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "forcePathStyle": {
+          "type": "boolean"
+        },
+        "credentials": {
+          "type": "object"
+        },
+        "key": {
+          "type": "string"
+        },
+        "created": {
+          "type": "string"
+        },
+        "modified": {
+          "type": "string"
+        }
+      }
+    },
+    "DbConnectParams": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "backend",
+            "pluginDataDir"
+          ],
+          "properties": {
+            "backend": {
+              "const": "sqlite"
+            },
+            "pluginDataDir": {
+              "type": "string"
+            },
+            "sqlitePath": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "backend",
+            "pluginDataDir",
+            "accountId",
+            "databaseId",
+            "apiBase",
+            "apiToken"
+          ],
+          "properties": {
+            "backend": {
+              "const": "d1"
+            },
+            "pluginDataDir": {
+              "type": "string"
+            },
+            "accountId": {
+              "type": "string"
+            },
+            "databaseId": {
+              "type": "string"
+            },
+            "apiBase": {
+              "type": "string"
+            },
+            "apiToken": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "backend",
+            "pluginDataDir",
+            "url"
+          ],
+          "properties": {
+            "backend": {
+              "const": "postgres"
+            },
+            "pluginDataDir": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "StatementDto": {
+      "type": "object",
+      "required": [
+        "sql"
+      ],
+      "properties": {
+        "sql": {
+          "type": "string"
+        },
+        "values": {
+          "type": "array"
+        }
+      }
+    },
+    "OutputS3Context": {
+      "type": "object",
+      "required": [
+        "pluginDataDir",
+        "bucket",
+        "prefix",
+        "region"
+      ],
+      "properties": {
+        "pluginDataDir": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "forcePathStyle": {
+          "type": "boolean"
+        },
+        "credentials": {
+          "type": "object"
+        }
+      }
+    },
+    "ObjectMetaDto": {
+      "type": "object",
+      "properties": {
+        "contentType": {
+          "type": "string"
+        },
+        "contentLength": {
+          "type": "integer"
+        },
+        "asin": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "creationTime": {
+          "type": "string"
+        },
+        "lastWriteTime": {
+          "type": "string"
+        }
+      }
+    },
+    "BrandDto": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "bg",
+        "fg",
+        "accent",
+        "iconUrl"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "bg": {
+          "type": "string"
+        },
+        "fg": {
+          "type": "string"
+        },
+        "accent": {
+          "type": "string"
+        },
+        "iconUrl": {
+          "type": "string"
+        }
+      }
+    },
+    "ConfigOptionDto": {
+      "type": "object",
+      "required": [
+        "key",
+        "label",
+        "values"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "label"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

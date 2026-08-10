@@ -48,7 +48,7 @@ impl LibraryStore {
     /// Wrap an already-opened (and migrated) SeaORM connection.
     ///
     /// Prefer the database plugin host (`open_library_store`) or, in tests,
-    /// `bookclerk_plugin_database::sqlite::open_memory` — this crate does not
+    /// `bookclerk_plugin_database_sqlite::open_memory` — this crate does not
     /// open engine-specific connections.
     #[must_use]
     pub fn from_connection(db: DatabaseConnection) -> Self {

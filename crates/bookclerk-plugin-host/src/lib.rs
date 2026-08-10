@@ -1,21 +1,23 @@
 //! External plugin host for Bookclerk (`bookclerk-plugin-host`).
 //!
 //! Discovers staged guests under `$BOOKCLERK_FILES_DIR/plugins/`, spawns them
-//! over JSON-RPC, and optionally links first-party adapters in-process when the
-//! `bundled-plugins` feature is enabled on the host binary.
+//! over the Workers RPC ABI (native binary or `bookclerk-workerd`), and
+//! optionally links first-party adapters in-process when the `bundled-plugins`
+//! feature is enabled on the host binary.
 //!
 //! Two load paths share the same registries:
 //!
 //! 1. **In-process builtins** — [`register_builtin_sources`] /
 //!    [`register_builtin_integrations`] link first-party library crates so
 //!    `cargo run` works without staging binaries.
-//! 2. **External guests** — separate executables discovered from install
-//!    directories (`plugin.toml` + binary) over newline-delimited JSON-RPC on
-//!    stdio.
+//! 2. **External guests** — separate executables (or `bookclerk-workerd` +
+//!    modules) discovered from install directories (`plugin.toml`) over
+//!    newline-delimited Workers RPC on stdio.
 //!
 //! External plugins are **untrusted** relative to the host: the host never
 //! passes `library.db` / `master.key` / the files-dir root, clears
 //! secret-bearing env on spawn, and mediates credentials + library upserts.
+//! Operators must `bookclerk plugins approve` domains/bindings before enable.
 //!
 //! Host binaries should depend on **this** crate for registration — not on
 //! individual store crates.
@@ -25,10 +27,12 @@
 //! Third-party Rust plugins should depend on [`bookclerk_plugin_sdk`], not this
 //! crate. This host crate re-exports the protocol types for in-tree convenience.
 //!
-//! See `docs/plugins.md` and `docs/plugin-registry.md`.
+//! See `docs/plugins.md`, `docs/adr/plugin-workers-rpc-workerd.md`, and
+//! `docs/plugin-registry.md`.
 
 mod builtins;
 mod callback_proxy;
+mod consent;
 mod crates_io;
 mod destinations;
 mod discover;
@@ -57,6 +61,10 @@ pub use bookclerk_plugin_sdk::{
 pub use builtins::{
     load_integrations, load_sources, register_builtin_integrations, register_builtin_sources,
 };
+pub use consent::{
+    consent_request, consent_summary, grant_covers, require_grant, PluginGrant, PluginGrantStore,
+    GRANTS_FILE,
+};
 pub use crates_io::search_crates_io;
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{discover_plugins, plugin_search_dirs, settings_table, DiscoveredPlugin};
@@ -68,7 +76,12 @@ pub use host::{
     ExternalDestination, ExternalIntegration, ExternalSource,
 };
 pub use jail::plugin_data_dir;
-pub use manifest::{NetworkNeed, PluginKind, PluginManifest, SandboxManifest};
+pub use manifest::{
+    embedded_logo_api_path, logo_content_type, validate_logo, BindingCapabilities,
+    CapabilitiesManifest, JailNetworkNeed, LogoKind, MethodCapabilities, ModuleSpec,
+    NetworkCapabilities, NetworkMode, PluginKind, PluginManifest, PluginRuntimeKind, WorkerdLimits,
+    WorkerdRuntimeManifest, MAX_EMBEDDED_LOGO_BYTES,
+};
 pub use registry::{
     host_target_triple, kind_keyword, validate_plugin_id, BookclerkPackageMetadata,
     PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, PRODUCT_KEYWORD, REGISTRY_KEYWORD,

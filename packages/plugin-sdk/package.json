@@ -1,0 +1,65 @@
+{
+  "name": "@bookclerk/plugin-sdk",
+  "version": "0.1.0",
+  "description": "Bookclerk plugin guest SDK — ABI types, workerd + native runtimes, author tools",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "bookclerk-plugin": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "embed",
+    "bridge",
+    "workerd-pin.json",
+    "src",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./workerd": {
+      "types": "./dist/workerd.d.ts",
+      "import": "./dist/workerd.js",
+      "default": "./dist/workerd.js"
+    },
+    "./native": {
+      "types": "./dist/native.d.ts",
+      "import": "./dist/native.js",
+      "default": "./dist/native.js"
+    },
+    "./sparse-workerd": {
+      "types": "./dist/sparse-workerd/index.d.ts",
+      "import": "./dist/sparse-workerd/index.js",
+      "default": "./dist/sparse-workerd/index.js"
+    },
+    "./embed/bookclerk_plugin.js": "./embed/bookclerk_plugin.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-ambient.mjs",
+    "check-schema": "node scripts/check-schema.mjs",
+    "prepare": "npm run build",
+    "test:tools": "node scripts/test-tools.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "smol-toml": "^1.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  },
+  "keywords": [
+    "bookclerk",
+    "bookclerk-plugin",
+    "workerd",
+    "workers-rpc"
+  ],
+  "license": "MIT"
+}

@@ -11,7 +11,7 @@ use crate::coordinate::{PackageCoordinate, RegistrySource};
 use crate::error::{CatalogError, Result};
 use crate::extract::{extract_archive, safe_join, sha256_file, write_file};
 use crate::kind::RuntimeIdentity;
-use crate::manifest::{parse_sha256_hex, BookclerkPackageManifest, PROTOCOL_JSONRPC_STDIO_V1};
+use crate::manifest::{parse_sha256_hex, BookclerkPackageManifest};
 use crate::receipt::InstallReceipt;
 use crate::target::{host_bookclerk_target, select_target, ArchiveFormat};
 use crate::trust::TrustPolicy;
@@ -396,10 +396,7 @@ fn build_receipt(
         target: target.to_string(),
         archive_sha256: artifact.archive_sha256.clone(),
         executable_sha256: exe_digest.or_else(|| artifact.executable_sha256.clone()),
-        protocol: manifest
-            .protocol
-            .clone()
-            .if_empty_then(PROTOCOL_JSONRPC_STDIO_V1),
+        protocol: manifest.effective_protocol(),
         api_version: manifest.api_version,
         runtime: manifest.runtime(),
         requested_sandbox: manifest.sandbox.clone(),
@@ -408,19 +405,6 @@ fn build_receipt(
         update_constraint: None,
         publisher_key_id: manifest.publisher.as_ref().and_then(|p| p.key_id.clone()),
         allow_unsigned: trust.allow_unsigned,
-    }
-}
-
-trait IfEmpty {
-    fn if_empty_then(self, default: &str) -> String;
-}
-impl IfEmpty for String {
-    fn if_empty_then(self, default: &str) -> String {
-        if self.is_empty() {
-            default.into()
-        } else {
-            self
-        }
     }
 }
 
@@ -700,7 +684,7 @@ mod tests {
         let target = host_bookclerk_target();
         let manifest = BookclerkPackageManifest {
             schema_version: 1,
-            protocol: PROTOCOL_JSONRPC_STDIO_V1.into(),
+            protocol: None,
             api_version: 1,
             api_version_max: None,
             min_bookclerk: None,

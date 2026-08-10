@@ -23,15 +23,12 @@
     }
   },
   "mounts": [
-    "source=bookclerk-cargo-registry,target=/home/bookclerk/.cargo/registry,type=volume",
-    "source=bookclerk-cargo-git,target=/home/bookclerk/.cargo/git,type=volume",
     "source=${localEnv:XDG_RUNTIME_DIR},target=/run/host-user,type=bind",
     "source=${localEnv:XDG_RUNTIME_DIR}/bus,target=/run/host-user/bus,type=bind",
     "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind"
   ],
   "containerEnv": {
     "CARGO_TERM_COLOR": "always",
-    "CARGO_HOME": "/home/bookclerk/.cargo",
     "XDG_RUNTIME_DIR": "/run/host-user",
     "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/host-user/bus",
     "DISPLAY": "${localEnv:DISPLAY}",
@@ -39,9 +36,12 @@
   },
   "remoteEnv": {
     "PATH": "${containerWorkspaceFolder}/target/debug:${containerWorkspaceFolder}/target/release:${containerEnv:PATH}",
-    "BOOKCLERK_FILES_DIR": "/tmp/BookclerkFiles"
+    "CARGO_HOME": "${containerWorkspaceFolder}/.cargo-home",
+    "CARGO_TARGET_DIR": "${containerWorkspaceFolder}/target",
+    "TMPDIR": "${containerWorkspaceFolder}/.tmp",
+    "BOOKCLERK_FILES_DIR": "${containerWorkspaceFolder}/BookclerkFiles"
   },
-  "postCreateCommand": "bash -lc 'cargo fetch && (cd ui && npm ci)'",
+  "postCreateCommand": "bash -lc 'mkdir -p .cargo-home .tmp BookclerkFiles && cargo fetch && (cd ui && npm ci)'",
   "customizations": {
     "vscode": {
       "extensions": [

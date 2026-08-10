@@ -1,6 +1,8 @@
-//! Host↔guest handshake against staged first-party plugin artifacts.
+//! Host↔guest handshake against staged optional/example artifacts (+ platform in FILES_DIR).
 //!
-//! Requires binaries under `BOOKCLERK_PLUGIN_ARTIFACTS` (CI: `cargo stage-plugins`).
+//! Requires:
+//! - `BOOKCLERK_PLUGIN_ARTIFACTS` — optional + examples (`cargo stage-plugins --optional --examples`)
+//! - platform guests under `$BOOKCLERK_FILES_DIR/plugins/` (`cargo install-platform`)
 
 use std::path::PathBuf;
 
@@ -17,7 +19,9 @@ fn artifacts_dir() -> Option<PathBuf> {
 #[tokio::test]
 async fn staged_first_party_plugins_handshake() {
     let Some(artifacts) = artifacts_dir() else {
-        eprintln!("skipping: set BOOKCLERK_PLUGIN_ARTIFACTS after `cargo stage-plugins`");
+        eprintln!(
+            "skipping: set BOOKCLERK_PLUGIN_ARTIFACTS after `cargo stage-plugins --optional --examples`"
+        );
         return;
     };
     assert!(
@@ -26,28 +30,48 @@ async fn staged_first_party_plugins_handshake() {
         artifacts.display()
     );
 
-    let files = tempfile::tempdir().expect("temp files dir");
-    // Point discovery at the staged tree via BOOKCLERK_PLUGIN_DIRS.
+    let files = match std::env::var_os("BOOKCLERK_FILES_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => {
+            eprintln!("skipping: set BOOKCLERK_FILES_DIR after `cargo install-platform`");
+            return;
+        }
+    };
+    assert!(
+        files.join("plugins").join("sqlite").is_dir(),
+        "platform sqlite missing under {}/plugins (run cargo install-platform)",
+        files.display()
+    );
+
+    // Optional/examples from artifacts; platform from FILES_DIR/plugins.
     std::env::set_var("BOOKCLERK_PLUGIN_DIRS", artifacts.as_os_str());
     let config = Config {
-        paths: Some(Paths::from_files_dir(files.path().to_path_buf())),
+        paths: Some(Paths::from_files_dir(files)),
         ..Default::default()
     };
 
     let plugins = discover_plugins(&config).expect("discover");
     let ids: Vec<_> = plugins.iter().map(|p| p.manifest.id.as_str()).collect();
     for expected in [
-        "echo",
+        // platform (FILES_DIR)
+        "local",
+        "sqlite",
+        // optional (artifacts)
         "audible",
         "libro",
         "chirp",
         "graphicaudio",
         "audiobookshelf",
         "s3",
-        "local",
-        "sqlite",
         "d1",
         "postgres",
+        // examples
+        "echo-native-rust",
+        "echo-native-node",
+        "echo-native-python",
+        "echo-workerd-ts",
+        "echo-workerd-python",
+        "echo-workerd-rust",
     ] {
         assert!(
             ids.contains(&expected),
@@ -79,6 +103,23 @@ async fn staged_first_party_plugins_handshake() {
                 health.ok,
                 "{} health not ok: {:?}",
                 plugin.manifest.id, health
+            );
+        }
+        // Real workerd isolate (not a JS-less shim): Echo guests must return module detail.
+        let expected_detail = match plugin.manifest.id.as_str() {
+            "echo-workerd-ts" => Some("echo workerd plugin ready"),
+            "echo-workerd-python" => Some("echo workerd python plugin ready"),
+            "echo-workerd-rust" => Some("echo workerd rust wasm plugin ready"),
+            "echo-native-node" => Some("echo-native-node ready"),
+            "echo-native-python" => Some("echo-native-python ready"),
+            _ => None,
+        };
+        if let Some(detail) = expected_detail {
+            assert_eq!(
+                health.detail.as_deref(),
+                Some(detail),
+                "{} must run under real workerd (run cargo ensure-workerd)",
+                plugin.manifest.id
             );
         }
 

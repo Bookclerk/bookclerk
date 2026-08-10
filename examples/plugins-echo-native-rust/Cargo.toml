@@ -1,0 +1,31 @@
+[package]
+name = "bookclerk-plugin-echo-native-rust"
+description = "Reference Echo integration (native Rust / BookclerkPlugin)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-integration", "audiobook"]
+categories = ["multimedia", "command-line-utilities"]
+
+[package.metadata.bookclerk]
+api_version = 1
+kind = "integration"
+id = "echo-native-rust"
+display_name = "Echo Integration (native Rust)"
+
+[[bin]]
+name = "bookclerk-plugin-echo-native-rust"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+bookclerk-plugin-abi.workspace = true
+bookclerk-plugin-sdk.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util"] }
+
+[lints]
+workspace = true

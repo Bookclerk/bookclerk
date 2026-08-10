@@ -1,0 +1,75 @@
+# Experimental sketch — Node Single Executable Application (SEA).
+# Support tier: EXPERIMENTAL (not Tier-1 / Rust parity).
+#
+# Documented platform gaps (Node SEA official CI as of this sketch):
+#   - Alpine / musl: not supported
+#   - macOS x64: weak / not in Node's SEA CI matrix
+# Matrix here matches what Node documents: Linux glibc, macOS arm64, Windows.
+#
+# Intended for a standalone plugin repo (copy this directory). When kept under
+# the Bookclerk monorepo, GitHub ignores nested `.github/` — treat as a template.
+#
+# Incomplete: postject inject + archive naming must track Node's SEA docs.
+# Do not enable as a release gate until Echo SEA passes Bookclerk conformance.
+
+name: Package Echo (Node SEA, experimental)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "src/**"
+      - "plugin.toml"
+      - "package.json"
+      - "sea-config.json"
+      - ".github/workflows/package.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  sea:
+    name: sea-${{ matrix.bookclerk_target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bookclerk_target: linux-x64-gnu
+            archive_ext: tar.gz
+          - os: macos-latest
+            bookclerk_target: macos-arm64
+            archive_ext: tar.gz
+          - os: windows-latest
+            bookclerk_target: windows-x64
+            archive_ext: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Prepare SEA blob (node --experimental-sea-config)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Node docs also describe `node --build-sea` in newer releases; this
+          # sketch uses the stable-prep path from the SEA guide:
+          #   node --experimental-sea-config sea-config.json
+          node --experimental-sea-config sea-config.json
+          # Then: copy process.execPath → bookclerk-plugin-echo-native-node[.exe],
+          # codesign --remove-signature on macOS, inject with postject:
+          #   npx postject <exe> NODE_SEA_BLOB sea-prep.blob \
+          #     --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
+          # See https://nodejs.org/api/single-executable-applications.html
+          echo "EXPERIMENTAL: complete postject + pack steps before shipping"
+
+      - name: Pack sketch (placeholder until postject lands)
+        if: false
+        shell: bash
+        run: |
+          # Intended archive name (Bookclerk target):
+          # bookclerk-plugin-echo-native-node-0.1.0-${{ matrix.bookclerk_target }}.${{ matrix.archive_ext }}
+          true

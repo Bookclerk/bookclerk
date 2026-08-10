@@ -1,6 +1,6 @@
 # Libro.fm APK API probe
 
-The Libro.fm integration in `crates/bookclerk-plugins/source-libro` follows the unofficial
+The Libro.fm integration in `crates/bookclerk-plugins/optional/source-libro` follows the unofficial
 mobile API used by the Android app (`fm.libro.librofm`). Community clients
 originally reverse-engineered those calls; this probe keeps that surface
 honest by re-extracting it from the latest Play Store APK.
@@ -32,7 +32,7 @@ to catch — there is no such fallback.
 - OAuth password-grant path (`/oauth/token`) plus auth request/response fields
 
 Then it diffs tracked path/header/version constants against
-`crates/bookclerk-plugins/source-libro/src/client.rs` and request/response shapes against
+`crates/bookclerk-plugins/optional/source-libro/src/client.rs` and request/response shapes against
 `scripts/librofm-apk-probe/expected_shapes.json`.
 
 | Client constant | APK source |

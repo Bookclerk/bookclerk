@@ -8,6 +8,7 @@ Bookclerk is a Cargo workspace of library crates plus binaries:
 | `bookclerkd` | `bookclerkd` | Scheduled jobs + authenticated HTTP API / GUI |
 | `bookclerk-media-worker` | `bookclerk-media-worker` | Confined child process running one codec job |
 | `bookclerk-jail` | `bookclerk-jail` | Applies a confinement policy, then `exec`s a plugin guest |
+| `bookclerk-workerd` | `bookclerk-workerd` | Jailed Cloudflare workerd isolate launcher for script plugins |
 | *(lib)* | `bookclerk-tray` | In-process tray linked into `bookclerkd` (not a default-member) |
 
 Both share the same core: sources, library DB, acquire pipeline, storage, and
@@ -57,7 +58,8 @@ Bookclerk uses four first-class plugin roles (in-process and/or external):
 | **Integration** | `Integration` | `audiobookshelf`, SPA portal claim helpers |
 
 Third-party plugins are separate executables discovered via `plugin.toml` and
-spoken to over newline-delimited JSON-RPC on stdio. Each guest is started by
+spoken to over Workers RPC (`api_version = 1`) on stdio (native) or via
+`bookclerk-workerd` (script isolates). Each guest is started by
 `bookclerk-jail`, which confines it to its own install directory (read-only),
 `plugins/<id>/data`, `plugins/<id>/tmp`, and — for source/output/database
 operations — a **per-call** filesystem grant (Unix descriptor on fd 3; never the
@@ -73,12 +75,13 @@ in-process fallback when a platform guest is missing.
 | --- | --- |
 | Config / paths / logging | `bookclerk-config` |
 | Source trait + registry | `bookclerk-source` |
-| Store adapters (plugins) | `bookclerk-plugins/source-{audible,libro,chirp,graphicaudio}` (lib + guest bin) |
+| Store adapters (plugins) | `bookclerk-plugins/optional/source-{audible,libro,chirp,graphicaudio}` (lib + guest bin) |
 | ABS integration (plugin) | `bookclerk-plugins/integration-audiobookshelf` (lib + guest bin) |
 | Clear-media packaging | `bookclerk-media` (remux / fixup / MP3; no DRM) |
 | MP4 container plumbing | `bookclerk-mp4` (shared with store plugins; no cryptography) |
 | Process confinement | `bookclerk-sandbox` (Landlock+seccomp / Seatbelt / AppContainer) |
 | Guest jail launcher | `bookclerk-jail` (applies a policy, then `exec`s the guest) |
+| Workerd isolate launcher | `bookclerk-workerd` (pinned Cloudflare workerd + bridge/egress) |
 | Acquire orchestration | `bookclerk-acquire` |
 | Naming templates | `bookclerk-naming` |
 | Library DB | `bookclerk-library` (SeaORM plugins + rusqlite store) |

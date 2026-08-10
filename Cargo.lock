@@ -1280,7 +1280,7 @@ dependencies = [
  "bookclerk-library",
  "bookclerk-media",
  "bookclerk-naming",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "bookclerk-source",
  "bookclerk-storage",
  "bytes",
@@ -1309,7 +1309,7 @@ dependencies = [
  "bookclerk-migrate",
  "bookclerk-naming",
  "bookclerk-plugin-catalog",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-host",
  "bookclerk-search",
  "bookclerk-source",
@@ -1352,16 +1352,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-db-guest"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-library",
+ "bookclerk-plugin-sdk",
+ "sea-orm",
+ "tokio",
+]
+
+[[package]]
 name = "bookclerk-dev"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bookclerk-plugin-manifest",
+ "bookclerk-workerd",
  "clap",
  "flate2",
  "hex",
  "sha2 0.11.0",
  "tar",
  "tempfile",
+ "toml",
  "walkdir",
  "zip 8.6.0",
 ]
@@ -1374,7 +1387,7 @@ dependencies = [
  "bookclerk-config",
  "bookclerk-enrich",
  "bookclerk-library",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "bookclerk-source",
  "chrono",
  "fastembed",
@@ -1396,7 +1409,7 @@ name = "bookclerk-enrich"
 version = "0.1.0"
 dependencies = [
  "bookclerk-library",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "chrono",
  "reqwest 0.13.4",
  "serde",
@@ -1451,7 +1464,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bookclerk-config",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "chacha20poly1305 0.11.0",
  "chrono",
  "html-escape",
@@ -1508,7 +1521,7 @@ dependencies = [
  "anyhow",
  "bookclerk-config",
  "bookclerk-library",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "chrono",
  "flate2",
  "rusqlite",
@@ -1541,6 +1554,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-plugin-abi"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "bookclerk-plugin-catalog"
 version = "0.1.0"
 dependencies = [
@@ -1563,15 +1586,46 @@ dependencies = [
 ]
 
 [[package]]
-name = "bookclerk-plugin-database"
+name = "bookclerk-plugin-database-d1"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bookclerk-db-guest",
+ "bookclerk-library",
+ "bookclerk-plugin-sdk",
+ "reqwest 0.13.4",
+ "sea-orm",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "bookclerk-plugin-database-postgres"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bookclerk-db-guest",
+ "bookclerk-library",
+ "bookclerk-plugin-sdk",
+ "sea-orm",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "bookclerk-plugin-database-sqlite"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "bookclerk-db-guest",
  "bookclerk-library",
  "bookclerk-plugin-sdk",
- "reqwest 0.13.4",
  "rusqlite",
  "rusqlite_migration",
  "sea-orm",
@@ -1614,12 +1668,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "bookclerk-plugin-echo-integration"
+name = "bookclerk-plugin-echo-native-rust"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "bookclerk-plugin-abi",
  "bookclerk-plugin-sdk",
- "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "bookclerk-plugin-echo-workerd-rust"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-plugin-abi",
+ "console_error_panic_hook",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1633,8 +1699,9 @@ dependencies = [
  "bookclerk-config",
  "bookclerk-integrations",
  "bookclerk-library",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-integration-audiobookshelf",
+ "bookclerk-plugin-manifest",
  "bookclerk-plugin-sdk",
  "bookclerk-plugin-source-audible",
  "bookclerk-plugin-source-chirp",
@@ -1677,18 +1744,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-plugin-manifest"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-plugin-abi",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "toml",
+ "url",
+]
+
+[[package]]
 name = "bookclerk-plugin-sdk"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
+ "bookclerk-plugin-abi",
+ "bookclerk-plugin-manifest",
+ "bookclerk-workerd",
  "chrono",
+ "flate2",
+ "hex",
  "libc",
  "sea-orm",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "toml",
  "tracing",
+ "ureq",
 ]
 
 [[package]]
@@ -1705,7 +1795,7 @@ dependencies = [
  "bookclerk-library",
  "bookclerk-media",
  "bookclerk-mp4",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
  "bookclerk-source",
  "cbc 0.2.1",
@@ -1735,7 +1825,7 @@ dependencies = [
  "async-trait",
  "bookclerk-config",
  "bookclerk-library",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
  "bookclerk-source",
  "bytes",
@@ -1758,7 +1848,7 @@ dependencies = [
  "async-trait",
  "bookclerk-config",
  "bookclerk-library",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
  "bookclerk-source",
  "bytes",
@@ -1785,7 +1875,7 @@ dependencies = [
  "async-trait",
  "bookclerk-config",
  "bookclerk-library",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
  "bookclerk-source",
  "bytes",
@@ -1824,7 +1914,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bookclerk-library",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "serde",
  "tantivy",
  "tempfile",
@@ -1860,7 +1950,7 @@ dependencies = [
  "aws-sdk-s3",
  "bookclerk-config",
  "bookclerk-library",
- "bookclerk-plugin-database",
+ "bookclerk-plugin-database-sqlite",
  "bookclerk-source",
  "bytes",
  "chrono",
@@ -1888,6 +1978,26 @@ dependencies = [
  "tray-icon",
  "ureq",
  "winit",
+]
+
+[[package]]
+name = "bookclerk-workerd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bookclerk-plugin-abi",
+ "bookclerk-plugin-manifest",
+ "flate2",
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "ureq",
 ]
 
 [[package]]
@@ -2343,6 +2453,16 @@ dependencies = [
  "libc",
  "unicode-width 0.2.2",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if",
+ "wasm-bindgen",
 ]
 
 [[package]]

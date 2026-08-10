@@ -7,7 +7,7 @@ use std::process::Command;
 use bookclerk_plugin_catalog::{
     host_bookclerk_target, sha256_file, ArtifactTarget, BookclerkPackageManifest, InstallOptions,
     InstallReceipt, Installer, PackageCoordinate, PluginKind, RegistryAdapter, SandboxRequest,
-    StaticAdapter, StaticIndex, StaticPackage, TrustPolicy, PROTOCOL_JSONRPC_STDIO_V1,
+    StaticAdapter, StaticIndex, StaticPackage, TrustPolicy, PROTOCOL_WORKERS_RPC,
 };
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -23,7 +23,6 @@ fn write_mini_archive(dir: &std::path::Path) -> (std::path::PathBuf, String) {
 id = "echo"
 kind = "integration"
 command = "./echo"
-protocol = "jsonrpc-stdio-v1"
 
 [sandbox]
 network = "none"
@@ -33,7 +32,7 @@ network = "none"
         h.set_mode(0o644);
         h.set_cksum();
         tar.append_data(&mut h, "plugin.toml", &toml[..]).unwrap();
-        // Minimal executable: exit 0 (not a real JSON-RPC guest — install path only).
+        // Minimal executable: exit 0 (not a real Workers RPC guest — install path only).
         let bin = b"#!/bin/true\n";
         let mut h2 = tar::Header::new_gnu();
         h2.set_size(bin.len() as u64);
@@ -61,7 +60,7 @@ fn install_from_static_fixture_registry() {
         "1.0.0".into(),
         BookclerkPackageManifest {
             schema_version: 1,
-            protocol: PROTOCOL_JSONRPC_STDIO_V1.into(),
+            protocol: None,
             api_version: 1,
             api_version_max: None,
             min_bookclerk: None,
@@ -117,6 +116,7 @@ fn install_from_static_fixture_registry() {
     let receipt = InstallReceipt::load(&out.plugin_root).unwrap();
     assert_eq!(receipt.runtime.id, "echo");
     assert_eq!(receipt.version, "1.0.0");
+    assert_eq!(receipt.protocol, PROTOCOL_WORKERS_RPC);
 
     // Update rollback: bad digest refuses without destroying prior install.
     let mut bad = manifest.clone();

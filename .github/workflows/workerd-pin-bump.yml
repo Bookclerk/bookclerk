@@ -1,0 +1,158 @@
+# Daily bump of the pinned Cloudflare `workerd` binary.
+#
+# Policy:
+# - Only consider releases published ≥ 7 days ago (supply-chain cooldown).
+# - Run Echo workerd integration tests against the new pin in this workflow.
+# - Open a PR and squash-merge it after those tests pass.
+#
+# PRs opened with GITHUB_TOKEN do not re-trigger workflows on that PR, so
+# validation runs here before merge rather than relying on PR CI alone.
+
+name: workerd pin bump
+
+on:
+  schedule:
+    # Daily 06:17 UTC — offset from the hour to avoid thundering herds.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: workerd-pin-bump
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+  WORKERD_PIN_COOLDOWN_DAYS: "7"
+
+jobs:
+  bump:
+    name: bump pin + test + PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
+          save-if: false
+
+      - name: Select eligible workerd release
+        id: select
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if python3 scripts/bump-workerd-pin.py \
+              --cooldown-days "$WORKERD_PIN_COOLDOWN_DAYS" --check; then
+            echo "bump=true" >> "$GITHUB_OUTPUT"
+          else
+            code=$?
+            if [[ "$code" -eq 2 ]]; then
+              echo "bump=false" >> "$GITHUB_OUTPUT"
+              echo "No eligible workerd bump (pin current or within cooldown)."
+            else
+              exit "$code"
+            fi
+          fi
+
+      - name: Apply pin bump
+        if: steps.select.outputs.bump == 'true'
+        id: pin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/bump-workerd-pin.py \
+            --cooldown-days "$WORKERD_PIN_COOLDOWN_DAYS" --write
+          python3 scripts/sync-workerd-pin.py --check
+          tag="$(python3 -c 'import json; print(json.load(open("crates/bookclerk-workerd/workerd-pin.json"))["release_tag"])')"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Build launcher + ensure workerd
+        if: steps.select.outputs.bump == 'true'
+        run: |
+          cargo build -p bookclerk-workerd -p bookclerk-dev
+          cargo ensure-workerd
+          test -x target/debug/workerd
+          test -x target/debug/bookclerk-workerd
+
+      - name: Echo workerd integration tests
+        if: steps.select.outputs.bump == 'true'
+        run: |
+          chmod +x scripts/test-workerd-echo.sh
+          ./scripts/test-workerd-echo.sh debug
+
+      - name: Create or update pull request
+        if: steps.select.outputs.bump == 'true'
+        id: cpr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            build(deps): bump workerd pin to ${{ steps.pin.outputs.tag }}
+
+            Cloudflare workerd releases daily; Bookclerk pins a release only after
+            a ${{ env.WORKERD_PIN_COOLDOWN_DAYS }}-day publish cooldown (supply-chain).
+          branch: deps/workerd-pin
+          delete-branch: true
+          title: "build(deps): bump workerd pin to ${{ steps.pin.outputs.tag }}"
+          body: |
+            ## Summary
+            - Bump pinned Cloudflare `workerd` to `${{ steps.pin.outputs.tag }}`
+            - Cooldown: releases must be published ≥ **${{ env.WORKERD_PIN_COOLDOWN_DAYS }} days** ago
+            - Echo workerd guests (`ts` / `python` / `rust`) handshake + `cliInvoke` passed in this workflow
+
+            ## Test plan
+            - [x] `scripts/bump-workerd-pin.py` (cooldown filter + digests → workerd-pin.json)
+            - [x] `scripts/sync-workerd-pin.py --check` (pin.rs + SDK stub + bridge copies)
+            - [x] `cargo ensure-workerd` for the new pin
+            - [x] `scripts/test-workerd-echo.sh`
+
+            This PR is squash-merged by the bump workflow after those checks (GITHUB_TOKEN
+            PRs do not re-trigger Actions, so validation is in-job).
+          labels: |
+            dependencies
+          add-paths: |
+            crates/bookclerk-workerd/workerd-pin.json
+            crates/bookclerk-workerd/src/pin.rs
+            packages/plugin-sdk/workerd-pin.json
+            packages/plugin-sdk/bridge/
+            packages/plugin-sdk-python/workerd-pin.json
+            packages/plugin-sdk-python/src/bookclerk_plugin_sdk/workerd-pin.json
+            packages/plugin-sdk-python/src/bookclerk_plugin_sdk/bridge/
+
+      - name: Automerge (squash) after in-job tests
+        if: >
+          steps.select.outputs.bump == 'true'
+          && steps.cpr.outputs.pull-request-number
+          && steps.cpr.outputs.pull-request-operation != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pr="${{ steps.cpr.outputs.pull-request-number }}"
+          # Echo tests already passed in this job. GITHUB_TOKEN-authored PRs do
+          # not re-trigger Actions, so required PR checks would never complete
+          # under --auto alone — squash-merge here (or enable automerge when
+          # the repo allows merge without those checks).
+          if gh pr merge "$pr" --auto --squash 2>/dev/null; then
+            state="$(gh pr view "$pr" --json state,autoMergeRequest -q \
+              '[.state, (.autoMergeRequest != null)] | @tsv')"
+            echo "automerge status: $state"
+          fi
+          state="$(gh pr view "$pr" --json state -q .state)"
+          if [[ "$state" == "OPEN" ]]; then
+            gh pr merge "$pr" --squash --delete-branch
+          fi

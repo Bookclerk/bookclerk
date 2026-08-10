@@ -1,0 +1,56 @@
+[package]
+name = "bookclerk-plugin-source-libro"
+description = "Libro.fm source plugin: in-process ContentSource + Workers RPC guest binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-source", "audiobook"]
+
+[package.metadata.bookclerk]
+api_version = 1
+kind = "source"
+id = "libro"
+display_name = "Libro.fm"
+
+
+[lib]
+name = "bookclerk_plugin_source_libro"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bookclerk-plugin-source-libro"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+bookclerk-config.workspace = true
+bookclerk-library.workspace = true
+bookclerk-plugin-sdk.workspace = true
+bookclerk-source.workspace = true
+reqwest = { version = "0.13", default-features = true, features = ["json", "query", "rustls"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+bookclerk-plugin-database-sqlite.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+wiremock.workspace = true
+serde_json.workspace = true
+bookclerk-library.workspace = true
+bookclerk-source.workspace = true
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

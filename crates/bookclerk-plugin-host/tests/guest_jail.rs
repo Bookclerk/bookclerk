@@ -103,7 +103,7 @@ try_write() {
         r#"
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
-  printf '{"jsonrpc":"2.0","id":%s,"result":{"api_version":2,"id":"probe","kind":"integration","capabilities":[]}}\n' "$id"
+  printf '{"id":%s,"result":{"apiVersion":1,"id":"probe","kind":"integration","capabilities":[]}}\n' "$id"
 done
 "#,
     );
@@ -139,8 +139,9 @@ impl Fixture {
         write_script(&install.join("guest.sh"), &probe_script(&probes(&paths)));
         std::fs::write(
             install.join("plugin.toml"),
-            "api_version = 2\nid = \"probe\"\nkind = \"integration\"\n\
-             command = \"./guest.sh\"\n\n[sandbox]\nnetwork = \"none\"\n",
+            "api_version = 1\nid = \"probe\"\nkind = \"integration\"\n\
+             runtime = \"native\"\ncommand = \"./guest.sh\"\n\n\
+             [capabilities.network]\nmode = \"deny\"\n",
         )
         .expect("plugin.toml");
 

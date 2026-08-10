@@ -8,19 +8,34 @@
 //! # In a standalone plugin repo / workspace:
 //! [dependencies]
 //! bookclerk-plugin-sdk = { git = "https://github.com/fritz-fritz/bookclerk", package = "bookclerk-plugin-sdk" }
-//! # or path = "../bookclerk/crates/bookclerk-plugin-sdk"
+//! # Database guests also need:
+//! # bookclerk-plugin-sdk = { …, features = ["db"] }
+//! ```
+//!
+//! Authoring helpers (`check` / `fmt` / `package` / `smoke`) live behind feature
+//! `tools` (pulls `bookclerk-workerd` for smoke only). Guest plugins should use
+//! default features.
+//!
+//! ```bash
+//! cargo run -p bookclerk-plugin-sdk --features tools --bin bookclerk-plugin -- check .
+//! cargo plugin -- smoke .   # alias enables --features tools
 //! ```
 //!
 //! See `docs/plugin-registry.md`.
 
 pub mod callback_tunnel;
+#[cfg(feature = "db")]
 mod db;
 mod error;
 mod fetch_dir;
 mod guest;
 mod pass_fd;
+pub mod plugin;
 pub mod protocol;
+pub mod tools;
+pub mod workerd;
 
+#[cfg(feature = "db")]
 pub use db::{
     b64_string_to_bytes, bytes_to_b64_string, exec_result_from_dto, exec_result_to_dto,
     json_to_sea_value, proxy_rows_from_dto, proxy_rows_to_dto, sea_value_to_json,
@@ -33,17 +48,26 @@ pub use error::{Result, SdkError};
 pub use fetch_dir::{fetch_work_dir, upload_file_path, FetchWorkDir, UploadFile};
 pub use guest::PluginGuest;
 pub use pass_fd::{fd_proc_path, recv_passed_fd, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV};
+pub use plugin::{plugin_error_from_message, BookclerkPlugin, BookclerkPluginGuest};
 pub use protocol::{
-    methods, BookAcquiredDto, BrandDto, CatalogDetailParams, CatalogHitDto, CliArgKind, CliArgSpec,
-    CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema, ConfigOptionDto,
-    ConfigOptionValueDto, CopyParams, CredentialsUpdateParams, EventPollResultDto,
-    ExpandCandidatesParams, ExternalUserDto, FetchTitleParams, GetParams, GetResultDto,
-    HandshakeResult, HealthDto, KeyParams, ListParams, ListeningProgressDto, LocalCopyParams,
-    LocalGetParams, LocalKeyParams, LocalListParams, LocalPutFileParams, LocalPutParams,
-    LocalTouchFileParams, LoginCompleteParams, LoginParams, LoginResultDto, LoginStartResultDto,
-    ObjectInfoDto, ObjectMetaDto, ObjectProbeDto, OutputLocalContextDto, OutputS3ContextDto,
-    PlainPartDto, PurchaseHintDto, PurchaseHintParams, PutFileParams, PutParams, S3CredentialsDto,
-    ScanBookDto, ScanParams, ScanSummaryDto, SearchCatalogParams, SourceAccountDto, SourceFetchDto,
-    SyncListeningResultDto, TouchFileParams, HOST_API_VERSION_MAX, HOST_API_VERSION_MIN,
-    MAX_RPC_LINE_BYTES, PLUGIN_API_VERSION, PROTOCOL_NAME,
+    methods, AuthenticateUserParams, BookAcquiredDto, BrandDto, CatalogDetailParams, CatalogHitDto,
+    CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
+    ConfigOptionDto, ConfigOptionValueDto, CopyParams, CredentialsUpdateParams, EventPollResultDto,
+    ExistsResultDto, ExpandCandidatesParams, ExternalUserDto, FetchTitleParams, GetParams,
+    GetResultDto, HandshakeResult, HealthDto, HealthResult, KeyParams, ListAccountsParams,
+    ListDealsParams, ListParams, ListeningProgressDto, LocalCopyParams, LocalGetParams,
+    LocalKeyParams, LocalListParams, LocalPutFileParams, LocalPutParams, LocalTouchFileParams,
+    LoginCompleteParams, LoginParams, LoginResultDto, LoginStartParams, LoginStartResultDto,
+    ObjectInfoDto, ObjectMetaDto, ObjectProbeDto, OutputCopyParams, OutputGetParams,
+    OutputKeyParams, OutputListParams, OutputLocalContextDto, OutputPutFileParams, OutputPutParams,
+    OutputS3ContextDto, OutputTouchFileParams, PlainPartDto, PurchaseHintDto, PurchaseHintParams,
+    PutFileParams, PutParams, S3CredentialsDto, ScanBookDto, ScanLibraryParams, ScanParams,
+    ScanSummaryDto, SearchCatalogParams, SourceAccountDto, SourceFetchDto, SyncListeningResultDto,
+    TouchFileParams, HOST_API_VERSION_MAX, HOST_API_VERSION_MIN, MAX_RPC_LINE_BYTES,
+    PLUGIN_API_VERSION, PROTOCOL_NAME,
+};
+
+pub use bookclerk_plugin_abi::{
+    DiagnoseResult, HandshakeParams, HostToPluginEvent, PluginError, PluginErrorCode,
+    PluginToHostEvent, API_VERSION,
 };

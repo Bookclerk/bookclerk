@@ -1,0 +1,8 @@
+{
+  "name": "bookclerk-plugin-echo-workerd-rust",
+  "private": true,
+  "description": "Build helper — regenerates modules/pkg Wasm glue",
+  "scripts": {
+    "build": "bash ./build-wasm.sh"
+  }
+}

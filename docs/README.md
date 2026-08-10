@@ -24,8 +24,9 @@ Start here if you are new:
 
 | Doc | When to read |
 | --- | --- |
-| [Plugins](plugins.md) | Ship or host a third-party source/integration, and the jail guests run in |
-| [Plugin registry](plugin-registry.md) | crates.io taxonomy, prebuilt install, catalog roadmap |
+| [Plugins](plugins.md) | Ship or host a third-party source/integration (Workers RPC ABI, jail, workerd) |
+| [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Greenfield `api_version = 1` decision: ABI, `BookclerkPlugin`, consent |
+| [Plugin registry](plugin-registry.md) | crates.io taxonomy, native vs workerd archives, catalog roadmap |
 | [Packaging](packaging.md) | `cargo package-*` aliases, platform bundles, release CI |
 | [Source candidates](source-candidates.md) | Research notes for stores not yet implemented |
 | [Diagnostics](diagnostics.md) | Opt-in crash/error reporting pipeline |
@@ -37,6 +38,7 @@ Start here if you are new:
 | --- | --- |
 | [Migration](migration.md) | Moving from classic Libation Files |
 | [Libation parity](libation-parity.md) | Headless CLI/settings matrix vs Libation Chardonnay |
+| [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Plugin ABI target state (not Cap’n Proto / not legacy JSON-RPC product ABI) |
 
 ## Agent / contributor notes
 

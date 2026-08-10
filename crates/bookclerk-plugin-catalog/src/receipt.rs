@@ -80,6 +80,7 @@ mod tests {
     use super::*;
     use crate::coordinate::RegistrySource;
     use crate::kind::PluginKind;
+    use crate::manifest::PROTOCOL_WORKERS_RPC;
 
     #[test]
     fn receipt_round_trip() {
@@ -97,7 +98,7 @@ mod tests {
             target: "linux-x64-gnu".into(),
             archive_sha256: "aa".repeat(32),
             executable_sha256: None,
-            protocol: "jsonrpc-stdio-v1".into(),
+            protocol: PROTOCOL_WORKERS_RPC.into(),
             api_version: 1,
             runtime: RuntimeIdentity::new(PluginKind::Integration, "echo"),
             requested_sandbox: SandboxRequest {

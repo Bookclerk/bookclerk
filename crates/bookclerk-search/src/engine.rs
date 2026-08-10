@@ -279,7 +279,7 @@ mod tests {
     #[tokio::test]
     async fn indexes_and_finds_by_title() {
         let dir = tempfile::tempdir().unwrap();
-        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
             .unwrap();
         library
@@ -302,7 +302,7 @@ mod tests {
     #[tokio::test]
     async fn indexes_uuid_product_id_isbn_asin() {
         let dir = tempfile::tempdir().unwrap();
-        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
             .unwrap();
         library

@@ -1,0 +1,59 @@
+[package]
+name = "bookclerk-plugin-source-graphicaudio"
+description = "GraphicAudio source plugin: in-process ContentSource + Workers RPC guest binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-source", "audiobook"]
+
+[package.metadata.bookclerk]
+api_version = 1
+kind = "source"
+id = "graphicaudio"
+display_name = "GraphicAudio"
+
+
+[lib]
+name = "bookclerk_plugin_source_graphicaudio"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bookclerk-plugin-source-graphicaudio"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+bookclerk-config.workspace = true
+bookclerk-library.workspace = true
+bookclerk-plugin-sdk.workspace = true
+bookclerk-source.workspace = true
+scraper.workspace = true
+html-escape.workspace = true
+reqwest = { version = "0.13", default-features = true, features = ["json", "query", "rustls", "form", "cookies"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+tracing.workspace = true
+uuid = { workspace = true }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+bookclerk-plugin-database-sqlite.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+wiremock.workspace = true
+serde_json.workspace = true
+bookclerk-library.workspace = true
+bookclerk-source.workspace = true
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

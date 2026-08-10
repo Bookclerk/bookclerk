@@ -1,0 +1,35 @@
+[package]
+name = "bookclerk-plugin-database-postgres"
+description = "Optional PostgreSQL library database plugin (Workers RPC guest)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-database"]
+
+[package.metadata.bookclerk]
+api_version = 1
+kind = "database"
+id = "postgres"
+display_name = "PostgreSQL"
+
+[[bin]]
+name = "bookclerk-plugin-database-postgres"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+bookclerk-db-guest.workspace = true
+bookclerk-library.workspace = true
+bookclerk-plugin-sdk = { workspace = true, features = ["db"] }
+sea-orm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

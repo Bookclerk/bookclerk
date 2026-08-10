@@ -1,6 +1,0 @@
-api_version = 1
-id = "audiobookshelf"
-name = "Audiobookshelf"
-kind = "integration"
-command = "./bookclerk-plugin-integration-audiobookshelf"
-outbound_urls = ["https://www.audiobookshelf.org/"]

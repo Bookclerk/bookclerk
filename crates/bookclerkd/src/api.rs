@@ -20,7 +20,10 @@ use bookclerk_library::{
     configure_master_key_with, AcquireStatus, BookRecord, LibraryStore, NewTitleRequest,
     NewTitleRequestSource, RequestStatus, TitleRequestRecord,
 };
-use bookclerk_plugin_host::{DatabaseRegistry, DestinationRegistry};
+use bookclerk_plugin_host::{
+    consent_request, consent_summary, grant_covers, require_grant, DatabaseRegistry,
+    DestinationRegistry, PluginGrant, PluginGrantStore,
+};
 use bookclerk_search::{SearchEngine, SearchHit};
 use bookclerk_source::SourceRegistry;
 use serde::{Deserialize, Serialize};
@@ -139,6 +142,21 @@ struct SettingsResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct PluginConsentResponse {
+    plugin_id: String,
+    request: PluginGrant,
+    covered: bool,
+    summary: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    existing: Option<PluginGrant>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PluginConsentApproveRequest {
+    approve: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct ActionResponse {
     ok: bool,
     message: String,
@@ -216,6 +234,11 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route("/api/status", get(status))
         .route("/api/config/reload", post(reload_config))
         .route("/api/settings", get(get_settings).patch(patch_settings))
+        .route(
+            "/api/plugins/{id}/consent",
+            get(get_plugin_consent).post(post_plugin_consent),
+        )
+        .route("/api/plugins/{kind}/{id}/logo", get(get_plugin_logo))
         .route("/api/database/migrate", post(migrate_database))
         .route("/api/jobs", get(list_jobs))
         .route("/api/library/scan", post(trigger_scan))
@@ -703,21 +726,30 @@ fn plugin_kind_label(kind: bookclerk_plugin_host::PluginKind) -> &'static str {
     }
 }
 
-/// Google favicon for first-party plugins when `plugin.toml` has no `outbound_urls`.
-fn first_party_google_favicon(kind: bookclerk_plugin_host::PluginKind, id: &str) -> Option<String> {
-    let domain = match (kind, id) {
-        (bookclerk_plugin_host::PluginKind::Source, "audible") => "audible.com",
-        (bookclerk_plugin_host::PluginKind::Source, "chirp") => "chirpbooks.com",
-        (bookclerk_plugin_host::PluginKind::Source, "libro") => "libro.fm",
-        (bookclerk_plugin_host::PluginKind::Source, "graphicaudio") => "graphicaudio.com",
-        (bookclerk_plugin_host::PluginKind::Integration, "audiobookshelf") => "audiobookshelf.org",
-        (bookclerk_plugin_host::PluginKind::Database, "d1") => "cloudflare.com",
-        (bookclerk_plugin_host::PluginKind::Database, "postgres") => "postgresql.org",
-        _ => return None,
+/// Resolve Settings `logo` from `plugin.toml` (`https://…` or host-served embed path).
+fn settings_logo_from_manifest(plugin: &bookclerk_plugin_host::DiscoveredPlugin) -> Option<String> {
+    let kind = match plugin.manifest.logo_kind() {
+        Ok(k) => k?,
+        Err(_) => return None,
     };
-    Some(format!(
-        "https://www.google.com/s2/favicons?domain={domain}&sz=128"
-    ))
+    match kind {
+        bookclerk_plugin_host::LogoKind::RemoteUrl(url) => Some(url),
+        bookclerk_plugin_host::LogoKind::EmbeddedPath(_) => {
+            Some(bookclerk_plugin_host::embedded_logo_api_path(
+                plugin.manifest.kind.as_str(),
+                &plugin.manifest.id,
+            ))
+        }
+    }
+}
+
+fn non_empty_logo(url: &str) -> Option<String> {
+    let t = url.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
 }
 
 fn plugin_setting_option(
@@ -1148,9 +1180,27 @@ fn build_source_settings_group(
     PluginSettingsGroup {
         id: id.to_string(),
         kind: plugin_kind_label(bookclerk_plugin_host::PluginKind::Source).to_string(),
-        logo: Some(source.portal_brand().icon_url.to_string()),
+        logo: non_empty_logo(source.portal_brand().icon_url),
         settings: options,
     }
+}
+
+fn build_integration_settings_group(
+    config: &Config,
+    integration: &dyn bookclerk_integrations::Integration,
+    table: toml::Table,
+) -> PluginSettingsGroup {
+    let id = integration.id();
+    let mut group = build_plugin_settings_group(
+        config,
+        bookclerk_plugin_host::PluginKind::Integration,
+        id,
+        table,
+    );
+    if let Some(brand) = integration.portal_brand() {
+        group.logo = non_empty_logo(brand.icon_url);
+    }
+    group
 }
 
 fn build_plugin_settings_group(
@@ -1221,100 +1271,64 @@ fn build_plugin_settings_group(
     PluginSettingsGroup {
         id: id.to_string(),
         kind: plugin_kind_label(kind).to_string(),
-        logo: first_party_google_favicon(kind, id),
+        logo: None,
         settings: options,
-    }
-}
-
-fn fallback_plugin_table(
-    config: &Config,
-    kind: bookclerk_plugin_host::PluginKind,
-    id: &str,
-) -> toml::Table {
-    match kind {
-        bookclerk_plugin_host::PluginKind::Source => {
-            config.sources.table(id).cloned().unwrap_or_default()
-        }
-        bookclerk_plugin_host::PluginKind::Integration => config
-            .integrations
-            .plugin_table(id)
-            .cloned()
-            .unwrap_or_default(),
-        bookclerk_plugin_host::PluginKind::Output if id == "local" => {
-            match toml::Value::try_from(&config.output.local) {
-                Ok(toml::Value::Table(table)) => table,
-                _ => toml::Table::new(),
-            }
-        }
-        bookclerk_plugin_host::PluginKind::Output if id == "s3" => {
-            match toml::Value::try_from(&config.output.s3) {
-                Ok(toml::Value::Table(table)) => table,
-                _ => toml::Table::new(),
-            }
-        }
-        bookclerk_plugin_host::PluginKind::Output => toml::Table::new(),
-        bookclerk_plugin_host::PluginKind::Database if id == "sqlite" => {
-            match toml::Value::try_from(&config.database.sqlite) {
-                Ok(toml::Value::Table(table)) => table,
-                _ => toml::Table::new(),
-            }
-        }
-        bookclerk_plugin_host::PluginKind::Database if id == "d1" => {
-            match toml::Value::try_from(&config.database.d1) {
-                Ok(toml::Value::Table(table)) => table,
-                _ => toml::Table::new(),
-            }
-        }
-        bookclerk_plugin_host::PluginKind::Database if id == "postgres" => {
-            match toml::Value::try_from(&config.database.postgres) {
-                Ok(toml::Value::Table(table)) => table,
-                _ => toml::Table::new(),
-            }
-        }
-        bookclerk_plugin_host::PluginKind::Database => toml::Table::new(),
     }
 }
 
 fn plugin_settings_snapshot(
     config: &Config,
     sources: &SourceRegistry,
+    integrations: &IntegrationRegistry,
     discovered_plugins: &[bookclerk_plugin_host::DiscoveredPlugin],
 ) -> Vec<PluginSettingsGroup> {
-    const DEFAULT_SOURCE_IDS: &[&str] = &["audible", "libro", "chirp", "graphicaudio"];
-    const DEFAULT_INTEGRATION_IDS: &[&str] = &["audiobookshelf"];
-    const DEFAULT_OUTPUT_IDS: &[&str] = &["local", "s3"];
-    const DEFAULT_DATABASE_IDS: &[&str] = &["sqlite", "d1", "postgres"];
-
     let mut groups_by_key: std::collections::BTreeMap<(String, String), PluginSettingsGroup> =
         std::collections::BTreeMap::new();
 
     for plugin in discovered_plugins {
         let table = bookclerk_plugin_host::settings_table(config, plugin);
-        let mut group = if plugin.manifest.kind == bookclerk_plugin_host::PluginKind::Source {
-            if let Some(source) = sources.get(&plugin.manifest.id) {
-                build_source_settings_group(config, source.as_ref(), table)
-            } else {
-                build_plugin_settings_group(
-                    config,
-                    plugin.manifest.kind,
-                    &plugin.manifest.id,
-                    table,
-                )
+        let mut group = match plugin.manifest.kind {
+            bookclerk_plugin_host::PluginKind::Source => {
+                if let Some(source) = sources.get(&plugin.manifest.id) {
+                    build_source_settings_group(config, source.as_ref(), table)
+                } else {
+                    build_plugin_settings_group(
+                        config,
+                        plugin.manifest.kind,
+                        &plugin.manifest.id,
+                        table,
+                    )
+                }
             }
-        } else {
-            build_plugin_settings_group(config, plugin.manifest.kind, &plugin.manifest.id, table)
+            bookclerk_plugin_host::PluginKind::Integration => {
+                if let Some(integration) = integrations.get(&plugin.manifest.id) {
+                    build_integration_settings_group(config, integration.as_ref(), table)
+                } else {
+                    build_plugin_settings_group(
+                        config,
+                        plugin.manifest.kind,
+                        &plugin.manifest.id,
+                        table,
+                    )
+                }
+            }
+            _ => build_plugin_settings_group(
+                config,
+                plugin.manifest.kind,
+                &plugin.manifest.id,
+                table,
+            ),
         };
-        // Prefer manifest outbound_urls → Google favicon; keep portal brand as fallback.
-        if let Some(logo) = plugin.manifest.google_favicon_url() {
-            group.logo = Some(logo);
-        } else if group.logo.is_none() {
-            if let Some(source) = sources.get(&plugin.manifest.id) {
-                group.logo = Some(source.portal_brand().icon_url.to_string());
+        // Prefer live BrandDto / portal brand (already on group); else plugin.toml logo.
+        if group.logo.is_none() {
+            if let Some(logo) = settings_logo_from_manifest(plugin) {
+                group.logo = Some(logo);
             }
         }
         groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
     }
 
+    // Loaded in-process guests that were not also discovered from disk.
     for source in sources.all() {
         let id = source.id().to_string();
         let key = (String::from("source"), id.clone());
@@ -1324,63 +1338,16 @@ fn plugin_settings_snapshot(
             groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
         }
     }
-
-    for id in DEFAULT_SOURCE_IDS {
-        let key = (String::from("source"), (*id).to_string());
+    for integration in integrations.all() {
+        let id = integration.id().to_string();
+        let key = (String::from("integration"), id.clone());
         if !groups_by_key.contains_key(&key) {
-            let table =
-                fallback_plugin_table(config, bookclerk_plugin_host::PluginKind::Source, id);
-            let group = build_plugin_settings_group(
-                config,
-                bookclerk_plugin_host::PluginKind::Source,
-                id,
-                table,
-            );
-            groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
-        }
-    }
-
-    for id in DEFAULT_INTEGRATION_IDS {
-        let key = (String::from("integration"), (*id).to_string());
-        if !groups_by_key.contains_key(&key) {
-            let table =
-                fallback_plugin_table(config, bookclerk_plugin_host::PluginKind::Integration, id);
-            let group = build_plugin_settings_group(
-                config,
-                bookclerk_plugin_host::PluginKind::Integration,
-                id,
-                table,
-            );
-            groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
-        }
-    }
-
-    for id in DEFAULT_OUTPUT_IDS {
-        let key = (String::from("output"), (*id).to_string());
-        if !groups_by_key.contains_key(&key) {
-            let table =
-                fallback_plugin_table(config, bookclerk_plugin_host::PluginKind::Output, id);
-            let group = build_plugin_settings_group(
-                config,
-                bookclerk_plugin_host::PluginKind::Output,
-                id,
-                table,
-            );
-            groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
-        }
-    }
-
-    for id in DEFAULT_DATABASE_IDS {
-        let key = (String::from("database"), (*id).to_string());
-        if !groups_by_key.contains_key(&key) {
-            let table =
-                fallback_plugin_table(config, bookclerk_plugin_host::PluginKind::Database, id);
-            let group = build_plugin_settings_group(
-                config,
-                bookclerk_plugin_host::PluginKind::Database,
-                id,
-                table,
-            );
+            let table = config
+                .integrations
+                .plugin_table(&id)
+                .cloned()
+                .unwrap_or_default();
+            let group = build_integration_settings_group(config, integration.as_ref(), table);
             groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
         }
     }
@@ -1454,6 +1421,219 @@ fn apply_database_enable_updates(
     Ok(())
 }
 
+fn setting_value_is_enabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Plugin ids newly flipped to enabled via `*.enabled` settings keys.
+fn newly_enabled_plugin_ids(
+    updates: &[(String, String)],
+    previous: &std::collections::HashMap<&str, &PluginSettingOption>,
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    for (key, value) in updates {
+        if !setting_value_is_enabled(value) {
+            continue;
+        }
+        let parts: Vec<&str> = key.split('.').collect();
+        if parts.len() != 3 || parts[2] != "enabled" {
+            continue;
+        }
+        if !matches!(parts[0], "sources" | "integrations" | "output" | "database") {
+            continue;
+        }
+        let prev = previous
+            .get(key.as_str())
+            .map(|opt| opt.value.as_str())
+            .unwrap_or("false");
+        if setting_value_is_enabled(prev) {
+            continue;
+        }
+        ids.push(parts[1].to_string());
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// Plugin ids that become the active database backend via this settings patch.
+///
+/// Covers both `database.<id>.enabled=true` and a direct `database.plugin=<id>`
+/// override (the latter is allowlisted outside the editable-key set).
+fn database_backends_requiring_grant(
+    updates: &[(String, String)],
+    current_database_plugin: &str,
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    for (key, value) in updates {
+        if key == "database.plugin" {
+            let id = value.trim();
+            if id.is_empty() {
+                continue;
+            }
+            if !current_database_plugin.eq_ignore_ascii_case(id) {
+                ids.push(id.to_string());
+            }
+            continue;
+        }
+        let Some(rest) = key.strip_prefix("database.") else {
+            continue;
+        };
+        let Some(id) = rest.strip_suffix(".enabled") else {
+            continue;
+        };
+        if id.is_empty() || id.contains('.') || !setting_value_is_enabled(value) {
+            continue;
+        }
+        if !current_database_plugin.eq_ignore_ascii_case(id) {
+            ids.push(id.to_string());
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn consent_required_response(plugin_id: &str, message: String, summary: Vec<String>) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "error": "consent_required",
+            "message": message,
+            "plugin_id": plugin_id,
+            "summary": summary,
+        })),
+    )
+        .into_response()
+}
+
+/// Serve an embedded `plugin.toml` `logo` file from under the plugin install root.
+async fn get_plugin_logo(
+    State(state): State<Arc<AppState>>,
+    AxumPath((kind, id)): AxumPath<(String, String)>,
+) -> Result<Response, StatusCode> {
+    let cfg = state.config.read().await.clone();
+    let (bytes, content_type) = plugin_logo_bytes_for(&cfg, &kind, &id)?;
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "private, max-age=3600"),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+/// Discover `kind`/`id` and read an embedded logo (sync; route + integration tests).
+fn plugin_logo_bytes_for(
+    config: &Config,
+    kind: &str,
+    id: &str,
+) -> Result<(Vec<u8>, &'static str), StatusCode> {
+    let plugin = bookclerk_plugin_host::discover_plugins(config)
+        .map_err(|_| StatusCode::NOT_FOUND)?
+        .into_iter()
+        .find(|p| plugin_kind_label(p.manifest.kind) == kind && p.manifest.id == id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    read_embedded_plugin_logo(&plugin)
+}
+
+/// Read and confine an embedded logo path under `plugin.root`.
+fn read_embedded_plugin_logo(
+    plugin: &bookclerk_plugin_host::DiscoveredPlugin,
+) -> Result<(Vec<u8>, &'static str), StatusCode> {
+    let raw = plugin
+        .manifest
+        .logo
+        .as_deref()
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let logo = bookclerk_plugin_host::validate_logo(raw).map_err(|_| StatusCode::NOT_FOUND)?;
+    let bookclerk_plugin_host::LogoKind::EmbeddedPath(rel) = logo else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let root = std::fs::canonicalize(&plugin.root).map_err(|_| StatusCode::NOT_FOUND)?;
+    let path = std::fs::canonicalize(root.join(&rel)).map_err(|_| StatusCode::NOT_FOUND)?;
+    if !path.starts_with(&root) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let meta = std::fs::metadata(&path).map_err(|_| StatusCode::NOT_FOUND)?;
+    if !meta.is_file() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    if meta.len() > bookclerk_plugin_host::MAX_EMBEDDED_LOGO_BYTES {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    let bytes = std::fs::read(&path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok((bytes, bookclerk_plugin_host::logo_content_type(&rel)))
+}
+
+async fn get_plugin_consent(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<PluginConsentResponse>, StatusCode> {
+    let cfg = state.config.read().await.clone();
+    let plugin = discover_plugins_for_settings(&cfg)
+        .await
+        .into_iter()
+        .find(|p| p.manifest.id == id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let request = consent_request(&plugin.manifest);
+    let summary = consent_summary(&request);
+    let store = PluginGrantStore::load(&cfg.paths().files_dir).map_err(|err| {
+        tracing::error!(error = %err, "failed to load plugin grants");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let existing = store.get(&id).cloned();
+    let covered = existing
+        .as_ref()
+        .is_some_and(|grant| grant_covers(grant, &request));
+    Ok(Json(PluginConsentResponse {
+        plugin_id: id,
+        request,
+        covered,
+        summary,
+        existing,
+    }))
+}
+
+async fn post_plugin_consent(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<PluginConsentApproveRequest>,
+) -> Result<Json<PluginConsentResponse>, StatusCode> {
+    if !body.approve {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let cfg = state.config.read().await.clone();
+    let plugin = discover_plugins_for_settings(&cfg)
+        .await
+        .into_iter()
+        .find(|p| p.manifest.id == id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let grant = consent_request(&plugin.manifest);
+    let summary = consent_summary(&grant);
+    let mut store = PluginGrantStore::load(&cfg.paths().files_dir).map_err(|err| {
+        tracing::error!(error = %err, "failed to load plugin grants");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    store.upsert(grant.clone());
+    store.save(&cfg.paths().files_dir).map_err(|err| {
+        tracing::error!(error = %err, "failed to save plugin grants");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(Json(PluginConsentResponse {
+        plugin_id: id,
+        request: grant.clone(),
+        covered: true,
+        summary,
+        existing: Some(grant),
+    }))
+}
+
 async fn get_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SettingsResponse>, StatusCode> {
@@ -1461,16 +1641,23 @@ async fn get_settings(
     let discovered_plugins = discover_plugins_for_settings(&cfg).await;
     Ok(Json(SettingsResponse {
         settings: current_settings_snapshot(&cfg),
-        plugins: plugin_settings_snapshot(&cfg, &state.sources, &discovered_plugins),
+        plugins: plugin_settings_snapshot(
+            &cfg,
+            &state.sources,
+            &state.integrations,
+            &discovered_plugins,
+        ),
     }))
 }
 
 async fn patch_settings(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PatchSettingsRequest>,
-) -> Result<Json<SettingsResponse>, StatusCode> {
+) -> Result<Json<SettingsResponse>, Response> {
     if body.settings.is_empty() {
-        return get_settings(State(state.clone())).await;
+        return get_settings(State(state.clone()))
+            .await
+            .map_err(IntoResponse::into_response);
     }
 
     let updates: Vec<(String, String)> = body
@@ -1487,10 +1674,13 @@ async fn patch_settings(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| {
             tracing::warn!(error = %err, "rejected invalid settings update");
-            StatusCode::BAD_REQUEST
+            StatusCode::BAD_REQUEST.into_response()
         })?;
 
-    let editable = get_settings(State(state.clone())).await?.0;
+    let editable = get_settings(State(state.clone()))
+        .await
+        .map_err(IntoResponse::into_response)?
+        .0;
     let editable_keys: std::collections::HashSet<&str> = editable
         .plugins
         .iter()
@@ -1508,7 +1698,7 @@ async fn patch_settings(
         .find(|(key, _)| !editable_keys.contains(key.as_str()) && key != "database.plugin")
     {
         tracing::warn!(%key, "rejected unsupported settings update key");
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into_response());
     }
     if let Some((key, value)) = updates.iter().find(|(key, value)| {
         editable_plugin_options
@@ -1517,7 +1707,7 @@ async fn patch_settings(
             .is_some_and(|choices| !choices.iter().any(|choice| choice.value == *value))
     }) {
         tracing::warn!(%key, %value, "rejected invalid enum settings update value");
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into_response());
     }
 
     let files_dir = {
@@ -1528,6 +1718,44 @@ async fn patch_settings(
         let cfg = state.config.read().await;
         cfg.paths().config_file.clone()
     };
+    let current_database_plugin = {
+        let cfg = state.config.read().await;
+        cfg.database.plugin.clone()
+    };
+
+    let mut enabling = newly_enabled_plugin_ids(&updates, &editable_plugin_options);
+    // Direct `database.plugin` (and exclusive `database.<id>.enabled`) switches
+    // must not bypass consent — same bar as `bookclerk plugins enable`.
+    for id in database_backends_requiring_grant(&updates, &current_database_plugin) {
+        if !enabling.iter().any(|e| e.eq_ignore_ascii_case(&id)) {
+            enabling.push(id);
+        }
+    }
+    if !enabling.is_empty() {
+        let discovered = discover_plugins_for_settings(
+            &Config::load(Some(files_dir.clone()), Some(config_path.clone())).map_err(|err| {
+                tracing::error!(error = %err, "failed to load config for consent check");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            })?,
+        )
+        .await;
+        for plugin_id in &enabling {
+            let Some(plugin) = discovered.iter().find(|p| p.manifest.id == *plugin_id) else {
+                tracing::warn!(%plugin_id, "cannot enable undiscovered plugin");
+                return Err(StatusCode::BAD_REQUEST.into_response());
+            };
+            if let Err(err) = require_grant(&files_dir, &plugin.manifest) {
+                let request = consent_request(&plugin.manifest);
+                let summary = consent_summary(&request);
+                tracing::warn!(%plugin_id, error = %err, "plugin enable blocked pending consent");
+                return Err(consent_required_response(
+                    plugin_id,
+                    err.to_string(),
+                    summary,
+                ));
+            }
+        }
+    }
 
     let mut normalized_pairs = Vec::<(String, String)>::new();
     for (key, value) in &updates {
@@ -1540,12 +1768,12 @@ async fn patch_settings(
 
     let mut cfg = Config::load(Some(files_dir), Some(config_path.clone())).map_err(|err| {
         tracing::error!(error = %err, "failed to load config for settings update");
-        StatusCode::INTERNAL_SERVER_ERROR
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
     })?;
 
     apply_database_enable_updates(&mut cfg, &updates).map_err(|err| {
         tracing::warn!(error = %err, "rejected database settings update");
-        StatusCode::BAD_REQUEST
+        StatusCode::BAD_REQUEST.into_response()
     })?;
 
     let pairs = normalized_pairs
@@ -1558,20 +1786,22 @@ async fn patch_settings(
     // address cannot leave config.toml half-updated.
     if let Err(err) = validate_daemon_listen(&cfg) {
         tracing::warn!(error = %err, "rejected daemon.listen settings update");
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into_response());
     }
 
     cfg.write_toml_file(&config_path).map_err(|err| {
         tracing::error!(error = %err, "settings update write failed");
-        StatusCode::INTERNAL_SERVER_ERROR
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
     })?;
 
     reload_daemon_config(&state).await.map_err(|err| {
         tracing::error!(error = %err, "settings reload failed");
-        StatusCode::INTERNAL_SERVER_ERROR
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
     })?;
 
-    get_settings(State(state)).await
+    get_settings(State(state))
+        .await
+        .map_err(IntoResponse::into_response)
 }
 
 async fn reload_config(
@@ -1625,6 +1855,23 @@ async fn migrate_database(
                 )
             };
             if body.apply && !body.dry_run {
+                let files_dir = cfg.paths().files_dir.clone();
+                let discovered = discover_plugins_for_settings(&cfg).await;
+                let Some(plugin) = discovered
+                    .iter()
+                    .find(|p| p.manifest.id.eq_ignore_ascii_case(&to_plugin))
+                else {
+                    tracing::warn!(%to_plugin, "cannot apply migrate to undiscovered database plugin");
+                    return Err(StatusCode::BAD_REQUEST);
+                };
+                if let Err(err) = require_grant(&files_dir, &plugin.manifest) {
+                    tracing::warn!(
+                        plugin = %to_plugin,
+                        error = %err,
+                        "database migrate apply blocked pending consent"
+                    );
+                    return Err(StatusCode::FORBIDDEN);
+                }
                 let mut new_cfg = cfg.clone();
                 new_cfg.database.plugin = to_plugin.clone();
                 let path = new_cfg.paths().config_file.clone();
@@ -2950,7 +3197,8 @@ fn internal_err(err: impl std::fmt::Display) -> (StatusCode, String) {
 mod tests {
     use super::{
         allowed_setting_key, apply_database_enable_updates, build_plugin_settings_group,
-        normalize_disabled_shelves, normalize_setting_value, title_id_candidates,
+        database_backends_requiring_grant, normalize_disabled_shelves, normalize_setting_value,
+        title_id_candidates,
     };
     use bookclerk_config::Config;
 
@@ -2983,6 +3231,36 @@ mod tests {
         assert!(allowed_setting_key("database.sqlite.enabled"));
         assert!(!allowed_setting_key("database"));
         assert!(!allowed_setting_key("database..enabled"));
+    }
+
+    #[test]
+    fn database_plugin_override_requires_grant() {
+        assert_eq!(
+            database_backends_requiring_grant(&[("database.plugin".into(), "d1".into())], "sqlite"),
+            vec!["d1".to_string()]
+        );
+        assert!(database_backends_requiring_grant(
+            &[("database.plugin".into(), "sqlite".into())],
+            "sqlite"
+        )
+        .is_empty());
+        assert!(database_backends_requiring_grant(
+            &[("database.plugin".into(), "".into())],
+            "sqlite"
+        )
+        .is_empty());
+        assert_eq!(
+            database_backends_requiring_grant(
+                &[("database.postgres.enabled".into(), "true".into())],
+                "sqlite"
+            ),
+            vec!["postgres".to_string()]
+        );
+        assert!(database_backends_requiring_grant(
+            &[("database.sqlite.enabled".into(), "true".into())],
+            "sqlite"
+        )
+        .is_empty());
     }
 
     #[test]
@@ -3148,5 +3426,120 @@ mod tests {
             "continue-series".into(),
         ]);
         assert_eq!(normalized, vec!["requests", "continue-series"]);
+    }
+
+    fn stage_logo_plugin(files: &std::path::Path, logo_line: &str) -> std::path::PathBuf {
+        let root = files.join("plugins").join("logo-echo");
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        let bin = root.join("guest");
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // Minimal 1x1 PNG
+        let png: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08,
+            0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xfe,
+            0xd4, 0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(root.join("assets/logo.png"), png).unwrap();
+        std::fs::write(
+            root.join("plugin.toml"),
+            format!(
+                r#"
+api_version = 1
+id = "logo-echo"
+kind = "integration"
+version = "0.1.0"
+{logo_line}
+runtime = "native"
+command = "./guest"
+[capabilities.network]
+mode = "deny"
+"#
+            ),
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn embedded_logo_route_bytes_via_discovery() {
+        let files = tempfile::tempdir().unwrap();
+        stage_logo_plugin(files.path(), r#"logo = "assets/logo.png""#);
+        let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+        let (bytes, ctype) =
+            super::plugin_logo_bytes_for(&cfg, "integration", "logo-echo").expect("logo bytes");
+        assert_eq!(ctype, "image/png");
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn remote_logo_url_is_not_served_by_embed_route() {
+        let files = tempfile::tempdir().unwrap();
+        stage_logo_plugin(
+            files.path(),
+            r#"logo = "https://www.google.com/s2/favicons?domain=example.com&sz=128""#,
+        );
+        let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+        let err = super::plugin_logo_bytes_for(&cfg, "integration", "logo-echo").unwrap_err();
+        assert_eq!(err, axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn plugin_logo_http_route_serves_png() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let files = tempfile::tempdir().unwrap();
+        stage_logo_plugin(files.path(), r#"logo = "assets/logo.png""#);
+        let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+
+        async fn logo_handler(
+            axum::extract::State(cfg): axum::extract::State<Config>,
+            axum::extract::Path((kind, id)): axum::extract::Path<(String, String)>,
+        ) -> Result<axum::response::Response, StatusCode> {
+            use axum::response::IntoResponse;
+            let (bytes, content_type) = super::plugin_logo_bytes_for(&cfg, &kind, &id)?;
+            Ok((
+                StatusCode::OK,
+                [
+                    (axum::http::header::CONTENT_TYPE, content_type),
+                    (axum::http::header::CACHE_CONTROL, "private, max-age=3600"),
+                ],
+                bytes,
+            )
+                .into_response())
+        }
+
+        let app = axum::Router::new()
+            .route(
+                "/api/plugins/{kind}/{id}/logo",
+                axum::routing::get(logo_handler),
+            )
+            .with_state(cfg);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/plugins/integration/logo-echo/logo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n");
     }
 }

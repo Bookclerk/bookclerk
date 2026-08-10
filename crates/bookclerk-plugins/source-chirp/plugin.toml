@@ -1,6 +1,0 @@
-api_version = 1
-id = "chirp"
-name = "Chirp"
-kind = "source"
-command = "./bookclerk-plugin-source-chirp"
-outbound_urls = ["https://www.chirpbooks.com/"]

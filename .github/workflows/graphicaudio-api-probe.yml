@@ -11,14 +11,14 @@ on:
     paths:
       - "scripts/source-probes/**"
       - ".github/workflows/graphicaudio-api-probe.yml"
-      - "crates/bookclerk-plugins/source-graphicaudio/src/client.rs"
-      - "crates/bookclerk-plugins/source-graphicaudio/src/magento.rs"
+      - "crates/bookclerk-plugins/optional/source-graphicaudio/src/client.rs"
+      - "crates/bookclerk-plugins/optional/source-graphicaudio/src/magento.rs"
   pull_request:
     paths:
       - "scripts/source-probes/**"
       - ".github/workflows/graphicaudio-api-probe.yml"
-      - "crates/bookclerk-plugins/source-graphicaudio/src/client.rs"
-      - "crates/bookclerk-plugins/source-graphicaudio/src/magento.rs"
+      - "crates/bookclerk-plugins/optional/source-graphicaudio/src/client.rs"
+      - "crates/bookclerk-plugins/optional/source-graphicaudio/src/magento.rs"
 
 permissions:
   contents: read

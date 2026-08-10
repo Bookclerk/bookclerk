@@ -3,5 +3,5 @@
     "dockerfile": "cloud-agent.Dockerfile",
     "context": "."
   },
-  "install": "cargo fetch"
+  "install": "mkdir -p .cargo-home .tmp BookclerkFiles && cargo fetch"
 }

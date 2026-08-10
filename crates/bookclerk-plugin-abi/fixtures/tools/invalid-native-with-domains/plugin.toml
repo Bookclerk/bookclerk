@@ -1,0 +1,9 @@
+api_version = 1
+id = "bad-native-domains"
+kind = "source"
+runtime = "native"
+command = "./bad"
+
+[capabilities.network]
+mode = "outbound"
+domains = ["api.example.com"]

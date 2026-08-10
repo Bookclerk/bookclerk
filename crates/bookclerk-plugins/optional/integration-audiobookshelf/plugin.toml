@@ -1,0 +1,15 @@
+api_version = 1
+id = "audiobookshelf"
+name = "Audiobookshelf"
+kind = "integration"
+version = "0.1.0"
+logo = "https://www.google.com/s2/favicons?domain=audiobookshelf.org&sz=128"
+runtime = "native"
+command = "./bookclerk-plugin-integration-audiobookshelf"
+
+[capabilities.network]
+mode = "outbound"
+# Self-hosted ABS: list your server hostname(s) here. www.audiobookshelf.org
+# alone is insufficient for talking to your library instance.
+[capabilities.bindings]
+config = true

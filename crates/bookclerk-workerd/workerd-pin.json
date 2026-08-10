@@ -1,0 +1,27 @@
+{
+  "release_tag": "v1.20260810.1",
+  "bundled_compat_date": "2026-08-01",
+  "version_stamp": "workerd.version",
+  "assets": {
+    "linux-x86_64": {
+      "artifact": "workerd-linux-64.gz",
+      "sha256_hex": "9e1afea9756db8838dcb6587854f1dd7a0c582de11615b818b2e33aa52369e4e"
+    },
+    "linux-aarch64": {
+      "artifact": "workerd-linux-arm64.gz",
+      "sha256_hex": "feb8f8daff71cc2ae41d85180e6c462fdfa7926b0fc1ac9b2b732752a1031700"
+    },
+    "macos-x86_64": {
+      "artifact": "workerd-darwin-64.gz",
+      "sha256_hex": "210f206380eef81c50636b2e6f95e3d023fc71e9ea0255a06b40599a1a1ed5e6"
+    },
+    "macos-aarch64": {
+      "artifact": "workerd-darwin-arm64.gz",
+      "sha256_hex": "4cb7c537be16784c9cb0148d0fa9f0315aeaa4e307d9e3f03cb29cd7388f0cb0"
+    },
+    "windows-x86_64": {
+      "artifact": "workerd-windows-64.gz",
+      "sha256_hex": "098f30dc67d05cd07add352af31b9f66ca22dcd0409c077ffa44b6f8ed329859"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+api_version = 1
+id = "chirp"
+name = "Chirp"
+kind = "source"
+version = "0.1.0"
+logo = "https://www.google.com/s2/favicons?domain=chirpbooks.com&sz=128"
+runtime = "native"
+command = "./bookclerk-plugin-source-chirp"
+
+[capabilities.network]
+mode = "outbound"
+# GraphQL API + storefront. Cover/media download URLs come from the API
+# (often CDN hosts); redirects after an allowed initial host do not need
+# re-approval. Add CDN wildcards only when those hosts are used as initial
+# request targets.
+[capabilities.bindings]
+config = true
+secrets = true
+work_fs = true

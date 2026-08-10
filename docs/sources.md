@@ -68,7 +68,7 @@ Credentials are stored in `encrypted_secrets` (DB-backed). Classic Libation impo
 IdentityTokens are not converted. Re-authenticate with `auth login`, or import an
 audible-rs auth file via `bookclerk auth import`.
 
-Low-level auth/download notes: [`crates/bookclerk-plugins/source-audible/README.md`](../crates/bookclerk-plugins/source-audible/README.md).
+Low-level auth/download notes: [`crates/bookclerk-plugins/optional/source-audible/README.md`](../crates/bookclerk-plugins/optional/source-audible/README.md).
 
 ### Example
 

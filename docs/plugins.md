@@ -2,78 +2,136 @@
 
 Bookclerk is built around pluggable **sources**, **destinations**, and
 **integrations**. First-party **guest** implementations live under
-`crates/bookclerk-plugins/` (one package per plugin, JSON-RPC binary + optional
-in-process `register()` library). The **host** runtime is
+`crates/bookclerk-plugins/{platform,optional}/` (one package per plugin). The
+**host** runtime is
 [`bookclerk-plugin-host`](../crates/bookclerk-plugin-host) — discovery, spawn,
-jail, and JSON-RPC — distinct from the runtime install tree
+jail, consent, and Workers RPC — distinct from the runtime install tree
 `$BOOKCLERK_FILES_DIR/plugins/`.
 
-## Terminology
+The product ABI is **Workers RPC** at `api_version = 1` (no `protocol` key; no
+JSON-RPC 2.0 as the product ABI). Decision record:
+[`docs/adr/plugin-workers-rpc-workerd.md`](adr/plugin-workers-rpc-workerd.md).
+Authoritative schema:
+[`crates/bookclerk-plugin-abi/schema/abi.json`](../crates/bookclerk-plugin-abi/schema/abi.json).
 
-| Term | Meaning |
+Authors implement the branded guest base **`BookclerkPlugin`** via a minimal
+language SDK. Each SDK covers **both** `native` and `workerd`, plus in-process
+author tools (`check` / `fmt` / `sync-embed` / `package` / `smoke`) that are
+**self-contained** for that language (vendoring the `BookclerkPlugin` embed
+and, for Python Workers, the required compatibility flags). Workerd `smoke`
+downloads the pinned Cloudflare `workerd` binary and runs handshake/health
+without a built Rust `bookclerk-workerd` launcher — see
+[packaging.md](packaging.md#plugin-author-tools-check--fmt--sync-embed--package--smoke).
+
+On native guests, `BookclerkPluginGuest.serve` is the stdin/stdout Workers RPC
+runner — authors still subclass (or implement) `BookclerkPlugin`.
+
+| Language | Package | Notes |
+| --- | --- | --- |
+| TypeScript / Node | [`@bookclerk/plugin-sdk`](../packages/plugin-sdk/) | `/workerd` + `/native` both export `BookclerkPlugin`; native adds `BookclerkPluginGuest` |
+| Python | [`bookclerk-plugin-sdk`](../packages/plugin-sdk-python/) | `BookclerkPlugin` + `BookclerkPluginGuest`; workerd `BookclerkPlugin` |
+| Rust | [`bookclerk-plugin-sdk`](../crates/bookclerk-plugin-sdk/) | `BookclerkPlugin` trait + `BookclerkPluginGuest`; workerd embed + `wasmBookclerkPlugin` |
+
+Runtimes in `plugin.toml`:
+
+| `runtime` | How it runs |
 | --- | --- |
-| **Plugin host** | Crate `bookclerk-plugin-host`; loads guests, never ships storefront logic by default |
-| **Guest / external plugin** | Separate executable + `plugin.toml` under `plugins/<id>/` |
-| **Plugin package** | Rust crate under `crates/bookclerk-plugins/` (or third-party repo) |
-| **Platform-shipped guest** | First-party external plugin bundled in the install package (`plugins/sqlite/`, `plugins/local/`, storefronts, …) — sandboxed subprocess, not linked in-process |
-| **In-process fallback** | When a platform guest is missing or fails to start, hosts fall back to the same logic in `bookclerk-library` (SQLite) or `bookclerk-storage` (local output) |
-| **`bundled-plugins`** | Optional host feature linking storefronts in-process (dev only; omit for release packaging) |
-
-This document covers the **external** (subprocess) model over newline-delimited
-[JSON-RPC 2.0](https://www.jsonrpc.org/specification) on stdio (any language).
+| `native` | OS binary speaking the same Workers RPC ABI (spawned through `bookclerk-jail`) |
+| `workerd` | Author `modules/` loaded by first-party [`bookclerk-workerd`](../crates/bookclerk-workerd/) — **one jail + one isolate per plugin** (local embed, not Cloudflare cloud execution) |
 
 For the product overview see the [documentation index](README.md). Built-in
 storefronts: [sources.md](sources.md). Audiobookshelf / Connect:
 [integrations.md](integrations.md). Publishing / crates.io taxonomy and
 standalone author repos: [plugin-registry.md](plugin-registry.md).
 
+## Terminology
+
+| Term | Meaning |
+| --- | --- |
+| **Plugin host** | Crate `bookclerk-plugin-host`; loads guests, never ships storefront logic by default |
+| **External guest** | Any jailed subprocess plugin (platform, product, example, or third-party) |
+| **Platform guest** | Bundled in the installer: `sqlite`, `local` only (`plugins/platform/`) |
+| **Optional plugin** | Bookclerk-maintained optional guests (storefronts, ABS, s3, d1, postgres under `plugins/optional/`) |
+| **Product plugin** | Synonym for optional first-party guests (packaged via `cargo package-plugins`) |
+| **Reference example** | Echo samples under `examples/`; CI/`cargo dev --examples` only — never packaged |
+| **Third-party plugin** | Outside this monorepo; same jail + Workers RPC ABI |
+| **Plugin package** | Rust crate under `crates/bookclerk-plugins/`, or a workerd archive (`plugin.toml` + `modules/`) |
+| **In-process fallback** | When a platform guest is missing or fails to start, hosts fall back to logic in `bookclerk-library` / `bookclerk-storage` |
+| **`bundled-plugins`** | Optional host feature linking storefronts in-process (dev only; omit for release packaging) |
+| **`BookclerkPlugin`** | Branded guest contract (TS/Python class / Rust trait) on both native and workerd; app code never depends on bare platform entrypoints |
+| **`BookclerkPluginGuest`** | Native-only stdio Workers RPC runner that dispatches to a `BookclerkPlugin` (sibling of low-level `PluginGuest`) |
+
 ## Local development (external guests)
 
-Hosts default to **external guests only** (no storefronts linked in-process).
-One command builds, stages, and runs with sandboxed platform guests (sqlite, local,
-storefronts):
+`cargo dev` builds a **lean** platform set (daemon + helpers + platform guests),
+installs platform into `$BOOKCLERK_FILES_DIR/plugins/`, and runs `bookclerkd`
+(restart-based; no HMR). Optional storefronts are opt-in:
 
 ```bash
-export BOOKCLERK_FILES_DIR=/tmp/BookclerkFiles   # optional; this is the default
-cargo dev-daemon                                 # daemon with staged guests
-cargo dev-cli -- version                         # CLI with staged guests
+export BOOKCLERK_FILES_DIR=./BookclerkFiles   # optional; cargo-dev default
+cargo dev                                        # lean platform + daemon
+cargo dev --optional                             # + optional storefronts
+cargo dev --examples                             # + reference Echo examples
+cargo dev-cli -- version                         # lean CLI path
 ```
 
 Granular aliases (same dispatcher — see `crates/bookclerk-dev/README.md`):
 
 ```bash
-cargo build-plugins          # guest binaries only
-cargo stage-plugins          # build + copy to target/plugin-artifacts
-cargo test-staged            # build + stage + handshake integration test
+cargo build-app --platform              # full default-members + platform guests
+cargo build-app --optional --examples   # optional + Cargo examples
+cargo install-platform                  # sqlite + local → FILES_DIR/plugins
+cargo stage-plugins --optional          # optional → target/plugin-artifacts
+cargo stage-plugins --examples --skip-build
+cargo test-staged                       # handshake smoke
 ```
 
 Add `--release` to any alias for release builds. Override staging dir with
-`BOOKCLERK_PLUGIN_ARTIFACTS`. Forward host args after `--` (e.g. `cargo dev-daemon -- --help`).
+`BOOKCLERK_PLUGIN_ARTIFACTS`. Forward host args after `--` (e.g. `cargo dev -- --help`).
 
 Optional in-process iteration (no staging): build hosts with
 `--features bundled-plugins` on `bookclerk-cli` / `bookclerkd`.
+
+Reference Echo examples (distinct plugin ids):
+
+| Path | Runtime |
+| --- | --- |
+| [`examples/plugins-echo-native-rust`](../examples/plugins-echo-native-rust/) | native Rust |
+| [`examples/plugins-echo-native-node`](../examples/plugins-echo-native-node/) | native Node SEA |
+| [`examples/plugins-echo-native-python`](../examples/plugins-echo-native-python/) | native Python |
+| [`examples/plugins-echo-workerd-ts`](../examples/plugins-echo-workerd-ts/) | workerd TypeScript |
+| [`examples/plugins-echo-workerd-python`](../examples/plugins-echo-workerd-python/) | workerd Python Workers |
+| [`examples/plugins-echo-workerd-rust`](../examples/plugins-echo-workerd-rust/) | workerd Rust/Wasm |
+
+```bash
+cd packages/plugin-sdk && npm ci && npm run build
+cd ../../examples/plugins-echo-workerd-ts && npm ci && npm run typecheck
+```
 
 ## Why subprocesses?
 
 Content sources and integrations need their own async runtimes, HTTPS clients,
 and OAuth flows. Loading foreign `cdylib`s into the host process is fragile
-across Rust/Tokio versions. A child process gives crash isolation, independent
-releases, and a stable wire protocol.
+across Rust/Tokio versions. A child process (native binary or
+`bookclerk-workerd` under jail) gives crash isolation, independent releases, and
+a stable ABI. Workerd is an **authoring/runtime** choice for portable JS/TS
+modules — the jail remains the security boundary (see the ADR).
 
 ## Trust model (external plugins are untrusted)
 
 External plugins run as a **separate OS process**, confined by the host to the
-directories it hands them ([the guest jail](#the-guest-jail)). The protocol
-boundary is narrow on top of that:
+directories it hands them ([the guest jail](#the-guest-jail)). The ABI boundary
+is narrow on top of that:
 
 | Host guarantees | Detail |
 | --- | --- |
-| No library DB path (sources / integrations / outputs) | `library.db` is never passed on the wire to those kinds — and not reachable if it were. **Database** guests receive the SQLite file only via the fd-3 side channel (or `sqlite_path` when unconfined) at `db.connect` |
+| No library DB path (sources / integrations / outputs) | `library.db` is never passed on the wire to those kinds — and not reachable if it were. **Database** guests receive the SQLite file only via the fd-3 side channel (or `sqlite_path` when unconfined) at `dbConnect` |
 | No files-dir root | Plugins get `plugin_data_dir` (`…/plugins/<id>/data`) and a per-fetch work directory (descriptor) — not `master.key` or the download cache root |
 | Env scrub | Child spawn uses `env_clear` + a small allowlist (`PATH`, locale, …). `BOOKCLERK_*`, `AWS_*`, tokens, and DB URLs are not inherited; `HOME` and `TMPDIR` are replaced with the guest's own directories |
-| Host-mediated secrets | `login` returns `{ account, credentials }`; host seals into `encrypted_secrets` with `provider = plugin id`. `scan` and `fetch_title` receive those blobs from the host |
-| Host-mediated library writes | `scan` returns book DTOs; host upserts with `source` forced to the plugin id. `list_accounts` is answered from the host accounts table |
+| Host-mediated secrets | `login` returns `{ account, credentials }`; host seals into `encrypted_secrets` with `provider = plugin id`. `scan` and `fetchTitle` receive those blobs from the host |
+| Host-mediated library writes | `scan` returns book DTOs; host upserts with `source` forced to the plugin id. Account listing for a plugin id is answered from the host accounts table |
 | Scoped identity | Plugin cannot claim another storefront’s `source` / `provider` |
+| Network consent | Operator runs `bookclerk plugins approve` before enable. **Workerd** guests enforce `capabilities.network.domains` as the isolate hostname allowlist (redirect hops free). **Native** guests with `mode = "outbound"` get coarse jail internet — **no hostname filter**; `domains` must not be declared |
 
 First-party guests ship under `crates/bookclerk-plugins/` with the guest SDK
 contract. Host binaries (`bookclerk`, `bookclerkd`) depend on
@@ -85,15 +143,16 @@ external copies of the same id are skipped when an in-process adapter is already
 registered. After registration, hosts talk **only**
 through `ContentSource` /
 `Integration` (login, scan, fetch, import, revoke, inspect, plus catalog
-`search_catalog` / `catalog_detail` / `expand_candidates` / `purchase_hint` /
-`list_deals` for Discover). Sources always return `PlainFetch` (`SourceFetch` is
+`searchCatalog` / `catalogDetail` / `expandCandidates` / `purchaseHint` /
+`listDeals` for Discover). Sources always return `PlainFetch` (`SourceFetch` is
 an alias) —
 DRM (Adrm/CENC) is decrypted inside the Audible plugin before the host sees
-media. Guest `fetch_title` carries optional `pdf_url`; catalog methods are on
-the JSON-RPC wire for external guests.
+media. Guest `fetchTitle` carries optional `pdfUrl`; catalog methods are on the
+Workers RPC wire for external guests.
 
-Enabling a third-party plugin still means running that binary as the Bookclerk
-user, inside the jail below — review plugins before enabling them.
+Enabling a third-party plugin still means running that guest as the Bookclerk
+user, inside the jail below — review and **approve** capabilities before
+enabling.
 
 ## Shipping without a store
 
@@ -133,8 +192,10 @@ choice made by whoever installs the plugin, not by whoever shipped the binary.
 ## The guest jail
 
 Every external guest is started by **`bookclerk-jail`**, a small launcher that
-applies a confinement policy to itself and then `exec`s the plugin. What it
-grants is decided entirely by the host.
+applies a confinement policy to itself and then `exec`s the plugin process
+(native binary **or** `bookclerk-workerd`). What it grants is decided entirely
+by the host. Workerd is not a substitute for the jail — one jail + one isolate
+per plugin.
 
 A guest gets four paths and nothing else:
 
@@ -143,7 +204,7 @@ A guest gets four paths and nothing else:
 | its install directory | read-only | `cwd` |
 | `…/plugins/<id>/data` | read/write | `HOME`, and `plugin_data_dir` on the wire |
 | `…/plugins/<id>/tmp` | read/write | `TMPDIR` / `TEMP` / `TMP` |
-| one fetch work directory at a time | write (via descriptor) | passed on fd 3 immediately before each `fetch_title` |
+| one fetch work directory at a time | write (via descriptor) | passed on fd 3 immediately before each `fetchTitle` |
 
 Plus the system read paths every process needs to start (the loader, shared
 libraries, the CA bundle — including `/var/lib/ca-certificates` on
@@ -168,7 +229,7 @@ A guest is long-lived — one process per plugin, serving every call for the lif
 of the daemon — and filesystem confinement is fixed at spawn. Granting the whole
 cache would let one fetch read or overwrite every other fetch's scratch.
 
-The host therefore opens exactly one work directory per `fetch_title`, sends it
+The host therefore opens exactly one work directory per `fetchTitle`, sends it
 over a Unix socket with `SCM_RIGHTS` on fd 3 (preserved through
 `bookclerk-jail`), and the guest resolves `/proc/self/fd/N` (or `/dev/fd/N` on
 macOS), where `N` is the received directory descriptor. The `cache_dir` string
@@ -217,28 +278,65 @@ dependency bump, and becomes a property of the jail.
 
 ### Declaring what a plugin needs
 
-A manifest may ask for network reachability, and nothing else:
+A manifest declares network and host bindings under **`[capabilities]`** — not
+a free-form filesystem widen.
+
+**Workerd** (hostname-filtered outbound):
 
 ```toml
-[sandbox]
-network = "outbound"   # none | outbound | listen
+runtime = "workerd"
+# …
+
+[capabilities.network]
+mode = "outbound"
+domains = ["api.example.com", "www.example.com"]   # required; isolate allowlist
 ```
 
-| Value | Grants |
-| --- | --- |
-| `none` | no IP sockets at all |
-| `outbound` (default) | outbound connections only — enough to call an API and download a file |
-| `listen` | outbound plus a loopback callback listener on a kernel-assigned port |
+**Native** (coarse jail outbound — **no domain list**):
 
-`listen` exists for interactive OAuth: Audible's sign-in receives its
-authorization code over loopback, so the Audible plugin declares it. On Linux the
-grant is a bind on port 0 (the kernel picks); on macOS it is a bind and inbound
-filtered to `localhost`. Either way a fixed, well-known port cannot be claimed.
+```toml
+runtime = "native"
+command = "./my-plugin"
+
+[capabilities.network]
+mode = "outbound"   # deny | outbound — do NOT set `domains`
+```
+
+| Network `mode` | Native | Workerd |
+| --- | --- | --- |
+| `deny` | no IP sockets | isolate blocked (`globalOutbound` → blocked) |
+| `outbound` | coarse jail internet (`NetPolicy::Outbound`, or `OutboundListen` with oauth) — **not** hostname-filtered | isolate egress allowlist; **`domains` required** |
+
+`capabilities.network.domains` is **workerd-only**. Declaring `domains` on a
+native plugin is a validate/schema error. Do **not** invent domains on native
+plugins for Settings favicons — use optional top-level `logo` instead. Native
+storefronts (Audible, Libro, Chirp, GraphicAudio), destinations (S3), and
+databases (Postgres, D1 HTTP) that need the network use `mode = "outbound"` and
+dial with normal OS sockets under the jail. There is no host HTTP/TCP domain
+proxy for native guests: AppContainer
+blocks loopback `HTTP_PROXY`, and an HTTP-only IPC mediator cannot carry
+Postgres TCP, the AWS SDK, or libraries that embed their own HTTP client.
+
+When you need enforceable hostname allowlists, ship a **workerd** plugin. The
+operator still **approves** native `outbound` (with an explicit warning that the
+guest can reach the open internet).
+
+Workerd: redirects after an allowed initial host do not need re-allowlist
+membership; a direct request to a non-listed host is denied inside the isolate
+(`bridge/egress.js` + shared `EgressPolicy`).
+
+`bindings.oauth = true` (with outbound network) is how storefronts declare an
+OAuth-style callback need. The **host** owns the browser-facing TCP listener and
+forwards connections over IPC (see [Interactive listeners](#interactive-listeners-oauth-and-similar));
+native guests with oauth also receive jail listen rights for that tunnel.
 
 Unrestricted network access is deliberately not expressible, and **the filesystem
 allowlist cannot be widened from a manifest**. A manifest ships with the plugin
 it describes, so anything it can ask for is something a hostile plugin can ask
-for too.
+for too — consent and review are the operator controls.
+
+Optional `[capabilities.methods]` lists RPC method names for discovery/consent
+UI (e.g. `handshake`, `health`, `onEvent`, `cli`).
 
 ### Isolation modes
 
@@ -312,16 +410,16 @@ unique profile per job.
 
 Per-fetch / upload / sqlite paths are not in the spawn allowlist. On Unix the
 host passes an open descriptor over `SCM_RIGHTS`; on Windows it temporarily ACLs
-the path for the Package SID, puts the path on the JSON-RPC wire, and revokes
+the path for the Package SID, puts the path on the RPC wire, and revokes
 the ACE when the RPC returns.
 
 #### Interactive listeners (OAuth and similar)
 
-Guest `network = "listen"` declares that the storefront needs an OAuth-style
-callback. The **host** owns the browser-facing TCP listener and forwards each
-connection over a duplex IPC tunnel (Unix socket under the plugin scratch dir,
-or a Windows named pipe) into the guest, which still runs its HTTP stack
-(Audible LoginServer). `login.start` carries `callback_ipc` +
+`capabilities.bindings.oauth = true` declares that the storefront needs an
+OAuth-style callback. The **host** owns the browser-facing TCP listener and
+forwards each connection over a duplex IPC tunnel (Unix socket under the plugin
+scratch dir, or a Windows named pipe) into the guest, which still runs its HTTP
+stack (Audible LoginServer). `loginStart` carries `callback_ipc` +
 `callback_public_base`; the guest must not bind TCP when those are set.
 
 On Windows the named pipe is created with a Package-SID DACL (plus SYSTEM /
@@ -373,14 +471,15 @@ The host looks for `bookclerk-jail` in this order:
 3. `bookclerk-jail` beside the running executable
 
 Each candidate is checked for existence, so a stale configured path fails loudly
-instead of degrading to an unconfined guest. Build and ship it with the hosts:
+instead of degrading to an unconfined guest. Build and ship it with the hosts
+(and `bookclerk-workerd` when shipping workerd guests):
 
 ```bash
 cargo build --release -p bookclerk-cli -p bookclerkd \
-  -p bookclerk-media-worker -p bookclerk-jail
+  -p bookclerk-media-worker -p bookclerk-jail -p bookclerk-workerd
 ```
 
-The Docker images copy it into `/usr/local/bin` alongside `bookclerk` and
+The Docker images copy helpers into `/usr/local/bin` alongside `bookclerk` and
 `bookclerkd`.
 
 ### Troubleshooting
@@ -406,33 +505,52 @@ allowlist is not negotiable from a manifest.
 inherited by the host and lands in the daemon log directly under the
 `bookclerk-jail:` line reporting what was applied.
 
+**Enable refused: run `bookclerk plugins approve` first** — consent grant is
+missing or the plugin widened `capabilities` since the last grant. Re-approve,
+then `bookclerk plugins enable <id>`.
+
 ## Two files, two jobs
 
 | File | Role |
 | --- | --- |
-| `plugin.toml` (next to the binary) | **Install / discovery** — id, kind, command, args |
+| `plugin.toml` (next to the binary or `modules/`) | **Install / discovery** — id, kind, runtime, command or `[workerd]`, capabilities |
 | `config.toml` (`[sources.<id>]` / `[integrations.<id>]`) | **User settings** — `enabled`, opaque knobs |
 
 The plugin (or its installer) drops a directory under a search root. Bookclerk
-scans for `plugin.toml`, spawns `command`, and passes the matching main-config
-table on `handshake`. Users never put `command` in `config.toml`.
+scans for `plugin.toml`, spawns the native `command` or `bookclerk-workerd`, and
+passes the matching main-config table on `handshake`. Users never put `command`
+in `config.toml`.
 
 ## Layout
+
+Native:
 
 ```text
 $BOOKCLERK_FILES_DIR/plugins/
   echo/
     plugin.toml
-    bookclerk-plugin-echo-integration   # executable
+    bookclerk-plugin-echo-native-rust   # executable
     data/                               # host-created: guest state, its HOME
     tmp/                                # host-created: guest scratch, its TMPDIR
+```
+
+Workerd (script archive — no per-OS binary required):
+
+```text
+$BOOKCLERK_FILES_DIR/plugins/
+  echo/
+    plugin.toml
+    modules/
+      index.js
+    data/
+    tmp/
 ```
 
 `data/` and `tmp/` are created by the host at spawn, so a plugin archive should
 not ship them; deleting one plugin's state means deleting those two directories.
 They are keyed by plugin id under `$BOOKCLERK_FILES_DIR/plugins/<id>/` wherever
-the binary itself was installed, which in the layout above is the same directory —
-read-only to the guest apart from that writable pair.
+the guest itself was installed — read-only to the guest apart from that writable
+pair.
 
 Additional roots: `BOOKCLERK_PLUGIN_DIRS` (OS path list). A guest staged under one
 of those still keeps its state under the files dir, so an upgrade that replaces
@@ -440,21 +558,28 @@ the staging tree does not take the plugin's state with it.
 
 ### `plugin.toml`
 
+Native Echo:
+
 ```toml
-api_version = 2
+api_version = 1
 id = "echo"
 name = "Echo Integration"
 kind = "integration"          # source | integration | output | database
-command = "./bookclerk-plugin-echo-integration"
-# args = ["--verbose"]
-# Public site/API URLs (informational). Settings derives a Google favicon from the first host.
-# outbound_urls = ["https://example.com/"]
+version = "0.1.0"
+# logo = "https://example.com/icon.png"   # or "assets/logo.png" (host-served)
+runtime = "native"
+command = "./bookclerk-plugin-echo-native-rust"
 
-# Optional: what this plugin needs from its jail. Omitted means outbound-only.
-[sandbox]
-network = "none"              # none | outbound | listen
+[capabilities.network]
+mode = "deny"
 
-# Optional: CLI help without spawning (handshake/cli.describe win at invoke)
+[capabilities.bindings]
+config = true
+
+[capabilities.methods]
+list = ["handshake", "health", "diagnose", "onEvent", "cli"]
+
+# Optional: CLI help without spawning (handshake / cliDescribe win at invoke)
 [cli]
 [[cli.commands]]
 name = "ping"
@@ -466,24 +591,92 @@ kind = "string"
 default = "hi"
 ```
 
-`command` may be absolute or relative to the manifest directory. An absolute
-`command` is granted read access on its own, so a manifest may point at a binary
-installed elsewhere.
+Workerd Echo (TypeScript / Python / Rust-Wasm under
+[`examples/plugins-echo-workerd-*`](../examples/); TOML shape matches TS):
 
-`[sandbox]` is described under [the guest jail](#declaring-what-a-plugin-needs).
-An unknown key or an unknown `network` value is a parse error rather than a
-silent default — a typo in a security-relevant field must not read as "whatever
-we would have picked".
+```toml
+api_version = 1
+id = "echo"
+name = "Echo Integration"
+kind = "integration"
+version = "1.0.0"
+runtime = "workerd"
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[capabilities.network]
+mode = "deny"
+
+[capabilities.bindings]
+config = true
+plugin_kv = true
+```
+
+There is **no** `protocol` key. `api_version` must be `1`. Optional top-level
+`logo` sets the Settings favicon: an `https://` / `http://` URL (browser loads
+it directly) or a relative image path under the plugin install root (host serves
+`GET /api/plugins/{kind}/{id}/logo`). Do **not** invent `capabilities.network.domains`
+on native plugins just for icons — domains remain **workerd-only** allowlists.
+
+This is separate from handshake **`BrandDto.icon_url`**: that field is the live
+portal/Accounts brand returned by the guest after spawn (includes optional brand
+colors `bg` / `fg` / `accent` plus `icon_url`). Optional `plugin.toml` `logo` is
+install metadata so Settings can show an icon **without** spawning. When a
+source/integration is loaded, Settings prefers the live brand `icon_url` over
+`plugin.toml` `logo`. Keep them aligned when you ship both.
+
+`command` (native) may be absolute or relative to the manifest directory. An
+absolute `command` is granted read access on its own, so a manifest may point at
+a binary installed elsewhere. For `runtime = "workerd"`, the host resolves
+`bookclerk-workerd` beside itself; that launcher requires the pinned Cloudflare
+`workerd` binary (`cargo ensure-workerd` / platform package) and loads
+`[workerd]` + `modules/` into a real isolate. If `compatibility_date` is newer
+than the Bookclerk pin, the host **warns** and still loads. The pin itself is
+bumped on a **7-day publish cooldown** by CI — see
+[packaging.md](packaging.md#cloudflare-workerd-pin).
+
+Unknown capability keys are parse errors rather than silent defaults — a typo in
+a security-relevant field must not read as "whatever we would have picked".
 
 Two plugins that claim the same `id` for the same `kind` are a **hard startup
 error** (CLI/daemon exit). The same id across different kinds (e.g. a source and
 an integration both named `echo`) is allowed. An external id that collides with
 a first-party plugin of the same kind is also rejected.
 
+## Consent before enable
+
+Third-party (and newly installed) plugins require an explicit permission grant:
+
+```bash
+bookclerk plugins approve echo          # interactive summary of network/bindings
+bookclerk plugins approve echo --yes    # non-interactive
+bookclerk plugins enable echo
+```
+
+Grants are persisted under the files dir. Widening `capabilities.network` or
+bindings after a prior grant requires re-approval. For workerd, widening the
+`domains` allowlist requires re-approval; redirect following does not expand
+the consented domain list.
+
+Approving a **native** plugin with `mode = "outbound"` shows an explicit warning
+that networking is **not** hostname-filtered.
+
+**Deferred (discovery/install):** a content hash bound to the grant so a
+different binary under the same id cannot keep an old grant forever. End goal
+once install/upgrade exists: on upgrade, **refresh the registered hash without
+re-prompting** when capabilities did not widen; re-prompt only when the
+capability scope expands (`grant_covers` already encodes that rule). Do not
+expect spawn-time hash checks in this release.
+
 ## Enabling and settings in `config.toml`
 
 Plugin `id` must match a config table. **External integrations default to
 disabled**; sources follow the usual `[sources.<id>]` rules (missing → enabled).
+`plugins enable` still refuses until a grant exists.
 
 ```toml
 [integrations.echo]
@@ -495,45 +688,62 @@ enabled = true
 # … opaque knobs …
 ```
 
-## Protocol (api_version = 2)
+## ABI (api_version = 1, Workers RPC)
 
-Host → plugin: one JSON object per line on stdin.  
-Plugin → host: one JSON-RPC response per line on stdout.  
-Stderr is free for logging. Guests outside
-`HOST_API_VERSION_MIN..=HOST_API_VERSION_MAX` (currently both `2`) fail
-handshake cleanly.
+Host ↔ plugin: Workers RPC method calls with structured (camelCase) payloads.
+The schema in
+[`crates/bookclerk-plugin-abi/schema/abi.json`](../crates/bookclerk-plugin-abi/schema/abi.json)
+is authoritative; Rust (`bookclerk-plugin-abi` / `bookclerk-plugin-sdk`) and
+TypeScript (`@bookclerk/plugin-sdk`) are generated projections of that contract.
+Method names on the wire are **camelCase** (`onEvent`, `cliInvoke`, `fetchTitle`,
+…). Guests outside the host’s supported API version fail handshake cleanly.
+
+Native guests implement `BookclerkPlugin` and speak the ABI over stdio via
+`BookclerkPluginGuest::serve` / `BookclerkPluginGuest.serve`. Workerd guests
+expose the same methods on a `BookclerkPlugin` entrypoint loaded by
+`bookclerk-workerd` (no separate guest runner — the isolate hosts the class).
+
+### Reverse channel (`HOST.notify`)
+
+Workerd guests may call `env.HOST.notify(event)` with a `PluginToHost`-style
+payload. `bookclerk-workerd` wires the isolate `HOST` binding to a loopback
+HTTP callback: events are POSTed to the launcher, buffered in memory for the
+session, and logged. Native stdio guests already have a reverse path on the
+RPC framing; this workerd path is the minimal equivalent until the host fans
+events into integrations/jobs.
 
 ### Common
 
 | Method | Purpose |
 | --- | --- |
 | `handshake` | Negotiate version, id, kind, capabilities, brand |
+| `shutdown` | Graceful teardown |
 | `health` | Connectivity / config check |
 | `diagnose` | Human-readable CLI probe lines |
-| `cli.describe` | Declared CLI command schema (`CliSchema`) |
-| `cli.invoke` | Run a declared command (`CliInvokeParams` → `CliInvokeResult`) |
+| `cliDescribe` | Declared CLI command schema (`CliSchema`) |
+| `cliInvoke` | Run a declared command (`CliInvokeParams` → `CliInvokeResult`) |
 
-Handshake params include `{ "api_version": 2, "config": {…} }` — the plugin’s
+Handshake params include `{ "apiVersion": 1, "config": {…} }` — the plugin’s
 `[sources.<id>]` / `[integrations.<id>]` table from **main** `config.toml` as JSON
 (empty object if the table is missing).
 
-Optional handshake field `cli` may embed the same schema as `cli.describe`. Prefer
+Optional handshake field `cli` may embed the same schema as `cliDescribe`. Prefer
 advertising capability `cli` and implementing both methods. You may also mirror
 the schema in `plugin.toml` under `[cli]` so `bookclerk plugins <id> --help`
-works without spawning the plugin; at invoke time handshake / `cli.describe`
+works without spawning the plugin; at invoke time handshake / `cliDescribe`
 remain authoritative.
 
 ### Plugin CLI
 
 Host commands that apply to every plugin stay on Bookclerk verbs
-(`plugins list|info|diagnose|enable|disable`, `integrations …`, `auth …`).
-Plugin-specific commands are declared and invoked as:
+(`plugins list|info|diagnose|approve|enable|disable`, `integrations …`,
+`auth …`). Plugin-specific commands are declared and invoked as:
 
 ```bash
 bookclerk plugins <plugin-id> <command> [args…]
 ```
 
-Example schema (JSON / handshake `cli` / `cli.describe`):
+Example schema (JSON / handshake `cli` / `cliDescribe`):
 
 ```json
 {
@@ -555,99 +765,91 @@ Example schema (JSON / handshake `cli` / `cli.describe`):
 }
 ```
 
-`cli.invoke` params: `{ "command": "ping", "args": { "message": "hi" } }`.
-Result: `{ "exit_code": 0, "stdout": "…", "stderr": "…", "json": … }`.
+`cliInvoke` params: `{ "command": "ping", "args": { "message": "hi" } }`.
+Result: `{ "exitCode": 0, "stdout": "…", "stderr": "…", "json": … }`.
 
 ### Integration capabilities
 
-Advertise in `handshake.capabilities`: `start`, `on_event`, `health`,
-`diagnose`, `scan_library`, `sync_listening`, `authenticate_user`, `cli`.
+Advertise in `handshake.capabilities`: `start`, `onEvent`, `health`,
+`diagnose`, `scanLibrary`, `syncListening`, `authenticateUser`, `cli`.
 
 | Method | Notes |
 | --- | --- |
 | `start` | Background watchers |
-| `on_event` | `{ "event": "book_acquired"\|"external_user_observed", "payload": … }` |
-| `scan_library` | `{ "force": bool }` |
-| `sync_listening` | Return `{ "items": [ ListeningProgressSnapshot, … ] }`; host upserts tagged with plugin id |
-| `authenticate_user` | `{ "username", "password" }` → `ExternalUser` |
-| `event_poll` | Return `{ "users": [ ExternalUserDto, … ] }` — host polls after `start` and kicks off **core** workflows (e.g. claim tickets). The plugin stays oblivious to portal/tickets |
+| `onEvent` | `{ "type": "book_acquired"\|"external_user_observed", "payload": … }` |
+| `scanLibrary` | `{ "force": bool }` |
+| `syncListening` | Return listening progress snapshots; host upserts tagged with plugin id |
+| `authenticateUser` | `{ "username", "password" }` → external user |
+| `pollEvents` | Return observed external users — host polls after `start` and kicks off **core** workflows (e.g. claim tickets). The plugin stays oblivious to portal/tickets |
 
 ### Source capabilities
 
 | Method | Notes |
 | --- | --- |
-| `login` | Password sources. Params: `plugin_data_dir`, marketplace/label/email/password. Result: `{ account, credentials? }` — host seals credentials (`provider = plugin id`) and upserts the account row |
-| `login.start` / `login.complete` | OAuth sources (Audible). Start returns `{ session_id, url }`; complete returns `LoginResultDto` |
-| `list_accounts` | Host-only (accounts table for this plugin id); plugin is not called |
-| `scan` | Params: `plugin_data_dir`, filters, and host-injected `credentials` map (`account_id` → opaque JSON; **no** `library_db`). Result includes `books[]` DTOs; host upserts with `source` forced to plugin id |
-| `fetch_title` | Host injects `credentials` from `encrypted_secrets`; plugin writes media under `cache_dir` and returns **`plain`** paths (DRM guests decrypt before return) |
+| `login` | Password sources. Params include `pluginDataDir`, marketplace/label/email/password. Result: `{ account, credentials? }` — host seals credentials (`provider = plugin id`) and upserts the account row |
+| `loginStart` / `loginComplete` | OAuth sources (Audible). Start returns `{ sessionId, url }`; complete returns login result |
+| `scan` | Params include `pluginDataDir`, filters, and host-injected `credentials` map (`accountId` → opaque JSON; **no** library DB path). Result includes `books[]` DTOs; host upserts with `source` forced to plugin id |
+| `fetchTitle` | Host injects `credentials` from `encrypted_secrets`; plugin writes media under the work directory and returns **plain** paths (DRM guests decrypt before return) |
 
 Plugins must not open `library.db` or read `master.key`. Do not put Encrypted
 content keys on the wire — decrypt in the guest when needed.
 
 ### Output plugins
 
-`kind = "output"` guests implement [`StorageBackend`] over JSON-RPC. The host
-never grants them the acquire cache or output library: `put_file` delivers the
-local media file over the same side channel as source `fetch_title` directories
+`kind = "output"` guests implement storage over Workers RPC. The host
+never grants them the acquire cache or output library: `putFile` delivers the
+local media file over the same side channel as source `fetchTitle` directories
 (fd 3 is the preserved `SCM_RIGHTS` socket; the open file descriptor arrives
 over that socket immediately before the RPC). When no side channel is wired
-(unconfined / best-effort), the host sends an absolute `local_path` in the RPC
+(unconfined / best-effort), the host sends an absolute local path in the RPC
 params instead. S3 credentials and bucket config are injected on each RPC —
 guests do not inherit `BOOKCLERK_AWS_*` or read `encrypted_secrets`.
 
 | Method | Notes |
 | --- | --- |
-| `put` | Small objects (covers, sidecars): `{ key, data_base64, meta }` |
-| `put_file` | Large audiobooks: host passes file fd, then RPC `{ key, meta }` |
-| `get` / `exists` / `list` / `probe` / `copy` / `delete` / `touch_file` | Mirror in-process storage |
+| `put` | Small objects (covers, sidecars): key + data + meta |
+| `putFile` | Large audiobooks: host passes file fd, then RPC key + meta |
+| `get` / `exists` / `list` / `probe` / `copy` / `delete` / `touchFile` | Mirror in-process storage |
 
 First-party S3 ships as `bookclerk-plugin-destination-s3`. When the guest is
 discovered under `plugins/s3/` and `[output.s3].enabled = true`, the host
-loads it at startup via [`load_external_destinations`] instead of the in-process
-[`S3Backend`].
+loads it at startup via external destination loading instead of the in-process
+S3 backend.
 
 ### Database plugins
 
-`kind = "database"` guests implement the SeaORM proxy boundary over JSON-RPC.
+`kind = "database"` guests implement the SeaORM proxy boundary over Workers RPC.
 Engine connect/migrate/proxy code lives in the guest
-(`bookclerk-plugin-database` modules); the host does not link SQL engines.
-The host opens the library through [`load_external_database`] /
-[`open_library_store`] (guest required — no in-process fallback). SQLite
-receives `library.db` on fd 3 at `db.connect`.
+(`bookclerk-plugin-database-sqlite` (and optional d1/postgres guests) modules); the host does not link SQL engines.
+The host opens the library through the external database loader (guest required —
+no in-process fallback). SQLite receives `library.db` on fd 3 at `dbConnect`.
 
 | Method | Notes |
 | --- | --- |
-| `db.connect` | Open backend via tagged `DbConnectParams` (`backend`: `sqlite` / `d1` / `postgres`); returns `{ "dialect": "sqlite" \| "postgres" }` (SQLite: fd 3; D1/Postgres: host-injected credentials) |
-| `db.ping` | Verify connectivity |
-| `db.query` / `db.execute` | Forward SeaORM [`Statement`] payloads |
+| `dbConnect` | Open backend via tagged connect params (`backend`: `sqlite` / `d1` / `postgres`); returns dialect (SQLite: fd 3; D1/Postgres: host-injected credentials) |
+| `dbPing` | Verify connectivity |
+| `dbQuery` / `dbExecute` | Forward SeaORM statement payloads |
 
 Built-in ids: `sqlite`, `d1`, `postgres` (match `[database].plugin`).
 
-## Example
+## Examples
+
+Native Echo:
 
 ```bash
-cargo build -p bookclerk-plugin-echo-integration
+cargo build -p bookclerk-plugin-echo-native-rust
 mkdir -p "$BOOKCLERK_FILES_DIR/plugins/echo"
-cp target/debug/bookclerk-plugin-echo-integration \
-   "$BOOKCLERK_FILES_DIR/plugins/echo/"
-cat > "$BOOKCLERK_FILES_DIR/plugins/echo/plugin.toml" <<'EOF'
-api_version = 2
-id = "echo"
-kind = "integration"
-command = "./bookclerk-plugin-echo-integration"
-
-[cli]
-[[cli.commands]]
-name = "ping"
-about = "Probe echo plugin"
-[[cli.commands.args]]
-name = "message"
-long = "message"
-kind = "string"
-default = "hi"
-EOF
+cp target/debug/bookclerk-plugin-echo-native-rust \
+  "$BOOKCLERK_FILES_DIR/plugins/echo/"
+cp examples/plugins-echo-native-rust/plugin.toml \
+  "$BOOKCLERK_FILES_DIR/plugins/echo/"
 ```
+
+Workerd Echo — install `plugin.toml` + `modules/` from any of
+[`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/),
+[`plugins-echo-workerd-python/`](../examples/plugins-echo-workerd-python/), or
+[`plugins-echo-workerd-rust/`](../examples/plugins-echo-workerd-rust/) (host
+spawns `bookclerk-workerd`, not a SEA binary).
 
 ```toml
 # config.toml
@@ -656,6 +858,7 @@ enabled = true
 ```
 
 ```bash
+bookclerk plugins approve echo --yes
 bookclerk plugins list
 bookclerk plugins enable echo
 bookclerk integrations status
@@ -666,10 +869,17 @@ bookclerk plugins echo ping --message hello
 
 ## Distribution
 
-Ship a directory (or archive) containing `plugin.toml` + binary for the target
-OS/arch. Users unpack under `plugins/` (or a `BOOKCLERK_PLUGIN_DIRS` root) and set
-`enabled = true` in `config.toml`. No rebuild of Bookclerk is required when the
-protocol version matches.
+**Native:** ship a directory (or archive) containing `plugin.toml` + binary for
+the target OS/arch.
+
+**Workerd / script:** ship `plugin.toml` + `modules/` (no per-OS author binary).
+The operator’s Bookclerk install already includes `bookclerk-workerd`, the pinned
+Cloudflare `workerd` binary, and `bookclerk-jail`.
+
+Users unpack under `plugins/` (or a `BOOKCLERK_PLUGIN_DIRS` root), **approve**
+capabilities, then set `enabled = true` in `config.toml` (or
+`bookclerk plugins enable`). No rebuild of Bookclerk is required when
+`api_version` matches.
 
 ### First-party plugins (dual load via plugin host)
 
@@ -681,7 +891,8 @@ works without staging binaries. CLI/daemon call only those host helpers —
 never store crates by name. Discovery skips an id that is already registered.
 
 Guest binaries depend on **`bookclerk-plugin-sdk`** (+ their private store crate
-for first-party). Third-party authors should depend on the SDK only — not
+for first-party). TypeScript workerd guests depend on **`@bookclerk/plugin-sdk`**.
+Third-party authors should depend on the SDK only — not
 `bookclerk-plugin-host`, `bookclerk-library`, or `bookclerk-source`.
 
 CI builds and stages plugin artifacts with `cargo stage-plugins` (same as local
@@ -691,7 +902,7 @@ Locally:
 
 ```bash
 cargo stage-plugins                    # build + stage to target/plugin-artifacts
-cargo dev-daemon                       # stage + run bookclerkd
+cargo dev                       # stage + run bookclerkd
 # or: BOOKCLERK_PLUGIN_ARTIFACTS=/tmp/bc-plugins cargo stage-plugins
 ```
 

@@ -1,0 +1,10 @@
+api_version = 1
+id = "bad-logo-vbscript"
+kind = "integration"
+version = "0.1.0"
+logo = "vbscript:msgbox(1)"
+runtime = "native"
+command = "./bad"
+
+[capabilities.network]
+mode = "deny"

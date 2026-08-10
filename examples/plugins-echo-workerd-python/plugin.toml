@@ -1,0 +1,37 @@
+api_version = 1
+id = "echo-workerd-python"
+name = "Echo Integration (workerd Python)"
+kind = "integration"
+version = "1.0.0"
+runtime = "workerd"
+
+[workerd]
+compatibility_date = "2026-08-01"
+# Required for Python Workers under local bookclerk-workerd (also enforced by
+# `python -m bookclerk_plugin_sdk check|fmt|package`).
+compatibility_flags = [
+    "python_workers",
+    "disable_python_external_sdk",
+]
+main_module = "plugin.py"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 50
+
+[[modules]]
+name = "plugin.py"
+path = "plugin.py"
+type = "python"
+
+[capabilities.network]
+mode = "deny"
+
+[capabilities.bindings]
+config = true
+plugin_kv = true
+
+[capabilities.methods]
+list = ["handshake", "health", "diagnose", "onEvent", "cli"]

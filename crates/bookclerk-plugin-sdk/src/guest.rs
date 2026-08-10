@@ -1,19 +1,21 @@
-//! Guest-side JSON-RPC helper (stdio).
+//! Guest-side Workers RPC helper (stdio).
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use bookclerk_plugin_abi::{methods, PluginError, PluginErrorCode, RpcRequest, RpcResponse};
+
 use crate::error::{Result, SdkError};
-use crate::protocol::{methods, MAX_RPC_LINE_BYTES};
+use crate::protocol::MAX_RPC_LINE_BYTES;
 
 /// Guest-side helper: read requests from stdin, write responses to stdout.
 ///
-/// Third-party Rust plugins depend on this crate and call [`PluginGuest::serve`].
+/// Prefer [`crate::BookclerkPluginGuest`] + [`crate::BookclerkPlugin`] for new
+/// plugins (typed method dispatch). This type is the low-level raw-handler loop.
 pub struct PluginGuest;
 
 impl PluginGuest {
-    /// Run a simple dispatch loop on tokio stdin/stdout.
+    /// Run a simple dispatch loop on tokio stdin/stdout (Workers RPC framing).
     pub async fn serve<F, Fut>(mut handler: F) -> Result<()>
     where
         F: FnMut(String, Value) -> Fut,
@@ -30,16 +32,14 @@ impl PluginGuest {
             if line.trim().is_empty() {
                 continue;
             }
-            let req: GuestRequest = match serde_json::from_str(&line) {
+            let req: RpcRequest = match serde_json::from_str(&line) {
                 Ok(r) => r,
                 Err(err) => {
                     tracing::warn!(%err, "invalid request");
                     continue;
                 }
             };
-            let is_shutdown = req.method == methods::SHUTDOWN;
-            // Call the handler first so a guest can flush work; shutdown still
-            // acks even when the handler does not implement the method.
+            let is_shutdown = req.method == methods::shutdown::NAME;
             let outcome = match handler(req.method.clone(), req.params.unwrap_or(Value::Null)).await
             {
                 Ok(result) => Ok(result),
@@ -47,19 +47,18 @@ impl PluginGuest {
                 Err(message) => Err(message),
             };
             let resp = match outcome {
-                Ok(result) => GuestResponse {
-                    jsonrpc: "2.0",
+                Ok(result) => RpcResponse {
                     id: req.id,
                     result: Some(result),
                     error: None,
                 },
-                Err(message) => GuestResponse {
-                    jsonrpc: "2.0",
+                Err(message) => RpcResponse {
                     id: req.id,
                     result: None,
-                    error: Some(GuestError {
-                        code: -32000,
+                    error: Some(PluginError {
+                        code: PluginErrorCode::Internal,
                         message,
+                        details: None,
                     }),
                 },
             };
@@ -80,65 +79,14 @@ async fn read_rpc_line<R: AsyncBufRead + AsyncBufReadExt + Unpin>(
     reader: &mut R,
 ) -> Result<Option<String>> {
     let mut buf = Vec::new();
-    loop {
-        let available = reader.fill_buf().await?;
-        if available.is_empty() {
-            if buf.is_empty() {
-                return Ok(None);
-            }
-            break;
-        }
-        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
-            let end = pos + 1;
-            if buf.len() + end > MAX_RPC_LINE_BYTES {
-                return Err(SdkError::message(format!(
-                    "RPC line exceeds MAX_RPC_LINE_BYTES ({MAX_RPC_LINE_BYTES})"
-                )));
-            }
-            buf.extend_from_slice(&available[..end]);
-            reader.consume(end);
-            break;
-        }
-        if buf.len() + available.len() > MAX_RPC_LINE_BYTES {
-            return Err(SdkError::message(format!(
-                "RPC line exceeds MAX_RPC_LINE_BYTES ({MAX_RPC_LINE_BYTES})"
-            )));
-        }
-        let n = available.len();
-        buf.extend_from_slice(available);
-        reader.consume(n);
+    let n = reader.read_until(b'\n', &mut buf).await?;
+    if n == 0 {
+        return Ok(None);
     }
-    // Strip trailing newline (and optional CR).
-    if buf.last() == Some(&b'\n') {
-        buf.pop();
-        if buf.last() == Some(&b'\r') {
-            buf.pop();
-        }
+    if buf.len() > MAX_RPC_LINE_BYTES {
+        return Err(SdkError::message(format!(
+            "RPC line exceeds max size ({MAX_RPC_LINE_BYTES} bytes)"
+        )));
     }
-    String::from_utf8(buf)
-        .map(Some)
-        .map_err(|err| SdkError::message(format!("RPC line is not valid UTF-8: {err}")))
-}
-
-#[derive(Debug, Deserialize)]
-struct GuestRequest {
-    id: Option<u64>,
-    method: String,
-    params: Option<Value>,
-}
-
-#[derive(Debug, Serialize)]
-struct GuestResponse {
-    jsonrpc: &'static str,
-    id: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<GuestError>,
-}
-
-#[derive(Debug, Serialize)]
-struct GuestError {
-    code: i64,
-    message: String,
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }

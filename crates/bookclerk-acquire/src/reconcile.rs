@@ -515,7 +515,7 @@ mod reconcile_integration {
             .await
             .unwrap();
 
-        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
             .unwrap();
         library
@@ -562,7 +562,7 @@ mod reconcile_integration {
             .await
             .unwrap();
 
-        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
             .unwrap();
         library
@@ -617,7 +617,7 @@ mod reconcile_integration {
             .await
             .unwrap();
 
-        let library = bookclerk_plugin_database::sqlite::open_store_memory()
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
             .unwrap();
         library

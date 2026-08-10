@@ -1,4 +1,4 @@
-//! JSON-RPC 2.0 over newline-delimited stdio.
+//! Workers RPC over newline-delimited stdio (identical native / workerd framing).
 
 #![cfg_attr(unix, allow(unsafe_code))]
 
@@ -24,12 +24,11 @@ use crate::protocol::{
 };
 use crate::{PluginError, Result};
 
-/// Default wait for one JSON-RPC round-trip before the host gives up.
+/// Default wait for one RPC round-trip before the host gives up.
 const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 #[derive(Debug, Serialize)]
 struct Request {
-    jsonrpc: &'static str,
     id: u64,
     method: String,
     params: Value,
@@ -37,15 +36,17 @@ struct Request {
 
 #[derive(Debug, Deserialize)]
 struct Response {
-    #[allow(dead_code)]
-    jsonrpc: Option<String>,
     id: Option<u64>,
     result: Option<Value>,
-    error: Option<RpcErrorObject>,
+    error: Option<AbiRpcError>,
 }
 
+/// Wire error (matches [`bookclerk_plugin_abi::PluginError`] JSON).
 #[derive(Debug, Deserialize)]
-struct RpcErrorObject {
+struct AbiRpcError {
+    #[serde(default)]
+    #[allow(dead_code)]
+    code: Option<String>,
     message: String,
 }
 
@@ -136,6 +137,8 @@ impl PluginClient {
                 cmd.arg("--")
                     .arg(&plugin.command)
                     .args(&plugin.manifest.args);
+                cmd.env("BOOKCLERK_PLUGIN_ROOT", &plugin.root);
+                cmd.env("BOOKCLERK_PLUGIN_TOML", plugin.root.join("plugin.toml"));
                 cmd
             }
             Start::Unconfined { reason } => {
@@ -323,7 +326,7 @@ impl PluginClient {
             .call(
                 methods::HANDSHAKE,
                 serde_json::json!({
-                    "api_version": PLUGIN_API_VERSION,
+                    "apiVersion": PLUGIN_API_VERSION,
                     "config": config_table,
                 }),
             )
@@ -514,7 +517,6 @@ impl PluginClient {
             map.insert(id, tx);
         }
         let req = Request {
-            jsonrpc: "2.0",
             id,
             method: method.to_string(),
             params,
@@ -633,6 +635,30 @@ impl PluginClient {
         self.call(methods::CLI_INVOKE, serde_json::to_value(params)?)
             .await
     }
+
+    /// Run `diagnose`, accepting either `{ "lines": [...] }` or a bare string array.
+    pub async fn diagnose(&self) -> Result<Vec<String>> {
+        let value: Value = self
+            .call(methods::DIAGNOSE, Value::Object(Default::default()))
+            .await?;
+        Ok(parse_diagnose_lines(value))
+    }
+}
+
+fn parse_diagnose_lines(value: Value) -> Vec<String> {
+    if let Some(arr) = value.as_array() {
+        return arr
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+    }
+    if let Some(lines) = value.get("lines").and_then(|v| v.as_array()) {
+        return lines
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+    }
+    vec![value.to_string()]
 }
 
 impl Drop for PluginClient {

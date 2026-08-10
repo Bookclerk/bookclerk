@@ -17,6 +17,8 @@ pub enum PluginError {
     #[error("toml: {0}")]
     Toml(#[from] toml::de::Error),
     #[error(transparent)]
+    Manifest(#[from] bookclerk_plugin_manifest::Error),
+    #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
 

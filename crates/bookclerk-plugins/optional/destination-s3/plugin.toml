@@ -1,0 +1,16 @@
+api_version = 1
+id = "s3"
+name = "S3 output"
+kind = "output"
+version = "0.1.0"
+logo = "https://www.google.com/s2/favicons?domain=aws.amazon.com&sz=128"
+runtime = "native"
+command = "./bookclerk-plugin-destination-s3"
+
+[capabilities.network]
+mode = "outbound"
+# Native: no `domains` (workerd-only). AWS SDK dials S3 under coarse jail outbound.
+[capabilities.bindings]
+config = true
+secrets = true
+work_fs = true

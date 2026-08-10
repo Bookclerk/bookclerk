@@ -30,8 +30,9 @@ pub use install::{
 };
 pub use kind::{PluginKind, RuntimeIdentity};
 pub use manifest::{
-    parse_sha256_hex, validate_sha256_hex, ArtifactTarget, BookclerkPackageManifest, PackageLinks,
-    PublisherIdentity, SandboxRequest, MANIFEST_SCHEMA_VERSION, PROTOCOL_JSONRPC_STDIO_V1,
+    normalize_protocol, parse_sha256_hex, validate_sha256_hex, ArtifactTarget,
+    BookclerkPackageManifest, PackageLinks, PublisherIdentity, SandboxRequest,
+    MANIFEST_SCHEMA_VERSION, PROTOCOL_WORKERS_RPC,
 };
 pub use receipt::{InstallReceipt, RECEIPT_FILE};
 pub use target::{

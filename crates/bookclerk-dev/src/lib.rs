@@ -3,6 +3,16 @@
 pub mod package;
 pub mod plugins;
 
+/// Ensure the pinned Cloudflare `workerd` binary is present under `target/<profile>/`.
+pub fn ensure_workerd_for_profile(
+    root: &std::path::Path,
+    release: bool,
+) -> anyhow::Result<std::path::PathBuf> {
+    let profile = if release { "release" } else { "debug" };
+    let dir = root.join("target").join(profile);
+    bookclerk_workerd::ensure_workerd(&dir)
+}
+
 pub fn workspace_root() -> anyhow::Result<std::path::PathBuf> {
     Ok(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -18,14 +28,69 @@ pub fn default_artifacts(root: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|| root.join("target").join("plugin-artifacts"))
 }
 
+/// Dev files root: `$BOOKCLERK_FILES_DIR`, else `<workspace>/BookclerkFiles`.
 pub fn default_files_dir() -> std::path::PathBuf {
-    std::env::var_os("BOOKCLERK_FILES_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/BookclerkFiles"))
+    if let Some(path) = std::env::var_os("BOOKCLERK_FILES_DIR") {
+        return std::path::PathBuf::from(path);
+    }
+    workspace_root()
+        .map(|root| root.join("BookclerkFiles"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("BookclerkFiles"))
+}
+
+/// Wipe a Bookclerk files directory (config, DB, master.key, plugins, caches).
+pub fn reset_files_dir(files_dir: &std::path::Path) -> anyhow::Result<()> {
+    use anyhow::{bail, Context};
+
+    if files_dir.as_os_str().is_empty() {
+        bail!("refusing to reset empty BOOKCLERK_FILES_DIR");
+    }
+    // Guard against wiping a filesystem root if misconfigured.
+    if files_dir
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::RootDir))
+        .count()
+        < 1
+    {
+        bail!(
+            "refusing to reset suspicious files dir {}",
+            files_dir.display()
+        );
+    }
+    if files_dir.exists() {
+        std::fs::remove_dir_all(files_dir)
+            .with_context(|| format!("remove {}", files_dir.display()))?;
+    }
+    std::fs::create_dir_all(files_dir)
+        .with_context(|| format!("recreate {}", files_dir.display()))?;
+    Ok(())
 }
 
 /// Workspace version from `CARGO_PKG_VERSION` (matches `[workspace.package].version`).
 #[must_use]
 pub fn workspace_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_files_dir_recreates_empty_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("BookclerkFiles");
+        std::fs::create_dir_all(root.join("plugins")).unwrap();
+        std::fs::write(root.join("library.db"), b"stale").unwrap();
+        std::fs::write(root.join("config.toml"), b"x = 1").unwrap();
+        reset_files_dir(&root).expect("reset");
+        assert!(root.is_dir());
+        assert!(!root.join("library.db").exists());
+        assert!(!root.join("config.toml").exists());
+    }
+
+    #[test]
+    fn reset_files_dir_refuses_filesystem_root() {
+        assert!(reset_files_dir(std::path::Path::new("/")).is_err());
+    }
 }

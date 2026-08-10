@@ -749,7 +749,7 @@ mod tests {
     #[tokio::test]
     async fn upsert_sealed_v1_and_get() {
         let _dek = setup_dek().await;
-        let db = bookclerk_plugin_database::sqlite::open_memory()
+        let db = bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap();
         let plaintext = b"test-sealed-payload";
@@ -815,7 +815,7 @@ mod tests {
     async fn unseal_cache_invalidates_on_upsert() {
         let _dek = setup_dek().await;
         clear_plaintext_cache_for_tests();
-        let db = bookclerk_plugin_database::sqlite::open_memory()
+        let db = bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap();
         let first = build_sealed_record(
@@ -868,7 +868,7 @@ mod tests {
     #[tokio::test]
     async fn upsert_replaces_same_composite_key() {
         let _dek = setup_dek().await;
-        let db = bookclerk_plugin_database::sqlite::open_memory()
+        let db = bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap();
         for i in 0u8..2 {
@@ -892,7 +892,7 @@ mod tests {
     #[tokio::test]
     async fn list_secrets_by_kind() {
         let _dek = setup_dek().await;
-        let db = bookclerk_plugin_database::sqlite::open_memory()
+        let db = bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap();
         for (provider, account_id, name) in &[
@@ -917,7 +917,7 @@ mod tests {
     #[tokio::test]
     async fn delete_secret_test() {
         let _dek = setup_dek().await;
-        let db = bookclerk_plugin_database::sqlite::open_memory()
+        let db = bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap();
         let rec = build_sealed_record(
@@ -958,7 +958,7 @@ mod tests {
     #[tokio::test]
     async fn delete_secrets_for_account_only_integration() {
         let _dek = setup_dek().await;
-        let db = bookclerk_plugin_database::sqlite::open_memory()
+        let db = bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap();
 

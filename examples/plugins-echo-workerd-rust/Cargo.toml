@@ -1,0 +1,26 @@
+[package]
+name = "bookclerk-plugin-echo-workerd-rust"
+description = "Echo integration — workerd Rust/Wasm guest (JSON dispatch + JS WorkerEntrypoint)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+bookclerk-plugin-abi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+
+[lints]
+workspace = true

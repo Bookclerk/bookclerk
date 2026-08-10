@@ -2,7 +2,7 @@
 //!
 //! [`LibraryStore`] is SeaORM-backed: every backend is a
 //! [`sea_orm::DatabaseConnection`]. Engine connect/migrate/proxy quirks live in
-//! the database plugin (`bookclerk-plugin-database`); hosts open the store via
+//! the database plugin (`bookclerk-plugin-database-sqlite` (and optional d1/postgres guests)); hosts open the store via
 //! the external guest RPC. This crate owns the greenfield schema
 //! ([`migrations`]), typed [`entities`], and the store API. See
 //! `docs/database.md`.

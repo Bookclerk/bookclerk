@@ -1,0 +1,45 @@
+"""ABI constants — keep aligned with crates/bookclerk-plugin-abi/schema/abi.json."""
+
+from __future__ import annotations
+
+API_VERSION: int = 1
+
+METHOD_NAMES: tuple[str, ...] = (
+    "handshake",
+    "shutdown",
+    "health",
+    "diagnose",
+    "start",
+    "onEvent",
+    "pollEvents",
+    "scanLibrary",
+    "syncListening",
+    "authenticateUser",
+    "cliDescribe",
+    "cliInvoke",
+    "login",
+    "loginStart",
+    "loginComplete",
+    "credentialsUpdate",
+    "scan",
+    "fetchTitle",
+    "searchCatalog",
+    "expandCandidates",
+    "purchaseHint",
+    "listDeals",
+    "listAccounts",
+    "catalogDetail",
+    "put",
+    "putFile",
+    "get",
+    "exists",
+    "list",
+    "probe",
+    "copy",
+    "delete",
+    "touchFile",
+    "dbConnect",
+    "dbPing",
+    "dbQuery",
+    "dbExecute",
+)

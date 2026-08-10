@@ -48,9 +48,9 @@ pub async fn import_accounts(
         })?;
 
     let store = if dry_run {
-        bookclerk_plugin_database::sqlite::open_store_memory().await?
+        bookclerk_plugin_database_sqlite::open_store_memory().await?
     } else {
-        bookclerk_plugin_database::sqlite::open_store(&dest_files_dir.join("library.db")).await?
+        bookclerk_plugin_database_sqlite::open_store(&dest_files_dir.join("library.db")).await?
     };
 
     let mut summary = AccountsImportSummary::default();

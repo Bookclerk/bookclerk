@@ -1,12 +1,34 @@
 # Local development helpers (external plugin workflow).
 # See crates/bookclerk-dev/README.md.
+#
+# Workspace-local Cargo output: keep `target/` on the bind mount so builds
+# travel between host / Dev Container / Cloud Agent. Registry/git cache lives in
+# `.cargo-home/` when `CARGO_HOME` is set (see `.envrc`, Dev Container, AGENTS.md).
+
+[build]
+target-dir = "target"
+
+[env]
+# Applied to `cargo run` / `cargo test` / build scripts (aliases use `cargo run`).
+# CARGO_HOME cannot be set here for Cargo's own registry — export it in the shell
+# (`.envrc`) or container env instead.
+CARGO_TARGET_DIR = { value = "target", relative = true }
+BOOKCLERK_FILES_DIR = { value = "BookclerkFiles", relative = true }
+TMPDIR = { value = ".tmp", relative = true }
+
 [alias]
-build-plugins = "run -p bookclerk-dev -- build-plugins"
+build-app = "run -p bookclerk-dev -- build-app"
+build-plugins = "run -p bookclerk-dev -- build-app --optional"
 stage-plugins = "run -p bookclerk-dev -- stage-plugins"
+install-platform = "run -p bookclerk-dev -- install-platform"
+dev = "run -p bookclerk-dev -- dev"
 dev-daemon = "run -p bookclerk-dev -- dev-daemon"
 dev-cli = "run -p bookclerk-dev -- dev-cli"
 test-staged = "run -p bookclerk-dev -- test-staged"
 package-plugins = "run -p bookclerk-dev -- package-plugins"
 package-hosts = "run -p bookclerk-dev -- package-hosts"
 package-platform = "run -p bookclerk-dev -- package-platform"
+ensure-workerd = "run -p bookclerk-dev -- ensure-workerd"
+reset = "run -p bookclerk-dev -- reset"
 check-plugin-host = "check -p bookclerk-plugin-host --no-default-features"
+plugin = "run -p bookclerk-plugin-sdk --features tools --bin bookclerk-plugin --"

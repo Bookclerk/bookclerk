@@ -6,7 +6,6 @@
       "versions": {
         "0.1.0": {
           "schema_version": 1,
-          "protocol": "jsonrpc-stdio-v1",
           "api_version": 1,
           "kind": "integration",
           "id": "echo",
@@ -15,24 +14,24 @@
           "artifacts": [
             {
               "target": "linux-x64-gnu",
-              "url": "https://cdn.example.com/bookclerk-plugins/echo/0.1.0/bookclerk-plugin-echo-integration-0.1.0-linux-x64-gnu.tar.gz",
+              "url": "https://cdn.example.com/bookclerk-plugins/echo-native-rust/0.1.0/bookclerk-plugin-echo-native-rust-0.1.0-linux-x64-gnu.tar.gz",
               "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "archive_root": ".",
-              "executable": "bookclerk-plugin-echo-integration"
+              "executable": "bookclerk-plugin-echo-native-rust"
             },
             {
               "target": "macos-arm64",
-              "url": "https://cdn.example.com/bookclerk-plugins/echo/0.1.0/bookclerk-plugin-echo-integration-0.1.0-macos-arm64.tar.gz",
+              "url": "https://cdn.example.com/bookclerk-plugins/echo-native-rust/0.1.0/bookclerk-plugin-echo-native-rust-0.1.0-macos-arm64.tar.gz",
               "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "archive_root": ".",
-              "executable": "bookclerk-plugin-echo-integration"
+              "executable": "bookclerk-plugin-echo-native-rust"
             },
             {
               "target": "windows-x64",
-              "url": "https://cdn.example.com/bookclerk-plugins/echo/0.1.0/bookclerk-plugin-echo-integration-0.1.0-windows-x64.zip",
+              "url": "https://cdn.example.com/bookclerk-plugins/echo-native-rust/0.1.0/bookclerk-plugin-echo-native-rust-0.1.0-windows-x64.zip",
               "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "archive_root": ".",
-              "executable": "bookclerk-plugin-echo-integration.exe"
+              "executable": "bookclerk-plugin-echo-native-rust.exe"
             }
           ],
           "sandbox": {

@@ -289,7 +289,7 @@ mod tests {
         let _dek = master_key_test_read_lock_async().await;
         ensure_shared_test_dek();
         let store = LibraryStore::from_connection(
-            bookclerk_plugin_database::sqlite::open_memory()
+            bookclerk_plugin_database_sqlite::open_memory()
                 .await
                 .unwrap(),
         );

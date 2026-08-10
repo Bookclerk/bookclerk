@@ -1,0 +1,21 @@
+[package]
+name = "bookclerk-plugin-manifest"
+description = "plugin.toml parse, validate, and canonical format (no host deps)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+bookclerk-plugin-abi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url = "2"
+toml.workspace = true
+
+[lints]
+workspace = true

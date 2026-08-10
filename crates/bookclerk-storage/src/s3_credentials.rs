@@ -176,7 +176,7 @@ mod tests {
     #[tokio::test]
     async fn roundtrip_sealed_v1() {
         setup_dek();
-        let db = bookclerk_plugin_database::sqlite::open_memory()
+        let db = bookclerk_plugin_database_sqlite::open_memory()
             .await
             .unwrap();
         let creds = S3Credentials {

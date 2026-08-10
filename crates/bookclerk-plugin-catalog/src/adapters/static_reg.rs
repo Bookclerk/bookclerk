@@ -167,12 +167,12 @@ impl RegistryAdapter for StaticAdapter {
 mod tests {
     use super::*;
     use crate::kind::PluginKind;
-    use crate::manifest::{ArtifactTarget, PROTOCOL_JSONRPC_STDIO_V1};
+    use crate::manifest::{ArtifactTarget, PROTOCOL_WORKERS_RPC};
 
     fn sample_manifest(id: &str) -> BookclerkPackageManifest {
         BookclerkPackageManifest {
             schema_version: 1,
-            protocol: PROTOCOL_JSONRPC_STDIO_V1.into(),
+            protocol: Some(PROTOCOL_WORKERS_RPC.into()),
             api_version: 1,
             api_version_max: None,
             min_bookclerk: None,

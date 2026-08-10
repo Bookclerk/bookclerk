@@ -121,9 +121,9 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
     if let Some(db_path) = &source.library_db {
         let library_db = opts.dest_files_dir.join("library.db");
         let store = if opts.dry_run {
-            bookclerk_plugin_database::sqlite::open_store_memory().await?
+            bookclerk_plugin_database_sqlite::open_store_memory().await?
         } else {
-            bookclerk_plugin_database::sqlite::open_store(&library_db).await?
+            bookclerk_plugin_database_sqlite::open_store(&library_db).await?
         };
         let lib = import_library_db(
             db_path,

@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-plugin-sdk"
-description = "Guest-only Bookclerk plugin SDK (JSON-RPC protocol + stdio helper)"
+description = "Guest Bookclerk plugin SDK (Workers RPC ABI + BookclerkPlugin + stdio server + author tools)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,18 +10,48 @@ authors.workspace = true
 # Intended for crates.io later; keep unpublished until the public SDK surface stabilizes.
 publish = false
 
+[features]
+default = []
+# SeaORM proxy helpers for database guests / host adapters.
+db = ["dep:sea-orm", "dep:base64"]
+# Author CLI (`bookclerk-plugin`) including workerd `smoke`. Guest plugins
+# should leave this off so they do not pull `bookclerk-workerd` / download deps.
+tools = ["dep:bookclerk-workerd"]
+
+[[bin]]
+name = "bookclerk-plugin"
+path = "src/bin/bookclerk-plugin.rs"
+required-features = ["tools"]
+
 [dependencies]
-base64.workspace = true
+async-trait.workspace = true
+bookclerk-plugin-abi.workspace = true
+bookclerk-plugin-manifest.workspace = true
+bookclerk-workerd = { workspace = true, optional = true }
 chrono = { workspace = true, features = ["serde"] }
-sea-orm = { workspace = true, default-features = false, features = ["proxy"] }
+flate2.workspace = true
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "io-std", "macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "io-std", "macros", "rt", "sync", "time", "net"] }
+toml.workspace = true
 tracing.workspace = true
+ureq.workspace = true
+base64 = { workspace = true, optional = true }
+sea-orm = { workspace = true, default-features = false, features = ["proxy"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[test]]
+name = "tools_conformance"
+required-features = ["tools"]
 
 [lints]
 workspace = true

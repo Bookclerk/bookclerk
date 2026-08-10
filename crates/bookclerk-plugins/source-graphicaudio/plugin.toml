@@ -1,6 +1,0 @@
-api_version = 1
-id = "graphicaudio"
-name = "GraphicAudio"
-kind = "source"
-command = "./bookclerk-plugin-source-graphicaudio"
-outbound_urls = ["https://www.graphicaudio.com/", "https://www.graphicaudio.net/"]

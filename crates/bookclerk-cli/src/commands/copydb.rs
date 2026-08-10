@@ -37,7 +37,7 @@ pub async fn run(args: CopyDbArgs, config: &Config) -> anyhow::Result<()> {
     let paths = config.paths();
     let source = args.source.unwrap_or_else(|| paths.library_db.clone());
     // Ensure schema migrations (e.g. series_asin) are applied before export.
-    let _ = bookclerk_plugin_database::sqlite::open_store(&source).await?;
+    let _ = bookclerk_plugin_database_sqlite::open_store(&source).await?;
     let conn = Connection::open_with_flags(&source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let (mut client, connection) =
         tokio_postgres::connect(&args.connection, tokio_postgres::NoTls).await?;

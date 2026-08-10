@@ -9,13 +9,9 @@ repository.workspace = true
 authors.workspace = true
 
 [features]
-default = [
-    "bookclerk-plugin-source-audible",
-    "bookclerk-plugin-source-libro",
-    "bookclerk-plugin-source-chirp",
-    "bookclerk-plugin-source-graphicaudio",
-    "bookclerk-plugin-integration-audiobookshelf",
-]
+# Empty by default so platform builds stay external-guest-only. Opt in via
+# host `bundled-plugins` (or these feature names) for in-process storefronts.
+default = []
 
 [dependencies]
 anyhow.workspace = true
@@ -26,7 +22,8 @@ bookclerk-config.workspace = true
 bookclerk-sandbox.workspace = true
 bookclerk-integrations.workspace = true
 bookclerk-library.workspace = true
-bookclerk-plugin-sdk.workspace = true
+bookclerk-plugin-manifest.workspace = true
+bookclerk-plugin-sdk = { workspace = true, features = ["db"] }
 bookclerk-source.workspace = true
 bookclerk-storage.workspace = true
 bytes.workspace = true
@@ -50,7 +47,7 @@ uuid.workspace = true
 libc = "0.2"
 
 [dev-dependencies]
-bookclerk-plugin-database.workspace = true
+bookclerk-plugin-database-sqlite.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util"] }
 

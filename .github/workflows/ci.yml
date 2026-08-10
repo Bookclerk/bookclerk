@@ -31,7 +31,9 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: |
+            ui/package-lock.json
+            packages/plugin-sdk/package-lock.json
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -45,6 +47,25 @@ jobs:
           cd ui
           npm ci
           npm run build
+
+      - name: Plugin SDK ABI schema drift check
+        run: |
+          python3 scripts/gen-plugin-abi.py --check
+          python3 scripts/sync-workerd-pin.py --check
+          cd packages/plugin-sdk
+          npm ci
+          npm run check-schema
+          npm run build
+          npm run test:tools
+
+      - name: Python plugin SDK tools conformance
+        run: |
+          python3 -m venv .venv-ci-plugin-sdk
+          .venv-ci-plugin-sdk/bin/pip install -e packages/plugin-sdk-python pytest
+          .venv-ci-plugin-sdk/bin/pytest packages/plugin-sdk-python/tests -q
+
+      - name: Rust plugin SDK tools conformance
+        run: cargo test -p bookclerk-plugin-sdk --features tools --test tools_conformance
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -65,17 +86,40 @@ jobs:
             --all-targets -- -D warnings
           ./scripts/check-store-free-hosts.sh
 
-      - name: Stage first-party plugin artifacts
+      # Package list comes from directory discovery (platform / optional / examples).
+      # `build-app --platform` also ensures the pinned Cloudflare `workerd` binary.
+      - name: Build app (platform + optional + examples)
+        run: cargo build-app --platform --optional --examples
+
+      - name: Pinned workerd present beside helpers
+        run: |
+          test -x target/debug/bookclerk-workerd
+          test -x target/debug/workerd
+          test -f target/debug/workerd.version
+
+      - name: Install platform guests into FILES_DIR
+        env:
+          BOOKCLERK_FILES_DIR: ${{ runner.temp }}/BookclerkFiles
+        run: cargo install-platform --skip-build
+
+      - name: Stage optional plugins + reference examples
         env:
           BOOKCLERK_PLUGIN_ARTIFACTS: ${{ runner.temp }}/bookclerk-plugins
-        run: cargo stage-plugins
+        run: cargo stage-plugins --optional --examples --skip-build
 
       - name: Test
         env:
+          BOOKCLERK_FILES_DIR: ${{ runner.temp }}/BookclerkFiles
           BOOKCLERK_PLUGIN_ARTIFACTS: ${{ runner.temp }}/bookclerk-plugins
           BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: "1"
           BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
-        run: cargo test --workspace
+          BOOKCLERK_WORKERD_BIN: ${{ github.workspace }}/target/debug/workerd
+        # Prepend helpers in-shell. Do not use `env.PATH` — workflow `env:` has
+        # no PATH key, so `${{ env.PATH }}` is empty and wiped `cargo` off PATH.
+        # `$GITHUB_PATH` only affects *later* steps, not this one.
+        run: |
+          export PATH="${{ github.workspace }}/target/debug:$PATH"
+          cargo test --workspace
 
   release:
     name: release build
@@ -106,20 +150,19 @@ jobs:
           npm ci
           npm run build
 
-      # bookclerk-media-worker and bookclerk-jail ship with the hosts, not
-      # alongside them as extras: media jobs are refused without the worker, and
-      # plugins are refused without the launcher.
+      # Hosts + helpers + platform guests from directory discovery.
       - name: Build release binaries
         env:
           BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
-        run: >
-          cargo build --release -p bookclerk-cli -p bookclerkd
-          -p bookclerk-media-worker -p bookclerk-jail
+        run: cargo build-app --release --platform
 
       - name: Helper binaries are present beside the hosts
         run: |
           test -x target/release/bookclerk-media-worker
           test -x target/release/bookclerk-jail
+          test -x target/release/bookclerk-workerd
+          test -x target/release/workerd
+          test -f target/release/workerd.version
 
   # The confinement backends are entirely per-OS, so an ubuntu-only run says
   # nothing about Seatbelt or the Windows path. This also exercises the negative
@@ -151,7 +194,8 @@ jobs:
       - name: Clippy
         run: >
           cargo clippy -p bookclerk-sandbox -p bookclerk-media
-          -p bookclerk-media-worker -p bookclerk-jail --all-targets -- -D warnings
+          -p bookclerk-media-worker -p bookclerk-jail
+          --all-targets -- -D warnings
 
       # Every enforcement test no-ops without a backend, so a runner that lost
       # Landlock would report green while proving nothing. Demand enforcement

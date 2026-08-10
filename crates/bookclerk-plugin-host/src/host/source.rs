@@ -89,8 +89,8 @@ impl ExternalSource {
 
     fn supports_oauth_rpc(&self) -> bool {
         self.auth_mode == PortalAuthMode::Oauth
-            && self.client.has_capability("login.start")
-            && self.client.has_capability("login.complete")
+            && self.client.has_capability("loginStart")
+            && self.client.has_capability("loginComplete")
     }
 
     fn login_params(plugin_data_dir: String, opts: LoginOptions) -> LoginParams {
@@ -782,7 +782,7 @@ mod tests {
     async fn scan_credentials_only_from_this_scope() {
         let dir = tempdir().unwrap();
         configure_master_key(dir.path()).unwrap();
-        let store = bookclerk_plugin_database::sqlite::open_store_memory()
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
             .unwrap();
         let echo = store.scope("echo");
@@ -813,7 +813,7 @@ mod tests {
     async fn scan_credentials_skips_scan_disabled_unless_explicit() {
         let dir = tempdir().unwrap();
         configure_master_key(dir.path()).unwrap();
-        let store = bookclerk_plugin_database::sqlite::open_store_memory()
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
             .unwrap();
         let echo = store.scope("echo");

@@ -120,7 +120,7 @@ fn push_manifest(
         )));
     }
     seen.insert(key, manifest_path.to_path_buf());
-    let command = resolve_command(root, &manifest.command)?;
+    let command = resolve_spawn_command(root, &manifest)?;
     if !command.is_file() {
         return Err(PluginError::message(format!(
             "plugin `{}`: command not found at {}",
@@ -134,6 +134,55 @@ fn push_manifest(
         command,
     });
     Ok(())
+}
+
+fn resolve_spawn_command(root: &Path, manifest: &PluginManifest) -> Result<PathBuf> {
+    use crate::manifest::PluginRuntimeKind;
+    match manifest.runtime {
+        PluginRuntimeKind::Native => {
+            let command = manifest.command.as_ref().ok_or_else(|| {
+                PluginError::message(format!(
+                    "plugin `{}`: native runtime missing command",
+                    manifest.id
+                ))
+            })?;
+            resolve_command(root, command)
+        }
+        PluginRuntimeKind::Workerd => resolve_workerd_runtime(),
+    }
+}
+
+fn resolve_workerd_runtime() -> Result<PathBuf> {
+    const NAME: &str = if cfg!(windows) {
+        "bookclerk-workerd.exe"
+    } else {
+        "bookclerk-workerd"
+    };
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(NAME);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    if let Ok(path) = which_in_path(NAME) {
+        return Ok(path);
+    }
+    Err(PluginError::message(format!(
+        "bookclerk-workerd not found beside the host binary or on PATH ({NAME})"
+    )))
+}
+
+fn which_in_path(name: &str) -> std::result::Result<PathBuf, ()> {
+    let path = std::env::var_os("PATH").ok_or(())?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(())
 }
 
 fn resolve_command(root: &Path, command: &Path) -> Result<PathBuf> {
@@ -246,7 +295,11 @@ mod tests {
 api_version = 1
 id = "echo"
 kind = "integration"
+runtime = "native"
 command = "./echo-bin"
+
+[capabilities.network]
+mode = "deny"
 "#,
         )
         .unwrap();
@@ -288,7 +341,11 @@ command = "./echo-bin"
 api_version = 1
 id = "{id}"
 kind = "{kind}"
+runtime = "native"
 command = "./bin"
+
+[capabilities.network]
+mode = "deny"
 "#
             ),
         )

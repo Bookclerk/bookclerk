@@ -1,0 +1,32 @@
+api_version = 1
+id = "echo-tools"
+name = "Echo Tools"
+kind = "integration"
+version = "0.1.0"
+runtime = "native"
+command = "./echo-tools"
+
+[capabilities.network]
+mode = "deny"
+
+[capabilities.bindings]
+config = true
+
+[capabilities.methods]
+list = [
+    "handshake",
+    "health",
+    "cli",
+]
+
+[[cli.commands]]
+name = "ping"
+about = "Probe"
+
+[[cli.commands.args]]
+name = "message"
+long = "message"
+kind = "string"
+required = false
+default = "hi"
+positional = false

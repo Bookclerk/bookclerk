@@ -7,8 +7,8 @@ use crate::error::{CatalogError, Result};
 use crate::kind::{PluginKind, RuntimeIdentity};
 use crate::target::{normalize_target, ArchiveFormat};
 
-/// Wire protocol identifier for newline-delimited JSON-RPC over stdio.
-pub const PROTOCOL_JSONRPC_STDIO_V1: &str = "jsonrpc-stdio-v1";
+/// Product wire protocol for Workers RPC (`api_version = 1`).
+pub const PROTOCOL_WORKERS_RPC: &str = "workers-rpc";
 
 /// Current package manifest schema.
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -94,8 +94,9 @@ impl ArtifactTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookclerkPackageManifest {
     pub schema_version: u32,
-    #[serde(default = "default_protocol")]
-    pub protocol: String,
+    /// Optional wire label. Prefer absent; when present use `workers-rpc`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
     pub api_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_version_max: Option<u32>,
@@ -123,14 +124,16 @@ pub struct BookclerkPackageManifest {
     pub publisher: Option<PublisherIdentity>,
 }
 
-fn default_protocol() -> String {
-    PROTOCOL_JSONRPC_STDIO_V1.into()
-}
-
 impl BookclerkPackageManifest {
     #[must_use]
     pub fn runtime(&self) -> RuntimeIdentity {
         RuntimeIdentity::new(self.kind, self.id.clone())
+    }
+
+    /// Effective protocol string for receipts / wire defaults.
+    #[must_use]
+    pub fn effective_protocol(&self) -> String {
+        normalize_protocol(self.protocol.as_deref()).unwrap_or_else(|_| PROTOCOL_WORKERS_RPC.into())
     }
 
     /// Validate schema + require digests for install-grade manifests.
@@ -141,12 +144,7 @@ impl BookclerkPackageManifest {
                 self.schema_version
             )));
         }
-        if self.protocol != PROTOCOL_JSONRPC_STDIO_V1 {
-            return Err(CatalogError::message(format!(
-                "unsupported protocol `{}`; expected `{PROTOCOL_JSONRPC_STDIO_V1}`",
-                self.protocol
-            )));
-        }
+        let _ = normalize_protocol(self.protocol.as_deref())?;
         if self.api_version == 0 {
             return Err(CatalogError::message("api_version must be >= 1"));
         }
@@ -190,6 +188,20 @@ impl BookclerkPackageManifest {
     }
 }
 
+/// Normalize optional `protocol` for Workers RPC packages.
+///
+/// Accepts absent / empty / `workers-rpc` only.
+pub fn normalize_protocol(protocol: Option<&str>) -> Result<String> {
+    let trimmed = protocol.map(str::trim).filter(|s| !s.is_empty());
+    match trimmed {
+        None => Ok(PROTOCOL_WORKERS_RPC.into()),
+        Some(PROTOCOL_WORKERS_RPC) => Ok(PROTOCOL_WORKERS_RPC.into()),
+        Some(other) => Err(CatalogError::message(format!(
+            "unsupported protocol `{other}`; expected absent or `{PROTOCOL_WORKERS_RPC}`"
+        ))),
+    }
+}
+
 /// Validate lowercase hex SHA-256 (64 chars).
 pub fn validate_sha256_hex(s: &str) -> Result<()> {
     validate_sha256_hex_field("sha256", s)
@@ -221,7 +233,6 @@ mod tests {
     fn sample_json() -> &'static str {
         r#"{
           "schema_version": 1,
-          "protocol": "jsonrpc-stdio-v1",
           "api_version": 1,
           "kind": "integration",
           "id": "echo",
@@ -230,7 +241,7 @@ mod tests {
             "target": "linux-x64-gnu",
             "url": "file:///tmp/echo.tar.gz",
             "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "executable": "bookclerk-plugin-echo-integration"
+            "executable": "bookclerk-plugin-echo-native-rust"
           }],
           "sandbox": { "network": "none" }
         }"#
@@ -241,6 +252,30 @@ mod tests {
         let m = BookclerkPackageManifest::from_json(sample_json()).unwrap();
         m.validate_for_install().unwrap();
         assert_eq!(m.runtime().id, "echo");
+        assert!(m.protocol.is_none());
+        assert_eq!(m.effective_protocol(), PROTOCOL_WORKERS_RPC);
+    }
+
+    #[test]
+    fn accepts_explicit_workers_rpc_protocol() {
+        let mut m = BookclerkPackageManifest::from_json(sample_json()).unwrap();
+        m.protocol = Some(PROTOCOL_WORKERS_RPC.into());
+        m.validate_for_install().unwrap();
+        assert_eq!(m.effective_protocol(), PROTOCOL_WORKERS_RPC);
+    }
+
+    #[test]
+    fn rejects_legacy_jsonrpc_protocol() {
+        let mut m = BookclerkPackageManifest::from_json(sample_json()).unwrap();
+        m.protocol = Some("jsonrpc-stdio-v1".into());
+        assert!(m.validate_for_install().is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_protocol() {
+        let mut m = BookclerkPackageManifest::from_json(sample_json()).unwrap();
+        m.protocol = Some("capnp-v0".into());
+        assert!(m.validate_for_install().is_err());
     }
 
     #[test]

@@ -1,0 +1,11 @@
+api_version = 1
+id = "logo-path"
+name = "Logo Path"
+kind = "integration"
+version = "0.1.0"
+logo = "assets/logo.png"
+runtime = "native"
+command = "./logo-path"
+
+[capabilities.network]
+mode = "deny"

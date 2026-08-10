@@ -138,11 +138,22 @@ const ANON_SESSION: AuthSession = {
 
 export class ApiError extends Error {
   status: number;
+  /** Machine slug from JSON error bodies when present. */
+  code?: string;
+  pluginId?: string;
+  summary?: string[];
 
-  constructor(status: number, message: string) {
+  constructor(
+    status: number,
+    message: string,
+    extras?: { code?: string; pluginId?: string; summary?: string[] },
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = extras?.code;
+    this.pluginId = extras?.pluginId;
+    this.summary = extras?.summary;
   }
 }
 
@@ -208,15 +219,28 @@ async function parseJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     let message = text || `${res.status} ${res.statusText}`;
+    let code: string | undefined;
+    let pluginId: string | undefined;
+    let summary: string[] | undefined;
     try {
-      const body = JSON.parse(text) as { error?: string; message?: string };
+      const body = JSON.parse(text) as {
+        error?: string;
+        message?: string;
+        plugin_id?: string;
+        summary?: string[];
+      };
       // Prefer the human-readable `message` (branded errors, login throttle)
       // over the machine slug in `error`.
       message = body.message?.trim() || body.error?.trim() || message;
+      code = typeof body.error === "string" ? body.error : undefined;
+      pluginId = typeof body.plugin_id === "string" ? body.plugin_id : undefined;
+      summary = Array.isArray(body.summary)
+        ? body.summary.filter((line): line is string => typeof line === "string")
+        : undefined;
     } catch {
       // keep raw text
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, { code, pluginId, summary });
   }
   return res.json() as Promise<T>;
 }
@@ -349,6 +373,39 @@ export interface PluginSettingsGroup {
 export interface SettingsResponse {
   settings: Record<string, string>;
   plugins: PluginSettingsGroup[];
+}
+
+export interface PluginConsentResponse {
+  plugin_id: string;
+  request: {
+    pluginId: string;
+    kind: string;
+    networkMode: string;
+    domains: string[];
+    bindings: string[];
+    compatibilityFlags: string[];
+    approvedAt: string;
+  };
+  covered: boolean;
+  summary: string[];
+  existing?: PluginConsentResponse["request"];
+}
+
+export async function fetchPluginConsent(id: string): Promise<PluginConsentResponse> {
+  const res = await fetch(`/api/plugins/${encodeURIComponent(id)}/consent`, {
+    credentials: "include",
+  });
+  return parseJson<PluginConsentResponse>(res);
+}
+
+export async function approvePluginConsent(id: string): Promise<PluginConsentResponse> {
+  const res = await fetch(`/api/plugins/${encodeURIComponent(id)}/consent`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approve: true }),
+  });
+  return parseJson<PluginConsentResponse>(res);
 }
 
 function normalizeCatalogSort(raw: unknown): CatalogSearchSort {

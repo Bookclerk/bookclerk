@@ -1,0 +1,11 @@
+api_version = 1
+id = "logo-url"
+name = "Logo URL"
+kind = "integration"
+version = "0.1.0"
+logo = "https://www.google.com/s2/favicons?domain=example.com&sz=128"
+runtime = "native"
+command = "./logo-url"
+
+[capabilities.network]
+mode = "deny"
