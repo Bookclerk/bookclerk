@@ -12,7 +12,11 @@ mod fmt;
 mod logo;
 mod types;
 
-pub use egress::{host_matches, EgressPolicy, DEFAULT_MAX_REDIRECTS};
+pub use egress::{
+    consent_domains_for, host_matches, manifest_needs_python, normalize_domain_pattern,
+    normalize_hostname, with_python_runtime_hosts, EgressPolicy, DEFAULT_MAX_REDIRECTS,
+    PYODIDE_EGRESS_HOSTS,
+};
 pub use error::{Error, Result};
 pub use fmt::format_manifest;
 pub use logo::{

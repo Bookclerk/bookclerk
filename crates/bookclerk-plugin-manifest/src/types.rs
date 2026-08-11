@@ -214,10 +214,18 @@ pub struct PluginManifest {
 }
 
 impl PluginManifest {
-    /// Domains used for workerd network consent UI.
+    /// Domains used for workerd network consent UI (IDNA-normalized; includes
+    /// Pyodide CDN hosts when this is a Python + outbound guest).
     #[must_use]
-    pub fn consent_domains(&self) -> &[String] {
-        &self.capabilities.network.domains
+    pub fn consent_domains(&self) -> Vec<String> {
+        crate::egress::consent_domains_for(self).unwrap_or_else(|_| {
+            self.capabilities
+                .network
+                .domains
+                .iter()
+                .filter_map(|d| crate::egress::normalize_domain_pattern(d))
+                .collect()
+        })
     }
 
     /// Validated logo classification, if `logo` is set.
@@ -292,6 +300,14 @@ impl PluginManifest {
                 "plugin.toml: capabilities.network.domains is required when runtime = \"workerd\" \
                  and mode = \"outbound\"",
             ));
+        }
+        for domain in &self.capabilities.network.domains {
+            if crate::egress::normalize_domain_pattern(domain).is_none() {
+                return Err(Error::message(format!(
+                    "plugin.toml: capabilities.network.domains entry `{domain}` is not a valid \
+                     hostname (IDNA ToASCII failed or percent-encoded host)"
+                )));
+            }
         }
         Ok(())
     }
@@ -461,7 +477,7 @@ config = true
         )
         .unwrap();
         assert!(m.logo.is_none());
-        assert_eq!(m.consent_domains(), &["api.example.com".to_string()]);
+        assert_eq!(m.consent_domains(), vec!["api.example.com".to_string()]);
     }
 
     #[test]

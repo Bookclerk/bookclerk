@@ -95,6 +95,18 @@ pub fn consent_request(manifest: &PluginManifest) -> PluginGrant {
         .as_ref()
         .map(|w| w.compatibility_flags.iter().cloned().collect())
         .unwrap_or_default();
+    let domains: BTreeSet<String> = bookclerk_plugin_manifest::consent_domains_for(manifest)
+        .unwrap_or_else(|_| {
+            manifest
+                .capabilities
+                .network
+                .domains
+                .iter()
+                .filter_map(|d| bookclerk_plugin_manifest::normalize_domain_pattern(d))
+                .collect::<Vec<_>>()
+        })
+        .into_iter()
+        .collect();
     PluginGrant {
         plugin_id: manifest.id.clone(),
         kind: manifest.kind.as_str().to_string(),
@@ -102,13 +114,7 @@ pub fn consent_request(manifest: &PluginManifest) -> PluginGrant {
             crate::manifest::NetworkMode::Deny => "deny".into(),
             crate::manifest::NetworkMode::Outbound => "outbound".into(),
         },
-        domains: manifest
-            .capabilities
-            .network
-            .domains
-            .iter()
-            .cloned()
-            .collect(),
+        domains,
         bindings,
         compatibility_flags: flags,
         approved_at: chrono::Utc::now().to_rfc3339(),
@@ -137,6 +143,16 @@ pub fn consent_summary(grant: &PluginGrant) -> Vec<String> {
         ));
         lines
             .push("Redirect hops after an allowed initial host do not require re-approval.".into());
+        let pyodide = bookclerk_plugin_manifest::PYODIDE_EGRESS_HOSTS;
+        let has_pyodide = pyodide
+            .iter()
+            .any(|h| grant.domains.iter().any(|d| d.eq_ignore_ascii_case(h)));
+        if has_pyodide {
+            lines.push(format!(
+                "Python runtime hosts (Pyodide/CDN): {}",
+                pyodide.join(", ")
+            ));
+        }
     }
     if !grant.bindings.is_empty() {
         lines.push(format!(
@@ -811,5 +827,52 @@ list = ["handshake", "health", "diagnose", "onEvent", "cli"]
             None,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn python_outbound_consent_includes_pyodide_hosts() {
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 1
+id = "echo-workerd-python"
+kind = "integration"
+runtime = "workerd"
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = ["python_workers"]
+main_module = "plugin.py"
+
+[[modules]]
+name = "plugin.py"
+path = "plugin.py"
+type = "python"
+
+[capabilities.network]
+mode = "outbound"
+domains = ["api.example.com"]
+
+[capabilities.bindings]
+config = true
+"#,
+        )
+        .unwrap();
+        let grant = consent_request(&manifest);
+        assert!(grant.domains.contains("api.example.com"));
+        for host in bookclerk_plugin_manifest::PYODIDE_EGRESS_HOSTS {
+            assert!(
+                grant.domains.iter().any(|d| d == *host),
+                "missing Pyodide host {host} in {:?}",
+                grant.domains
+            );
+        }
+        let summary = consent_summary(&grant);
+        assert!(
+            summary.iter().any(|l| l.contains("Python runtime hosts")),
+            "{summary:?}"
+        );
+        // Grant that only has author domains does not cover Python+outbound request.
+        let narrow = sample_grant(&["api.example.com"], &["config"], &["python_workers"]);
+        assert!(!grant_covers(&narrow, &grant));
     }
 }

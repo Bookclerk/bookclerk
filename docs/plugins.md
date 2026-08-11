@@ -131,7 +131,7 @@ is narrow on top of that:
 | Host-mediated secrets | `login` returns `{ account, credentials }`; host seals into `encrypted_secrets` with `provider = plugin id`. `scan` and `fetchTitle` receive those blobs from the host |
 | Host-mediated library writes | `scan` returns book DTOs; host upserts with `source` forced to the plugin id. Account listing for a plugin id is answered from the host accounts table |
 | Scoped identity | Plugin cannot claim another storefront’s `source` / `provider` |
-| Network consent | Operator runs `bookclerk plugins approve` before enable; the **same covering grant is required again at every external spawn** and at privileged delivery (`config` / `secrets` / `work_fs` / `oauth`). **Workerd** guests enforce `capabilities.network.domains` as the isolate hostname allowlist (redirect hops free). **Native** guests with `mode = "outbound"` get coarse jail internet — **no hostname filter**; `domains` must not be declared |
+| Network consent | Operator runs `bookclerk plugins approve` before enable; the **same covering grant is required again at every external spawn** and at privileged delivery (`config` / `secrets` / `work_fs` / `oauth`). **Workerd** guests enforce `capabilities.network.domains` as the isolate hostname allowlist (**initial host only**, IDNA-normalized; redirect hops stay free by design). **Native** guests with `mode = "outbound"` get coarse jail internet — **no hostname filter**; `domains` must not be declared |
 
 First-party guests ship under `crates/bookclerk-plugins/` with the guest SDK
 contract. Host binaries (`bookclerk`, `bookclerkd`) depend on
@@ -321,9 +321,25 @@ When you need enforceable hostname allowlists, ship a **workerd** plugin. The
 operator still **approves** native `outbound` (with an explicit warning that the
 guest can reach the open internet).
 
-Workerd: redirects after an allowed initial host do not need re-allowlist
-membership; a direct request to a non-listed host is denied inside the isolate
-(`bridge/egress.js` + shared `EgressPolicy`).
+Workerd egress matching (shared `EgressPolicy` + `bridge/egress.js`):
+
+- **Initial host only.** The first request URL's host must be on
+  `capabilities.network.domains` (with `*.` prefix wildcards). Matching uses
+  **IDNA ToASCII** on both the request host and allowlist patterns; percent-encoded
+  hosts and failed IDNA are **rejected** (fail closed). Unicode and Punycode forms
+  of the same name match after normalization.
+- **Redirect hops stay free (intentional).** After an allowed initial host,
+  `Location` redirects are followed up to `maxRedirects` **without** re-checking
+  the domain allowlist. Do not treat hop hosts as consented domains — operators
+  approve the initial allowlist only. Cross-origin redirects drop `Authorization`
+  (Fetch CORS non-wildcard request-header) plus `Cookie` / `Cookie2` /
+  `Proxy-Authorization` as defense in depth. Method/body follow Fetch
+  HTTP-redirect fetch: 301/302 convert **POST→GET** only; 303 converts
+  non-GET/HEAD→GET; 307/308 preserve method/body. `AbortSignal` and other
+  RequestInit metadata survive hops.
+- **Python + outbound.** Workerd Python guests also require the Pyodide/CDN hosts
+  (`cdn.jsdelivr.net`, `pypi.org`, `files.pythonhosted.org`) in the consent grant;
+  materialize uses the same set and does not silently widen beyond it.
 
 `bindings.oauth = true` (with outbound network) is how storefronts declare an
 OAuth-style callback need. The **host** owns the browser-facing TCP listener and
@@ -668,12 +684,14 @@ manifest stays within the installer envelope (deny network, `config` /
 
 Grants are persisted under the files dir. Widening `capabilities.network` or
 bindings after a prior grant requires re-approval (enable **and** spawn fail
-closed). For workerd, widening the `domains` allowlist requires re-approval;
-redirect following does not expand the consented domain list. When a stored
-grant still *covers* a narrowed manifest, spawn/delivery uses an **effective
-grant** limited to the current request surface (domains, bindings, flags,
-network mode) while keeping the stored `approved_at` — so privileged delivery
-cannot exceed what the current `plugin.toml` declares.
+closed). For workerd, widening the `domains` allowlist requires re-approval —
+including the Python runtime hosts folded into `consent_request` for Python +
+outbound guests. Redirect following does **not** expand the consented domain
+list (hops stay free by design; only the initial host is allowlisted). When a
+stored grant still *covers* a narrowed manifest, spawn/delivery uses an
+**effective grant** limited to the current request surface (domains, bindings,
+flags, network mode) while keeping the stored `approved_at` — so privileged
+delivery cannot exceed what the current `plugin.toml` declares.
 
 Approving a **native** plugin with `mode = "outbound"` shows an explicit warning
 that networking is **not** hostname-filtered.

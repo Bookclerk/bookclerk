@@ -4,7 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use bookclerk_plugin_manifest::{NetworkMode, PluginManifest};
+use bookclerk_plugin_manifest::{
+    manifest_needs_python, with_python_runtime_hosts, NetworkMode, PluginManifest,
+};
 
 use crate::egress::EgressProxy;
 
@@ -31,12 +33,8 @@ pub const SDK_JS_MODULE_NAMES: &[&str] =
 pub const SDK_PY_WORKERD_MODULE: &str = "bookclerk_plugin_sdk/workerd.py";
 pub const SDK_PY_INIT_MODULE: &str = "bookclerk_plugin_sdk/__init__.py";
 
-/// Hosts Pyodide / Cloudflare Python Workers commonly fetch on first boot
-/// (runtime index + micropip). Documented here so deny never opens unrestricted
-/// `internet`; Outbound + Python routes through `egress` with these allowlisted.
-/// See Cloudflare Python packages docs (PyPI / Pyodide) and jsDelivr Pyodide CDN.
-pub const PYODIDE_EGRESS_HOSTS: &[&str] =
-    &["cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"];
+// Re-export so call sites / docs can discover the shared list beside workerd config.
+pub use bookclerk_plugin_manifest::PYODIDE_EGRESS_HOSTS;
 
 /// Where bridge assets + Cap'n Proto config are written.
 ///
@@ -248,7 +246,13 @@ pub fn materialize(
     // Host/egress/bridge stay plain JS — never inherit python_workers (heavy).
     let bridge_flags = String::new();
 
-    let domains = egress_domains_for(needs_python, egress.mode(), egress.allowed_initial_hosts());
+    // Domain allowlist must match consent_request (manifest language + outbound),
+    // not silently widen from on-disk .py detection alone.
+    let domains = egress_domains_for(
+        manifest_needs_python(manifest),
+        egress.mode(),
+        egress.allowed_initial_hosts(),
+    );
     let mut policy = egress.policy().clone();
     policy.domains = domains;
     let policy_json = policy.to_policy_json();
@@ -381,17 +385,12 @@ pub fn plugin_global_outbound(mode: NetworkMode) -> &'static str {
 }
 
 /// Egress allowlist: plugin domains, plus Pyodide CDN hosts when Python + Outbound.
+///
+/// Uses the same host set as [`bookclerk_plugin_manifest::consent_domains_for`] so
+/// materialize cannot silently widen beyond what `consent_request` / grants cover.
 #[must_use]
 pub fn egress_domains_for(needs_python: bool, mode: NetworkMode, base: &[String]) -> Vec<String> {
-    let mut domains = base.to_vec();
-    if needs_python && mode == NetworkMode::Outbound {
-        for host in PYODIDE_EGRESS_HOSTS {
-            if !domains.iter().any(|d| d.eq_ignore_ascii_case(host)) {
-                domains.push((*host).to_string());
-            }
-        }
-    }
-    domains
+    with_python_runtime_hosts(needs_python, mode, base)
 }
 
 fn module_field_for(name: &str) -> Result<(&'static str, bool)> {
