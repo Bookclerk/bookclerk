@@ -14,6 +14,11 @@ the host SSH agent socket (private key never enters the container; see
 `docs/devcontainer.md`). Dev Container signing tweaks use project-local
 `.git/config` only and are not applied to Cloud Builds.
 
+Environment Builds: keep Builds **off** until the environment’s Builds tab
+shows a healthy **SYSTEM/RECURRING** snapshot of `main`. Draft (AGENT/MANUAL)
+builds validate config but are never the boot baseline; with Builds on and no
+healthy SYSTEM build, new agents resolve `no_healthy_builds` and cold-install.
+
 Workspace-local caches (gitignored; travel with the bind-mounted checkout):
 
 | Path | Role |

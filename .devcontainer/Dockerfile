@@ -4,8 +4,11 @@
 # - Cloud Agent: Cursor checks out the correct commit into /workspace.
 # Pin to the same Rust minor as packaging/docker/Dockerfile.
 #
-# Build artifacts land in the workspace `target/` / `.cargo-home/` / `ui/dist/`
-# so Linux hosts (glibc ≥ bookworm) can run the resulting binaries.
+# Do NOT set WORKDIR /workspace or ENV paths under /workspace here: the image
+# must not own that tree. Cursor clones into /workspace at runtime; Dev
+# Containers use ${containerWorkspaceFolder}. Workspace caches
+# (target/, .cargo-home/, .tmp/, BookclerkFiles/) are created by install /
+# postCreate and pointed at via remoteEnv / the Cloud install script.
 
 FROM rust:1.85-bookworm
 
@@ -62,14 +65,8 @@ RUN groupadd --gid 1000 bookclerk \
     && mkdir -p /home/bookclerk/.cargo/registry /home/bookclerk/.cargo/git \
     && chown -R bookclerk:bookclerk /home/bookclerk/.cargo
 
-# Portable defaults for Cloud Agent (/workspace). Dev Container overrides paths
-# via remoteEnv to ${containerWorkspaceFolder}/….
+# Toolchain PATH only — workspace-local Cargo/TMPDIR paths are set at runtime
+# (Cloud install script / Dev Container remoteEnv), never baked to /workspace.
 ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    CARGO_HOME=/workspace/.cargo-home \
-    CARGO_TARGET_DIR=/workspace/target \
-    TMPDIR=/workspace/.tmp \
-    BOOKCLERK_FILES_DIR=/workspace/BookclerkFiles \
     CARGO_TERM_COLOR=always \
     RUST_BACKTRACE=1
-
-WORKDIR /workspace

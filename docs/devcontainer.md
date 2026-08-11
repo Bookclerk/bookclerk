@@ -6,7 +6,19 @@ Bookworm + Rust + OpenSSL headers + Node) so local hosts without `libssl-dev`
 
 The same Dockerfile is shared with Cursor Cloud Agents
 ([`.devcontainer/Dockerfile`](../.devcontainer/Dockerfile), referenced from
-[`.cursor/environment.json`](../.cursor/environment.json)).
+[`.cursor/environment.json`](../.cursor/environment.json)). The image must
+**not** set `WORKDIR /workspace` or bake `CARGO_*` / `TMPDIR` under
+`/workspace` — Cursor clones the repo there at runtime; workspace cache paths
+are set by Dev Container `remoteEnv` or
+[`.cursor/cloud-agent-install.sh`](../.cursor/cloud-agent-install.sh).
+
+When **Environment Builds** are enabled in the Cursor dashboard, new agents
+boot only from a **healthy SYSTEM/RECURRING** build of the default branch.
+Agent-triggered draft builds never become that baseline. If Builds is on and
+the Builds tab shows `no_healthy_builds` (or only failed SYSTEM / draft-only
+successes), disable Builds until a green default-branch SYSTEM build exists —
+otherwise new agents fall into a long cold install and can appear stuck
+without a usable checkout/branch.
 
 The workspace is **bind-mounted**. Cargo writes into the repo’s `target/` and
 `.cargo-home/` (registry/git), and Vite into `ui/dist/`. `target/debug` and
