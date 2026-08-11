@@ -62,7 +62,7 @@ label (`S:(ML;;NW;;;LW)`). See [plugins.md](plugins.md) (Interactive listeners).
 | Active processes | 8 | 64 |
 | CPU rate | 80% hard cap | uncapped |
 | Stderr proxy budget | 1 MiB | 16 MiB |
-| data/tmp growth (plan) | 512 MiB each | n/a |
+| data/tmp growth (plan + side-pass) | 512 MiB each | n/a |
 | RPC timeout | kill + quarantine | n/a (stdio job) |
 
 Limits are best-effort Job Object + host policy, not a hard multi-tenant quota.

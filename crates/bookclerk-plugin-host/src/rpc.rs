@@ -76,6 +76,8 @@ pub struct PluginClient {
     /// Set after a serious timeout or protocol violation; client must be dropped
     /// and the plugin restarted under operator control.
     quarantined: Arc<AtomicBool>,
+    /// Plugin private state directory (`…/plugins/<id>/data`), also guest `HOME`.
+    data: PathBuf,
     /// Plugin scratch directory (`…/plugins/<id>/tmp`) for callback IPC sockets.
     scratch: PathBuf,
     /// Host end of the fetch-directory side channel, when the guest is jailed.
@@ -324,6 +326,7 @@ impl PluginClient {
             grant: grant.clone(),
             call_gate: Mutex::new(()),
             quarantined,
+            data: jail.data.clone(),
             scratch: jail.scratch.clone(),
             #[cfg(unix)]
             fd_channel: jail.fd_channel,
@@ -486,6 +489,20 @@ impl PluginClient {
         if let Some(side) = side {
             // FD / ACL side passes are work_fs privileges — require the binding.
             require_binding(&self.grant, "work_fs")?;
+            // Re-check data/tmp before granting more write-capable work: a guest
+            // that filled its state after a lean spawn must not keep receiving
+            // fetch dirs / uploads / db FDs.
+            if let Err(err) =
+                crate::jail::ensure_plugin_state_within_budget(&self.id, &self.data, &self.scratch)
+            {
+                self.quarantine_and_kill(&format!(
+                    "plugin state exceeds disk budget before `{method}` side-pass"
+                ))
+                .await;
+                return Err(PluginError::message(format!(
+                    "{err}; guest killed and quarantined"
+                )));
+            }
             #[cfg(unix)]
             if let Some(channel) = self.fd_channel.as_ref() {
                 match side {
@@ -810,6 +827,7 @@ fn plugin_env_allowed(key: &str) -> bool {
 #[cfg(test)]
 mod env_tests {
     use super::plugin_env_allowed;
+    use crate::jail::ensure_plugin_state_within_budget_limit;
 
     #[test]
     fn allows_path_blocks_secrets() {
@@ -820,5 +838,22 @@ mod env_tests {
         assert!(!plugin_env_allowed("AWS_SECRET_ACCESS_KEY"));
         assert!(!plugin_env_allowed("CLOUDFLARE_API_TOKEN"));
         assert!(!plugin_env_allowed("BOOKCLERK_DATABASE_POSTGRES_URL"));
+    }
+
+    /// Mirrors the side-pass gate: growth after a lean check must deny the next
+    /// write-capable pass without needing a live guest.
+    #[test]
+    fn side_pass_budget_gate_denies_after_growth() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let data = root.path().join("data");
+        let scratch = root.path().join("tmp");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+
+        ensure_plugin_state_within_budget_limit("echo", &data, &scratch, 32).expect("lean");
+        std::fs::write(data.join("blob"), vec![0u8; 64]).unwrap();
+        let err = ensure_plugin_state_within_budget_limit("echo", &data, &scratch, 32)
+            .expect_err("side-pass must refuse");
+        assert!(err.to_string().contains("limit 32"), "got: {err}");
     }
 }

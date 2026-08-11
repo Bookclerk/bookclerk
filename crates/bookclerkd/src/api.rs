@@ -3875,7 +3875,7 @@ mode = "deny"
         );
         let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
         let (bytes, ctype) =
-            super::plugin_logo_bytes_for(&cfg, "integration", "logo-echo").expect("sanitized svg");
+            super::plugin_logo_bytes_for(&cfg, "integration", "logo_echo").expect("sanitized svg");
         assert_eq!(ctype, "image/svg+xml");
         let body = String::from_utf8(bytes).expect("utf-8 svg");
         assert!(
@@ -3899,7 +3899,7 @@ mode = "deny"
         // Not well-formed XML — svg-hush must fail closed (no raw bytes).
         write_logo_svg(&root, "<svg><script>alert(1)</script><not-closed>");
         let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
-        let err = super::plugin_logo_bytes_for(&cfg, "integration", "logo-echo").unwrap_err();
+        let err = super::plugin_logo_bytes_for(&cfg, "integration", "logo_echo").unwrap_err();
         assert_eq!(err, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
     }
 
@@ -3992,7 +3992,7 @@ mode = "deny"
         let res = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/plugins/integration/logo-echo/logo")
+                    .uri("/api/plugins/integration/logo_echo/logo")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4051,7 +4051,7 @@ mode = "deny"
         let res = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/plugins/integration/logo-echo/logo")
+                    .uri("/api/plugins/integration/logo_echo/logo")
                     .body(Body::empty())
                     .unwrap(),
             )

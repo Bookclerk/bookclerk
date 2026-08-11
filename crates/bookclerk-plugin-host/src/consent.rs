@@ -834,7 +834,7 @@ list = ["handshake", "health", "diagnose", "onEvent", "cli"]
         let manifest = PluginManifest::parse(
             r#"
 api_version = 1
-id = "echo-workerd-python"
+id = "echo_workerd_python"
 kind = "integration"
 runtime = "workerd"
 

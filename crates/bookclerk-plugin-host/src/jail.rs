@@ -79,6 +79,12 @@ fn plugin_state_root(config: &Config, plugin_id: &str) -> Result<PathBuf> {
         .join(validated_plugin_id(plugin_id)?))
 }
 
+/// Default host budget for each of `plugins/<id>/data` and `plugins/<id>/tmp`.
+///
+/// Checked at jail plan (spawn/reload) and again before write-heavy RPC
+/// side-passes so a running guest cannot fill disk after a lean spawn.
+pub(crate) const PLUGIN_STATE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
+
 /// Shallow recursive size used for availability budgets (best-effort).
 ///
 /// Uses `symlink_metadata` so a guest cannot force the host to walk outside
@@ -103,6 +109,53 @@ fn dir_size_bytes(root: &Path) -> std::io::Result<u64> {
         }
     }
     Ok(total)
+}
+
+/// Fail closed when `data` or `scratch` exceeds [`PLUGIN_STATE_BUDGET_BYTES`].
+pub(crate) fn ensure_plugin_state_within_budget(
+    plugin_id: &str,
+    data: &Path,
+    scratch: &Path,
+) -> Result<()> {
+    ensure_plugin_state_within_budget_limit(plugin_id, data, scratch, PLUGIN_STATE_BUDGET_BYTES)
+}
+
+/// Same as [`ensure_plugin_state_within_budget`] with an explicit byte limit
+/// (tests use a tiny ceiling so they need not grow past 512 MiB).
+pub(crate) fn ensure_plugin_state_within_budget_limit(
+    plugin_id: &str,
+    data: &Path,
+    scratch: &Path,
+    limit_bytes: u64,
+) -> Result<()> {
+    for dir in [data, scratch] {
+        // Missing dirs count as empty; plan creates them before this runs.
+        let used = match dir_size_bytes(dir) {
+            Ok(n) => n,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(err) => {
+                return Err(PluginError::message(format!(
+                    "could not measure plugin `{plugin_id}` state directory {}: {err}",
+                    dir.display()
+                )));
+            }
+        };
+        if used > limit_bytes {
+            tracing::error!(
+                plugin = %plugin_id,
+                path = %dir.display(),
+                used_bytes = used,
+                limit_bytes,
+                "plugin state directory exceeds host disk budget"
+            );
+            return Err(PluginError::message(format!(
+                "plugin `{plugin_id}` state directory {} is {used} bytes \
+                 (limit {limit_bytes}); clear it before reload",
+                dir.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// How a guest will be started.
@@ -156,19 +209,10 @@ impl GuestJail {
                 PluginError::message(format!("could not create {}: {err}", dir.display()))
             })?;
         }
-        // Best-effort availability: refuse to start if plugin state already grew
-        // past the host budget (runaway cache / tmp from a previous session).
-        const PLUGIN_STATE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
-        for dir in [&data, &scratch] {
-            let used = dir_size_bytes(dir).unwrap_or(0);
-            if used > PLUGIN_STATE_BUDGET_BYTES {
-                return Err(PluginError::message(format!(
-                    "plugin `{id}` state directory {} is {used} bytes \
-                     (limit {PLUGIN_STATE_BUDGET_BYTES}); clear it before reload",
-                    dir.display()
-                )));
-            }
-        }
+        // Availability: refuse spawn/reload when state already exceeds the host
+        // budget (runaway cache / tmp from a previous session). Runtime growth
+        // is re-checked before write-heavy side-passes on [`PluginClient`].
+        ensure_plugin_state_within_budget(id, &data, &scratch)?;
         // Fail closed while planning: a missing/unwritable local output root
         // must not become a late, opaque guest IO failure after jail start.
         if plugin.manifest.kind == crate::PluginKind::Output
@@ -863,5 +907,48 @@ mod tests {
             }
             other => panic!("expected a fallback, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn state_budget_allows_empty_dirs_and_refuses_growth_past_limit() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let data = root.path().join("data");
+        let scratch = root.path().join("tmp");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+
+        ensure_plugin_state_within_budget_limit("echo", &data, &scratch, 64).expect("empty ok");
+
+        std::fs::write(data.join("fat.bin"), vec![0u8; 100]).expect("write");
+        let err = ensure_plugin_state_within_budget_limit("echo", &data, &scratch, 64)
+            .expect_err("must refuse over budget");
+        assert!(err.to_string().contains("state directory"), "got: {err}");
+        assert!(err.to_string().contains("limit 64"), "got: {err}");
+
+        // Clear growth → subsequent check succeeds again (reload path).
+        std::fs::remove_file(data.join("fat.bin")).unwrap();
+        ensure_plugin_state_within_budget_limit("echo", &data, &scratch, 64).expect("cleared");
+    }
+
+    #[test]
+    fn plan_refuses_when_existing_state_exceeds_budget() {
+        let files = tempfile::tempdir().expect("tempdir");
+        let install = tempfile::tempdir().expect("tempdir");
+        let mut config = config_at(files.path());
+        config.plugins.isolation = Isolation::Off;
+        let plugin = plugin_at(install.path(), "libro", JailNetworkNeed::Outbound);
+
+        let data = plugin_data_dir(&config, "libro").unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        // Grow past the production 512 MiB ceiling with a sparse-ish write that
+        // still counts via `metadata().len()` on a regular file.
+        let fat = data.join("fat.bin");
+        let file = std::fs::File::create(&fat).expect("create");
+        file.set_len(PLUGIN_STATE_BUDGET_BYTES + 1)
+            .expect("set_len");
+        drop(file);
+
+        let err = GuestJail::plan(&config, &plugin).expect_err("must refuse");
+        assert!(err.to_string().contains("state directory"), "got: {err}");
     }
 }

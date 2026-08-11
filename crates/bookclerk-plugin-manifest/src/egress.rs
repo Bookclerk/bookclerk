@@ -349,7 +349,7 @@ mod tests {
     fn python_outbound_includes_pyodide_hosts() {
         let toml = r#"
 api_version = 1
-id = "py-demo"
+id = "py_demo"
 kind = "integration"
 runtime = "workerd"
 [workerd]
@@ -383,7 +383,7 @@ domains = ["api.example.com"]
     fn js_outbound_omits_pyodide_hosts() {
         let toml = r#"
 api_version = 1
-id = "js-demo"
+id = "js_demo"
 kind = "integration"
 runtime = "workerd"
 [workerd]
