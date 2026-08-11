@@ -30,9 +30,14 @@ use bookclerk_plugin_manifest::PluginManifest;
 use bookclerk_workerd::config::{self, ListenSpec};
 use bookclerk_workerd::egress::EgressProxy;
 use bookclerk_workerd::ensure::ensure_workerd;
+use bookclerk_workerd::notify::{
+    self, event_type_for_log, generate_bridge_token, parse_notify_http, push_notify_event,
+    NOTIFY_ACCEPT_LIMIT, NOTIFY_MAX_BODY,
+};
 use bookclerk_workerd::pin::{binary_name, BUNDLED_WORKERD_COMPAT_DATE, WORKERD_RELEASE_TAG};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use crate::manifest_env::load_manifest;
@@ -137,6 +142,8 @@ async fn run_isolate(
 ) -> Result<()> {
     let state_dir = config::workerd_state_dir(root)?;
     let notify_events: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let bridge_token = generate_bridge_token();
+    let notify_sem = Arc::new(Semaphore::new(NOTIFY_ACCEPT_LIMIT));
 
     #[cfg(unix)]
     let (listen, rpc_listener, notify_addr, notify_task) = {
@@ -149,7 +156,12 @@ async fn run_isolate(
         let notify_sock = state_dir.join("notify.sock");
         let _ = std::fs::remove_file(&notify_sock);
         let notify_addr = format!("unix:{}", notify_sock.display());
-        let notify_task = spawn_notify_unix(notify_sock, Arc::clone(&notify_events));
+        let notify_task = spawn_notify_unix(
+            notify_sock,
+            Arc::clone(&notify_events),
+            bridge_token.clone(),
+            Arc::clone(&notify_sem),
+        );
         (
             ListenSpec::InheritedTcp { port: rpc_port },
             Some(rpc_listener),
@@ -172,7 +184,12 @@ async fn run_isolate(
             .context("bind HOST.notify ephemeral loopback")?;
         let notify_port = notify_listener.local_addr()?.port();
         let notify_addr = format!("127.0.0.1:{notify_port}");
-        let notify_task = spawn_notify_tcp(notify_listener, Arc::clone(&notify_events));
+        let notify_task = spawn_notify_tcp(
+            notify_listener,
+            Arc::clone(&notify_events),
+            bridge_token.clone(),
+            Arc::clone(&notify_sem),
+        );
         (
             ListenSpec::TcpLoopback(rpc_port),
             None::<std::net::TcpListener>,
@@ -181,7 +198,14 @@ async fn run_isolate(
         )
     };
 
-    let generated = config::materialize(root, manifest, egress, listen, notify_addr.as_deref())?;
+    let generated = config::materialize(
+        root,
+        manifest,
+        egress,
+        listen,
+        notify_addr.as_deref(),
+        &bridge_token,
+    )?;
 
     let mut cmd = tokio::process::Command::new(workerd_bin);
     cmd.arg("serve")
@@ -210,11 +234,11 @@ async fn run_isolate(
 
     forward_child_logs(&mut child);
 
-    wait_for_bridge(&generated.listen)
+    wait_for_bridge(&generated.listen, &bridge_token)
         .await
         .context("workerd bridge /health did not become ready")?;
 
-    let result = mediate_stdio(&generated.listen).await;
+    let result = mediate_stdio(&generated.listen, &bridge_token).await;
     let _ = child.kill().await;
     let _ = child.wait().await;
     if let Some(task) = notify_task {
@@ -252,6 +276,8 @@ fn clear_cloexec(listener: &std::net::TcpListener) -> Result<()> {
 fn spawn_notify_unix(
     path: PathBuf,
     events: Arc<Mutex<Vec<serde_json::Value>>>,
+    token: String,
+    sem: Arc<Semaphore>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let listener = match tokio::net::UnixListener::bind(&path) {
@@ -270,9 +296,14 @@ fn spawn_notify_unix(
             let Ok((mut stream, _)) = listener.accept().await else {
                 continue;
             };
+            let Ok(permit) = sem.clone().acquire_owned().await else {
+                continue;
+            };
             let events = Arc::clone(&events);
+            let token = token.clone();
             tokio::spawn(async move {
-                if let Err(err) = handle_notify_connection(&mut stream, &events).await {
+                let _permit = permit;
+                if let Err(err) = handle_notify_connection(&mut stream, &events, &token).await {
                     warn!(error = %err, "HOST.notify request failed");
                 }
             });
@@ -284,6 +315,8 @@ fn spawn_notify_unix(
 fn spawn_notify_tcp(
     std_listener: std::net::TcpListener,
     events: Arc<Mutex<Vec<serde_json::Value>>>,
+    token: String,
+    sem: Arc<Semaphore>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // Keep the already-bound port-0 socket (do not rebind a concrete port).
@@ -303,9 +336,14 @@ fn spawn_notify_tcp(
             let Ok((mut stream, _)) = listener.accept().await else {
                 continue;
             };
+            let Ok(permit) = sem.clone().acquire_owned().await else {
+                continue;
+            };
             let events = Arc::clone(&events);
+            let token = token.clone();
             tokio::spawn(async move {
-                if let Err(err) = handle_notify_connection(&mut stream, &events).await {
+                let _permit = permit;
+                if let Err(err) = handle_notify_connection(&mut stream, &events, &token).await {
                     warn!(error = %err, "HOST.notify request failed");
                 }
             });
@@ -316,55 +354,112 @@ fn spawn_notify_tcp(
 async fn handle_notify_connection<S>(
     stream: &mut S,
     events: &Mutex<Vec<serde_json::Value>>,
+    token: &str,
 ) -> Result<()>
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
 {
-    let mut buf = vec![0u8; 65536];
-    let n = stream.read(&mut buf).await?;
-    if n == 0 {
+    let raw = read_notify_http(stream).await?;
+    if raw.is_empty() {
         return Ok(());
     }
-    let raw = String::from_utf8_lossy(&buf[..n]);
-    let (status, body) = match parse_notify_http(&raw) {
-        Ok(event) => {
-            info!(event = %event, "HOST.notify");
-            if let Ok(mut guard) = events.lock() {
-                guard.push(event);
+    let (status, reason, body) = match parse_notify_http(&raw, token) {
+        Ok((event, size)) => {
+            info!(
+                event_type = ?event_type_for_log(&event),
+                size,
+                "HOST.notify"
+            );
+            match push_notify_event(events, event) {
+                Ok(true) => {
+                    warn!(
+                        cap = notify::NOTIFY_EVENT_CAP,
+                        "HOST.notify event buffer full; dropped oldest"
+                    );
+                }
+                Ok(false) => {}
+                Err(err) => warn!(error = %err, "HOST.notify buffer push failed"),
             }
-            (200u16, "ok")
+            (200u16, "OK", "ok")
         }
         Err(err) => {
-            warn!(error = %err, "HOST.notify bad request");
-            (400, "bad request")
+            let msg = err.to_string();
+            if msg.contains("unauthorized") {
+                warn!("HOST.notify unauthorized");
+                (401, "Unauthorized", "unauthorized")
+            } else {
+                warn!(error = %err, "HOST.notify bad request");
+                (400, "Bad Request", "bad request")
+            }
         }
     };
     let resp = format!(
-        "HTTP/1.1 {status} {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-        if status == 200 { "OK" } else { "Bad Request" },
+        "HTTP/1.1 {status} {reason}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(resp.as_bytes()).await?;
     Ok(())
 }
 
-fn parse_notify_http(raw: &str) -> Result<serde_json::Value> {
-    let (headers, body) = raw
-        .split_once("\r\n\r\n")
-        .or_else(|| raw.split_once("\n\n"))
-        .context("incomplete HTTP request")?;
-    let request_line = headers.lines().next().unwrap_or("");
-    if !request_line.starts_with("POST ") {
-        bail!("expected POST");
+/// Read one HTTP request for notify, capped so headers + body stay within
+/// `NOTIFY_MAX_BODY` plus a modest header allowance.
+async fn read_notify_http<S>(stream: &mut S) -> Result<String>
+where
+    S: AsyncReadExt + Unpin,
+{
+    const HEADER_ALLOWANCE: usize = 8192;
+    let max_total = NOTIFY_MAX_BODY + HEADER_ALLOWANCE;
+    let mut buf = Vec::with_capacity(4096);
+    let mut tmp = [0u8; 4096];
+    loop {
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.len() > max_total {
+            bail!("notify request too large");
+        }
+        if find_header_end(&buf).is_some() {
+            // Prefer to have the full body when Content-Length is already present.
+            if let Some(need) = content_length_needed(&buf) {
+                let header_end = find_header_end(&buf).unwrap();
+                let have = buf.len().saturating_sub(header_end);
+                if have >= need.min(NOTIFY_MAX_BODY + 1) {
+                    break;
+                }
+                // Still need more body bytes — keep reading unless oversized.
+                if need > NOTIFY_MAX_BODY {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
     }
-    if !request_line.contains("/notify") {
-        bail!("expected /notify path");
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+fn find_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| i + 4)
+        .or_else(|| buf.windows(2).position(|w| w == b"\n\n").map(|i| i + 2))
+}
+
+fn content_length_needed(buf: &[u8]) -> Option<usize> {
+    let end = find_header_end(buf)?;
+    let headers = std::str::from_utf8(&buf[..end]).ok()?;
+    for line in headers.lines().skip(1) {
+        let line = line.trim_end_matches('\r');
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            return value.trim().parse().ok();
+        }
     }
-    let body = body.trim_start_matches('\u{feff}').trim();
-    if body.is_empty() {
-        return Ok(serde_json::Value::Null);
-    }
-    serde_json::from_str(body).context("notify JSON body")
+    None
 }
 
 fn forward_child_logs(child: &mut Child) {
@@ -386,10 +481,10 @@ fn forward_child_logs(child: &mut Child) {
     }
 }
 
-async fn wait_for_bridge(listen: &ListenSpec) -> Result<()> {
+async fn wait_for_bridge(listen: &ListenSpec, token: &str) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
-        match bridge_get(listen, "/health").await {
+        match bridge_get(listen, "/health", token).await {
             Ok(_) => return Ok(()),
             Err(_) => {
                 if tokio::time::Instant::now() > deadline {
@@ -401,7 +496,7 @@ async fn wait_for_bridge(listen: &ListenSpec) -> Result<()> {
     }
 }
 
-async fn mediate_stdio(listen: &ListenSpec) -> Result<()> {
+async fn mediate_stdio(listen: &ListenSpec, token: &str) -> Result<()> {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut stdout = tokio::io::stdout();
@@ -419,7 +514,7 @@ async fn mediate_stdio(listen: &ListenSpec) -> Result<()> {
         }
         let req: RpcRequest = serde_json::from_str(line)?;
         let is_shutdown = req.method == methods::shutdown::NAME;
-        let resp = forward_rpc(listen, &req)
+        let resp = forward_rpc(listen, &req, token)
             .await
             .unwrap_or_else(|err| RpcResponse {
                 id: req.id.clone(),
@@ -441,9 +536,9 @@ async fn mediate_stdio(listen: &ListenSpec) -> Result<()> {
     Ok(())
 }
 
-async fn forward_rpc(listen: &ListenSpec, req: &RpcRequest) -> Result<RpcResponse> {
+async fn forward_rpc(listen: &ListenSpec, req: &RpcRequest, token: &str) -> Result<RpcResponse> {
     let body = serde_json::to_vec(req)?;
-    let text = bridge_post(listen, "/rpc", &body).await?;
+    let text = bridge_post(listen, "/rpc", &body, token).await?;
     let value: serde_json::Value = serde_json::from_str(&text).context("parse bridge JSON")?;
     if let Some(err) = value.get("error") {
         let code = err
@@ -477,20 +572,24 @@ async fn bridge_http(
     method: &str,
     path: &str,
     body: Option<Vec<u8>>,
+    token: &str,
 ) -> Result<String> {
     let port = listen.port();
     let url = format!("http://127.0.0.1:{port}{path}");
     let url_owned = url.clone();
     let method = method.to_string();
+    let auth = format!("Bearer {token}");
     tokio::task::spawn_blocking(move || {
         let mut response = match method.as_str() {
             "GET" => ureq::get(&url_owned)
+                .header("Authorization", &auth)
                 .call()
                 .with_context(|| url_owned.clone())?,
             "POST" => {
                 let body = body.unwrap_or_default();
                 ureq::post(&url_owned)
                     .header("content-type", "application/json")
+                    .header("Authorization", &auth)
                     .send(body)
                     .with_context(|| format!("POST {url_owned}"))?
             }
@@ -515,12 +614,12 @@ async fn bridge_http(
     .await?
 }
 
-async fn bridge_get(listen: &ListenSpec, path: &str) -> Result<String> {
-    bridge_http(listen, "GET", path, None).await
+async fn bridge_get(listen: &ListenSpec, path: &str, token: &str) -> Result<String> {
+    bridge_http(listen, "GET", path, None, token).await
 }
 
-async fn bridge_post(listen: &ListenSpec, path: &str, body: &[u8]) -> Result<String> {
-    bridge_http(listen, "POST", path, Some(body.to_vec())).await
+async fn bridge_post(listen: &ListenSpec, path: &str, body: &[u8], token: &str) -> Result<String> {
+    bridge_http(listen, "POST", path, Some(body.to_vec()), token).await
 }
 
 fn plugin_error_code(code: &str) -> PluginErrorCode {

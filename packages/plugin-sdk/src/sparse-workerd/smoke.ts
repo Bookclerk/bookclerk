@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { parse as parseToml } from "smol-toml";
 import { validateManifest, type Manifest } from "../tools/validate.js";
@@ -28,12 +29,18 @@ async function freeLoopbackPort(): Promise<number> {
   });
 }
 
-async function waitForHealth(base: string, timeoutMs = 15_000): Promise<void> {
+async function waitForHealth(
+  base: string,
+  token: string,
+  timeoutMs = 15_000,
+): Promise<void> {
   const url = `${base}/health`;
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
       if (res.ok) return;
     } catch {
       // retry
@@ -48,10 +55,14 @@ async function waitForHealth(base: string, timeoutMs = 15_000): Promise<void> {
 async function postRpc(
   rpcUrl: string,
   body: { id: string | number; method: string; params?: unknown },
+  token: string,
 ): Promise<unknown> {
   const res = await fetch(rpcUrl, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -115,9 +126,11 @@ export async function runSmoke(pluginDir: string): Promise<string> {
 
   const workerdBin = await ensureWorkerd(defaultCacheDir());
   const port = await freeLoopbackPort();
+  const bridgeToken = randomBytes(32).toString("hex");
   const generated = materializeConfig(root, manifest, {
     listenPort: port,
     notifyAddr: null,
+    bridgeToken,
   });
   const base = `http://${generated.listenAddr}`;
 
@@ -139,18 +152,26 @@ export async function runSmoke(pluginDir: string): Promise<string> {
   child.stderr?.on("data", onChunk);
 
   try {
-    await waitForHealth(base);
+    await waitForHealth(base, bridgeToken);
     const rpcUrl = `${base}/rpc`;
-    const handshake = await postRpc(rpcUrl, {
-      id: 1,
-      method: "handshake",
-      params: { apiVersion: 1, config: {} },
-    });
-    const health = await postRpc(rpcUrl, {
-      id: 2,
-      method: "health",
-      params: {},
-    });
+    const handshake = await postRpc(
+      rpcUrl,
+      {
+        id: 1,
+        method: "handshake",
+        params: { apiVersion: 1, config: {} },
+      },
+      bridgeToken,
+    );
+    const health = await postRpc(
+      rpcUrl,
+      {
+        id: 2,
+        method: "health",
+        params: {},
+      },
+      bridgeToken,
+    );
     const detail = {
       plugin: manifest.id,
       listen: generated.listenAddr,

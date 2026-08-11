@@ -33,6 +33,11 @@ export type MaterializeOptions = {
   listenPort: number;
   /** Optional HOST.notify reverse channel (`host:port`). Smoke omits this. */
   notifyAddr?: string | null;
+  /**
+   * Per-isolate bearer for `/rpc`, `/health`, and HOST.notify (`BRIDGE_TOKEN`).
+   * Required — generate once per smoke/isolate and send on every bridge request.
+   */
+  bridgeToken: string;
   /** Override package root (tests). */
   sdkRoot?: string;
   /** Cap'n Proto output filename (default `.bookclerk-workerd-config.capnp`). */
@@ -257,12 +262,17 @@ export function materializeConfig(
 
   const listenAddr = `127.0.0.1:${options.listenPort}`;
   const pluginOutbound = pluginGlobalOutbound(networkMode);
+  const bridgeToken = options.bridgeToken;
+  if (!bridgeToken) {
+    throw new Error("bridgeToken is required");
+  }
+  const bridgeTokenBinding = `(name = "BRIDGE_TOKEN", text = "${escapeCapnp(bridgeToken)}")`;
 
   let notifyService = "";
-  let hostBindings = "";
+  let hostBindings = bridgeTokenBinding;
   if (options.notifyAddr) {
     notifyService = `    (name = "hostNotify", external = (address = "${escapeCapnp(options.notifyAddr)}", http = ())),`;
-    hostBindings = `(name = "NOTIFY", service = "hostNotify")`;
+    hostBindings = `${bridgeTokenBinding},\n    (name = "NOTIFY", service = "hostNotify")`;
   }
 
   const compatDate = escapeCapnp(workerd.compatibility_date);
@@ -326,7 +336,8 @@ const bridgeWorker :Workerd.Worker = (
   compatibilityDate = "${compatDate}",
   
   bindings = [
-    ${entrypointBinding}
+    ${entrypointBinding},
+    ${bridgeTokenBinding}
   ],
   globalOutbound = "blocked",
 );

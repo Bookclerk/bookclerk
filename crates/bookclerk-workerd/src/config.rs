@@ -121,12 +121,16 @@ pub struct GeneratedConfig {
 ///
 /// `notify_addr` is an optional workerd `external` address (`host:port` or
 /// `unix:/path`) for `HOST.notify` → launcher reverse channel.
+///
+/// `bridge_token` is a per-isolate bearer shared by the launcher, bridge `/rpc`
+/// + `/health`, and `HOST.notify` reverse channel (`BRIDGE_TOKEN` binding).
 pub fn materialize(
     root: &Path,
     manifest: &PluginManifest,
     egress: &EgressProxy,
     listen: ListenSpec,
     notify_addr: Option<&str>,
+    bridge_token: &str,
 ) -> Result<GeneratedConfig> {
     let workerd = manifest
         .workerd
@@ -273,15 +277,20 @@ pub fn materialize(
     // Python uses the egress proxy with Pyodide CDN hosts auto-allowlisted.
     let plugin_outbound = plugin_global_outbound(egress.mode());
 
+    let bridge_token_binding = format!(
+        r#"(name = "BRIDGE_TOKEN", text = "{}")"#,
+        escape_capnp(bridge_token)
+    );
+
     let (notify_service, host_bindings) = match notify_addr {
         Some(addr) => (
             format!(
                 r#"    (name = "hostNotify", external = (address = "{}", http = ())),"#,
                 escape_capnp(addr)
             ),
-            r#"(name = "NOTIFY", service = "hostNotify")"#.to_string(),
+            format!("{bridge_token_binding},\n    (name = \"NOTIFY\", service = \"hostNotify\")"),
         ),
-        None => (String::new(), String::new()),
+        None => (String::new(), bridge_token_binding.clone()),
     };
 
     let config = format!(
@@ -345,7 +354,8 @@ const bridgeWorker :Workerd.Worker = (
   compatibilityDate = "{compat_date}",
   {bridge_flags}
   bindings = [
-    {entrypoint_binding}
+    {entrypoint_binding},
+    {bridge_token_binding}
   ],
   globalOutbound = "blocked",
 );
@@ -357,6 +367,7 @@ const bridgeWorker :Workerd.Worker = (
         modules = module_embeds.join(",\n    "),
         policy_escaped = policy_escaped,
         entrypoint_binding = entrypoint_binding,
+        bridge_token_binding = bridge_token_binding,
         plugin_outbound = plugin_outbound,
         notify_service = notify_service,
         host_bindings = host_bindings,

@@ -755,9 +755,20 @@ expose the same methods on a `BookclerkPlugin` entrypoint loaded by
 Workerd guests may call `env.HOST.notify(event)` with a `PluginToHost`-style
 payload. `bookclerk-workerd` wires the isolate `HOST` binding to a loopback
 HTTP callback: events are POSTed to the launcher, buffered in memory for the
-session, and logged. Native stdio guests already have a reverse path on the
-RPC framing; this workerd path is the minimal equivalent until the host fans
-events into integrations/jobs.
+session, and logged (event `type` + size only — not the full JSON body).
+
+Bridge loopback RPC (`/rpc`, `/health`) and the notify reverse channel share a
+**per-isolate bearer token** (`BRIDGE_TOKEN` Cap’n Proto binding on both the
+bridge and host workers). The launcher generates the token, injects it into the
+workerd config, and sends `Authorization: Bearer …` on every bridge request;
+`host_stub.js` does the same for notify. Requests without a matching bearer are
+rejected (`401`). Notify parsing also requires a valid `Content-Length` (hard
+max 64 KiB), limits concurrent accepts, and caps the in-memory event buffer
+(drop-oldest when full).
+
+Native stdio guests already have a reverse path on the RPC framing; this workerd
+path is the minimal equivalent until the host fans events into
+integrations/jobs.
 
 ### Common
 

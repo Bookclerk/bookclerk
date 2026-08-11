@@ -3,6 +3,7 @@
 pub mod config;
 pub mod egress;
 pub mod ensure;
+pub mod notify;
 pub mod pin;
 
 pub use egress::EgressProxy;

@@ -10,6 +10,7 @@ use bookclerk_plugin_manifest::{parse, PluginRuntimeKind};
 use bookclerk_workerd::config::{self, ListenSpec};
 use bookclerk_workerd::egress::EgressProxy;
 use bookclerk_workerd::ensure_workerd;
+use bookclerk_workerd::notify::generate_bridge_token;
 use serde_json::{json, Value};
 
 /// Smoke a `runtime = "workerd"` plugin: ensure pin → materialize → handshake + health.
@@ -35,7 +36,8 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
     let port = free_loopback_port().map_err(|e| format!("allocate port: {e}"))?;
     let listen = ListenSpec::TcpLoopback(port);
     let egress = EgressProxy::from_manifest(&manifest);
-    let generated = config::materialize(&root, &manifest, &egress, listen, None)
+    let bridge_token = generate_bridge_token();
+    let generated = config::materialize(&root, &manifest, &egress, listen, None, &bridge_token)
         .map_err(|e| format!("materialize config: {e:#}"))?;
     let base = generated.listen.client_base_url();
 
@@ -52,7 +54,7 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
         .map_err(|e| format!("spawn {}: {e}", workerd_bin.display()))?;
 
     let result = (|| {
-        wait_for_health(&base).map_err(|e| format!("health: {e}"))?;
+        wait_for_health(&base, &bridge_token).map_err(|e| format!("health: {e}"))?;
         let rpc_url = format!("{base}/rpc");
         let handshake = post_rpc(
             &rpc_url,
@@ -61,6 +63,7 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
                 "method": "handshake",
                 "params": { "apiVersion": 1, "config": {} }
             }),
+            &bridge_token,
         )?;
         let health = post_rpc(
             &rpc_url,
@@ -69,6 +72,7 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
                 "method": "health",
                 "params": {}
             }),
+            &bridge_token,
         )?;
         let detail = json!({
             "plugin": manifest.id,
@@ -103,11 +107,12 @@ fn free_loopback_port() -> std::io::Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
-fn wait_for_health(base: &str) -> Result<(), String> {
+fn wait_for_health(base: &str, token: &str) -> Result<(), String> {
     let url = format!("{base}/health");
     let deadline = Instant::now() + Duration::from_secs(15);
+    let auth = format!("Bearer {token}");
     loop {
-        match ureq::get(&url).call() {
+        match ureq::get(&url).header("Authorization", &auth).call() {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             _ => {
                 if Instant::now() > deadline {
@@ -119,9 +124,10 @@ fn wait_for_health(base: &str) -> Result<(), String> {
     }
 }
 
-fn post_rpc(url: &str, body: &Value) -> Result<Value, String> {
+fn post_rpc(url: &str, body: &Value, token: &str) -> Result<Value, String> {
     let mut response = ureq::post(url)
         .header("content-type", "application/json")
+        .header("Authorization", &format!("Bearer {token}"))
         .send_json(body)
         .map_err(|e| format!("POST {url}: {e}"))?;
     let status = response.status();

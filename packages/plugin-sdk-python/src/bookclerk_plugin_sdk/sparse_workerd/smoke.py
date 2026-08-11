@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import socket
 import subprocess
 import time
@@ -24,12 +25,17 @@ def _free_loopback_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _wait_for_health(base: str, timeout_s: float = 15.0) -> None:
+def _wait_for_health(base: str, token: str, timeout_s: float = 15.0) -> None:
     url = f"{base}/health"
     deadline = time.monotonic() + timeout_s
     while True:
         try:
-            with urllib.request.urlopen(url, timeout=1.0) as resp:  # noqa: S310 — loopback
+            req = urllib.request.Request(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=1.0) as resp:  # noqa: S310 — loopback
                 if 200 <= resp.status < 300:
                     return
         except (urllib.error.URLError, TimeoutError, OSError):
@@ -39,12 +45,15 @@ def _wait_for_health(base: str, timeout_s: float = 15.0) -> None:
         time.sleep(0.05)
 
 
-def _post_rpc(rpc_url: str, body: dict[str, Any]) -> Any:
+def _post_rpc(rpc_url: str, body: dict[str, Any], token: str) -> Any:
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         rpc_url,
         data=data,
-        headers={"content-type": "application/json"},
+        headers={
+            "content-type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
         method="POST",
     )
     try:
@@ -80,8 +89,13 @@ def run_smoke(plugin_dir: Path) -> str:
 
     workerd_bin = ensure_workerd(default_cache_dir())
     port = _free_loopback_port()
+    bridge_token = secrets.token_hex(32)
     config_path, listen_addr = materialize_config(
-        root, manifest, listen_port=port, notify_addr=None
+        root,
+        manifest,
+        listen_port=port,
+        notify_addr=None,
+        bridge_token=bridge_token,
     )
     base = f"http://{listen_addr}"
 
@@ -96,13 +110,18 @@ def run_smoke(plugin_dir: Path) -> str:
         text=True,
     )
     try:
-        _wait_for_health(base)
+        _wait_for_health(base, bridge_token)
         rpc_url = f"{base}/rpc"
         handshake = _post_rpc(
             rpc_url,
             {"id": 1, "method": "handshake", "params": {"apiVersion": 1, "config": {}}},
+            bridge_token,
         )
-        health = _post_rpc(rpc_url, {"id": 2, "method": "health", "params": {}})
+        health = _post_rpc(
+            rpc_url,
+            {"id": 2, "method": "health", "params": {}},
+            bridge_token,
+        )
         detail = {
             "plugin": manifest["id"],
             "listen": listen_addr,

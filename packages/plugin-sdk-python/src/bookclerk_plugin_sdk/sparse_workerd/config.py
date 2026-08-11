@@ -108,6 +108,7 @@ def materialize_config(
     *,
     listen_port: int,
     notify_addr: str | None = None,
+    bridge_token: str,
     sdk_root: Path | None = None,
     config_name: str = ".bookclerk-workerd-config.capnp",
 ) -> tuple[Path, str]:
@@ -225,15 +226,22 @@ def materialize_config(
 
     listen_addr = f"127.0.0.1:{listen_port}"
     plugin_outbound = plugin_global_outbound(network_mode)
+    if not bridge_token:
+        raise ValueError("bridge_token is required")
+    bridge_token_binding = (
+        f'(name = "BRIDGE_TOKEN", text = "{escape_capnp(bridge_token)}")'
+    )
 
     notify_service = ""
-    host_bindings = ""
+    host_bindings = bridge_token_binding
     if notify_addr:
         notify_service = (
             f'    (name = "hostNotify", external = '
             f'(address = "{escape_capnp(notify_addr)}", http = ())),'
         )
-        host_bindings = '(name = "NOTIFY", service = "hostNotify")'
+        host_bindings = (
+            f"{bridge_token_binding},\n    (name = \"NOTIFY\", service = \"hostNotify\")"
+        )
 
     compat_date = escape_capnp(str(workerd["compatibility_date"]))
     modules_joined = ",\n    ".join(module_embeds)
@@ -297,7 +305,8 @@ const bridgeWorker :Workerd.Worker = (
   compatibilityDate = "{compat_date}",
   
   bindings = [
-    {entrypoint_binding}
+    {entrypoint_binding},
+    {bridge_token_binding}
   ],
   globalOutbound = "blocked",
 );
