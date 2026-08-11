@@ -329,6 +329,7 @@ impl Integration for ExternalIntegration {
         username: &str,
         password: &str,
     ) -> bookclerk_integrations::Result<ExternalUser> {
+        self.client.require_binding("secrets")?;
         let user: ExternalUser = self
             .client
             .call(

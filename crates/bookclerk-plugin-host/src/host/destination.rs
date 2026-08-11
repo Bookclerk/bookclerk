@@ -68,6 +68,11 @@ impl ExternalDestination {
     }
 
     fn ctx(&self) -> OutputS3ContextDto {
+        let credentials = if crate::consent::grant_has_binding(self.client.grant(), "secrets") {
+            self.credentials.as_ref().map(credentials_to_dto)
+        } else {
+            None
+        };
         OutputS3ContextDto {
             plugin_data_dir: self.plugin_data_dir.display().to_string(),
             bucket: self.s3_config.bucket.clone(),
@@ -75,7 +80,7 @@ impl ExternalDestination {
             region: self.s3_config.region.clone(),
             endpoint: self.s3_config.endpoint.clone(),
             force_path_style: self.s3_config.force_path_style,
-            credentials: self.credentials.as_ref().map(credentials_to_dto),
+            credentials,
         }
     }
 

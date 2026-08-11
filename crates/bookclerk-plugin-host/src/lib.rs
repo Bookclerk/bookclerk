@@ -17,7 +17,9 @@
 //! External plugins are **untrusted** relative to the host: the host never
 //! passes `library.db` / `master.key` / the files-dir root, clears
 //! secret-bearing env on spawn, and mediates credentials + library upserts.
-//! Operators must `bookclerk plugins approve` domains/bindings before enable.
+//! Operators must `bookclerk plugins approve` domains/bindings before enable;
+//! the same covering grant is required again at every external spawn and at
+//! privileged delivery points (`config` / `secrets` / `work_fs` / `oauth`).
 //!
 //! Host binaries should depend on **this** crate for registration — not on
 //! individual store crates.
@@ -62,8 +64,9 @@ pub use builtins::{
     load_integrations, load_sources, register_builtin_integrations, register_builtin_sources,
 };
 pub use consent::{
-    consent_request, consent_summary, grant_covers, require_grant, PluginGrant, PluginGrantStore,
-    GRANTS_FILE,
+    consent_request, consent_summary, effective_grant, grant_covers, grant_has_binding,
+    handshake_config_for_grant, is_platform_plugin_id, require_binding, require_grant, spawn_grant,
+    validate_handshake_capabilities, PluginGrant, PluginGrantStore, GRANTS_FILE,
 };
 pub use crates_io::search_crates_io;
 pub use destinations::{build_acquire_destinations, build_storage_backend};

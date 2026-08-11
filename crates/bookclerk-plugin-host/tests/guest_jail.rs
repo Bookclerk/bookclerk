@@ -17,7 +17,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use bookclerk_config::{Config, Isolation, Paths};
-use bookclerk_plugin_host::{discover_plugins, plugin_data_dir, DiscoveredPlugin, PluginClient};
+use bookclerk_plugin_host::{
+    consent_request, discover_plugins, plugin_data_dir, DiscoveredPlugin, PluginClient,
+    PluginGrantStore,
+};
 
 /// Where cargo left the launcher for this test run.
 ///
@@ -145,11 +148,23 @@ impl Fixture {
         )
         .expect("plugin.toml");
 
+        // Spawn requires a covering consent grant (same bar as enable).
         let mut config = Config {
             paths: Some(paths),
             ..Default::default()
         };
         config.plugins.isolation = Isolation::Required;
+        let plugin = discover_plugins(&config)
+            .expect("discover")
+            .into_iter()
+            .find(|found| found.manifest.id == "probe")
+            .expect("probe");
+        let mut grants = PluginGrantStore::default();
+        grants.upsert(consent_request(&plugin.manifest));
+        grants
+            .save(&config.paths().files_dir)
+            .expect("write plugin-grants.json");
+
         Self { files, config }
     }
 
@@ -291,5 +306,64 @@ async fn a_guest_that_cannot_be_jailed_is_not_spawned() {
             .join("probe-report")
             .exists(),
         "the guest ran despite a jail that could not be applied"
+    );
+}
+
+/// Enabled (discovered) plugins still cannot spawn without a covering grant.
+#[tokio::test]
+async fn spawn_fails_without_consent_grant() {
+    let fixture = Fixture::new(|_| BTreeMap::new());
+    // Remove the grant Fixture::new wrote.
+    let grants_path = fixture.config.paths().files_dir.join("plugin-grants.json");
+    std::fs::remove_file(&grants_path).expect("remove grants");
+
+    let message = match PluginClient::spawn(
+        &fixture.plugin(),
+        &fixture.config,
+        serde_json::json!({}),
+    )
+    .await
+    {
+        Ok(_) => panic!("spawn must fail without a grant"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        message.contains("no permission grant") || message.contains("approve"),
+        "got: {message}"
+    );
+}
+
+/// A grant that no longer covers the manifest (widened bindings) blocks spawn.
+#[tokio::test]
+async fn spawn_fails_when_manifest_widens_past_grant() {
+    let fixture = Fixture::new(|_| BTreeMap::new());
+    let install = fixture
+        .config
+        .paths()
+        .files_dir
+        .join("plugins")
+        .join("probe");
+    std::fs::write(
+        install.join("plugin.toml"),
+        "api_version = 1\nid = \"probe\"\nkind = \"integration\"\n\
+         runtime = \"native\"\ncommand = \"./guest.sh\"\n\n\
+         [capabilities.network]\nmode = \"deny\"\n\n\
+         [capabilities.bindings]\nconfig = true\nsecrets = true\n",
+    )
+    .expect("widen plugin.toml");
+
+    let message = match PluginClient::spawn(
+        &fixture.plugin(),
+        &fixture.config,
+        serde_json::json!({}),
+    )
+    .await
+    {
+        Ok(_) => panic!("spawn must fail after capability widening"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        message.contains("capabilities widened") || message.contains("re-approve"),
+        "got: {message}"
     );
 }

@@ -16,6 +16,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex, MutexGuard};
 
+use crate::consent::{
+    handshake_config_for_grant, require_binding, spawn_grant, validate_handshake_capabilities,
+    PluginGrant,
+};
 use crate::discover::DiscoveredPlugin;
 use crate::jail::{GuestJail, Start};
 use crate::protocol::{
@@ -64,6 +68,8 @@ pub struct PluginClient {
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>,
     next_id: AtomicU64,
     handshake: HandshakeResult,
+    /// Covering operator grant checked at spawn and privilege delivery.
+    grant: PluginGrant,
     /// Serializes side-channel / ACL setup with the matching JSON-RPC write so
     /// concurrent calls cannot reorder FDs or revoke grants early.
     call_gate: Mutex<()>,
@@ -110,18 +116,22 @@ impl PluginClient {
     ///
     /// Takes the whole [`DiscoveredPlugin`] and [`Config`] rather than a command
     /// line so there is no way to start a guest without deciding how it is
-    /// confined. `config_table` is the plugin's own settings, sent at handshake.
+    /// confined. `config_table` is the plugin's own settings, sent at handshake
+    /// only when the covering grant includes the `config` binding.
     ///
     /// # Errors
     ///
-    /// Fails when the jail cannot be applied and `[plugins].isolation` is
-    /// `required`, and when the guest does not answer the handshake.
+    /// Fails when no covering consent grant exists, when the jail cannot be
+    /// applied and `[plugins].isolation` is `required`, when the guest does not
+    /// answer the handshake, or when handshake claims exceed the manifest/grant.
     pub async fn spawn(
         plugin: &DiscoveredPlugin,
         config: &Config,
         config_table: Value,
     ) -> Result<Self> {
         let id = plugin.manifest.id.as_str();
+        let grant = spawn_grant(&config.paths().files_dir, &plugin.manifest)?;
+        let handshake_config = handshake_config_for_grant(&grant, config_table);
         let jail = GuestJail::plan(config, plugin)?;
 
         let mut cmd = match &jail.start {
@@ -311,6 +321,7 @@ impl PluginClient {
                 config_options: vec![],
                 cli: None,
             },
+            grant: grant.clone(),
             call_gate: Mutex::new(()),
             quarantined,
             scratch: jail.scratch.clone(),
@@ -327,7 +338,7 @@ impl PluginClient {
                 methods::HANDSHAKE,
                 serde_json::json!({
                     "apiVersion": PLUGIN_API_VERSION,
-                    "config": config_table,
+                    "config": handshake_config,
                 }),
             )
             .await?;
@@ -345,6 +356,12 @@ impl PluginClient {
                 "plugin handshake id differs from manifest id; using manifest id"
             );
         }
+        validate_handshake_capabilities(
+            &plugin.manifest,
+            &grant,
+            &hs.capabilities,
+            hs.portal_auth_mode.as_deref(),
+        )?;
         let mut client = client;
         client.handshake = hs;
         Ok(client)
@@ -358,6 +375,17 @@ impl PluginClient {
     #[must_use]
     pub fn handshake(&self) -> &HandshakeResult {
         &self.handshake
+    }
+
+    /// Covering consent grant from spawn (bindings gate privileged delivery).
+    #[must_use]
+    pub fn grant(&self) -> &PluginGrant {
+        &self.grant
+    }
+
+    /// Fail closed when a delivery site needs a binding this guest was not granted.
+    pub fn require_binding(&self, name: &str) -> Result<()> {
+        require_binding(&self.grant, name)
     }
 
     pub fn has_capability(&self, cap: &str) -> bool {
@@ -456,6 +484,8 @@ impl PluginClient {
         let mut _acl_guards: Vec<crate::windows_acl::AclGuard> = Vec::new();
 
         if let Some(side) = side {
+            // FD / ACL side passes are work_fs privileges — require the binding.
+            require_binding(&self.grant, "work_fs")?;
             #[cfg(unix)]
             if let Some(channel) = self.fd_channel.as_ref() {
                 match side {

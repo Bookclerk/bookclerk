@@ -56,6 +56,7 @@ impl ExternalSource {
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
         let client = PluginClient::spawn(plugin, config, config_json.clone()).await?;
+        let source_config = crate::handshake_config_for_grant(client.grant(), config_json);
         let hs = client.handshake().clone();
         let display_name = hs
             .display_name
@@ -83,7 +84,7 @@ impl ExternalSource {
             password_env,
             sort_key: hs.sort_key.unwrap_or(200),
             plugin_data_dir,
-            source_config: config_json,
+            source_config,
         })
     }
 
@@ -117,6 +118,9 @@ impl ExternalSource {
         scope: &SourceScope,
         opts: LoginOptions,
     ) -> bookclerk_source::Result<SourceAccount> {
+        if opts.password.is_some() {
+            self.client.require_binding("secrets")?;
+        }
         let result: LoginResultDto = self
             .client
             .call(
@@ -137,6 +141,7 @@ impl ExternalSource {
         opts: LoginOptions,
         on_progress: &(dyn Fn(OAuthProgress) + Send + Sync),
     ) -> bookclerk_source::Result<SourceAccount> {
+        self.client.require_binding("oauth")?;
         // Host owns the browser TCP listener and forwards bytes to the guest
         // over IPC — required under Windows AppContainer loopback isolation.
         let proxy = crate::callback_proxy::CallbackProxy::start(
@@ -301,6 +306,9 @@ impl ContentSource for ExternalSource {
         opts: ScanOptions,
     ) -> bookclerk_source::Result<ScanSummary> {
         let credentials = scan_credentials_for(scope, &opts.accounts).await?;
+        if !credentials.is_empty() {
+            self.client.require_binding("secrets")?;
+        }
         let dto: ScanSummaryDto = self
             .client
             .call(
@@ -347,6 +355,9 @@ impl ContentSource for ExternalSource {
             .load_credentials_json(account_id)
             .await
             .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?;
+        if credentials.is_some() {
+            self.client.require_binding("secrets")?;
+        }
         let download = serde_json::to_value(&opts.download)
             .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
         let value = self

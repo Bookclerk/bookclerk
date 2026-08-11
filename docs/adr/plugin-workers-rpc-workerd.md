@@ -36,7 +36,9 @@ contract must be **identical** across runtimes.
      key; OS jails cannot filter by hostname across HTTP + raw TCP without a
      full mediator). Prefer workerd when hostname allowlists matter.
 6. **Consent UX:** CLI and web UI prompt before enable; grants persisted;
-   capability widening re-prompts. Native outbound shows an explicit warning.
+   capability widening re-prompts. The same covering grant is enforced at every
+   external spawn and at privileged delivery (`config` / `secrets` / `work_fs` /
+   `oauth`). Native outbound shows an explicit warning.
 7. **`compatibility_date` newer than bundled workerd:** warn, still load.
 
 ## Consequences

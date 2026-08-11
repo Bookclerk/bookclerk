@@ -47,7 +47,7 @@ impl ExternalDatabase {
 
     /// Open the library connection through the guest (`db.connect` + optional fd pass).
     pub async fn connect(&self, config: &Config) -> Result<DatabaseConnection, DbErr> {
-        let params = connect_params(config, &self.plugin_id, &self.plugin_data_dir)?;
+        let params = connect_params(config, &self.plugin_id, &self.plugin_data_dir, &self.client)?;
         let value = serde_json::to_value(&params).map_err(|err| DbErr::Custom(err.to_string()))?;
 
         let connect_result: DbConnectResult = if self.plugin_id.eq_ignore_ascii_case("sqlite") {
@@ -239,6 +239,7 @@ fn connect_params(
     config: &Config,
     plugin_id: &str,
     plugin_data_dir: &Path,
+    client: &PluginClient,
 ) -> Result<DbConnectParams, DbErr> {
     let data_dir = plugin_data_dir.display().to_string();
     match DatabasePluginKind::parse(plugin_id) {
@@ -249,17 +250,27 @@ fn connect_params(
                 sqlite_path: Some(path.display().to_string()),
             })
         }
-        Some(DatabasePluginKind::D1) => Ok(DbConnectParams::D1 {
-            plugin_data_dir: data_dir,
-            account_id: config.database.d1.account_id.clone(),
-            database_id: config.database.d1.database_id.clone(),
-            api_base: config.database.d1.api_base.clone(),
-            api_token: resolve_d1_api_token().map_err(map_config_err)?,
-        }),
-        Some(DatabasePluginKind::Postgres) => Ok(DbConnectParams::Postgres {
-            plugin_data_dir: data_dir,
-            url: resolve_postgres_url(config).map_err(map_config_err)?,
-        }),
+        Some(DatabasePluginKind::D1) => {
+            client
+                .require_binding("secrets")
+                .map_err(|err| DbErr::Custom(err.to_string()))?;
+            Ok(DbConnectParams::D1 {
+                plugin_data_dir: data_dir,
+                account_id: config.database.d1.account_id.clone(),
+                database_id: config.database.d1.database_id.clone(),
+                api_base: config.database.d1.api_base.clone(),
+                api_token: resolve_d1_api_token().map_err(map_config_err)?,
+            })
+        }
+        Some(DatabasePluginKind::Postgres) => {
+            client
+                .require_binding("secrets")
+                .map_err(|err| DbErr::Custom(err.to_string()))?;
+            Ok(DbConnectParams::Postgres {
+                plugin_data_dir: data_dir,
+                url: resolve_postgres_url(config).map_err(map_config_err)?,
+            })
+        }
         None => Err(DbErr::Custom(format!(
             "unknown database plugin `{plugin_id}`"
         ))),

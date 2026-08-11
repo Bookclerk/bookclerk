@@ -131,7 +131,7 @@ is narrow on top of that:
 | Host-mediated secrets | `login` returns `{ account, credentials }`; host seals into `encrypted_secrets` with `provider = plugin id`. `scan` and `fetchTitle` receive those blobs from the host |
 | Host-mediated library writes | `scan` returns book DTOs; host upserts with `source` forced to the plugin id. Account listing for a plugin id is answered from the host accounts table |
 | Scoped identity | Plugin cannot claim another storefront’s `source` / `provider` |
-| Network consent | Operator runs `bookclerk plugins approve` before enable. **Workerd** guests enforce `capabilities.network.domains` as the isolate hostname allowlist (redirect hops free). **Native** guests with `mode = "outbound"` get coarse jail internet — **no hostname filter**; `domains` must not be declared |
+| Network consent | Operator runs `bookclerk plugins approve` before enable; the **same covering grant is required again at every external spawn** and at privileged delivery (`config` / `secrets` / `work_fs` / `oauth`). **Workerd** guests enforce `capabilities.network.domains` as the isolate hostname allowlist (redirect hops free). **Native** guests with `mode = "outbound"` get coarse jail internet — **no hostname filter**; `domains` must not be declared |
 
 First-party guests ship under `crates/bookclerk-plugins/` with the guest SDK
 contract. Host binaries (`bookclerk`, `bookclerkd`) depend on
@@ -505,9 +505,10 @@ allowlist is not negotiable from a manifest.
 inherited by the host and lands in the daemon log directly under the
 `bookclerk-jail:` line reporting what was applied.
 
-**Enable refused: run `bookclerk plugins approve` first** — consent grant is
+**Enable / spawn refused: run `bookclerk plugins approve` first** — consent grant is
 missing or the plugin widened `capabilities` since the last grant. Re-approve,
-then `bookclerk plugins enable <id>`.
+then `bookclerk plugins enable <id>` (spawn also fails closed until the grant
+covers the current manifest).
 
 ## Two files, two jobs
 
@@ -647,9 +648,12 @@ error** (CLI/daemon exit). The same id across different kinds (e.g. a source and
 an integration both named `echo`) is allowed. An external id that collides with
 a first-party plugin of the same kind is also rejected.
 
-## Consent before enable
+## Consent before enable (and every spawn)
 
-Third-party (and newly installed) plugins require an explicit permission grant:
+Third-party (and newly installed) plugins require an explicit permission grant
+before **enable** and again before **every external spawn**. Privileged delivery
+also checks individual bindings: handshake `config`, host-injected secrets,
+`work_fs` side-channel / ACL passes, and OAuth callback proxy setup.
 
 ```bash
 bookclerk plugins approve echo          # interactive summary of network/bindings
@@ -657,10 +661,19 @@ bookclerk plugins approve echo --yes    # non-interactive
 bookclerk plugins enable echo
 ```
 
+Platform guests (`sqlite`, `local`) skip the consent UX and are enabled by
+default; the host auto-persists a covering grant on first spawn when their
+manifest stays within the installer envelope (deny network, `config` /
+`work_fs` only).
+
 Grants are persisted under the files dir. Widening `capabilities.network` or
-bindings after a prior grant requires re-approval. For workerd, widening the
-`domains` allowlist requires re-approval; redirect following does not expand
-the consented domain list.
+bindings after a prior grant requires re-approval (enable **and** spawn fail
+closed). For workerd, widening the `domains` allowlist requires re-approval;
+redirect following does not expand the consented domain list. When a stored
+grant still *covers* a narrowed manifest, spawn/delivery uses an **effective
+grant** limited to the current request surface (domains, bindings, flags,
+network mode) while keeping the stored `approved_at` — so privileged delivery
+cannot exceed what the current `plugin.toml` declares.
 
 Approving a **native** plugin with `mode = "outbound"` shows an explicit warning
 that networking is **not** hostname-filtered.

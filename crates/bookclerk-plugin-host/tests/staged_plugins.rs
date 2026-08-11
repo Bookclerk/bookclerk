@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use bookclerk_config::{Config, Paths};
 use bookclerk_plugin_host::{
-    discover_plugins, methods, CatalogHitDto, HealthDto, PluginClient, PluginKind,
-    SearchCatalogParams,
+    consent_request, discover_plugins, methods, CatalogHitDto, HealthDto, PluginClient,
+    PluginGrantStore, PluginKind, SearchCatalogParams,
 };
 
 fn artifacts_dir() -> Option<PathBuf> {
@@ -51,6 +51,14 @@ async fn staged_first_party_plugins_handshake() {
     };
 
     let plugins = discover_plugins(&config).expect("discover");
+    // External spawn requires covering grants (platform sqlite/local auto-grant;
+    // optional/examples need an explicit approve snapshot for this smoke test).
+    let mut grants = PluginGrantStore::load(&config.paths().files_dir).expect("load grants");
+    for plugin in &plugins {
+        grants.upsert(consent_request(&plugin.manifest));
+    }
+    grants.save(&config.paths().files_dir).expect("save grants");
+
     let ids: Vec<_> = plugins.iter().map(|p| p.manifest.id.as_str()).collect();
     for expected in [
         // platform (FILES_DIR)
