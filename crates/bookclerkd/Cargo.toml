@@ -60,6 +60,7 @@ secrecy.workspace = true
 base64.workspace = true
 sha2.workspace = true
 rand.workspace = true
+svg-hush.workspace = true
 
 [dev-dependencies]
 bookclerk-plugin-database-sqlite.workspace = true

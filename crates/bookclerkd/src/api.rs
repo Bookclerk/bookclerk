@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use axum::extract::Request;
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -1819,6 +1819,14 @@ fn consent_required_response(plugin_id: &str, message: String, summary: Vec<Stri
         .into_response()
 }
 
+/// Restrictive CSP for SVG logos served from the daemon origin (defense in depth
+/// alongside [`sanitize_svg_logo`]).
+///
+/// `img-src data: blob:` allows sanitized embedded rasters (`allow_standard_images`);
+/// `style-src 'unsafe-inline'` covers typical SVG presentation attributes/styles.
+/// Scripts and plugins stay blocked.
+const SVG_LOGO_CSP: &str = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'none'; object-src 'none'; sandbox";
+
 /// Serve an embedded `plugin.toml` `logo` file from under the plugin install root.
 async fn get_plugin_logo(
     State(state): State<Arc<AppState>>,
@@ -1826,15 +1834,28 @@ async fn get_plugin_logo(
 ) -> Result<Response, StatusCode> {
     let cfg = state.config.read().await.clone();
     let (bytes, content_type) = plugin_logo_bytes_for(&cfg, &kind, &id)?;
-    Ok((
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, content_type),
-            (header::CACHE_CONTROL, "private, max-age=3600"),
-        ],
-        bytes,
-    )
-        .into_response())
+    Ok(plugin_logo_response(bytes, content_type))
+}
+
+/// Build the HTTP response for an embedded logo (SVG gets CSP; never raw SVG).
+fn plugin_logo_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=3600"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    if content_type == "image/svg+xml" {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(SVG_LOGO_CSP),
+        );
+    }
+    (StatusCode::OK, headers, bytes).into_response()
 }
 
 /// Discover `kind`/`id` and read an embedded logo (sync; route + integration tests).
@@ -1852,6 +1873,9 @@ fn plugin_logo_bytes_for(
 }
 
 /// Read and confine an embedded logo path under `plugin.root`.
+///
+/// SVG bytes are always run through Cloudflare `svg-hush` before return; filter
+/// failure yields [`StatusCode::UNPROCESSABLE_ENTITY`] (never the raw input).
 fn read_embedded_plugin_logo(
     plugin: &bookclerk_plugin_host::DiscoveredPlugin,
 ) -> Result<(Vec<u8>, &'static str), StatusCode> {
@@ -1877,7 +1901,26 @@ fn read_embedded_plugin_logo(
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
     let bytes = std::fs::read(&path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok((bytes, bookclerk_plugin_host::logo_content_type(&rel)))
+    let content_type = bookclerk_plugin_host::logo_content_type(&rel);
+    if content_type == "image/svg+xml" || rel.to_ascii_lowercase().ends_with(".svg") {
+        let sanitized = sanitize_svg_logo(&bytes)?;
+        Ok((sanitized, "image/svg+xml"))
+    } else {
+        Ok((bytes, content_type))
+    }
+}
+
+/// Strip scripting and other abusable SVG features. On error, callers must not
+/// serve `input`.
+fn sanitize_svg_logo(input: &[u8]) -> Result<Vec<u8>, StatusCode> {
+    let mut filter = svg_hush::Filter::new();
+    filter.set_data_url_filter(svg_hush::data_url_filter::allow_standard_images);
+    let mut out = Vec::new();
+    filter.filter(input, &mut out).map_err(|err| {
+        tracing::warn!(error = %err, "svg-hush rejected embedded plugin logo");
+        StatusCode::UNPROCESSABLE_ENTITY
+    })?;
+    Ok(out)
 }
 
 async fn get_plugin_consent(
@@ -3792,6 +3835,10 @@ mode = "deny"
         root
     }
 
+    fn write_logo_svg(root: &std::path::Path, svg: &str) {
+        std::fs::write(root.join("assets/logo.svg"), svg.as_bytes()).unwrap();
+    }
+
     #[test]
     fn embedded_logo_route_bytes_via_discovery() {
         let files = tempfile::tempdir().unwrap();
@@ -3815,6 +3862,47 @@ mode = "deny"
         assert_eq!(err, axum::http::StatusCode::NOT_FOUND);
     }
 
+    #[test]
+    fn embedded_svg_logo_is_sanitized_stripping_script() {
+        let files = tempfile::tempdir().unwrap();
+        let root = stage_logo_plugin(files.path(), r#"logo = "assets/logo.svg""#);
+        write_logo_svg(
+            &root,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">
+  <script>alert(1)</script>
+  <circle cx="5" cy="5" r="4" fill="#333" onclick="alert(2)"/>
+</svg>"##,
+        );
+        let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+        let (bytes, ctype) =
+            super::plugin_logo_bytes_for(&cfg, "integration", "logo-echo").expect("sanitized svg");
+        assert_eq!(ctype, "image/svg+xml");
+        let body = String::from_utf8(bytes).expect("utf-8 svg");
+        assert!(
+            !body.to_ascii_lowercase().contains("<script"),
+            "script element must be stripped: {body}"
+        );
+        assert!(
+            !body.to_ascii_lowercase().contains("onclick"),
+            "onclick must be stripped: {body}"
+        );
+        assert!(
+            body.contains("circle") || body.contains("<svg"),
+            "benign markup should remain: {body}"
+        );
+    }
+
+    #[test]
+    fn malformed_svg_logo_is_rejected_not_served_raw() {
+        let files = tempfile::tempdir().unwrap();
+        let root = stage_logo_plugin(files.path(), r#"logo = "assets/logo.svg""#);
+        // Not well-formed XML — svg-hush must fail closed (no raw bytes).
+        write_logo_svg(&root, "<svg><script>alert(1)</script><not-closed>");
+        let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+        let err = super::plugin_logo_bytes_for(&cfg, "integration", "logo-echo").unwrap_err();
+        assert_eq!(err, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
     #[tokio::test]
     async fn plugin_logo_http_route_serves_png() {
         use axum::body::Body;
@@ -3830,17 +3918,8 @@ mode = "deny"
             axum::extract::State(cfg): axum::extract::State<Config>,
             axum::extract::Path((kind, id)): axum::extract::Path<(String, String)>,
         ) -> Result<axum::response::Response, StatusCode> {
-            use axum::response::IntoResponse;
             let (bytes, content_type) = super::plugin_logo_bytes_for(&cfg, &kind, &id)?;
-            Ok((
-                StatusCode::OK,
-                [
-                    (axum::http::header::CONTENT_TYPE, content_type),
-                    (axum::http::header::CACHE_CONTROL, "private, max-age=3600"),
-                ],
-                bytes,
-            )
-                .into_response())
+            Ok(super::plugin_logo_response(bytes, content_type))
         }
 
         let app = axum::Router::new()
@@ -3864,8 +3943,127 @@ mode = "deny"
             res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
             "image/png"
         );
+        assert_eq!(
+            res.headers()
+                .get(axum::http::header::X_CONTENT_TYPE_OPTIONS)
+                .unwrap(),
+            "nosniff"
+        );
+        assert!(res
+            .headers()
+            .get(axum::http::header::CONTENT_SECURITY_POLICY)
+            .is_none());
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[tokio::test]
+    async fn plugin_logo_http_route_serves_benign_svg_with_csp() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let files = tempfile::tempdir().unwrap();
+        let root = stage_logo_plugin(files.path(), r#"logo = "assets/logo.svg""#);
+        write_logo_svg(
+            &root,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8">
+  <rect width="8" height="8" fill="#abc"/>
+</svg>"##,
+        );
+        let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+
+        async fn logo_handler(
+            axum::extract::State(cfg): axum::extract::State<Config>,
+            axum::extract::Path((kind, id)): axum::extract::Path<(String, String)>,
+        ) -> Result<axum::response::Response, StatusCode> {
+            let (bytes, content_type) = super::plugin_logo_bytes_for(&cfg, &kind, &id)?;
+            Ok(super::plugin_logo_response(bytes, content_type))
+        }
+
+        let app = axum::Router::new()
+            .route(
+                "/api/plugins/{kind}/{id}/logo",
+                axum::routing::get(logo_handler),
+            )
+            .with_state(cfg);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/plugins/integration/logo-echo/logo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "image/svg+xml"
+        );
+        assert_eq!(
+            res.headers()
+                .get(axum::http::header::X_CONTENT_TYPE_OPTIONS)
+                .unwrap(),
+            "nosniff"
+        );
+        assert_eq!(
+            res.headers()
+                .get(axum::http::header::CONTENT_SECURITY_POLICY)
+                .unwrap(),
+            super::SVG_LOGO_CSP
+        );
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("rect") || text.contains("<svg"), "{text}");
+        assert!(!text.to_ascii_lowercase().contains("<script"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn plugin_logo_http_route_rejects_malicious_unparseable_svg() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let files = tempfile::tempdir().unwrap();
+        let root = stage_logo_plugin(files.path(), r#"logo = "assets/logo.svg""#);
+        write_logo_svg(&root, "<svg><script>alert(1)</script><broken");
+        let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+
+        async fn logo_handler(
+            axum::extract::State(cfg): axum::extract::State<Config>,
+            axum::extract::Path((kind, id)): axum::extract::Path<(String, String)>,
+        ) -> Result<axum::response::Response, StatusCode> {
+            let (bytes, content_type) = super::plugin_logo_bytes_for(&cfg, &kind, &id)?;
+            Ok(super::plugin_logo_response(bytes, content_type))
+        }
+
+        let app = axum::Router::new()
+            .route(
+                "/api/plugins/{kind}/{id}/logo",
+                axum::routing::get(logo_handler),
+            )
+            .with_state(cfg);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/plugins/integration/logo-echo/logo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            !text.contains("<script") && !text.contains("alert"),
+            "must not leak raw svg: {text}"
+        );
     }
 
     /// #116: after swapping auth-disabled → auth-enabled (as reload does before

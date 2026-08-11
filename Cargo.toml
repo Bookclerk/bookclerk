@@ -185,6 +185,7 @@ scraper = "0.27"
 html-escape = "0.2"
 infer = "0.22"
 mime_guess = "2"
+svg-hush = "0.9.7"
 
 [profile.release]
 lto = true
