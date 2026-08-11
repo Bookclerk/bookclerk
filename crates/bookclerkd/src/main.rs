@@ -14,16 +14,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bookclerk_config::{
-    init_tracing_with, read_or_create_operator_token, Config, ListenAddrs, LogFormat,
-    TracingOptions,
-};
+use bookclerk_config::{init_tracing_with, Config, ListenAddrs, LogFormat, TracingOptions};
 use bookclerk_library::configure_master_key_with;
 use clap::Parser;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 
-use crate::api::{reload_daemon_config, resolve_ui_dist, router, validate_daemon_listen, AppState};
-use crate::auth::OperatorAuthState;
+use crate::api::{
+    bind_listen_addrs, build_operator_auth, reload_daemon_config, resolve_ui_dist,
+    revert_listen_after_bind_failure, router, start_integration_watchers, validate_daemon_listen,
+    AppState,
+};
 use crate::registry::default_registry_with_plugins;
 use crate::scheduler::spawn_scheduler;
 
@@ -109,29 +109,10 @@ async fn main() -> anyhow::Result<()> {
         let cfg = config.clone();
         default_registry_with_plugins(&cfg).await?
     };
-    let auth_cfg = {
-        let auth = config.daemon.auth.clone();
-        validate_daemon_listen(&config)?;
-        auth
-    };
-    let operator_auth = if auth_cfg.enabled {
-        let (token, _created) = read_or_create_operator_token(&config)?;
-        Some(Arc::new(OperatorAuthState::new(
-            token,
-            auth_cfg.session_ttl_hours,
-            true,
-            auth_cfg.login_max_failures,
-            auth_cfg.login_lockout_secs,
-        )))
-    } else {
-        tracing::warn!("daemon.auth.enabled=false — HTTP API is unauthenticated");
-        Some(Arc::new(OperatorAuthState::new(
-            String::new(),
-            auth_cfg.session_ttl_hours,
-            false,
-            auth_cfg.login_max_failures,
-            auth_cfg.login_lockout_secs,
-        )))
+    validate_daemon_listen(&config)?;
+    let operator_auth = {
+        let lib = library.read().await.clone();
+        build_operator_auth(&config, &lib).await?
     };
 
     let config = Arc::new(RwLock::new(config));
@@ -144,59 +125,22 @@ async fn main() -> anyhow::Result<()> {
         jobs: Arc::new(RwLock::new(Vec::new())),
         work_lock: Mutex::new(()),
         discover_gate: Arc::new(Semaphore::new(1)),
-        integrations: integrations.clone(),
-        sources,
+        integrations: Arc::new(RwLock::new(integrations)),
+        sources: Arc::new(RwLock::new(sources)),
         destinations: Arc::new(RwLock::new(destinations)),
-        auth: operator_auth,
+        auth: Arc::new(RwLock::new(Arc::new(operator_auth))),
+        reload_lock: Mutex::new(()),
         listen_reload: listen_reload.clone(),
+        last_bound_listen: RwLock::new(None),
+        tray: RwLock::new(None),
     });
 
-    // Start integration watchers; mint claim tickets on new ABS users.
-    {
-        let library_for_tickets = library.clone();
-        let config_for_tickets = config.clone();
-        let ctx = bookclerk_integrations::IntegrationContext {
-            on_external_user: Some(Arc::new(move |user| {
-                let library_for_tickets = library_for_tickets.clone();
-                let config_for_tickets = config_for_tickets.clone();
-                tokio::spawn(async move {
-                    let cfg = config_for_tickets.read().await;
-                    let lib = library_for_tickets.read().await.clone();
-                    match bookclerk_integrations::mint_for_external_user(
-                        &lib,
-                        &cfg,
-                        &user,
-                        "abs_watcher",
-                    )
-                    .await
-                    {
-                        Ok(minted) => {
-                            if let Some(url) = minted.portal_url {
-                                tracing::info!(%url, "claim ticket minted for ABS user");
-                            } else {
-                                tracing::info!(
-                                    token = %minted.token,
-                                    "claim ticket minted for ABS user"
-                                );
-                            }
-                        }
-                        Err(err) => tracing::warn!(%err, "failed to mint claim ticket"),
-                    }
-                });
-            })),
-        };
-        let integrations = integrations.clone();
-        tokio::spawn(async move {
-            let _ = integrations.start_all(ctx).await;
-        });
-    }
-
+    start_integration_watchers(&state).await;
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 
     let ui_dist = resolve_ui_dist();
     let app = router(state.clone(), ui_dist);
-    let mut tray: Option<bookclerk_tray::SharedTrayConfig> = None;
 
     loop {
         if process_shutdown.load(Ordering::SeqCst) {
@@ -210,10 +154,15 @@ async fn main() -> anyhow::Result<()> {
 
             let listen = config.read().await.daemon.listen.clone();
             match bind_listen_addrs(&listen).await {
-                Ok(listeners) => break listeners,
+                Ok(listeners) => {
+                    *state.last_bound_listen.write().await = Some(listen);
+                    break listeners;
+                }
                 Err(err) => {
+                    let reverted = revert_listen_after_bind_failure(&state).await;
                     tracing::error!(
                         error = %err,
+                        reverted,
                         "failed to bind any daemon.listen address; retrying in 5s or on config reload"
                     );
                     tokio::select! {
@@ -234,9 +183,18 @@ async fn main() -> anyhow::Result<()> {
 
         // After bind so the tray's first browser open reaches a live listener.
         let cfg = config.read().await.clone();
-        match &tray {
-            Some(handle) => tray_companion::update_tray_listen(handle, &cfg.daemon.listen),
-            None => tray = tray_companion::maybe_spawn_tray(&cfg),
+        {
+            let mut tray_slot = state.tray.write().await;
+            match tray_slot.as_ref() {
+                Some(handle) => {
+                    let auth = state.auth_snapshot().await;
+                    tray_companion::update_tray_after_reload(handle, &cfg, &auth);
+                }
+                None => {
+                    let auth = state.auth_snapshot().await;
+                    *tray_slot = tray_companion::maybe_spawn_tray(&cfg, &auth);
+                }
+            }
         }
 
         let mut set = tokio::task::JoinSet::new();
@@ -267,36 +225,10 @@ async fn main() -> anyhow::Result<()> {
         }
         tracing::info!("HTTP listeners shut down for rebind");
     }
-    Ok(())
-}
 
-/// Bind every configured listen address; skip failures unless none succeed.
-async fn bind_listen_addrs(listen: &ListenAddrs) -> anyhow::Result<Vec<tokio::net::TcpListener>> {
-    let addrs = listen
-        .socket_addrs()
-        .map_err(|err| anyhow::anyhow!("{err}"))?;
-    let mut listeners = Vec::new();
-    let mut errors = Vec::new();
-    for addr in addrs {
-        match tokio::net::TcpListener::bind(addr).await {
-            Ok(listener) => listeners.push(listener),
-            Err(err) => {
-                tracing::warn!(
-                    %addr,
-                    error = %err,
-                    "failed to bind daemon.listen address; skipping"
-                );
-                errors.push(format!("{addr}: {err}"));
-            }
-        }
-    }
-    if listeners.is_empty() {
-        anyhow::bail!(
-            "could not bind any daemon.listen address ({})",
-            errors.join("; ")
-        );
-    }
-    Ok(listeners)
+    // Best-effort stop of integration watchers on process exit.
+    state.integrations.read().await.stop_all().await;
+    Ok(())
 }
 
 async fn serve_shutdown(listen_reload: Arc<Notify>, process_shutdown: Arc<AtomicBool>) {
@@ -343,19 +275,18 @@ async fn shutdown_signal() {
     };
 
     #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            () = ctrl_c => {},
+            _ = terminate.recv() => {},
+        }
+    }
 
     #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
+    {
+        ctrl_c.await;
     }
-    tracing::info!("shutdown signal received");
 }

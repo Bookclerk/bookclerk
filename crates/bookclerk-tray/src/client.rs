@@ -1,6 +1,5 @@
 //! Talk to the local `bookclerkd` HTTP API from the tray thread.
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,7 +9,6 @@ pub struct TrayConfig {
     pub base_url: String,
     pub auth_enabled: bool,
     pub operator_token: Option<String>,
-    pub token_path: Option<PathBuf>,
 }
 
 /// Shared tray config so the daemon can refresh `base_url` after listen rebinds.
@@ -64,22 +62,21 @@ impl TrayConfig {
         Ok(())
     }
 
-    pub fn print_operator_token(&self) {
+    /// Copy the operator token to the system clipboard (never prints the value).
+    pub fn copy_operator_token(&self) {
         if !self.auth_enabled {
             eprintln!("bookclerk: operator auth is disabled");
             return;
         }
         match self.operator_token.as_deref() {
-            Some(token) if !token.is_empty() => {
-                if let Some(path) = &self.token_path {
-                    eprintln!(
-                        "bookclerk: operator token (file {}):\n{token}",
-                        path.display()
-                    );
-                } else {
-                    eprintln!("bookclerk: operator token:\n{token}");
+            Some(token) if !token.is_empty() => match arboard::Clipboard::new()
+                .and_then(|mut cb| cb.set_text(token.to_owned()))
+            {
+                Ok(()) => eprintln!("bookclerk: operator token copied to clipboard"),
+                Err(_) => {
+                    eprintln!("bookclerk: clipboard unavailable — run `bookclerk daemon token`");
                 }
-            }
+            },
             _ => eprintln!("bookclerk: no operator token available"),
         }
     }
@@ -141,7 +138,6 @@ mod tests {
             base_url: "http://127.0.0.1:8787".into(),
             auth_enabled: true,
             operator_token: Some("abc".into()),
-            token_path: None,
         };
         assert_eq!(
             cfg.ui_url(),
@@ -155,7 +151,6 @@ mod tests {
             base_url: "http://127.0.0.1:8787".into(),
             auth_enabled: true,
             operator_token: Some("a&b=c+d".into()),
-            token_path: None,
         };
         assert_eq!(
             cfg.ui_url(),
@@ -171,7 +166,6 @@ mod tests {
             base_url: "http://127.0.0.1:8787".into(),
             auth_enabled: false,
             operator_token: None,
-            token_path: None,
         };
         cfg.set_listen("127.0.0.1:9999");
         assert_eq!(cfg.base_url, "http://127.0.0.1:9999");

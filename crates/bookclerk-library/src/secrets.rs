@@ -24,11 +24,13 @@
 //!
 //! ## Bootstrap secrets (NOT stored here)
 //!
-//! `BOOKCLERK_AUTH_PASSWORD`, `BOOKCLERK_DATABASE_POSTGRES_URL`,
-//! `BOOKCLERK_D1_API_TOKEN` / `CLOUDFLARE_API_TOKEN`, and
-//! `BOOKCLERK_OPERATOR_TOKEN` are **env-only bootstrap** credentials.
-//! They are needed to open the DB or bootstrap the master key and cannot
-//! be stored here. `config.toml` also stays on disk.
+//! `BOOKCLERK_AUTH_PASSWORD`, `BOOKCLERK_DATABASE_POSTGRES_URL`, and
+//! `BOOKCLERK_D1_API_TOKEN` / `CLOUDFLARE_API_TOKEN` are **env-only bootstrap**
+//! credentials. They are needed to open the DB or bootstrap the master key and
+//! cannot be stored here. `config.toml` also stays on disk.
+//!
+//! `BOOKCLERK_OPERATOR_TOKEN` is an optional **env override** for the durable
+//! operator token row (`kind = operator_token`); see [`crate::operator_token`].
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -53,10 +55,11 @@ use crate::master_key::{require_master_key, seal_with_dek, unseal_with_dek};
 
 /// Well-known `kind` values for the `encrypted_secrets` table.
 ///
-/// Only runtime auth credentials live here. Bootstrap credentials
-/// (`BOOKCLERK_AUTH_PASSWORD`, `BOOKCLERK_OPERATOR_TOKEN`,
-/// `BOOKCLERK_D1_API_TOKEN`, `BOOKCLERK_DATABASE_POSTGRES_URL`) are
-/// env-only and never stored in this table.
+/// Runtime credentials live here. Bootstrap credentials
+/// (`BOOKCLERK_AUTH_PASSWORD`, `BOOKCLERK_D1_API_TOKEN`,
+/// `BOOKCLERK_DATABASE_POSTGRES_URL`) are env-only and never stored in this
+/// table. `BOOKCLERK_OPERATOR_TOKEN` may override the durable
+/// [`OPERATOR_TOKEN`](secret_kind::OPERATOR_TOKEN) row without writing it.
 pub mod secret_kind {
     /// Store / source OAuth credentials (Audible, Libro.fm, Chirp, GA).
     pub const SOURCE_AUTH: &str = "source_auth";
@@ -64,6 +67,8 @@ pub mod secret_kind {
     pub const S3: &str = "s3";
     /// Widevine CDM blob.
     pub const WIDEVINE: &str = "widevine";
+    /// Daemon HTTP operator API token (Bearer / GUI login).
+    pub const OPERATOR_TOKEN: &str = "operator_token";
 }
 
 /// Ownership namespace for `encrypted_secrets.account_type`.

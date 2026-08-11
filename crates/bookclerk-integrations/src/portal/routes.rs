@@ -9,7 +9,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use bookclerk_config::Config;
 use bookclerk_library::LibraryStore;
-use bookclerk_source::{ContentSource, LoginOptions, PortalAuthMode};
+use bookclerk_source::{ContentSource, LoginOptions, PortalAuthMode, SourceRegistry};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -28,8 +28,8 @@ const SESSION_COOKIE: &str = "bookclerk_portal_session";
 pub struct PortalState {
     pub config: Arc<RwLock<Config>>,
     pub library: Arc<RwLock<LibraryStore>>,
-    pub integrations: IntegrationRegistry,
-    pub sources: Vec<Arc<dyn ContentSource>>,
+    pub integrations: Arc<RwLock<IntegrationRegistry>>,
+    pub sources: Arc<RwLock<SourceRegistry>>,
 }
 
 impl PortalState {
@@ -116,6 +116,8 @@ async fn login_integration(
     }
     let integration = state
         .integrations
+        .read()
+        .await
         .get(&body.provider)
         .ok_or_else(|| PortalError::bad("unknown integration provider"))?;
     if !integration.supports_credential_login() {
@@ -180,8 +182,9 @@ struct MeResponse {
 
 async fn sources(State(state): State<PortalState>) -> Json<SourcesResponse> {
     let cfg = state.config.read().await;
+    let sources = state.sources.read().await;
     let mut list = Vec::new();
-    for s in &state.sources {
+    for s in sources.all() {
         // Appearance follows `[sources.<id>].enabled` even if a stale registry entry remains.
         if !cfg.sources.is_enabled(s.id()) {
             continue;
@@ -268,7 +271,9 @@ async fn source_password_login(
     Json(body): Json<PasswordLoginBody>,
 ) -> Result<Json<serde_json::Value>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
-    let source = find_source(&state, &id).ok_or_else(|| PortalError::bad("unknown source"))?;
+    let source = find_source(&state, &id)
+        .await
+        .ok_or_else(|| PortalError::bad("unknown source"))?;
     require_source_enabled(&state, source.id()).await?;
     if source.portal_auth_mode() != PortalAuthMode::Password {
         return Err(PortalError::bad(
@@ -319,7 +324,9 @@ async fn source_oauth_start(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
-    let source = find_source(&state, &id).ok_or_else(|| PortalError::bad("unknown source"))?;
+    let source = find_source(&state, &id)
+        .await
+        .ok_or_else(|| PortalError::bad("unknown source"))?;
     require_source_enabled(&state, source.id()).await?;
     if source.portal_auth_mode() != PortalAuthMode::Oauth {
         return Err(PortalError::bad(
@@ -411,15 +418,17 @@ async fn connections(
     let mut connections = Vec::new();
     for link in links {
         let acct = library.get_account(&link.account_id).await?;
-        let brand = find_source(&state, &link.source)
-            .map(|s| Brand::from(s.portal_brand()))
-            .or_else(|| {
-                state
-                    .integrations
-                    .get(&link.source)
-                    .and_then(|i| i.portal_brand())
-                    .or_else(|| integration_brand(&link.source))
-            });
+        let brand = if let Some(s) = find_source(&state, &link.source).await {
+            Some(Brand::from(s.portal_brand()))
+        } else {
+            state
+                .integrations
+                .read()
+                .await
+                .get(&link.source)
+                .and_then(|i| i.portal_brand())
+                .or_else(|| integration_brand(&link.source))
+        };
         // Still list (and allow revoke of) connections even when the source
         // plugin is disabled — only new connect/login is gated by enabled.
         let source_enabled = cfg.sources.is_enabled(&link.source);
@@ -497,22 +506,14 @@ async fn require_source_enabled(state: &PortalState, id: &str) -> Result<(), Por
         return Err(PortalError::bad(format!("source `{id}` is disabled")));
     }
     // Also require registration (registry builders skip disabled sources).
-    if find_source(state, id).is_none() {
+    if find_source(state, id).await.is_none() {
         return Err(PortalError::bad(format!("source `{id}` is not registered")));
     }
     Ok(())
 }
 
-fn find_source(state: &PortalState, id_or_alias: &str) -> Option<Arc<dyn ContentSource>> {
-    let needle = id_or_alias.trim().to_ascii_lowercase();
-    state
-        .sources
-        .iter()
-        .find(|s| {
-            s.id().eq_ignore_ascii_case(&needle)
-                || s.aliases().iter().any(|a| a.eq_ignore_ascii_case(&needle))
-        })
-        .cloned()
+async fn find_source(state: &PortalState, id_or_alias: &str) -> Option<Arc<dyn ContentSource>> {
+    state.sources.read().await.get(id_or_alias)
 }
 
 async fn session_response(session: String, state: &PortalState) -> Response {

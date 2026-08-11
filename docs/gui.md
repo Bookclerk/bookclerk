@@ -27,12 +27,12 @@ The SPA supports two session types:
 
 | Role | How to sign in | Capabilities |
 | --- | --- | --- |
-| **Operator** | Paste `operator.token` | Full library, scan/acquire, jobs, Discover, Wishlist, Accounts |
+| **Operator** | Paste operator token (`bookclerk daemon token`) | Full library, scan/acquire, jobs, Discover, Wishlist, Accounts |
 | **Portal** | Claim ticket or integration return-visit login | Discover (personalized), Wishlist, library of **linked-account books only** (no acquire), Accounts |
 
 | Item | Detail |
 | --- | --- |
-| Operator token | `$BOOKCLERK_FILES_DIR/operator.token` / `BOOKCLERK_OPERATOR_TOKEN` |
+| Operator token | `encrypted_secrets` (or `BOOKCLERK_OPERATOR_TOKEN` override); tray copies to clipboard |
 | Operator cookie | `bookclerk_operator_session` (`Path=/`) |
 | Portal cookie | `bookclerk_portal_session` (`Path=/`) |
 | Portal APIs | `/api/portal/*` (SPA Accounts / claim redeem) |

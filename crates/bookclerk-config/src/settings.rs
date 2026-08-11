@@ -202,8 +202,6 @@ impl Default for DaemonConfig {
 pub struct DaemonAuthConfig {
     /// When true, `/api/*` (and legacy control routes) require Bearer or session cookie.
     pub enabled: bool,
-    /// Token file path relative to `$BOOKCLERK_FILES_DIR`, or absolute.
-    pub token_file: String,
     /// Browser session lifetime in hours after `POST /api/auth/login`.
     pub session_ttl_hours: u64,
     /// Failed `POST /api/auth/login` attempts (per client IP) before a lockout.
@@ -216,7 +214,6 @@ impl Default for DaemonAuthConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            token_file: String::from("operator.token"),
             session_ttl_hours: 12,
             login_max_failures: 5,
             login_lockout_secs: 60,
@@ -469,12 +466,6 @@ impl Config {
         }
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_AUTH_ENABLED") {
             self.daemon.auth.enabled = parse_bool(&v).unwrap_or(self.daemon.auth.enabled);
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_OPERATOR_TOKEN_FILE") {
-            let trimmed = v.trim();
-            if !trimmed.is_empty() {
-                self.daemon.auth.token_file = trimmed.to_string();
-            }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_AUTH_SESSION_TTL_HOURS") {
             if let Ok(hours) = v.trim().parse::<u64>() {

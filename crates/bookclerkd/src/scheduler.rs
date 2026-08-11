@@ -98,10 +98,8 @@ fn spawn_listen_sync_loop(state: Arc<AppState>) {
 
             let started = std::time::Instant::now();
             let library = state.library.read().await.clone();
-            let summary = state
-                .integrations
-                .sync_listening_progress_all(&library)
-                .await;
+            let integrations = state.integrations.read().await.clone();
+            let summary = integrations.sync_listening_progress_all(&library).await;
             if summary.by_provider.is_empty() {
                 info!(
                     elapsed_ms = started.elapsed().as_millis() as u64,

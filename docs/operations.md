@@ -30,19 +30,41 @@ Override listen with `BOOKCLERK_DAEMON_LISTEN` or `daemon.listen`. Defaults to
 an array; env/CLI accept a single address or a comma-separated list. IPv6 uses
 bracketed form (`[::1]:8787`). The daemon binds each address (skips failures if
 at least one succeeds). Changing `daemon.listen` and reloading
-(`POST /api/config/reload` or SIGHUP) **rebinds without restarting**. The tray
-opens `http://localhost:<port>` and leaves resolution to the OS.
+(`POST /api/config/reload` or SIGHUP) **rebinds without restarting**. Reload also
+rebuilds operator auth, sources, integrations, destinations, and (when needed)
+the database plugin as one transactional swap — auth is published **before** any
+listen rebind so a public listener never outruns middleware. The tray opens
+`http://localhost:<port>` and leaves resolution to the OS.
 
-Operator auth
-defaults **on** (`[daemon.auth]`); token at `$BOOKCLERK_FILES_DIR/operator.token`
-or `BOOKCLERK_OPERATOR_TOKEN`. Do not expose publicly without TLS (reverse
-proxy) and a protected token. Details: [gui.md](gui.md).
+Operator auth defaults **on** (`[daemon.auth]`). The token is sealed in
+`encrypted_secrets` (legacy `operator.token` files are imported once then
+deleted). Optional override: `BOOKCLERK_OPERATOR_TOKEN`. Show or rotate with
+`bookclerk daemon token` / `bookclerk daemon token rotate`. The system tray
+**Copy operator token** menu copies to the clipboard and never prints the value.
+Do not expose publicly without TLS (reverse proxy) and a protected token.
+Details: [gui.md](gui.md).
+
+### Hot-reloadable settings
+
+| Setting | On reload |
+| --- | --- |
+| `daemon.listen` | Rebind listeners (after auth swap); preflight-binds free ports and rolls back to the last successful bind if rebind fails |
+| `daemon.auth.*` / operator token | Rebuild `OperatorAuthState` (sessions preserved; previous token accepted for ~60s after rotate/reload) |
+| `sources.*` / `integrations.*` / `output.*` | Rebuild registries; integration watchers stopped then restarted |
+| `database.plugin` | Re-open library + destinations |
+| `[media]` | Swap media worker pool |
+
+`GET /api/settings` returns both `settings` (configured) and `effective`
+(runtime auth flag + loaded plugin ids). `GET /api/status` includes
+`auth_enabled` for the live middleware.
 
 Talk to a running daemon from the CLI (sends Bearer when auth is enabled):
 
 ```bash
 bookclerk daemon health
 bookclerk daemon status
+bookclerk daemon token
+bookclerk daemon token rotate
 bookclerk daemon jobs
 bookclerk daemon scan [--account <id>]
 bookclerk daemon acquire [--asin <id>] [--account <id>]
@@ -101,9 +123,12 @@ To publish the UI / API (keep operator auth enabled; terminate TLS at a proxy):
 
 ```bash
 docker run … -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 \
-  -e BOOKCLERK_OPERATOR_TOKEN_FILE=/secrets/operator.token \
+  -e BOOKCLERK_OPERATOR_TOKEN="$(bookclerk daemon token)" \
   -p 8787:8787 bookclerkd
 ```
+
+(Prefer sealing the token in `library.db` under `/config` and omitting the env
+override once the volume is initialized.)
 
 Copy `/etc/bookclerk/config.example.toml` from the image as a starting config.
 

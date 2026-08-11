@@ -34,6 +34,14 @@ pub trait Integration: Send + Sync {
     /// Start background tasks (user watchers, etc.).
     async fn start(&self, ctx: IntegrationContext) -> Result<()>;
 
+    /// Stop background tasks started by [`Self::start`].
+    ///
+    /// Default: no-op. Implementations that spawn poll loops should cancel them
+    /// idempotently so config reload can replace the registry safely.
+    async fn stop(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Handle a fan-out event (best-effort; errors are logged by the registry).
     async fn on_event(&self, event: &IntegrationEvent) -> Result<()>;
 

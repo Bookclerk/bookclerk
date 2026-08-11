@@ -16,8 +16,8 @@ use crate::registry::default_registry_with_plugins;
 
 async fn notify_integrations(state: &AppState, asin: &str, storage_key: &str) {
     let library = state.library.read().await.clone();
-    bookclerk_integrations::emit_book_acquired(&state.integrations, &library, asin, storage_key)
-        .await;
+    let integrations = state.integrations.read().await.clone();
+    bookclerk_integrations::emit_book_acquired(&integrations, &library, asin, storage_key).await;
 }
 
 /// Enqueue a library scan and run it in the background.

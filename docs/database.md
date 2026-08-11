@@ -347,7 +347,8 @@ These are required to open the DB or derive the master key and cannot be stored 
 - `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` — wraps `master.key` at rest
   (strongly recommended in production; env preferred)
 - `BOOKCLERK_DATABASE_POSTGRES_URL` / `BOOKCLERK_D1_API_TOKEN` — DB connection bootstrap
-- `BOOKCLERK_OPERATOR_TOKEN` — operator API key bootstrap
+- `BOOKCLERK_OPERATOR_TOKEN` — optional override for the durable operator API token
+  (otherwise sealed in `encrypted_secrets`; see `bookclerk daemon token`)
 - `config.toml` (remains on disk)
 
 > **No `Accounts/` directory for secrets.** All runtime credentials (Audible, Libro.fm,

@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+arboard = "3"
 open = "5"
 png = "0.18"
 tracing.workspace = true

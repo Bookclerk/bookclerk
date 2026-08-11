@@ -129,8 +129,9 @@ Default listen: both loopbacks
 `["127.0.0.1:8787", "[::1]:8787"]` (`BOOKCLERK_DAEMON_LISTEN` / `daemon.listen`;
 string or array / comma-separated). IPv6 uses bracketed form: `[::1]:8787`.
 
-Operator auth (`[daemon.auth]`, token file / `BOOKCLERK_OPERATOR_TOKEN`) gates
-the API. See [gui.md](gui.md) and [operations.md](operations.md).
+Operator auth (`[daemon.auth]`, DB-sealed token / `BOOKCLERK_OPERATOR_TOKEN`) gates
+the API. Config reload swaps auth before listen rebind. See [gui.md](gui.md) and
+[operations.md](operations.md).
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |

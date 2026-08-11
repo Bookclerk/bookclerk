@@ -164,9 +164,11 @@ json_logs = true
 # Operator auth for the HTTP API / GUI (required when binding non-loopback).
 # [daemon.auth]
 # enabled = true
-# token_file = "operator.token"   # under $BOOKCLERK_FILES_DIR, or absolute
 # session_ttl_hours = 12
-# Env: BOOKCLERK_OPERATOR_TOKEN, BOOKCLERK_OPERATOR_TOKEN_FILE, BOOKCLERK_DAEMON_AUTH_ENABLED
+# Env: BOOKCLERK_OPERATOR_TOKEN (optional override), BOOKCLERK_DAEMON_AUTH_ENABLED
+# Token is stored sealed in encrypted_secrets (not a files-dir operator.token).
+# Show/rotate: `bookclerk daemon token` / `bookclerk daemon token rotate`
+# Tray menu copies the token to the clipboard (never prints it).
 
 # [integrations]
 # public_origin = "https://bookclerk.example.com"  # shareable SPA claim URLs (?ticket=)

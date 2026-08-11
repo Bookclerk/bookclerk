@@ -104,10 +104,10 @@ impl Tray for BookclerkTray {
             }
             .into(),
             StandardItem {
-                label: "Print operator token".into(),
+                label: "Copy operator token".into(),
                 activate: Box::new(move |_| {
                     if let Ok(guard) = token.lock() {
-                        guard.print_operator_token();
+                        guard.copy_operator_token();
                     }
                 }),
                 ..Default::default()

@@ -13,6 +13,7 @@ mod error;
 pub mod master_key;
 pub mod migrations;
 mod models;
+pub mod operator_token;
 pub mod scope;
 pub mod secrets;
 mod store;
@@ -33,6 +34,12 @@ pub use models::{
     BookRecord, ClaimTicketRecord, EmbeddingRecord, GlobalQueueEntry, ListeningProgressRecord,
     PortalIdentity, RequestStatus, TitleRequestRecord, TitleRequestSourceRecord, UserPreferences,
     WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, OPERATOR_PREFS_KEY,
+};
+pub use operator_token::{
+    env_operator_token, legacy_operator_token_file, load_operator_token,
+    read_or_create_operator_token, resolve_operator_token, rotate_operator_token,
+    save_operator_token, ResolveOperatorToken, OPERATOR_TOKEN_ACCOUNT_ID,
+    OPERATOR_TOKEN_SECRET_NAME,
 };
 pub use scope::SourceScope;
 pub use secrets::{

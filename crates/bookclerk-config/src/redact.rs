@@ -134,8 +134,8 @@ pub fn clear_registered_secrets() {
 ///
 /// Registration is global so parallel tests that `clear`/`register` can race;
 /// hold this guard for the full arrange/act/assert window.
-#[cfg(test)]
-pub(crate) fn secrets_registry_test_lock() -> std::sync::MutexGuard<'static, ()> {
+#[doc(hidden)]
+pub fn secrets_registry_test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()

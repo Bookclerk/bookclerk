@@ -45,7 +45,8 @@ pub use logging::{init_tracing, init_tracing_with, LogFormat, LoggingHandle, Tra
 pub use media::MediaConfig;
 pub use naming_profile::{NamingProfile, NamingProfileTemplates, ResolvedNamingTemplates};
 pub use operator_auth::{
-    operator_token_path, read_operator_token, read_or_create_operator_token, ResolveOperatorToken,
+    generate_operator_token, read_operator_token_env, validate_operator_token,
+    ResolveOperatorTokenEnv,
 };
 pub use output::{
     normalize_storage_prefix, BadBookAction, DestinationNaming, MultiDestinationMode,
@@ -67,7 +68,7 @@ pub use plugins::{
 pub use redact::{
     contains_registered_secret, is_sensitive_field, is_upload_identifying_field,
     redact_field_value, redact_str, register_secret, register_secrets, register_secrets_from_env,
-    sanitize_for_remote_upload, truncate_upload_message, REDACTED,
+    sanitize_for_remote_upload, secrets_registry_test_lock, truncate_upload_message, REDACTED,
 };
 pub use settings::{
     AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig, DiagnosticsConfig,

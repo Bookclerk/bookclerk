@@ -58,6 +58,7 @@ uuid.workspace = true
 secrecy.workspace = true
 
 [dev-dependencies]
+bookclerk-plugin-database-sqlite.workspace = true
 http-body-util = "0.1"
 tempfile.workspace = true
 tower = { version = "0.5", features = ["util"] }

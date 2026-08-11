@@ -2,18 +2,18 @@
 
 use std::sync::{Arc, Mutex};
 
-use bookclerk_config::{
-    graphical_session_available, operator_token_path, read_operator_token, Config, ListenAddrs,
-};
+use bookclerk_config::{graphical_session_available, Config};
 use bookclerk_tray::{SharedTrayConfig, TrayConfig};
+
+use crate::auth::OperatorAuthState;
 
 /// Start the tray companion on a background OS thread when appropriate.
 ///
-/// Returns a shared config handle so the daemon can refresh `base_url` after a
-/// listen rebind. No-ops (returns `None`) when:
+/// Returns a shared config handle so the daemon can refresh `base_url` / token
+/// after a listen rebind or auth reload. No-ops (returns `None`) when:
 /// - `[daemon].tray = false` / `BOOKCLERK_NO_TRAY` / `BOOKCLERK_DAEMON_TRAY=0`
 /// - no windowing / session-bus environment (typical systemd/Docker hosts)
-pub fn maybe_spawn_tray(config: &Config) -> Option<SharedTrayConfig> {
+pub fn maybe_spawn_tray(config: &Config, auth: &OperatorAuthState) -> Option<SharedTrayConfig> {
     if !config.daemon.tray {
         tracing::debug!("daemon.tray disabled; not starting tray");
         return None;
@@ -27,25 +27,17 @@ pub fn maybe_spawn_tray(config: &Config) -> Option<SharedTrayConfig> {
     }
 
     let base_url = config.daemon.listen.tray_base_url();
-    let auth_enabled = config.daemon.auth.enabled;
-    let (operator_token, token_path) = if auth_enabled {
-        match read_operator_token(config) {
-            Ok(Some((token, _))) => (Some(token), Some(operator_token_path(config))),
-            Ok(None) => (None, Some(operator_token_path(config))),
-            Err(err) => {
-                tracing::warn!(error = %err, "could not read operator token for tray");
-                (None, Some(operator_token_path(config)))
-            }
-        }
+    let auth_enabled = auth.enabled;
+    let operator_token = if auth_enabled && !auth.token.is_empty() {
+        Some(auth.token.clone())
     } else {
-        (None, None)
+        None
     };
 
     let tray = TrayConfig {
         base_url: base_url.clone(),
         auth_enabled,
         operator_token,
-        token_path,
     };
 
     let shared: SharedTrayConfig = Arc::new(Mutex::new(tray));
@@ -77,12 +69,22 @@ pub fn maybe_spawn_tray(config: &Config) -> Option<SharedTrayConfig> {
     Some(shared)
 }
 
-/// Point the running tray at new listen addrs after a successful rebind.
-pub fn update_tray_listen(tray: &SharedTrayConfig, listen: &ListenAddrs) {
+/// Refresh tray listen URL + operator auth after a successful reload / rebind.
+pub fn update_tray_after_reload(
+    tray: &SharedTrayConfig,
+    config: &Config,
+    auth: &OperatorAuthState,
+) {
     match tray.lock() {
         Ok(mut guard) => {
             let prev = guard.base_url.clone();
-            guard.set_base_url(listen.tray_base_url());
+            guard.set_base_url(config.daemon.listen.tray_base_url());
+            guard.auth_enabled = auth.enabled;
+            guard.operator_token = if auth.enabled && !auth.token.is_empty() {
+                Some(auth.token.clone())
+            } else {
+                None
+            };
             if prev != guard.base_url {
                 tracing::info!(
                     from = %prev,
@@ -91,6 +93,6 @@ pub fn update_tray_listen(tray: &SharedTrayConfig, listen: &ListenAddrs) {
                 );
             }
         }
-        Err(err) => tracing::warn!(error = %err, "tray config lock poisoned; not updating listen"),
+        Err(err) => tracing::warn!(error = %err, "tray config lock poisoned; not updating"),
     }
 }

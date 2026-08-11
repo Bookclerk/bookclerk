@@ -134,12 +134,13 @@ diagnostics ring always keeps TRACE+; stderr/OS facility honor `BOOKCLERK_LOG` /
 - Daemon: `cargo run -p bookclerkd` (or `cargo dev`). Listens on `127.0.0.1:8787`
   and `[::1]:8787` by default (override with `BOOKCLERK_DAEMON_LISTEN` or
   `daemon.listen` in `config.toml`; string, array, or comma-separated). Operator
-  auth defaults on (`operator.token` under the files dir, or
+  auth defaults on (token sealed in `encrypted_secrets`, or
   `BOOKCLERK_OPERATOR_TOKEN`). Control plane: `GET /health`,
   `POST /api/auth/login`, authenticated `/api/status`, `/api/jobs`,
   `/api/library/*` (legacy `/status` `/scan` `/acquire` `/jobs` also gated).
   `POST` bodies require the `Content-Type: application/json` header (send `{}`
-  for defaults), otherwise the request is rejected.
+  for defaults), otherwise the request is rejected. Show/rotate the token with
+  `bookclerk daemon token` / `bookclerk daemon token rotate`.
 
 ### Live store / storage testing constraints
 

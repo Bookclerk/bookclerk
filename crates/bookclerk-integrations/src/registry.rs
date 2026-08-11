@@ -50,6 +50,15 @@ impl IntegrationRegistry {
         Ok(())
     }
 
+    /// Stop all integrations (background watchers). Errors are logged, not fatal.
+    pub async fn stop_all(&self) {
+        for integration in &self.integrations {
+            if let Err(err) = integration.stop().await {
+                error!(id = integration.id(), %err, "integration stop failed");
+            }
+        }
+    }
+
     /// Fan-out an event; individual failures are logged, not fatal.
     pub async fn emit(&self, event: &IntegrationEvent) {
         for integration in &self.integrations {

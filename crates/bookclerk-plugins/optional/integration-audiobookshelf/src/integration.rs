@@ -1,6 +1,7 @@
 //! Audiobookshelf integration adapter.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +31,10 @@ pub struct AbsIntegration {
     /// Debounce overlapping acquire→scan bursts.
     scan_lock: Mutex<()>,
     known_users: Arc<Mutex<HashSet<String>>>,
+    /// Set by [`Self::stop`] to end the user-watch poll loop.
+    watch_cancel: Arc<AtomicBool>,
+    /// Bumped on each [`Self::start`]/[`Self::stop`] so a superseded watch loop exits.
+    watch_epoch: Arc<AtomicU64>,
 }
 
 impl AbsIntegration {
@@ -65,6 +70,8 @@ impl AbsIntegration {
             config_error,
             scan_lock: Mutex::new(()),
             known_users: Arc::new(Mutex::new(HashSet::new())),
+            watch_cancel: Arc::new(AtomicBool::new(false)),
+            watch_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -139,8 +146,12 @@ impl Integration for AbsIntegration {
             debug!("ABS user watch disabled");
             return Ok(());
         }
+        let epoch = self.watch_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        self.watch_cancel.store(false, Ordering::SeqCst);
         let known = self.known_users.clone();
         let on_user = ctx.on_external_user.clone();
+        let cancel = self.watch_cancel.clone();
+        let epoch_flag = self.watch_epoch.clone();
         // Seed + poll loop (Socket.io client deferred; poll is reliable without extra deps).
         let this_client = client.clone();
         let known_seed = known.clone();
@@ -156,7 +167,15 @@ impl Integration for AbsIntegration {
                 Err(err) => warn!(%err, "failed to seed ABS users"),
             }
             loop {
+                if cancel.load(Ordering::SeqCst) || epoch_flag.load(Ordering::SeqCst) != epoch {
+                    debug!("ABS user watch stopped");
+                    break;
+                }
                 tokio::time::sleep(Duration::from_secs(30)).await;
+                if cancel.load(Ordering::SeqCst) || epoch_flag.load(Ordering::SeqCst) != epoch {
+                    debug!("ABS user watch stopped");
+                    break;
+                }
                 match client.list_users().await {
                     Ok(users) => {
                         let mut g = known.lock().await;
@@ -183,6 +202,12 @@ impl Integration for AbsIntegration {
                 }
             }
         });
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
+        self.watch_epoch.fetch_add(1, Ordering::SeqCst);
+        self.watch_cancel.store(true, Ordering::SeqCst);
         Ok(())
     }
 

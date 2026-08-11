@@ -71,7 +71,7 @@ impl App {
 
         let open_i = MenuItem::new("Open Bookclerk", true, None);
         let scan_i = MenuItem::new("Scan library", true, None);
-        let token_i = MenuItem::new("Print operator token", true, None);
+        let token_i = MenuItem::new("Copy operator token", true, None);
         let quit_i = MenuItem::new("Hide tray", true, None);
 
         let menu = Menu::new();
@@ -128,8 +128,8 @@ impl App {
         });
     }
 
-    fn print_token(&self) {
-        self.with_client(TrayConfig::print_operator_token);
+    fn copy_token(&self) {
+        self.with_client(TrayConfig::copy_operator_token);
     }
 }
 
@@ -166,7 +166,7 @@ impl ApplicationHandler<UserEvent> for App {
                 } else if Some(&event.id) == self.scan_id.as_ref() {
                     self.scan();
                 } else if Some(&event.id) == self.token_id.as_ref() {
-                    self.print_token();
+                    self.copy_token();
                 } else if Some(&event.id) == self.quit_id.as_ref() {
                     self.tray_icon.take();
                     event_loop.exit();
