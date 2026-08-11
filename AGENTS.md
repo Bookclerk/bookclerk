@@ -3,8 +3,16 @@
 ## Cursor Cloud specific instructions
 
 This is a Rust workspace (edition 2021, `rust-toolchain.toml` pins the `stable`
-channel with `rustfmt` + `clippy`). The startup update script runs
-`cargo fetch`, so dependencies are already downloaded when a session begins.
+channel with `rustfmt` + `clippy`). Cloud Agent / Builds use the shared image in
+[`.devcontainer/Dockerfile`](.devcontainer/Dockerfile) via
+[`.cursor/environment.json`](.cursor/environment.json); `install` runs
+[`.cursor/cloud-agent-install.sh`](.cursor/cloud-agent-install.sh) (`cargo fetch`,
+`ui` npm build, `cargo build-app --platform --optional --examples`). A `bookclerkd` terminal runs
+`cargo dev --skip-build`. Cloud commits use Cursor’s HSM signing (no custom
+signing secrets). Local Dev Containers inherit host `git config` and sign via
+the host SSH agent socket (private key never enters the container; see
+`docs/devcontainer.md`). Dev Container signing tweaks use project-local
+`.git/config` only and are not applied to Cloud Builds.
 
 Workspace-local caches (gitignored; travel with the bind-mounted checkout):
 

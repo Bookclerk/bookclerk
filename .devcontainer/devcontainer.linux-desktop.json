@@ -25,7 +25,8 @@
   "mounts": [
     "source=${localEnv:XDG_RUNTIME_DIR},target=/run/host-user,type=bind",
     "source=${localEnv:XDG_RUNTIME_DIR}/bus,target=/run/host-user/bus,type=bind",
-    "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind"
+    "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind",
+    "source=${localEnv:SSH_AUTH_SOCK},target=/run/host-services/ssh-auth.sock,type=bind"
   ],
   "containerEnv": {
     "CARGO_TERM_COLOR": "always",
@@ -39,9 +40,16 @@
     "CARGO_HOME": "${containerWorkspaceFolder}/.cargo-home",
     "CARGO_TARGET_DIR": "${containerWorkspaceFolder}/target",
     "TMPDIR": "${containerWorkspaceFolder}/.tmp",
-    "BOOKCLERK_FILES_DIR": "${containerWorkspaceFolder}/BookclerkFiles"
+    "BOOKCLERK_FILES_DIR": "${containerWorkspaceFolder}/BookclerkFiles",
+    "SSH_AUTH_SOCK": "/run/host-services/ssh-auth.sock",
+    "GIT_AUTHOR_NAME": "${localEnv:GIT_AUTHOR_NAME}",
+    "GIT_AUTHOR_EMAIL": "${localEnv:GIT_AUTHOR_EMAIL}",
+    "GIT_COMMITTER_NAME": "${localEnv:GIT_COMMITTER_NAME}",
+    "GIT_COMMITTER_EMAIL": "${localEnv:GIT_COMMITTER_EMAIL}",
+    "GIT_SSH_SIGNING_PUBKEY": "${localEnv:GIT_SSH_SIGNING_PUBKEY}"
   },
   "postCreateCommand": "bash -lc 'mkdir -p .cargo-home .tmp BookclerkFiles && cargo fetch && (cd ui && npm ci)'",
+  "postStartCommand": "bash .devcontainer/git-signing.sh",
   "customizations": {
     "vscode": {
       "extensions": [

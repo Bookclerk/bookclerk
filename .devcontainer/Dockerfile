@@ -1,10 +1,13 @@
-# Dev Container image for Bookclerk.
+# Shared Dev Container + Cursor Cloud Agent base image for Bookclerk.
 #
-# The IDE bind-mounts the repo into the container — do not COPY sources here.
-# Build artifacts land in the workspace `target/` and `ui/dist/` so you can run
-# the Linux binaries on the host (glibc ≥ bookworm).
+# - Dev Container: bind-mounts the repo (do not COPY sources).
+# - Cloud Agent: Cursor checks out the correct commit into /workspace.
+# Pin to the same Rust minor as packaging/docker/Dockerfile.
+#
+# Build artifacts land in the workspace `target/` / `.cargo-home/` / `ui/dist/`
+# so Linux hosts (glibc ≥ bookworm) can run the resulting binaries.
 
-FROM rust:1-bookworm
+FROM rust:1.85-bookworm
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -18,6 +21,7 @@ RUN apt-get update \
         git \
         gnupg \
         jq \
+        openssh-client \
         pkg-config \
         libssl-dev \
         libdbus-1-dev \
@@ -43,15 +47,29 @@ RUN mkdir -p /etc/apt/keyrings \
 # install components up front so the first `cargo check` is faster.
 RUN rustup component add rustfmt clippy
 
-# Create a non-root dev user. VS Code's `updateRemoteUserUID` remaps this
+# Cursor Cloud Agent shells often start with a minimal PATH that omits
+# /usr/local/cargo/bin. Symlink the toolchain into /usr/local/bin so
+# `cargo`/`rustc` remain usable without a manual PATH export.
+RUN for b in cargo rustc rustup rustfmt rustdoc cargo-clippy clippy-driver cargo-fmt; do \
+      ln -sf "/usr/local/cargo/bin/$b" "/usr/local/bin/$b"; \
+    done
+
+# Create a non-root dev user. VS Code/Cursor `updateRemoteUserUID` remaps this
 # account to the host UID/GID at container create time (no hardcoded host IDs).
+# Cloud Agents typically run as root and ignore this account.
 RUN groupadd --gid 1000 bookclerk \
-    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash bookclerk
-
-ENV CARGO_TERM_COLOR=always \
-    RUST_BACKTRACE=1
-
-RUN mkdir -p /home/bookclerk/.cargo/registry /home/bookclerk/.cargo/git \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash bookclerk \
+    && mkdir -p /home/bookclerk/.cargo/registry /home/bookclerk/.cargo/git \
     && chown -R bookclerk:bookclerk /home/bookclerk/.cargo
 
-WORKDIR /workspaces/bookclerk
+# Portable defaults for Cloud Agent (/workspace). Dev Container overrides paths
+# via remoteEnv to ${containerWorkspaceFolder}/….
+ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    CARGO_HOME=/workspace/.cargo-home \
+    CARGO_TARGET_DIR=/workspace/target \
+    TMPDIR=/workspace/.tmp \
+    BOOKCLERK_FILES_DIR=/workspace/BookclerkFiles \
+    CARGO_TERM_COLOR=always \
+    RUST_BACKTRACE=1
+
+WORKDIR /workspace
