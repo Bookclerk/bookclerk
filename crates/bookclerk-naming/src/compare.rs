@@ -151,7 +151,7 @@ fn existence(v1: &Value) -> bool {
     }
 }
 
-/// HasValue evaluator.
+/// Classic Libation `HasValue` conditional: true when the tagged field is non-empty.
 pub(crate) fn has_value(v1: &Value) -> bool {
     match v1 {
         Value::Null => false,

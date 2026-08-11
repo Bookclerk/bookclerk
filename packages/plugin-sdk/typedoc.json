@@ -1,0 +1,21 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": [
+    "src/index.ts",
+    "src/workerd.ts",
+    "src/native.ts",
+    "src/sparse-workerd/index.ts",
+    "src/cli.ts"
+  ],
+  "entryPointStrategy": "resolve",
+  "out": "../../docs/api/typescript",
+  "name": "@bookclerk/plugin-sdk",
+  "readme": "README.md",
+  "excludePrivate": true,
+  "excludeExternals": true,
+  "validation": {
+    "notExported": false,
+    "invalidLink": true,
+    "notDocumented": false
+  }
+}

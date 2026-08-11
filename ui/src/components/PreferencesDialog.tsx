@@ -41,6 +41,12 @@ type PreferencesContextValue = {
 
 const PreferencesContext = createContext<PreferencesContextValue | null>(null);
 
+/**
+ * Reads the preferences context (must be under {@link PreferencesProvider}).
+ *
+ * @returns Preferences context value.
+ * @throws When used outside {@link PreferencesProvider}.
+ */
 export function usePreferences(): PreferencesContextValue {
   const ctx = useContext(PreferencesContext);
   if (!ctx) {
@@ -49,7 +55,9 @@ export function usePreferences(): PreferencesContextValue {
   return ctx;
 }
 
-/** Header control — safe on every authenticated app page. */
+/**
+ * Header control that opens the preferences dialog — safe on every authenticated page.
+ */
 export function PreferencesButton() {
   const { openPreferences, preferencesOpen } = usePreferences();
   return (
@@ -65,6 +73,11 @@ export function PreferencesButton() {
   );
 }
 
+/**
+ * Provides preferences state and dialog for authenticated app chrome.
+ *
+ * @param props - Children, current default view, and optional change callback.
+ */
 export function PreferencesProvider({
   children,
   defaultView,
@@ -106,7 +119,11 @@ const ShelvesChangeRegistrationContext = createContext<
   ((fn: ShelvesListener | null) => void) | null
 >(null);
 
-/** Discover registers so shelf toggles can refresh the feed while that page is mounted. */
+/**
+ * Registers a listener invoked when Discover shelf visibility prefs change.
+ *
+ * @param listener - Callback, or `null` to clear.
+ */
 export function useRegisterShelvesChangeListener(listener: ShelvesListener | null) {
   const setOnShelvesChange = useContext(ShelvesChangeRegistrationContext);
   const listenerRef = useRef(listener);

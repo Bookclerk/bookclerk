@@ -1,11 +1,20 @@
-//! Shared host/egress allowlist policy (workerd JS + native mediator).
+//! Shared host/egress allowlist policy (workerd JS bridge + native mediator).
 //!
-//! Semantics match `bookclerk-workerd` bridge `egress.js`:
-//! - **initial** request hosts must match `domains` (`*` prefix wildcards)
-//! - hosts and patterns are IDNA ToASCII–normalized; percent-encoded hosts fail closed
-//! - **redirect** hops after an allowed initial request do not re-check domains
-//!   (intentional — redirect hops stay free)
-//! - hop count is capped by `max_redirects`
+//! Semantics match `bookclerk-workerd` bridge `egress.js` and the product rules
+//! in `docs/plugins.md`:
+//!
+//! - **Initial** request hosts must match [`EgressPolicy::domains`] (`*.`
+//!   prefix wildcards). Hosts and patterns are IDNA ToASCII–normalized;
+//!   percent-encoded hosts fail closed.
+//! - **Redirect** hops after an allowed initial request do **not** re-check
+//!   domains (intentional — operators approve the initial allowlist only).
+//! - Hop count is capped by [`EgressPolicy::max_redirects`] (wire
+//!   `maxRedirects`).
+//! - **Python + outbound** workerd guests also receive
+//!   [`PYODIDE_EGRESS_HOSTS`] in consent and egress lists.
+//!
+//! Native guests never get hostname filtering; see [`crate::NetworkMode`] and
+//! [`crate::PluginManifest::validate`].
 
 use serde::{Deserialize, Serialize};
 
@@ -13,28 +22,57 @@ use crate::types::{
     NetworkCapabilities, NetworkMode, PluginManifest, PluginRuntimeKind, WorkerdRuntimeManifest,
 };
 
-/// Default redirect budget (matches workerd policy injection).
+/// Default redirect budget injected when building policy from network caps.
+///
+/// Matches workerd policy injection (`maxRedirects = 10`). Wire JSON uses
+/// camelCase `maxRedirects`.
 pub const DEFAULT_MAX_REDIRECTS: u32 = 10;
 
 /// Hosts Pyodide / Cloudflare Python Workers commonly fetch on first boot
-/// (runtime index + micropip). Included in consent + egress when a workerd
-/// guest is Python + `outbound`. See Cloudflare Python packages docs.
+/// (runtime index + micropip).
+///
+/// Included in consent UI lists and [`EgressPolicy`] domain allowlists when a
+/// workerd guest is Python **and** [`NetworkMode::Outbound`]. See Cloudflare
+/// Python packages docs. Values:
+/// `cdn.jsdelivr.net`, `pypi.org`, `files.pythonhosted.org`.
 pub const PYODIDE_EGRESS_HOSTS: &[&str] =
     &["cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"];
 
-/// Initial-host allowlist with redirect-follow semantics.
+/// Initial-host allowlist with redirect-follow and optional subrequest budget.
+///
+/// Serialized as camelCase for injection into workerd `EGRESS_POLICY` and the
+/// native helper (`mode`, `domains`, `maxRedirects`, optional `subrequests`).
+///
+/// # Matching rules
+///
+/// - [`Self::allows_initial`] — hostname must match an allowlist entry after
+///   IDNA normalization (`*.example.com` or exact host).
+/// - [`Self::allows_redirect`] — after an allowed initial fetch, hops are
+///   permitted solely by index `< max_redirects` (domain not re-checked).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EgressPolicy {
+    /// Network mode (`deny` or `outbound`). Wire name: `mode`.
     pub mode: NetworkMode,
+
+    /// IDNA-normalized initial-request host patterns (`*.cdn.example.com` or
+    /// exact hosts). Empty when mode is deny. Wire name: `domains`.
     pub domains: Vec<String>,
+
+    /// Maximum redirect hops after an allowed initial request (0-based hop
+    /// index must be `< max_redirects`). Wire name: `maxRedirects`. Defaults
+    /// to [`DEFAULT_MAX_REDIRECTS`].
     #[serde(default = "default_max_redirects")]
     pub max_redirects: u32,
-    /// Max outbound `fetch` calls (initial + redirect hops that actually fetch).
+
+    /// Max outbound `fetch` calls (initial request plus redirect hops that
+    /// actually fetch).
     ///
-    /// When present and finite, the workerd egress bridge enforces this counter.
-    /// Absent means unlimited (tests / native mediator). Workerd guests always
-    /// inject the clamped `[workerd].limits.subrequests` value.
+    /// When present and finite, the workerd egress bridge enforces this
+    /// counter **per egress invocation**. Absent means unlimited (tests /
+    /// native mediator). Workerd guests always inject the clamped
+    /// `[workerd].limits.subrequests` value via [`Self::from_manifest`].
+    /// Wire name: `subrequests`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subrequests: Option<u32>,
 }
@@ -44,13 +82,38 @@ fn default_max_redirects() -> u32 {
 }
 
 impl EgressPolicy {
-    /// Build a policy from network capabilities, normalizing domains (fail closed → deny).
+    /// Builds a policy from network capabilities, normalizing domains.
+    ///
+    /// Invalid allowlist entries cause a fail-closed [`Self::deny`] policy
+    /// (prefer [`Self::try_from_network`] when you need the error).
+    ///
+    /// # Arguments
+    ///
+    /// * `caps` - `[capabilities.network]` table from the manifest.
+    ///
+    /// # Returns
+    ///
+    /// An outbound or deny policy with normalized domains and
+    /// [`DEFAULT_MAX_REDIRECTS`]. `subrequests` is unset.
     #[must_use]
     pub fn from_network(caps: &NetworkCapabilities) -> Self {
         Self::try_from_network(caps).unwrap_or_else(|_| Self::deny())
     }
 
-    /// Like [`from_network`] but returns an error when any allowlist entry is invalid.
+    /// Like [`Self::from_network`] but returns an error when any allowlist
+    /// entry fails IDNA / percent-encoding checks.
+    ///
+    /// # Arguments
+    ///
+    /// * `caps` - `[capabilities.network]` table from the manifest.
+    ///
+    /// # Returns
+    ///
+    /// Policy with deduplicated, IDNA-normalized domain patterns.
+    ///
+    /// # Errors
+    ///
+    /// Returns a string describing the first invalid domain pattern.
     pub fn try_from_network(caps: &NetworkCapabilities) -> Result<Self, String> {
         let domains = normalize_domain_list(&caps.domains)?;
         Ok(Self {
@@ -61,14 +124,40 @@ impl EgressPolicy {
         })
     }
 
-    /// Policy from a plugin manifest, including Pyodide hosts for Python+outbound
-    /// and clamped `[workerd].limits.subrequests` when a workerd table is present.
+    /// Builds policy from a full plugin manifest.
+    ///
+    /// Appends [`PYODIDE_EGRESS_HOSTS`] for Python + outbound workerd guests
+    /// and sets `subrequests` from clamped `[workerd].limits` when present.
+    /// Invalid allowlist entries fail closed to [`Self::deny`].
+    ///
+    /// # Arguments
+    ///
+    /// * `manifest` - Validated (or at least deserialized) plugin descriptor.
+    ///
+    /// # Returns
+    ///
+    /// Egress policy ready for workerd injection or consent materialization.
     #[must_use]
     pub fn from_manifest(manifest: &PluginManifest) -> Self {
         Self::try_from_manifest(manifest).unwrap_or_else(|_| Self::deny())
     }
 
-    /// Like [`from_manifest`] but fails closed on invalid allowlist entries.
+    /// Like [`Self::from_manifest`] but fails closed on invalid allowlist entries.
+    ///
+    /// # Arguments
+    ///
+    /// * `manifest` - Plugin descriptor providing network caps and optional
+    ///   `[workerd]` limits.
+    ///
+    /// # Returns
+    ///
+    /// Policy with Python runtime hosts (when applicable) and clamped
+    /// subrequest budget when `[workerd]` is present.
+    ///
+    /// # Errors
+    ///
+    /// Returns a string describing the first invalid domain in
+    /// `capabilities.network.domains`.
     pub fn try_from_manifest(manifest: &PluginManifest) -> Result<Self, String> {
         let mut policy = Self::try_from_network(&manifest.capabilities.network)?;
         policy.domains = with_python_runtime_hosts(
@@ -82,13 +171,27 @@ impl EgressPolicy {
         Ok(policy)
     }
 
-    /// Attach a clamped subrequest budget (typically from [`crate::WorkerdLimits::effective`]).
+    /// Attaches a clamped subrequest budget (typically from
+    /// [`crate::WorkerdLimits::effective`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `subrequests` - Maximum fetch count for the workerd egress bridge.
+    ///
+    /// # Returns
+    ///
+    /// `self` with `subrequests` set to `Some(subrequests)`.
     #[must_use]
     pub fn with_subrequests(mut self, subrequests: u32) -> Self {
         self.subrequests = Some(subrequests);
         self
     }
 
+    /// Returns a deny-all policy (no domains, default redirect budget, no
+    /// subrequest cap).
+    ///
+    /// Used when allowlist normalization fails (`from_*` helpers) or when
+    /// network mode is deny.
     #[must_use]
     pub fn deny() -> Self {
         Self {
@@ -99,22 +202,37 @@ impl EgressPolicy {
         }
     }
 
+    /// Returns the configured [`NetworkMode`].
     #[must_use]
     pub fn mode(&self) -> NetworkMode {
         self.mode
     }
 
+    /// Returns the IDNA-normalized domain allowlist (may include Pyodide hosts).
     #[must_use]
     pub fn domains(&self) -> &[String] {
         &self.domains
     }
 
+    /// Returns the redirect hop budget (`maxRedirects` on the wire).
     #[must_use]
     pub fn max_redirects(&self) -> u32 {
         self.max_redirects
     }
 
-    /// Whether a *direct* (non-redirect) request host is permitted.
+    /// Returns whether a *direct* (non-redirect) request host is permitted.
+    ///
+    /// Deny mode always returns `false`. Outbound mode normalizes `host` via
+    /// [`normalize_hostname`] and matches against [`Self::domains`].
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - Request hostname (may include a trailing dot; Unicode or
+    ///   Punycode). Percent-encoded hosts never match.
+    ///
+    /// # Returns
+    ///
+    /// `true` when mode is outbound and the host matches an allowlist entry.
     #[must_use]
     pub fn allows_initial(&self, host: &str) -> bool {
         match self.mode {
@@ -130,7 +248,20 @@ impl EgressPolicy {
         }
     }
 
-    /// Redirect hops are allowed without re-checking the domain allowlist.
+    /// Returns whether a redirect hop is allowed without re-checking domains.
+    ///
+    /// Deny mode always returns `false`. Outbound mode allows hops while
+    /// `hop_index < max_redirects`. The `host` argument is intentionally
+    /// unused — redirect targets are not re-allowlisted.
+    ///
+    /// # Arguments
+    ///
+    /// * `_host` - Redirect target hostname (ignored by design).
+    /// * `hop_index` - Zero-based redirect hop index after the initial request.
+    ///
+    /// # Returns
+    ///
+    /// `true` when mode is outbound and the hop is within budget.
     #[must_use]
     pub fn allows_redirect(&self, _host: &str, hop_index: u32) -> bool {
         match self.mode {
@@ -139,7 +270,16 @@ impl EgressPolicy {
         }
     }
 
-    /// Wire form injected into workerd `EGRESS_POLICY` and the native helper.
+    /// Serializes this policy to the JSON value injected as workerd
+    /// `EGRESS_POLICY` (and the native helper wire form).
+    ///
+    /// On unlikely serialize failure, returns a deny-shaped object with
+    /// `maxRedirects` set to [`DEFAULT_MAX_REDIRECTS`].
+    ///
+    /// # Returns
+    ///
+    /// CamelCase JSON (`mode`, `domains`, `maxRedirects`, optional
+    /// `subrequests`).
     #[must_use]
     pub fn to_policy_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_else(|_| {
@@ -152,8 +292,23 @@ impl EgressPolicy {
     }
 }
 
-/// True when the manifest declares a Python workerd guest (main module, modules,
-/// or `python_workers` compatibility flag).
+/// Returns `true` when the manifest declares a Python workerd guest.
+///
+/// Detection (any of):
+/// - `[workerd].main_module` ends with `.py`
+/// - `compatibility_flags` contains `python_workers`
+/// - any `[[modules]]` entry has `type = "python"` or a `.py` name/path
+///
+/// Native runtimes always return `false`.
+///
+/// # Arguments
+///
+/// * `manifest` - Plugin descriptor to inspect.
+///
+/// # Returns
+///
+/// `true` when Pyodide CDN hosts should be merged into consent/egress lists
+/// for outbound guests.
 #[must_use]
 pub fn manifest_needs_python(manifest: &PluginManifest) -> bool {
     if manifest.runtime != PluginRuntimeKind::Workerd {
@@ -176,7 +331,21 @@ fn workerd_declares_python(w: &WorkerdRuntimeManifest) -> bool {
         || w.compatibility_flags.iter().any(|f| f == "python_workers")
 }
 
-/// Append Pyodide CDN hosts when `needs_python` and mode is outbound (deduped).
+/// Appends [`PYODIDE_EGRESS_HOSTS`] when `needs_python` and mode is outbound.
+///
+/// Existing entries that already match a Pyodide host (case-insensitive) are
+/// not duplicated.
+///
+/// # Arguments
+///
+/// * `needs_python` - Typically from [`manifest_needs_python`].
+/// * `mode` - Network mode; hosts are only appended for
+///   [`NetworkMode::Outbound`].
+/// * `base` - Already-normalized author allowlist.
+///
+/// # Returns
+///
+/// A new `Vec` with base domains plus any missing Pyodide hosts.
 #[must_use]
 pub fn with_python_runtime_hosts(
     needs_python: bool,
@@ -194,7 +363,24 @@ pub fn with_python_runtime_hosts(
     domains
 }
 
-/// Consent / egress domain list for a manifest (normalized + Pyodide when needed).
+/// Builds the consent / egress domain list for a manifest.
+///
+/// Normalizes `capabilities.network.domains` via IDNA and appends Pyodide
+/// hosts when [`manifest_needs_python`] and mode is outbound.
+///
+/// # Arguments
+///
+/// * `manifest` - Plugin descriptor providing network caps and runtime hints.
+///
+/// # Returns
+///
+/// Deduplicated, IDNA-normalized host patterns for operator consent UI and
+/// materialization.
+///
+/// # Errors
+///
+/// Returns a string when any declared domain fails
+/// [`normalize_domain_pattern`].
 pub fn consent_domains_for(manifest: &PluginManifest) -> Result<Vec<String>, String> {
     let base = normalize_domain_list(&manifest.capabilities.network.domains)?;
     Ok(with_python_runtime_hosts(
@@ -216,7 +402,19 @@ fn normalize_domain_list(domains: &[String]) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// IDNA ToASCII hostname. Rejects percent-encoding and failed IDNA (fail closed).
+/// Normalizes a hostname with IDNA ToASCII (fail closed).
+///
+/// Trims ASCII whitespace and a single trailing dot. Rejects empty strings
+/// and any host containing `%` (percent-encoding bypass).
+///
+/// # Arguments
+///
+/// * `host` - Raw request or allowlist hostname.
+///
+/// # Returns
+///
+/// ASCII/Punycode hostname, or `None` when IDNA fails or the input is
+/// percent-encoded / empty.
 #[must_use]
 pub fn normalize_hostname(host: &str) -> Option<String> {
     let host = host.trim().trim_end_matches('.');
@@ -228,7 +426,20 @@ pub fn normalize_hostname(host: &str) -> Option<String> {
         .map(|c| c.into_owned())
 }
 
-/// Normalize an allowlist pattern (`*.example.com` or exact host) via IDNA.
+/// Normalizes an allowlist pattern (`*.example.com` or exact host) via IDNA.
+///
+/// The `*.` prefix is preserved; only the suffix is ToASCII-normalized.
+/// Percent-encoded patterns and empty patterns return `None`.
+///
+/// # Arguments
+///
+/// * `pattern` - Author-supplied domain entry from
+///   `capabilities.network.domains`.
+///
+/// # Returns
+///
+/// Normalized pattern suitable for storage on [`EgressPolicy::domains`], or
+/// `None` on failure.
 #[must_use]
 pub fn normalize_domain_pattern(pattern: &str) -> Option<String> {
     let pattern = pattern.trim().trim_end_matches('.');
@@ -243,9 +454,32 @@ pub fn normalize_domain_pattern(pattern: &str) -> Option<String> {
     }
 }
 
-/// Hostname / allowlist pattern match (`*.example.com` or exact).
+/// Returns whether `host` matches an allowlist `pattern`.
 ///
-/// Both sides are IDNA-normalized; invalid hosts/patterns never match.
+/// Both sides are IDNA-normalized first; invalid hosts or patterns never
+/// match. Wildcard patterns (`*.cdn.example.com`) match the bare suffix and
+/// any subdomain (`cdn.example.com`, `a.cdn.example.com`) but not
+/// `notcdn.example.com`.
+///
+/// # Arguments
+///
+/// * `host` - Request hostname to test.
+/// * `pattern` - Exact host or `*.` prefix wildcard pattern.
+///
+/// # Returns
+///
+/// `true` when both normalize successfully and the host is covered by the
+/// pattern.
+///
+/// # Examples
+///
+/// ```
+/// use bookclerk_plugin_manifest::host_matches;
+///
+/// assert!(host_matches("API.Example.COM", "api.example.com"));
+/// assert!(host_matches("www.cdn.example.com", "*.cdn.example.com"));
+/// assert!(!host_matches("evil.com", "api.example.com"));
+/// ```
 #[must_use]
 pub fn host_matches(host: &str, pattern: &str) -> bool {
     let (Some(host), Some(pattern)) = (normalize_hostname(host), normalize_domain_pattern(pattern))

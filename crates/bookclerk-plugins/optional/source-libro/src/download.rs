@@ -221,6 +221,7 @@ fn extract_zip_audio<R: std::io::Read + std::io::Seek>(
     Ok(out)
 }
 
+/// Chapters from tracks.
 #[must_use]
 pub fn chapters_from_tracks(tracks: &[ManifestTrack]) -> Vec<(String, u64)> {
     let mut chapters = Vec::new();

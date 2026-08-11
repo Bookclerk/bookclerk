@@ -1,15 +1,18 @@
 //! Multiplexed byte tunnel for host-owned OAuth callback listeners.
 //!
-//! The host binds the browser-facing TCP socket (works under AppContainer
-//! loopback isolation) and forwards each accepted connection over a duplex
-//! IPC stream to the guest. The guest runs its HTTP stack (e.g. Audible
-//! LoginServer) on the forwarded streams — no guest `listen` required.
+//! Audience: source plugin authors that need a browser redirect target during
+//! interactive login (e.g. Audible OAuth) while the guest is jailed and cannot
+//! bind loopback itself. The host binds the browser-facing TCP socket (works
+//! under AppContainer loopback isolation) and forwards each accepted connection
+//! over a duplex IPC stream. The guest runs its HTTP stack on
+//! [`TunnelStream`] values from [`TunnelGuest::accept`] — no guest `listen`
+//! required.
 //!
 //! Frame layout (big-endian):
 //! ```text
 //! u32 length_of_rest | u8 type | u32 conn_id | payload
 //! ```
-//! Types: `Open=1`, `Data=2`, `Close=3`.
+//! Types: `Open=1`, `Data=2`, `Close=3`. Payload per Data frame is capped at 1 MiB.
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -33,7 +36,12 @@ enum OutFrame {
     Close(u32),
 }
 
-/// Host end: opens logical connections toward the guest.
+/// Host end of the callback tunnel: opens logical connections toward the guest.
+///
+/// Construct with [`TunnelHost::new`] over the duplex IPC halves shared with
+/// [`TunnelGuest`]. Call [`TunnelHost::open`] once per accepted browser TCP
+/// connection, then `tokio::io::copy_bidirectional` between the TCP socket and
+/// the returned [`TunnelStream`].
 pub struct TunnelHost {
     out_tx: mpsc::UnboundedSender<OutFrame>,
     next_id: AtomicU32,
@@ -41,13 +49,21 @@ pub struct TunnelHost {
     _tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
-/// Guest end: accepts logical connections opened by the host.
+/// Guest end of the callback tunnel: accepts logical connections from the host.
+///
+/// Construct with [`TunnelGuest::new`] on the peer IPC halves. Loop on
+/// [`TunnelGuest::accept`] and feed each [`TunnelStream`] into the guest HTTP
+/// server (same `AsyncRead` + `AsyncWrite` surface as a TCP stream).
 pub struct TunnelGuest {
     accept_rx: mpsc::UnboundedReceiver<TunnelStream>,
     _tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
-/// One multiplexed connection (`AsyncRead` + `AsyncWrite`).
+/// One multiplexed logical connection implementing `AsyncRead` + `AsyncWrite`.
+///
+/// Connection ids are assigned by the host ([`TunnelHost::open`]) and echoed in
+/// Open/Data/Close frames. Writes larger than the 1 MiB frame payload cap are
+/// split into multiple Data frames (partial write semantics).
 pub struct TunnelStream {
     id: u32,
     out_tx: mpsc::UnboundedSender<OutFrame>,
@@ -57,6 +73,10 @@ pub struct TunnelStream {
 }
 
 impl TunnelStream {
+    /// Stable connection id shared with the peer for this logical stream.
+    ///
+    /// Assigned by [`TunnelHost::open`] starting at `1` and included in every
+    /// frame for this stream. Useful for logging correlating browser sockets.
     #[must_use]
     pub fn id(&self) -> u32 {
         self.id
@@ -64,6 +84,20 @@ impl TunnelStream {
 }
 
 impl TunnelHost {
+    /// Spawns reader/writer tasks on the host half of a duplex IPC link.
+    ///
+    /// Keeps background tasks alive for the lifetime of `self`. Dropping the
+    /// host stops accepting new opens; in-flight streams observe EOF when the
+    /// peer closes.
+    ///
+    /// # Arguments
+    ///
+    /// * `reader` - Async half that receives guest→host frames.
+    /// * `writer` - Async half that sends host→guest frames.
+    ///
+    /// # Returns
+    ///
+    /// Ready [`TunnelHost`] that can [`Self::open`] logical connections.
     pub fn new<R, W>(reader: R, writer: W) -> Self
     where
         R: AsyncRead + Send + Unpin + 'static,
@@ -102,6 +136,19 @@ impl TunnelHost {
         }
     }
 
+    /// Opens one logical connection toward the guest and returns its stream.
+    ///
+    /// Allocates a new connection id, registers an inbound data channel, and
+    /// sends an Open frame so [`TunnelGuest::accept`] can yield the peer stream.
+    ///
+    /// # Returns
+    ///
+    /// Host-side [`TunnelStream`] ready for bidirectional I/O with the guest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError`] when the background writer task has exited (IPC
+    /// closed) so the Open frame cannot be queued.
     pub async fn open(&self) -> Result<TunnelStream> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::unbounded_channel();
@@ -120,6 +167,17 @@ impl TunnelHost {
 }
 
 impl TunnelGuest {
+    /// Spawns reader/writer tasks on the guest half of a duplex IPC link.
+    ///
+    /// # Arguments
+    ///
+    /// * `reader` - Async half that receives host→guest frames.
+    /// * `writer` - Async half that sends guest→host frames.
+    ///
+    /// # Returns
+    ///
+    /// Ready [`TunnelGuest`] whose [`Self::accept`] yields streams opened by
+    /// the host.
     pub fn new<R, W>(reader: R, writer: W) -> Self
     where
         R: AsyncRead + Send + Unpin + 'static,
@@ -170,6 +228,16 @@ impl TunnelGuest {
         }
     }
 
+    /// Waits for the next logical connection opened by [`TunnelHost::open`].
+    ///
+    /// # Returns
+    ///
+    /// Guest-side [`TunnelStream`] for one browser callback connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError`] when the accept channel closes because the IPC
+    /// reader task exited (peer hangup or frame error).
     pub async fn accept(&mut self) -> Result<TunnelStream> {
         self.accept_rx
             .recv()

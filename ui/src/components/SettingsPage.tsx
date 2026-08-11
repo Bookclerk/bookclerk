@@ -263,6 +263,11 @@ function FieldBlock({
 const selectClassName =
   "w-full rounded-md border border-ink/15 bg-white/80 px-3 py-2 text-sm text-ink shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
 
+/**
+ * Operator/user Settings — daemon listen, plugins, consent, and user admin.
+ *
+ * @param props - Session hooks, nav, role, and optional session snapshot.
+ */
 export function SettingsPage({
   onLogout,
   onSessionExpired,

@@ -8,6 +8,9 @@ import {
 } from "@/lib/catalogTitle";
 import { cn } from "@/lib/utils";
 
+/**
+ * Value/label pair for Discover filter checklists.
+ */
 export type FacetOption = { value: string; label: string };
 
 function FilterSection({
@@ -97,6 +100,11 @@ function SearchableCheckList({
   );
 }
 
+/**
+ * Discover results filter rail (authors, narrators, series, genres, sources, …).
+ *
+ * @param props - Facet options, selected filters, and change handlers.
+ */
 export function DiscoverFilterRail({
   className,
   authorOptions,

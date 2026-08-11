@@ -26,9 +26,13 @@ const SESSION_COOKIE: &str = "bookclerk_portal_session";
 /// Shared state for portal handlers.
 #[derive(Clone)]
 pub struct PortalState {
+    /// Loaded Bookclerk configuration shared with portal handlers.
     pub config: Arc<RwLock<Config>>,
+    /// Open library store used for identity / ticket / session rows.
     pub library: Arc<RwLock<LibraryStore>>,
+    /// Configured outbound integration registry.
     pub integrations: Arc<RwLock<IntegrationRegistry>>,
+    /// Content-source registry used for portal store connect / OAuth.
     pub sources: Arc<RwLock<SourceRegistry>>,
 }
 
@@ -39,6 +43,14 @@ impl PortalState {
 }
 
 /// SPA-facing portal API. Nest under `/api/portal`.
+///
+/// # Arguments
+///
+/// * `state` - Shared portal / handler state.
+///
+/// # Returns
+///
+/// `Router` result.
 pub fn portal_spa_router(state: PortalState) -> Router {
     Router::new()
         .route("/redeem", post(redeem))
@@ -57,6 +69,15 @@ pub fn portal_spa_router(state: PortalState) -> Router {
 }
 
 /// Resolve a portal identity from the request cookie, if present and valid.
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `headers` - Incoming HTTP headers (cookie lookup).
+///
+/// # Returns
+///
+/// `Some(...)` when found / applicable; otherwise `None`.
 pub async fn portal_identity_from_headers(
     library: &LibraryStore,
     headers: &HeaderMap,
@@ -556,6 +577,21 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 /// Mint a claim ticket for an external user (daemon watcher / CLI).
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `config` - Loaded Bookclerk configuration.
+/// * `user` - External user identity from an integration login/watcher.
+/// * `created_by` - Actor string recorded on the claim ticket (`daemon`, CLI user, …).
+///
+/// # Returns
+///
+/// On success, `crate::Result<crate::tickets::MintedClaimTicket>`.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn mint_for_external_user(
     library: &LibraryStore,
     config: &Config,

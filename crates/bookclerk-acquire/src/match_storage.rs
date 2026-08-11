@@ -64,6 +64,7 @@ const FOLDER_COMPANION_BASENAMES: &[&str] = &[
 /// Options for [`match_storage_to_library`].
 #[derive(Debug, Clone)]
 pub struct MatchStorageOptions {
+    /// Optional account id filter; `None` means all accounts.
     pub account: Option<String>,
     /// Clear Acquired when no matching audio is found.
     pub clear_missing: bool,
@@ -75,6 +76,7 @@ pub struct MatchStorageOptions {
     pub only_clear_missing: bool,
     /// Relocate matched audio (and sidecars) onto the configured template layout.
     pub fix_layout: bool,
+    /// When true, treat unmatched titles as download candidates.
     pub download: DownloadOptions,
 }
 
@@ -95,10 +97,15 @@ impl Default for MatchStorageOptions {
 /// Summary of a storage→library match run.
 #[derive(Debug, Clone, Default)]
 pub struct MatchStorageSummary {
+    /// Titles matched to existing storage objects.
     pub matched: u32,
+    /// Titles whose storage_key was updated to a newly matched object.
     pub relocated: u32,
+    /// Titles cleared from Acquired because no matching file was found.
     pub cleared: u32,
+    /// Titles already consistent with storage.
     pub unchanged: u32,
+    /// Storage keys that could not be matched to a library row.
     pub unmatched_files: u32,
 }
 

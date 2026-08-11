@@ -9,10 +9,13 @@ use crate::error::Result;
 /// Metadata attached to a stored object.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ObjectMeta {
+    /// MIME type stored with the object (e.g. `audio/mp4`).
     pub content_type: Option<String>,
+    /// Object size in bytes when known at put time.
     pub content_length: Option<u64>,
     /// Free-form ASIN / title tags for S3 object metadata.
     pub asin: Option<String>,
+    /// Display title stored as object user-metadata when supported.
     pub title: Option<String>,
     /// Creation timestamp as RFC 3339 (S3 metadata `creation-time`).
     pub creation_time: Option<String>,
@@ -23,7 +26,9 @@ pub struct ObjectMeta {
 /// Listing entry returned by [`StorageBackend::list`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectInfo {
+    /// Relative storage key (prefix + path; no leading slash).
     pub key: String,
+    /// Object size in bytes.
     pub size: u64,
 }
 
@@ -31,9 +36,13 @@ pub struct ObjectInfo {
 /// object bodies.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ObjectProbe {
+    /// Relative storage key that was probed.
     pub key: String,
+    /// Object size in bytes from HeadObject / local metadata.
     pub size: u64,
+    /// MIME type when the backend exposes it.
     pub content_type: Option<String>,
+    /// User-metadata / sidecar fields (ASIN, title, timestamps, …).
     pub meta: ObjectMeta,
 }
 
@@ -78,7 +87,7 @@ pub trait StorageBackend: Send + Sync {
 
     /// Stream a local file into storage (preferred for large audiobooks).
     ///
-    /// Default implementation reads the whole file then calls [`put`].
+    /// Default implementation reads the whole file then calls [`Self::put`].
     async fn put_file(&self, key: &str, path: &Path, meta: ObjectMeta) -> Result<()> {
         let data = tokio::fs::read(path).await?;
         let mut meta = meta;
@@ -88,10 +97,19 @@ pub trait StorageBackend: Send + Sync {
         self.put(key, Bytes::from(data), meta).await
     }
 
-    /// Read the full object.
+    /// Download the full object body into memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::StorageError::NotFound`] when missing, and I/O or S3
+    /// failures otherwise.
     async fn get(&self, key: &str) -> Result<Bytes>;
 
-    /// True when the object exists.
+    /// Return whether `key` exists without downloading the body.
+    ///
+    /// # Errors
+    ///
+    /// Propagates backend probe failures (not merely absence).
     async fn exists(&self, key: &str) -> Result<bool>;
 
     /// List objects under `prefix`.

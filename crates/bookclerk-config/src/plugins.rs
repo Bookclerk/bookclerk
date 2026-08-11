@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(transparent)]
 pub struct SourcesConfig {
+    /// Opaque `[sources.<id>]` tables keyed by plugin id (`audible`, `libro`, …).
     pub plugins: BTreeMap<String, toml::Value>,
 }
 
@@ -194,8 +195,12 @@ impl PluginsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct IntegrationsConfig {
+    /// Hours a connect-portal claim ticket remains valid (default 72).
     pub claim_ticket_ttl_hours: u64,
+    /// Public HTTPS origin for portal redirects when behind a reverse proxy
+    /// (e.g. `https://bookclerk.example.com`). `None` derives from the request.
     pub public_origin: Option<String>,
+    /// Hours a portal browser session cookie remains valid (default 12).
     pub portal_session_ttl_hours: u64,
     /// Opaque tables for integration plugins (including `audiobookshelf`).
     #[serde(flatten)]
@@ -292,12 +297,19 @@ impl IntegrationsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AudiobookshelfConfig {
+    /// When true, ABS sync / notify hooks are active (default false).
     pub enabled: bool,
+    /// Audiobookshelf server origin without trailing slash (e.g. `https://abs.example`).
     pub base_url: String,
+    /// ABS API token; registered for log redaction when set.
     pub api_key: Option<String>,
+    /// Target ABS library UUID when the server has multiple libraries.
     pub library_id: Option<String>,
+    /// When true, poll ABS users for listening-progress sync.
     pub watch_users: bool,
+    /// When true, ask ABS to rescan after a successful acquire.
     pub notify_scan_on_acquire: bool,
+    /// When true, allow signing in to the Bookclerk portal with ABS credentials.
     pub allow_credential_login: bool,
 }
 

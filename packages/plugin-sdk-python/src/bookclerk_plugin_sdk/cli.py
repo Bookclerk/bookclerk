@@ -1,4 +1,8 @@
-"""CLI entry: `bookclerk-plugin` / `python -m bookclerk_plugin_sdk`."""
+"""CLI entry: ``bookclerk-plugin`` / ``python -m bookclerk_plugin_sdk``.
+
+Dispatches authoring helpers (``check``, ``fmt``, ``sync-embed``, ``package``,
+``smoke``) that mirror the Rust/TypeScript plugin toolchains.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,19 @@ from .tools import check_plugin, fmt_plugin_toml, package_plugin, sync_embed
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the ``bookclerk-plugin`` CLI.
+
+    Args:
+        argv: Argument vector excluding the program name. Defaults to
+            ``sys.argv[1:]``.
+
+    Returns:
+        Process exit code (``0`` success, ``1`` command failure, ``2`` usage).
+
+    Examples:
+        >>> # python -m bookclerk_plugin_sdk check ./my-plugin
+        >>> # main(["check", "./my-plugin"])
+    """
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in {"-h", "--help", "help"}:
         print(

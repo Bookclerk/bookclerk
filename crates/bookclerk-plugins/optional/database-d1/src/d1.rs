@@ -47,6 +47,7 @@ pub struct D1Proxy {
 }
 
 impl D1Proxy {
+    /// Constructs a new instance with default or provided parameters.
     #[must_use]
     pub fn new(
         api_base: String,

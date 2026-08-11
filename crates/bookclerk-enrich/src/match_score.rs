@@ -27,22 +27,32 @@ const ISBN_MATCH_GAP_CLOSE: f64 = 0.55;
 /// Owned-title (e.g. Libro) metadata used as the match query.
 #[derive(Debug, Clone, Default)]
 pub struct MatchQuery<'a> {
+    /// Display title as shown on the storefront or library card.
     pub title: &'a str,
+    /// Optional subtitle when the catalog distinguishes it from the title.
     pub subtitle: Option<&'a str>,
+    /// Primary author name used for fuzzy matching.
     pub author: Option<&'a str>,
+    /// Primary narrator name used for fuzzy matching.
     pub narrator: Option<&'a str>,
+    /// Canonical ISBN-13 (or ISBN-10 normalized) when published.
     pub isbn: Option<&'a str>,
-    /// Runtime in minutes.
+    /// Candidate runtime in minutes for scoring against the seed.
     pub duration_minutes: Option<f64>,
 }
 
 /// Candidate metadata used for confidence scoring.
 #[derive(Debug, Clone)]
 pub struct ScoreInput<'a> {
+    /// Display title as shown on the storefront or library card.
     pub title: &'a str,
+    /// Optional subtitle when the catalog distinguishes it from the title.
     pub subtitle: Option<&'a str>,
+    /// Primary author name used for fuzzy matching.
     pub author: Option<&'a str>,
+    /// Primary narrator name used for fuzzy matching.
     pub narrator: Option<&'a str>,
+    /// Canonical ISBN-13 (or ISBN-10 normalized) when published.
     pub isbn: Option<&'a str>,
     /// Runtime in minutes (Audible / Audnexus `runtimeLengthMin`).
     pub duration_minutes: Option<f64>,
@@ -57,6 +67,15 @@ pub struct ScoreInput<'a> {
 ///   [`ISBN_MATCH_GAP_CLOSE`] of the remaining gap to 1.0 (not a forced accept)
 ///
 /// When the query title is an ASIN, returns `1.0`.
+///
+/// # Arguments
+///
+/// * `book` - Library book row to update.
+/// * `query` - Query vector or free-text search string.
+///
+/// # Returns
+///
+/// `f64` result.
 #[must_use]
 pub fn calculate_match_confidence(book: &ScoreInput<'_>, query: &MatchQuery<'_>) -> f64 {
     let query_title = composed_title(query.title, query.subtitle);
@@ -123,6 +142,14 @@ pub fn calculate_match_confidence(book: &ScoreInput<'_>, query: &MatchQuery<'_>)
 }
 
 /// Digits-only ISBN for exact matching (strips hyphens / spaces / `ISBN` prefix).
+///
+/// # Arguments
+///
+/// * `raw` - String `raw` for this call.
+///
+/// # Returns
+///
+/// String result for this operation.
 #[must_use]
 pub fn normalize_isbn(raw: &str) -> String {
     let trimmed = raw.trim();
@@ -145,6 +172,14 @@ pub fn normalize_isbn(raw: &str) -> String {
 /// ISBN is **not** available from every storefront (Chirp / GraphicAudio / Audible
 /// public catalog often omit it). When present, prefer this canonical form so
 /// 10- and 13-digit variants of the same book share one key.
+///
+/// # Arguments
+///
+/// * `raw` - String `raw` for this call.
+///
+/// # Returns
+///
+/// String result for this operation.
 #[must_use]
 pub fn canonicalize_isbn(raw: &str) -> String {
     let n = normalize_isbn(raw);
@@ -170,6 +205,16 @@ pub fn canonicalize_isbn(raw: &str) -> String {
     n
 }
 
+/// Returns true when both sides normalize to the same ISBN-13 (or matching ISBN-10).
+///
+/// # Arguments
+///
+/// * `query_isbn` - String `query_isbn` for this call.
+/// * `book_isbn` - String `book_isbn` for this call.
+///
+/// # Returns
+///
+/// `true` when the predicate holds.
 #[must_use]
 pub fn isbn_exact_match(query_isbn: Option<&str>, book_isbn: Option<&str>) -> bool {
     let Some(q) = query_isbn.map(canonicalize_isbn).filter(|s| !s.is_empty()) else {
@@ -269,6 +314,15 @@ fn strip_redundant_spaces(s: &str) -> String {
 }
 
 /// Clean a title for fuzzy compares (AudioBookshelf `cleanTitleForCompares`).
+///
+/// # Arguments
+///
+/// * `title` - Display title.
+/// * `keep_subtitle` - When true, retain subtitle text for soft compares.
+///
+/// # Returns
+///
+/// String result for this operation.
 #[must_use]
 pub fn clean_title_for_compares(title: &str, keep_subtitle: bool) -> String {
     if title.is_empty() {
@@ -301,6 +355,14 @@ pub fn clean_title_for_compares(title: &str, keep_subtitle: bool) -> String {
 }
 
 /// Clean an author string for fuzzy compares (AudioBookshelf `cleanAuthorForCompares`).
+///
+/// # Arguments
+///
+/// * `author` - String `author` for this call.
+///
+/// # Returns
+///
+/// String result for this operation.
 #[must_use]
 pub fn clean_author_for_compares(author: &str) -> String {
     if author.is_empty() {
@@ -406,6 +468,15 @@ fn strip_et_al(s: &str) -> String {
 }
 
 /// Levenshtein distance (case-insensitive by default, matching ABS).
+///
+/// # Arguments
+///
+/// * `a` - Left-hand vector.
+/// * `b` - Right-hand vector.
+///
+/// # Returns
+///
+/// `usize` result.
 #[must_use]
 pub fn levenshtein_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.to_lowercase().chars().collect();
@@ -431,6 +502,15 @@ pub fn levenshtein_distance(a: &str, b: &str) -> usize {
 }
 
 /// Similarity in `[0.0, 1.0]` from Levenshtein distance.
+///
+/// # Arguments
+///
+/// * `a` - Left-hand vector.
+/// * `b` - Right-hand vector.
+///
+/// # Returns
+///
+/// `f64` result.
 #[must_use]
 pub fn levenshtein_similarity(a: &str, b: &str) -> f64 {
     let distance = levenshtein_distance(a, b);
@@ -446,6 +526,14 @@ pub fn levenshtein_similarity(a: &str, b: &str) -> f64 {
 ///
 /// Includes all-numeric catalog ids (e.g. `1094100765`); Audnexus accepts these
 /// and older Audible storefront ASINs are often numeric.
+///
+/// # Arguments
+///
+/// * `s` - Input string to validate or normalize.
+///
+/// # Returns
+///
+/// `true` when the predicate holds.
 #[must_use]
 pub fn is_valid_asin(s: &str) -> bool {
     let s = s.trim();

@@ -2,7 +2,9 @@
 """Sync ABI projections from crates/bookclerk-plugin-abi/schema/abi.json.
 
 - Ensures packages/plugin-sdk/src/generated.ts lists every schema method
-- Rewrites packages/plugin-sdk-python/.../abi.py METHOD_NAMES (--write)
+- Ensures packages/plugin-sdk-python/.../abi.py ``METHOD_NAMES`` match schema
+  (preserves Google-style docs / TypedDicts; ``--write`` rewrites only that
+  tuple, or scaffolds a stub file when missing)
 - Ensures plugin-toml.json copies match between abi and manifest crates
 - Ensures methods.rs METHOD_NAMES match abi.json methods keys (--check)
 - Ensures fixtures/wire/*.json object keys are camelCase (no `_` in keys)
@@ -39,6 +41,12 @@ REQUIRED_WIRE_FIXTURES = (
     "dbExecute.result.json",
 )
 
+# Matches `METHOD_NAMES: tuple[str, ...] = ( ... )` including a trailing comma.
+METHOD_NAMES_RE = re.compile(
+    r"METHOD_NAMES:\s*tuple\[str,\s*\.\.\.\]\s*=\s*\((.*?)\)\s*\n",
+    re.DOTALL,
+)
+
 
 def method_names_from_schema() -> list[str]:
     schema = json.loads(ABI.read_text(encoding="utf-8"))
@@ -56,18 +64,37 @@ def method_names_from_methods_rs() -> list[str]:
     return names
 
 
-def render_py(names: list[str]) -> str:
+def method_names_tuple_body(names: list[str]) -> str:
     body = ",\n".join(f'    "{n}"' for n in names)
+    return f"(\n{body},\n)"
+
+
+def method_names_from_py(text: str) -> list[str] | None:
+    """Return METHOD_NAMES entries from abi.py, or None if the binding is absent."""
+    match = METHOD_NAMES_RE.search(text)
+    if not match:
+        return None
+    return re.findall(r'"([^"]+)"', match.group(1))
+
+
+def render_py_stub(names: list[str]) -> str:
+    """Minimal abi.py used only when the file is missing."""
     return f'''"""ABI constants — keep aligned with crates/bookclerk-plugin-abi/schema/abi.json."""
 
 from __future__ import annotations
 
 API_VERSION: int = 1
 
-METHOD_NAMES: tuple[str, ...] = (
-{body},
-)
+METHOD_NAMES: tuple[str, ...] = {method_names_tuple_body(names)}
 '''
+
+
+def sync_py_method_names(text: str, names: list[str]) -> str:
+    """Replace the METHOD_NAMES tuple in place; preserve surrounding docs/types."""
+    replacement = f"METHOD_NAMES: tuple[str, ...] = {method_names_tuple_body(names)}\n"
+    if not METHOD_NAMES_RE.search(text):
+        raise SystemExit(f"METHOD_NAMES binding not found in {PY_ABI}")
+    return METHOD_NAMES_RE.sub(replacement, text, count=1)
 
 
 def collect_snake_keys(value: Any, path: str = "$") -> list[str]:
@@ -153,14 +180,28 @@ def main() -> int:
         print(f"generated.ts missing methods: {missing}", file=sys.stderr)
         drift = True
 
-    py_expected = render_py(names)
     py_current = PY_ABI.read_text(encoding="utf-8") if PY_ABI.is_file() else ""
-    if py_current != py_expected:
+    py_names = method_names_from_py(py_current) if py_current else None
+    if py_names != names:
         if args.write:
-            PY_ABI.write_text(py_expected, encoding="utf-8")
-            print(f"wrote {PY_ABI}")
+            if not py_current:
+                PY_ABI.write_text(render_py_stub(names), encoding="utf-8")
+            else:
+                PY_ABI.write_text(
+                    sync_py_method_names(py_current, names), encoding="utf-8"
+                )
+            print(f"wrote METHOD_NAMES in {PY_ABI}")
         else:
-            print("python abi.py METHOD_NAMES drift", file=sys.stderr)
+            detail = (
+                "missing METHOD_NAMES binding"
+                if py_names is None
+                else (
+                    f"schema only: {sorted(set(names) - set(py_names))}; "
+                    f"abi.py only: {sorted(set(py_names) - set(names))}; "
+                    f"order mismatch: {py_names != names}"
+                )
+            )
+            print(f"python abi.py METHOD_NAMES drift ({detail})", file=sys.stderr)
             drift = True
 
     # Wire fixtures are not auto-fixable; fail even under `--write`.

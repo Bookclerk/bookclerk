@@ -1,3 +1,5 @@
+//! Integration tests: recommend flow (bookclerk-discover).
+
 #[cfg(test)]
 mod integration {
     use bookclerk_discover::{

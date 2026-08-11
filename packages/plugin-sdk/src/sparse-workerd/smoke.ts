@@ -1,5 +1,8 @@
 /**
  * Out-of-tree workerd plugin smoke: ensure → materialize → handshake + health.
+ *
+ * Spawns the pinned `workerd` binary against a materialised Cap'n Proto config
+ * and exercises the bridge `/health` plus `handshake` / `health` RPC methods.
  */
 
 import fs from "node:fs";
@@ -111,8 +114,17 @@ function killChild(child: ChildProcess): void {
 }
 
 /**
- * Smoke a workerd plugin directory without the Rust `bookclerk-workerd` binary.
- * Returns a human-readable success summary; throws on failure.
+ * Smokes a workerd plugin directory without the Rust `bookclerk-workerd` binary.
+ *
+ * @param pluginDir - Plugin root with `runtime = "workerd"`.
+ * @returns Human-readable success summary including handshake/health JSON.
+ * @throws {Error} When the runtime is not workerd, workerd fails to start, or
+ *   RPC calls fail.
+ *
+ * @example
+ * ```ts
+ * console.log(await runSmoke("./my-plugin"));
+ * ```
  */
 export async function runSmoke(pluginDir: string): Promise<string> {
   const root = path.resolve(pluginDir);

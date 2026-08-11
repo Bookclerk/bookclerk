@@ -1,4 +1,7 @@
-//! CLI entry for `bookclerk-plugin`.
+//! CLI entry for the `bookclerk-plugin` binary (feature `tools`).
+//!
+//! Audience: humans and CI invoking authoring subcommands. Guest plugin crates
+//! should leave feature `tools` off so they do not link `bookclerk-workerd`.
 
 use std::env;
 use std::path::PathBuf;
@@ -8,7 +11,27 @@ use bookclerk_plugin_manifest::{format_manifest, parse};
 
 use super::{check_plugin, package_plugin, smoke_plugin, sync_embed};
 
-/// Run the authoring CLI (`check` / `fmt` / `sync-embed` / `package` / `smoke`). Returns a process exit code.
+/// Runs the authoring CLI (`check` / `fmt` / `sync-embed` / `package` / `smoke`).
+///
+/// Reads `std::env::args` after the binary name. Unknown commands or missing
+/// required flags print usage to stderr and return exit code `2`.
+///
+/// **Feature gate:** available only with `--features tools` (also required by
+/// the `bookclerk-plugin` binary).
+///
+/// # Returns
+///
+/// Process [`ExitCode`]: `0` on success, `1` on command failure, `2` on usage
+/// errors.
+///
+/// # Examples
+///
+/// ```ignore
+/// // from src/bin/bookclerk-plugin.rs
+/// fn main() -> std::process::ExitCode {
+///     bookclerk_plugin_sdk::tools::run_tools_cli()
+/// }
+/// ```
 pub fn run() -> ExitCode {
     let mut args = env::args().skip(1).collect::<Vec<_>>();
     if args.is_empty() {

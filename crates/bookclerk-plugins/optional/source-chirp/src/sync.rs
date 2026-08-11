@@ -12,7 +12,9 @@ use crate::error::{ChirpError, Result};
 /// Options for a Chirp library scan.
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
+    /// Accounts.
     pub accounts: Vec<String>,
+    /// Page size.
     pub page_size: u32,
 }
 

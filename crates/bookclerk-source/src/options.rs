@@ -18,41 +18,73 @@ use serde::{Deserialize, Serialize};
 pub struct DownloadOptions {
     /// Optional per-fetch audio quality overlay (set by plugins that need it).
     pub quality: AudioQuality,
+    /// Post-download packaging format (M4B / MP3 / passthrough).
     pub format: OutputFormat,
+    /// Prefer Widevine/CENC download when the store offers it.
     pub widevine: bool,
+    /// Prefer xHE-AAC on the Widevine path when offered.
     pub xhe_aac: bool,
+    /// Optional local Widevine `.wvd` path (absolute or under files dir).
     pub widevine_cdm: Option<PathBuf>,
     /// Remote L3 CDM provider URL (`None` = classic Libation AudibleCdm; empty/`off` = disable).
     pub widevine_cdm_provider: Option<String>,
     /// Path-template profile; per-field template overrides win when set.
     pub naming_profile: NamingProfile,
+    /// Optional folder-path template override; `None` uses the naming profile.
     pub folder_template: Option<String>,
+    /// Optional file-stem template override; `None` uses the naming profile.
     pub file_template: Option<String>,
+    /// When true, download a cover JPEG alongside audio.
     pub download_cover: bool,
+    /// When true, download a companion PDF when the store exposes one.
     pub download_pdf: bool,
+    /// When true, write a `.cue` sidecar from API chapters.
     pub create_cue: bool,
+    /// When true, embed tags, cover, and chapters after packaging.
     pub fixup_metadata: bool,
+    /// Which chapter JSON sidecars to write (`off` / `flat` / `tree` / `both`).
     pub chapter_json: ChapterJsonMode,
+    /// When true, persist raw catalog API JSON as `metadata.json`.
     pub save_metadata_json: bool,
+    /// Cover image size request (`500`, `1215`, or `native`).
     pub cover_size: String,
+    /// Preferred Audible chapter API layout when fetching (`tree` or `flat`).
     pub chapter_layout: String,
+    /// When true, re-acquire even if media already exists at the destination.
     pub overwrite_existing: bool,
+    /// When true, also split packaged output into per-chapter files.
     pub split_files_by_chapter: bool,
+    /// Max MP3 part size in MiB when format is `split_mp3_by_size`.
     pub split_mp3_max_mb: u32,
+    /// Optional per-chapter file-stem template.
     pub chapter_file_template: Option<String>,
+    /// Optional embedded chapter-title template.
     pub chapter_title_template: Option<String>,
+    /// Drop chapter splits shorter than this many minutes (`0` = keep all).
     pub minimum_file_duration_minutes: u32,
+    /// When true, flatten nested chapter titles into a single path segment.
     pub combine_nested_chapter_titles: bool,
+    /// When true, merge opening/end credit chapters into adjacent chapters.
     pub merge_opening_and_end_credits: bool,
+    /// When true, strip an "Unabridged" suffix from titles used in naming.
     pub strip_unabridged: bool,
+    /// When true, trim Audible brand intro/outro from the remux window.
     pub strip_audible_brand_audio: bool,
+    /// When true, download Audible clips/bookmarks sidecars when offered.
     pub download_clips_bookmarks: bool,
+    /// When true, keep the encrypted download in storage (`RetainAaxFile`).
     pub retain_aax_file: bool,
+    /// Fetch speed cap in KB/s (`0` = unlimited).
     pub download_speed_limit_kbps: u32,
+    /// LAME encoder knobs used when packaging to MP3.
     pub lame: LameConfig,
+    /// Optional ceiling for output sample rate in Hz (`None` = leave source rate).
     pub max_sample_rate: Option<u32>,
+    /// How to set the file creation / birth timestamp after acquire.
     pub creation_time: FileTimestampMode,
+    /// How to set the file last-write / mtime after acquire.
     pub last_write_time: FileTimestampMode,
+    /// Resolved find/replace rules for path-segment sanitisation.
     pub replacement_characters: Vec<ReplacementRule>,
     /// Filesystem / object-store path length limits for storage keys.
     pub path_limits: PathLimits,
@@ -180,41 +212,49 @@ impl DownloadOptions {
         self.format
     }
 
+    /// True when the effective format re-encodes to MP3.
     #[must_use]
     pub fn wants_mp3(&self) -> bool {
         self.effective_output().wants_mp3()
     }
 
+    /// True when output should be split into per-chapter files.
     #[must_use]
     pub fn wants_split_by_chapter(&self) -> bool {
         self.effective_output().wants_split_by_chapter() || self.split_files_by_chapter
     }
 
+    /// True when store-delivered media is left as-is (no remux/transcode).
     #[must_use]
     pub fn is_noop_output(&self) -> bool {
         self.effective_output().is_noop()
     }
 
+    /// True when Opus packaging is selected (not yet implemented).
     #[must_use]
     pub fn wants_opus(&self) -> bool {
         self.effective_output().wants_opus()
     }
 
+    /// True when output is split into MP3 parts by target size.
     #[must_use]
     pub fn wants_split_by_size(&self) -> bool {
         self.effective_output().wants_split_by_size()
     }
 
+    /// True when a flat `chapters.flat.json` sidecar should be written.
     #[must_use]
     pub fn chapter_json_flat(&self) -> bool {
         self.chapter_json.wants_flat()
     }
 
+    /// True when a nested `chapters.tree.json` sidecar should be written.
     #[must_use]
     pub fn chapter_json_tree(&self) -> bool {
         self.chapter_json.wants_tree()
     }
 
+    /// True when any chapter JSON sidecar should be written.
     #[must_use]
     pub fn wants_chapter_json(&self) -> bool {
         self.chapter_json.wants_any()

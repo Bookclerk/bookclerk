@@ -1,6 +1,11 @@
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
+/**
+ * Full-page recoverable error with optional retry.
+ *
+ * @param props - Title, message, retry label, and optional retry handler.
+ */
 export function ErrorStatePage({
   title,
   message,

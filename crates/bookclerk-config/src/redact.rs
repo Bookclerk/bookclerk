@@ -262,7 +262,7 @@ pub fn redact_field_value(name: &str, value: &str) -> String {
 
 /// Extra sanitization for payloads that leave the machine (collector / B2).
 ///
-/// Emails are **partially** masked (see [`mask_email`]) so triage can still see
+/// Emails are **partially** masked (local-part truncated) so triage can still see
 /// rough account shape without shipping a clear address. Other identifying
 /// fields (title, path, account, …) remain fully [`REDACTED`].
 #[must_use]

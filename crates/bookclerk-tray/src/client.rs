@@ -6,8 +6,11 @@ use std::time::Duration;
 /// Configuration for the in-process tray (no child `bookclerkd` process).
 #[derive(Debug, Clone)]
 pub struct TrayConfig {
+    /// Daemon HTTP base URL (e.g. `http://127.0.0.1:8787`).
     pub base_url: String,
+    /// When true, operator-token auth is required for tray actions.
     pub auth_enabled: bool,
+    /// Operator bearer token used for authenticated daemon calls.
     pub operator_token: Option<String>,
 }
 
@@ -15,6 +18,15 @@ pub struct TrayConfig {
 pub type SharedTrayConfig = Arc<Mutex<TrayConfig>>;
 
 impl TrayConfig {
+    /// Builds an HTTP base URL from a daemon listen address.
+    ///
+    /// # Arguments
+    ///
+    /// * `listen` - `host:port` or an absolute `http(s)://` URL (trailing `/` stripped).
+    ///
+    /// # Returns
+    ///
+    /// Absolute base URL with an `http://` scheme when `listen` was host-only.
     #[must_use]
     pub fn base_url(listen: &str) -> String {
         let listen = listen.trim().trim_end_matches('/');
@@ -41,11 +53,21 @@ impl TrayConfig {
         format!("{base}/")
     }
 
+    /// Opens the daemon web UI in the default browser.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the OS cannot launch a browser for [`Self::ui_url`].
     pub fn open_ui(&self) -> anyhow::Result<()> {
         open::that(self.ui_url())?;
         Ok(())
     }
 
+    /// POSTs an authenticated library scan request to the daemon.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP request fails or the daemon rejects it.
     pub fn trigger_scan(&self) -> anyhow::Result<()> {
         let url = format!("{}/api/library/scan", self.base_url.trim_end_matches('/'));
         let mut req = ureq::post(&url)
@@ -81,10 +103,20 @@ impl TrayConfig {
         }
     }
 
+    /// Updates the configured daemon listen address used to derive [`Self::base_url`].
+    ///
+    /// # Arguments
+    ///
+    /// * `listen` - Daemon listen address (`host:port` or URL).
     pub fn set_listen(&mut self, listen: &str) {
         self.base_url = Self::base_url(listen);
     }
 
+    /// Overrides the daemon HTTP base URL used for subsequent calls.
+    ///
+    /// # Arguments
+    ///
+    /// * `base_url` - Absolute HTTP base URL for the daemon.
     pub fn set_base_url(&mut self, base_url: impl Into<String>) {
         self.base_url = base_url.into();
     }

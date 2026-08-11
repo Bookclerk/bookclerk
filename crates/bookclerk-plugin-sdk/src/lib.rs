@@ -1,8 +1,23 @@
 //! Guest-only Bookclerk plugin SDK.
 //!
-//! Third-party Rust plugins depend on **this** crate (path/git today; crates.io
-//! later) — not the host `bookclerk-plugin-host` crate, which pulls library/config
-//! and other Bookclerk internals.
+//! # Audience
+//!
+//! Third-party **Rust plugin authors**. Depend on this crate (path/git today;
+//! crates.io later) — not the host `bookclerk-plugin-host` crate, which pulls
+//! library/config and other Bookclerk internals.
+//!
+//! # What to use
+//!
+//! | Need | Entry point |
+//! | --- | --- |
+//! | Native guest (`runtime = "native"`) | [`BookclerkPlugin`] + [`BookclerkPluginGuest::serve`] |
+//! | Raw stdio dispatch | [`PluginGuest`] |
+//! | Fetch / upload FD side channels | [`fetch_work_dir`], [`upload_file_path`] |
+//! | OAuth callback without guest listen | [`callback_tunnel`] |
+//! | Workerd / Wasm guests | [`workerd`] + npm `@bookclerk/plugin-sdk` |
+//! | ABI DTOs / method names | [`protocol`] (re-exports `bookclerk-plugin-abi`) |
+//! | SeaORM ↔ wire helpers | feature `db` (crate-root re-exports) |
+//! | Author CLI (`check` / `fmt` / `package` / `smoke`) | feature `tools` → [`tools`] |
 //!
 //! ```toml
 //! # In a standalone plugin repo / workspace:
@@ -21,7 +36,19 @@
 //! cargo plugin -- smoke .   # alias enables --features tools
 //! ```
 //!
-//! See `docs/plugin-registry.md`.
+//! # API documentation
+//!
+//! Generated rustdoc for this crate is part of the workspace API reference
+//! (`./scripts/generate-api-docs.sh` → `docs/api/rust/`). Style guide:
+//! `docs/code-documentation.md`. Product narrative: `docs/plugins.md`,
+//! `docs/plugin-registry.md`.
+//!
+//! # Re-exports
+//!
+//! Crate-root `pub use` items are the stable import surface for guests
+//! (handshake DTOs, [`PluginError`], FD helpers, tunnel types). Prefer
+//! `use bookclerk_plugin_sdk::…` over reaching into submodules unless you need
+//! module-level docs.
 
 pub mod callback_tunnel;
 #[cfg(feature = "db")]

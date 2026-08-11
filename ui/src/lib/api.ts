@@ -1,3 +1,6 @@
+/**
+ * Pipeline acquire state for a library book row.
+ */
 export type AcquireStatus =
   | "not_acquired"
   | "queued"
@@ -5,9 +8,18 @@ export type AcquireStatus =
   | "acquired"
   | "error";
 
+/**
+ * Primary authenticated SPA views mirrored in the URL path.
+ */
 export type AppView = "discover" | "library" | "accounts" | "wishlist" | "settings";
+/**
+ * Session role returned by the daemon auth APIs.
+ */
 export type AuthRole = "operator" | "administrator" | "member";
 
+/**
+ * Linked portal identity attached to a user session.
+ */
 export interface PortalInfo {
   identity_id: number;
   provider: string;
@@ -15,17 +27,26 @@ export interface PortalInfo {
   label: string | null;
 }
 
+/**
+ * Signed-in administrator or member profile from `/api/auth/me`.
+ */
 export interface AuthMeUser {
   id: number;
   role: "administrator" | "member" | string;
   display_name: string | null;
 }
 
+/**
+ * Active impersonation target when an administrator is viewing as another user.
+ */
 export interface AuthMeImpersonating {
   user_id: number;
   display_name: string | null;
 }
 
+/**
+ * Normalized client session used to gate SPA views and actions.
+ */
 export interface AuthSession {
   authenticated: boolean;
   role?: AuthRole;
@@ -37,53 +58,100 @@ export interface AuthSession {
   user?: AuthMeUser;
 }
 
+/**
+ * Library book row from `/api/library/books`.
+ *
+ * Field names match the daemon JSON (`snake_case`). Use `uuid` for acquire /
+ * cover URLs; `asin` / `isbn` are store product ids when known.
+ */
 export interface BookRecord {
+  /** Library row primary key. */
   id: number;
+  /** Stable book uuid used by acquire / cover / detail APIs. */
   uuid: string;
+  /** Storefront plugin id (`audible`, `libro`, …). */
   source: string;
+  /** Sealed account id that owns this title. */
   account_id: string;
+  /** Store-native product id (ASIN, ISBN, UUID, …). */
   product_id: string;
+  /** Audible ASIN when the source provides one. */
   asin: string | null;
+  /** ISBN-13 / ISBN-10 when the source provides one. */
   isbn: string | null;
+  /** Marketplace / locale code (`us`, `uk`, …). */
   marketplace: string;
+  /** Display title. */
   title: string;
+  /** Semicolon- or comma-separated author list. */
   authors: string | null;
+  /** Semicolon- or comma-separated narrator list. */
   narrators: string | null;
+  /** Series name when known. */
   series: string | null;
+  /** Position within the series (string to preserve `#1.5` styles). */
   series_index: string | null;
   /** Audible series / podcast-parent ASIN when known. */
   series_asin: string | null;
+  /** Pipeline state for the main audio acquire job. */
   acquire_status: AcquireStatus;
+  /** Destination object key after a successful acquire. */
   storage_key: string | null;
+  /** Last acquire / scan error message when status is `error`. */
   error_message: string | null;
+  /** Purchase / library-add timestamp from the store (ISO-8601). */
   purchased_at: string | null;
   /** Space-separated user tags. */
   tags: string | null;
+  /** Overall community rating (0–5) when enriched. */
   rating_overall: number | null;
+  /** Performance / narrator rating when enriched. */
   rating_performance: number | null;
+  /** Story rating when enriched. */
   rating_story: number | null;
+  /** Whether the listener marked the title finished. */
   is_finished: boolean;
+  /** Pipeline state for companion PDF acquire. */
   pdf_status: AcquireStatus;
+  /** Destination key for an acquired companion PDF. */
   pdf_storage_key: string | null;
+  /** Publisher name when known. */
   publisher: string | null;
+  /** Runtime length in minutes when known. */
   length_minutes: number | null;
+  /** True when the edition is abridged. */
   is_abridged: boolean;
+  /** Content kind slug (`audiobook`, `podcast`, …). */
   content_kind: string;
   /** Genre / category list from the store (often `;`- or `,`-separated). */
   categories: string | null;
+  /** Subtitle when the store provides one. */
   subtitle: string | null;
+  /** Original publication date (ISO-8601 date or datetime). */
   published_at: string | null;
+  /** Long-form description / blurb (may contain light HTML). */
   description: string | null;
+  /** BCP-47-ish language code from the store. */
   language: string | null;
+  /** Remote or proxied cover image URL. */
   cover_url: string | null;
+  /** Subject / BISAC-style tags when enriched. */
   subjects: string | null;
+  /** Enrichment provider id that last wrote metadata. */
   enrich_source: string | null;
+  /** Enrichment confidence score (0–1) when present. */
   enrich_confidence: number | null;
+  /** When enrichment last ran (ISO-8601). */
   enrich_updated_at: string | null;
+  /** Row insert time (ISO-8601). */
   created_at: string;
+  /** Row last update time (ISO-8601). */
   updated_at: string;
 }
 
+/**
+ * Paginated library books list payload.
+ */
 export interface BooksResponse {
   books: BookRecord[];
   total: number;
@@ -91,6 +159,9 @@ export interface BooksResponse {
   offset: number;
 }
 
+/**
+ * Aggregate library counters from `/api/status`.
+ */
 export interface StatusResponse {
   accounts: number;
   books: number;
@@ -102,6 +173,9 @@ export interface StatusResponse {
   storage_backend: string;
 }
 
+/**
+ * Background job row from `/api/jobs`.
+ */
 export interface JobInfo {
   id: string;
   kind: string;
@@ -109,12 +183,18 @@ export interface JobInfo {
   detail: string | null;
 }
 
+/**
+ * Ack payload for scan / acquire job triggers.
+ */
 export interface ActionResponse {
   ok: boolean;
   message: string;
   job_id: string;
 }
 
+/**
+ * Storefront brand colors and logo URL for Accounts UI.
+ */
 export interface PortalBrand {
   bg: string;
   fg: string;
@@ -122,6 +202,9 @@ export interface PortalBrand {
   logo: string;
 }
 
+/**
+ * Connectable storefront advertised by `/api/portal/sources`.
+ */
 export interface PortalSource {
   id: string;
   name: string;
@@ -129,6 +212,9 @@ export interface PortalSource {
   brand: PortalBrand;
 }
 
+/**
+ * Linked store account for the current portal user.
+ */
 export interface PortalConnection {
   account_id: string;
   source: string;
@@ -138,6 +224,9 @@ export interface PortalConnection {
   brand?: PortalBrand;
 }
 
+/**
+ * Portal identity from `/api/portal/me`.
+ */
 export interface PortalMe {
   provider: string;
   external_user_id: string;
@@ -150,6 +239,9 @@ const ANON_SESSION: AuthSession = {
   can_acquire: false,
 };
 
+/**
+ * HTTP failure from Bookclerk JSON APIs, including optional machine `code`.
+ */
 export class ApiError extends Error {
   status: number;
   /** Machine slug from JSON error bodies when present. */
@@ -171,13 +263,24 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Narrows `unknown` to {@link ApiError}.
+ *
+ * @param error - Caught value from a failed API call.
+ * @returns Whether `error` is an {@link ApiError} instance.
+ */
 export function isApiError(error: unknown): error is ApiError {
   return error instanceof ApiError;
 }
 
 /**
- * Map API / network failures to short copy for non-technical users.
+ * Maps API / network failures to short copy for non-technical users.
+ *
  * Keeps branded daemon messages when they already read as plain language.
+ *
+ * @param error - Caught failure from fetch / parse helpers.
+ * @param fallback - Copy used when the error has no safe user-facing text.
+ * @returns Message suitable for inline SPA error banners.
  */
 export function userFacingApiError(error: unknown, fallback: string): string {
   if (isApiError(error)) {
@@ -303,6 +406,11 @@ function toAuthSession(body: {
   };
 }
 
+/**
+ * Loads the current session from `GET /api/auth/me`.
+ *
+ * @returns Anonymous session when the response is 401.
+ */
 export async function authMe(): Promise<AuthSession> {
   const res = await fetchWithTimeout(
     "/api/auth/me",
@@ -324,6 +432,12 @@ export async function authMe(): Promise<AuthSession> {
   return toAuthSession(body);
 }
 
+/**
+ * Signs in with the operator token via `POST /api/auth/login`.
+ *
+ * @param token - Operator bearer token from `bookclerk daemon token`.
+ * @returns Authenticated operator session (acquire enabled).
+ */
 export async function login(token: string): Promise<AuthSession> {
   const res = await fetchWithTimeout(
     "/api/auth/login",
@@ -349,6 +463,11 @@ export async function login(token: string): Promise<AuthSession> {
   };
 }
 
+/**
+ * Clears the operator cookie session via `POST /api/auth/logout`.
+ *
+ * @returns Resolves when the logout request finishes.
+ */
 export async function logout(): Promise<void> {
   await fetch("/api/auth/logout", {
     method: "POST",
@@ -358,6 +477,12 @@ export async function logout(): Promise<void> {
   });
 }
 
+/**
+ * Temporarily elevates a user session with the operator token.
+ *
+ * @param token - Operator bearer token.
+ * @returns Resolves when elevation succeeds.
+ */
 export async function elevate(token: string): Promise<void> {
   const res = await fetch("/api/auth/elevate", {
     method: "POST",
@@ -368,6 +493,11 @@ export async function elevate(token: string): Promise<void> {
   await parseJson(res);
 }
 
+/**
+ * Ends an elevated operator window on a user session.
+ *
+ * @returns Resolves when elevation is cleared.
+ */
 export async function endElevation(): Promise<void> {
   const res = await fetch("/api/auth/elevate", {
     method: "DELETE",
@@ -378,6 +508,12 @@ export async function endElevation(): Promise<void> {
   await parseJson(res);
 }
 
+/**
+ * Starts administrator impersonation of another user.
+ *
+ * @param userId - Target user id.
+ * @returns Resolves when impersonation is active.
+ */
 export async function startImpersonate(userId: number): Promise<void> {
   const res = await fetch("/api/auth/impersonate", {
     method: "POST",
@@ -388,6 +524,11 @@ export async function startImpersonate(userId: number): Promise<void> {
   await parseJson(res);
 }
 
+/**
+ * Stops the current administrator impersonation session.
+ *
+ * @returns Resolves when impersonation ends.
+ */
 export async function stopImpersonate(): Promise<void> {
   const res = await fetch("/api/auth/impersonate", {
     method: "DELETE",
@@ -398,6 +539,9 @@ export async function stopImpersonate(): Promise<void> {
   await parseJson(res);
 }
 
+/**
+ * User row from `GET /api/users` (administrator settings).
+ */
 export interface ListedUser {
   id: number;
   role: string;
@@ -406,12 +550,24 @@ export interface ListedUser {
   has_password: boolean;
 }
 
+/**
+ * Lists users for administrator settings.
+ *
+ * @returns User rows (empty array when none).
+ */
 export async function listUsers(): Promise<ListedUser[]> {
   const res = await fetch("/api/users", { credentials: "include" });
   const body = await parseJson<{ users: ListedUser[] }>(res);
   return body.users ?? [];
 }
 
+/**
+ * Signs in with username/password via `POST /api/auth/password`.
+ *
+ * @param login - Username or email.
+ * @param password - Account password.
+ * @returns Resolves when the session cookie is set.
+ */
 export async function passwordLogin(
   login: string,
   password: string,
@@ -425,6 +581,9 @@ export async function passwordLogin(
   await parseJson(res);
 }
 
+/**
+ * Per-user Discover / default-view preferences.
+ */
 export interface UserPreferences {
   default_view: AppView;
   disabled_shelves: string[];
@@ -436,16 +595,25 @@ export interface UserPreferences {
   discover_excluded_sources: string[];
 }
 
+/**
+ * One config key/value pair for `PATCH /api/settings`.
+ */
 export interface SettingsUpdate {
   key: string;
   value: string;
 }
 
+/**
+ * Select option for a plugin setting.
+ */
 export interface PluginSettingChoice {
   value: string;
   label: string;
 }
 
+/**
+ * Editable plugin setting descriptor from the settings API.
+ */
 export interface PluginSettingOption {
   key: string;
   label: string;
@@ -454,6 +622,9 @@ export interface PluginSettingOption {
   choices?: PluginSettingChoice[];
 }
 
+/**
+ * Settings group for one installed plugin.
+ */
 export interface PluginSettingsGroup {
   id: string;
   kind: string;
@@ -462,11 +633,17 @@ export interface PluginSettingsGroup {
   settings: PluginSettingOption[];
 }
 
+/**
+ * Flat config map plus per-plugin setting groups.
+ */
 export interface SettingsResponse {
   settings: Record<string, string>;
   plugins: PluginSettingsGroup[];
 }
 
+/**
+ * Network/capability consent status for a plugin.
+ */
 export interface PluginConsentResponse {
   plugin_id: string;
   request: {
@@ -483,6 +660,15 @@ export interface PluginConsentResponse {
   existing?: PluginConsentResponse["request"];
 }
 
+/**
+ * Loads network/capability consent status for a plugin before enable.
+ *
+ * Call from Settings when an operator reviews domains/bindings that still need
+ * approval; `covered` is false until approvePluginConsent succeeds.
+ *
+ * @param id - Plugin id from handshake / Settings list.
+ * @returns Current consent request payload and whether it already covers the ask.
+ */
 export async function fetchPluginConsent(id: string): Promise<PluginConsentResponse> {
   const res = await fetch(`/api/plugins/${encodeURIComponent(id)}/consent`, {
     credentials: "include",
@@ -490,6 +676,12 @@ export async function fetchPluginConsent(id: string): Promise<PluginConsentRespo
   return parseJson<PluginConsentResponse>(res);
 }
 
+/**
+ * Approves network consent for a plugin.
+ *
+ * @param id - Plugin id.
+ * @returns Updated consent response after approval.
+ */
 export async function approvePluginConsent(id: string): Promise<PluginConsentResponse> {
   const res = await fetch(`/api/plugins/${encodeURIComponent(id)}/consent`, {
     method: "POST",
@@ -548,6 +740,11 @@ function parsePreferencesBody(body: {
   };
 }
 
+/**
+ * Loads the signed-in user's preferences.
+ *
+ * @returns Normalized {@link UserPreferences}.
+ */
 export async function fetchPreferences(): Promise<UserPreferences> {
   const res = await fetchWithTimeout(
     "/api/preferences",
@@ -558,6 +755,12 @@ export async function fetchPreferences(): Promise<UserPreferences> {
   return parsePreferencesBody(await parseJson(res));
 }
 
+/**
+ * Partially updates the signed-in user's preferences.
+ *
+ * @param body - Fields to patch (`discover_language: null` clears to browser default).
+ * @returns Updated preferences after save.
+ */
 export async function patchPreferences(body: {
   default_view?: AppView;
   disabled_shelves?: string[];
@@ -581,11 +784,22 @@ export async function patchPreferences(body: {
   return parsePreferencesBody(await parseJson(res));
 }
 
+/**
+ * Loads operator settings groups and plugin option schemas for the Settings page.
+ *
+ * @returns Core settings plus per-plugin option groups.
+ */
 export async function fetchSettings(): Promise<SettingsResponse> {
   const res = await fetch("/api/settings", { credentials: "include" });
   return parseJson<SettingsResponse>(res);
 }
 
+/**
+ * Applies a batch of operator setting key/value updates from the Settings form.
+ *
+ * @param body - List of `{ key, value }` updates (plugin knobs use dotted keys).
+ * @returns Refreshed settings payload after the patch.
+ */
 export async function patchSettings(body: { settings: SettingsUpdate[] }): Promise<SettingsResponse> {
   const res = await fetch("/api/settings", {
     method: "PATCH",
@@ -596,6 +810,12 @@ export async function patchSettings(body: { settings: SettingsUpdate[] }): Promi
   return parseJson<SettingsResponse>(res);
 }
 
+/**
+ * Redeems a claim ticket into a portal user session.
+ *
+ * @param ticket - One-time claim ticket string.
+ * @returns Resolves when the session cookie is set.
+ */
 export async function portalRedeem(ticket: string): Promise<void> {
   const res = await fetch("/api/portal/redeem", {
     method: "POST",
@@ -606,6 +826,12 @@ export async function portalRedeem(ticket: string): Promise<void> {
   await parseJson(res);
 }
 
+/**
+ * Signs in via an integration provider username/password.
+ *
+ * @param body - Provider id plus credentials.
+ * @returns Resolves when the portal session is established.
+ */
 export async function portalLoginIntegration(body: {
   provider: string;
   username: string;
@@ -620,6 +846,11 @@ export async function portalLoginIntegration(body: {
   await parseJson(res);
 }
 
+/**
+ * Clears the portal / user session cookie.
+ *
+ * @returns Resolves when logout finishes (best-effort).
+ */
 export async function portalLogout(): Promise<void> {
   await fetch("/api/portal/logout", {
     method: "POST",
@@ -629,17 +860,34 @@ export async function portalLogout(): Promise<void> {
   });
 }
 
+/**
+ * Loads the linked portal identity for the signed-in SPA session.
+ *
+ * @returns Portal identity metadata used by Accounts / Settings headers.
+ */
 export async function portalMe(): Promise<PortalMe> {
   const res = await fetch("/api/portal/me", { credentials: "include" });
   return parseJson(res);
 }
 
+/**
+ * Lists connectable storefronts for Accounts.
+ *
+ * @returns Source descriptors including brand metadata.
+ */
 export async function portalSources(): Promise<PortalSource[]> {
   const res = await fetch("/api/portal/sources", { credentials: "include" });
   const body = await parseJson<{ sources: PortalSource[] }>(res);
   return body.sources;
 }
 
+/**
+ * Password-connects a storefront account.
+ *
+ * @param id - Source plugin id.
+ * @param body - Store email and password.
+ * @returns Resolves when the connection is stored.
+ */
 export async function portalSourceLogin(
   id: string,
   body: { email: string; password: string },
@@ -653,6 +901,12 @@ export async function portalSourceLogin(
   await parseJson(res);
 }
 
+/**
+ * Starts OAuth for a storefront and returns the authorize URL.
+ *
+ * @param id - Source plugin id.
+ * @returns Object with browser `url` to open.
+ */
 export async function portalSourceOauthStart(id: string): Promise<{ url: string }> {
   const res = await fetch(
     `/api/portal/sources/${encodeURIComponent(id)}/oauth/start`,
@@ -666,12 +920,25 @@ export async function portalSourceOauthStart(id: string): Promise<{ url: string 
   return parseJson(res);
 }
 
+/**
+ * Lists linked store accounts for the current portal user.
+ *
+ * @returns Connection rows.
+ */
 export async function portalConnections(): Promise<PortalConnection[]> {
   const res = await fetch("/api/portal/connections", { credentials: "include" });
   const body = await parseJson<{ connections: PortalConnection[] }>(res);
   return body.connections;
 }
 
+/**
+ * Disconnects a storefront account from the current portal user.
+ *
+ * Does not delete library rows; only revokes the sealed credentials / link.
+ *
+ * @param accountId - Portal connection account id from {@link portalConnections}.
+ * @returns Resolves when the revoke POST succeeds.
+ */
 export async function portalRevokeConnection(accountId: string): Promise<void> {
   const res = await fetch(
     `/api/portal/connections/${encodeURIComponent(accountId)}/revoke`,
@@ -685,7 +952,12 @@ export async function portalRevokeConnection(accountId: string): Promise<void> {
   await parseJson(res);
 }
 
-/** Sign out regardless of operator vs user/portal session. */
+/**
+ * Signs out regardless of operator vs user/portal session.
+ *
+ * @param role - Current session role; portal roles use portal logout.
+ * @returns Resolves when logout completes.
+ */
 export async function signOut(role?: AuthRole): Promise<void> {
   if (role === "administrator" || role === "member") {
     await portalLogout();
@@ -698,16 +970,35 @@ export async function signOut(role?: AuthRole): Promise<void> {
   }
 }
 
+/**
+ * Loads aggregate library status counters.
+ *
+ * @returns Status payload for the jobs strip / library header.
+ */
 export async function fetchStatus(): Promise<StatusResponse> {
   const res = await fetch("/api/status", { credentials: "include" });
   return parseJson(res);
 }
 
+/**
+ * Lists recent background jobs for the jobs strip / status polling.
+ *
+ * @returns Job rows from `/api/jobs` (newest first as returned by the daemon).
+ */
 export async function fetchJobs(): Promise<JobInfo[]> {
   const res = await fetch("/api/jobs", { credentials: "include" });
   return parseJson(res);
 }
 
+/**
+ * Fetches one page of library books for the Library table.
+ *
+ * Omits `status` (or passes `all`) to include every acquire state. Default page
+ * size is 40 when `limit` is omitted.
+ *
+ * @param params - Optional search string, acquire-status filter, and pagination.
+ * @returns Paginated books plus total count for the pager.
+ */
 export async function fetchBooks(params: {
   q?: string;
   status?: string;
@@ -725,6 +1016,14 @@ export async function fetchBooks(params: {
   return parseJson(res);
 }
 
+/**
+ * Queues a full-library scan job for accounts with scan enabled.
+ *
+ * Prefer CLI one-shot scans with an explicit `--account` in cloud testing; this
+ * SPA helper hits the authenticated daemon endpoint used by the Library UI.
+ *
+ * @returns Action ack including `job_id` when accepted.
+ */
 export async function triggerScan(): Promise<ActionResponse> {
   const res = await fetch("/api/library/scan", {
     method: "POST",
@@ -735,6 +1034,12 @@ export async function triggerScan(): Promise<ActionResponse> {
   return parseJson(res);
 }
 
+/**
+ * Queues acquire for a library book by uuid and/or ASIN.
+ *
+ * @param body - Target identifiers (`uuid` and/or `asin`).
+ * @returns Action ack including `job_id`.
+ */
 export async function triggerAcquire(body: {
   uuid?: string;
   asin?: string;
@@ -748,15 +1053,27 @@ export async function triggerAcquire(body: {
   return parseJson(res);
 }
 
+/**
+ * Builds the authenticated cover image URL for a library book.
+ *
+ * @param uuid - Book uuid.
+ * @returns Relative URL under `/api/library/books/.../cover`.
+ */
 export function coverUrl(uuid: string): string {
   return `/api/library/books/${encodeURIComponent(uuid)}/cover`;
 }
 
+/**
+ * Storefront product identity for a catalog work.
+ */
 export interface StoreEdition {
   source: string;
   product_id: string;
 }
 
+/**
+ * Live or seeded storefront price / buy URL for a title.
+ */
 export interface PurchaseHint {
   source: string;
   product_id: string;
@@ -771,11 +1088,17 @@ export interface PurchaseHint {
   member_price_label?: string | null;
 }
 
+/**
+ * Purchase hint list plus optional best pick.
+ */
 export interface PurchaseHintsResponse {
   hints: PurchaseHint[];
   best: PurchaseHint | null;
 }
 
+/**
+ * Discover shelf recommendation item.
+ */
 export interface Recommendation {
   work_id: string | null;
   title: string;
@@ -808,6 +1131,9 @@ export interface Recommendation {
   language?: string | null;
 }
 
+/**
+ * Query used to resolve purchase hints for a title.
+ */
 export interface PurchaseHintsQuery {
   title: string;
   authors?: string | null;
@@ -819,6 +1145,9 @@ export interface PurchaseHintsQuery {
   region?: string;
 }
 
+/**
+ * One Discover feed shelf (id, copy, items).
+ */
 export interface DiscoverShelf {
   id: string;
   title: string;
@@ -826,16 +1155,28 @@ export interface DiscoverShelf {
   items: Recommendation[];
 }
 
+/**
+ * Shelf kind id/label for preference toggles.
+ */
 export interface ShelfKindInfo {
   id: string;
   label: string;
 }
 
+/**
+ * Discover recommendations feed payload.
+ */
 export interface DiscoverFeed {
   shelves: DiscoverShelf[];
   shelf_kinds?: ShelfKindInfo[];
 }
 
+/**
+ * Wishlist / title-request row from `/api/wishlist`.
+ *
+ * Represents a user ask for a title (and optional acquire queue linkage via
+ * `resolved_book_uuid` / `work_key`).
+ */
 export interface TitleRequest {
   id: number;
   uuid: string;
@@ -866,6 +1207,9 @@ export interface TitleRequest {
   updated_at: string;
 }
 
+/**
+ * Aggregated global request-queue entry (shared wishlist demand).
+ */
 export interface GlobalQueueEntry {
   work_key: string;
   title: string;
@@ -895,6 +1239,9 @@ export interface GlobalQueueEntry {
   reasons?: string[];
 }
 
+/**
+ * One hit from `/api/discover/search`.
+ */
 export interface CatalogSearchHit {
   work_key: string;
   title: string;
@@ -921,6 +1268,9 @@ export interface CatalogSearchHit {
   purchase_hints?: PurchaseHint[];
 }
 
+/**
+ * Server-supported Discover catalog sort keys.
+ */
 export type CatalogSearchSort =
   | "relevance"
   | "popularity"
@@ -930,8 +1280,14 @@ export type CatalogSearchSort =
   | "price"
   | "length";
 
+/**
+ * Ascending or descending catalog sort direction.
+ */
 export type CatalogSortDir = "asc" | "desc";
 
+/**
+ * Server-side include/exclude filters for catalog search.
+ */
 export type CatalogSearchFilters = {
   authors?: string[];
   narrators?: string[];
@@ -946,6 +1302,9 @@ export type CatalogSearchFilters = {
   max_length_minutes?: number;
 };
 
+/**
+ * Cursor-paginated catalog search page.
+ */
 export interface CatalogSearchPage {
   items: CatalogSearchHit[];
   page_size: number;
@@ -955,6 +1314,12 @@ export interface CatalogSearchPage {
   sort_dir?: string;
 }
 
+/**
+ * Loads Discover recommendation shelves.
+ *
+ * @param limit - Max items per shelf (default 36). Seed URLs only; live prices load later.
+ * @returns Discover feed payload.
+ */
 export async function fetchDiscoverFeed(limit = 36): Promise<DiscoverFeed> {
   // Seed storefront URLs in the feed; live prices load viewport-gated per card.
   const res = await fetchWithTimeout(
@@ -1042,7 +1407,9 @@ async function flushPurchaseHintsQueue() {
   }
 }
 
-/** One Audible customer review for title detail. */
+/**
+ * One Audible customer review for title detail.
+ */
 export interface TitleReview {
   id?: string | null;
   title?: string | null;
@@ -1054,7 +1421,9 @@ export interface TitleReview {
   submitted_at?: string | null;
 }
 
-/** Public Audnexus / Audible catalog fields for detail dialogs. */
+/**
+ * Public Audnexus / Audible catalog fields for detail dialogs.
+ */
 export interface TitleMeta {
   asin?: string | null;
   title?: string | null;
@@ -1083,8 +1452,14 @@ export interface TitleMeta {
   reviews?: TitleReview[];
 }
 
+/**
+ * Audible review sort modes for title detail.
+ */
 export type TitleReviewsSort = "MostHelpful" | "MostRecent";
 
+/**
+ * Paginated title-reviews request body.
+ */
 export type TitleReviewsQuery = {
   asin: string;
   region?: string;
@@ -1093,6 +1468,9 @@ export type TitleReviewsQuery = {
   sort_by?: TitleReviewsSort;
 };
 
+/**
+ * One page of Audible customer reviews.
+ */
 export type TitleReviewsPage = {
   asin: string;
   page: number;
@@ -1145,7 +1523,12 @@ function purchaseHintsClientKey(q: PurchaseHintsQuery): string {
   ].join("|");
 }
 
-/** Viewport-gated cards coalesce into a short batch window. */
+/**
+ * Resolves purchase hints, coalescing viewport-gated cards into a short batch window.
+ *
+ * @param body - Title identity and optional candidate edition.
+ * @returns Hints list plus optional best pick (client-cached).
+ */
 export function fetchPurchaseHints(
   body: PurchaseHintsQuery,
 ): Promise<PurchaseHintsResponse> {
@@ -1169,6 +1552,9 @@ export function fetchPurchaseHints(
   });
 }
 
+/**
+ * Query for public title metadata enrichment.
+ */
 export type TitleMetaQuery = {
   title: string;
   authors?: string | null;
@@ -1247,7 +1633,12 @@ async function flushTitleMetaQueue() {
   }
 }
 
-/** Viewport-gated cards coalesce into a short batch window. */
+/**
+ * Fetches title metadata, coalescing viewport-gated cards into a short batch window.
+ *
+ * @param body - Title identity fields.
+ * @returns Metadata or `null` when none matched (client-cached).
+ */
 export function fetchTitleMeta(body: TitleMetaQuery): Promise<TitleMeta | null> {
   const key = titleMetaClientKey(body);
   const cached = clientCacheGet(titleMetaClientCache, key);
@@ -1262,7 +1653,12 @@ export function fetchTitleMeta(body: TitleMetaQuery): Promise<TitleMeta | null> 
   });
 }
 
-/** Paginated Audible customer reviews for title detail infinite scroll. */
+/**
+ * Loads a page of Audible customer reviews for title detail infinite scroll.
+ *
+ * @param body - ASIN, region, page, and sort.
+ * @returns Reviews page payload.
+ */
 export async function fetchTitleReviews(
   body: TitleReviewsQuery,
 ): Promise<TitleReviewsPage> {
@@ -1290,7 +1686,12 @@ export async function fetchTitleReviews(
   return (await parseJson(res)) as TitleReviewsPage;
 }
 
-/** Batch title-meta (order preserved); uses the same client TTL cache as singles. */
+/**
+ * Batch title-meta fetch (order preserved); shares the client TTL cache with singles.
+ *
+ * @param queries - Parallel title-meta queries.
+ * @returns Metadata (or `null`) aligned with `queries`.
+ */
 export async function fetchTitleMetaBatch(
   queries: TitleMetaQuery[],
 ): Promise<(TitleMeta | null)[]> {
@@ -1349,6 +1750,17 @@ function browserCatalogLanguage(): string {
   return "en";
 }
 
+/**
+ * Searches the Discover catalog across enabled storefronts.
+ *
+ * Returns an empty page (without calling the network) when `q` trims to fewer
+ * than 2 characters. Language defaults to the browser locale unless
+ * `allLanguages` is set.
+ *
+ * @param q - Free-text query (minimum 2 characters after trim).
+ * @param opts - Pagination cursor, sort, language, and server-side facet filters.
+ * @returns Cursor-paginated search page (or an empty stub when `q` is too short).
+ */
 export async function searchCatalog(
   q: string,
   opts?: {
@@ -1418,6 +1830,11 @@ export async function searchCatalog(
   return parseJson(res);
 }
 
+/**
+ * Loads the current user's wishlist items.
+ *
+ * @returns Title-request rows.
+ */
 export async function fetchWishlist(): Promise<TitleRequest[]> {
   const res = await fetchWithTimeout(
     "/api/wishlist",
@@ -1428,11 +1845,22 @@ export async function fetchWishlist(): Promise<TitleRequest[]> {
   return parseJson(res);
 }
 
+/**
+ * Loads the global request queue (shared demand).
+ *
+ * @returns Aggregated queue entries.
+ */
 export async function fetchRequestQueue(): Promise<GlobalQueueEntry[]> {
   const res = await fetch("/api/request-queue", { credentials: "include" });
   return parseJson(res);
 }
 
+/**
+ * Adds a title to the current user's wishlist.
+ *
+ * @param body - Title fields and optional catalog enrichment.
+ * @returns Created title-request row.
+ */
 export async function createWishlistItem(body: {
   title: string;
   authors?: string;
@@ -1463,6 +1891,12 @@ export async function createWishlistItem(body: {
   return parseJson(res);
 }
 
+/**
+ * Deletes a wishlist title-request owned by the current user.
+ *
+ * @param uuid - Wishlist title-request uuid from {@link fetchWishlist}.
+ * @returns The removed title-request row as echoed by the API.
+ */
 export async function removeWishlistItem(uuid: string): Promise<TitleRequest> {
   const res = await fetch(`/api/wishlist/${encodeURIComponent(uuid)}`, {
     method: "DELETE",

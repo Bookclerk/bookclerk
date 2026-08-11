@@ -146,6 +146,11 @@ function parseSortKey(raw: string | undefined): CatalogSortKey {
   }
 }
 
+/**
+ * Discover view — recommendation shelves and catalog search.
+ *
+ * @param props - Logout handler, nav props, and optional session role.
+ */
 export function DiscoverPage({
   onLogout,
   nav,

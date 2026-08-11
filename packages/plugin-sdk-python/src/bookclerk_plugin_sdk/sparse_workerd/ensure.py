@@ -1,4 +1,8 @@
-"""Download / refresh the pinned Cloudflare ``workerd`` binary (mirrors ensure.rs)."""
+"""Download / refresh the pinned Cloudflare ``workerd`` binary (mirrors ensure.rs).
+
+Resolves the platform asset from ``workerd-pin.json``, verifies sha256, and
+caches under ``~/.cache/bookclerk/workerd`` (or ``BOOKCLERK_WORKERD_CACHE``).
+"""
 
 from __future__ import annotations
 
@@ -16,10 +20,27 @@ _PKG = Path(__file__).resolve().parent.parent  # bookclerk_plugin_sdk/
 
 
 def package_root() -> Path:
+    """Return the ``bookclerk_plugin_sdk`` package directory.
+
+    Returns:
+        Absolute path containing ``workerd.py``, ``bridge/``, and the pin file.
+    """
     return _PKG
 
 
 def load_pin(root: Path | None = None) -> dict[str, Any]:
+    """Load the pinned workerd release metadata.
+
+    Args:
+        root: Package root containing ``workerd-pin.json`` (defaults to this SDK).
+
+    Returns:
+        Parsed pin dictionary (release tag, assets, version stamp).
+
+    Raises:
+        FileNotFoundError: If the pin file is missing.
+        json.JSONDecodeError: If the pin file is not valid JSON.
+    """
     pin_path = (root or package_root()) / "workerd-pin.json"
     import json
 
@@ -30,6 +51,15 @@ def platform_key(
     system: str | None = None,
     machine: str | None = None,
 ) -> str | None:
+    """Map OS/arch to a pin asset key such as ``linux-x86_64``.
+
+    Args:
+        system: OS name override (defaults to ``platform.system()``).
+        machine: CPU arch override (defaults to ``platform.machine()``).
+
+    Returns:
+        Pin key string, or ``None`` when the platform is unsupported.
+    """
     system = (system or platform.system()).lower()
     machine = (machine or platform.machine()).lower()
     os_map = {"linux": "linux", "darwin": "macos", "windows": "windows"}
@@ -47,15 +77,37 @@ def platform_key(
 
 
 def binary_name() -> str:
+    """Return the on-disk workerd binary filename for this OS.
+
+    Returns:
+        ``workerd.exe`` on Windows, otherwise ``workerd``.
+    """
     return "workerd.exe" if platform.system().lower() == "windows" else "workerd"
 
 
 def download_url(pin: dict[str, Any], artifact: str) -> str:
+    """Build the GitHub release download URL for a workerd artifact.
+
+    Args:
+        pin: Loaded pin metadata containing ``release_tag``.
+        artifact: Asset filename from the pin ``assets`` table.
+
+    Returns:
+        Absolute HTTPS URL to the Cloudflare workerd release asset.
+    """
     tag = pin["release_tag"]
     return f"https://github.com/cloudflare/workerd/releases/download/{tag}/{artifact}"
 
 
 def default_cache_dir() -> Path:
+    """Resolve the workerd binary cache directory.
+
+    Honors ``BOOKCLERK_WORKERD_CACHE`` when set; otherwise uses
+    ``~/.cache/bookclerk/workerd``.
+
+    Returns:
+        Path to the cache directory (may not exist yet).
+    """
     if env := os.environ.get("BOOKCLERK_WORKERD_CACHE"):
         return Path(env)
     home = Path.home()
@@ -87,7 +139,23 @@ def ensure_workerd(
     cache_dir: Path | None = None,
     root: Path | None = None,
 ) -> Path:
-    """Ensure ``cache_dir/workerd`` matches the pin. Honors ``BOOKCLERK_WORKERD_BIN``."""
+    """Ensure a pinned ``workerd`` binary is available locally.
+
+    Reuses ``BOOKCLERK_WORKERD_BIN`` or a cached binary when the version stamp
+    matches the pin; otherwise downloads, verifies sha256, and installs.
+
+    Args:
+        cache_dir: Override cache directory (defaults to :func:`default_cache_dir`).
+        root: SDK root for loading ``workerd-pin.json``.
+
+    Returns:
+        Path to an executable workerd binary matching the pin.
+
+    Raises:
+        RuntimeError: If no asset exists for this platform or the download hash
+            mismatches.
+        OSError: If the binary cannot be written or executed.
+    """
     pin = load_pin(root)
     override = os.environ.get("BOOKCLERK_WORKERD_BIN")
     if override:

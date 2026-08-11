@@ -1,5 +1,10 @@
 import type { JobInfo, StatusResponse } from "@/lib/api";
 
+/**
+ * Compact status counters and recent jobs strip for Library.
+ *
+ * @param props - Status payload and job list.
+ */
 export function JobsStrip({
   status,
   jobs,

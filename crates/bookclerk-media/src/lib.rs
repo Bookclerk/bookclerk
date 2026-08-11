@@ -1,8 +1,13 @@
 //! Clear-media packaging: remux, metadata fix-up, and MP3 encode.
 //!
-//! DRM (Adrm / CENC) lives in store plugins (e.g. Audible), not here. The
+//! # Audience
+//!
+//! Host acquire / media-worker code. Store plugins may call helpers that are
+//! re-exported here, but DRM (Adrm / CENC) stays in those plugins. The
 //! ISO-BMFF reading and writing underneath is [`bookclerk_mp4`], which both this
 //! crate and those plugins share; the keys and ciphers stay with the plugin.
+//!
+//! Style: `docs/code-documentation.md`. Product narrative: `docs/media.md`.
 //!
 //! # Where the work runs
 //!
@@ -56,6 +61,7 @@ use std::path::{Path, PathBuf};
 /// Outcome of a successful media operation.
 #[derive(Debug, Clone)]
 pub struct MediaOutcome {
+    /// Absolute path of the written media file.
     pub output: PathBuf,
 }
 

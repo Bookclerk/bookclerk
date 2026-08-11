@@ -1,6 +1,11 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
+/**
+ * Small uppercase status/label chip.
+ *
+ * @param props - Optional className and children.
+ */
 export function Badge({
   className,
   children,

@@ -1,4 +1,5 @@
-//! Audiobookshelf integration plugin: in-process [`Integration`] + Workers RPC guest.
+//! Audiobookshelf integration plugin: in-process
+//! [`bookclerk_integrations::Integration`] + Workers RPC guest.
 //!
 //! Host binaries should register via [`register`] through
 //! `bookclerk_plugin_host::register_builtin_integrations` (feature-gated), not by
@@ -24,14 +25,24 @@ use bookclerk_config::Config;
 use bookclerk_integrations::{IntegrationRegistry, Result};
 use tracing::info;
 
-/// Integration id (`audiobookshelf`).
+/// Integration id used in handshake and `[integrations.audiobookshelf]`.
 pub const ID: &str = "audiobookshelf";
 
-/// Register Audiobookshelf when `[integrations.audiobookshelf] enabled`.
+/// Registers Audiobookshelf when `[integrations.audiobookshelf] enabled`.
 ///
 /// When enabled but misconfigured (e.g. missing API key), the adapter is still
 /// registered so health/diagnose surface the error instead of silently omitting
 /// it.
+///
+/// # Arguments
+///
+/// * `registry` - Host integration registry to receive the adapter.
+/// * `config` - Loaded Bookclerk config (reads the audiobookshelf section).
+///
+/// # Errors
+///
+/// Returns an integration error only when registration itself fails; missing
+/// credentials are deferred to health/diagnose.
 pub fn register(registry: &mut IntegrationRegistry, config: &Config) -> Result<()> {
     let abs = config.integrations.audiobookshelf();
     if abs.enabled {

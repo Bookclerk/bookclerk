@@ -31,18 +31,38 @@ pub struct BuildSelection {
 /// One discovered guest (platform, optional, or example).
 #[derive(Debug, Clone)]
 pub struct DiscoveredGuest {
+    /// Stable identifier for this item.
     pub id: String,
+    /// Discriminant or category for this value.
     pub kind: String,
+    /// Plugin source or install directory relative to the workspace.
     pub dir: PathBuf,
     /// Relative to workspace root (for packaging / logs).
     pub rel_dir: String,
+    /// Cargo / npm package name for this plugin guest.
     pub package: Option<String>,
+    /// Compiled binary name when the guest is a native executable.
     pub bin_name: Option<String>,
+    /// Expected `plugin.toml` package name / id.
     pub manifest_name: String,
+    /// Guest runtime (`native`, `workerd`, `python`, …).
     pub runtime: String,
 }
 
 /// Resolve Cargo `-p` names for [`BuildSelection`].
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `sel` - `sel` input for this call.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<String>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn packages_for(root: &Path, sel: BuildSelection) -> Result<Vec<String>> {
     let mut pkgs = Vec::new();
     if sel.platform {
@@ -77,6 +97,21 @@ fn push_native_package(pkgs: &mut Vec<String>, guest: &DiscoveredGuest) {
     }
 }
 
+/// Which plugin sets `cargo build-app` / `cargo stage-plugins` should include.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `release` - When true, install under `target/release/`; otherwise `target/debug/`.
+/// * `sel` - `sel` input for this call.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn build_selection(root: &Path, release: bool, sel: BuildSelection) -> Result<()> {
     let pkgs = packages_for(root, sel)?;
     if pkgs.is_empty() {
@@ -86,6 +121,23 @@ pub fn build_selection(root: &Path, release: bool, sel: BuildSelection) -> Resul
 }
 
 /// Stage optional and/or example guests into `dest` (catalog layout).
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `dest` - Filesystem path (`dest`).
+/// * `release` - When true, install under `target/release/`; otherwise `target/debug/`.
+/// * `optional` - Boolean flag `optional`.
+/// * `examples` - Boolean flag `examples`.
+/// * `skip_build` - Boolean flag `skip_build`.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn stage_plugins(
     root: &Path,
     dest: &Path,
@@ -130,6 +182,20 @@ pub fn stage_plugins(
 }
 
 /// Install platform guests into `$FILES_DIR/plugins/{id}/` (installer layout).
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `files_dir` - Bookclerk files directory to wipe and recreate.
+/// * `release` - When true, install under `target/release/`; otherwise `target/debug/`.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn install_platform(root: &Path, files_dir: &Path, release: bool) -> Result<()> {
     let plugins_root = files_dir.join("plugins");
     fs::create_dir_all(&plugins_root)
@@ -151,6 +217,21 @@ pub fn install_platform(root: &Path, files_dir: &Path, release: bool) -> Result<
 }
 
 /// Stage platform guests into a temp dir for `package-platform` bundling.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `dest` - Filesystem path (`dest`).
+/// * `release` - When true, install under `target/release/`; otherwise `target/debug/`.
+/// * `skip_build` - Boolean flag `skip_build`.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn stage_platform_for_pack(
     root: &Path,
     dest: &Path,
@@ -180,18 +261,71 @@ pub fn stage_platform_for_pack(
 }
 
 /// Stage optional guests for `package-plugins`.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `dest` - Filesystem path (`dest`).
+/// * `release` - When true, install under `target/release/`; otherwise `target/debug/`.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn stage_optional_for_pack(root: &Path, dest: &Path, release: bool) -> Result<()> {
     stage_plugins(root, dest, release, true, false, false)
 }
 
+/// Lists platform plugin guests under `crates/bookclerk-plugins/platform`.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<DiscoveredGuest>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn discover_platform(root: &Path) -> Result<Vec<DiscoveredGuest>> {
     discover_tier(root, PLATFORM_PLUGINS_DIR)
 }
 
+/// Lists optional storefront / integration guests under `…/optional`.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<DiscoveredGuest>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn discover_optional(root: &Path) -> Result<Vec<DiscoveredGuest>> {
     discover_tier(root, OPTIONAL_PLUGINS_DIR)
 }
 
+/// Lists reference Echo example guests under `examples/`.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<DiscoveredGuest>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn discover_examples(root: &Path) -> Result<Vec<DiscoveredGuest>> {
     let examples = root.join(EXAMPLES_DIR);
     if !examples.is_dir() {

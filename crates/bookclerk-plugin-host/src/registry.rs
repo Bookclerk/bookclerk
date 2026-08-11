@@ -17,7 +17,7 @@ pub const CRATE_NAME_PREFIX: &str = "bookclerk-plugin-";
 /// Keyword every published plugin crate should include.
 pub const REGISTRY_KEYWORD: &str = "bookclerk-plugin";
 
-/// Shared product keyword.
+/// Shared crates.io keyword (`bookclerk`) expected on published plugin crates.
 pub const PRODUCT_KEYWORD: &str = "bookclerk";
 
 /// Kind-specific crates.io keyword (`bookclerk-source`, …).
@@ -34,7 +34,9 @@ pub fn kind_keyword(kind: PluginKind) -> &'static str {
 /// Parsed crates.io crate name for a Bookclerk plugin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginCrateName {
+    /// Plugin kind encoded in the crates.io name.
     pub kind: PluginKind,
+    /// Plugin id (`[a-z0-9_]{2,32}`), globally unique across kinds.
     pub id: String,
 }
 
@@ -99,9 +101,13 @@ fn parse_kind(s: &str) -> Option<PluginKind> {
 /// `[package.metadata.bookclerk]` published on crates.io.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookclerkPackageMetadata {
+    /// Plugin ABI / package metadata API version (must be >= 1).
     pub api_version: u32,
+    /// Plugin kind encoded in the crates.io name.
     pub kind: PluginKind,
+    /// Plugin id (`[a-z0-9_]{2,32}`), globally unique across kinds.
     pub id: String,
+    /// Optional human-readable name for catalog UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     /// Template with `{tag}`, `{version}`, `{target}`, `{crate}` placeholders.
@@ -116,8 +122,10 @@ pub struct BookclerkPackageMetadata {
     /// Placeholders: `{tag}`, `{version}`, `{target}`, `{crate}`, `{ext}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_url: Option<String>,
+    /// Optional path inside the release archive where `plugin.toml` lives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_root: Option<String>,
+    /// Optional minimum Bookclerk host version required to run this plugin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_host: Option<String>,
 }
@@ -197,12 +205,19 @@ impl BookclerkPackageMetadata {
 /// One catalog hit from crates.io (or a curated index).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginCatalogEntry {
+    /// crates.io package name (`bookclerk-plugin-{kind}-{id}`).
     pub crate_name: String,
+    /// Published crate / release version string.
     pub version: String,
+    /// Short crates.io description when the index provides one.
     pub description: Option<String>,
+    /// Download count from the registry index, when known.
     pub downloads: u64,
+    /// Documentation URL from crate metadata, when present.
     pub documentation: Option<String>,
+    /// Source repository URL from crate metadata, when present.
     pub repository: Option<String>,
+    /// Project homepage URL from crate metadata, when present.
     pub homepage: Option<String>,
     /// Parsed from crate name when it matches the taxonomy.
     #[serde(default, skip_serializing_if = "Option::is_none")]

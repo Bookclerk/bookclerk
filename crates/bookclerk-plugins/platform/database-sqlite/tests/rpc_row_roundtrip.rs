@@ -1,3 +1,5 @@
+//! Integration tests: rpc row roundtrip (bookclerk-plugins).
+
 use std::sync::Arc;
 
 use async_trait::async_trait;

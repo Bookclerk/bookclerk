@@ -1,4 +1,9 @@
 //! Runtime setting overrides (classic `acquire -o Key=value`).
+//!
+//! # Audience
+//!
+//! Host CLI / daemon operators applying dotted or classic PascalCase keys onto
+//! a loaded [`crate::Config`] without hand-editing TOML.
 
 use std::path::{Path, PathBuf};
 
@@ -17,6 +22,21 @@ pub fn apply_setting_overrides(config: &mut Config, pairs: &[(&str, &str)]) {
     }
 }
 
+/// Load config, apply `pairs`, and write the result back to the resolved config path.
+///
+/// # Arguments
+///
+/// * `files_dir` - Optional `BOOKCLERK_FILES_DIR` override.
+/// * `config_path` - Optional explicit `config.toml` path.
+/// * `pairs` - `(key, value)` overrides (classic or dotted).
+///
+/// # Returns
+///
+/// The updated [`Config`] after a successful write.
+///
+/// # Errors
+///
+/// Propagates load, validation, and write failures as [`crate::ConfigError`].
 pub fn apply_config_updates(
     files_dir: Option<PathBuf>,
     config_path: Option<PathBuf>,
@@ -29,6 +49,16 @@ pub fn apply_config_updates(
     Ok(cfg)
 }
 
+/// Load `path`, apply `pairs`, and write the updated TOML back to the same path.
+///
+/// # Arguments
+///
+/// * `path` - Existing `config.toml` to mutate in place.
+/// * `pairs` - `(key, value)` overrides (classic or dotted).
+///
+/// # Errors
+///
+/// Propagates read, parse, and write failures as [`crate::ConfigError`].
 pub fn apply_config_updates_from_path(path: &Path, pairs: &[(&str, &str)]) -> Result<Config> {
     let mut cfg = Config::from_toml_file(path)?;
     apply_setting_overrides(&mut cfg, pairs);

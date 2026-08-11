@@ -21,6 +21,23 @@ pub struct LibraryImportSummary {
 }
 
 /// Import books from classic EF Core SQLite `LibationContext.db`.
+///
+/// # Arguments
+///
+/// * `classic_db` - Filesystem path (`classic_db`).
+/// * `store` - `store` input for this call.
+/// * `audio_paths` - Filesystem path (`audio_paths`).
+/// * `books_root` - Filesystem path (`books_root`).
+/// * `account_id_map` - String `account_id_map` for this call.
+/// * `dry_run` - Boolean flag `dry_run`.
+///
+/// # Returns
+///
+/// On success, the inner `LibraryImportSummary` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn import_library_db(
     classic_db: &Path,
     store: &LibraryStore,

@@ -10,12 +10,22 @@ const APP_PATHS = new Set([
   "/settings",
 ]);
 
-/** True when `pathname` is a known GUI route (not an API/static/unknown URL). */
+/**
+ * Returns whether `pathname` is a known GUI route (not an API/static/unknown URL).
+ *
+ * @param pathname - Document pathname (may include a trailing slash).
+ * @returns True when the path is owned by the React SPA.
+ */
 export function isAppPath(pathname: string): boolean {
   return APP_PATHS.has(normalizePathname(pathname));
 }
 
-/** Strip a trailing slash (except for `/`). */
+/**
+ * Strips a trailing slash (except for `/`).
+ *
+ * @param pathname - Raw document pathname.
+ * @returns Normalized pathname.
+ */
 export function normalizePathname(pathname: string): string {
   const raw = pathname || "/";
   if (raw.length > 1 && raw.endsWith("/")) {
@@ -24,7 +34,12 @@ export function normalizePathname(pathname: string): string {
   return raw === "" ? "/" : raw;
 }
 
-/** Map a document path to an app view, or `null` for `/` (use default_view). */
+/**
+ * Maps a document path to an app view, or `null` for `/` (use default_view).
+ *
+ * @param pathname - Document pathname.
+ * @returns Matching {@link AppView}, or `null` when the path is `/` or unknown.
+ */
 export function viewFromPath(pathname: string): AppView | null {
   switch (normalizePathname(pathname)) {
     case "/discover":
@@ -42,7 +57,12 @@ export function viewFromPath(pathname: string): AppView | null {
   }
 }
 
-/** Canonical document path for an app view. */
+/**
+ * Returns the canonical document path for an app view.
+ *
+ * @param view - SPA view id.
+ * @returns Path such as `/library`.
+ */
 export function pathForView(view: AppView): string {
   switch (view) {
     case "discover":
@@ -58,7 +78,13 @@ export function pathForView(view: AppView): string {
   }
 }
 
-/** Resolve the view to show for the current URL + signed-in default. */
+/**
+ * Resolves the view to show for the current URL plus signed-in default.
+ *
+ * @param pathname - Document pathname.
+ * @param defaultView - Session default view when the path is `/`.
+ * @returns Effective {@link AppView}.
+ */
 export function resolveView(
   pathname: string,
   defaultView: AppView | string | undefined,
@@ -66,6 +92,12 @@ export function resolveView(
   return viewFromPath(pathname) ?? normalizeAppView(defaultView);
 }
 
+/**
+ * Coerces an unknown string into a valid {@link AppView}.
+ *
+ * @param v - Candidate view id from the session or URL.
+ * @returns Valid view, defaulting to `discover`.
+ */
 export function normalizeAppView(v: string | undefined): AppView {
   if (
     v === "library" ||
@@ -79,7 +111,12 @@ export function normalizeAppView(v: string | undefined): AppView {
   return "discover";
 }
 
-/** Update the URL bar without a full reload. */
+/**
+ * Updates the URL bar without a full reload.
+ *
+ * @param view - View to reflect in the path.
+ * @param mode - History `push` (default) or `replace`.
+ */
 export function syncUrlToView(view: AppView, mode: "push" | "replace" = "push") {
   const next = pathForView(view);
   const current = normalizePathname(window.location.pathname);
@@ -94,7 +131,9 @@ export function syncUrlToView(view: AppView, mode: "push" | "replace" = "push") 
 
 const DISCOVER_SEARCH_HANDOFF = "bookclerk.discoverSearch";
 
-/** Optional post-search filter/sort applied after a Discover catalog query. */
+/**
+ * Optional post-search filter/sort applied after a Discover catalog query.
+ */
 export type DiscoverSearchHandoff = {
   q: string;
   /** Storefront-scoped search (`author` / `narrator` / `series` / `genre`). */
@@ -146,7 +185,11 @@ export type DiscoverSearchHandoff = {
     | "length";
 };
 
-/** Queue a Discover catalog search for the next Discover page mount (cross-view). */
+/**
+ * Queues a Discover catalog search for the next Discover page mount (cross-view).
+ *
+ * @param handoff - Query string or full handoff object (ignored when `q` is under 2 chars).
+ */
 export function queueDiscoverSearch(handoff: string | DiscoverSearchHandoff) {
   const payload: DiscoverSearchHandoff =
     typeof handoff === "string" ? { q: handoff } : { ...handoff };
@@ -159,7 +202,11 @@ export function queueDiscoverSearch(handoff: string | DiscoverSearchHandoff) {
   }
 }
 
-/** Consume a queued Discover search (once). */
+/**
+ * Consumes a queued Discover search (once).
+ *
+ * @returns Handoff payload, or `null` when none / invalid.
+ */
 export function takeQueuedDiscoverSearch(): DiscoverSearchHandoff | null {
   try {
     const raw = sessionStorage.getItem(DISCOVER_SEARCH_HANDOFF);

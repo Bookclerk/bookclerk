@@ -58,13 +58,21 @@ pub async fn fetch_title_materials_with_quality(
 /// Parameters for [`fetch_title_with_mode`].
 #[derive(Debug, Clone)]
 pub struct TitleFetchRequest<'a> {
+    /// Store base URL.
     pub store_base_url: &'a str,
+    /// Email.
     pub email: &'a str,
+    /// Product Identifier.
     pub product_id: &'a str,
+    /// Product title.
     pub product_title: Option<&'a str>,
+    /// Absolute path to the download/work cache directory.
     pub cache_dir: &'a Path,
+    /// Prefer hi.
     pub prefer_hi: bool,
+    /// Mode.
     pub mode: GraphicAudioAccess,
+    /// Password.
     pub password: Option<&'a str>,
     /// ZIP SKU preference when [`Self::mode`] is [`GraphicAudioAccess::Zip`].
     pub zip_container: GraphicAudioContainer,

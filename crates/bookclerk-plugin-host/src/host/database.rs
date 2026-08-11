@@ -92,6 +92,7 @@ pub struct DatabaseRegistry {
 }
 
 impl DatabaseRegistry {
+    /// Currently active external database guest for `[database].plugin`.
     #[must_use]
     pub fn active(&self) -> Option<Arc<ExternalDatabase>> {
         self.active.clone()
@@ -138,7 +139,7 @@ pub async fn load_external_database(config: &Config) -> PluginResult<DatabaseReg
     Ok(registry)
 }
 
-/// Open [`LibraryStore`] via the external database guest (required).
+/// Open [`bookclerk_library::LibraryStore`] via the external database guest (required).
 pub async fn open_library_store(
     config: &Config,
     registry: &DatabaseRegistry,

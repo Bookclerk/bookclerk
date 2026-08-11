@@ -27,6 +27,11 @@ function clearHash() {
   window.history.replaceState(null, "", `${pathname}${search}`);
 }
 
+/**
+ * Unauthenticated entry — operator token, password, claim ticket, or return login.
+ *
+ * @param props - Called with the new session after successful sign-in.
+ */
 export function LoginPage({
   onSuccess,
 }: {

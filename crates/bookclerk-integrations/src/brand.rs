@@ -5,11 +5,13 @@ use serde::Serialize;
 /// Visual identity for a store or integration in the portal UI.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct Brand {
+    /// Stable identifier for this item.
     pub id: &'static str,
+    /// Operator-facing brand name shown on portal connect buttons.
     pub name: &'static str,
-    /// Button background.
+    /// CSS background color for portal connect buttons (`#RRGGBB`).
     pub bg: &'static str,
-    /// Button foreground / text.
+    /// CSS foreground / text color for portal connect buttons.
     pub fg: &'static str,
     /// Optional accent (border / focus).
     pub accent: &'static str,

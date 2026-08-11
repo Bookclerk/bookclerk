@@ -34,6 +34,7 @@ pub const DEFAULT_WIDEVINE_CDM_PROVIDER: &str =
 /// Loaded Widevine CDM client.
 pub struct WidevineCdm {
     cdm: Cdm,
+    /// Security level.
     pub security_level: u8,
 }
 
@@ -266,15 +267,21 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// Result of a Widevine (or Mpeg-fallback) download into `work_dir`.
 #[derive(Debug, Clone)]
 pub struct WidevineDownload {
+    /// Filesystem path for this value.
     pub path: PathBuf,
+    /// DRM type.
     pub drm_type: String,
+    /// Content format.
     pub content_format: Option<String>,
+    /// Content size.
     pub content_size: Option<u64>,
     /// CENC key id (hex); absent for plain Mpeg.
     pub kid: Option<String>,
     /// CENC content key (hex).
     pub key: Option<String>,
+    /// Needs decrypt.
     pub needs_decrypt: bool,
+    /// Pdf URL.
     pub pdf_url: Option<String>,
 }
 

@@ -1,4 +1,13 @@
-//! Configuration, data-directory resolution, and logging setup for Bookclerk.
+//! Host configuration, files-dir layout, and logging for Bookclerk.
+//!
+//! # Audience
+//!
+//! Host binaries (`bookclerk`, `bookclerkd`) and in-process host crates — not
+//! guest plugins. Parses `config.toml`, applies env overrides, resolves
+//! `BOOKCLERK_FILES_DIR`, and installs tracing / diagnostics.
+//!
+//! Product narrative: `docs/configuration.md`, `docs/diagnostics.md`. Style:
+//! `docs/code-documentation.md`.
 
 mod cookie_flags;
 mod database;

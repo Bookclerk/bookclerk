@@ -7,24 +7,46 @@ use bookclerk_storage::{FanoutBackend, LocalFsBackend, S3Backend, StorageBackend
 
 use crate::error::{AcquireError, Result};
 
+/// One configured output destination for an acquire run.
 pub struct AcquireDestination {
+    /// Destination backend kind (`local`, `s3`, …).
     pub kind: OutputBackendKind,
+    /// Constructed storage backend for this destination.
     pub backend: Box<dyn StorageBackend>,
+    /// Source download options (quality, chapter prefs, …).
     pub options: DownloadOptions,
 }
 
+/// Ordered set of acquire destinations built from config.
 pub struct AcquireDestinations {
+    /// Configured acquire destinations in evaluation order.
     pub items: Vec<AcquireDestination>,
+    /// Index of the primary destination used for library status keys.
     pub primary: OutputBackendKind,
+    /// Whether multiple destinations are enabled for this run.
     pub multi_destination: MultiDestinationMode,
 }
 
 impl AcquireDestinations {
-    /// Build destination backends.
+    /// Builds destination backends from `[output]` config.
     ///
     /// `library` is used when the S3 destination loads credentials from
     /// `encrypted_secrets` (after `BOOKCLERK_AWS_*` env override, before
     /// the AWS SDK default chain).
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Host config with enabled `[output.local]` / `[output.s3]`.
+    /// * `library` - Optional library store for sealed S3 credentials.
+    ///
+    /// # Returns
+    ///
+    /// Constructed destinations with a chosen primary backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AcquireError`] when destination config is invalid or a backend
+    /// cannot be constructed.
     pub async fn from_config(config: &Config, library: Option<&LibraryStore>) -> Result<Self> {
         config.output.validate_destinations().map_err(|err| {
             AcquireError::Other(anyhow::anyhow!("invalid output destination config: {err}"))
@@ -64,16 +86,19 @@ impl AcquireDestinations {
         })
     }
 
+    /// Returns the number of configured destinations.
     #[must_use]
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
+    /// Returns true when no destinations are configured.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
+    /// Returns the primary destination used for library storage keys.
     #[must_use]
     pub fn primary_destination(&self) -> &AcquireDestination {
         self.items
@@ -82,6 +107,7 @@ impl AcquireDestinations {
             .unwrap_or_else(|| &self.items[0])
     }
 
+    /// Returns the destination whose kind equals `kind`, if configured.
     #[must_use]
     pub fn destination(&self, kind: OutputBackendKind) -> Option<&AcquireDestination> {
         self.items.iter().find(|dest| dest.kind == kind)
@@ -104,6 +130,7 @@ impl AcquireDestinations {
         Ok(Box::new(FanoutBackend::new(backends)?))
     }
 
+    /// Consumes this set and returns a listing backend over the primary destination.
     pub fn into_listing_backend(self) -> Result<Box<dyn StorageBackend>> {
         let backends = self
             .items

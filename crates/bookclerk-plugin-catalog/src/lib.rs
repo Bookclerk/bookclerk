@@ -42,6 +42,19 @@ pub use trust::TrustPolicy;
 pub use version::{max_version, newest_newer_than, Version};
 
 /// Federated search across configured adapters (static first, then cargo/npm).
+///
+/// # Arguments
+///
+/// * `adapters` - Registry adapters to query in order.
+/// * `query` - Free-text query and hit limit.
+///
+/// # Returns
+///
+/// Combined catalog hits truncated to `query.limit` (clamped 1..=100).
+///
+/// # Errors
+///
+/// Returns [`CatalogError`] when every adapter fails and no hits were collected.
 pub fn federated_search(
     adapters: &[&dyn RegistryAdapter],
     query: &SearchQuery,

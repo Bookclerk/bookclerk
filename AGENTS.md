@@ -32,7 +32,9 @@ Workspace-local caches (gitignored; travel with the bind-mounted checkout):
 
 Product docs live under [`docs/`](docs/README.md). Bookclerk is a
 **multi-storefront** audiobook library manager (sources + destinations +
-integrations), not an Audible-only Libation fork.
+integrations), not an Audible-only Libation fork. Public APIs use
+[Google-style inline docs](docs/code-documentation.md); regenerate HTML with
+`./scripts/generate-api-docs.sh` into `docs/api/`.
 
 ### Services / binaries
 

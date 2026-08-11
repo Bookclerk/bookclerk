@@ -41,6 +41,17 @@ Start here if you are new:
 | [Libation parity](libation-parity.md) | Headless CLI/settings matrix vs Libation Chardonnay |
 | [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Plugin ABI target state (not Cap’n Proto / not legacy JSON-RPC product ABI) |
 
+## API reference (generated)
+
+| Doc | When to read |
+| --- | --- |
+| [Code documentation (Google style)](code-documentation.md) | Inline `///` / JSDoc / Python docstring conventions |
+| [Generated API reference](api/README.md) | How to build rustdoc / TypeDoc / pdoc into `docs/api/` |
+
+```bash
+./scripts/generate-api-docs.sh
+```
+
 ## Agent / contributor notes
 
 Cloud-agent and local-dev conventions live in [`AGENTS.md`](../AGENTS.md) at

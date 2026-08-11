@@ -73,6 +73,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # Google-style API docs → docs/api/ (see docs/code-documentation.md).
+      # --check generates into a temp dir so the workspace tree stays clean.
+      - name: Generate API docs
+        run: ./scripts/generate-api-docs.sh --check
+
       - name: Plugin host without in-process sources
         run: cargo check -p bookclerk-plugin-host --no-default-features
 

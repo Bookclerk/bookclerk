@@ -39,6 +39,11 @@ const PAGE_SIZE = 40;
 const selectClassName =
   "rounded-md border border-ink/15 bg-white/80 px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
 
+/**
+ * Library view — searchable, filterable owned titles with acquire actions.
+ *
+ * @param props - Logout, acquire permission, nav, and optional role.
+ */
 export function LibraryPage({
   onLogout,
   canAcquire,

@@ -1,5 +1,5 @@
 /**
- * Download / refresh the pinned Cloudflare `workerd` binary (mirrors ensure.rs).
+ * Downloads / refreshes the pinned Cloudflare `workerd` binary (mirrors `ensure.rs`).
  */
 
 import { createHash } from "node:crypto";
@@ -12,30 +12,62 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 
+/**
+ * One platform asset entry inside {@link WorkerdPin}.
+ */
 export type WorkerdAsset = {
+  /** Gzip-compressed release artifact filename on the Cloudflare workerd GitHub release. */
   artifact: string;
+  /** Expected SHA-256 hex digest of the compressed artifact bytes (not the gunzipped binary). */
   sha256_hex: string;
 };
 
+/**
+ * Contents of `workerd-pin.json` shipping with this package.
+ */
 export type WorkerdPin = {
+  /** GitHub release tag (for example `v1.20250310.0`) that identifies this pin. */
   release_tag: string;
+  /** Compatibility date bundled with this pin for Cap'n Proto configs. */
   bundled_compat_date: string;
+  /** Stamp filename written beside the installed binary to record `release_tag`. */
   version_stamp: string;
+  /** Platform key → artifact map (`linux-x86_64`, `macos-aarch64`, `windows-x86_64`, …). */
   assets: Record<string, WorkerdAsset>;
 };
 
-/** Package root (`packages/plugin-sdk`) whether running from `src/` or `dist/`. */
+/**
+ * Resolves the `@bookclerk/plugin-sdk` package root.
+ *
+ * Works whether this module is loaded from `src/sparse-workerd` or
+ * `dist/sparse-workerd`.
+ *
+ * @returns Absolute path to `packages/plugin-sdk`.
+ */
 export function packageRoot(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
   // dist/sparse-workerd or src/sparse-workerd → package root
   return path.resolve(here, "../..");
 }
 
+/**
+ * Loads and parses `workerd-pin.json` from the package root.
+ *
+ * @param root - Package root override (defaults to {@link packageRoot}).
+ * @returns Parsed pin document.
+ */
 export function loadPin(root = packageRoot()): WorkerdPin {
   const pinPath = path.join(root, "workerd-pin.json");
   return JSON.parse(fs.readFileSync(pinPath, "utf8")) as WorkerdPin;
 }
 
+/**
+ * Maps Node `process.platform` / `process.arch` to a pin asset key.
+ *
+ * @param platform - Node platform string (default `process.platform`).
+ * @param arch - Node arch string (default `process.arch`).
+ * @returns Pin asset key, or `undefined` when the host is unsupported.
+ */
 export function platformKey(
   platform = process.platform,
   arch = process.arch,
@@ -50,15 +82,34 @@ export function platformKey(
   return map[`${platform}-${arch}`];
 }
 
+/**
+ * Returns the on-disk workerd binary basename for the current platform.
+ *
+ * @returns `workerd.exe` on Windows, otherwise `workerd`.
+ */
 export function binaryName(): string {
   return process.platform === "win32" ? "workerd.exe" : "workerd";
 }
 
+/**
+ * Builds the GitHub release download URL for a pin artifact.
+ *
+ * @param pin - Loaded workerd pin.
+ * @param artifact - Artifact filename from {@link WorkerdAsset.artifact}.
+ * @returns Absolute HTTPS download URL.
+ */
 export function downloadUrl(pin: WorkerdPin, artifact: string): string {
   return `https://github.com/cloudflare/workerd/releases/download/${pin.release_tag}/${artifact}`;
 }
 
-/** Preferred cache: `BOOKCLERK_WORKERD_CACHE` or `~/.cache/bookclerk/workerd`. */
+/**
+ * Resolves the preferred workerd cache directory.
+ *
+ * Honors `BOOKCLERK_WORKERD_CACHE`, otherwise uses
+ * `~/.cache/bookclerk/workerd`.
+ *
+ * @returns Absolute cache directory path.
+ */
 export function defaultCacheDir(): string {
   if (process.env.BOOKCLERK_WORKERD_CACHE) {
     return process.env.BOOKCLERK_WORKERD_CACHE;
@@ -82,8 +133,14 @@ function isCurrent(bin: string, pin: WorkerdPin): boolean {
 }
 
 /**
- * Ensure `cacheDir/workerd` matches the pin, downloading if needed.
- * Honors `BOOKCLERK_WORKERD_BIN` when set and current.
+ * Ensures `cacheDir/workerd` matches the pin, downloading if needed.
+ *
+ * Honors `BOOKCLERK_WORKERD_BIN` when that binary exists and matches the pin.
+ *
+ * @param cacheDir - Directory that will hold the binary (default {@link defaultCacheDir}).
+ * @param root - Package root for loading the pin (default {@link packageRoot}).
+ * @returns Absolute path to a current `workerd` binary.
+ * @throws {Error} When the platform has no pin, download fails, or the digest mismatches.
  */
 export async function ensureWorkerd(
   cacheDir = defaultCacheDir(),

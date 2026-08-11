@@ -23,6 +23,9 @@ pub struct SqliteProxy {
 }
 
 impl SqliteProxy {
+    /// Wraps an already-opened rusqlite connection for SeaORM proxy queries.
+    ///
+    /// Call after applying migrations (see [`open`] / [`open_memory`]).
     #[must_use]
     pub fn new(conn: Connection) -> Self {
         Self {
@@ -31,7 +34,19 @@ impl SqliteProxy {
     }
 }
 
-/// Open (or create) a local SQLite database, migrate, return a SeaORM proxy.
+/// Opens (or creates) a SQLite file, runs library migrations, and returns a SeaORM proxy.
+///
+/// Use for the production `library.db` path. Journal mode is `TRUNCATE` so
+/// jailed guests without parent-dir unlink rights can still commit.
+///
+/// # Arguments
+///
+/// * `path` - Absolute path to the SQLite database file.
+///
+/// # Errors
+///
+/// Returns [`LibraryError`] when the parent directory cannot be created, the
+/// file cannot be opened, migrations fail, or the SeaORM proxy cannot connect.
 pub async fn open(path: &Path) -> Result<DatabaseConnection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -56,7 +71,13 @@ pub async fn open(path: &Path) -> Result<DatabaseConnection> {
     Ok(db)
 }
 
-/// In-memory SQLite (tests / dry-run migrate).
+/// Opens an in-memory SQLite database, migrates, and returns a SeaORM proxy.
+///
+/// Intended for unit tests and dry-run migrate paths (no durable file).
+///
+/// # Errors
+///
+/// Returns [`LibraryError`] when migrations or the SeaORM proxy fail.
 pub async fn open_memory() -> Result<DatabaseConnection> {
     let mut conn = rusqlite::Connection::open_in_memory()?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
@@ -70,12 +91,27 @@ pub async fn open_memory() -> Result<DatabaseConnection> {
     Ok(db)
 }
 
-/// Open SQLite at `path` and wrap as [`LibraryStore`].
+/// Opens SQLite at `path`, migrates, and wraps it as a [`LibraryStore`].
+///
+/// Prefer this entry point from CLI / daemon hosts that need the high-level
+/// library API rather than a raw [`DatabaseConnection`].
+///
+/// # Arguments
+///
+/// * `path` - Absolute path to the SQLite database file.
+///
+/// # Errors
+///
+/// Propagates errors from [`open`].
 pub async fn open_store(path: &Path) -> Result<LibraryStore> {
     Ok(LibraryStore::from_connection(open(path).await?))
 }
 
-/// In-memory [`LibraryStore`] (tests).
+/// Opens an in-memory [`LibraryStore`] for tests.
+///
+/// # Errors
+///
+/// Propagates errors from [`open_memory`].
 pub async fn open_store_memory() -> Result<LibraryStore> {
     Ok(LibraryStore::from_connection(open_memory().await?))
 }

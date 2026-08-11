@@ -12,21 +12,44 @@ use crate::naming::swap_audio_extension;
 /// Options for [`convert_book`].
 #[derive(Debug, Clone)]
 pub struct ConvertRequest {
+    /// Scratch directory for temporary acquire/convert files.
     pub cache_dir: PathBuf,
+    /// When true, re-download or re-convert even if output exists.
     pub force: bool,
+    /// LAME MP3 encoder settings from config.
     pub lame: bookclerk_config::LameConfig,
+    /// Optional ceiling on output sample rate in Hz.
     pub max_sample_rate: Option<u32>,
 }
 
 /// Summary of a batch convert run.
 #[derive(Debug, Clone, Default)]
 pub struct ConvertSummary {
+    /// Titles successfully converted in this run.
     pub converted: u32,
+    /// Titles skipped (already done or ineligible).
     pub skipped: u32,
+    /// Titles that failed conversion or matching.
     pub failed: u32,
 }
 
 /// Convert one acquired m4b/m4a to mp3 and update the library storage key.
+///
+/// # Arguments
+///
+/// * `library` - Library store used to update acquire status / storage key.
+/// * `storage` - Object storage backend holding the source and destination objects.
+/// * `book` - Acquired book row whose `storage_key` points at m4b/m4a.
+/// * `req` - Cache directory, force flag, and LAME settings.
+///
+/// # Returns
+///
+/// Object-storage key of the written MP3.
+///
+/// # Errors
+///
+/// Returns [`AcquireError`] when the source is missing/ineligible, encode fails,
+/// or library/storage updates fail.
 pub async fn convert_book(
     library: &LibraryStore,
     storage: &dyn StorageBackend,

@@ -247,26 +247,37 @@ struct LoginErrorBody {
 /// One library / sample product from `api/products`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Product {
+    /// Identifier.
     #[serde(rename = "Id")]
     pub id: String,
+    /// Product type.
     #[serde(rename = "Type", default)]
     pub product_type: Option<String>,
+    /// Product name.
     #[serde(rename = "ProductName", default)]
     pub product_name: Option<String>,
+    /// Title.
     #[serde(rename = "Title", default)]
     pub title: Option<String>,
+    /// Author.
     #[serde(rename = "Author", default)]
     pub author: Option<String>,
+    /// Series.
     #[serde(rename = "Series", default)]
     pub series: Option<String>,
+    /// Episode.
     #[serde(rename = "Episode", default)]
     pub episode: Option<String>,
+    /// Genre.
     #[serde(rename = "Genre", default)]
     pub genre: Option<String>,
+    /// Image.
     #[serde(rename = "Image", default)]
     pub image: Option<String>,
+    /// Thumbnail.
     #[serde(rename = "Thumbnail", default)]
     pub thumbnail: Option<String>,
+    /// Running time.
     #[serde(rename = "Running Time", default)]
     pub running_time: Option<String>,
     #[serde(
@@ -274,12 +285,14 @@ pub struct Product {
         default,
         deserialize_with = "deserialize_opt_stringish"
     )]
+    /// Purchased date.
     pub purchased_date: Option<String>,
     #[serde(
         rename = "Release Date",
         default,
         deserialize_with = "deserialize_opt_stringish"
     )]
+    /// Release date.
     pub release_date: Option<String>,
 }
 
@@ -344,8 +357,10 @@ impl Product {
 /// Lo/Hi download URLs from `api/links`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadLinks {
+    /// Lo.
     #[serde(rename = "Lo", default)]
     pub lo: Option<String>,
+    /// Hi.
     #[serde(rename = "Hi", default)]
     pub hi: Option<String>,
 }

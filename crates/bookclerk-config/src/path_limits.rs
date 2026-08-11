@@ -32,6 +32,7 @@ pub struct PathLimits {
     /// Max UTF-8 bytes for the full relative storage key (`folder/…/file.ext`).
     /// `0` disables. For S3, set to [`S3_MAX_OBJECT_KEY_BYTES`] minus prefix len.
     pub max_storage_key_bytes: usize,
+    /// Whether segment truncation counts Unicode scalars or UTF-8 bytes.
     pub measure: PathLengthMeasure,
 }
 

@@ -2,9 +2,7 @@
 //!
 //! JS `modules/index.js` loads this module and forwards Workers RPC methods.
 //! Types come from [`bookclerk_plugin_abi`] — the same ABI as
-//! [`bookclerk_plugin_sdk::BookclerkPlugin`].
-
-#![allow(missing_docs)]
+//! `bookclerk_plugin_sdk::BookclerkPlugin`.
 
 use bookclerk_plugin_abi::{
     CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
@@ -33,7 +31,24 @@ fn cli_schema() -> CliSchema {
     }
 }
 
-/// Dispatch one Workers RPC method. Returns JSON text (result payload).
+/// Dispatches one Workers RPC method and returns the JSON result payload.
+///
+/// Called from the JS `WorkerEntrypoint` glue (and unit tests). Unknown methods
+/// return `Err`; successful handlers serialize ABI DTOs as JSON text.
+///
+/// # Arguments
+///
+/// * `method` - Workers RPC method name (`handshake`, `health`, `cliInvoke`, …).
+/// * `params_json` - JSON params object, or empty/`null` when the method takes none.
+///
+/// # Returns
+///
+/// JSON text of the method result (may be the literal `null`).
+///
+/// # Errors
+///
+/// Returns an error string when params fail to parse, serialization fails, or
+/// the method is unsupported.
 pub fn dispatch_json(method: &str, params_json: &str) -> Result<String, String> {
     let params: Value = if params_json.trim().is_empty() {
         Value::Null
@@ -109,7 +124,16 @@ mod wasm_api {
         console_error_panic_hook::set_once();
     }
 
-    /// Workers RPC dispatch for the JS `WorkerEntrypoint` glue.
+    /// Forwards a Workers RPC call into [`super::dispatch_json`].
+    ///
+    /// # Arguments
+    ///
+    /// * `method` - Workers RPC method name.
+    /// * `params_json` - JSON params (may be empty).
+    ///
+    /// # Errors
+    ///
+    /// Maps dispatch failures to [`JsError`].
     #[wasm_bindgen]
     pub fn dispatch(method: &str, params_json: &str) -> Result<String, JsError> {
         dispatch_json(method, params_json).map_err(|e| JsError::new(&e))

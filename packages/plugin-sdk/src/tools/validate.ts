@@ -1,31 +1,61 @@
 /**
- * plugin.toml semantic validation (mirrors bookclerk-plugin-manifest rules).
+ * `plugin.toml` semantic validation (mirrors `bookclerk-plugin-manifest` rules).
+ *
+ * Used by `bookclerk-plugin check|fmt|package` and the sparse-workerd smoke path.
  */
 
+/**
+ * Parsed `plugin.toml` shape accepted by the TypeScript author tools.
+ *
+ * Field names match the TOML keys (snake_case), not the Workers RPC wire
+ * (camelCase). See `docs/plugins.md` for the full manifest contract.
+ */
 export type Manifest = {
+  /** ABI version declared in `plugin.toml`; must be `1` for current hosts. */
   api_version: number;
+  /** Globally unique plugin id matching `[a-z0-9_]{2,32}` (no leading/trailing `_`). */
   id: string;
+  /** Optional operator-facing display name when it differs from `id`. */
   name?: string;
+  /** Plugin surface kind: `source` | `integration` | `output` | `database`. */
   kind: string;
+  /** Semver-ish package version embedded in release archive filenames. */
   version?: string;
+  /** Remote `http(s)` URL or relative image path under the plugin root for the brand logo. */
   logo?: string;
+  /** Guest runtime; defaults to `native` when omitted (`workerd` for Workers RPC isolates). */
   runtime?: string;
+  /** Native executable path relative to the plugin root (required when `runtime = "native"`). */
   command?: string;
+  /** Extra argv appended after `command` when spawning the native guest. */
   args?: string[];
+  /** Workerd isolate settings (required when `runtime = "workerd"`). */
   workerd?: {
+    /** Cloudflare Workers compatibility date (`YYYY-MM-DD`) for the isolate. */
     compatibility_date: string;
+    /** Optional Cloudflare compatibility flags (Python Workers need `python_workers`, …). */
     compatibility_flags?: string[];
+    /** Entrypoint module filename under `modules_dir` (for example `plugin.js`). */
     main_module: string;
+    /** Modules directory relative to the plugin root (default `modules`). */
     modules_dir?: string;
+    /** Named WorkerEntrypoint export on the main module (default `default`). */
     entrypoint?: string;
+    /** Optional CPU / subrequest limits enforced by the host egress policy. */
     limits?: { cpu_ms?: number; subrequests?: number };
   };
+  /** Extra module descriptors for legacy / advanced layouts outside `modules_dir`. */
   modules?: Array<{ name: string; path: string; type?: string }>;
+  /** Network, bindings, and method capabilities the operator must consent to. */
   capabilities: {
+    /** Egress policy (`deny` / `outbound`, plus hostname domains for workerd). */
     network: { mode: string; domains?: string[] };
+    /** Consented host bindings (`config`, `secrets`, `plugin_kv`, `work_fs`, `oauth`). */
     bindings?: Record<string, boolean>;
+    /** Declared Workers RPC method list the guest implements. */
     methods?: { list?: string[] };
   };
+  /** Optional CLI schema block (`[[cli.commands]]`) mirrored into handshake. */
   cli?: unknown;
 };
 
@@ -40,10 +70,19 @@ const LOGO_EXTENSIONS = [
 ] as const;
 
 /**
- * Strict plugin id grammar (mirrors Rust `validate_plugin_id`):
- * `[a-z0-9_]{2,32}` with no leading/trailing `_` and no `__`.
- * Ids are globally unique across kinds. Leading/trailing whitespace is
- * rejected (non-lossy), not trimmed.
+ * Validates a plugin id against the strict grammar.
+ *
+ * Mirrors Rust `validate_plugin_id`: `[a-z0-9_]{2,32}` with no leading/trailing
+ * `_` and no `__`. Ids are globally unique across kinds. Leading/trailing
+ * whitespace is rejected (non-lossy), not trimmed.
+ *
+ * @param id - Candidate plugin id from `plugin.toml`.
+ * @throws {Error} When the id violates the grammar.
+ *
+ * @example
+ * ```ts
+ * validatePluginId("echo_source");
+ * ```
  */
 export function validatePluginId(id: string): void {
   if (id !== id.trim()) {
@@ -66,7 +105,16 @@ export function validatePluginId(id: string): void {
   }
 }
 
-/** Classify and validate `plugin.toml` `logo` (mirrors Rust `validate_logo`). */
+/**
+ * Classifies and validates a `plugin.toml` `logo` value.
+ *
+ * Mirrors Rust `validate_logo`: either an `http(s)` URL or a relative embedded
+ * image path under the plugin root.
+ *
+ * @param raw - Raw logo string from the manifest.
+ * @returns Discriminated logo kind with the validated value.
+ * @throws {Error} When the logo is empty, unsafe, or uses a disallowed scheme.
+ */
 export function validateLogo(
   raw: string,
 ): { kind: "remote"; value: string } | { kind: "embedded"; value: string } {
@@ -155,6 +203,15 @@ function validateEmbeddedPath(trimmed: string): { kind: "embedded"; value: strin
   return { kind: "embedded", value: normalized };
 }
 
+/**
+ * Validates a parsed {@link Manifest} against semantic manifest rules.
+ *
+ * Checks id grammar, `api_version`, kind, runtime-specific required fields,
+ * and workerd network domain requirements.
+ *
+ * @param m - Manifest object (typically from `smol-toml`).
+ * @throws {Error} When any semantic rule fails (message prefixed with `plugin.toml:`).
+ */
 export function validateManifest(m: Manifest): void {
   if (!m.id || !String(m.id).trim()) {
     throw new Error("plugin.toml: `id` is required");

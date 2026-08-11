@@ -82,3 +82,15 @@ the pinned Cloudflare `workerd` into `~/.cache/bookclerk/workerd` (override with
 bridge under the plugin dir, then POSTs `handshake` / `health` to `/rpc`.
 
 See Echo examples under [`examples/`](../../examples/).
+
+## API docs
+
+Public exports use Google-style JSDoc. Generate HTML with TypeDoc:
+
+```bash
+npm run docs
+# or from the repo root:
+./scripts/generate-api-docs.sh
+```
+
+Conventions: [`docs/code-documentation.md`](../../docs/code-documentation.md).

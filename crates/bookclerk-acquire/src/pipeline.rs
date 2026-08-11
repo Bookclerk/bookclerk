@@ -41,14 +41,21 @@ pub struct AcquireRequest {
     pub book_uuid: Option<String>,
     /// Which store owns this title (plugin id: `audible`, `libro`, …).
     pub source: String,
+    /// Store account id that owns this title.
     pub account_id: String,
+    /// Display title used for naming and metadata.
     pub title: String,
+    /// Author list for naming templates and tags.
     pub authors: Option<String>,
+    /// Narrator list for naming templates and tags.
     pub narrators: Option<String>,
+    /// Series name for naming templates, when present.
     pub series: Option<String>,
+    /// Series position string for naming templates, when present.
     pub series_index: Option<String>,
+    /// Source download options (quality, chapter prefs, …).
     pub options: DownloadOptions,
-    /// Root for auth files (`BOOKCLERK_FILES_DIR`).
+    /// Bookclerk files directory root (`BOOKCLERK_FILES_DIR`).
     pub files_dir: PathBuf,
     /// Scratch directory for encrypted + decrypted temps.
     pub cache_dir: PathBuf,
@@ -62,8 +69,11 @@ pub struct AcquireRequest {
 /// Result after a successful acquire.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcquireResult {
+    /// Primary product id (Audible ASIN, ISBN, …) for this job.
     pub asin: String,
+    /// Object-storage key written for the primary audio artifact.
     pub storage_key: String,
+    /// All object keys written during this acquire (audio + sidecars).
     #[serde(default)]
     pub written_keys: Vec<String>,
     /// True when an existing file was matched and no download ran.
@@ -71,6 +81,21 @@ pub struct AcquireResult {
 }
 
 /// Run the acquire pipeline for one book.
+///
+/// # Arguments
+///
+/// * `library` - Library store for status updates.
+/// * `source` - Content-source plugin used to fetch the title.
+/// * `destinations` - Output backends to write packaged audio into.
+/// * `req` - Title identity, account, and download options.
+///
+/// # Returns
+///
+/// [`AcquireResult`] describing written keys and match status.
+///
+/// # Errors
+///
+/// Returns [`AcquireError`] when fetch, package, storage, or library updates fail.
 pub async fn acquire_book(
     library: &LibraryStore,
     destinations: &AcquireDestinations,

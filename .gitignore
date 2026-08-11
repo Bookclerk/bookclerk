@@ -60,6 +60,14 @@ lcov.info
 *.egg-info/
 **/*.egg-info/
 
+# Generated API reference HTML (see docs/api/README.md / scripts/generate-api-docs.sh)
+/docs/api/rust/
+/docs/api/typescript/
+/docs/api/ui/
+/docs/api/python/
+/.tmp/api-docs-cargo-target/
+/.tmp/api-docs-venv/
+
 # Local APK probe outputs (CI uploads these as artifacts)
 /artifacts/
 **/__pycache__/

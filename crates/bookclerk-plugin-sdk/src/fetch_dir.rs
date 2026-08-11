@@ -1,4 +1,14 @@
 //! Receive host-passed descriptors for fetch and upload side channels.
+//!
+//! Audience: source and destination plugin authors implementing
+//! [`crate::BookclerkPlugin::fetch_title`] or
+//! [`crate::BookclerkPlugin::put_file`]. Prefer these helpers over reading
+//! `cache_dir` / `local_path` strings alone when the host sets
+//! [`crate::PLUGIN_FD_CHANNEL_ENV`] — the jail may not grant a usable path
+//! string, only an SCM_RIGHTS descriptor.
+//!
+//! See `docs/plugins.md` (guest jail / download cache) and
+//! [`crate::recv_passed_fd`].
 
 #![cfg_attr(unix, allow(unsafe_code))]
 
@@ -9,10 +19,13 @@ use crate::error::{Result, SdkError};
 use crate::pass_fd::{fd_proc_path, recv_passed_fd, PLUGIN_FD_CHANNEL_ENV};
 use crate::protocol::FetchTitleParams;
 
-/// An open fetch work directory received from the host.
+/// An open fetch work directory received from the host for one `fetchTitle` call.
 ///
 /// Holds the descriptor open for its lifetime so `/proc/self/fd/N` (or
-/// `/dev/fd/N`) stays valid for the duration of the `fetch_title` call.
+/// `/dev/fd/N`) stays valid for the duration of the call. When the side channel
+/// is not armed, falls back to the `cache_dir` field on
+/// [`FetchTitleParams`] from the RPC params (absolute path string the host
+/// already prepared inside the guest jail).
 pub struct FetchWorkDir {
     #[cfg(unix)]
     _fd: Option<std::os::fd::OwnedFd>,
@@ -20,7 +33,25 @@ pub struct FetchWorkDir {
 }
 
 impl FetchWorkDir {
-    /// Resolve the directory a `fetch_title` call should write into.
+    /// Resolves the directory a `fetchTitle` call should write downloaded audio into.
+    ///
+    /// When [`PLUGIN_FD_CHANNEL_ENV`] is set, receives one SCM_RIGHTS directory
+    /// FD from the host and maps it via [`fd_proc_path`]. Otherwise uses the
+    /// `cache_dir` field on `params` as an absolute path string.
+    ///
+    /// # Arguments
+    ///
+    /// * `params` - Host `fetchTitle` params; `cache_dir` is used only when the
+    ///   FD side channel is inactive.
+    ///
+    /// # Returns
+    ///
+    /// A [`FetchWorkDir`] whose [`Self::path`] is valid for the rest of the RPC.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError`] when the side channel is required but
+    /// [`recv_passed_fd`] fails, or when FD → path mapping fails on this OS.
     pub fn open(params: &FetchTitleParams) -> Result<Self> {
         if std::env::var(PLUGIN_FD_CHANNEL_ENV).is_ok() {
             let fd = recv_passed_fd()?;
@@ -37,6 +68,10 @@ impl FetchWorkDir {
         })
     }
 
+    /// Absolute filesystem path of the fetch work directory.
+    ///
+    /// On Unix with a passed FD this is typically `/proc/self/fd/N` (Linux) or
+    /// `/dev/fd/N` (macOS/BSD). Keep `self` alive while writing under this path.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -51,7 +86,10 @@ impl Deref for FetchWorkDir {
     }
 }
 
-/// An open upload file received from the host for `put_file`.
+/// An open upload file received from the host for one `putFile` call.
+///
+/// Same FD-lifetime rules as [`FetchWorkDir`]: keep the value alive while
+/// reading the path so the `/proc/self/fd/N` symlink remains valid.
 pub struct UploadFile {
     #[cfg(unix)]
     _fd: Option<std::os::fd::OwnedFd>,
@@ -59,7 +97,25 @@ pub struct UploadFile {
 }
 
 impl UploadFile {
-    /// Resolve the local file path for a `put_file` call.
+    /// Resolves the local file path for a `putFile` upload.
+    ///
+    /// Prefer the FD side channel when [`PLUGIN_FD_CHANNEL_ENV`] is set.
+    /// Otherwise requires a non-empty `local_path` from the RPC params.
+    ///
+    /// # Arguments
+    ///
+    /// * `local_path` - Optional absolute path from host params; ignored when
+    ///   the FD channel is active. Must be `Some` and non-empty when the
+    ///   channel is inactive.
+    ///
+    /// # Returns
+    ///
+    /// An [`UploadFile`] whose [`Self::path`] points at the bytes to upload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError`] when neither an FD nor a usable `local_path` is
+    /// available, or when receiving/mapping the FD fails.
     pub fn open(local_path: Option<&str>) -> Result<Self> {
         if std::env::var(PLUGIN_FD_CHANNEL_ENV).is_ok() {
             let fd = recv_passed_fd()?;
@@ -84,6 +140,10 @@ impl UploadFile {
         })
     }
 
+    /// Absolute filesystem path of the file the host wants uploaded.
+    ///
+    /// Keep `self` alive for the duration of the read so a passed FD path stays
+    /// valid.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -98,12 +158,40 @@ impl Deref for UploadFile {
     }
 }
 
-/// Resolve the directory a `fetch_title` call should write into.
+/// Resolves the directory a `fetchTitle` call should write into.
+///
+/// Thin wrapper around [`FetchWorkDir::open`].
+///
+/// # Arguments
+///
+/// * `params` - Host `fetchTitle` params (see [`FetchWorkDir::open`]).
+///
+/// # Returns
+///
+/// Open work directory for this RPC.
+///
+/// # Errors
+///
+/// Propagates [`FetchWorkDir::open`] failures.
 pub fn fetch_work_dir(params: &FetchTitleParams) -> Result<FetchWorkDir> {
     FetchWorkDir::open(params)
 }
 
-/// Resolve the local file path for a `put_file` call.
+/// Resolves the local file path for a `putFile` call.
+///
+/// Thin wrapper around [`UploadFile::open`].
+///
+/// # Arguments
+///
+/// * `local_path` - Optional path from host params (see [`UploadFile::open`]).
+///
+/// # Returns
+///
+/// Open upload file handle for this RPC.
+///
+/// # Errors
+///
+/// Propagates [`UploadFile::open`] failures.
 pub fn upload_file_path(local_path: Option<&str>) -> Result<UploadFile> {
     UploadFile::open(local_path)
 }

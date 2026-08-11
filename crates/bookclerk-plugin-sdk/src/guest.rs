@@ -1,4 +1,13 @@
-//! Guest-side Workers RPC helper (stdio).
+//! Low-level guest-side Workers RPC helper over tokio stdin/stdout.
+//!
+//! Audience: advanced plugin authors who need a raw `(method, params) → Value`
+//! dispatch loop. Prefer [`crate::BookclerkPluginGuest`] +
+//! [`crate::BookclerkPlugin`] for typed native guests — that path parses
+//! camelCase Workers RPC params into ABI DTOs and maps methods to trait
+//! methods.
+//!
+//! Framing: one JSON [`bookclerk_plugin_abi::RpcRequest`] / response object per
+//! newline, capped at [`crate::protocol::MAX_RPC_LINE_BYTES`].
 
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -11,11 +20,54 @@ use crate::protocol::MAX_RPC_LINE_BYTES;
 /// Guest-side helper: read requests from stdin, write responses to stdout.
 ///
 /// Prefer [`crate::BookclerkPluginGuest`] + [`crate::BookclerkPlugin`] for new
-/// plugins (typed method dispatch). This type is the low-level raw-handler loop.
+/// plugins (typed method dispatch). This type is the low-level raw-handler loop
+/// used by thin adapters and tests.
 pub struct PluginGuest;
 
 impl PluginGuest {
-    /// Run a simple dispatch loop on tokio stdin/stdout (Workers RPC framing).
+    /// Runs a simple dispatch loop on tokio stdin/stdout (Workers RPC framing).
+    ///
+    /// Each non-empty line is deserialized as an RPC request. The handler
+    /// receives the wire method name and JSON params. A `shutdown` method
+    /// always ends the loop after the response is written; handler errors on
+    /// `shutdown` are coerced to a successful null result so the host can exit
+    /// cleanly.
+    ///
+    /// # Arguments
+    ///
+    /// * `handler` - Async closure invoked per request. Return `Ok(Value)` for
+    ///   the RPC `result`, or `Err(String)` which becomes an
+    ///   [`PluginErrorCode::Internal`] wire error (except on `shutdown`).
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when stdin EOF is reached or after a successful `shutdown`
+    /// response flush.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError`] on I/O failures, oversize frames
+    /// ([`MAX_RPC_LINE_BYTES`]), or response JSON serialization errors.
+    /// Malformed request lines are logged and skipped (no response).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use bookclerk_plugin_sdk::PluginGuest;
+    /// use serde_json::{json, Value};
+    ///
+    /// # async fn demo() -> bookclerk_plugin_sdk::Result<()> {
+    /// PluginGuest::serve(|method, _params| async move {
+    ///     if method == "health" {
+    ///         Ok(json!({ "ok": true }))
+    ///     } else {
+    ///         Err(format!("unsupported {method}"))
+    ///     }
+    /// })
+    /// .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn serve<F, Fut>(mut handler: F) -> Result<()>
     where
         F: FnMut(String, Value) -> Fut,

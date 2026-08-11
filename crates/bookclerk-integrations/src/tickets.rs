@@ -21,13 +21,32 @@ pub fn generate_token() -> String {
 /// Freshly minted claim ticket (includes plaintext once).
 #[derive(Debug, Clone)]
 pub struct MintedClaimTicket {
+    /// Persisted claim-ticket row (hash only; no plaintext token).
     pub record: ClaimTicketRecord,
+    /// Plaintext secret shown once at mint time; only a hash is persisted.
     pub token: String,
+    /// Portal identity bound to this ticket.
     pub identity: PortalIdentity,
+    /// Shareable SPA claim URL when `public_origin` is configured.
     pub portal_url: Option<String>,
 }
 
 /// Ensure identity exists and mint a claim ticket.
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `integrations` - Integrations config (TTL, public origin, …).
+/// * `user` - External user identity from an integration login/watcher.
+/// * `created_by` - Actor string recorded on the claim ticket (`daemon`, CLI user, …).
+///
+/// # Returns
+///
+/// On success, the inner `MintedClaimTicket` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn mint_claim_ticket(
     library: &LibraryStore,
     integrations: &IntegrationsConfig,
@@ -59,6 +78,15 @@ pub async fn mint_claim_ticket(
 /// Build a shareable SPA claim URL when `public_origin` is configured.
 ///
 /// Opens the Bookclerk GUI login page with `?ticket=` (see `LoginPage`).
+///
+/// # Arguments
+///
+/// * `integrations` - Integrations config (TTL, public origin, …).
+/// * `token` - Plaintext claim or session token.
+///
+/// # Returns
+///
+/// `Some(...)` when found / applicable; otherwise `None`.
 #[must_use]
 pub fn ticket_portal_url(integrations: &IntegrationsConfig, token: &str) -> Option<String> {
     let origin = integrations.public_origin.as_deref()?.trim_end_matches('/');
@@ -66,6 +94,20 @@ pub fn ticket_portal_url(integrations: &IntegrationsConfig, token: &str) -> Opti
 }
 
 /// Redeem a claim ticket into a portal session cookie value (plaintext).
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `integrations` - Integrations config (TTL, public origin, …).
+/// * `raw_ticket` - Plaintext claim ticket from the SPA / share URL.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn redeem_ticket_to_session(
     library: &LibraryStore,
     integrations: &IntegrationsConfig,
@@ -90,6 +132,20 @@ pub async fn redeem_ticket_to_session(
 }
 
 /// Create a portal session for an already-resolved identity (credential login).
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `integrations` - Integrations config (TTL, public origin, …).
+/// * `identity` - Already-resolved portal identity.
+///
+/// # Returns
+///
+/// On success, the inner `String` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn session_for_identity(
     library: &LibraryStore,
     integrations: &IntegrationsConfig,
@@ -105,6 +161,19 @@ pub async fn session_for_identity(
 }
 
 /// Resolve identity from a portal session cookie value.
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `raw_session` - Plaintext portal session cookie value.
+///
+/// # Returns
+///
+/// On success, the inner `Option<PortalIdentity>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn identity_from_session(
     library: &LibraryStore,
     raw_session: &str,

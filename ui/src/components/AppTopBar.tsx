@@ -17,8 +17,9 @@ const LINKS: { id: AppView; label: string }[] = [
 ];
 
 /**
- * Shared header chrome: logo + nav, prominent page actions, and a compact
- * menu on narrow viewports for nav / preferences / sign-out.
+ * Shared authenticated page header (nav, actions, sign-out).
+ *
+ * @param props - Nav props, sign-out handler, and optional action slot.
  */
 export function AppTopBar({
   nav,

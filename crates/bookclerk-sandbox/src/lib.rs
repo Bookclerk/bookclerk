@@ -1,5 +1,11 @@
 //! Portable, unprivileged process confinement.
 //!
+//! # Audience
+//!
+//! Host binaries that confine media workers and plugin guests (`bookclerk-jail`,
+//! `bookclerk-media-worker`). Guest plugins never link this crate; the host
+//! imposes the jail. See `docs/plugins.md#the-guest-jail` and `docs/media.md`.
+//!
 //! Bookclerk confines code by what it may touch, not by which uid it runs as.
 //! Every backend here works without root, without setuid helpers, and without
 //! user namespaces or bind mounts:
@@ -7,7 +13,7 @@
 //! - **Linux** — Landlock filesystem allowlist plus a seccomp-bpf deny list.
 //! - **macOS** — Seatbelt (`sandbox_init`) with a deny-default SBPL profile.
 //! - **Windows** — AppContainer applied at `CreateProcess`; see
-//!   [`spawn`](crate::spawn). A process cannot confine *itself* on Windows, so
+//!   [`spawn`]. A process cannot confine *itself* on Windows, so
 //!   [`Policy::confine_current_process`] reports the filesystem layer as
 //!   [`LayerStatus::Unsupported`] there. Children are confined by
 //!   [`spawn::run_appcontainer`] (used by `bookclerk-jail`).
@@ -30,9 +36,10 @@ pub use spec::{Spec, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV, SPEC_ENV};
 /// Windows AppContainer spawn API ([`plan_appcontainer`](spawn::plan_appcontainer),
 /// [`run_appcontainer`](spawn::run_appcontainer)).
 ///
-/// Re-exports [`platform::windows_spawn`] so callers can depend on a stable
-/// `bookclerk_sandbox::spawn` path on every OS. Non-Windows builds keep the
-/// planning helpers and return a clear error from launch/ACL entry points.
+/// Windows AppContainer planning / launch helpers re-exported on every OS so
+/// callers can depend on a stable `bookclerk_sandbox::spawn` path. Non-Windows
+/// builds keep the planning helpers and return a clear error from launch/ACL
+/// entry points.
 pub mod spawn {
     pub use crate::platform::windows_pipe::NamedPipeSecurity;
     pub use crate::platform::windows_spawn::{
@@ -258,7 +265,7 @@ impl Policy {
         self
     }
 
-    /// Diagnostics label.
+    /// Diagnostics label supplied to [`Self::new`] (logs / doctor output only).
     #[must_use]
     pub fn label(&self) -> &str {
         &self.label
@@ -297,7 +304,7 @@ impl Policy {
     /// Read allowlist, including the platform system set when enabled.
     ///
     /// Missing paths are filtered out and the rest are resolved to their
-    /// physical location; see [`resolve`].
+    /// physical (canonical) location.
     #[must_use]
     pub fn resolved_reads(&self) -> Vec<PathBuf> {
         let system = self
@@ -316,7 +323,7 @@ impl Policy {
     /// when the system set is enabled.
     ///
     /// Missing paths are filtered out and the rest are resolved to their
-    /// physical location; see [`resolve`].
+    /// physical (canonical) location.
     #[must_use]
     pub fn resolved_writes(&self) -> Vec<PathBuf> {
         let system = self
@@ -331,7 +338,7 @@ impl Policy {
         )
     }
 
-    /// Network policy.
+    /// Network reachability granted by this policy.
     #[must_use]
     pub fn net_policy(&self) -> NetPolicy {
         self.net
@@ -343,7 +350,7 @@ impl Policy {
         self.allow_exec
     }
 
-    /// Failure mode.
+    /// What to do when a requested layer cannot engage.
     #[must_use]
     pub fn enforcement_mode(&self) -> Enforcement {
         self.enforcement
@@ -481,11 +488,11 @@ pub struct Report {
     pub label: String,
     /// Backend name, e.g. `landlock+seccomp`.
     pub backend: &'static str,
-    /// Filesystem allowlist status.
+    /// Filesystem allowlist (Landlock / Seatbelt / AppContainer) status.
     pub filesystem: LayerStatus,
-    /// Syscall restriction status.
+    /// Syscall restriction (seccomp / Seatbelt operation classes) status.
     pub syscall: LayerStatus,
-    /// Network restriction status.
+    /// Network restriction status for the requested [`NetPolicy`].
     pub network: LayerStatus,
     /// Memory / CPU / process ceilings (Job Object / cgroup v2).
     pub resources: LayerStatus,
@@ -551,7 +558,7 @@ impl Report {
 /// What this host can enforce, without applying anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Capabilities {
-    /// Backend name for this platform.
+    /// Backend name for this platform (e.g. `landlock+seccomp`).
     pub backend: &'static str,
     /// Whether a process can confine *itself* (Landlock / Seatbelt).
     ///
@@ -563,9 +570,9 @@ pub struct Capabilities {
     /// True on Windows once AppContainer launch is wired. Plugin jails that
     /// start guests through `bookclerk-jail` check this (or [`Self::filesystem`]).
     pub spawn_filesystem: bool,
-    /// Whether syscall filtering is available.
+    /// Whether syscall filtering (seccomp / equivalent) is available.
     pub syscall: bool,
-    /// Whether network restriction is available.
+    /// Whether network restriction can be applied on this host.
     pub network: bool,
     /// Human-readable detail, e.g. the Landlock ABI level found.
     pub detail: String,
@@ -585,27 +592,27 @@ pub fn capabilities() -> Capabilities {
     platform::capabilities()
 }
 
-/// Confinement failure.
+/// Confinement failure when applying or requiring a [`Policy`].
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {
-    /// A required layer did not engage.
+    /// A required layer did not engage under [`Enforcement::Required`].
     #[error("{label}: {layer} confinement not enforced ({detail})")]
     NotEnforced {
-        /// Policy label.
+        /// Diagnostics label from the policy that failed.
         label: String,
-        /// Which layer failed.
+        /// Layer name (`filesystem`, `syscall`, or `network`).
         layer: &'static str,
-        /// Why it failed.
+        /// Why the layer did not engage.
         detail: String,
     },
-    /// A backend call failed.
+    /// A backend call failed outright (kernel / API error).
     #[error("{label}: {backend} failed: {detail}")]
     Backend {
-        /// Policy label.
+        /// Diagnostics label from the policy that failed.
         label: String,
-        /// Backend name.
+        /// Backend name that returned the error.
         backend: &'static str,
-        /// Underlying error.
+        /// Underlying backend error text.
         detail: String,
     },
 }

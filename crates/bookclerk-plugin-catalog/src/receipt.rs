@@ -18,32 +18,49 @@ pub const RECEIPT_BACKUP: &str = "receipt.json.bak";
 /// Record written after a successful install / update.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallReceipt {
+    /// DTO schema version for CLI/UI JSON compatibility.
     pub schema_version: u32,
+    /// Fully qualified package coordinate when version is known.
     pub coordinate: PackageCoordinate,
+    /// Resolved or candidate package version string.
     pub version: String,
+    /// Base URL of the package registry (for example crates.io or npm).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_url: Option<String>,
+    /// Resolved download URL used for this install.
     pub artifact_url: String,
+    /// Host target triple used to select release artifacts.
     pub target: String,
+    /// Lowercase hex SHA-256 of the downloadable archive bytes.
     pub archive_sha256: String,
+    /// Optional SHA-256 of the extracted executable bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executable_sha256: Option<String>,
+    /// Host↔guest wire protocol id (for example `workers-rpc`).
     pub protocol: String,
+    /// Plugin ABI version negotiated with the host.
     pub api_version: u32,
+    /// Bookclerk runtime identity (kind + plugin id) when known.
     pub runtime: RuntimeIdentity,
+    /// Publisher-requested sandbox snapshot recorded at install time.
     pub requested_sandbox: SandboxRequest,
     /// Host-approved network mode (may be stricter than requested).
     pub approved_network: String,
+    /// RFC 3339 time when this install was activated.
     pub installed_at: DateTime<Utc>,
+    /// Optional update constraint (for example pinned version range).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_constraint: Option<String>,
+    /// Publisher signing key id recorded when the install was verified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publisher_key_id: Option<String>,
+    /// When true, allow packages without publisher signatures (digests still required).
     #[serde(default)]
     pub allow_unsigned: bool,
 }
 
 impl InstallReceipt {
+    /// Receipt schema version for forward-compatible reads.
     pub const SCHEMA_VERSION: u32 = 1;
 
     /// Path to receipt inside an installed plugin directory.

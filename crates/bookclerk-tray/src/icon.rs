@@ -1,6 +1,12 @@
 //! Decode the packaged tray PNG into platform icon formats.
 
 #[cfg(target_os = "linux")]
+/// Decodes the packaged tray PNG into a StatusNotifierItem ARGB icon.
+///
+/// # Returns
+///
+/// `ksni::Icon` with width/height and ARGB pixel bytes.
+#[must_use]
 pub fn tray_icon() -> ksni::Icon {
     let (width, height, mut data) = decode_png_rgba(include_bytes!("../tray-icon.png"));
     for pixel in data.chunks_exact_mut(4) {
@@ -15,6 +21,15 @@ pub fn tray_icon() -> ksni::Icon {
 }
 
 #[cfg(any(windows, target_os = "macos"))]
+/// Decodes the packaged tray PNG into a `tray-icon` RGBA icon.
+///
+/// # Returns
+///
+/// Platform tray icon built from RGBA pixels.
+///
+/// # Errors
+///
+/// Returns an error when the PNG cannot be converted into a `tray_icon::Icon`.
 pub fn tray_icon_rgba() -> anyhow::Result<tray_icon::Icon> {
     let (width, height, data) = decode_png_rgba(include_bytes!("../tray-icon.png"));
     tray_icon::Icon::from_rgba(data, width, height)

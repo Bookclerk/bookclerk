@@ -1,4 +1,9 @@
 //! Opt-in diagnostics: recent-log ring buffer, crash + error-burst upload.
+//!
+//! # Audience
+//!
+//! Host binaries that call [`crate::logging::init_tracing_with`]. Guests never
+//! depend on this module. See `docs/diagnostics.md`.
 
 use std::collections::VecDeque;
 use std::panic::{self, PanicHookInfo};
@@ -16,24 +21,39 @@ use crate::settings::DiagnosticsConfig;
 /// Snapshot of a single redacted log event kept for crash / error uploads.
 #[derive(Debug, Clone, Serialize)]
 pub struct BufferedEvent {
+    /// Event time as Unix milliseconds (wall clock).
     pub ts_unix_ms: u64,
+    /// Tracing level name (`ERROR`, `WARN`, `INFO`, …).
     pub level: String,
+    /// Tracing target / module path.
     pub target: String,
+    /// Redacted primary message text.
     pub message: String,
+    /// Additional redacted structured fields as `(name, value)` pairs.
     pub fields: Vec<(String, String)>,
 }
 
+/// JSON body POSTed to the diagnostics collector `/submit` endpoint.
 #[derive(Debug, Clone, Serialize)]
 pub struct UploadPayload {
+    /// Why this upload was produced (`crash`, `error_burst`, `cli_error`, …).
     pub trigger: String,
+    /// Bookclerk version string recorded at subscriber install.
     pub version: String,
+    /// Host OS (`linux`, `macos`, `windows`, …).
     pub os: String,
+    /// CPU architecture (`x86_64`, `aarch64`, …).
     pub arch: String,
+    /// Best-effort Linux distro id when detectable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distro: Option<String>,
+    /// `rustc` release baked in at build time (or `"unknown"`).
     pub rustc_release: String,
+    /// `rustc` channel baked in at build time (or `"unknown"`).
     pub rustc_channel: String,
+    /// Upload assembly time as Unix milliseconds.
     pub archived_at_unix_ms: u64,
+    /// Redacted ring-buffer snapshot (oldest first).
     pub events: Vec<BufferedEvent>,
 }
 
@@ -201,7 +221,7 @@ impl DiagnosticsHandle {
     /// Best-effort upload of the current ring buffer (blocking).
     ///
     /// Used by the panic hook, CLI exit path, and tests. Waits for any in-flight
-    /// upload to finish (via [`DiagnosticsInner::upload_gate`]) so crash reports
+    /// upload to finish (serialized upload gate) so crash reports
     /// are not dropped and concurrent POSTs cannot overlap.
     pub fn upload_blocking(&self, trigger: &str) {
         if !self.upload_enabled() {

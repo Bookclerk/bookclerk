@@ -4,6 +4,18 @@ use bookclerk_library::{migrations, LibraryError, Result};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement, Value};
 
 /// Apply pending schema versions to backends without `rusqlite_migration`.
+///
+/// # Arguments
+///
+/// * `db` - Open SeaORM connection for the guest database engine.
+///
+/// # Returns
+///
+/// `Ok(())` when all pending versions have been applied (or none were pending).
+///
+/// # Errors
+///
+/// Returns [`bookclerk_library::LibraryError`] when DDL or bookkeeping statements fail.
 pub async fn apply_pending_migrations(db: &DatabaseConnection) -> Result<()> {
     let backend = db.get_database_backend();
     db.execute_raw(Statement::from_string(
@@ -58,6 +70,15 @@ pub async fn apply_pending_migrations(db: &DatabaseConnection) -> Result<()> {
 }
 
 /// Typed SQL `NULL` for proxy columns so SeaORM `Option<T>` decoding works.
+///
+/// # Arguments
+///
+/// * `decl_type` - String `decl_type` for this call.
+/// * `column` - String `column` for this call.
+///
+/// # Returns
+///
+/// `Value` result.
 #[must_use]
 pub fn typed_null(decl_type: Option<&str>, column: &str) -> Value {
     if let Some(decl) = decl_type {

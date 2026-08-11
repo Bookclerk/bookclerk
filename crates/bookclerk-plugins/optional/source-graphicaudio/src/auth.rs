@@ -14,9 +14,12 @@ pub struct GraphicAudioAuthFile {
     pub token: String,
     /// Device / client id sent at login (stable for this auth file; used by `device`).
     pub client_id: String,
+    /// Sign-in email (also the Bookclerk account id).
     pub email: String,
+    /// Marketplace / locale hint stored for Bookclerk (defaults to `us`).
     #[serde(default = "default_marketplace")]
     pub marketplace: String,
+    /// Optional operator-facing account label in Accounts UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }

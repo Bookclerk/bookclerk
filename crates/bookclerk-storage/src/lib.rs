@@ -1,4 +1,12 @@
 //! Storage backends for acquired audiobooks, covers, and PDFs.
+//!
+//! # Audience
+//!
+//! Host acquire / library code that writes through [`StorageBackend`]. Guest
+//! plugins do not depend on this crate.
+//!
+//! Product narrative: destination sections in `docs/configuration.md`. Style:
+//! `docs/code-documentation.md`.
 
 mod error;
 mod fanout;
@@ -23,13 +31,25 @@ pub use traits::{
 use bookclerk_config::{normalize_storage_prefix, Config, OutputBackendKind};
 use sea_orm::DatabaseConnection;
 
-/// Build the configured storage backend(s).
+/// Build the configured storage backend(s) from `[output.*]`.
 ///
-/// When multiple `[output.*]` destination plugins are enabled, returns a
-/// [`FanoutBackend`] that writes to all of them.
+/// When multiple destination plugins are enabled, returns a [`FanoutBackend`]
+/// that writes to all of them.
 ///
-/// Pass `db` so the S3 destination can load credentials from `encrypted_secrets`
-/// after env override (`BOOKCLERK_AWS_*`) and before the AWS SDK default chain.
+/// # Arguments
+///
+/// * `config` - Loaded Bookclerk configuration (validated destinations).
+/// * `db` - Optional SeaORM connection so S3 can load `encrypted_secrets`
+///   after env override (`BOOKCLERK_AWS_*`) and before the AWS SDK chain.
+///
+/// # Returns
+///
+/// A boxed [`StorageBackend`] (single backend or fan-out).
+///
+/// # Errors
+///
+/// Returns [`StorageError::InvalidKey`] when destination validation fails, and
+/// propagates backend construction failures otherwise.
 pub async fn from_config(
     config: &Config,
     db: Option<&DatabaseConnection>,

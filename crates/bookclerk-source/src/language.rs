@@ -1,4 +1,8 @@
-//! Preferred-language ranking for catalog search results.
+//! Preferred-language ranking helpers for catalog merge.
+//!
+//! # Audience
+//!
+//! Host discover / catalog code soft-prioritising hits by language.
 
 /// Normalize a language tag or display name to a primary ISO-ish code.
 ///

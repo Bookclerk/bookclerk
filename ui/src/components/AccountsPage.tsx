@@ -17,6 +17,11 @@ import {
 } from "@/lib/api";
 import { cn, pageWidthClass } from "@/lib/utils";
 
+/**
+ * Storefront Accounts page — connect and revoke linked sources.
+ *
+ * @param props - Logout handler, nav props, and optional session role.
+ */
 export function AccountsPage({
   onLogout,
   nav,

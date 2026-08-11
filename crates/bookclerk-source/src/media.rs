@@ -1,6 +1,8 @@
-//! Shared audio container sniffing / extension helpers for plain downloads.
+//! Audio file-extension sniffing helpers for clear downloads.
 //!
-//! Priority: magic bytes ([`infer`]) → `Content-Type` ([`mime_guess`]) → URL path.
+//! # Audience
+//!
+//! Source plugins and host acquire code naming downloaded parts.
 
 /// Guess an audio file extension from a URL path (query/fragment stripped).
 #[must_use]

@@ -1,4 +1,8 @@
-//! `bookclerk-plugin check`
+//! `bookclerk-plugin check` and optional workerd embed sync.
+//!
+//! Audience: authors validating on-disk plugin layout before packaging or
+//! loading. Always available (no `tools` feature required for these library
+//! entry points); the CLI wrapper lives behind feature `tools`.
 
 use std::path::{Path, PathBuf};
 
@@ -6,7 +10,26 @@ use bookclerk_plugin_manifest::{parse, PluginRuntimeKind};
 
 use crate::error::{Result, SdkError};
 
-/// Validate `plugin.toml` and on-disk layout under `plugin_dir`.
+/// Validates `plugin.toml` and the on-disk layout under `plugin_dir`.
+///
+/// Checks embedded logo paths, native `command` presence when
+/// `.require-binary` is set, and workerd `modules_dir` / `main_module` plus a
+/// light JS import heuristic for `@bookclerk/plugin-sdk`.
+///
+/// # Arguments
+///
+/// * `plugin_dir` - Directory containing `plugin.toml` (usually `.` or the
+///   staged plugin root).
+///
+/// # Returns
+///
+/// Human-readable success line (`ok id=… kind=… runtime=…`) for CLI stdout.
+///
+/// # Errors
+///
+/// Returns [`SdkError`] when the manifest is missing/invalid, required files
+/// are absent, or a workerd main module looks like a bare `WorkerEntrypoint`
+/// without the Bookclerk base class.
 pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
     let toml_path = plugin_dir.join("plugin.toml");
     let text = std::fs::read_to_string(&toml_path)
@@ -94,7 +117,25 @@ pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
     ))
 }
 
-/// Optional vendor of the workerd JS embed (host normally injects the package).
+/// Optionally vendors the workerd JS embed under the plugin modules tree.
+///
+/// Writes [`crate::workerd::EMBED_BOOKCLERK_PLUGIN_JS_SRC`] to
+/// `modules/@bookclerk/plugin-sdk/workerd.js` (paths from the manifest). Hosts
+/// normally inject this package at runtime — use sync only for offline /
+/// hermetic trees.
+///
+/// # Arguments
+///
+/// * `plugin_dir` - Workerd plugin root (`runtime = "workerd"`).
+///
+/// # Returns
+///
+/// Success message including the destination path.
+///
+/// # Errors
+///
+/// Returns [`SdkError`] when the manifest is not workerd, `main_module` is not
+/// `.js`/`.mjs`, or filesystem writes fail.
 pub fn sync_embed(plugin_dir: &Path) -> Result<String> {
     let toml_path = plugin_dir.join("plugin.toml");
     let text = std::fs::read_to_string(&toml_path)

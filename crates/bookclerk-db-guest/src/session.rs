@@ -11,15 +11,41 @@ type Result<T> = std::result::Result<T, String>;
 static DB: Mutex<Option<DatabaseConnection>> = Mutex::const_new(None);
 
 /// Store the opened engine connection for subsequent ping/query/execute calls.
+///
+/// # Arguments
+///
+/// * `conn` - Opened SeaORM database connection for this guest process.
 pub async fn set_connection(conn: DatabaseConnection) {
     *DB.lock().await = Some(conn);
 }
 
+/// Issues a guest `db.ping` RPC against the process-local SeaORM connection.
+///
+/// # Returns
+///
+/// `Ok(())` when the engine responds to ping.
+///
+/// # Errors
+///
+/// Returns an error string when [`set_connection`] was never called or ping fails.
 pub async fn guest_ping() -> Result<()> {
     let conn = connection().await?;
     conn.ping().await.map_err(|e| e.to_string())
 }
 
+/// Runs a read-only SQL query through the guest database bridge.
+///
+/// # Arguments
+///
+/// * `dto` - RPC statement DTO from the host bridge.
+///
+/// # Returns
+///
+/// Query rows projected into [`QueryResultDto`].
+///
+/// # Errors
+///
+/// Returns an error string when not connected or the engine rejects the statement.
 pub async fn guest_query(dto: StatementDto) -> Result<QueryResultDto> {
     let conn = connection().await?;
     let backend = conn.get_database_backend();
@@ -32,6 +58,19 @@ pub async fn guest_query(dto: StatementDto) -> Result<QueryResultDto> {
     Ok(QueryResultDto { rows: out })
 }
 
+/// Runs a mutating SQL statement through the guest database bridge.
+///
+/// # Arguments
+///
+/// * `dto` - RPC statement DTO from the host bridge.
+///
+/// # Returns
+///
+/// Last-insert id and rows-affected in an [`ExecResultDto`].
+///
+/// # Errors
+///
+/// Returns an error string when not connected or the engine rejects the statement.
 pub async fn guest_execute(dto: StatementDto) -> Result<ExecResultDto> {
     let conn = connection().await?;
     let backend = conn.get_database_backend();
@@ -51,6 +90,18 @@ async fn connection() -> Result<DatabaseConnection> {
 }
 
 /// Convert a SeaORM query row into the RPC DTO (also used by integration tests).
+///
+/// # Arguments
+///
+/// * `row` - SeaORM query row to project into an RPC DTO.
+///
+/// # Returns
+///
+/// `ProxyRowDto` result.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 #[must_use]
 pub fn row_to_dto(row: &sea_orm::QueryResult) -> ProxyRowDto {
     let proxy = from_query_result_to_proxy_row(row);

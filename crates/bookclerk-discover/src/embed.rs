@@ -14,6 +14,14 @@ pub const MODEL_ALL_MINILM_L6_V2_Q: &str = "all-minilm-l6-v2-q";
 pub const MODEL_LOCAL_HASH_V1: &str = "local-hash-v1";
 
 /// Resolve the configured model id.
+///
+/// # Arguments
+///
+/// * `configured` - Configured model id from config/env; empty selects the build default.
+///
+/// # Returns
+///
+/// String result for this operation.
 #[must_use]
 pub fn embedding_model_id(configured: &str) -> &str {
     let trimmed = configured.trim();
@@ -32,8 +40,11 @@ pub fn default_embedding_model_id() -> &'static str {
 
 /// Produce dense vectors for recommendation / similarity search.
 pub trait Embedder: Send {
+    /// Stable embedding model id stored alongside vectors in SQLite.
     fn model_id(&self) -> &str;
+    /// Length of each embedding vector produced by this backend.
     fn dimensions(&self) -> usize;
+    /// Embeds each input text into a dense float vector of [`Self::dimensions`] length.
     fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 }
 
@@ -48,6 +59,15 @@ pub struct HashEmbedder {
 }
 
 impl HashEmbedder {
+    /// Creates a hash embedder with the given vector length (clamped to 8..=384).
+    ///
+    /// # Arguments
+    ///
+    /// * `dims` - Desired embedding length before clamping.
+    ///
+    /// # Returns
+    ///
+    /// Embedder that maps text to deterministic unit vectors of length `dims`.
     #[must_use]
     pub fn new(dims: usize) -> Self {
         Self {
@@ -93,6 +113,19 @@ pub struct OnnxEmbedder {
 
 impl OnnxEmbedder {
     /// Download (if needed) and load quantized MiniLM into `cache_dir`.
+    ///
+    /// # Arguments
+    ///
+    /// * `cache_dir` - Directory used to cache downloaded model weights.
+    /// * `intra_threads` - ONNX intra-op thread count (clamped to at least 1).
+    ///
+    /// # Returns
+    ///
+    /// On success, the inner `Self` value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the underlying I/O, parse, network, or store operation fails.
     pub fn open(cache_dir: &Path, intra_threads: usize) -> Result<Self> {
         std::fs::create_dir_all(cache_dir).map_err(|e| DiscoverError::Embed(e.to_string()))?;
         let options = fastembed::TextInitOptions::new(fastembed::EmbeddingModel::AllMiniLML6V2Q)
@@ -130,6 +163,14 @@ impl Embedder for OnnxEmbedder {
 }
 
 /// Build the text blob embedded for a work.
+///
+/// # Arguments
+///
+/// * `work` - Library work row whose metadata is turned into embedding text.
+///
+/// # Returns
+///
+/// String result for this operation.
 #[must_use]
 pub fn text_for_work(work: &WorkRecord) -> String {
     let mut parts = Vec::new();
@@ -157,6 +198,14 @@ pub fn text_for_work(work: &WorkRecord) -> String {
 }
 
 /// SHA-256 hex of embedding input text.
+///
+/// # Arguments
+///
+/// * `text` - Input text to hash or embed.
+///
+/// # Returns
+///
+/// String result for this operation.
 #[must_use]
 pub fn text_hash(text: &str) -> String {
     let mut hasher = Sha256::new();
@@ -165,6 +214,14 @@ pub fn text_hash(text: &str) -> String {
 }
 
 /// Encode f32 slice as little-endian bytes.
+///
+/// # Arguments
+///
+/// * `v` - Float vector to encode.
+///
+/// # Returns
+///
+/// Collected results (may be empty).
 #[must_use]
 pub fn vector_to_bytes(v: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(v.len() * 4);
@@ -175,6 +232,14 @@ pub fn vector_to_bytes(v: &[f32]) -> Vec<u8> {
 }
 
 /// Decode little-endian f32 blob.
+///
+/// # Arguments
+///
+/// * `bytes` - Little-endian f32 blob previously produced by [`vector_to_bytes`].
+///
+/// # Returns
+///
+/// Collected results (may be empty).
 #[must_use]
 pub fn bytes_to_vector(bytes: &[u8]) -> Vec<f32> {
     bytes
@@ -193,6 +258,15 @@ fn l2_normalize(v: &mut [f32]) {
 }
 
 /// Cosine similarity for equal-length L2-normalized (or raw) vectors.
+///
+/// # Arguments
+///
+/// * `a` - Left-hand vector.
+/// * `b` - Right-hand vector.
+///
+/// # Returns
+///
+/// `f32` result.
 #[must_use]
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
@@ -214,14 +288,29 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
-/// One similarity hit.
+/// One cosine-similarity neighbor from an embedding query.
 #[derive(Debug, Clone)]
 pub struct CosineHit {
+    /// Library entity id of the similar work (`works.id`).
     pub target_id: String,
+    /// Ranking score (higher is better); units are algorithm-specific.
     pub score: f32,
 }
 
 /// Embed works whose text hash changed (or are missing).
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `embedder` - Embedding backend that produces dense vectors.
+///
+/// # Returns
+///
+/// On success, the inner `usize` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn embed_dirty_works(
     library: &LibraryStore,
     embedder: &mut dyn Embedder,
@@ -269,6 +358,22 @@ pub async fn embed_dirty_works(
 }
 
 /// Brute-force cosine search against stored work embeddings.
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `model` - Embedding model id stored beside vectors in SQLite.
+/// * `query` - Query vector or free-text search string.
+/// * `exclude` - Entity ids to omit from results.
+/// * `limit` - Maximum number of results to return.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<CosineHit>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 #[allow(dead_code)]
 pub async fn similar_works(
     library: &LibraryStore,
@@ -304,6 +409,20 @@ pub async fn similar_works(
 /// When `prefer_onnx` is true, tries quantized MiniLM via fastembed/ort and
 /// **warns + falls back** to the local-hash embedder if load/download fails
 /// (missing glibc symbols, offline host, corrupt cache, …).
+///
+/// # Arguments
+///
+/// * `models_dir` - Directory that holds (or will hold) embedding model files.
+/// * `intra_threads` - ONNX intra-op thread count (clamped to at least 1).
+/// * `prefer_onnx` - When true, try MiniLM ONNX first and fall back to hash embeddings on failure.
+///
+/// # Returns
+///
+/// On success, the inner `Box<dyn Embedder>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn open_embedder(
     models_dir: &Path,
     intra_threads: usize,

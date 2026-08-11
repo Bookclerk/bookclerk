@@ -1,3 +1,7 @@
+/**
+ * Packages a plugin directory into a distributable `.tar.gz` archive.
+ */
+
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -26,7 +30,25 @@ function copyRecursive(src: string, dst: string): void {
   }
 }
 
-/** Package plugin_dir into outDir; returns archive path. */
+/**
+ * Packages `pluginDir` into `outDir` and returns the archive path.
+ *
+ * Native archives include the command binary and are tagged with the host
+ * target triple. Workerd archives include the modules tree (the SDK is injected
+ * by `bookclerk-workerd` at serve time). Updates `SHA256SUMS` beside the
+ * archive.
+ *
+ * @param pluginDir - Plugin root containing `plugin.toml`.
+ * @param outDir - Destination directory for the archive and checksums.
+ * @returns Absolute path to the created `.tar.gz`.
+ * @throws {Error} When validation fails, assets are missing, or `tar` fails.
+ *
+ * @example
+ * ```ts
+ * const archive = packagePlugin("./my-plugin", "./dist");
+ * console.log(`packed ${archive}`);
+ * ```
+ */
 export function packagePlugin(pluginDir: string, outDir: string): string {
   const tomlPath = path.join(pluginDir, "plugin.toml");
   const m = parseToml(fs.readFileSync(tomlPath, "utf8")) as Manifest;

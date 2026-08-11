@@ -33,9 +33,13 @@ pub const WISH_COUNT_WEIGHT: f64 = 40.0;
 /// Tunables for [`recommend`].
 #[derive(Debug, Clone)]
 pub struct RecommendOptions {
+    /// Maximum number of recommendations to return.
     pub limit: usize,
+    /// Embedding model id used for similarity (`all-minilm-l6-v2-q`, …).
     pub embedding_model: String,
+    /// Marketplace / region code (`us`, `uk`, …) for catalog lookups.
     pub region: String,
+    /// When true, attach buy links to each recommendation.
     pub include_purchase_hints: bool,
     /// When set, only listening rows for this external user influence ranking.
     /// Provider-agnostic — any integration that synced that user id.
@@ -48,7 +52,9 @@ pub struct RecommendOptions {
     pub listening_providers: Vec<String>,
     /// Pull unowned titles from storefront catalogs (the primary path).
     pub fetch_storefront_candidates: bool,
+    /// Max owned titles used as storefront related-search seeds.
     pub storefront_seed_limit: usize,
+    /// Hard cap on outbound catalog calls during recommend.
     pub storefront_max_remote_calls: usize,
     /// Drop GraphicAudio Magento series-set SKUs from discovery candidates.
     pub exclude_graphicaudio_series_sets: bool,
@@ -57,7 +63,9 @@ pub struct RecommendOptions {
     pub disabled_shelves: Vec<String>,
     /// Models dir for on-the-fly candidate embedding (optional; empty = skip).
     pub models_dir: Option<std::path::PathBuf>,
+    /// ONNX intra-op thread count for the embedder (clamped ≥ 1).
     pub embed_intra_threads: usize,
+    /// When false, skip embedding similarity and use heuristic ranking only.
     pub embeddings_enabled: bool,
 }
 
@@ -86,22 +94,35 @@ impl Default for RecommendOptions {
 /// One ranked recommendation (typically an unowned storefront title).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Recommendation {
+    /// Library `works.id` UUID when the recommendation is tied to an owned work.
     pub work_id: Option<String>,
+    /// Display title as shown on the storefront or library card.
     pub title: String,
+    /// Comma-separated author names when the storefront provides them.
     pub authors: Option<String>,
+    /// Comma-separated narrator names when known.
     pub narrators: Option<String>,
+    /// Series name when the title belongs to a named series.
     pub series: Option<String>,
+    /// Position within the series (e.g. `1`, `1.5`) when known.
     pub series_index: Option<String>,
+    /// Audible / Amazon ASIN when this edition is sold on Audible.
     pub asin: Option<String>,
+    /// Canonical ISBN-13 (or ISBN-10 normalized) when published.
     pub isbn: Option<String>,
+    /// Ranking score (higher is better); units are algorithm-specific.
     pub score: f64,
+    /// Short human-readable explanations for why this item was ranked here.
     pub reasons: Vec<String>,
+    /// Buy / open-in-store links with optional member vs list pricing.
     pub purchase_hints: Vec<PurchaseHint>,
     /// True when sourced from an open title request rather than storefront discovery.
     pub from_request: bool,
+    /// Wishlist / title-request UUID when this card came from a request.
     pub request_uuid: Option<String>,
     /// Storefront that proposed this title (`audible`, `libro`, …).
     pub candidate_source: Option<String>,
+    /// Storefront product id of the edition that produced this card.
     pub candidate_product_id: Option<String>,
     /// All known storefront editions (for multi-store purchase links).
     #[serde(default)]
@@ -121,17 +142,22 @@ pub struct Recommendation {
     /// Optional bibliographic extras from storefront catalog / Audnexus.
     #[serde(default)]
     pub subtitle: Option<String>,
+    /// Publisher or storefront synopsis; may be truncated for embeddings.
     #[serde(default)]
     pub description: Option<String>,
+    /// Publisher imprint as reported by the catalog.
     #[serde(default)]
     pub publisher: Option<String>,
+    /// Audiobook runtime in whole minutes when known.
     #[serde(default)]
     pub length_minutes: Option<i64>,
+    /// Publication date string from the catalog (ISO or storefront format).
     #[serde(default)]
     pub published_at: Option<String>,
     /// Candidate genres (not taste-seed `seed_categories`).
     #[serde(default)]
     pub genres: Option<String>,
+    /// BCP-47 / storefront language code (`en`, `de`, …) when known.
     #[serde(default)]
     pub language: Option<String>,
 }
@@ -140,20 +166,31 @@ pub struct Recommendation {
 /// heavy wish-count weight (shared order; not per-viewer personalized).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RankedQueueEntry {
+    /// Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author).
     pub work_key: String,
+    /// Display title as shown on the storefront or library card.
     pub title: String,
+    /// Comma-separated author names when the storefront provides them.
     pub authors: Option<String>,
+    /// Audible / Amazon ASIN when this edition is sold on Audible.
     pub asin: Option<String>,
+    /// Canonical ISBN-13 (or ISBN-10 normalized) when published.
     pub isbn: Option<String>,
+    /// HTTPS URL for cover art when the catalog exposes one.
     pub cover_url: Option<String>,
+    /// Number of distinct users who wishlisted this title.
     pub wish_count: i64,
+    /// Sample Bookclerk user UUIDs who requested this title (privacy-capped).
     pub sample_uuids: Vec<String>,
+    /// UTC timestamp of the earliest wishlist request for this work.
     pub first_requested_at: chrono::DateTime<chrono::Utc>,
+    /// UTC timestamp of the latest wishlist request for this work.
     pub last_requested_at: chrono::DateTime<chrono::Utc>,
     /// Final rank score (`taste_score + wish_count * `[`WISH_COUNT_WEIGHT`]).
     pub score: f64,
     /// Local taste / embedding component before the wish-count boost.
     pub taste_score: f64,
+    /// Short human-readable explanations for why this item was ranked here.
     pub reasons: Vec<String>,
 }
 
@@ -184,6 +221,15 @@ impl RankedQueueEntry {
 }
 
 /// Combine local recommend taste with a heavy multi-user wishlist boost.
+///
+/// # Arguments
+///
+/// * `taste_score` - `taste_score` input for this call.
+/// * `wish_count` - Numeric `wish_count` value for this call.
+///
+/// # Returns
+///
+/// `f64` result.
 #[must_use]
 pub fn combine_wishlist_score(taste_score: f64, wish_count: i64) -> f64 {
     taste_score.max(0.0) + (wish_count.max(0) as f64) * WISH_COUNT_WEIGHT
@@ -206,6 +252,20 @@ struct SeriesAffinity {
 }
 
 /// Build ranked recommendations for the operator (or a specific external user).
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `registry` - Configured content-source or integration registry.
+/// * `opts` - Options struct for this operation.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<Recommendation>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn recommend(
     library: &LibraryStore,
     registry: &SourceRegistry,
@@ -217,6 +277,20 @@ pub async fn recommend(
 }
 
 /// Personalized Discover feed (Netflix-style shelves) from the same candidate pool.
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `registry` - Configured content-source or integration registry.
+/// * `opts` - Options struct for this operation.
+///
+/// # Returns
+///
+/// On success, the inner `crate::shelves::DiscoverFeed` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn recommend_feed(
     library: &LibraryStore,
     registry: &SourceRegistry,
@@ -242,6 +316,20 @@ pub async fn recommend_feed(
 /// + all listening progress). Titles already in the library are omitted.
 ///
 /// Wishlist rows keyed as ASIN vs ISBN for the same work are merged first.
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `registry` - Configured content-source or integration registry.
+/// * `opts` - Options struct for this operation.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<RankedQueueEntry>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn rank_global_request_queue(
     library: &LibraryStore,
     _registry: &SourceRegistry,
@@ -1067,6 +1155,14 @@ fn apply_series_completion_score(
 /// **Absolute hours heard** are the primary signal — 50% of a 30‑hour title
 /// (15 h) outweighs 50% of a 3‑hour title (1.5 h). Percent complete is only a
 /// secondary completion bonus, not the main weight.
+///
+/// # Arguments
+///
+/// * `row` - SeaORM query row to project into an RPC DTO.
+///
+/// # Returns
+///
+/// `f64` result.
 #[must_use]
 pub fn listening_engagement(row: &ListeningProgressRecord) -> f64 {
     let mut progress = row.progress.unwrap_or(0.0).clamp(0.0, 1.0);

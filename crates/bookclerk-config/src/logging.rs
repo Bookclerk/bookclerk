@@ -90,7 +90,7 @@ pub struct LoggingHandle {
 /// directive — it always records TRACE and above so uploads retain deep context.
 /// Widen local verbosity with e.g. `BOOKCLERK_LOG=bookclerk=debug` when investigating.
 ///
-/// Secrets are redacted on every sink. See [`crate::redact`].
+/// Secrets are redacted on every sink via the public `register_secret` / `redact_str` helpers.
 pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
     let filter = EnvFilter::try_from_env("BOOKCLERK_LOG")
         .or_else(|_| EnvFilter::try_from_default_env())

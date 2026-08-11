@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "docs": "typedoc --options typedoc.json",
+    "test:safe-html": "node scripts/check-safe-html.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -24,6 +26,7 @@
     "@vitejs/plugin-react": "^6.0.3",
     "oxlint": "^1.71.0",
     "tailwindcss": "^4.3.3",
+    "typedoc": "^0.28.20",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"
   }

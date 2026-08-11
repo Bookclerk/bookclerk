@@ -44,6 +44,11 @@ function MetaRow({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+/**
+ * Modal showing a library {@link BookRecord} with optional acquire action.
+ *
+ * @param props - Book, busy flag, close/acquire handlers, and acquire visibility.
+ */
 export function BookDetailModal({
   book,
   busy,

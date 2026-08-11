@@ -63,6 +63,14 @@ impl<T: Clone> TtlCache<T> {
 }
 
 /// Stable cache key from arbitrary serializable fields.
+///
+/// # Arguments
+///
+/// * `parts` - String `parts` for this call.
+///
+/// # Returns
+///
+/// String result for this operation.
 #[must_use]
 pub fn cache_key(parts: &[&str]) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

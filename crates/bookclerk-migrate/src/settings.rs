@@ -10,6 +10,18 @@ use serde_json::Value;
 use crate::error::{MigrateError, Result};
 
 /// Load Settings.json as a JSON object.
+///
+/// # Arguments
+///
+/// * `path` - Filesystem path involved in this operation.
+///
+/// # Returns
+///
+/// On success, the inner `Value` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn load_settings_json(path: &Path) -> Result<Value> {
     let text = std::fs::read_to_string(path).map_err(|err| {
         MigrateError::Settings(format!("failed to read {}: {err}", path.display()))
@@ -19,6 +31,11 @@ pub fn load_settings_json(path: &Path) -> Result<Value> {
 }
 
 /// Apply classic Settings.json keys onto `config`.
+///
+/// # Arguments
+///
+/// * `config` - Loaded Bookclerk configuration.
+/// * `settings` - `settings` input for this call.
 pub fn apply_settings_json(config: &mut Config, settings: &Value) {
     if let Some(books) = string_at(settings, "Books") {
         config.output.local.enabled = true;
@@ -193,6 +210,14 @@ fn bool_at(value: &Value, key: &str) -> Option<bool> {
 }
 
 /// Best-effort reverse of [`apply_settings_json`] for Libation Settings.json export.
+///
+/// # Arguments
+///
+/// * `config` - Loaded Bookclerk configuration.
+///
+/// # Returns
+///
+/// `Value` result.
 #[must_use]
 pub fn config_to_settings_json(config: &Config) -> Value {
     use serde_json::json;

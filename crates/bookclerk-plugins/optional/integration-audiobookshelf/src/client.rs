@@ -33,6 +33,7 @@ impl AbsApiClient {
         })
     }
 
+    /// Base URL.
     #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base_url
@@ -233,15 +234,21 @@ pub struct AuthorizeResponse {
     pub server_settings: Option<Value>,
 }
 
+/// Audiobookshelf user.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AbsUser {
+    /// Identifier.
     pub id: String,
+    /// Username.
     #[serde(default)]
     pub username: String,
+    /// Token.
     #[serde(default)]
     pub token: Option<String>,
+    /// Typ.
     #[serde(default)]
     pub typ: Option<String>,
+    /// User type.
     #[serde(rename = "type", default)]
     pub user_type: Option<String>,
 }
@@ -249,33 +256,47 @@ pub struct AbsUser {
 /// Full ABS user payload including listening progress.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AbsUserDetail {
+    /// Identifier.
     pub id: String,
+    /// Username.
     #[serde(default)]
     pub username: String,
+    /// Media progress.
     #[serde(default, rename = "mediaProgress")]
     pub media_progress: Vec<AbsMediaProgress>,
 }
 
+/// Audiobookshelf media progress.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AbsMediaProgress {
+    /// Identifier.
     pub id: String,
+    /// Library item Identifier.
     #[serde(rename = "libraryItemId")]
     pub library_item_id: String,
+    /// Duration.
     #[serde(default)]
     pub duration: Option<f64>,
+    /// Progress.
     #[serde(default)]
     pub progress: Option<f64>,
+    /// Current time.
     #[serde(default, rename = "currentTime")]
     pub current_time: Option<f64>,
+    /// Is finished.
     #[serde(default, rename = "isFinished")]
     pub is_finished: bool,
+    /// Last update.
     #[serde(default, rename = "lastUpdate")]
     pub last_update: Option<i64>,
 }
 
+/// Audiobookshelf library item.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AbsLibraryItem {
+    /// Identifier.
     pub id: String,
+    /// Media.
     #[serde(default)]
     pub media: Option<AbsItemMedia>,
 }
@@ -298,10 +319,14 @@ pub struct AbsItemMetadata {
     pub isbn: Option<String>,
 }
 
+/// Audiobookshelf library.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AbsLibrary {
+    /// Identifier.
     pub id: String,
+    /// Display or configuration name.
     pub name: String,
+    /// Media type.
     #[serde(default)]
     pub media_type: Option<String>,
 }

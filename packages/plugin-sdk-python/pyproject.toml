@@ -14,6 +14,9 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# Google-style API reference via pdoc (`./scripts/generate-api-docs.sh` installs
+# this extra into a throwaway venv; local use: pip install -e ".[docs]").
+docs = ["pdoc>=15"]
 
 [project.scripts]
 bookclerk-plugin = "bookclerk_plugin_sdk.cli:main"

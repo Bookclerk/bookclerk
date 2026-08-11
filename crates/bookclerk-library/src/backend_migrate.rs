@@ -27,11 +27,14 @@ pub struct BackendMigrateOptions {
 /// Per-table row counts copied (or that would be copied in dry-run mode).
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct BackendMigrateSummary {
+    /// Map of table name → rows copied (or counted in dry-run).
     pub tables: std::collections::BTreeMap<String, usize>,
+    /// When true, counts rows without writing to the destination.
     pub dry_run: bool,
 }
 
 impl BackendMigrateSummary {
+    /// Sums row counts across all tables in the summary.
     #[must_use]
     pub fn total_rows(&self) -> usize {
         self.tables.values().sum()
@@ -42,6 +45,21 @@ impl BackendMigrateSummary {
 ///
 /// The destination should be empty unless [`BackendMigrateOptions::force`] is set.
 /// Runs in a single transaction on the destination when not dry-run.
+///
+/// # Arguments
+///
+/// * `source` - Existing library backend to read from.
+/// * `dest` - Target backend to write into (must already be migrated).
+/// * `opts` - Dry-run / force behavior.
+///
+/// # Returns
+///
+/// Per-table row counts copied (or that would be copied when `dry_run`).
+///
+/// # Errors
+///
+/// Returns [`LibraryError`] when the destination is non-empty without `force`,
+/// or when any read/write fails.
 pub async fn migrate_library_backend(
     source: &DatabaseConnection,
     dest: &DatabaseConnection,

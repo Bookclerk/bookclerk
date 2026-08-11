@@ -275,7 +275,7 @@ impl Drop for AppContainerSession {
 
 /// RAII guard that revokes a temporary Package-SID ACE on drop.
 ///
-/// With a per-launch Package SID, [`REVOKE_ACCESS`] removes only this launch’s
+/// With a per-launch Package SID, `REVOKE_ACCESS` removes only this launch’s
 /// trustee ACEs on the path (not another job’s grants).
 #[derive(Debug)]
 pub struct AclGrant {
@@ -440,6 +440,7 @@ pub fn is_os_managed_path(path: &Path) -> bool {
     matches!(classify_acl_path(path), AclPathClass::AmbientOsRuntime)
 }
 
+/// Is os managed path.
 #[cfg(not(windows))]
 #[must_use]
 pub fn is_os_managed_path(_path: &Path) -> bool {

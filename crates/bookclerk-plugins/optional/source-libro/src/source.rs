@@ -20,15 +20,18 @@ use crate::download::fetch_title_materials_with;
 use crate::error::{LibroError, Result};
 use crate::sync::{scan_library, ScanOptions as LibroScanOptions};
 
-/// Canonical plugin id.
+/// Handshake / config id for this store (`libro` in `[sources.libro]`).
 pub const ID: &str = "libro";
 
-/// Env var for non-interactive password login.
+/// Env var read for non-interactive password login when Accounts UI is unavailable.
 pub const PASSWORD_ENV: &str = "BOOKCLERK_LIBRO_PASSWORD";
 
 const ALIASES: &[&str] = &["libro.fm", "librofm"];
 
-/// Libro.fm content source.
+/// Libro.fm storefront adapter implementing [`ContentSource`].
+///
+/// Prefer [`LibroSource::from_config`] when registering with the host; use
+/// [`LibroSource::with_base_url`] for wiremock / staging.
 #[derive(Debug, Clone)]
 pub struct LibroSource {
     base_url: String,
@@ -75,6 +78,7 @@ impl LibroSource {
         }
     }
 
+    /// Sets the preferred download container (`m4b` / track zip).
     #[must_use]
     pub fn with_container(mut self, container: LibroContainer) -> Self {
         self.container = container;
@@ -87,7 +91,10 @@ impl LibroSource {
         Arc::new(Self::new())
     }
 
-    /// Login and persist credentials to DB.
+    /// Logs in with email/password and seals credentials into `encrypted_secrets`.
+    ///
+    /// Call from Accounts connect or CLI helpers; the guest path returns
+    /// credential JSON without writing secrets (see [`crate::guest::guest_login`]).
     pub async fn login_account(
         &self,
         library: &SourceScope,

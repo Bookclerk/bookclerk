@@ -18,13 +18,16 @@ use crate::download::fetch_title_materials;
 use crate::error::{ChirpError, Result};
 use crate::sync::{scan_library, ScanOptions as ChirpScanOptions};
 
-/// Canonical plugin id.
+/// Handshake / config id for this store (`chirp` in `[sources.chirp]`).
 pub const ID: &str = "chirp";
 
-/// Env var for non-interactive password login.
+/// Env var read for non-interactive password login when Accounts UI is unavailable.
 pub const PASSWORD_ENV: &str = "BOOKCLERK_CHIRP_PASSWORD";
 
-/// Chirp content source.
+/// Chirp storefront adapter implementing [`ContentSource`].
+///
+/// Prefer [`ChirpSource::from_config`] when registering with the host; use
+/// [`ChirpSource::with_graphql_url`] for wiremock / staging.
 #[derive(Debug, Clone)]
 pub struct ChirpSource {
     graphql_url: String,
@@ -37,6 +40,7 @@ impl Default for ChirpSource {
 }
 
 impl ChirpSource {
+    /// Returns a Chirp source aimed at the production GraphQL endpoint.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -50,6 +54,7 @@ impl ChirpSource {
         Self::new()
     }
 
+    /// Overrides the GraphQL endpoint (tests / staging).
     #[must_use]
     pub fn with_graphql_url(graphql_url: impl Into<String>) -> Self {
         Self {
@@ -57,12 +62,13 @@ impl ChirpSource {
         }
     }
 
+    /// Arc-wrapped instance for [`bookclerk_source::SourceRegistry`].
     #[must_use]
     pub fn shared() -> Arc<Self> {
         Arc::new(Self::new())
     }
 
-    /// Login and persist credentials to DB.
+    /// Logs in with email/password and seals credentials into `encrypted_secrets`.
     pub async fn login_account(
         &self,
         library: &SourceScope,

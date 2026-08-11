@@ -1,6 +1,7 @@
 //! Workerd guest bridge — same [`crate::BookclerkPlugin`] contract as native.
 //!
-//! Dual-stack with native guests:
+//! Audience: authors of `runtime = "workerd"` plugins (JS modules and optional
+//! Rust→Wasm). Dual-stack with native guests:
 //!
 //! - **Native:** `use bookclerk_plugin_sdk::{BookclerkPlugin, BookclerkPluginGuest};`
 //! - **Workerd:** JS modules import the package; Rust implements ABI dispatch:
@@ -14,7 +15,9 @@
 //! ```
 //!
 //! `bookclerk-workerd` injects `@bookclerk/plugin-sdk/workerd` (and the package
-//! root) into the isolate — authors do not vendor a relative filepath.
+//! root) into the isolate — authors do not vendor a relative filepath. Optional
+//! offline vendors can copy [`EMBED_BOOKCLERK_PLUGIN_JS_SRC`] via
+//! `bookclerk-plugin sync-embed` (feature `tools`).
 //!
 //! Layout (see `examples/plugins-echo-workerd-rust/`):
 //!
@@ -28,13 +31,26 @@
 pub use crate::plugin::BookclerkPlugin;
 
 /// Suggested main module filename for JS+Wasm workerd guests.
+///
+/// Matches the common `plugin.toml` `[workerd] main_module = "index.js"` default
+/// and the layout under [`DEFAULT_MODULES_DIR`].
 pub const DEFAULT_MAIN_MODULE: &str = "index.js";
 
-/// Suggested modules directory (matches `plugin.toml` default).
+/// Suggested modules directory name relative to the plugin root.
+///
+/// Matches the `plugin.toml` `[workerd] modules_dir` default (`"modules"`).
 pub const DEFAULT_MODULES_DIR: &str = "modules";
 
-/// Filename used by optional `sync-embed` vendors (prefer package imports).
+/// Filename historically used by optional `sync-embed` vendors.
+///
+/// Prefer importing `@bookclerk/plugin-sdk/workerd` (injected by
+/// `bookclerk-workerd`) over shipping this file next to guest modules.
 pub const EMBED_BOOKCLERK_PLUGIN_JS: &str = "bookclerk_plugin.js";
 
-/// Embeddable workerd runtime (`BookclerkPlugin` + `wasmBookclerkPlugin`).
+/// Source text of the embeddable workerd runtime helper.
+///
+/// Contains the `BookclerkPlugin` base class and `wasmBookclerkPlugin` factory
+/// mirrored by the npm package. Written to
+/// `modules/@bookclerk/plugin-sdk/workerd.js` by [`crate::tools::sync_embed`]
+/// when authors need an offline vendor (feature `tools`).
 pub const EMBED_BOOKCLERK_PLUGIN_JS_SRC: &str = include_str!("../embed/bookclerk_plugin.js");

@@ -26,18 +26,26 @@ const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
 /// One row from My Downloadable Products.
 #[derive(Debug, Clone)]
 pub struct DownloadableProduct {
+    /// Title.
     pub title: String,
+    /// Option label.
     pub option_label: String,
+    /// Download URL.
     pub download_url: String,
+    /// Remaining.
     pub remaining: Option<u32>,
+    /// Status.
     pub status: String,
 }
 
 /// One owned title from Browser Player `content_library` HTML.
 #[derive(Debug, Clone)]
 pub struct LibraryItem {
+    /// Product Identifier.
     pub product_id: String,
+    /// Title.
     pub title: Option<String>,
+    /// Listen path.
     pub listen_path: Option<String>,
 }
 
@@ -54,6 +62,7 @@ impl DownloadableProduct {
         preference.format_rank(&self.option_label)
     }
 
+    /// Has remaining.
     #[must_use]
     pub fn has_remaining(&self) -> bool {
         match self.remaining {
@@ -93,6 +102,7 @@ impl MagentoClient {
         })
     }
 
+    /// Base URL.
     #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base_url

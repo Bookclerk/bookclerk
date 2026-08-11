@@ -13,6 +13,15 @@ fn has_html(raw: &str) -> bool {
 }
 
 /// Prefer HTML blurbs over plain text; otherwise the longer string wins.
+///
+/// # Arguments
+///
+/// * `a` - First candidate description (may be HTML or plain).
+/// * `b` - Second candidate description.
+///
+/// # Returns
+///
+/// The richer non-empty description, or `None` when both are empty.
 #[must_use]
 pub fn pick_better_description(a: Option<&str>, b: Option<&str>) -> Option<String> {
     let left = a.map(str::trim).filter(|s| !s.is_empty());
@@ -86,6 +95,13 @@ fn merge_hint(into: &mut WishlistPurchaseHint, from: &WishlistPurchaseHint) {
 }
 
 /// Apply merged bib / editions / hints onto a wishlist row from its source snapshots.
+///
+/// Updates `row` in place from `row.sources`, clearing merged fields when no
+/// sources remain.
+///
+/// # Arguments
+///
+/// * `row` - Wishlist title-request record whose `sources` snapshots are merged.
 pub fn apply_merged_sources(row: &mut TitleRequestRecord) {
     let sources = row.sources.clone();
     if sources.is_empty() {

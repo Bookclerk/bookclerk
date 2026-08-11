@@ -25,12 +25,14 @@ use crate::magento::{MagentoClient, DEFAULT_STORE_URL};
 use crate::options::{GraphicAudioAccess, GraphicAudioBitrate, GraphicAudioContainer};
 use crate::sync::{scan_library, ScanOptions as GaScanOptions};
 
-/// Canonical plugin id.
+/// Handshake / config id for this store (`graphicaudio` in `[sources.graphicaudio]`).
 pub const ID: &str = "graphicaudio";
 
 const ALIASES: &[&str] = &["ga", "graphic-audio"];
 
-/// GraphicAudio content source.
+/// GraphicAudio storefront adapter implementing [`ContentSource`].
+///
+/// Access path (`web` / `zip` / `device`) comes from config; see crate-level docs.
 #[derive(Debug, Clone)]
 pub struct GraphicAudioSource {
     /// Access App API origin (`…/access`).
@@ -128,12 +130,14 @@ impl GraphicAudioSource {
         self
     }
 
+    /// Sets the Access App encode bitrate preference.
     #[must_use]
     pub fn with_bitrate(mut self, bitrate: GraphicAudioBitrate) -> Self {
         self.bitrate = bitrate;
         self
     }
 
+    /// Sets the Magento ZIP container preference (`mp3` / `m4b` / auto).
     #[must_use]
     pub fn with_container(mut self, container: GraphicAudioContainer) -> Self {
         self.container = container;

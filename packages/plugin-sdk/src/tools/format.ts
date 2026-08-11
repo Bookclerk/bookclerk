@@ -1,6 +1,6 @@
 /**
- * Canonical plugin.toml emit — field order matches bookclerk-plugin-manifest /
- * `toml::to_string_pretty` for conformance fixtures.
+ * Canonical `plugin.toml` emit — field order matches `bookclerk-plugin-manifest`
+ * / `toml::to_string_pretty` for conformance fixtures.
  */
 
 import type { Manifest } from "./validate.js";
@@ -15,7 +15,21 @@ function emitStringArray(values: string[], indent = ""): string {
   return `[\n${lines.join("\n")}\n${indent}]`;
 }
 
-/** Format a validated manifest object to canonical TOML. */
+/**
+ * Formats a validated manifest object to canonical TOML.
+ *
+ * Output is stable across the Rust / TypeScript / Python author tools so
+ * `bookclerk-plugin fmt --check` and CI fixtures agree.
+ *
+ * @param m - Manifest previously accepted by `validateManifest`.
+ * @returns Canonical TOML text ending in a trailing newline.
+ *
+ * @example
+ * ```ts
+ * const text = formatManifest(validateAndLoad("./plugin.toml"));
+ * fs.writeFileSync("plugin.toml", text);
+ * ```
+ */
 export function formatManifest(m: Manifest): string {
   const lines: string[] = [];
   lines.push(`api_version = ${m.api_version}`);

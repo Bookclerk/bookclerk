@@ -599,7 +599,7 @@ pub fn migration_sql() -> &'static [&'static str] {
     ]
 }
 
-/// Ordered DDL for D1 / Postgres [`schema_migrations`] versioning.
+/// Ordered DDL for D1 / Postgres `schema_migrations` versioning.
 #[must_use]
 pub fn migration_sql_postgres() -> &'static [&'static str] {
     &[

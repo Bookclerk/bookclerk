@@ -18,6 +18,7 @@ const UA: &str = concat!(
 /// PyPI JSON API adapter. Search is not supported by PyPI; use static registries
 /// for discovery and exact `pypi:name==version` coordinates for install.
 pub struct PypiAdapter {
+    /// PyPI simple/API base URL for this adapter.
     pub base_url: String,
 }
 

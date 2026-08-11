@@ -1,6 +1,11 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
+/**
+ * Styled text input matching Bookclerk form controls.
+ *
+ * @param props - Standard input attributes.
+ */
 export function Input({
   className,
   ...props

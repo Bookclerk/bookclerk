@@ -22,16 +22,19 @@ pub enum ChapterJsonMode {
 }
 
 impl ChapterJsonMode {
+    /// True when a flat `chapters.flat.json` sidecar should be written.
     #[must_use]
     pub fn wants_flat(self) -> bool {
         matches!(self, Self::Flat | Self::Both)
     }
 
+    /// True when a nested `chapters.tree.json` sidecar should be written.
     #[must_use]
     pub fn wants_tree(self) -> bool {
         matches!(self, Self::Tree | Self::Both)
     }
 
+    /// True when any chapter JSON sidecar mode other than [`Self::Off`] is set.
     #[must_use]
     pub fn wants_any(self) -> bool {
         !matches!(self, Self::Off)
@@ -70,6 +73,11 @@ pub enum OutputFormat {
 }
 
 impl OutputFormat {
+    /// Parse a TOML / CLI format id (`enriched_m4b`, `mp3`, `none`, …).
+    ///
+    /// # Returns
+    ///
+    /// `Some` when `raw` matches a known alias; `None` for unknown values.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -85,6 +93,7 @@ impl OutputFormat {
         }
     }
 
+    /// True when the format re-encodes to MP3 (single or split).
     #[must_use]
     pub fn wants_mp3(self) -> bool {
         matches!(
@@ -93,26 +102,31 @@ impl OutputFormat {
         )
     }
 
+    /// True when output is one MP3 file per chapter.
     #[must_use]
     pub fn wants_split_by_chapter(self) -> bool {
         matches!(self, Self::SplitMp3ByChapter)
     }
 
+    /// True when output is split into MP3 parts by target size.
     #[must_use]
     pub fn wants_split_by_size(self) -> bool {
         matches!(self, Self::SplitMp3BySize)
     }
 
+    /// True when store-delivered media is left as-is (no remux/transcode).
     #[must_use]
     pub fn is_noop(self) -> bool {
         matches!(self, Self::None)
     }
 
+    /// True when Opus packaging is selected (not yet implemented).
     #[must_use]
     pub fn wants_opus(self) -> bool {
         matches!(self, Self::Opus)
     }
 
+    /// True when the pipeline prefers an M4B intermediate (enriched or chapter-split).
     #[must_use]
     pub fn prefers_m4b_container(self) -> bool {
         matches!(self, Self::EnrichedM4b | Self::SplitMp3ByChapter)

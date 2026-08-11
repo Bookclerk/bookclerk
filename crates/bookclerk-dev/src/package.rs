@@ -73,6 +73,14 @@ pub fn bookclerk_target() -> &'static str {
 }
 
 /// Map a Bookclerk target or legacy rustc triple to a Bookclerk target name.
+///
+/// # Arguments
+///
+/// * `triple_or_target` - String `triple_or_target` for this call.
+///
+/// # Returns
+///
+/// `Some(...)` when found / applicable; otherwise `None`.
 #[must_use]
 pub fn normalize_bookclerk_target(triple_or_target: &str) -> Option<&'static str> {
     match triple_or_target {
@@ -87,6 +95,14 @@ pub fn normalize_bookclerk_target(triple_or_target: &str) -> Option<&'static str
 }
 
 /// Whether archives for this Bookclerk target (or rustc triple) use `.zip`.
+///
+/// # Arguments
+///
+/// * `triple_or_target` - String `triple_or_target` for this call.
+///
+/// # Returns
+///
+/// `true` when the predicate holds.
 #[must_use]
 pub fn uses_zip_archive(triple_or_target: &str) -> bool {
     match normalize_bookclerk_target(triple_or_target) {
@@ -95,6 +111,21 @@ pub fn uses_zip_archive(triple_or_target: &str) -> bool {
     }
 }
 
+/// Packages discovered plugin guests into the release artifacts directory.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `out_dir` - Filesystem path (`out_dir`).
+/// * `version` - String `version` for this call.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn package_plugins(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     let staged = root.join("target").join("plugin-artifacts-pack");
     plugins::stage_optional_for_pack(root, &staged, true)?;
@@ -123,6 +154,21 @@ pub fn package_plugins(root: &Path, out_dir: &Path, version: &str) -> Result<()>
     Ok(())
 }
 
+/// Packages host binaries (`bookclerk`, `bookclerkd`, helpers) into artifacts.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `out_dir` - Filesystem path (`out_dir`).
+/// * `version` - String `version` for this call.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     ensure_ui_built(root)?;
     build_hosts(root)?;
@@ -163,6 +209,21 @@ pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     Ok(())
 }
 
+/// Packages platform-only guests (sqlite / local) into artifacts.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `out_dir` - Filesystem path (`out_dir`).
+/// * `version` - String `version` for this call.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     ensure_ui_built(root)?;
     plugins::build_selection(

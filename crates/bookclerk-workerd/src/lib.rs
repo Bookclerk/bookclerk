@@ -1,4 +1,11 @@
 //! Library surface for the pinned Cloudflare `workerd` helper and egress policy.
+//!
+//! # Audience
+//!
+//! The `bookclerk-workerd` launcher binary and host packaging (`cargo ensure-workerd`).
+//! Guest authors do not link this crate; they run inside the isolate it configures.
+//!
+//! See `docs/plugins.md` for jail / workerd isolation requirements.
 
 pub mod config;
 pub mod egress;

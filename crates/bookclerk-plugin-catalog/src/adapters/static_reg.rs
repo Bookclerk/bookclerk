@@ -15,14 +15,19 @@ use crate::manifest::BookclerkPackageManifest;
 /// Top-level static index document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StaticIndex {
+    /// DTO schema version for CLI/UI JSON compatibility.
     pub schema_version: u32,
+    /// Packages listed in this static registry index.
     #[serde(default)]
     pub packages: Vec<StaticPackage>,
 }
 
+/// One package entry in a static registry index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StaticPackage {
+    /// Package name within `source`.
     pub name: String,
+    /// Known versions and manifests for this static package.
     #[serde(default)]
     pub versions: std::collections::BTreeMap<String, BookclerkPackageManifest>,
 }
@@ -64,17 +69,20 @@ pub fn load_static_index(path_or_url: &str) -> Result<StaticIndex> {
 
 /// Adapter over an in-memory or remote static index.
 pub struct StaticAdapter {
+    /// Absolute URL of the static registry index document.
     pub index_url: String,
     index: StaticIndex,
 }
 
 impl StaticAdapter {
+    /// Downloads and parses a static registry index from `index_url`.
     pub fn open(index_url: impl Into<String>) -> Result<Self> {
         let index_url = index_url.into();
         let index = load_static_index(&index_url)?;
         Ok(Self { index_url, index })
     }
 
+    /// Wraps an already-parsed static index without fetching.
     #[must_use]
     pub fn from_index(index_url: impl Into<String>, index: StaticIndex) -> Self {
         Self {

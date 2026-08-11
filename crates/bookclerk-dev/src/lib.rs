@@ -4,6 +4,19 @@ pub mod package;
 pub mod plugins;
 
 /// Ensure the pinned Cloudflare `workerd` binary is present under `target/<profile>/`.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `release` - When true, install under `target/release/`; otherwise `target/debug/`.
+///
+/// # Returns
+///
+/// Absolute path to the ensured `workerd` binary.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn ensure_workerd_for_profile(
     root: &std::path::Path,
     release: bool,
@@ -13,6 +26,15 @@ pub fn ensure_workerd_for_profile(
     bookclerk_workerd::ensure_workerd(&dir)
 }
 
+/// Resolves the Cargo workspace root from `CARGO_MANIFEST_DIR` or cwd.
+///
+/// # Returns
+///
+/// Absolute path to the ensured `workerd` binary.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn workspace_root() -> anyhow::Result<std::path::PathBuf> {
     Ok(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -22,6 +44,15 @@ pub fn workspace_root() -> anyhow::Result<std::path::PathBuf> {
         .to_path_buf())
 }
 
+/// Default directory for packaged release artifacts under the workspace.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+///
+/// # Returns
+///
+/// Absolute path to the artifacts directory.
 pub fn default_artifacts(root: &std::path::Path) -> std::path::PathBuf {
     std::env::var_os("BOOKCLERK_PLUGIN_ARTIFACTS")
         .map(std::path::PathBuf::from)
@@ -39,6 +70,18 @@ pub fn default_files_dir() -> std::path::PathBuf {
 }
 
 /// Wipe a Bookclerk files directory (config, DB, master.key, plugins, caches).
+///
+/// # Arguments
+///
+/// * `files_dir` - Bookclerk files directory to wipe and recreate.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn reset_files_dir(files_dir: &std::path::Path) -> anyhow::Result<()> {
     use anyhow::{bail, Context};
 

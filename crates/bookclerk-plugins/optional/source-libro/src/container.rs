@@ -14,6 +14,7 @@ pub enum LibroContainer {
 }
 
 impl LibroContainer {
+    /// Parse.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {

@@ -3,7 +3,11 @@ import { cn } from "@/lib/utils";
 
 const FALLBACK_COVER = "/bookclerk-mark.svg";
 
-/** Square audiobook cover thumbnail (Discover / Wishlist / list rows). */
+/**
+ * Small cover thumbnail with fallback art.
+ *
+ * @param props - Optional image URL and size className.
+ */
 export function CoverThumb({
   url,
   className = "h-12 w-12",

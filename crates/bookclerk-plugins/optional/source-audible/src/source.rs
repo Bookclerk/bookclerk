@@ -31,10 +31,13 @@ use crate::error::AudibleError;
 use crate::qr::QrRenderMode;
 use crate::sync::scan_library;
 
-/// Canonical plugin id.
+/// Handshake / config id for this store (`audible` in `[sources.audible]`).
 pub const ID: &str = "audible";
 
-/// Audible store as a [`ContentSource`].
+/// Audible storefront adapter implementing [`ContentSource`].
+///
+/// Construct with [`AudibleSource::from_config`] for host registration, or
+/// [`AudibleSource::new`] / [`AudibleSource::with_bitrate`] in tests.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AudibleSource {
     /// License bitrate tier (`[sources.audible] bitrate`).
@@ -42,6 +45,7 @@ pub struct AudibleSource {
 }
 
 impl AudibleSource {
+    /// Returns an Audible source with default bitrate (`High` / config default).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -58,6 +62,7 @@ impl AudibleSource {
         Self { bitrate }
     }
 
+    /// Overrides the license bitrate tier used for download requests.
     #[must_use]
     pub fn with_bitrate(mut self, bitrate: AudioQuality) -> Self {
         self.bitrate = bitrate;

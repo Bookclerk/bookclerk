@@ -15,12 +15,19 @@ pub const GRANTS_FILE: &str = "plugin-grants.json";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginGrant {
+    /// Plugin id from `plugin.toml` (globally unique across kinds).
     pub plugin_id: String,
+    /// Plugin kind string (`source`, `integration`, `output`, `database`).
     pub kind: String,
+    /// Approved network mode: `deny` or `outbound`.
     pub network_mode: String,
+    /// Approved initial outbound domain patterns (workerd allowlist).
     pub domains: BTreeSet<String>,
+    /// Approved host binding names (`config`, `secrets`, `oauth`, …).
     pub bindings: BTreeSet<String>,
+    /// Approved workerd compatibility flags from the consent snapshot.
     pub compatibility_flags: BTreeSet<String>,
+    /// RFC 3339 time when the operator approved this grant.
     pub approved_at: String,
 }
 
@@ -28,15 +35,30 @@ pub struct PluginGrant {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginGrantStore {
+    /// Persisted per-plugin grant snapshots.
     #[serde(default)]
     pub grants: Vec<PluginGrant>,
 }
 
 impl PluginGrantStore {
+    /// Absolute path to `plugin-grants.json` under `files_dir`.
     pub fn path(files_dir: &Path) -> PathBuf {
         files_dir.join(GRANTS_FILE)
     }
 
+    /// Loads grants from disk, or an empty store when the file is missing.
+    ///
+    /// # Arguments
+    ///
+    /// * `files_dir` - Bookclerk files directory that owns `plugin-grants.json`.
+    ///
+    /// # Returns
+    ///
+    /// Parsed [`PluginGrantStore`], defaulting when the file does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError`] when the file cannot be read or parsed.
     pub fn load(files_dir: &Path) -> Result<Self> {
         let path = Self::path(files_dir);
         if !path.is_file() {
@@ -46,6 +68,15 @@ impl PluginGrantStore {
         Ok(serde_json::from_str(&text)?)
     }
 
+    /// Writes this grant store to `plugin-grants.json` under `files_dir`.
+    ///
+    /// # Arguments
+    ///
+    /// * `files_dir` - Bookclerk files directory that owns `plugin-grants.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError`] when serialization or the write fails.
     pub fn save(&self, files_dir: &Path) -> Result<()> {
         let path = Self::path(files_dir);
         let text = serde_json::to_string_pretty(self)?;
@@ -53,10 +84,24 @@ impl PluginGrantStore {
         Ok(())
     }
 
+    /// Returns the grant for `plugin_id`, if one is stored.
+    ///
+    /// # Arguments
+    ///
+    /// * `plugin_id` - Plugin id to look up.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the matching [`PluginGrant`], or `None`.
     pub fn get(&self, plugin_id: &str) -> Option<&PluginGrant> {
         self.grants.iter().find(|g| g.plugin_id == plugin_id)
     }
 
+    /// Inserts or replaces the grant for `grant.plugin_id`.
+    ///
+    /// # Arguments
+    ///
+    /// * `grant` - Full consent snapshot to persist in memory (call [`Self::save`] to flush).
     pub fn upsert(&mut self, grant: PluginGrant) {
         if let Some(existing) = self
             .grants
@@ -210,6 +255,19 @@ pub fn effective_grant(existing: &PluginGrant, requested: &PluginGrant) -> Plugi
 }
 
 /// Require a covering grant before enable **or** every external spawn.
+///
+/// # Arguments
+///
+/// * `files_dir` - Bookclerk files directory containing `plugin-grants.json`.
+/// * `manifest` - Plugin manifest whose requested capabilities must be covered.
+///
+/// # Returns
+///
+/// Effective [`PluginGrant`] capped to the current request surface.
+///
+/// # Errors
+///
+/// Returns [`PluginError`] when no grant exists or capabilities widened past approval.
 pub fn require_grant(files_dir: &Path, manifest: &PluginManifest) -> Result<PluginGrant> {
     let store = PluginGrantStore::load(files_dir)?;
     let requested = consent_request(manifest);
@@ -300,6 +358,15 @@ pub fn spawn_grant(files_dir: &Path, manifest: &PluginManifest) -> Result<Plugin
     }
 }
 
+/// Returns true for installer platform guests (`sqlite`, `local`).
+///
+/// # Arguments
+///
+/// * `id` - Plugin id to test (case-insensitive).
+///
+/// # Returns
+///
+/// `true` when the id is a built-in platform plugin.
 #[must_use]
 pub fn is_platform_plugin_id(id: &str) -> bool {
     matches!(id.to_ascii_lowercase().as_str(), "sqlite" | "local")

@@ -1,4 +1,7 @@
-//! `bookclerk-plugin package`
+//! `bookclerk-plugin package` — archive a plugin directory for distribution.
+//!
+//! Audience: release / CI packaging. Always available as a library function;
+//! the CLI subcommand is behind feature `tools`.
 
 use std::fs::File;
 use std::io::Read;
@@ -11,7 +14,27 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{Result, SdkError};
 
-/// Package a plugin directory into `out_dir`, returning the archive path.
+/// Packages a plugin directory into `out_dir` as a `.tar.gz` plus `SHA256SUMS`.
+///
+/// Native guests include the binary named by `command` (mode `0755` on Unix)
+/// and name the archive with the host target triple. Workerd guests copy the
+/// `modules_dir` tree and use a `-workerd` archive stem. Existing
+/// `SHA256SUMS` lines for the same archive name are replaced.
+///
+/// # Arguments
+///
+/// * `plugin_dir` - Directory containing `plugin.toml` and guest payload.
+/// * `out_dir` - Destination directory for the archive and checksums file
+///   (created if missing).
+///
+/// # Returns
+///
+/// Absolute or relative path to the written `.tar.gz` archive.
+///
+/// # Errors
+///
+/// Returns [`SdkError`] when the manifest is invalid, required binaries /
+/// modules are missing, or archive / checksum I/O fails.
 pub fn package_plugin(plugin_dir: &Path, out_dir: &Path) -> Result<PathBuf> {
     let toml_path = plugin_dir.join("plugin.toml");
     let text = std::fs::read_to_string(&toml_path)

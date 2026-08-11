@@ -1,4 +1,12 @@
-//! Discovery: works graph, embeddings, recommendations, purchase hints, requests.
+//! Discovery: works graph, embeddings, recommendations, purchase hints, and requests.
+//!
+//! # Audience
+//!
+//! Host binaries (`bookclerkd`, CLI) that build Discover shelves, catalog search,
+//! and wishlist ranking. Storefront plugins are not expected to depend on this
+//! crate directly.
+//!
+//! See `docs/` Discover / library product docs for operator-facing behavior.
 
 mod candidates;
 mod catalog_search;

@@ -14,6 +14,7 @@ use crate::{PluginError, Result};
 /// A discovered plugin ready to spawn.
 #[derive(Debug, Clone)]
 pub struct DiscoveredPlugin {
+    /// Parsed `plugin.toml` for this install directory.
     pub manifest: PluginManifest,
     /// Directory containing `plugin.toml` (cwd + relative `command` base).
     pub root: PathBuf,
@@ -45,6 +46,18 @@ pub fn plugin_search_dirs(config: &Config) -> Vec<PathBuf> {
 /// Plugin ids are **globally unique across kinds**. Two manifests that claim
 /// the same `id` (even with different kinds) are a hard error — Bookclerk
 /// refuses to start with an ambiguous plugin set.
+///
+/// # Arguments
+///
+/// * `config` - Host config providing `files_dir` and plugin search roots.
+///
+/// # Returns
+///
+/// Sorted list of spawnable plugins (command path resolved).
+///
+/// # Errors
+///
+/// Returns [`PluginError`] on duplicate ids, missing binaries, or I/O failures.
 pub fn discover_plugins(config: &Config) -> Result<Vec<DiscoveredPlugin>> {
     let mut out = Vec::new();
     // id (lowercased) → (kind, first manifest path)

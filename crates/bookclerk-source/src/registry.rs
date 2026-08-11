@@ -1,4 +1,9 @@
-//! Registry of content sources.
+//! In-process registry of installed [`crate::ContentSource`] implementations.
+//!
+//! # Audience
+//!
+//! Host startup / CLI code that registers first-party sources and runs
+//! multi-source scans.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,6 +21,7 @@ pub struct SourceRegistry {
 }
 
 impl SourceRegistry {
+    /// Empty registry with no sources registered.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -43,7 +49,11 @@ impl SourceRegistry {
             .cloned()
     }
 
-    /// Require a source or return an error.
+    /// Look up a source or return [`crate::SourceError::Api`] when missing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an API error when `id_or_alias` is not registered.
     pub fn require(&self, id_or_alias: &str) -> Result<Arc<dyn ContentSource>> {
         self.get(id_or_alias).ok_or_else(|| {
             SourceError::api(format!("content source `{id_or_alias}` is not registered"))

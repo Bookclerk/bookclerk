@@ -321,16 +321,21 @@ fn url_is_libro_host(url: &str) -> bool {
     host == "libro.fm" || host.ends_with(".libro.fm")
 }
 
+/// Token response.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TokenResponse {
+    /// Access token.
     pub access_token: String,
+    /// Token type.
     #[serde(default = "default_bearer")]
     pub token_type: String,
     /// Unix seconds when the token was issued (mobile API).
     #[serde(default)]
     pub created_at: Option<i64>,
+    /// Expires in.
     #[serde(default)]
     pub expires_in: Option<i64>,
+    /// Error.
     #[serde(default)]
     pub error: Option<String>,
 }
@@ -339,48 +344,68 @@ fn default_bearer() -> String {
     String::from("Bearer")
 }
 
+/// Library page.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LibraryPage {
+    /// Page.
     #[serde(default)]
     pub page: u32,
+    /// Total pages.
     #[serde(default)]
     pub total_pages: u32,
+    /// Audiobooks.
     #[serde(default)]
     pub audiobooks: Vec<Audiobook>,
+    /// Tags.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Error.
     #[serde(default)]
     pub error: Option<String>,
 }
 
+/// Audiobook.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Audiobook {
     /// ISBN may arrive as string or number in JSON.
     #[serde(deserialize_with = "deserialize_isbn")]
     pub isbn: String,
+    /// Title.
     pub title: String,
+    /// Authors.
     #[serde(default, deserialize_with = "deserialize_authors")]
     pub authors: Option<Vec<String>>,
+    /// Cover URL.
     #[serde(default)]
     pub cover_url: Option<String>,
+    /// Subtitle.
     #[serde(default)]
     pub subtitle: Option<String>,
+    /// Publisher.
     #[serde(default)]
     pub publisher: Option<String>,
+    /// Publication date.
     #[serde(default)]
     pub publication_date: Option<String>,
+    /// Abridged.
     #[serde(default)]
     pub abridged: Option<bool>,
+    /// Series.
     #[serde(default)]
     pub series: Option<String>,
+    /// Series num.
     #[serde(default)]
     pub series_num: Option<serde_json::Value>,
+    /// Genres.
     #[serde(default)]
     pub genres: Option<Vec<Genre>>,
+    /// Audiobook info.
     #[serde(default)]
     pub audiobook_info: Option<AudiobookInfo>,
+    /// User metadata.
     #[serde(default)]
     pub user_metadata: Option<UserMetadata>,
+    /// Identifier.
     #[serde(default)]
     pub id: Option<serde_json::Value>,
 }
@@ -414,29 +439,40 @@ pub struct UserMetadata {
     pub hidden: Option<bool>,
 }
 
+/// Download manifest.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DownloadManifest {
+    /// ISBN identifier.
     #[serde(default, deserialize_with = "deserialize_optional_isbn")]
     pub isbn: Option<String>,
+    /// Parts.
     #[serde(default)]
     pub parts: Vec<DownloadPart>,
+    /// Tracks.
     #[serde(default)]
     pub tracks: Vec<ManifestTrack>,
+    /// Expires at.
     #[serde(default)]
     pub expires_at: Option<String>,
+    /// Size bytes.
     #[serde(default)]
     pub size_bytes: Option<u64>,
 }
 
+/// Download part.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DownloadPart {
+    /// URL.
     pub url: String,
+    /// Size bytes.
     #[serde(default)]
     pub size_bytes: Option<u64>,
 }
 
+/// Manifest track.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ManifestTrack {
+    /// Number.
     #[serde(default)]
     pub number: Option<u32>,
     /// APK `ApiTrack` uses `length_msec` (Gson `@SerializedName`).
@@ -445,6 +481,7 @@ pub struct ManifestTrack {
     /// Legacy / fixture-only key; prefer `length_msec` when both are present.
     #[serde(default)]
     pub length_sec: Option<u64>,
+    /// Chapter title.
     #[serde(default)]
     pub chapter_title: Option<String>,
 }
@@ -459,8 +496,10 @@ impl ManifestTrack {
     }
 }
 
+/// Packaged m4b.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PackagedM4b {
+    /// M4b URL.
     pub m4b_url: String,
 }
 

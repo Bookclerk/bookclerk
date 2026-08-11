@@ -8,9 +8,13 @@ use crate::recommend::Recommendation;
 /// One horizontal Discover row (series to finish, more by author, …).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DiscoverShelf {
+    /// Stable identifier for this item.
     pub id: String,
+    /// Display title as shown on the storefront or library card.
     pub title: String,
+    /// Optional subtitle when the catalog distinguishes it from the title.
     pub subtitle: Option<String>,
+    /// Ordered collection of child entries for this response.
     pub items: Vec<Recommendation>,
 }
 
@@ -19,12 +23,14 @@ pub struct DiscoverShelf {
 pub struct ShelfKindInfo {
     /// Stable kind id (`finish_series`, `author`, `genre`, `from_store`, …).
     pub id: String,
+    /// Operator-visible label for this account or item.
     pub label: String,
 }
 
 /// Full Discover page payload: ordered shelves of personalized candidates.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct DiscoverFeed {
+    /// Ordered horizontal shelves that make up the Discover page.
     pub shelves: Vec<DiscoverShelf>,
     /// Catalog of shelf kinds for ignore prefs (empty `disabled_shelves` = all on).
     #[serde(default)]
@@ -77,6 +83,15 @@ fn kind(id: &str, label: &str) -> ShelfKindInfo {
 }
 
 /// Whether `shelf_id` matches an ignore entry (exact, kind prefix, or `from_store`).
+///
+/// # Arguments
+///
+/// * `shelf_id` - Shelf id to test against the ignore list.
+/// * `disabled` - Ignore-list entries from user preferences.
+///
+/// # Returns
+///
+/// `true` when the predicate holds.
 #[must_use]
 pub fn shelf_is_disabled(shelf_id: &str, disabled: &[String]) -> bool {
     if disabled.is_empty() {
@@ -106,6 +121,17 @@ pub fn shelf_is_disabled(shelf_id: &str, disabled: &[String]) -> bool {
 }
 
 /// Partition scored recommendations into Discover shelves (items may repeat).
+///
+/// # Arguments
+///
+/// * `recs` - Scored recommendations to partition into shelves.
+/// * `taste` - Local taste context used to title personalized shelves.
+/// * `per_shelf` - Max items per shelf (clamped).
+/// * `disabled_shelves` - Shelf kind ids the operator has ignored.
+///
+/// # Returns
+///
+/// `DiscoverFeed` result.
 #[must_use]
 pub fn build_discover_feed(
     recs: &[Recommendation],
@@ -457,6 +483,15 @@ fn slugish(s: &str) -> String {
 }
 
 /// Flatten shelves into a unique score-sorted list (CLI / legacy).
+///
+/// # Arguments
+///
+/// * `feed` - Discover feed to flatten.
+/// * `limit` - Maximum number of results to return.
+///
+/// # Returns
+///
+/// Collected results (may be empty).
 #[must_use]
 pub fn flatten_feed(feed: &DiscoverFeed, limit: usize) -> Vec<Recommendation> {
     let mut by_key: HashMap<String, Recommendation> = HashMap::new();

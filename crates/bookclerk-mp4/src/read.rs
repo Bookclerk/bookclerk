@@ -26,10 +26,32 @@ pub struct SampleReader {
 }
 
 impl SampleReader {
+    /// Opens `path` for buffered sample reads.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Filesystem path to a progressive MP4/M4A/M4B.
+    ///
+    /// # Returns
+    ///
+    /// Reader positioned at byte 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Mp4Error::Io`] when the file cannot be opened.
     pub fn open(path: &Path) -> Result<Self> {
         Ok(Self::new(File::open(path)?))
     }
 
+    /// Wraps an already-opened file with a buffered sample reader.
+    ///
+    /// # Arguments
+    ///
+    /// * `file` - Seekable file handle positioned anywhere (reader seeks per sample).
+    ///
+    /// # Returns
+    ///
+    /// Buffered reader ready for [`Self::read_sample`].
     #[must_use]
     pub fn new(file: File) -> Self {
         Self {
@@ -39,6 +61,20 @@ impl SampleReader {
     }
 
     /// Fill `buf` with exactly `size` bytes from `offset`, resizing it to match.
+    ///
+    /// # Arguments
+    ///
+    /// * `offset` - Absolute byte offset in the file.
+    /// * `size` - Number of bytes to read.
+    /// * `buf` - Destination buffer resized to `size`.
+    ///
+    /// # Returns
+    ///
+    /// The successful result value for this operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the underlying I/O, parse, network, or store operation fails.
     pub fn read_sample(&mut self, offset: u64, size: usize, buf: &mut Vec<u8>) -> Result<()> {
         buf.resize(size, 0);
         self.seek_to(offset)?;

@@ -15,22 +15,42 @@ use crate::settings::config_to_settings_json;
 /// Options for Libation-compatible export.
 #[derive(Debug, Clone)]
 pub struct LibationExportOptions {
+    /// Bookclerk or Libation files directory root for this operation.
     pub files_dir: PathBuf,
+    /// Destination path for the export archive or directory.
     pub dest: PathBuf,
+    /// When true, overwrite existing data instead of failing on conflict.
     pub force: bool,
+    /// When true, report what would change without writing files.
     pub dry_run: bool,
 }
 
 /// Summary of a Libation export.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LibationExportSummary {
+    /// Count of settings keys imported or exported.
     pub settings: bool,
+    /// Count of accounts imported or exported.
     pub accounts: usize,
+    /// Count of book rows imported or exported.
     pub books: usize,
+    /// Non-fatal warnings collected during the run (operator-facing).
     pub warnings: Vec<String>,
 }
 
 /// Write Settings.json, AccountsSettings.json, and LibationContext.db.
+///
+/// # Arguments
+///
+/// * `opts` - Options struct for this operation.
+///
+/// # Returns
+///
+/// On success, the inner `LibationExportSummary` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn export_libation(opts: LibationExportOptions) -> Result<LibationExportSummary> {
     let mut summary = LibationExportSummary::default();
     if !opts.dry_run {

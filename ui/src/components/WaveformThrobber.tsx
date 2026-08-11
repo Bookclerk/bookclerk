@@ -1,8 +1,9 @@
 import { cn } from "@/lib/utils";
 
 /**
- * Animated equalizer bars matching the orange waveform in the Bookclerk mark.
- * Prefer this over a generic spinner for catalog-search waiting states.
+ * Animated waveform loading indicator.
+ *
+ * @param props - Optional className and size.
  */
 export function WaveformThrobber({
   className,

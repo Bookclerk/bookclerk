@@ -1,4 +1,6 @@
-/** Client-side unknown-path screen (Vite SPA fallback / in-app navigation). */
+/**
+ * Client-side unknown-path screen (Vite SPA fallback / in-app navigation).
+ */
 export function NotFoundPage() {
   const path = window.location.pathname || "/";
 

@@ -3,6 +3,14 @@
 use sha2::{Digest, Sha256};
 
 /// SHA-256 hex digest of a raw ticket/session token for durable storage.
+///
+/// # Arguments
+///
+/// * `raw` - Opaque plaintext token; callers must not persist this value.
+///
+/// # Returns
+///
+/// Lowercase hex SHA-256 digest (64 characters).
 #[must_use]
 pub fn hash_token(raw: &str) -> String {
     let mut hasher = Sha256::new();

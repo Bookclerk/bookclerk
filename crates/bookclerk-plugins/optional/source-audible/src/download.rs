@@ -17,12 +17,15 @@ use crate::widevine::{ensure_widevine_cdm, fetch_widevine_download};
 
 /// Authenticated Audible client bound to one account.
 ///
-/// Cloneable (cheap — shares the inner Arc<Client>). Any token refresh
+/// Cloneable (cheap — shares the inner `Arc<Client>`). Any token refresh
 /// propagates to all clones because they share the same `Arc<Mutex<Authenticator>>`.
 #[derive(Clone)]
 pub struct AccountClient {
+    /// HTTP or RPC client used for outbound requests.
     pub client: Arc<Client>,
+    /// Account Identifier.
     pub account_id: String,
+    /// Marketplace.
     pub marketplace: String,
 }
 
@@ -49,24 +52,38 @@ pub enum DrmKind {
 /// Public summary of a license grant (no secrets).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LicenseSummary {
+    /// Amazon ASIN identifier.
     pub asin: String,
+    /// Status code.
     pub status_code: String,
+    /// DRM type.
     pub drm_type: Option<String>,
+    /// Content format.
     pub content_format: Option<String>,
+    /// Content size.
     pub content_size: Option<u64>,
+    /// Granted.
     pub granted: bool,
+    /// Denial message.
     pub denial_message: Option<String>,
+    /// Has voucher.
     pub has_voucher: bool,
+    /// Offline URL present.
     pub offline_url_present: bool,
 }
 
 /// Encrypted (or plain Mpeg) audio downloaded to cache, plus decrypt material.
 #[derive(Debug, Clone)]
 pub struct EncryptedDownload {
+    /// Filesystem path for this value.
     pub path: PathBuf,
+    /// DRM type.
     pub drm_type: Option<String>,
+    /// Content format.
     pub content_format: Option<String>,
+    /// Content size.
     pub content_size: Option<u64>,
+    /// DRM kind.
     pub drm_kind: DrmKind,
     /// Adrm aaxc content key (hex).
     pub key: Option<String>,
@@ -78,6 +95,7 @@ pub struct EncryptedDownload {
     pub cenc_key: Option<String>,
     /// True when the file still needs decrypt (native Adrm or CENC).
     pub needs_decrypt: bool,
+    /// Pdf URL.
     pub pdf_url: Option<String>,
 }
 

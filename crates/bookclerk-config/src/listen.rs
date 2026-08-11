@@ -20,6 +20,8 @@ impl Default for ListenAddrs {
 }
 
 impl ListenAddrs {
+    /// Build from raw address strings, dropping empties; falls back to defaults
+    /// when every entry is empty.
     #[must_use]
     pub fn new(addrs: Vec<String>) -> Self {
         let cleaned: Vec<String> = addrs
@@ -56,11 +58,13 @@ impl ListenAddrs {
         Ok(addrs)
     }
 
+    /// Configured bind strings in declaration order.
     #[must_use]
     pub fn as_slice(&self) -> &[String] {
         &self.0
     }
 
+    /// True when no bind addresses remain (should not occur after [`Self::new`]).
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()

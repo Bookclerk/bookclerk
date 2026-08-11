@@ -11,6 +11,18 @@ use crate::error::{MigrateError, Result};
 pub type AudioPathMap = HashMap<String, PathBuf>;
 
 /// Load audio paths keyed by ASIN.
+///
+/// # Arguments
+///
+/// * `path` - Filesystem path involved in this operation.
+///
+/// # Returns
+///
+/// On success, the inner `AudioPathMap` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn load_audio_paths(path: &Path) -> Result<AudioPathMap> {
     let text = std::fs::read_to_string(path).map_err(|err| {
         MigrateError::Library(format!("failed to read {}: {err}", path.display()))
@@ -80,6 +92,15 @@ fn audio_path_from_entry(entry: &Value) -> Option<PathBuf> {
 
 /// Relativize `audio` under `books_root` when possible; otherwise return the
 /// absolute path as a storage key string.
+///
+/// # Arguments
+///
+/// * `audio` - Filesystem path (`audio`).
+/// * `books_root` - Filesystem path (`books_root`).
+///
+/// # Returns
+///
+/// String result for this operation.
 pub fn storage_key_for(audio: &Path, books_root: &Path) -> String {
     if let Ok(rel) = audio.strip_prefix(books_root) {
         return rel.to_string_lossy().replace('\\', "/");

@@ -17,6 +17,7 @@ pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SandboxRequest {
+    /// Requested guest network mode (`deny` or `outbound`).
     #[serde(default = "default_network")]
     pub network: String,
 }
@@ -37,10 +38,15 @@ fn default_network() -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PackageLinks {
+    /// Source repository URL from package metadata, when present.
     pub repository: Option<String>,
+    /// Documentation URL from package metadata, when present.
     pub documentation: Option<String>,
+    /// Project homepage URL from package metadata, when present.
     pub homepage: Option<String>,
+    /// SPDX or human-readable license string from package metadata.
     pub license: Option<String>,
+    /// Support / issue-tracker URL from package metadata, when present.
     pub support: Option<String>,
 }
 
@@ -48,8 +54,11 @@ pub struct PackageLinks {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PublisherIdentity {
+    /// Package name within `source`.
     pub name: Option<String>,
+    /// HTTPS URL for this resource (artifact, publisher, …).
     pub url: Option<String>,
+    /// Publisher signing key identifier when signatures are present.
     pub key_id: Option<String>,
 }
 
@@ -77,6 +86,7 @@ fn default_root() -> String {
 }
 
 impl ArtifactTarget {
+    /// Bookclerk target id selected for this host.
     #[must_use]
     pub fn bookclerk_target(&self) -> String {
         normalize_target(&self.target)
@@ -84,6 +94,7 @@ impl ArtifactTarget {
             .to_string()
     }
 
+    /// Archive format for this artifact (`tar.gz` or `zip`).
     #[must_use]
     pub fn archive_format(&self) -> ArchiveFormat {
         ArchiveFormat::for_target(&self.bookclerk_target())
@@ -93,38 +104,53 @@ impl ArtifactTarget {
 /// Canonical install-grade package metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookclerkPackageManifest {
+    /// DTO schema version for CLI/UI JSON compatibility.
     pub schema_version: u32,
     /// Optional wire label. Prefer absent; when present use `workers-rpc`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
+    /// Plugin ABI version negotiated with the host.
     pub api_version: u32,
+    /// Maximum plugin ABI version this package claims to support.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_version_max: Option<u32>,
+    /// Optional minimum Bookclerk host version required to install/run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_bookclerk: Option<String>,
+    /// Destination backend kind (`local`, `s3`, …).
     pub kind: PluginKind,
+    /// Plugin id (`[a-z0-9_]{2,32}`), globally unique across kinds.
     pub id: String,
+    /// Optional human-readable name for catalog and UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Short package description from the registry, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Filled by adapters; may be omitted in static index entries that nest under name/version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordinate: Option<PackageCoordinate>,
+    /// Per-target downloadable artifacts for this package version.
     pub artifacts: Vec<ArtifactTarget>,
+    /// Publisher-requested sandbox surface (informational until approved).
     #[serde(default)]
     pub sandbox: SandboxRequest,
+    /// Optional documentation and support links.
     #[serde(default)]
     pub links: PackageLinks,
+    /// When true, this version was yanked and must not be installed unattended.
     #[serde(default)]
     pub yanked: bool,
+    /// RFC 3339 release timestamp from the registry, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub released_at: Option<String>,
+    /// Optional publisher identity for trust decisions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publisher: Option<PublisherIdentity>,
 }
 
 impl BookclerkPackageManifest {
+    /// Returns the [`RuntimeIdentity`] (kind + id) for this package.
     #[must_use]
     pub fn runtime(&self) -> RuntimeIdentity {
         RuntimeIdentity::new(self.kind, self.id.clone())
@@ -177,7 +203,7 @@ impl BookclerkPackageManifest {
         Ok(())
     }
 
-    /// Parse from JSON.
+    /// Parses a package manifest from a JSON document.
     pub fn from_json(text: &str) -> Result<Self> {
         Ok(serde_json::from_str(text)?)
     }

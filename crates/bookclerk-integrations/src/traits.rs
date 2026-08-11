@@ -45,7 +45,16 @@ pub trait Integration: Send + Sync {
     /// Handle a fan-out event (best-effort; errors are logged by the registry).
     async fn on_event(&self, event: &IntegrationEvent) -> Result<()>;
 
-    /// Connectivity / config health check.
+    /// Probes connectivity and configuration for this integration.
+    ///
+    /// # Returns
+    ///
+    /// A health snapshot suitable for CLI / SPA status views.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the probe itself fails unexpectedly (transports);
+    /// soft failures should usually set [`IntegrationHealth::ok`] to `false`.
     async fn health(&self) -> Result<IntegrationHealth>;
 
     /// Whether this integration may appear as a portal username/password login.

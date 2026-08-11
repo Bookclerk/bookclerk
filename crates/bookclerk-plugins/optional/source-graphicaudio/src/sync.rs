@@ -18,6 +18,7 @@ pub struct ScanOptions {
     pub accounts: Vec<String>,
     /// When true, also import promotional `Type=sample` entries (default: false).
     pub include_samples: bool,
+    /// Page size.
     pub page_size: u32,
 }
 
@@ -44,9 +45,13 @@ impl From<&bookclerk_source::ScanOptions> for ScanOptions {
 /// Runtime context for [`scan_library`] (Access App vs Magento).
 #[derive(Debug, Clone, Copy)]
 pub struct ScanContext<'a> {
+    /// Access base URL.
     pub access_base_url: Option<&'a str>,
+    /// Store base URL.
     pub store_base_url: Option<&'a str>,
+    /// Access.
     pub access: GraphicAudioAccess,
+    /// Magento password.
     pub magento_password: Option<&'a str>,
 }
 

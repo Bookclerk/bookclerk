@@ -9,6 +9,18 @@ use crate::error::Result;
 ///
 /// When a book has both identifiers, prefer an existing work that already
 /// carries either alias so ISBN-only and ASIN-only rows consolidate.
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+///
+/// # Returns
+///
+/// On success, the inner `usize` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn rebuild_works_from_library(library: &LibraryStore) -> Result<usize> {
     let books = library.list_books(None).await?;
     let mut linked = 0usize;

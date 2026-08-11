@@ -1,4 +1,9 @@
-"""Out-of-tree workerd plugin smoke: ensure → materialize → handshake + health."""
+"""Out-of-tree workerd plugin smoke: ensure → materialize → handshake + health.
+
+Spawns the pinned Cloudflare ``workerd`` with a materialized Cap'n Proto config
+and POSTs ``handshake`` / ``health`` to the bridge ``/rpc`` endpoint. Does not
+require the Rust ``bookclerk-workerd`` binary.
+"""
 
 from __future__ import annotations
 
@@ -76,7 +81,23 @@ def _post_rpc(rpc_url: str, body: dict[str, Any], token: str) -> Any:
 
 
 def run_smoke(plugin_dir: Path) -> str:
-    """Smoke a workerd plugin without the Rust ``bookclerk-workerd`` binary."""
+    """Smoke a workerd plugin without the Rust ``bookclerk-workerd`` binary.
+
+    Args:
+        plugin_dir: Path to a ``runtime = "workerd"`` plugin root.
+
+    Returns:
+        Multi-line status including plugin id and JSON handshake/health detail.
+
+    Raises:
+        FileNotFoundError: If ``plugin.toml`` is missing.
+        ValueError: If the manifest is invalid or not a workerd plugin.
+        TimeoutError: If the bridge health endpoint never becomes ready.
+        RuntimeError: If handshake/health RPC fails.
+
+    Examples:
+        >>> # print(run_smoke(Path("./my-workerd-plugin")))
+    """
     root = plugin_dir.resolve()
     toml_path = root / "plugin.toml"
     if not toml_path.is_file():

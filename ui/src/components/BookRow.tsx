@@ -17,6 +17,11 @@ const statusStyles: Record<AcquireStatus, string> = {
   error: "bg-brick/15 text-brick",
 };
 
+/**
+ * One library table/list row with cover, metadata, and acquire affordances.
+ *
+ * @param props - Book, handlers, busy flag, and acquire visibility.
+ */
 export function BookRow({
   book,
   onAcquire,

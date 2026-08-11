@@ -35,6 +35,7 @@ impl TrustPolicy {
         }
     }
 
+    /// Returns `Ok(())` when unsigned packages are permitted by this policy.
     pub fn check_unsigned_allowed(&self) -> Result<()> {
         if self.allow_unsigned {
             Ok(())

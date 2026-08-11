@@ -1,4 +1,13 @@
-//! Multi-source content providers for Bookclerk (Audible, Libro.fm, …).
+//! Shared traits and DTOs for Bookclerk content-source plugins.
+//!
+//! # Audience
+//!
+//! Host registration code and first-party / third-party **source plugin**
+//! authors implementing [`ContentSource`]. Guests that speak the JSON-RPC ABI
+//! map onto these types via the plugin host; they do not depend on this crate
+//! directly from workerd.
+//!
+//! Product narrative: `docs/plugins.md`. Style: `docs/code-documentation.md`.
 
 mod brand;
 mod error;

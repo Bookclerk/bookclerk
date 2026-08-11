@@ -1,12 +1,23 @@
+/**
+ * Plugin tree checks and optional SDK embed sync for workerd guests.
+ */
+
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import { validateLogo, validateManifest, type Manifest } from "./validate.js";
 
-/** Optional vendor path for offline archives (host normally injects the package). */
+/**
+ * Optional vendor filename for offline archives (host normally injects the package).
+ */
 export const EMBED_BOOKCLERK_PLUGIN_JS = "bookclerk_plugin.js";
 
+/**
+ * Resolves the path to the packaged workerd embed script.
+ *
+ * @returns Absolute path to `embed/bookclerk_plugin.js` inside this package.
+ */
 export function sdkEmbedSrc(): string {
   return path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
@@ -14,6 +25,23 @@ export function sdkEmbedSrc(): string {
   );
 }
 
+/**
+ * Validates a plugin directory's `plugin.toml` and runtime assets.
+ *
+ * For workerd guests, also asserts the main module imports
+ * `@bookclerk/plugin-sdk` / `BookclerkPlugin` rather than bare
+ * `WorkerEntrypoint`.
+ *
+ * @param pluginDir - Plugin root containing `plugin.toml`.
+ * @returns Human-readable success summary (`ok id=… kind=… runtime=…`).
+ * @throws {Error} When the manifest or required assets are invalid / missing.
+ *
+ * @example
+ * ```ts
+ * console.log(checkPlugin("./my-plugin"));
+ * // ok id=echo kind=source runtime=workerd
+ * ```
+ */
 export function checkPlugin(pluginDir: string): string {
   const tomlPath = path.join(pluginDir, "plugin.toml");
   const text = fs.readFileSync(tomlPath, "utf8");
@@ -74,9 +102,20 @@ export function checkPlugin(pluginDir: string): string {
 }
 
 /**
- * Optional: vendor the workerd embed for offline trees.
+ * Optionally vendors the workerd embed under the plugin modules tree.
+ *
  * Prefer `import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd"` —
- * `bookclerk-workerd` injects that module at runtime.
+ * `bookclerk-workerd` injects that module at runtime. This helper remains for
+ * offline / air-gapped archives.
+ *
+ * @param pluginDir - Workerd plugin root containing `plugin.toml`.
+ * @returns Human-readable sync summary including the destination path.
+ * @throws {Error} When the runtime is not workerd or the embed source is missing.
+ *
+ * @example
+ * ```ts
+ * console.log(syncEmbed("./my-workerd-plugin"));
+ * ```
  */
 export function syncEmbed(pluginDir: string): string {
   const tomlPath = path.join(pluginDir, "plugin.toml");

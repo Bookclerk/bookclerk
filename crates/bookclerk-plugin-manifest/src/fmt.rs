@@ -1,9 +1,49 @@
-//! Canonical `plugin.toml` formatting.
+//! Canonical `plugin.toml` formatting for SDK `fmt` / `fmt --check`.
+//!
+//! Serializes a validated [`crate::PluginManifest`] with `toml::to_string_pretty`
+//! and ensures a trailing newline so `fmt --check` diffs stay stable across tools.
 
 use crate::error::Result;
 use crate::types::PluginManifest;
 
-/// Serialize a validated manifest to canonical TOML (stable for `fmt --check`).
+/// Serializes a validated manifest to canonical TOML.
+///
+/// The output is suitable for rewriting `plugin.toml` on disk or comparing
+/// against the on-disk file in `fmt --check`. Field order and pretty-print
+/// style follow `toml` crate defaults; a trailing `\n` is always present.
+///
+/// # Arguments
+///
+/// * `manifest` - Manifest that has already passed [`PluginManifest::validate`]
+///   (typically from [`PluginManifest::parse`]).
+///
+/// # Returns
+///
+/// Pretty-printed TOML ending with a newline.
+///
+/// # Errors
+///
+/// Returns [`crate::Error::TomlSer`] when serialization fails.
+///
+/// # Examples
+///
+/// ```
+/// use bookclerk_plugin_manifest::{format_manifest, parse};
+///
+/// let m = parse(r#"
+/// api_version = 1
+/// id = "echo"
+/// kind = "integration"
+/// runtime = "native"
+/// command = "./echo"
+///
+/// [capabilities.network]
+/// mode = "deny"
+/// "#).unwrap();
+/// let formatted = format_manifest(&m).unwrap();
+/// assert!(formatted.ends_with('\n'));
+/// assert_eq!(parse(&formatted).unwrap(), m);
+/// ```
 pub fn format_manifest(manifest: &PluginManifest) -> Result<String> {
     let mut out = toml::to_string_pretty(manifest)?;
     if !out.ends_with('\n') {

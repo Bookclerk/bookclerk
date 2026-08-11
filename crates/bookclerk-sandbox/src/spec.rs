@@ -47,7 +47,7 @@ pub struct Spec {
     /// Paths the confined process may read and write.
     #[serde(default)]
     pub writes: Vec<PathBuf>,
-    /// Network reachability.
+    /// Network reachability granted to the confined process.
     #[serde(default)]
     pub net: NetPolicy,
     /// Whether `execve` is permitted.

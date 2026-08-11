@@ -1,7 +1,7 @@
 //! Guest-process helpers for the external GraphicAudio source plugin.
 //!
 //! These APIs do **not** open the library DB — the host seals credentials and
-//! upserts scan DTOs via [`bookclerk_plugin_host::ExternalSource`].
+//! upserts scan DTOs via `bookclerk_plugin_host::ExternalSource`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -434,7 +434,7 @@ pub fn resolve_container(source_config: &Value) -> GraphicAudioContainer {
         .unwrap_or_default()
 }
 
-/// Canonical source id for handshake.
+/// Source id returned in handshake; must match [`crate::source::ID`].
 #[must_use]
 pub fn source_id() -> &'static str {
     ID

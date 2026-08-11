@@ -8,6 +8,20 @@ use crate::types::ListeningProgressSnapshot;
 /// Upsert provider-agnostic listening snapshots into `listening_progress`.
 ///
 /// `provider` should be the integration id (`audiobookshelf`, plugin id, …).
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `provider` - Integration id.
+/// * `items` - `items` input for this call.
+///
+/// # Returns
+///
+/// On success, the inner `usize` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn upsert_listening_snapshots(
     library: &LibraryStore,
     provider: &str,
@@ -62,6 +76,21 @@ pub async fn upsert_listening_snapshots(
 }
 
 /// Best-effort match to an owned library book via ASIN, ISBN, or exact title.
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `asin` - Optional Audible / Amazon ASIN.
+/// * `isbn` - Optional ISBN (any punctuation; normalized internally).
+/// * `title` - Display title.
+///
+/// # Returns
+///
+/// On success, the inner `Option<String>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn match_book_uuid(
     library: &LibraryStore,
     asin: Option<&str>,

@@ -11,31 +11,51 @@ use crate::identity::works_match;
 /// A purchase / catalog availability hint (optionally priced at view time).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct PurchaseHint {
+    /// Canonical storefront / plugin id (`audible`, `libro`, `chirp`, …).
     pub source: String,
+    /// Storefront-native product id (ASIN, ISBN, UUID, …).
     pub product_id: String,
+    /// Display title as shown on the storefront or library card.
     pub title: Option<String>,
+    /// Absolute HTTPS URL.
     pub url: Option<String>,
     /// Primary / best known sell price in minor units (prefer member when dual).
     /// `0` = free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_cents: Option<i64>,
+    /// ISO 4217 currency code for price fields (`USD`, `EUR`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
     /// Display string from the store (`$2.99`, `FREE`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_label: Option<String>,
+    /// Non-member / list price in integer cents when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list_price_cents: Option<i64>,
+    /// Human-readable list price from the storefront.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list_price_label: Option<String>,
+    /// Member / credit price in integer cents when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_price_cents: Option<i64>,
+    /// Human-readable member price from the storefront.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_price_label: Option<String>,
 }
 
 impl PurchaseHint {
     /// URL-only catalog link (no price yet).
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - Storefront id or filesystem source path, depending on call site.
+    /// * `product_id` - Storefront-native product id.
+    /// * `title` - Display title.
+    /// * `url` - Absolute URL being checked or opened.
+    ///
+    /// # Returns
+    ///
+    /// Updated `Self` for chaining.
     #[must_use]
     pub fn link(
         source: impl Into<String>,
@@ -109,15 +129,22 @@ impl PurchaseHint {
 /// Inputs for view-time catalog + pricing lookup.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PurchaseHintsQuery {
+    /// Display title as shown on the storefront or library card.
     pub title: String,
+    /// Comma-separated author names when the storefront provides them.
     pub authors: Option<String>,
+    /// Audible / Amazon ASIN when this edition is sold on Audible.
     pub asin: Option<String>,
+    /// Canonical ISBN-13 (or ISBN-10 normalized) when published.
     pub isbn: Option<String>,
+    /// Storefront id of the edition that produced this card.
     pub candidate_source: Option<String>,
+    /// Storefront product id of the edition that produced this card.
     pub candidate_product_id: Option<String>,
     /// Known storefront editions already on the recommendation card.
     #[serde(default)]
     pub store_editions: Vec<crate::identity::StoreEdition>,
+    /// Marketplace / region code (`us`, `uk`, …) for catalog lookups.
     pub region: Option<String>,
     /// Storefronts the caller has linked accounts for. Treated as **member**
     /// pricing when picking `best`; other stores are compared at list /
@@ -129,14 +156,33 @@ pub struct PurchaseHintsQuery {
 /// Priced catalog matches for one title, sorted best-first.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PurchaseHintsResponse {
+    /// Resolved purchase hints for this query.
     pub hints: Vec<PurchaseHint>,
     /// Lowest-priced hint (or first catalog hit when no prices resolved).
     pub best: Option<PurchaseHint>,
 }
 
-/// Look up purchase links via registered [`ContentSource::purchase_hint`] (no prices).
+/// Look up purchase links via registered
+/// [`bookclerk_source::ContentSource::purchase_hint`] (no prices).
 ///
 /// Call [`resolve_purchase_hints`] for multi-store + live pricing.
+///
+/// # Arguments
+///
+/// * `registry` - Configured content-source or integration registry.
+/// * `title` - Display title.
+/// * `author` - String `author` for this call.
+/// * `asin` - Optional Audible / Amazon ASIN.
+/// * `isbn` - Optional ISBN (any punctuation; normalized internally).
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+///
+/// # Returns
+///
+/// On success, the inner `Vec<PurchaseHint>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn purchase_hints_for(
     registry: &SourceRegistry,
     title: &str,
@@ -163,6 +209,17 @@ pub async fn purchase_hints_for(
 }
 
 /// Seed a deterministic storefront URL from a known candidate (no remote I/O).
+///
+/// # Arguments
+///
+/// * `source` - Storefront id or filesystem source path, depending on call site.
+/// * `product_id` - Storefront-native product id.
+/// * `title` - Display title.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+///
+/// # Returns
+///
+/// `Some(...)` when found / applicable; otherwise `None`.
 #[must_use]
 pub fn seed_purchase_hint(
     source: &str,
@@ -230,6 +287,19 @@ fn purchase_hints_cache_key(query: &PurchaseHintsQuery, region: &str) -> String 
 }
 
 /// Resolve every catalog match and attach live prices (view-time).
+///
+/// # Arguments
+///
+/// * `registry` - Configured content-source or integration registry.
+/// * `query` - Query vector or free-text search string.
+///
+/// # Returns
+///
+/// On success, the inner `PurchaseHintsResponse` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn resolve_purchase_hints(
     registry: &SourceRegistry,
     query: &PurchaseHintsQuery,
@@ -395,6 +465,14 @@ async fn resolve_purchase_hints_uncached(
 }
 
 /// Pick the lowest-priced hint (ties keep earlier order). Unpriced sort after priced.
+///
+/// # Arguments
+///
+/// * `hints` - Purchase hints to pick from.
+///
+/// # Returns
+///
+/// `Some(...)` when found / applicable; otherwise `None`.
 #[must_use]
 pub fn best_purchase_hint(hints: &[PurchaseHint]) -> Option<&PurchaseHint> {
     hints.iter().min_by(|a, b| cmp_hint_price(a, b))
@@ -407,6 +485,15 @@ pub fn best_purchase_hint(hints: &[PurchaseHint]) -> Option<&PurchaseHint> {
 /// member still sees Audible on the shelf when Audible’s non-member price beats
 /// Libro’s member price. When nothing is linked, all stores are compared as
 /// non-members. Hints with no usable price for that role sort last.
+///
+/// # Arguments
+///
+/// * `hints` - Purchase hints to pick from.
+/// * `preferred` - String `preferred` for this call.
+///
+/// # Returns
+///
+/// `Some(...)` when found / applicable; otherwise `None`.
 #[must_use]
 pub fn best_purchase_hint_preferring<'a>(
     hints: &'a [PurchaseHint],
@@ -484,6 +571,20 @@ fn best_hint_for_caller(
 }
 
 /// Resolve many purchase-hint queries with bounded concurrency (order preserved).
+///
+/// # Arguments
+///
+/// * `registry` - Configured content-source or integration registry.
+/// * `queries` - Batch of purchase-hint or title-meta queries.
+/// * `max_concurrent` - Numeric `max_concurrent` value for this call.
+///
+/// # Returns
+///
+/// On success, `Vec<Result<PurchaseHintsResponse>>`.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn resolve_purchase_hints_batch(
     registry: &SourceRegistry,
     queries: &[PurchaseHintsQuery],
@@ -600,6 +701,14 @@ async fn append_registry_hints(
 ///
 /// Libro is intentionally excluded: `libro.fm/audiobooks/{isbn}` 404s for many
 /// ISBNs that appear on Audible-only titles.
+///
+/// # Arguments
+///
+/// * `source` - Storefront id or filesystem source path, depending on call site.
+///
+/// # Returns
+///
+/// `true` when the predicate holds.
 pub(crate) fn seed_source_is_trusted(source: &str) -> bool {
     matches!(source.trim().to_ascii_lowercase().as_str(), "audible")
 }
@@ -749,6 +858,14 @@ fn region_host_suffix(region: &str) -> &'static str {
 }
 
 /// Parse `$12.34` / `12.34` / `FREE` into cents.
+///
+/// # Arguments
+///
+/// * `raw` - String `raw` for this call.
+///
+/// # Returns
+///
+/// `Some(...)` when found / applicable; otherwise `None`.
 #[must_use]
 pub fn parse_money_label_to_cents(raw: &str) -> Option<i64> {
     let s = raw.trim();
@@ -779,6 +896,16 @@ pub fn parse_money_label_to_cents(raw: &str) -> Option<i64> {
     Some((amount * 100.0).round() as i64)
 }
 
+/// Formats integer cents into a storefront-style money label for `currency`.
+///
+/// # Arguments
+///
+/// * `cents` - Integer cents to format.
+/// * `currency` - ISO 4217 currency code.
+///
+/// # Returns
+///
+/// String result for this operation.
 #[must_use]
 pub fn format_money_label(cents: i64, currency: &str) -> String {
     if cents <= 0 {

@@ -1,10 +1,49 @@
 //! Authoritative Bookclerk plugin ABI (`api_version = 1`).
 //!
-//! The JSON Schema in `schema/abi.json` is the canonical contract. Types here
+//! # Audience
+//!
+//! - **Guest authors** — implement Workers RPC methods against these DTOs
+//!   (via `bookclerk-plugin-sdk`, `@bookclerk/plugin-sdk`, or a language binding
+//!   generated from the same schema).
+//! - **Host / SDK maintainers** — deserialize stdio or workerd frames, seal
+//!   credentials, and upsert library rows without depending on store-specific
+//!   crates.
+//!
+//! Product narrative (jail, consent, install layout) lives in
+//! [`docs/plugins.md`](https://github.com/bookclerk/bookclerk/blob/main/docs/plugins.md).
+//! This crate is the typed wire contract only.
+//!
+//! # Schema
+//!
+//! The JSON Schema at [`schema/abi.json`](https://github.com/bookclerk/bookclerk/blob/main/crates/bookclerk-plugin-abi/schema/abi.json)
+//! (also embedded as [`ABI_SCHEMA_JSON`]) is the canonical contract. Types here
 //! are the Rust projection used by host and guest SDKs. Wire DTO fields
-//! serialize as camelCase to match Workers RPC / TypeScript (`abi.json` `$defs`).
-
-#![allow(missing_docs)]
+//! serialize as **camelCase** to match Workers RPC / TypeScript (`abi.json`
+//! `$defs`). Method names on the wire are camelCase strings listed in
+//! [`methods::METHOD_NAMES`] (for example `loginStart`, `fetchTitle`,
+//! `dbConnect`).
+//!
+//! Install manifests validate against [`PLUGIN_TOML_SCHEMA_JSON`]
+//! (`schema/plugin-toml.json`).
+//!
+//! # Versioning
+//!
+//! [`API_VERSION`] is currently `1`. Guests that advertise a different
+//! `apiVersion` on [`types::HandshakeParams`] fail handshake cleanly. There is
+//! no `protocol` key — only `api_version` / wire `apiVersion`. Bumping the
+//! version requires a coordinated schema + SDK change; do not invent ad-hoc
+//! fields outside `$defs`.
+//!
+//! # Modules
+//!
+//! | Module | Contents |
+//! | --- | --- |
+//! | [`methods`] | Wire method name constants (`handshake`, `onEvent`, …) |
+//! | [`types`] | Shared DTOs (handshake, health, CLI, stdio RPC frames) |
+//! | [`kind`] | Kind-specific DTOs (source / integration / output) |
+//! | [`db`] | Database-guest connect / query / execute DTOs |
+//! | [`error`] | [`PluginError`] / [`PluginErrorCode`] |
+//! | [`events`] | Host↔plugin typed event envelopes |
 
 pub mod db;
 pub mod error;
@@ -25,13 +64,18 @@ pub use kind::*;
 pub use methods::METHOD_NAMES;
 pub use types::*;
 
-/// Wire API version for all guests.
+/// Negotiated Workers RPC API version for all guests (`1`).
+///
+/// Sent as wire field `apiVersion` on handshake params/results. Must match the
+/// `const` in `schema/abi.json`.
 pub const API_VERSION: u32 = 1;
 
-/// Embedded schema bytes (CI / docs tooling can compare generators against this).
+/// Embedded bytes of `schema/abi.json` (CI and docs tooling can compare
+/// generators against this exact string).
 pub const ABI_SCHEMA_JSON: &str = include_str!("../schema/abi.json");
 
-/// Install `plugin.toml` JSON Schema (shared with language SDK author tools).
+/// Embedded JSON Schema for install `plugin.toml` files (shared with language
+/// SDK author tools and `bookclerk plugins` validation).
 pub const PLUGIN_TOML_SCHEMA_JSON: &str = include_str!("../schema/plugin-toml.json");
 
 #[cfg(test)]

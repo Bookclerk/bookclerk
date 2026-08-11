@@ -41,16 +41,22 @@ pub const S3_SECRET_ACCOUNT_ID: &str = "default";
 /// Do NOT treat bare `AWS_*` as Bookclerk override — the SDK chain may still
 /// use those later.
 pub const ENV_AWS_ACCESS_KEY_ID: &str = "BOOKCLERK_AWS_ACCESS_KEY_ID";
+/// Process env override for the AWS secret access key (`BOOKCLERK_AWS_SECRET_ACCESS_KEY`).
 pub const ENV_AWS_SECRET_ACCESS_KEY: &str = "BOOKCLERK_AWS_SECRET_ACCESS_KEY";
+/// Process env override for a temporary session token (`BOOKCLERK_AWS_SESSION_TOKEN`).
 pub const ENV_AWS_SESSION_TOKEN: &str = "BOOKCLERK_AWS_SESSION_TOKEN";
 
 /// Static AWS-style credentials for the S3 destination.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct S3Credentials {
+    /// AWS access key id (also accepted from [`ENV_AWS_ACCESS_KEY_ID`]).
     pub access_key_id: String,
+    /// AWS secret access key (redacted in [`Debug`]; never logged).
     pub secret_access_key: String,
+    /// Optional STS session token when using temporary credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_token: Option<String>,
+    /// Optional operator-facing label shown in Settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }

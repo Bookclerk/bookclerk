@@ -13,6 +13,7 @@ use crate::edit::find_child_in_range;
 use crate::error::{Mp4Error, Result};
 use crate::samples::{build_samples, ChunkMapEntry, SampleInfo};
 
+/// Codec or encryption FourCC found in the track's sample description.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SampleEntryKind {
     /// Audible Adrm encrypted AAC (`aavd`).
@@ -21,38 +22,69 @@ pub enum SampleEntryKind {
     Mp4a,
     /// Common Encryption audio (`enca`).
     Enca,
+    /// Opaque error wrapped from `anyhow`.
     Other(FourCC),
 }
 
 /// Parsed progressive (non-fragmented) MP4 relevant to remux.
 #[derive(Debug)]
 pub struct Mp4File {
+    /// Absolute path to the MP4 file that was parsed.
     pub path: std::path::PathBuf,
+    /// Total file size in bytes.
     pub file_size: u64,
+    /// ISO-BMFF `ftyp` (file type) FourCC.
     pub ftyp: BoxHeader,
+    /// ISO-BMFF `moov` (movie metadata) FourCC.
     pub moov: BoxHeader,
+    /// ISO-BMFF `mdat` (media data) FourCC.
     pub mdat: BoxHeader,
+    /// Primary brand FourCC from `ftyp` (e.g. `M4A `, `isom`).
     pub major_brand: FourCC,
+    /// Compatible brand FourCCs advertised in `ftyp`.
     pub compatible_brands: Vec<FourCC>,
+    /// Movie-header timescale (ticks per second).
     pub mvhd_timescale: u32,
+    /// Movie-header duration in [`Self::mvhd_timescale`] ticks.
     pub mvhd_duration: u64,
+    /// Primary audio track summary when present.
     pub audio: AudioTrack,
     /// Raw moov bytes (including header) — used when rewriting with patched stsd.
     pub moov_bytes: Vec<u8>,
+    /// Raw `ftyp` box bytes (including header) for remux / patch.
     pub ftyp_bytes: Vec<u8>,
 }
 
+/// Parsed audio track summary (timescale, samples, codec).
 #[derive(Debug)]
 pub struct AudioTrack {
+    /// ISO-BMFF `trak` (track) FourCC.
     pub trak: BoxHeader,
+    /// Media timescale (ticks per second) for this track.
     pub timescale: u32,
+    /// Track duration in media timescale ticks.
     pub duration: u64,
+    /// Codec or encryption FourCC found in the track's sample description.
     pub sample_entry_kind: SampleEntryKind,
     /// Absolute file offset of the 4-byte sample-entry type inside stsd.
     pub sample_entry_type_offset: u64,
+    /// Decoded sample table (offsets, sizes, durations) for this track.
     pub samples: Vec<SampleInfo>,
 }
 
+/// Parses top-level boxes and the primary audio track from an MP4/M4A/M4B file.
+///
+/// # Arguments
+///
+/// * `path` - Filesystem path involved in this operation.
+///
+/// # Returns
+///
+/// On success, the inner `Mp4File` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn parse_mp4(path: &Path) -> Result<Mp4File> {
     let mut file = File::open(path)?;
     let file_size = file.seek(SeekFrom::End(0))?;
@@ -327,6 +359,14 @@ fn parse_chunk_offsets(file: &mut File, stbl: &BoxHeader) -> Result<Vec<u64>> {
 }
 
 /// Absolute duration of the audio track in milliseconds.
+///
+/// # Arguments
+///
+/// * `track` - `track` input for this call.
+///
+/// # Returns
+///
+/// `u64` result.
 #[must_use]
 pub fn track_duration_ms(track: &AudioTrack) -> u64 {
     if track.timescale == 0 {
@@ -342,13 +382,27 @@ pub fn track_duration_ms(track: &AudioTrack) -> u64 {
 /// Clear AAC (`mp4a`) decoder config extracted from a progressive MP4/M4A/M4B.
 #[derive(Debug, Clone)]
 pub struct Mp4aConfig {
+    /// Audio sample rate in Hz from the sample entry.
     pub sample_rate: u32,
+    /// Channel count from the sample entry.
     pub channels: u16,
     /// AudioSpecificConfig from `esds` DecoderSpecificInfo.
     pub asc: Vec<u8>,
 }
 
 /// Read sample-rate / channel count / ASC from a clear `mp4a` sample entry.
+///
+/// # Arguments
+///
+/// * `mp4` - `mp4` input for this call.
+///
+/// # Returns
+///
+/// On success, the inner `Mp4aConfig` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn extract_mp4a_config(mp4: &Mp4File) -> Result<Mp4aConfig> {
     if mp4.audio.sample_entry_kind != SampleEntryKind::Mp4a {
         return Err(Mp4Error::container(format!(

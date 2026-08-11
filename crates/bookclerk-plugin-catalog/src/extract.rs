@@ -12,8 +12,9 @@ use zip::ZipArchive;
 use crate::error::{CatalogError, Result};
 use crate::target::ArchiveFormat;
 
-/// Default caps for adversarial archives.
+/// Hard cap on archive file size before extraction.
 pub const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
+/// Hard cap on total extracted archive bytes.
 pub const MAX_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
 pub const MAX_COMPRESSION_RATIO: u64 = 100;
 pub const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;

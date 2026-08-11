@@ -2596,7 +2596,7 @@ struct CatalogSearchQuery {
     /// Alias for [`Self::page_size`] (typeahead / legacy).
     limit: Option<usize>,
     page_size: Option<usize>,
-    /// Opaque cursor from a previous [`CatalogSearchPage`].
+    /// Opaque cursor from a previous [`bookclerk_discover::CatalogSearchPage`].
     cursor: Option<String>,
     /// `relevance` / `popularity` / `rating` / `title` / `author` / `price` / `length`.
     sort: Option<String>,

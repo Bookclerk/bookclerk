@@ -1,4 +1,8 @@
-//! ContentSource trait.
+//! [`ContentSource`] trait — the host-facing contract for storefront plugins.
+//!
+//! # Audience
+//!
+//! Source plugin authors and host registration / job code.
 
 use std::path::Path;
 
@@ -23,6 +27,7 @@ pub enum PortalAuthMode {
 }
 
 impl PortalAuthMode {
+    /// Wire / portal id (`oauth` or `password`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -32,7 +37,7 @@ impl PortalAuthMode {
     }
 }
 
-/// Pluggable audiobook store.
+/// Pluggable audiobook storefront (auth, scan, fetch, catalog).
 ///
 /// Plugins own their id, brand, auth mode, and config parsing. Hosts register
 /// concrete crates at startup and talk only through this trait.

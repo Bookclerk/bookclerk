@@ -60,3 +60,16 @@ if __name__ == "__main__":
 
 See [`examples/plugins-echo-workerd-python`](../../examples/plugins-echo-workerd-python/)
 and [`examples/plugins-echo-native-python`](../../examples/plugins-echo-native-python/).
+
+## API docs
+
+Public APIs use [Google-style docstrings](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings).
+Generate HTML with pdoc:
+
+```bash
+pip install -e "packages/plugin-sdk-python[docs]"
+# or from the repo root:
+./scripts/generate-api-docs.sh
+```
+
+Conventions: [`docs/code-documentation.md`](../../docs/code-documentation.md).

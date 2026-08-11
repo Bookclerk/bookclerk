@@ -1,4 +1,8 @@
 //! Lucene-style query normalization for classic Libation search syntax.
+//!
+//! # Audience
+//!
+//! Host search UI / CLI before handing a string to [`crate::SearchEngine`].
 
 /// Normalize a classic Libation/Lucene query for Tantivy's parser.
 ///

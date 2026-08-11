@@ -1,9 +1,11 @@
 import { Star } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type StarRatingProps = {
+/** Props for {@link StarRating}. */
+export type StarRatingProps = {
   /** Rating on a 0–`max` scale (fractional values get a clipped fill). */
   value: number;
+  /** Maximum stars (default 5). */
   max?: number;
   className?: string;
   /** Size classes for each star glyph (width + height). */
@@ -11,8 +13,9 @@ type StarRatingProps = {
 };
 
 /**
- * Five-star row with Lucide stars: solid teal fill, outlined empties, and a
- * width-clipped partial fill for fractional overall ratings (e.g. 4.8).
+ * Read-only star row with width-clipped partial fill for fractional ratings.
+ *
+ * @param props - Rating value, max stars, and optional class names.
  */
 export function StarRating({
   value,

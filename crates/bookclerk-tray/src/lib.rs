@@ -15,6 +15,18 @@ mod native_tray;
 pub use client::{SharedTrayConfig, TrayConfig};
 
 /// Run the tray on the current thread until the user chooses Quit tray.
+///
+/// # Arguments
+///
+/// * `config` - Loaded Bookclerk configuration.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn run_blocking(config: SharedTrayConfig) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -34,6 +46,18 @@ pub fn run_blocking(config: SharedTrayConfig) -> anyhow::Result<()> {
 }
 
 /// Start the tray on a dedicated OS thread (safe beside the Tokio HTTP runtime).
+///
+/// # Arguments
+///
+/// * `config` - Loaded Bookclerk configuration.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn spawn(config: SharedTrayConfig) -> std::thread::JoinHandle<anyhow::Result<()>> {
     std::thread::Builder::new()
         .name("bookclerk-tray".into())

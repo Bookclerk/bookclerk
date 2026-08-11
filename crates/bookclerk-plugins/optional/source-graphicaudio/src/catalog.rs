@@ -12,15 +12,22 @@ const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
 /// One Magento catalog product (grid / related / product page).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MagentoCatalogProduct {
+    /// Product Identifier.
     pub product_id: String,
+    /// Sku.
     pub sku: Option<String>,
+    /// Title.
     pub title: String,
+    /// URL.
     pub url: Option<String>,
+    /// Series.
     pub series: Option<String>,
+    /// Cover URL.
     pub cover_url: Option<String>,
 }
 
 impl MagentoCatalogProduct {
+    /// Is series set.
     #[must_use]
     pub fn is_series_set(&self) -> bool {
         let sku = self.sku.as_deref().unwrap_or("");

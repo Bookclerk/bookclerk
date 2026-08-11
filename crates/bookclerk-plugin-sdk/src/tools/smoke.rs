@@ -1,4 +1,9 @@
-//! Out-of-tree workerd smoke via `bookclerk-workerd` library (no launcher binary).
+//! Out-of-tree workerd smoke via the `bookclerk-workerd` library (feature `tools`).
+//!
+//! Audience: authors verifying a `runtime = "workerd"` plugin can handshake
+//! without installing the full Bookclerk host. Downloads/ensures the pinned
+//! `workerd` binary (see `BOOKCLERK_WORKERD_CACHE`), materializes a config, and
+//! posts `handshake` + `health` over the HTTP bridge.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -13,7 +18,25 @@ use bookclerk_workerd::ensure_workerd;
 use bookclerk_workerd::notify::generate_bridge_token;
 use serde_json::{json, Value};
 
-/// Smoke a `runtime = "workerd"` plugin: ensure pin → materialize → handshake + health.
+/// Smokes a `runtime = "workerd"` plugin: ensure pin → materialize → handshake + health.
+///
+/// Spawns unconfined `workerd serve` on a free loopback port (jailed guests use
+/// a listen FD via the launcher instead). Kills the child before returning.
+///
+/// **Feature gate:** `tools` (pulls `bookclerk-workerd`).
+///
+/// # Arguments
+///
+/// * `plugin_dir` - Directory containing `plugin.toml` with `runtime = "workerd"`.
+///
+/// # Returns
+///
+/// Multi-line success text including pretty-printed handshake/health JSON.
+///
+/// # Errors
+///
+/// Returns a plain `String` error when the manifest is not workerd, workerd
+/// cannot be ensured, health never becomes ready, or RPC calls fail.
 pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
     let root = plugin_dir
         .canonicalize()

@@ -2,7 +2,11 @@ import { useState } from "react";
 import { storeFaviconUrl, storeLabel } from "@/lib/catalogTitle";
 import { cn } from "@/lib/utils";
 
-/** Small storefront favicon (same Google source as Settings). */
+/**
+ * Storefront favicon/logo badge for a source id.
+ *
+ * @param props - Store id and optional className.
+ */
 export function StoreLogo({
   source,
   className,

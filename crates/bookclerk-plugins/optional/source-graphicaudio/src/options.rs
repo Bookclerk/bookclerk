@@ -60,6 +60,7 @@ pub enum GraphicAudioBitrate {
 }
 
 impl GraphicAudioBitrate {
+    /// Parse.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -69,6 +70,7 @@ impl GraphicAudioBitrate {
         }
     }
 
+    /// Prefers hi.
     #[must_use]
     pub fn prefers_hi(self) -> bool {
         matches!(self, Self::Hi)
@@ -82,12 +84,16 @@ pub enum GraphicAudioContainer {
     /// Prefer M4B, then MP3, then FLAC (default).
     #[default]
     Auto,
+    /// M4b variant.
     M4b,
+    /// MP3 variant.
     Mp3,
+    /// Flac variant.
     Flac,
 }
 
 impl GraphicAudioContainer {
+    /// Parse.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {

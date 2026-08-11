@@ -7,6 +7,13 @@ use crate::registry::IntegrationRegistry;
 use crate::types::IntegrationEvent;
 
 /// Look up the acquired book and emit [`IntegrationEvent::BookAcquired`].
+///
+/// # Arguments
+///
+/// * `registry` - Configured content-source or integration registry.
+/// * `library` - Open library store used for reads/writes.
+/// * `product_or_uuid` - String `product_or_uuid` for this call.
+/// * `storage_key` - String `storage_key` for this call.
 pub async fn emit_book_acquired(
     registry: &IntegrationRegistry,
     library: &LibraryStore,

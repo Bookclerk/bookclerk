@@ -20,6 +20,15 @@ pub const NOTIFY_ACCEPT_LIMIT: usize = 8;
 /// Always walks `expected` (second argument) once and folds length mismatch into
 /// the same accumulator, so unauthorized inputs of any length take work
 /// proportional to the expected token rather than returning early.
+///
+/// # Arguments
+///
+/// * `provided` - String `provided` for this call.
+/// * `expected` - Expected bearer token.
+///
+/// # Returns
+///
+/// `true` when the predicate holds.
 #[must_use]
 pub fn constant_time_eq(provided: &str, expected: &str) -> bool {
     let provided = provided.as_bytes();
@@ -34,6 +43,14 @@ pub fn constant_time_eq(provided: &str, expected: &str) -> bool {
 }
 
 /// Extract `Bearer <token>` from an Authorization header value.
+///
+/// # Arguments
+///
+/// * `authorization` - String `authorization` for this call.
+///
+/// # Returns
+///
+/// `Some(...)` when found / applicable; otherwise `None`.
 #[must_use]
 pub fn parse_bearer(authorization: Option<&str>) -> Option<&str> {
     let value = authorization?.trim();
@@ -50,6 +67,10 @@ pub fn parse_bearer(authorization: Option<&str>) -> Option<&str> {
 
 /// Parse HTTP headers from the header block (no request line).
 /// Returns lowercased header name → raw value (first occurrence wins).
+///
+/// # Arguments
+///
+/// * `header_block` - String `header_block` for this call.
 pub fn parse_header_map(header_block: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for line in header_block.lines().skip(1) {
@@ -81,6 +102,19 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
 /// - Body byte length matching Content-Length (after optional trailing junk is truncated)
 ///
 /// Returns `(event, body_len)`.
+///
+/// # Arguments
+///
+/// * `raw` - String `raw` for this call.
+/// * `expected_token` - String `expected_token` for this call.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn parse_notify_http(raw: &str, expected_token: &str) -> Result<(Value, usize)> {
     let (header_part, body_part) = raw
         .split_once("\r\n\r\n")
@@ -130,12 +164,33 @@ pub fn parse_notify_http(raw: &str, expected_token: &str) -> Result<(Value, usiz
 }
 
 /// Event type string for logging (object `.type` only); never the full body.
+///
+/// # Arguments
+///
+/// * `event` - Fan-out event delivered to every integration.
+///
+/// # Returns
+///
+/// `Some(...)` when found / applicable; otherwise `None`.
 #[must_use]
 pub fn event_type_for_log(event: &Value) -> Option<&str> {
     event.as_object()?.get("type")?.as_str()
 }
 
 /// Push an event, dropping the oldest when at capacity. Returns `true` if dropped.
+///
+/// # Arguments
+///
+/// * `events` - `events` input for this call.
+/// * `event` - Fan-out event delivered to every integration.
+///
+/// # Returns
+///
+/// On success, the inner `bool` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn push_notify_event(events: &Mutex<Vec<Value>>, event: Value) -> Result<bool> {
     let mut guard = events
         .lock()

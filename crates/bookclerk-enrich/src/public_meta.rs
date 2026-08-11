@@ -29,6 +29,14 @@ struct GenreCategoryNode {
 }
 
 /// Map marketplace / region code to Audible API TLD (AudioBookshelf `regionMap`).
+///
+/// # Arguments
+///
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+///
+/// # Returns
+///
+/// `&'static str` result.
 #[must_use]
 pub fn region_tld(region: &str) -> &'static str {
     match region.trim().to_ascii_lowercase().as_str() {
@@ -46,6 +54,14 @@ pub fn region_tld(region: &str) -> &'static str {
 }
 
 /// Normalize a marketplace string to an Audnexus `region` query value.
+///
+/// # Arguments
+///
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+///
+/// # Returns
+///
+/// String result for this operation.
 #[must_use]
 pub fn normalize_region(region: &str) -> String {
     match region.trim().to_ascii_lowercase().as_str() {
@@ -59,6 +75,14 @@ pub fn normalize_region(region: &str) -> String {
 }
 
 /// Shared HTTP client for public metadata calls.
+///
+/// # Returns
+///
+/// On success, the inner `Client` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn public_http_client() -> Result<Client> {
     Client::builder()
         .timeout(HTTP_TIMEOUT)
@@ -72,10 +96,15 @@ pub fn public_http_client() -> Result<Client> {
 /// One Audible catalog product (public search hit).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CatalogProduct {
+    /// Audible / Amazon ASIN when this edition is sold on Audible.
     pub asin: String,
+    /// Display title as shown on the storefront or library card.
     pub title: Option<String>,
+    /// Comma-separated author names when the storefront provides them.
     pub authors: Option<String>,
+    /// Comma-separated narrator names when known.
     pub narrators: Option<String>,
+    /// Series name when the title belongs to a named series.
     pub series: Option<String>,
     /// Parent series ASIN when the catalog returns series metadata.
     pub series_asin: Option<String>,
@@ -83,17 +112,25 @@ pub struct CatalogProduct {
     pub series_sequence: Option<String>,
     /// Cover URL from `product_images` when the `media` response group is present.
     pub cover_url: Option<String>,
+    /// Optional subtitle when the catalog distinguishes it from the title.
     pub subtitle: Option<String>,
     /// Publisher summary / blurb (`product_extended_attrs`).
     pub description: Option<String>,
+    /// Publisher imprint as reported by the catalog.
     pub publisher: Option<String>,
+    /// Audiobook runtime in whole minutes when known.
     pub length_minutes: Option<i64>,
+    /// Publication date string from the catalog (ISO or storefront format).
     pub published_at: Option<String>,
     /// Genre / subject labels (`;`-separated).
     pub categories: Option<String>,
+    /// BCP-47 / storefront language code (`en`, `de`, …) when known.
     pub language: Option<String>,
+    /// List or deal price in integer cents of [`Self::currency`].
     pub price_cents: Option<i64>,
+    /// ISO 4217 currency code for price fields (`USD`, `EUR`, …).
     pub currency: Option<String>,
+    /// Human-readable price string from the storefront (e.g. `$14.95`).
     pub price_label: Option<String>,
     /// Overall community rating when the `rating` response group is present.
     pub rating_overall: Option<f64>,
@@ -102,6 +139,21 @@ pub struct CatalogProduct {
 }
 
 /// Search the public Audible catalog by title/author; returns ASINs (relevance order).
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `title` - Display title.
+/// * `author` - String `author` for this call.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<String>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn search_catalog_asins(
     http: &Client,
     region: &str,
@@ -116,6 +168,20 @@ pub async fn search_catalog_asins(
 }
 
 /// Keyword catalog search (e.g. ISBN) — useful when title search misses a hit.
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `keywords` - String `keywords` for this call.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<String>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn search_catalog_keywords(
     http: &Client,
     region: &str,
@@ -149,6 +215,22 @@ product_extended_attrs,media,price,category_ladders,rating";
 ///
 /// Pass `title` and/or `author` and/or `keywords`. Empty title is allowed when
 /// keywords or author alone are set.
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `title` - Display title.
+/// * `author` - String `author` for this call.
+/// * `keywords` - String `keywords` for this call.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<CatalogProduct>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn search_catalog_products(
     http: &Client,
     region: &str,
@@ -160,6 +242,22 @@ pub async fn search_catalog_products(
 }
 
 /// Same as [`search_catalog_products`] but requests list price / category ladders.
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `title` - Display title.
+/// * `author` - String `author` for this call.
+/// * `keywords` - String `keywords` for this call.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<CatalogProduct>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn search_catalog_products_rich(
     http: &Client,
     region: &str,
@@ -171,6 +269,25 @@ pub async fn search_catalog_products_rich(
 }
 
 /// Public catalog search with optional narrator, series ASIN, and/or category filters.
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `title` - Display title.
+/// * `author` - String `author` for this call.
+/// * `keywords` - String `keywords` for this call.
+/// * `narrator` - String `narrator` for this call.
+/// * `series_asin` - String `series_asin` for this call.
+/// * `rich` - Boolean flag `rich`.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<CatalogProduct>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn search_catalog_products_ex(
     http: &Client,
@@ -201,6 +318,27 @@ pub async fn search_catalog_products_ex(
 ///
 /// Note: Audible's public catalog ignores `language=` query params; prefer
 /// local re-rank on [`CatalogProduct::language`] after fetch.
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `title` - Display title.
+/// * `author` - String `author` for this call.
+/// * `keywords` - String `keywords` for this call.
+/// * `narrator` - String `narrator` for this call.
+/// * `series_asin` - String `series_asin` for this call.
+/// * `category_id` - String `category_id` for this call.
+/// * `rich` - Boolean flag `rich`.
+/// * `num_results` - Numeric `num_results` value for this call.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<CatalogProduct>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn search_catalog_products_ex2(
     http: &Client,
@@ -233,11 +371,31 @@ pub async fn search_catalog_products_ex2(
 }
 
 /// Storefront catalog search (`GET /1.0/catalog/search`) — the same index the
+/// Storefront catalog search (`GET /1.0/catalog/search`) — the same index the
 /// Audible website uses.
 ///
 /// Prefer this over [`search_catalog_products_paged`] for Discover keyword browse:
 /// `/catalog/products?keywords=` frequently omits titles that still resolve via
 /// `/catalog/products/{asin}` (e.g. English *A Game of Thrones* `B002UZZ93G`).
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `keywords` - String `keywords` for this call.
+/// * `page` - Numeric `page` value for this call.
+/// * `sort` - Sort field for the merged result set.
+/// * `rich` - Boolean flag `rich`.
+/// * `num_results` - Numeric `num_results` value for this call.
+/// * `with_rating` - Boolean flag `with_rating`.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<CatalogProduct>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn search_catalog_storefront(
     http: &Client,
@@ -287,6 +445,30 @@ pub async fn search_catalog_storefront(
 }
 
 /// Paged public catalog search with explicit `products_sort_by` and optional rating.
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `title` - Display title.
+/// * `author` - String `author` for this call.
+/// * `keywords` - String `keywords` for this call.
+/// * `narrator` - String `narrator` for this call.
+/// * `series_asin` - String `series_asin` for this call.
+/// * `category_id` - String `category_id` for this call.
+/// * `page` - Numeric `page` value for this call.
+/// * `products_sort_by` - String `products_sort_by` for this call.
+/// * `rich` - Boolean flag `rich`.
+/// * `num_results` - Numeric `num_results` value for this call.
+/// * `with_rating` - Boolean flag `with_rating`.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<CatalogProduct>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn search_catalog_products_paged(
     http: &Client,
@@ -368,6 +550,21 @@ pub async fn search_catalog_products_paged(
 }
 
 /// Keyword/title search, then keep products whose series name matches `series`.
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `series` - Optional series name.
+/// * `limit` - Maximum number of results to return.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<CatalogProduct>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn search_catalog_by_series_name(
     http: &Client,
     region: &str,
@@ -409,6 +606,24 @@ pub async fn search_catalog_by_series_name(
 ///
 /// `page` is 1-based (Audible catalog convention), matching
 /// [`search_catalog_products_paged`].
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `genre` - String `genre` for this call.
+/// * `page` - Numeric `page` value for this call.
+/// * `products_sort_by` - String `products_sort_by` for this call.
+/// * `limit` - Maximum number of results to return.
+/// * `with_rating` - Boolean flag `with_rating`.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<CatalogProduct>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn search_catalog_by_genre_name(
     http: &Client,
@@ -467,6 +682,20 @@ pub async fn search_catalog_by_genre_name(
 /// Fetches `GET …/catalog/categories?categories_num_levels=3&root=Genres`, flattens
 /// the tree, and picks the best case-insensitive name match (deeper nodes and
 /// Science Fiction & Fantasy paths preferred; Children’s / Teen deprioritized).
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `genre` - String `genre` for this call.
+///
+/// # Returns
+///
+/// On success, the inner `Option<String>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn resolve_genre_category_id(
     http: &Client,
     region: &str,
@@ -592,6 +821,20 @@ fn genre_category_score(node: &GenreCategoryNode) -> i64 {
 }
 
 /// List products in an Audible series by parent series ASIN (public catalog).
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `series_asin` - String `series_asin` for this call.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<CatalogProduct>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn search_catalog_by_series_asin(
     http: &Client,
     region: &str,
@@ -601,6 +844,20 @@ pub async fn search_catalog_by_series_asin(
 }
 
 /// Narrator-focused public catalog search.
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `narrator` - String `narrator` for this call.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<CatalogProduct>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn search_catalog_by_narrator(
     http: &Client,
     region: &str,
@@ -635,6 +892,14 @@ async fn catalog_products_from_response(
 }
 
 /// True for Audible podcast shows / episodes (`content_type` / delivery type).
+///
+/// # Arguments
+///
+/// * `p` - `p` input for this call.
+///
+/// # Returns
+///
+/// `true` when the predicate holds.
 #[must_use]
 pub fn is_audible_podcast_product(p: &Value) -> bool {
     let content_type = p
@@ -895,27 +1160,54 @@ fn join_named_people(value: Option<&Value>) -> Option<String> {
 /// title-detail paths only.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CatalogRating {
+    /// Aggregate star rating across listeners.
     pub overall: Option<f64>,
+    /// Narration / performance sub-score.
     pub performance: Option<f64>,
+    /// Story / content sub-score.
     pub story: Option<f64>,
+    /// Total number of ratings contributing to the averages.
     pub num_ratings: Option<i64>,
+    /// Total number of written reviews when distinct from ratings.
     pub num_reviews: Option<i64>,
 }
 
 /// One customer review from Audible's public catalog reviews endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogReview {
+    /// Stable identifier for this item.
     pub id: Option<String>,
+    /// Display title as shown on the storefront or library card.
     pub title: Option<String>,
+    /// Full review text from the storefront.
     pub body: String,
+    /// Display name of the review author on the storefront.
     pub author_name: Option<String>,
+    /// Overall star rating for this review when present.
     pub overall_rating: Option<i64>,
+    /// Narration sub-rating for this review when present.
     pub performance_rating: Option<i64>,
+    /// Story sub-rating for this review when present.
     pub story_rating: Option<i64>,
+    /// When the review was submitted (storefront timestamp string).
     pub submitted_at: Option<String>,
 }
 
 /// Fetch Audible community ratings for one ASIN (public catalog; no account).
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `asin` - Optional Audible / Amazon ASIN.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+///
+/// # Returns
+///
+/// On success, the inner `Option<CatalogRating>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn fetch_audible_catalog_rating(
     http: &Client,
     asin: &str,
@@ -958,11 +1250,14 @@ pub async fn fetch_audible_catalog_rating(
 /// Audible catalog reviews sort (`MostHelpful` or `MostRecent`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogReviewsSort {
+    /// Sort reviews by helpfulness (storefront default).
     MostHelpful,
+    /// Sort reviews by newest submission first.
     MostRecent,
 }
 
 impl CatalogReviewsSort {
+    /// Returns the wire / FourCC string form of this value.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MostHelpful => "MostHelpful",
@@ -970,6 +1265,15 @@ impl CatalogReviewsSort {
         }
     }
 
+    /// Parses this value from its wire string form.
+    ///
+    /// # Arguments
+    ///
+    /// * `raw` - String `raw` for this call.
+    ///
+    /// # Returns
+    ///
+    /// Updated `Self` for chaining.
     pub fn parse(raw: &str) -> Self {
         match raw.trim() {
             s if s.eq_ignore_ascii_case("MostRecent") || s.eq_ignore_ascii_case("recent") => {
@@ -983,10 +1287,15 @@ impl CatalogReviewsSort {
 /// One page of helpful Audible customer reviews (public; no account).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogReviewsPage {
+    /// Review rows on this page.
     pub reviews: Vec<CatalogReview>,
+    /// 1-based page index for this reviews / list request.
     pub page: u32,
+    /// Maximum number of items returned in this page.
     pub page_size: usize,
+    /// When true, another page is available via [`Self::next_cursor`].
     pub has_more: bool,
+    /// Remote sort key for reviews (`most_helpful`, `most_recent`, …).
     pub sort_by: CatalogReviewsSort,
 }
 
@@ -994,6 +1303,21 @@ pub struct CatalogReviewsPage {
 ///
 /// Convenience wrapper around [`fetch_audible_catalog_reviews_page`] (page 1).
 /// `limit` is clamped to `1..=50` (Audible's reviews endpoint max).
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `asin` - Optional Audible / Amazon ASIN.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `limit` - Maximum number of results to return.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<CatalogReview>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn fetch_audible_catalog_reviews(
     http: &Client,
     asin: &str,
@@ -1013,6 +1337,23 @@ pub async fn fetch_audible_catalog_reviews(
 }
 
 /// Paginated Audible catalog reviews (`page` is 1-based).
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `asin` - Optional Audible / Amazon ASIN.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `page` - Numeric `page` value for this call.
+/// * `page_size` - Maximum items to return in this page.
+/// * `sort_by` - `sort_by` input for this call.
+///
+/// # Returns
+///
+/// On success, the inner `CatalogReviewsPage` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn fetch_audible_catalog_reviews_page(
     http: &Client,
     asin: &str,
@@ -1141,6 +1482,14 @@ fn parse_catalog_reviews(body: &Value, limit: usize) -> Vec<CatalogReview> {
 /// Normalize review text for clients: decode HTML entities and preserve Audible
 /// guided questionnaire JSON (`[{ type, question, id, answer }, …]`) so the UI
 /// can render Q&A sections. Unrelated JSON arrays are left unchanged.
+///
+/// # Arguments
+///
+/// * `body` - HTTP request body bytes.
+///
+/// # Returns
+///
+/// String result for this operation.
 pub fn normalize_review_body(body: &str) -> String {
     let trimmed = body.trim();
     if trimmed.starts_with('[') {
@@ -1250,6 +1599,20 @@ fn json_i64(v: &Value) -> Option<i64> {
 }
 
 /// Fetch book metadata from Audnexus (no Audible account).
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `asin` - Optional Audible / Amazon ASIN.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+///
+/// # Returns
+///
+/// On success, the inner `Option<Value>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn fetch_audnexus_book(http: &Client, asin: &str, region: &str) -> Result<Option<Value>> {
     let asin = asin.trim().to_ascii_uppercase();
     if !is_valid_asin(&asin) {
@@ -1284,6 +1647,20 @@ pub async fn fetch_audnexus_book(http: &Client, asin: &str, region: &str) -> Res
 /// Audnexus uses camelCase (`startOffsetMs`, `brandIntroDurationMs`). Callers that
 /// already accept both casings can use the raw body; this helper also mirrors
 /// snake_case keys for code that only reads Audible API field names.
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `asin` - Optional Audible / Amazon ASIN.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+///
+/// # Returns
+///
+/// On success, the inner `Option<Value>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn fetch_audnexus_chapters(
     http: &Client,
     asin: &str,
@@ -1316,6 +1693,19 @@ pub async fn fetch_audnexus_chapters(
 }
 
 /// Convenience: public chapter fetch with a fresh HTTP client.
+///
+/// # Arguments
+///
+/// * `asin` - Optional Audible / Amazon ASIN.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+///
+/// # Returns
+///
+/// On success, the inner `Option<Value>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn fetch_public_chapter_info(asin: &str, region: &str) -> Result<Option<Value>> {
     let http = public_http_client()?;
     fetch_audnexus_chapters(&http, asin, region).await

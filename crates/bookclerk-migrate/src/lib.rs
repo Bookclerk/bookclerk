@@ -1,4 +1,9 @@
 //! Import/export classic Libation Files and native Bookclerk backups.
+//!
+//! # Audience
+//!
+//! CLI migration commands and host tooling. Converts classic Libation directories
+//! into Bookclerk `files` layouts, and round-trips native `.tar.zst` backups.
 
 mod accounts;
 mod discover;
@@ -30,11 +35,11 @@ use serde::{Deserialize, Serialize};
 /// Options for a full classic Libation Files directory import.
 #[derive(Debug, Clone)]
 pub struct MigrateOptions {
-    /// Source classic Libation Files directory.
+    /// Absolute path to the classic Libation Files directory to import.
     pub source: std::path::PathBuf,
     /// Destination files dir (auth, library.db, config.toml).
     pub dest_files_dir: std::path::PathBuf,
-    /// Overwrite existing config.toml.
+    /// When true, overwrite an existing destination `config.toml`.
     pub force: bool,
     /// Retained for CLI compatibility; credentials are never imported by migrate
     /// (use the Audible plugin: `auth login` / `auth import`).
@@ -46,16 +51,35 @@ pub struct MigrateOptions {
 /// Summary of a migration run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MigrateSummary {
+    /// When true, `Settings.json` was found and applied (or would be, in dry-run).
     pub settings_imported: bool,
+    /// Count of accounts imported or exported.
     pub accounts: usize,
+    /// Count of credential blobs imported.
     pub credentials: usize,
+    /// Count of book rows imported or exported.
     pub books: usize,
+    /// Count of books marked acquired after import.
     pub acquired: usize,
+    /// Count of storage-key mappings written.
     pub storage_keys: usize,
+    /// Non-fatal warnings collected during the run (operator-facing).
     pub warnings: Vec<String>,
 }
 
 /// Import classic Libation Files into a bookclerk data directory.
+///
+/// # Arguments
+///
+/// * `opts` - Options struct for this operation.
+///
+/// # Returns
+///
+/// On success, the inner `MigrateSummary` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
     let source = discover_source(&opts.source)?;
     let mut summary = MigrateSummary::default();
@@ -148,6 +172,14 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
 }
 
 /// Resolve a classic Libation path from CLI / env.
+///
+/// # Arguments
+///
+/// * `explicit` - Filesystem path (`explicit`).
+///
+/// # Returns
+///
+/// `Some(...)` when found / applicable; otherwise `None`.
 pub fn resolve_classic_files_dir(explicit: Option<&Path>) -> Option<std::path::PathBuf> {
     if let Some(path) = explicit {
         return Some(path.to_path_buf());

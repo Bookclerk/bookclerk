@@ -18,5 +18,9 @@ thiserror.workspace = true
 url = "2"
 toml.workspace = true
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lints]
 workspace = true

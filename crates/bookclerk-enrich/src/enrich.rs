@@ -23,23 +23,37 @@ pub const DEFAULT_ENRICH_MIN_CONFIDENCE: u8 = 90;
 /// Metadata pulled from Audible / Audnexus for a confident match.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Enrichment {
+    /// Audible / Amazon ASIN when this edition is sold on Audible.
     pub asin: String,
+    /// Display title as shown on the storefront or library card.
     pub title: String,
+    /// Comma-separated author names when the storefront provides them.
     pub authors: Option<String>,
+    /// Comma-separated narrator names when known.
     pub narrators: Option<String>,
+    /// Series name when the title belongs to a named series.
     pub series: Option<String>,
+    /// Position within the series (e.g. `1`, `1.5`) when known.
     pub series_index: Option<String>,
+    /// Audible series ASIN when the catalog associates one.
     pub series_asin: Option<String>,
+    /// Audiobook runtime in whole minutes when known.
     pub length_minutes: Option<i64>,
+    /// Publisher imprint as reported by the catalog.
     pub publisher: Option<String>,
+    /// Optional subtitle when the catalog distinguishes it from the title.
     pub subtitle: Option<String>,
+    /// HTTPS URL for cover art when the catalog exposes one.
     pub cover_url: Option<String>,
+    /// Canonical ISBN-13 (or ISBN-10 normalized) when published.
     pub isbn: Option<String>,
     /// ISO-8601 / RFC3339 timestamp when known (`releaseDate`).
     pub published_at: Option<String>,
     /// ABS-style genre string (`;`-separated).
     pub categories: Option<String>,
+    /// Publisher or storefront synopsis; may be truncated for embeddings.
     pub description: Option<String>,
+    /// BCP-47 / storefront language code (`en`, `de`, …) when known.
     pub language: Option<String>,
     /// Match confidence in `[0.0, 1.0]` (omit/`None` for legacy callers).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,13 +63,29 @@ pub struct Enrichment {
 /// A scored Audible match candidate.
 #[derive(Debug, Clone)]
 pub struct ScoredMatch {
+    /// Filled metadata fields from the public catalog match.
     pub enrichment: Enrichment,
+    /// Match confidence in `[0.0, 1.0]`; higher means a stronger ASIN match.
     pub confidence: f64,
 }
 
 /// Look up the best Audible match for the given query metadata via public APIs.
 ///
 /// Returns [`None`] when no candidate meets `min_confidence` (0.0–1.0).
+///
+/// # Arguments
+///
+/// * `query` - Query vector or free-text search string.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `min_confidence` - Minimum match confidence in `[0.0, 1.0]` to apply enrichment.
+///
+/// # Returns
+///
+/// On success, the inner `Option<ScoredMatch>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn lookup_by_metadata(
     query: &MatchQuery<'_>,
     region: &str,
@@ -66,6 +96,21 @@ pub async fn lookup_by_metadata(
 }
 
 /// Catalog + Audnexus lookup against an already-built HTTP client.
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `query` - Query vector or free-text search string.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `min_confidence` - Minimum match confidence in `[0.0, 1.0]` to apply enrichment.
+///
+/// # Returns
+///
+/// On success, the inner `Option<ScoredMatch>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn lookup_by_metadata_with_client(
     http: &reqwest::Client,
     query: &MatchQuery<'_>,
@@ -154,6 +199,20 @@ pub async fn lookup_by_metadata_with_client(
 /// fields win for display metadata (title, contributors, series, ISBN, genres,
 /// publish date). Store-native `length_minutes` is kept when present — Audible
 /// runtimes include brand intro/outro that plain Acquire files omit.
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `book_uuid` - String `book_uuid` for this call.
+/// * `enrichment` - Catalog fields to merge onto the book row.
+///
+/// # Returns
+///
+/// On success, the inner `bookclerk_library::BookRecord` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn apply_enrichment_to_book(
     library: &LibraryStore,
     book_uuid: &str,
@@ -243,6 +302,19 @@ pub async fn apply_enrichment_to_book(
 /// Source-agnostic: any non-`audible` row with title and/or ISBN is considered.
 /// Uses title, author, narrator, subtitle, ISBN, and duration when present.
 /// `min_confidence_percent` is 0–100 (default [`DEFAULT_ENRICH_MIN_CONFIDENCE`]).
+///
+/// # Arguments
+///
+/// * `library` - Open library store used for reads/writes.
+/// * `min_confidence_percent` - `min_confidence_percent` input for this call.
+///
+/// # Returns
+///
+/// On success, the inner `usize` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn enrich_books_from_audible(
     library: &LibraryStore,
     min_confidence_percent: u8,
@@ -303,6 +375,14 @@ pub async fn enrich_books_from_audible(
 }
 
 /// Convert a 0–100 percent threshold to a 0.0–1.0 fraction.
+///
+/// # Arguments
+///
+/// * `percent` - Confidence threshold expressed as 0–100.
+///
+/// # Returns
+///
+/// `f64` result.
 #[must_use]
 pub fn confidence_percent_to_fraction(percent: u8) -> f64 {
     f64::from(percent.min(100)) / 100.0
@@ -312,12 +392,39 @@ pub fn confidence_percent_to_fraction(percent: u8) -> f64 {
 ///
 /// Used by Discover / Wishlist / Library detail views to surface description,
 /// runtime, publisher, and related fields without requiring a library row.
+///
+/// # Arguments
+///
+/// * `asin` - Optional Audible / Amazon ASIN.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+///
+/// # Returns
+///
+/// On success, the inner `Option<Enrichment>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn enrichment_for_asin(asin: &str, region: &str) -> Result<Option<Enrichment>> {
     let http = public_http_client()?;
     enrichment_for_asin_with_client(&http, asin, region).await
 }
 
 /// Same as [`enrichment_for_asin`] with a shared HTTP client.
+///
+/// # Arguments
+///
+/// * `http` - `http` input for this call.
+/// * `asin` - Optional Audible / Amazon ASIN.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+///
+/// # Returns
+///
+/// On success, the inner `Option<Enrichment>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn enrichment_for_asin_with_client(
     http: &reqwest::Client,
     asin: &str,

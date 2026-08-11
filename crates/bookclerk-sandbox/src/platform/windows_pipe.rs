@@ -14,7 +14,7 @@
 
 use crate::SandboxError;
 
-/// Owned [`SECURITY_ATTRIBUTES`] suitable for `CreateNamedPipe` to one guest.
+/// Owned `SECURITY_ATTRIBUTES` suitable for `CreateNamedPipe` to one guest.
 ///
 /// Keep this value alive until the create call returns; the kernel copies the
 /// descriptor onto the pipe object.

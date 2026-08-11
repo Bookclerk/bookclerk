@@ -2,10 +2,14 @@
 
 use crate::error::{Mp4Error, Result};
 
+/// One run from the sample-to-chunk (`stsc`) table.
 #[derive(Debug, Clone)]
 pub struct ChunkMapEntry {
+    /// 1-based first chunk index for this `stsc` entry.
     pub first_chunk: u32,
+    /// Number of samples in each chunk of this run.
     pub samples_per_chunk: u32,
+    /// 1-based index into the sample description table.
     pub sample_description_index: u32,
 }
 
@@ -14,14 +18,32 @@ pub struct ChunkMapEntry {
 pub struct SampleInfo {
     /// Absolute file offset of the sample payload.
     pub offset: u64,
+    /// Total box size in bytes including the header.
     pub size: u32,
     /// Composition start time in media timescale ticks.
     pub start_cts: u64,
     /// Sample duration in media timescale ticks.
     pub duration: u32,
+    /// 1-based chunk index that contains this sample.
     pub chunk_index: u32,
 }
 
+/// Builds a flat sample table from `stts` / `stsc` / `stsz` / `stco` (or `co64`).
+///
+/// # Arguments
+///
+/// * `stts` - Numeric `stts` value for this call.
+/// * `stsc` - `stsc` input for this call.
+/// * `sample_sizes` - Numeric `sample_sizes` value for this call.
+/// * `chunk_offsets` - Numeric `chunk_offsets` value for this call.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<SampleInfo>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn build_samples(
     stts: &[(u32, u32)],
     stsc: &[ChunkMapEntry],
@@ -107,6 +129,17 @@ pub fn build_samples(
 /// Indices rather than clones: a long audiobook has millions of samples, and the
 /// caller needs the original positions anyway to line up any per-sample state it
 /// keeps of its own. Output composition times are rebased by the writer.
+///
+/// # Arguments
+///
+/// * `samples` - `samples` input for this call.
+/// * `timescale` - Numeric `timescale` value for this call.
+/// * `start_ms` - Numeric `start_ms` value for this call.
+/// * `end_ms` - Numeric `end_ms` value for this call.
+///
+/// # Returns
+///
+/// Collected results (may be empty).
 #[must_use]
 pub fn select_samples_by_ms(
     samples: &[SampleInfo],

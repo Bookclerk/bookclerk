@@ -266,7 +266,8 @@ pub async fn guest_scan(
 
 /// Download + decrypt one title; return plain paths (never encrypted on the wire).
 ///
-/// `download` is the host [`DownloadOptions`] JSON from [`FetchTitleParams::download`].
+/// `download` is the host [`DownloadOptions`] JSON from the ABI
+/// `FetchTitleParams.download` field.
 /// Plugin bitrate from `source_config` overlays `quality` (same as in-process).
 pub async fn guest_fetch_title(
     credentials: &Value,

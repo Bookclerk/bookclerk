@@ -30,8 +30,11 @@ pub struct NativeBackupManifest {
 /// Options for exporting a native backup.
 #[derive(Debug, Clone)]
 pub struct NativeExportOptions {
+    /// Bookclerk or Libation files directory root for this operation.
     pub files_dir: PathBuf,
+    /// Destination path for the export archive or directory.
     pub dest: PathBuf,
+    /// Bookclerk version string recorded in the backup manifest.
     pub bookclerk_version: String,
     /// Include `plugins/**/plugin.toml` (not plugin binaries).
     pub include_plugin_manifests: bool,
@@ -44,29 +47,51 @@ pub struct NativeExportOptions {
 /// Options for importing a native backup.
 #[derive(Debug, Clone)]
 pub struct NativeImportOptions {
+    /// Path to the native backup `.tar.zst` (or similar) archive.
     pub archive: PathBuf,
+    /// Destination Bookclerk files directory for import.
     pub dest_files_dir: PathBuf,
+    /// When true, overwrite existing data instead of failing on conflict.
     pub force: bool,
+    /// When true, report what would change without writing files.
     pub dry_run: bool,
 }
 
 /// Summary of a native export.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NativeExportSummary {
+    /// Path to the native backup `.tar.zst` (or similar) archive.
     pub archive: String,
+    /// Count of files packaged or restored.
     pub files: usize,
+    /// Logical paths included in the archive.
     pub included: Vec<String>,
 }
 
 /// Summary of a native import.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NativeImportSummary {
+    /// Count of files packaged or restored.
     pub files: usize,
+    /// Native backup format version actually read from the archive.
     pub format_version: u32,
+    /// Non-fatal warnings collected during the run (operator-facing).
     pub warnings: Vec<String>,
 }
 
 /// Export Bookclerk files-dir essentials into a `.tar.gz` archive.
+///
+/// # Arguments
+///
+/// * `opts` - Options struct for this operation.
+///
+/// # Returns
+///
+/// On success, the inner `NativeExportSummary` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn export_native(opts: NativeExportOptions) -> Result<NativeExportSummary> {
     if let Some(parent) = opts.dest.parent() {
         std::fs::create_dir_all(parent)?;
@@ -148,6 +173,18 @@ pub fn export_native(opts: NativeExportOptions) -> Result<NativeExportSummary> {
 }
 
 /// Restore a native backup archive into `dest_files_dir`.
+///
+/// # Arguments
+///
+/// * `opts` - Options struct for this operation.
+///
+/// # Returns
+///
+/// On success, the inner `NativeImportSummary` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn import_native(opts: NativeImportOptions) -> Result<NativeImportSummary> {
     let file = File::open(&opts.archive)
         .map_err(|source| err(format!("open {}: {source}", opts.archive.display())))?;

@@ -34,6 +34,7 @@ pub const RESERVED_MOOV_SLACK: usize = 1 << 20;
 /// Where a file's `moov` sits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MoovLocation {
+    /// Byte offset of this box or region within the file.
     pub start: u64,
     /// Total box length, `free` padding included.
     pub len: u64,
@@ -46,6 +47,18 @@ pub struct MoovLocation {
 ///
 /// Only the box headers and `moov` itself are read, so the cost is the header's
 /// and not the file's.
+///
+/// # Arguments
+///
+/// * `path` - Filesystem path involved in this operation.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn read_moov(path: &Path) -> Result<(MoovLocation, Vec<u8>)> {
     let mut file = File::open(path)?;
     let boxes = top_level_boxes(&mut file)?;
@@ -72,6 +85,18 @@ pub fn read_moov(path: &Path) -> Result<(MoovLocation, Vec<u8>)> {
 }
 
 /// Every box at the top level, in file order.
+///
+/// # Arguments
+///
+/// * `file` - Open file handle.
+///
+/// # Returns
+///
+/// On success, the inner `Vec<BoxHeader>` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn top_level_boxes(file: &mut File) -> Result<Vec<BoxHeader>> {
     let file_len = file.seek(SeekFrom::End(0))?;
     let mut out = Vec::new();
@@ -96,6 +121,18 @@ pub fn top_level_boxes(file: &mut File) -> Result<Vec<BoxHeader>> {
 /// Anything appended to `moov` goes after its last child, so the slack has to
 /// come off before an edit and go back on after it. Returns whether one was
 /// there to remove.
+///
+/// # Arguments
+///
+/// * `moov` - `moov` input for this call.
+///
+/// # Returns
+///
+/// On success, the inner `bool` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn strip_trailing_free(moov: &mut Vec<u8>) -> Result<bool> {
     let end = last_child_range(moov)?;
     let Some((start, kind)) = end else {
@@ -153,6 +190,20 @@ pub fn pad_moov_to(moov: &mut Vec<u8>, total: usize) -> Result<()> {
 /// the work happened in a scratch file laid out differently, has to correct them
 /// back. Only what sits after the edit moves, which is why `above` is usually
 /// where `moov` starts: media in front of the header stays put.
+///
+/// # Arguments
+///
+/// * `moov` - `moov` input for this call.
+/// * `above` - Numeric `above` value for this call.
+/// * `delta` - Numeric `delta` value for this call.
+///
+/// # Returns
+///
+/// The successful result value for this operation.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn shift_chunk_offsets(moov: &mut [u8], above: u64, delta: i64) -> Result<()> {
     if delta == 0 {
         return Ok(());

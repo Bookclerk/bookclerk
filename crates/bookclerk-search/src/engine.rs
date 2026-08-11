@@ -1,4 +1,8 @@
-//! Tantivy index build and search.
+//! Tantivy index build and search (classic Libation `SearchEngine` field parity).
+//!
+//! # Audience
+//!
+//! Host code that opens [`SearchEngine`] under `search_index/` and runs queries.
 
 use std::path::{Path, PathBuf};
 
@@ -18,8 +22,11 @@ pub struct SearchHit {
     pub asin: String,
     /// Library public uuid (indexed lowercased; returned as stored).
     pub uuid: String,
+    /// Library account id that owns this title.
     pub account_id: String,
+    /// Display title stored with the hit.
     pub title: String,
+    /// Tantivy relevance score (higher is better).
     pub score: f32,
 }
 
@@ -44,6 +51,15 @@ pub struct SearchEngine {
 
 impl SearchEngine {
     /// Open or create a search index at `dir`.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - Absolute path to the Tantivy index directory (created if missing).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::SearchError::Index`] when the directory or index cannot
+    /// be opened.
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).map_err(|err| SearchError::Index(err.to_string()))?;
         let mut schema_builder = Schema::builder();

@@ -34,6 +34,11 @@ import { cn, pageWidthClass } from "@/lib/utils";
 import { formatDuration } from "@/lib/libraryFilters";
 import { queueDiscoverSearch } from "@/lib/routes";
 
+/**
+ * Wishlist view — personal wishes and the global request queue.
+ *
+ * @param props - Logout handler, nav props, and optional session role.
+ */
 export function WishlistPage({
   onLogout,
   nav,

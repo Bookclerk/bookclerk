@@ -196,6 +196,9 @@ strip = true
 # `deny` (not `forbid`) so platform FFI sinks can `#[allow(unsafe_code)]`
 # locally — e.g. Windows Event Log in bookclerk-config.
 unsafe_code = "deny"
+# Google-style public API docs (see docs/code-documentation.md). CI promotes
+# warnings to errors via RUSTFLAGS="-D warnings".
+missing_docs = "warn"
 
 [workspace.lints.clippy]
 # Keep CI green on defaults; tighten pedantic lints as crates mature.

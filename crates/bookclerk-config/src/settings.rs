@@ -1,4 +1,9 @@
 //! Application settings loaded from TOML with environment overrides.
+//!
+//! # Audience
+//!
+//! Host binaries and crates that load [`Config`]. Guest plugins receive opaque
+//! tables at handshake and do not parse this module.
 
 use std::path::{Path, PathBuf};
 
@@ -19,12 +24,16 @@ pub struct Config {
     #[serde(skip)]
     pub paths: Option<Paths>,
 
+    /// Library / scan / acquire behaviour (`[library]`).
     pub library: LibraryConfig,
     /// Library database backend plugin (`[database]`).
     #[serde(default)]
     pub database: crate::database::DatabaseConfig,
+    /// Acquire packaging and destination backends (`[output]`).
     pub output: OutputConfig,
+    /// HTTP control-plane / tray settings (`[daemon]`).
     pub daemon: DaemonConfig,
+    /// Master-key wrapping passphrase (`[auth]`).
     pub auth: AuthConfig,
     /// Content-source plugins (`[sources.audible]`, `[sources.graphicaudio]`, …).
     pub sources: SourcesConfig,
@@ -116,7 +125,7 @@ pub struct DiscoveryConfig {
     pub exclude_graphicaudio_series_sets: bool,
     /// How often `bookclerkd` syncs ABS listening progress (0 = disabled).
     pub listen_sync_interval_minutes: u64,
-    /// Default recommendation list size.
+    /// Default number of titles returned by a recommendations run (default 20).
     pub recommend_limit: usize,
 }
 
@@ -156,12 +165,14 @@ impl Default for LibraryConfig {
     }
 }
 
-/// Audible download quality.
+/// Audible download bitrate tier (`high` / `normal` in TOML).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AudioQuality {
+    /// Highest offered bitrate for the title (default).
     #[default]
     High,
+    /// Standard / lower bitrate when the store offers a choice.
     Normal,
 }
 
@@ -328,6 +339,16 @@ impl DiagnosticsConfig {
 
 impl Config {
     /// Load config: defaults ← optional TOML file ← environment overrides.
+    ///
+    /// # Arguments
+    ///
+    /// * `cli_files_dir` - Optional override for `BOOKCLERK_FILES_DIR`.
+    /// * `config_path` - Optional explicit path to `config.toml`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::ConfigError`] when the file cannot be read or parsed, or
+    /// when soft validation of destinations / database fails after merge.
     pub fn load(cli_files_dir: Option<PathBuf>, config_path: Option<PathBuf>) -> Result<Self> {
         let files_dir = resolve_files_dir(cli_files_dir);
         let paths = Paths::from_files_dir(files_dir);
@@ -357,7 +378,11 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Parse a TOML config file.
+    /// Deserialize configuration from a TOML file on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::ConfigError::Read`] or [`crate::ConfigError::Parse`].
     pub fn from_toml_file(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
             path: path.display().to_string(),
@@ -366,7 +391,11 @@ impl Config {
         Self::from_toml_str(&text, &path.display().to_string())
     }
 
-    /// Parse TOML from a string.
+    /// Deserialize configuration from a TOML string (tests / embedded configs).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::ConfigError::Parse`] on invalid TOML.
     pub fn from_toml_str(text: &str, origin: &str) -> Result<Self> {
         toml::from_str(text).map_err(|source| ConfigError::Parse {
             path: origin.to_string(),

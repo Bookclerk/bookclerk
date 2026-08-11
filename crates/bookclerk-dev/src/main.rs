@@ -130,7 +130,7 @@ enum Commands {
     /// Does **not** remove Cargo `target/` or `.cargo-home/` (use `cargo clean` /
     /// delete `.cargo-home` for those). Requires `--yes`.
     Reset {
-        /// Confirm destructive wipe.
+        /// When set, allows `cargo reset` to delete `BookclerkFiles/` without a prompt.
         #[arg(long)]
         yes: bool,
         /// Also remove `target/plugin-artifacts`.

@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 /// Character replacement rule (`ReplacementCharacters` in classic Settings.json).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReplacementRule {
+    /// Substring to search for in each path segment / tag value.
     pub find: String,
+    /// Replacement text (may be empty to strip `find`).
     pub replace: String,
 }
 
@@ -69,9 +71,12 @@ impl Default for LameConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FileTimestampMode {
+    /// Use the wall-clock time at acquire completion (default).
     #[default]
     Now,
+    /// Use the account purchase / added-to-library timestamp when known.
     Purchased,
+    /// Use the publisher release date when known.
     Published,
 }
 
@@ -142,7 +147,7 @@ pub fn default_replacement_characters() -> Vec<ReplacementRule> {
     windows_replacement_characters()
 }
 
-/// Resolve the replacement map for naming.
+/// Resolve the character-replacement map used when sanitising storage path segments.
 ///
 /// Explicit non-empty `replacement_characters` always wins. Otherwise
 /// `path_sanitization` (with `storage_is_s3` for [`PathSanitizationMode::Auto`])

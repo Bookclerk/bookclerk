@@ -24,6 +24,9 @@ import {
 
 type AuthState = "loading" | "anon" | "authed";
 
+/**
+ * Root SPA shell — auth gate, URL sync, and view routing.
+ */
 export default function App() {
   const [auth, setAuth] = useState<AuthState>("loading");
   const [session, setSession] = useState<AuthSession | null>(null);

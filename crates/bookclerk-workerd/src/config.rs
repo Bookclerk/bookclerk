@@ -31,6 +31,7 @@ pub const SDK_JS_MODULE_NAMES: &[&str] =
     &["@bookclerk/plugin-sdk/workerd", "@bookclerk/plugin-sdk"];
 /// Python package path for `from bookclerk_plugin_sdk.workerd import …`.
 pub const SDK_PY_WORKERD_MODULE: &str = "bookclerk_plugin_sdk/workerd.py";
+/// Python module path that initializes the sparse workerd guest SDK.
 pub const SDK_PY_INIT_MODULE: &str = "bookclerk_plugin_sdk/__init__.py";
 
 // Re-export so call sites / docs can discover the shared list beside workerd config.
@@ -40,6 +41,18 @@ pub use bookclerk_plugin_manifest::PYODIDE_EGRESS_HOSTS;
 ///
 /// Prefer `$TMPDIR` (the guest scratch dir inside a jail). The plugin install
 /// root is read-only under Landlock, so materializing `.bookclerk/` there fails.
+///
+/// # Arguments
+///
+/// * `plugin_root` - Filesystem path (`plugin_root`).
+///
+/// # Returns
+///
+/// On success, the inner `PathBuf` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn workerd_state_dir(plugin_root: &Path) -> Result<PathBuf> {
     let base = std::env::var_os("TMPDIR")
         .or_else(|| std::env::var_os("TEMP"))
@@ -60,7 +73,10 @@ pub enum ListenSpec {
     /// Parent already bound `127.0.0.1:0`; workerd inherits via `--socket-fd`.
     /// Required under Linux Landlock `OutboundListen` (only `bind(port=0)` is
     /// allowed — rebinding a concrete ephemeral port is EPERM).
-    InheritedTcp { port: u16 },
+    InheritedTcp {
+        /// Ephemeral port already bound by the parent (informational for clients).
+        port: u16,
+    },
 }
 
 impl ListenSpec {
@@ -80,6 +96,7 @@ impl ListenSpec {
         }
     }
 
+    /// HTTP origin the workerd isolate uses to call back into Bookclerk.
     #[must_use]
     pub fn client_base_url(&self) -> String {
         match self {
@@ -89,6 +106,7 @@ impl ListenSpec {
         }
     }
 
+    /// TCP port the isolate or notify listener binds.
     #[must_use]
     pub fn port(&self) -> u16 {
         match self {
@@ -99,8 +117,11 @@ impl ListenSpec {
 
 /// Materialize bridge assets + config under `root`, return config path and socket addr hint.
 pub struct GeneratedConfig {
+    /// Path to the generated workerd config file.
     pub config_path: PathBuf,
+    /// Listen address for the notify / bridge socket.
     pub listen: ListenSpec,
+    /// Writable state directory for the isolate (outside the install root).
     pub state_dir: PathBuf,
     /// Pass to `workerd serve -I` so Cap'n Proto `/modules/…` embeds resolve
     /// against the read-only plugin install root.
@@ -124,6 +145,23 @@ pub struct GeneratedConfig {
 ///
 /// `bridge_token` is a per-isolate bearer shared by the launcher, bridge `/rpc`
 /// + `/health`, and `HOST.notify` reverse channel (`BRIDGE_TOKEN` binding).
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `manifest` - Parsed plugin manifest.
+/// * `egress` - `egress` input for this call.
+/// * `listen` - Daemon listen address (`host:port` or URL).
+/// * `notify_addr` - String `notify_addr` for this call.
+/// * `bridge_token` - Bearer token for isolate → host notify.
+///
+/// # Returns
+///
+/// On success, the inner `GeneratedConfig` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn materialize(
     root: &Path,
     manifest: &PluginManifest,
@@ -396,6 +434,14 @@ const bridgeWorker :Workerd.Worker = (
 }
 
 /// Plugin isolate `globalOutbound`: Deny → blocked; Outbound → egress proxy.
+///
+/// # Arguments
+///
+/// * `mode` - Network mode from the plugin manifest.
+///
+/// # Returns
+///
+/// `&'static str` result.
 #[must_use]
 pub fn plugin_global_outbound(mode: NetworkMode) -> &'static str {
     match mode {
@@ -408,6 +454,16 @@ pub fn plugin_global_outbound(mode: NetworkMode) -> &'static str {
 ///
 /// Uses the same host set as [`bookclerk_plugin_manifest::consent_domains_for`] so
 /// materialize cannot silently widen beyond what `consent_request` / grants cover.
+///
+/// # Arguments
+///
+/// * `needs_python` - Boolean flag `needs_python`.
+/// * `mode` - Network mode from the plugin manifest.
+/// * `base` - String `base` for this call.
+///
+/// # Returns
+///
+/// Collected results (may be empty).
 #[must_use]
 pub fn egress_domains_for(needs_python: bool, mode: NetworkMode, base: &[String]) -> Vec<String> {
     with_python_runtime_hosts(needs_python, mode, base)

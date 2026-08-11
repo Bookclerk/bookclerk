@@ -41,6 +41,14 @@ impl Default for ProgressiveFixture {
 
 impl ProgressiveFixture {
     /// A fixture of `count` samples whose bytes are deterministic but distinct.
+    ///
+    /// # Arguments
+    ///
+    /// * `count` - Numeric `count` value for this call.
+    ///
+    /// # Returns
+    ///
+    /// Updated `Self` for chaining.
     #[must_use]
     pub fn with_generated_samples(count: usize) -> Self {
         let samples = (0..count)
@@ -58,6 +66,14 @@ impl ProgressiveFixture {
     }
 
     /// Replace every sample payload, keeping the timing.
+    ///
+    /// # Arguments
+    ///
+    /// * `samples` - `samples` input for this call.
+    ///
+    /// # Returns
+    ///
+    /// Updated `Self` for chaining.
     #[must_use]
     pub fn with_samples(mut self, samples: Vec<Vec<u8>>) -> Self {
         self.samples = samples;
@@ -65,6 +81,14 @@ impl ProgressiveFixture {
     }
 
     /// Set the `stsd` sample entry type.
+    ///
+    /// # Arguments
+    ///
+    /// * `sample_entry` - `sample_entry` input for this call.
+    ///
+    /// # Returns
+    ///
+    /// Updated `Self` for chaining.
     #[must_use]
     pub fn with_sample_entry(mut self, sample_entry: &[u8; 4]) -> Self {
         self.sample_entry = *sample_entry;
@@ -82,6 +106,18 @@ impl ProgressiveFixture {
     }
 
     /// Write the file. Payloads land in a single trailing `mdat`.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Filesystem path involved in this operation.
+    ///
+    /// # Returns
+    ///
+    /// The successful result value for this operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the underlying I/O, parse, network, or store operation fails.
     pub fn write(&self, path: &Path) -> Result<()> {
         assert!(
             !self.samples.is_empty(),

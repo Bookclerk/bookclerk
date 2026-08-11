@@ -1,4 +1,9 @@
 //! Acquire orchestration: license → download → decrypt → metadata → storage.
+//!
+//! Host-facing pipeline for fetching a storefront title, packaging audio, and
+//! writing it to one or more [`destinations`]. DRM decrypt happens inside
+//! content-source plugins; this crate never sees license keys. See
+//! `docs/media.md` for encode/remux details.
 
 mod convert;
 mod cue;

@@ -1,6 +1,19 @@
 #!/usr/bin/env node
 /**
- * `bookclerk-plugin` — check / fmt / package / smoke (TypeScript SDK tools).
+ * `bookclerk-plugin` — check / fmt / package / smoke CLI for the TypeScript SDK.
+ *
+ * Invoked as `npx bookclerk-plugin <command>` or via the package `bin` entry.
+ * Commands mirror the Rust / Python author tools so plugin trees stay
+ * cross-language consistent.
+ *
+ * Usage:
+ * ```
+ * bookclerk-plugin check [dir]
+ * bookclerk-plugin fmt [--check] [plugin.toml]
+ * bookclerk-plugin sync-embed [dir]
+ * bookclerk-plugin package --out <dir> [plugin-dir]
+ * bookclerk-plugin smoke [dir]
+ * ```
  */
 
 import fs from "node:fs";
@@ -24,6 +37,18 @@ Usage:
 `);
 }
 
+/**
+ * Parses argv and runs the requested authoring subcommand.
+ *
+ * @param argv - Full process argv including node and script path.
+ * @returns Process exit code (0 success, 1 failure, 2 usage).
+ *
+ * @example
+ * ```ts
+ * // Equivalent to: bookclerk-plugin check ./my-plugin
+ * await main(["node", "bookclerk-plugin", "check", "./my-plugin"]);
+ * ```
+ */
 async function main(argv: string[]): Promise<number> {
   const args = argv.slice(2);
   if (args.length === 0 || args[0] === "-h" || args[0] === "--help") {

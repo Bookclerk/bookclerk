@@ -1,25 +1,50 @@
-//! Plugin logo validation: remote http(s) URL or relative image path.
+//! Plugin logo validation: remote `http(s)` URL or relative image path.
+//!
+//! The optional `logo` key in `plugin.toml` is either a browser-loadable
+//! remote URL (Settings / Accounts UI loads it directly) or a path under the
+//! plugin install root that the host serves via
+//! [`embedded_logo_api_path`]. Absolute filesystem paths, parent segments,
+//! and non-http(s) URL schemes are rejected.
 
 use url::Url;
 
 use crate::error::{Error, Result};
 
-/// Allowed image extensions for embedded logos (lowercase, with dot).
+/// Allowed image extensions for embedded logos (lowercase, including the dot).
+///
+/// Used by [`validate_logo`] when classifying a relative path. Remote URLs are
+/// not restricted to these extensions.
 pub const LOGO_EXTENSIONS: &[&str] = &[".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"];
 
-/// Maximum size when the host serves an embedded logo.
+/// Maximum byte size when the host serves an embedded logo over the API.
+///
+/// Enforcement is host-side at read time; this constant documents the shared
+/// budget (`512 KiB`).
 pub const MAX_EMBEDDED_LOGO_BYTES: u64 = 512 * 1024;
 
-/// Classified `plugin.toml` `logo` value after validation.
+/// Classified `plugin.toml` `logo` value after successful validation.
+///
+/// Produced by [`validate_logo`] / [`PluginManifest::logo_kind`](crate::PluginManifest::logo_kind).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogoKind {
-    /// Browser-loadable `http://` or `https://` URL.
+    /// Browser-loadable `http://` or `https://` URL (no userinfo).
+    ///
+    /// The string is the original trimmed input (scheme and path preserved).
     RemoteUrl(String),
-    /// Path relative to the plugin install root (host serves via API).
+
+    /// Path relative to the plugin install root (forward-slash normalized).
+    ///
+    /// The host serves the file via [`embedded_logo_api_path`]; must end with
+    /// one of [`LOGO_EXTENSIONS`].
     EmbeddedPath(String),
 }
 
 impl LogoKind {
+    /// Returns the underlying URL or relative path string.
+    ///
+    /// # Returns
+    ///
+    /// Borrowed contents of [`LogoKind::RemoteUrl`] or [`LogoKind::EmbeddedPath`].
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
@@ -27,18 +52,55 @@ impl LogoKind {
         }
     }
 
+    /// Returns `true` when this logo is a remote `http(s)` URL.
     #[must_use]
     pub fn is_remote(&self) -> bool {
         matches!(self, Self::RemoteUrl(_))
     }
 
+    /// Returns `true` when this logo is an embedded path under the plugin root.
     #[must_use]
     pub fn is_embedded(&self) -> bool {
         matches!(self, Self::EmbeddedPath(_))
     }
 }
 
-/// Validate an optional logo string from `plugin.toml`.
+/// Validates an optional logo string from `plugin.toml`.
+///
+/// Absolute URLs (any scheme) are parsed with `url::Url`; only `http` /
+/// `https` are accepted, and userinfo is forbidden. Values that fail URL
+/// parse are treated as relative embedded image paths (must stay under the
+/// plugin root and end with an allowed extension).
+///
+/// # Arguments
+///
+/// * `raw` - Raw `logo` field value (leading/trailing whitespace is trimmed).
+///
+/// # Returns
+///
+/// A classified [`LogoKind`].
+///
+/// # Errors
+///
+/// Returns [`Error::Message`] when the value is empty, contains NUL, uses a
+/// disallowed URL scheme, includes userinfo, escapes the plugin root (`..`,
+/// absolute / drive / UNC paths), or lacks an allowed image extension.
+///
+/// # Examples
+///
+/// ```
+/// use bookclerk_plugin_manifest::{validate_logo, LogoKind};
+///
+/// assert!(matches!(
+///     validate_logo("https://example.com/logo.png").unwrap(),
+///     LogoKind::RemoteUrl(_)
+/// ));
+/// assert_eq!(
+///     validate_logo("assets/logo.png").unwrap(),
+///     LogoKind::EmbeddedPath("assets/logo.png".into())
+/// );
+/// assert!(validate_logo("javascript:alert(1)").is_err());
+/// ```
 pub fn validate_logo(raw: &str) -> Result<LogoKind> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -129,7 +191,18 @@ fn validate_embedded_path(s: &str) -> Result<LogoKind> {
     Ok(LogoKind::EmbeddedPath(normalized))
 }
 
-/// MIME type for an embedded logo path (by extension).
+/// Returns the MIME type for an embedded logo path based on its extension.
+///
+/// Unrecognized extensions map to `application/octet-stream`. Case of the
+/// path is ignored.
+///
+/// # Arguments
+///
+/// * `path` - Relative logo path (typically from [`LogoKind::EmbeddedPath`]).
+///
+/// # Returns
+///
+/// A static MIME type string suitable for `Content-Type` when serving the file.
 #[must_use]
 pub fn logo_content_type(path: &str) -> &'static str {
     let lower = path.to_ascii_lowercase();
@@ -150,7 +223,19 @@ pub fn logo_content_type(path: &str) -> &'static str {
     }
 }
 
-/// Settings / UI href for an embedded logo (`/api/plugins/{kind}/{id}/logo`).
+/// Builds the Settings / UI href for an embedded logo.
+///
+/// Format: `/api/plugins/{kind}/{id}/logo`. Remote logos are not rewritten;
+/// callers should use the remote URL string directly.
+///
+/// # Arguments
+///
+/// * `kind` - Plugin kind wire name (`source`, `integration`, `output`, `database`).
+/// * `id` - Validated plugin id.
+///
+/// # Returns
+///
+/// Absolute path (no host) for the operator SPA or daemon static route.
 #[must_use]
 pub fn embedded_logo_api_path(kind: &str, id: &str) -> String {
     format!("/api/plugins/{kind}/{id}/logo")

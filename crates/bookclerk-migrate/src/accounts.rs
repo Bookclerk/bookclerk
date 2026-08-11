@@ -25,6 +25,22 @@ pub struct AccountsImportSummary {
 ///
 /// `skip_auth` is retained for CLI compatibility; credentials are never sealed
 /// here (Audible IdentityTokens are not converted in migrate).
+///
+/// # Arguments
+///
+/// * `path` - Filesystem path involved in this operation.
+/// * `dest_files_dir` - Filesystem path (`dest_files_dir`).
+/// * `force` - When true, overwrite or force a full remote rescan.
+/// * `skip_auth` - Boolean flag `skip_auth`.
+/// * `dry_run` - Boolean flag `dry_run`.
+///
+/// # Returns
+///
+/// On success, the inner `AccountsImportSummary` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn import_accounts(
     path: &Path,
     dest_files_dir: &Path,

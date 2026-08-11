@@ -134,9 +134,13 @@ async fn persist_imported_auth(
 /// Summary of a configured account.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountInfo {
+    /// Account Identifier.
     pub account_id: String,
+    /// Marketplace.
     pub marketplace: String,
+    /// Operator-visible label for this account or item.
     pub label: Option<String>,
+    /// Status.
     pub status: AccountStatus,
     /// Reference to where credentials live (`encrypted_secrets:<id>`), for display only.
     pub auth_file: Option<String>,
@@ -146,14 +150,20 @@ pub struct AccountInfo {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountStatus {
+    /// Valid variant.
     Valid,
+    /// Expiring soon variant.
     ExpiringSoon,
+    /// Expired variant.
     Expired,
+    /// Missing refresh variant.
     MissingRefresh,
+    /// Unknown variant.
     Unknown,
 }
 
 impl AccountStatus {
+    /// As str.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {

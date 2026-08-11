@@ -1,0 +1,15 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["src"],
+  "entryPointStrategy": "expand",
+  "out": "../docs/api/ui",
+  "name": "bookclerk-ui",
+  "excludePrivate": true,
+  "excludeExternals": true,
+  "exclude": ["**/*.test.ts", "**/*.test.tsx"],
+  "validation": {
+    "notExported": false,
+    "invalidLink": false,
+    "notDocumented": false
+  }
+}

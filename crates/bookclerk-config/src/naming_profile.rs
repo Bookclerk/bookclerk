@@ -28,8 +28,11 @@ pub enum NamingProfile {
 /// Concrete templates contributed by a [`NamingProfile`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NamingProfileTemplates {
+    /// Default folder-path template for this profile (Libation tag syntax).
     pub folder: &'static str,
+    /// Default file-stem template for this profile (no extension).
     pub file: &'static str,
+    /// Default per-chapter file-stem template when splitting by chapter.
     pub chapter_file: &'static str,
 }
 
@@ -70,7 +73,7 @@ impl NamingProfile {
         }
     }
 
-    /// Templates for this profile.
+    /// Built-in folder / file / chapter-file templates for this profile.
     #[must_use]
     pub fn templates(self) -> NamingProfileTemplates {
         match self {
@@ -98,8 +101,11 @@ impl NamingProfile {
 /// defaults and optional per-field overrides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedNamingTemplates {
+    /// Folder-path template after profile defaults and optional overrides.
     pub folder: String,
+    /// File-stem template after profile defaults and optional overrides.
     pub file: String,
+    /// Chapter file-stem template after profile defaults and optional overrides.
     pub chapter_file: String,
 }
 

@@ -1,10 +1,13 @@
 """check / fmt / package / sync-embed — mirrors Rust/TS author tools.
 
-Dual-stack Python SDK:
+Validates ``plugin.toml``, formats manifests, vendors workerd embeds, and packs
+release archives. Dual-stack Python SDK:
 
 - Native: ``from bookclerk_plugin_sdk import BookclerkPlugin, BookclerkPluginGuest``
 - Workerd: ``from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js``
-  (`bookclerk-workerd` injects that module — no relative filepath embed)
+  (``bookclerk-workerd`` injects that module — no relative filepath embed)
+
+See ``docs/plugins.md`` for manifest fields and runtime requirements.
 """
 
 from __future__ import annotations
@@ -21,12 +24,29 @@ from typing import Any
 
 # Required for local bookclerk-workerd / Pyodide without pywrangler.
 PYTHON_WORKERD_FLAGS = ("python_workers", "disable_python_external_sdk")
+"""Compatibility flags required for Python Workers under bookclerk-workerd."""
 
 LOGO_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico")
+"""Allowed file extensions for embedded ``plugin.toml`` logo paths."""
 
 
 def validate_logo(raw: str) -> tuple[str, str]:
-    """Return ``(\"remote\"|\"embedded\", value)``. Mirrors Rust ``validate_logo``."""
+    """Classify and validate a ``plugin.toml`` logo value.
+
+    Mirrors Rust ``validate_logo``. Accepts absolute ``http``/``https`` URLs or
+    relative image paths under the plugin root.
+
+    Args:
+        raw: Raw ``logo`` string from the manifest.
+
+    Returns:
+        A ``(\"remote\"|\"embedded\", value)`` pair with the validated URL or
+        normalized relative path.
+
+    Raises:
+        ValueError: If the logo is empty, uses a bad scheme, includes userinfo,
+            or is an unsafe / non-image embedded path.
+    """
     from urllib.parse import urlparse
 
     trimmed = raw.strip()
@@ -92,11 +112,18 @@ def _validate_embedded_path(trimmed: str) -> tuple[str, str]:
 
 
 def validate_plugin_id(id: str) -> None:
-    """Strict ``[a-z0-9_]{2,32}`` grammar (mirrors Rust ``validate_plugin_id``).
+    """Validate a plugin id against the strict ``[a-z0-9_]{2,32}`` grammar.
 
-    Ids are globally unique across kinds. Invalid characters are rejected —
-    never rewritten — so ``a/b`` and ``a_b`` cannot collide. Leading/trailing
-    whitespace is rejected (non-lossy), not stripped.
+    Mirrors Rust ``validate_plugin_id``. Ids are globally unique across kinds.
+    Invalid characters are rejected — never rewritten — so ``a/b`` and ``a_b``
+    cannot collide. Leading/trailing whitespace is rejected (non-lossy), not
+    stripped.
+
+    Args:
+        id: Candidate plugin id from ``plugin.toml``.
+
+    Raises:
+        ValueError: If the id fails length, charset, or underscore rules.
     """
     if id != id.strip():
         raise ValueError(
@@ -117,6 +144,15 @@ def validate_plugin_id(id: str) -> None:
 
 
 def validate_manifest(m: dict[str, Any]) -> None:
+    """Validate a parsed ``plugin.toml`` mapping.
+
+    Args:
+        m: Manifest dictionary (typically from ``tomllib.loads``).
+
+    Raises:
+        ValueError: If required fields, runtime tables, or network capabilities
+            are missing or inconsistent.
+    """
     if not str(m.get("id", "")).strip():
         raise ValueError("plugin.toml: `id` is required")
     try:
@@ -182,6 +218,23 @@ def _sdk_workerd_embed_src() -> Path:
 
 
 def check_plugin(plugin_dir: Path) -> str:
+    """Validate a plugin directory and its ``plugin.toml``.
+
+    Args:
+        plugin_dir: Path to the plugin root containing ``plugin.toml``.
+
+    Returns:
+        A short ``ok id=... kind=... runtime=...`` status string.
+
+    Raises:
+        ValueError: If the manifest or Python workerd sources are invalid.
+        FileNotFoundError: If required logo, modules, or native binaries are missing.
+        OSError: If ``plugin.toml`` cannot be read.
+
+    Examples:
+        >>> # print(check_plugin(Path("./my-plugin")))
+        >>> # ok id=echo kind=source runtime=workerd
+    """
     text = (plugin_dir / "plugin.toml").read_text(encoding="utf-8")
     m = tomllib.loads(text)
     validate_manifest(m)
@@ -231,11 +284,25 @@ def check_plugin(plugin_dir: Path) -> str:
 
 
 def sync_embed(plugin_dir: Path) -> str:
-    """Optional: vendor SDK sources under modules/ for offline archives.
+    """Vendor SDK sources under ``modules/`` for offline workerd archives.
 
     Prefer package imports — ``bookclerk-workerd`` injects
     ``bookclerk_plugin_sdk.workerd`` at runtime. This writes the same files so a
-    staged tree is self-contained without host injection.
+    staged tree is self-contained without host injection. Also ensures Python
+    Workers compatibility flags in ``plugin.toml``.
+
+    Args:
+        plugin_dir: Path to a workerd Python plugin root.
+
+    Returns:
+        Status string describing the synced path (and flag updates, if any).
+
+    Raises:
+        ValueError: If the plugin is not a Python workerd guest.
+        OSError: If files cannot be read or written.
+
+    Examples:
+        >>> # print(sync_embed(Path("./my-python-workerd-plugin")))
     """
     toml_path = plugin_dir / "plugin.toml"
     text = toml_path.read_text(encoding="utf-8")
@@ -309,7 +376,14 @@ def _string_array(values: list[str]) -> str:
 
 
 def format_manifest(m: dict[str, Any]) -> str:
-    """Emit canonical TOML matching Rust `format_manifest` gold fixtures."""
+    """Emit canonical TOML matching Rust ``format_manifest`` gold fixtures.
+
+    Args:
+        m: Validated manifest dictionary.
+
+    Returns:
+        Canonical ``plugin.toml`` text ending with a newline.
+    """
     if (m.get("runtime") or "native") == "workerd" and _is_python_workerd(m):
         w = dict(m.get("workerd") or {})
         w["compatibility_flags"] = _ensure_python_flags(w.get("compatibility_flags"))
@@ -395,6 +469,19 @@ def format_manifest(m: dict[str, Any]) -> str:
 
 
 def fmt_plugin_toml(path: Path, *, check_only: bool) -> str:
+    """Format ``plugin.toml`` in place, or check that it is already canonical.
+
+    Args:
+        path: Path to ``plugin.toml``.
+        check_only: When ``True``, raise if reformatting would change the file.
+
+    Returns:
+        Status string (``ok …`` or ``wrote …``).
+
+    Raises:
+        ValueError: If validation fails or ``check_only`` finds a drift.
+        OSError: If the file cannot be read or written.
+    """
     text = path.read_text(encoding="utf-8")
     m = tomllib.loads(text)
     validate_manifest(m)
@@ -431,6 +518,24 @@ def _host_target() -> str:
 
 
 def package_plugin(plugin_dir: Path, out_dir: Path) -> Path:
+    """Pack a plugin into a ``.tar.gz`` archive and update ``SHA256SUMS``.
+
+    Args:
+        plugin_dir: Path to the plugin root.
+        out_dir: Destination directory for the archive and checksums file.
+
+    Returns:
+        Path to the created ``.tar.gz`` archive.
+
+    Raises:
+        ValueError: If the manifest is invalid.
+        FileNotFoundError: If a required native binary, modules tree, or logo is missing.
+        subprocess.CalledProcessError: If ``tar`` fails.
+
+    Examples:
+        >>> # archive = package_plugin(Path("./my-plugin"), Path("./dist"))
+        >>> # print(f"packed {archive}")
+    """
     m = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
     validate_manifest(m)
     version = m.get("version") or "0.0.0"

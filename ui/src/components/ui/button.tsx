@@ -13,6 +13,11 @@ const variants: Record<Variant, string> = {
     "bg-brick/10 text-brick border border-brick/30 hover:bg-brick/20 disabled:opacity-50",
 };
 
+/**
+ * Styled button with primary / secondary / ghost / danger variants.
+ *
+ * @param props - Standard button attributes plus optional `variant`.
+ */
 export function Button({
   className,
   variant = "primary",

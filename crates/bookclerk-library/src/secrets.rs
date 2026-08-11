@@ -65,7 +65,7 @@ pub mod secret_kind {
     pub const SOURCE_AUTH: &str = "source_auth";
     /// S3 / object-storage credentials.
     pub const S3: &str = "s3";
-    /// Widevine CDM blob.
+    /// Widevine L3 CDM device blob (`kind = widevine`).
     pub const WIDEVINE: &str = "widevine";
     /// Daemon HTTP operator API token (Bearer / GUI login).
     pub const OPERATOR_TOKEN: &str = "operator_token";
@@ -214,9 +214,9 @@ fn clear_plaintext_cache_for_tests() {
 /// A row from the `encrypted_secrets` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedSecretRecord {
-    /// Auto-assigned database row id (`None` before first upsert).
+    /// Surrogate primary key assigned by the database.
     pub id: Option<i64>,
-    /// Broad category — see [`secret_kind`] constants.
+    /// Secret kind discriminator (`source_auth`, `s3`, …).
     pub kind: String,
     /// Source / service name (`"audible"`, `"libro"`, `"s3"`, …) or `None`.
     pub provider: Option<String>,
@@ -231,23 +231,25 @@ pub struct EncryptedSecretRecord {
     /// - `"audible-rs-auth"` — sealed-v1 wrapping a plain audible-rs envelope
     /// - `"json-encrypted"` — legacy: JSON encrypted with Argon2id + XChaCha20-Poly1305
     pub format: String,
-    /// Encrypted (or raw) payload bytes.
+    /// Encrypted payload bytes for this secret.
     pub ciphertext: Vec<u8>,
-    /// KDF algorithm identifier (e.g. `"argon2id"`) or `None`.
+    /// KDF algorithm id for legacy rows (for example `argon2id`).
     pub kdf_algorithm: Option<String>,
-    /// Random salt used for key derivation, or `None`.
+    /// Random salt for legacy Argon2 key derivation.
     pub kdf_salt: Option<Vec<u8>>,
-    /// Argon2 memory cost in KiB, or `None`.
+    /// Argon2 memory cost in KiB for legacy rows.
     pub kdf_m_cost: Option<u32>,
-    /// Argon2 time cost (iterations), or `None`.
+    /// Argon2 time cost (iterations) for legacy rows.
     pub kdf_t_cost: Option<u32>,
-    /// Argon2 parallelism factor, or `None`.
+    /// Argon2 parallel lane count stored for legacy `json-encrypted` rows.
     pub kdf_p_cost: Option<u32>,
     /// Cipher algorithm identifier (e.g. `"xchacha20poly1305"`) or `None`.
     pub cipher_algorithm: Option<String>,
-    /// Random nonce used for encryption, or `None`.
+    /// AEAD nonce bytes used with `ciphertext`.
     pub cipher_nonce: Option<Vec<u8>>,
+    /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
+    /// RFC 3339 timestamp when the row was last modified.
     pub updated_at: String,
 }
 
@@ -271,8 +273,11 @@ const NONCE_LEN: usize = 24;
 
 /// Raw output from [`encrypt_secret`] (legacy Argon2id path).
 pub struct EncryptedBlob {
+    /// Random salt for legacy Argon2 key derivation.
     pub kdf_salt: Vec<u8>,
+    /// AEAD nonce bytes used with `ciphertext`.
     pub cipher_nonce: Vec<u8>,
+    /// Encrypted payload bytes for this secret.
     pub ciphertext: Vec<u8>,
 }
 
@@ -296,7 +301,7 @@ fn random_bytes_array<const N: usize>() -> [u8; N] {
 
 /// Encrypt `plaintext` with Argon2id key derivation + XChaCha20-Poly1305 (legacy).
 ///
-/// Use [`seal_secret_record`] for new writes. This function is retained for
+/// Use [`build_sealed_record`] for new writes. This function is retained for
 /// legacy test compat and the json-encrypted migration path.
 pub fn encrypt_secret(plaintext: &[u8], password: &str) -> Result<EncryptedBlob> {
     let salt = random_bytes_array::<SALT_LEN>().to_vec();
@@ -475,14 +480,49 @@ pub struct SecretStore<'a> {
 }
 
 impl<'a> SecretStore<'a> {
+    /// Constructs a store handle over an existing database connection.
+    ///
+    /// # Arguments
+    ///
+    /// * `db` - SeaORM connection owned by the caller for the lifetime of this handle.
+    ///
+    /// # Returns
+    ///
+    /// A [`SecretStore`] that delegates to the standalone CRUD helpers.
     pub fn new(db: &'a DatabaseConnection) -> Self {
         Self { db }
     }
 
+    /// Inserts or replaces a sealed secret row.
+    ///
+    /// # Arguments
+    ///
+    /// * `record` - Fully populated sealed secret identity and ciphertext.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when the database write fails.
     pub async fn upsert(&self, record: &EncryptedSecretRecord) -> Result<()> {
         upsert_secret(self.db, record).await
     }
 
+    /// Loads one sealed secret by identity columns, if present.
+    ///
+    /// # Arguments
+    ///
+    /// * `kind` - Secret kind (`source_auth`, `s3`, …).
+    /// * `provider` - Optional provider / plugin id filter.
+    /// * `account_type` - `integration` or `operator`.
+    /// * `account_id` - Optional account id filter.
+    /// * `name` - Logical secret name within that identity.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Some(record))` when found, `Ok(None)` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when the database read fails.
     pub async fn get(
         &self,
         kind: &str,
@@ -494,10 +534,36 @@ impl<'a> SecretStore<'a> {
         get_secret(self.db, kind, provider, account_type, account_id, name).await
     }
 
+    /// Lists sealed secrets with the given `kind`.
+    ///
+    /// # Arguments
+    ///
+    /// * `kind` - Secret kind to filter on.
+    ///
+    /// # Returns
+    ///
+    /// All matching sealed rows (ciphertext included).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when the database read fails.
     pub async fn list(&self, kind: &str) -> Result<Vec<EncryptedSecretRecord>> {
         list_secrets(self.db, kind).await
     }
 
+    /// Deletes one sealed secret by identity columns.
+    ///
+    /// # Arguments
+    ///
+    /// * `kind` - Secret kind (`source_auth`, `s3`, …).
+    /// * `provider` - Optional provider / plugin id filter.
+    /// * `account_type` - `integration` or `operator`.
+    /// * `account_id` - Optional account id filter.
+    /// * `name` - Logical secret name within that identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError`] when the database delete fails.
     pub async fn delete(
         &self,
         kind: &str,

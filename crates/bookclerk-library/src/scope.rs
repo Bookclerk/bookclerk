@@ -18,8 +18,8 @@ use crate::store::{LibraryStore, NewBook};
 /// Host-enforced view of [`LibraryStore`] for one content-source plugin id.
 ///
 /// Both in-repo first-party adapters and external JSON-RPC plugins must use
-/// this type (via [`ContentSource`](bookclerk_source::ContentSource) or the
-/// external host adapter). Secrets and books for other plugins are invisible.
+/// this type (via a `bookclerk_source::ContentSource` adapter or the external
+/// host adapter). Secrets and books for other plugins are invisible.
 #[derive(Clone)]
 pub struct SourceScope {
     store: LibraryStore,
@@ -83,7 +83,16 @@ impl SourceScope {
             .await
     }
 
-    /// Accounts belonging to this plugin only.
+    /// Lists all store accounts in the library database.
+    ///
+    ///
+    /// # Returns
+    ///
+    /// `Result<Vec<AccountRecord>>` — `Ok` on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns a crate error when the database operation fails or inputs are invalid.
     pub async fn list_accounts(&self) -> Result<Vec<AccountRecord>> {
         let all = self.store.list_accounts().await?;
         Ok(all

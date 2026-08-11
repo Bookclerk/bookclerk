@@ -293,6 +293,7 @@ impl Default for ChirpClient {
 }
 
 impl ChirpClient {
+    /// Constructs a new instance with default or provided parameters.
     #[must_use]
     pub fn new(graphql_url: impl Into<String>) -> Self {
         Self {
@@ -302,23 +303,27 @@ impl ChirpClient {
         }
     }
 
+    /// With HTTP.
     #[must_use]
     pub fn with_http(mut self, http: reqwest::Client) -> Self {
         self.http = http;
         self
     }
 
+    /// With token.
     #[must_use]
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.access_token = Some(token.into());
         self
     }
 
+    /// Access token.
     #[must_use]
     pub fn access_token(&self) -> Option<&str> {
         self.access_token.as_deref()
     }
 
+    /// Graphql URL.
     #[must_use]
     pub fn graphql_url(&self) -> &str {
         &self.graphql_url
@@ -743,38 +748,54 @@ pub struct SignInUser {
 /// One `currentUserAudiobooks` row.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LibraryItem {
+    /// Identifier.
     pub id: String,
+    /// Archived.
     #[serde(default)]
     pub archived: Option<bool>,
+    /// Playable.
     #[serde(default)]
     pub playable: Option<bool>,
+    /// Audiobook.
     pub audiobook: Option<Audiobook>,
 }
 
 /// Chirp audiobook metadata (+ optional tracks).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Audiobook {
+    /// Identifier.
     pub id: String,
+    /// Display title.
     #[serde(default, rename = "displayTitle")]
     pub display_title: Option<String>,
+    /// Sub title.
     #[serde(default, rename = "subTitle")]
     pub sub_title: Option<String>,
+    /// Display authors.
     #[serde(default, rename = "displayAuthors")]
     pub display_authors: Option<String>,
+    /// Display narrators.
     #[serde(default, rename = "displayNarrators")]
     pub display_narrators: Option<String>,
+    /// Duration ms.
     #[serde(default, rename = "durationMs")]
     pub duration_ms: Option<u64>,
+    /// Abridged.
     #[serde(default)]
     pub abridged: Option<bool>,
+    /// Publisher.
     #[serde(default)]
     pub publisher: Option<String>,
+    /// Released on.
     #[serde(default, rename = "releasedOn")]
     pub released_on: Option<String>,
+    /// Cover URL.
     #[serde(default, rename = "coverUrl")]
     pub cover_url: Option<String>,
+    /// Description.
     #[serde(default)]
     pub description: Option<String>,
+    /// Tracks.
     #[serde(default)]
     pub tracks: Vec<Track>,
 }
@@ -782,20 +803,28 @@ pub struct Audiobook {
 /// Live Chirp storefront pricing (`audiobook.currentProduct`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChirpProductPricing {
+    /// Identifier.
     #[serde(default, deserialize_with = "deserialize_id_string_opt")]
     pub id: Option<String>,
+    /// Discount price.
     #[serde(default, rename = "discountPrice")]
     pub discount_price: String,
+    /// Discounted price cents.
     #[serde(default, rename = "discountedPriceCents")]
     pub discounted_price_cents: Option<i64>,
+    /// Listing price.
     #[serde(default, rename = "listingPrice")]
     pub listing_price: Option<String>,
+    /// Is free listing.
     #[serde(default, rename = "isFreeListing")]
     pub is_free_listing: bool,
+    /// Hot deal.
     #[serde(default, rename = "hotDeal")]
     pub hot_deal: bool,
+    /// Purchase URL.
     #[serde(default, rename = "purchaseUrl")]
     pub purchase_url: Option<String>,
+    /// Salable in current country.
     #[serde(default, rename = "salableInCurrentCountry")]
     pub salable_in_current_country: Option<bool>,
 }
@@ -818,32 +847,45 @@ where
 /// Catalog-oriented audiobook (search / related / series).
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogAudiobook {
+    /// Identifier.
     pub id: String,
+    /// Display title.
     #[serde(default, rename = "displayTitle")]
     pub display_title: Option<String>,
+    /// Display authors.
     #[serde(default, rename = "displayAuthors")]
     pub display_authors: Option<String>,
+    /// Display narrators.
     #[serde(default, rename = "displayNarrators")]
     pub display_narrators: Option<String>,
+    /// URL.
     #[serde(default)]
     pub url: Option<String>,
+    /// Cover URL.
     #[serde(default, rename = "coverUrl")]
     pub cover_url: Option<String>,
+    /// Series audiobook.
     #[serde(default, rename = "seriesAudiobook")]
     pub series_audiobook: Option<SeriesAudiobookRef>,
+    /// Sub title.
     #[serde(default, rename = "subTitle")]
     pub sub_title: Option<String>,
+    /// Description.
     #[serde(default)]
     pub description: Option<String>,
+    /// Publisher.
     #[serde(default)]
     pub publisher: Option<String>,
+    /// Duration ms.
     #[serde(default, rename = "durationMs")]
     pub duration_ms: Option<u64>,
+    /// Released on.
     #[serde(default, rename = "releasedOn")]
     pub released_on: Option<String>,
     /// Chirp display language (`English`, `Spanish`, …).
     #[serde(default)]
     pub language: Option<String>,
+    /// Abridged.
     #[serde(default)]
     pub abridged: Option<bool>,
     /// Storefront genre chips (`Thrillers`, `Crime Fiction & Mysteries`, …).
@@ -859,6 +901,7 @@ pub struct CatalogTag {
 }
 
 impl CatalogAudiobook {
+    /// Title.
     #[must_use]
     pub fn title(&self) -> String {
         self.display_title
@@ -867,6 +910,7 @@ impl CatalogAudiobook {
             .unwrap_or_else(|| self.id.clone())
     }
 
+    /// Series name.
     #[must_use]
     pub fn series_name(&self) -> Option<String> {
         self.series_audiobook
@@ -888,63 +932,84 @@ pub struct SeriesAudiobookRef {
 /// Chirp series metadata.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogSeries {
+    /// Identifier.
     #[serde(deserialize_with = "deserialize_id_string")]
     pub id: String,
+    /// Display or configuration name.
     pub name: String,
+    /// Slug.
     pub slug: String,
 }
 
 /// Chirp author metadata.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogAuthor {
+    /// Identifier.
     #[serde(deserialize_with = "deserialize_id_string")]
     pub id: String,
+    /// Display or configuration name.
     pub name: String,
+    /// Slug.
     pub slug: String,
 }
 
 /// Related-audiobook expansion result.
 #[derive(Debug, Clone)]
 pub struct RelatedCatalog {
+    /// Related.
     pub related: Vec<CatalogAudiobook>,
+    /// Series.
     pub series: Option<CatalogSeries>,
 }
 
 /// Series page expansion result.
 #[derive(Debug, Clone)]
 pub struct SeriesCatalog {
+    /// Series.
     pub series: CatalogSeries,
+    /// Audiobooks.
     pub audiobooks: Vec<CatalogAudiobook>,
 }
 
 /// Author summary expansion result.
 #[derive(Debug, Clone)]
 pub struct AuthorCatalog {
+    /// Author.
     pub author: CatalogAuthor,
+    /// Audiobooks.
     pub audiobooks: Vec<CatalogAudiobook>,
 }
 
 /// Typeahead hits.
 #[derive(Debug, Clone, Default)]
 pub struct TypeaheadCatalog {
+    /// Audiobooks.
     pub audiobooks: Vec<CatalogAudiobook>,
+    /// Authors.
     pub authors: Vec<CatalogAuthor>,
 }
 
 /// One downloadable / playable track.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Track {
+    /// Identifier.
     pub id: String,
+    /// Media URL.
     #[serde(default, rename = "mediaUrl")]
     pub media_url: Option<String>,
+    /// Chapter number.
     #[serde(default, rename = "chapterNumber")]
     pub chapter_number: Option<i64>,
+    /// Part number.
     #[serde(default, rename = "partNumber")]
     pub part_number: Option<i64>,
+    /// Duration ms.
     #[serde(default, rename = "durationMs")]
     pub duration_ms: Option<u64>,
+    /// Offset from book start ms.
     #[serde(default, rename = "offsetFromBookStartMs")]
     pub offset_from_book_start_ms: Option<u64>,
+    /// Display name.
     #[serde(default, rename = "displayName")]
     pub display_name: Option<String>,
 }

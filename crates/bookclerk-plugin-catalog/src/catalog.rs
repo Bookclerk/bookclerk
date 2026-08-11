@@ -12,23 +12,33 @@ pub const CATALOG_DTO_SCHEMA_VERSION: u32 = 1;
 /// One discovery hit from any registry adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogHit {
+    /// DTO schema version for CLI/UI JSON compatibility.
     pub schema_version: u32,
     /// Source-qualified coordinate when version is known; otherwise name-only hint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordinate: Option<PackageCoordinate>,
+    /// Registry adapter kind (`cargo`, `npm`, `pypi`, `static`, …).
     pub source_kind: String,
+    /// Package name in the source registry.
     pub package_name: String,
+    /// Resolved or candidate package version string.
     pub version: String,
+    /// Short package description from the registry, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Download count from the registry index, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub downloads: Option<u64>,
+    /// Source repository URL from package metadata, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
+    /// Project homepage URL from package metadata, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub homepage: Option<String>,
+    /// Documentation URL from package metadata, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<String>,
+    /// Bookclerk runtime identity (kind + plugin id) when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimeIdentity>,
     /// Present after metadata hydration / static index lookup.
@@ -84,6 +94,8 @@ impl CatalogHit {
 /// Search query passed to adapters.
 #[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
+    /// Free-text search string passed to registry adapters.
     pub text: Option<String>,
+    /// Maximum hits to return (clamped by the caller).
     pub limit: u32,
 }

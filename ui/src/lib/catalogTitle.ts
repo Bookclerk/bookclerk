@@ -9,7 +9,9 @@ import type {
   TitleMeta,
   TitleRequest,
 } from "@/lib/api";
-/** Unified title shape for Discover / Wishlist detail dialogs and result rows. */
+/**
+ * Unified title shape for Discover / Wishlist detail dialogs and result rows.
+ */
 export type CatalogTitle = {
   work_key: string;
   title: string;
@@ -40,6 +42,9 @@ export type CatalogTitle = {
   notes?: string | null;
 };
 
+/**
+ * Client-side catalog filter categories (legacy / local lists).
+ */
 export type CatalogFilterKind =
   | "all"
   | "authors"
@@ -47,8 +52,14 @@ export type CatalogFilterKind =
   | "narrators"
   | "genres"
   | "sources";
+/**
+ * Alias of {@link CatalogSearchSort} for Discover UI state.
+ */
 export type CatalogSortKey = CatalogSearchSort;
 
+/**
+ * UI labels for {@link CatalogFilterKind}.
+ */
 export const CATALOG_FILTER_KINDS: { value: CatalogFilterKind; label: string }[] = [
   { value: "all", label: "All" },
   { value: "authors", label: "Authors" },
@@ -58,12 +69,23 @@ export const CATALOG_FILTER_KINDS: { value: CatalogFilterKind; label: string }[]
   { value: "sources", label: "Sources" },
 ];
 
-/** Storefront search facet passed as `?field=` on `/api/discover/search`. */
+/**
+ * Storefront search facet passed as `?field=` on `/api/discover/search`.
+ */
 export type CatalogSearchField = "author" | "narrator" | "series" | "genre";
 
+/**
+ * Narrator name excluded when “Hide Virtual Voice” is enabled.
+ */
 export const VIRTUAL_VOICE_EXCLUDE = "Virtual Voice";
 
-/** Compose a Discover catalog search + facet filter from a title-detail meta link. */
+/**
+ * Composes a Discover catalog search + facet filter from a title-detail meta link.
+ *
+ * @param kind - Metadata link kind (authors / narrators / series / genres).
+ * @param value - Linked label text.
+ * @returns Search query, field, sort, and matching include filters.
+ */
 export function discoverSearchFromMeta(
   kind: "authors" | "narrators" | "series" | "genres",
   value: string,
@@ -91,6 +113,9 @@ export function discoverSearchFromMeta(
   }
 }
 
+/**
+ * UI labels for Discover catalog sort keys.
+ */
 export const CATALOG_SORT_OPTIONS: { value: CatalogSortKey; label: string }[] = [
   { value: "relevance", label: "Relevance" },
   { value: "popularity", label: "Popularity" },
@@ -101,7 +126,9 @@ export const CATALOG_SORT_OPTIONS: { value: CatalogSortKey; label: string }[] = 
   { value: "length", label: "Runtime" },
 ];
 
-/** Known storefront ids for prefs / empty facet fallbacks. */
+/**
+ * Known storefront ids for prefs / empty facet fallbacks.
+ */
 export const CATALOG_SOURCE_IDS = [
   "audible",
   "chirp",
@@ -109,8 +136,14 @@ export const CATALOG_SOURCE_IDS = [
   "graphicaudio",
 ] as const;
 
+/**
+ * Discover runtime length buckets for server filters.
+ */
 export type RuntimeBucket = "any" | "under6" | "6to12" | "12to20" | "over20";
 
+/**
+ * UI options and minute bounds for {@link RuntimeBucket}.
+ */
 export const RUNTIME_BUCKET_OPTIONS: {
   value: RuntimeBucket;
   label: string;
@@ -124,6 +157,12 @@ export const RUNTIME_BUCKET_OPTIONS: {
   { value: "over20", label: "20 hours & up", min: 1201 },
 ];
 
+/**
+ * Maps a runtime bucket to server min/max length filters.
+ *
+ * @param bucket - Selected runtime bucket.
+ * @returns Optional `min_length_minutes` / `max_length_minutes`.
+ */
 export function runtimeBucketBounds(bucket: RuntimeBucket): {
   min_length_minutes?: number;
   max_length_minutes?: number;
@@ -136,14 +175,25 @@ export function runtimeBucketBounds(bucket: RuntimeBucket): {
   };
 }
 
+/**
+ * Default sort direction for a catalog sort key.
+ *
+ * @param sort - Catalog sort key.
+ * @returns `asc` for title/author/length; otherwise `desc`.
+ */
 export function defaultSortDirFor(sort: CatalogSortKey): "asc" | "desc" {
   if (sort === "title" || sort === "author" || sort === "length") return "asc";
   return "desc";
 }
 
-/** Wire value for “no hard language filter” in the Discover language control. */
+/**
+ * Wire value for “no hard language filter” in the Discover language control.
+ */
 export const CATALOG_LANGUAGE_ALL = "__all__";
 
+/**
+ * Language select options for Discover (includes {@link CATALOG_LANGUAGE_ALL}).
+ */
 export const CATALOG_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
   { value: "en", label: "English" },
   { value: "es", label: "Spanish" },
@@ -167,7 +217,12 @@ export const CATALOG_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
   { value: CATALOG_LANGUAGE_ALL, label: "All languages" },
 ];
 
-/** Map Discover language control → hard filter / all-languages flag. */
+/**
+ * Maps Discover language control → hard filter / all-languages flag.
+ *
+ * @param filterLanguage - Selected language code or {@link CATALOG_LANGUAGE_ALL}.
+ * @returns Server search language options.
+ */
 export function catalogLanguageSearchOpts(filterLanguage: string): {
   languages?: string[];
   allLanguages?: boolean;
@@ -180,7 +235,12 @@ export function catalogLanguageSearchOpts(filterLanguage: string): {
   return { languages: [code] };
 }
 
-/** Options for the language `<select>`, ensuring the browser default appears. */
+/**
+ * Options for the language `<select>`, ensuring the browser default appears.
+ *
+ * @param preferred - Preferred BCP-47 primary tag (default: browser language).
+ * @returns Value/label pairs for the control.
+ */
 export function catalogLanguageSelectOptions(
   preferred = preferredCatalogLanguage(),
 ): { value: string; label: string }[] {
@@ -197,7 +257,12 @@ export function catalogLanguageSelectOptions(
   return opts;
 }
 
-/** Build server filter payload from UI multi-select state. */
+/**
+ * Builds the server filter payload from UI multi-select state.
+ *
+ * @param opts - Include lists, exclusions, rating, and runtime bucket.
+ * @returns {@link CatalogSearchFilters} for `searchCatalog`.
+ */
 export function buildCatalogSearchFilters(opts: {
   authors: string[];
   narrators: string[];
@@ -228,6 +293,14 @@ export function buildCatalogSearchFilters(opts: {
   };
 }
 
+/**
+ * Human-readable label for a storefront plugin id in Discover filters.
+ *
+ * Falls back to the raw id when the store is unknown so future plugins still render.
+ *
+ * @param source - Store id (`audible`, `libro`, …).
+ * @returns Display name for UI chrome.
+ */
 export function storeLabel(source: string): string {
   switch (source.toLowerCase()) {
     case "audible":
@@ -253,17 +326,32 @@ const STORE_FAVICON_DOMAINS: Record<string, string> = {
   audiobookshelf: "audiobookshelf.org",
 };
 
+/**
+ * Builds a Google S2 favicon URL for a domain.
+ *
+ * @param domain - Hostname such as `audible.com`.
+ * @returns Favicon image URL.
+ */
 export function googleFaviconUrl(domain: string): string {
   return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=128`;
 }
 
-/** Favicon URL for a storefront id (`audible`, `libro`, …), if known. */
+/**
+ * Favicon URL for a storefront id (`audible`, `libro`, …), if known.
+ *
+ * @param source - Store id.
+ * @returns Favicon URL, or `undefined` when the domain is unknown.
+ */
 export function storeFaviconUrl(source: string): string | undefined {
   const domain = STORE_FAVICON_DOMAINS[source.trim().toLowerCase()];
   return domain ? googleFaviconUrl(domain) : undefined;
 }
 
-/** Primary BCP-47 tag from the browser (default `en`). */
+/**
+ * Primary BCP-47 language tag from the browser (default `en`).
+ *
+ * @returns Two/three-letter language code.
+ */
 export function preferredCatalogLanguage(): string {
   try {
     const raw =
@@ -319,7 +407,13 @@ function normalizeCatalogLanguage(raw: string | null | undefined): string | null
   return null;
 }
 
-/** Soft rank: 0 preferred, 1 unknown, 2 other. */
+/**
+ * Soft language rank for ordering search hits.
+ *
+ * @param hitLanguage - Language on the hit.
+ * @param preferred - Preferred language (default: browser).
+ * @returns `0` preferred, `1` unknown, `2` other.
+ */
 export function catalogLanguageRank(
   hitLanguage: string | null | undefined,
   preferred = preferredCatalogLanguage(),
@@ -329,7 +423,13 @@ export function catalogLanguageRank(
   return hit === preferred ? 0 : 2;
 }
 
-/** Stable soft-sort: preferred language first, then unknown, then other. */
+/**
+ * Stable soft-sort: preferred language first, then unknown, then other.
+ *
+ * @param items - Rows with optional `language`.
+ * @param preferred - Preferred language code.
+ * @returns New array sorted by {@link catalogLanguageRank}.
+ */
 export function preferCatalogLanguageOrder<T extends { language?: string | null }>(
   items: T[],
   preferred = preferredCatalogLanguage(),
@@ -355,7 +455,13 @@ function uniqueSorted(values: Iterable<string>): string[] {
   );
 }
 
-/** Format series name + book number for list/card rows (`Sun Eater #3`). */
+/**
+ * Formats series name + book number for list/card rows (`Sun Eater #3`).
+ *
+ * @param series - Series name.
+ * @param seriesIndex - Optional book number.
+ * @returns Label, or `null` when series is empty.
+ */
 export function formatSeriesLabel(
   series: string | null | undefined,
   seriesIndex?: string | null,
@@ -366,7 +472,12 @@ export function formatSeriesLabel(
   return index ? `${name} #${index}` : name;
 }
 
-/** Split genre / category blobs (`Fantasy; Epic` / comma / pipe). */
+/**
+ * Splits genre / category blobs (`Fantasy; Epic` / comma / pipe).
+ *
+ * @param raw - Combined list string.
+ * @returns Trimmed non-empty parts.
+ */
 export function splitMetaList(raw: string | null | undefined): string[] {
   if (!raw?.trim()) return [];
   return raw
@@ -375,7 +486,12 @@ export function splitMetaList(raw: string | null | undefined): string[] {
     .filter(Boolean);
 }
 
-/** Compact purchase price line; prefers dual member/list when both exist. */
+/**
+ * Compact purchase price line; prefers dual member/list when both exist.
+ *
+ * @param hint - Price label fields from a purchase hint.
+ * @returns Display string, or `null` when no prices.
+ */
 export function formatPurchasePrices(hint: {
   price_label?: string | null;
   member_price_label?: string | null;
@@ -394,7 +510,12 @@ export function formatPurchasePrices(hint: {
   );
 }
 
-/** Single best price for shelf cards (member / primary only — no dual list). */
+/**
+ * Single best price for shelf cards (member / primary only — no dual list).
+ *
+ * @param hint - Price label fields from a purchase hint.
+ * @returns Display string, or `null` when no prices.
+ */
 export function formatShelfBestPrice(hint: {
   price_label?: string | null;
   member_price_label?: string | null;
@@ -408,6 +529,13 @@ export function formatShelfBestPrice(hint: {
   );
 }
 
+/**
+ * Maps a catalog search hit into a {@link CatalogTitle}.
+ *
+ * @param hit - Search hit.
+ * @param wishlistUuid - Optional wishlist uuid when already wished.
+ * @returns Unified catalog title.
+ */
 export function catalogTitleFromHit(
   hit: CatalogSearchHit,
   wishlistUuid?: string | null,
@@ -438,6 +566,13 @@ export function catalogTitleFromHit(
   };
 }
 
+/**
+ * Maps a Discover recommendation into a {@link CatalogTitle}.
+ *
+ * @param rec - Recommendation row.
+ * @param wishlistUuid - Optional wishlist uuid override.
+ * @returns Unified catalog title.
+ */
 export function catalogTitleFromRec(
   rec: Recommendation,
   wishlistUuid?: string | null,
@@ -479,6 +614,12 @@ export function catalogTitleFromRec(
   };
 }
 
+/**
+ * Maps a wishlist title-request into a {@link CatalogTitle}.
+ *
+ * @param req - Wishlist row.
+ * @returns Unified catalog title (with `wishlist_uuid` set).
+ */
 export function catalogTitleFromRequest(req: TitleRequest): CatalogTitle {
   const editions = req.store_editions ?? [];
   const sources =
@@ -525,8 +666,13 @@ function hasHtmlMarkup(raw: string): boolean {
 }
 
 /**
- * Prefer richer store/Audnexus blurbs over short plain catalog teasers.
+ * Prefers richer store/Audnexus blurbs over short plain catalog teasers.
+ *
  * HTML descriptions win over plain text; otherwise the longer string wins.
+ *
+ * @param a - Current description.
+ * @param b - Incoming description.
+ * @returns Preferred non-empty description, or `null`.
  */
 export function pickBetterDescription(
   a: string | null | undefined,
@@ -543,7 +689,12 @@ export function pickBetterDescription(
   return right.length > left.length ? right : left;
 }
 
-/** True when a blurb looks like a full store description, not a truncated teaser. */
+/**
+ * Returns whether a blurb looks like a full store description, not a truncated teaser.
+ *
+ * @param raw - Optional HTML/plain description.
+ * @returns True when length and ending look complete.
+ */
 export function descriptionLooksComplete(raw: string | null | undefined): boolean {
   const t = raw?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() ?? "";
   if (t.length < 480) return false;
@@ -552,7 +703,13 @@ export function descriptionLooksComplete(raw: string | null | undefined): boolea
   return true;
 }
 
-/** Overlay public Audnexus / catalog metadata onto a sparse CatalogTitle. */
+/**
+ * Overlays public Audnexus / catalog metadata onto a sparse {@link CatalogTitle}.
+ *
+ * @param title - Existing title.
+ * @param meta - Fetched metadata (no-op when nullish).
+ * @returns Merged title.
+ */
 export function applyTitleMeta(title: CatalogTitle, meta: TitleMeta | null | undefined): CatalogTitle {
   if (!meta) return title;
   return {
@@ -576,6 +733,12 @@ export function applyTitleMeta(title: CatalogTitle, meta: TitleMeta | null | und
   };
 }
 
+/**
+ * Returns whether a title still needs public metadata enrichment.
+ *
+ * @param title - Catalog title.
+ * @returns True when core fields (description, length, publisher, narrators, series index) are incomplete.
+ */
 export function titleNeedsMeta(title: CatalogTitle): boolean {
   const hasCore = Boolean(
     descriptionLooksComplete(title.description) &&
@@ -591,11 +754,23 @@ export function titleNeedsMeta(title: CatalogTitle): boolean {
   return !(hasCore && seriesComplete);
 }
 
-/** Shelf cards also pull title-meta when overall rating is still unknown. */
+/**
+ * Returns whether a shelf card should pull title-meta (includes missing overall rating).
+ *
+ * @param title - Catalog title.
+ * @returns True when {@link titleNeedsMeta} or `rating_overall` is unknown.
+ */
 export function titleNeedsShelfMeta(title: CatalogTitle): boolean {
   return titleNeedsMeta(title) || title.rating_overall == null;
 }
 
+/**
+ * Maps a global request-queue entry into a {@link CatalogTitle}.
+ *
+ * @param entry - Queue entry.
+ * @param wishlistUuid - Optional wishlist uuid when the current user also wished it.
+ * @returns Unified catalog title.
+ */
 export function catalogTitleFromQueueEntry(
   entry: GlobalQueueEntry,
   wishlistUuid?: string | null,
@@ -630,6 +805,13 @@ export function catalogTitleFromQueueEntry(
   };
 }
 
+/**
+ * Builds distinct local filter options from a title list.
+ *
+ * @param titles - Catalog titles.
+ * @param kind - Filter category.
+ * @returns Value/label pairs.
+ */
 export function catalogFilterValues(
   titles: CatalogTitle[],
   kind: CatalogFilterKind,
@@ -667,6 +849,14 @@ export function catalogFilterValues(
   }
 }
 
+/**
+ * Returns whether a title matches a local catalog filter.
+ *
+ * @param title - Catalog title.
+ * @param kind - Filter category.
+ * @param value - Selected value (`all` / empty always matches).
+ * @returns True when visible under the filter.
+ */
 export function catalogMatchesFilter(
   title: CatalogTitle,
   kind: CatalogFilterKind,
@@ -696,6 +886,15 @@ export function catalogMatchesFilter(
   }
 }
 
+/**
+ * Client-sorts catalog titles for keys the server does not re-rank locally.
+ *
+ * Relevance / popularity / rating keep input order (server ranking).
+ *
+ * @param titles - Catalog titles.
+ * @param sortKey - Sort key.
+ * @returns Sorted copy or original order for server-ranked keys.
+ */
 export function sortCatalogTitles(
   titles: CatalogTitle[],
   sortKey: CatalogSortKey,

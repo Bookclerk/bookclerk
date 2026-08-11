@@ -34,6 +34,14 @@ const ABS_BRAND: Brand = Brand {
 };
 
 /// Brand for an integration provider id (first-party fallbacks).
+///
+/// # Arguments
+///
+/// * `id` - Stable id to look up.
+///
+/// # Returns
+///
+/// `Some(...)` when found / applicable; otherwise `None`.
 #[must_use]
 pub fn integration_brand(id: &str) -> Option<Brand> {
     match id.trim().to_ascii_lowercase().as_str() {

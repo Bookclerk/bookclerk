@@ -53,5 +53,9 @@ tempfile.workspace = true
 name = "tools_conformance"
 required-features = ["tools"]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lints]
 workspace = true

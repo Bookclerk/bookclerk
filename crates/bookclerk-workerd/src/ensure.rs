@@ -18,6 +18,18 @@ use crate::pin::{
 /// if that path exists and its version stamp (sibling `workerd.version`) or
 /// `--version` output matches the pin, it is returned; otherwise ensure still
 /// installs into `dir` (override path is not overwritten).
+///
+/// # Arguments
+///
+/// * `dir` - Directory path for this operation.
+///
+/// # Returns
+///
+/// On success, the inner `PathBuf` value.
+///
+/// # Errors
+///
+/// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn ensure_workerd(dir: &Path) -> Result<PathBuf> {
     if let Ok(override_bin) = std::env::var("BOOKCLERK_WORKERD_BIN") {
         let path = PathBuf::from(override_bin);
@@ -85,6 +97,14 @@ pub fn ensure_workerd(dir: &Path) -> Result<PathBuf> {
 }
 
 /// Preferred install directory: beside this process, else `dir` argument from callers.
+///
+/// # Arguments
+///
+/// * `dir` - Directory path for this operation.
+///
+/// # Returns
+///
+/// `PathBuf` result.
 #[must_use]
 pub fn workerd_bin_path(dir: &Path) -> PathBuf {
     if let Ok(override_bin) = std::env::var("BOOKCLERK_WORKERD_BIN") {

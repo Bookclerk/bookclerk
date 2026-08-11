@@ -1,4 +1,9 @@
-"""Materialize Cap'n Proto workerd config + bridge (mirrors config.rs)."""
+"""Materialize Cap'n Proto workerd config + bridge (mirrors config.rs).
+
+Writes ``.bookclerk/`` bridge assets and a Cap'n Proto config that embeds plugin
+modules plus the injected Python/JS SDK. Used by the sparse smoke launcher and
+authoring tools that do not ship the Rust ``bookclerk-workerd`` binary.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +14,13 @@ from typing import Any
 from .ensure import package_root
 
 SDK_JS_MODULE_NAMES = ("@bookclerk/plugin-sdk/workerd", "@bookclerk/plugin-sdk")
+"""Module names used when embedding the TypeScript workerd SDK."""
 SDK_PY_WORKERD_MODULE = "bookclerk_plugin_sdk/workerd.py"
+"""Isolate module path for the Python workerd BookclerkPlugin base."""
 SDK_PY_INIT_MODULE = "bookclerk_plugin_sdk/__init__.py"
+"""Isolate module path for the package ``__init__`` stub."""
 PYODIDE_EGRESS_HOSTS = ("cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org")
+"""Extra egress hosts allowed for Python Workers / Pyodide package fetch."""
 
 SDK_PY_INIT = '''"""Bookclerk plugin SDK (workerd isolate).
 
@@ -21,13 +30,30 @@ Native stdio guests use the pip package's BookclerkPlugin +
 BookclerkPluginGuest.serve instead.
 """
 '''
+"""Source text embedded as ``bookclerk_plugin_sdk/__init__.py`` in the isolate."""
 
 
 def escape_capnp(s: str) -> str:
+    """Escape a string for embedding inside Cap'n Proto double quotes.
+
+    Args:
+        s: Raw string to escape.
+
+    Returns:
+        Escaped string safe for Cap'n Proto text literals.
+    """
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def is_legacy_sdk_embed(name: str) -> bool:
+    """Return whether ``name`` is a legacy vendored SDK path to skip.
+
+    Args:
+        name: Module path relative to the plugin ``modules/`` directory.
+
+    Returns:
+        ``True`` if the file should be omitted in favor of host injection.
+    """
     n = name.replace("\\", "/")
     return n in {
         "bookclerk_plugin.js",
@@ -41,6 +67,17 @@ def is_legacy_sdk_embed(name: str) -> bool:
 
 
 def module_field_for(name: str) -> tuple[str, bool]:
+    """Map a module filename to its Cap'n Proto embed field.
+
+    Args:
+        name: Module path (used for extension detection).
+
+    Returns:
+        A ``(field_name, is_python)`` pair such as ``("pythonModule", True)``.
+
+    Raises:
+        ValueError: If the extension is not a supported workerd module type.
+    """
     lower = name.lower()
     if lower.endswith(".py"):
         return "pythonModule", True
@@ -58,6 +95,14 @@ def module_field_for(name: str) -> tuple[str, bool]:
 
 
 def collect_modules(directory: Path) -> list[Path]:
+    """Collect embeddable module files under ``directory``.
+
+    Args:
+        directory: Plugin modules root to walk recursively.
+
+    Returns:
+        Sorted list of ``.js``/``.mjs``/``.py``/``.wasm``/``.json`` file paths.
+    """
     out: list[Path] = []
 
     def walk(d: Path) -> None:
@@ -77,10 +122,28 @@ def collect_modules(directory: Path) -> list[Path]:
 
 
 def plugin_global_outbound(mode: str) -> str:
+    """Map network mode to the plugin worker ``globalOutbound`` service name.
+
+    Args:
+        mode: Manifest network mode (``outbound`` or deny-style).
+
+    Returns:
+        ``"egress"`` for outbound mode, otherwise ``"blocked"``.
+    """
     return "egress" if mode == "outbound" else "blocked"
 
 
 def egress_domains_for(needs_python: bool, mode: str, base: list[str]) -> list[str]:
+    """Build the egress allow-list, adding Pyodide hosts when needed.
+
+    Args:
+        needs_python: Whether the plugin embeds Python modules.
+        mode: Network mode from the manifest.
+        base: Domains declared in ``capabilities.network.domains``.
+
+    Returns:
+        Domain list possibly extended with :data:`PYODIDE_EGRESS_HOSTS`.
+    """
     domains = list(base)
     if needs_python and mode == "outbound":
         for host in PYODIDE_EGRESS_HOSTS:
@@ -112,7 +175,26 @@ def materialize_config(
     sdk_root: Path | None = None,
     config_name: str = ".bookclerk-workerd-config.capnp",
 ) -> tuple[Path, str]:
-    """Write bridge + Cap'n Proto under ``plugin_root``. Returns (config_path, listen_addr)."""
+    """Write bridge assets and Cap'n Proto config under ``plugin_root``.
+
+    Args:
+        plugin_root: Plugin directory that contains ``modules/`` and receives
+            ``.bookclerk/`` plus the config file.
+        manifest: Parsed ``plugin.toml`` mapping (must include ``[workerd]``).
+        listen_port: Loopback TCP port for the bridge RPC socket.
+        notify_addr: Optional host notify address for callback bindings.
+        bridge_token: Bearer token required by the bridge HTTP surface.
+        sdk_root: SDK package root for bridge/SDK embeds (defaults to this package).
+        config_name: Output Cap'n Proto filename under ``plugin_root``.
+
+    Returns:
+        ``(config_path, listen_addr)`` where ``listen_addr`` is ``127.0.0.1:<port>``.
+
+    Raises:
+        ValueError: If ``[workerd]`` is missing or ``bridge_token`` is empty.
+        FileNotFoundError: If bridge assets, modules, main module, or SDK embeds
+            cannot be found.
+    """
     workerd = manifest.get("workerd")
     if not isinstance(workerd, dict):
         raise ValueError("missing [workerd] table")
