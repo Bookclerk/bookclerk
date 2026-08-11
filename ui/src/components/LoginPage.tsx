@@ -4,13 +4,14 @@ import { Input } from "@/components/ui/input";
 import {
   authMe,
   login,
+  passwordLogin,
   portalLoginIntegration,
   portalRedeem,
   type AuthSession,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type Tab = "operator" | "claim" | "return";
+type Tab = "operator" | "password" | "claim" | "return";
 
 /** Pull `#token=…` / `#operator_token=…` from the tray's open-UI URL. */
 function tokenFromHash(): string | null {
@@ -139,6 +140,20 @@ export function LoginPage({
     }
   }
 
+  async function onPasswordSubmit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await passwordLogin(username.trim(), password);
+      await finishPortal();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid login or password.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="flex min-h-full items-center justify-center px-4 py-10">
       <div className="w-full max-w-md animate-[fadeUp_420ms_ease-out]">
@@ -151,18 +166,19 @@ export function LoginPage({
           Sign in
         </h1>
         <p className="mt-2 text-sm text-ink/70">
-          Operator token, claim ticket, or return with an integration account.
+          Operator token, local password, claim ticket, or integration return.
         </p>
 
         <div
-          className="mt-6 flex gap-1 rounded-md border border-ink/10 bg-white/40 p-1"
+          className="mt-6 flex flex-wrap gap-1 rounded-md border border-ink/10 bg-white/40 p-1"
           role="tablist"
         >
           {(
             [
               ["operator", "Operator"],
-              ["claim", "Claim ticket"],
-              ["return", "Return visit"],
+              ["password", "Password"],
+              ["claim", "Claim"],
+              ["return", "Return"],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -219,6 +235,49 @@ export function LoginPage({
             ) : null}
             <Button type="submit" className="mt-5 w-full" disabled={busy || !token}>
               {busy ? "Signing in…" : "Open library"}
+            </Button>
+          </form>
+        ) : null}
+
+        {tab === "password" ? (
+          <form onSubmit={onPasswordSubmit} className="mt-5">
+            <p className="text-sm text-ink/70">
+              Sign in with a local Bookclerk username and password.
+            </p>
+            <label className="mt-4 block text-sm font-semibold" htmlFor="local-login">
+              Username
+            </label>
+            <Input
+              id="local-login"
+              autoComplete="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="mt-1.5"
+              required
+            />
+            <label className="mt-4 block text-sm font-semibold" htmlFor="local-password">
+              Password
+            </label>
+            <Input
+              id="local-password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="mt-1.5"
+              required
+            />
+            {error ? (
+              <p className="mt-2 text-sm font-medium text-brick" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <Button
+              type="submit"
+              className="mt-5 w-full"
+              disabled={busy || !username || !password}
+            >
+              {busy ? "Signing in…" : "Sign in"}
             </Button>
           </form>
         ) : null}

@@ -7,8 +7,8 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use bookclerk_config::Config;
-use bookclerk_library::LibraryStore;
+use bookclerk_config::{session_cookie_flags, Config};
+use bookclerk_library::{hash_token, LibraryStore};
 use bookclerk_source::{ContentSource, LoginOptions, PortalAuthMode, SourceRegistry};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -147,18 +147,24 @@ async fn login_integration(
     Ok(session_response(session, &state).await)
 }
 
-async fn logout(State(_state): State<PortalState>) -> Response {
-    let cookie = format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
-    let mut headers = HeaderMap::new();
-    if let Ok(v) = axum::http::HeaderValue::from_str(&cookie) {
-        headers.append(header::SET_COOKIE, v);
+async fn logout(State(state): State<PortalState>, headers: HeaderMap) -> Response {
+    if let Some(raw) = cookie_value(&headers, SESSION_COOKIE) {
+        let library = state.library_snapshot().await;
+        let hash = hash_token(&raw);
+        if let Err(err) = library.delete_portal_session(&hash).await {
+            warn!(error = %err, "failed to revoke portal session");
+        }
     }
-    (
-        StatusCode::OK,
-        headers,
-        Json(serde_json::json!({ "ok": true })),
-    )
-        .into_response()
+    let flags = {
+        let cfg = state.config.read().await;
+        session_cookie_flags(cfg.integrations.public_origin.as_deref())
+    };
+    let cookie = format!("{SESSION_COOKIE}=; {flags}; Max-Age=0");
+    let mut out = HeaderMap::new();
+    if let Ok(v) = axum::http::HeaderValue::from_str(&cookie) {
+        out.append(header::SET_COOKIE, v);
+    }
+    (StatusCode::OK, out, Json(serde_json::json!({ "ok": true }))).into_response()
 }
 
 async fn me(
@@ -479,12 +485,18 @@ async fn revoke_connection(
     if !links.iter().any(|l| l.account_id == account_id) {
         return Err(PortalError::bad("account not linked to this identity"));
     }
-    // Delete the DB-stored credentials (source auth + Widevine CDM) and mark the
-    // account revoked. No filesystem credentials exist to clean up.
-    if let Err(err) = library.delete_account_secrets(&account_id).await {
-        warn!(%account_id, %err, "failed to delete encrypted_secrets on revoke");
+    library.unlink_account(identity.id, &account_id).await?;
+    // Exclusive-link invariant: only delete secrets when no other identity
+    // still references this account_id. Propagate count failures — do not
+    // treat them as "still linked" (that would skip secret cleanup).
+    // Revoking credentials keeps already-acquired library rows (product policy).
+    let remaining = library.count_account_links_for_account(&account_id).await?;
+    if remaining == 0 {
+        if let Err(err) = library.delete_account_secrets(&account_id).await {
+            warn!(%account_id, %err, "failed to delete encrypted_secrets on revoke");
+        }
+        library.revoke_credentials(&account_id).await?;
     }
-    library.revoke_credentials(&account_id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -519,9 +531,9 @@ async fn find_source(state: &PortalState, id_or_alias: &str) -> Option<Arc<dyn C
 async fn session_response(session: String, state: &PortalState) -> Response {
     let cfg = state.config.read().await;
     let max_age = cfg.integrations.portal_session_ttl_hours * 3600;
+    let flags = session_cookie_flags(cfg.integrations.public_origin.as_deref());
     // Path=/ so the SPA (and /api/portal) can share the session cookie.
-    let cookie =
-        format!("{SESSION_COOKIE}={session}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}");
+    let cookie = format!("{SESSION_COOKIE}={session}; {flags}; Max-Age={max_age}");
     (
         StatusCode::OK,
         [(header::SET_COOKIE, cookie)],

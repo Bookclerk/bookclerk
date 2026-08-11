@@ -130,7 +130,7 @@ diagnostics ring always keeps TRACE+; stderr/OS facility honor `BOOKCLERK_LOG` /
 `docs/diagnostics.md`.
 
 - CLI: `cargo run -p bookclerk-cli -- <cmd>` (or `cargo dev-cli -- <cmd>`).
-  Examples: `version`, `auth list`, `library list`.
+  Examples: `version`, `library accounts`, `library list`.
 - Daemon: `cargo run -p bookclerkd` (or `cargo dev`). Listens on `127.0.0.1:8787`
   and `[::1]:8787` by default (override with `BOOKCLERK_DAEMON_LISTEN` or
   `daemon.listen` in `config.toml`; string, array, or comma-separated). Operator
@@ -146,18 +146,19 @@ diagnostics ring always keeps TRACE+; stderr/OS facility honor `BOOKCLERK_LOG` /
 
 When exercising real store credentials in this cloud environment:
 
-- Prefer **interactive** `bookclerk auth login` (browser/QR or Desktop pane), not
-  a pre-baked `.auth` file, when the goal is to test Audible login itself.
+- Connect stores via the **User SPA Accounts** UI (administrator/member session
+  from a claim ticket or integration login), not the removed `bookclerk auth`
+  CLI. Prefer interactive OAuth/password connect in Accounts when testing
+  Audible login itself (not a pre-baked `.auth` file).
 - Amazon accounts with **2FA/MFA require OTP** during the browser OAuth step
   (audible-rs has no password CLI). Use a TOTP seed or complete the challenge
   in the Desktop pane; see README / `crates/bookclerk-plugins/optional/source-audible/README.md`.
-- Password stores (never put passwords on argv):
-  - Libro.fm: `auth login --source libro --email <addr>` + `BOOKCLERK_LIBRO_PASSWORD`
-  - Chirp: `auth login --source chirp --email <addr>` + `BOOKCLERK_CHIRP_PASSWORD`
-  - GraphicAudio: `auth login --source graphicaudio --email <addr>` + `BOOKCLERK_GA_PASSWORD`
+- Password stores: enter credentials in Accounts (never put passwords on argv).
+  Env vars such as `BOOKCLERK_LIBRO_PASSWORD` / `BOOKCLERK_CHIRP_PASSWORD` /
+  `BOOKCLERK_GA_PASSWORD` may still apply to plugin helpers where documented.
 - Keep `library.auto_acquire = false` in `$BOOKCLERK_FILES_DIR/config.toml`.
 - After login, **disable the account for scans**:
-  `bookclerk auth set-scan <account> --scan false`.
+  `bookclerk library set-scan <account> --scan false`.
   (Scan inclusion is per-account in SQLite, not a TOML key.)
 - Do **not** acquire the full library. Cap at **one** book:
   - Audible: `bookclerk library acquire --asin <ASIN>`
@@ -185,9 +186,9 @@ When exercising real store credentials in this cloud environment:
   always return Plain). Host packaging is `bookclerk-media` (MP3 via
   Symphonia+LAME, metadata fix-up, chapter remux). No `ffmpeg` or
   `aaxclean-cli` is required. Widevine L3 CDMs auto-provision via classic
-  Libation AudibleCdm (`auth login` registers as Android); optional BYO `.wvd`
-  still works. Spatial/Atmos (L1) is not available. Neither a CDM nor ffmpeg is
-  required to build, test, or run non-acquire commands.
+  Libation AudibleCdm (Accounts connect registers as Android); optional BYO
+  `.wvd` still works. Spatial/Atmos (L1) is not available. Neither a CDM nor
+  ffmpeg is required to build, test, or run non-acquire commands.
 - S3/MinIO credentials: `BOOKCLERK_AWS_ACCESS_KEY_ID` /
   `BOOKCLERK_AWS_SECRET_ACCESS_KEY` (optional `BOOKCLERK_AWS_SESSION_TOKEN`)
   override when both are set; otherwise `encrypted_secrets` (`kind=s3`,

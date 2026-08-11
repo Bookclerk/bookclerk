@@ -4,18 +4,11 @@ use bookclerk_config::IntegrationsConfig;
 use bookclerk_library::{ClaimTicketRecord, LibraryStore, PortalIdentity};
 use chrono::{Duration, Utc};
 use rand::Rng;
-use sha2::{Digest, Sha256};
 
 use crate::error::{IntegrationError, Result};
 use crate::types::ExternalUser;
 
-/// Hash a raw ticket/session token for storage.
-#[must_use]
-pub fn hash_token(raw: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(raw.as_bytes());
-    hex::encode(hasher.finalize())
-}
+pub use bookclerk_library::hash_token;
 
 /// Generate a URL-safe random token.
 #[must_use]

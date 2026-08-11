@@ -183,6 +183,13 @@ pub struct DaemonConfig {
     pub tray: bool,
     /// Operator authentication for the HTTP API / GUI.
     pub auth: DaemonAuthConfig,
+    /// Peer addresses trusted to set `X-Forwarded-For` / `Forwarded` (CIDR or IP).
+    ///
+    /// Empty (default): always use the direct TCP peer — safe behind no proxy.
+    /// When the peer matches an entry, login throttling uses the leftmost
+    /// `X-Forwarded-For` client address (typical single reverse-proxy layout).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for DaemonConfig {
@@ -192,6 +199,7 @@ impl Default for DaemonConfig {
             json_logs: true,
             tray: true,
             auth: DaemonAuthConfig::default(),
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -480,6 +488,17 @@ impl Config {
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_AUTH_LOGIN_LOCKOUT_SECS") {
             if let Ok(secs) = v.trim().parse::<u64>() {
                 self.daemon.auth.login_lockout_secs = secs.max(1);
+            }
+        }
+        if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_TRUSTED_PROXIES") {
+            let parsed: Vec<String> = v
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            if !parsed.is_empty() {
+                self.daemon.trusted_proxies = parsed;
             }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_DIAGNOSTICS_SHARE_REPORTS")

@@ -11,7 +11,11 @@ import {
   fetchPluginConsent,
   fetchSettings,
   isApiError,
+  listUsers,
   patchSettings,
+  startImpersonate,
+  type AuthSession,
+  type ListedUser,
   type PluginConsentResponse,
   type PluginSettingOption,
   type PluginSettingsGroup,
@@ -262,13 +266,17 @@ const selectClassName =
 export function SettingsPage({
   onLogout,
   onSessionExpired,
+  onSessionChange,
   nav,
   role,
+  session,
 }: {
   onLogout: () => void;
   onSessionExpired: () => void;
+  onSessionChange?: () => void | Promise<void>;
   nav: AppNavProps;
   role?: AuthRole;
+  session?: AuthSession | null;
 }) {
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -296,6 +304,8 @@ export function SettingsPage({
     autoAcquire: boolean;
     pluginValues: Record<string, string>;
   } | null>(null);
+  const [users, setUsers] = useState<ListedUser[]>([]);
+  const [impersonateBusy, setImpersonateBusy] = useState(false);
 
   const daemonListen =
     listenExposure === "custom"
@@ -456,6 +466,11 @@ export function SettingsPage({
         autoAcquire: nextSettings.settings["library.auto_acquire"] === "true",
         pluginValues: nextPluginValues,
       });
+      try {
+        setUsers(await listUsers());
+      } catch {
+        setUsers([]);
+      }
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         onSessionExpired();
@@ -691,6 +706,63 @@ export function SettingsPage({
             message={error}
             onRetry={() => void refresh()}
           />
+        ) : null}
+
+        {role === "operator" && users.length > 0 ? (
+          <section className="space-y-3">
+            <div className="space-y-1">
+              <h2 className="text-lg font-semibold text-ink">Impersonate</h2>
+              <p className="text-sm text-ink/55">
+                View the library as another user. A banner appears until you stop.
+              </p>
+            </div>
+            <ul className="divide-y divide-ink/10 bg-white/35">
+              {users.map((u) => (
+                <li
+                  key={u.id}
+                  className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+                >
+                  <div>
+                    <div className="font-medium text-ink">
+                      {u.display_name?.trim() || `User #${u.id}`}
+                    </div>
+                    <div className="text-xs text-ink/50">
+                      {u.role} · {u.status}
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={
+                      impersonateBusy ||
+                      session?.impersonating?.user_id === u.id
+                    }
+                    onClick={() => {
+                      void (async () => {
+                        setImpersonateBusy(true);
+                        try {
+                          await startImpersonate(u.id);
+                          await onSessionChange?.();
+                        } catch (err) {
+                          setError(
+                            err instanceof Error
+                              ? err.message
+                              : "Impersonate failed",
+                          );
+                        } finally {
+                          setImpersonateBusy(false);
+                        }
+                      })();
+                    }}
+                  >
+                    {session?.impersonating?.user_id === u.id
+                      ? "Active"
+                      : "Impersonate"}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </section>
         ) : null}
 
         {role === "operator" ? (

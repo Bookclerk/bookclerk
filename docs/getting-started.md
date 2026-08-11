@@ -49,50 +49,36 @@ and `plugins/` under the files directory. Auth credentials are stored in the
 
 ## Authenticate a store
 
+Store connect lives in the **User SPA Accounts** UI (claim ticket or integration
+login → Accounts → Connect). There is no `bookclerk auth` CLI group; the operator
+token cannot link bookstore sources.
+
 ### Audible (OAuth)
 
-```bash
-bookclerk auth login -m us
-```
+In Accounts, choose Audible and complete Amazon OAuth in the browser. Amazon
+accounts with **2FA/MFA must complete OTP in the browser**.
 
-Default mode starts a local callback server and prints a URL + terminal QR
-(good for SSH with port-forward). Use `--external` to paste a redirect URL, or
-`--response-url` for scripts.
+Alternatives for operators migrating credentials:
 
-Amazon accounts with **2FA/MFA must complete OTP in the browser**. There is no
-username/password CLI for Audible. Alternatives:
-
-- Import an existing audible-rs auth file: `bookclerk auth import path/to/file.audible.auth`
-- Migrate classic Libation accounts: see [migration.md](migration.md)
+- Import an existing audible-rs auth file via the Audible plugin / migrate path
+  (see [migration.md](migration.md) and [sources.md](sources.md))
 
 Wrap `master.key` at rest (strongly recommended for production):
 
 ```bash
 export BOOKCLERK_AUTH_PASSWORD='your-strong-passphrase'
-bookclerk auth login --force
 ```
 
 ### Password stores (Libro.fm, Chirp, GraphicAudio)
 
-```bash
-export BOOKCLERK_LIBRO_PASSWORD='…'
-bookclerk auth login --source libro --email you@example.com
-
-export BOOKCLERK_CHIRP_PASSWORD='…'
-bookclerk auth login --source chirp --email you@example.com
-
-export BOOKCLERK_GA_PASSWORD='…'
-bookclerk auth login --source graphicaudio --email you@example.com
-```
-
-Passwords come from the env var or an interactive prompt — **never** on argv.
-Details per store: [sources.md](sources.md).
+Connect from Accounts with email + password (passwords are never placed on CLI
+argv). Details per store: [sources.md](sources.md).
 
 ### Account hygiene
 
 ```bash
-bookclerk auth list
-bookclerk auth set-scan <account> --scan false   # exclude from bare/daemon scans
+bookclerk library accounts
+bookclerk library set-scan <account> --scan false   # exclude from bare/daemon scans
 ```
 
 Bare `library scan` and daemon schedules honor `scan_enabled`. Explicit

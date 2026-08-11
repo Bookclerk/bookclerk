@@ -108,6 +108,20 @@ const SQLITE_SCHEMA: &str = r#"
         updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        role TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        display_name TEXT,
+        password_hash TEXT,
+        security_version INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+    CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+
     CREATE TABLE IF NOT EXISTS portal_identities (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         provider TEXT NOT NULL,
@@ -141,6 +155,26 @@ const SQLITE_SCHEMA: &str = r#"
     );
 
     CREATE INDEX IF NOT EXISTS idx_portal_sessions_hash ON portal_sessions(token_hash);
+
+    CREATE TABLE IF NOT EXISTS operator_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_operator_sessions_hash ON operator_sessions(token_hash);
+
+    CREATE TABLE IF NOT EXISTS security_audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        action TEXT NOT NULL,
+        detail_json TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_security_audit_at ON security_audit_events(at);
 
     CREATE TABLE IF NOT EXISTS account_links (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -333,18 +367,251 @@ const SQLITE_SCHEMA: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_encrypted_secrets_account_type ON encrypted_secrets(account_type);
     "#;
 
-/// Ordered migration list for local SQLite files (`PRAGMA user_version`).
+/// Additive migration: durable hashed operator sessions (#117).
 ///
-/// A single greenfield version-1 DDL (wishlist, discover prefs, secrets, …).
+/// Existing installs already applied greenfield v1; this version creates the
+/// table when missing. Fresh databases also create it via [`SQLITE_SCHEMA`] /
+/// [`POSTGRES_SCHEMA`] (`IF NOT EXISTS` keeps the double apply safe).
+const MIGRATION_V2_OPERATOR_SESSIONS_SQLITE: &str = r#"
+    CREATE TABLE IF NOT EXISTS operator_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_operator_sessions_hash ON operator_sessions(token_hash);
+"#;
+
+const MIGRATION_V2_OPERATOR_SESSIONS_POSTGRES: &str = r#"
+    CREATE TABLE IF NOT EXISTS operator_sessions (
+        id BIGSERIAL PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_operator_sessions_hash ON operator_sessions(token_hash);
+"#;
+
+/// Additive migration: first-party `users` + bridge column on portal identities (#117).
+///
+/// Data backfill (portal row → member user, prefs subject remap) runs in
+/// [`crate::LibraryStore::ensure_users_bridged`] after DDL apply.
+const MIGRATION_V3_USERS_SQLITE: &str = r#"
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        role TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        display_name TEXT,
+        password_hash TEXT,
+        security_version INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+    CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+"#;
+
+const MIGRATION_V3_USERS_POSTGRES: &str = r#"
+    CREATE TABLE IF NOT EXISTS users (
+        id BIGSERIAL PRIMARY KEY,
+        role TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        display_name TEXT,
+        password_hash TEXT,
+        security_version BIGINT NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+    CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+"#;
+
+/// SQLite cannot add a FK column in one statement portably; add nullable `user_id`
+/// then index. Existing rows are bridged in Rust.
+const MIGRATION_V3_PORTAL_USER_ID_SQLITE: &str = r#"
+    ALTER TABLE portal_identities ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS idx_portal_identities_user ON portal_identities(user_id);
+"#;
+
+const MIGRATION_V3_PORTAL_USER_ID_POSTGRES: &str = r#"
+    ALTER TABLE portal_identities ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS idx_portal_identities_user ON portal_identities(user_id);
+"#;
+
+/// Additive migration: elevate / impersonate metadata + security audit (#117 Phase 2).
+const MIGRATION_V4_ELEVATE_AUDIT_SQLITE: &str = r#"
+    ALTER TABLE operator_sessions ADD COLUMN elevated_from_user_id INTEGER;
+    ALTER TABLE operator_sessions ADD COLUMN impersonating_user_id INTEGER;
+    CREATE TABLE IF NOT EXISTS security_audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        action TEXT NOT NULL,
+        detail_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_security_audit_at ON security_audit_events(at);
+"#;
+
+const MIGRATION_V4_ELEVATE_AUDIT_POSTGRES: &str = r#"
+    ALTER TABLE operator_sessions ADD COLUMN IF NOT EXISTS elevated_from_user_id BIGINT;
+    ALTER TABLE operator_sessions ADD COLUMN IF NOT EXISTS impersonating_user_id BIGINT;
+    CREATE TABLE IF NOT EXISTS security_audit_events (
+        id BIGSERIAL PRIMARY KEY,
+        at TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        action TEXT NOT NULL,
+        detail_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_security_audit_at ON security_audit_events(at);
+"#;
+
+/// Additive migration: local login_name + user invites (#117 Phase 3).
+const MIGRATION_V5_PROVISIONING_SQLITE: &str = r#"
+    ALTER TABLE users ADD COLUMN login_name TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_name ON users(login_name);
+    CREATE TABLE IF NOT EXISTS user_invites (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash TEXT NOT NULL UNIQUE,
+        role TEXT NOT NULL,
+        login_name TEXT,
+        display_name TEXT,
+        expires_at TEXT NOT NULL,
+        redeemed_at TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_invites_hash ON user_invites(token_hash);
+"#;
+
+const MIGRATION_V5_PROVISIONING_POSTGRES: &str = r#"
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS login_name TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_name ON users(login_name);
+    CREATE TABLE IF NOT EXISTS user_invites (
+        id BIGSERIAL PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        role TEXT NOT NULL,
+        login_name TEXT,
+        display_name TEXT,
+        expires_at TEXT NOT NULL,
+        redeemed_at TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_invites_hash ON user_invites(token_hash);
+"#;
+
+/// Additive migration: OIDC authorization server tables (#117 Phase 4).
+const MIGRATION_V6_OIDC_SQLITE: &str = r#"
+    CREATE TABLE IF NOT EXISTS oidc_clients (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id TEXT NOT NULL UNIQUE,
+        client_secret_hash TEXT,
+        redirect_uris_json TEXT NOT NULL,
+        name TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS oidc_auth_codes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code_hash TEXT NOT NULL UNIQUE,
+        client_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        code_challenge TEXT NOT NULL,
+        code_challenge_method TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_oidc_auth_codes_hash ON oidc_auth_codes(code_hash);
+    CREATE TABLE IF NOT EXISTS oidc_refresh_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash TEXT NOT NULL UNIQUE,
+        client_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        scope TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_oidc_refresh_hash ON oidc_refresh_tokens(token_hash);
+"#;
+
+const MIGRATION_V6_OIDC_POSTGRES: &str = r#"
+    CREATE TABLE IF NOT EXISTS oidc_clients (
+        id BIGSERIAL PRIMARY KEY,
+        client_id TEXT NOT NULL UNIQUE,
+        client_secret_hash TEXT,
+        redirect_uris_json TEXT NOT NULL,
+        name TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS oidc_auth_codes (
+        id BIGSERIAL PRIMARY KEY,
+        code_hash TEXT NOT NULL UNIQUE,
+        client_id TEXT NOT NULL,
+        user_id BIGINT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        code_challenge TEXT NOT NULL,
+        code_challenge_method TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_oidc_auth_codes_hash ON oidc_auth_codes(code_hash);
+    CREATE TABLE IF NOT EXISTS oidc_refresh_tokens (
+        id BIGSERIAL PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        client_id TEXT NOT NULL,
+        user_id BIGINT NOT NULL,
+        scope TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_oidc_refresh_hash ON oidc_refresh_tokens(token_hash);
+"#;
+
+/// Exclusive account_links: one portal identity per store account (#117 Phase 5).
+const MIGRATION_V7_EXCLUSIVE_LINKS_SQLITE: &str = r#"
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(account_id);
+"#;
+
+const MIGRATION_V7_EXCLUSIVE_LINKS_POSTGRES: &str = r#"
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(account_id);
+"#;
+
+/// Ordered migration list for local SQLite files (`PRAGMA user_version`).
 #[must_use]
 pub fn migration_sql() -> &'static [&'static str] {
-    &[SQLITE_SCHEMA]
+    &[
+        SQLITE_SCHEMA,
+        MIGRATION_V2_OPERATOR_SESSIONS_SQLITE,
+        MIGRATION_V3_USERS_SQLITE,
+        MIGRATION_V3_PORTAL_USER_ID_SQLITE,
+        MIGRATION_V4_ELEVATE_AUDIT_SQLITE,
+        MIGRATION_V5_PROVISIONING_SQLITE,
+        MIGRATION_V6_OIDC_SQLITE,
+        MIGRATION_V7_EXCLUSIVE_LINKS_SQLITE,
+    ]
 }
 
 /// Ordered DDL for D1 / Postgres [`schema_migrations`] versioning.
 #[must_use]
 pub fn migration_sql_postgres() -> &'static [&'static str] {
-    &[POSTGRES_SCHEMA]
+    &[
+        POSTGRES_SCHEMA,
+        MIGRATION_V2_OPERATOR_SESSIONS_POSTGRES,
+        MIGRATION_V3_USERS_POSTGRES,
+        MIGRATION_V3_PORTAL_USER_ID_POSTGRES,
+        MIGRATION_V4_ELEVATE_AUDIT_POSTGRES,
+        MIGRATION_V5_PROVISIONING_POSTGRES,
+        MIGRATION_V6_OIDC_POSTGRES,
+        MIGRATION_V7_EXCLUSIVE_LINKS_POSTGRES,
+    ]
 }
 
 /// SQLite schema migrations (single greenfield schema).
@@ -453,6 +720,20 @@ const POSTGRES_SCHEMA: &str = r#"
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS users (
+            id BIGSERIAL PRIMARY KEY,
+            role TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            display_name TEXT,
+            password_hash TEXT,
+            security_version BIGINT NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+        CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+
         CREATE TABLE IF NOT EXISTS portal_identities (
             id BIGSERIAL PRIMARY KEY,
             provider TEXT NOT NULL,
@@ -484,6 +765,26 @@ const POSTGRES_SCHEMA: &str = r#"
         );
 
         CREATE INDEX IF NOT EXISTS idx_portal_sessions_hash ON portal_sessions(token_hash);
+
+        CREATE TABLE IF NOT EXISTS operator_sessions (
+            id BIGSERIAL PRIMARY KEY,
+            token_hash TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_operator_sessions_hash ON operator_sessions(token_hash);
+
+        CREATE TABLE IF NOT EXISTS security_audit_events (
+            id BIGSERIAL PRIMARY KEY,
+            at TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            action TEXT NOT NULL,
+            detail_json TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_security_audit_at ON security_audit_events(at);
 
         CREATE TABLE IF NOT EXISTS account_links (
             id BIGSERIAL PRIMARY KEY,

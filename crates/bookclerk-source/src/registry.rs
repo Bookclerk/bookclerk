@@ -103,7 +103,7 @@ impl SourceRegistry {
         }
         if !any && total.accounts == 0 {
             return Err(SourceError::no_accounts(
-                "no accounts configured — run `bookclerk auth login` first",
+                "no accounts configured — connect a store in the Bookclerk Accounts UI",
             ));
         }
         Ok(total)

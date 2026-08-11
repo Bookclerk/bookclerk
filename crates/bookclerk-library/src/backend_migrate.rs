@@ -8,8 +8,10 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, 
 
 use crate::entities::{
     account_links, accounts, books, claim_tickets, embeddings, encrypted_secrets, ignored_titles,
-    listening_progress, portal_identities, portal_sessions, saved_filters, title_request_sources,
-    title_requests, user_preferences, work_editions, works,
+    listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, operator_sessions,
+    portal_identities, portal_sessions, saved_filters, security_audit_events,
+    title_request_sources, title_requests, user_invites, user_preferences, users, work_editions,
+    works,
 };
 use crate::error::{LibraryError, Result};
 
@@ -74,7 +76,8 @@ pub async fn migrate_library_backend(
         }};
     }
 
-    // FK-safe order.
+    // FK-safe order (users before portal_identities.user_id).
+    copy!(users, "users");
     copy!(accounts, "accounts");
     copy!(portal_identities, "portal_identities");
     copy!(works, "works");
@@ -82,7 +85,9 @@ pub async fn migrate_library_backend(
     copy!(ignored_titles, "ignored_titles");
     copy!(saved_filters, "saved_filters");
     copy!(claim_tickets, "claim_tickets");
+    copy!(user_invites, "user_invites");
     copy!(portal_sessions, "portal_sessions");
+    copy!(operator_sessions, "operator_sessions");
     copy!(account_links, "account_links");
     copy!(work_editions, "work_editions");
     copy!(listening_progress, "listening_progress");
@@ -91,6 +96,10 @@ pub async fn migrate_library_backend(
     copy!(embeddings, "embeddings");
     copy!(user_preferences, "user_preferences");
     copy!(encrypted_secrets, "encrypted_secrets");
+    copy!(security_audit_events, "security_audit_events");
+    copy!(oidc_clients, "oidc_clients");
+    copy!(oidc_auth_codes, "oidc_auth_codes");
+    copy!(oidc_refresh_tokens, "oidc_refresh_tokens");
 
     txn.commit().await.map_err(LibraryError::Orm)?;
     Ok(summary)
@@ -130,6 +139,7 @@ async fn dry_run_counts(
             tables.insert($name.into(), n);
         }};
     }
+    count!(users, "users");
     count!(accounts, "accounts");
     count!(portal_identities, "portal_identities");
     count!(works, "works");
@@ -137,7 +147,9 @@ async fn dry_run_counts(
     count!(ignored_titles, "ignored_titles");
     count!(saved_filters, "saved_filters");
     count!(claim_tickets, "claim_tickets");
+    count!(user_invites, "user_invites");
     count!(portal_sessions, "portal_sessions");
+    count!(operator_sessions, "operator_sessions");
     count!(account_links, "account_links");
     count!(work_editions, "work_editions");
     count!(listening_progress, "listening_progress");
@@ -146,5 +158,9 @@ async fn dry_run_counts(
     count!(embeddings, "embeddings");
     count!(user_preferences, "user_preferences");
     count!(encrypted_secrets, "encrypted_secrets");
+    count!(security_audit_events, "security_audit_events");
+    count!(oidc_clients, "oidc_clients");
+    count!(oidc_auth_codes, "oidc_auth_codes");
+    count!(oidc_refresh_tokens, "oidc_refresh_tokens");
     Ok(tables)
 }

@@ -392,6 +392,8 @@ async fn revoke_keeps_books_and_portal_tickets_work() {
         .unwrap()
         .unwrap();
     assert!(redeemed.redeemed_at.is_some());
+    // Second redeem must fail (atomic consume).
+    assert!(store.redeem_claim_ticket("abc123hash").await.is_err());
 
     store
         .link_account(identity.id, "user-1", "audible")
@@ -409,6 +411,66 @@ async fn revoke_keeps_books_and_portal_tickets_work() {
             .connection_status,
         "active"
     );
+}
+
+#[tokio::test]
+async fn account_links_are_exclusive_per_account_id() {
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    store
+        .upsert_account("acct-x", "us", Some("X"), true, "audible")
+        .await
+        .unwrap();
+    let a = store
+        .upsert_portal_identity("p", "a", Some("A"))
+        .await
+        .unwrap();
+    let b = store
+        .upsert_portal_identity("p", "b", Some("B"))
+        .await
+        .unwrap();
+    store.link_account(a.id, "acct-x", "audible").await.unwrap();
+    assert!(store.link_account(b.id, "acct-x", "audible").await.is_err());
+    store.unlink_account(a.id, "acct-x").await.unwrap();
+    assert_eq!(
+        store
+            .count_account_links_for_account("acct-x")
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn users_bridged_from_portal_identity() {
+    use crate::models::UserRole;
+
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let identity = store
+        .upsert_portal_identity("audiobookshelf", "usr_bridge", Some("cara"))
+        .await
+        .unwrap();
+    let user_id = identity.user_id.expect("upsert creates linked user");
+    let user = store.get_user(user_id).await.unwrap().unwrap();
+    assert_eq!(user.role, UserRole::Member);
+    assert_eq!(user.display_name.as_deref(), Some("cara"));
+
+    // Idempotent: no additional orphans to bridge.
+    assert_eq!(store.ensure_users_bridged().await.unwrap(), 0);
+    let again = store
+        .get_portal_identity("audiobookshelf", "usr_bridge")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.user_id, Some(user_id));
+    assert_eq!(store.list_users().await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -733,4 +795,21 @@ async fn wishlist_sources_merge_description_and_editions() {
     let listed = store.list_wishlist(None).await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].store_editions.len(), 3);
+}
+
+#[tokio::test]
+async fn operator_sessions_persist_and_revoke() {
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let hash = "op-session-hash-001";
+    store
+        .insert_operator_session(hash, Utc::now() + chrono::Duration::hours(1))
+        .await
+        .unwrap();
+    assert!(store.operator_session_valid(hash).await.unwrap());
+    assert!(store.delete_operator_session(hash).await.unwrap());
+    assert!(!store.operator_session_valid(hash).await.unwrap());
 }

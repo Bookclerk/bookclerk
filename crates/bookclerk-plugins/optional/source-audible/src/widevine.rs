@@ -177,12 +177,13 @@ async fn provision_cdm_bytes_from_provider(
     if device_type != ANDROID_DEVICE_TYPE {
         return Err(AudibleError::Widevine(format!(
             "Widevine L3 needs an Android-registered account (device_type={device_type:?}). \
-             Re-login with: bookclerk auth login --force"
+             Re-connect Audible from the Bookclerk Accounts UI"
         )));
     }
     let signer = auth.signer().cloned().ok_or_else(|| {
         AudibleError::Widevine(
-            "account has no signing material; re-login with bookclerk auth login --force".into(),
+            "account has no signing material; re-connect Audible from the Bookclerk Accounts UI"
+                .into(),
         )
     })?;
     let api_url = format!(

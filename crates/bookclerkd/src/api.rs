@@ -245,13 +245,24 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     // Use `route_layer` (not `layer`) so auth never wraps the router's fallback.
     // `.layer(auth)` made unmatched paths — including `/` when the GUI dist was
     // missing — return a bare 401 instead of serving the SPA / branded 404.
-    let operator_only = Router::new()
+    let operator_or_admin = Router::new()
         .route("/status", get(status))
         .route("/scan", post(trigger_scan))
         .route("/acquire", post(trigger_acquire))
         .route("/jobs", get(list_jobs))
         .route("/integrations/{id}/scan", post(trigger_integration_scan))
         .route("/api/status", get(status))
+        .route("/api/jobs", get(list_jobs))
+        .route("/api/library/scan", post(trigger_scan))
+        .route("/api/library/acquire", post(trigger_acquire))
+        .route("/api/discover/sync-listening", post(sync_listening))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_operator_or_administrator_auth,
+        ))
+        .with_state(state.clone());
+
+    let operator_only = Router::new()
         .route("/api/config/reload", post(reload_config))
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
@@ -260,10 +271,12 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         )
         .route("/api/plugins/{kind}/{id}/logo", get(get_plugin_logo))
         .route("/api/database/migrate", post(migrate_database))
-        .route("/api/jobs", get(list_jobs))
-        .route("/api/library/scan", post(trigger_scan))
-        .route("/api/library/acquire", post(trigger_acquire))
-        .route("/api/discover/sync-listening", post(sync_listening))
+        .route("/api/users", get(auth::list_users))
+        .route(
+            "/api/auth/impersonate",
+            post(auth::impersonate).delete(auth::impersonate_end),
+        )
+        .route("/api/auth/elevate", delete(auth::elevate_end))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_operator_auth,
@@ -297,6 +310,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route("/api/wishlist/{uuid}", delete(delete_wishlist))
         .route("/api/request-queue", get(list_request_queue))
         .route("/api/auth/logout", post(auth::logout))
+        .route("/api/auth/sessions", get(auth::list_sessions))
+        .route("/api/auth/sessions/{id}", delete(auth::revoke_session))
         .route(
             "/api/preferences",
             get(get_preferences).patch(patch_preferences),
@@ -315,12 +330,29 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/tray-handoff", get(auth::tray_handoff))
         .route("/api/auth/me", get(auth::me))
+        .route("/api/auth/elevate", post(auth::elevate))
+        .route("/api/auth/bootstrap", post(auth::bootstrap))
+        .route(
+            "/api/auth/password",
+            post(auth::password_login).put(auth::set_password),
+        )
+        .route("/api/users", post(auth::create_user))
+        .merge(operator_or_admin)
         .merge(operator_only)
         .merge(shared)
-        .with_state(state);
+        .with_state(state.clone());
 
     // SPA Accounts / claim APIs (Path=/ portal session cookie).
     app = app.nest("/api/portal", portal_spa_router(portal_state));
+
+    // OIDC authorization server (ABS / third-party user tokens).
+    app = app.merge(crate::oidc::router(state.clone()));
+
+    // CSRF for cookie-authenticated mutating /api/* (after routes registered).
+    app = app.layer(middleware::from_fn_with_state(
+        state,
+        crate::csrf::require_csrf_for_cookie_api,
+    ));
 
     if let Some(dist) = ui_dist {
         if dist.is_dir() {
@@ -2310,7 +2342,7 @@ async fn trigger_integration_scan(
 
 async fn list_books(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Query(query): Query<BooksQuery>,
 ) -> Result<Json<BooksResponse>, StatusCode> {
     let library = state.library_snapshot().await;
@@ -2318,17 +2350,9 @@ async fn list_books(
     let offset = query.offset.unwrap_or(0);
     let status_filter = query.status.as_deref().and_then(AcquireStatus::parse);
 
-    // Portal users only see books from accounts they linked (contributed).
-    let portal_accounts: Option<std::collections::HashSet<String>> =
-        if let Some(identity) = auth::caller_portal_identity(&state, &headers).await {
-            let links = library
-                .list_account_links(identity.id)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            Some(links.into_iter().map(|l| l.account_id).collect())
-        } else {
-            None
-        };
+    // Authenticated callers (operator or user) share the full library for
+    // browsing. Account *linking* and acquire remain capability-gated; store
+    // connect is User-only.
 
     let mut books = if let Some(q) = query.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let index_dir = state.config.read().await.paths().search_index_dir.clone();
@@ -2343,11 +2367,6 @@ async fn list_books(
                     continue;
                 }
             }
-            if let Some(allowed) = portal_accounts.as_ref() {
-                if !allowed.contains(&hit.account_id) {
-                    continue;
-                }
-            }
             if let Some(book) = book_for_search_hit(&library, &hit)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -2357,32 +2376,10 @@ async fn list_books(
         }
         out
     } else if let Some(account) = query.account.as_deref() {
-        if let Some(allowed) = portal_accounts.as_ref() {
-            if !allowed.contains(account) {
-                Vec::new()
-            } else {
-                library
-                    .list_books(Some(account))
-                    .await
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            }
-        } else {
-            library
-                .list_books(Some(account))
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        }
-    } else if let Some(allowed) = portal_accounts.as_ref() {
-        let mut out = Vec::new();
-        for account_id in allowed {
-            out.extend(
-                library
-                    .list_books(Some(account_id))
-                    .await
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-            );
-        }
-        out
+        library
+            .list_books(Some(account))
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     } else {
         library
             .list_books(None)

@@ -91,6 +91,30 @@ When `bookclerkd` is running with integrations configured:
 Keep the daemon listen address trusted — the control plane itself is
 operator-authenticated; portal tickets are the user-facing claim mechanism.
 
+## OIDC for Audiobookshelf
+
+Bookclerk can act as an OpenID Connect authorization server so Audiobookshelf
+(or another client) logs users in with Bookclerk Users — never the shared
+operator token.
+
+Discovery: `GET /.well-known/openid-configuration`
+
+| Endpoint | Notes |
+| --- | --- |
+| `/oidc/authorize` | Auth code + PKCE (`S256`). Requires a **User** portal session (operator bearer is rejected). |
+| `/oidc/token` | `authorization_code` / `refresh_token` |
+| `/oidc/userinfo` | Bearer access token |
+| `/oidc/revoke` | Refresh token revoke |
+
+Register the ABS client (public PKCE) once after bootstrap, e.g. redirect
+`http://127.0.0.1:13378/auth/openid/callback` and client id `audiobookshelf`.
+Set ABS OpenID issuer to Bookclerk's `integrations.public_origin` (or the
+daemon URL). Access/ID tokens are HS256 JWTs keyed from the operator token
+material (rotate token → existing JWTs stop verifying).
+
+See also the ABS plugin notes under
+`crates/bookclerk-plugins/optional/integration-audiobookshelf/`.
+
 ## Enabling third-party integrations
 
 External integrations **default to disabled**. Install under

@@ -21,26 +21,29 @@ An embedded Tauri window remains deferred pending an OSV-clean GTK4 graph —
 tracked in [#44](https://github.com/fritz-fritz/bookclerk/pull/44). Path notes:
 [gui-desktop-path.md](gui-desktop-path.md).
 
-## Auth (operator + portal)
+## Auth (operator + users)
 
-The SPA supports two session types:
+The SPA supports operator and first-party user sessions:
 
 | Role | How to sign in | Capabilities |
 | --- | --- | --- |
-| **Operator** | Paste operator token (`bookclerk daemon token`) | Full library, scan/acquire, jobs, Discover, Wishlist, Accounts |
-| **Portal** | Claim ticket or integration return-visit login | Discover (personalized), Wishlist, library of **linked-account books only** (no acquire), Accounts |
+| **Operator** | Paste operator token (`bookclerk daemon token`) | Full library, scan/acquire, jobs, Discover, Wishlist; **cannot** connect bookstore sources |
+| **Administrator** | Claim ticket / integration login (linked user) | Same as member, plus acquire / admin caps |
+| **Member** | Claim ticket or integration return-visit login | Discover (personalized), Wishlist, **full shared library** (browse), Accounts (store connect) |
 
 | Item | Detail |
 | --- | --- |
 | Operator token | `encrypted_secrets` (or `BOOKCLERK_OPERATOR_TOKEN` override); tray copies to clipboard |
 | Operator cookie | `bookclerk_operator_session` (`Path=/`) |
-| Portal cookie | `bookclerk_portal_session` (`Path=/`) |
+| Portal cookie | `bookclerk_portal_session` (`Path=/`) — federation session bound to a first-party user |
 | Portal APIs | `/api/portal/*` (SPA Accounts / claim redeem) |
 | Config | `[daemon.auth]` |
-| User prefs (DB) | `GET` / `PATCH /api/preferences` — `default_view`, `disabled_shelves` |
+| User prefs (DB) | `GET` / `PATCH /api/preferences` — `default_view`, `disabled_shelves` (subject `user:{id}` or `operator`) |
 
-`GET /api/auth/me` returns `{ authenticated, role, default_view, can_acquire, portal? }`
-with `default_view` from the caller's SQLite preferences row.
+`GET /api/auth/me` returns
+`{ authenticated, role, default_view, can_acquire, portal?, user? }` with
+`role` of `operator` | `administrator` | `member`, optional first-party `user`,
+and `default_view` from the caller's SQLite preferences row.
 
 ## Client routes
 
@@ -86,8 +89,9 @@ Values: `discover` | `wishlist` | `library` | `accounts`. Stored in
   / drops the shared queue entry) plus a sidebar **global queue** ranked by
   overall / operator Discover taste with a heavy multi-user wish boost
   (shared order for every viewer; store-agnostic; no approval flow)
-- **Library** — vertical infinite scroll; operators see acquire/scan; portal
-  users see only books from accounts they linked
+- **Library** — vertical infinite scroll; operators see acquire/scan; all
+  authenticated roles share the full library for browsing (store connect stays
+  User-only via Accounts)
 - **Accounts** — link bookstore sources, revoke connections, manage portal identity
   connections (claim ticket / credential login on the sign-in screen)
 

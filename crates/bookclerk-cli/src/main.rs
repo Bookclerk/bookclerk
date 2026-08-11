@@ -52,12 +52,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Authentication and account management.
-    Auth {
-        #[command(subcommand)]
-        command: commands::auth::AuthCommand,
-    },
-    /// Library scan, acquire, search, and status.
+    /// Library scan, acquire, search, accounts, and status.
     Library {
         #[command(subcommand)]
         command: commands::library::LibraryCommand,
@@ -284,7 +279,6 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     let format = cli.format;
 
     match cli.command {
-        Commands::Auth { command } => commands::auth::run(command, &config).await,
         Commands::Library { command } => commands::library::run(command, &config).await,
         Commands::Discover { command } => commands::discover::run(&config, format, command).await,
         Commands::Integrations { command } => commands::integrations::run(command, &config).await,

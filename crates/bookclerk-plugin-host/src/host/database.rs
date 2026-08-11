@@ -152,7 +152,9 @@ pub async fn open_library_store(
         .connect(config)
         .await
         .map_err(bookclerk_library::LibraryError::Orm)?;
-    Ok(bookclerk_library::LibraryStore::from_connection(db))
+    let store = bookclerk_library::LibraryStore::from_connection(db);
+    store.ensure_users_bridged().await?;
+    Ok(store)
 }
 
 /// Open the library for a specific `[database].plugin` id (ignoring the active config value).

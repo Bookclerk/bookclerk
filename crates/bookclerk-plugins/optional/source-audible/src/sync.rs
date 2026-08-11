@@ -41,7 +41,7 @@ pub async fn scan_library(scope: &SourceScope, options: ScanOptions) -> Result<S
 
     if targets.is_empty() {
         return Err(AudibleError::NoAccounts(
-            "no Audible accounts configured — run `bookclerk auth login` first".into(),
+            "no Audible accounts configured — connect a store in the Bookclerk Accounts UI".into(),
         ));
     }
 

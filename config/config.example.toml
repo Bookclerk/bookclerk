@@ -160,6 +160,9 @@ enabled = false
 [daemon]
 listen = "127.0.0.1:8787"
 json_logs = true
+# Peers allowed to set X-Forwarded-For for login throttling (empty = direct peer only).
+# trusted_proxies = ["127.0.0.1", "::1"]
+# Env: BOOKCLERK_DAEMON_TRUSTED_PROXIES (comma-separated)
 
 # Operator auth for the HTTP API / GUI (required when binding non-loopback).
 # [daemon.auth]
@@ -167,11 +170,12 @@ json_logs = true
 # session_ttl_hours = 12
 # Env: BOOKCLERK_OPERATOR_TOKEN (optional override), BOOKCLERK_DAEMON_AUTH_ENABLED
 # Token is stored sealed in encrypted_secrets (not a files-dir operator.token).
+# Browser sessions are hashed in operator_sessions (survive restart; logout revokes).
 # Show/rotate: `bookclerk daemon token` / `bookclerk daemon token rotate`
 # Tray menu copies the token to the clipboard (never prints it).
 
 # [integrations]
-# public_origin = "https://bookclerk.example.com"  # shareable SPA claim URLs (?ticket=)
+# public_origin = "https://bookclerk.example.com"  # claim URLs + Secure session cookies
 
 # [integrations.audiobookshelf]
 # enabled = false

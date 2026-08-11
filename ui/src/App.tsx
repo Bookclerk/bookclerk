@@ -7,7 +7,13 @@ import { NotFoundPage } from "@/components/NotFoundPage";
 import { PreferencesProvider } from "@/components/PreferencesDialog";
 import { SettingsPage } from "@/components/SettingsPage";
 import { WishlistPage } from "@/components/WishlistPage";
-import { authMe, type AppView, type AuthSession } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import {
+  authMe,
+  stopImpersonate,
+  type AppView,
+  type AuthSession,
+} from "@/lib/api";
 import {
   isAppPath,
   normalizeAppView,
@@ -86,6 +92,21 @@ export default function App() {
     setAuth("anon");
   }
 
+  async function onStopImpersonate() {
+    try {
+      await stopImpersonate();
+      const me = await authMe();
+      setSession(me);
+    } catch {
+      /* keep banner; next navigation will refresh */
+    }
+  }
+
+  async function refreshSession() {
+    const me = await authMe();
+    setSession(me);
+  }
+
   // Unknown paths stay a branded 404 (API/static assets are not SPA routes).
   if (!knownPath) {
     return <NotFoundPage />;
@@ -125,8 +146,10 @@ export default function App() {
       <SettingsPage
         onLogout={onLogout}
         onSessionExpired={onLogout}
+        onSessionChange={refreshSession}
         nav={nav}
         role={role}
+        session={session}
       />
     );
   } else if (view === "discover") {
@@ -140,6 +163,25 @@ export default function App() {
         setSession((s) => (s ? { ...s, default_view: v } : s))
       }
     >
+      {session.impersonating ? (
+        <div className="flex items-center justify-between gap-3 bg-brick px-4 py-2 text-sm text-white">
+          <span>
+            Impersonating{" "}
+            <strong>
+              {session.impersonating.display_name?.trim() ||
+                `user #${session.impersonating.user_id}`}
+            </strong>
+          </span>
+          <Button
+            type="button"
+            variant="secondary"
+            className="h-8 bg-white text-brick hover:bg-white/90"
+            onClick={() => void onStopImpersonate()}
+          >
+            Stop
+          </Button>
+        </div>
+      ) : null}
       {page}
     </PreferencesProvider>
   );

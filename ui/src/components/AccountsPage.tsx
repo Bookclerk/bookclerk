@@ -34,6 +34,7 @@ export function AccountsPage({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [oauthUrl, setOauthUrl] = useState<string | null>(null);
+  const canConnect = role === "administrator" || role === "member";
 
   async function refresh() {
     setError(null);
@@ -46,9 +47,9 @@ export function AccountsPage({
         setConnections(conns);
       } catch (err) {
         setConnections([]);
-        if (role !== "portal") {
+        if (!canConnect) {
           setError(
-            "Store linking requires a portal session. Sign in with a claim ticket or integration account.",
+            "Store linking requires a user session. Sign in with a claim ticket or integration account (operators cannot connect stores).",
           );
         } else {
           throw err;
@@ -190,7 +191,7 @@ export function AccountsPage({
                       </div>
                       <Button
                         variant="secondary"
-                        disabled={busy || role !== "portal"}
+                        disabled={busy || !canConnect}
                         onClick={() => {
                           if (s.auth === "oauth") {
                             void onOauthStart(s.id);

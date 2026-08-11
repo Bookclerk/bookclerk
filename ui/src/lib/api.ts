@@ -6,7 +6,7 @@ export type AcquireStatus =
   | "error";
 
 export type AppView = "discover" | "library" | "accounts" | "wishlist" | "settings";
-export type AuthRole = "operator" | "portal";
+export type AuthRole = "operator" | "administrator" | "member";
 
 export interface PortalInfo {
   identity_id: number;
@@ -15,12 +15,26 @@ export interface PortalInfo {
   label: string | null;
 }
 
+export interface AuthMeUser {
+  id: number;
+  role: "administrator" | "member" | string;
+  display_name: string | null;
+}
+
+export interface AuthMeImpersonating {
+  user_id: number;
+  display_name: string | null;
+}
+
 export interface AuthSession {
   authenticated: boolean;
   role?: AuthRole;
   default_view: AppView;
   can_acquire: boolean;
+  elevated?: boolean;
+  impersonating?: AuthMeImpersonating;
   portal?: PortalInfo;
+  user?: AuthMeUser;
 }
 
 export interface BookRecord {
@@ -211,7 +225,9 @@ function normalizeView(raw: string | undefined): AppView {
 }
 
 function normalizeRole(raw: string | undefined): AuthRole | undefined {
-  if (raw === "operator" || raw === "portal") return raw;
+  if (raw === "operator" || raw === "administrator" || raw === "member") return raw;
+  // Legacy portal sessions map to member.
+  if (raw === "portal") return "member";
   return undefined;
 }
 
@@ -270,14 +286,20 @@ function toAuthSession(body: {
   role?: string;
   default_view?: string;
   can_acquire?: boolean;
+  elevated?: boolean;
+  impersonating?: AuthMeImpersonating;
   portal?: PortalInfo;
+  user?: AuthMeUser;
 }): AuthSession {
   return {
     authenticated: body.authenticated,
     role: normalizeRole(body.role),
     default_view: normalizeView(body.default_view),
     can_acquire: Boolean(body.can_acquire),
+    elevated: Boolean(body.elevated),
+    impersonating: body.impersonating,
     portal: body.portal,
+    user: body.user,
   };
 }
 
@@ -294,7 +316,10 @@ export async function authMe(): Promise<AuthSession> {
     role?: string;
     default_view?: string;
     can_acquire?: boolean;
+    elevated?: boolean;
+    impersonating?: AuthMeImpersonating;
     portal?: PortalInfo;
+    user?: AuthMeUser;
   }>(res);
   return toAuthSession(body);
 }
@@ -331,6 +356,73 @@ export async function logout(): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: "{}",
   });
+}
+
+export async function elevate(token: string): Promise<void> {
+  const res = await fetch("/api/auth/elevate", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  await parseJson(res);
+}
+
+export async function endElevation(): Promise<void> {
+  const res = await fetch("/api/auth/elevate", {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  await parseJson(res);
+}
+
+export async function startImpersonate(userId: number): Promise<void> {
+  const res = await fetch("/api/auth/impersonate", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId }),
+  });
+  await parseJson(res);
+}
+
+export async function stopImpersonate(): Promise<void> {
+  const res = await fetch("/api/auth/impersonate", {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  await parseJson(res);
+}
+
+export interface ListedUser {
+  id: number;
+  role: string;
+  status: string;
+  display_name: string | null;
+  has_password: boolean;
+}
+
+export async function listUsers(): Promise<ListedUser[]> {
+  const res = await fetch("/api/users", { credentials: "include" });
+  const body = await parseJson<{ users: ListedUser[] }>(res);
+  return body.users ?? [];
+}
+
+export async function passwordLogin(
+  login: string,
+  password: string,
+): Promise<void> {
+  const res = await fetch("/api/auth/password", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ login, password }),
+  });
+  await parseJson(res);
 }
 
 export interface UserPreferences {
@@ -593,9 +685,9 @@ export async function portalRevokeConnection(accountId: string): Promise<void> {
   await parseJson(res);
 }
 
-/** Sign out regardless of operator vs portal session. */
+/** Sign out regardless of operator vs user/portal session. */
 export async function signOut(role?: AuthRole): Promise<void> {
-  if (role === "portal") {
+  if (role === "administrator" || role === "member") {
     await portalLogout();
     return;
   }

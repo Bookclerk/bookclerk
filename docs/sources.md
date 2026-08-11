@@ -18,12 +18,16 @@ search path (`$BOOKCLERK_FILES_DIR/plugins` or `BOOKCLERK_PLUGIN_DIRS`). See
 [plugins.md](plugins.md). External third-party source plugins use the same
 config table shape.
 
-## Common CLI
+## Connecting stores
+
+Connect bookstore accounts from the **User SPA Accounts** UI (administrator or
+member session via claim ticket / integration login). Operators cannot link
+stores. There is no `bookclerk auth` CLI group.
 
 ```bash
-bookclerk auth login --source <id> …
-bookclerk auth list
-bookclerk auth status
+bookclerk library accounts
+bookclerk library status
+bookclerk library set-scan <account> --scan false
 bookclerk library scan --source <id>
 bookclerk library acquire <title-id>
 ```
@@ -35,11 +39,8 @@ account is required for enrichment. Tune `library.enrich_min_confidence`
 
 ## Audible
 
-```bash
-bookclerk auth login -m us              # default --source audible
-bookclerk auth login --external         # paste redirect
-bookclerk auth login --force            # refresh / re-register (Android)
-```
+Connect Audible from Accounts (Amazon OAuth). Re-connect to refresh / re-register
+as Android when Widevine L3 provisioning requires it.
 
 ### Decrypt / formats
 
@@ -65,8 +66,8 @@ Optional brand-audio trim: `output.strip_audible_brand_audio = true`.
 
 Credentials are stored in `encrypted_secrets` (DB-backed). Classic Libation import
 (`import libation`) converts `AccountsSettings.json` account metadata only;
-IdentityTokens are not converted. Re-authenticate with `auth login`, or import an
-audible-rs auth file via `bookclerk auth import`.
+IdentityTokens are not converted. Re-connect Audible from the Accounts UI, or see
+[migration.md](migration.md) for classic import paths.
 
 Low-level auth/download notes: [`crates/bookclerk-plugins/optional/source-audible/README.md`](../crates/bookclerk-plugins/optional/source-audible/README.md).
 
@@ -85,9 +86,9 @@ format = "enriched_m4b"
 
 ## Libro.fm
 
+Connect from the Accounts UI (email + password). Then:
+
 ```bash
-export BOOKCLERK_LIBRO_PASSWORD='…'
-bookclerk auth login --source libro --email you@example.com
 bookclerk library scan --source libro
 bookclerk library acquire --isbn 978…
 ```
@@ -102,9 +103,9 @@ Credentials are stored in `encrypted_secrets` (DB-backed).
 
 ## Chirp
 
+Connect from the Accounts UI (email + password). Then:
+
 ```bash
-export BOOKCLERK_CHIRP_PASSWORD='…'
-bookclerk auth login --source chirp --email you@example.com
 bookclerk library scan --source chirp
 ```
 
@@ -119,7 +120,8 @@ context if probes fail. Research background: [source-candidates.md](source-candi
 
 ## GraphicAudio
 
-Three access modes (pick one; default `web`):
+Connect from the Accounts UI (email + password). Three access modes (pick one;
+default `web`):
 
 | `access` | Behavior |
 | --- | --- |
@@ -128,8 +130,6 @@ Three access modes (pick one; default `web`):
 | `device` | Access App API Hi/Lo streams (uses a device slot / `client_id`) |
 
 ```bash
-export BOOKCLERK_GA_PASSWORD='…'
-bookclerk auth login --source graphicaudio --email you@example.com
 bookclerk library scan --source graphicaudio
 ```
 
