@@ -1,0 +1,13 @@
+{
+  "account": {
+    "accountId": "reader@example.com",
+    "source": "audible",
+    "marketplace": "us",
+    "label": "Primary",
+    "scanEnabled": true
+  },
+  "credentials": {
+    "accessToken": "opaque-token",
+    "refreshToken": "opaque-refresh"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "pluginDataDir": "/var/bookclerk/plugins/audible/data",
+  "accountId": "reader@example.com",
+  "titleId": "B00TESTASIN",
+  "cacheDir": "/var/bookclerk/cache/acquire",
+  "credentials": {
+    "accessToken": "opaque-token"
+  },
+  "sourceConfig": {
+    "bitrate": "High"
+  },
+  "download": {
+    "widevine": true,
+    "downloadCover": true
+  }
+}

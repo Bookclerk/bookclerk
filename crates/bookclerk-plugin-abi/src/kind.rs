@@ -1,6 +1,8 @@
 //! Kind-specific Workers RPC DTOs (source / integration / output).
 //!
-//! Field names serialize as camelCase unless a type documents otherwise.
+//! Field names serialize as camelCase on the wire. Tagged enums keep their
+//! discriminant rename policy (`SourceFetchDto` variant tags stay
+//! `snake_case`; `DbConnectParams` backend tags stay `lowercase`).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,6 +28,7 @@ fn default_catalog_page() -> u32 {
 /// `book` is opaque JSON shaped like the host library row; guests may deserialize
 /// a subset without depending on `bookclerk-library`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BookAcquiredDto {
     pub book: Value,
     pub storage_key: String,
@@ -35,6 +38,7 @@ pub struct BookAcquiredDto {
 
 /// Source account DTO.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SourceAccountDto {
     pub account_id: String,
     pub source: String,
@@ -47,6 +51,7 @@ pub struct SourceAccountDto {
 
 /// Login params for source plugins (no files-dir root / DB path).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginParams {
     /// Scoped writable directory for this plugin only (`…/plugins/<id>/data`).
     pub plugin_data_dir: String,
@@ -94,6 +99,7 @@ pub struct LoginParams {
 
 /// Login result — account metadata plus opaque credentials for the host to seal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginResultDto {
     pub account: SourceAccountDto,
     /// Opaque JSON credential blob. Host seals into `encrypted_secrets`
@@ -104,6 +110,7 @@ pub struct LoginResultDto {
 
 /// Result of [`methods::LOGIN_START`] (interactive OAuth).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginStartResultDto {
     /// Opaque session id for [`methods::LOGIN_COMPLETE`].
     pub session_id: String,
@@ -113,12 +120,14 @@ pub struct LoginStartResultDto {
 
 /// Params for [`methods::LOGIN_COMPLETE`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginCompleteParams {
     pub session_id: String,
 }
 
 /// Params for [`methods::CREDENTIALS_UPDATE`] — guest-requested credential write-back.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CredentialsUpdateParams {
     pub account_id: String,
     /// Replacement opaque credential JSON for the host to re-seal.
@@ -127,6 +136,7 @@ pub struct CredentialsUpdateParams {
 
 /// One external user observed by an integration (ABS-only concerns; host workflows).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExternalUserDto {
     pub provider: String,
     pub external_user_id: String,
@@ -139,6 +149,7 @@ pub struct ExternalUserDto {
 
 /// Result of [`methods::EVENT_POLL`] — signals for the host to kick off workflows.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct EventPollResultDto {
     #[serde(default)]
     pub users: Vec<ExternalUserDto>,
@@ -149,6 +160,7 @@ pub struct EventPollResultDto {
 /// Host injects sealed credentials (same mediation as `fetch_title`) so the
 /// plugin does not need a private credential store under `plugin_data_dir`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanParams {
     pub plugin_data_dir: String,
     #[serde(default)]
@@ -169,6 +181,7 @@ pub struct ScanParams {
 
 /// One library title returned by an external source `scan` (host upserts).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanBookDto {
     pub account_id: String,
     pub product_id: String,
@@ -198,6 +211,7 @@ pub struct ScanBookDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanSummaryDto {
     #[serde(default)]
     pub accounts: usize,
@@ -214,6 +228,7 @@ pub struct ScanSummaryDto {
 
 /// Fetch-title params. Plugin writes media under `cache_dir` and returns paths.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FetchTitleParams {
     pub plugin_data_dir: String,
     pub account_id: String,
@@ -239,6 +254,7 @@ pub struct FetchTitleParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SourceFetchDto {
+    #[serde(rename_all = "camelCase")]
     Plain {
         parts: Vec<PlainPartDto>,
         #[serde(default)]
@@ -255,6 +271,7 @@ pub enum SourceFetchDto {
 
 /// Params for [`methods::CATALOG_DETAIL`].
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogDetailParams {
     /// Store product id (Libro ISBN or ISBN-slug).
     pub product_id: String,
@@ -265,6 +282,7 @@ pub struct CatalogDetailParams {
 
 /// Params for [`methods::SEARCH_CATALOG`].
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchCatalogParams {
     pub query: String,
     #[serde(default)]
@@ -287,6 +305,7 @@ pub struct SearchCatalogParams {
 
 /// Params for [`methods::EXPAND_CANDIDATES`].
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ExpandCandidatesParams {
     #[serde(default)]
     pub source: String,
@@ -314,6 +333,7 @@ pub struct ExpandCandidatesParams {
 
 /// Params for [`methods::PURCHASE_HINT`].
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct PurchaseHintParams {
     #[serde(default)]
     pub product_id: Option<String>,
@@ -333,6 +353,7 @@ pub struct PurchaseHintParams {
 
 /// Wire form of a catalog / candidate hit.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogHitDto {
     pub product_id: String,
     pub title: String,
@@ -384,6 +405,7 @@ pub struct CatalogHitDto {
 
 /// Wire form of [`SourcePurchaseHint`].
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct PurchaseHintDto {
     pub product_id: String,
     #[serde(default)]
@@ -407,6 +429,7 @@ pub struct PurchaseHintDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlainPartDto {
     pub path: String,
     #[serde(default)]
@@ -420,6 +443,7 @@ pub struct PlainPartDto {
 /// Host upserts into the generic `listening_progress` table tagged with the
 /// plugin id; plugins must not open the library DB themselves.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncListeningResultDto {
     #[serde(default)]
     pub items: Vec<ListeningProgressDto>,
@@ -428,6 +452,7 @@ pub struct SyncListeningResultDto {
 /// Wire DTO for one listening-progress row (serde-compatible with the host
 /// `ListeningProgressSnapshot` shape).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ListeningProgressDto {
     pub external_user_id: String,
     pub external_item_id: String,
@@ -455,6 +480,7 @@ pub struct ListeningProgressDto {
 
 /// Object metadata for output plugins (mirrors host [`bookclerk_storage::ObjectMeta`]).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ObjectMetaDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
@@ -472,6 +498,7 @@ pub struct ObjectMetaDto {
 
 /// Listing entry for output plugins.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ObjectInfoDto {
     pub key: String,
     pub size: u64,
@@ -479,6 +506,7 @@ pub struct ObjectInfoDto {
 
 /// Probe result for output plugins.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ObjectProbeDto {
     pub key: String,
     pub size: u64,
@@ -490,6 +518,7 @@ pub struct ObjectProbeDto {
 
 /// Static AWS-style credentials injected by the host (never read from guest env).
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct S3CredentialsDto {
     pub access_key_id: String,
     pub secret_access_key: String,
@@ -509,6 +538,7 @@ impl std::fmt::Debug for S3CredentialsDto {
 
 /// S3 destination knobs the host injects on every output RPC.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct OutputS3ContextDto {
     /// Scoped writable directory for this plugin only (`…/plugins/<id>/data`).
     pub plugin_data_dir: String,
@@ -526,6 +556,7 @@ pub struct OutputS3ContextDto {
 
 /// Local filesystem destination knobs the host injects on every output RPC.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct OutputLocalContextDto {
     /// Scoped writable directory for this plugin only (`…/plugins/<id>/data`).
     pub plugin_data_dir: String,
@@ -537,6 +568,7 @@ pub struct OutputLocalContextDto {
 
 /// Params for [`methods::PUT`] (local filesystem output).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalPutParams {
     #[serde(flatten)]
     pub ctx: OutputLocalContextDto,
@@ -548,6 +580,7 @@ pub struct LocalPutParams {
 
 /// Params for [`methods::PUT_FILE`] (local filesystem output).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalPutFileParams {
     #[serde(flatten)]
     pub ctx: OutputLocalContextDto,
@@ -560,6 +593,7 @@ pub struct LocalPutFileParams {
 
 /// Params for [`methods::GET`] (local filesystem output).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalGetParams {
     #[serde(flatten)]
     pub ctx: OutputLocalContextDto,
@@ -568,6 +602,7 @@ pub struct LocalGetParams {
 
 /// Params for key-scoped local output methods.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalKeyParams {
     #[serde(flatten)]
     pub ctx: OutputLocalContextDto,
@@ -576,6 +611,7 @@ pub struct LocalKeyParams {
 
 /// Params for [`methods::LIST`] (local filesystem output).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalListParams {
     #[serde(flatten)]
     pub ctx: OutputLocalContextDto,
@@ -584,6 +620,7 @@ pub struct LocalListParams {
 
 /// Params for [`methods::COPY`] (local filesystem output).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalCopyParams {
     #[serde(flatten)]
     pub ctx: OutputLocalContextDto,
@@ -593,6 +630,7 @@ pub struct LocalCopyParams {
 
 /// Params for [`methods::TOUCH_FILE`] (local filesystem output).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalTouchFileParams {
     #[serde(flatten)]
     pub ctx: OutputLocalContextDto,
@@ -605,6 +643,7 @@ pub struct LocalTouchFileParams {
 
 /// Params for [`methods::PUT`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PutParams {
     #[serde(flatten)]
     pub ctx: OutputS3ContextDto,
@@ -622,6 +661,7 @@ pub struct PutParams {
 /// wired (e.g. unconfined / best-effort), the host sets [`Self::local_path`]
 /// instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PutFileParams {
     #[serde(flatten)]
     pub ctx: OutputS3ContextDto,
@@ -634,6 +674,7 @@ pub struct PutFileParams {
 
 /// Params for [`methods::GET`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetParams {
     #[serde(flatten)]
     pub ctx: OutputS3ContextDto,
@@ -642,12 +683,14 @@ pub struct GetParams {
 
 /// Result of [`methods::GET`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetResultDto {
     pub data_base64: String,
 }
 
 /// Params for key-scoped output methods.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KeyParams {
     #[serde(flatten)]
     pub ctx: OutputS3ContextDto,
@@ -656,6 +699,7 @@ pub struct KeyParams {
 
 /// Params for [`methods::LIST`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListParams {
     #[serde(flatten)]
     pub ctx: OutputS3ContextDto,
@@ -664,6 +708,7 @@ pub struct ListParams {
 
 /// Params for [`methods::COPY`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CopyParams {
     #[serde(flatten)]
     pub ctx: OutputS3ContextDto,
@@ -673,6 +718,7 @@ pub struct CopyParams {
 
 /// Params for [`methods::TOUCH_FILE`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TouchFileParams {
     #[serde(flatten)]
     pub ctx: OutputS3ContextDto,
@@ -741,6 +787,7 @@ pub enum OutputTouchFileParams {
 
 /// Result of [`methods::EXISTS`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ExistsResultDto {
     pub exists: bool,
 }

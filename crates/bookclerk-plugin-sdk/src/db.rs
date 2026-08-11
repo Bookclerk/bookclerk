@@ -309,6 +309,10 @@ mod tests {
         };
         let v = serde_json::to_value(&sqlite).unwrap();
         assert_eq!(v["backend"], "sqlite");
+        assert_eq!(v["pluginDataDir"], "/tmp/p");
+        assert_eq!(v["sqlitePath"], "/tmp/library.db");
+        assert!(v.get("plugin_data_dir").is_none());
+        assert!(v.get("sqlite_path").is_none());
         let back: DbConnectParams = serde_json::from_value(v).unwrap();
         assert_eq!(back, sqlite);
 

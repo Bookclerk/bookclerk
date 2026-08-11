@@ -1,0 +1,21 @@
+{
+  "accounts": 1,
+  "booksUpserted": 1,
+  "pages": 1,
+  "skippedDisabled": 0,
+  "books": [
+    {
+      "accountId": "reader@example.com",
+      "productId": "B00TESTASIN",
+      "title": "Example Title",
+      "marketplace": "us",
+      "asin": "B00TESTASIN",
+      "authors": "A. Author",
+      "narrators": "N. Narrator",
+      "series": "Example Series",
+      "seriesIndex": "1",
+      "contentKind": "book",
+      "lengthMinutes": 360
+    }
+  ]
+}

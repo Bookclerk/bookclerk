@@ -880,7 +880,8 @@ mod tests {
             pdf_url: Some("https://x/y.pdf".into()),
         };
         let json = serde_json::to_value(&dto).unwrap();
-        assert_eq!(json["pdf_url"], "https://x/y.pdf");
+        assert_eq!(json["pdfUrl"], "https://x/y.pdf");
+        assert!(json.get("pdf_url").is_none());
         let back: SourceFetchDto = serde_json::from_value(json).unwrap();
         let plain = source_fetch_from_dto(back);
         assert_eq!(plain.pdf_url.as_deref(), Some("https://x/y.pdf"));

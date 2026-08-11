@@ -1,0 +1,21 @@
+{
+  "pluginDataDir": "/var/bookclerk/plugins/s3/data",
+  "bucket": "library",
+  "prefix": "Books/",
+  "region": "us-east-1",
+  "endpoint": "https://s3.example.com",
+  "forcePathStyle": true,
+  "credentials": {
+    "accessKeyId": "AKIAEXAMPLE",
+    "secretAccessKey": "secret",
+    "sessionToken": "session"
+  },
+  "key": "Books/Example Title.m4b",
+  "dataBase64": "cGFuY2FrZQ==",
+  "meta": {
+    "contentType": "audio/mp4",
+    "contentLength": 7,
+    "asin": "B00TESTASIN",
+    "title": "Example Title"
+  }
+}

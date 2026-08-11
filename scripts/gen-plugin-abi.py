@@ -5,6 +5,7 @@
 - Rewrites packages/plugin-sdk-python/.../abi.py METHOD_NAMES (--write)
 - Ensures plugin-toml.json copies match between abi and manifest crates
 - Ensures methods.rs METHOD_NAMES match abi.json methods keys (--check)
+- Ensures fixtures/wire/*.json object keys are camelCase (no `_` in keys)
 
 Exit 1 on drift when --check (default).
 """
@@ -16,6 +17,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 ABI = ROOT / "crates/bookclerk-plugin-abi/schema/abi.json"
@@ -24,6 +26,18 @@ TS_GENERATED = ROOT / "packages/plugin-sdk/src/generated.ts"
 PY_ABI = ROOT / "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/abi.py"
 PLUGIN_TOML_SCHEMA = ROOT / "crates/bookclerk-plugin-abi/schema/plugin-toml.json"
 MANIFEST_SCHEMA = ROOT / "crates/bookclerk-plugin-manifest/schema/plugin-toml.json"
+WIRE_FIXTURES = ROOT / "crates/bookclerk-plugin-abi/fixtures/wire"
+
+REQUIRED_WIRE_FIXTURES = (
+    "login.request.json",
+    "login.result.json",
+    "scan.request.json",
+    "scan.result.json",
+    "fetchTitle.request.json",
+    "put.s3.request.json",
+    "dbConnect.sqlite.json",
+    "dbExecute.result.json",
+)
 
 
 def method_names_from_schema() -> list[str]:
@@ -54,6 +68,48 @@ METHOD_NAMES: tuple[str, ...] = (
 {body},
 )
 '''
+
+
+def collect_snake_keys(value: Any, path: str = "$") -> list[str]:
+    """Return paths of object keys that contain `_` (not camelCase)."""
+    bad: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            here = f"{path}.{key}"
+            if "_" in key:
+                bad.append(here)
+            bad.extend(collect_snake_keys(child, here))
+    elif isinstance(value, list):
+        for i, child in enumerate(value):
+            bad.extend(collect_snake_keys(child, f"{path}[{i}]"))
+    return bad
+
+
+def check_wire_fixtures() -> list[str]:
+    """Validate golden wire fixtures exist and use camelCase object keys."""
+    errors: list[str] = []
+    if not WIRE_FIXTURES.is_dir():
+        return [f"missing wire fixtures dir: {WIRE_FIXTURES}"]
+    present = {p.name for p in WIRE_FIXTURES.glob("*.json")}
+    for name in REQUIRED_WIRE_FIXTURES:
+        if name not in present:
+            errors.append(f"missing required wire fixture: {name}")
+    for path in sorted(WIRE_FIXTURES.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            errors.append(f"{path.name}: invalid JSON ({exc})")
+            continue
+        for bad in collect_snake_keys(data):
+            errors.append(f"{path.name}: non-camelCase key at {bad}")
+        # Spot-check a few multi-word fields against abi.json $defs naming.
+        if path.name == "login.request.json" and "pluginDataDir" not in data:
+            errors.append(f"{path.name}: expected pluginDataDir")
+        if path.name == "dbExecute.result.json" and "lastInsertId" not in data:
+            errors.append(f"{path.name}: expected lastInsertId")
+        if path.name == "put.s3.request.json" and "forcePathStyle" not in data:
+            errors.append(f"{path.name}: expected forcePathStyle")
+    return errors
 
 
 def main() -> int:
@@ -107,9 +163,17 @@ def main() -> int:
             print("python abi.py METHOD_NAMES drift", file=sys.stderr)
             drift = True
 
+    # Wire fixtures are not auto-fixable; fail even under `--write`.
+    wire_errors = check_wire_fixtures()
+    if wire_errors:
+        for err in wire_errors:
+            print(f"wire fixtures: {err}", file=sys.stderr)
+
+    if wire_errors:
+        return 1
     if drift and args.check and not args.write:
         return 1
-    print(f"ok methods={len(names)}")
+    print(f"ok methods={len(names)} wire_fixtures={len(REQUIRED_WIRE_FIXTURES)}")
     return 0
 
 

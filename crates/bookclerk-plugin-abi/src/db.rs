@@ -7,6 +7,7 @@ use serde_json::Value as JsonValue;
 
 /// SQL + bind parameters crossing the host↔database-guest boundary.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct StatementDto {
     pub sql: String,
     #[serde(default)]
@@ -15,18 +16,21 @@ pub struct StatementDto {
 
 /// One result row from `dbQuery`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ProxyRowDto {
     pub values: BTreeMap<String, JsonValue>,
 }
 
 /// Result of `dbQuery`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct QueryResultDto {
     pub rows: Vec<ProxyRowDto>,
 }
 
 /// Result of `dbExecute`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ExecResultDto {
     pub last_insert_id: u64,
     pub rows_affected: u64,
@@ -36,12 +40,14 @@ pub struct ExecResultDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "backend", rename_all = "lowercase")]
 pub enum DbConnectParams {
+    #[serde(rename_all = "camelCase")]
     Sqlite {
         plugin_data_dir: String,
         /// Host fallback path when no fd side channel is wired.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sqlite_path: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
     D1 {
         plugin_data_dir: String,
         account_id: String,
@@ -49,6 +55,7 @@ pub enum DbConnectParams {
         api_base: String,
         api_token: String,
     },
+    #[serde(rename_all = "camelCase")]
     Postgres {
         plugin_data_dir: String,
         url: String,
@@ -57,6 +64,7 @@ pub enum DbConnectParams {
 
 /// Result of a successful `dbConnect`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DbConnectResult {
     /// SeaORM dialect the host should use for the RPC proxy (`sqlite` or `postgres`).
     pub dialect: String,

@@ -1,0 +1,12 @@
+{
+  "pluginDataDir": "/var/bookclerk/plugins/audible/data",
+  "accounts": ["reader@example.com"],
+  "pageSize": 50,
+  "importEpisodes": true,
+  "importPlusTitles": true,
+  "credentials": {
+    "reader@example.com": {
+      "accessToken": "opaque-token"
+    }
+  }
+}

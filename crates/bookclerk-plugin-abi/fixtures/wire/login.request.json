@@ -1,0 +1,14 @@
+{
+  "pluginDataDir": "/var/bookclerk/plugins/audible/data",
+  "marketplace": "us",
+  "label": "Primary",
+  "email": "reader@example.com",
+  "force": false,
+  "callbackBind": "127.0.0.1:0",
+  "callbackIpc": "/tmp/bookclerk-oauth.sock",
+  "callbackPublicBase": "http://127.0.0.1:3847",
+  "external": false,
+  "showQr": true,
+  "timeoutSecs": 300,
+  "extra": {}
+}

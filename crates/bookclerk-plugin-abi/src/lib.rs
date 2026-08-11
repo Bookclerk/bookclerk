@@ -1,8 +1,8 @@
 //! Authoritative Bookclerk plugin ABI (`api_version = 1`).
 //!
 //! The JSON Schema in `schema/abi.json` is the canonical contract. Types here
-//! are the Rust projection used by host and guest SDKs. Field names serialize
-//! as camelCase to match Workers RPC / TypeScript where annotated.
+//! are the Rust projection used by host and guest SDKs. Wire DTO fields
+//! serialize as camelCase to match Workers RPC / TypeScript (`abi.json` `$defs`).
 
 #![allow(missing_docs)]
 
@@ -12,6 +12,9 @@ pub mod events;
 pub mod kind;
 pub mod methods;
 pub mod types;
+
+#[cfg(test)]
+mod wire_fixtures;
 
 pub use db::{
     DbConnectParams, DbConnectResult, ExecResultDto, ProxyRowDto, QueryResultDto, StatementDto,

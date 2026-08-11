@@ -42,6 +42,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-ambient.mjs",
     "check-schema": "node scripts/check-schema.mjs",
+    "check-wire": "node scripts/check-wire-fixtures.mjs",
     "prepare": "npm run build",
     "test:tools": "node scripts/test-tools.mjs"
   },
