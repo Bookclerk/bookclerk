@@ -40,11 +40,11 @@ worker builds its policy from the job, confines itself, runs the codec, and
 writes a JSON reply to stdout. Nothing configures the jail separately from the
 request, so a job can never be granted more than it declared.
 
-| Platform | Backend | Filesystem | Syscalls | Network |
-| --- | --- | --- | --- | --- |
-| Linux | Landlock + seccomp-bpf | allowlist, ABI-probed | deny list | no IP sockets |
-| macOS | Seatbelt (`sandbox_init`) | deny-default SBPL profile | — | denied in profile |
-| Windows | AppContainer | spawn-time only | — | — |
+| Platform | Backend | Filesystem | Syscalls | Network | Memory / CPU / PIDs |
+| --- | --- | --- | --- | --- | --- |
+| Linux | Landlock + seccomp-bpf | allowlist, ABI-probed | deny list | no IP sockets | cgroup v2 only when Spec sets limits (media Spec leaves them unset) |
+| macOS | Seatbelt (`sandbox_init`) | deny-default SBPL profile | — | denied in profile | unsupported (FS/net only) |
+| Windows | AppContainer | spawn-time only | — | — | Job Object (media label heuristics: 2 GiB / 64 procs / uncapped CPU) |
 
 macOS has no seccomp equivalent — Seatbelt gates operation classes rather than
 syscall numbers — so the syscall layer reports as not applicable rather than as

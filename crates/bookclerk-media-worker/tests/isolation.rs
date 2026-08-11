@@ -112,6 +112,9 @@ fn media_spec(job: &MediaJob, confinement: Confinement) -> Spec {
         enforcement,
         preserve_fds: vec![],
         windows_profile_name: None,
+        memory_bytes: None,
+        active_processes: None,
+        cpu_rate_percent: None,
     }
 }
 

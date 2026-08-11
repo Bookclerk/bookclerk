@@ -393,11 +393,11 @@ The same three modes as `[media].isolation`, and the same reasoning: the tiers
 differ in what they reach for, not in how a missing jail is handled. Confirm
 what is in effect with `bookclerk config get plugins.isolation`.
 
-| Platform | Backend | Filesystem | Syscalls | Network |
-| --- | --- | --- | --- | --- |
-| Linux | Landlock + seccomp-bpf | allowlist, ABI-probed | deny list | per-policy |
-| macOS | Seatbelt (`sandbox_init`) | deny-default SBPL profile | — | per-policy |
-| Windows | AppContainer | spawn-time ACL allowlist | — | capability SIDs |
+| Platform | Backend | Filesystem | Syscalls | Network | Memory / CPU / PIDs |
+| --- | --- | --- | --- | --- | --- |
+| Linux | Landlock + seccomp-bpf | allowlist, ABI-probed | deny list | per-policy | cgroup v2 best-effort (`memory.max` / `cpu.max` / `pids.max`) when Spec sets limits |
+| macOS | Seatbelt (`sandbox_init`) | deny-default SBPL profile | — | per-policy | unsupported (FS/net only; no fake enforcement) |
+| Windows | AppContainer | spawn-time ACL allowlist | — | capability SIDs | Job Object (Spec fields override label heuristics) |
 
 ### Windows confinement
 
@@ -470,8 +470,15 @@ available as a fallback.
 #### Availability
 
 Plugin Jobs get conservative memory / active-process (and optional CPU) limits;
-media workers get higher defaults. Each plugin's `data/` and `tmp/` directories
-are capped at **512 MiB each**: the host measures them at jail plan
+media workers get higher defaults. When a jail `Spec` carries
+`memory_bytes` / `active_processes` / `cpu_rate_percent` (workerd guests map
+clamped `[workerd].limits.cpu_ms` → `cpu_rate_percent =
+clamp(1, 100, cpu_ms * 80 / 30000)`, with 512 MiB / 8 processes), those values
+override the label heuristics on Windows. On Linux the same Spec fields are
+applied best-effort via a dedicated cgroup v2 child (never written onto a
+shared parent slice); on macOS Seatbelt they are ignored
+(documented as unsupported — FS/net only). Each plugin's `data/` and `tmp/`
+directories are capped at **512 MiB each**: the host measures them at jail plan
 (spawn/reload) and again before write-heavy RPC side-passes (fetch directory,
 upload file, database file grants). Over budget refuses the operation, kills
 the guest, and quarantines the client until restart. RPC timeouts and framing

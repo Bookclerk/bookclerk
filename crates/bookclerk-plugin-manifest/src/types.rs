@@ -153,8 +153,9 @@ fn default_entrypoint() -> String {
 /// Optional workerd resource limits (host clamps).
 ///
 /// Local workerd does **not** Cap'n Proto-emit `cpuMs` / `subRequests`. Bookclerk
-/// clamps these values, injects `subrequests` into egress policy JSON, and logs
-/// `cpu_ms` (OS-jail CPU enforcement is a follow-up).
+/// clamps these values, injects `subrequests` into egress policy JSON, and maps
+/// `cpu_ms` onto jail Spec CPU rate (plus memory/process ceilings) for OS
+/// enforcement.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct WorkerdLimits {
@@ -653,5 +654,41 @@ mode = "deny"
                 "padded id `{padded}`: {err}"
             );
         }
+    }
+
+    #[test]
+    fn workerd_limits_effective_defaults_and_caps() {
+        assert_eq!(
+            WorkerdLimits::default().effective(),
+            EffectiveWorkerdLimits {
+                cpu_ms: WorkerdLimits::DEFAULT_CPU_MS,
+                subrequests: WorkerdLimits::DEFAULT_SUBREQUESTS,
+            }
+        );
+        assert_eq!(
+            WorkerdLimits {
+                cpu_ms: Some(0),
+                subrequests: Some(0),
+            }
+            .effective(),
+            EffectiveWorkerdLimits {
+                cpu_ms: WorkerdLimits::DEFAULT_CPU_MS,
+                subrequests: WorkerdLimits::DEFAULT_SUBREQUESTS,
+            }
+        );
+        let capped = WorkerdLimits {
+            cpu_ms: Some(500_000),
+            subrequests: Some(9_999),
+        }
+        .effective();
+        assert_eq!(capped.cpu_ms, WorkerdLimits::MAX_CPU_MS);
+        assert_eq!(capped.subrequests, WorkerdLimits::MAX_SUBREQUESTS);
+        let mid = WorkerdLimits {
+            cpu_ms: Some(12_000),
+            subrequests: Some(10),
+        }
+        .effective();
+        assert_eq!(mid.cpu_ms, 12_000);
+        assert_eq!(mid.subrequests, 10);
     }
 }

@@ -65,7 +65,17 @@ label (`S:(ML;;NW;;;LW)`). See [plugins.md](plugins.md) (Interactive listeners).
 | data/tmp growth (plan + side-pass) | 512 MiB each | n/a |
 | RPC timeout | kill + quarantine | n/a (stdio job) |
 
-Limits are best-effort Job Object + host policy, not a hard multi-tenant quota.
+Defaults come from the jail label (`plugin:…` vs `media-…`). A `Spec` may set
+`memory_bytes` / `active_processes` / `cpu_rate_percent` explicitly (workerd
+guests do); each set field overrides the corresponding heuristic. Limits are
+best-effort Job Object + host policy, not a hard multi-tenant quota.
+
+Cross-platform: Linux applies the same Spec fields via cgroup v2 into a
+**dedicated child** cgroup when the hierarchy allows it (never onto a shared
+parent slice). If a leaf cannot be created, the resources layer is reported
+not-applicable and Required still rests on FS/net. macOS Seatbelt cannot
+enforce memory/CPU/pids — Bookclerk reports that layer as not applicable and
+does not fake enforcement.
 
 ## AppContainer vs LPAC
 

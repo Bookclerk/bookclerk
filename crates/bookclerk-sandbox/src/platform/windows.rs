@@ -66,5 +66,14 @@ pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> 
             NetPolicy::Full => LayerStatus::NotRequested,
             NetPolicy::Deny | NetPolicy::Outbound | NetPolicy::OutboundListen => unsupported,
         },
+        // Resource ceilings are applied at CreateProcess via the Job Object,
+        // not during self-confine (which Windows cannot do).
+        resources: if policy.has_resource_limits() {
+            LayerStatus::NotApplicable(
+                "Job Object memory/CPU/pids apply at AppContainer spawn".into(),
+            )
+        } else {
+            LayerStatus::NotRequested
+        },
     })
 }

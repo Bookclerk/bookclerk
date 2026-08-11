@@ -34,6 +34,11 @@ pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> 
         backend: BACKEND,
         filesystem: LayerStatus::Unsupported(detail.clone()),
         syscall: LayerStatus::Unsupported(detail.clone()),
-        network: LayerStatus::Unsupported(detail),
+        network: LayerStatus::Unsupported(detail.clone()),
+        resources: if policy.has_resource_limits() {
+            LayerStatus::Unsupported(detail)
+        } else {
+            LayerStatus::NotRequested
+        },
     })
 }

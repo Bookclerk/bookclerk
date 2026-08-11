@@ -76,6 +76,21 @@ pub struct Spec {
     /// and deletes it after the guest (and its Job Object) exits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub windows_profile_name: Option<String>,
+    /// Soft memory ceiling in bytes (Job Object / cgroup v2 `memory.max`).
+    ///
+    /// `None` keeps platform defaults (Windows label heuristics; Linux applies
+    /// no cgroup memory limit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_bytes: Option<u64>,
+    /// Cap on concurrent processes in the jail (Job active-process / `pids.max`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_processes: Option<u32>,
+    /// CPU hard-cap as a percent of one CPU (1–100).
+    ///
+    /// Windows: Job Object CPU rate. Linux: cgroup v2 `cpu.max` quota for a
+    /// 100 ms period. macOS Seatbelt cannot enforce this (see docs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_rate_percent: Option<u32>,
 }
 
 fn default_system_paths() -> bool {
@@ -96,6 +111,9 @@ impl Spec {
             enforcement: Enforcement::default(),
             preserve_fds: Vec::new(),
             windows_profile_name: None,
+            memory_bytes: None,
+            active_processes: None,
+            cpu_rate_percent: None,
         }
     }
 
@@ -109,6 +127,9 @@ impl Spec {
             .allow_exec(self.allow_exec)
             .system_paths(self.system_paths)
             .enforcement(self.enforcement)
+            .memory_bytes(self.memory_bytes)
+            .active_processes(self.active_processes)
+            .cpu_rate_percent(self.cpu_rate_percent)
     }
 }
 
@@ -128,6 +149,9 @@ mod tests {
             enforcement: Enforcement::Required,
             preserve_fds: Vec::new(),
             windows_profile_name: None,
+            memory_bytes: Some(512 * 1024 * 1024),
+            active_processes: Some(8),
+            cpu_rate_percent: Some(80),
         };
         let json = serde_json::to_string(&spec).expect("encode");
         assert_eq!(

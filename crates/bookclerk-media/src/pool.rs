@@ -538,6 +538,10 @@ fn media_job_spec(job: &MediaJob, confinement: Confinement) -> Spec {
         preserve_fds: vec![],
         // Jail creates a unique per-job AppContainer profile.
         windows_profile_name: None,
+        // Leave unset: Windows Job uses media label heuristics; Linux skips cgroup.
+        memory_bytes: None,
+        active_processes: None,
+        cpu_rate_percent: None,
     }
 }
 

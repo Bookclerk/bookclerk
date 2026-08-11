@@ -824,7 +824,7 @@ fn run_appcontainer_windows(
     // CreateProcess: lpApplicationName = exe, lpCommandLine must still begin with
     // argv[0] (the program image) so Rust/C argv parsing lines up.
     let cmdline = windows_command_line(program, args);
-    let job_limits = job_limits_for_label(policy.label());
+    let job_limits = job_limits_for_policy(policy);
     let request = LaunchRequest {
         exe: program,
         cmdline,
@@ -952,23 +952,17 @@ fn copy_flushing<R: std::io::Read + ?Sized, W: std::io::Write + ?Sized>(
     }
 }
 
-/// Job resource defaults: plugins are capped tightly; media workers get more headroom.
+/// Job resource limits: Spec fields override label heuristics.
 #[cfg(windows)]
-fn job_limits_for_label(label: &str) -> super::windows_launch::JobResourceLimits {
+fn job_limits_for_policy(policy: &Policy) -> super::windows_launch::JobResourceLimits {
     use super::windows_launch::JobResourceLimits;
-    let media = label.to_ascii_lowercase().contains("media");
-    if media {
-        JobResourceLimits {
-            memory_bytes: Some(2 * 1024 * 1024 * 1024),
-            cpu_rate_percent: None,
-            active_processes: Some(64),
-        }
-    } else {
-        JobResourceLimits {
-            memory_bytes: Some(512 * 1024 * 1024),
-            cpu_rate_percent: Some(80),
-            active_processes: Some(8),
-        }
+    let limits = policy.resolved_job_limits();
+    JobResourceLimits {
+        memory_bytes: limits
+            .memory_bytes
+            .map(|b| usize::try_from(b).unwrap_or(usize::MAX)),
+        cpu_rate_percent: limits.cpu_rate_percent,
+        active_processes: limits.active_processes,
     }
 }
 

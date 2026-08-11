@@ -5,6 +5,8 @@
 
 #![allow(unsafe_code)] // prctl and the Landlock ABI probe are raw syscalls.
 
+use std::path::Path;
+
 use landlock::{
     path_beneath_rules, Access, AccessFs, AccessNet, CompatLevel, Compatible, NetPort,
     RestrictionStatus, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope, ABI,
@@ -130,6 +132,10 @@ pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> 
     let reads = policy.resolved_reads();
     let writes = policy.resolved_writes();
 
+    // Resource ceilings before Landlock/seccomp. Failure is NotApplicable
+    // (best-effort); Required still hinges on FS/net, not on a writable cgroup.
+    let resources = apply_cgroup_v2_limits(policy);
+
     let (filesystem, landlock_network) = apply_landlock(policy, &reads, &writes)?;
     let syscall = apply_seccomp(policy)?;
 
@@ -141,7 +147,146 @@ pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> 
         filesystem,
         syscall,
         network,
+        resources,
     })
+}
+
+/// Best-effort cgroup v2 `memory.max` / `cpu.max` / `pids.max` when Spec asked.
+///
+/// Returns [`LayerStatus::NotRequested`] when no resource fields are set (native
+/// guests keep prior behavior). A missing or unwritable hierarchy is
+/// [`NotApplicable`] — same posture as macOS Seatbelt: we never claim
+/// `Enforced`, and [`Enforcement::Required`] still passes on FS/net. Callers that
+/// demand resource enforcement for CI use dedicated tests / env knobs rather
+/// than failing every Required guest when the host cannot delegate a leaf.
+fn apply_cgroup_v2_limits(policy: &Policy) -> LayerStatus {
+    if !policy.has_resource_limits() {
+        return LayerStatus::NotRequested;
+    }
+    let limits = policy.resource_limits();
+    match try_apply_cgroup_v2(&limits) {
+        Ok(()) => LayerStatus::Enforced,
+        Err(detail) => {
+            tracing::warn!(
+                label = %policy.label(),
+                error = %detail,
+                "cgroup v2 resource limits not applied"
+            );
+            LayerStatus::NotApplicable(detail)
+        }
+    }
+}
+
+/// Try to place this process into a **child** cgroup with the requested ceilings.
+///
+/// Never writes limits onto the current/parent cgroup: that would throttle
+/// siblings (and in CI, the whole job) sharing the runner slice.
+fn try_apply_cgroup_v2(limits: &crate::ResourceLimits) -> Result<(), String> {
+    let root = Path::new("/sys/fs/cgroup");
+    if !root.join("cgroup.controllers").is_file() {
+        return Err("cgroup v2 not mounted at /sys/fs/cgroup".into());
+    }
+
+    let current_rel = current_cgroup_v2_path()?;
+    let parent = if current_rel.is_empty() || current_rel == "/" {
+        root.to_path_buf()
+    } else {
+        root.join(current_rel.trim_start_matches('/'))
+    };
+    if !parent.is_dir() {
+        return Err(format!(
+            "current cgroup path {} is missing under /sys/fs/cgroup",
+            parent.display()
+        ));
+    }
+
+    // Prefer a dedicated leaf so we do not fight "no internal processes".
+    let child_name = format!("bookclerk-{}", std::process::id());
+    let child = parent.join(&child_name);
+
+    // Enable controllers on the parent when possible (may fail if parent still
+    // has processes — then child create fails closed below).
+    let _ = enable_subtree_controllers(&parent);
+
+    match std::fs::create_dir(&child) {
+        Ok(()) => {
+            write_cgroup_limits(&child, limits)?;
+            move_self_into_cgroup(&child)?;
+            Ok(())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            write_cgroup_limits(&child, limits)?;
+            move_self_into_cgroup(&child)?;
+            Ok(())
+        }
+        Err(create_err) => Err(format!(
+            "could not create child cgroup {}: {create_err} \
+             (refusing to write limits onto shared parent {})",
+            child.display(),
+            parent.display()
+        )),
+    }
+}
+
+fn current_cgroup_v2_path() -> Result<String, String> {
+    let raw = std::fs::read_to_string("/proc/self/cgroup")
+        .map_err(|err| format!("read /proc/self/cgroup: {err}"))?;
+    for line in raw.lines() {
+        // v2: `0::/user.slice/...`
+        if let Some(path) = line.strip_prefix("0::") {
+            return Ok(path.to_string());
+        }
+    }
+    Err("no cgroup v2 entry in /proc/self/cgroup".into())
+}
+
+fn enable_subtree_controllers(parent: &Path) -> Result<(), String> {
+    let available = std::fs::read_to_string(parent.join("cgroup.controllers"))
+        .map_err(|err| format!("read cgroup.controllers: {err}"))?;
+    let mut enable = String::new();
+    for name in ["memory", "cpu", "pids"] {
+        if available.split_whitespace().any(|c| c == name) {
+            if !enable.is_empty() {
+                enable.push(' ');
+            }
+            enable.push('+');
+            enable.push_str(name);
+        }
+    }
+    if enable.is_empty() {
+        return Err("memory/cpu/pids controllers unavailable".into());
+    }
+    std::fs::write(parent.join("cgroup.subtree_control"), &enable)
+        .map_err(|err| format!("write cgroup.subtree_control ({enable}): {err}"))
+}
+
+fn write_cgroup_limits(dir: &Path, limits: &crate::ResourceLimits) -> Result<(), String> {
+    if let Some(bytes) = limits.memory_bytes {
+        write_cgroup_file(dir, "memory.max", &bytes.to_string())?;
+    }
+    if let Some(percent) = limits.cpu_rate_percent {
+        // cgroup v2 cpu.max: "$MAX $PERIOD" in microseconds. 100ms period;
+        // quota scales with the 1–100 percent hard cap.
+        const PERIOD_US: u64 = 100_000;
+        let pct = u64::from(percent.clamp(1, 100));
+        let quota = PERIOD_US.saturating_mul(pct) / 100;
+        write_cgroup_file(dir, "cpu.max", &format!("{quota} {PERIOD_US}"))?;
+    }
+    if let Some(n) = limits.active_processes {
+        write_cgroup_file(dir, "pids.max", &n.to_string())?;
+    }
+    Ok(())
+}
+
+fn write_cgroup_file(dir: &Path, name: &str, value: &str) -> Result<(), String> {
+    let path = dir.join(name);
+    std::fs::write(&path, value).map_err(|err| format!("write {}: {err}", path.display()))
+}
+
+fn move_self_into_cgroup(dir: &Path) -> Result<(), String> {
+    let path = dir.join("cgroup.procs");
+    let pid = std::process::id().to_string();
+    std::fs::write(&path, &pid).map_err(|err| format!("move pid into {}: {err}", path.display()))
 }
 
 /// Fold Landlock's network result together with what seccomp covers.
@@ -441,5 +586,36 @@ mod tests {
         assert!(denied.contains(&libc::SYS_ptrace));
         assert!(denied.contains(&libc::SYS_init_module));
         assert!(denied.contains(&libc::SYS_setuid));
+    }
+
+    #[test]
+    fn cgroup_limit_files_use_expected_wire_format() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let limits = crate::ResourceLimits {
+            memory_bytes: Some(512 * 1024 * 1024),
+            cpu_rate_percent: Some(80),
+            active_processes: Some(8),
+        };
+        write_cgroup_limits(dir.path(), &limits).expect("write");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("memory.max")).unwrap(),
+            (512 * 1024 * 1024).to_string()
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("cpu.max")).unwrap(),
+            "80000 100000"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("pids.max")).unwrap(),
+            "8"
+        );
+    }
+
+    #[test]
+    fn resource_limits_absent_report_not_requested() {
+        assert_eq!(
+            apply_cgroup_v2_limits(&Policy::new("plugin:echo")),
+            LayerStatus::NotRequested
+        );
     }
 }

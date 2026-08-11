@@ -391,6 +391,7 @@ fn build_spec(
     if is_sqlite_database_plugin(plugin) {
         writes.extend(sqlite_library_paths(config));
     }
+    let resources = workerd_spec_resource_limits(plugin);
     Spec {
         label: format!("plugin:{}", plugin.manifest.id),
         // The install directory covers `plugin.toml` and, in the usual layout,
@@ -425,6 +426,41 @@ fn build_spec(
         enforcement,
         preserve_fds,
         windows_profile_name,
+        memory_bytes: resources.memory_bytes,
+        active_processes: resources.active_processes,
+        cpu_rate_percent: resources.cpu_rate_percent,
+    }
+}
+
+/// Map clamped workerd `[workerd].limits` onto jail Spec resource fields.
+///
+/// Native guests leave these unset so Windows keeps label heuristics and Linux
+/// does not apply cgroup ceilings. Workerd guests always get plugin Job-shaped
+/// defaults:
+///
+/// - `memory_bytes` = 512 MiB
+/// - `active_processes` = 8
+/// - `cpu_rate_percent` = `clamp(1, 100, effective_cpu_ms * 80 / DEFAULT_CPU_MS)`
+///   so the host default budget (30 s) maps to the Windows plugin Job 80% cap.
+fn workerd_spec_resource_limits(plugin: &DiscoveredPlugin) -> bookclerk_sandbox::ResourceLimits {
+    use crate::manifest::WorkerdLimits;
+
+    if plugin.manifest.runtime != crate::PluginRuntimeKind::Workerd {
+        return bookclerk_sandbox::ResourceLimits::default();
+    }
+    let limits = plugin
+        .manifest
+        .workerd
+        .as_ref()
+        .map(|w| w.limits.clone())
+        .unwrap_or_default();
+    let effective = limits.effective();
+    let cpu_rate = ((u64::from(effective.cpu_ms) * 80) / u64::from(WorkerdLimits::DEFAULT_CPU_MS))
+        .clamp(1, 100) as u32;
+    bookclerk_sandbox::ResourceLimits {
+        memory_bytes: Some(512 * 1024 * 1024),
+        active_processes: Some(8),
+        cpu_rate_percent: Some(cpu_rate),
     }
 }
 
@@ -817,6 +853,70 @@ mod tests {
             None,
         );
         assert_eq!(spec.net, NetPolicy::OutboundListen);
+    }
+
+    #[test]
+    fn workerd_limits_map_to_spec_resource_fields() {
+        use crate::manifest::{PluginRuntimeKind, WorkerdLimits, WorkerdRuntimeManifest};
+
+        let files = tempfile::tempdir().expect("tempdir");
+        let install = tempfile::tempdir().expect("tempdir");
+        let config = config_at(files.path());
+
+        let native = plugin_at(install.path(), "native", JailNetworkNeed::None);
+        let native_spec = build_spec(
+            &native,
+            &config,
+            &plugin_data_dir(&config, "native").unwrap(),
+            &plugin_scratch_dir(&config, "native").unwrap(),
+            vec![],
+            Enforcement::Required,
+            None,
+        );
+        assert!(native_spec.memory_bytes.is_none());
+        assert!(native_spec.active_processes.is_none());
+        assert!(native_spec.cpu_rate_percent.is_none());
+
+        let mut workerd = plugin_at(install.path(), "echo", JailNetworkNeed::None);
+        workerd.manifest.runtime = PluginRuntimeKind::Workerd;
+        workerd.manifest.command = None;
+        workerd.manifest.workerd = Some(WorkerdRuntimeManifest {
+            compatibility_date: "2026-08-01".into(),
+            compatibility_flags: vec![],
+            main_module: "index.js".into(),
+            modules_dir: "modules".into(),
+            entrypoint: "default".into(),
+            limits: WorkerdLimits::default(),
+        });
+        let default_spec = build_spec(
+            &workerd,
+            &config,
+            &plugin_data_dir(&config, "echo").unwrap(),
+            &plugin_scratch_dir(&config, "echo").unwrap(),
+            vec![],
+            Enforcement::Required,
+            None,
+        );
+        assert_eq!(default_spec.memory_bytes, Some(512 * 1024 * 1024));
+        assert_eq!(default_spec.active_processes, Some(8));
+        // DEFAULT_CPU_MS (30_000) * 80 / 30_000 = 80
+        assert_eq!(default_spec.cpu_rate_percent, Some(80));
+
+        workerd.manifest.workerd.as_mut().unwrap().limits = WorkerdLimits {
+            cpu_ms: Some(15_000),
+            subrequests: None,
+        };
+        let half = build_spec(
+            &workerd,
+            &config,
+            &plugin_data_dir(&config, "echo").unwrap(),
+            &plugin_scratch_dir(&config, "echo").unwrap(),
+            vec![],
+            Enforcement::Required,
+            None,
+        );
+        // 15_000 * 80 / 30_000 = 40
+        assert_eq!(half.cpu_rate_percent, Some(40));
     }
 
     /// Hostile / non-grammar ids are rejected (no lossy rewrite). Path

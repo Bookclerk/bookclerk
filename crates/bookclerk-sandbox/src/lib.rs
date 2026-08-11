@@ -101,6 +101,56 @@ pub struct Policy {
     allow_exec: bool,
     system_paths: bool,
     enforcement: Enforcement,
+    memory_bytes: Option<u64>,
+    active_processes: Option<u32>,
+    cpu_rate_percent: Option<u32>,
+}
+
+/// Optional OS resource ceilings carried on a [`Policy`] / [`Spec`].
+///
+/// Windows applies these (merged with label heuristics) via a Job Object.
+/// Linux applies them best-effort via cgroup v2 when at least one field is set.
+/// macOS Seatbelt has no equivalent — see [`Policy::has_resource_limits`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ResourceLimits {
+    /// Process memory ceiling in bytes.
+    pub memory_bytes: Option<u64>,
+    /// CPU hard-cap as a percent of one CPU (1–100).
+    pub cpu_rate_percent: Option<u32>,
+    /// Maximum concurrent processes in the jail.
+    pub active_processes: Option<u32>,
+}
+
+impl ResourceLimits {
+    /// Whether any limit was requested.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.memory_bytes.is_none()
+            && self.cpu_rate_percent.is_none()
+            && self.active_processes.is_none()
+    }
+}
+
+/// Label-based Job defaults used when a [`Spec`] leaves resource fields unset.
+///
+/// Plugin guests are capped tightly; labels containing `"media"` get more
+/// headroom (matching the historical Windows Job heuristics).
+#[must_use]
+pub fn label_resource_defaults(label: &str) -> ResourceLimits {
+    let media = label.to_ascii_lowercase().contains("media");
+    if media {
+        ResourceLimits {
+            memory_bytes: Some(2 * 1024 * 1024 * 1024),
+            cpu_rate_percent: None,
+            active_processes: Some(64),
+        }
+    } else {
+        ResourceLimits {
+            memory_bytes: Some(512 * 1024 * 1024),
+            cpu_rate_percent: Some(80),
+            active_processes: Some(8),
+        }
+    }
 }
 
 impl Policy {
@@ -115,6 +165,9 @@ impl Policy {
             allow_exec: false,
             system_paths: true,
             enforcement: Enforcement::Required,
+            memory_bytes: None,
+            active_processes: None,
+            cpu_rate_percent: None,
         }
     }
 
@@ -184,10 +237,61 @@ impl Policy {
         self
     }
 
+    /// Soft memory ceiling in bytes (`None` = platform default / unset).
+    #[must_use]
+    pub fn memory_bytes(mut self, bytes: Option<u64>) -> Self {
+        self.memory_bytes = bytes;
+        self
+    }
+
+    /// Cap on concurrent processes (`None` = platform default / unset).
+    #[must_use]
+    pub fn active_processes(mut self, n: Option<u32>) -> Self {
+        self.active_processes = n;
+        self
+    }
+
+    /// CPU hard-cap percent 1–100 (`None` = platform default / unset).
+    #[must_use]
+    pub fn cpu_rate_percent(mut self, percent: Option<u32>) -> Self {
+        self.cpu_rate_percent = percent.map(|p| p.clamp(1, 100));
+        self
+    }
+
     /// Diagnostics label.
     #[must_use]
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    /// Spec-provided resource ceilings (before label heuristics).
+    #[must_use]
+    pub fn resource_limits(&self) -> ResourceLimits {
+        ResourceLimits {
+            memory_bytes: self.memory_bytes,
+            cpu_rate_percent: self.cpu_rate_percent,
+            active_processes: self.active_processes,
+        }
+    }
+
+    /// Whether the Spec/Policy asked for any OS resource ceiling.
+    #[must_use]
+    pub fn has_resource_limits(&self) -> bool {
+        !self.resource_limits().is_empty()
+    }
+
+    /// Job Object limits: Spec fields override [`label_resource_defaults`].
+    ///
+    /// Always returns concrete ceilings suitable for Windows Jobs. Linux only
+    /// applies cgroup limits when [`Self::has_resource_limits`] is true.
+    #[must_use]
+    pub fn resolved_job_limits(&self) -> ResourceLimits {
+        let defaults = label_resource_defaults(&self.label);
+        ResourceLimits {
+            memory_bytes: self.memory_bytes.or(defaults.memory_bytes),
+            cpu_rate_percent: self.cpu_rate_percent.or(defaults.cpu_rate_percent),
+            active_processes: self.active_processes.or(defaults.active_processes),
+        }
     }
 
     /// Read allowlist, including the platform system set when enabled.
@@ -383,6 +487,8 @@ pub struct Report {
     pub syscall: LayerStatus,
     /// Network restriction status.
     pub network: LayerStatus,
+    /// Memory / CPU / process ceilings (Job Object / cgroup v2).
+    pub resources: LayerStatus,
 }
 
 impl Report {
@@ -393,6 +499,7 @@ impl Report {
             filesystem: LayerStatus::NotRequested,
             syscall: LayerStatus::NotRequested,
             network: LayerStatus::NotRequested,
+            resources: LayerStatus::NotRequested,
         }
     }
 
@@ -408,6 +515,7 @@ impl Report {
             ("filesystem", &self.filesystem),
             ("syscall", &self.syscall),
             ("network", &self.network),
+            ("resources", &self.resources),
         ] {
             if let LayerStatus::Unsupported(detail) = status {
                 return Err(SandboxError::NotEnforced {
@@ -434,8 +542,8 @@ impl Report {
     #[must_use]
     pub fn summary(&self) -> String {
         format!(
-            "{} [{}]: filesystem={}, syscall={}, network={}",
-            self.label, self.backend, self.filesystem, self.syscall, self.network
+            "{} [{}]: filesystem={}, syscall={}, network={}, resources={}",
+            self.label, self.backend, self.filesystem, self.syscall, self.network, self.resources
         )
     }
 }
@@ -631,6 +739,7 @@ mod tests {
             filesystem: LayerStatus::Unsupported("no backend".into()),
             syscall: LayerStatus::NotRequested,
             network: LayerStatus::NotRequested,
+            resources: LayerStatus::NotRequested,
         };
         let err = report.require_enforced().expect_err("should reject");
         assert!(matches!(
@@ -653,6 +762,9 @@ mod tests {
             filesystem: LayerStatus::Partial("profile is broader than landlock".into()),
             syscall: LayerStatus::NotApplicable("seatbelt gates operations".into()),
             network: LayerStatus::Enforced,
+            resources: LayerStatus::NotApplicable(
+                "Seatbelt has no memory/CPU/pids controls".into(),
+            ),
         };
         report
             .require_enforced()
@@ -669,6 +781,7 @@ mod tests {
             filesystem: LayerStatus::NotApplicable("nothing to see here".into()),
             syscall: LayerStatus::NotApplicable("nor here".into()),
             network: LayerStatus::NotApplicable("nor here".into()),
+            resources: LayerStatus::NotApplicable("nor here".into()),
         };
         let err = report
             .require_enforced()
@@ -689,5 +802,59 @@ mod tests {
     fn capabilities_probe_does_not_panic() {
         let caps = capabilities();
         assert!(!caps.backend.is_empty());
+    }
+
+    #[test]
+    fn label_resource_defaults_distinguish_media_from_plugins() {
+        let plugin = label_resource_defaults("plugin:echo");
+        assert_eq!(plugin.memory_bytes, Some(512 * 1024 * 1024));
+        assert_eq!(plugin.cpu_rate_percent, Some(80));
+        assert_eq!(plugin.active_processes, Some(8));
+
+        let media = label_resource_defaults("media-worker:encode_mp3");
+        assert_eq!(media.memory_bytes, Some(2 * 1024 * 1024 * 1024));
+        assert_eq!(media.cpu_rate_percent, None);
+        assert_eq!(media.active_processes, Some(64));
+    }
+
+    #[test]
+    fn resolved_job_limits_prefer_spec_fields_over_label_heuristics() {
+        let policy = Policy::new("plugin:echo")
+            .memory_bytes(Some(64 * 1024 * 1024))
+            .active_processes(Some(3))
+            .cpu_rate_percent(Some(25));
+        let limits = policy.resolved_job_limits();
+        assert_eq!(limits.memory_bytes, Some(64 * 1024 * 1024));
+        assert_eq!(limits.active_processes, Some(3));
+        assert_eq!(limits.cpu_rate_percent, Some(25));
+
+        // Unset fields still fall back to plugin heuristics.
+        let partial = Policy::new("plugin:echo").memory_bytes(Some(128 * 1024 * 1024));
+        let merged = partial.resolved_job_limits();
+        assert_eq!(merged.memory_bytes, Some(128 * 1024 * 1024));
+        assert_eq!(merged.cpu_rate_percent, Some(80));
+        assert_eq!(merged.active_processes, Some(8));
+
+        // No Spec fields → full label defaults (Windows Job path).
+        let unset = Policy::new("plugin:echo").resolved_job_limits();
+        assert_eq!(unset, label_resource_defaults("plugin:echo"));
+    }
+
+    #[test]
+    fn cpu_rate_percent_clamps_to_1_100() {
+        assert_eq!(
+            Policy::new("x")
+                .cpu_rate_percent(Some(0))
+                .resource_limits()
+                .cpu_rate_percent,
+            Some(1)
+        );
+        assert_eq!(
+            Policy::new("x")
+                .cpu_rate_percent(Some(250))
+                .resource_limits()
+                .cpu_rate_percent,
+            Some(100)
+        );
     }
 }

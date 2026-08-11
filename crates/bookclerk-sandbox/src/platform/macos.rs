@@ -113,6 +113,17 @@ pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> 
                 .to_string(),
         ),
         network,
+        // Seatbelt has no memory / CPU rate / pids controls. Not a silent gap:
+        // we never claim Enforced. Required still passes (like syscall).
+        resources: if policy.has_resource_limits() {
+            LayerStatus::NotApplicable(
+                "macOS Seatbelt enforces filesystem/network only; memory/CPU/pids \
+                 are unsupported (no fake enforcement)"
+                    .into(),
+            )
+        } else {
+            LayerStatus::NotRequested
+        },
     })
 }
 
