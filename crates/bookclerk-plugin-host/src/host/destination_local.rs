@@ -48,7 +48,7 @@ impl ExternalLocalDestination {
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
         let client = Arc::new(PluginClient::spawn(plugin, config, config_json).await?);
-        let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id);
+        let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
         let root = resolved_local_output_root(config);
         let prefix = normalize_storage_prefix(config.output.local.prefix.trim());
         Ok(Self {

@@ -31,7 +31,7 @@ _ensure_sdk_path()
 from bookclerk_plugin_sdk import BookclerkPlugin, BookclerkPluginGuest  # noqa: E402
 
 API_VERSION = 1
-PLUGIN_ID = "echo-native-python"
+PLUGIN_ID = "echo_native_python"
 KIND = "integration"
 
 CLI_SCHEMA = {
@@ -72,11 +72,11 @@ class EchoPlugin(BookclerkPlugin):
             "id": PLUGIN_ID,
             "enabled": True,
             "ok": True,
-            "detail": "echo-native-python ready",
+            "detail": "echo_native_python ready",
         }
 
     def diagnose(self):
-        return {"lines": ["echo-native-python diagnose: ok"]}
+        return {"lines": ["echo_native_python diagnose: ok"]}
 
     def on_event(self, _event):
         return None

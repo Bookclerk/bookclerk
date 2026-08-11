@@ -1,5 +1,5 @@
 api_version = 1
-id = "echo-workerd-rust"
+id = "echo_workerd_rust"
 name = "Echo Integration (workerd Rust/Wasm)"
 kind = "integration"
 version = "1.0.0"

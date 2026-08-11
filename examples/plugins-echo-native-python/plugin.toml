@@ -1,5 +1,5 @@
 api_version = 1
-id = "echo-native-python"
+id = "echo_native_python"
 name = "Echo Integration (native Python)"
 kind = "integration"
 version = "0.1.0"

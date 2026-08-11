@@ -1,5 +1,5 @@
 api_version = 1
-id = "logo-path"
+id = "logo_path"
 name = "Logo Path"
 kind = "integration"
 version = "0.1.0"

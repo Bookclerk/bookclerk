@@ -1,5 +1,5 @@
 api_version = 1
-id = "echo-workerd-ts"
+id = "echo_workerd_ts"
 name = "Echo Integration (workerd TypeScript)"
 kind = "integration"
 version = "1.0.0"

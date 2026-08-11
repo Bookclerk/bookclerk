@@ -379,9 +379,9 @@ fn stage_guest(
             .with_context(|| format!("copy {} -> {}", src_bin.display(), dest_bin.display()))?;
         set_executable(&dest_bin)?;
         patch_command(&manifest_dest, bin_name)?;
-    } else if guest.id == "echo-native-node" {
+    } else if guest.id == "echo_native_node" {
         stage_echo_native_node(root, &guest.dir, &out, &manifest_dest)?;
-    } else if guest.id == "echo-native-python" {
+    } else if guest.id == "echo_native_python" {
         stage_echo_native_python(root, &guest.dir, &out, &manifest_dest)?;
     } else {
         bail!(
@@ -444,7 +444,7 @@ fn stage_echo_native_node(
     let native_js = sdk_dist.join("native.js");
     if !native_js.is_file() {
         bail!(
-            "missing {} — run `npm run build` in packages/plugin-sdk before staging echo-native-node",
+            "missing {} — run `npm run build` in packages/plugin-sdk before staging echo_native_node",
             native_js.display()
         );
     }
@@ -809,9 +809,9 @@ mod tests {
         for g in &guests {
             assert!(seen.insert(g.id.as_str()), "duplicate {}", g.id);
         }
-        assert!(seen.contains("echo-native-rust"));
-        assert!(seen.contains("echo-workerd-ts"));
-        assert!(seen.contains("echo-workerd-python"));
-        assert!(seen.contains("echo-workerd-rust"));
+        assert!(seen.contains("echo_native_rust"));
+        assert!(seen.contains("echo_workerd_ts"));
+        assert!(seen.contains("echo_workerd_python"));
+        assert!(seen.contains("echo_workerd_rust"));
     }
 }

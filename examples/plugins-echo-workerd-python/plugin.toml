@@ -1,5 +1,5 @@
 api_version = 1
-id = "echo-workerd-python"
+id = "echo_workerd_python"
 name = "Echo Integration (workerd Python)"
 kind = "integration"
 version = "1.0.0"

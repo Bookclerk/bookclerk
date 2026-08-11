@@ -3,9 +3,9 @@
 //! Speaks the Workers RPC ABI via [`BookclerkPlugin`] / [`BookclerkPluginGuest`].
 //!
 //! ```bash
-//! bookclerk plugins approve echo-native-rust --yes
-//! bookclerk plugins enable echo-native-rust
-//! bookclerk plugins echo-native-rust ping --message hi
+//! bookclerk plugins approve echo_native_rust --yes
+//! bookclerk plugins enable echo_native_rust
+//! bookclerk plugins echo_native_rust ping --message hi
 //! ```
 
 use async_trait::async_trait;
@@ -16,7 +16,7 @@ use bookclerk_plugin_abi::{
 };
 use bookclerk_plugin_sdk::{BookclerkPlugin, BookclerkPluginGuest};
 
-const PLUGIN_ID: &str = "echo-native-rust";
+const PLUGIN_ID: &str = "echo_native_rust";
 
 fn cli_schema() -> CliSchema {
     CliSchema {
@@ -64,18 +64,18 @@ impl BookclerkPlugin for EchoPlugin {
             ok: true,
             id: Some(PLUGIN_ID.into()),
             enabled: Some(true),
-            detail: Some("echo-native-rust ready".into()),
+            detail: Some("echo_native_rust ready".into()),
         })
     }
 
     async fn diagnose(&self) -> Result<DiagnoseResult, PluginError> {
         Ok(DiagnoseResult {
-            lines: vec!["echo-native-rust diagnose: ok".into()],
+            lines: vec!["echo_native_rust diagnose: ok".into()],
         })
     }
 
     async fn on_event(&self, event: HostToPluginEvent) -> Result<(), PluginError> {
-        eprintln!("echo-native-rust event: {event:?}");
+        eprintln!("echo_native_rust event: {event:?}");
         Ok(())
     }
 

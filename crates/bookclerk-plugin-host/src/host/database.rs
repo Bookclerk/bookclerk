@@ -41,7 +41,7 @@ impl ExternalDatabase {
         Ok(Self {
             client,
             plugin_id: plugin.manifest.id.clone(),
-            plugin_data_dir: plugin_data_dir(config, &plugin.manifest.id),
+            plugin_data_dir: plugin_data_dir(config, &plugin.manifest.id)?,
         })
     }
 

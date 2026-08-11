@@ -18,7 +18,7 @@ from __future__ import annotations
 from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js
 
 API_VERSION = 1
-PLUGIN_ID = "my-python-plugin"
+PLUGIN_ID = "my_python_plugin"
 KIND = "integration"
 
 

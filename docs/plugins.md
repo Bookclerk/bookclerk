@@ -94,6 +94,12 @@ Optional in-process iteration (no staging): build hosts with
 
 Reference Echo examples (distinct plugin ids):
 
+Plugin **ids are globally unique across kinds** (source / integration / output /
+database). The grammar is strict and non-lossy: lowercase `[a-z0-9_]{2,32}` with
+no leading/trailing `_` and no `__` (same rule as the crates.io `{id}` segment).
+Invalid characters are rejected at manifest load / install — never rewritten —
+so values like `a/b` and `a_b` cannot collide after sanitization.
+
 | Path | Runtime |
 | --- | --- |
 | [`examples/plugins-echo-native-rust`](../examples/plugins-echo-native-rust/) | native Rust |

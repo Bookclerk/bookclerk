@@ -52,7 +52,7 @@ impl ExternalDestination {
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
         let client = Arc::new(PluginClient::spawn(plugin, config, config_json).await?);
-        let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id);
+        let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
         let s3_config = config.output.s3.clone();
         let prefix = normalize_storage_prefix(s3_config.prefix.trim());
         let credentials = resolve_host_credentials(db)

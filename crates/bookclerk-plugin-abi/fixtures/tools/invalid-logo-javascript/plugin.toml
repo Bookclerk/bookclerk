@@ -1,5 +1,5 @@
 api_version = 1
-id = "bad-logo-js"
+id = "bad_logo_js"
 kind = "integration"
 version = "0.1.0"
 logo = "javascript:alert(1)"

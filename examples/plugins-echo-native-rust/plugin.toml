@@ -1,5 +1,5 @@
 api_version = 1
-id = "echo-native-rust"
+id = "echo_native_rust"
 name = "Echo Integration (native Rust)"
 kind = "integration"
 version = "0.1.0"

@@ -1,5 +1,5 @@
 api_version = 1
-id = "bad-logo-vbscript"
+id = "bad_logo_vbscript"
 kind = "integration"
 version = "0.1.0"
 logo = "vbscript:msgbox(1)"

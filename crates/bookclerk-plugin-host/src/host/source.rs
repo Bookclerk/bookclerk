@@ -74,7 +74,7 @@ impl ExternalSource {
             .as_deref()
             .map(|s| Box::leak(s.to_string().into_boxed_str()) as &'static str);
         // Created while the jail was being planned, since the allowlist names it.
-        let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id);
+        let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
         Ok(Self {
             client,
             display_name,

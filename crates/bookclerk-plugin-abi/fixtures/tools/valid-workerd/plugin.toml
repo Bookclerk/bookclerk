@@ -1,5 +1,5 @@
 api_version = 1
-id = "echo-workerd-tools"
+id = "echo_workerd_tools"
 kind = "integration"
 version = "0.1.0"
 runtime = "workerd"

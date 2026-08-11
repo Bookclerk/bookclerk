@@ -78,26 +78,12 @@ impl fmt::Display for PluginCrateName {
 }
 
 /// Validate plugin id segment used in crate names and `plugin.toml`.
+///
+/// Delegates to [`bookclerk_plugin_manifest::validate_plugin_id`] (strict
+/// `[a-z0-9_]{2,32}` grammar; globally unique across kinds).
 pub fn validate_plugin_id(id: &str) -> Result<()> {
-    if id.len() < 2 || id.len() > 32 {
-        return Err(PluginError::message(format!(
-            "plugin id `{id}` must be 2–32 characters"
-        )));
-    }
-    if !id
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-    {
-        return Err(PluginError::message(format!(
-            "plugin id `{id}` must be lowercase ascii letters, digits, or `_`"
-        )));
-    }
-    if id.starts_with('_') || id.ends_with('_') || id.contains("__") {
-        return Err(PluginError::message(format!(
-            "plugin id `{id}` must not start/end with `_` or contain `__`"
-        )));
-    }
-    Ok(())
+    bookclerk_plugin_manifest::validate_plugin_id(id)
+        .map_err(|e| PluginError::message(e.to_string()))
 }
 
 fn parse_kind(s: &str) -> Option<PluginKind> {

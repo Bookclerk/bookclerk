@@ -248,6 +248,9 @@ impl PluginManifest {
         if self.id.trim().is_empty() {
             return Err(Error::message("plugin.toml: `id` is required"));
         }
+        // Validate the raw id (non-lossy): do not trim before grammar checks.
+        crate::validate_plugin_id(&self.id)
+            .map_err(|e| Error::message(format!("plugin.toml: {e}")))?;
         if self.api_version != 1 {
             return Err(Error::message("plugin.toml: `api_version` must be 1"));
         }
@@ -389,7 +392,7 @@ config = true
         let err = PluginManifest::parse(
             r#"
 api_version = 1
-id = "x"
+id = "xx"
 kind = "source"
 runtime = "workerd"
 [workerd]
@@ -453,7 +456,7 @@ secrets = true
     fn parse_echo_native_rust_fixture() {
         let raw = include_str!("../../../examples/plugins-echo-native-rust/plugin.toml");
         let m = PluginManifest::parse(raw).expect("echo native rust plugin.toml");
-        assert_eq!(m.id, "echo-native-rust");
+        assert_eq!(m.id, "echo_native_rust");
         assert!(m.cli.is_some());
     }
 
@@ -538,5 +541,27 @@ mode = "deny"
         )
         .expect_err("javascript logo");
         assert!(err.to_string().contains("logo"), "{err}");
+    }
+
+    #[test]
+    fn id_with_leading_or_trailing_whitespace_rejected() {
+        for padded in [" echo", "echo "] {
+            let toml = format!(
+                r#"
+api_version = 1
+id = "{padded}"
+kind = "integration"
+runtime = "native"
+command = "./bin"
+[capabilities.network]
+mode = "deny"
+"#
+            );
+            let err = PluginManifest::parse(&toml).expect_err(padded);
+            assert!(
+                err.to_string().contains("whitespace"),
+                "padded id `{padded}`: {err}"
+            );
+        }
     }
 }

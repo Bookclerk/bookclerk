@@ -191,7 +191,9 @@ impl Fixture {
         assert_eq!(client.handshake().id, "probe");
         drop(client);
 
-        let report = plugin_data_dir(&self.config, "probe").join("probe-report");
+        let report = plugin_data_dir(&self.config, "probe")
+            .expect("valid plugin id")
+            .join("probe-report");
         let text = std::fs::read_to_string(&report)
             .unwrap_or_else(|err| panic!("read {}: {err}", report.display()));
         text.lines()
@@ -303,6 +305,7 @@ async fn a_guest_that_cannot_be_jailed_is_not_spawned() {
     assert!(message.contains("refusing to run plugin"), "got: {message}");
     assert!(
         !plugin_data_dir(&config, "probe")
+            .expect("valid plugin id")
             .join("probe-report")
             .exists(),
         "the guest ran despite a jail that could not be applied"

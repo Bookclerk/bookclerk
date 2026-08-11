@@ -8,7 +8,7 @@
 import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd";
 
 const API_VERSION = 1;
-const PLUGIN_ID = "echo-workerd-ts";
+const PLUGIN_ID = "echo_workerd_ts";
 const KIND = "integration";
 
 const CLI = {

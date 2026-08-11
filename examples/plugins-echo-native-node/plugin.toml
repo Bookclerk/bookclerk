@@ -1,5 +1,5 @@
 api_version = 1
-id = "echo-native-node"
+id = "echo_native_node"
 name = "Echo Integration (native Node)"
 kind = "integration"
 version = "0.1.0"

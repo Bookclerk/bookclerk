@@ -42,12 +42,14 @@ pub fn plugin_search_dirs(config: &Config) -> Vec<PathBuf> {
 /// - `$dir/plugin.toml` (single plugin at root), or
 /// - `$dir/<name>/plugin.toml` (one plugin per subdirectory).
 ///
-/// Two manifests that claim the same `(kind, id)` are a hard error — Bookclerk
+/// Plugin ids are **globally unique across kinds**. Two manifests that claim
+/// the same `id` (even with different kinds) are a hard error — Bookclerk
 /// refuses to start with an ambiguous plugin set.
 pub fn discover_plugins(config: &Config) -> Result<Vec<DiscoveredPlugin>> {
     let mut out = Vec::new();
-    // kind\0id (lowercased) → first manifest path
-    let mut seen: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
+    // id (lowercased) → (kind, first manifest path)
+    let mut seen: std::collections::HashMap<String, (crate::PluginKind, PathBuf)> =
+        std::collections::HashMap::new();
     for dir in plugin_search_dirs(config) {
         if !dir.is_dir() {
             continue;
@@ -58,14 +60,14 @@ pub fn discover_plugins(config: &Config) -> Result<Vec<DiscoveredPlugin>> {
     Ok(out)
 }
 
-fn conflict_key(kind: crate::PluginKind, id: &str) -> String {
-    format!("{}\0{}", kind.as_str(), id.trim().to_ascii_lowercase())
+fn conflict_key(id: &str) -> String {
+    id.trim().to_ascii_lowercase()
 }
 
 fn discover_in_dir(
     dir: &Path,
     out: &mut Vec<DiscoveredPlugin>,
-    seen: &mut std::collections::HashMap<String, PathBuf>,
+    seen: &mut std::collections::HashMap<String, (crate::PluginKind, PathBuf)>,
 ) -> Result<()> {
     let root_manifest = dir.join("plugin.toml");
     if root_manifest.is_file() {
@@ -96,7 +98,7 @@ fn push_manifest(
     manifest_path: &Path,
     root: &Path,
     out: &mut Vec<DiscoveredPlugin>,
-    seen: &mut std::collections::HashMap<String, PathBuf>,
+    seen: &mut std::collections::HashMap<String, (crate::PluginKind, PathBuf)>,
 ) -> Result<()> {
     let text = std::fs::read_to_string(manifest_path)?;
     let manifest = PluginManifest::parse(&text)?;
@@ -109,17 +111,19 @@ fn push_manifest(
         );
         return Ok(());
     }
-    let key = conflict_key(manifest.kind, &manifest.id);
-    if let Some(first) = seen.get(&key) {
+    let key = conflict_key(&manifest.id);
+    if let Some((first_kind, first_path)) = seen.get(&key) {
         return Err(PluginError::message(format!(
-            "duplicate {} plugin id `{}`: already claimed by {} and also by {}",
-            manifest.kind.as_str(),
+            "duplicate plugin id `{}`: already claimed by {} plugin at {} and also by {} plugin at {} \
+             (ids must be globally unique across kinds)",
             manifest.id,
-            first.display(),
+            first_kind.as_str(),
+            first_path.display(),
+            manifest.kind.as_str(),
             manifest_path.display()
         )));
     }
-    seen.insert(key, manifest_path.to_path_buf());
+    seen.insert(key, (manifest.kind, manifest_path.to_path_buf()));
     let command = resolve_spawn_command(root, &manifest)?;
     if !command.is_file() {
         return Err(PluginError::message(format!(
@@ -366,15 +370,13 @@ mode = "deny"
             ..Config::default()
         };
         let err = discover_plugins(&cfg).unwrap_err().to_string();
-        assert!(
-            err.contains("duplicate integration plugin id `echo`"),
-            "{err}"
-        );
+        assert!(err.contains("duplicate plugin id `echo`"), "{err}");
+        assert!(err.contains("globally unique"), "{err}");
         assert!(err.contains("plugin.toml"), "{err}");
     }
 
     #[test]
-    fn same_id_different_kind_is_allowed() {
+    fn same_id_different_kind_is_hard_error() {
         let tmp = tempfile::tempdir().unwrap();
         let plugins = tmp.path().join("plugins");
         write_plugin(&plugins.join("echo-src"), "echo", "source");
@@ -386,7 +388,10 @@ mode = "deny"
             )),
             ..Config::default()
         };
-        let found = discover_plugins(&cfg).unwrap();
-        assert_eq!(found.len(), 2);
+        let err = discover_plugins(&cfg).unwrap_err().to_string();
+        assert!(err.contains("duplicate plugin id `echo`"), "{err}");
+        assert!(err.contains("source"), "{err}");
+        assert!(err.contains("integration"), "{err}");
+        assert!(err.contains("globally unique"), "{err}");
     }
 }

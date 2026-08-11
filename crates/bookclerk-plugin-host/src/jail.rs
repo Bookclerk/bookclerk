@@ -51,9 +51,11 @@ const JAIL_BIN_NAME: &str = "bookclerk-jail";
 const JAIL_BIN_ENV: &str = "BOOKCLERK_PLUGIN_JAIL";
 
 /// The private directory a plugin keeps state in.
-#[must_use]
-pub fn plugin_data_dir(config: &Config, plugin_id: &str) -> PathBuf {
-    plugin_state_root(config, plugin_id).join("data")
+///
+/// `plugin_id` must satisfy [`bookclerk_plugin_manifest::validate_plugin_id`];
+/// invalid ids are rejected (no lossy rewriting).
+pub fn plugin_data_dir(config: &Config, plugin_id: &str) -> Result<PathBuf> {
+    Ok(plugin_state_root(config, plugin_id)?.join("data"))
 }
 
 /// Scratch space for one plugin, used as its `TMPDIR`.
@@ -61,21 +63,20 @@ pub fn plugin_data_dir(config: &Config, plugin_id: &str) -> PathBuf {
 /// Guests inherit `TMPDIR` from the host otherwise, which names a directory
 /// outside every jail — so a guest reaching for a temp file would fail on a
 /// permission error unrelated to anything it was denied.
-#[must_use]
-fn plugin_scratch_dir(config: &Config, plugin_id: &str) -> PathBuf {
-    plugin_state_root(config, plugin_id).join("tmp")
+fn plugin_scratch_dir(config: &Config, plugin_id: &str) -> Result<PathBuf> {
+    Ok(plugin_state_root(config, plugin_id)?.join("tmp"))
 }
 
 /// Where one plugin's host-managed directories live.
 ///
 /// Distinct from [`DiscoveredPlugin::root`], which is where the plugin is
 /// installed and is read-only to the guest.
-fn plugin_state_root(config: &Config, plugin_id: &str) -> PathBuf {
-    config
+fn plugin_state_root(config: &Config, plugin_id: &str) -> Result<PathBuf> {
+    Ok(config
         .paths()
         .files_dir
         .join("plugins")
-        .join(sanitize_id(plugin_id).as_ref())
+        .join(validated_plugin_id(plugin_id)?))
 }
 
 /// Shallow recursive size used for availability budgets (best-effort).
@@ -147,8 +148,8 @@ impl GuestJail {
     /// hostile input, so running it unconfined is worse than not running it.
     pub(crate) fn plan(config: &Config, plugin: &DiscoveredPlugin) -> Result<Self> {
         let id = &plugin.manifest.id;
-        let data = plugin_data_dir(config, id);
-        let scratch = plugin_scratch_dir(config, id);
+        let data = plugin_data_dir(config, id)?;
+        let scratch = plugin_scratch_dir(config, id)?;
 
         for dir in [&data, &scratch] {
             std::fs::create_dir_all(dir).map_err(|err| {
@@ -509,28 +510,13 @@ fn resolved_local_output_root(config: &Config) -> PathBuf {
     }
 }
 
-fn sanitize_id(id: &str) -> std::borrow::Cow<'_, str> {
-    if !id.is_empty()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-        && id != "."
-        && id != ".."
-    {
-        return std::borrow::Cow::Borrowed(id);
-    }
-    let mut out = String::with_capacity(id.len());
-    for ch in id.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    if out.trim_matches('_').is_empty() {
-        out = "plugin".to_string();
-    }
-    std::borrow::Cow::Owned(out)
+/// Accepted plugin ids are used as path segments with no rewriting.
+///
+/// Invalid ids are rejected — lossy mapping (e.g. `/` → `_`) is forbidden so
+/// distinct raw ids cannot collide after sanitization.
+fn validated_plugin_id(id: &str) -> Result<&str> {
+    crate::registry::validate_plugin_id(id)?;
+    Ok(id)
 }
 
 #[cfg(test)]
@@ -606,8 +592,8 @@ mod tests {
         let spec = build_spec(
             &plugin,
             &config,
-            &plugin_data_dir(&config, "libro"),
-            &plugin_scratch_dir(&config, "libro"),
+            &plugin_data_dir(&config, "libro").unwrap(),
+            &plugin_scratch_dir(&config, "libro").unwrap(),
             vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
             Enforcement::Required,
             None,
@@ -658,8 +644,8 @@ mod tests {
         let spec = build_spec(
             &plugin,
             &config,
-            &plugin_data_dir(&config, "sqlite"),
-            &plugin_scratch_dir(&config, "sqlite"),
+            &plugin_data_dir(&config, "sqlite").unwrap(),
+            &plugin_scratch_dir(&config, "sqlite").unwrap(),
             vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
             Enforcement::Required,
             None,
@@ -715,8 +701,8 @@ mod tests {
         let spec = build_spec(
             &plugin,
             &config,
-            &plugin_data_dir(&config, "libro"),
-            &plugin_scratch_dir(&config, "libro"),
+            &plugin_data_dir(&config, "libro").unwrap(),
+            &plugin_scratch_dir(&config, "libro").unwrap(),
             vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
             Enforcement::Required,
             None,
@@ -729,8 +715,8 @@ mod tests {
     fn one_guest_cannot_reach_another_guests_data() {
         let files = tempfile::tempdir().expect("tempdir");
         let config = config_at(files.path());
-        let mine = plugin_data_dir(&config, "libro");
-        let theirs = plugin_data_dir(&config, "audible");
+        let mine = plugin_data_dir(&config, "libro").unwrap();
+        let theirs = plugin_data_dir(&config, "audible").unwrap();
         assert!(!theirs.starts_with(&mine));
         assert!(!mine.starts_with(&theirs));
     }
@@ -748,12 +734,12 @@ mod tests {
             (JailNetworkNeed::Outbound, NetPolicy::Outbound),
             (JailNetworkNeed::Listen, NetPolicy::OutboundListen),
         ] {
-            let plugin = plugin_at(install.path(), "x", need);
+            let plugin = plugin_at(install.path(), "xx", need);
             let spec = build_spec(
                 &plugin,
                 &config,
-                &plugin_data_dir(&config, "x"),
-                &plugin_scratch_dir(&config, "x"),
+                &plugin_data_dir(&config, "xx").unwrap(),
+                &plugin_scratch_dir(&config, "xx").unwrap(),
                 vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
                 Enforcement::Required,
                 None,
@@ -780,8 +766,8 @@ mod tests {
         let spec = build_spec(
             &workerd,
             &config,
-            &plugin_data_dir(&config, "echo"),
-            &plugin_scratch_dir(&config, "echo"),
+            &plugin_data_dir(&config, "echo").unwrap(),
+            &plugin_scratch_dir(&config, "echo").unwrap(),
             vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
             Enforcement::Required,
             None,
@@ -789,21 +775,23 @@ mod tests {
         assert_eq!(spec.net, NetPolicy::OutboundListen);
     }
 
-    /// A manifest is written by whoever shipped the plugin, so a hostile id must
-    /// not be able to place a writable directory outside the plugins tree.
+    /// Hostile / non-grammar ids are rejected (no lossy rewrite). Path
+    /// containment for valid ids remains: state lives under `plugins/<id>/`.
     #[test]
-    fn a_traversing_plugin_id_stays_inside_the_plugins_tree() {
+    fn invalid_plugin_ids_are_rejected_not_rewritten() {
         let files = tempfile::tempdir().expect("tempdir");
         let config = config_at(files.path());
-        let plugins_root = files.path().join("plugins");
-        for hostile in ["../../etc", "..", ".", "a/b", "/absolute"] {
-            let data = plugin_data_dir(&config, hostile);
+        for hostile in ["../../etc", "..", ".", "a/b", "/absolute", "a-b", "a__b"] {
+            let err = plugin_data_dir(&config, hostile).expect_err("must reject");
             assert!(
-                data.starts_with(&plugins_root),
-                "id {hostile:?} escaped to {}",
-                data.display()
+                err.to_string().contains("plugin id"),
+                "id {hostile:?} got: {err}"
             );
         }
+        // Valid id is identity under plugins/.
+        let data = plugin_data_dir(&config, "echo").unwrap();
+        assert!(data.starts_with(files.path().join("plugins").join("echo")));
+        assert!(!data.to_string_lossy().contains(".."));
     }
 
     /// The download cache root is never granted; fetch scratch arrives one directory
@@ -817,8 +805,8 @@ mod tests {
         let spec = build_spec(
             &plugin,
             &config,
-            &plugin_data_dir(&config, "libro"),
-            &plugin_scratch_dir(&config, "libro"),
+            &plugin_data_dir(&config, "libro").unwrap(),
+            &plugin_scratch_dir(&config, "libro").unwrap(),
             vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
             Enforcement::Required,
             None,

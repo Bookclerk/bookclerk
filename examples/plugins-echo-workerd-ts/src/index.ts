@@ -18,7 +18,7 @@ export default class EchoPlugin extends BookclerkPlugin {
   async handshake(_params: HandshakeParams): Promise<HandshakeResult> {
     return {
       apiVersion: 1,
-      id: "echo-workerd-ts",
+      id: "echo_workerd_ts",
       kind: "integration",
       displayName: "Echo Integration (workerd TypeScript)",
       capabilities: ["health", "diagnose", "onEvent", "cli"],

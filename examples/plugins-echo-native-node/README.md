@@ -1,7 +1,7 @@
 # Echo Integration (native Node)
 
 Reference **native** Bookclerk guest. Subclasses `BookclerkPlugin` and runs with
-`BookclerkPluginGuest.serve` (`api_version = 1`, id `echo-native-node`).
+`BookclerkPluginGuest.serve` (`api_version = 1`, id `echo_native_node`).
 
 **Dev / CI staging** (`cargo stage-plugins --examples`) installs a small shell
 launcher that runs a **vendored** `runtime/node` (hardlinked/copied from
@@ -19,7 +19,7 @@ cd packages/plugin-sdk && npm run build
 cd examples/plugins-echo-native-node
 node src/echo.mjs
 # or after staging:
-# target/plugin-artifacts/echo-native-node/bookclerk-plugin-echo-native-node
+# target/plugin-artifacts/echo_native_node/bookclerk-plugin-echo-native-node
 ```
 
 Sibling examples: `plugins-echo-native-rust`, `plugins-echo-native-python`,

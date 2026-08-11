@@ -8,7 +8,13 @@
   "required": ["api_version", "id", "kind", "capabilities"],
   "properties": {
     "api_version": { "type": "integer", "const": 1 },
-    "id": { "type": "string", "minLength": 1 },
+    "id": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 32,
+      "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$",
+      "description": "Globally unique across kinds. Lowercase letters, digits, and single underscores only (2–32 chars); no leading/trailing or doubled `_`."
+    },
     "name": { "type": "string" },
     "kind": {
       "type": "string",

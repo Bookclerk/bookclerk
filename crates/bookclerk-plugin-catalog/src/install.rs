@@ -84,6 +84,17 @@ impl Installer {
         let dest = safe_join(&opts.plugins_root, Path::new(&runtime.id))?;
         if dest.exists() {
             if let Ok(existing) = InstallReceipt::load(&dest) {
+                if existing.runtime.id.eq_ignore_ascii_case(&runtime.id)
+                    && existing.runtime.kind != runtime.kind
+                {
+                    return Err(CatalogError::message(format!(
+                        "plugin id `{}` is already installed as a {} plugin at {}; \
+                         ids must be globally unique across kinds",
+                        runtime.id,
+                        existing.runtime.kind.as_str(),
+                        dest.display()
+                    )));
+                }
                 let conflict = existing.runtime != runtime
                     || existing.coordinate.source.kind_name() != coordinate.source.kind_name()
                     || existing.coordinate.name != coordinate.name;
@@ -408,39 +419,10 @@ fn build_receipt(
     }
 }
 
-/// Reject absolute / traversing plugin ids before joining under `plugins_root`.
+/// Reject plugin ids that fail the strict grammar (also blocks path escape).
 fn validate_plugin_id(id: &str) -> Result<()> {
-    if id.is_empty() {
-        return Err(CatalogError::message("plugin id must not be empty"));
-    }
-    if id.contains('\0') {
-        return Err(CatalogError::message("plugin id must not contain NUL"));
-    }
-    let path = Path::new(id);
-    if path.is_absolute() {
-        return Err(CatalogError::message(format!(
-            "refusing absolute plugin id: {id}"
-        )));
-    }
-    use std::path::Component;
-    for comp in path.components() {
-        match comp {
-            Component::Normal(c) => {
-                if c.is_empty() {
-                    return Err(CatalogError::message(format!(
-                        "refusing empty component in plugin id: {id}"
-                    )));
-                }
-            }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(CatalogError::message(format!(
-                    "refusing path-escaping plugin id: {id}"
-                )));
-            }
-        }
-    }
-    Ok(())
+    bookclerk_plugin_manifest::validate_plugin_id(id)
+        .map_err(|e| CatalogError::message(e.to_string()))
 }
 
 fn validate_plugin_toml(
@@ -736,11 +718,101 @@ mod tests {
     }
 
     #[test]
-    fn rejects_escaping_plugin_id() {
+    fn rejects_invalid_plugin_id() {
         let err = validate_plugin_id("../evil").unwrap_err();
-        assert!(err.to_string().contains("escaping"), "{err}");
+        assert!(err.to_string().contains("plugin id"), "{err}");
         let err = validate_plugin_id("/abs").unwrap_err();
-        assert!(err.to_string().contains("absolute"), "{err}");
+        assert!(err.to_string().contains("plugin id"), "{err}");
+        let err = validate_plugin_id("a-b").unwrap_err();
+        assert!(err.to_string().contains("lowercase"), "{err}");
+        let err = validate_plugin_id("a").unwrap_err();
+        assert!(err.to_string().contains("2–32"), "{err}");
+        validate_plugin_id("echo").unwrap();
+        validate_plugin_id("my_store").unwrap();
+    }
+
+    #[test]
+    fn rejects_same_id_different_kind_on_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins = tmp.path().join("plugins");
+        let dest = plugins.join("echo");
+        fs::create_dir_all(&dest).unwrap();
+        let existing = InstallReceipt {
+            schema_version: InstallReceipt::SCHEMA_VERSION,
+            coordinate: PackageCoordinate {
+                source: RegistrySource::LocalArchive,
+                name: "old".into(),
+                version: "1.0.0".into(),
+            },
+            version: "1.0.0".into(),
+            registry_url: None,
+            artifact_url: "file:///old".into(),
+            target: "linux-x64-gnu".into(),
+            archive_sha256: "ab".repeat(32),
+            executable_sha256: None,
+            protocol: "workers-rpc".into(),
+            api_version: 1,
+            runtime: RuntimeIdentity::new(PluginKind::Source, "echo"),
+            requested_sandbox: Default::default(),
+            approved_network: "none".into(),
+            installed_at: Utc::now(),
+            update_constraint: None,
+            publisher_key_id: None,
+            allow_unsigned: true,
+        };
+        existing.store(&dest).unwrap();
+        fs::write(
+            dest.join("plugin.toml"),
+            "api_version = 1\nid = \"echo\"\nkind = \"source\"\ncommand = \"./echo\"\n",
+        )
+        .unwrap();
+
+        let (archive, digest) = make_echo_archive(tmp.path());
+        let target = host_bookclerk_target();
+        let manifest = BookclerkPackageManifest {
+            schema_version: 1,
+            protocol: None,
+            api_version: 1,
+            api_version_max: None,
+            min_bookclerk: None,
+            kind: PluginKind::Integration,
+            id: "echo".into(),
+            display_name: Some("Echo".into()),
+            description: None,
+            coordinate: None,
+            artifacts: vec![ArtifactTarget {
+                target: target.into(),
+                url: format!("file://{}", archive.display()),
+                archive_sha256: digest,
+                archive_root: ".".into(),
+                executable: "echo".into(),
+                executable_sha256: None,
+            }],
+            sandbox: Default::default(),
+            links: Default::default(),
+            yanked: false,
+            released_at: None,
+            publisher: None,
+        };
+        let opts = InstallOptions {
+            plugins_root: plugins,
+            replace: true,
+            trust: TrustPolicy {
+                allow_unsigned: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let coord = PackageCoordinate {
+            source: RegistrySource::LocalArchive,
+            name: archive.display().to_string(),
+            version: "1.0.0".into(),
+        };
+        let err = Installer::install_from_manifest(&manifest, &coord, &opts)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("globally unique"), "{err}");
+        assert!(err.contains("source"), "{err}");
     }
 
     #[test]

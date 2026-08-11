@@ -74,12 +74,12 @@ async fn staged_first_party_plugins_handshake() {
         "d1",
         "postgres",
         // examples
-        "echo-native-rust",
-        "echo-native-node",
-        "echo-native-python",
-        "echo-workerd-ts",
-        "echo-workerd-python",
-        "echo-workerd-rust",
+        "echo_native_rust",
+        "echo_native_node",
+        "echo_native_python",
+        "echo_workerd_ts",
+        "echo_workerd_python",
+        "echo_workerd_rust",
     ] {
         assert!(
             ids.contains(&expected),
@@ -115,11 +115,11 @@ async fn staged_first_party_plugins_handshake() {
         }
         // Real workerd isolate (not a JS-less shim): Echo guests must return module detail.
         let expected_detail = match plugin.manifest.id.as_str() {
-            "echo-workerd-ts" => Some("echo workerd plugin ready"),
-            "echo-workerd-python" => Some("echo workerd python plugin ready"),
-            "echo-workerd-rust" => Some("echo workerd rust wasm plugin ready"),
-            "echo-native-node" => Some("echo-native-node ready"),
-            "echo-native-python" => Some("echo-native-python ready"),
+            "echo_workerd_ts" => Some("echo workerd plugin ready"),
+            "echo_workerd_python" => Some("echo workerd python plugin ready"),
+            "echo_workerd_rust" => Some("echo workerd rust wasm plugin ready"),
+            "echo_native_node" => Some("echo_native_node ready"),
+            "echo_native_python" => Some("echo_native_python ready"),
             _ => None,
         };
         if let Some(detail) = expected_detail {

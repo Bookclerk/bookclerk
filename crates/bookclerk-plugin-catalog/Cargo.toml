@@ -11,6 +11,7 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+bookclerk-plugin-manifest.workspace = true
 chrono.workspace = true
 flate2.workspace = true
 hex.workspace = true

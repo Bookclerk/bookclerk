@@ -1,5 +1,5 @@
 api_version = 1
-id = "bad-native-domains"
+id = "bad_native_domains"
 kind = "source"
 runtime = "native"
 command = "./bad"

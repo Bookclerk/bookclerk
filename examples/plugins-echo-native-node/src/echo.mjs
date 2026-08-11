@@ -26,7 +26,7 @@ const { BookclerkPlugin, BookclerkPluginGuest } = await import(
 );
 
 const API_VERSION = 1;
-const PLUGIN_ID = "echo-native-node";
+const PLUGIN_ID = "echo_native_node";
 const KIND = "integration";
 
 const CLI_SCHEMA = {
@@ -67,12 +67,12 @@ class EchoPlugin extends BookclerkPlugin {
       id: PLUGIN_ID,
       enabled: true,
       ok: true,
-      detail: "echo-native-node ready",
+      detail: "echo_native_node ready",
     };
   }
 
   diagnose() {
-    return { lines: ["echo-native-node diagnose: ok"] };
+    return { lines: ["echo_native_node diagnose: ok"] };
   }
 
   onEvent() {}

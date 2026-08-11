@@ -114,7 +114,7 @@ bookclerk-plugin-{kind}-{id}
 | --- | --- | --- |
 | Prefix | Always `bookclerk-plugin-` | — |
 | `{kind}` | One of `source`, `integration`, `output`, `database` | `source` |
-| `{id}` | Plugin id: lowercase `a-z`, `0-9`, `_` only; 2–32 chars; must match `plugin.toml` `id` and `[sources.<id>]` / … | `spotify`, `my_store` |
+| `{id}` | Globally unique across kinds. Lowercase `a-z`, `0-9`, `_` only; 2–32 chars; no leading/trailing or doubled `_`; must match `plugin.toml` `id` and `[sources.<id>]` / … | `spotify`, `my_store` |
 
 **Examples**
 

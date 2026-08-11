@@ -11,7 +11,7 @@ from __future__ import annotations
 from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js
 
 API_VERSION = 1
-PLUGIN_ID = "echo-workerd-python"
+PLUGIN_ID = "echo_workerd_python"
 KIND = "integration"
 
 CLI = {
@@ -70,7 +70,7 @@ class Default(BookclerkPlugin):
         )
 
     async def diagnose(self, _params=None):
-        return js({"lines": ["echo-workerd-python: ok"]})
+        return js({"lines": ["echo_workerd_python: ok"]})
 
     async def onEvent(self, event=None):
         if _get(event, "type") == "book_acquired":

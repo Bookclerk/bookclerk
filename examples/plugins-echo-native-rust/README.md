@@ -9,9 +9,9 @@ and [docs/plugins.md](../../docs/plugins.md).
 ```bash
 cargo build -p bookclerk-plugin-echo-native-rust
 # or: cargo stage-plugins --examples
-bookclerk plugins approve echo-native-rust --yes
-bookclerk plugins enable echo-native-rust
-bookclerk plugins echo-native-rust ping --message hi
+bookclerk plugins approve echo_native_rust --yes
+bookclerk plugins enable echo_native_rust
+bookclerk plugins echo_native_rust ping --message hi
 ```
 
 Sibling examples: `plugins-echo-native-node`, `plugins-echo-native-python`,

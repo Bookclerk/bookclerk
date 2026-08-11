@@ -3754,7 +3754,7 @@ mod tests {
     }
 
     fn stage_logo_plugin(files: &std::path::Path, logo_line: &str) -> std::path::PathBuf {
-        let root = files.join("plugins").join("logo-echo");
+        let root = files.join("plugins").join("logo_echo");
         std::fs::create_dir_all(root.join("assets")).unwrap();
         let bin = root.join("guest");
         std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
@@ -3777,7 +3777,7 @@ mod tests {
             format!(
                 r#"
 api_version = 1
-id = "logo-echo"
+id = "logo_echo"
 kind = "integration"
 version = "0.1.0"
 {logo_line}
@@ -3798,7 +3798,7 @@ mode = "deny"
         stage_logo_plugin(files.path(), r#"logo = "assets/logo.png""#);
         let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
         let (bytes, ctype) =
-            super::plugin_logo_bytes_for(&cfg, "integration", "logo-echo").expect("logo bytes");
+            super::plugin_logo_bytes_for(&cfg, "integration", "logo_echo").expect("logo bytes");
         assert_eq!(ctype, "image/png");
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
     }
@@ -3811,7 +3811,7 @@ mode = "deny"
             r#"logo = "https://www.google.com/s2/favicons?domain=example.com&sz=128""#,
         );
         let cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
-        let err = super::plugin_logo_bytes_for(&cfg, "integration", "logo-echo").unwrap_err();
+        let err = super::plugin_logo_bytes_for(&cfg, "integration", "logo_echo").unwrap_err();
         assert_eq!(err, axum::http::StatusCode::NOT_FOUND);
     }
 
@@ -3853,7 +3853,7 @@ mode = "deny"
         let res = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/plugins/integration/logo-echo/logo")
+                    .uri("/api/plugins/integration/logo_echo/logo")
                     .body(Body::empty())
                     .unwrap(),
             )

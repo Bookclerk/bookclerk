@@ -1,5 +1,5 @@
 api_version = 1
-id = "bad-logo-parent"
+id = "bad_logo_parent"
 kind = "integration"
 version = "0.1.0"
 logo = "../escape.png"

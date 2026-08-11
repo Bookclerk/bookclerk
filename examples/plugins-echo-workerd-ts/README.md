@@ -2,7 +2,7 @@
 
 Greenfield Workers RPC guest that **extends `BookclerkPlugin`** from
 `@bookclerk/plugin-sdk/workerd` (not bare `WorkerEntrypoint`). Id:
-`echo-workerd-ts`. Isolation: `bookclerk-jail` + `bookclerk-workerd` + pinned
+`echo_workerd_ts`. Isolation: `bookclerk-jail` + `bookclerk-workerd` + pinned
 Cloudflare `workerd`.
 
 Authoring: `src/index.ts` and `modules/index.js` both use
@@ -23,7 +23,7 @@ cd ../../examples/plugins-echo-workerd-ts && npm ci && npm run typecheck
 ```
 
 Install layout: `plugin.toml` + `modules/` under
-`$BOOKCLERK_FILES_DIR/plugins/echo-workerd-ts/` (or staged artifacts).
+`$BOOKCLERK_FILES_DIR/plugins/echo_workerd_ts/` (or staged artifacts).
 
 `cargo build-app --platform` / `cargo dev` / `cargo ensure-workerd` fetch the
 pinned Cloudflare `workerd` beside `target/<profile>/bookclerk-workerd`. There

@@ -1,5 +1,5 @@
 api_version = 1
-id = "logo-url"
+id = "logo_url"
 name = "Logo URL"
 kind = "integration"
 version = "0.1.0"

@@ -12,7 +12,7 @@ use bookclerk_plugin_abi::{
 };
 use serde_json::{json, Value};
 
-const PLUGIN_ID: &str = "echo-workerd-rust";
+const PLUGIN_ID: &str = "echo_workerd_rust";
 
 fn cli_schema() -> CliSchema {
     CliSchema {
@@ -65,7 +65,7 @@ pub fn dispatch_json(method: &str, params_json: &str) -> Result<String, String> 
         })
         .map_err(|e| e.to_string())?,
         "diagnose" => serde_json::to_value(DiagnoseResult {
-            lines: vec!["echo-workerd-rust: ok".into()],
+            lines: vec!["echo_workerd_rust: ok".into()],
         })
         .map_err(|e| e.to_string())?,
         "onEvent" => Value::Null,

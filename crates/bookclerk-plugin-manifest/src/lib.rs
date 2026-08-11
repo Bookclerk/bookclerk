@@ -9,6 +9,7 @@
 mod egress;
 mod error;
 mod fmt;
+mod id;
 mod logo;
 mod types;
 
@@ -19,6 +20,7 @@ pub use egress::{
 };
 pub use error::{Error, Result};
 pub use fmt::format_manifest;
+pub use id::validate_plugin_id;
 pub use logo::{
     embedded_logo_api_path, logo_content_type, validate_logo, LogoKind, LOGO_EXTENSIONS,
     MAX_EMBEDDED_LOGO_BYTES,

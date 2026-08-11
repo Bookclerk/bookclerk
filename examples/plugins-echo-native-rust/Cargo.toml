@@ -14,7 +14,7 @@ categories = ["multimedia", "command-line-utilities"]
 [package.metadata.bookclerk]
 api_version = 1
 kind = "integration"
-id = "echo-native-rust"
+id = "echo_native_rust"
 display_name = "Echo Integration (native Rust)"
 
 [[bin]]
