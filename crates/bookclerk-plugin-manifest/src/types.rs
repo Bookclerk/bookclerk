@@ -151,6 +151,10 @@ fn default_entrypoint() -> String {
 }
 
 /// Optional workerd resource limits (host clamps).
+///
+/// Local workerd does **not** Cap'n Proto-emit `cpuMs` / `subRequests`. Bookclerk
+/// clamps these values, injects `subrequests` into egress policy JSON, and logs
+/// `cpu_ms` (OS-jail CPU enforcement is a follow-up).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct WorkerdLimits {
@@ -160,9 +164,51 @@ pub struct WorkerdLimits {
     pub subrequests: Option<u32>,
 }
 
+/// Concrete limits after applying host defaults and hard caps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveWorkerdLimits {
+    pub cpu_ms: u32,
+    pub subrequests: u32,
+}
+
 impl WorkerdLimits {
+    /// Default CPU budget when unset or `0` (matches Echo examples).
+    pub const DEFAULT_CPU_MS: u32 = 30_000;
+    /// Default outbound fetch budget when unset or `0` (matches Echo examples).
+    pub const DEFAULT_SUBREQUESTS: u32 = 50;
+    /// Hard host cap for CPU budget (ms).
+    pub const MAX_CPU_MS: u32 = 120_000;
+    /// Hard host cap for outbound fetch budget.
+    pub const MAX_SUBREQUESTS: u32 = 1_000;
+
     fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// Resolve concrete limits: unset/`0` → defaults, then clamp to hard caps.
+    #[must_use]
+    pub fn effective(&self) -> EffectiveWorkerdLimits {
+        EffectiveWorkerdLimits {
+            cpu_ms: clamp_limit(self.cpu_ms, Self::DEFAULT_CPU_MS, Self::MAX_CPU_MS),
+            subrequests: clamp_limit(
+                self.subrequests,
+                Self::DEFAULT_SUBREQUESTS,
+                Self::MAX_SUBREQUESTS,
+            ),
+        }
+    }
+
+    /// Alias for [`Self::effective`].
+    #[must_use]
+    pub fn clamp(&self) -> EffectiveWorkerdLimits {
+        self.effective()
+    }
+}
+
+fn clamp_limit(raw: Option<u32>, default: u32, max: u32) -> u32 {
+    match raw {
+        None | Some(0) => default,
+        Some(n) => n.min(max),
     }
 }
 
@@ -360,6 +406,50 @@ pub enum JailNetworkNeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workerd_limits_unset_and_zero_use_defaults() {
+        assert_eq!(
+            WorkerdLimits::default().effective(),
+            EffectiveWorkerdLimits {
+                cpu_ms: WorkerdLimits::DEFAULT_CPU_MS,
+                subrequests: WorkerdLimits::DEFAULT_SUBREQUESTS,
+            }
+        );
+        assert_eq!(
+            WorkerdLimits {
+                cpu_ms: Some(0),
+                subrequests: Some(0),
+            }
+            .clamp(),
+            EffectiveWorkerdLimits {
+                cpu_ms: WorkerdLimits::DEFAULT_CPU_MS,
+                subrequests: WorkerdLimits::DEFAULT_SUBREQUESTS,
+            }
+        );
+    }
+
+    #[test]
+    fn workerd_limits_over_cap_are_clamped() {
+        let over = WorkerdLimits {
+            cpu_ms: Some(WorkerdLimits::MAX_CPU_MS + 1),
+            subrequests: Some(WorkerdLimits::MAX_SUBREQUESTS + 50),
+        }
+        .effective();
+        assert_eq!(over.cpu_ms, WorkerdLimits::MAX_CPU_MS);
+        assert_eq!(over.subrequests, WorkerdLimits::MAX_SUBREQUESTS);
+    }
+
+    #[test]
+    fn workerd_limits_in_range_pass_through() {
+        let mid = WorkerdLimits {
+            cpu_ms: Some(45_000),
+            subrequests: Some(100),
+        }
+        .effective();
+        assert_eq!(mid.cpu_ms, 45_000);
+        assert_eq!(mid.subrequests, 100);
+    }
 
     #[test]
     fn parse_workerd_echo() {

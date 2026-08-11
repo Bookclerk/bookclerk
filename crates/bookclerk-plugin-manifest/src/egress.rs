@@ -30,6 +30,13 @@ pub struct EgressPolicy {
     pub domains: Vec<String>,
     #[serde(default = "default_max_redirects")]
     pub max_redirects: u32,
+    /// Max outbound `fetch` calls (initial + redirect hops that actually fetch).
+    ///
+    /// When present and finite, the workerd egress bridge enforces this counter.
+    /// Absent means unlimited (tests / native mediator). Workerd guests always
+    /// inject the clamped `[workerd].limits.subrequests` value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subrequests: Option<u32>,
 }
 
 fn default_max_redirects() -> u32 {
@@ -50,10 +57,12 @@ impl EgressPolicy {
             mode: caps.mode,
             domains,
             max_redirects: DEFAULT_MAX_REDIRECTS,
+            subrequests: None,
         })
     }
 
-    /// Policy from a plugin manifest, including Pyodide hosts for Python+outbound.
+    /// Policy from a plugin manifest, including Pyodide hosts for Python+outbound
+    /// and clamped `[workerd].limits.subrequests` when a workerd table is present.
     #[must_use]
     pub fn from_manifest(manifest: &PluginManifest) -> Self {
         Self::try_from_manifest(manifest).unwrap_or_else(|_| Self::deny())
@@ -67,7 +76,17 @@ impl EgressPolicy {
             policy.mode,
             &policy.domains,
         );
+        if let Some(workerd) = manifest.workerd.as_ref() {
+            policy.subrequests = Some(workerd.limits.effective().subrequests);
+        }
         Ok(policy)
+    }
+
+    /// Attach a clamped subrequest budget (typically from [`crate::WorkerdLimits::effective`]).
+    #[must_use]
+    pub fn with_subrequests(mut self, subrequests: u32) -> Self {
+        self.subrequests = Some(subrequests);
+        self
     }
 
     #[must_use]
@@ -76,6 +95,7 @@ impl EgressPolicy {
             mode: NetworkMode::Deny,
             domains: Vec::new(),
             max_redirects: DEFAULT_MAX_REDIRECTS,
+            subrequests: None,
         }
     }
 
@@ -255,6 +275,7 @@ mod tests {
             mode: NetworkMode::Outbound,
             domains: vec!["api.example.com".into(), "*.cdn.example.com".into()],
             max_redirects: 5,
+            subrequests: None,
         };
         assert!(policy.allows_initial("api.example.com"));
         assert!(policy.allows_initial("a.cdn.example.com"));
@@ -284,6 +305,7 @@ mod tests {
             mode: NetworkMode::Outbound,
             domains: vec!["xn--bcher-kva.de".into()],
             max_redirects: 10,
+            subrequests: None,
         };
         assert!(policy.allows_initial("bücher.de"));
         assert!(policy.allows_initial("xn--bcher-kva.de"));
@@ -298,6 +320,7 @@ mod tests {
             mode: NetworkMode::Outbound,
             domains: vec!["evil.com".into()],
             max_redirects: 10,
+            subrequests: None,
         };
         assert!(!policy.allows_initial("evil%2ecom"));
         assert!(normalize_domain_pattern("api%2eexample.com").is_none());
@@ -338,11 +361,66 @@ mod tests {
             mode: NetworkMode::Outbound,
             domains: vec!["libro.fm".into()],
             max_redirects: 10,
+            subrequests: None,
         };
         let v = policy.to_policy_json();
         assert_eq!(v["mode"], "outbound");
         assert_eq!(v["maxRedirects"], 10);
         assert_eq!(v["domains"][0], "libro.fm");
+        assert!(v.get("subrequests").is_none());
+    }
+
+    #[test]
+    fn policy_json_includes_subrequests_when_set() {
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["api.example.com".into()],
+            max_redirects: 10,
+            subrequests: Some(50),
+        };
+        let v = policy.to_policy_json();
+        assert_eq!(v["subrequests"], 50);
+    }
+
+    #[test]
+    fn workerd_manifest_injects_clamped_subrequests() {
+        let toml = r#"
+api_version = 1
+id = "limits_demo"
+kind = "integration"
+runtime = "workerd"
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "plugin.js"
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 50
+[capabilities.network]
+mode = "outbound"
+domains = ["api.example.com"]
+"#;
+        let manifest = PluginManifest::parse(toml).unwrap();
+        let policy = EgressPolicy::from_manifest(&manifest);
+        assert_eq!(policy.subrequests, Some(50));
+        let over = r#"
+api_version = 1
+id = "limits_over"
+kind = "integration"
+runtime = "workerd"
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "plugin.js"
+[workerd.limits]
+subrequests = 99999
+[capabilities.network]
+mode = "deny"
+"#;
+        let over_manifest = PluginManifest::parse(over).unwrap();
+        let over_policy = EgressPolicy::from_manifest(&over_manifest);
+        assert_eq!(
+            over_policy.subrequests,
+            Some(crate::WorkerdLimits::MAX_SUBREQUESTS)
+        );
     }
 
     #[test]

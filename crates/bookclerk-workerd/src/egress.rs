@@ -69,6 +69,7 @@ mod tests {
             mode: NetworkMode::Outbound,
             domains: vec!["api.example.com".into(), "*.cdn.example.com".into()],
             max_redirects: 5,
+            subrequests: None,
         });
         assert!(proxy.allows_initial_host("api.example.com"));
         assert!(proxy.allows_initial_host("a.cdn.example.com"));

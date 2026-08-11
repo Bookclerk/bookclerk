@@ -18,6 +18,7 @@ modules_dir = "modules"
 entrypoint = "default"
 
 [workerd.limits]
+# Host-clamped; subrequests enforced in egress (local workerd has no Cap'n Proto cpuMs/subRequests).
 cpu_ms = 30000
 subrequests = 50
 

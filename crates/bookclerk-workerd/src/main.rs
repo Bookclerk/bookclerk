@@ -80,6 +80,7 @@ async fn main() -> Result<()> {
 
     let workerd_bin = resolve_workerd_binary()?;
     let egress = EgressProxy::from_manifest(&manifest);
+    let limits = workerd_meta.limits.effective();
     info!(
         plugin = %manifest.id,
         main = %main_module.display(),
@@ -87,6 +88,8 @@ async fn main() -> Result<()> {
         pin = WORKERD_RELEASE_TAG,
         mode = ?egress.mode(),
         domains = ?egress.allowed_initial_hosts(),
+        cpu_ms = limits.cpu_ms,
+        subrequests = limits.subrequests,
         "starting workerd plugin isolate"
     );
 

@@ -257,8 +257,17 @@ pub fn materialize(
         egress.mode(),
         egress.allowed_initial_hosts(),
     );
+    let limits = workerd.limits.effective();
+    tracing::info!(
+        cpu_ms = limits.cpu_ms,
+        subrequests = limits.subrequests,
+        "effective workerd limits (clamped; subrequests enforced in egress)"
+    );
     let mut policy = egress.policy().clone();
     policy.domains = domains;
+    // Always inject clamped subrequests so the bridge can enforce (even if the
+    // caller built EgressProxy without going through from_manifest).
+    policy.subrequests = Some(limits.subrequests);
     let policy_json = policy.to_policy_json();
     let policy_escaped = escape_capnp(&policy_json.to_string());
 
@@ -536,5 +545,32 @@ mod tests {
         assert!(!ListenSpec::InheritedTcp { port: 9 }
             .workerd_socket_line()
             .contains("address"));
+    }
+
+    #[test]
+    fn egress_policy_json_includes_clamped_subrequests() {
+        use bookclerk_plugin_manifest::{EgressPolicy, NetworkMode, WorkerdLimits};
+
+        let limits = WorkerdLimits {
+            cpu_ms: Some(30_000),
+            subrequests: Some(50),
+        }
+        .effective();
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["api.example.com".into()],
+            max_redirects: 10,
+            subrequests: Some(limits.subrequests),
+        };
+        let v = policy.to_policy_json();
+        assert_eq!(v["subrequests"], 50);
+        assert_eq!(v["maxRedirects"], 10);
+
+        let capped = WorkerdLimits {
+            cpu_ms: None,
+            subrequests: Some(50_000),
+        }
+        .effective();
+        assert_eq!(capped.subrequests, WorkerdLimits::MAX_SUBREQUESTS);
     }
 }
