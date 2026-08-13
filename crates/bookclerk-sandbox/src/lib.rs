@@ -113,6 +113,23 @@ pub struct Policy {
     cpu_rate_percent: Option<u32>,
 }
 
+/// Number of logical CPUs visible to this process (at least 1).
+#[must_use]
+pub fn host_logical_cpus() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1)
+        .max(1)
+}
+
+/// Maximum Spec / grant CPU rate: 100% × logical CPUs (one-core units).
+///
+/// Example: 8 logical CPUs → `800` (eight full cores of CFS/Job bandwidth).
+#[must_use]
+pub fn host_cpu_rate_max() -> u32 {
+    host_logical_cpus().saturating_mul(100)
+}
+
 /// Optional OS resource ceilings carried on a [`Policy`] / [`Spec`].
 ///
 /// Windows applies these (merged with label heuristics) via a Job Object.
@@ -122,10 +139,37 @@ pub struct Policy {
 pub struct ResourceLimits {
     /// Process memory ceiling in bytes.
     pub memory_bytes: Option<u64>,
-    /// CPU hard-cap as a percent of one CPU (1–100).
+    /// CPU hard-cap as a percent of **one logical CPU** (1..=host cores×100).
+    ///
+    /// Values above 100 request multi-core bandwidth (200 ≈ two cores). Linux
+    /// writes cgroup v2 `cpu.max` as `period * percent / 100`. Windows Job
+    /// `CpuRate` is a share of **all** processors, so [`windows_job_cpu_rate`]
+    /// scales by logical CPU count. Threads share one quota pool.
     pub cpu_rate_percent: Option<u32>,
     /// Maximum concurrent processes in the jail.
     pub active_processes: Option<u32>,
+}
+
+/// Map a percent-of-one-CPU hard cap onto a Windows Job Object `CpuRate`.
+///
+/// Job `CpuRate` is “cycles per 10 000” of **machine** capacity. Bookclerk’s
+/// [`ResourceLimits::cpu_rate_percent`] is percent of **one** logical CPU, so
+/// this divides by `logical_cpus` (at least 1). Result is clamped to `1..=10000`
+/// because `CpuRate = 0` is rejected by the API.
+///
+/// # Examples
+///
+/// - 80% of one core on an 8-CPU host → 10% of the machine → `1000`
+/// - 400% (four cores) on an 8-CPU host → 50% of the machine → `5000`
+#[must_use]
+pub fn windows_job_cpu_rate(percent_of_one_cpu: u32, logical_cpus: u32) -> u32 {
+    let cores = logical_cpus.max(1);
+    let max_pct = cores.saturating_mul(100);
+    let pct = percent_of_one_cpu.clamp(1, max_pct);
+    ((u64::from(pct) * 100) / u64::from(cores))
+        .clamp(1, 10_000)
+        .try_into()
+        .unwrap_or(10_000)
 }
 
 impl ResourceLimits {
@@ -258,10 +302,13 @@ impl Policy {
         self
     }
 
-    /// CPU hard-cap percent 1–100 (`None` = platform default / unset).
+    /// CPU hard-cap percent of one logical CPU (`None` = platform default / unset).
+    ///
+    /// Clamped to `1..=`[`host_cpu_rate_max`] (100 × logical CPUs).
     #[must_use]
     pub fn cpu_rate_percent(mut self, percent: Option<u32>) -> Self {
-        self.cpu_rate_percent = percent.map(|p| p.clamp(1, 100));
+        let max = host_cpu_rate_max();
+        self.cpu_rate_percent = percent.map(|p| p.clamp(1, max));
         self
     }
 
@@ -848,7 +895,8 @@ mod tests {
     }
 
     #[test]
-    fn cpu_rate_percent_clamps_to_1_100() {
+    fn cpu_rate_percent_clamps_to_host_max() {
+        let max = host_cpu_rate_max();
         assert_eq!(
             Policy::new("x")
                 .cpu_rate_percent(Some(0))
@@ -858,10 +906,34 @@ mod tests {
         );
         assert_eq!(
             Policy::new("x")
-                .cpu_rate_percent(Some(250))
+                .cpu_rate_percent(Some(max.saturating_add(50)))
                 .resource_limits()
                 .cpu_rate_percent,
-            Some(100)
+            Some(max)
         );
+        if max >= 200 {
+            assert_eq!(
+                Policy::new("x")
+                    .cpu_rate_percent(Some(200))
+                    .resource_limits()
+                    .cpu_rate_percent,
+                Some(200)
+            );
+        }
+    }
+
+    #[test]
+    fn windows_job_cpu_rate_scales_by_logical_cpus() {
+        // 80% of one core on 8 CPUs → 10% of machine → CpuRate 1000.
+        assert_eq!(windows_job_cpu_rate(80, 8), 1_000);
+        assert_eq!(windows_job_cpu_rate(100, 1), 10_000);
+        assert_eq!(windows_job_cpu_rate(100, 4), 2_500);
+        // Four cores on eight → 50% of machine.
+        assert_eq!(windows_job_cpu_rate(400, 8), 5_000);
+        // Never emit 0 (API rejects it).
+        assert_eq!(windows_job_cpu_rate(1, 128), 1);
+        assert_eq!(windows_job_cpu_rate(50, 0), 5_000); // cores treated as 1
+                                                        // Cap at full machine.
+        assert_eq!(windows_job_cpu_rate(10_000, 4), 10_000);
     }
 }

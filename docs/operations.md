@@ -18,6 +18,11 @@ HTTP control plane (default `127.0.0.1:8787`):
 | --- | --- | --- |
 | `GET /health` | no | Liveness |
 | `POST /api/auth/login` | no | Operator token → session cookie |
+| `POST /api/auth/bootstrap` | operator | Create first Owner (once) |
+| `POST /api/auth/elevate` | owner + password | Short-lived elevated operator session |
+| `GET` / `POST` / `PATCH` `/api/users…` | provisioner | List/create/patch users; remint claim tickets |
+| `GET` / `POST` `/api/plugins/{id}/consent` | operator | Plugin grant status / approve (widen or narrow; host-capped) |
+| `GET` / `PATCH` `/api/settings` | operator | Daemon, library, plugins, confinement knobs |
 | `GET /api/status` (also `/status`) | yes | Status snapshot |
 | `POST /api/library/scan` (also `/scan`) | yes | Queue scan (`Content-Type: application/json`) |
 | `POST /api/library/acquire` (also `/acquire`) | yes | Queue acquire |
@@ -43,6 +48,18 @@ deleted). Optional override: `BOOKCLERK_OPERATOR_TOKEN`. Show or rotate with
 sessions are stored hashed in `operator_sessions` (survive restart; logout
 revokes server-side). The system tray **Copy operator token** menu copies to
 the clipboard and never prints the value.
+
+User provisioning is role-scoped: Administrators may manage Members only;
+non-elevated Owners may manage Members and Administrators (not Owners);
+Operator tokens and elevated Owners may assign any role, including Owner.
+Last-active-Owner demote/disable/delete is refused. Changing an existing
+password requires the current password (invite/bootstrap first-password setup
+does not). Elevated Operator sessions are revoked when the origin Owner is
+demoted, disabled, deleted, or has their password changed.
+
+The Owner role is greenfield. Testing/dev hosts that already have a
+`library.db` from before this change should recreate it (`cargo reset --yes`)
+and re-bootstrap; there is no Admin→Owner upgrade migration.
 
 When exposing the daemon behind TLS, set `integrations.public_origin =
 "https://…"` so session cookies gain the `Secure` flag. List reverse-proxy

@@ -31,6 +31,10 @@ stage_echo() {
   if [[ -d "$src/modules" ]]; then
     cp -a "$src/modules" "$dest/"
   fi
+  # Embedded logo (and any other assets/) for guests that ship one.
+  if [[ -d "$src/assets" ]]; then
+    cp -a "$src/assets" "$dest/"
+  fi
   echo "$dest"
 }
 
@@ -62,7 +66,20 @@ for id in plugins-echo-workerd-ts plugins-echo-workerd-python plugins-echo-worke
       '{"id":4,"method":"shutdown","params":{}}' \
       | run_rpc "$dest" 2>/dev/null
   )"
-  assert_contains "$out" "echo-workerd"
+  case "$id" in
+    plugins-echo-workerd-ts)
+      assert_contains "$out" 'echo_workerd_ts'
+      assert_contains "$out" 'echo workerd plugin ready'
+      ;;
+    plugins-echo-workerd-python)
+      assert_contains "$out" 'echo_workerd_python'
+      assert_contains "$out" 'echo workerd python plugin ready'
+      ;;
+    plugins-echo-workerd-rust)
+      assert_contains "$out" 'echo_workerd_rust'
+      assert_contains "$out" 'echo workerd rust wasm plugin ready'
+      ;;
+  esac
   if [[ "$out" != *'"ok":true'* && "$out" != *'"ok": true'* ]]; then
     echo "expected health ok in: $out" >&2
     exit 1
@@ -72,18 +89,38 @@ for id in plugins-echo-workerd-ts plugins-echo-workerd-python plugins-echo-worke
     exit 1
   fi
   assert_contains "$out" 'pong: ci'
-  case "$id" in
-    plugins-echo-workerd-ts)
-      assert_contains "$out" 'echo workerd plugin ready'
-      ;;
-    plugins-echo-workerd-python)
-      assert_contains "$out" 'echo workerd python plugin ready'
-      ;;
-    plugins-echo-workerd-rust)
-      assert_contains "$out" 'echo workerd rust wasm plugin ready'
-      ;;
-  esac
   echo "ok $id"
 done
+
+# Outbound allowlist guest: probe www.example.com under *.example.com.
+# Success = egress returned a Response (HTTP status is best-effort / ignored).
+id=plugins-echo-workerd-fetch
+dest="$(stage_echo "$id")"
+echo "==> $id"
+out="$(
+  printf '%s\n' \
+    '{"id":1,"method":"handshake","params":{"apiVersion":1}}' \
+    '{"id":2,"method":"health","params":{}}' \
+    '{"id":3,"method":"cliInvoke","params":{"command":"ping","args":{"message":"ci"}}}' \
+    '{"id":4,"method":"cliInvoke","params":{"command":"fetch-example","args":{}}}' \
+    '{"id":5,"method":"shutdown","params":{}}' \
+    | run_rpc "$dest" 2>/dev/null
+)"
+assert_contains "$out" "echo_workerd_fetch"
+assert_contains "$out" 'echo workerd fetch plugin ready'
+assert_contains "$out" 'pong: ci'
+if [[ "$out" == *'"allowed":true'* || "$out" == *'"allowed": true'* ]]; then
+  # Allowed Response must surface exitCode 0; do not require HTTP 2xx.
+  if [[ "$out" != *'"exitCode":0'* && "$out" != *'"exitCode": 0'* ]]; then
+    echo "expected exitCode 0 when fetch was allowed in: $out" >&2
+    exit 1
+  fi
+  assert_contains "$out" 'example.com fetch allowed (HTTP'
+  echo "ok $id (allowlist Response received; HTTP status ignored)"
+else
+  echo "warn: $id fetch-example best-effort skip (no Response / network unavailable)" >&2
+  echo "got: $out" >&2
+  echo "ok $id (handshake/health/ping only)"
+fi
 
 echo "all workerd echo guests passed"

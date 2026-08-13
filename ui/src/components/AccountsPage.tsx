@@ -69,7 +69,9 @@ export function AccountsPage({
 
   useEffect(() => {
     void refresh();
-  }, []);
+    // Re-run when effective role changes (e.g. start/stop impersonation).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+  }, [role]);
 
   async function onPasswordLogin(e: FormEvent, sourceId: string) {
     e.preventDefault();

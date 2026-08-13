@@ -56,7 +56,8 @@ pub mod types;
 mod wire_fixtures;
 
 pub use db::{
-    DbConnectParams, DbConnectResult, ExecResultDto, ProxyRowDto, QueryResultDto, StatementDto,
+    atomic_status, DbAtomicParams, DbAtomicResult, DbBeginParams, DbBeginResult, DbConnectParams,
+    DbConnectResult, DbTxnParams, ExecResultDto, ProxyRowDto, QueryResultDto, StatementDto,
 };
 pub use error::{PluginError, PluginErrorCode, Result};
 pub use events::{HostToPluginEvent, PluginToHostEvent};
@@ -121,5 +122,20 @@ mod tests {
             schema_names, expected,
             "abi.json methods keys must match methods.rs METHOD_NAMES"
         );
+    }
+
+    #[test]
+    fn db_atomic_params_use_camel_case_op_tag() {
+        let params = DbAtomicParams::DeleteUser { user_id: 7 };
+        let v = serde_json::to_value(&params).unwrap();
+        assert_eq!(v["op"], "deleteUser");
+        assert_eq!(v["userId"], 7);
+        let back: DbAtomicParams = serde_json::from_value(v).unwrap();
+        assert_eq!(back, params);
+
+        let d1 = DbConnectResult::d1();
+        let rv = serde_json::to_value(&d1).unwrap();
+        assert_eq!(rv["dialect"], "sqlite");
+        assert_eq!(rv["interactiveTxn"], false);
     }
 }

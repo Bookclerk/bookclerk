@@ -27,23 +27,27 @@ The SPA supports operator and first-party user sessions:
 
 | Role | How to sign in | Capabilities |
 | --- | --- | --- |
-| **Operator** | Paste operator token (`bookclerk daemon token`) | Full library, scan/acquire, jobs, Discover, Wishlist; **cannot** connect bookstore sources |
-| **Administrator** | Claim ticket / integration login (linked user) | Same as member, plus acquire / admin caps |
-| **Member** | Claim ticket or integration return-visit login | Discover (personalized), Wishlist, **full shared library** (browse), Accounts (store connect) |
+| **Operator** | Paste operator token (`bookclerk daemon token`) | Full library, scan/acquire, jobs, Discover, Wishlist, Settings (daemon/plugins/confinement), impersonate; **cannot** connect bookstore sources |
+| **Owner** | Invite magic link / password / integration login | Administrator powers + **elevate** to operator with password reauth (Server/Plugins + impersonation) |
+| **Administrator** | Invite magic link / password / integration login | Member powers + acquire/scan/jobs; provision users (no elevate) |
+| **Member** | Invite magic link, password, or integration return-visit | Discover, Wishlist, shared library browse, Accounts (store connect); Settings Account (Profile / Security / Sessions) |
 
 | Item | Detail |
 | --- | --- |
 | Operator token | `encrypted_secrets` (or `BOOKCLERK_OPERATOR_TOKEN` override); tray copies to clipboard |
-| Operator cookie | `bookclerk_operator_session` (`Path=/`) |
+| Operator cookie | `bookclerk_operator_session` (`Path=/`) — also used for elevated Owner sessions |
 | Portal cookie | `bookclerk_portal_session` (`Path=/`) — federation session bound to a first-party user |
 | Portal APIs | `/api/portal/*` (SPA Accounts / claim redeem) |
+| User admin APIs | `GET`/`POST /api/users`, `PATCH /api/users/{id}`, `POST /api/users/{id}/claim-ticket` (provisioner: operator, owner, or administrator) |
+| Elevate | `POST /api/auth/elevate` `{ password }` / `DELETE /api/auth/elevate` (Owner only) |
+| Bootstrap | `POST /api/auth/bootstrap` (operator; once when no owners exist) |
 | Config | `[daemon.auth]` |
 | User prefs (DB) | `GET` / `PATCH /api/preferences` — `default_view`, `disabled_shelves` (subject `user:{id}` or `operator`) |
 
 `GET /api/auth/me` returns
-`{ authenticated, role, default_view, can_acquire, portal?, user? }` with
-`role` of `operator` | `administrator` | `member`, optional first-party `user`,
-and `default_view` from the caller's SQLite preferences row.
+`{ authenticated, role, default_view, can_acquire, elevated, impersonating?, portal?, user? }`
+with `role` of `operator` | `owner` | `administrator` | `member`, optional first-party
+`user`, and `default_view` from the caller's preferences row.
 
 ## Client routes
 
@@ -57,6 +61,7 @@ The SPA keeps the URL bar in sync with the active screen via the History API:
 | `/wishlist` | Wishlist |
 | `/accounts` | Accounts |
 | `/settings` | Settings |
+| `/invite` | Sign-in / claim (magic-link ticket in `?ticket=`) |
 
 `bookclerkd` serves `index.html` for those document paths (assets still come
 from `ui/dist`). A hard refresh on `/library` therefore loads the SPA, not a
@@ -94,10 +99,23 @@ Values: `discover` | `wishlist` | `library` | `accounts`. Stored in
   User-only via Accounts)
 - **Accounts** — link bookstore sources, revoke connections, manage portal identity
   connections (claim ticket / credential login on the sign-in screen)
+- **Settings** —
+  - **Account** (all roles): Profile, Security (password + Owner elevate), Sessions
+  - **User Management** (operator, owner, or administrator): bootstrap first
+    Owner, create users (email + copyable invite magic link), role/status,
+    remint invite, reset password. Role options follow the provisioner matrix
+    (Administrator → Members only; Owner → Members and Administrators;
+    Operator / elevated Owner → all roles). Presence / listening is not loaded
+    on this list.
+  - **Impersonate** (operator / elevated Owner)
+  - **Server / Plugins** (operator or elevated): listen, auth, auto-acquire,
+    plugin enablement with branded consent dialog (widen or narrow grants;
+    host-capped workerd/disk limits; workerd domain allowlists), isolation +
+    jail resource knobs
 
-A future **plugin browser** (install/configure third-party plugins from the
-operator dashboard) is sketched in [plugin-registry.md](plugin-registry.md);
-today plugins are managed via CLI / `config.toml` ([plugins.md](plugins.md)).
+A future **plugin browser** (install/configure third-party plugins from a
+catalog) is sketched in [plugin-registry.md](plugin-registry.md); enablement and
+consent today live in Settings plus CLI / `config.toml` ([plugins.md](plugins.md)).
 
 ## Run
 

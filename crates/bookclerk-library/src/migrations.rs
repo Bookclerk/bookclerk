@@ -584,6 +584,41 @@ const MIGRATION_V7_EXCLUSIVE_LINKS_POSTGRES: &str = r#"
     CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(account_id);
 "#;
 
+/// Additive migration: session client metadata for operator/portal session lists.
+///
+/// Plain `ADD COLUMN` (no `IF NOT EXISTS`): the SQLite build bundled with
+/// `rusqlite` rejects `ADD COLUMN IF NOT EXISTS` (`near "EXISTS": syntax error`).
+const MIGRATION_V8_SESSION_CLIENT_SQLITE: &str = r#"
+    ALTER TABLE operator_sessions ADD COLUMN user_agent TEXT;
+    ALTER TABLE operator_sessions ADD COLUMN device_type TEXT;
+    ALTER TABLE operator_sessions ADD COLUMN client_label TEXT;
+    ALTER TABLE portal_sessions ADD COLUMN user_agent TEXT;
+    ALTER TABLE portal_sessions ADD COLUMN device_type TEXT;
+    ALTER TABLE portal_sessions ADD COLUMN client_label TEXT;
+    ALTER TABLE portal_sessions ADD COLUMN last_used_at TEXT;
+"#;
+
+const MIGRATION_V8_SESSION_CLIENT_POSTGRES: &str = r#"
+    ALTER TABLE operator_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;
+    ALTER TABLE operator_sessions ADD COLUMN IF NOT EXISTS device_type TEXT;
+    ALTER TABLE operator_sessions ADD COLUMN IF NOT EXISTS client_label TEXT;
+    ALTER TABLE portal_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;
+    ALTER TABLE portal_sessions ADD COLUMN IF NOT EXISTS device_type TEXT;
+    ALTER TABLE portal_sessions ADD COLUMN IF NOT EXISTS client_label TEXT;
+    ALTER TABLE portal_sessions ADD COLUMN IF NOT EXISTS last_used_at TEXT;
+"#;
+
+/// Optional contact email on first-party users (invites / notifications).
+const MIGRATION_V9_USER_EMAIL_SQLITE: &str = r#"
+    ALTER TABLE users ADD COLUMN email TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+"#;
+
+const MIGRATION_V9_USER_EMAIL_POSTGRES: &str = r#"
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+"#;
+
 /// Ordered migration list for local SQLite files (`PRAGMA user_version`).
 #[must_use]
 pub fn migration_sql() -> &'static [&'static str] {
@@ -596,6 +631,8 @@ pub fn migration_sql() -> &'static [&'static str] {
         MIGRATION_V5_PROVISIONING_SQLITE,
         MIGRATION_V6_OIDC_SQLITE,
         MIGRATION_V7_EXCLUSIVE_LINKS_SQLITE,
+        MIGRATION_V8_SESSION_CLIENT_SQLITE,
+        MIGRATION_V9_USER_EMAIL_SQLITE,
     ]
 }
 
@@ -611,6 +648,8 @@ pub fn migration_sql_postgres() -> &'static [&'static str] {
         MIGRATION_V5_PROVISIONING_POSTGRES,
         MIGRATION_V6_OIDC_POSTGRES,
         MIGRATION_V7_EXCLUSIVE_LINKS_POSTGRES,
+        MIGRATION_V8_SESSION_CLIENT_POSTGRES,
+        MIGRATION_V9_USER_EMAIL_POSTGRES,
     ]
 }
 

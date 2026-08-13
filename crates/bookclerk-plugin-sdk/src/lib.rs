@@ -64,9 +64,10 @@ pub mod workerd;
 
 #[cfg(feature = "db")]
 pub use db::{
-    b64_string_to_bytes, bytes_to_b64_string, exec_result_from_dto, exec_result_to_dto,
-    json_to_sea_value, proxy_rows_from_dto, proxy_rows_to_dto, sea_value_to_json,
-    statement_from_dto, statement_to_dto, DbConnectParams, DbConnectResult, ExecResultDto,
+    atomic_status, b64_string_to_bytes, bytes_to_b64_string, exec_result_from_dto,
+    exec_result_to_dto, json_to_sea_value, proxy_rows_from_dto, proxy_rows_to_dto,
+    sea_value_to_json, statement_from_dto, statement_to_dto, DbAtomicParams, DbAtomicResult,
+    DbBeginParams, DbBeginResult, DbConnectParams, DbConnectResult, DbTxnParams, ExecResultDto,
     ProxyRowDto, QueryResultDto, StatementDto,
 };
 

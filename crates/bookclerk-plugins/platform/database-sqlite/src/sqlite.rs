@@ -13,13 +13,81 @@ use sea_orm::{
     Database, DatabaseConnection, DbBackend, DbErr, ProxyDatabaseTrait, ProxyExecResult, ProxyRow,
     Statement, Value,
 };
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::OwnedMutexGuard;
+use tokio::task::{try_id, Id as TaskId};
 
 const SLOW_SQL_WARN_MS: u128 = 250;
 
-/// SeaORM proxy over a shared rusqlite connection.
 #[derive(Debug)]
+struct SqliteState {
+    conn: Connection,
+    txn_depth: u32,
+}
+
+impl SqliteState {
+    fn begin(&mut self) -> rusqlite::Result<()> {
+        if self.txn_depth == 0 {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        } else {
+            self.conn
+                .execute_batch(&format!("SAVEPOINT sp_{}", self.txn_depth))?;
+        }
+        self.txn_depth += 1;
+        Ok(())
+    }
+
+    fn commit(&mut self) -> rusqlite::Result<()> {
+        if self.txn_depth == 0 {
+            return Ok(());
+        }
+        if self.txn_depth == 1 {
+            self.conn.execute_batch("COMMIT")?;
+        } else {
+            self.conn
+                .execute_batch(&format!("RELEASE SAVEPOINT sp_{}", self.txn_depth - 1))?;
+        }
+        self.txn_depth -= 1;
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> rusqlite::Result<()> {
+        if self.txn_depth == 0 {
+            return Ok(());
+        }
+        if self.txn_depth == 1 {
+            self.conn.execute_batch("ROLLBACK")?;
+        } else {
+            let name = format!("sp_{}", self.txn_depth - 1);
+            self.conn
+                .execute_batch(&format!("ROLLBACK TO SAVEPOINT {name}"))?;
+            self.conn
+                .execute_batch(&format!("RELEASE SAVEPOINT {name}"))?;
+        }
+        self.txn_depth -= 1;
+        Ok(())
+    }
+}
+
+/// Exclusive connection lease for an open SeaORM transaction.
+struct TxnLease {
+    _guard: OwnedMutexGuard<()>,
+    owner: Option<TaskId>,
+}
+
+/// Held for the duration of one statement so it cannot run inside another
+/// task's open transaction on this shared connection.
+enum StatementPermit {
+    OwnedByTxn,
+    Transient(#[allow(dead_code)] OwnedMutexGuard<()>),
+}
+
+/// SeaORM proxy over a shared rusqlite connection.
 pub struct SqliteProxy {
-    conn: Arc<Mutex<Connection>>,
+    conn: Arc<Mutex<SqliteState>>,
+    /// Serializes top-level transactions and statements from other tasks.
+    txn_gate: Arc<AsyncMutex<()>>,
+    txn_lease: Arc<Mutex<Option<TxnLease>>>,
 }
 
 impl SqliteProxy {
@@ -29,8 +97,57 @@ impl SqliteProxy {
     #[must_use]
     pub fn new(conn: Connection) -> Self {
         Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: Arc::new(Mutex::new(SqliteState { conn, txn_depth: 0 })),
+            txn_gate: Arc::new(AsyncMutex::new(())),
+            txn_lease: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn same_task(owner: Option<TaskId>) -> bool {
+        match (owner, try_id()) {
+            (Some(a), Some(b)) => a == b,
+            // `#[tokio::test]` drives the body with `block_on`, which has no
+            // task id. Sequential statements in that context own the lease.
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, SqliteState> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn lock_lease(&self) -> std::sync::MutexGuard<'_, Option<TxnLease>> {
+        self.txn_lease.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn release_lease_if_idle(&self, depth: u32) {
+        if depth == 0 {
+            *self.lock_lease() = None;
+        }
+    }
+
+    /// Wait until this task may use the shared connection.
+    ///
+    /// SeaORM sends every statement through the same proxy, so a `BEGIN` from
+    /// one task would otherwise include other tasks' queries in that SQLite
+    /// transaction. Nested `begin` from the owning task uses savepoints.
+    async fn acquire_for_statement(&self) -> StatementPermit {
+        {
+            let lease = self.lock_lease();
+            if let Some(l) = lease.as_ref() {
+                if Self::same_task(l.owner) {
+                    return StatementPermit::OwnedByTxn;
+                }
+            }
+        }
+        StatementPermit::Transient(self.txn_gate.clone().lock_owned().await)
+    }
+}
+
+impl std::fmt::Debug for SqliteProxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqliteProxy").finish_non_exhaustive()
     }
 }
 
@@ -119,6 +236,10 @@ pub async fn open_store_memory() -> Result<LibraryStore> {
 #[async_trait]
 impl ProxyDatabaseTrait for SqliteProxy {
     async fn query(&self, statement: Statement) -> std::result::Result<Vec<ProxyRow>, DbErr> {
+        if bookclerk_library::is_txn_broken() {
+            return Err(bookclerk_library::txn_broken_err());
+        }
+        let _permit = self.acquire_for_statement().await;
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let sql_summary = summarize_sql(&statement.sql);
@@ -128,6 +249,7 @@ impl ProxyDatabaseTrait for SqliteProxy {
                 .lock()
                 .map_err(|e| DbErr::Custom(format!("sqlite mutex poisoned: {e}")))?;
             let mut stmt = conn
+                .conn
                 .prepare(&statement.sql)
                 .map_err(|e| DbErr::Custom(e.to_string()))?;
             let binds = statement_binds(&statement);
@@ -180,6 +302,10 @@ impl ProxyDatabaseTrait for SqliteProxy {
     }
 
     async fn execute(&self, statement: Statement) -> std::result::Result<ProxyExecResult, DbErr> {
+        if bookclerk_library::is_txn_broken() {
+            return Err(bookclerk_library::txn_broken_err());
+        }
+        let _permit = self.acquire_for_statement().await;
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let sql_summary = summarize_sql(&statement.sql);
@@ -189,10 +315,11 @@ impl ProxyDatabaseTrait for SqliteProxy {
                 .lock()
                 .map_err(|e| DbErr::Custom(format!("sqlite mutex poisoned: {e}")))?;
             let binds = statement_binds(&statement);
-            conn.execute(&statement.sql, rusqlite::params_from_iter(binds.iter()))
+            conn.conn
+                .execute(&statement.sql, rusqlite::params_from_iter(binds.iter()))
                 .map_err(|e| DbErr::Custom(e.to_string()))?;
             let elapsed_ms = started.elapsed().as_millis();
-            let rows_affected = conn.changes();
+            let rows_affected = conn.conn.changes();
             if elapsed_ms >= SLOW_SQL_WARN_MS {
                 tracing::warn!(
                     op = "execute",
@@ -213,7 +340,7 @@ impl ProxyDatabaseTrait for SqliteProxy {
                 );
             }
             Ok(ProxyExecResult {
-                last_insert_id: conn.last_insert_rowid() as u64,
+                last_insert_id: conn.conn.last_insert_rowid() as u64,
                 rows_affected,
             })
         })
@@ -222,13 +349,15 @@ impl ProxyDatabaseTrait for SqliteProxy {
     }
 
     async fn ping(&self) -> std::result::Result<(), DbErr> {
+        let _permit = self.acquire_for_statement().await;
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let started = Instant::now();
             let conn = conn
                 .lock()
                 .map_err(|e| DbErr::Custom(format!("sqlite mutex poisoned: {e}")))?;
-            conn.prepare("SELECT 1")
+            conn.conn
+                .prepare("SELECT 1")
                 .map_err(|e| DbErr::Custom(e.to_string()))?;
             tracing::debug!(
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -238,6 +367,87 @@ impl ProxyDatabaseTrait for SqliteProxy {
         })
         .await
         .map_err(|err| DbErr::Custom(format!("sqlite ping task failed: {err}")))?
+    }
+
+    async fn begin(&self) {
+        if bookclerk_library::consume_begin_injection() {
+            bookclerk_library::note_begin_failed("injected begin failure");
+            return;
+        }
+        {
+            let lease = self.lock_lease();
+            if let Some(l) = lease.as_ref() {
+                if Self::same_task(l.owner) {
+                    drop(lease);
+                    let mut state = self.lock_state();
+                    if let Err(err) = state.begin() {
+                        bookclerk_library::note_begin_failed(&err);
+                        tracing::error!(error = %err, "sqlite nested begin failed");
+                    }
+                    return;
+                }
+            }
+        }
+        let guard = self.txn_gate.clone().lock_owned().await;
+        {
+            let mut state = self.lock_state();
+            if let Err(err) = state.begin() {
+                bookclerk_library::note_begin_failed(&err);
+                tracing::error!(error = %err, "sqlite begin failed");
+                return;
+            }
+        }
+        *self.lock_lease() = Some(TxnLease {
+            _guard: guard,
+            owner: try_id(),
+        });
+    }
+
+    async fn commit(&self) {
+        if bookclerk_library::consume_commit_injection() {
+            bookclerk_library::note_commit_failed("injected commit failure");
+            let depth = {
+                let mut state = self.lock_state();
+                if let Err(err) = state.rollback() {
+                    tracing::error!(error = %err, "sqlite rollback after injected commit failure");
+                }
+                state.txn_depth
+            };
+            self.release_lease_if_idle(depth);
+            return;
+        }
+        let depth = {
+            let mut state = self.lock_state();
+            if let Err(err) = state.commit() {
+                bookclerk_library::note_commit_failed(&err);
+                tracing::error!(error = %err, "sqlite commit failed");
+                if let Err(rb) = state.rollback() {
+                    tracing::error!(error = %rb, "sqlite rollback after commit failure");
+                }
+            }
+            state.txn_depth
+        };
+        self.release_lease_if_idle(depth);
+    }
+
+    async fn rollback(&self) {
+        let depth = {
+            let mut state = self.lock_state();
+            if let Err(err) = state.rollback() {
+                tracing::error!(error = %err, "sqlite rollback failed");
+            }
+            state.txn_depth
+        };
+        self.release_lease_if_idle(depth);
+    }
+
+    fn start_rollback(&self) {
+        let depth = {
+            let mut state = self.lock_state();
+            let _ = state.rollback();
+            state.txn_depth
+        };
+        self.release_lease_if_idle(depth);
     }
 }
 

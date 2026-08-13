@@ -1,0 +1,27 @@
+{
+  "name": "bookclerk-plugin-echo-workerd-fetch",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Echo workerd fetch example (*.example.com allowlist + embedded logo)",
+  "type": "module",
+  "main": "modules/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@bookclerk/plugin-sdk": "file:../../packages/plugin-sdk"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "bookclerk",
+    "bookclerk-plugin",
+    "workerd"
+  ],
+  "license": "MIT"
+}

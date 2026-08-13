@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Settings2, X } from "lucide-react";
+import { Ban, Settings2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StoreLogo } from "@/components/StoreLogo";
 import {
@@ -18,17 +18,18 @@ import {
   type AppView,
   type CatalogSearchSort,
   type CatalogSortDir,
+  type PortalSource,
   type ShelfKindInfo,
 } from "@/lib/api";
 import {
   CATALOG_LANGUAGE_ALL,
   CATALOG_LANGUAGE_OPTIONS,
   CATALOG_SORT_OPTIONS,
-  CATALOG_SOURCE_IDS,
   defaultSortDirFor,
   preferredCatalogLanguage,
   storeLabel,
 } from "@/lib/catalogTitle";
+import { loadEnabledSources } from "@/lib/enabledSources";
 
 const LANG_BROWSER = "__browser__";
 
@@ -162,6 +163,7 @@ function PreferencesDialog({
     useState<CatalogSortDir>("desc");
   const [discoverLanguage, setDiscoverLanguage] = useState(LANG_BROWSER);
   const [excludedSources, setExcludedSources] = useState<string[]>([]);
+  const [enabledSources, setEnabledSources] = useState<PortalSource[]>([]);
 
   useEffect(() => {
     if (!open) return;
@@ -170,9 +172,10 @@ function PreferencesDialog({
     setError(null);
     void (async () => {
       try {
-        const [prefs, feed] = await Promise.all([
+        const [prefs, feed, sources] = await Promise.all([
           fetchPreferences(),
           fetchDiscoverFeed(1),
+          loadEnabledSources(),
         ]);
         if (cancelled) return;
         setPrefsView(prefs.default_view);
@@ -181,7 +184,10 @@ function PreferencesDialog({
         setDiscoverSort(prefs.discover_sort);
         setDiscoverSortDir(prefs.discover_sort_dir);
         setDiscoverLanguage(prefs.discover_language ?? LANG_BROWSER);
+        // Keep exclusions for stores that are currently disabled so they
+        // reapply when those sources are re-enabled later.
         setExcludedSources(prefs.discover_excluded_sources ?? []);
+        setEnabledSources(sources);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Failed to load preferences");
@@ -432,27 +438,39 @@ function PreferencesDialog({
               </div>
               <div className="space-y-2">
                 <p className="text-sm font-medium text-ink">Stores to include</p>
-                <ul className="grid gap-2 sm:grid-cols-2">
-                  {CATALOG_SOURCE_IDS.map((id) => {
-                    const on = !excludedSources.some(
-                      (s) => s.toLowerCase() === id,
-                    );
-                    return (
-                      <li key={id}>
-                        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
-                          <input
-                            type="checkbox"
-                            checked={on}
-                            disabled={busy}
-                            onChange={() => void toggleExcludedSource(id)}
-                          />
-                          <StoreLogo source={id} className="h-4 w-4" />
-                          <span>{storeLabel(id)}</span>
-                        </label>
-                      </li>
-                    );
-                  })}
-                </ul>
+                <p className="text-xs text-ink/50">
+                  Only enabled storefront plugins appear here. Exclusions for
+                  disabled stores are kept and apply again if re-enabled.
+                </p>
+                {enabledSources.length === 0 ? (
+                  <p className="flex items-center gap-2 text-sm text-ink/55">
+                    <Ban className="h-4 w-4 shrink-0 text-ink/40" aria-hidden />
+                    <span>None</span>
+                  </p>
+                ) : (
+                  <ul className="grid gap-2 sm:grid-cols-2">
+                    {enabledSources.map((source) => {
+                      const id = source.id.toLowerCase();
+                      const on = !excludedSources.some(
+                        (s) => s.toLowerCase() === id,
+                      );
+                      return (
+                        <li key={source.id}>
+                          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              disabled={busy}
+                              onChange={() => void toggleExcludedSource(id)}
+                            />
+                            <StoreLogo source={id} className="h-4 w-4" />
+                            <span>{source.name || storeLabel(id)}</span>
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </div>
             </div>
 

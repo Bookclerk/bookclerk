@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { Ban } from "lucide-react";
 import { StoreLogo } from "@/components/StoreLogo";
 import {
-  CATALOG_SOURCE_IDS,
   RUNTIME_BUCKET_OPTIONS,
   storeLabel,
   type RuntimeBucket,
@@ -117,6 +117,7 @@ export function DiscoverFilterRail({
   filterSeries,
   filterGenres,
   excludedSources,
+  enabledSourceIds,
   minRating,
   runtimeBucket,
   onAuthorsChange,
@@ -138,6 +139,8 @@ export function DiscoverFilterRail({
   filterSeries: string[];
   filterGenres: string[];
   excludedSources: string[];
+  /** Enabled storefront plugin ids from `/api/portal/sources`. */
+  enabledSourceIds: string[];
   minRating: number | null;
   runtimeBucket: RuntimeBucket;
   onAuthorsChange: (next: string[]) => void;
@@ -149,13 +152,15 @@ export function DiscoverFilterRail({
   onRuntimeBucketChange: (next: RuntimeBucket) => void;
 }) {
   const stores = useMemo(() => {
-    const fromFacets = sourceOptions.map((o) => o.value.toLowerCase());
-    const ids = new Set<string>([
-      ...CATALOG_SOURCE_IDS,
-      ...fromFacets,
-    ]);
-    return Array.from(ids).sort();
-  }, [sourceOptions]);
+    const enabled = enabledSourceIds.map((id) => id.toLowerCase());
+    // Prefer enabled sources; intersect facet hits so disabled stores do not reappear.
+    if (enabled.length === 0) return [];
+    const fromFacets = new Set(
+      sourceOptions.map((o) => o.value.toLowerCase()).filter(Boolean),
+    );
+    const ids = enabled.filter((id) => fromFacets.size === 0 || fromFacets.has(id));
+    return (ids.length > 0 ? ids : enabled).sort();
+  }, [enabledSourceIds, sourceOptions]);
 
   function toggleSource(id: string, included: boolean) {
     const key = id.toLowerCase();
@@ -176,26 +181,33 @@ export function DiscoverFilterRail({
       )}
     >
       <FilterSection title="Stores">
-        <ul className="space-y-2">
-          {stores.map((id) => {
-            const included = !excludedSources.some(
-              (s) => s.toLowerCase() === id,
-            );
-            return (
-              <li key={id}>
-                <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
-                  <input
-                    type="checkbox"
-                    checked={included}
-                    onChange={(e) => toggleSource(id, e.target.checked)}
-                  />
-                  <StoreLogo source={id} className="h-4 w-4" />
-                  <span>{storeLabel(id)}</span>
-                </label>
-              </li>
-            );
-          })}
-        </ul>
+        {stores.length === 0 ? (
+          <p className="flex items-center gap-2 text-sm text-ink/55">
+            <Ban className="h-4 w-4 shrink-0 text-ink/40" aria-hidden />
+            <span>None</span>
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {stores.map((id) => {
+              const included = !excludedSources.some(
+                (s) => s.toLowerCase() === id,
+              );
+              return (
+                <li key={id}>
+                  <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+                    <input
+                      type="checkbox"
+                      checked={included}
+                      onChange={(e) => toggleSource(id, e.target.checked)}
+                    />
+                    <StoreLogo source={id} className="h-4 w-4" />
+                    <span>{storeLabel(id)}</span>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </FilterSection>
 
       <FilterSection title="Customer reviews">

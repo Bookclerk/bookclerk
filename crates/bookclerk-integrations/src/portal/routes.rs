@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bookclerk_config::{session_cookie_flags, Config};
-use bookclerk_library::{hash_token, LibraryStore};
+use bookclerk_library::{classify_session_client, hash_password, hash_token, LibraryStore};
 use bookclerk_source::{ContentSource, LoginOptions, PortalAuthMode, SourceRegistry};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -17,7 +17,8 @@ use tracing::{info, warn};
 use super::brands::{integration_brand, Brand};
 use crate::registry::IntegrationRegistry;
 use crate::tickets::{
-    identity_from_session, mint_claim_ticket, redeem_ticket_to_session, session_for_identity,
+    identity_from_session, inspect_claim_ticket, mint_claim_ticket,
+    redeem_ticket_to_session_with_client, session_for_identity,
 };
 use crate::types::ExternalUser;
 
@@ -89,24 +90,72 @@ pub async fn portal_identity_from_headers(
 #[derive(Debug, Deserialize)]
 struct RedeemBody {
     ticket: String,
+    /// Required when the linked local user has no password (invite / reset).
+    #[serde(default)]
+    password: Option<String>,
 }
 
 async fn redeem(
     State(state): State<PortalState>,
+    headers: HeaderMap,
     Json(body): Json<RedeemBody>,
 ) -> Result<Response, PortalError> {
     let cfg = state.config.read().await;
     let library = state.library_snapshot().await;
-    let (session, identity) =
-        redeem_ticket_to_session(&library, &cfg.integrations, body.ticket.trim()).await?;
+    let ua = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    let client = classify_session_client(ua, ua.is_none());
+    let raw_ticket = body.ticket.trim();
+    // Peek first so a missing/too-short invite password does not burn the ticket.
+    let identity = inspect_claim_ticket(&library, raw_ticket).await?;
     // Defense-in-depth: refuse tickets whose provider integration is disabled.
-    if !cfg.integrations.is_enabled(&identity.provider) {
+    // Local claim tickets use provider `local` and are always allowed.
+    if identity.provider != "local" && !cfg.integrations.is_enabled(&identity.provider) {
         return Err(PortalError::bad(format!(
             "integration `{}` is disabled",
             identity.provider
         )));
     }
+
+    // Hash outside the consume transaction. Assignment is conditional and
+    // rolled back if the ticket is already consumed.
+    let mut password_hash = None;
+    if identity.provider == "local" {
+        if let Some(user_id) = identity.user_id {
+            let existing = library
+                .get_user_password_hash(user_id)
+                .await
+                .map_err(|e| PortalError::bad(e.to_string()))?;
+            if existing.is_none() {
+                let password = body
+                    .password
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        PortalError::bad("password required — set a password to finish claim login")
+                    })?;
+                if password.len() < 8 {
+                    return Err(PortalError::bad("password must be at least 8 characters"));
+                }
+                password_hash =
+                    Some(hash_password(password).map_err(|e| PortalError::bad(e.to_string()))?);
+            }
+        }
+    }
+    let integrations = cfg.integrations.clone();
     drop(cfg);
+
+    let (session, identity) = redeem_ticket_to_session_with_client(
+        &library,
+        &integrations,
+        raw_ticket,
+        Some(&client),
+        password_hash.as_deref(),
+    )
+    .await?;
+
     info!(
         identity_id = identity.id,
         provider = %identity.provider,

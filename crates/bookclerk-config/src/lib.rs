@@ -70,11 +70,14 @@ pub use path_limits::{
     enforce_storage_key_limits, path_len, truncate_filename_stem, truncate_path_component,
     PathLengthMeasure, PathLimits, DEFAULT_MAX_FILENAME_LENGTH, S3_MAX_OBJECT_KEY_BYTES,
 };
-pub use paths::{resolve_config_path, resolve_files_dir, Paths};
+pub use paths::{
+    resolve_config_path, resolve_files_dir, Paths, BOOKCLERK_CONFIG_ENV, BOOKCLERK_FILES_DIR_ENV,
+};
 pub use pipeline_opts::{ChapterJsonMode, OutputFormat};
 pub use platform::detect_distro;
 pub use plugins::{
-    AudiobookshelfConfig, IntegrationsConfig, PluginRegistryEntry, PluginsConfig, SourcesConfig,
+    host_cpu_rate_max, host_logical_cpus, AudiobookshelfConfig, IntegrationsConfig,
+    PluginRegistryEntry, PluginsConfig, PluginsJailConfig, SourcesConfig,
 };
 pub use redact::{
     contains_registered_secret, is_sensitive_field, is_upload_identifying_field,

@@ -8,6 +8,7 @@ const APP_PATHS = new Set([
   "/wishlist",
   "/accounts",
   "/settings",
+  "/invite",
 ]);
 
 /**

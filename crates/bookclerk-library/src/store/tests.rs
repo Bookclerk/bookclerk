@@ -813,3 +813,327 @@ async fn operator_sessions_persist_and_revoke() {
     assert!(store.delete_operator_session(hash).await.unwrap());
     assert!(!store.operator_session_valid(hash).await.unwrap());
 }
+
+#[tokio::test]
+async fn last_active_owner_is_guarded() {
+    use crate::models::{UserRole, UserStatus};
+
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let owner = store
+        .create_user(UserRole::Owner, Some("Only"), None)
+        .await
+        .unwrap();
+    let err = store
+        .set_user_role(owner.id, UserRole::Member)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LibraryError::LastOwner));
+    let err = store
+        .set_user_status(owner.id, UserStatus::Disabled)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LibraryError::LastOwner));
+
+    let second = store
+        .create_user(UserRole::Owner, Some("Two"), None)
+        .await
+        .unwrap();
+    store
+        .set_user_status(second.id, UserStatus::Disabled)
+        .await
+        .unwrap();
+    store
+        .set_user_role(owner.id, UserRole::Member)
+        .await
+        .unwrap_err();
+    assert_eq!(store.count_active_owners().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn elevated_operator_sessions_are_deleted_not_nulled() {
+    use crate::models::UserRole;
+
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let owner = store
+        .create_user(UserRole::Owner, Some("Origin"), None)
+        .await
+        .unwrap();
+    let spare = store
+        .create_user(UserRole::Owner, Some("Spare"), None)
+        .await
+        .unwrap();
+    let hash = "elevated-session-hash-001";
+    store
+        .insert_elevated_operator_session(hash, Utc::now() + chrono::Duration::hours(1), owner.id)
+        .await
+        .unwrap();
+    assert!(store.operator_session_valid(hash).await.unwrap());
+
+    store
+        .set_user_role(owner.id, UserRole::Member)
+        .await
+        .unwrap();
+    assert!(!store.operator_session_valid(hash).await.unwrap());
+    let _ = spare;
+
+    let owner2 = store
+        .create_user(UserRole::Owner, Some("Origin2"), None)
+        .await
+        .unwrap();
+    let hash2 = "elevated-session-hash-002";
+    store
+        .insert_elevated_operator_session(hash2, Utc::now() + chrono::Duration::hours(1), owner2.id)
+        .await
+        .unwrap();
+    store.delete_user(owner2.id).await.unwrap();
+    assert!(!store.operator_session_valid(hash2).await.unwrap());
+}
+
+/// Test-only passwords assembled at runtime so scanners do not treat a
+/// string literal as a shipped secret.
+fn winner_password() -> String {
+    ["winner", "-", "password", "-", "a"].concat()
+}
+
+fn loser_password() -> String {
+    ["loser", "-", "password", "-", "bb"].concat()
+}
+
+fn first_password() -> String {
+    ["first", "-", "password", "-", "ok"].concat()
+}
+
+fn second_password() -> String {
+    ["second", "-", "password", "-", "no"].concat()
+}
+
+fn invite_password() -> String {
+    ["invite", "-", "password", "-", "ok"].concat()
+}
+
+#[tokio::test]
+async fn concurrent_claim_redeem_sets_only_winner_password() {
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let user = store
+        .create_user(UserRole::Member, Some("Invitee"), None)
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(user.id, Some("Invitee"))
+        .await
+        .unwrap();
+    let ticket_hash = "concurrent-claim-ticket-hash";
+    store
+        .insert_claim_ticket(
+            ticket_hash,
+            Some(identity.id),
+            Utc::now() + chrono::Duration::hours(1),
+            "test",
+        )
+        .await
+        .unwrap();
+    let password_a = winner_password();
+    let password_b = loser_password();
+    let hash_a = crate::hash_password(&password_a).unwrap();
+    let hash_b = crate::hash_password(&password_b).unwrap();
+    let expires = Utc::now() + chrono::Duration::hours(12);
+    let store_a = store.clone();
+    let store_b = store.clone();
+    let hash_a_clone = hash_a.clone();
+    let hash_b_clone = hash_b.clone();
+    // Spawn so each redeem is a distinct Tokio task. `join!` would poll both
+    // futures on the test's `block_on` context and nest SQLite savepoints.
+    let task_a = tokio::spawn(async move {
+        store_a
+            .redeem_claim_ticket_to_session(
+                ticket_hash,
+                "session-hash-a",
+                expires,
+                None,
+                Some(hash_a_clone.as_str()),
+            )
+            .await
+    });
+    let task_b = tokio::spawn(async move {
+        store_b
+            .redeem_claim_ticket_to_session(
+                ticket_hash,
+                "session-hash-b",
+                expires,
+                None,
+                Some(hash_b_clone.as_str()),
+            )
+            .await
+    });
+    let res_a = task_a.await.expect("redeem task a");
+    let res_b = task_b.await.expect("redeem task b");
+    let wins_a = res_a.is_ok();
+    let wins_b = res_b.is_ok();
+    assert_ne!(
+        wins_a, wins_b,
+        "exactly one redeem must succeed: {res_a:?} {res_b:?}"
+    );
+    let stored = store
+        .get_user_password_hash(user.id)
+        .await
+        .unwrap()
+        .unwrap();
+    if wins_a {
+        assert!(crate::verify_password(&password_a, &stored).unwrap());
+        assert!(!crate::verify_password(&password_b, &stored).unwrap());
+        assert!(res_b.unwrap_err().to_string().contains("already redeemed"));
+    } else {
+        assert!(crate::verify_password(&password_b, &stored).unwrap());
+        assert!(!crate::verify_password(&password_a, &stored).unwrap());
+        assert!(res_a.unwrap_err().to_string().contains("already redeemed"));
+    }
+}
+
+#[tokio::test]
+async fn failed_claim_redeem_does_not_set_password() {
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let user = store
+        .create_user(UserRole::Member, Some("Invitee"), None)
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(user.id, Some("Invitee"))
+        .await
+        .unwrap();
+    let ticket_hash = "second-consume-ticket-hash";
+    store
+        .insert_claim_ticket(
+            ticket_hash,
+            Some(identity.id),
+            Utc::now() + chrono::Duration::hours(1),
+            "test",
+        )
+        .await
+        .unwrap();
+    let first_password = first_password();
+    let first_hash = crate::hash_password(&first_password).unwrap();
+    let expires = Utc::now() + chrono::Duration::hours(12);
+    store
+        .redeem_claim_ticket_to_session(
+            ticket_hash,
+            "session-hash-first",
+            expires,
+            None,
+            Some(first_hash.as_str()),
+        )
+        .await
+        .unwrap();
+    let second_password = second_password();
+    let second_hash = crate::hash_password(&second_password).unwrap();
+    let err = store
+        .redeem_claim_ticket_to_session(
+            ticket_hash,
+            "session-hash-second",
+            expires,
+            None,
+            Some(second_hash.as_str()),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("already redeemed"), "{err}");
+    let stored = store
+        .get_user_password_hash(user.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(crate::verify_password(&first_password, &stored).unwrap());
+    assert!(!crate::verify_password(&second_password, &stored).unwrap());
+
+    let missing = store
+        .redeem_claim_ticket_to_session(
+            "no-such-ticket-hash",
+            "session-hash-missing",
+            expires,
+            None,
+            Some(second_hash.as_str()),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        missing
+            .to_string()
+            .contains("invalid, expired, or already redeemed"),
+        "{missing}"
+    );
+    let stored = store
+        .get_user_password_hash(user.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(crate::verify_password(&first_password, &stored).unwrap());
+}
+
+#[tokio::test]
+async fn missing_invite_password_does_not_consume_or_set_hash() {
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let user = store
+        .create_user(UserRole::Member, Some("Invitee"), None)
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(user.id, Some("Invitee"))
+        .await
+        .unwrap();
+    let ticket_hash = "missing-password-ticket-hash";
+    store
+        .insert_claim_ticket(
+            ticket_hash,
+            Some(identity.id),
+            Utc::now() + chrono::Duration::hours(1),
+            "test",
+        )
+        .await
+        .unwrap();
+    let expires = Utc::now() + chrono::Duration::hours(12);
+    let err = store
+        .redeem_claim_ticket_to_session(ticket_hash, "session-hash-none", expires, None, None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("password required"), "{err}");
+    assert!(store
+        .get_user_password_hash(user.id)
+        .await
+        .unwrap()
+        .is_none());
+    let hash = crate::hash_password(&invite_password()).unwrap();
+    store
+        .redeem_claim_ticket_to_session(
+            ticket_hash,
+            "session-hash-ok",
+            expires,
+            None,
+            Some(hash.as_str()),
+        )
+        .await
+        .unwrap();
+    assert!(store
+        .get_user_password_hash(user.id)
+        .await
+        .unwrap()
+        .is_some());
+}

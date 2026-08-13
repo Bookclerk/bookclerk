@@ -1,4 +1,4 @@
-# ADR: First-party identity (Operator / Administrator / Member)
+# ADR: First-party identity (Operator / Owner / Administrator / Member)
 
 - **Status:** Accepted
 - **Date:** 2026-08-11
@@ -20,15 +20,17 @@ and Accounts, without requiring Redis or an external IdP.
 
 | Principal | Powers |
 | --- | --- |
-| **Operator** | Control plane via shared operator token + durable hashed sessions. **Cannot** connect bookstore sources. Can **impersonate** any User. Creates the linked **Administrator** on bootstrap. |
-| **Administrator** | Normal User + admin caps (provision users, acquire). Can **elevate to Operator** with reauth. |
+| **Operator** | Control plane via shared operator token + durable hashed sessions. **Cannot** connect bookstore sources. Can **impersonate** any User. Creates the linked **Owner** on bootstrap. |
+| **Owner** | Super-user (multiple allowed). Administrator caps plus **elevate to Operator** after password reauth. Last active Owner cannot be demoted/disabled/deleted. Non-elevated Owners may provision Members and Administrators, not other Owners. |
+| **Administrator** | Normal User + admin caps (provision Members only; cannot create, assign, or manage Administrator or Owner). **Cannot** elevate. |
 | **Member** | Normal User; may connect sources under policy. |
 
 ### Federation and OIDC
 
-- Keep claim tickets and integration `authenticateUser` even when a User has no
-  local password yet. External bookstore/integration accounts are **connections**,
-  not login principals.
+- Keep claim tickets / invite magic links (`/invite?ticket=…`) and integration
+  `authenticateUser` even when a User has no local password yet. External
+  bookstore/integration accounts are **connections**, not login principals.
+- Optional contact `email` on users supports future invite notifications.
 - Bookclerk is the OIDC authorization server for Audiobookshelf (core AS;
   plugins do not implement the protocol). Tokens are bound to a **User**, never
   minted from the operator token alone.
@@ -54,8 +56,8 @@ acceptance is gated by automated tests listed in that PR and in [#117](https://g
 | --- | --- |
 | **0** | Durable hashed operator sessions; portal logout revoke; atomic claim redeem; Secure cookies; `daemon.trusted_proxies` |
 | **1** | `users` schema; migrate `portal_identities`; ban CLI/operator store-link; prefs `user:{id}` |
-| **2** | Administrator elevate-to-Operator; Operator impersonate User |
-| **3** | Bootstrap Administrator; invites; Argon2id; federation without local password |
+| **2** | Owner elevate-to-Operator (password); Operator / elevated impersonate User |
+| **3** | Bootstrap Owner; invite magic links; Argon2id; federation without local password |
 | **4** | Core OIDC AS (code + PKCE) for ABS |
 | **5** | CSRF/Origin; session list/revoke; audit log; account-link invariant; proxy TLS docs |
 
@@ -65,6 +67,13 @@ acceptance is gated by automated tests listed in that PR and in [#117](https://g
 - Operator prefs subject remains `operator`; user prefs use `user:{id}`.
 - Docs: [gui.md](../gui.md), [operations.md](../operations.md),
   [integrations.md](../integrations.md), [database.md](../database.md).
+- The Owner / Administrator / Member role split is **greenfield**. There is no
+  in-place upgrade that promotes existing Administrators to Owner. Testing and
+  development deployments that already have a `library.db` from before this
+  change must recreate it (`cargo reset --yes`, or delete
+  `$BOOKCLERK_FILES_DIR` and re-bootstrap). Production hosts should plan a
+  fresh files directory / restore from a compatible backup rather than expecting
+  a silent role migration.
 
 ## Non-goals
 

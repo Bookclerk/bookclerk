@@ -4,20 +4,24 @@
 //! Engine connect / migrate / proxy quirks live entirely in the database guest.
 //! There is no in-process fallback.
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::thread::ThreadId;
 
 use async_trait::async_trait;
 use bookclerk_config::{resolve_d1_api_token, resolve_postgres_url, Config, DatabasePluginKind};
 use bookclerk_plugin_sdk::{
-    exec_result_from_dto, methods, proxy_rows_from_dto, statement_to_dto, DbConnectParams,
-    DbConnectResult, ExecResultDto, QueryResultDto,
+    atomic_status, exec_result_from_dto, methods, proxy_rows_from_dto, statement_to_dto,
+    DbAtomicParams, DbAtomicResult, DbBeginParams, DbBeginResult, DbConnectParams, DbConnectResult,
+    DbTxnParams, ExecResultDto, QueryResultDto, StatementDto,
 };
 use sea_orm::{
     Database, DatabaseConnection, DbBackend, DbErr, ProxyDatabaseTrait, ProxyExecResult, ProxyRow,
     Statement,
 };
 use serde_json::Value;
+use tokio::task::{try_id, Id as TaskId};
 
 use crate::discover::DiscoveredPlugin;
 use crate::jail::plugin_data_dir;
@@ -46,7 +50,10 @@ impl ExternalDatabase {
     }
 
     /// Open the library connection through the guest (`db.connect` + optional fd pass).
-    pub async fn connect(&self, config: &Config) -> Result<DatabaseConnection, DbErr> {
+    pub async fn connect(
+        &self,
+        config: &Config,
+    ) -> Result<(DatabaseConnection, DbConnectResult), DbErr> {
         let params = connect_params(config, &self.plugin_id, &self.plugin_data_dir, &self.client)?;
         let value = serde_json::to_value(&params).map_err(|err| DbErr::Custom(err.to_string()))?;
 
@@ -80,8 +87,10 @@ impl ExternalDatabase {
         let backend = dialect_to_backend(&connect_result.dialect)?;
         let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(RpcDatabaseProxy {
             client: self.client.clone(),
+            txn_stacks: Arc::new(Mutex::new(HashMap::new())),
         }));
-        Database::connect_proxy(backend, proxy).await
+        let db = Database::connect_proxy(backend, proxy).await?;
+        Ok((db, connect_result))
     }
 }
 
@@ -131,9 +140,28 @@ pub async fn load_external_database(config: &Config) -> PluginResult<DatabaseReg
         break;
     }
     if registry.active.is_none() {
+        let files = &config.paths().files_dir;
+        let expected = files.join("plugins").join(&active);
+        let mut hint = format!(
+            "looked under {} (set {} to the directory `cargo dev` uses, \
+             typically ./BookclerkFiles, or run `cargo install-platform` / \
+             `cargo dev-cli -- daemon token`)",
+            expected.display(),
+            bookclerk_config::BOOKCLERK_FILES_DIR_ENV
+        );
+        if let Ok(cwd) = std::env::current_dir() {
+            let alt = cwd.join("BookclerkFiles").join("plugins").join(&active);
+            if alt.is_dir() && alt != expected {
+                hint.push_str(&format!(
+                    "; found guest at {} — export {}={}",
+                    alt.display(),
+                    bookclerk_config::BOOKCLERK_FILES_DIR_ENV,
+                    cwd.join("BookclerkFiles").display()
+                ));
+            }
+        }
         return Err(PluginError::Other(anyhow::anyhow!(
-            "database plugin `{active}` not found — stage plugins/{} (see docs/database.md)",
-            active
+            "database plugin `{active}` not found — {hint} (see docs/database.md)"
         )));
     }
     Ok(registry)
@@ -149,11 +177,19 @@ pub async fn open_library_store(
             "no active database plugin — stage and enable [database].plugin"
         ))
     })?;
-    let db = ext
+    let (db, caps) = ext
         .connect(config)
         .await
         .map_err(bookclerk_library::LibraryError::Orm)?;
-    let store = bookclerk_library::LibraryStore::from_connection(db);
+    let store = if caps.interactive_txn {
+        bookclerk_library::LibraryStore::from_connection(db)
+    } else {
+        bookclerk_library::LibraryStore::from_connection(db).with_atomic_txn(Arc::new(
+            RpcAtomicBackend {
+                client: ext.client.clone(),
+            },
+        ))
+    };
     store.ensure_users_bridged().await?;
     Ok(store)
 }
@@ -188,9 +224,24 @@ pub async fn migrate_database_plugin(
     bookclerk_library::migrate_library_backend(source.db(), dest.db(), opts).await
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum TaskKey {
+    Tokio(TaskId),
+    Thread(ThreadId),
+}
+
+fn task_key() -> TaskKey {
+    match try_id() {
+        Some(id) => TaskKey::Tokio(id),
+        None => TaskKey::Thread(std::thread::current().id()),
+    }
+}
+
 #[derive(Clone)]
 struct RpcDatabaseProxy {
     client: Arc<PluginClient>,
+    /// Per-task stack of guest txn ids (nested SeaORM begin = nested RPC).
+    txn_stacks: Arc<Mutex<HashMap<TaskKey, Vec<String>>>>,
 }
 
 impl std::fmt::Debug for RpcDatabaseProxy {
@@ -199,10 +250,80 @@ impl std::fmt::Debug for RpcDatabaseProxy {
     }
 }
 
+impl RpcDatabaseProxy {
+    fn lock_stacks(&self) -> std::sync::MutexGuard<'_, HashMap<TaskKey, Vec<String>>> {
+        self.txn_stacks.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn current_txn_id(&self) -> Option<String> {
+        self.lock_stacks()
+            .get(&task_key())
+            .and_then(|stack| stack.last())
+            .cloned()
+    }
+
+    fn push_txn(&self, txn_id: String) {
+        self.lock_stacks()
+            .entry(task_key())
+            .or_default()
+            .push(txn_id);
+    }
+
+    fn pop_txn(&self) -> Option<String> {
+        let mut stacks = self.lock_stacks();
+        let key = task_key();
+        let id = stacks.get_mut(&key).and_then(Vec::pop);
+        if stacks.get(&key).is_some_and(Vec::is_empty) {
+            stacks.remove(&key);
+        }
+        id
+    }
+
+    fn statement_dto(&self, statement: &Statement) -> StatementDto {
+        let mut dto = statement_to_dto(statement);
+        dto.txn_id = self.current_txn_id();
+        dto
+    }
+
+    async fn rpc_begin(&self, parent: Option<String>) -> std::result::Result<String, DbErr> {
+        let result: DbBeginResult = self
+            .client
+            .call(
+                methods::DB_BEGIN,
+                serde_json::to_value(DbBeginParams {
+                    parent_txn_id: parent,
+                })
+                .map_err(map_json_err)?,
+            )
+            .await
+            .map_err(map_rpc_err)?;
+        Ok(result.txn_id)
+    }
+
+    async fn rpc_finish(&self, commit: bool, txn_id: String) -> std::result::Result<(), DbErr> {
+        let method = if commit {
+            methods::DB_COMMIT
+        } else {
+            methods::DB_ROLLBACK
+        };
+        self.client
+            .call::<Value>(
+                method,
+                serde_json::to_value(DbTxnParams { txn_id }).map_err(map_json_err)?,
+            )
+            .await
+            .map_err(map_rpc_err)?;
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl ProxyDatabaseTrait for RpcDatabaseProxy {
     async fn query(&self, statement: Statement) -> std::result::Result<Vec<ProxyRow>, DbErr> {
-        let dto = statement_to_dto(&statement);
+        if bookclerk_library::is_txn_broken() {
+            return Err(bookclerk_library::txn_broken_err());
+        }
+        let dto = self.statement_dto(&statement);
         let result: QueryResultDto = self
             .client
             .call(
@@ -215,7 +336,10 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
     }
 
     async fn execute(&self, statement: Statement) -> std::result::Result<ProxyExecResult, DbErr> {
-        let dto = statement_to_dto(&statement);
+        if bookclerk_library::is_txn_broken() {
+            return Err(bookclerk_library::txn_broken_err());
+        }
+        let dto = self.statement_dto(&statement);
         let result: ExecResultDto = self
             .client
             .call(
@@ -233,6 +357,241 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
             .await
             .map_err(map_rpc_err)?;
         Ok(())
+    }
+
+    async fn begin(&self) {
+        if bookclerk_library::consume_begin_injection() {
+            bookclerk_library::note_begin_failed("injected begin failure");
+            return;
+        }
+        let parent = self.current_txn_id();
+        match self.rpc_begin(parent).await {
+            Ok(txn_id) => self.push_txn(txn_id),
+            Err(err) => {
+                bookclerk_library::note_begin_failed(&err);
+                tracing::error!(error = %err, "database plugin dbBegin failed");
+            }
+        }
+    }
+
+    async fn commit(&self) {
+        if bookclerk_library::consume_commit_injection() {
+            if let Some(txn_id) = self.pop_txn() {
+                if let Err(err) = self.rpc_finish(false, txn_id).await {
+                    tracing::error!(
+                        error = %err,
+                        "database plugin dbRollback after injected commit failure"
+                    );
+                }
+            }
+            bookclerk_library::note_commit_failed("injected commit failure");
+            return;
+        }
+        let Some(txn_id) = self.pop_txn() else {
+            if bookclerk_library::is_txn_broken() {
+                return;
+            }
+            bookclerk_library::note_commit_failed("no open transaction to commit");
+            return;
+        };
+        if let Err(err) = self.rpc_finish(true, txn_id.clone()).await {
+            bookclerk_library::note_commit_failed(&err);
+            tracing::error!(error = %err, "database plugin dbCommit failed");
+            if let Err(rb) = self.rpc_finish(false, txn_id).await {
+                tracing::error!(error = %rb, "database plugin dbRollback after commit failure");
+            }
+        }
+    }
+
+    async fn rollback(&self) {
+        let Some(txn_id) = self.pop_txn() else {
+            return;
+        };
+        if let Err(err) = self.rpc_finish(false, txn_id).await {
+            tracing::error!(error = %err, "database plugin dbRollback failed");
+        }
+    }
+
+    fn start_rollback(&self) {
+        let Some(txn_id) = self.pop_txn() else {
+            return;
+        };
+        let client = self.client.clone();
+        let Ok(params) = serde_json::to_value(DbTxnParams { txn_id }) else {
+            return;
+        };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::error!("database plugin dbRollback skipped: no tokio runtime");
+            return;
+        };
+        if let Err(err) = tokio::task::block_in_place(|| {
+            handle.block_on(async move {
+                client
+                    .call::<Value>(methods::DB_ROLLBACK, params)
+                    .await
+                    .map(|_| ())
+            })
+        }) {
+            tracing::error!(error = %err, "database plugin dbRollback failed");
+        }
+    }
+}
+
+struct RpcAtomicBackend {
+    client: Arc<PluginClient>,
+}
+
+impl RpcAtomicBackend {
+    async fn call(&self, params: DbAtomicParams) -> bookclerk_library::Result<DbAtomicResult> {
+        self.client
+            .call(
+                methods::DB_ATOMIC,
+                serde_json::to_value(&params).map_err(|err| {
+                    bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string()))
+                })?,
+            )
+            .await
+            .map_err(|err| bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string())))
+    }
+}
+
+fn atomic_app_err(
+    status: &str,
+    not_found: bookclerk_library::LibraryError,
+) -> Option<bookclerk_library::LibraryError> {
+    match status {
+        s if s == atomic_status::OK => None,
+        s if s == atomic_status::NOT_FOUND => Some(not_found),
+        s if s == atomic_status::LAST_OWNER => Some(bookclerk_library::LibraryError::LastOwner),
+        s if s == atomic_status::CLAIM_INVALID => Some(bookclerk_library::LibraryError::Other(
+            anyhow::anyhow!("claim ticket invalid, expired, or already redeemed"),
+        )),
+        s if s == atomic_status::PASSWORD_REQUIRED => Some(bookclerk_library::LibraryError::Other(
+            anyhow::anyhow!("password required — set a password to finish claim login"),
+        )),
+        other => Some(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+            "database atomic operation failed: {other}"
+        ))),
+    }
+}
+
+fn decode_payload<T: serde::de::DeserializeOwned>(
+    payload: Option<Value>,
+    what: &str,
+) -> bookclerk_library::Result<T> {
+    let value = payload.ok_or_else(|| {
+        bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+            "database atomic operation ok without {what} payload"
+        ))
+    })?;
+    serde_json::from_value(value).map_err(|err| {
+        bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+            "database atomic {what} payload: {err}"
+        ))
+    })
+}
+
+#[async_trait]
+impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
+    async fn delete_user(&self, id: i64) -> bookclerk_library::Result<()> {
+        let result = self
+            .call(DbAtomicParams::DeleteUser { user_id: id })
+            .await?;
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::NotFound(format!("user {id}")),
+        ) {
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    async fn set_user_status(
+        &self,
+        id: i64,
+        status: bookclerk_library::UserStatus,
+    ) -> bookclerk_library::Result<bookclerk_library::UserRecord> {
+        let result = self
+            .call(DbAtomicParams::SetUserStatus {
+                user_id: id,
+                status: status.as_str().to_string(),
+            })
+            .await?;
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::NotFound(format!("user {id}")),
+        ) {
+            return Err(err);
+        }
+        decode_payload(result.payload, "user")
+    }
+
+    async fn set_user_password_hash(
+        &self,
+        id: i64,
+        password_hash: Option<&str>,
+    ) -> bookclerk_library::Result<bookclerk_library::UserRecord> {
+        let result = self
+            .call(DbAtomicParams::SetUserPasswordHash {
+                user_id: id,
+                password_hash: password_hash.map(str::to_string),
+            })
+            .await?;
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::NotFound(format!("user {id}")),
+        ) {
+            return Err(err);
+        }
+        decode_payload(result.payload, "user")
+    }
+
+    async fn set_user_role(
+        &self,
+        id: i64,
+        role: bookclerk_library::UserRole,
+    ) -> bookclerk_library::Result<bookclerk_library::UserRecord> {
+        let result = self
+            .call(DbAtomicParams::SetUserRole {
+                user_id: id,
+                role: role.as_str().to_string(),
+            })
+            .await?;
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::NotFound(format!("user {id}")),
+        ) {
+            return Err(err);
+        }
+        decode_payload(result.payload, "user")
+    }
+
+    async fn redeem_claim_ticket_to_session(
+        &self,
+        token_hash: &str,
+        session_hash: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+        client: Option<&bookclerk_library::SessionClientInfo>,
+        new_password_hash: Option<&str>,
+    ) -> bookclerk_library::Result<bookclerk_library::PortalIdentity> {
+        let result = self
+            .call(DbAtomicParams::RedeemClaimTicket {
+                token_hash: token_hash.to_string(),
+                session_hash: session_hash.to_string(),
+                expires_at: expires_at.to_rfc3339(),
+                user_agent: client.and_then(|c| c.user_agent.clone()),
+                device_type: client.map(|c| c.device_type.clone()),
+                client_label: client.map(|c| c.client_label.clone()),
+                new_password_hash: new_password_hash.map(str::to_string),
+            })
+            .await?;
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::Other(anyhow::anyhow!("claim ticket not found")),
+        ) {
+            return Err(err);
+        }
+        decode_payload(result.payload, "portal identity")
     }
 }
 

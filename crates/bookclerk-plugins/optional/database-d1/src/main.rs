@@ -3,9 +3,10 @@
 use async_trait::async_trait;
 use bookclerk_db_guest::{guest_execute, guest_ping, guest_query, set_connection};
 use bookclerk_plugin_sdk::{
-    BookclerkPlugin, BookclerkPluginGuest, DbConnectParams, DbConnectResult, DiagnoseResult,
-    ExecResultDto, HandshakeParams, HandshakeResult, HealthResult, PluginError, QueryResultDto,
-    StatementDto, PLUGIN_API_VERSION,
+    BookclerkPlugin, BookclerkPluginGuest, DbAtomicParams, DbAtomicResult, DbBeginParams,
+    DbBeginResult, DbConnectParams, DbConnectResult, DbTxnParams, DiagnoseResult, ExecResultDto,
+    HandshakeParams, HandshakeResult, HealthResult, PluginError, QueryResultDto, StatementDto,
+    PLUGIN_API_VERSION,
 };
 
 struct D1Plugin;
@@ -25,6 +26,7 @@ impl BookclerkPlugin for D1Plugin {
                 "dbPing".into(),
                 "dbQuery".into(),
                 "dbExecute".into(),
+                "dbAtomic".into(),
             ],
             sort_key: Some(5),
             ..HandshakeResult::default()
@@ -63,7 +65,7 @@ impl BookclerkPlugin for D1Plugin {
             .await
             .map_err(|e| PluginError::internal(e.to_string()))?;
         set_connection(db).await;
-        Ok(DbConnectResult::sqlite())
+        Ok(DbConnectResult::d1())
     }
 
     async fn db_ping(&self) -> Result<(), PluginError> {
@@ -76,6 +78,34 @@ impl BookclerkPlugin for D1Plugin {
 
     async fn db_execute(&self, params: StatementDto) -> Result<ExecResultDto, PluginError> {
         guest_execute(params).await.map_err(PluginError::internal)
+    }
+
+    async fn db_begin(&self, _params: DbBeginParams) -> Result<DbBeginResult, PluginError> {
+        Err(PluginError::unsupported(
+            "D1 does not support interactive transactions; each HTTP request commits immediately. \
+             Atomic library operations use dbAtomic (one HTTP batch / one SQL transaction)",
+        ))
+    }
+
+    async fn db_commit(&self, _params: DbTxnParams) -> Result<(), PluginError> {
+        Err(PluginError::unsupported(
+            "D1 does not support interactive transactions",
+        ))
+    }
+
+    async fn db_rollback(&self, _params: DbTxnParams) -> Result<(), PluginError> {
+        Err(PluginError::unsupported(
+            "D1 does not support interactive transactions",
+        ))
+    }
+
+    async fn db_atomic(&self, params: DbAtomicParams) -> Result<DbAtomicResult, PluginError> {
+        let proxy = bookclerk_plugin_database_d1::shared_proxy()
+            .ok_or_else(|| PluginError::internal("d1 guest is not connected"))?;
+        proxy
+            .run_atomic(params)
+            .await
+            .map_err(|e| PluginError::internal(e.to_string()))
     }
 }
 

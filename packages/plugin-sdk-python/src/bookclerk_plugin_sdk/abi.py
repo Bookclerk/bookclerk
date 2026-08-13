@@ -55,6 +55,10 @@ METHOD_NAMES: tuple[str, ...] = (
     "dbPing",
     "dbQuery",
     "dbExecute",
+    "dbBegin",
+    "dbCommit",
+    "dbRollback",
+    "dbAtomic",
 )
 """Canonical Workers RPC method names exposed on the guest surface (camelCase wire)."""
 
@@ -471,6 +475,59 @@ class StatementDto(TypedDict, total=False):
 
     sql: str
     values: list[Any]
+    txnId: str
+
+
+class DbBeginParams(TypedDict, total=False):
+    """Params for ``dbBegin`` (wire camelCase).
+
+    Attributes:
+        parentTxnId: Existing transaction to nest a savepoint under.
+    """
+
+    parentTxnId: str
+
+
+class DbBeginResult(TypedDict):
+    """Result of a successful ``dbBegin``.
+
+    Attributes:
+        txnId: Opaque id for subsequent statements and commit/rollback.
+    """
+
+    txnId: str
+
+
+class DbTxnParams(TypedDict):
+    """Params for ``dbCommit`` / ``dbRollback``.
+
+    Attributes:
+        txnId: Transaction id returned by ``dbBegin``.
+    """
+
+    txnId: str
+
+
+class DbAtomicParams(TypedDict, total=False):
+    """Params for ``dbAtomic`` (wire camelCase tagged ``op``).
+
+    Attributes:
+        op: Named operation (``deleteUser``, ``redeemClaimTicket``, …).
+    """
+
+    op: str
+
+
+class DbAtomicResult(TypedDict, total=False):
+    """Result of ``dbAtomic``.
+
+    Attributes:
+        status: Application outcome (``ok``, ``lastOwner``, …).
+        payload: Library record JSON when ``status`` is ``ok``.
+    """
+
+    status: str
+    payload: Any
 
 
 __all__ = [
@@ -486,6 +543,11 @@ __all__ = [
     "ConfigOptionDto",
     "ConfigOptionValueDto",
     "CredentialsUpdateParams",
+    "DbBeginParams",
+    "DbBeginResult",
+    "DbAtomicParams",
+    "DbAtomicResult",
+    "DbTxnParams",
     "DiagnoseResult",
     "FetchTitleParams",
     "HandshakeParams",

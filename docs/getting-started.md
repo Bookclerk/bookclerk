@@ -47,6 +47,18 @@ On first use Bookclerk also creates `library.db`, `cache/`, `search_index/`,
 and `plugins/` under the files directory. Auth credentials are stored in the
 `encrypted_secrets` table inside `library.db` — there is no `Accounts/` directory.
 
+The first-party role model (Owner / Administrator / Member) is greenfield: there
+is no migration that upgrades a pre-Owner Administrator. After pulling this
+schema, recreate a testing/dev database rather than reusing an old
+`library.db`:
+
+```bash
+cargo reset --yes   # wipes BookclerkFiles/ (not target/ or .cargo-home/)
+```
+
+Then bootstrap the first Owner from Settings (operator session) or
+`POST /api/auth/bootstrap`.
+
 ## Authenticate a store
 
 Store connect lives in the **User SPA Accounts** UI (claim ticket or integration

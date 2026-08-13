@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use bookclerk_plugin_manifest::{
-    manifest_needs_python, with_python_runtime_hosts, NetworkMode, PluginManifest,
+    manifest_needs_python, with_python_runtime_hosts, EffectiveWorkerdLimits, NetworkMode,
+    PluginManifest,
 };
 
 use crate::egress::EgressProxy;
@@ -166,6 +167,7 @@ pub fn materialize(
     root: &Path,
     manifest: &PluginManifest,
     egress: &EgressProxy,
+    limits: EffectiveWorkerdLimits,
     listen: ListenSpec,
     notify_addr: Option<&str>,
     bridge_token: &str,
@@ -295,17 +297,22 @@ pub fn materialize(
         egress.mode(),
         egress.allowed_initial_hosts(),
     );
-    let limits = workerd.limits.effective();
+    // Prefer the caller-supplied effective limits (manifest + optional operator
+    // grant). Never raise above an egress policy subrequest ceiling already set.
+    let subrequests = match egress.policy().subrequests {
+        Some(granted) => limits.subrequests.min(granted),
+        None => limits.subrequests,
+    };
     tracing::info!(
         cpu_ms = limits.cpu_ms,
-        subrequests = limits.subrequests,
+        subrequests,
         "effective workerd limits (clamped; subrequests enforced in egress)"
     );
     let mut policy = egress.policy().clone();
     policy.domains = domains;
     // Always inject clamped subrequests so the bridge can enforce (even if the
     // caller built EgressProxy without going through from_manifest).
-    policy.subrequests = Some(limits.subrequests);
+    policy.subrequests = Some(subrequests);
     let policy_json = policy.to_policy_json();
     let policy_escaped = escape_capnp(&policy_json.to_string());
 
@@ -628,5 +635,130 @@ mod tests {
         }
         .effective();
         assert_eq!(capped.subrequests, WorkerdLimits::MAX_SUBREQUESTS);
+    }
+
+    fn socket_names(capnp: &str) -> Vec<String> {
+        let start = capnp.find("sockets = [").expect("sockets block");
+        let block = &capnp[start..];
+        let end = block.find(']').expect("sockets close");
+        let block = &block[..end];
+        block
+            .split("name = \"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next().map(str::to_string))
+            .collect()
+    }
+
+    fn plugin_worker_outbound(capnp: &str) -> &str {
+        let start = capnp.find("const pluginWorker").expect("pluginWorker");
+        let after = &capnp[start + "const pluginWorker".len()..];
+        let end = after.find("const ").unwrap_or(after.len());
+        let block = &after[..end];
+        if block.contains("globalOutbound = \"blocked\"") {
+            "blocked"
+        } else if block.contains("globalOutbound = \"egress\"") {
+            "egress"
+        } else if block.contains("globalOutbound = \"internet\"") {
+            "internet"
+        } else {
+            "missing"
+        }
+    }
+
+    fn materialize_capnp(flags: &[&str], mode: NetworkMode) -> String {
+        use bookclerk_plugin_manifest::{
+            CapabilitiesManifest, NetworkCapabilities, PluginKind, PluginManifest,
+            PluginRuntimeKind, WorkerdLimits, WorkerdRuntimeManifest,
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let modules = dir.path().join("modules");
+        std::fs::create_dir_all(&modules).expect("modules dir");
+        std::fs::write(modules.join("index.js"), "export default {};").expect("index.js");
+        let manifest = PluginManifest {
+            api_version: 1,
+            id: "echo".into(),
+            name: None,
+            kind: PluginKind::Integration,
+            version: None,
+            logo: None,
+            runtime: PluginRuntimeKind::Workerd,
+            command: None,
+            args: vec![],
+            workerd: Some(WorkerdRuntimeManifest {
+                compatibility_date: "2026-08-01".into(),
+                compatibility_flags: flags.iter().map(|s| (*s).to_string()).collect(),
+                main_module: "index.js".into(),
+                modules_dir: "modules".into(),
+                entrypoint: "default".into(),
+                limits: WorkerdLimits::default(),
+            }),
+            modules: vec![],
+            capabilities: CapabilitiesManifest {
+                network: NetworkCapabilities {
+                    mode,
+                    domains: if mode == NetworkMode::Outbound {
+                        vec!["example.com".into()]
+                    } else {
+                        vec![]
+                    },
+                },
+                bindings: Default::default(),
+                methods: Default::default(),
+            },
+            cli: None,
+        };
+        let generated = materialize(
+            dir.path(),
+            &manifest,
+            &EgressProxy::from_policy(match mode {
+                NetworkMode::Deny => bookclerk_plugin_manifest::EgressPolicy::deny(),
+                NetworkMode::Outbound => {
+                    bookclerk_plugin_manifest::EgressPolicy::from_manifest(&manifest)
+                }
+            }),
+            WorkerdLimits::default().effective(),
+            ListenSpec::InheritedTcp { port: 9 },
+            None,
+            "test-bridge-token",
+        )
+        .expect("materialize");
+        std::fs::read_to_string(&generated.config_path).expect("read capnp")
+    }
+
+    #[test]
+    fn deny_workerd_config_exposes_only_rpc_socket_for_compat_flags() {
+        use bookclerk_plugin_manifest::NetworkMode;
+
+        // Flags authors may request; none of them may add listen sockets.
+        for flags in [
+            &[] as &[&str],
+            &["python_workers"],
+            &["python_workers", "disable_python_external_sdk"],
+            &["nodejs_compat"],
+            &["nodejs_compat", "streams_enable_constructors"],
+        ] {
+            let capnp = materialize_capnp(flags, NetworkMode::Deny);
+            assert_eq!(socket_names(&capnp), vec!["rpc".to_string()], "{flags:?}");
+            assert_eq!(plugin_worker_outbound(&capnp), "blocked", "{flags:?}");
+            assert!(
+                capnp.contains("const hostWorker")
+                    && capnp.contains("globalOutbound = \"blocked\""),
+                "host worker must stay blocked: {flags:?}"
+            );
+            assert!(
+                capnp.contains("const bridgeWorker") && capnp.contains(r#"(name = "rpc""#),
+                "rpc socket must target the bridge: {flags:?}"
+            );
+            let sockets = capnp
+                .split("sockets = [")
+                .nth(1)
+                .and_then(|rest| rest.split(']').next())
+                .unwrap_or("");
+            assert!(
+                !sockets.contains("address"),
+                "inherited rpc socket must not bind a second address: {flags:?}\n{sockets}"
+            );
+        }
     }
 }

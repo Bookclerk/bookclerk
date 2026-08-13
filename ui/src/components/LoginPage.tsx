@@ -46,6 +46,8 @@ export function LoginPage({
     const params = new URLSearchParams(window.location.search);
     return params.get("ticket") ?? "";
   });
+  const [claimPassword, setClaimPassword] = useState("");
+  const [claimPasswordConfirm, setClaimPasswordConfirm] = useState("");
   const [provider, setProvider] = useState("audiobookshelf");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -117,8 +119,15 @@ export function LoginPage({
     e.preventDefault();
     setBusy(true);
     setError(null);
+    const password = claimPassword.trim();
+    const confirm = claimPasswordConfirm.trim();
+    if (password && password !== confirm) {
+      setError("Passwords do not match.");
+      setBusy(false);
+      return;
+    }
     try {
-      await portalRedeem(ticket.trim());
+      await portalRedeem(ticket.trim(), password || undefined);
       await finishPortal();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Invalid or expired ticket.");
@@ -290,7 +299,9 @@ export function LoginPage({
         {tab === "claim" ? (
           <form onSubmit={onClaimSubmit} className="mt-5">
             <p className="text-sm text-ink/70">
-              Use a ticket issued when your library user was created.
+              Use an invite magic link or paste the ticket below. Set a password when
+              required — for example on invite or password-reset tickets when the account has
+              no password yet.
             </p>
             <label className="mt-4 block text-sm font-semibold" htmlFor="ticket">
               Claim ticket
@@ -304,6 +315,28 @@ export function LoginPage({
               autoComplete="off"
               spellCheck={false}
               required
+            />
+            <label className="mt-4 block text-sm font-semibold" htmlFor="claim-password">
+              Password <span className="font-normal text-ink/55">(optional)</span>
+            </label>
+            <Input
+              id="claim-password"
+              type="password"
+              value={claimPassword}
+              onChange={(e) => setClaimPassword(e.target.value)}
+              className="mt-1.5"
+              autoComplete="new-password"
+            />
+            <label className="mt-4 block text-sm font-semibold" htmlFor="claim-password-confirm">
+              Confirm password
+            </label>
+            <Input
+              id="claim-password-confirm"
+              type="password"
+              value={claimPasswordConfirm}
+              onChange={(e) => setClaimPasswordConfirm(e.target.value)}
+              className="mt-1.5"
+              autoComplete="new-password"
             />
             {error ? (
               <p className="mt-2 text-sm font-medium text-brick" role="alert">

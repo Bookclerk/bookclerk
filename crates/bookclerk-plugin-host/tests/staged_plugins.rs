@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use bookclerk_config::{Config, Paths};
 use bookclerk_plugin_host::{
-    consent_request, discover_plugins, methods, CatalogHitDto, HealthDto, PluginClient,
-    PluginGrantStore, PluginKind, SearchCatalogParams,
+    consent_request, discover_plugins, methods, CatalogHitDto, CliInvokeParams, HealthDto,
+    PluginClient, PluginGrantStore, PluginKind, SearchCatalogParams,
 };
 
 fn artifacts_dir() -> Option<PathBuf> {
@@ -80,6 +80,7 @@ async fn staged_first_party_plugins_handshake() {
         "echo_workerd_ts",
         "echo_workerd_python",
         "echo_workerd_rust",
+        "echo_workerd_fetch",
     ] {
         assert!(
             ids.contains(&expected),
@@ -118,6 +119,7 @@ async fn staged_first_party_plugins_handshake() {
             "echo_workerd_ts" => Some("echo workerd plugin ready"),
             "echo_workerd_python" => Some("echo workerd python plugin ready"),
             "echo_workerd_rust" => Some("echo workerd rust wasm plugin ready"),
+            "echo_workerd_fetch" => Some("echo workerd fetch plugin ready"),
             "echo_native_node" => Some("echo_native_node ready"),
             "echo_native_python" => Some("echo_native_python ready"),
             _ => None,
@@ -129,6 +131,40 @@ async fn staged_first_party_plugins_handshake() {
                 "{} must run under real workerd (run cargo ensure-workerd)",
                 plugin.manifest.id
             );
+        }
+
+        // Best-effort outbound probe: allowlist success = Response received.
+        // HTTP status from example.com is informational only — do not assert 2xx.
+        if plugin.manifest.id == "echo_workerd_fetch" && client.has_capability("cli") {
+            let result = client
+                .cli_invoke(CliInvokeParams {
+                    command: "fetch-example".into(),
+                    args: Default::default(),
+                })
+                .await
+                .unwrap_or_else(|e| panic!("echo_workerd_fetch fetch-example must answer: {e}"));
+            let allowed = result
+                .json
+                .as_ref()
+                .and_then(|v| v.get("allowed"))
+                .and_then(|v| v.as_bool());
+            match allowed {
+                Some(true) => {
+                    assert_eq!(
+                        result.exit_code, 0,
+                        "allowed Response must exit 0 regardless of HTTP status: {:?}",
+                        result.stdout
+                    );
+                }
+                Some(false) | None => {
+                    // Origin / DNS / sandbox may block the hop; allowlist semantics
+                    // are still covered by the guest returning a structured answer.
+                    eprintln!(
+                        "echo_workerd_fetch fetch-example best-effort skip (no Response): exit={} stdout={:?} stderr={:?}",
+                        result.exit_code, result.stdout, result.stderr
+                    );
+                }
+            }
         }
 
         // Catalog RPC smoke: must return Ok (empty vec is fine) without crashing.

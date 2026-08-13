@@ -85,10 +85,13 @@ pub struct Spec {
     /// Cap on concurrent processes in the jail (Job active-process / `pids.max`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_processes: Option<u32>,
-    /// CPU hard-cap as a percent of one CPU (1–100).
+    /// CPU hard-cap as a percent of **one logical CPU** (`1..=` host cores×100).
     ///
-    /// Windows: Job Object CPU rate. Linux: cgroup v2 `cpu.max` quota for a
-    /// 100 ms period. macOS Seatbelt cannot enforce this (see docs).
+    /// Linux: cgroup v2 `cpu.max` quota for a 100 ms period (`quota = period ×
+    /// percent / 100`; values above 100 request multiple cores). Windows: Job
+    /// Object hard cap, scaled by logical CPU count so the same percent means
+    /// one-core bandwidth (see [`crate::windows_job_cpu_rate`]). macOS Seatbelt
+    /// cannot enforce this (see docs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_rate_percent: Option<u32>,
 }

@@ -1,20 +1,11 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { LogOut, Menu, Settings2, X } from "lucide-react";
-import { AppNav, type AppNavProps } from "@/components/AppNav";
+import { AppNav, navLinksForRole, type AppNavProps } from "@/components/AppNav";
 import { usePreferences } from "@/components/PreferencesDialog";
 import { Button } from "@/components/ui/button";
 import { pathForView } from "@/lib/routes";
-import type { AppView } from "@/lib/api";
 import { cn } from "@/lib/utils";
-
-const LINKS: { id: AppView; label: string }[] = [
-  { id: "discover", label: "Discover" },
-  { id: "wishlist", label: "Wishlist" },
-  { id: "library", label: "Library" },
-  { id: "accounts", label: "Accounts" },
-  { id: "settings", label: "Settings" },
-];
 
 /**
  * Shared authenticated page header (nav, actions, sign-out).
@@ -34,6 +25,7 @@ export function AppTopBar({
   const [menuOpen, setMenuOpen] = useState(false);
   const menuId = useId();
   const { openPreferences, preferencesOpen } = usePreferences();
+  const links = navLinksForRole(nav.role);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -136,7 +128,7 @@ export function AppTopBar({
                   </Button>
                 </div>
                 <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-3">
-                  {LINKS.map((link) => (
+                  {links.map((link) => (
                     <a
                       key={link.id}
                       href={pathForView(link.id)}

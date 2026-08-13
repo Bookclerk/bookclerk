@@ -495,3 +495,47 @@ class BookclerkPlugin(WorkerEntrypoint):
             RuntimeError: With ``code="unsupported"`` when not overridden.
         """
         raise _unsupported("dbExecute")
+
+    async def dbBegin(self, _params=None):
+        """Begin a database transaction (or nested savepoint).
+
+        Args:
+            _params: Optional ``parentTxnId`` for nested savepoints.
+
+        Raises:
+            RuntimeError: With ``code="unsupported"`` when not overridden.
+        """
+        raise _unsupported("dbBegin")
+
+    async def dbCommit(self, _params=None):
+        """Commit a guest transaction.
+
+        Args:
+            _params: ``{ txnId }``.
+
+        Raises:
+            RuntimeError: With ``code="unsupported"`` when not overridden.
+        """
+        raise _unsupported("dbCommit")
+
+    async def dbRollback(self, _params=None):
+        """Roll back a guest transaction.
+
+        Args:
+            _params: ``{ txnId }``.
+
+        Raises:
+            RuntimeError: With ``code="unsupported"`` when not overridden.
+        """
+        raise _unsupported("dbRollback")
+
+    async def dbAtomic(self, _params=None):
+        """Run a named atomic library operation as one SQL transaction.
+
+        Args:
+            _params: Tagged ``{ op, ... }`` operation.
+
+        Raises:
+            RuntimeError: With ``code="unsupported"`` when not overridden.
+        """
+        raise _unsupported("dbAtomic")

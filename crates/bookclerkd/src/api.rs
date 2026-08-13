@@ -1,5 +1,6 @@
 //! HTTP control plane for `bookclerkd` (operator API + static GUI).
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,8 +22,13 @@ use bookclerk_library::{
     NewTitleRequestSource, RequestStatus, TitleRequestRecord,
 };
 use bookclerk_plugin_host::{
-    consent_request, consent_summary, grant_covers, require_grant, DatabaseRegistry,
-    DestinationRegistry, PluginGrant, PluginGrantStore,
+    consent_request, consent_summary, cores_to_percent, effective_cpu_cores, format_cpu_cores,
+    grant_covers, host_cpu_cores_max, percent_to_cores, require_grant, validate_approved_grant,
+    DatabaseRegistry, DestinationRegistry, PluginGrant, PluginGrantStore, PluginRuntimeKind,
+    WorkerdLimits, KNOWN_HOST_BINDINGS, PLUGIN_JAIL_CPU_CORES_DEFAULT,
+    PLUGIN_JAIL_CPU_RATE_DEFAULT, PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT,
+    PLUGIN_JAIL_EXTRA_PROCESSES_MAX, PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX,
+    PLUGIN_STATE_BUDGET_MIB_DEFAULT, PLUGIN_STATE_BUDGET_MIB_MAX,
 };
 use bookclerk_search::{SearchEngine, SearchHit};
 use bookclerk_source::SourceRegistry;
@@ -159,21 +165,132 @@ struct SettingsResponse {
     /// Runtime-effective values after the last successful reload (auth, plugins).
     effective: std::collections::BTreeMap<String, String>,
     plugins: Vec<PluginSettingsGroup>,
+    /// Host max jail CPU in cores (2 d.p.; equals logical CPU count).
+    host_cpu_cores_max: f64,
+    /// Optional global per-jail CPU ceiling in cores (from `[plugins.jail]`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jail_cpu_cores: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct PluginConsentBrand {
+    name: String,
+    bg: Option<String>,
+    fg: Option<String>,
+    accent: Option<String>,
+    logo: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PluginConsentLimits {
+    cpu_ms: u32,
+    subrequests: u32,
+    max_cpu_ms: u32,
+    max_subrequests: u32,
+    disk_mib: u32,
+    max_disk_mib: u32,
+    memory_mib: u32,
+    max_memory_mib: u32,
+    /// Manifest / default jail CPU in cores (2 d.p.).
+    cpu_cores: f64,
+    /// Host max jail CPU in cores (2 d.p.).
+    max_cpu_cores: f64,
+    /// Optional `[plugins.jail]` ceiling in cores.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jail_cpu_cores: Option<f64>,
+    /// Default extra process/thread budget (native consent).
+    extra_processes: u32,
+    /// Host hard cap for extra process budget.
+    max_extra_processes: u32,
+    /// Suggested / default host bindings operators may grant.
+    known_bindings: Vec<&'static str>,
+}
+
+/// Operator-facing grant JSON: CPU as cores (not Spec percent).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginGrantView {
+    plugin_id: String,
+    kind: String,
+    network_mode: String,
+    domains: Vec<String>,
+    bindings: Vec<String>,
+    compatibility_flags: Vec<String>,
+    approved_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cpu_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subrequests: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disk_mib: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_mib: Option<u32>,
+    /// Jail CPU in cores (2 d.p.); absent for workerd.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cpu_cores: Option<f64>,
+    /// Extra process/thread budget beyond launcher overhead; native only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra_processes: Option<u32>,
+}
+
+impl PluginGrantView {
+    fn from_grant(grant: &PluginGrant) -> Self {
+        Self {
+            plugin_id: grant.plugin_id.clone(),
+            kind: grant.kind.clone(),
+            network_mode: grant.network_mode.clone(),
+            domains: grant.domains.iter().cloned().collect(),
+            bindings: grant.bindings.iter().cloned().collect(),
+            compatibility_flags: grant.compatibility_flags.iter().cloned().collect(),
+            approved_at: grant.approved_at.clone(),
+            cpu_ms: grant.cpu_ms,
+            subrequests: grant.subrequests,
+            disk_mib: grant.disk_mib,
+            memory_mib: grant.memory_mib,
+            cpu_cores: grant.cpu_rate_percent.map(percent_to_cores),
+            extra_processes: grant.extra_processes,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
 struct PluginConsentResponse {
     plugin_id: String,
-    request: PluginGrant,
+    /// Guest runtime (`native` or `workerd`) — drives which controls are enforceable.
+    runtime: String,
+    request: PluginGrantView,
     covered: bool,
     summary: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    existing: Option<PluginGrant>,
+    existing: Option<PluginGrantView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    brand: Option<PluginConsentBrand>,
+    /// Host-capped resource defaults (workerd budgets + shared disk). Always set.
+    limits: PluginConsentLimits,
 }
 
 #[derive(Debug, Deserialize)]
 struct PluginConsentApproveRequest {
     approve: bool,
+    #[serde(default)]
+    grant: Option<PluginGrantOverride>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginGrantOverride {
+    network_mode: Option<String>,
+    domains: Option<Vec<String>>,
+    bindings: Option<Vec<String>>,
+    compatibility_flags: Option<Vec<String>>,
+    cpu_ms: Option<u32>,
+    subrequests: Option<u32>,
+    disk_mib: Option<u32>,
+    memory_mib: Option<u32>,
+    /// Jail CPU in cores (2 d.p.); converted to Spec percent server-side.
+    cpu_cores: Option<f64>,
+    /// Extra process/thread budget (native); ignored for workerd.
+    extra_processes: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -271,7 +388,6 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         )
         .route("/api/plugins/{kind}/{id}/logo", get(get_plugin_logo))
         .route("/api/database/migrate", post(migrate_database))
-        .route("/api/users", get(auth::list_users))
         .route(
             "/api/auth/impersonate",
             post(auth::impersonate).delete(auth::impersonate_end),
@@ -336,7 +452,19 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/auth/password",
             post(auth::password_login).put(auth::set_password),
         )
-        .route("/api/users", post(auth::create_user))
+        .route("/api/users", get(auth::list_users).post(auth::create_user))
+        .route(
+            "/api/users/{id}",
+            axum::routing::patch(auth::patch_user).delete(auth::delete_user),
+        )
+        .route(
+            "/api/users/{id}/claim-ticket",
+            post(auth::create_user_claim_ticket),
+        )
+        .route(
+            "/api/users/{id}/reset-password",
+            post(auth::reset_user_password),
+        )
         .merge(operator_or_admin)
         .merge(operator_only)
         .merge(shared)
@@ -369,6 +497,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 "/wishlist",
                 "/accounts",
                 "/settings",
+                "/invite",
             ];
             for path in SPA_DOC_PATHS {
                 app = app.route_service(path, ServeFile::new(index.clone()));
@@ -892,6 +1021,12 @@ fn allowed_setting_key(key: &str) -> bool {
             | "library.auto_acquire"
             | "library.scan_interval_minutes"
             | "database.plugin"
+            | "plugins.isolation"
+            | "media.isolation"
+            | "plugins.jail.memory_mib"
+            | "plugins.jail.cpu_rate_percent"
+            | "plugins.jail.cpu_cores"
+            | "plugins.jail.extra_processes"
     ) {
         return true;
     }
@@ -932,6 +1067,49 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
             // Validate listen list before writing config.toml (supports multi-bind).
             bookclerk_config::ListenAddrs::parse_list(value).map(|addrs| addrs.join_comma())
         }
+        "plugins.isolation" | "media.isolation" => bookclerk_config::Isolation::parse(value)
+            .map(|mode| mode.as_str().to_string())
+            .ok_or_else(|| format!("{key} must be required, best-effort, or off")),
+        "plugins.jail.memory_mib" => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Ok(String::new());
+            }
+            trimmed
+                .parse::<u64>()
+                .map(|n| n.to_string())
+                .map_err(|_| "plugins.jail.memory_mib must be a non-negative integer".into())
+        }
+        "plugins.jail.cpu_rate_percent" | "plugins.jail.cpu_cores" => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                // Empty resets to the platform default (0.80 cores).
+                return Ok(format_cpu_cores(PLUGIN_JAIL_CPU_CORES_DEFAULT));
+            }
+            // UI sends cores (e.g. "0.80"); integer percent still accepted.
+            let cores = if trimmed.contains('.') {
+                trimmed
+                    .parse::<f64>()
+                    .map_err(|_| "plugins.jail.cpu_cores must be a number".to_string())?
+            } else {
+                let percent = trimmed
+                    .parse::<u32>()
+                    .map_err(|_| "plugins.jail.cpu_cores must be a number".to_string())?;
+                percent_to_cores(percent)
+            };
+            let clamped = effective_cpu_cores(Some(cores));
+            Ok(format_cpu_cores(clamped))
+        }
+        "plugins.jail.extra_processes" => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Ok(PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT.to_string());
+            }
+            trimmed
+                .parse::<u32>()
+                .map(|n| n.min(PLUGIN_JAIL_EXTRA_PROCESSES_MAX).to_string())
+                .map_err(|_| "plugins.jail.extra_processes must be a non-negative integer".into())
+        }
         _ if (key.starts_with("sources.")
             || key.starts_with("integrations.")
             || key.starts_with("output."))
@@ -968,6 +1146,42 @@ fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<Stri
     settings.insert(
         "library.scan_interval_minutes".into(),
         config.library.scan_interval_minutes.to_string(),
+    );
+    settings.insert(
+        "plugins.isolation".into(),
+        config.plugins.isolation.as_str().to_string(),
+    );
+    settings.insert(
+        "media.isolation".into(),
+        config.media.isolation.as_str().to_string(),
+    );
+    settings.insert(
+        "plugins.jail.memory_mib".into(),
+        config
+            .plugins
+            .jail
+            .memory_mib
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
+    );
+    settings.insert(
+        "plugins.jail.cpu_cores".into(),
+        format_cpu_cores(percent_to_cores(
+            config
+                .plugins
+                .jail
+                .cpu_rate_percent
+                .unwrap_or(PLUGIN_JAIL_CPU_RATE_DEFAULT),
+        )),
+    );
+    settings.insert(
+        "plugins.jail.extra_processes".into(),
+        config
+            .plugins
+            .jail
+            .extra_processes
+            .unwrap_or(PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT)
+            .to_string(),
     );
     for source in config.sources.plugins.keys() {
         settings.insert(
@@ -1923,6 +2137,152 @@ fn sanitize_svg_logo(input: &[u8]) -> Result<Vec<u8>, StatusCode> {
     Ok(out)
 }
 
+async fn plugin_consent_brand(
+    state: &AppState,
+    plugin: &bookclerk_plugin_host::DiscoveredPlugin,
+) -> Option<PluginConsentBrand> {
+    let mut brand = PluginConsentBrand {
+        name: plugin
+            .manifest
+            .name
+            .clone()
+            .unwrap_or_else(|| plugin.manifest.id.clone()),
+        bg: None,
+        fg: None,
+        accent: None,
+        logo: settings_logo_from_manifest(plugin),
+    };
+    match plugin.manifest.kind {
+        bookclerk_plugin_host::PluginKind::Source => {
+            let source = state.sources.read().await.get(&plugin.manifest.id);
+            if let Some(source) = source {
+                let source_brand = source.portal_brand();
+                brand.name = source_brand.name.to_string();
+                brand.bg = Some(source_brand.bg.to_string());
+                brand.fg = Some(source_brand.fg.to_string());
+                brand.accent = Some(source_brand.accent.to_string());
+                brand.logo = non_empty_logo(source_brand.logo_href()).or(brand.logo);
+            }
+        }
+        bookclerk_plugin_host::PluginKind::Integration => {
+            let integration = state.integrations.read().await.get(&plugin.manifest.id);
+            if let Some(integration_brand) =
+                integration.and_then(|integration| integration.portal_brand())
+            {
+                brand.name = integration_brand.name.to_string();
+                brand.bg = Some(integration_brand.bg.to_string());
+                brand.fg = Some(integration_brand.fg.to_string());
+                brand.accent = Some(integration_brand.accent.to_string());
+                brand.logo = non_empty_logo(integration_brand.logo_href()).or(brand.logo);
+            }
+        }
+        bookclerk_plugin_host::PluginKind::Output | bookclerk_plugin_host::PluginKind::Database => {
+        }
+    }
+    if brand.name == plugin.manifest.id
+        && brand.bg.is_none()
+        && brand.fg.is_none()
+        && brand.accent.is_none()
+        && brand.logo.is_none()
+    {
+        None
+    } else {
+        Some(brand)
+    }
+}
+
+fn plugin_consent_limits(
+    plugin: &bookclerk_plugin_host::DiscoveredPlugin,
+    jail_cpu_rate_percent: Option<u32>,
+) -> PluginConsentLimits {
+    let (cpu_ms, subrequests) = if plugin.manifest.runtime == PluginRuntimeKind::Workerd {
+        let effective = plugin
+            .manifest
+            .workerd
+            .as_ref()
+            .map(|workerd| workerd.limits.clone())
+            .unwrap_or_default()
+            .effective();
+        (effective.cpu_ms, effective.subrequests)
+    } else {
+        (
+            WorkerdLimits::DEFAULT_CPU_MS,
+            WorkerdLimits::DEFAULT_SUBREQUESTS,
+        )
+    };
+    let max_cpu_cores = host_cpu_cores_max();
+    PluginConsentLimits {
+        cpu_ms,
+        subrequests,
+        max_cpu_ms: WorkerdLimits::MAX_CPU_MS,
+        max_subrequests: WorkerdLimits::MAX_SUBREQUESTS,
+        disk_mib: PLUGIN_STATE_BUDGET_MIB_DEFAULT,
+        max_disk_mib: PLUGIN_STATE_BUDGET_MIB_MAX,
+        memory_mib: PLUGIN_JAIL_MEMORY_MIB_DEFAULT,
+        max_memory_mib: PLUGIN_JAIL_MEMORY_MIB_MAX,
+        cpu_cores: PLUGIN_JAIL_CPU_CORES_DEFAULT.min(max_cpu_cores),
+        max_cpu_cores,
+        jail_cpu_cores: jail_cpu_rate_percent
+            .map(|n| effective_cpu_cores(Some(percent_to_cores(n)))),
+        extra_processes: PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT,
+        max_extra_processes: PLUGIN_JAIL_EXTRA_PROCESSES_MAX,
+        known_bindings: KNOWN_HOST_BINDINGS.to_vec(),
+    }
+}
+
+fn build_approved_grant(
+    baseline: &PluginGrant,
+    grant_override: Option<PluginGrantOverride>,
+) -> Result<PluginGrant, StatusCode> {
+    let Some(grant_override) = grant_override else {
+        return Ok(baseline.clone());
+    };
+    let mut approved = baseline.clone();
+    if let Some(network_mode) = grant_override.network_mode {
+        approved.network_mode = network_mode;
+    }
+    if let Some(domains) = grant_override.domains {
+        approved.domains = vec_to_set(domains);
+    }
+    if let Some(bindings) = grant_override.bindings {
+        approved.bindings = vec_to_set(bindings);
+    }
+    if let Some(compatibility_flags) = grant_override.compatibility_flags {
+        approved.compatibility_flags = vec_to_set(compatibility_flags);
+    }
+    if grant_override.cpu_ms.is_some() {
+        approved.cpu_ms = grant_override.cpu_ms;
+    }
+    if grant_override.subrequests.is_some() {
+        approved.subrequests = grant_override.subrequests;
+    }
+    if grant_override.disk_mib.is_some() {
+        approved.disk_mib = grant_override.disk_mib;
+    }
+    if grant_override.memory_mib.is_some() {
+        approved.memory_mib = grant_override.memory_mib;
+    }
+    if let Some(cores) = grant_override.cpu_cores {
+        let percent = cores_to_percent(effective_cpu_cores(Some(cores)));
+        approved.cpu_rate_percent = Some(percent.max(1));
+    }
+    if grant_override.extra_processes.is_some() {
+        approved.extra_processes = grant_override.extra_processes;
+    }
+    validate_approved_grant(&approved, baseline).map_err(|err| {
+        tracing::warn!(error = %err, plugin = %baseline.plugin_id, "invalid plugin consent grant override");
+        StatusCode::BAD_REQUEST
+    })
+}
+
+fn vec_to_set(values: Vec<String>) -> BTreeSet<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
 async fn get_plugin_consent(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -1943,12 +2303,22 @@ async fn get_plugin_consent(
     let covered = existing
         .as_ref()
         .is_some_and(|grant| grant_covers(grant, &request));
+    let brand = plugin_consent_brand(&state, &plugin).await;
+    let limits = plugin_consent_limits(&plugin, cfg.plugins.jail.cpu_rate_percent);
+    let runtime = match plugin.manifest.runtime {
+        PluginRuntimeKind::Native => "native",
+        PluginRuntimeKind::Workerd => "workerd",
+    }
+    .to_string();
     Ok(Json(PluginConsentResponse {
         plugin_id: id,
-        request,
+        runtime,
+        request: PluginGrantView::from_grant(&request),
         covered,
         summary,
-        existing,
+        existing: existing.as_ref().map(PluginGrantView::from_grant),
+        brand,
+        limits,
     }))
 }
 
@@ -1966,23 +2336,34 @@ async fn post_plugin_consent(
         .into_iter()
         .find(|p| p.manifest.id == id)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let grant = consent_request(&plugin.manifest);
-    let summary = consent_summary(&grant);
+    let request = consent_request(&plugin.manifest);
+    let summary = consent_summary(&request);
+    let approved = build_approved_grant(&request, body.grant)?;
     let mut store = PluginGrantStore::load(&cfg.paths().files_dir).map_err(|err| {
         tracing::error!(error = %err, "failed to load plugin grants");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    store.upsert(grant.clone());
+    store.upsert(approved.clone());
     store.save(&cfg.paths().files_dir).map_err(|err| {
         tracing::error!(error = %err, "failed to save plugin grants");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+    let brand = plugin_consent_brand(&state, &plugin).await;
+    let limits = plugin_consent_limits(&plugin, cfg.plugins.jail.cpu_rate_percent);
+    let runtime = match plugin.manifest.runtime {
+        PluginRuntimeKind::Native => "native",
+        PluginRuntimeKind::Workerd => "workerd",
+    }
+    .to_string();
     Ok(Json(PluginConsentResponse {
         plugin_id: id,
-        request: grant.clone(),
+        runtime,
+        request: PluginGrantView::from_grant(&request),
         covered: true,
         summary,
-        existing: Some(grant),
+        existing: Some(PluginGrantView::from_grant(&approved)),
+        brand,
+        limits,
     }))
 }
 
@@ -2022,6 +2403,12 @@ async fn get_settings(
         settings,
         effective,
         plugins: plugin_settings_snapshot(&cfg, &sources, &integrations, &discovered_plugins),
+        host_cpu_cores_max: host_cpu_cores_max(),
+        jail_cpu_cores: cfg
+            .plugins
+            .jail
+            .cpu_rate_percent
+            .map(|n| effective_cpu_cores(Some(percent_to_cores(n)))),
     }))
 }
 
@@ -3549,9 +3936,10 @@ fn internal_err(err: impl std::fmt::Display) -> (StatusCode, String) {
 #[cfg(test)]
 mod tests {
     use super::{
-        allowed_setting_key, apply_database_enable_updates, build_plugin_settings_group,
-        database_backends_requiring_grant, normalize_disabled_shelves, normalize_setting_value,
-        title_id_candidates, validate_daemon_listen, validate_daemon_listen_against_auth,
+        allowed_setting_key, apply_database_enable_updates, build_approved_grant,
+        build_plugin_settings_group, current_settings_snapshot, database_backends_requiring_grant,
+        normalize_disabled_shelves, normalize_setting_value, title_id_candidates,
+        validate_daemon_listen, validate_daemon_listen_against_auth, PluginGrantOverride,
     };
     use bookclerk_config::{Config, ListenAddrs};
 
@@ -3584,6 +3972,115 @@ mod tests {
         assert!(allowed_setting_key("database.sqlite.enabled"));
         assert!(!allowed_setting_key("database"));
         assert!(!allowed_setting_key("database..enabled"));
+        assert!(allowed_setting_key("plugins.isolation"));
+        assert!(allowed_setting_key("media.isolation"));
+        assert!(allowed_setting_key("plugins.jail.memory_mib"));
+        assert!(allowed_setting_key("plugins.jail.cpu_cores"));
+        assert!(allowed_setting_key("plugins.jail.cpu_rate_percent"));
+        assert!(allowed_setting_key("plugins.jail.extra_processes"));
+        assert!(!allowed_setting_key("plugins.jail"));
+    }
+
+    #[test]
+    fn settings_snapshot_includes_confinement_keys() {
+        let mut cfg = Config::default();
+        cfg.plugins.jail.memory_mib = Some(512);
+        cfg.plugins.jail.cpu_rate_percent = Some(55);
+        let snapshot = current_settings_snapshot(&cfg);
+        assert_eq!(
+            snapshot.get("plugins.isolation").map(String::as_str),
+            Some("required")
+        );
+        assert_eq!(
+            snapshot.get("media.isolation").map(String::as_str),
+            Some("required")
+        );
+        assert_eq!(
+            snapshot.get("plugins.jail.memory_mib").map(String::as_str),
+            Some("512")
+        );
+        assert_eq!(
+            snapshot.get("plugins.jail.cpu_cores").map(String::as_str),
+            Some("0.55")
+        );
+        assert_eq!(
+            snapshot
+                .get("plugins.jail.extra_processes")
+                .map(String::as_str),
+            Some("2")
+        );
+    }
+
+    #[test]
+    fn build_approved_grant_accepts_widen_and_narrow() {
+        use bookclerk_plugin_host::PluginGrant;
+        use std::collections::BTreeSet;
+
+        let baseline = PluginGrant {
+            plugin_id: "demo".into(),
+            kind: "source".into(),
+            network_mode: "outbound".into(),
+            domains: BTreeSet::from(["a.example".into(), "b.example".into()]),
+            bindings: BTreeSet::from(["config".into(), "secrets".into()]),
+            compatibility_flags: BTreeSet::new(),
+            cpu_ms: Some(30_000),
+            subrequests: Some(50),
+            disk_mib: Some(512),
+            memory_mib: Some(512),
+            cpu_rate_percent: Some(80),
+            extra_processes: Some(2),
+            approved_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let approved = build_approved_grant(
+            &baseline,
+            Some(PluginGrantOverride {
+                network_mode: Some("deny".into()),
+                domains: Some(vec!["a.example".into()]),
+                bindings: Some(vec!["config".into()]),
+                compatibility_flags: None,
+                cpu_ms: Some(12_000),
+                subrequests: Some(10),
+                disk_mib: Some(1024),
+                memory_mib: Some(256),
+                cpu_cores: Some(0.40),
+                extra_processes: Some(1),
+            }),
+        )
+        .expect("narrow");
+        assert_eq!(approved.network_mode, "deny");
+        assert_eq!(
+            approved.domains.iter().cloned().collect::<Vec<_>>(),
+            vec!["a.example".to_string()]
+        );
+        assert_eq!(approved.cpu_ms, Some(12_000));
+        assert_eq!(approved.disk_mib, Some(1024));
+        assert_eq!(approved.memory_mib, Some(256));
+        assert_eq!(approved.cpu_rate_percent, Some(40));
+        assert_eq!(approved.extra_processes, Some(1));
+
+        let widen = build_approved_grant(
+            &baseline,
+            Some(PluginGrantOverride {
+                network_mode: None,
+                domains: Some(vec!["a.example".into(), "evil.example".into()]),
+                bindings: Some(vec!["config".into(), "secrets".into(), "oauth".into()]),
+                compatibility_flags: None,
+                cpu_ms: Some(60_000),
+                subrequests: None,
+                disk_mib: Some(2048),
+                memory_mib: Some(1024),
+                cpu_cores: Some(0.90),
+                extra_processes: Some(8),
+            }),
+        )
+        .expect("widen beyond baseline");
+        assert!(widen.domains.contains("evil.example"));
+        assert!(widen.bindings.contains("oauth"));
+        assert_eq!(widen.cpu_ms, Some(60_000));
+        assert_eq!(widen.disk_mib, Some(2048));
+        assert_eq!(widen.memory_mib, Some(1024));
+        assert_eq!(widen.cpu_rate_percent, Some(90));
+        assert_eq!(widen.extra_processes, Some(8));
     }
 
     #[test]

@@ -15,7 +15,7 @@ export type AppView = "discover" | "library" | "accounts" | "wishlist" | "settin
 /**
  * Session role returned by the daemon auth APIs.
  */
-export type AuthRole = "operator" | "administrator" | "member";
+export type AuthRole = "operator" | "owner" | "administrator" | "member";
 
 /**
  * Linked portal identity attached to a user session.
@@ -34,6 +34,9 @@ export interface AuthMeUser {
   id: number;
   role: "administrator" | "member" | string;
   display_name: string | null;
+  login_name?: string | null;
+  status?: string;
+  has_password?: boolean;
 }
 
 /**
@@ -328,7 +331,14 @@ function normalizeView(raw: string | undefined): AppView {
 }
 
 function normalizeRole(raw: string | undefined): AuthRole | undefined {
-  if (raw === "operator" || raw === "administrator" || raw === "member") return raw;
+  if (
+    raw === "operator" ||
+    raw === "owner" ||
+    raw === "administrator" ||
+    raw === "member"
+  ) {
+    return raw;
+  }
   // Legacy portal sessions map to member.
   if (raw === "portal") return "member";
   return undefined;
@@ -478,17 +488,17 @@ export async function logout(): Promise<void> {
 }
 
 /**
- * Temporarily elevates a user session with the operator token.
+ * Temporarily elevates an Owner session after password re-authentication.
  *
- * @param token - Operator bearer token.
+ * @param password - The Owner's account password.
  * @returns Resolves when elevation succeeds.
  */
-export async function elevate(token: string): Promise<void> {
+export async function elevate(password: string): Promise<void> {
   const res = await fetch("/api/auth/elevate", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ password }),
   });
   await parseJson(res);
 }
@@ -508,8 +518,11 @@ export async function endElevation(): Promise<void> {
   await parseJson(res);
 }
 
+/** Alias used by Settings RBAC controls. */
+export const endElevate = endElevation;
+
 /**
- * Starts administrator impersonation of another user.
+ * Starts operator (or elevated Owner) impersonation of another user.
  *
  * @param userId - Target user id.
  * @returns Resolves when impersonation is active.
@@ -525,7 +538,7 @@ export async function startImpersonate(userId: number): Promise<void> {
 }
 
 /**
- * Stops the current administrator impersonation session.
+ * Stops the current operator impersonation session.
  *
  * @returns Resolves when impersonation ends.
  */
@@ -547,7 +560,65 @@ export interface ListedUser {
   role: string;
   status: string;
   display_name: string | null;
+  login_name: string | null;
+  email?: string | null;
   has_password: boolean;
+  /** Non-expired portal session present. */
+  online?: boolean;
+  /** Most recent portal session activity (RFC 3339). */
+  last_active_at?: string | null;
+  /** Unfinished listen within the recent window. */
+  listening?: {
+    title: string | null;
+    provider: string;
+    last_listened_at: string;
+  } | null;
+  /** Linked storefront / integration accounts. */
+  integrations?: {
+    source: string;
+    account_id: string;
+    label: string | null;
+  }[];
+}
+
+/**
+ * Created / patched user response from RBAC provisioning APIs.
+ */
+export interface UserMutationResponse {
+  ok: boolean;
+  user: ListedUser;
+  claim_ticket?: string | null;
+  /** Magic-link URL for `/invite?ticket=…` when an invite was minted. */
+  invite_url?: string | null;
+}
+
+/**
+ * Bootstrap response for the first owner.
+ */
+export interface BootstrapAdministratorResponse {
+  ok: boolean;
+  user_id: number;
+  claim_ticket: string;
+  invite_url?: string | null;
+  login_name: string | null;
+  has_password: boolean;
+}
+
+/**
+ * Active auth session row visible to the current principal.
+ */
+export interface ListedSession {
+  id: number;
+  kind: "operator" | "portal" | string;
+  created_at: string;
+  expires_at: string;
+  last_used_at?: string | null;
+  elevated?: boolean;
+  impersonating_user_id?: number | null;
+  is_current?: boolean;
+  client_label?: string | null;
+  device_type?: string | null;
+  user_agent?: string | null;
 }
 
 /**
@@ -559,6 +630,181 @@ export async function listUsers(): Promise<ListedUser[]> {
   const res = await fetch("/api/users", { credentials: "include" });
   const body = await parseJson<{ users: ListedUser[] }>(res);
   return body.users ?? [];
+}
+
+/**
+ * Creates the first Owner account when no owners (or legacy administrators) exist.
+ *
+ * @param body - Optional display/login/email/password fields for the new owner.
+ * @returns Bootstrap result including the one-time invite magic link.
+ */
+export async function bootstrapAdministrator(body: {
+  display_name?: string;
+  login_name?: string;
+  email?: string;
+  password?: string;
+}): Promise<BootstrapAdministratorResponse> {
+  const res = await fetch("/api/auth/bootstrap", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Creates a first-party Bookclerk user.
+ *
+ * @param body - Role, profile fields, optional password, and invite choice.
+ * @returns Created user plus optional one-time claim ticket.
+ */
+export async function createUser(body: {
+  role?: string;
+  display_name?: string;
+  login_name?: string;
+  email?: string;
+  password?: string;
+  mint_invite?: boolean;
+}): Promise<UserMutationResponse> {
+  const res = await fetch("/api/users", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Updates a first-party user role, status, or profile fields.
+ *
+ * @param id - User id to patch.
+ * @param body - Partial user fields accepted by the daemon.
+ * @returns Patched user row.
+ */
+export async function patchUser(
+  id: number,
+  body: {
+    role?: string;
+    status?: string;
+    display_name?: string;
+    login_name?: string;
+    email?: string;
+  },
+): Promise<UserMutationResponse> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Mints a fresh one-time claim ticket for an existing active user.
+ *
+ * @param id - User id.
+ * @returns One-time claim ticket.
+ */
+export async function mintUserClaimTicket(id: number): Promise<{
+  ok: boolean;
+  claim_ticket: string;
+  invite_url?: string | null;
+}> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/claim-ticket`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Mints a password-reset claim ticket and revokes the user's portal sessions.
+ *
+ * @param id - User id.
+ * @returns Reset ticket plus count of revoked sessions.
+ */
+export async function resetUserPassword(
+  id: number,
+): Promise<{
+  ok: boolean;
+  claim_ticket: string;
+  invite_url?: string | null;
+  revoked_sessions: number;
+}> {
+  const res = await fetch(
+    `/api/users/${encodeURIComponent(String(id))}/reset-password`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    },
+  );
+  return parseJson(res);
+}
+
+/**
+ * Deletes a first-party user (operator / administrator provisioner).
+ *
+ * @param id - User id.
+ * @returns Ack payload.
+ */
+export async function deleteUser(id: number): Promise<{ ok: boolean }> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Lists sessions for the current principal.
+ *
+ * @returns Active session rows.
+ */
+export async function listSessions(): Promise<ListedSession[]> {
+  const res = await fetch("/api/auth/sessions", { credentials: "include" });
+  const body = await parseJson<{ sessions: ListedSession[] }>(res);
+  return body.sessions ?? [];
+}
+
+/**
+ * Revokes one session visible to the current principal.
+ *
+ * @param id - Session id.
+ * @returns Resolves when the revoke succeeds.
+ */
+export async function revokeSession(id: number): Promise<void> {
+  const res = await fetch(`/api/auth/sessions/${encodeURIComponent(String(id))}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await parseJson(res);
+}
+
+/**
+ * Sets a password for self or for a managed user.
+ *
+ * @param body - New password and optional target user id.
+ * @returns Count of revoked sessions.
+ */
+export async function setPassword(body: {
+  password: string;
+  current_password?: string;
+  user_id?: number;
+}): Promise<{ ok: boolean; revoked_sessions: number }> {
+  const res = await fetch("/api/auth/password", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
 }
 
 /**
@@ -638,7 +884,71 @@ export interface PluginSettingsGroup {
  */
 export interface SettingsResponse {
   settings: Record<string, string>;
+  effective?: Record<string, string>;
   plugins: PluginSettingsGroup[];
+  /** Host max jail CPU in cores (2 d.p.; equals logical CPU count). */
+  host_cpu_cores_max?: number;
+  /** Optional global per-jail CPU ceiling in cores. */
+  jail_cpu_cores?: number | null;
+}
+
+/**
+ * Plugin consent grant shape serialized by the daemon.
+ */
+export interface PluginGrant {
+  pluginId: string;
+  kind: string;
+  networkMode: string;
+  domains: string[];
+  bindings: string[];
+  compatibilityFlags: string[];
+  approvedAt: string;
+  cpuMs?: number;
+  subrequests?: number;
+  diskMib?: number;
+  memoryMib?: number;
+  /** Jail CPU in cores (2 d.p.) from the daemon. */
+  cpuCores?: number;
+  /** Extra process/thread budget beyond launcher overhead (native). */
+  extraProcesses?: number;
+}
+
+/**
+ * Branded display metadata for a plugin consent dialog.
+ */
+export interface PluginConsentBrand {
+  name: string;
+  bg?: string | null;
+  fg?: string | null;
+  accent?: string | null;
+  logo?: string | null;
+}
+
+/**
+ * Host-capped consent limit defaults (workerd budgets + shared jail/disk).
+ *
+ * Jail CPU fields are cores (2 d.p.) from the daemon — no percent conversion.
+ */
+export interface PluginConsentLimits {
+  cpu_ms: number;
+  subrequests: number;
+  max_cpu_ms: number;
+  max_subrequests: number;
+  disk_mib: number;
+  max_disk_mib: number;
+  memory_mib: number;
+  max_memory_mib: number;
+  /** Manifest / default jail CPU in cores. */
+  cpu_cores: number;
+  /** Host max jail CPU in cores. */
+  max_cpu_cores: number;
+  /** Optional Settings global jail CPU ceiling in cores. */
+  jail_cpu_cores?: number | null;
+  /** Default extra process/thread budget (native). */
+  extra_processes: number;
+  /** Host hard cap for extra process budget. */
+  max_extra_processes: number;
+  known_bindings: string[];
 }
 
 /**
@@ -646,18 +956,14 @@ export interface SettingsResponse {
  */
 export interface PluginConsentResponse {
   plugin_id: string;
-  request: {
-    pluginId: string;
-    kind: string;
-    networkMode: string;
-    domains: string[];
-    bindings: string[];
-    compatibilityFlags: string[];
-    approvedAt: string;
-  };
+  /** Guest runtime: `native` or `workerd`. */
+  runtime: string;
+  request: PluginGrant;
   covered: boolean;
   summary: string[];
-  existing?: PluginConsentResponse["request"];
+  existing?: PluginGrant;
+  brand?: PluginConsentBrand;
+  limits: PluginConsentLimits;
 }
 
 /**
@@ -682,12 +988,26 @@ export async function fetchPluginConsent(id: string): Promise<PluginConsentRespo
  * @param id - Plugin id.
  * @returns Updated consent response after approval.
  */
-export async function approvePluginConsent(id: string): Promise<PluginConsentResponse> {
+export async function approvePluginConsent(
+  id: string,
+  grant?: {
+    networkMode: string;
+    domains: string[];
+    bindings: string[];
+    compatibilityFlags: string[];
+    cpuMs?: number;
+    subrequests?: number;
+    diskMib?: number;
+    memoryMib?: number;
+    cpuCores?: number;
+    extraProcesses?: number;
+  },
+): Promise<PluginConsentResponse> {
   const res = await fetch(`/api/plugins/${encodeURIComponent(id)}/consent`, {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ approve: true }),
+    body: JSON.stringify({ approve: true, ...(grant ? { grant } : {}) }),
   });
   return parseJson<PluginConsentResponse>(res);
 }
@@ -814,14 +1134,19 @@ export async function patchSettings(body: { settings: SettingsUpdate[] }): Promi
  * Redeems a claim ticket into a portal user session.
  *
  * @param ticket - One-time claim ticket string.
+ * @param password - Optional password when claiming invite/reset tickets.
  * @returns Resolves when the session cookie is set.
  */
-export async function portalRedeem(ticket: string): Promise<void> {
+export async function portalRedeem(ticket: string, password?: string): Promise<void> {
+  const body: { ticket: string; password?: string } = { ticket };
+  if (password?.trim()) {
+    body.password = password.trim();
+  }
   const res = await fetch("/api/portal/redeem", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ticket }),
+    body: JSON.stringify(body),
   });
   await parseJson(res);
 }

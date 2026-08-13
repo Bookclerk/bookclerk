@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 
 use bookclerk_config::{Config, Isolation, Paths};
 use bookclerk_plugin_host::{
-    consent_request, discover_plugins, plugin_data_dir, DiscoveredPlugin, PluginClient,
-    PluginGrantStore,
+    consent_request, discover_plugins, grant_has_binding, plugin_data_dir, require_grant,
+    DiscoveredPlugin, PluginClient, PluginGrantStore,
 };
 
 /// Where cargo left the launcher for this test run.
@@ -336,9 +336,10 @@ async fn spawn_fails_without_consent_grant() {
     );
 }
 
-/// A grant that no longer covers the manifest (widened bindings) blocks spawn.
+/// Extra bindings in a later `plugin.toml` stay off the effective grant.
+/// The stored operator subset remains covering, so spawn is not refused.
 #[tokio::test]
-async fn spawn_fails_when_manifest_widens_past_grant() {
+async fn spawn_keeps_stored_grant_when_manifest_widens() {
     let fixture = Fixture::new(|_| BTreeMap::new());
     let install = fixture
         .config
@@ -355,18 +356,24 @@ async fn spawn_fails_when_manifest_widens_past_grant() {
     )
     .expect("widen plugin.toml");
 
-    let message = match PluginClient::spawn(
-        &fixture.plugin(),
-        &fixture.config,
-        serde_json::json!({}),
-    )
-    .await
-    {
-        Ok(_) => panic!("spawn must fail after capability widening"),
-        Err(err) => err.to_string(),
-    };
+    let plugin = fixture.plugin();
+    let grant = require_grant(fixture.config.paths().files_dir.as_path(), &plugin.manifest)
+        .expect("stored grant still covers a widened manifest");
     assert!(
-        message.contains("capabilities widened") || message.contains("re-approve"),
-        "got: {message}"
+        !grant_has_binding(&grant, "secrets"),
+        "extra manifest bindings must stay off the effective grant"
     );
+
+    match PluginClient::spawn(&plugin, &fixture.config, serde_json::json!({})).await {
+        Ok(_) => {}
+        Err(err) => {
+            let message = err.to_string();
+            assert!(
+                !message.contains("capabilities widened")
+                    && !message.contains("re-approve")
+                    && !message.contains("grant does not match"),
+                "stored grant must still cover spawn after widening; got: {message}"
+            );
+        }
+    }
 }

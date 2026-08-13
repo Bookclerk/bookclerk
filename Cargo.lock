@@ -1378,6 +1378,7 @@ dependencies = [
  "bookclerk-plugin-sdk",
  "sea-orm",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1615,12 +1616,15 @@ dependencies = [
  "bookclerk-db-guest",
  "bookclerk-library",
  "bookclerk-plugin-sdk",
+ "chrono",
  "reqwest 0.13.4",
+ "rusqlite",
  "sea-orm",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
@@ -1647,6 +1651,7 @@ dependencies = [
  "bookclerk-db-guest",
  "bookclerk-library",
  "bookclerk-plugin-sdk",
+ "chrono",
  "rusqlite",
  "rusqlite_migration",
  "sea-orm",
@@ -2017,6 +2022,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",

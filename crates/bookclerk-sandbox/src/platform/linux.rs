@@ -266,9 +266,9 @@ fn write_cgroup_limits(dir: &Path, limits: &crate::ResourceLimits) -> Result<(),
     }
     if let Some(percent) = limits.cpu_rate_percent {
         // cgroup v2 cpu.max: "$MAX $PERIOD" in microseconds. 100ms period;
-        // quota scales with the 1–100 percent hard cap.
+        // percent is of **one** logical CPU (100 → one core; 200 → two cores).
         const PERIOD_US: u64 = 100_000;
-        let pct = u64::from(percent.clamp(1, 100));
+        let pct = u64::from(percent.max(1));
         let quota = PERIOD_US.saturating_mul(pct) / 100;
         write_cgroup_file(dir, "cpu.max", &format!("{quota} {PERIOD_US}"))?;
     }

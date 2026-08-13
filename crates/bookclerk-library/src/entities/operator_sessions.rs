@@ -22,6 +22,12 @@ pub struct Model {
     pub elevated_from_user_id: Option<i64>,
     /// User id being impersonated by this operator session, if any.
     pub impersonating_user_id: Option<i64>,
+    /// Raw User-Agent captured at session mint (optional).
+    pub user_agent: Option<String>,
+    /// Best-effort device class (`desktop` / `mobile` / `tablet` / `api`).
+    pub device_type: Option<String>,
+    /// Best-effort OS / client label (`Windows`, `Android`, `API`, …).
+    pub client_label: Option<String>,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

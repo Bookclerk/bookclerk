@@ -1,0 +1,35 @@
+api_version = 1
+id = "echo_workerd_fetch"
+name = "Echo Fetch (workerd)"
+kind = "integration"
+version = "1.0.0"
+runtime = "workerd"
+logo = "assets/logo.svg"
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+# Host-clamped; subrequests enforced in egress (local workerd has no Cap'n Proto cpuMs/subRequests).
+cpu_ms = 30000
+subrequests = 50
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[capabilities.network]
+mode = "outbound"
+domains = ["*.example.com"]
+
+[capabilities.bindings]
+config = true
+plugin_kv = true
+
+[capabilities.methods]
+list = ["handshake", "health", "diagnose", "onEvent", "cli"]

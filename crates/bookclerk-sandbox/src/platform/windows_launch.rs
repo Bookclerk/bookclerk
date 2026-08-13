@@ -41,8 +41,8 @@ use windows::Win32::System::JobObjects::{
     JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
     JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_CPU_RATE_CONTROL_ENABLE, JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
-    JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+    JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Threading::{
@@ -426,8 +426,9 @@ fn configure_job(job: HANDLE, limits: &JobResourceLimits) -> Result<(), SandboxE
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
         info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         if let Some(bytes) = limits.memory_bytes {
-            info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
-            info.ProcessMemoryLimit = bytes;
+            // Job-wide commit charge (main + children), aligned with Linux cgroup memory.max.
+            info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+            info.JobMemoryLimit = bytes;
         }
         if let Some(n) = limits.active_processes {
             info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
@@ -447,7 +448,11 @@ fn configure_job(job: HANDLE, limits: &JobResourceLimits) -> Result<(), SandboxE
                     | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
                 ..Default::default()
             };
-            cpu.Anonymous.CpuRate = percent.clamp(1, 100) * 100;
+            // Job CpuRate is % of *all* processors; Spec percent is one-core.
+            let logical_cpus = std::thread::available_parallelism()
+                .map(|n| n.get() as u32)
+                .unwrap_or(1);
+            cpu.Anonymous.CpuRate = crate::windows_job_cpu_rate(percent, logical_cpus);
             SetInformationJobObject(
                 job,
                 JobObjectCpuRateControlInformation,

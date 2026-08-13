@@ -732,6 +732,70 @@ export interface StatementDto {
    * arrays matching the host RPC encoding). Defaults to an empty list.
    */
   values?: unknown[];
+  /**
+   * Guest transaction id from `dbBegin`. Omitted for autocommit statements.
+   */
+  txnId?: string;
+}
+
+/**
+ * Parameters for database `dbBegin`.
+ */
+export interface DbBeginParams {
+  /**
+   * Existing transaction to nest a savepoint under. Omitted to start a
+   * top-level transaction.
+   */
+  parentTxnId?: string;
+}
+
+/**
+ * Result of a successful `dbBegin`.
+ */
+export interface DbBeginResult {
+  /**
+   * Opaque id the host must send on subsequent statements and commit/rollback.
+   */
+  txnId: string;
+}
+
+/**
+ * Parameters for `dbCommit` / `dbRollback`.
+ */
+export interface DbTxnParams {
+  /**
+   * Transaction id returned by `dbBegin`.
+   */
+  txnId: string;
+}
+
+/**
+ * Result of `dbConnect`. D1 sets `interactiveTxn` to false and implements
+ * `dbAtomic` instead of interactive `dbBegin`.
+ */
+export interface DbConnectResult {
+  /** SeaORM dialect (`sqlite` or `postgres`). D1 reports `sqlite`. */
+  dialect: string;
+  /**
+   * When false, the host must not use SeaORM `begin()` / `dbBegin`.
+   * Omitted by older guests (treated as true).
+   */
+  interactiveTxn?: boolean;
+}
+
+/**
+ * Named atomic library operation for `dbAtomic` (D1 HTTP batch).
+ */
+export type DbAtomicParams = JsonObject;
+
+/**
+ * Application result of `dbAtomic`.
+ */
+export interface DbAtomicResult {
+  /** `ok`, `empty`, `notFound`, `lastOwner`, `claimInvalid`, `passwordRequired`. */
+  status: string;
+  /** Library record JSON when `status` is `ok`. */
+  payload?: unknown;
 }
 
 /**
@@ -775,6 +839,10 @@ export const METHOD_NAMES = [
   "dbPing",
   "dbQuery",
   "dbExecute",
+  "dbBegin",
+  "dbCommit",
+  "dbRollback",
+  "dbAtomic",
 ] as const;
 
 /**

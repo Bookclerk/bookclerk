@@ -122,6 +122,18 @@
         },
         "dbExecute": {
           "$ref": "#/$defs/StatementDto"
+        },
+        "dbBegin": {
+          "$ref": "#/$defs/DbBeginParams"
+        },
+        "dbCommit": {
+          "$ref": "#/$defs/DbTxnParams"
+        },
+        "dbRollback": {
+          "$ref": "#/$defs/DbTxnParams"
+        },
+        "dbAtomic": {
+          "$ref": "#/$defs/DbAtomicParams"
         }
       }
     }
@@ -1086,6 +1098,67 @@
         },
         "values": {
           "type": "array"
+        },
+        "txnId": {
+          "type": "string"
+        }
+      }
+    },
+    "DbBeginParams": {
+      "type": "object",
+      "properties": {
+        "parentTxnId": {
+          "type": "string"
+        }
+      }
+    },
+    "DbBeginResult": {
+      "type": "object",
+      "required": [
+        "txnId"
+      ],
+      "properties": {
+        "txnId": {
+          "type": "string"
+        }
+      }
+    },
+    "DbTxnParams": {
+      "type": "object",
+      "required": [
+        "txnId"
+      ],
+      "properties": {
+        "txnId": {
+          "type": "string"
+        }
+      }
+    },
+    "DbAtomicParams": {
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "type": "string",
+          "description": "Named atomic library operation (camelCase tag: deleteUser, redeemClaimTicket, …)."
+        }
+      },
+      "additionalProperties": true
+    },
+    "DbAtomicResult": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "Application outcome: ok, empty, notFound, lastOwner, claimInvalid, passwordRequired."
+        },
+        "payload": {
+          "description": "Op-specific library record JSON when status is ok."
         }
       }
     },

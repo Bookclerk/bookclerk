@@ -475,6 +475,45 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 tracing::warn!(key, value = v, "unknown integrations override; ignoring");
             }
         }
+        "plugins.isolation" => {
+            if let Some(isolation) = crate::Isolation::parse(v) {
+                config.plugins.isolation = isolation;
+            }
+        }
+        "media.isolation" => {
+            if let Some(isolation) = crate::Isolation::parse(v) {
+                config.media.isolation = isolation;
+            }
+        }
+        "plugins.jail.memory_mib" => {
+            if v.is_empty() {
+                config.plugins.jail.memory_mib = None;
+            } else if let Ok(n) = v.parse::<u64>() {
+                config.plugins.jail.memory_mib = Some(n);
+            }
+        }
+        "plugins.jail.cpu_rate_percent" | "plugins.jail.cpu_cores" => {
+            if v.is_empty() {
+                // Empty resets to the platform default (80% of one core).
+                config.plugins.jail.cpu_rate_percent = Some(80);
+            } else if v.contains('.') {
+                if let Ok(cores) = v.parse::<f64>() {
+                    let pct = ((cores * 100.0).round() as u32)
+                        .clamp(1, crate::plugins::host_cpu_rate_max());
+                    config.plugins.jail.cpu_rate_percent = Some(pct);
+                }
+            } else if let Ok(n) = v.parse::<u32>() {
+                config.plugins.jail.cpu_rate_percent =
+                    Some(n.clamp(1, crate::plugins::host_cpu_rate_max()));
+            }
+        }
+        "plugins.jail.extra_processes" => {
+            if v.is_empty() {
+                config.plugins.jail.extra_processes = Some(2);
+            } else if let Ok(n) = v.parse::<u32>() {
+                config.plugins.jail.extra_processes = Some(n.min(62));
+            }
+        }
         _ => tracing::warn!(key, value = v, "unknown setting override; ignoring"),
     }
 }

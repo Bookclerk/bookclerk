@@ -1,8 +1,15 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import { AccountSettingsPanel } from "@/components/AccountSettingsPanel";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
+import { UserManagementPanel } from "@/components/UserManagementPanel";
+import {
+  PluginConsentDialog,
+  type PluginConsentGrantDraft,
+} from "@/components/PluginConsentDialog";
+import { CpuCoresSlider } from "@/components/CpuCoresSlider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,11 +18,13 @@ import {
   fetchPluginConsent,
   fetchSettings,
   isApiError,
+  listSessions,
   listUsers,
   patchSettings,
-  startImpersonate,
+  revokeSession,
   type AuthSession,
   type ListedUser,
+  type ListedSession,
   type PluginConsentResponse,
   type PluginSettingOption,
   type PluginSettingsGroup,
@@ -45,6 +54,13 @@ const DEFAULT_DAEMON_PORT = "8787";
 
 type ListenExposure = "localhost" | "all" | "custom";
 type ListenRow = { host: string; port: string };
+type SettingsTab = "account" | "users" | "server" | "plugins";
+
+const ISOLATION_OPTIONS = [
+  ["required", "Required"],
+  ["best-effort", "Best effort"],
+  ["off", "Off"],
+] as const;
 
 /** Split one `daemon.listen` entry (`127.0.0.1:8787` / `[::1]:8787`) into host + port. */
 function splitDaemonListen(listen: string): ListenRow {
@@ -131,6 +147,27 @@ function daemonPortError(port: string): string | null {
   return null;
 }
 
+function optionalIntegerError(value: string, label: string, min = 0, max?: number): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^\d+$/.test(trimmed)) return `${label} must be a whole number`;
+  const n = Number(trimmed);
+  if (n < min) return `${label} must be at least ${min}`;
+  if (max != null && n > max) return `${label} must be ${max} or lower`;
+  return null;
+}
+
+const DEFAULT_JAIL_CPU_CORES = 0.8;
+const DEFAULT_JAIL_EXTRA_PROCESSES = "2";
+
+/** Format cores for the Settings patch body (daemon already validates/clamps). */
+function coresSettingValue(cores: number | null | undefined): string {
+  if (cores == null || !Number.isFinite(cores)) {
+    return DEFAULT_JAIL_CPU_CORES.toFixed(2);
+  }
+  return cores.toFixed(2);
+}
+
 function pluginRowKey(plugin: PluginSettingsGroup): string {
   return `${plugin.kind}:${plugin.id}`;
 }
@@ -140,6 +177,20 @@ function findEnabledOption(plugin: PluginSettingsGroup): PluginSettingOption | n
   const byKey = plugin.settings.find((option) => option.key.endsWith(".enabled"));
   if (byKey) return byKey;
   return plugin.settings.find((option) => option.label.trim().toLowerCase() === "enabled") ?? null;
+}
+
+function runtimeLoadedKey(plugin: PluginSettingsGroup): string {
+  const plural =
+    plugin.kind === "source"
+      ? "sources"
+      : plugin.kind === "integration"
+        ? "integrations"
+        : `${plugin.kind}s`;
+  return `runtime.${plural}.${plugin.id}.loaded`;
+}
+
+function effectiveLoaded(settings: SettingsResponse | null, plugin: PluginSettingsGroup): boolean {
+  return settings?.effective?.[runtimeLoadedKey(plugin)] === "true";
 }
 
 /** Prefer API `logo`, then known store/domain favicons; advance on load failure. */
@@ -297,20 +348,36 @@ export function SettingsPage({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [daemonAuthEnabled, setDaemonAuthEnabled] = useState(true);
   const [autoAcquire, setAutoAcquire] = useState(false);
+  const [pluginsIsolation, setPluginsIsolation] = useState("required");
+  const [mediaIsolation, setMediaIsolation] = useState("required");
+  const [jailMemoryMiB, setJailMemoryMiB] = useState("");
+  const [jailCpuCores, setJailCpuCores] = useState(DEFAULT_JAIL_CPU_CORES);
+  const [jailExtraProcesses, setJailExtraProcesses] = useState(DEFAULT_JAIL_EXTRA_PROCESSES);
   const [pluginValues, setPluginValues] = useState<Record<string, string>>({});
   const [pluginErrors, setPluginErrors] = useState<Record<string, string>>({});
+  const [consentCoverage, setConsentCoverage] = useState<Record<string, PluginConsentResponse>>({});
   /** Plugins start collapsed; keys are `${kind}:${id}`. */
   const [expandedPlugins, setExpandedPlugins] = useState<Set<string>>(() => new Set());
   const [consentPrompt, setConsentPrompt] = useState<PluginConsentResponse | null>(null);
+  const [pendingEnableOption, setPendingEnableOption] = useState<PluginSettingOption | null>(null);
   const [consentBusy, setConsentBusy] = useState(false);
   const [operatorBaseline, setOperatorBaseline] = useState<{
     daemonListen: string;
     daemonAuthEnabled: boolean;
     autoAcquire: boolean;
+    pluginsIsolation: string;
+    mediaIsolation: string;
+    jailMemoryMiB: string;
+    jailCpuCores: number;
+    jailExtraProcesses: string;
     pluginValues: Record<string, string>;
   } | null>(null);
   const [users, setUsers] = useState<ListedUser[]>([]);
-  const [impersonateBusy, setImpersonateBusy] = useState(false);
+  const [usersError, setUsersError] = useState<string | null>(null);
+  const [usersBusy, setUsersBusy] = useState(false);
+  const [sessions, setSessions] = useState<ListedSession[]>([]);
+  const [sessionsBusy, setSessionsBusy] = useState(false);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
 
   const daemonListen =
     listenExposure === "custom"
@@ -324,6 +391,70 @@ export function SettingsPage({
           ? "Add at least one listen address."
           : null
       : daemonPortError(daemonPort);
+  const jailMemoryError = optionalIntegerError(jailMemoryMiB, "Memory MiB");
+  const hostCpuCoresMax =
+    typeof settings?.host_cpu_cores_max === "number" &&
+    Number.isFinite(settings.host_cpu_cores_max) &&
+    settings.host_cpu_cores_max > 0
+      ? settings.host_cpu_cores_max
+      : 1;
+  const jailCpuError =
+    jailCpuCores < 0.01 || hostCpuCoresMax < jailCpuCores
+      ? `CPU cores must be between 0.01 and ${hostCpuCoresMax.toFixed(2)}`
+      : null;
+  const jailProcessError = optionalIntegerError(
+    jailExtraProcesses,
+    "Additional processes",
+    0,
+    62,
+  );
+  const confinementHasErrors = Boolean(jailMemoryError || jailCpuError || jailProcessError);
+  const isImpersonating = Boolean(session?.impersonating);
+  const showOperatorChrome = role === "operator" && !isImpersonating;
+  const canManageUsers = role === "operator" || role === "owner" || role === "administrator";
+  const showUserAdmin = canManageUsers && (!isImpersonating || role === "administrator");
+  const canManageOperator = showOperatorChrome;
+  const showBootstrap = showOperatorChrome && !loading && users.length === 0;
+  const adminCount = useMemo(
+    () => users.filter((user) => user.role === "administrator" && user.status === "active").length,
+    [users],
+  );
+  const currentUserId = session?.user?.id;
+
+  function resolveDefaultTab(): SettingsTab {
+    return "account";
+  }
+
+  const [activeTab, setActiveTab] = useState<SettingsTab>("account");
+  const [tabInitialized, setTabInitialized] = useState(false);
+
+  useEffect(() => {
+    if (!loading && !tabInitialized) {
+      setActiveTab(resolveDefaultTab());
+      setTabInitialized(true);
+    }
+  }, [loading, tabInitialized]);
+
+  useEffect(() => {
+    if (!isImpersonating) return;
+    if (activeTab === "server" || activeTab === "plugins") {
+      setActiveTab("account");
+      return;
+    }
+    // Impersonating a non-privileged user: hide User Management.
+    if (activeTab === "users" && role !== "administrator" && role !== "owner") {
+      setActiveTab("account");
+    }
+  }, [isImpersonating, activeTab, role]);
+
+  useEffect(() => {
+    if (!showUserAdmin && activeTab === "users") {
+      setActiveTab("account");
+    }
+    if (!showOperatorChrome && (activeTab === "server" || activeTab === "plugins")) {
+      setActiveTab("account");
+    }
+  }, [showUserAdmin, showOperatorChrome, activeTab]);
 
   function buildPluginValues(nextSettings: SettingsResponse): Record<string, string> {
     const out: Record<string, string> = {};
@@ -347,6 +478,24 @@ export function SettingsPage({
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
     }
+  }
+
+  async function prefetchConsentCoverage(nextSettings: SettingsResponse) {
+    const entries = await Promise.all(
+      nextSettings.plugins.map(async (plugin) => {
+        try {
+          return [plugin.id, await fetchPluginConsent(plugin.id)] as const;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    setConsentCoverage(
+      entries.reduce<Record<string, PluginConsentResponse>>((acc, entry) => {
+        if (entry) acc[entry[0]] = entry[1];
+        return acc;
+      }, {}),
+    );
   }
 
   function parseBooleanLike(value: string): boolean {
@@ -395,7 +544,7 @@ export function SettingsPage({
   }
 
   const operatorHasValidationErrors =
-    Object.keys(pluginErrors).length > 0 || daemonListenError !== null;
+    Object.keys(pluginErrors).length > 0 || daemonListenError !== null || confinementHasErrors;
 
   const pluginsByKind = useMemo(() => {
     const buckets = new Map<string, PluginSettingsGroup[]>();
@@ -424,57 +573,112 @@ export function SettingsPage({
     if (autoAcquire !== operatorBaseline.autoAcquire) {
       return true;
     }
+    if (pluginsIsolation !== operatorBaseline.pluginsIsolation) {
+      return true;
+    }
+    if (mediaIsolation !== operatorBaseline.mediaIsolation) {
+      return true;
+    }
+    if (jailMemoryMiB !== operatorBaseline.jailMemoryMiB) {
+      return true;
+    }
+    if (jailCpuCores !== operatorBaseline.jailCpuCores) {
+      return true;
+    }
+    if (jailExtraProcesses !== operatorBaseline.jailExtraProcesses) {
+      return true;
+    }
     const currentKeys = Object.keys(pluginValues);
     const baselineKeys = Object.keys(operatorBaseline.pluginValues);
     if (currentKeys.length !== baselineKeys.length) {
       return true;
     }
     return currentKeys.some((key) => pluginValues[key] !== operatorBaseline.pluginValues[key]);
-  }, [autoAcquire, daemonAuthEnabled, daemonListen, operatorBaseline, pluginValues]);
+  }, [
+    autoAcquire,
+    daemonAuthEnabled,
+    daemonListen,
+    jailCpuCores,
+    jailExtraProcesses,
+    jailMemoryMiB,
+    mediaIsolation,
+    operatorBaseline,
+    pluginValues,
+    pluginsIsolation,
+  ]);
 
   async function refresh() {
     setError(null);
     setOperatorLoadError(null);
+    setUsersError(null);
+    setSessionsError(null);
     setLoading(true);
     try {
-      if (role !== "operator") {
+      if (!canManageOperator) {
         setSettings(null);
         setPluginValues({});
         setPluginErrors({});
+        setConsentCoverage({});
         setOperatorBaseline(null);
-        return;
+      } else {
+        const nextSettings = await withRequestTimeout(
+          fetchSettings(),
+          "Operator settings request",
+        );
+        const nextPluginValues = buildPluginValues(nextSettings);
+        setSettings(nextSettings);
+        const listen = nextSettings.settings["daemon.listen"] ?? "";
+        const rows = parseListenList(listen);
+        const exposure = detectListenExposure(rows);
+        setListenExposure(exposure);
+        setDaemonPort(rows[0]?.port ?? DEFAULT_DAEMON_PORT);
+        setAdvancedRows(rows);
+        setAdvancedOpen(exposure === "custom");
+        setDaemonAuthEnabled(nextSettings.settings["daemon.auth.enabled"] === "true");
+        setAutoAcquire(nextSettings.settings["library.auto_acquire"] === "true");
+        setPluginsIsolation(nextSettings.settings["plugins.isolation"] ?? "required");
+        setMediaIsolation(nextSettings.settings["media.isolation"] ?? "required");
+        setJailMemoryMiB(nextSettings.settings["plugins.jail.memory_mib"] ?? "");
+        setJailCpuCores(nextSettings.jail_cpu_cores ?? DEFAULT_JAIL_CPU_CORES);
+        setJailExtraProcesses(
+          nextSettings.settings["plugins.jail.extra_processes"] ?? DEFAULT_JAIL_EXTRA_PROCESSES,
+        );
+        setPluginValues(nextPluginValues);
+        setPluginErrors({});
+        setOperatorBaseline({
+          daemonListen:
+            exposure === "custom"
+              ? joinListenRows(rows)
+              : listenListFromExposure(exposure, rows[0]?.port ?? DEFAULT_DAEMON_PORT),
+          daemonAuthEnabled: nextSettings.settings["daemon.auth.enabled"] === "true",
+          autoAcquire: nextSettings.settings["library.auto_acquire"] === "true",
+          pluginsIsolation: nextSettings.settings["plugins.isolation"] ?? "required",
+          mediaIsolation: nextSettings.settings["media.isolation"] ?? "required",
+          jailMemoryMiB: nextSettings.settings["plugins.jail.memory_mib"] ?? "",
+          jailCpuCores: nextSettings.jail_cpu_cores ?? DEFAULT_JAIL_CPU_CORES,
+          jailExtraProcesses:
+            nextSettings.settings["plugins.jail.extra_processes"] ?? DEFAULT_JAIL_EXTRA_PROCESSES,
+          pluginValues: nextPluginValues,
+        });
+        void prefetchConsentCoverage(nextSettings);
       }
 
-      const nextSettings = await withRequestTimeout(
-        fetchSettings(),
-        "Operator settings request",
-      );
-      const nextPluginValues = buildPluginValues(nextSettings);
-      setSettings(nextSettings);
-      const listen = nextSettings.settings["daemon.listen"] ?? "";
-      const rows = parseListenList(listen);
-      const exposure = detectListenExposure(rows);
-      setListenExposure(exposure);
-      setDaemonPort(rows[0]?.port ?? DEFAULT_DAEMON_PORT);
-      setAdvancedRows(rows);
-      setAdvancedOpen(exposure === "custom");
-      setDaemonAuthEnabled(nextSettings.settings["daemon.auth.enabled"] === "true");
-      setAutoAcquire(nextSettings.settings["library.auto_acquire"] === "true");
-      setPluginValues(nextPluginValues);
-      setPluginErrors({});
-      setOperatorBaseline({
-        daemonListen:
-          exposure === "custom"
-            ? joinListenRows(rows)
-            : listenListFromExposure(exposure, rows[0]?.port ?? DEFAULT_DAEMON_PORT),
-        daemonAuthEnabled: nextSettings.settings["daemon.auth.enabled"] === "true",
-        autoAcquire: nextSettings.settings["library.auto_acquire"] === "true",
-        pluginValues: nextPluginValues,
-      });
-      try {
-        setUsers(await listUsers());
-      } catch {
+      if (showUserAdmin) {
+        try {
+          setUsers(await listUsers());
+        } catch (err) {
+          setUsers([]);
+          setUsersError(err instanceof Error ? err.message : "Failed to load users");
+        }
+      } else {
         setUsers([]);
+      }
+
+      try {
+        setSessions(await listSessions());
+      } catch (err) {
+        setSessions([]);
+        setSessionsError(err instanceof Error ? err.message : "Failed to load sessions");
       }
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
@@ -508,6 +712,14 @@ export function SettingsPage({
           { key: "daemon.listen", value: nextListen },
           { key: "daemon.auth.enabled", value: String(daemonAuthEnabled) },
           { key: "library.auto_acquire", value: String(autoAcquire) },
+          { key: "plugins.isolation", value: pluginsIsolation },
+          { key: "media.isolation", value: mediaIsolation },
+          { key: "plugins.jail.memory_mib", value: jailMemoryMiB.trim() },
+          { key: "plugins.jail.cpu_cores", value: coresSettingValue(jailCpuCores) },
+          {
+            key: "plugins.jail.extra_processes",
+            value: jailExtraProcesses.trim() || DEFAULT_JAIL_EXTRA_PROCESSES,
+          },
           ...pluginUpdates,
         ],
       }),
@@ -525,6 +737,13 @@ export function SettingsPage({
     setDaemonPort(rows[0]?.port ?? DEFAULT_DAEMON_PORT);
     setAdvancedRows(rows);
     setAdvancedOpen(exposure === "custom");
+    setPluginsIsolation(next.settings["plugins.isolation"] ?? "required");
+    setMediaIsolation(next.settings["media.isolation"] ?? "required");
+    setJailMemoryMiB(next.settings["plugins.jail.memory_mib"] ?? "");
+    setJailCpuCores(next.jail_cpu_cores ?? DEFAULT_JAIL_CPU_CORES);
+    setJailExtraProcesses(
+      next.settings["plugins.jail.extra_processes"] ?? DEFAULT_JAIL_EXTRA_PROCESSES,
+    );
     setPluginValues(nextPluginValues);
     setPluginErrors({});
     setOperatorBaseline({
@@ -534,21 +753,34 @@ export function SettingsPage({
           : listenListFromExposure(exposure, rows[0]?.port ?? DEFAULT_DAEMON_PORT),
       daemonAuthEnabled: next.settings["daemon.auth.enabled"] === "true",
       autoAcquire: next.settings["library.auto_acquire"] === "true",
+      pluginsIsolation: next.settings["plugins.isolation"] ?? "required",
+      mediaIsolation: next.settings["media.isolation"] ?? "required",
+      jailMemoryMiB: next.settings["plugins.jail.memory_mib"] ?? "",
+      jailCpuCores: next.jail_cpu_cores ?? DEFAULT_JAIL_CPU_CORES,
+      jailExtraProcesses:
+        next.settings["plugins.jail.extra_processes"] ?? DEFAULT_JAIL_EXTRA_PROCESSES,
       pluginValues: nextPluginValues,
     });
+    void prefetchConsentCoverage(next);
   }
 
-  async function promptConsentForPlugin(pluginId: string, fallbackSummary?: string[]) {
+  async function promptConsentForPlugin(
+    pluginId: string,
+    fallbackSummary?: string[],
+    enableOption?: PluginSettingOption,
+  ) {
+    setPendingEnableOption(enableOption ?? null);
     try {
       const consent = await fetchPluginConsent(pluginId);
       setConsentPrompt(consent);
     } catch {
       setConsentPrompt({
         plugin_id: pluginId,
+        runtime: "native",
         request: {
           pluginId,
           kind: "",
-          networkMode: "",
+          networkMode: "deny",
           domains: [],
           bindings: [],
           compatibilityFlags: [],
@@ -559,11 +791,55 @@ export function SettingsPage({
           ? fallbackSummary
           : [
               `Plugin: ${pluginId}`,
-              "Approve network mode and host bindings before enabling.",
-              "Workerd plugins may list outbound domains (enforced in the isolate).",
-              "Native outbound has no hostname allowlist — coarse jail internet only.",
+              "Approve network mode, bindings, and disk budget before enabling.",
+              "Workerd guests also enforce domain allowlists and isolate CPU/subrequest budgets.",
+              "Native guests use OS-jail allow-or-deny for network (no hostname filter).",
             ],
+        limits: {
+          cpu_ms: 30000,
+          subrequests: 50,
+          max_cpu_ms: 120000,
+          max_subrequests: 1000,
+          disk_mib: 512,
+          max_disk_mib: 4096,
+          memory_mib: 512,
+          max_memory_mib: 4096,
+          cpu_cores: 0.8,
+          max_cpu_cores: 1,
+          jail_cpu_cores: 0.8,
+          extra_processes: 2,
+          max_extra_processes: 62,
+          known_bindings: ["config", "secrets", "plugin_kv", "work_fs", "oauth"],
+        },
       });
+    }
+  }
+
+  async function onPluginEnabledChange(
+    plugin: PluginSettingsGroup,
+    option: PluginSettingOption,
+    checked: boolean,
+  ) {
+    if (!checked) {
+      setPluginValue(option, "false");
+      return;
+    }
+    setError(null);
+    setPluginErrors((current) => {
+      const { [option.key]: _removed, ...rest } = current;
+      return rest;
+    });
+    try {
+      const consent = consentCoverage[plugin.id] ?? (await fetchPluginConsent(plugin.id));
+      setConsentCoverage((current) => ({ ...current, [plugin.id]: consent }));
+      if (consent.covered) {
+        setPluginValue(option, "true");
+        return;
+      }
+      setPendingEnableOption(option);
+      setConsentPrompt(consent);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load plugin consent");
     }
   }
 
@@ -594,15 +870,21 @@ export function SettingsPage({
     }
   }
 
-  async function onConsentApprove() {
+  async function onConsentApprove(grant: PluginConsentGrantDraft) {
     if (!consentPrompt) return;
     setConsentBusy(true);
     setError(null);
     try {
-      await approvePluginConsent(consentPrompt.plugin_id);
-      const next = await saveOperatorSettings();
-      applySavedSettings(next, daemonListen);
+      const approved = await approvePluginConsent(consentPrompt.plugin_id, grant);
+      setConsentCoverage((current) => ({
+        ...current,
+        [consentPrompt.plugin_id]: approved,
+      }));
+      if (pendingEnableOption) {
+        setPluginValue(pendingEnableOption, "true");
+      }
       setConsentPrompt(null);
+      setPendingEnableOption(null);
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         onSessionExpired();
@@ -621,6 +903,49 @@ export function SettingsPage({
   async function onSignOut() {
     await signOut(role);
     onLogout();
+  }
+
+  async function reloadUsers() {
+    if (!showUserAdmin) return;
+    setUsersError(null);
+    setUsers(await listUsers());
+  }
+
+  async function reloadSessions() {
+    setSessionsError(null);
+    setSessions(await listSessions());
+  }
+
+  async function onRevokeSession(id: number) {
+    setSessionsBusy(true);
+    setSessionsError(null);
+    try {
+      await revokeSession(id);
+      await reloadSessions();
+      await onSessionChange?.();
+    } catch (err) {
+      setSessionsError(err instanceof Error ? err.message : "Session revoke failed");
+    } finally {
+      setSessionsBusy(false);
+    }
+  }
+
+  async function onRevokeOtherSessions() {
+    const others = sessions.filter((row) => !row.is_current);
+    if (others.length === 0) return;
+    setSessionsBusy(true);
+    setSessionsError(null);
+    try {
+      for (const row of others) {
+        await revokeSession(row.id);
+      }
+      await reloadSessions();
+      await onSessionChange?.();
+    } catch (err) {
+      setSessionsError(err instanceof Error ? err.message : "Session revoke failed");
+    } finally {
+      setSessionsBusy(false);
+    }
   }
 
   function renderPluginOption(plugin: PluginSettingsGroup, option: PluginSettingOption) {
@@ -679,7 +1004,7 @@ export function SettingsPage({
             nav={nav}
             onSignOut={onSignOut}
             actions={
-              role === "operator" ? (
+              showOperatorChrome ? (
                 <Button
                   variant="secondary"
                   onClick={() => void refresh()}
@@ -696,16 +1021,89 @@ export function SettingsPage({
 
       <div className="min-h-0 flex-1 overflow-auto">
       <main className={cn("flex w-full flex-col gap-8 px-4 py-6 sm:px-5", pageWidthClass)}>
-        <div className="space-y-1">
-          <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">Settings</h1>
-          <p className="text-sm text-ink/60">
-            {role === "operator"
-              ? "Daemon, library, and plugin knobs for this Bookclerk host."
-              : "User preferences are under Preferences in the header menu."}
-          </p>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">Settings</h1>
+            <p className="text-sm text-ink/60">
+              {showOperatorChrome
+                ? "Account, users, daemon, and plugin knobs for this host."
+                : showUserAdmin
+                  ? "Account security and user management. Discover preferences stay in the header Preferences dialog."
+                  : "Account security and sessions. Discover preferences stay in the header Preferences dialog."}
+            </p>
+          </div>
+
+          <div
+            className="flex flex-wrap gap-1 rounded-md border border-ink/10 bg-white/40 p-1"
+            role="tablist"
+            aria-label="Settings sections"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "account"}
+              className={cn(
+                "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                activeTab === "account"
+                  ? "bg-ink text-paper shadow-sm"
+                  : "text-ink/60 hover:text-ink",
+              )}
+              onClick={() => setActiveTab("account")}
+            >
+              Account
+            </button>
+            {showUserAdmin ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "users"}
+                className={cn(
+                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                  activeTab === "users"
+                    ? "bg-ink text-paper shadow-sm"
+                    : "text-ink/60 hover:text-ink",
+                )}
+                onClick={() => setActiveTab("users")}
+              >
+                User Management
+              </button>
+            ) : null}
+            {showOperatorChrome ? (
+              <>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "server"}
+                  className={cn(
+                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                    activeTab === "server"
+                      ? "bg-ink text-paper shadow-sm"
+                      : "text-ink/60 hover:text-ink",
+                  )}
+                  onClick={() => setActiveTab("server")}
+                >
+                  Server Settings
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "plugins"}
+                  className={cn(
+                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                    activeTab === "plugins"
+                      ? "bg-ink text-paper shadow-sm"
+                      : "text-ink/60 hover:text-ink",
+                  )}
+                  onClick={() => setActiveTab("plugins")}
+                >
+                  Plugins
+                </button>
+              </>
+            ) : null}
+          </div>
         </div>
 
-        {error && role !== "operator" ? (
+        {error && !showOperatorChrome ? (
           <ErrorStatePage
             title="Settings request failed"
             message={error}
@@ -713,64 +1111,56 @@ export function SettingsPage({
           />
         ) : null}
 
-        {role === "operator" && users.length > 0 ? (
-          <section className="space-y-3">
-            <div className="space-y-1">
-              <h2 className="text-lg font-semibold text-ink">Impersonate</h2>
-              <p className="text-sm text-ink/55">
-                View the library as another user. A banner appears until you stop.
-              </p>
-            </div>
-            <ul className="divide-y divide-ink/10 bg-white/35">
-              {users.map((u) => (
-                <li
-                  key={u.id}
-                  className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
-                >
-                  <div>
-                    <div className="font-medium text-ink">
-                      {u.display_name?.trim() || `User #${u.id}`}
-                    </div>
-                    <div className="text-xs text-ink/50">
-                      {u.role} · {u.status}
-                    </div>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    disabled={
-                      impersonateBusy ||
-                      session?.impersonating?.user_id === u.id
-                    }
-                    onClick={() => {
-                      void (async () => {
-                        setImpersonateBusy(true);
-                        try {
-                          await startImpersonate(u.id);
-                          await onSessionChange?.();
-                        } catch (err) {
-                          setError(
-                            err instanceof Error
-                              ? err.message
-                              : "Impersonate failed",
-                          );
-                        } finally {
-                          setImpersonateBusy(false);
-                        }
-                      })();
-                    }}
-                  >
-                    {session?.impersonating?.user_id === u.id
-                      ? "Active"
-                      : "Impersonate"}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          </section>
+        {activeTab === "account" ? (
+          <AccountSettingsPanel
+            session={session ?? null}
+            onSessionChange={onSessionChange}
+            onDeleted={async () => {
+              await onSignOut();
+            }}
+            sessions={sessions}
+            sessionsBusy={sessionsBusy}
+            sessionsError={sessionsError}
+            onRefreshSessions={() => {
+              void (async () => {
+                setSessionsBusy(true);
+                try {
+                  await reloadSessions();
+                } catch (err) {
+                  setSessionsError(
+                    err instanceof Error ? err.message : "Failed to load sessions",
+                  );
+                } finally {
+                  setSessionsBusy(false);
+                }
+              })();
+            }}
+            onRevokeSession={(id) => void onRevokeSession(id)}
+            onRevokeOtherSessions={() => void onRevokeOtherSessions()}
+          />
         ) : null}
 
-        {role === "operator" ? (
+        {activeTab === "users" && showUserAdmin ? (
+          <UserManagementPanel
+            users={users}
+            setUsers={setUsers}
+            busy={usersBusy}
+            setBusy={setUsersBusy}
+            error={usersError}
+            setError={setUsersError}
+            showBootstrap={showBootstrap}
+            showOperatorChrome={showOperatorChrome}
+            session={session ?? null}
+            adminCount={adminCount}
+            currentUserId={currentUserId}
+            onSessionChange={onSessionChange}
+            onUsersChanged={async () => {
+              await reloadUsers();
+            }}
+          />
+        ) : null}
+
+        {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (
           loading ? (
             <p className="text-sm text-ink/50">Loading operator settings…</p>
           ) : settings ? (
@@ -785,6 +1175,8 @@ export function SettingsPage({
                 </p>
               ) : null}
 
+              {activeTab === "server" ? (
+                <>
               <section className="space-y-3">
                 <div className="space-y-1">
                   <h2 className="text-lg font-semibold text-ink">Daemon</h2>
@@ -982,6 +1374,103 @@ export function SettingsPage({
                 </div>
               </section>
 
+              <section className="space-y-3">
+                <div className="space-y-1">
+                  <h2 className="text-lg font-semibold text-ink">Confinement</h2>
+                  <p className="text-sm text-ink/55">
+                    Host isolation policy for plugins and media workers.
+                  </p>
+                </div>
+                <div className="grid gap-4 bg-white/35 px-3 py-3 sm:grid-cols-2">
+                  <FieldBlock label="Plugin isolation" htmlFor="plugins-isolation">
+                    <select
+                      id="plugins-isolation"
+                      value={pluginsIsolation}
+                      onChange={(e) => setPluginsIsolation(e.target.value)}
+                      className={selectClassName}
+                    >
+                      {ISOLATION_OPTIONS.map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </FieldBlock>
+                  <FieldBlock label="Media isolation" htmlFor="media-isolation">
+                    <select
+                      id="media-isolation"
+                      value={mediaIsolation}
+                      onChange={(e) => setMediaIsolation(e.target.value)}
+                      className={selectClassName}
+                    >
+                      {ISOLATION_OPTIONS.map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </FieldBlock>
+                  <FieldBlock
+                    label="Jail memory MiB"
+                    htmlFor="plugins-jail-memory"
+                    hint="Leave empty for the platform default."
+                    error={jailMemoryError ?? undefined}
+                  >
+                    <Input
+                      id="plugins-jail-memory"
+                      type="number"
+                      min={0}
+                      value={jailMemoryMiB}
+                      onChange={(e) => setJailMemoryMiB(e.target.value)}
+                      placeholder="default"
+                    />
+                  </FieldBlock>
+                  <FieldBlock
+                    label="Jail CPU cores"
+                    htmlFor="plugins-jail-cpu"
+                    hint="Per-jail ceiling in cores (two decimals; 1.00 = one logical CPU). Defaults to 0.80. Idle guests do not reserve CPU."
+                    error={jailCpuError ?? undefined}
+                  >
+                    <div className="flex flex-col gap-2">
+                      <CpuCoresSlider
+                        id="plugins-jail-cpu"
+                        value={jailCpuCores}
+                        onChange={(cores) => setJailCpuCores(cores)}
+                        hostMaxCores={hostCpuCoresMax}
+                        disabled={false}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="self-start px-0 text-xs text-ink/55"
+                        onClick={() => setJailCpuCores(DEFAULT_JAIL_CPU_CORES)}
+                      >
+                        Reset to default (0.80)
+                      </Button>
+                    </div>
+                  </FieldBlock>
+                  <FieldBlock
+                    label="Additional processes"
+                    htmlFor="plugins-jail-processes"
+                    hint="Ceiling on extra processes/threads beyond each guest’s launcher overhead (native default 2; workerd headroom is host-managed)."
+                    error={jailProcessError ?? undefined}
+                  >
+                    <Input
+                      id="plugins-jail-processes"
+                      type="number"
+                      min={0}
+                      max={62}
+                      value={jailExtraProcesses}
+                      onChange={(e) => setJailExtraProcesses(e.target.value)}
+                      placeholder={DEFAULT_JAIL_EXTRA_PROCESSES}
+                    />
+                  </FieldBlock>
+                </div>
+              </section>
+                </>
+              ) : null}
+
+              {activeTab === "plugins" ? (
               <section className="space-y-5">
                 <div className="space-y-1">
                   <h2 className="text-lg font-semibold text-ink">Plugins</h2>
@@ -1011,6 +1500,8 @@ export function SettingsPage({
                           );
                           const canExpand =
                             detailSettings.length > 0 || plugin.settings.length === 0;
+                          const consent = consentCoverage[plugin.id];
+                          const loaded = effectiveLoaded(settings, plugin);
 
                           return (
                             <li key={rowKey} className="px-3 py-2.5">
@@ -1057,6 +1548,22 @@ export function SettingsPage({
                                     >
                                       {enabled ? "Enabled" : "Disabled"}
                                     </Badge>
+                                    {loaded ? (
+                                      <Badge className="bg-teal/10 text-ink/70 normal-case tracking-normal">
+                                        Loaded
+                                      </Badge>
+                                    ) : null}
+                                    {consent ? (
+                                      <Badge
+                                        className={
+                                          consent.covered
+                                            ? "bg-teal/15 text-ink normal-case tracking-normal"
+                                            : "bg-brick/10 text-brick normal-case tracking-normal"
+                                        }
+                                      >
+                                        {consent.covered ? "Granted" : "Needs approval"}
+                                      </Badge>
+                                    ) : null}
                                     <input
                                       id={`plugin-enabled-${rowKey}`}
                                       type="checkbox"
@@ -1064,13 +1571,35 @@ export function SettingsPage({
                                       aria-label={`${plugin.id} enabled`}
                                       checked={enabled}
                                       onChange={(e) =>
-                                        setPluginValue(enabledOption, String(e.target.checked))
+                                        void onPluginEnabledChange(
+                                          plugin,
+                                          enabledOption,
+                                          e.target.checked,
+                                        )
                                       }
                                       onClick={(e) => e.stopPropagation()}
                                     />
                                   </div>
                                 ) : (
-                                  <span className="ml-auto text-xs text-ink/45">{plugin.kind}</span>
+                                  <div className="ml-auto flex items-center gap-2">
+                                    {loaded ? (
+                                      <Badge className="bg-teal/10 text-ink/70 normal-case tracking-normal">
+                                        Loaded
+                                      </Badge>
+                                    ) : null}
+                                    {consent ? (
+                                      <Badge
+                                        className={
+                                          consent.covered
+                                            ? "bg-teal/15 text-ink normal-case tracking-normal"
+                                            : "bg-brick/10 text-brick normal-case tracking-normal"
+                                        }
+                                      >
+                                        {consent.covered ? "Granted" : "Needs approval"}
+                                      </Badge>
+                                    ) : null}
+                                    <span className="text-xs text-ink/45">{plugin.kind}</span>
+                                  </div>
                                 )}
                               </div>
 
@@ -1113,6 +1642,7 @@ export function SettingsPage({
                   ))
                 )}
               </section>
+              ) : null}
             </form>
           ) : (
             <ErrorStatePage
@@ -1128,7 +1658,7 @@ export function SettingsPage({
       </main>
       </div>
 
-      {role === "operator" && settings && !loading ? (
+      {showOperatorChrome && settings && !loading && (activeTab === "server" || activeTab === "plugins") ? (
         <div className="shrink-0 border-t border-ink/10 bg-paper/90 px-4 py-3 backdrop-blur-md">
           <div className={cn("flex flex-wrap items-center justify-between gap-3", pageWidthClass)}>
             <p className={`text-xs ${operatorHasValidationErrors ? "text-brick" : "text-ink/50"}`}>
@@ -1150,53 +1680,15 @@ export function SettingsPage({
       ) : null}
 
       {consentPrompt ? (
-        <div
-          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/40 px-4 py-10 sm:items-center"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget && !consentBusy) {
-              setConsentPrompt(null);
-            }
+        <PluginConsentDialog
+          consent={consentPrompt}
+          busy={consentBusy}
+          onCancel={() => {
+            setConsentPrompt(null);
+            setPendingEnableOption(null);
           }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="plugin-consent-title"
-            className="w-full max-w-lg rounded-lg border border-ink/10 bg-paper p-5 shadow-xl"
-          >
-            <h2
-              id="plugin-consent-title"
-              className="font-display text-xl font-semibold text-ink"
-            >
-              Approve plugin permissions
-            </h2>
-            <p className="mt-1 text-sm text-ink/55">
-              Enabling <span className="font-medium text-ink">{consentPrompt.plugin_id}</span>{" "}
-              requires consent for its network mode and host bindings. Workerd plugins enforce
-              declared domains inside the isolate (redirect hops after an allowed initial host
-              do not require re-approval). Native outbound is coarse jail internet with{" "}
-              <span className="font-medium text-ink">no hostname allowlist</span>.
-            </p>
-            <ul className="mt-4 list-disc space-y-1 pl-5 text-sm text-ink/80">
-              {consentPrompt.summary.map((line) => (
-                <li key={line}>{line}</li>
-              ))}
-            </ul>
-            <div className="mt-5 flex flex-wrap justify-end gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={consentBusy}
-                onClick={() => setConsentPrompt(null)}
-              >
-                Cancel
-              </Button>
-              <Button type="button" disabled={consentBusy} onClick={() => void onConsentApprove()}>
-                {consentBusy ? "Approving…" : "Approve and enable"}
-              </Button>
-            </div>
-          </div>
-        </div>
+          onApprove={(grant) => void onConsentApprove(grant)}
+        />
       ) : null}
     </div>
   );

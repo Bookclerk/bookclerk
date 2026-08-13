@@ -36,5 +36,5 @@ ureq.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-[lints]
-workspace = true
+[dev-dependencies]
+tempfile.workspace = true

@@ -7,6 +7,7 @@
 //! ([`migrations`]), typed [`entities`], and the store API. See
 //! `docs/database.md`.
 
+mod atomic_txn;
 mod backend_migrate;
 pub mod entities;
 mod error;
@@ -15,13 +16,16 @@ pub mod migrations;
 mod models;
 pub mod operator_token;
 pub mod password;
+pub mod proxy_txn;
 pub mod scope;
 pub mod secrets;
+mod session_client;
 mod store;
 mod text;
 mod token_hash;
 mod wishlist_merge;
 
+pub use atomic_txn::AtomicTxnBackend;
 pub use backend_migrate::{migrate_library_backend, BackendMigrateOptions, BackendMigrateSummary};
 pub use error::{LibraryError, Result};
 pub use master_key::{
@@ -34,10 +38,11 @@ pub use models::{
     content_kind_from_classic, content_kind_to_classic, is_downloadable, is_episode,
     is_podcast_parent, portal_prefs_key, user_prefs_key, AccountLinkRecord, AccountRecord,
     AcquireStatus, BookRecord, ClaimTicketRecord, EmbeddingRecord, GlobalQueueEntry,
-    ListeningProgressRecord, OperatorSessionRecord, PortalIdentity, RequestStatus,
-    SecurityAuditEvent, TitleRequestRecord, TitleRequestSourceRecord, UserInviteRecord,
-    UserPreferences, UserRecord, UserRole, UserStatus, WishlistPurchaseHint, WishlistStoreEdition,
-    WorkRecord, OPERATOR_PREFS_KEY,
+    ListeningProgressRecord, OperatorSessionRecord, PortalIdentity, PortalSessionRecord,
+    RequestStatus, SecurityAuditEvent, TitleRequestRecord, TitleRequestSourceRecord,
+    UserIntegrationHint, UserInviteRecord, UserListeningHint, UserPreferences, UserPresenceExtras,
+    UserRecord, UserRole, UserStatus, WishlistPurchaseHint, WishlistStoreEdition, WorkRecord,
+    OPERATOR_PREFS_KEY,
 };
 pub use operator_token::{
     env_operator_token, legacy_operator_token_file, load_operator_token,
@@ -46,6 +51,11 @@ pub use operator_token::{
     OPERATOR_TOKEN_SECRET_NAME,
 };
 pub use password::{hash_password, verify_password};
+pub use proxy_txn::{
+    consume_begin_injection, consume_commit_injection, inject_begin_failures,
+    inject_commit_failures, is_txn_broken, note_begin_failed, note_commit_failed, take_txn_fault,
+    txn_broken_err,
+};
 pub use scope::SourceScope;
 pub use secrets::{
     b64_string_to_bytes, build_sealed_record, bytes_to_b64_string, clear_unseal_cache,
@@ -54,6 +64,7 @@ pub use secrets::{
     EncryptedSecretRecord, SecretStore, CIPHER_ALGORITHM, FORMAT_SEALED_V1, KDF_ALGORITHM,
     KDF_M_COST, KDF_P_COST, KDF_T_COST,
 };
+pub use session_client::{classify_session_client, SessionClientInfo};
 pub use store::{
     fallback_work_key, prefer_enrichment_source, wishlist_identities_match,
     CatalogEnrichmentFields, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,

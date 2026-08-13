@@ -59,9 +59,22 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
     let port = free_loopback_port().map_err(|e| format!("allocate port: {e}"))?;
     let listen = ListenSpec::TcpLoopback(port);
     let egress = EgressProxy::from_manifest(&manifest);
+    let limits = manifest
+        .workerd
+        .as_ref()
+        .map(|w| w.limits.effective())
+        .unwrap_or_else(|| bookclerk_plugin_manifest::WorkerdLimits::default().effective());
     let bridge_token = generate_bridge_token();
-    let generated = config::materialize(&root, &manifest, &egress, listen, None, &bridge_token)
-        .map_err(|e| format!("materialize config: {e:#}"))?;
+    let generated = config::materialize(
+        &root,
+        &manifest,
+        &egress,
+        limits,
+        listen,
+        None,
+        &bridge_token,
+    )
+    .map_err(|e| format!("materialize config: {e:#}"))?;
     let base = generated.listen.client_base_url();
 
     let mut child = Command::new(&workerd_bin)

@@ -9,7 +9,7 @@ pub struct Model {
     /// Surrogate primary key assigned by the database.
     #[sea_orm(primary_key)]
     pub id: i64,
-    /// First-party role (`administrator` or `member`).
+    /// First-party role (`owner`, `administrator`, or `member`).
     pub role: String,
     /// Lifecycle status for the row (user, request, …).
     pub status: String,
@@ -17,6 +17,8 @@ pub struct Model {
     pub display_name: Option<String>,
     /// Local username for password login, when set.
     pub login_name: Option<String>,
+    /// Optional contact email for invites / notifications.
+    pub email: Option<String>,
     /// Argon2id PHC hash for local login; never plaintext.
     pub password_hash: Option<String>,
     /// Incremented to invalidate existing sessions after security changes.

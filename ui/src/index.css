@@ -60,3 +60,25 @@ body {
     transform: none;
   }
 }
+
+/* Plugin consent dialog — soft enter for grant review presence. */
+@keyframes consentDialogEnter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.consent-dialog-enter {
+  animation: consentDialogEnter 220ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .consent-dialog-enter {
+    animation: none;
+  }
+}

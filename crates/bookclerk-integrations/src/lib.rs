@@ -27,7 +27,8 @@ pub use portal::{
 pub use registry::IntegrationRegistry;
 pub use tickets::{
     generate_token, hash_token, identity_from_session, mint_claim_ticket, redeem_ticket_to_session,
-    session_for_identity, ticket_portal_url, MintedClaimTicket,
+    redeem_ticket_to_session_with_client, session_for_identity, session_for_identity_with_client,
+    ticket_portal_url, MintedClaimTicket,
 };
 pub use traits::{Integration, IntegrationContext};
 pub use types::{

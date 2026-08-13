@@ -159,7 +159,9 @@ pub struct PortalIdentity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UserRole {
-    /// Full control-plane and library administration privileges.
+    /// Host super-user: may elevate to Operator after password re-auth.
+    Owner,
+    /// Library / user administration without Operator elevation.
     Administrator,
     /// Library member with scoped portal access (no operator token).
     Member,
@@ -170,6 +172,7 @@ impl UserRole {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Owner => "owner",
             Self::Administrator => "administrator",
             Self::Member => "member",
         }
@@ -179,10 +182,23 @@ impl UserRole {
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
+            "owner" => Some(Self::Owner),
             "administrator" => Some(Self::Administrator),
             "member" => Some(Self::Member),
             _ => None,
         }
+    }
+
+    /// Whether this role may provision users and manage the host library.
+    #[must_use]
+    pub fn is_privileged(self) -> bool {
+        matches!(self, Self::Owner | Self::Administrator)
+    }
+
+    /// Whether this role may elevate to a short-lived Operator session.
+    #[must_use]
+    pub fn can_elevate(self) -> bool {
+        matches!(self, Self::Owner)
     }
 }
 
@@ -228,7 +244,7 @@ impl UserStatus {
 pub struct UserRecord {
     /// Surrogate primary key assigned by the database.
     pub id: i64,
-    /// First-party role (`administrator` or `member`).
+    /// First-party role (`owner`, `administrator`, or `member`).
     pub role: UserRole,
     /// Lifecycle status for the row (user, request, …).
     pub status: UserStatus,
@@ -236,6 +252,8 @@ pub struct UserRecord {
     pub display_name: Option<String>,
     /// Local username for password login, when set.
     pub login_name: Option<String>,
+    /// Optional contact email (notifications / magic-link invites later).
+    pub email: Option<String>,
     /// Whether a local password hash is stored for this user.
     pub has_password: bool,
     /// Incremented to invalidate existing sessions after security changes.
@@ -244,6 +262,41 @@ pub struct UserRecord {
     pub created_at: DateTime<Utc>,
     /// RFC 3339 timestamp when the row was last modified.
     pub updated_at: DateTime<Utc>,
+}
+
+/// Storefront / integration connection summary for admin user lists.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserIntegrationHint {
+    /// Content-source or integration plugin id (`audible`, `libro`, …).
+    pub source: String,
+    /// Store or operator account id this row belongs to.
+    pub account_id: String,
+    /// Optional operator-facing account label.
+    pub label: Option<String>,
+}
+
+/// Recent unfinished listening hint for admin user lists.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserListeningHint {
+    /// Display title when the provider reported one.
+    pub title: Option<String>,
+    /// Integration / storefront provider id.
+    pub provider: String,
+    /// RFC 3339 time of the last playback update.
+    pub last_listened_at: DateTime<Utc>,
+}
+
+/// Presence + connection extras for administrator user management.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserPresenceExtras {
+    /// True when the user has a non-expired portal session.
+    pub online: bool,
+    /// Most recent unfinished listen within the listening window, if any.
+    pub listening: Option<UserListeningHint>,
+    /// Linked storefront / integration accounts across portal identities.
+    pub integrations: Vec<UserIntegrationHint>,
+    /// Most recent portal session activity (RFC 3339), when known.
+    pub last_active_at: Option<DateTime<Utc>>,
 }
 
 /// Invite ticket for provisioning a User (token plaintext never stored).
@@ -284,6 +337,33 @@ pub struct OperatorSessionRecord {
     pub elevated_from_user_id: Option<i64>,
     /// User id being impersonated by this operator session, if any.
     pub impersonating_user_id: Option<i64>,
+    /// Raw User-Agent captured at session mint (optional).
+    pub user_agent: Option<String>,
+    /// Best-effort device class (`desktop` / `mobile` / `tablet` / `api`).
+    pub device_type: Option<String>,
+    /// Best-effort OS / client label (`Windows`, `Android`, `API`, …).
+    pub client_label: Option<String>,
+}
+
+/// Portal session row for session lists (includes hash for current-session match).
+#[derive(Debug, Clone)]
+pub struct PortalSessionRecord {
+    /// Surrogate primary key assigned by the database.
+    pub id: i64,
+    /// SHA-256 hex of the session token (never serialized to clients).
+    pub token_hash: String,
+    /// RFC 3339 created timestamp.
+    pub created_at: String,
+    /// RFC 3339 expiry timestamp.
+    pub expires_at: String,
+    /// RFC 3339 last-used timestamp, when known.
+    pub last_used_at: Option<String>,
+    /// Raw User-Agent captured at session mint (optional).
+    pub user_agent: Option<String>,
+    /// Best-effort device class.
+    pub device_type: Option<String>,
+    /// Best-effort OS / client label.
+    pub client_label: Option<String>,
 }
 
 /// Security audit event (elevate / impersonate / login / provision).

@@ -30,6 +30,7 @@ use bookclerk_plugin_manifest::PluginManifest;
 use bookclerk_workerd::config::{self, ListenSpec};
 use bookclerk_workerd::egress::EgressProxy;
 use bookclerk_workerd::ensure::ensure_workerd;
+use bookclerk_workerd::grant::OperatorGrantEnv;
 use bookclerk_workerd::notify::{
     self, event_type_for_log, generate_bridge_token, parse_notify_http, push_notify_event,
     NOTIFY_ACCEPT_LIMIT, NOTIFY_MAX_BODY,
@@ -79,8 +80,9 @@ async fn main() -> Result<()> {
     }
 
     let workerd_bin = resolve_workerd_binary()?;
-    let egress = EgressProxy::from_manifest(&manifest);
-    let limits = workerd_meta.limits.effective();
+    let grant = OperatorGrantEnv::from_env();
+    let egress = grant.apply_egress(&manifest, EgressProxy::from_manifest(&manifest));
+    let limits = grant.apply_limits(workerd_meta.limits.effective());
     info!(
         plugin = %manifest.id,
         main = %main_module.display(),
@@ -90,10 +92,11 @@ async fn main() -> Result<()> {
         domains = ?egress.allowed_initial_hosts(),
         cpu_ms = limits.cpu_ms,
         subrequests = limits.subrequests,
+        grant_overrides = !grant.is_empty(),
         "starting workerd plugin isolate"
     );
 
-    run_isolate(&workerd_bin, &root, &manifest, &egress).await
+    run_isolate(&workerd_bin, &root, &manifest, &egress, limits).await
 }
 
 fn plugin_root() -> Result<PathBuf> {
@@ -142,6 +145,7 @@ async fn run_isolate(
     root: &Path,
     manifest: &PluginManifest,
     egress: &EgressProxy,
+    limits: bookclerk_plugin_manifest::EffectiveWorkerdLimits,
 ) -> Result<()> {
     let state_dir = config::workerd_state_dir(root)?;
     let notify_events: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
@@ -205,6 +209,7 @@ async fn run_isolate(
         root,
         manifest,
         egress,
+        limits,
         listen,
         notify_addr.as_deref(),
         &bridge_token,

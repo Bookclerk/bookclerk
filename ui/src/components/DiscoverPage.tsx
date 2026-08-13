@@ -25,6 +25,7 @@ import {
 } from "@/components/TitleDetailModal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { loadEnabledSources } from "@/lib/enabledSources";
 import { cn, pageWidthClass } from "@/lib/utils";
 import {
   applyTitleMeta,
@@ -196,6 +197,7 @@ export function DiscoverPage({
   const [filterSeries, setFilterSeries] = useState<string[]>([]);
   const [filterGenres, setFilterGenres] = useState<string[]>([]);
   const [excludedSources, setExcludedSources] = useState<string[]>([]);
+  const [enabledSourceIds, setEnabledSourceIds] = useState<string[]>([]);
   const [minRating, setMinRating] = useState<number | null>(null);
   const [runtimeBucket, setRuntimeBucket] = useState<RuntimeBucket>("any");
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -250,6 +252,19 @@ export function DiscoverPage({
         // Keep browser/language defaults when prefs fail.
       } finally {
         if (!cancelled) setPrefsReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const sources = await loadEnabledSources();
+      if (!cancelled) {
+        setEnabledSourceIds(sources.map((s) => s.id));
       }
     })();
     return () => {
@@ -769,7 +784,7 @@ export function DiscoverPage({
                   }
                   if (e.key === "Escape") setSearchOpen(false);
                 }}
-                placeholder="Search Audible, Libro.fm, Chirp, GraphicAudio… (Enter for results)"
+                placeholder="Search Book Stores... (Enter for results)"
                 className={cn(
                   "h-11 pl-9",
                   searchBusy || resultsBusy ? "pr-10" : null,
@@ -1025,6 +1040,7 @@ export function DiscoverPage({
                   filterSeries={filterSeries}
                   filterGenres={filterGenres}
                   excludedSources={excludedSources}
+                  enabledSourceIds={enabledSourceIds}
                   minRating={minRating}
                   runtimeBucket={runtimeBucket}
                   onAuthorsChange={(vals) => {
@@ -1099,7 +1115,7 @@ export function DiscoverPage({
                         Searching storefronts
                       </p>
                       <p className="text-xs text-ink/45">
-                        Audible, Libro.fm, Chirp, and GraphicAudio — usually a few seconds
+                        Querying enabled book stores — usually a few seconds
                       </p>
                     </div>
                   </div>

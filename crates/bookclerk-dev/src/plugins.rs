@@ -947,5 +947,6 @@ mod tests {
         assert!(seen.contains("echo_workerd_ts"));
         assert!(seen.contains("echo_workerd_python"));
         assert!(seen.contains("echo_workerd_rust"));
+        assert!(seen.contains("echo_workerd_fetch"));
     }
 }

@@ -139,6 +139,49 @@ pub struct PluginRegistryEntry {
     pub name: Option<String>,
 }
 
+/// Optional global resource ceilings for plugin guest jails under `[plugins.jail]`.
+///
+/// These override label defaults when building a guest [`bookclerk_sandbox::Spec`].
+/// Guest filesystem access remains install read-only plus host-managed data/tmp —
+/// not a free-form path widen.
+///
+/// `cpu_rate_percent` is percent of **one logical CPU** (100 = one core) and is a
+/// **per-jail ceiling** only (`min(grant, this, host_max)`). Quotas are rate
+/// limits, not reservations: if many plugins’ ceilings sum above host capacity,
+/// the OS scheduler shares CPU among runnable guests. Bookclerk does not keep a
+/// cumulative Σ ledger or throttle later spawns.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PluginsJailConfig {
+    /// Soft memory ceiling in mebibytes (mapped to Spec `memory_bytes`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mib: Option<u64>,
+    /// Per-jail CPU rate ceiling (one-core percent units). Defaults to 80.
+    #[serde(default = "default_jail_cpu_rate_percent")]
+    pub cpu_rate_percent: Option<u32>,
+    /// Ceiling on **extra** processes/threads beyond launcher overhead. Defaults to 2.
+    #[serde(default = "default_jail_extra_processes")]
+    pub extra_processes: Option<u32>,
+}
+
+fn default_jail_cpu_rate_percent() -> Option<u32> {
+    Some(80)
+}
+
+fn default_jail_extra_processes() -> Option<u32> {
+    Some(2)
+}
+
+impl Default for PluginsJailConfig {
+    fn default() -> Self {
+        Self {
+            memory_mib: None,
+            cpu_rate_percent: Some(80),
+            extra_processes: Some(2),
+        }
+    }
+}
+
 /// `[plugins]` — how external plugin guests are run.
 ///
 /// Separate from `[sources.*]` / `[integrations.*]`, which say *which* plugins
@@ -153,6 +196,9 @@ pub struct PluginsConfig {
     /// launcher is found beside the running executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jail_bin: Option<std::path::PathBuf>,
+    /// Optional global jail resource ceilings for all plugin guests.
+    #[serde(default, skip_serializing_if = "PluginsJailConfig::is_default")]
+    pub jail: PluginsJailConfig,
     /// Federated discovery sources (static indexes, cargo, npm, pypi).
     ///
     /// Search order is list order; default when empty is crates.io only.
@@ -162,6 +208,37 @@ pub struct PluginsConfig {
     /// `--allow-unsigned` (digests are still required).
     #[serde(default)]
     pub allow_unsigned: bool,
+}
+
+impl PluginsJailConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Clamp CPU / extra-process ceilings into host-safe ranges when set.
+    pub fn clamp(&mut self) {
+        if let Some(cpu) = self.cpu_rate_percent {
+            self.cpu_rate_percent = Some(cpu.clamp(1, host_cpu_rate_max()));
+        }
+        if let Some(extra) = self.extra_processes {
+            self.extra_processes = Some(extra.min(62));
+        }
+    }
+}
+
+/// Logical CPUs visible to this process (at least 1).
+#[must_use]
+pub fn host_logical_cpus() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1)
+        .max(1)
+}
+
+/// Host CPU rate ceiling in one-core percent units (`logical_cpus × 100`).
+#[must_use]
+pub fn host_cpu_rate_max() -> u32 {
+    host_logical_cpus().saturating_mul(100)
 }
 
 impl PluginsConfig {
@@ -185,6 +262,22 @@ impl PluginsConfig {
                 self.allow_unsigned = b;
             }
         }
+        if let Ok(value) = std::env::var("BOOKCLERK_PLUGIN_JAIL_MEMORY_MIB") {
+            if let Ok(memory_mib) = value.trim().parse::<u64>() {
+                self.jail.memory_mib = Some(memory_mib);
+            }
+        }
+        if let Ok(value) = std::env::var("BOOKCLERK_PLUGIN_JAIL_CPU_RATE_PERCENT") {
+            if let Ok(cpu) = value.trim().parse::<u32>() {
+                self.jail.cpu_rate_percent = Some(cpu.clamp(1, host_cpu_rate_max()));
+            }
+        }
+        if let Ok(value) = std::env::var("BOOKCLERK_PLUGIN_JAIL_EXTRA_PROCESSES") {
+            if let Ok(extra) = value.trim().parse::<u32>() {
+                self.jail.extra_processes = Some(extra.min(62));
+            }
+        }
+        self.jail.clamp();
     }
 }
 
@@ -324,5 +417,54 @@ impl Default for AudiobookshelfConfig {
             notify_scan_on_acquire: true,
             allow_credential_login: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Config;
+
+    #[test]
+    fn plugins_jail_toml_round_trips() {
+        let config: Config = toml::from_str(
+            r#"
+[plugins.jail]
+memory_mib = 768
+cpu_rate_percent = 40
+extra_processes = 6
+"#,
+        )
+        .expect("parse");
+        assert_eq!(config.plugins.jail.memory_mib, Some(768));
+        assert_eq!(config.plugins.jail.cpu_rate_percent, Some(40));
+        assert_eq!(config.plugins.jail.extra_processes, Some(6));
+        let encoded = toml::to_string(&config.plugins).expect("encode");
+        assert!(
+            encoded.contains("memory_mib = 768"),
+            "expected jail memory in {encoded}"
+        );
+    }
+
+    #[test]
+    fn plugins_jail_defaults_cpu_80_and_extra_2() {
+        let jail = PluginsJailConfig::default();
+        assert_eq!(jail.cpu_rate_percent, Some(80));
+        assert_eq!(jail.extra_processes, Some(2));
+        assert_eq!(jail.memory_mib, None);
+    }
+
+    #[test]
+    fn plugins_jail_cpu_clamps_to_host_max() {
+        let max = host_cpu_rate_max();
+        let mut jail = PluginsJailConfig {
+            cpu_rate_percent: Some(max.saturating_add(50)),
+            ..Default::default()
+        };
+        jail.clamp();
+        assert_eq!(jail.cpu_rate_percent, Some(max));
+        jail.cpu_rate_percent = Some(0);
+        jail.clamp();
+        assert_eq!(jail.cpu_rate_percent, Some(1));
     }
 }

@@ -58,17 +58,20 @@ label (`S:(ML;;NW;;;LW)`). See [plugins.md](plugins.md) (Interactive listeners).
 
 | | Plugins | Media |
 | --- | --- | --- |
-| Process memory | 512 MiB | 2 GiB |
-| Active processes | 8 | 64 |
-| CPU rate | 80% hard cap | uncapped |
+| Job memory (cumulative) | 512 MiB | 2 GiB |
+| Active processes | overhead + extra (native 1+2=3, workerd 2+2=4 by default) | 64 |
+| CPU rate | 80% of one core hard cap | uncapped |
 | Stderr proxy budget | 1 MiB | 16 MiB |
 | data/tmp growth (plan + side-pass) | 512 MiB each | n/a |
 | RPC timeout | kill + quarantine | n/a (stdio job) |
 
-Defaults come from the jail label (`plugin:…` vs `media-…`). A `Spec` may set
-`memory_bytes` / `active_processes` / `cpu_rate_percent` explicitly (workerd
-guests do); each set field overrides the corresponding heuristic. Limits are
-best-effort Job Object + host policy, not a hard multi-tenant quota.
+Defaults come from the jail label (`plugin:…` vs `media-…`) and grant/host
+ceilings. A `Spec` may set `memory_bytes` / `active_processes` /
+`cpu_rate_percent` explicitly; each set field overrides the corresponding
+heuristic. Memory uses Job Object **job-wide** commit charge
+(`JOB_OBJECT_LIMIT_JOB_MEMORY`), aligned with Linux cgroup `memory.max` (main +
+children). Limits are best-effort Job Object + host policy, not a hard
+multi-tenant quota.
 
 Cross-platform: Linux applies the same Spec fields via cgroup v2 into a
 **dedicated child** cgroup when the hierarchy allows it (never onto a shared

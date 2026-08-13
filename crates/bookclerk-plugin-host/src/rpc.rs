@@ -17,11 +17,12 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex, MutexGuard};
 
 use crate::consent::{
-    handshake_config_for_grant, require_binding, spawn_grant, validate_handshake_capabilities,
-    PluginGrant,
+    handshake_config_for_grant, inject_workerd_grant_env, require_binding, spawn_grant,
+    validate_handshake_capabilities, PluginGrant,
 };
 use crate::discover::DiscoveredPlugin;
 use crate::jail::{GuestJail, Start};
+use crate::manifest::PluginRuntimeKind;
 use crate::protocol::{
     methods, HandshakeResult, HOST_API_VERSION_MAX, HOST_API_VERSION_MIN, MAX_RPC_LINE_BYTES,
     PLUGIN_API_VERSION,
@@ -180,6 +181,11 @@ impl PluginClient {
             }
         }
         cmd.env("BOOKCLERK_PLUGIN_ID", id);
+        if plugin.manifest.runtime == PluginRuntimeKind::Workerd {
+            // Explicit env after env_clear — same pattern as BOOKCLERK_PLUGIN_ID.
+            // bookclerk-workerd reads these to clamp EGRESS_POLICY / limits.
+            inject_workerd_grant_env(&mut cmd, &grant);
+        }
         // Redirect the directories a program reaches for without being told.
         // Inherited values name paths outside the jail, so a guest writing a
         // temp file would fail on a permission error unrelated to its own work.
@@ -509,9 +515,13 @@ impl PluginClient {
             // Re-check data/tmp before granting more write-capable work: a guest
             // that filled its state after a lean spawn must not keep receiving
             // fetch dirs / uploads / db FDs.
-            if let Err(err) =
-                crate::jail::ensure_plugin_state_within_budget(&self.id, &self.data, &self.scratch)
-            {
+            let disk_budget = crate::consent::effective_disk_budget_bytes(Some(&self.grant));
+            if let Err(err) = crate::jail::ensure_plugin_state_within_budget_limit(
+                &self.id,
+                &self.data,
+                &self.scratch,
+                disk_budget,
+            ) {
                 self.quarantine_and_kill(&format!(
                     "plugin state exceeds disk budget before `{method}` side-pass"
                 ))

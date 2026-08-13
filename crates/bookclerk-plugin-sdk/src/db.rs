@@ -15,7 +15,8 @@ use sea_orm::{ProxyExecResult, ProxyRow, Statement, Value};
 use serde_json::Value as JsonValue;
 
 pub use bookclerk_plugin_abi::{
-    DbConnectParams, DbConnectResult, ExecResultDto, ProxyRowDto, QueryResultDto, StatementDto,
+    atomic_status, DbAtomicParams, DbAtomicResult, DbBeginParams, DbBeginResult, DbConnectParams,
+    DbConnectResult, DbTxnParams, ExecResultDto, ProxyRowDto, QueryResultDto, StatementDto,
 };
 
 const SEA_NULL_KEY: &str = "$sea_null";
@@ -40,6 +41,7 @@ pub fn statement_to_dto(statement: &Statement) -> StatementDto {
             Some(values) => values.0.iter().map(sea_value_to_json).collect(),
             None => Vec::new(),
         },
+        txn_id: None,
     }
 }
 
@@ -418,6 +420,7 @@ mod tests {
         let dto = StatementDto {
             sql: "INSERT INTO encrypted_secrets (kdf_salt) VALUES (?)".into(),
             values: values.iter().map(sea_value_to_json).collect(),
+            txn_id: None,
         };
         let stmt = statement_from_dto(dto, sea_orm::DatabaseBackend::Postgres);
         assert!(matches!(
@@ -444,5 +447,13 @@ mod tests {
         let result = DbConnectResult::postgres();
         let rv = serde_json::to_value(&result).unwrap();
         assert_eq!(rv["dialect"], "postgres");
+        assert_eq!(rv["interactiveTxn"], true);
+
+        let legacy: DbConnectResult =
+            serde_json::from_value(serde_json::json!({ "dialect": "sqlite" })).unwrap();
+        assert!(legacy.interactive_txn);
+        let d1 = DbConnectResult::d1();
+        assert!(!d1.interactive_txn);
+        assert_eq!(d1.dialect, "sqlite");
     }
 }

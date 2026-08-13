@@ -108,6 +108,7 @@ so values like `a/b` and `a_b` cannot collide after sanitization.
 | [`examples/plugins-echo-workerd-ts`](../examples/plugins-echo-workerd-ts/) | workerd TypeScript |
 | [`examples/plugins-echo-workerd-python`](../examples/plugins-echo-workerd-python/) | workerd Python Workers |
 | [`examples/plugins-echo-workerd-rust`](../examples/plugins-echo-workerd-rust/) | workerd Rust/Wasm |
+| [`examples/plugins-echo-workerd-fetch`](../examples/plugins-echo-workerd-fetch/) | workerd outbound `*.example.com` + logo |
 
 ```bash
 cd packages/plugin-sdk && npm ci && npm run build
@@ -310,7 +311,7 @@ mode = "outbound"   # deny | outbound — do NOT set `domains`
 
 | Network `mode` | Native | Workerd |
 | --- | --- | --- |
-| `deny` | no IP sockets | isolate blocked (`globalOutbound` → blocked) |
+| `deny` | no IP sockets (`NetPolicy::Deny`, including OAuth listen) | OS jail stays `OutboundListen` for the RPC bridge; isolate `globalOutbound` → blocked (grant is isolate-enforced; see the ADR) |
 | `outbound` | coarse jail internet (`NetPolicy::Outbound`, or `OutboundListen` with oauth) — **not** hostname-filtered | isolate egress allowlist; **`domains` required** |
 
 `capabilities.network.domains` is **workerd-only**. Declaring `domains` on a
@@ -471,19 +472,30 @@ available as a fallback.
 
 Plugin Jobs get conservative memory / active-process (and optional CPU) limits;
 media workers get higher defaults. When a jail `Spec` carries
-`memory_bytes` / `active_processes` / `cpu_rate_percent` (workerd guests map
-clamped `[workerd].limits.cpu_ms` → `cpu_rate_percent =
-clamp(1, 100, cpu_ms * 80 / 30000)`, with 512 MiB / 8 processes), those values
-override the label heuristics on Windows. On Linux the same Spec fields are
-applied best-effort via a dedicated cgroup v2 child (never written onto a
-shared parent slice); on macOS Seatbelt they are ignored
-(documented as unsupported — FS/net only). Each plugin's `data/` and `tmp/`
-directories are capped at **512 MiB each**: the host measures them at jail plan
-(spawn/reload) and again before write-heavy RPC side-passes (fetch directory,
-upload file, database file grants). Over budget refuses the operation, kills
-the guest, and quarantines the client until restart. RPC timeouts and framing
-violations likewise kill and quarantine. Stdin proxying does not block jail
-exit after the guest terminates.
+`memory_bytes` / `active_processes` / `cpu_rate_percent` (percent of **one
+logical CPU**; values above 100 request multi-core bandwidth up to
+`logical_cpus × 100`), those values override the label heuristics on Windows
+(Job `CpuRate` is scaled by core count so the meaning matches Linux cgroup
+`cpu.max`; Job memory is **job-wide** commit charge, matching Linux
+`memory.max`). Operator grants expose an **extra** process/thread budget
+(`extraProcesses`, default **2**) above launcher overhead (native **1**,
+workerd **2**); Spec `active_processes` = overhead + extra (capped at 64).
+Workerd consent does not edit process budget (host-managed headroom). Workerd
+guests use isolate `cpu_ms` for the script budget; their jail CPU rate comes
+from the host default / `[plugins.jail]` per-jail ceiling (default **80**)
+rather than a per-plugin `cpuRatePercent`. On Linux the Spec fields are applied
+best-effort via a dedicated cgroup v2 child (never written onto a shared parent
+slice); on macOS Seatbelt they are ignored (documented as unsupported — FS/net
+only). `[plugins.jail].cpu_rate_percent` is a **per-jail ceiling** only (not a
+cumulative reservation; default 80). Quotas cap how fast a guest may burn CPU;
+if many plugins’ ceilings sum above host capacity, the OS scheduler shares
+cycles among runnable guests. Each plugin's `data/` and `tmp/` directories are
+capped at **512 MiB each**: the host measures them at jail plan (spawn/reload)
+and again before write-heavy RPC side-passes (fetch directory, upload file,
+database file grants). Over budget refuses the operation, kills the guest, and
+quarantines the client until restart. RPC timeouts and framing violations
+likewise kill and quarantine. Stdin proxying does not block jail exit after the
+guest terminates.
 
 #### Trust vs sandbox
 
@@ -711,6 +723,18 @@ before **enable** and again before **every external spawn**. Privileged delivery
 also checks individual bindings: handshake `config`, host-injected secrets,
 `work_fs` side-channel / ACL passes, and OAuth callback proxy setup.
 
+**Operator Settings** shows a branded consent dialog when enabling a plugin that
+is not yet covered. The dialog starts from the manifest baseline and lets the
+operator **widen or narrow** domains/bindings/flags, network mode, workerd
+`cpuMs`/`subrequests`, and shared `diskMib` (host-capped). Daemon APIs:
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/plugins/{id}/consent` | Request surface, `covered`, optional `brand` / `limits` |
+| `POST` | `/api/plugins/{id}/consent` | `{ "approve": true, "grant"?: { … } }` — omit `grant` for full request |
+
+CLI remains available (always approves the full request):
+
 ```bash
 bookclerk plugins approve echo          # interactive summary of network/bindings
 bookclerk plugins approve echo --yes    # non-interactive
@@ -722,19 +746,39 @@ default; the host auto-persists a covering grant on first spawn when their
 manifest stays within the installer envelope (deny network, `config` /
 `work_fs` only).
 
-Grants are persisted under the files dir. Widening `capabilities.network` or
-bindings after a prior grant requires re-approval (enable **and** spawn fail
-closed). For workerd, widening the `domains` allowlist requires re-approval —
-including the Python runtime hosts folded into `consent_request` for Python +
-outbound guests. Redirect following does **not** expand the consented domain
-list (hops stay free by design; only the initial host is allowlisted). When a
-stored grant still *covers* a narrowed manifest, spawn/delivery uses an
-**effective grant** limited to the current request surface (domains, bindings,
-flags, network mode) while keeping the stored `approved_at` — so privileged
-delivery cannot exceed what the current `plugin.toml` declares.
+Grants are persisted under `$BOOKCLERK_FILES_DIR/plugin-grants.json`. The
+manifest consent request is a **baseline**, not a hard ceiling: operators may
+**widen or narrow** domains, bindings, flags, network mode, workerd budgets, and
+per-plugin disk / jail memory / CPU rate / extra process budget (`diskMib`,
+`memoryMib`, `cpuRatePercent` and `extraProcesses` for **native** only). Host
+hard caps still apply (`WorkerdLimits` maxes, disk/memory max 4096 MiB, CPU rate
+up to `logical_cpus × 100` one-core percent, extra processes 62 / absolute PIDs
+64, known bindings). Workerd plugins use isolate `cpuMs` instead of per-plugin
+`cpuRatePercent`; jail CPU for workerd follows the host default /
+`[plugins.jail]` per-jail ceiling (default 80). Process headroom for workerd is
+host-managed (overhead 2 + default extra 2). Bookclerk does **not** guarantee
+plugin behaviour if overrides remove capabilities the guest needs. Domain
+allowlists are enforced for **workerd** guests (via `BOOKCLERK_WORKERD_GRANT_*`
+→ `EGRESS_POLICY`); **native** guests get OS-jail allow-or-deny for network (no
+hostname filter). Jail Spec memory/CPU/PID ceilings and disk budgets apply to
+**both** runtimes. Redirect following does **not** expand the consented domain
+list (hops stay free by design; only the initial host is allowlisted).
 
 Approving a **native** plugin with `mode = "outbound"` shows an explicit warning
 that networking is **not** hostname-filtered.
+
+Global confinement knobs (Settings → Confinement, or `config.toml`):
+
+| Key | Purpose |
+| --- | --- |
+| `plugins.isolation` | `required` / `best-effort` / `off` |
+| `media.isolation` | same tiers for media-worker |
+| `plugins.jail.memory_mib` | optional Spec memory ceiling |
+| `plugins.jail.cpu_rate_percent` | per-jail CPU ceiling as integer percent of one core (default **80**; 100 = 1.00 core; UI edits cores to two decimals; max = cores×100; OS shares if oversubscribed) |
+| `plugins.jail.extra_processes` | ceiling on extra processes/threads beyond launcher overhead (default **2**; Spec `active_processes` = overhead + extra) |
+
+Guest filesystem access remains install read-only plus host-managed
+`plugins/<id>/data` and `plugins/<id>/tmp` — not a free-form widen.
 
 **Deferred (discovery/install):** a content hash bound to the grant so a
 different binary under the same id cannot keep an old grant forever. End goal
@@ -910,7 +954,10 @@ no in-process fallback). SQLite receives `library.db` on fd 3 at `dbConnect`.
 | --- | --- |
 | `dbConnect` | Open backend via tagged connect params (`backend`: `sqlite` / `d1` / `postgres`); returns dialect (SQLite: fd 3; D1/Postgres: host-injected credentials) |
 | `dbPing` | Verify connectivity |
-| `dbQuery` / `dbExecute` | Forward SeaORM statement payloads |
+| `dbQuery` / `dbExecute` | Forward SeaORM statement payloads (optional `txnId` from `dbBegin`) |
+| `dbBegin` | Start a native engine transaction (or nested savepoint via `parentTxnId`); returns `txnId`. The host records a sticky per-task fault when this RPC fails so later statements cannot fall back to autocommit. D1 rejects interactive transactions and sets `interactiveTxn: false` on `dbConnect`. |
+| `dbCommit` / `dbRollback` | Finish that transaction. A failed `dbCommit` is surfaced to `LibraryStore` (SeaORM's proxy hook is infallible); the guest is rolled back. |
+| `dbAtomic` | D1-only named library operation (claim redeem, last-owner guards, password hash) as one HTTP `batch()` / one SQL transaction. SQLite and Postgres leave this unimplemented and keep using `dbBegin`. |
 
 Built-in ids: `sqlite`, `d1`, `postgres` (match `[database].plugin`).
 
@@ -929,9 +976,11 @@ cp examples/plugins-echo-native-rust/plugin.toml \
 
 Workerd Echo — install `plugin.toml` + `modules/` from any of
 [`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/),
-[`plugins-echo-workerd-python/`](../examples/plugins-echo-workerd-python/), or
-[`plugins-echo-workerd-rust/`](../examples/plugins-echo-workerd-rust/) (host
-spawns `bookclerk-workerd`, not a SEA binary).
+[`plugins-echo-workerd-python/`](../examples/plugins-echo-workerd-python/),
+[`plugins-echo-workerd-rust/`](../examples/plugins-echo-workerd-rust/), or
+[`plugins-echo-workerd-fetch/`](../examples/plugins-echo-workerd-fetch/)
+(outbound `*.example.com` + embedded logo; host spawns `bookclerk-workerd`,
+not a SEA binary).
 
 ```toml
 # config.toml

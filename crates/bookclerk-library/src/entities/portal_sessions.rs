@@ -18,6 +18,14 @@ pub struct Model {
     pub expires_at: String,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
+    /// RFC 3339 time of the last authenticated use of this session.
+    pub last_used_at: Option<String>,
+    /// Raw User-Agent captured at session mint (optional).
+    pub user_agent: Option<String>,
+    /// Best-effort device class (`desktop` / `mobile` / `tablet` / `api`).
+    pub device_type: Option<String>,
+    /// Best-effort OS / client label (`Windows`, `Android`, `API`, …).
+    pub client_label: Option<String>,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

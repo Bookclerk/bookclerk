@@ -10,6 +10,10 @@
 //! | [`crate::methods::db_ping`] | (none) | success / [`crate::PluginError`] |
 //! | [`crate::methods::db_query`] | [`StatementDto`] | [`QueryResultDto`] |
 //! | [`crate::methods::db_execute`] | [`StatementDto`] | [`ExecResultDto`] |
+//! | [`crate::methods::db_begin`] | [`DbBeginParams`] | [`DbBeginResult`] |
+//! | [`crate::methods::db_commit`] | [`DbTxnParams`] | success / [`crate::PluginError`] |
+//! | [`crate::methods::db_rollback`] | [`DbTxnParams`] | success / [`crate::PluginError`] |
+//! | [`crate::methods::db_atomic`] | [`DbAtomicParams`] | [`DbAtomicResult`] |
 //!
 //! Wire fields use camelCase. The `backend` tag on [`DbConnectParams`] is
 //! lowercase (`sqlite`, `d1`, `postgres`).
@@ -33,6 +37,41 @@ pub struct StatementDto {
     /// Ordered bind values for the statement (wire `values`; default empty).
     #[serde(default)]
     pub values: Vec<JsonValue>,
+    /// Guest transaction id from [`crate::methods::db_begin`] (wire `txnId`).
+    ///
+    /// Omitted for autocommit statements. When set, the guest runs the
+    /// statement inside that transaction (or nested savepoint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub txn_id: Option<String>,
+}
+
+/// Params for [`crate::methods::db_begin`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DbBeginParams {
+    /// Existing transaction to nest a savepoint under (wire `parentTxnId`).
+    ///
+    /// Omitted to start a top-level transaction. The guest serializes
+    /// top-level begins so SQLite / D1 never interleave writers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_txn_id: Option<String>,
+}
+
+/// Result of a successful [`crate::methods::db_begin`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DbBeginResult {
+    /// Opaque id the host must send on subsequent statements and
+    /// commit/rollback (wire `txnId`).
+    pub txn_id: String,
+}
+
+/// Params for [`crate::methods::db_commit`] and [`crate::methods::db_rollback`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DbTxnParams {
+    /// Transaction id returned by [`crate::methods::db_begin`] (wire `txnId`).
+    pub txn_id: String,
 }
 
 /// One result row from [`crate::methods::db_query`].
@@ -109,32 +148,180 @@ pub enum DbConnectParams {
     },
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// Result of a successful [`crate::methods::db_connect`].
 ///
 /// Tells the host which SeaORM dialect to use when composing subsequent
-/// `dbQuery` / `dbExecute` statements against this guest.
+/// `dbQuery` / `dbExecute` statements against this guest, and whether
+/// interactive `dbBegin` is available.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DbConnectResult {
     /// SeaORM dialect string the host should use for the RPC proxy
     /// (`"sqlite"` or `"postgres"`; D1 guests report `"sqlite"`).
     pub dialect: String,
+    /// When `false`, the host must not use SeaORM `begin()` / `dbBegin`.
+    ///
+    /// SQLite and Postgres default to `true`. D1 HTTP cannot keep `BEGIN`
+    /// open across RPCs; those guests set `false` and implement
+    /// [`crate::methods::db_atomic`] instead. Omitted on the wire by older
+    /// guests (treated as `true`).
+    #[serde(default = "default_true")]
+    pub interactive_txn: bool,
 }
 
 impl DbConnectResult {
-    /// Connect result advertising the SQLite (or D1) dialect.
+    /// Connect result advertising the SQLite dialect with interactive transactions.
     #[must_use]
     pub fn sqlite() -> Self {
         Self {
             dialect: String::from("sqlite"),
+            interactive_txn: true,
         }
     }
 
-    /// Connect result advertising the Postgres dialect.
+    /// Connect result advertising the Postgres dialect with interactive transactions.
     #[must_use]
     pub fn postgres() -> Self {
         Self {
             dialect: String::from("postgres"),
+            interactive_txn: true,
+        }
+    }
+
+    /// Connect result for Cloudflare D1 (SQLite dialect, no interactive `BEGIN`).
+    #[must_use]
+    pub fn d1() -> Self {
+        Self {
+            dialect: String::from("sqlite"),
+            interactive_txn: false,
+        }
+    }
+}
+
+/// Application status strings returned by [`crate::methods::db_atomic`].
+pub mod atomic_status {
+    /// Operation committed with the expected payload (or no payload).
+    pub const OK: &str = "ok";
+    /// Consume-once lookup found nothing (or the row was expired).
+    pub const EMPTY: &str = "empty";
+    /// Target row does not exist.
+    pub const NOT_FOUND: &str = "notFound";
+    /// Refused: would remove the last active owner.
+    pub const LAST_OWNER: &str = "lastOwner";
+    /// Claim ticket missing, expired, or already redeemed.
+    pub const CLAIM_INVALID: &str = "claimInvalid";
+    /// Local claim login needs a password; the ticket was not consumed.
+    pub const PASSWORD_REQUIRED: &str = "passwordRequired";
+}
+
+/// Named atomic library operation for [`crate::methods::db_atomic`].
+///
+/// D1 guests run each variant as one HTTP `batch()` (one SQL transaction)
+/// with control flow encoded in `WHERE` clauses so the host does not need
+/// mid-transaction reads. SQLite / Postgres guests leave this unimplemented;
+/// the host uses SeaORM interactive transactions instead.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum DbAtomicParams {
+    /// Delete a first-party user and personal data (last-owner guarded).
+    #[serde(rename_all = "camelCase")]
+    DeleteUser {
+        /// `users.id` to delete.
+        user_id: i64,
+    },
+    /// Set `users.status` (`active` / `disabled`; last-owner guarded).
+    #[serde(rename_all = "camelCase")]
+    SetUserStatus {
+        /// `users.id` to update.
+        user_id: i64,
+        /// Canonical status string (`active` or `disabled`).
+        status: String,
+    },
+    /// Set or clear the Argon2id password hash and bump `security_version`.
+    #[serde(rename_all = "camelCase")]
+    SetUserPasswordHash {
+        /// `users.id` to update.
+        user_id: i64,
+        /// New hash, or `null` to clear.
+        password_hash: Option<String>,
+    },
+    /// Set `users.role` (last-owner guarded on demotion).
+    #[serde(rename_all = "camelCase")]
+    SetUserRole {
+        /// `users.id` to update.
+        user_id: i64,
+        /// Canonical role string (`owner` / `administrator` / `member`).
+        role: String,
+    },
+    /// Consume a claim ticket, optionally set a first password, mint a session.
+    #[serde(rename_all = "camelCase")]
+    RedeemClaimTicket {
+        /// SHA-256 hex digest of the claim ticket.
+        token_hash: String,
+        /// SHA-256 hex digest of the new portal session token.
+        session_hash: String,
+        /// RFC 3339 expiry for the minted session.
+        expires_at: String,
+        /// Raw User-Agent captured at session mint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_agent: Option<String>,
+        /// Best-effort device class.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_type: Option<String>,
+        /// Best-effort OS / client label.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_label: Option<String>,
+        /// Argon2id hash to set when the local user has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        new_password_hash: Option<String>,
+    },
+}
+
+/// Result of a successful [`crate::methods::db_atomic`] RPC.
+///
+/// `status` is an application outcome ([`atomic_status`]); SQL failures are
+/// plugin errors and roll back the D1 batch. `payload` is a library record
+/// JSON object using snake_case field names matching `UserRecord` /
+/// `PortalIdentity`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DbAtomicResult {
+    /// Application outcome (`ok`, `empty`, `notFound`, `lastOwner`, …).
+    pub status: String,
+    /// Op-specific record when `status` is `ok`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<JsonValue>,
+}
+
+impl DbAtomicResult {
+    /// Successful operation with a JSON payload.
+    #[must_use]
+    pub fn ok(payload: JsonValue) -> Self {
+        Self {
+            status: atomic_status::OK.into(),
+            payload: Some(payload),
+        }
+    }
+
+    /// Successful operation with no payload (`deleteUser`).
+    #[must_use]
+    pub fn ok_unit() -> Self {
+        Self {
+            status: atomic_status::OK.into(),
+            payload: None,
+        }
+    }
+
+    /// Application failure or empty consume-once result (no payload).
+    #[must_use]
+    pub fn with_status(status: &str) -> Self {
+        Self {
+            status: status.to_string(),
+            payload: None,
         }
     }
 }
