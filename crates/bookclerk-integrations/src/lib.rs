@@ -22,7 +22,8 @@ pub use factory::{from_config, register_builtins};
 pub use hooks::emit_book_acquired;
 pub use listening::{match_book_uuid, upsert_listening_snapshots};
 pub use portal::{
-    mint_for_external_user, portal_identity_from_headers, portal_spa_router, PortalState,
+    mint_for_external_user, portal_identity_from_headers, portal_spa_router,
+    redeem_lose_next_responses, PortalState,
 };
 pub use registry::IntegrationRegistry;
 pub use tickets::{

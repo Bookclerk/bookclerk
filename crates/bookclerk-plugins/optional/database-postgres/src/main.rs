@@ -2,13 +2,14 @@
 
 use async_trait::async_trait;
 use bookclerk_db_guest::{
-    guest_begin, guest_commit, guest_execute, guest_ping, guest_query, guest_rollback,
-    set_connection,
+    guest_atomic, guest_begin, guest_commit, guest_execute, guest_ping, guest_query,
+    guest_rollback, set_connection,
 };
 use bookclerk_plugin_sdk::{
-    BookclerkPlugin, BookclerkPluginGuest, DbBeginParams, DbBeginResult, DbConnectParams,
-    DbConnectResult, DbTxnParams, DiagnoseResult, ExecResultDto, HandshakeParams, HandshakeResult,
-    HealthResult, PluginError, QueryResultDto, StatementDto, PLUGIN_API_VERSION,
+    BookclerkPlugin, BookclerkPluginGuest, DbAtomicRequest, DbAtomicResult, DbBeginParams,
+    DbBeginResult, DbConnectParams, DbConnectResult, DbTxnParams, DiagnoseResult, ExecResultDto,
+    HandshakeParams, HandshakeResult, HealthResult, PluginError, QueryResultDto, StatementDto,
+    PLUGIN_API_VERSION,
 };
 
 struct PostgresPlugin;
@@ -31,6 +32,7 @@ impl BookclerkPlugin for PostgresPlugin {
                 "dbBegin".into(),
                 "dbCommit".into(),
                 "dbRollback".into(),
+                "dbAtomic".into(),
             ],
             sort_key: Some(5),
             ..HandshakeResult::default()
@@ -98,6 +100,10 @@ impl BookclerkPlugin for PostgresPlugin {
         guest_rollback(params.txn_id)
             .await
             .map_err(PluginError::internal)
+    }
+
+    async fn db_atomic(&self, params: DbAtomicRequest) -> Result<DbAtomicResult, PluginError> {
+        guest_atomic(params).await.map_err(PluginError::internal)
     }
 }
 

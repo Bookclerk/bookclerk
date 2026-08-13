@@ -87,6 +87,13 @@ impl MasterKey {
     fn from_bytes(bytes: [u8; DEK_LEN]) -> Self {
         Self { bytes }
     }
+
+    /// Fixed DEK for unit tests that must not touch `master.key`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn from_test_bytes(bytes: [u8; DEK_LEN]) -> Self {
+        Self::from_bytes(bytes)
+    }
 }
 
 impl std::fmt::Debug for MasterKey {

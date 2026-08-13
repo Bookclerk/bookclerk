@@ -36,6 +36,7 @@ export interface AuthMeUser {
   display_name: string | null;
   login_name?: string | null;
   status?: string;
+  email?: string | null;
   has_password?: boolean;
 }
 
@@ -521,6 +522,264 @@ export async function endElevation(): Promise<void> {
 /** Alias used by Settings RBAC controls. */
 export const endElevate = endElevation;
 
+/** Enabled upstream OIDC/OAuth login providers. */
+export interface OidcProvider {
+  id: string;
+  name: string;
+}
+
+/** Linked portal identity (local or `oidc:{id}`). */
+export interface LinkedIdentity {
+  provider: string;
+  external_user_id: string;
+  label: string | null;
+}
+
+/** How an upstream IdP decides who may become a first-party User. */
+export type OidcProvisionMode = "mapped_role" | "any" | "allowlist" | "invite_only";
+
+/** Where a provider client secret is stored (never returned in plaintext). */
+export type OidcSecretSource = "env" | "config" | "store" | "none";
+
+/** Owner/operator view of one `[auth.oidc]` provider (secrets redacted). */
+export interface OidcProviderConfigView {
+  id: string;
+  name: string;
+  preset?: string | null;
+  issuer?: string | null;
+  client_id: string;
+  scopes: string[];
+  provision: OidcProvisionMode;
+  default_role: string;
+  role_claim: string;
+  role_map: Record<string, string>;
+  link_by_email: boolean;
+  allowed_email_domains: string[];
+  allowed_emails: string[];
+  allowed_subjects: string[];
+  apple_team_id?: string | null;
+  apple_key_id?: string | null;
+  has_client_secret: boolean;
+  has_apple_private_key?: boolean;
+  secret_source: OidcSecretSource;
+}
+
+/** Owner/operator identity-broker settings payload. */
+export interface OidcBrokerConfigView {
+  enabled: boolean;
+  allowed_email_domains: string[];
+  callback_url?: string | null;
+  providers: OidcProviderConfigView[];
+}
+
+/** Provider fields accepted by `PUT /api/auth/oidc/config`. */
+export interface OidcProviderConfigUpdate {
+  id: string;
+  name: string;
+  preset?: string | null;
+  issuer?: string | null;
+  client_id: string;
+  /** Omit to keep; empty string to clear; non-empty to store. */
+  client_secret?: string;
+  scopes: string[];
+  provision: OidcProvisionMode;
+  default_role: string;
+  role_claim: string;
+  role_map: Record<string, string>;
+  link_by_email: boolean;
+  allowed_email_domains: string[];
+  allowed_emails: string[];
+  allowed_subjects: string[];
+  apple_team_id?: string | null;
+  apple_key_id?: string | null;
+  apple_private_key?: string;
+}
+
+/** Body for `PUT /api/auth/oidc/config`. */
+export interface OidcBrokerConfigUpdate {
+  enabled: boolean;
+  allowed_email_domains: string[];
+  providers: OidcProviderConfigUpdate[];
+  current_password?: string;
+}
+
+/** Registered passkey row. */
+export interface ListedPasskey {
+  id: number;
+  credential_id: string;
+}
+
+/**
+ * Public list of SSO providers for the login page.
+ */
+export async function listOidcProviders(): Promise<{
+  enabled: boolean;
+  providers: OidcProvider[];
+}> {
+  const res = await fetch("/api/auth/oidc/providers", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Owner/operator identity-broker configuration (secrets redacted).
+ *
+ * @returns Enabled flag, callback URL, and provider rows.
+ */
+export async function fetchOidcConfig(): Promise<OidcBrokerConfigView> {
+  const res = await fetch("/api/auth/oidc/config", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Replaces `[auth.oidc]` providers. Omit `client_secret` to keep the stored value.
+ *
+ * @param body - Broker enablement and provider list.
+ * @returns Saved configuration with redacted secrets.
+ */
+export async function putOidcConfig(body: OidcBrokerConfigUpdate): Promise<OidcBrokerConfigView> {
+  const res = await fetch("/api/auth/oidc/config", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Linked login identities for the current User.
+ */
+export async function listOidcIdentities(): Promise<LinkedIdentity[]> {
+  const res = await fetch("/api/auth/oidc/identities", { credentials: "include" });
+  const body = await parseJson<{ identities: LinkedIdentity[] }>(res);
+  return body.identities ?? [];
+}
+
+/**
+ * Passkeys registered to the current User.
+ */
+export async function listPasskeys(): Promise<ListedPasskey[]> {
+  const res = await fetch("/api/auth/passkeys", { credentials: "include" });
+  const body = await parseJson<{ passkeys: ListedPasskey[] }>(res);
+  return body.passkeys ?? [];
+}
+
+/**
+ * Begin WebAuthn registration (authenticated).
+ */
+export async function passkeyRegisterBegin(currentPassword?: string): Promise<{
+  challenge_id: string;
+  publicKey: Record<string, unknown>;
+}> {
+  const res = await fetch("/api/auth/passkeys/register/begin", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(
+      currentPassword ? { current_password: currentPassword } : {},
+    ),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Finish WebAuthn registration.
+ */
+export async function passkeyRegisterFinish(body: {
+  challenge_id: string;
+  credential: Record<string, unknown>;
+}): Promise<void> {
+  const res = await fetch("/api/auth/passkeys/register/finish", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  await parseJson(res);
+}
+
+/**
+ * Delete a passkey owned by the current User.
+ */
+export async function deletePasskey(
+  id: number,
+  currentPassword?: string,
+): Promise<void> {
+  const res = await fetch(`/api/auth/passkeys/${id}`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(
+      currentPassword ? { current_password: currentPassword } : {},
+    ),
+  });
+  await parseJson(res);
+}
+
+/**
+ * Begin identifier-first passkey login.
+ */
+export async function passkeyLoginBegin(login: string): Promise<{
+  challenge_id: string;
+  publicKey: Record<string, unknown>;
+}> {
+  const res = await fetch("/api/auth/passkeys/login/begin", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ login }),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Finish passkey login (sets the portal session cookie).
+ */
+export async function passkeyLoginFinish(body: {
+  challenge_id: string;
+  credential: Record<string, unknown>;
+}): Promise<void> {
+  const res = await fetch("/api/auth/passkeys/login/finish", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  await parseJson(res);
+}
+
+/**
+ * Begin passkey Owner elevation.
+ */
+export async function passkeyElevateBegin(): Promise<{
+  challenge_id: string;
+  publicKey: Record<string, unknown>;
+}> {
+  const res = await fetch("/api/auth/passkeys/elevate/begin", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Finish passkey Owner elevation.
+ */
+export async function passkeyElevateFinish(body: {
+  challenge_id: string;
+  credential: Record<string, unknown>;
+}): Promise<void> {
+  const res = await fetch("/api/auth/passkeys/elevate/finish", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  await parseJson(res);
+}
+
 /**
  * Starts operator (or elevated Owner) impersonation of another user.
  *
@@ -577,6 +836,12 @@ export interface ListedUser {
   integrations?: {
     source: string;
     account_id: string;
+    label: string | null;
+  }[];
+  /** Linked login identities (local + OIDC). */
+  identities?: {
+    provider: string;
+    external_user_id: string;
     label: string | null;
   }[];
 }
@@ -1138,7 +1403,8 @@ export async function patchSettings(body: { settings: SettingsUpdate[] }): Promi
  * @returns Resolves when the session cookie is set.
  */
 export async function portalRedeem(ticket: string, password?: string): Promise<void> {
-  const body: { ticket: string; password?: string } = { ticket };
+  const nonce = claimRedeemNonce(ticket);
+  const body: { ticket: string; nonce: string; password?: string } = { ticket, nonce };
   if (password?.trim()) {
     body.password = password.trim();
   }
@@ -1149,6 +1415,48 @@ export async function portalRedeem(ticket: string, password?: string): Promise<v
     body: JSON.stringify(body),
   });
   await parseJson(res);
+  clearClaimRedeemNonce(ticket);
+}
+
+const CLAIM_REDEEM_NONCE_RE = /^[0-9a-f]{64}$/i;
+
+function claimRedeemNonceKey(ticket: string): string {
+  return `bookclerk.claimRedeemNonce:${ticket}`;
+}
+
+/**
+ * Persist a 32-byte redeem nonce across HTTP retries for this ticket.
+ *
+ * The nonce binds the committed session to the initiating browser so a used
+ * magic-link URL alone cannot replay the receipt.
+ */
+function claimRedeemNonce(ticket: string): string {
+  const key = claimRedeemNonceKey(ticket);
+  try {
+    const existing = sessionStorage.getItem(key);
+    if (existing && CLAIM_REDEEM_NONCE_RE.test(existing)) {
+      return existing.toLowerCase();
+    }
+  } catch {
+    // sessionStorage can be unavailable in private modes.
+  }
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const nonce = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  try {
+    sessionStorage.setItem(key, nonce);
+  } catch {
+    // Keep going with an in-memory nonce for this attempt.
+  }
+  return nonce;
+}
+
+function clearClaimRedeemNonce(ticket: string): void {
+  try {
+    sessionStorage.removeItem(claimRedeemNonceKey(ticket));
+  } catch {
+    // ignore
+  }
 }
 
 /**

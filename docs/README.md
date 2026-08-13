@@ -26,7 +26,7 @@ Start here if you are new:
 | --- | --- |
 | [Plugins](plugins.md) | Ship or host a third-party source/integration (Workers RPC ABI, jail, workerd) |
 | [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Greenfield `api_version = 1` decision: ABI, `BookclerkPlugin`, consent |
-| [ADR: First-party identity](adr/first-party-identity.md) | Operator / Administrator / Member, federation, OIDC for ABS, phased rollout |
+| [ADR: First-party identity](adr/first-party-identity.md) | Operator / Owner / Administrator / Member, optional multi-IdP broker, passkeys, OIDC for ABS |
 | [Plugin registry](plugin-registry.md) | crates.io taxonomy, native vs workerd archives, catalog roadmap |
 | [Packaging](packaging.md) | `cargo package-*` aliases, platform bundles, release CI |
 | [Source candidates](source-candidates.md) | Research notes for stores not yet implemented |

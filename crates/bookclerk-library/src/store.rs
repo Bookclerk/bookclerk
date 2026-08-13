@@ -14,17 +14,18 @@ use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait,
     ActiveValue::{NotSet, Set},
-    ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DatabaseTransaction, EntityTrait,
-    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
+    ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait,
+    QueryFilter, QueryOrder, QuerySelect,
 };
 use uuid::Uuid;
 
 use crate::atomic_txn::AtomicTxnBackend;
 use crate::entities::{
     account_links, accounts, books, claim_tickets, embeddings, ignored_titles, listening_progress,
-    oidc_auth_codes, oidc_clients, oidc_refresh_tokens, operator_sessions, portal_identities,
-    portal_sessions, saved_filters, security_audit_events, title_request_sources, title_requests,
-    user_invites, user_preferences, users, work_editions, works,
+    oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions,
+    portal_identities, portal_sessions, saved_filters, security_audit_events,
+    title_request_sources, title_requests, user_invites, user_preferences, users,
+    webauthn_challenges, webauthn_credentials, work_editions, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
@@ -41,8 +42,8 @@ use crate::wishlist_merge::apply_merged_sources;
 #[derive(Clone)]
 pub struct LibraryStore {
     db: DatabaseConnection,
-    /// When set (D1), interactive SeaORM `begin()` is unavailable and these
-    /// methods run as one guest `dbAtomic` SQL batch instead.
+    /// When set, named security methods run as one guest `dbAtomic` command
+    /// instead of a local SeaORM transaction.
     atomic: Option<Arc<dyn AtomicTxnBackend>>,
 }
 
@@ -63,9 +64,11 @@ impl LibraryStore {
         Self { db, atomic: None }
     }
 
-    /// Attach a guest atomic-batch backend (D1 `dbAtomic`) for interactive txns.
+    /// Attach a guest `dbAtomic` backend for named security operations.
     ///
-    /// SQLite and Postgres leave this unset and use SeaORM `begin()`.
+    /// Hosts attach this for every database plugin. Tests that open a local
+    /// connection leave it unset and run the same commands through
+    /// [`crate::execute_db_atomic`].
     #[must_use]
     pub fn with_atomic_txn(mut self, backend: Arc<dyn AtomicTxnBackend>) -> Self {
         self.atomic = Some(backend);
@@ -82,23 +85,6 @@ impl LibraryStore {
     #[must_use]
     pub fn db(&self) -> &DatabaseConnection {
         &self.db
-    }
-
-    async fn commit_or_rollback<T>(txn: DatabaseTransaction, result: Result<T>) -> Result<T> {
-        match result {
-            Ok(val) => {
-                txn.commit().await.map_err(LibraryError::Orm)?;
-                if let Some(fault) = crate::take_txn_fault() {
-                    return Err(LibraryError::Orm(sea_orm::DbErr::Custom(fault)));
-                }
-                Ok(val)
-            }
-            Err(err) => {
-                let _ = txn.rollback().await;
-                let _ = crate::take_txn_fault();
-                Err(err)
-            }
-        }
     }
 
     /// Write-lock active owner rows so last-owner checks cannot race a concurrent
@@ -774,108 +760,122 @@ impl LibraryStore {
         if let Some(atomic) = &self.atomic {
             return atomic.delete_user(id).await;
         }
-        let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        let result = async {
-            Self::lock_active_owners(&txn).await?;
-            let model = users::Entity::find_by_id(id)
-                .one(&txn)
-                .await
-                .map_err(LibraryError::Orm)?
-                .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
-            let current = map_user(model);
-            if matches!(current.role, UserRole::Owner)
-                && matches!(current.status, UserStatus::Active)
-                && Self::count_active_owners_on(&txn).await? <= 1
-            {
-                return Err(LibraryError::LastOwner);
-            }
+        crate::db_atomic::delete_user(&self.db, id).await
+    }
 
-            let identities = portal_identities::Entity::find()
-                .filter(portal_identities::Column::UserId.eq(id))
-                .all(&txn)
-                .await
-                .map_err(LibraryError::Orm)?;
-
-            for identity in &identities {
-                account_links::Entity::delete_many()
-                    .filter(account_links::Column::IdentityId.eq(identity.id))
-                    .exec(&txn)
-                    .await
-                    .map_err(LibraryError::Orm)?;
-                title_requests::Entity::delete_many()
-                    .filter(title_requests::Column::IdentityId.eq(identity.id))
-                    .exec(&txn)
-                    .await
-                    .map_err(LibraryError::Orm)?;
-                claim_tickets::Entity::delete_many()
-                    .filter(claim_tickets::Column::IdentityId.eq(identity.id))
-                    .exec(&txn)
-                    .await
-                    .map_err(LibraryError::Orm)?;
-                portal_sessions::Entity::delete_many()
-                    .filter(portal_sessions::Column::IdentityId.eq(identity.id))
-                    .exec(&txn)
-                    .await
-                    .map_err(LibraryError::Orm)?;
-                listening_progress::Entity::delete_many()
-                    .filter(listening_progress::Column::IdentityId.eq(identity.id))
-                    .exec(&txn)
-                    .await
-                    .map_err(LibraryError::Orm)?;
-                user_preferences::Entity::delete_many()
-                    .filter(user_preferences::Column::IdentityId.eq(identity.id))
-                    .exec(&txn)
-                    .await
-                    .map_err(LibraryError::Orm)?;
-            }
-
-            // Elevated origin must not become a normal Operator session.
-            Self::delete_elevated_operator_sessions_for_user_on(&txn, id).await?;
-            // Impersonation pointer: clear only (session remains a real Operator).
-            {
-                use sea_orm::sea_query::Expr;
-                operator_sessions::Entity::update_many()
-                    .col_expr(
-                        operator_sessions::Column::ImpersonatingUserId,
-                        Expr::value(Option::<i64>::None),
-                    )
-                    .filter(operator_sessions::Column::ImpersonatingUserId.eq(id))
-                    .exec(&txn)
-                    .await
-                    .map_err(LibraryError::Orm)?;
-            }
-
-            oidc_refresh_tokens::Entity::delete_many()
-                .filter(oidc_refresh_tokens::Column::UserId.eq(id))
-                .exec(&txn)
-                .await
-                .map_err(LibraryError::Orm)?;
-            oidc_auth_codes::Entity::delete_many()
-                .filter(oidc_auth_codes::Column::UserId.eq(id))
-                .exec(&txn)
-                .await
-                .map_err(LibraryError::Orm)?;
-
-            portal_identities::Entity::delete_many()
-                .filter(portal_identities::Column::UserId.eq(id))
-                .exec(&txn)
-                .await
-                .map_err(LibraryError::Orm)?;
-
-            user_preferences::Entity::delete_many()
-                .filter(user_preferences::Column::SubjectKey.eq(user_prefs_key(id)))
-                .exec(&txn)
-                .await
-                .map_err(LibraryError::Orm)?;
-
-            users::Entity::delete_by_id(id)
-                .exec(&txn)
-                .await
-                .map_err(LibraryError::Orm)?;
-            Ok(())
+    pub(crate) async fn delete_user_on<C: ConnectionTrait>(txn: &C, id: i64) -> Result<()> {
+        Self::lock_active_owners(txn).await?;
+        let model = users::Entity::find_by_id(id)
+            .one(txn)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+        let current = map_user(model);
+        if matches!(current.role, UserRole::Owner)
+            && matches!(current.status, UserStatus::Active)
+            && Self::count_active_owners_on(txn).await? <= 1
+        {
+            return Err(LibraryError::LastOwner);
         }
-        .await;
-        Self::commit_or_rollback(txn, result).await
+
+        let identities = portal_identities::Entity::find()
+            .filter(portal_identities::Column::UserId.eq(id))
+            .all(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+
+        for identity in &identities {
+            account_links::Entity::delete_many()
+                .filter(account_links::Column::IdentityId.eq(identity.id))
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+            title_requests::Entity::delete_many()
+                .filter(title_requests::Column::IdentityId.eq(identity.id))
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+            claim_tickets::Entity::delete_many()
+                .filter(claim_tickets::Column::IdentityId.eq(identity.id))
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+            portal_sessions::Entity::delete_many()
+                .filter(portal_sessions::Column::IdentityId.eq(identity.id))
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+            listening_progress::Entity::delete_many()
+                .filter(listening_progress::Column::IdentityId.eq(identity.id))
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+            user_preferences::Entity::delete_many()
+                .filter(user_preferences::Column::IdentityId.eq(identity.id))
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+        }
+
+        // Elevated origin must not become a normal Operator session.
+        Self::delete_elevated_operator_sessions_for_user_on(txn, id).await?;
+        // Impersonation pointer: clear only (session remains a real Operator).
+        {
+            use sea_orm::sea_query::Expr;
+            operator_sessions::Entity::update_many()
+                .col_expr(
+                    operator_sessions::Column::ImpersonatingUserId,
+                    Expr::value(Option::<i64>::None),
+                )
+                .filter(operator_sessions::Column::ImpersonatingUserId.eq(id))
+                .exec(txn)
+                .await
+                .map_err(LibraryError::Orm)?;
+        }
+
+        oidc_refresh_tokens::Entity::delete_many()
+            .filter(oidc_refresh_tokens::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        oidc_auth_codes::Entity::delete_many()
+            .filter(oidc_auth_codes::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        webauthn_credentials::Entity::delete_many()
+            .filter(webauthn_credentials::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        webauthn_challenges::Entity::delete_many()
+            .filter(webauthn_challenges::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        oidc_rp_states::Entity::delete_many()
+            .filter(oidc_rp_states::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+
+        portal_identities::Entity::delete_many()
+            .filter(portal_identities::Column::UserId.eq(id))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+
+        user_preferences::Entity::delete_many()
+            .filter(user_preferences::Column::SubjectKey.eq(user_prefs_key(id)))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+
+        users::Entity::delete_by_id(id)
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(())
     }
 
     /// Set user status (`active` / `disabled`).
@@ -885,33 +885,36 @@ impl LibraryStore {
         if let Some(atomic) = &self.atomic {
             return atomic.set_user_status(id, status).await;
         }
-        let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        let result = async {
-            Self::lock_active_owners(&txn).await?;
-            let model = users::Entity::find_by_id(id)
-                .one(&txn)
-                .await
-                .map_err(LibraryError::Orm)?
-                .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
-            let current = map_user(model.clone());
-            if matches!(status, UserStatus::Disabled)
-                && matches!(current.role, UserRole::Owner)
-                && matches!(current.status, UserStatus::Active)
-                && Self::count_active_owners_on(&txn).await? <= 1
-            {
-                return Err(LibraryError::LastOwner);
-            }
-            let mut am: users::ActiveModel = model.into();
-            am.status = Set(status.as_str().to_string());
-            am.updated_at = Set(now_str());
-            let model = am.update(&txn).await.map_err(LibraryError::Orm)?;
-            if matches!(status, UserStatus::Disabled) {
-                Self::delete_elevated_operator_sessions_for_user_on(&txn, id).await?;
-            }
-            Ok(map_user(model))
+        crate::db_atomic::set_user_status(&self.db, id, status).await
+    }
+
+    pub(crate) async fn set_user_status_on<C: ConnectionTrait>(
+        txn: &C,
+        id: i64,
+        status: UserStatus,
+    ) -> Result<UserRecord> {
+        Self::lock_active_owners(txn).await?;
+        let model = users::Entity::find_by_id(id)
+            .one(txn)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+        let current = map_user(model.clone());
+        if matches!(status, UserStatus::Disabled)
+            && matches!(current.role, UserRole::Owner)
+            && matches!(current.status, UserStatus::Active)
+            && Self::count_active_owners_on(txn).await? <= 1
+        {
+            return Err(LibraryError::LastOwner);
         }
-        .await;
-        Self::commit_or_rollback(txn, result).await
+        let mut am: users::ActiveModel = model.into();
+        am.status = Set(status.as_str().to_string());
+        am.updated_at = Set(now_str());
+        let model = am.update(txn).await.map_err(LibraryError::Orm)?;
+        if matches!(status, UserStatus::Disabled) {
+            Self::delete_elevated_operator_sessions_for_user_on(txn, id).await?;
+        }
+        Ok(map_user(model))
     }
 
     /// Set display name (does not bump security_version).
@@ -944,24 +947,27 @@ impl LibraryStore {
         if let Some(atomic) = &self.atomic {
             return atomic.set_user_password_hash(id, password_hash).await;
         }
-        let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        let result = async {
-            let model = users::Entity::find_by_id(id)
-                .one(&txn)
-                .await
-                .map_err(LibraryError::Orm)?
-                .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
-            let next_sv = model.security_version.saturating_add(1);
-            let mut am: users::ActiveModel = model.into();
-            am.password_hash = Set(password_hash.map(str::to_string));
-            am.security_version = Set(next_sv);
-            am.updated_at = Set(now_str());
-            let model = am.update(&txn).await.map_err(LibraryError::Orm)?;
-            Self::delete_elevated_operator_sessions_for_user_on(&txn, id).await?;
-            Ok(map_user(model))
-        }
-        .await;
-        Self::commit_or_rollback(txn, result).await
+        crate::db_atomic::set_user_password_hash(&self.db, id, password_hash).await
+    }
+
+    pub(crate) async fn set_user_password_hash_on<C: ConnectionTrait>(
+        txn: &C,
+        id: i64,
+        password_hash: Option<&str>,
+    ) -> Result<UserRecord> {
+        let model = users::Entity::find_by_id(id)
+            .one(txn)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+        let next_sv = model.security_version.saturating_add(1);
+        let mut am: users::ActiveModel = model.into();
+        am.password_hash = Set(password_hash.map(str::to_string));
+        am.security_version = Set(next_sv);
+        am.updated_at = Set(now_str());
+        let model = am.update(txn).await.map_err(LibraryError::Orm)?;
+        Self::delete_elevated_operator_sessions_for_user_on(txn, id).await?;
+        Ok(map_user(model))
     }
 
     /// Set login_name (unique); does not bump security_version.
@@ -1077,34 +1083,37 @@ impl LibraryStore {
         if let Some(atomic) = &self.atomic {
             return atomic.set_user_role(id, role).await;
         }
-        let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        let result = async {
-            Self::lock_active_owners(&txn).await?;
-            let model = users::Entity::find_by_id(id)
-                .one(&txn)
-                .await
-                .map_err(LibraryError::Orm)?
-                .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
-            let current = map_user(model.clone());
-            if !matches!(role, UserRole::Owner)
-                && matches!(current.role, UserRole::Owner)
-                && matches!(current.status, UserStatus::Active)
-                && Self::count_active_owners_on(&txn).await? <= 1
-            {
-                return Err(LibraryError::LastOwner);
-            }
-            let role_changed = current.role != role;
-            let mut am: users::ActiveModel = model.into();
-            am.role = Set(role.as_str().to_string());
-            am.updated_at = Set(now_str());
-            let model = am.update(&txn).await.map_err(LibraryError::Orm)?;
-            if role_changed {
-                Self::delete_elevated_operator_sessions_for_user_on(&txn, id).await?;
-            }
-            Ok(map_user(model))
+        crate::db_atomic::set_user_role(&self.db, id, role).await
+    }
+
+    pub(crate) async fn set_user_role_on<C: ConnectionTrait>(
+        txn: &C,
+        id: i64,
+        role: UserRole,
+    ) -> Result<UserRecord> {
+        Self::lock_active_owners(txn).await?;
+        let model = users::Entity::find_by_id(id)
+            .one(txn)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+        let current = map_user(model.clone());
+        if !matches!(role, UserRole::Owner)
+            && matches!(current.role, UserRole::Owner)
+            && matches!(current.status, UserStatus::Active)
+            && Self::count_active_owners_on(txn).await? <= 1
+        {
+            return Err(LibraryError::LastOwner);
         }
-        .await;
-        Self::commit_or_rollback(txn, result).await
+        let role_changed = current.role != role;
+        let mut am: users::ActiveModel = model.into();
+        am.role = Set(role.as_str().to_string());
+        am.updated_at = Set(now_str());
+        let model = am.update(txn).await.map_err(LibraryError::Orm)?;
+        if role_changed {
+            Self::delete_elevated_operator_sessions_for_user_on(txn, id).await?;
+        }
+        Ok(map_user(model))
     }
 
     /// Count administrators (includes disabled).
@@ -1385,6 +1394,8 @@ impl LibraryStore {
     /// * `expires_at` - RFC 3339 expiry for the minted session.
     /// * `client` - Optional client metadata stored on the session row.
     /// * `new_password_hash` - Argon2id hash to set when the local user has none.
+    /// * `password_fingerprint` - Stable HMAC of the plaintext password for
+    ///   `dbAtomic` idempotency; ignored by the mutation SQL.
     ///
     /// # Returns
     ///
@@ -1401,6 +1412,7 @@ impl LibraryStore {
         expires_at: chrono::DateTime<Utc>,
         client: Option<&crate::SessionClientInfo>,
         new_password_hash: Option<&str>,
+        password_fingerprint: Option<&str>,
     ) -> Result<crate::models::PortalIdentity> {
         if let Some(atomic) = &self.atomic {
             return atomic
@@ -1410,86 +1422,102 @@ impl LibraryStore {
                     expires_at,
                     client,
                     new_password_hash,
+                    password_fingerprint,
                 )
                 .await;
         }
+        crate::db_atomic::redeem_claim_ticket_to_session(
+            &self.db,
+            token_hash,
+            session_hash,
+            expires_at,
+            client,
+            new_password_hash,
+            password_fingerprint,
+        )
+        .await
+    }
+
+    pub(crate) async fn redeem_claim_ticket_to_session_on<C: ConnectionTrait>(
+        txn: &C,
+        token_hash: &str,
+        session_hash: &str,
+        expires_at: chrono::DateTime<Utc>,
+        client: Option<&crate::SessionClientInfo>,
+        new_password_hash: Option<&str>,
+    ) -> Result<crate::models::PortalIdentity> {
         use sea_orm::sea_query::Expr;
 
-        let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        let result = async {
-            let now = now_str();
-            let consumed = claim_tickets::Entity::update_many()
-                .col_expr(claim_tickets::Column::RedeemedAt, Expr::value(now.clone()))
-                .filter(claim_tickets::Column::TokenHash.eq(token_hash))
-                .filter(claim_tickets::Column::RedeemedAt.is_null())
-                .filter(claim_tickets::Column::ExpiresAt.gt(now.clone()))
-                .exec(&txn)
-                .await
-                .map_err(LibraryError::Orm)?;
-            if consumed.rows_affected != 1 {
-                return Err(LibraryError::Other(anyhow::anyhow!(
-                    "claim ticket invalid, expired, or already redeemed"
-                )));
-            }
-            let ticket = claim_tickets::Entity::find()
-                .filter(claim_tickets::Column::TokenHash.eq(token_hash))
-                .one(&txn)
-                .await
-                .map_err(LibraryError::Orm)?
-                .ok_or_else(|| {
-                    LibraryError::Other(anyhow::anyhow!("claim ticket missing after atomic redeem"))
-                })?;
-            let identity_id = ticket.identity_id.ok_or_else(|| {
-                LibraryError::Other(anyhow::anyhow!("claim ticket is not bound to an identity"))
+        let now = now_str();
+        let consumed = claim_tickets::Entity::update_many()
+            .col_expr(claim_tickets::Column::RedeemedAt, Expr::value(now.clone()))
+            .filter(claim_tickets::Column::TokenHash.eq(token_hash))
+            .filter(claim_tickets::Column::RedeemedAt.is_null())
+            .filter(claim_tickets::Column::ExpiresAt.gt(now.clone()))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        if consumed.rows_affected != 1 {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "claim ticket invalid, expired, or already redeemed"
+            )));
+        }
+        let ticket = claim_tickets::Entity::find()
+            .filter(claim_tickets::Column::TokenHash.eq(token_hash))
+            .one(txn)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| {
+                LibraryError::Other(anyhow::anyhow!("claim ticket missing after atomic redeem"))
             })?;
-            let identity_model = portal_identities::Entity::find_by_id(identity_id)
-                .one(&txn)
-                .await
-                .map_err(LibraryError::Orm)?
-                .ok_or_else(|| {
-                    LibraryError::Other(anyhow::anyhow!("portal identity missing for claim ticket"))
-                })?;
-            let identity = map_portal_identity(identity_model);
-            if identity.provider == "local" {
-                if let Some(user_id) = identity.user_id {
-                    let user = users::Entity::find_by_id(user_id)
-                        .one(&txn)
-                        .await
-                        .map_err(LibraryError::Orm)?
-                        .ok_or_else(|| LibraryError::NotFound(format!("user {user_id}")))?;
-                    if user.password_hash.is_none() {
-                        let Some(hash) = new_password_hash else {
-                            return Err(LibraryError::Other(anyhow::anyhow!(
-                                "password required — set a password to finish claim login"
-                            )));
-                        };
-                        let next_sv = user.security_version.saturating_add(1);
-                        let mut am: users::ActiveModel = user.into();
-                        am.password_hash = Set(Some(hash.to_string()));
-                        am.security_version = Set(next_sv);
-                        am.updated_at = Set(now_str());
-                        am.update(&txn).await.map_err(LibraryError::Orm)?;
-                        Self::delete_elevated_operator_sessions_for_user_on(&txn, user_id).await?;
-                    }
+        let identity_id = ticket.identity_id.ok_or_else(|| {
+            LibraryError::Other(anyhow::anyhow!("claim ticket is not bound to an identity"))
+        })?;
+        let identity_model = portal_identities::Entity::find_by_id(identity_id)
+            .one(txn)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| {
+                LibraryError::Other(anyhow::anyhow!("portal identity missing for claim ticket"))
+            })?;
+        let identity = map_portal_identity(identity_model);
+        if identity.provider == "local" {
+            if let Some(user_id) = identity.user_id {
+                let user = users::Entity::find_by_id(user_id)
+                    .one(txn)
+                    .await
+                    .map_err(LibraryError::Orm)?
+                    .ok_or_else(|| LibraryError::NotFound(format!("user {user_id}")))?;
+                if user.password_hash.is_none() {
+                    let Some(hash) = new_password_hash else {
+                        return Err(LibraryError::Other(anyhow::anyhow!(
+                            "password required — set a password to finish claim login"
+                        )));
+                    };
+                    let next_sv = user.security_version.saturating_add(1);
+                    let mut am: users::ActiveModel = user.into();
+                    am.password_hash = Set(Some(hash.to_string()));
+                    am.security_version = Set(next_sv);
+                    am.updated_at = Set(now_str());
+                    am.update(txn).await.map_err(LibraryError::Orm)?;
+                    Self::delete_elevated_operator_sessions_for_user_on(txn, user_id).await?;
                 }
             }
-            let session_now = now_str();
-            let session = portal_sessions::ActiveModel {
-                id: NotSet,
-                token_hash: Set(session_hash.to_string()),
-                identity_id: Set(identity.id),
-                expires_at: Set(expires_at.to_rfc3339()),
-                created_at: Set(session_now.clone()),
-                last_used_at: Set(Some(session_now)),
-                user_agent: Set(client.and_then(|c| c.user_agent.clone())),
-                device_type: Set(client.map(|c| c.device_type.clone())),
-                client_label: Set(client.map(|c| c.client_label.clone())),
-            };
-            session.insert(&txn).await.map_err(LibraryError::Orm)?;
-            Ok(identity)
         }
-        .await;
-        Self::commit_or_rollback(txn, result).await
+        let session_now = now_str();
+        let session = portal_sessions::ActiveModel {
+            id: NotSet,
+            token_hash: Set(session_hash.to_string()),
+            identity_id: Set(identity.id),
+            expires_at: Set(expires_at.to_rfc3339()),
+            created_at: Set(session_now.clone()),
+            last_used_at: Set(Some(session_now)),
+            user_agent: Set(client.and_then(|c| c.user_agent.clone())),
+            device_type: Set(client.map(|c| c.device_type.clone())),
+            client_label: Set(client.map(|c| c.client_label.clone())),
+        };
+        session.insert(txn).await.map_err(LibraryError::Orm)?;
+        Ok(identity)
     }
 
     /// Create a portal session (hash only).
@@ -1858,6 +1886,373 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .map(map_portal_identity))
+    }
+
+    /// All portal identities linked to a first-party user.
+    pub async fn list_portal_identities_for_user(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<crate::models::PortalIdentity>> {
+        Ok(portal_identities::Entity::find()
+            .filter(portal_identities::Column::UserId.eq(user_id))
+            .order_by_asc(portal_identities::Column::Id)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_portal_identity)
+            .collect())
+    }
+
+    /// Link `(provider, external_user_id)` to an existing user (SSO / invite_only).
+    ///
+    /// Creates the identity row when missing. Refuses to steal an identity already
+    /// bound to a different user.
+    pub async fn link_portal_identity_to_user(
+        &self,
+        provider: &str,
+        external_user_id: &str,
+        user_id: i64,
+        label: Option<&str>,
+    ) -> Result<crate::models::PortalIdentity> {
+        if let Some(existing) = self.get_portal_identity(provider, external_user_id).await? {
+            if let Some(bound) = existing.user_id {
+                if bound != user_id {
+                    return Err(LibraryError::Other(anyhow::anyhow!(
+                        "identity already linked to another user"
+                    )));
+                }
+            } else {
+                let model = portal_identities::Entity::find_by_id(existing.id)
+                    .one(&self.db)
+                    .await
+                    .map_err(LibraryError::Orm)?
+                    .ok_or_else(|| LibraryError::NotFound("portal identity".into()))?;
+                let mut am: portal_identities::ActiveModel = model.into();
+                am.user_id = Set(Some(user_id));
+                if label.is_some() {
+                    am.label = Set(label.map(str::to_string));
+                }
+                let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
+                return Ok(map_portal_identity(model));
+            }
+            return Ok(existing);
+        }
+        let am = portal_identities::ActiveModel {
+            id: NotSet,
+            provider: Set(provider.to_string()),
+            external_user_id: Set(external_user_id.to_string()),
+            label: Set(label.map(str::to_string)),
+            user_id: Set(Some(user_id)),
+            created_at: Set(now_str()),
+        };
+        let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(map_portal_identity(model))
+    }
+
+    /// Insert a short-lived OIDC RP authorize state row.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_oidc_rp_state(
+        &self,
+        state_hash: &str,
+        provider_id: &str,
+        pkce_verifier: &str,
+        nonce: &str,
+        purpose: &str,
+        user_id: Option<i64>,
+        expires_at: chrono::DateTime<Utc>,
+    ) -> Result<()> {
+        let _ = self.prune_expired_oidc_rp_states().await;
+        if self.count_oidc_rp_states().await? >= 256 {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "too many pending OIDC login attempts"
+            )));
+        }
+        let am = oidc_rp_states::ActiveModel {
+            id: NotSet,
+            state_hash: Set(state_hash.to_string()),
+            provider_id: Set(provider_id.to_string()),
+            pkce_verifier: Set(pkce_verifier.to_string()),
+            nonce: Set(nonce.to_string()),
+            purpose: Set(purpose.to_string()),
+            user_id: Set(user_id),
+            expires_at: Set(expires_at.to_rfc3339()),
+            created_at: Set(now_str()),
+        };
+        am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// Consume (delete) an OIDC RP state by hash if it has not expired.
+    ///
+    /// Find + delete run in one transaction so concurrent callbacks cannot both
+    /// observe the same unused state.
+    pub async fn take_oidc_rp_state(
+        &self,
+        state_hash: &str,
+    ) -> Result<Option<(String, String, String, String, Option<i64>)>> {
+        if let Some(atomic) = &self.atomic {
+            return atomic.take_oidc_rp_state(state_hash).await;
+        }
+        crate::db_atomic::take_oidc_rp_state(&self.db, state_hash).await
+    }
+
+    pub(crate) async fn take_oidc_rp_state_on<C: ConnectionTrait>(
+        txn: &C,
+        state_hash: &str,
+    ) -> Result<Option<(String, String, String, String, Option<i64>)>> {
+        let now = now_str();
+        let Some(model) = oidc_rp_states::Entity::find()
+            .filter(oidc_rp_states::Column::StateHash.eq(state_hash))
+            .one(txn)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        let deleted = oidc_rp_states::Entity::delete_by_id(model.id)
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        if deleted.rows_affected != 1 {
+            return Ok(None);
+        }
+        if model.expires_at.as_str() <= now.as_str() {
+            return Ok(None);
+        }
+        Ok(Some((
+            model.provider_id,
+            model.pkce_verifier,
+            model.nonce,
+            model.purpose,
+            model.user_id,
+        )))
+    }
+
+    /// Store a WebAuthn credential for a user.
+    pub async fn insert_webauthn_credential(
+        &self,
+        user_id: i64,
+        credential_id: &str,
+        passkey_json: &str,
+    ) -> Result<()> {
+        let am = webauthn_credentials::ActiveModel {
+            id: NotSet,
+            user_id: Set(user_id),
+            credential_id: Set(credential_id.to_string()),
+            passkey_json: Set(passkey_json.to_string()),
+            created_at: Set(now_str()),
+            last_used_at: Set(None),
+        };
+        am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// Passkeys registered to a user.
+    pub async fn list_webauthn_credentials(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<(i64, String, String)>> {
+        Ok(webauthn_credentials::Entity::find()
+            .filter(webauthn_credentials::Column::UserId.eq(user_id))
+            .order_by_asc(webauthn_credentials::Column::Id)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(|m| (m.id, m.credential_id, m.passkey_json))
+            .collect())
+    }
+
+    /// Count passkeys for a user.
+    pub async fn count_webauthn_credentials(&self, user_id: i64) -> Result<u64> {
+        webauthn_credentials::Entity::find()
+            .filter(webauthn_credentials::Column::UserId.eq(user_id))
+            .count(&self.db)
+            .await
+            .map_err(LibraryError::Orm)
+    }
+
+    /// Look up a passkey by credential id.
+    pub async fn get_webauthn_credential_by_cred_id(
+        &self,
+        credential_id: &str,
+    ) -> Result<Option<(i64, i64, String)>> {
+        Ok(webauthn_credentials::Entity::find()
+            .filter(webauthn_credentials::Column::CredentialId.eq(credential_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(|m| (m.id, m.user_id, m.passkey_json)))
+    }
+
+    /// Replace passkey JSON after a successful assertion (counter update).
+    pub async fn update_webauthn_credential(&self, id: i64, passkey_json: &str) -> Result<()> {
+        let model = webauthn_credentials::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound("passkey".into()))?;
+        let mut am: webauthn_credentials::ActiveModel = model.into();
+        am.passkey_json = Set(passkey_json.to_string());
+        am.last_used_at = Set(Some(now_str()));
+        am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// Delete a passkey owned by `user_id`.
+    pub async fn delete_webauthn_credential(&self, user_id: i64, id: i64) -> Result<bool> {
+        let res = webauthn_credentials::Entity::delete_many()
+            .filter(webauthn_credentials::Column::Id.eq(id))
+            .filter(webauthn_credentials::Column::UserId.eq(user_id))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(res.rows_affected > 0)
+    }
+
+    /// Insert a WebAuthn ceremony state.
+    pub async fn insert_webauthn_challenge(
+        &self,
+        challenge_id: &str,
+        user_id: Option<i64>,
+        kind: &str,
+        state_json: &str,
+        expires_at: chrono::DateTime<Utc>,
+    ) -> Result<()> {
+        let _ = self.prune_expired_webauthn_challenges().await;
+        if self.count_webauthn_challenges().await? >= 256 {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "too many pending WebAuthn challenges"
+            )));
+        }
+        let am = webauthn_challenges::ActiveModel {
+            id: NotSet,
+            challenge_id: Set(challenge_id.to_string()),
+            user_id: Set(user_id),
+            kind: Set(kind.to_string()),
+            state_json: Set(state_json.to_string()),
+            expires_at: Set(expires_at.to_rfc3339()),
+            created_at: Set(now_str()),
+        };
+        am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// Consume a WebAuthn ceremony by id (transactional delete-and-return).
+    pub async fn take_webauthn_challenge(
+        &self,
+        challenge_id: &str,
+        kind: &str,
+    ) -> Result<Option<(Option<i64>, String)>> {
+        if let Some(atomic) = &self.atomic {
+            return atomic.take_webauthn_challenge(challenge_id, kind).await;
+        }
+        crate::db_atomic::take_webauthn_challenge(&self.db, challenge_id, kind).await
+    }
+
+    pub(crate) async fn take_webauthn_challenge_on<C: ConnectionTrait>(
+        txn: &C,
+        challenge_id: &str,
+        kind: &str,
+    ) -> Result<Option<(Option<i64>, String)>> {
+        let now = now_str();
+        let Some(model) = webauthn_challenges::Entity::find()
+            .filter(webauthn_challenges::Column::ChallengeId.eq(challenge_id))
+            .filter(webauthn_challenges::Column::Kind.eq(kind))
+            .one(txn)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        let deleted = webauthn_challenges::Entity::delete_by_id(model.id)
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
+        if deleted.rows_affected != 1 {
+            return Ok(None);
+        }
+        if model.expires_at.as_str() <= now.as_str() {
+            return Ok(None);
+        }
+        Ok(Some((model.user_id, model.state_json)))
+    }
+
+    /// Drop expired OIDC RP states (bounded cleanup).
+    pub async fn prune_expired_oidc_rp_states(&self) -> Result<u64> {
+        let now = now_str();
+        let result = oidc_rp_states::Entity::delete_many()
+            .filter(oidc_rp_states::Column::ExpiresAt.lte(now))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(result.rows_affected)
+    }
+
+    /// Drop expired WebAuthn challenges (bounded cleanup).
+    pub async fn prune_expired_webauthn_challenges(&self) -> Result<u64> {
+        let now = now_str();
+        let result = webauthn_challenges::Entity::delete_many()
+            .filter(webauthn_challenges::Column::ExpiresAt.lte(now))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(result.rows_affected)
+    }
+
+    /// Count pending OIDC RP states (for public-begin caps).
+    pub async fn count_oidc_rp_states(&self) -> Result<u64> {
+        oidc_rp_states::Entity::find()
+            .count(&self.db)
+            .await
+            .map_err(LibraryError::Orm)
+    }
+
+    /// Count pending WebAuthn challenges (for public-begin caps).
+    pub async fn count_webauthn_challenges(&self) -> Result<u64> {
+        webauthn_challenges::Entity::find()
+            .count(&self.db)
+            .await
+            .map_err(LibraryError::Orm)
+    }
+
+    /// Created-at of a still-valid portal session (recent-auth checks).
+    pub async fn portal_session_created_at(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<chrono::DateTime<Utc>>> {
+        let now = now_str();
+        let Some(session) = portal_sessions::Entity::find()
+            .filter(portal_sessions::Column::TokenHash.eq(token_hash))
+            .filter(portal_sessions::Column::ExpiresAt.gt(now))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(parse_dt(&session.created_at)))
+    }
+
+    /// Overwrite `created_at` for a portal session (tests / recent-auth fixtures).
+    pub async fn set_portal_session_created_at(
+        &self,
+        token_hash: &str,
+        created_at: chrono::DateTime<Utc>,
+    ) -> Result<bool> {
+        let Some(model) = portal_sessions::Entity::find()
+            .filter(portal_sessions::Column::TokenHash.eq(token_hash))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(false);
+        };
+        let mut am: portal_sessions::ActiveModel = model.into();
+        am.created_at = Set(created_at.to_rfc3339());
+        am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(true)
     }
 
     /// Appends one security audit event row.

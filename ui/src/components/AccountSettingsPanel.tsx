@@ -1,18 +1,30 @@
-import { useState, type FormEvent } from "react";
-import { KeyRound, ShieldAlert, Trash2 } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
+import { Fingerprint, KeyRound, Trash2 } from "lucide-react";
 import { SessionsPanel } from "@/components/SessionsPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  deletePasskey,
   deleteUser,
   elevate,
   endElevate,
   isApiError,
+  listOidcIdentities,
+  listOidcProviders,
+  listPasskeys,
+  passkeyElevateBegin,
+  passkeyElevateFinish,
+  passkeyRegisterBegin,
+  passkeyRegisterFinish,
   setPassword,
   type AuthSession,
+  type LinkedIdentity,
+  type ListedPasskey,
   type ListedSession,
+  type OidcProvider,
 } from "@/lib/api";
+import { assertPasskey, createPasskey } from "@/lib/webauthn";
 
 /**
  * Account tab: Profile, Security, Sessions (and Owner elevation).
@@ -54,6 +66,42 @@ export function AccountSettingsPanel({
   const [elevatePassword, setElevatePassword] = useState("");
   const [elevateBusy, setElevateBusy] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [passkeys, setPasskeys] = useState<ListedPasskey[]>([]);
+  const [identities, setIdentities] = useState<LinkedIdentity[]>([]);
+  const [oidcProviders, setOidcProviders] = useState<OidcProvider[]>([]);
+
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get("sso_error");
+    if (code === "mismatch") {
+      setError("The identity provider account did not match this user.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [keys, ids, oidc] = await Promise.all([
+          listPasskeys(),
+          listOidcIdentities(),
+          listOidcProviders(),
+        ]);
+        if (cancelled) return;
+        setPasskeys(keys);
+        setIdentities(ids);
+        setOidcProviders(oidc.providers);
+      } catch {
+        if (!cancelled) {
+          setPasskeys([]);
+          setIdentities([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
   async function onChangePassword(e: FormEvent) {
     e.preventDefault();
@@ -150,6 +198,61 @@ export function AccountSettingsPanel({
     }
   }
 
+  async function onRegisterPasskey() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const begin = await passkeyRegisterBegin(
+        passkeys.length > 0 ? currentPassword || undefined : undefined,
+      );
+      const result = await createPasskey(begin);
+      await passkeyRegisterFinish(result);
+      setPasskeys(await listPasskeys());
+      setNotice("Passkey registered. You can use it to sign in if SSO is unavailable.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Passkey registration failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDeletePasskey(id: number) {
+    setBusy(true);
+    setError(null);
+    try {
+      await deletePasskey(id, currentPassword || undefined);
+      setPasskeys(await listPasskeys());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to remove passkey");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onElevatePasskey() {
+    setElevateBusy(true);
+    setError(null);
+    try {
+      const begin = await passkeyElevateBegin();
+      const result = await assertPasskey(begin);
+      await passkeyElevateFinish(result);
+      await onSessionChange?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Passkey elevation failed");
+    } finally {
+      setElevateBusy(false);
+    }
+  }
+
+  const oidcIdentities = identities.filter((i) => i.provider.startsWith("oidc:"));
+  const linkedProviderIds = new Set(
+    oidcIdentities.map((i) => i.provider.replace(/^oidc:/, "")),
+  );
+  const elevateProviders = oidcProviders.filter((p) => linkedProviderIds.has(p.id));
+  const showPasskeyBanner = Boolean(user) && oidcIdentities.length > 0 && passkeys.length === 0;
+  const hasPassword = session?.user?.has_password === true;
+
   return (
     <div className="flex flex-col gap-10">
       {error ? (
@@ -213,7 +316,7 @@ export function AccountSettingsPanel({
         <div className="space-y-1">
           <h2 className="text-lg font-semibold text-ink">Security</h2>
           <p className="text-sm text-ink/55">
-            Password and elevation. Passkeys are not available yet.
+            Password, passkeys, linked identity providers, and Owner elevation.
           </p>
         </div>
 
@@ -260,16 +363,77 @@ export function AccountSettingsPanel({
                 </Button>
               </div>
             </form>
-            <div className="flex items-start gap-3 border border-dashed border-ink/15 bg-white/20 px-4 py-3 text-sm text-ink/55">
-              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-              <div>
-                <p className="font-medium text-ink/70">Passkeys</p>
-                <p>
-                  WebAuthn / passkey sign-in is planned; password remains the
-                  supported method.
-                </p>
+            {showPasskeyBanner ? (
+              <div className="flex items-start gap-3 border border-teal/30 bg-teal/10 px-4 py-3 text-sm text-ink/70">
+                <Fingerprint className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <div>
+                  <p className="font-medium text-ink">Register a passkey</p>
+                  <p>
+                    SSO created this account. Add a passkey so you can still sign
+                    in (and Owners can elevate) if the identity provider is down.
+                  </p>
+                </div>
               </div>
+            ) : null}
+            <div className="flex flex-col gap-3 bg-white/35 px-4 py-4">
+              <div className="flex items-start gap-3 text-sm text-ink/70">
+                <Fingerprint className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <div>
+                  <p className="font-medium text-ink">Passkeys</p>
+                  <p>
+                    Phishing-resistant sign-in that stays on this Bookclerk host.
+                  </p>
+                </div>
+              </div>
+              {passkeys.length === 0 ? (
+                <p className="text-sm text-ink/55">No passkeys registered.</p>
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {passkeys.map((pk) => (
+                    <li
+                      key={pk.id}
+                      className="flex items-center justify-between gap-3 text-sm"
+                    >
+                      <span className="truncate font-mono text-ink/70">
+                        {pk.credential_id.slice(0, 16)}…
+                      </span>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={busy}
+                        onClick={() => void onDeletePasskey(pk.id)}
+                      >
+                        Remove
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={busy}
+                onClick={() => void onRegisterPasskey()}
+              >
+                <Fingerprint className="h-4 w-4" />
+                {busy ? "Waiting…" : "Add passkey"}
+              </Button>
             </div>
+            {oidcIdentities.length > 0 ? (
+              <div className="flex flex-col gap-2 bg-white/35 px-4 py-4">
+                <p className="text-sm font-medium text-ink">Linked sign-in</p>
+                <ul className="flex flex-wrap gap-1.5">
+                  {oidcIdentities.map((id) => (
+                    <li key={`${id.provider}:${id.external_user_id}`}>
+                      <Badge className="bg-ink/8 text-ink normal-case tracking-normal">
+                        {id.provider.replace(/^oidc:/, "")}
+                        {id.label ? ` · ${id.label}` : ""}
+                      </Badge>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </>
         ) : (
           <div className="space-y-2 bg-white/35 px-4 py-4 text-sm text-ink/60">
@@ -287,9 +451,10 @@ export function AccountSettingsPanel({
                 Operator elevation
               </h3>
               <p className="text-sm text-ink/55">
-                Owners can elevate to Operator by re-entering their account
-                password. Elevation unlocks Server Settings, Plugins, and
-                impersonation.
+                Owners can elevate to Operator with a fresh IdP login, a
+                passkey, or a local password. Elevation unlocks Server Settings,
+                Plugins, and impersonation. The Operator token is a separate
+                local session, not elevation.
               </p>
             </div>
             {session?.elevated ? (
@@ -307,26 +472,59 @@ export function AccountSettingsPanel({
                 </Button>
               </div>
             ) : canElevate ? (
-              <form
-                className="flex flex-wrap gap-2"
-                onSubmit={(e) => void onElevate(e)}
-              >
-                <Input
-                  className="min-w-64 flex-1"
-                  type="password"
-                  value={elevatePassword}
-                  onChange={(e) => setElevatePassword(e.target.value)}
-                  placeholder="Confirm your password"
-                  autoComplete="current-password"
-                  aria-label="Confirm password to elevate"
-                />
-                <Button
-                  type="submit"
-                  disabled={elevateBusy || !elevatePassword.trim()}
-                >
-                  {elevateBusy ? "Elevating…" : "Elevate to Operator"}
-                </Button>
-              </form>
+              <div className="flex flex-col gap-3">
+                {elevateProviders.map((p) => (
+                  <Button
+                    key={p.id}
+                    type="button"
+                    variant="secondary"
+                    disabled={elevateBusy}
+                    onClick={() => {
+                      window.location.href = `/api/auth/oidc/elevate?provider=${encodeURIComponent(p.id)}`;
+                    }}
+                  >
+                    Continue with {p.name}
+                  </Button>
+                ))}
+                {passkeys.length > 0 ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={elevateBusy}
+                    onClick={() => void onElevatePasskey()}
+                  >
+                    <Fingerprint className="h-4 w-4" />
+                    {elevateBusy ? "Waiting for passkey…" : "Elevate with passkey"}
+                  </Button>
+                ) : null}
+                {hasPassword ? (
+                  <form
+                    className="flex flex-wrap gap-2"
+                    onSubmit={(e) => void onElevate(e)}
+                  >
+                    <Input
+                      className="min-w-64 flex-1"
+                      type="password"
+                      value={elevatePassword}
+                      onChange={(e) => setElevatePassword(e.target.value)}
+                      placeholder="Confirm your password"
+                      autoComplete="current-password"
+                      aria-label="Confirm password to elevate"
+                    />
+                    <Button
+                      type="submit"
+                      disabled={elevateBusy || !elevatePassword.trim()}
+                    >
+                      {elevateBusy ? "Elevating…" : "Elevate to Operator"}
+                    </Button>
+                  </form>
+                ) : (
+                  <p className="text-sm text-ink/55">
+                    This Owner has no local password. Use SSO step-up or a
+                    passkey, or sign in with the Operator token on the host.
+                  </p>
+                )}
+              </div>
             ) : null}
           </div>
         ) : null}

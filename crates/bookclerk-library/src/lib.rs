@@ -9,6 +9,7 @@
 
 mod atomic_txn;
 mod backend_migrate;
+mod db_atomic;
 pub mod entities;
 mod error;
 pub mod master_key;
@@ -27,6 +28,7 @@ mod wishlist_merge;
 
 pub use atomic_txn::AtomicTxnBackend;
 pub use backend_migrate::{migrate_library_backend, BackendMigrateOptions, BackendMigrateSummary};
+pub use db_atomic::{db_atomic_operation_id, db_atomic_request_hash, execute_db_atomic};
 pub use error::{LibraryError, Result};
 pub use master_key::{
     configure_master_key, configure_master_key_with, inspect_master_key, master_key_path,
@@ -74,5 +76,8 @@ pub use text::{
     decode_html_entities, decode_html_entities_cow, decode_html_entities_in_place,
     decode_html_entities_opt, decode_html_entities_opt_in_place, str_maybe_html_entity,
 };
-pub use token_hash::hash_token;
+pub use token_hash::{
+    derive_claim_password_fingerprint, derive_claim_session_token, hash_token,
+    parse_claim_redeem_nonce, CLAIM_REDEEM_NONCE_HEX_LEN,
+};
 pub use wishlist_merge::{apply_merged_sources, pick_better_description};

@@ -69,6 +69,8 @@ pub mod secret_kind {
     pub const WIDEVINE: &str = "widevine";
     /// Daemon HTTP operator API token (Bearer / GUI login).
     pub const OPERATOR_TOKEN: &str = "operator_token";
+    /// OIDC/OAuth relying-party client secret (`name` = provider id).
+    pub const OIDC_CLIENT: &str = "oidc_client";
 }
 
 /// Ownership namespace for `encrypted_secrets.account_type`.

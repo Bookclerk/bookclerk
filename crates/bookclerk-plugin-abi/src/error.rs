@@ -111,4 +111,13 @@ impl PluginError {
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(PluginErrorCode::NotFound, message)
     }
+
+    /// Convenience for [`PluginErrorCode::Unavailable`].
+    ///
+    /// Use for ambiguous transport failures (lost HTTP/RPC responses, timeouts)
+    /// where the caller should retry the same idempotency key.
+    #[must_use]
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self::new(PluginErrorCode::Unavailable, message)
+    }
 }

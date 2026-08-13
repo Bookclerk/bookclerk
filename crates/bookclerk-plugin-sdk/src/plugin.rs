@@ -16,7 +16,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use bookclerk_plugin_abi::{
     methods, AuthenticateUserParams, CatalogDetailParams, CatalogHitDto, CliInvokeParams,
-    CliInvokeResult, CliSchema, CredentialsUpdateParams, DbAtomicParams, DbAtomicResult,
+    CliInvokeResult, CliSchema, CredentialsUpdateParams, DbAtomicRequest, DbAtomicResult,
     DbBeginParams, DbBeginResult, DbConnectParams, DbConnectResult, DbTxnParams, DiagnoseResult,
     EventPollResultDto, ExecResultDto, ExistsResultDto, ExpandCandidatesParams, ExternalUserDto,
     FetchTitleParams, GetResultDto, HandshakeParams, HandshakeResult, HealthResult,
@@ -608,19 +608,20 @@ pub trait BookclerkPlugin: Send + Sync + 'static {
 
     /// Runs a named atomic library operation as one guest SQL transaction.
     ///
-    /// D1 implements this as one HTTP `batch()`. SQLite / Postgres leave the
-    /// default; the host uses interactive `dbBegin` on those backends.
+    /// Bundled database guests implement this. D1 uses one HTTP `batch()`;
+    /// SQLite and Postgres use a native local transaction. Both persist a
+    /// receipt keyed by `operationId`.
     ///
     /// # Arguments
     ///
-    /// * `_params` - Tagged operation and arguments.
+    /// * `_params` - Idempotency envelope and tagged operation.
     ///
     /// # Errors
     ///
     /// Returns [`PluginError::unsupported`] unless the guest overrides this.
     async fn db_atomic(
         &self,
-        _params: DbAtomicParams,
+        _params: DbAtomicRequest,
     ) -> std::result::Result<DbAtomicResult, PluginError> {
         Err(PluginError::unsupported("dbAtomic not implemented"))
     }
@@ -942,7 +943,7 @@ async fn dispatch<P: BookclerkPlugin>(
             Ok(Value::Null)
         }
         m if m == methods::db_atomic::NAME => {
-            let p: DbAtomicParams = parse_params("dbAtomic", params)?;
+            let p: DbAtomicRequest = parse_params("dbAtomic", params)?;
             to_value(plugin.db_atomic(p).await?)
         }
         other => plugin.call_raw(other, params).await,

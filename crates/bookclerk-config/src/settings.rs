@@ -5,6 +5,7 @@
 //! Host binaries and crates that load [`Config`]. Guest plugins receive opaque
 //! tables at handshake and do not parse this module.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -67,6 +68,9 @@ pub struct AuthConfig {
     /// env (wins when both are set). Registered for log redaction on load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
+    /// Optional upstream OIDC/OAuth identity broker (`[auth.oidc]`).
+    #[serde(default, skip_serializing_if = "crate::OidcBrokerConfig::is_unset")]
+    pub oidc: crate::OidcBrokerConfig,
 }
 
 /// Library / scan related settings.
@@ -823,6 +827,7 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         self.database.validate()?;
         self.output.validate_destinations()?;
+        self.auth.oidc.validate()?;
         if self.diagnostics.share_reports && self.diagnostics.effective_collector_url().is_empty() {
             return Err(ConfigError::Invalid(
                 "diagnostics.share_reports=true requires diagnostics.collector_url, \
@@ -875,6 +880,31 @@ impl Config {
         crate::redact::register_secrets_from_env();
         if let Some(pw) = self.auth_password() {
             crate::redact::register_secret(&pw);
+        }
+        for provider in &self.auth.oidc.providers {
+            for value in [
+                provider.client_secret.as_deref(),
+                provider.apple_private_key.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    crate::redact::register_secret(trimmed);
+                }
+            }
+            for env_key in [
+                crate::oidc_client_secret_env_key(&provider.id),
+                crate::oidc_apple_private_key_env_key(&provider.id),
+            ] {
+                if let Ok(v) = std::env::var(&env_key) {
+                    let trimmed = v.trim();
+                    if !trimmed.is_empty() {
+                        crate::redact::register_secret(trimmed);
+                    }
+                }
+            }
         }
         if let Some(key) = self.integrations.audiobookshelf().api_key {
             let trimmed = key.trim();
@@ -982,12 +1012,37 @@ impl Config {
     }
 
     /// Write the config as TOML (skips resolved `paths`).
+    ///
+    /// Stages a same-directory temp file, `fsync`s it, then atomically replaces
+    /// `path` so a crash cannot leave a truncated `config.toml`.
+    ///
+    /// On Unix, `rename` replaces the destination. On Windows, `std::fs::rename`
+    /// cannot replace an existing file, so this uses `MoveFileExW` with
+    /// `MOVEFILE_REPLACE_EXISTING` instead of delete-then-rename.
     pub fn write_toml_file(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        let dir = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => {
+                std::fs::create_dir_all(parent)?;
+                parent
+            }
+            _ => Path::new("."),
+        };
         let text = self.to_toml_string()?;
-        std::fs::write(path, text)?;
+        let tmp = staging_toml_path(dir, path);
+        let staged = (|| {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+            Ok::<(), std::io::Error>(())
+        })();
+        if let Err(err) = staged {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err.into());
+        }
+        crate::atomic_replace::replace_file(&tmp, path)?;
+        if let Ok(dirfd) = std::fs::File::open(dir) {
+            let _ = dirfd.sync_all();
+        }
         Ok(())
     }
 
@@ -1015,6 +1070,31 @@ impl Config {
             .clone()
             .unwrap_or_else(|| self.paths().cache_dir.clone())
     }
+}
+
+/// Same-directory staging path unique per write (pid + nonce + counter).
+///
+/// Concurrent `write_toml_file` calls in one process must not share a temp name.
+pub(crate) fn staging_toml_path(dir: &Path, dest: &Path) -> PathBuf {
+    let name = dest
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("config.toml");
+    let mut nonce = [0u8; 8];
+    if getrandom::fill(&mut nonce).is_err() {
+        nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            .to_le_bytes();
+    }
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nonce = u64::from_le_bytes(nonce);
+    dir.join(format!(
+        ".{name}.tmp-{}-{nonce:016x}-{n}",
+        std::process::id()
+    ))
 }
 
 fn parse_bool(value: &str) -> Option<bool> {
@@ -1400,6 +1480,79 @@ upload_url = "https://example.invalid"
         let loaded = Config::from_toml_file(&path).unwrap();
         assert!(loaded.library.auto_acquire);
         assert_eq!(loaded.output.local.root, PathBuf::from("/data/books"));
+    }
+
+    #[test]
+    fn staging_toml_path_is_unique_per_call() {
+        let dir = Path::new("/tmp");
+        let dest = dir.join("config.toml");
+        let a = staging_toml_path(dir, &dest);
+        let b = staging_toml_path(dir, &dest);
+        assert_ne!(a, b, "concurrent writers must not share a temp name");
+        assert_eq!(a.parent(), Some(dir));
+        assert!(a
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|n| n.starts_with(".config.toml.tmp-")));
+    }
+
+    #[test]
+    fn write_toml_concurrent_same_process_leaves_valid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let mut cfg = Config::default();
+                    cfg.library.auto_acquire = i % 2 == 0;
+                    cfg.write_toml_file(&path)
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        let loaded = Config::from_toml_file(&path).unwrap();
+        let _ = loaded.library.auto_acquire;
+    }
+
+    #[test]
+    fn write_toml_replaces_existing_file_atomically() {
+        let mut cfg = Config::default();
+        cfg.library.auto_acquire = true;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "this should be replaced entirely\n").unwrap();
+        cfg.write_toml_file(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("replaced entirely"), "{text}");
+        assert!(text.contains("auto_acquire"), "{text}");
+        let loaded = Config::from_toml_file(&path).unwrap();
+        assert!(loaded.library.auto_acquire);
+    }
+
+    #[test]
+    fn register_known_secrets_includes_apple_private_key() {
+        use crate::redact::{
+            clear_registered_secrets, redact_str, secrets_registry_test_lock, REDACTED,
+        };
+        use crate::OidcProviderConfig;
+
+        let _lock = secrets_registry_test_lock();
+        clear_registered_secrets();
+        let key = ["APPLE", "P8", "FIXTURE", "xyzzy"].concat();
+        let mut cfg = Config::default();
+        cfg.auth.oidc.providers.push(OidcProviderConfig {
+            id: "apple".into(),
+            apple_private_key: Some(key.clone()),
+            ..OidcProviderConfig::default()
+        });
+        cfg.register_known_secrets();
+        let out = redact_str(&format!("pem {key} leak"));
+        assert!(!out.contains(&key), "{out}");
+        assert!(out.contains(REDACTED), "{out}");
+        clear_registered_secrets();
     }
 
     #[test]

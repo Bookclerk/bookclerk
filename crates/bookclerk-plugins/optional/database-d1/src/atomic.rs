@@ -3,9 +3,15 @@
 //! Each [`DbAtomicParams`] variant is compiled to a list of SQL statements
 //! that D1 runs as **one** SQL transaction. Control flow lives in `WHERE`
 //! clauses (and a status `SELECT`) so the guest never needs mid-transaction
-//! round-trips. A statement failure aborts the HTTP batch and rolls back.
+//! round-trips. Consume-once ops use `DELETE … RETURNING` so concurrent
+//! callers cannot both observe the unused row. A statement failure aborts
+//! the HTTP batch and rolls back.
 
-use bookclerk_plugin_sdk::{atomic_status, DbAtomicParams, DbAtomicResult};
+use std::time::Duration;
+
+use bookclerk_plugin_sdk::{
+    atomic_status, DbAtomicParams, DbAtomicRequest, DbAtomicResult, DbAtomicTiming,
+};
 use sea_orm::DbErr;
 use serde_json::{json, Value as JsonValue};
 
@@ -19,25 +25,189 @@ struct AtomicPlan {
     statements: Vec<SqlStmt>,
     outcome_index: usize,
     payload_index: Option<usize>,
+    /// `DELETE … RETURNING` consume-once; when set, expiry uses this cutoff.
+    consume_once: Option<(ConsumeOnceKind, String)>,
+    /// When set, interpret from this `SELECT` of `db_atomic_receipts`.
+    receipt_select_index: Option<usize>,
+    /// Receipt `SELECT` immediately after prune; a row means this attempt is a replay.
+    prior_receipt_index: Option<usize>,
+    expected_hash: Option<String>,
 }
+
+struct ReceiptCtx {
+    operation_id: String,
+    request_hash: String,
+    kind: &'static str,
+    now: String,
+    expires_at: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConsumeOnceKind {
+    OidcRpState,
+    WebauthnChallenge,
+}
+
+const ATOMIC_HTTP_ATTEMPTS: usize = 3;
 
 impl D1Proxy {
     /// Runs a named library operation as one D1 HTTP batch (one SQL transaction).
     pub async fn run_atomic(
         &self,
-        op: DbAtomicParams,
+        req: DbAtomicRequest,
     ) -> std::result::Result<DbAtomicResult, DbErr> {
+        let started = std::time::Instant::now();
         let now = chrono::Utc::now().to_rfc3339();
-        let plan = plan_atomic(&op, &now);
-        let raw = self.run_batch(&plan.statements).await?;
-        let results = parse_batch_results(&raw)?;
-        Ok(interpret_atomic(&plan, &results))
+        let plan = plan_atomic(&req, &now)?;
+        let mut last_err = None;
+        for attempt in 0..ATOMIC_HTTP_ATTEMPTS {
+            let raw = match self.run_batch(&plan.statements).await {
+                Ok(value) => value,
+                Err(err) if err.is_retryable() && attempt + 1 < ATOMIC_HTTP_ATTEMPTS => {
+                    sleep_before_d1_retry(attempt, err.retry_after()).await;
+                    last_err = Some(DbErr::from(err));
+                    continue;
+                }
+                Err(err) => return Err(err.into()),
+            };
+            match parse_and_validate_batch(&plan, &raw, &req.operation_id) {
+                Ok(results) => {
+                    let mut result = interpret_atomic(&plan, &results);
+                    let db_execution_us = d1_sql_duration_us(&raw);
+                    result.operation_id = req.operation_id;
+                    result.timing = Some(DbAtomicTiming {
+                        attempt_elapsed_us: u64::try_from(started.elapsed().as_micros())
+                            .unwrap_or(u64::MAX),
+                        db_execution_us,
+                        db_timing_source: db_execution_us.map(|_| "d1_sql_duration".into()),
+                    });
+                    return Ok(result);
+                }
+                Err(err) if is_ambiguous_d1(&err) && attempt + 1 < ATOMIC_HTTP_ATTEMPTS => {
+                    sleep_before_d1_retry(attempt, None).await;
+                    last_err = Some(err);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| ambiguous_d1("exhausted retries")))
     }
+}
+
+async fn sleep_before_d1_retry(attempt: usize, retry_after: Option<Duration>) {
+    let delay = retry_after.unwrap_or_else(|| {
+        Duration::from_millis((50u64.saturating_mul(3u64.saturating_pow(attempt as u32))).min(400))
+    });
+    tokio::time::sleep(delay.min(Duration::from_secs(5))).await;
+}
+
+/// True when a D1 HTTP/parse failure may have already committed the batch.
+///
+/// Permanent 4xx responses are encoded as `D1 HTTP {status}: …` and are not
+/// retryable. Transport, incomplete 2xx, JSON parse, and 408/429/5xx use the
+/// `D1 ambiguous response` prefix.
+pub fn is_ambiguous_d1(err: &DbErr) -> bool {
+    err.to_string().contains("D1 ambiguous")
+}
+
+/// Maps a D1 [`DbErr`] onto the guest ABI: retryable/ambiguous → `unavailable`,
+/// client 4xx → `invalid_params`, other failures → `internal`.
+#[must_use]
+pub fn plugin_error_from_d1(err: DbErr) -> bookclerk_plugin_sdk::PluginError {
+    if is_ambiguous_d1(&err) {
+        return bookclerk_plugin_sdk::PluginError::unavailable(err.to_string());
+    }
+    if let Some(status) = permanent_http_status(&err) {
+        if (400..500).contains(&status) {
+            return bookclerk_plugin_sdk::PluginError::invalid_params(err.to_string());
+        }
+    }
+    bookclerk_plugin_sdk::PluginError::internal(err.to_string())
+}
+
+fn permanent_http_status(err: &DbErr) -> Option<u16> {
+    let text = err.to_string();
+    let idx = text.find("D1 HTTP ")?;
+    text[idx + "D1 HTTP ".len()..]
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn ambiguous_d1(msg: impl std::fmt::Display) -> DbErr {
+    DbErr::Custom(format!("D1 ambiguous response: {msg}"))
+}
+
+fn d1_sql_duration_us(raw: &JsonValue) -> Option<u64> {
+    let arr = raw.get("result")?.as_array()?;
+    let mut ms = 0.0_f64;
+    let mut any = false;
+    for entry in arr {
+        if let Some(duration) = entry
+            .get("meta")
+            .and_then(|m| m.get("timings"))
+            .and_then(|t| t.get("sql_duration_ms"))
+            .and_then(JsonValue::as_f64)
+        {
+            ms += duration;
+            any = true;
+        }
+    }
+    any.then_some((ms * 1000.0) as u64)
+}
+
+fn request_hash(op: &DbAtomicParams) -> std::result::Result<String, DbErr> {
+    bookclerk_library::db_atomic_request_hash(op).map_err(|err| DbErr::Custom(err.to_string()))
+}
+
+fn operation_kind(op: &DbAtomicParams) -> &'static str {
+    match op {
+        DbAtomicParams::DeleteUser { .. } => "deleteUser",
+        DbAtomicParams::SetUserStatus { .. } => "setUserStatus",
+        DbAtomicParams::SetUserPasswordHash { .. } => "setUserPasswordHash",
+        DbAtomicParams::SetUserRole { .. } => "setUserRole",
+        DbAtomicParams::RedeemClaimTicket { .. } => "redeemClaimTicket",
+        DbAtomicParams::TakeOidcRpState { .. } => "takeOidcRpState",
+        DbAtomicParams::TakeWebauthnChallenge { .. } => "takeWebauthnChallenge",
+    }
+}
+
+fn receipt_expiry(now: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(now)
+        .map(|dt| (dt + chrono::Duration::hours(24)).to_rfc3339())
+        .unwrap_or_else(|_| now.to_string())
 }
 
 /// Builds the D1 batch for `op`. `now` is the RFC 3339 timestamp shared by
 /// every statement in the batch (consume correlation, `updated_at`, sessions).
-fn plan_atomic(op: &DbAtomicParams, now: &str) -> AtomicPlan {
+fn plan_atomic(req: &DbAtomicRequest, now: &str) -> std::result::Result<AtomicPlan, DbErr> {
+    let inner = plan_inner(&req.operation, now);
+    let ctx = ReceiptCtx {
+        operation_id: req.operation_id.clone(),
+        request_hash: request_hash(&req.operation)?,
+        kind: operation_kind(&req.operation),
+        now: now.to_string(),
+        expires_at: receipt_expiry(now),
+    };
+    Ok(match &req.operation {
+        DbAtomicParams::TakeOidcRpState { state_hash } => wrap_consume_oidc(state_hash, now, &ctx),
+        DbAtomicParams::TakeWebauthnChallenge { challenge_id, kind } => {
+            wrap_consume_webauthn(challenge_id, kind, now, &ctx)
+        }
+        DbAtomicParams::DeleteUser { .. } => wrap_status_op(inner, &ctx, PayloadKind::None),
+        DbAtomicParams::SetUserStatus { user_id, .. }
+        | DbAtomicParams::SetUserPasswordHash { user_id, .. }
+        | DbAtomicParams::SetUserRole { user_id, .. } => {
+            wrap_status_op(inner, &ctx, PayloadKind::User { user_id: *user_id })
+        }
+        DbAtomicParams::RedeemClaimTicket { .. } => {
+            wrap_status_op(inner, &ctx, PayloadKind::Identity)
+        }
+    })
+}
+
+fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
     match op {
         DbAtomicParams::DeleteUser { user_id } => plan_delete_user(*user_id),
         DbAtomicParams::SetUserStatus { user_id, status } => {
@@ -56,6 +226,7 @@ fn plan_atomic(op: &DbAtomicParams, now: &str) -> AtomicPlan {
             device_type,
             client_label,
             new_password_hash,
+            password_fingerprint: _,
         } => plan_redeem_claim(
             token_hash,
             session_hash,
@@ -66,6 +237,10 @@ fn plan_atomic(op: &DbAtomicParams, now: &str) -> AtomicPlan {
             new_password_hash.as_deref(),
             now,
         ),
+        DbAtomicParams::TakeOidcRpState { state_hash } => plan_take_oidc_rp_state(state_hash, now),
+        DbAtomicParams::TakeWebauthnChallenge { challenge_id, kind } => {
+            plan_take_webauthn_challenge(challenge_id, kind, now)
+        }
     }
 }
 
@@ -85,6 +260,289 @@ fn j_opt_str(s: Option<&str>) -> JsonValue {
     match s {
         Some(v) => JsonValue::String(v.to_string()),
         None => JsonValue::Null,
+    }
+}
+
+enum PayloadKind {
+    None,
+    User { user_id: i64 },
+    Identity,
+}
+
+fn prune_receipts(ctx: &ReceiptCtx) -> SqlStmt {
+    sql(
+        "DELETE FROM db_atomic_receipts WHERE expires_at <= ? AND operation_id != ?",
+        vec![j_str(&ctx.now), j_str(&ctx.operation_id)],
+    )
+}
+
+fn select_receipt(ctx: &ReceiptCtx) -> SqlStmt {
+    sql(
+        "SELECT operation_id, request_hash, status, payload, created_at \
+         FROM db_atomic_receipts WHERE operation_id = ?",
+        vec![j_str(&ctx.operation_id)],
+    )
+}
+
+fn gate_write(sql_text: String, mut params: Vec<JsonValue>, operation_id: &str) -> SqlStmt {
+    let trimmed = sql_text.trim_start();
+    let is_write = trimmed.starts_with("INSERT")
+        || trimmed.starts_with("UPDATE")
+        || trimmed.starts_with("DELETE");
+    if !is_write {
+        return (sql_text, params);
+    }
+    params.push(j_str(operation_id));
+    (
+        format!(
+            "{sql_text} AND NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)"
+        ),
+        params,
+    )
+}
+
+fn gate_claimed_ok(sql_text: String, mut params: Vec<JsonValue>, operation_id: &str) -> SqlStmt {
+    let trimmed = sql_text.trim_start();
+    let is_write = trimmed.starts_with("INSERT")
+        || trimmed.starts_with("UPDATE")
+        || trimmed.starts_with("DELETE");
+    if !is_write {
+        return (sql_text, params);
+    }
+    params.push(j_str(operation_id));
+    (
+        format!(
+            "{sql_text} AND EXISTS (\
+                SELECT 1 FROM db_atomic_receipts \
+                 WHERE operation_id = ? AND status = '{ok}'\
+            )",
+            ok = atomic_status::OK,
+        ),
+        params,
+    )
+}
+
+fn user_payload_json_sql() -> &'static str {
+    "SELECT json_object(\
+        'id', id, 'role', role, 'status', status, \
+        'display_name', display_name, 'login_name', login_name, 'email', email, \
+        'has_password', json(CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 'true' ELSE 'false' END), \
+        'security_version', security_version, 'created_at', created_at, 'updated_at', updated_at\
+     ) AS payload FROM users WHERE id = ?"
+}
+
+fn identity_payload_json_sql() -> &'static str {
+    "SELECT json_object(\
+        'id', id, 'provider', provider, 'external_user_id', external_user_id, \
+        'label', label, 'user_id', user_id, 'created_at', created_at\
+     ) AS payload FROM ("
+}
+
+fn wrap_status_op(plan: AtomicPlan, ctx: &ReceiptCtx, payload: PayloadKind) -> AtomicPlan {
+    let outcome_index = plan.outcome_index;
+    let payload_index = plan.payload_index;
+    let outcome = plan.statements[outcome_index].clone();
+    let payload_stmt = payload_index.and_then(|idx| plan.statements.get(idx).cloned());
+    let mut statements = vec![prune_receipts(ctx), select_receipt(ctx)];
+    let prior_receipt_index = Some(statements.len() - 1);
+    for (i, (sql_text, params)) in plan.statements.into_iter().enumerate() {
+        if Some(i) == payload_index {
+            continue;
+        }
+        if i == outcome_index {
+            // Claim status now so later mutations cannot change the receipt.
+            statements.push(receipt_insert_from_outcome(ctx, &outcome));
+            continue;
+        }
+        if i < outcome_index {
+            statements.push(gate_write(sql_text, params, &ctx.operation_id));
+        } else {
+            statements.push(gate_claimed_ok(sql_text, params, &ctx.operation_id));
+        }
+    }
+    if let Some(update) = receipt_payload_update(ctx, payload, payload_stmt) {
+        statements.push(update);
+    }
+    statements.push(select_receipt(ctx));
+    let receipt_select_index = statements.len() - 1;
+    AtomicPlan {
+        statements,
+        outcome_index: 0,
+        payload_index: None,
+        consume_once: None,
+        receipt_select_index: Some(receipt_select_index),
+        prior_receipt_index,
+        expected_hash: Some(ctx.request_hash.clone()),
+    }
+}
+
+fn receipt_insert_from_outcome(ctx: &ReceiptCtx, outcome: &SqlStmt) -> SqlStmt {
+    let insert_sql = format!(
+        "INSERT INTO db_atomic_receipts (\
+            operation_id, operation_kind, request_hash, status, payload, created_at, expires_at\
+         ) SELECT ?, ?, ?, o.status, NULL, ?, ? FROM ({}) o \
+         WHERE NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)",
+        outcome.0
+    );
+    let mut params = vec![
+        j_str(&ctx.operation_id),
+        j_str(ctx.kind),
+        j_str(&ctx.request_hash),
+        j_str(&ctx.now),
+        j_str(&ctx.expires_at),
+    ];
+    params.extend(outcome.1.clone());
+    params.push(j_str(&ctx.operation_id));
+    (insert_sql, params)
+}
+
+fn receipt_payload_update(
+    ctx: &ReceiptCtx,
+    payload: PayloadKind,
+    payload_stmt: Option<SqlStmt>,
+) -> Option<SqlStmt> {
+    match payload {
+        PayloadKind::None => None,
+        PayloadKind::User { user_id } => {
+            let sql = format!(
+                "UPDATE db_atomic_receipts SET payload = ({}) \
+                 WHERE operation_id = ? AND status = '{ok}' AND payload IS NULL",
+                user_payload_json_sql(),
+                ok = atomic_status::OK,
+            );
+            Some((sql, vec![j_i64(user_id), j_str(&ctx.operation_id)]))
+        }
+        PayloadKind::Identity => {
+            let (inner_sql, inner_params) = payload_stmt?;
+            let sql = format!(
+                "UPDATE db_atomic_receipts SET payload = ({}{inner_sql})) \
+                 WHERE operation_id = ? AND status = '{ok}' AND payload IS NULL",
+                identity_payload_json_sql(),
+                ok = atomic_status::OK,
+            );
+            let mut params = inner_params;
+            params.push(j_str(&ctx.operation_id));
+            Some((sql, params))
+        }
+    }
+}
+
+fn wrap_consume_oidc(state_hash: &str, now: &str, ctx: &ReceiptCtx) -> AtomicPlan {
+    wrap_consume(
+        ctx,
+        "takeOidcRpState",
+        "oidc_rp_states",
+        "state_hash = ?",
+        vec![j_str(state_hash)],
+        format!("oidc:{state_hash}"),
+        "json_object(\
+            'provider_id', d.provider_id, 'pkce_verifier', d.pkce_verifier, \
+            'nonce', d.nonce, 'purpose', d.purpose, 'user_id', d.user_id)",
+        now,
+    )
+}
+
+fn wrap_consume_webauthn(
+    challenge_id: &str,
+    kind: &str,
+    now: &str,
+    ctx: &ReceiptCtx,
+) -> AtomicPlan {
+    wrap_consume(
+        ctx,
+        "takeWebauthnChallenge",
+        "webauthn_challenges",
+        "challenge_id = ? AND kind = ?",
+        vec![j_str(challenge_id), j_str(kind)],
+        format!("webauthn:{challenge_id}:{kind}"),
+        "json_object('user_id', d.user_id, 'state_json', d.state_json)",
+        now,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn wrap_consume(
+    ctx: &ReceiptCtx,
+    kind: &str,
+    table: &str,
+    where_sql: &str,
+    where_params: Vec<JsonValue>,
+    consume_key: String,
+    ok_json: &str,
+    now: &str,
+) -> AtomicPlan {
+    // SQLite (and D1) reject `DELETE … RETURNING` in a subquery. Copy the row
+    // into the receipt first with a unique `consume_key` so a second caller
+    // cannot also observe it, then delete the source row.
+    let insert_from_row = format!(
+        "INSERT OR IGNORE INTO db_atomic_receipts (\
+            operation_id, operation_kind, request_hash, status, payload, created_at, expires_at, consume_key\
+         ) SELECT ?, ?, ?, \
+            CASE WHEN d.expires_at <= ? THEN '{empty}' ELSE '{ok}' END, \
+            CASE WHEN d.expires_at <= ? THEN NULL ELSE {ok_json} END, \
+            ?, ?, ? \
+           FROM {table} AS d \
+          WHERE {where_sql} \
+            AND NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)",
+        empty = atomic_status::EMPTY,
+        ok = atomic_status::OK,
+    );
+    let mut from_row_params = vec![
+        j_str(&ctx.operation_id),
+        j_str(kind),
+        j_str(&ctx.request_hash),
+        j_str(now),
+        j_str(now),
+        j_str(&ctx.now),
+        j_str(&ctx.expires_at),
+        j_str(&consume_key),
+    ];
+    from_row_params.extend(where_params.clone());
+    from_row_params.push(j_str(&ctx.operation_id));
+
+    let delete_sql = format!(
+        "DELETE FROM {table} \
+         WHERE {where_sql} \
+           AND EXISTS (\
+             SELECT 1 FROM db_atomic_receipts \
+              WHERE operation_id = ? AND created_at = ?\
+           )"
+    );
+    let mut delete_params = where_params;
+    delete_params.push(j_str(&ctx.operation_id));
+    delete_params.push(j_str(&ctx.now));
+
+    let insert_empty = format!(
+        "INSERT INTO db_atomic_receipts (\
+            operation_id, operation_kind, request_hash, status, payload, created_at, expires_at, consume_key\
+         ) SELECT ?, ?, ?, '{empty}', NULL, ?, ?, NULL \
+          WHERE NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)",
+        empty = atomic_status::EMPTY,
+    );
+    let empty_params = vec![
+        j_str(&ctx.operation_id),
+        j_str(kind),
+        j_str(&ctx.request_hash),
+        j_str(&ctx.now),
+        j_str(&ctx.expires_at),
+        j_str(&ctx.operation_id),
+    ];
+    let statements = vec![
+        prune_receipts(ctx),
+        select_receipt(ctx),
+        (insert_from_row, from_row_params),
+        (delete_sql, delete_params),
+        (insert_empty, empty_params),
+        select_receipt(ctx),
+    ];
+    AtomicPlan {
+        statements,
+        outcome_index: 0,
+        payload_index: None,
+        consume_once: None,
+        receipt_select_index: Some(5),
+        prior_receipt_index: Some(1),
+        expected_hash: Some(ctx.request_hash.clone()),
     }
 }
 
@@ -179,7 +637,13 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         impersonate_p,
     ));
 
-    for table in ["oidc_refresh_tokens", "oidc_auth_codes"] {
+    for table in [
+        "oidc_refresh_tokens",
+        "oidc_auth_codes",
+        "webauthn_credentials",
+        "webauthn_challenges",
+        "oidc_rp_states",
+    ] {
         let mut p = vec![j_i64(user_id)];
         p.extend(allow_p.clone());
         statements.push(sql(
@@ -217,6 +681,10 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         statements,
         outcome_index,
         payload_index: None,
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
     }
 }
 
@@ -271,6 +739,10 @@ fn plan_set_user_status(user_id: i64, status: &str, now: &str) -> AtomicPlan {
         statements,
         outcome_index: 1,
         payload_index: Some(4),
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
     }
 }
 
@@ -307,6 +779,10 @@ fn plan_set_user_password_hash(user_id: i64, password_hash: Option<&str>, now: &
         ],
         outcome_index: 0,
         payload_index: Some(3),
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
     }
 }
 
@@ -367,6 +843,10 @@ fn plan_set_user_role(user_id: i64, role: &str, now: &str) -> AtomicPlan {
         ],
         outcome_index: 1,
         payload_index: Some(4),
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
     }
 }
 
@@ -511,6 +991,44 @@ fn plan_redeem_claim(
         ],
         outcome_index: 4,
         payload_index: Some(5),
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
+    }
+}
+
+fn plan_take_oidc_rp_state(state_hash: &str, now: &str) -> AtomicPlan {
+    AtomicPlan {
+        statements: vec![sql(
+            "DELETE FROM oidc_rp_states \
+             WHERE state_hash = ? \
+             RETURNING provider_id, pkce_verifier, nonce, purpose, user_id, expires_at",
+            vec![j_str(state_hash)],
+        )],
+        outcome_index: 0,
+        payload_index: Some(0),
+        consume_once: Some((ConsumeOnceKind::OidcRpState, now.to_string())),
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
+    }
+}
+
+fn plan_take_webauthn_challenge(challenge_id: &str, kind: &str, now: &str) -> AtomicPlan {
+    AtomicPlan {
+        statements: vec![sql(
+            "DELETE FROM webauthn_challenges \
+             WHERE challenge_id = ? AND kind = ? \
+             RETURNING user_id, state_json, expires_at",
+            vec![j_str(challenge_id), j_str(kind)],
+        )],
+        outcome_index: 0,
+        payload_index: Some(0),
+        consume_once: Some((ConsumeOnceKind::WebauthnChallenge, now.to_string())),
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
     }
 }
 
@@ -519,11 +1037,63 @@ struct BatchStmtResult {
     rows: Vec<JsonValue>,
 }
 
+fn parse_and_validate_batch(
+    plan: &AtomicPlan,
+    value: &JsonValue,
+    operation_id: &str,
+) -> std::result::Result<Vec<BatchStmtResult>, DbErr> {
+    let results = parse_batch_results(value)?;
+    if results.len() != plan.statements.len() {
+        return Err(ambiguous_d1(format!(
+            "expected {} statement results, got {}",
+            plan.statements.len(),
+            results.len()
+        )));
+    }
+    if let Some(idx) = plan.prior_receipt_index {
+        if let Some(row) = results.get(idx).and_then(|r| r.rows.first()) {
+            validate_receipt_row(row, operation_id)?;
+        }
+    }
+    if let Some(idx) = plan.receipt_select_index {
+        let Some(row) = results.get(idx).and_then(|r| r.rows.first()) else {
+            return Err(ambiguous_d1("missing final receipt row"));
+        };
+        validate_receipt_row(row, operation_id)?;
+    }
+    Ok(results)
+}
+
+fn required_receipt_string<'a>(
+    row: &'a JsonValue,
+    field: &str,
+) -> std::result::Result<&'a str, DbErr> {
+    row.get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ambiguous_d1(format!("malformed receipt row: missing {field}")))
+}
+
+fn validate_receipt_row(
+    row: &JsonValue,
+    expected_operation_id: &str,
+) -> std::result::Result<(), DbErr> {
+    let op_id = required_receipt_string(row, "operation_id")?;
+    let _hash = required_receipt_string(row, "request_hash")?;
+    let _status = required_receipt_string(row, "status")?;
+    let _created = required_receipt_string(row, "created_at")?;
+    if op_id != expected_operation_id {
+        return Err(ambiguous_d1(format!(
+            "receipt operation_id {op_id} != {expected_operation_id}"
+        )));
+    }
+    Ok(())
+}
+
 fn parse_batch_results(value: &JsonValue) -> std::result::Result<Vec<BatchStmtResult>, DbErr> {
     let Some(arr) = value.get("result").and_then(JsonValue::as_array) else {
-        return Err(DbErr::Custom(
-            "D1 batch response missing result array".into(),
-        ));
+        return Err(ambiguous_d1("batch response missing result array"));
     };
     let mut out = Vec::with_capacity(arr.len());
     for (i, entry) in arr.iter().enumerate() {
@@ -543,6 +1113,21 @@ fn parse_batch_results(value: &JsonValue) -> std::result::Result<Vec<BatchStmtRe
 }
 
 fn interpret_atomic(plan: &AtomicPlan, results: &[BatchStmtResult]) -> DbAtomicResult {
+    if let Some(idx) = plan.prior_receipt_index {
+        if let Some(row) = results.get(idx).and_then(|r| r.rows.first()) {
+            return interpret_receipt(Some(row), plan.expected_hash.as_deref().unwrap_or(""), true);
+        }
+    }
+    if let Some(idx) = plan.receipt_select_index {
+        return interpret_receipt(
+            results.get(idx).and_then(|r| r.rows.first()),
+            plan.expected_hash.as_deref().unwrap_or(""),
+            false,
+        );
+    }
+    if let Some((kind, now)) = &plan.consume_once {
+        return interpret_consume_once(*kind, now, results.get(plan.outcome_index));
+    }
     let Some(outcome) = results.get(plan.outcome_index).and_then(|r| r.rows.first()) else {
         return DbAtomicResult::with_status(atomic_status::CLAIM_INVALID);
     };
@@ -563,6 +1148,74 @@ fn interpret_atomic(plan: &AtomicPlan, results: &[BatchStmtResult]) -> DbAtomicR
         DbAtomicResult::ok(identity_payload(row))
     } else {
         DbAtomicResult::ok(user_payload(row))
+    }
+}
+
+fn interpret_receipt(
+    row: Option<&JsonValue>,
+    expected_hash: &str,
+    replayed: bool,
+) -> DbAtomicResult {
+    let Some(row) = row else {
+        return DbAtomicResult::with_status(atomic_status::EMPTY);
+    };
+    let stored_hash = row
+        .get("request_hash")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    if stored_hash != expected_hash {
+        return DbAtomicResult::with_status(atomic_status::IDEMPOTENCY_CONFLICT);
+    }
+    let status = row
+        .get("status")
+        .and_then(JsonValue::as_str)
+        .unwrap_or(atomic_status::EMPTY);
+    let created_at = row
+        .get("created_at")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+    let mut result = if status == atomic_status::OK {
+        match decode_receipt_payload(row.get("payload")) {
+            Some(payload) => DbAtomicResult::ok(payload),
+            None => DbAtomicResult::ok_unit(),
+        }
+    } else {
+        DbAtomicResult::with_status(status)
+    };
+    result.replayed = replayed;
+    result.receipt_created_at = created_at;
+    result
+}
+
+fn decode_receipt_payload(value: Option<&JsonValue>) -> Option<JsonValue> {
+    match value {
+        None | Some(JsonValue::Null) => None,
+        Some(JsonValue::String(s)) => serde_json::from_str(s)
+            .ok()
+            .or_else(|| Some(JsonValue::String(s.clone()))),
+        Some(other) => Some(other.clone()),
+    }
+}
+
+fn interpret_consume_once(
+    kind: ConsumeOnceKind,
+    now: &str,
+    result: Option<&BatchStmtResult>,
+) -> DbAtomicResult {
+    let Some(row) = result.and_then(|r| r.rows.first()) else {
+        return DbAtomicResult::with_status(atomic_status::EMPTY);
+    };
+    let expired = row
+        .get("expires_at")
+        .and_then(JsonValue::as_str)
+        .map(|expires_at| expires_at <= now)
+        .unwrap_or(true);
+    if expired {
+        return DbAtomicResult::with_status(atomic_status::EMPTY);
+    }
+    match kind {
+        ConsumeOnceKind::OidcRpState => DbAtomicResult::ok(oidc_rp_state_payload(row)),
+        ConsumeOnceKind::WebauthnChallenge => DbAtomicResult::ok(webauthn_challenge_payload(row)),
     }
 }
 
@@ -597,9 +1250,27 @@ fn identity_payload(row: &JsonValue) -> JsonValue {
     })
 }
 
+fn oidc_rp_state_payload(row: &JsonValue) -> JsonValue {
+    json!({
+        "provider_id": row.get("provider_id").cloned().unwrap_or(JsonValue::Null),
+        "pkce_verifier": row.get("pkce_verifier").cloned().unwrap_or(JsonValue::Null),
+        "nonce": row.get("nonce").cloned().unwrap_or(JsonValue::Null),
+        "purpose": row.get("purpose").cloned().unwrap_or(JsonValue::Null),
+        "user_id": row.get("user_id").cloned().unwrap_or(JsonValue::Null),
+    })
+}
+
+fn webauthn_challenge_payload(row: &JsonValue) -> JsonValue {
+    json!({
+        "user_id": row.get("user_id").cloned().unwrap_or(JsonValue::Null),
+        "state_json": row.get("state_json").cloned().unwrap_or(JsonValue::Null),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bookclerk_plugin_sdk::{atomic_status, DbAtomicParams, DbAtomicRequest};
     use rusqlite::Connection;
 
     fn migrate(conn: &Connection) {
@@ -860,5 +1531,373 @@ mod tests {
             .unwrap();
         assert!(hash.is_none());
         let _ = identity;
+    }
+
+    fn seed_oidc_rp_state(
+        conn: &Connection,
+        state_hash: &str,
+        expires_at: &str,
+        user_id: Option<i64>,
+    ) {
+        let nonce = ["n", "once", "-", "1"].concat();
+        conn.execute(
+            "INSERT INTO oidc_rp_states \
+             (state_hash, provider_id, pkce_verifier, nonce, purpose, user_id, expires_at, created_at) \
+             VALUES (?, 'corp', 'verifier', ?, 'login', ?, ?, '2020-01-01T00:00:00Z')",
+            rusqlite::params![state_hash, nonce, user_id, expires_at],
+        )
+        .unwrap();
+    }
+
+    fn seed_webauthn_challenge(
+        conn: &Connection,
+        challenge_id: &str,
+        kind: &str,
+        expires_at: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO webauthn_challenges \
+             (challenge_id, user_id, kind, state_json, expires_at, created_at) \
+             VALUES (?, 9, ?, '{\"x\":1}', ?, '2020-01-01T00:00:00Z')",
+            rusqlite::params![challenge_id, kind, expires_at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn take_oidc_rp_state_returns_payload_and_deletes() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_oidc_rp_state(&conn, "abc", "2099-01-01T00:00:00Z", Some(42));
+        let now = "2024-06-01T00:00:00Z";
+        let result = run_plan(&conn, &plan_take_oidc_rp_state("abc", now));
+        assert_eq!(result.status, atomic_status::OK);
+        let payload = result.payload.as_ref().unwrap();
+        assert_eq!(payload["provider_id"], "corp");
+        assert_eq!(payload["pkce_verifier"], "verifier");
+        assert_eq!(payload["nonce"], ["n", "once", "-", "1"].concat());
+        assert_eq!(payload["purpose"], "login");
+        assert_eq!(payload["user_id"], 42);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM oidc_rp_states", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn take_oidc_rp_state_second_take_is_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_oidc_rp_state(&conn, "abc", "2099-01-01T00:00:00Z", None);
+        let now = "2024-06-01T00:00:00Z";
+        let first = run_plan(&conn, &plan_take_oidc_rp_state("abc", now));
+        assert_eq!(first.status, atomic_status::OK);
+        let second = run_plan(&conn, &plan_take_oidc_rp_state("abc", now));
+        assert_eq!(second.status, atomic_status::EMPTY);
+        assert!(second.payload.is_none());
+    }
+
+    #[test]
+    fn take_oidc_rp_state_expired_deletes_and_returns_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_oidc_rp_state(&conn, "abc", "2020-01-01T00:00:00Z", Some(1));
+        let result = run_plan(
+            &conn,
+            &plan_take_oidc_rp_state("abc", "2024-06-01T00:00:00Z"),
+        );
+        assert_eq!(result.status, atomic_status::EMPTY);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM oidc_rp_states", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn take_webauthn_challenge_returns_payload_and_deletes() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_webauthn_challenge(&conn, "chal-1", "login", "2099-01-01T00:00:00Z");
+        let result = run_plan(
+            &conn,
+            &plan_take_webauthn_challenge("chal-1", "login", "2024-06-01T00:00:00Z"),
+        );
+        assert_eq!(result.status, atomic_status::OK);
+        let payload = result.payload.as_ref().unwrap();
+        assert_eq!(payload["user_id"], 9);
+        assert_eq!(payload["state_json"], "{\"x\":1}");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM webauthn_challenges", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn take_webauthn_challenge_wrong_kind_does_not_delete() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_webauthn_challenge(&conn, "chal-1", "login", "2099-01-01T00:00:00Z");
+        let result = run_plan(
+            &conn,
+            &plan_take_webauthn_challenge("chal-1", "register", "2024-06-01T00:00:00Z"),
+        );
+        assert_eq!(result.status, atomic_status::EMPTY);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM webauthn_challenges", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn take_webauthn_challenge_expired_deletes_and_returns_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_webauthn_challenge(&conn, "chal-1", "login", "2020-01-01T00:00:00Z");
+        let result = run_plan(
+            &conn,
+            &plan_take_webauthn_challenge("chal-1", "login", "2024-06-01T00:00:00Z"),
+        );
+        assert_eq!(result.status, atomic_status::EMPTY);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM webauthn_challenges", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    fn test_req(op: DbAtomicParams, id: &str) -> DbAtomicRequest {
+        DbAtomicRequest {
+            operation_id: id.to_string(),
+            operation: op,
+        }
+    }
+
+    #[test]
+    fn delete_user_removes_webauthn_and_oidc_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let keep = seed_user(&conn, "owner", "active", "Keep");
+        let doomed = seed_user(&conn, "owner", "active", "Go");
+        conn.execute(
+            "INSERT INTO webauthn_credentials (user_id, credential_id, passkey_json, created_at) \
+             VALUES (?, 'cred-reuse', '{}', '2020-01-01T00:00:00Z')",
+            [doomed],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO webauthn_challenges (challenge_id, user_id, kind, state_json, expires_at, created_at) \
+             VALUES ('chal-del', ?, 'login', '{}', '2099-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
+            [doomed],
+        )
+        .unwrap();
+        let nonce = ["n", "once"].concat();
+        conn.execute(
+            "INSERT INTO oidc_rp_states \
+             (state_hash, provider_id, pkce_verifier, nonce, purpose, user_id, expires_at, created_at) \
+             VALUES ('state-del', 'corp', 'v', ?, 'elevate', ?, '2099-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
+            rusqlite::params![nonce, doomed],
+        )
+        .unwrap();
+        let result = run_plan(&conn, &plan_delete_user(doomed));
+        assert_eq!(result.status, atomic_status::OK);
+        let creds: i64 = conn
+            .query_row("SELECT COUNT(*) FROM webauthn_credentials", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let chals: i64 = conn
+            .query_row("SELECT COUNT(*) FROM webauthn_challenges", [], |r| r.get(0))
+            .unwrap();
+        let states: i64 = conn
+            .query_row("SELECT COUNT(*) FROM oidc_rp_states", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((creds, chals, states), (0, 0, 0));
+        let _ = keep;
+    }
+
+    #[test]
+    fn delete_user_plan_atomic_ok_replay_then_not_found() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let _keep = seed_user(&conn, "owner", "active", "Keep");
+        let doomed = seed_user(&conn, "owner", "active", "Go");
+        let now = "2024-06-01T00:00:00Z";
+        let req = test_req(DbAtomicParams::DeleteUser { user_id: doomed }, "del-1");
+        let plan = plan_atomic(&req, now).unwrap();
+        let first = run_plan(&conn, &plan);
+        assert_eq!(first.status, atomic_status::OK);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users WHERE id = ?", [doomed], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 0);
+
+        let second = run_plan(&conn, &plan);
+        assert_eq!(second.status, atomic_status::OK);
+        assert!(second.replayed);
+
+        let again = plan_atomic(
+            &test_req(DbAtomicParams::DeleteUser { user_id: doomed }, "del-2"),
+            now,
+        )
+        .unwrap();
+        let third = run_plan(&conn, &again);
+        assert_eq!(third.status, atomic_status::NOT_FOUND);
+    }
+
+    #[test]
+    fn last_owner_delete_plan_atomic_keeps_the_row() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let owner = seed_user(&conn, "owner", "active", "Only");
+        let now = "2024-06-01T00:00:00Z";
+        let plan = plan_atomic(
+            &test_req(DbAtomicParams::DeleteUser { user_id: owner }, "del-owner"),
+            now,
+        )
+        .unwrap();
+        let result = run_plan(&conn, &plan);
+        assert_eq!(result.status, atomic_status::LAST_OWNER);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users WHERE id = ?", [owner], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn redeem_plan_atomic_replays_identity_after_lost_response() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let (_user, identity, token) = seed_claim(&conn, Some("already-set"));
+        let now = "2024-06-01T12:00:00Z";
+        let req = test_req(
+            DbAtomicParams::RedeemClaimTicket {
+                token_hash: token,
+                session_hash: "session-a".into(),
+                expires_at: "2099-01-01T00:00:00Z".into(),
+                user_agent: None,
+                device_type: None,
+                client_label: None,
+                new_password_hash: None,
+                password_fingerprint: None,
+            },
+            "redeem-1",
+        );
+        let plan = plan_atomic(&req, now).unwrap();
+        let first = run_plan(&conn, &plan);
+        assert_eq!(first.status, atomic_status::OK);
+        assert_eq!(first.payload.as_ref().unwrap()["id"], identity);
+        let second = run_plan(&conn, &plan);
+        assert_eq!(second.status, atomic_status::OK);
+        assert!(second.replayed);
+        assert_eq!(second.payload, first.payload);
+        let sessions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM portal_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sessions, 1);
+    }
+
+    #[test]
+    fn take_oidc_receipt_replays_after_commit() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_oidc_rp_state(&conn, "abc", "2099-01-01T00:00:00Z", Some(42));
+        let now = "2024-06-01T00:00:00Z";
+        let req = test_req(
+            DbAtomicParams::TakeOidcRpState {
+                state_hash: "abc".into(),
+            },
+            "op-take-1",
+        );
+        let plan = plan_atomic(&req, now).unwrap();
+        let first = run_plan(&conn, &plan);
+        assert_eq!(first.status, atomic_status::OK);
+        assert!(!first.replayed);
+        assert_eq!(first.payload.as_ref().unwrap()["pkce_verifier"], "verifier");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM oidc_rp_states", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+
+        let second = run_plan(&conn, &plan);
+        assert_eq!(second.status, atomic_status::OK);
+        assert!(second.replayed);
+        assert_eq!(second.payload, first.payload);
+
+        let conflict = plan_atomic(
+            &test_req(
+                DbAtomicParams::TakeOidcRpState {
+                    state_hash: "other".into(),
+                },
+                "op-take-1",
+            ),
+            now,
+        )
+        .unwrap();
+        let lost = run_plan(&conn, &conflict);
+        assert_eq!(lost.status, atomic_status::IDEMPOTENCY_CONFLICT);
+    }
+
+    fn envelope_for_plan(plan: &AtomicPlan, final_row: JsonValue) -> JsonValue {
+        let results: Vec<JsonValue> = plan
+            .statements
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                if Some(i) == plan.receipt_select_index {
+                    json!({ "success": true, "results": [final_row.clone()] })
+                } else {
+                    json!({ "success": true, "results": [] })
+                }
+            })
+            .collect();
+        json!({ "success": true, "result": results })
+    }
+
+    #[test]
+    fn malformed_final_receipt_row_with_correct_count_is_ambiguous() {
+        let req = test_req(
+            DbAtomicParams::TakeOidcRpState {
+                state_hash: "abc".into(),
+            },
+            "op-malformed",
+        );
+        let plan = plan_atomic(&req, "2024-06-01T00:00:00Z").unwrap();
+        let value = envelope_for_plan(
+            &plan,
+            json!({
+                "operation_id": "op-malformed",
+                "status": "ok",
+                "created_at": "2024-06-01T00:00:00Z"
+            }),
+        );
+        let err = parse_and_validate_batch(&plan, &value, &req.operation_id).unwrap_err();
+        assert!(is_ambiguous_d1(&err), "{err}");
+        assert!(err.to_string().contains("request_hash"), "{err}");
+    }
+
+    #[test]
+    fn valid_different_request_hash_is_idempotency_conflict() {
+        let req = test_req(
+            DbAtomicParams::TakeOidcRpState {
+                state_hash: "abc".into(),
+            },
+            "op-conflict",
+        );
+        let plan = plan_atomic(&req, "2024-06-01T00:00:00Z").unwrap();
+        let value = envelope_for_plan(
+            &plan,
+            json!({
+                "operation_id": "op-conflict",
+                "request_hash": "different-hash",
+                "status": "ok",
+                "created_at": "2024-06-01T00:00:00Z"
+            }),
+        );
+        let parsed = parse_and_validate_batch(&plan, &value, &req.operation_id).unwrap();
+        let result = interpret_atomic(&plan, &parsed);
+        assert_eq!(result.status, atomic_status::IDEMPOTENCY_CONFLICT);
     }
 }

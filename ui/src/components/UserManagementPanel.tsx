@@ -917,6 +917,26 @@ export function UserManagementPanel({
 
               <div className="space-y-2">
                 <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">
+                  Linked identities ({(selected.identities ?? []).length})
+                </p>
+                {(selected.identities ?? []).length === 0 ? (
+                  <p className="text-sm text-ink/50">No linked login identities.</p>
+                ) : (
+                  <ul className="flex flex-wrap gap-1.5">
+                    {(selected.identities ?? []).map((i) => (
+                      <li key={`${i.provider}:${i.external_user_id}`}>
+                        <Badge className="bg-ink/8 text-ink normal-case tracking-normal">
+                          {i.provider}
+                          {i.label ? ` · ${i.label}` : ""}
+                        </Badge>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">
                   Integrations ({(selected.integrations ?? []).length})
                 </p>
                 {(selected.integrations ?? []).length === 0 ? (

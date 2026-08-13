@@ -133,7 +133,7 @@
           "$ref": "#/$defs/DbTxnParams"
         },
         "dbAtomic": {
-          "$ref": "#/$defs/DbAtomicParams"
+          "$ref": "#/$defs/DbAtomicRequest"
         }
       }
     }
@@ -1142,10 +1142,26 @@
       "properties": {
         "op": {
           "type": "string",
-          "description": "Named atomic library operation (camelCase tag: deleteUser, redeemClaimTicket, …)."
+          "description": "Named atomic library operation (camelCase tag: deleteUser, redeemClaimTicket, takeOidcRpState, takeWebauthnChallenge, …)."
         }
       },
       "additionalProperties": true
+    },
+    "DbAtomicRequest": {
+      "type": "object",
+      "required": [
+        "operationId",
+        "operation"
+      ],
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "description": "Caller-chosen idempotency key. Retries after an ambiguous outcome must reuse it."
+        },
+        "operation": {
+          "$ref": "#/$defs/DbAtomicParams"
+        }
+      }
     },
     "DbAtomicResult": {
       "type": "object",
@@ -1155,10 +1171,22 @@
       "properties": {
         "status": {
           "type": "string",
-          "description": "Application outcome: ok, empty, notFound, lastOwner, claimInvalid, passwordRequired."
+          "description": "Application outcome: ok, empty, notFound, lastOwner, claimInvalid, passwordRequired, idempotencyConflict."
         },
         "payload": {
           "description": "Op-specific library record JSON when status is ok."
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "replayed": {
+          "type": "boolean"
+        },
+        "receiptCreatedAt": {
+          "type": "string"
+        },
+        "timing": {
+          "type": "object"
         }
       }
     },

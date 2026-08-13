@@ -112,19 +112,34 @@ pub async fn redeem_ticket_to_session(
     library: &LibraryStore,
     integrations: &IntegrationsConfig,
     raw_ticket: &str,
+    nonce: &str,
 ) -> Result<(String, PortalIdentity)> {
-    redeem_ticket_to_session_with_client(library, integrations, raw_ticket, None, None).await
+    redeem_ticket_to_session_with_client(library, integrations, raw_ticket, nonce, None, None, None)
+        .await
+}
+
+/// Peek a claim ticket's identity without consuming it.
+///
+/// Unredeemed expired tickets fail. Already-redeemed tickets succeed so a
+/// browser retry can submit the stable `dbAtomic` operation id after a lost
+/// reply. Credential mutation happens only inside
+/// [`redeem_ticket_to_session_with_client`].
+pub struct InspectedClaimTicket {
+    /// Portal identity bound to the ticket.
+    pub identity: PortalIdentity,
+    /// Whether `redeemed_at` is already set.
+    pub redeemed: bool,
 }
 
 /// Resolve a claim ticket's identity without consuming the ticket.
 ///
-/// Used so invite/reset password validation can fail without burning the
-/// one-time token. Credential mutation happens only inside
-/// [`redeem_ticket_to_session_with_client`].
+/// # Errors
+///
+/// Returns an error when the ticket is missing, unbound, or unredeemed-and-expired.
 pub async fn inspect_claim_ticket(
     library: &LibraryStore,
     raw_ticket: &str,
-) -> Result<PortalIdentity> {
+) -> Result<InspectedClaimTicket> {
     let hash = hash_token(raw_ticket);
     let ticket = library
         .get_claim_ticket_by_hash(&hash)
@@ -132,7 +147,8 @@ pub async fn inspect_claim_ticket(
         .ok_or_else(|| {
             IntegrationError::message("claim ticket invalid, expired, or already redeemed")
         })?;
-    if ticket.redeemed_at.is_some() || ticket.expires_at <= Utc::now() {
+    let redeemed = ticket.redeemed_at.is_some();
+    if !redeemed && ticket.expires_at <= Utc::now() {
         return Err(IntegrationError::message(
             "claim ticket invalid, expired, or already redeemed",
         ));
@@ -140,29 +156,48 @@ pub async fn inspect_claim_ticket(
     let identity_id = ticket
         .identity_id
         .ok_or_else(|| IntegrationError::message("claim ticket is not bound to an identity"))?;
-    library
+    let identity = library
         .get_portal_identity_by_id(identity_id)
         .await?
-        .ok_or_else(|| IntegrationError::message("portal identity missing for claim ticket"))
+        .ok_or_else(|| IntegrationError::message("portal identity missing for claim ticket"))?;
+    Ok(InspectedClaimTicket { identity, redeemed })
 }
 
 /// Redeem a claim ticket and mint a portal session with optional client metadata.
 ///
 /// `password_hash` is applied in the same transaction as ticket consume and
 /// session insert, and only while the ticket-bound local user has no password.
+/// `password_fingerprint` is hashed into the `dbAtomic` request so a retry with
+/// a freshly salted Argon2id encoding still matches the receipt.
+///
+/// The raw session token is derived from the claim ticket, browser nonce, and
+/// process DEK so a lost `dbAtomic` reply plus a new HTTP request reuse the
+/// same operation id. Possession of the used magic link without the nonce
+/// cannot recover the session.
 pub async fn redeem_ticket_to_session_with_client(
     library: &LibraryStore,
     integrations: &IntegrationsConfig,
     raw_ticket: &str,
+    nonce: &str,
     client: Option<&bookclerk_library::SessionClientInfo>,
     password_hash: Option<&str>,
+    password_fingerprint: Option<&str>,
 ) -> Result<(String, PortalIdentity)> {
+    let nonce = bookclerk_library::parse_claim_redeem_nonce(nonce)?;
     let hash = hash_token(raw_ticket);
-    let session = generate_token();
+    let dek = bookclerk_library::require_master_key(None)?;
+    let session = bookclerk_library::derive_claim_session_token(&dek, raw_ticket, nonce);
     let session_hash = hash_token(&session);
     let expires = Utc::now() + Duration::hours(integrations.portal_session_ttl_hours as i64);
     let identity = library
-        .redeem_claim_ticket_to_session(&hash, &session_hash, expires, client, password_hash)
+        .redeem_claim_ticket_to_session(
+            &hash,
+            &session_hash,
+            expires,
+            client,
+            password_hash,
+            password_fingerprint,
+        )
         .await?;
     Ok((session, identity))
 }
@@ -226,4 +261,91 @@ pub async fn identity_from_session(
 ) -> Result<Option<PortalIdentity>> {
     let hash = hash_token(raw_session);
     Ok(library.get_portal_session_identity(&hash).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bookclerk_library::UserRole;
+    use chrono::Utc;
+
+    fn invite_password() -> String {
+        ["invite", "-", "password", "-", "ok"].concat()
+    }
+
+    async fn claim_library() -> (
+        bookclerk_library::LibraryStore,
+        tempfile::TempDir,
+        tokio::sync::MutexGuard<'static, ()>,
+        String,
+    ) {
+        static DEK_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        let dek = DEK_LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        bookclerk_library::configure_master_key(dir.path()).unwrap();
+        let store = bookclerk_library::LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let user = store
+            .create_user(UserRole::Member, Some("Invitee"), None)
+            .await
+            .unwrap();
+        let password = bookclerk_library::hash_password(&invite_password()).unwrap();
+        store
+            .set_user_password_hash(user.id, Some(password.as_str()))
+            .await
+            .unwrap();
+        let identity = store
+            .ensure_local_portal_identity(user.id, Some("Invitee"))
+            .await
+            .unwrap();
+        let raw_ticket = generate_token();
+        store
+            .insert_claim_ticket(
+                &hash_token(&raw_ticket),
+                Some(identity.id),
+                Utc::now() + chrono::Duration::hours(1),
+                "test",
+            )
+            .await
+            .unwrap();
+        (store, dir, dek, raw_ticket)
+    }
+
+    #[tokio::test]
+    async fn redeem_retries_as_new_request_return_the_same_session_token() {
+        let (store, _dir, _dek, raw_ticket) = claim_library().await;
+        let integrations = IntegrationsConfig::default();
+        let nonce = hash_token(&["browser", "-", "nonce"].concat());
+        let (first, identity) =
+            redeem_ticket_to_session(&store, &integrations, &raw_ticket, &nonce)
+                .await
+                .unwrap();
+        // Simulate a lost HTTP reply: the client never observed `first`, and
+        // issues a new redeem of the same magic link with the persisted nonce.
+        let (second, identity2) =
+            redeem_ticket_to_session(&store, &integrations, &raw_ticket, &nonce)
+                .await
+                .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(identity.id, identity2.id);
+        assert_eq!(first.len(), 64);
+        let resolved = identity_from_session(&store, &first).await.unwrap();
+        assert_eq!(resolved.unwrap().id, identity.id);
+        let other_nonce = hash_token(&["other", "-", "browser"].concat());
+        let err = redeem_ticket_to_session(&store, &integrations, &raw_ticket, &other_nonce)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("already redeemed")
+                || err.to_string().contains("invalid")
+                || err.to_string().contains("claim"),
+            "{err}"
+        );
+    }
 }

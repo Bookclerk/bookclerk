@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use bookclerk_config::{resolve_d1_api_token, resolve_postgres_url, Config, DatabasePluginKind};
 use bookclerk_plugin_sdk::{
     atomic_status, exec_result_from_dto, methods, proxy_rows_from_dto, statement_to_dto,
-    DbAtomicParams, DbAtomicResult, DbBeginParams, DbBeginResult, DbConnectParams, DbConnectResult,
-    DbTxnParams, ExecResultDto, QueryResultDto, StatementDto,
+    DbAtomicParams, DbAtomicRequest, DbAtomicResult, DbBeginParams, DbBeginResult, DbConnectParams,
+    DbConnectResult, DbTxnParams, ExecResultDto, QueryResultDto, StatementDto,
 };
 use sea_orm::{
     Database, DatabaseConnection, DbBackend, DbErr, ProxyDatabaseTrait, ProxyExecResult, ProxyRow,
@@ -177,19 +177,15 @@ pub async fn open_library_store(
             "no active database plugin — stage and enable [database].plugin"
         ))
     })?;
-    let (db, caps) = ext
+    let (db, _caps) = ext
         .connect(config)
         .await
         .map_err(bookclerk_library::LibraryError::Orm)?;
-    let store = if caps.interactive_txn {
-        bookclerk_library::LibraryStore::from_connection(db)
-    } else {
-        bookclerk_library::LibraryStore::from_connection(db).with_atomic_txn(Arc::new(
-            RpcAtomicBackend {
-                client: ext.client.clone(),
-            },
-        ))
-    };
+    let store = bookclerk_library::LibraryStore::from_connection(db).with_atomic_txn(Arc::new(
+        RpcAtomicBackend {
+            client: ext.client.clone(),
+        },
+    ));
     store.ensure_users_bridged().await?;
     Ok(store)
 }
@@ -443,15 +439,31 @@ struct RpcAtomicBackend {
 
 impl RpcAtomicBackend {
     async fn call(&self, params: DbAtomicParams) -> bookclerk_library::Result<DbAtomicResult> {
-        self.client
-            .call(
-                methods::DB_ATOMIC,
-                serde_json::to_value(&params).map_err(|err| {
-                    bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string()))
-                })?,
-            )
-            .await
-            .map_err(|err| bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string())))
+        let operation_id = bookclerk_library::db_atomic_operation_id(&params);
+        let request = DbAtomicRequest {
+            operation_id,
+            operation: params,
+        };
+        let payload = serde_json::to_value(&request).map_err(|err| {
+            bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string()))
+        })?;
+        // Single host RPC. The D1 guest already retries incomplete 2xx / missing
+        // receipts with the same operation id; multiplying attempts here used to
+        // submit the batch up to 27 times. Guest `unavailable` (lost reply after
+        // those inner retries) maps to [`LibraryError::Unavailable`] so the HTTP
+        // client retries the whole redeem with the same derived session token.
+        match self.client.call(methods::DB_ATOMIC, payload).await {
+            Ok(result) => Ok(result),
+            Err(err) => Err(map_plugin_err(err)),
+        }
+    }
+}
+
+fn map_plugin_err(err: crate::PluginError) -> bookclerk_library::LibraryError {
+    if err.is_ambiguous_transport() {
+        bookclerk_library::LibraryError::Unavailable(err.to_string())
+    } else {
+        bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string()))
     }
 }
 
@@ -469,6 +481,11 @@ fn atomic_app_err(
         s if s == atomic_status::PASSWORD_REQUIRED => Some(bookclerk_library::LibraryError::Other(
             anyhow::anyhow!("password required — set a password to finish claim login"),
         )),
+        s if s == atomic_status::IDEMPOTENCY_CONFLICT => {
+            Some(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+                "database atomic operation_id reused with a different request"
+            )))
+        }
         other => Some(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
             "database atomic operation failed: {other}"
         ))),
@@ -573,6 +590,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         expires_at: chrono::DateTime<chrono::Utc>,
         client: Option<&bookclerk_library::SessionClientInfo>,
         new_password_hash: Option<&str>,
+        password_fingerprint: Option<&str>,
     ) -> bookclerk_library::Result<bookclerk_library::PortalIdentity> {
         let result = self
             .call(DbAtomicParams::RedeemClaimTicket {
@@ -583,6 +601,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
                 device_type: client.map(|c| c.device_type.clone()),
                 client_label: client.map(|c| c.client_label.clone()),
                 new_password_hash: new_password_hash.map(str::to_string),
+                password_fingerprint: password_fingerprint.map(str::to_string),
             })
             .await?;
         if let Some(err) = atomic_app_err(
@@ -593,6 +612,75 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         }
         decode_payload(result.payload, "portal identity")
     }
+
+    async fn take_oidc_rp_state(
+        &self,
+        state_hash: &str,
+    ) -> bookclerk_library::Result<Option<(String, String, String, String, Option<i64>)>> {
+        let result = self
+            .call(DbAtomicParams::TakeOidcRpState {
+                state_hash: state_hash.to_string(),
+            })
+            .await?;
+        if result.status == atomic_status::EMPTY {
+            return Ok(None);
+        }
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::NotFound("oidc rp state".into()),
+        ) {
+            return Err(err);
+        }
+        let row: AtomicOidcRpState = decode_payload(result.payload, "oidc rp state")?;
+        Ok(Some((
+            row.provider_id,
+            row.pkce_verifier,
+            row.nonce,
+            row.purpose,
+            row.user_id,
+        )))
+    }
+
+    async fn take_webauthn_challenge(
+        &self,
+        challenge_id: &str,
+        kind: &str,
+    ) -> bookclerk_library::Result<Option<(Option<i64>, String)>> {
+        let result = self
+            .call(DbAtomicParams::TakeWebauthnChallenge {
+                challenge_id: challenge_id.to_string(),
+                kind: kind.to_string(),
+            })
+            .await?;
+        if result.status == atomic_status::EMPTY {
+            return Ok(None);
+        }
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::NotFound("webauthn challenge".into()),
+        ) {
+            return Err(err);
+        }
+        let row: AtomicWebauthnChallenge = decode_payload(result.payload, "webauthn challenge")?;
+        Ok(Some((row.user_id, row.state_json)))
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct AtomicOidcRpState {
+    provider_id: String,
+    pkce_verifier: String,
+    nonce: String,
+    purpose: String,
+    #[serde(default)]
+    user_id: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct AtomicWebauthnChallenge {
+    #[serde(default)]
+    user_id: Option<i64>,
+    state_json: String,
 }
 
 fn connect_params(
@@ -671,5 +759,42 @@ mod tests {
     fn maps_dialects() {
         assert_eq!(dialect_to_backend("sqlite").unwrap(), DbBackend::Sqlite);
         assert_eq!(dialect_to_backend("postgres").unwrap(), DbBackend::Postgres);
+    }
+
+    #[test]
+    fn ambiguous_plugin_errors_map_to_unavailable() {
+        let err = crate::PluginError::unavailable("D1 HTTP 502");
+        assert!(err.is_ambiguous_transport());
+        assert!(matches!(
+            map_plugin_err(err),
+            bookclerk_library::LibraryError::Unavailable(_)
+        ));
+        let other = crate::PluginError::message("no such table");
+        assert!(!other.is_ambiguous_transport());
+        assert!(matches!(
+            map_plugin_err(other),
+            bookclerk_library::LibraryError::Other(_)
+        ));
+        let permanent = crate::PluginError::message("D1 HTTP 400: SQL error");
+        assert!(!permanent.is_ambiguous_transport());
+    }
+
+    #[test]
+    fn consume_once_rpc_payload_reuses_stable_operation_id() {
+        let params = DbAtomicParams::TakeOidcRpState {
+            state_hash: "abc".into(),
+        };
+        let first = serde_json::to_value(DbAtomicRequest {
+            operation_id: bookclerk_library::db_atomic_operation_id(&params),
+            operation: params.clone(),
+        })
+        .unwrap();
+        let second = serde_json::to_value(DbAtomicRequest {
+            operation_id: bookclerk_library::db_atomic_operation_id(&params),
+            operation: params,
+        })
+        .unwrap();
+        assert_eq!(first["operationId"], second["operationId"]);
+        assert_eq!(first["operationId"], "takeOidcRpState:abc");
     }
 }

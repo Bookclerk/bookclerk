@@ -508,11 +508,23 @@ class DbTxnParams(TypedDict):
     txnId: str
 
 
+class DbAtomicRequest(TypedDict, total=False):
+    """Envelope for ``dbAtomic`` (wire camelCase).
+
+    Attributes:
+        operationId: Idempotency key reused after an ambiguous outcome.
+        operation: Named operation params (``deleteUser``, ``takeOidcRpState``, …).
+    """
+
+    operationId: str
+    operation: DbAtomicParams
+
+
 class DbAtomicParams(TypedDict, total=False):
     """Params for ``dbAtomic`` (wire camelCase tagged ``op``).
 
     Attributes:
-        op: Named operation (``deleteUser``, ``redeemClaimTicket``, …).
+        op: Named operation (``deleteUser``, ``redeemClaimTicket``, ``takeOidcRpState``, …).
     """
 
     op: str
@@ -522,12 +534,20 @@ class DbAtomicResult(TypedDict, total=False):
     """Result of ``dbAtomic``.
 
     Attributes:
-        status: Application outcome (``ok``, ``lastOwner``, …).
+        status: Application outcome (``ok``, ``lastOwner``, ``empty``, …).
         payload: Library record JSON when ``status`` is ``ok``.
+        operationId: Echo of the request idempotency key.
+        replayed: True when the result came from a durable receipt.
+        receiptCreatedAt: RFC 3339 timestamp when the receipt was first written.
+        timing: Handler/engine timing; not part of the idempotency hash.
     """
 
     status: str
     payload: Any
+    operationId: str
+    replayed: bool
+    receiptCreatedAt: str
+    timing: Any
 
 
 __all__ = [
@@ -546,6 +566,7 @@ __all__ = [
     "DbBeginParams",
     "DbBeginResult",
     "DbAtomicParams",
+    "DbAtomicRequest",
     "DbAtomicResult",
     "DbTxnParams",
     "DiagnoseResult",

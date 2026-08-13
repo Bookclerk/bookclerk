@@ -21,6 +21,21 @@ pub fn session_cookie_flags(public_origin: Option<&str>) -> String {
     )
 }
 
+/// Cookie flags for the OIDC login transaction (`state` binding).
+///
+/// Apple's `form_post` callback is a cross-site POST, so HTTPS origins use
+/// `SameSite=None; Secure`. Local HTTP keeps `Lax` so GET callbacks still send
+/// the cookie on loopback.
+#[must_use]
+pub fn oidc_transaction_cookie_flags(public_origin: Option<&str>) -> String {
+    let secure = cookie_secure_suffix(public_origin);
+    if secure.is_empty() {
+        format!("Path=/; HttpOnly; SameSite=Lax{secure}")
+    } else {
+        format!("Path=/; HttpOnly; SameSite=None{secure}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -36,6 +51,22 @@ mod tests {
         assert_eq!(
             cookie_secure_suffix(Some("HTTPS://Books.Example.com")),
             "; Secure"
+        );
+    }
+
+    #[test]
+    fn oidc_tx_cookie_is_none_secure_on_https() {
+        assert_eq!(
+            oidc_transaction_cookie_flags(None),
+            "Path=/; HttpOnly; SameSite=Lax"
+        );
+        assert_eq!(
+            oidc_transaction_cookie_flags(Some("http://127.0.0.1:8787")),
+            "Path=/; HttpOnly; SameSite=Lax"
+        );
+        assert_eq!(
+            oidc_transaction_cookie_flags(Some("https://books.example.com")),
+            "Path=/; HttpOnly; SameSite=None; Secure"
         );
     }
 }

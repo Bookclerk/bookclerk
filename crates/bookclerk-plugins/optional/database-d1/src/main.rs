@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use bookclerk_db_guest::{guest_execute, guest_ping, guest_query, set_connection};
 use bookclerk_plugin_sdk::{
-    BookclerkPlugin, BookclerkPluginGuest, DbAtomicParams, DbAtomicResult, DbBeginParams,
+    BookclerkPlugin, BookclerkPluginGuest, DbAtomicRequest, DbAtomicResult, DbBeginParams,
     DbBeginResult, DbConnectParams, DbConnectResult, DbTxnParams, DiagnoseResult, ExecResultDto,
     HandshakeParams, HandshakeResult, HealthResult, PluginError, QueryResultDto, StatementDto,
     PLUGIN_API_VERSION,
@@ -99,13 +99,13 @@ impl BookclerkPlugin for D1Plugin {
         ))
     }
 
-    async fn db_atomic(&self, params: DbAtomicParams) -> Result<DbAtomicResult, PluginError> {
+    async fn db_atomic(&self, params: DbAtomicRequest) -> Result<DbAtomicResult, PluginError> {
         let proxy = bookclerk_plugin_database_d1::shared_proxy()
             .ok_or_else(|| PluginError::internal("d1 guest is not connected"))?;
         proxy
             .run_atomic(params)
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))
+            .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)
     }
 }
 

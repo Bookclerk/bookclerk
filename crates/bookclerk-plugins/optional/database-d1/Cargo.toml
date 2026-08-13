@@ -27,6 +27,7 @@ bookclerk-db-guest.workspace = true
 bookclerk-library.workspace = true
 bookclerk-plugin-sdk = { workspace = true, features = ["db"] }
 chrono.workspace = true
+hex.workspace = true
 reqwest.workspace = true
 sea-orm.workspace = true
 serde.workspace = true

@@ -28,9 +28,9 @@ The SPA supports operator and first-party user sessions:
 | Role | How to sign in | Capabilities |
 | --- | --- | --- |
 | **Operator** | Paste operator token (`bookclerk daemon token`) | Full library, scan/acquire, jobs, Discover, Wishlist, Settings (daemon/plugins/confinement), impersonate; **cannot** connect bookstore sources |
-| **Owner** | Invite magic link / password / integration login | Administrator powers + **elevate** to operator with password reauth (Server/Plugins + impersonation) |
-| **Administrator** | Invite magic link / password / integration login | Member powers + acquire/scan/jobs; provision users (no elevate) |
-| **Member** | Invite magic link, password, or integration return-visit | Discover, Wishlist, shared library browse, Accounts (store connect); Settings Account (Profile / Security / Sessions) |
+| **Owner** | Invite magic link / password / passkey / SSO / integration login | Administrator powers + **elevate** to operator (IdP step-up, passkey, or password). Server/Plugins + impersonation |
+| **Administrator** | Invite magic link / password / passkey / SSO / integration login | Member powers + acquire/scan/jobs; provision users (no elevate) |
+| **Member** | Invite magic link, password, passkey, SSO, or integration return-visit | Discover, Wishlist, shared library browse, Accounts (store connect); Settings Account (Profile / Security / Sessions) |
 
 | Item | Detail |
 | --- | --- |
@@ -39,7 +39,9 @@ The SPA supports operator and first-party user sessions:
 | Portal cookie | `bookclerk_portal_session` (`Path=/`) — federation session bound to a first-party user |
 | Portal APIs | `/api/portal/*` (SPA Accounts / claim redeem) |
 | User admin APIs | `GET`/`POST /api/users`, `PATCH /api/users/{id}`, `POST /api/users/{id}/claim-ticket` (provisioner: operator, owner, or administrator) |
-| Elevate | `POST /api/auth/elevate` `{ password }` / `DELETE /api/auth/elevate` (Owner only) |
+| Elevate | `POST /api/auth/elevate` `{ password }` / `DELETE /api/auth/elevate`; `GET /api/auth/oidc/elevate`; `POST /api/auth/passkeys/elevate/*` (Owner only) |
+| SSO | `GET /api/auth/oidc/providers` / `login` / `GET`+`POST /callback` (optional `[auth.oidc]`); Owner/operator `GET`/`PUT /api/auth/oidc/config` |
+| Passkeys | `GET`/`POST`/`DELETE /api/auth/passkeys…` (login + register + elevate) |
 | Bootstrap | `POST /api/auth/bootstrap` (operator; once when no owners exist) |
 | Config | `[daemon.auth]` |
 | User prefs (DB) | `GET` / `PATCH /api/preferences` — `default_view`, `disabled_shelves` (subject `user:{id}` or `operator`) |
@@ -100,13 +102,18 @@ Values: `discover` | `wishlist` | `library` | `accounts`. Stored in
 - **Accounts** — link bookstore sources, revoke connections, manage portal identity
   connections (claim ticket / credential login on the sign-in screen)
 - **Settings** —
-  - **Account** (all roles): Profile, Security (password + Owner elevate), Sessions
+  - **Account** (all roles): Profile, Security (password, passkeys, linked IdPs, Owner elevate), Sessions
   - **User Management** (operator, owner, or administrator): bootstrap first
     Owner, create users (email + copyable invite magic link), role/status,
     remint invite, reset password. Role options follow the provisioner matrix
     (Administrator → Members only; Owner → Members and Administrators;
     Operator / elevated Owner → all roles). Presence / listening is not loaded
     on this list.
+  - **Sign-in** (operator or Owner, not impersonating): enable the identity
+    broker, add OIDC/OAuth providers (Google/GitHub/Apple/Discord presets or
+    custom issuer), provision policy, role map. Client secrets are sealed in
+    `encrypted_secrets` (never shown again). Administrators cannot change IdP
+    settings.
   - **Impersonate** (operator / elevated Owner)
   - **Server / Plugins** (operator or elevated): listen, auth, auto-acquire,
     plugin enablement with branded consent dialog (widen or narrow grants;

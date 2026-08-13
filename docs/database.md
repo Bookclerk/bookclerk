@@ -190,15 +190,22 @@ avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
   **database-wide restore**, not a per-request rollback (it cannot exclude
   other writers, and a crash before restore leaves partial writes committed).
 - The D1 guest therefore **rejects** `dbBegin` / `dbCommit` / `dbRollback`.
-  Autocommit `dbQuery` / `dbExecute` still run as one-element [D1 `batch()`](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)
-  arrays. Atomic library operations (claim redeem, last-owner
-  demote/disable/delete, password rotation) use `dbAtomic`: the D1 plugin
-  sends those writes as **one multi-statement HTTP batch** (a real SQL
-  transaction) with control flow encoded in `WHERE` clauses, then returns a
-  structured status (`ok`, `lastOwner`, `claimInvalid`, `passwordRequired`,
-  `notFound`). `dbConnect` reports `interactiveTxn: false` so the host
-  dispatches those `LibraryStore` methods to `dbAtomic` instead of SeaORM
-  `begin()`. Time Travel is not used.
+  Autocommit `dbQuery` / `dbExecute` use the documented REST body
+  `{ "sql", "params" }`. Atomic library operations (claim redeem, last-owner
+  demote/disable/delete, password rotation, consume-once OIDC RP state and
+  WebAuthn challenges) use `dbAtomic` on every bundled backend. The D1 plugin
+  sends those writes as **one** `{ "batch": [...] }` REST request (a real SQL
+  transaction) with control flow encoded in `WHERE` clauses. SQLite and
+  PostgreSQL guests run the same named command in a native local transaction.
+  Each call carries an `operationId`; the plugin writes a durable receipt in
+  the same SQL transaction so a committed result whose HTTP/RPC response is
+  lost can be retried without a second mutation. Structured statuses include
+  `ok`, `empty`, `lastOwner`, `claimInvalid`, `passwordRequired`, `notFound`,
+  and `idempotencyConflict`. Consume-once ops use `DELETE … RETURNING` (D1)
+  or transactional delete-and-return (SQLite/Postgres) so a missing or expired
+  row cannot be observed twice. `dbConnect` reports `interactiveTxn: false` on
+  D1 (no `dbBegin`); SQLite/Postgres still expose `dbBegin` for unrelated work.
+  Time Travel is not used.
 - Schema migrations run in the D1 plugin module via
   `bookclerk_db_guest::apply_pending_migrations` (tracked in
   `schema_migrations`).
@@ -212,8 +219,8 @@ avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
 | Host (`bookclerk-plugin-host`) | Spawn guest, mediate secrets into tagged `DbConnectParams`, forward SeaORM via RPC proxy |
 
 Core stays database-agnostic: it sees a migrated `DatabaseConnection`, and
-when `dbConnect` reports `interactiveTxn: false` an optional
-[`AtomicTxnBackend`](../crates/bookclerk-library) (`dbAtomic` on the D1 guest).
+the host always attaches [`AtomicTxnBackend`](../crates/bookclerk-library)
+(`dbAtomic` on the guest) for named security operations.
 Hosts must install/stage the active database guest; missing guests are hard errors.
 
 ### LibraryStore status

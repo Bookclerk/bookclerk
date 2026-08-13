@@ -40,6 +40,13 @@ pub enum LibraryError {
     #[error("cannot demote or disable the last active owner")]
     LastOwner,
 
+    /// Backend temporarily unreachable or an atomic RPC response was lost.
+    ///
+    /// Callers that still hold the original consume-once / session token should
+    /// retry the same `dbAtomic` operation id rather than minting a new one.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
+
     /// Catch-all for otherwise unclassified failures.
     #[error(transparent)]
     Other(#[from] anyhow::Error),

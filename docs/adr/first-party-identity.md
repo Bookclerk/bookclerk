@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-11
+- **Updated:** 2026-08-12 (optional multi-IdP broker + passkeys)
 - **Tracking:** [#117](https://github.com/fritz-fritz/bookclerk/issues/117), PR [#129](https://github.com/fritz-fritz/bookclerk/pull/129)
 - **Prerequisite:** [#116](https://github.com/fritz-fritz/bookclerk/issues/116) (atomic config reload; closed)
 
@@ -14,26 +15,42 @@ from claim tickets or integration `authenticateUser`. Bookstore connect via
 goal is a self-hostable first-party User as the security principal for library
 and Accounts, without requiring Redis or an external IdP.
 
+Operators who already run a directory (Authentik, Keycloak, Entra) or want
+social sign-on need Bookclerk to **consume** upstream OIDC/OAuth while still
+**issuing** tokens to Audiobookshelf. True token passthrough (ABS trusts the
+upstream issuer) is not supportable.
+
 ## Decision
 
 ### Principals
 
 | Principal | Powers |
 | --- | --- |
-| **Operator** | Control plane via shared operator token + durable hashed sessions. **Cannot** connect bookstore sources. Can **impersonate** any User. Creates the linked **Owner** on bootstrap. |
-| **Owner** | Super-user (multiple allowed). Administrator caps plus **elevate to Operator** after password reauth. Last active Owner cannot be demoted/disabled/deleted. Non-elevated Owners may provision Members and Administrators, not other Owners. |
-| **Administrator** | Normal User + admin caps (provision Members only; cannot create, assign, or manage Administrator or Owner). **Cannot** elevate. |
-| **Member** | Normal User; may connect sources under policy. |
+| **Operator** | Control plane via shared operator token + durable hashed sessions. **Cannot** connect bookstore sources. Can **impersonate** any User. Creates the linked **Owner** on bootstrap. **Never** an OAuth/OIDC subject — not JIT’d, linked, or offered on the SSO login page. |
+| **Owner** | Super-user (multiple allowed). Administrator caps plus **elevate to Operator** after step-up (IdP `prompt=login`, passkey, or local password). Last active Owner cannot be demoted/disabled/deleted. Non-elevated Owners may provision Members and Administrators, not other Owners. May be mapped from an upstream IdP role. |
+| **Administrator** | Normal User + admin caps (provision Members only; cannot create, assign, or manage Administrator or Owner). **Cannot** elevate. May be JIT / role-synced from an IdP. |
+| **Member** | Normal User; may connect sources under policy. May be JIT from IdP or social provision policies. |
 
 ### Federation and OIDC
 
 - Keep claim tickets / invite magic links (`/invite?ticket=…`) and integration
   `authenticateUser` even when a User has no local password yet. External
   bookstore/integration accounts are **connections**, not login principals.
-- Optional contact `email` on users supports future invite notifications.
+- Optional contact `email` on users supports invites and SSO `link_by_email`.
 - Bookclerk is the OIDC authorization server for Audiobookshelf (core AS;
   plugins do not implement the protocol). Tokens are bound to a **User**, never
   minted from the operator token alone.
+- Bookclerk may optionally act as an OIDC/OAuth **relying party** (identity
+  broker) for one or more upstream providers. Upstream login creates or links a
+  first-party User; ABS still trusts Bookclerk’s issuer. IdP passwords are never
+  stored. Requiring an external IdP remains a non-goal.
+- Upstream roles map only to `owner` / `administrator` / `member` (never
+  `operator`). Per-provider provision modes: `mapped_role`, `any`, `allowlist`,
+  `invite_only`.
+- Owner elevation uses IdP step-up, a local passkey, or a Bookclerk password —
+  not a copied SSO password.
+- **Passkeys (WebAuthn)** are the User-plane hatch when an IdP is down. The
+  Operator token remains host break-glass.
 
 ### CLI
 
@@ -56,10 +73,11 @@ acceptance is gated by automated tests listed in that PR and in [#117](https://g
 | --- | --- |
 | **0** | Durable hashed operator sessions; portal logout revoke; atomic claim redeem; Secure cookies; `daemon.trusted_proxies` |
 | **1** | `users` schema; migrate `portal_identities`; ban CLI/operator store-link; prefs `user:{id}` |
-| **2** | Owner elevate-to-Operator (password); Operator / elevated impersonate User |
+| **2** | Owner elevate-to-Operator (password / IdP step-up / passkey); Operator / elevated impersonate User |
 | **3** | Bootstrap Owner; invite magic links; Argon2id; federation without local password |
 | **4** | Core OIDC AS (code + PKCE) for ABS |
 | **5** | CSRF/Origin; session list/revoke; audit log; account-link invariant; proxy TLS docs |
+| **6** | Optional multi-IdP OIDC RP (broker); WebAuthn passkeys |
 
 ## Consequences
 
@@ -71,13 +89,19 @@ acceptance is gated by automated tests listed in that PR and in [#117](https://g
   in-place upgrade that promotes existing Administrators to Owner. Testing and
   development deployments that already have a `library.db` from before this
   change must recreate it (`cargo reset --yes`, or delete
-  `$BOOKCLERK_FILES_DIR` and re-bootstrap). Production hosts should plan a
+  `$BOOKCLERK_FILES_DIR` and re-bootstrap). The OIDC RP / passkey tables in this
+  cut are likewise greenfield: testers should reset the database before
+  validating SSO and passkey enrollment. Production hosts should plan a
   fresh files directory / restore from a compatible backup rather than expecting
   a silent role migration.
 
 ## Non-goals
 
 - Requiring an external IdP or Redis
-- WebAuthn/passkeys in the first provisioning cut (password first; passkeys later)
+- Configuring ABS to trust an upstream issuer (token passthrough)
+- OAuth-linking or JIT of the Operator account
+- Storing IdP passwords, or requiring a Bookclerk password for SSO-only Users
+- Using bookstore OAuth (Audible, etc.) as enterprise SSO
+- SCIM/push provisioning in this cut (login-time JIT/sync is enough)
 - Spatial/Atmos DRM
 - Reopening #116

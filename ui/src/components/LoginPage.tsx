@@ -3,12 +3,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   authMe,
+  listOidcProviders,
   login,
+  passkeyLoginBegin,
+  passkeyLoginFinish,
   passwordLogin,
   portalLoginIntegration,
   portalRedeem,
   type AuthSession,
+  type OidcProvider,
 } from "@/lib/api";
+import { assertPasskey } from "@/lib/webauthn";
 import { cn } from "@/lib/utils";
 
 type Tab = "operator" | "password" | "claim" | "return";
@@ -27,8 +32,29 @@ function clearHash() {
   window.history.replaceState(null, "", `${pathname}${search}`);
 }
 
+function ssoErrorMessage(code: string | null): string | null {
+  switch (code) {
+    case "denied":
+      return "Sign-in was cancelled or denied by the identity provider.";
+    case "expired":
+      return "Sign-in expired. Try again.";
+    case "nonce":
+      return "Sign-in could not be verified. Try again.";
+    case "no_role":
+      return "Your account is not allowed to use this sign-in method.";
+    case "conflict":
+      return "This identity is already linked to another user.";
+    case "disabled":
+      return "This account is disabled.";
+    case "mismatch":
+      return "The identity provider account did not match this user.";
+    default:
+      return code ? "Sign-in failed." : null;
+  }
+}
+
 /**
- * Unauthenticated entry — operator token, password, claim ticket, or return login.
+ * Unauthenticated entry — operator token, password, SSO, passkey, claim, or return.
  *
  * @param props - Called with the new session after successful sign-in.
  */
@@ -51,8 +77,11 @@ export function LoginPage({
   const [provider, setProvider] = useState("audiobookshelf");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() =>
+    ssoErrorMessage(new URLSearchParams(window.location.search).get("sso_error")),
+  );
   const [busy, setBusy] = useState(false);
+  const [oidcProviders, setOidcProviders] = useState<OidcProvider[]>([]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -61,6 +90,21 @@ export function LoginPage({
       setTicket(t);
       setTab("claim");
     }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { providers } = await listOidcProviders();
+        if (!cancelled) setOidcProviders(providers);
+      } catch {
+        if (!cancelled) setOidcProviders([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Tray "Open Bookclerk" links carry the operator token in the fragment.
@@ -168,6 +212,21 @@ export function LoginPage({
     }
   }
 
+  async function onPasskeySubmit() {
+    setBusy(true);
+    setError(null);
+    try {
+      const begin = await passkeyLoginBegin(username.trim());
+      const assertion = await assertPasskey(begin);
+      await passkeyLoginFinish(assertion);
+      await finishPortal();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Passkey sign-in failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="flex min-h-full items-center justify-center px-4 py-10">
       <div className="w-full max-w-md animate-[fadeUp_420ms_ease-out]">
@@ -180,8 +239,27 @@ export function LoginPage({
           Sign in
         </h1>
         <p className="mt-2 text-sm text-ink/70">
-          Operator token, local password, claim ticket, or integration return.
+          Operator token, local password, passkey, SSO, claim ticket, or integration return.
         </p>
+
+        {oidcProviders.length > 0 ? (
+          <div className="mt-6 flex flex-col gap-2">
+            {oidcProviders.map((p) => (
+              <Button
+                key={p.id}
+                type="button"
+                variant="secondary"
+                className="w-full"
+                disabled={busy}
+                onClick={() => {
+                  window.location.href = `/api/auth/oidc/login?provider=${encodeURIComponent(p.id)}`;
+                }}
+              >
+                Continue with {p.name}
+              </Button>
+            ))}
+          </div>
+        ) : null}
 
         <div
           className="mt-6 flex flex-wrap gap-1 rounded-md border border-ink/10 bg-white/40 p-1"
@@ -292,6 +370,15 @@ export function LoginPage({
               disabled={busy || !username || !password}
             >
               {busy ? "Signing in…" : "Sign in"}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              className="mt-2 w-full"
+              disabled={busy || !username.trim()}
+              onClick={() => void onPasskeySubmit()}
+            >
+              {busy ? "Waiting for passkey…" : "Sign in with passkey"}
             </Button>
           </form>
         ) : null}

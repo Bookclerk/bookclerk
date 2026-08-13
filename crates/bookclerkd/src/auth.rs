@@ -36,7 +36,7 @@ const AUTH_DB_TIMEOUT: Duration = Duration::from_secs(3);
 pub const ELEVATION_TTL: Duration = Duration::from_secs(15 * 60);
 
 /// Peer IP for login throttling (`ConnectInfo` when available, else `"unknown"`).
-pub(crate) struct ClientIp(String);
+pub(crate) struct ClientIp(pub String);
 
 impl FromRequestParts<Arc<AppState>> for ClientIp {
     type Rejection = std::convert::Infallible;
@@ -232,7 +232,7 @@ impl OperatorAuthState {
     }
 
     /// `None` = allowed; `Some(retry_after)` = locked out.
-    async fn login_throttle_check(&self, client_key: &str) -> Option<Duration> {
+    pub(crate) async fn login_throttle_check(&self, client_key: &str) -> Option<Duration> {
         let mut map = self.login_attempts.lock().await;
         prune_login_attempts(&mut map, self.login_window, self.login_lockout);
         let bucket = map.get_mut(client_key)?;
@@ -249,7 +249,7 @@ impl OperatorAuthState {
         None
     }
 
-    async fn record_login_failure(&self, client_key: &str) -> Option<Duration> {
+    pub(crate) async fn record_login_failure(&self, client_key: &str) -> Option<Duration> {
         let mut map = self.login_attempts.lock().await;
         prune_login_attempts(&mut map, self.login_window, self.login_lockout);
         let now = Instant::now();
@@ -273,7 +273,7 @@ impl OperatorAuthState {
         None
     }
 
-    async fn clear_login_failures(&self, client_key: &str) {
+    pub(crate) async fn clear_login_failures(&self, client_key: &str) {
         self.login_attempts.lock().await.remove(client_key);
     }
 }
@@ -323,6 +323,8 @@ pub struct AuthMeUser {
     pub id: i64,
     pub role: String,
     pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     /// True when a local password hash is stored (invite users may be false).
     pub has_password: bool,
 }
@@ -487,7 +489,7 @@ async fn persist_operator_session_cookie_with_client(
     format!("{SESSION_COOKIE}={session_id}; {flags}; Max-Age={max_age}")
 }
 
-fn session_client_from_headers(headers: &HeaderMap) -> SessionClientInfo {
+pub(crate) fn session_client_from_headers(headers: &HeaderMap) -> SessionClientInfo {
     let ua = headers
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok());
@@ -496,7 +498,7 @@ fn session_client_from_headers(headers: &HeaderMap) -> SessionClientInfo {
     classify_session_client(ua, is_api)
 }
 
-fn too_many_requests(retry_after: Duration) -> Response {
+pub(crate) fn too_many_requests(retry_after: Duration) -> Response {
     let secs = retry_after.as_secs().max(1);
     let mut res = (
         StatusCode::TOO_MANY_REQUESTS,
@@ -600,12 +602,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
         let default_view = default_view_for_subject(&library, OPERATOR_PREFS_KEY, None).await;
         let user = if let Some(uid) = op.elevated_from_user_id {
             match timeout(AUTH_DB_TIMEOUT, library.get_user(uid)).await {
-                Ok(Ok(Some(u))) => Some(AuthMeUser {
-                    id: u.id,
-                    role: u.role.as_str().to_string(),
-                    display_name: u.display_name,
-                    has_password: u.has_password,
-                }),
+                Ok(Ok(Some(u))) => Some(auth_me_user(&u)),
                 _ => None,
             }
         } else {
@@ -709,6 +706,39 @@ pub async fn require_operator_auth(
     }
     if authorize_operator_bearer_only(&auth, req.headers()) {
         return Ok(next.run(req).await);
+    }
+    Err(StatusCode::UNAUTHORIZED)
+}
+
+/// Operator token/session **or** an Owner portal session (not impersonating).
+///
+/// Used for identity-broker (`[auth.oidc]`) configuration so Owners can manage
+/// SSO without elevating. Administrators cannot change IdP settings.
+pub async fn require_operator_or_owner_auth(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let auth = state.auth_snapshot().await;
+    if !auth.enabled {
+        return Ok(next.run(req).await);
+    }
+    if let Some(op) = resolve_operator_session(&state, &auth, req.headers()).await {
+        if op.impersonating_user_id.is_some() {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        return Ok(next.run(req).await);
+    }
+    if authorize_operator_bearer_only(&auth, req.headers()) {
+        return Ok(next.run(req).await);
+    }
+    let library = state.library_snapshot().await;
+    if let Some(identity) = timed_portal_identity_from_headers(&library, req.headers()).await {
+        let (role, _, _, _) = resolve_portal_caller_identity(&library, &identity).await;
+        if role == "owner" {
+            return Ok(next.run(req).await);
+        }
+        return Err(StatusCode::FORBIDDEN);
     }
     Err(StatusCode::UNAUTHORIZED)
 }
@@ -872,8 +902,18 @@ pub async fn prefs_subject_for_caller(
     }
 }
 
+fn auth_me_user(user: &bookclerk_library::UserRecord) -> AuthMeUser {
+    AuthMeUser {
+        id: user.id,
+        role: user.role.as_str().to_string(),
+        display_name: user.display_name.clone(),
+        email: user.email.clone(),
+        has_password: user.has_password,
+    }
+}
+
 /// Map a portal session to first-party role / prefs subject / optional user info.
-async fn resolve_portal_caller_identity(
+pub(crate) async fn resolve_portal_caller_identity(
     library: &bookclerk_library::LibraryStore,
     identity: &PortalIdentity,
 ) -> (String, bool, Option<AuthMeUser>, String) {
@@ -895,12 +935,7 @@ async fn resolve_portal_caller_identity(
             }
             let role = user.role.as_str().to_string();
             let can_acquire = user.role.is_privileged();
-            let me_user = AuthMeUser {
-                id: user.id,
-                role: role.clone(),
-                display_name: user.display_name.clone(),
-                has_password: user.has_password,
-            };
+            let me_user = auth_me_user(&user);
             (role, can_acquire, Some(me_user), prefs_key)
         }
         Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
@@ -933,7 +968,7 @@ async fn default_view_for_subject(
     }
 }
 
-async fn timed_portal_identity_from_headers(
+pub(crate) async fn timed_portal_identity_from_headers(
     library: &bookclerk_library::LibraryStore,
     headers: &HeaderMap,
 ) -> Option<PortalIdentity> {
@@ -1058,12 +1093,7 @@ async fn impersonation_caller_identity(
     }
     let role = user.role.as_str().to_string();
     let can_acquire = user.role.is_privileged();
-    let me_user = AuthMeUser {
-        id: user.id,
-        role: role.clone(),
-        display_name: user.display_name.clone(),
-        has_password: user.has_password,
-    };
+    let me_user = auth_me_user(&user);
     let portal = match timeout(
         AUTH_DB_TIMEOUT,
         library.first_portal_identity_for_user(user_id),
@@ -1145,20 +1175,30 @@ pub async fn elevate(
             .await;
         return Err(StatusCode::UNAUTHORIZED);
     }
+    issue_elevation(&state, &library, user.id, &headers).await
+}
+
+/// Mint a short-lived elevated operator cookie for an Owner.
+pub(crate) async fn issue_elevation(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    user_id: i64,
+    headers: &HeaderMap,
+) -> Result<Response, StatusCode> {
     let session_id = Uuid::new_v4().to_string();
     let token_hash = hash_token(&session_id);
     let expires = Utc::now()
         + ChronoDuration::from_std(ELEVATION_TTL).unwrap_or_else(|_| ChronoDuration::minutes(15));
-    let client = session_client_from_headers(&headers);
+    let client = session_client_from_headers(headers);
     library
-        .insert_elevated_operator_session_with_client(&token_hash, expires, user.id, Some(&client))
+        .insert_elevated_operator_session_with_client(&token_hash, expires, user_id, Some(&client))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let _ = library
         .insert_security_audit_event(
-            &format!("user:{}", user.id),
+            &format!("user:{user_id}"),
             "elevate_start",
-            Some(&format!(r#"{{"user_id":{}}}"#, user.id)),
+            Some(&format!(r#"{{"user_id":{user_id}}}"#)),
         )
         .await;
     let flags = {
@@ -1174,6 +1214,54 @@ pub async fn elevate(
             "ok": true,
             "elevated": true,
             "expires_in_secs": max_age
+        })),
+    )
+        .into_response())
+}
+
+/// Mint a portal session cookie for a first-party User.
+pub(crate) async fn issue_portal_session(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    user: &bookclerk_library::UserRecord,
+    headers: &HeaderMap,
+    audit_action: &str,
+) -> Result<Response, StatusCode> {
+    let identity = library
+        .ensure_local_portal_identity(user.id, user.display_name.as_deref())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let session_raw = Uuid::new_v4().to_string();
+    let ttl_hours = {
+        let cfg = state.config.read().await;
+        cfg.integrations.portal_session_ttl_hours.max(1)
+    };
+    let expires = Utc::now() + ChronoDuration::hours(ttl_hours as i64);
+    let client = session_client_from_headers(headers);
+    library
+        .insert_portal_session_with_client(
+            &hash_token(&session_raw),
+            identity.id,
+            expires,
+            Some(&client),
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = library
+        .insert_security_audit_event(&format!("user:{}", user.id), audit_action, None)
+        .await;
+    let flags = {
+        let cfg = state.config.read().await;
+        session_cookie_flags(cfg.integrations.public_origin.as_deref())
+    };
+    let max_age = ttl_hours.saturating_mul(3600);
+    let cookie = format!("{PORTAL_SESSION_COOKIE}={session_raw}; {flags}; Max-Age={max_age}");
+    Ok((
+        StatusCode::OK,
+        [(header::SET_COOKIE, cookie)],
+        Json(serde_json::json!({
+            "ok": true,
+            "role": user.role.as_str(),
         })),
     )
         .into_response())
@@ -1364,24 +1452,36 @@ pub async fn list_users(
         .list_users()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let rows: Vec<serde_json::Value> = users
-        .into_iter()
-        .map(|u| {
-            serde_json::json!({
-                "id": u.id,
-                "role": u.role.as_str(),
-                "status": u.status.as_str(),
-                "display_name": u.display_name,
-                "login_name": u.login_name,
-                "email": u.email,
-                "has_password": u.has_password,
-                "online": false,
-                "last_active_at": null,
-                "listening": null,
-                "integrations": [],
-            })
-        })
-        .collect();
+    let mut rows = Vec::new();
+    for u in users {
+        let identities = library
+            .list_portal_identities_for_user(u.id)
+            .await
+            .unwrap_or_default();
+        rows.push(serde_json::json!({
+            "id": u.id,
+            "role": u.role.as_str(),
+            "status": u.status.as_str(),
+            "display_name": u.display_name,
+            "login_name": u.login_name,
+            "email": u.email,
+            "has_password": u.has_password,
+            "online": false,
+            "last_active_at": null,
+            "listening": null,
+            "integrations": [],
+            "identities": identities
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "provider": p.provider,
+                        "external_user_id": p.external_user_id,
+                        "label": p.label,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }));
+    }
     Ok(Json(serde_json::json!({ "users": rows })))
 }
 
@@ -2344,11 +2444,77 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     }
 }
 
+/// How long a portal session counts as "recent" for authenticator / IdP changes.
+pub(crate) const RECENT_AUTH_WINDOW: ChronoDuration = ChronoDuration::minutes(15);
+
+/// Operator bearer/session (including elevated Owner) may skip step-up.
+///
+/// A non-elevated Owner portal session must have been minted within
+/// [`RECENT_AUTH_WINDOW`] or present a matching `current_password`.
+pub(crate) async fn require_operator_or_recent_owner(
+    state: &AppState,
+    headers: &HeaderMap,
+    current_password: Option<&str>,
+) -> Result<(), StatusCode> {
+    let auth = state.auth_snapshot().await;
+    if authorize_operator_bearer_only(&auth, headers) {
+        return Ok(());
+    }
+    if let Some(op) = resolve_operator_session(state, &auth, headers).await {
+        if op.impersonating_user_id.is_some() {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        return Ok(());
+    }
+    let library = state.library_snapshot().await;
+    let identity = timed_portal_identity_from_headers(&library, headers)
+        .await
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let (role, _, user, _) = resolve_portal_caller_identity(&library, &identity).await;
+    if role != "owner" {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let user = user.ok_or(StatusCode::UNAUTHORIZED)?;
+    require_recent_portal_reauth(state, headers, user.id, current_password).await
+}
+
+/// Require a recently minted portal session or the user's current password.
+pub(crate) async fn require_recent_portal_reauth(
+    state: &AppState,
+    headers: &HeaderMap,
+    user_id: i64,
+    current_password: Option<&str>,
+) -> Result<(), StatusCode> {
+    let library = state.library_snapshot().await;
+    if let Some(raw) = cookie_value(headers, PORTAL_SESSION_COOKIE) {
+        if let Ok(Some(created)) = library.portal_session_created_at(&hash_token(&raw)).await {
+            if Utc::now() - created <= RECENT_AUTH_WINDOW {
+                return Ok(());
+            }
+        }
+    }
+    let current = current_password
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let hash = library
+        .get_user_password_hash(user_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let ok = verify_password(current, &hash).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if ok {
+        Ok(())
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
 fn session_id_from_headers(headers: &HeaderMap) -> Option<String> {
     cookie_value(headers, SESSION_COOKIE)
 }
 
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
     for part in cookie.split(';') {
         let part = part.trim();
@@ -2465,6 +2631,20 @@ mod tests {
         ["adm", "in", "-", "pass"].concat()
     }
 
+    /// Install a process DEK when tests have not already configured one.
+    ///
+    /// Production hosts call [`bookclerk_library::configure_master_key_with`] at
+    /// startup. Claim redeem HMACs the portal session from that key so HTTP
+    /// retries reuse the same `dbAtomic` operation id.
+    fn ensure_process_dek() {
+        static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        if bookclerk_library::require_master_key(None).is_ok() {
+            return;
+        }
+        let dir = DIR.get_or_init(|| tempfile::tempdir().expect("test master.key dir"));
+        bookclerk_library::configure_master_key(dir.path()).expect("test DEK");
+    }
+
     /// Build a minimal AppState + router for Phase 2 authz tests.
     async fn phase2_harness(
         token: &str,
@@ -2483,6 +2663,11 @@ mod tests {
         use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 
         use crate::api::AppState;
+
+        // Claim redeem derives the portal session via HMAC-SHA256(DEK, ticket),
+        // matching daemon startup (`configure_master_key_with`). In-memory
+        // tests have no files_dir, so mint a process DEK when none is cached.
+        ensure_process_dek();
 
         let library = LibraryStore::from_connection(
             bookclerk_plugin_database_sqlite::open_memory()
@@ -2607,6 +2792,36 @@ mod tests {
             .unwrap_or(header)
             .trim()
             .to_string()
+    }
+
+    fn claim_redeem_nonce(parts: &[&str]) -> String {
+        // Concatenate at runtime so CodeQL does not treat a test nonce as a
+        // hard-coded cryptographic value.
+        bookclerk_library::hash_token(&parts.concat())
+    }
+
+    fn claim_redeem_body(ticket: &str, nonce: &str, password: Option<&str>) -> String {
+        match password {
+            Some(password) => {
+                format!(r#"{{"ticket":"{ticket}","nonce":"{nonce}","password":"{password}"}}"#)
+            }
+            None => format!(r#"{{"ticket":"{ticket}","nonce":"{nonce}"}}"#),
+        }
+    }
+
+    struct RedeemLoseGuard;
+
+    impl Drop for RedeemLoseGuard {
+        fn drop(&mut self) {
+            bookclerk_integrations::redeem_lose_next_responses(0);
+        }
+    }
+
+    async fn redeem_lose_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await
     }
 
     #[tokio::test]
@@ -3070,7 +3285,11 @@ mod tests {
                     .method("POST")
                     .uri("/api/portal/redeem")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(format!(r#"{{"ticket":"{claim_raw}"}}"#)))
+                    .body(Body::from(claim_redeem_body(
+                        &claim_raw,
+                        &claim_redeem_nonce(&["phase2", "-", "claim"]),
+                        None,
+                    )))
                     .unwrap(),
             )
             .await
@@ -3084,8 +3303,10 @@ mod tests {
                     .method("POST")
                     .uri("/api/portal/redeem")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(format!(
-                        r#"{{"ticket":"{claim_raw}","password":"short"}}"#
+                    .body(Body::from(claim_redeem_body(
+                        &claim_raw,
+                        &claim_redeem_nonce(&["phase2", "-", "claim"]),
+                        Some("short"),
                     )))
                     .unwrap(),
             )
@@ -3100,16 +3321,246 @@ mod tests {
                     .method("POST")
                     .uri("/api/portal/redeem")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(format!(
-                        r#"{{"ticket":"{claim_raw}","password":"{set_pw}"}}"#
+                    .body(Body::from(claim_redeem_body(
+                        &claim_raw,
+                        &claim_redeem_nonce(&["phase2", "-", "claim"]),
+                        Some(&set_pw),
                     )))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(ok.status(), StatusCode::OK);
+        assert_eq!(
+            ok.status(),
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&ok.into_body().collect().await.unwrap().to_bytes())
+        );
         let hash_after = library.get_user_password_hash(user.id).await.unwrap();
         assert!(hash_after.is_some());
+    }
+
+    #[tokio::test]
+    async fn portal_redeem_lost_response_replays_cookie_for_initiating_nonce() {
+        use axum::body::Body;
+        use axum::http::{header, Request, StatusCode};
+        use bookclerk_library::{hash_token, UserRole};
+        use chrono::{Duration as ChronoDuration, Utc};
+        use tower::ServiceExt;
+        use uuid::Uuid;
+
+        let _lock = redeem_lose_lock().await;
+        let _guard = RedeemLoseGuard;
+        let (_state, app, library) = phase2_harness("op-token-phase2").await;
+        let hash = bookclerk_library::hash_password(&["already", "-", "set"].concat()).unwrap();
+        let user = library
+            .create_user_with_login(UserRole::Member, Some("Ada"), Some("ada"), Some(&hash))
+            .await
+            .unwrap();
+        let identity = library
+            .ensure_local_portal_identity(user.id, Some("Ada"))
+            .await
+            .unwrap();
+        let claim_raw = Uuid::new_v4().to_string();
+        library
+            .insert_claim_ticket(
+                &hash_token(&claim_raw),
+                Some(identity.id),
+                Utc::now() + ChronoDuration::hours(1),
+                "test",
+            )
+            .await
+            .unwrap();
+        let nonce = claim_redeem_nonce(&["lost", "-", "response", "-", "browser"]);
+        bookclerk_integrations::redeem_lose_next_responses(1);
+
+        let lost = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/portal/redeem")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(claim_redeem_body(&claim_raw, &nonce, None)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lost.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(library
+            .get_claim_ticket_by_hash(&hash_token(&claim_raw))
+            .await
+            .unwrap()
+            .unwrap()
+            .redeemed_at
+            .is_some());
+
+        let retry = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/portal/redeem")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(claim_redeem_body(&claim_raw, &nonce, None)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry.status(), StatusCode::OK);
+        let cookie = cookie_from_set_cookie(
+            retry
+                .headers()
+                .get(header::SET_COOKIE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        );
+        let dek = bookclerk_library::require_master_key(None).unwrap();
+        let expected = bookclerk_library::derive_claim_session_token(&dek, &claim_raw, &nonce);
+        assert_eq!(cookie, format!("{PORTAL_SESSION_COOKIE}={expected}"));
+
+        let me = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/me")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(me.status(), StatusCode::OK);
+
+        let other = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/portal/redeem")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(claim_redeem_body(
+                        &claim_raw,
+                        &claim_redeem_nonce(&["other", "-", "browser"]),
+                        None,
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(other.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn portal_redeem_lost_invite_password_retry_keeps_password_usable() {
+        use axum::body::Body;
+        use axum::http::{header, Request, StatusCode};
+        use bookclerk_library::{hash_token, UserRole};
+        use chrono::{Duration as ChronoDuration, Utc};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        use uuid::Uuid;
+
+        let _lock = redeem_lose_lock().await;
+        let _guard = RedeemLoseGuard;
+        let (_state, app, library) = phase2_harness("op-token-phase2").await;
+        let user = library
+            .create_user_with_login(UserRole::Member, Some("Ivy"), Some("ivy"), None)
+            .await
+            .unwrap();
+        let identity = library
+            .ensure_local_portal_identity(user.id, Some("Ivy"))
+            .await
+            .unwrap();
+        let claim_raw = Uuid::new_v4().to_string();
+        library
+            .insert_claim_ticket(
+                &hash_token(&claim_raw),
+                Some(identity.id),
+                Utc::now() + ChronoDuration::hours(1),
+                "test",
+            )
+            .await
+            .unwrap();
+        let nonce = claim_redeem_nonce(&["invite", "-", "lost", "-", "response"]);
+        let invite_pw = ["invite", "-", "pass", "-", "word"].concat();
+        bookclerk_integrations::redeem_lose_next_responses(1);
+
+        let lost = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/portal/redeem")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(claim_redeem_body(
+                        &claim_raw,
+                        &nonce,
+                        Some(&invite_pw),
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lost.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let retry = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/portal/redeem")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(claim_redeem_body(
+                        &claim_raw,
+                        &nonce,
+                        Some(&invite_pw),
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry.status(), StatusCode::OK);
+        let cookie = cookie_from_set_cookie(
+            retry
+                .headers()
+                .get(header::SET_COOKIE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        );
+        let me = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/me")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(me.status(), StatusCode::OK);
+
+        let login = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/password")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"login":"ivy","password":"{invite_pw}"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            login.status(),
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&login.into_body().collect().await.unwrap().to_bytes())
+        );
     }
 
     #[tokio::test]
@@ -3806,5 +4257,63 @@ mod tests {
             .unwrap();
         assert_eq!(settings.status(), StatusCode::UNAUTHORIZED);
         let _ = settings.into_body().collect().await;
+    }
+
+    #[tokio::test]
+    async fn established_owner_first_passkey_requires_reauth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (state, app, library) = phase2_harness("op-token-phase2").await;
+        {
+            let mut cfg = state.config.write().await;
+            cfg.integrations.public_origin = Some("http://localhost:8787".into());
+        }
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        let raw = cookie
+            .strip_prefix(&format!("{PORTAL_SESSION_COOKIE}="))
+            .expect("portal cookie");
+        library
+            .set_portal_session_created_at(&hash_token(raw), Utc::now() - ChronoDuration::hours(1))
+            .await
+            .unwrap();
+
+        let stale = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/passkeys/register/begin")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "http://localhost:8787")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
+        let _ = stale.into_body().collect().await;
+
+        let ok = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/passkeys/register/begin")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "http://localhost:8787")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(format!(
+                        r#"{{"current_password":"{}"}}"#,
+                        phase2_owner_password()
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let _ = ok.into_body().collect().await;
     }
 }

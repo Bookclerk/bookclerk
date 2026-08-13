@@ -369,9 +369,10 @@ pub mod db_rollback {
 
 /// Run a named atomic library operation as one guest SQL transaction.
 ///
-/// Params: [`crate::db::DbAtomicParams`]. Result: [`crate::db::DbAtomicResult`].
-/// D1 implements this via one HTTP `batch()`. SQLite / Postgres leave it
-/// unimplemented; the host uses interactive `dbBegin` instead.
+/// Params: [`crate::db::DbAtomicRequest`]. Result: [`crate::db::DbAtomicResult`].
+/// Every bundled database guest implements this (D1 as one HTTP `batch()`,
+/// SQLite / Postgres as one native transaction) and records an `operationId`
+/// receipt so a lost response can be retried.
 pub mod db_atomic {
     /// Wire method name `"dbAtomic"`.
     pub const NAME: &str = "dbAtomic";

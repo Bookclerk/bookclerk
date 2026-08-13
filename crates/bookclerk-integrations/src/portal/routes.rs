@@ -1,5 +1,6 @@
 //! Axum routes for portal claim / account linking (`/api/portal`).
 
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -8,7 +9,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bookclerk_config::{session_cookie_flags, Config};
-use bookclerk_library::{classify_session_client, hash_password, hash_token, LibraryStore};
+use bookclerk_library::{
+    classify_session_client, hash_password, hash_token, parse_claim_redeem_nonce, LibraryStore,
+};
 use bookclerk_source::{ContentSource, LoginOptions, PortalAuthMode, SourceRegistry};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -23,6 +26,16 @@ use crate::tickets::{
 use crate::types::ExternalUser;
 
 const SESSION_COOKIE: &str = "bookclerk_portal_session";
+
+/// Drop the next N successful redeem HTTP responses after the DB commit.
+///
+/// Production stays at 0. Tests inject a committed-but-lost first reply so the
+/// retry can recover the receipt through the real handler.
+pub fn redeem_lose_next_responses(n: i32) {
+    REDEEM_LOSE_HTTP_RESPONSES.store(n, Ordering::SeqCst);
+}
+
+static REDEEM_LOSE_HTTP_RESPONSES: AtomicI32 = AtomicI32::new(0);
 
 /// Shared state for portal handlers.
 #[derive(Clone)]
@@ -90,6 +103,8 @@ pub async fn portal_identity_from_headers(
 #[derive(Debug, Deserialize)]
 struct RedeemBody {
     ticket: String,
+    /// Browser-generated one-time nonce persisted across HTTP retries.
+    nonce: String,
     /// Required when the linked local user has no password (invite / reset).
     #[serde(default)]
     password: Option<String>,
@@ -100,6 +115,7 @@ async fn redeem(
     headers: HeaderMap,
     Json(body): Json<RedeemBody>,
 ) -> Result<Response, PortalError> {
+    let nonce = parse_claim_redeem_nonce(&body.nonce).map_err(PortalError::from)?;
     let cfg = state.config.read().await;
     let library = state.library_snapshot().await;
     let ua = headers
@@ -108,9 +124,10 @@ async fn redeem(
     let client = classify_session_client(ua, ua.is_none());
     let raw_ticket = body.ticket.trim();
     // Peek first so a missing/too-short invite password does not burn the ticket.
-    let identity = inspect_claim_ticket(&library, raw_ticket).await?;
-    // Defense-in-depth: refuse tickets whose provider integration is disabled.
-    // Local claim tickets use provider `local` and are always allowed.
+    // Already-redeemed tickets are allowed through so a lost HTTP reply can
+    // recover the committed receipt; unredeemed expired tickets still fail.
+    let inspected = inspect_claim_ticket(&library, raw_ticket).await?;
+    let identity = &inspected.identity;
     if identity.provider != "local" && !cfg.integrations.is_enabled(&identity.provider) {
         return Err(PortalError::bad(format!(
             "integration `{}` is disabled",
@@ -118,24 +135,23 @@ async fn redeem(
         )));
     }
 
-    // Hash outside the consume transaction. Assignment is conditional and
-    // rolled back if the ticket is already consumed.
+    let password_plain = body
+        .password
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let mut password_hash = None;
+    let mut password_fingerprint = None;
     if identity.provider == "local" {
         if let Some(user_id) = identity.user_id {
             let existing = library
                 .get_user_password_hash(user_id)
                 .await
                 .map_err(|e| PortalError::bad(e.to_string()))?;
-            if existing.is_none() {
-                let password = body
-                    .password
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| {
-                        PortalError::bad("password required — set a password to finish claim login")
-                    })?;
+            if existing.is_none() && !inspected.redeemed {
+                let password = password_plain.ok_or_else(|| {
+                    PortalError::bad("password required — set a password to finish claim login")
+                })?;
                 if password.len() < 8 {
                     return Err(PortalError::bad("password must be at least 8 characters"));
                 }
@@ -144,6 +160,12 @@ async fn redeem(
             }
         }
     }
+    if let Some(password) = password_plain {
+        let dek = bookclerk_library::require_master_key(None)?;
+        password_fingerprint = Some(bookclerk_library::derive_claim_password_fingerprint(
+            &dek, nonce, password,
+        ));
+    }
     let integrations = cfg.integrations.clone();
     drop(cfg);
 
@@ -151,10 +173,23 @@ async fn redeem(
         &library,
         &integrations,
         raw_ticket,
+        nonce,
         Some(&client),
         password_hash.as_deref(),
+        password_fingerprint.as_deref(),
     )
     .await?;
+
+    if REDEEM_LOSE_HTTP_RESPONSES
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+            (v > 0).then_some(v - 1)
+        })
+        .is_ok()
+    {
+        return Err(PortalError::unavailable(
+            "database temporarily unavailable — retry the same redeem",
+        ));
+    }
 
     info!(
         identity_id = identity.id,
@@ -686,17 +721,32 @@ impl PortalError {
             message: msg.into(),
         }
     }
+
+    fn unavailable(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: msg.into(),
+        }
+    }
 }
 
 impl From<bookclerk_library::LibraryError> for PortalError {
     fn from(value: bookclerk_library::LibraryError) -> Self {
-        Self::bad(value.to_string())
+        match value {
+            bookclerk_library::LibraryError::Unavailable(msg) => Self::unavailable(msg),
+            other => Self::bad(other.to_string()),
+        }
     }
 }
 
 impl From<crate::error::IntegrationError> for PortalError {
     fn from(value: crate::error::IntegrationError) -> Self {
-        Self::bad(value.to_string())
+        match value {
+            crate::error::IntegrationError::Library(
+                bookclerk_library::LibraryError::Unavailable(msg),
+            ) => Self::unavailable(msg),
+            other => Self::bad(other.to_string()),
+        }
     }
 }
 

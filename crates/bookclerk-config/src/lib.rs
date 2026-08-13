@@ -9,6 +9,7 @@
 //! Product narrative: `docs/configuration.md`, `docs/diagnostics.md`. Style:
 //! `docs/code-documentation.md`.
 
+mod atomic_replace;
 mod cookie_flags;
 mod database;
 mod desktop;
@@ -21,6 +22,7 @@ mod listen;
 mod logging;
 mod media;
 mod naming_profile;
+mod oidc_broker;
 mod operator_auth;
 mod output;
 mod overrides;
@@ -32,7 +34,7 @@ mod plugins;
 mod redact;
 mod settings;
 
-pub use cookie_flags::{cookie_secure_suffix, session_cookie_flags};
+pub use cookie_flags::{cookie_secure_suffix, oidc_transaction_cookie_flags, session_cookie_flags};
 pub use database::{
     resolve_d1_api_token, resolve_postgres_url, DatabaseConfig, DatabaseD1Config,
     DatabasePluginKind, DatabasePostgresConfig, DatabaseSqliteConfig,
@@ -55,6 +57,11 @@ pub use listen::ListenAddrs;
 pub use logging::{init_tracing, init_tracing_with, LogFormat, LoggingHandle, TracingOptions};
 pub use media::MediaConfig;
 pub use naming_profile::{NamingProfile, NamingProfileTemplates, ResolvedNamingTemplates};
+pub use oidc_broker::{
+    allowlist_permits, email_domain_allowed, oidc_apple_private_key_env_key,
+    oidc_client_secret_env_key, oidc_secret_store_name, resolve_mapped_role, OidcBrokerConfig,
+    OidcProviderConfig, OidcProvisionMode,
+};
 pub use operator_auth::{
     generate_operator_token, read_operator_token_env, validate_operator_token,
     ResolveOperatorTokenEnv,

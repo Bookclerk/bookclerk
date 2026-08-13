@@ -544,6 +544,8 @@ mod tests {
         assert!(is_sensitive_field("refresh_token"));
         assert!(is_sensitive_field("AWS_SECRET_ACCESS_KEY"));
         assert!(is_sensitive_field("client_secret"));
+        assert!(is_sensitive_field("apple_private_key"));
+        assert!(is_sensitive_field("private_key"));
         assert!(!is_sensitive_field("asin"));
         assert!(!is_sensitive_field("title"));
     }

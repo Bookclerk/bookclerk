@@ -784,18 +784,37 @@ export interface DbConnectResult {
 }
 
 /**
- * Named atomic library operation for `dbAtomic` (D1 HTTP batch).
+ * Named atomic library operation for `dbAtomic`.
+ * Tagged `op`: `deleteUser`, `redeemClaimTicket`, `takeOidcRpState`,
+ * `takeWebauthnChallenge`, …
  */
 export type DbAtomicParams = JsonObject;
+
+/**
+ * Idempotency envelope for `dbAtomic`.
+ */
+export interface DbAtomicRequest {
+  /** Caller-chosen idempotency key; retries must reuse it. */
+  operationId: string;
+  operation: DbAtomicParams;
+}
 
 /**
  * Application result of `dbAtomic`.
  */
 export interface DbAtomicResult {
-  /** `ok`, `empty`, `notFound`, `lastOwner`, `claimInvalid`, `passwordRequired`. */
+  /** `ok`, `empty`, `notFound`, `lastOwner`, `claimInvalid`, `passwordRequired`, `idempotencyConflict`. */
   status: string;
   /** Library record JSON when `status` is `ok`. */
   payload?: unknown;
+  operationId?: string;
+  replayed?: boolean;
+  receiptCreatedAt?: string;
+  timing?: {
+    attemptElapsedUs: number;
+    dbExecutionUs?: number;
+    dbTimingSource?: string;
+  };
 }
 
 /**

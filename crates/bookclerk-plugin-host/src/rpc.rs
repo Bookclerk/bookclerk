@@ -294,7 +294,7 @@ impl PluginClient {
                             let mut map = pending_reader.lock().await;
                             if let Some(tx) = map.remove(&id) {
                                 let outcome = if let Some(err) = resp.error {
-                                    Err(PluginError::message(err.message))
+                                    Err(PluginError::from_abi(err.code.as_deref(), err.message))
                                 } else {
                                     Ok(resp.result.unwrap_or(Value::Null))
                                 };
@@ -612,7 +612,7 @@ impl PluginClient {
         }
         match tokio::time::timeout(RPC_TIMEOUT, rx).await {
             Ok(Ok(outcome)) => outcome,
-            Ok(Err(_)) => Err(PluginError::message(format!(
+            Ok(Err(_)) => Err(PluginError::unavailable(format!(
                 "plugin `{}` closed while waiting for `{method}`",
                 self.id
             ))),
@@ -624,7 +624,7 @@ impl PluginClient {
                     RPC_TIMEOUT.as_secs()
                 ))
                 .await;
-                Err(PluginError::message(format!(
+                Err(PluginError::unavailable(format!(
                     "plugin `{}` timed out after {}s waiting for `{method}` \
                      (guest killed and quarantined)",
                     self.id,

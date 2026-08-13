@@ -48,6 +48,7 @@ async fn injected_db_begin_failure_does_not_redeem() {
             expires,
             None,
             Some(hash.as_str()),
+            None,
         )
         .await
         .unwrap_err();
@@ -79,6 +80,7 @@ async fn injected_db_begin_failure_does_not_redeem() {
             expires,
             None,
             Some(hash.as_str()),
+            None,
         )
         .await
         .unwrap();
@@ -103,6 +105,7 @@ async fn injected_db_commit_failure_does_not_redeem() {
             expires,
             None,
             Some(hash.as_str()),
+            None,
         )
         .await
         .unwrap_err();
@@ -134,6 +137,7 @@ async fn injected_db_commit_failure_does_not_redeem() {
             expires,
             None,
             Some(hash.as_str()),
+            None,
         )
         .await
         .unwrap();

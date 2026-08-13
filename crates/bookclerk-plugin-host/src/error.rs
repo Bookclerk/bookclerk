@@ -11,6 +11,10 @@ pub enum PluginError {
     /// Operator-facing error text with no structured code.
     #[error("{0}")]
     Message(String),
+    /// Backend or plugin transport is temporarily unreachable; retry the same
+    /// idempotency key when the caller still holds consume-once material.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
     /// Filesystem or process I/O failure.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
@@ -41,6 +45,45 @@ impl PluginError {
     #[must_use]
     pub fn message(msg: impl Into<String>) -> Self {
         Self::Message(msg.into())
+    }
+
+    /// Builds a structured unavailable error (lost RPC, timeout, incomplete reply).
+    #[must_use]
+    pub fn unavailable(msg: impl Into<String>) -> Self {
+        Self::Unavailable(msg.into())
+    }
+
+    /// Maps a guest ABI error, preserving [`unavailable`](Self::unavailable)
+    /// so atomic retries can classify without string matching.
+    #[must_use]
+    pub fn from_abi(code: Option<&str>, message: impl Into<String>) -> Self {
+        let message = message.into();
+        if code == Some("unavailable") {
+            Self::unavailable(message)
+        } else {
+            Self::message(message)
+        }
+    }
+
+    /// True when a `dbAtomic` caller should retry the same operation id.
+    ///
+    /// Relies on the structured [`Self::Unavailable`] variant (guest ABI
+    /// `unavailable`, RPC timeout, or a closed guest) rather than matching
+    /// `D1 HTTP` strings: permanent 4xx from D1 is `internal` / `invalid_params`.
+    #[must_use]
+    pub fn is_ambiguous_transport(&self) -> bool {
+        match self {
+            Self::Unavailable(_) => true,
+            Self::Io(err) => matches!(
+                err.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::UnexpectedEof
+            ),
+            _ => false,
+        }
     }
 }
 

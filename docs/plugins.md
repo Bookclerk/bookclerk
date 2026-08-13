@@ -957,7 +957,7 @@ no in-process fallback). SQLite receives `library.db` on fd 3 at `dbConnect`.
 | `dbQuery` / `dbExecute` | Forward SeaORM statement payloads (optional `txnId` from `dbBegin`) |
 | `dbBegin` | Start a native engine transaction (or nested savepoint via `parentTxnId`); returns `txnId`. The host records a sticky per-task fault when this RPC fails so later statements cannot fall back to autocommit. D1 rejects interactive transactions and sets `interactiveTxn: false` on `dbConnect`. |
 | `dbCommit` / `dbRollback` | Finish that transaction. A failed `dbCommit` is surfaced to `LibraryStore` (SeaORM's proxy hook is infallible); the guest is rolled back. |
-| `dbAtomic` | D1-only named library operation (claim redeem, last-owner guards, password hash) as one HTTP `batch()` / one SQL transaction. SQLite and Postgres leave this unimplemented and keep using `dbBegin`. |
+| `dbAtomic` | Named library operation (claim redeem, last-owner guards, password hash, consume-once OIDC/WebAuthn) as one SQL transaction, with an `operationId` receipt for lost-response replay. D1 uses `{ "batch": [...] }` on the REST Query API. SQLite and Postgres run the same command in a native local transaction. |
 
 Built-in ids: `sqlite`, `d1`, `postgres` (match `[database].plugin`).
 

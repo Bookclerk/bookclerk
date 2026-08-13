@@ -1,15 +1,16 @@
 //! Cloudflare D1 HTTP API proxy for SeaORM.
 //!
-//! D1 HTTP requests do not keep an interactive SQL transaction open. Each
-//! autocommit statement is posted as a one-element D1 batch array. Interactive
-//! `BEGIN` is rejected: Time Travel is not a substitute for rollback, and
+//! D1 HTTP requests do not keep an interactive SQL transaction open.
+//! Autocommit statements use the documented `{ "sql", "params" }` REST body.
+//! Interactive `BEGIN` is rejected: Time Travel is not a substitute for rollback, and
 //! mid-transaction SeaORM reads cannot be satisfied without committing.
 //! Atomic library operations use [`D1Proxy::run_atomic`] (`dbAtomic`) which
-//! sends one multi-statement HTTP `batch()` (a real SQL transaction) with
-//! control flow encoded in SQL.
+//! sends `{ "batch": [...] }` (a real SQL transaction) with control flow
+//! encoded in SQL and a durable `operationId` receipt.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -40,7 +41,7 @@ pub async fn open(
 }
 
 const D1_INTERACTIVE_TXN_UNSUPPORTED: &str = "D1 does not support interactive transactions; \
-     each HTTP request commits immediately. Use dbAtomic for claim redeem and last-owner guards";
+     each HTTP request commits immediately. Use dbAtomic for claim redeem, last-owner guards, and consume-once tokens";
 
 static SHARED: OnceLock<D1Proxy> = OnceLock::new();
 
@@ -80,6 +81,73 @@ impl std::fmt::Debug for D1Proxy {
     }
 }
 
+/// HTTP budget for one D1 request, well below the host plugin RPC deadline (300s).
+const D1_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const D1_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Classified D1 HTTP / transport failure.
+#[derive(Debug)]
+pub(crate) enum D1Error {
+    /// Transport, timeout, incomplete/garbled 2xx, or retryable HTTP (408/429/5xx).
+    Ambiguous {
+        message: String,
+        retry_after: Option<Duration>,
+    },
+    /// Permanent HTTP failure (typical 4xx). Do not retry.
+    Permanent { status: u16, message: String },
+}
+
+impl D1Error {
+    fn ambiguous(message: impl Into<String>) -> Self {
+        Self::Ambiguous {
+            message: message.into(),
+            retry_after: None,
+        }
+    }
+
+    pub(crate) fn is_retryable(&self) -> bool {
+        matches!(self, Self::Ambiguous { .. })
+    }
+
+    pub(crate) fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::Ambiguous { retry_after, .. } => *retry_after,
+            Self::Permanent { .. } => None,
+        }
+    }
+}
+
+impl From<D1Error> for DbErr {
+    fn from(err: D1Error) -> Self {
+        match err {
+            D1Error::Ambiguous {
+                message,
+                retry_after,
+            } => {
+                let extra = retry_after
+                    .map(|d| format!(" retry-after-ms={}", d.as_millis()))
+                    .unwrap_or_default();
+                DbErr::Custom(format!("D1 ambiguous response:{extra} {message}"))
+            }
+            D1Error::Permanent { status, message } => {
+                DbErr::Custom(format!("D1 HTTP {status}: {message}"))
+            }
+        }
+    }
+}
+
+fn retryable_http_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+fn parse_retry_after(response: &reqwest::Response) -> Option<Duration> {
+    let raw = response.headers().get(reqwest::header::RETRY_AFTER)?;
+    let s = raw.to_str().ok()?.trim();
+    s.parse::<u64>().ok().map(Duration::from_secs)
+}
+
 impl D1Proxy {
     /// Constructs a new instance with default or provided parameters.
     #[must_use]
@@ -89,13 +157,18 @@ impl D1Proxy {
         database_id: String,
         api_token: String,
     ) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(D1_REQUEST_TIMEOUT)
+            .connect_timeout(D1_CONNECT_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             inner: Arc::new(D1Inner {
                 api_base: api_base.trim_end_matches('/').to_string(),
                 account_id,
                 database_id,
                 api_token,
-                client: reqwest::Client::new(),
+                client,
                 http: AsyncMutex::new(()),
             }),
         }
@@ -108,7 +181,11 @@ impl D1Proxy {
         )
     }
 
-    async fn post_json(&self, url: &str, body: JsonValue) -> std::result::Result<JsonValue, DbErr> {
+    async fn post_json(
+        &self,
+        url: &str,
+        body: JsonValue,
+    ) -> std::result::Result<JsonValue, D1Error> {
         let _http = self.inner.http.lock().await;
         let response = self
             .inner
@@ -118,33 +195,29 @@ impl D1Proxy {
             .json(&body)
             .send()
             .await
-            .map_err(|e| DbErr::Custom(format!("D1 HTTP error: {e}")))?;
+            .map_err(|e| D1Error::ambiguous(format!("transport: {e}")))?;
         parse_d1_response(response).await
     }
 
-    /// Runs one or more SQL statements. A JSON array is a D1 batch: statements
-    /// execute sequentially as one SQL transaction and roll back together on
-    /// failure.
+    /// Runs one or more SQL statements as one documented D1 `{ "batch": [...] }`
+    /// request: statements execute sequentially as one SQL transaction and roll
+    /// back together on failure.
     pub(crate) async fn run_batch(
         &self,
         statements: &[(String, Vec<JsonValue>)],
-    ) -> std::result::Result<JsonValue, DbErr> {
+    ) -> std::result::Result<JsonValue, D1Error> {
         if statements.is_empty() {
-            return Err(DbErr::Custom(
-                "D1 batch requires at least one statement".into(),
-            ));
+            return Err(D1Error::Permanent {
+                status: 400,
+                message: "D1 batch requires at least one statement".into(),
+            });
         }
-        let body = JsonValue::Array(
-            statements
+        let body = json!({
+            "batch": statements
                 .iter()
-                .map(|(sql, params)| {
-                    json!({
-                        "sql": sql,
-                        "params": params,
-                    })
-                })
-                .collect(),
-        );
+                .map(|(sql, params)| json!({ "sql": sql, "params": params }))
+                .collect::<Vec<_>>(),
+        });
         self.post_json(&self.query_url(), body).await
     }
 
@@ -153,7 +226,10 @@ impl D1Proxy {
         sql: &str,
         params: Vec<JsonValue>,
     ) -> std::result::Result<JsonValue, DbErr> {
-        self.run_batch(&[(sql.to_string(), params)]).await
+        let body = json!({ "sql": sql, "params": params });
+        self.post_json(&self.query_url(), body)
+            .await
+            .map_err(DbErr::from)
     }
 }
 
@@ -220,25 +296,35 @@ impl ProxyDatabaseTrait for D1Proxy {
     }
 }
 
-async fn parse_d1_response(response: reqwest::Response) -> std::result::Result<JsonValue, DbErr> {
+async fn parse_d1_response(response: reqwest::Response) -> std::result::Result<JsonValue, D1Error> {
     let status = response.status();
+    let retry_after = parse_retry_after(&response);
     let text = response
         .text()
         .await
-        .map_err(|e| DbErr::Custom(format!("D1 read body: {e}")))?;
+        .map_err(|e| D1Error::ambiguous(format!("read body: {e}")))?;
     if !status.is_success() {
-        return Err(DbErr::Custom(format!(
-            "D1 HTTP {status}: {}",
-            truncate(&text, 500)
-        )));
+        let message = truncate(&text, 500).to_string();
+        return Err(if retryable_http_status(status) {
+            D1Error::Ambiguous {
+                message: format!("HTTP {status}: {message}"),
+                retry_after,
+            }
+        } else {
+            D1Error::Permanent {
+                status: status.as_u16(),
+                message,
+            }
+        });
     }
-    let value: JsonValue = serde_json::from_str(&text)
-        .map_err(|e| DbErr::Custom(format!("D1 JSON parse: {e}; body={}", truncate(&text, 200))))?;
+    let value: JsonValue = serde_json::from_str(&text).map_err(|e| {
+        D1Error::ambiguous(format!("JSON parse: {e}; body={}", truncate(&text, 200)))
+    })?;
     if value.get("success").and_then(|v| v.as_bool()) == Some(false) {
-        return Err(DbErr::Custom(format!(
-            "D1 API unsuccessful: {}",
-            truncate(&text, 500)
-        )));
+        return Err(D1Error::Permanent {
+            status: status.as_u16(),
+            message: format!("API unsuccessful: {}", truncate(&text, 500)),
+        });
     }
     Ok(value)
 }
@@ -358,6 +444,85 @@ mod tests {
         }))
     }
 
+    fn incomplete_batch_ok() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "result": []
+        }))
+    }
+
+    fn d1_success_for_batch_request(request: &wiremock::Request) -> ResponseTemplate {
+        let body: JsonValue = serde_json::from_slice(&request.body).unwrap_or(json!({}));
+        let batch = body
+            .get("batch")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_else(|| vec![json!({"sql": "SELECT 1"})]);
+        let (echo_op, echo_hash) = receipt_echo_from_batch(&batch);
+        let results: Vec<JsonValue> = batch
+            .iter()
+            .map(|stmt| {
+                let sql = stmt.get("sql").and_then(JsonValue::as_str).unwrap_or("");
+                let is_receipt_select = sql.contains("FROM db_atomic_receipts")
+                    && sql.trim_start().starts_with("SELECT");
+                if is_receipt_select {
+                    json!({
+                        "results": [{
+                            "operation_id": echo_op,
+                            "request_hash": echo_hash,
+                            "status": "empty",
+                            "payload": null,
+                            "created_at": "2020-01-01T00:00:00Z"
+                        }],
+                        "success": true,
+                        "meta": {}
+                    })
+                } else {
+                    json!({
+                        "results": [],
+                        "success": true,
+                        "meta": { "changes": 1, "last_row_id": 1 }
+                    })
+                }
+            })
+            .collect();
+        ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "result": results
+        }))
+    }
+
+    fn receipt_echo_from_batch(batch: &[JsonValue]) -> (String, String) {
+        for stmt in batch {
+            let sql = stmt.get("sql").and_then(JsonValue::as_str).unwrap_or("");
+            if sql.contains("INTO db_atomic_receipts") {
+                let params = stmt.get("params").and_then(JsonValue::as_array);
+                if let Some(params) = params {
+                    let op = params
+                        .first()
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or("op")
+                        .to_string();
+                    let hash = params
+                        .get(2)
+                        .and_then(JsonValue::as_str)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("echo-hash")
+                        .to_string();
+                    return (op, hash);
+                }
+            }
+        }
+        ("op".into(), "echo-hash".into())
+    }
+
+    struct EchoBatchOk;
+    impl wiremock::Respond for EchoBatchOk {
+        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+            d1_success_for_batch_request(request)
+        }
+    }
+
     #[tokio::test]
     async fn begin_rejects_interactive_transactions() {
         let server = MockServer::start().await;
@@ -382,25 +547,29 @@ mod tests {
 
     #[tokio::test]
     async fn atomic_redeem_posts_one_multi_statement_batch() {
-        use bookclerk_plugin_sdk::DbAtomicParams;
+        use bookclerk_plugin_sdk::{DbAtomicParams, DbAtomicRequest};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"/query$"))
-            .respond_with(query_ok())
+            .respond_with(EchoBatchOk)
             .mount(&server)
             .await;
 
         let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
         let _ = proxy
-            .run_atomic(DbAtomicParams::RedeemClaimTicket {
-                token_hash: "ticket".into(),
-                session_hash: "session".into(),
-                expires_at: "2099-01-01T00:00:00Z".into(),
-                user_agent: None,
-                device_type: None,
-                client_label: None,
-                new_password_hash: Some("hash".into()),
+            .run_atomic(DbAtomicRequest {
+                operation_id: "op-redeem".into(),
+                operation: DbAtomicParams::RedeemClaimTicket {
+                    token_hash: "ticket".into(),
+                    session_hash: "session".into(),
+                    expires_at: "2099-01-01T00:00:00Z".into(),
+                    user_agent: None,
+                    device_type: None,
+                    client_label: None,
+                    new_password_hash: Some("hash".into()),
+                    password_fingerprint: Some("fp".into()),
+                },
             })
             .await;
 
@@ -413,14 +582,320 @@ mod tests {
             .map(|r| serde_json::from_slice(&r.body).unwrap())
             .collect();
         assert_eq!(queries.len(), 1);
-        assert!(queries[0].is_array());
+        let batch = queries[0]["batch"]
+            .as_array()
+            .expect("dbAtomic must use the documented { batch: [...] } envelope");
         assert!(
-            queries[0].as_array().unwrap().len() > 1,
+            batch.len() > 1,
             "dbAtomic must send a multi-statement D1 batch, got {}",
             queries[0]
         );
-        let sql = queries[0][0]["sql"].as_str().unwrap();
+        let sql: String = batch
+            .iter()
+            .filter_map(|stmt| stmt["sql"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(sql.contains("claim_tickets"), "{sql}");
+        assert!(sql.contains("db_atomic_receipts"), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn atomic_take_oidc_posts_delete_returning_batch() {
+        use bookclerk_plugin_sdk::{DbAtomicParams, DbAtomicRequest};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/query$"))
+            .respond_with(EchoBatchOk)
+            .mount(&server)
+            .await;
+
+        let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
+        let _ = proxy
+            .run_atomic(DbAtomicRequest {
+                operation_id: "op-take".into(),
+                operation: DbAtomicParams::TakeOidcRpState {
+                    state_hash: "abc".into(),
+                },
+            })
+            .await;
+
+        let queries: Vec<JsonValue> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path().ends_with("/query"))
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect();
+        assert_eq!(queries.len(), 1);
+        let batch = queries[0]["batch"]
+            .as_array()
+            .expect("dbAtomic must use the documented { batch: [...] } envelope");
+        let sql: String = batch
+            .iter()
+            .filter_map(|stmt| stmt["sql"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(sql.contains("DELETE FROM oidc_rp_states"), "{sql}");
+        assert!(sql.contains("consume_key"), "{sql}");
+        assert!(sql.contains("db_atomic_receipts"), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn atomic_take_oidc_retries_mangled_response() {
+        use bookclerk_plugin_sdk::{DbAtomicParams, DbAtomicRequest};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use wiremock::Respond;
+
+        struct FirstMangledThenOk {
+            hits: Arc<AtomicUsize>,
+        }
+        impl Respond for FirstMangledThenOk {
+            fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                if self.hits.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(200).set_body_string("{\"success\":")
+                } else {
+                    d1_success_for_batch_request(request)
+                }
+            }
+        }
+
+        let server = MockServer::start().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .and(path_regex(r"/query$"))
+            .respond_with(FirstMangledThenOk { hits: hits.clone() })
+            .mount(&server)
+            .await;
+
+        let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
+        let result = proxy
+            .run_atomic(DbAtomicRequest {
+                operation_id: "op-retry".into(),
+                operation: DbAtomicParams::TakeOidcRpState {
+                    state_hash: "abc".into(),
+                },
+            })
+            .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn atomic_take_oidc_retries_incomplete_2xx() {
+        use bookclerk_plugin_sdk::{DbAtomicParams, DbAtomicRequest};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use wiremock::Respond;
+
+        struct FirstIncompleteThenOk {
+            hits: Arc<AtomicUsize>,
+        }
+        impl Respond for FirstIncompleteThenOk {
+            fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                if self.hits.fetch_add(1, Ordering::SeqCst) == 0 {
+                    incomplete_batch_ok()
+                } else {
+                    d1_success_for_batch_request(request)
+                }
+            }
+        }
+
+        let server = MockServer::start().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .and(path_regex(r"/query$"))
+            .respond_with(FirstIncompleteThenOk { hits: hits.clone() })
+            .mount(&server)
+            .await;
+
+        let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
+        let result = proxy
+            .run_atomic(DbAtomicRequest {
+                operation_id: "op-incomplete".into(),
+                operation: DbAtomicParams::TakeOidcRpState {
+                    state_hash: "abc".into(),
+                },
+            })
+            .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn atomic_take_oidc_outer_retry_reuses_operation_id_after_two_lost_replies() {
+        use bookclerk_plugin_sdk::{DbAtomicParams, DbAtomicRequest};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use wiremock::Respond;
+
+        struct TwoIncompleteThenOk {
+            hits: Arc<AtomicUsize>,
+        }
+        impl Respond for TwoIncompleteThenOk {
+            fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                if self.hits.fetch_add(1, Ordering::SeqCst) < 2 {
+                    incomplete_batch_ok()
+                } else {
+                    d1_success_for_batch_request(request)
+                }
+            }
+        }
+
+        let server = MockServer::start().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .and(path_regex(r"/query$"))
+            .respond_with(TwoIncompleteThenOk { hits: hits.clone() })
+            .mount(&server)
+            .await;
+
+        let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
+        let req = DbAtomicRequest {
+            operation_id: "op-outer".into(),
+            operation: DbAtomicParams::TakeOidcRpState {
+                state_hash: "abc".into(),
+            },
+        };
+        // Inner loop retries twice on incomplete 2xx, then succeeds on the third
+        // attempt with the same operation_id (the outer caller also reuses it).
+        let result = proxy.run_atomic(req.clone()).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+
+        let replay = proxy.run_atomic(req).await.unwrap();
+        assert_eq!(replay.operation_id, "op-outer");
+        assert!(hits.load(Ordering::SeqCst) >= 4);
+    }
+
+    #[tokio::test]
+    async fn atomic_take_oidc_exhausted_inner_retries_then_same_id_recovers() {
+        use bookclerk_plugin_sdk::{DbAtomicParams, DbAtomicRequest};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use wiremock::Respond;
+
+        struct ThreeIncompleteThenOk {
+            hits: Arc<AtomicUsize>,
+        }
+        impl Respond for ThreeIncompleteThenOk {
+            fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                if self.hits.fetch_add(1, Ordering::SeqCst) < 3 {
+                    incomplete_batch_ok()
+                } else {
+                    d1_success_for_batch_request(request)
+                }
+            }
+        }
+
+        let server = MockServer::start().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .and(path_regex(r"/query$"))
+            .respond_with(ThreeIncompleteThenOk { hits: hits.clone() })
+            .mount(&server)
+            .await;
+
+        let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
+        let req = DbAtomicRequest {
+            operation_id: "op-resume".into(),
+            operation: DbAtomicParams::TakeOidcRpState {
+                state_hash: "abc".into(),
+            },
+        };
+        let first = proxy.run_atomic(req.clone()).await;
+        assert!(first.is_err(), "three incomplete 2xx exhaust inner retries");
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+
+        let recovered = proxy.run_atomic(req).await;
+        assert!(recovered.is_ok(), "{recovered:?}");
+        assert_eq!(hits.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn atomic_permanent_400_is_not_retried() {
+        use bookclerk_plugin_sdk::{DbAtomicParams, DbAtomicRequest};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use wiremock::Respond;
+
+        struct Always400 {
+            hits: Arc<AtomicUsize>,
+        }
+        impl Respond for Always400 {
+            fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+                self.hits.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(400)
+                    .set_body_string("{\"success\":false,\"errors\":[\"bad\"]}")
+            }
+        }
+
+        let server = MockServer::start().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .and(path_regex(r"/query$"))
+            .respond_with(Always400 { hits: hits.clone() })
+            .mount(&server)
+            .await;
+
+        let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
+        let err = proxy
+            .run_atomic(DbAtomicRequest {
+                operation_id: "op-400".into(),
+                operation: DbAtomicParams::TakeOidcRpState {
+                    state_hash: "abc".into(),
+                },
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("D1 HTTP 400"), "{err}");
+        assert!(!crate::atomic::is_ambiguous_d1(&err), "{err}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn atomic_503_is_retried_then_succeeds() {
+        use bookclerk_plugin_sdk::{DbAtomicParams, DbAtomicRequest};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use wiremock::Respond;
+
+        struct First503ThenOk {
+            hits: Arc<AtomicUsize>,
+        }
+        impl Respond for First503ThenOk {
+            fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                if self.hits.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(503)
+                        .insert_header("Retry-After", "0")
+                        .set_body_string("unavailable")
+                } else {
+                    d1_success_for_batch_request(request)
+                }
+            }
+        }
+
+        let server = MockServer::start().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .and(path_regex(r"/query$"))
+            .respond_with(First503ThenOk { hits: hits.clone() })
+            .mount(&server)
+            .await;
+
+        let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
+        let result = proxy
+            .run_atomic(DbAtomicRequest {
+                operation_id: "op-503".into(),
+                operation: DbAtomicParams::TakeOidcRpState {
+                    state_hash: "abc".into(),
+                },
+            })
+            .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -445,7 +920,10 @@ mod tests {
             .map(|r| serde_json::from_slice(&r.body).unwrap())
             .collect();
         assert_eq!(queries.len(), 1);
-        assert!(queries[0].is_array(), "D1 batch body must be a JSON array");
-        assert_eq!(queries[0][0]["sql"], "SELECT 1");
+        assert!(
+            queries[0].is_object(),
+            "single-statement D1 query must use {{ sql, params }}"
+        );
+        assert_eq!(queries[0]["sql"], "SELECT 1");
     }
 }

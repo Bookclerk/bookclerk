@@ -4,14 +4,15 @@
 //! open `BEGIN` to the task that called `begin`, so routing statements through
 //! a dedicated worker task keeps that lease valid until commit/rollback.
 //! The same worker serializes Postgres connection use. D1 guests reject
-//! `dbBegin` and implement `dbAtomic` (one HTTP batch) for library transactions
-//! that sqlite/postgres run interactively.
+//! `dbBegin` and implement `dbAtomic` (one HTTP batch). SQLite and Postgres
+//! also implement `dbAtomic` as one native transaction plus a durable receipt.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, OnceLock};
 
 use bookclerk_plugin_sdk::{
-    proxy_rows_to_dto, statement_from_dto, ExecResultDto, ProxyRowDto, QueryResultDto, StatementDto,
+    proxy_rows_to_dto, statement_from_dto, DbAtomicRequest, DbAtomicResult, ExecResultDto,
+    ProxyRowDto, QueryResultDto, StatementDto,
 };
 use sea_orm::{
     from_query_result_to_proxy_row, ConnectionTrait, DatabaseConnection, DatabaseTransaction,
@@ -171,6 +172,24 @@ pub async fn guest_commit(txn_id: String) -> Result<()> {
 /// Returns an error string when the id is unknown or the engine rejects rollback.
 pub async fn guest_rollback(txn_id: String) -> Result<()> {
     finish_txn(txn_id, false).await
+}
+
+/// Runs a named library operation as one native SQL transaction with a receipt.
+///
+/// # Arguments
+///
+/// * `req` - Idempotency envelope (`operationId` + named command).
+///
+/// # Errors
+///
+/// Returns an error string when not connected or the engine rejects the work.
+pub async fn guest_atomic(req: DbAtomicRequest) -> Result<DbAtomicResult> {
+    let gate = txn_gate();
+    let _gate = gate.lock().await;
+    let conn = connection().await?;
+    bookclerk_library::execute_db_atomic(&conn, req)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Runs a read-only SQL query through the guest database bridge.

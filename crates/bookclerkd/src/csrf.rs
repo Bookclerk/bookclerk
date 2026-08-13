@@ -12,8 +12,9 @@ use crate::auth::{PORTAL_SESSION_COOKIE, SESSION_COOKIE};
 
 /// Require `Origin` (or `Referer`) matching `integrations.public_origin` host,
 /// or same-origin `Host`, for cookie-authenticated state-changing `/api/*`
-/// requests. Exempts login / redeem / password / bootstrap paths. Non-`/api/`
-/// routes (including OIDC) are out of scope for this middleware.
+/// requests. Exempts login / redeem / password / bootstrap paths and the
+/// Apple `form_post` OIDC callback (cross-site POST; bound by the
+/// `bookclerk_oidc_tx` cookie + `state`, not Origin).
 pub async fn require_csrf_for_cookie_api(
     State(state): State<Arc<AppState>>,
     req: Request,
@@ -59,6 +60,9 @@ fn is_csrf_exempt(path: &str) -> bool {
             | "/api/auth/tray-handoff"
             | "/api/portal/redeem"
             | "/api/portal/login/integration"
+            | "/api/auth/oidc/callback"
+            | "/api/auth/passkeys/login/begin"
+            | "/api/auth/passkeys/login/finish"
     )
 }
 
@@ -158,5 +162,11 @@ mod tests {
         );
         headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:8787"));
         assert!(origin_ok(&headers, None));
+    }
+
+    #[test]
+    fn oidc_callback_is_csrf_exempt() {
+        assert!(is_csrf_exempt("/api/auth/oidc/callback"));
+        assert!(!is_csrf_exempt("/api/auth/logout"));
     }
 }

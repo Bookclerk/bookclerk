@@ -4,6 +4,7 @@ import { AccountSettingsPanel } from "@/components/AccountSettingsPanel";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
+import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
 import {
   PluginConsentDialog,
@@ -54,7 +55,7 @@ const DEFAULT_DAEMON_PORT = "8787";
 
 type ListenExposure = "localhost" | "all" | "custom";
 type ListenRow = { host: string; port: string };
-type SettingsTab = "account" | "users" | "server" | "plugins";
+type SettingsTab = "account" | "users" | "signin" | "server" | "plugins";
 
 const ISOLATION_OPTIONS = [
   ["required", "Required"],
@@ -411,6 +412,7 @@ export function SettingsPage({
   const confinementHasErrors = Boolean(jailMemoryError || jailCpuError || jailProcessError);
   const isImpersonating = Boolean(session?.impersonating);
   const showOperatorChrome = role === "operator" && !isImpersonating;
+  const showSignInSettings = (role === "operator" || role === "owner") && !isImpersonating;
   const canManageUsers = role === "operator" || role === "owner" || role === "administrator";
   const showUserAdmin = canManageUsers && (!isImpersonating || role === "administrator");
   const canManageOperator = showOperatorChrome;
@@ -445,16 +447,22 @@ export function SettingsPage({
     if (activeTab === "users" && role !== "administrator" && role !== "owner") {
       setActiveTab("account");
     }
+    if (activeTab === "signin") {
+      setActiveTab("account");
+    }
   }, [isImpersonating, activeTab, role]);
 
   useEffect(() => {
     if (!showUserAdmin && activeTab === "users") {
       setActiveTab("account");
     }
+    if (!showSignInSettings && activeTab === "signin") {
+      setActiveTab("account");
+    }
     if (!showOperatorChrome && (activeTab === "server" || activeTab === "plugins")) {
       setActiveTab("account");
     }
-  }, [showUserAdmin, showOperatorChrome, activeTab]);
+  }, [showUserAdmin, showSignInSettings, showOperatorChrome, activeTab]);
 
   function buildPluginValues(nextSettings: SettingsResponse): Record<string, string> {
     const out: Record<string, string> = {};
@@ -1026,10 +1034,12 @@ export function SettingsPage({
             <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">Settings</h1>
             <p className="text-sm text-ink/60">
               {showOperatorChrome
-                ? "Account, users, daemon, and plugin knobs for this host."
-                : showUserAdmin
-                  ? "Account security and user management. Discover preferences stay in the header Preferences dialog."
-                  : "Account security and sessions. Discover preferences stay in the header Preferences dialog."}
+                ? "Account, users, sign-in providers, daemon, and plugin knobs for this host."
+                : showSignInSettings
+                  ? "Account security, user management, and sign-in providers."
+                  : showUserAdmin
+                    ? "Account security and user management. Discover preferences stay in the header Preferences dialog."
+                    : "Account security and sessions. Discover preferences stay in the header Preferences dialog."}
             </p>
           </div>
 
@@ -1066,6 +1076,22 @@ export function SettingsPage({
                 onClick={() => setActiveTab("users")}
               >
                 User Management
+              </button>
+            ) : null}
+            {showSignInSettings ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "signin"}
+                className={cn(
+                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                  activeTab === "signin"
+                    ? "bg-ink text-paper shadow-sm"
+                    : "text-ink/60 hover:text-ink",
+                )}
+                onClick={() => setActiveTab("signin")}
+              >
+                Sign-in
               </button>
             ) : null}
             {showOperatorChrome ? (
@@ -1159,6 +1185,8 @@ export function SettingsPage({
             }}
           />
         ) : null}
+
+        {activeTab === "signin" && showSignInSettings ? <OidcSettingsPanel /> : null}
 
         {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (
           loading ? (

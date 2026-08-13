@@ -38,6 +38,44 @@ plugin = "sqlite"   # sqlite | d1 | postgres
 # or set auth.password / env and reload bookclerkd (SIGHUP or POST /api/config/reload).
 # password_file is no longer supported.
 
+# Optional identity broker (Settings → Sign-in, or this file). Bookclerk remains
+# the OIDC issuer for Audiobookshelf; these providers sign Users in. The Operator
+# token is never an OAuth subject. Client secrets: BOOKCLERK_OIDC_<ID>_CLIENT_SECRET
+# or encrypted_secrets. Mapping a role to `operator` is rejected.
+# [auth.oidc]
+# enabled = true
+# # allowed_email_domains = ["example.com"]
+#
+# [[auth.oidc.providers]]
+# id = "corp"
+# name = "Company SSO"
+# issuer = "https://idp.example.com/realms/corp"
+# client_id = "bookclerk"
+# scopes = ["openid", "profile", "email"]
+# provision = "mapped_role"   # mapped_role | any | allowlist | invite_only
+# role_claim = "groups"
+# role_map = { "bookclerk-owners" = "owner", "bookclerk-admins" = "administrator", "bookclerk-users" = "member" }
+# link_by_email = false
+#
+# [[auth.oidc.providers]]
+# id = "google"
+# name = "Google"
+# preset = "google"           # google | github | apple | discord
+# client_id = "....apps.googleusercontent.com"
+# provision = "allowlist"
+# default_role = "member"
+# allowed_email_domains = ["family.example"]
+# link_by_email = false
+#
+# [[auth.oidc.providers]]
+# id = "apple"
+# name = "Apple"
+# preset = "apple"
+# client_id = "com.example.bookclerk"
+# apple_team_id = "AB12CDEF34"
+# apple_key_id = "WXYZ123456"
+# # apple_private_key or BOOKCLERK_OIDC_APPLE_APPLE_PRIVATE_KEY (.p8 PEM)
+
 # Codec worker pool. Decode, encode, and packaging run in short-lived
 # `bookclerk-media-worker` processes that confine themselves to the paths each
 # job declared. See docs/media.md.

@@ -22,7 +22,7 @@ Classic Libation setting names are accepted as aliases where documented in
 | --- | --- |
 | `[library]` | Auto-acquire, scan interval, enrichment, storage layout fix |
 | `[database]` / `[database.sqlite]` / `[database.d1]` | Library DB plugin (`sqlite` default, Cloudflare D1) |
-| `[auth]` | Optional `[auth].password` wrapping `master.key` (prefer `BOOKCLERK_AUTH_PASSWORD`) |
+| `[auth]` | Optional `[auth].password` wrapping `master.key` (prefer `BOOKCLERK_AUTH_PASSWORD`); optional `[auth.oidc]` identity broker |
 | `[media]` | Codec worker pool: concurrency and confinement (see [media.md](media.md)) |
 | `[plugins]` | How external plugin guests are jailed (see [plugins.md](plugins.md)) |
 | `[output]` | Format, Widevine, naming, sidecars, multi-destination policy |
@@ -46,6 +46,7 @@ Classic Libation setting names are accepted as aliases where documented in
 | `BOOKCLERK_DAEMON_LISTEN` | Control plane bind |
 | `BOOKCLERK_LOG` / `RUST_LOG` | Log filter |
 | `BOOKCLERK_AUTH_PASSWORD` | Wraps `master.key` at rest (preferred over `[auth].password`); required for legacy `json-encrypted` rows |
+| `BOOKCLERK_OIDC_<ID>_CLIENT_SECRET` | Upstream OIDC/OAuth client secret for provider id `<ID>` (hyphens become underscores) |
 | `BOOKCLERK_LIBRO_PASSWORD` | Libro.fm login |
 | `BOOKCLERK_CHIRP_PASSWORD` | Chirp login |
 | `BOOKCLERK_GA_PASSWORD` | GraphicAudio login |
@@ -76,6 +77,13 @@ enrich_from_audible = true
 enrich_min_confidence = 90
 # fix_storage_layout = false
 ```
+
+## Identity broker (`[auth.oidc]`)
+
+Optional. Bookclerk remains the OIDC issuer for Audiobookshelf; these providers
+sign Users in. Configure in `config.toml` or **Settings → Sign-in** (Owner or
+Operator). See [integrations.md](integrations.md#optional-identity-broker-upstream-oidc--social)
+and `config/config.example.toml`. Mapping any IdP role to `operator` is rejected.
 
 ## Media worker pool
 

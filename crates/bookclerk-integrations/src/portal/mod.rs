@@ -7,5 +7,6 @@ mod routes;
 mod enabled_tests;
 
 pub use routes::{
-    mint_for_external_user, portal_identity_from_headers, portal_spa_router, PortalState,
+    mint_for_external_user, portal_identity_from_headers, portal_spa_router,
+    redeem_lose_next_responses, PortalState,
 };
