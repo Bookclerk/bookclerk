@@ -1,9 +1,9 @@
 # ADR: First-party identity (Operator / Owner / Administrator / Member)
 
-- **Status:** Accepted
+- **Status:** Accepted (Phases 0–6 landed on `main`)
 - **Date:** 2026-08-11
-- **Updated:** 2026-08-12 (optional multi-IdP broker + passkeys)
-- **Tracking:** [#117](https://github.com/fritz-fritz/bookclerk/issues/117), PR [#129](https://github.com/fritz-fritz/bookclerk/pull/129)
+- **Updated:** 2026-08-13 (#150 RBAC Settings / Owner; #152 OIDC broker + WebAuthn)
+- **Tracking:** [#117](https://github.com/fritz-fritz/bookclerk/issues/117) (closed via [#129](https://github.com/fritz-fritz/bookclerk/pull/129)); follow-ups [#150](https://github.com/fritz-fritz/bookclerk/pull/150), [#152](https://github.com/fritz-fritz/bookclerk/pull/152)
 - **Prerequisite:** [#116](https://github.com/fritz-fritz/bookclerk/issues/116) (atomic config reload; closed)
 
 ## Context
@@ -64,20 +64,23 @@ Use the existing database abstraction / SQLite platform path and bounded
 cleanup. Baseline must not require Redis, an external IdP, or another always-on
 service.
 
-## Phases (single draft PR)
+## Phases
 
-Implemented on branch `cursor/first-party-auth-sessions-0188` (PR #129). Phase
-acceptance is gated by automated tests listed in that PR and in [#117](https://github.com/fritz-fritz/bookclerk/issues/117).
+Core identity (Phases 0–5) shipped in [#129](https://github.com/fritz-fritz/bookclerk/pull/129)
+closing [#117](https://github.com/fritz-fritz/bookclerk/issues/117). Owner/RBAC Settings UI
+and provisioner matrix landed in [#150](https://github.com/fritz-fritz/bookclerk/pull/150).
+Optional multi-IdP broker + WebAuthn (Phase 6) landed in
+[#152](https://github.com/fritz-fritz/bookclerk/pull/152).
 
-| Phase | Scope |
-| --- | --- |
-| **0** | Durable hashed operator sessions; portal logout revoke; atomic claim redeem; Secure cookies; `daemon.trusted_proxies` |
-| **1** | `users` schema; migrate `portal_identities`; ban CLI/operator store-link; prefs `user:{id}` |
-| **2** | Owner elevate-to-Operator (password / IdP step-up / passkey); Operator / elevated impersonate User |
-| **3** | Bootstrap Owner; invite magic links; Argon2id; federation without local password |
-| **4** | Core OIDC AS (code + PKCE) for ABS |
-| **5** | CSRF/Origin; session list/revoke; audit log; account-link invariant; proxy TLS docs |
-| **6** | Optional multi-IdP OIDC RP (broker); WebAuthn passkeys |
+| Phase | Scope | Status |
+| --- | --- | --- |
+| **0** | Durable hashed operator sessions; portal logout revoke; atomic claim redeem; Secure cookies; `daemon.trusted_proxies` | Done (#129) |
+| **1** | `users` schema; migrate `portal_identities`; ban CLI/operator store-link; prefs `user:{id}` | Done (#129) |
+| **2** | Owner elevate-to-Operator (password / IdP step-up / passkey); Operator / elevated impersonate User | Done (#129, #150, #152) |
+| **3** | Bootstrap Owner; invite magic links; Argon2id; federation without local password | Done (#129, #150) |
+| **4** | Core OIDC AS (code + PKCE) for ABS | Done (#129) |
+| **5** | CSRF/Origin; session list/revoke; audit log; account-link invariant; proxy TLS docs | Done (#129) |
+| **6** | Optional multi-IdP OIDC RP (broker); WebAuthn passkeys | Done (#152) |
 
 ## Consequences
 
