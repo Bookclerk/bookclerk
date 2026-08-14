@@ -1452,7 +1452,7 @@ dependencies = [
  "tempfile",
  "toml",
  "walkdir",
- "zip 8.6.0",
+ "zip",
 ]
 
 [[package]]
@@ -1663,7 +1663,7 @@ dependencies = [
  "ureq",
  "url",
  "walkdir",
- "zip 8.6.0",
+ "zip",
 ]
 
 [[package]]
@@ -1951,7 +1951,7 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
- "zip 8.6.0",
+ "zip",
 ]
 
 [[package]]
@@ -1975,7 +1975,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
- "zip 8.6.0",
+ "zip",
 ]
 
 [[package]]
@@ -5602,7 +5602,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.21.7",
+ "base64 0.22.1",
  "chrono",
  "getrandom 0.2.17",
  "http 1.5.0",
@@ -7268,11 +7268,11 @@ dependencies = [
 
 [[package]]
 name = "rust_xlsxwriter"
-version = "0.96.0"
+version = "0.97.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd1746025420e17b5d62528b930e550e016e857038794d74e169018126ef3d14"
+checksum = "210c9bee5c2d1df2c3a4fa1fccf3647a37bea205a35d5775491731b271bff19b"
 dependencies = [
- "zip 7.2.0",
+ "zip",
 ]
 
 [[package]]
@@ -10360,20 +10360,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "zip"
-version = "7.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c42e33efc22a0650c311c2ef19115ce232583abbe80850bc8b66509ebef02de0"
-dependencies = [
- "crc32fast",
- "flate2",
- "indexmap 2.14.0",
- "memchr",
- "typed-path",
- "zopfli",
 ]
 
 [[package]]

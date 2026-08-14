@@ -168,7 +168,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tantivy = "0.26"
 csv = "1"
 filetime = "0.2"
-rust_xlsxwriter = "0.96"
+rust_xlsxwriter = "0.97"
 tar = "0.4"
 flate2 = "1"
 hex = "0.4"
