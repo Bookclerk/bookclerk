@@ -2636,13 +2636,19 @@ mod tests {
     /// Production hosts call [`bookclerk_library::configure_master_key_with`] at
     /// startup. Claim redeem HMACs the portal session from that key so HTTP
     /// retries reuse the same `dbAtomic` operation id.
+    ///
+    /// Serialized: parallel harness setup must not race on creating/reading a
+    /// half-written `master.key` (CI saw `truncated` under `--test-threads>1`).
     fn ensure_process_dek() {
+        static INIT: std::sync::Once = std::sync::Once::new();
         static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-        if bookclerk_library::require_master_key(None).is_ok() {
-            return;
-        }
-        let dir = DIR.get_or_init(|| tempfile::tempdir().expect("test master.key dir"));
-        bookclerk_library::configure_master_key(dir.path()).expect("test DEK");
+        INIT.call_once(|| {
+            if bookclerk_library::require_master_key(None).is_ok() {
+                return;
+            }
+            let dir = DIR.get_or_init(|| tempfile::tempdir().expect("test master.key dir"));
+            bookclerk_library::configure_master_key(dir.path()).expect("test DEK");
+        });
     }
 
     /// Build a minimal AppState + router for Phase 2 authz tests.
@@ -3182,6 +3188,9 @@ mod tests {
         use tower::ServiceExt;
         use uuid::Uuid;
 
+        // Hold the redeem-lose mutex for the whole test: later redeem calls must
+        // not consume a parallel lost-response injection (global AtomicI32).
+        let _redeem_lock = redeem_lose_lock().await;
         let (_state, app, library) = phase2_harness("op-token-phase2").await;
         let initial_password = ["initial", "-", "pass"].concat();
         let hash = hash_password(&initial_password).unwrap();
