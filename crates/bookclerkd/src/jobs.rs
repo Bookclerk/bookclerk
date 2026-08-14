@@ -14,6 +14,7 @@ use tracing::{error, info, warn};
 use crate::api::{AppState, JobInfo};
 use crate::registry::default_registry_with_plugins;
 
+/// Emits `book_acquired` to loaded integrations after a successful acquire or storage match.
 async fn notify_integrations(state: &AppState, asin: &str, storage_key: &str) {
     let library = state.library.read().await.clone();
     let integrations = state.integrations.read().await.clone();
@@ -288,6 +289,7 @@ pub async fn run_acquire(
     Ok(detail)
 }
 
+/// Appends a job to the in-memory ring and drops the oldest entries past 100.
 async fn push_job(state: &AppState, job: JobInfo) {
     let mut jobs = state.jobs.write().await;
     jobs.push(job);
@@ -298,6 +300,7 @@ async fn push_job(state: &AppState, job: JobInfo) {
     }
 }
 
+/// Updates a job's status (and optional detail) in the in-memory job list.
 async fn set_job_status(state: &AppState, id: &str, status: &str, detail: Option<String>) {
     let mut jobs = state.jobs.write().await;
     if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
@@ -308,6 +311,7 @@ async fn set_job_status(state: &AppState, id: &str, status: &str, detail: Option
     }
 }
 
+/// Allocates a job id as `{kind}-{uuid}` (`scan-…` / `acquire-…`).
 fn new_job_id(kind: &str) -> String {
     format!("{kind}-{}", uuid::Uuid::new_v4())
 }

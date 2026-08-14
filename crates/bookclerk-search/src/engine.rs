@@ -32,20 +32,35 @@ pub struct SearchHit {
 
 /// On-disk Tantivy search engine (classic Lucene `SearchEngine` parity).
 pub struct SearchEngine {
+    /// On-disk Tantivy index opened under `search_index/`.
     index: Index,
+    /// Stored lowercase `product_id` (classic Lucene `id`).
     id: Field,
+    /// Stored lowercase library UUID.
     uuid: Field,
+    /// Stored lowercase storefront product id.
     product_id: Field,
+    /// Stored lowercase ISBN (empty string when unknown).
     isbn: Field,
+    /// Stored lowercase ASIN (empty string when unknown).
     asin: Field,
+    /// Stored owning account id (not lowercased).
     account: Field,
+    /// Tokenized title (TEXT + stored).
     title: Field,
+    /// Tokenized authors string.
     authors: Field,
+    /// Tokenized narrators string.
     narrators: Field,
+    /// Tokenized series name.
     series: Field,
+    /// Tokenized operator tags.
     tags: Field,
+    /// Catch-all TEXT field (uuid, ids, title, people, series, tags).
     all: Field,
+    /// Stored `true`/`false` for acquire status (`acquired`).
     acquired: Field,
+    /// Stored `true`/`false` for listener finished flag.
     finished: Field,
 }
 
@@ -106,6 +121,10 @@ impl SearchEngine {
     }
 
     /// Rebuild the entire index from the library DB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn rebuild(&self, library: &LibraryStore) -> Result<usize> {
         let mut writer = self
             .index
@@ -125,6 +144,7 @@ impl SearchEngine {
         Ok(books.len())
     }
 
+    /// Indexes one library row; missing optional strings become empty, bools become `true`/`false`.
     fn add_book(&self, writer: &mut IndexWriter, book: &BookRecord) -> Result<()> {
         let acquired = bool_str(book.acquire_status == AcquireStatus::Acquired);
         let finished = bool_str(book.is_finished);
@@ -188,6 +208,10 @@ impl SearchEngine {
     /// Search the index. `limit` of 0 returns all matches (classic `-n 0`).
     ///
     /// Blocking. Prefer [`SearchEngine::open_and_search`] from async code.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn search(&self, raw_query: &str, limit: usize) -> Result<Vec<SearchHit>> {
         let query_str = normalize_lucene_query(raw_query);
         if query_str.is_empty() {
@@ -279,6 +303,7 @@ impl SearchEngine {
     }
 }
 
+/// Formats a boolean as the lowercase strings Tantivy stores on `acquired` / `finished`.
 fn bool_str(value: bool) -> String {
     if value {
         "true".into()

@@ -81,6 +81,7 @@ pub const ABI_SCHEMA_JSON: &str = include_str!("../schema/abi.json");
 pub const PLUGIN_TOML_SCHEMA_JSON: &str = include_str!("../schema/plugin-toml.json");
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
 

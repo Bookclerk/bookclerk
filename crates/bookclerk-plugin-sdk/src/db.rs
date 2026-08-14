@@ -20,6 +20,7 @@ pub use bookclerk_plugin_abi::{
     QueryResultDto, StatementDto,
 };
 
+/// JSON object key that carries a typed SeaORM null (`{"$sea_null": "BigInt"}`).
 const SEA_NULL_KEY: &str = "$sea_null";
 
 /// Converts a SeaORM [`Statement`] into the wire [`StatementDto`] used by `dbQuery` / `dbExecute`.
@@ -276,12 +277,14 @@ pub fn json_to_sea_value(v: &JsonValue, column: &str) -> Value {
     }
 }
 
+/// Wire JSON object for a typed SeaORM null of `kind`.
 fn sea_null_json(kind: &str) -> JsonValue {
     let mut map = serde_json::Map::new();
     map.insert(SEA_NULL_KEY.into(), JsonValue::String(kind.to_string()));
     JsonValue::Object(map)
 }
 
+/// Rebuilds a typed SeaORM `Value::…(None)` from a `$sea_null` object; unknown kinds become string null.
 fn json_sea_null(v: &JsonValue) -> Option<Value> {
     let kind = v.get(SEA_NULL_KEY)?.as_str()?;
     Some(match kind {
@@ -313,6 +316,7 @@ fn json_sea_null(v: &JsonValue) -> Option<Value> {
     })
 }
 
+/// Column-hinted JSON-null: integers, reals, blobs, or string based on known library column names.
 fn typed_null(column: &str) -> Value {
     const INTEGER_COLUMNS: &[&str] = &[
         "id",
@@ -348,6 +352,7 @@ fn typed_null(column: &str) -> Value {
     }
 }
 
+/// True for ciphertext / KDF / embedding columns that store raw bytes.
 fn is_binary_column(column: &str) -> bool {
     matches!(
         column,
@@ -394,6 +399,7 @@ pub fn b64_string_to_bytes(s: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
 

@@ -31,7 +31,7 @@ LOGO_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico")
 
 
 def validate_logo(raw: str) -> tuple[str, str]:
-    """Classify and validate a ``plugin.toml`` logo value.
+    r"""Classify and validate a ``plugin.toml`` logo value.
 
     Mirrors Rust ``validate_logo``. Accepts absolute ``http``/``https`` URLs or
     relative image paths under the plugin root.

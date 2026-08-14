@@ -48,6 +48,10 @@ impl PluginCrateName {
     }
 
     /// Parse `bookclerk-plugin-{kind}-{id}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn parse(name: &str) -> Result<Self> {
         let rest = name.strip_prefix(CRATE_NAME_PREFIX).ok_or_else(|| {
             PluginError::message(format!(
@@ -83,11 +87,16 @@ impl fmt::Display for PluginCrateName {
 ///
 /// Delegates to [`bookclerk_plugin_manifest::validate_plugin_id`] (strict
 /// `[a-z0-9_]{2,32}` grammar; globally unique across kinds).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn validate_plugin_id(id: &str) -> Result<()> {
     bookclerk_plugin_manifest::validate_plugin_id(id)
         .map_err(|e| PluginError::message(e.to_string()))
 }
 
+/// Maps a crates.io / manifest kind string onto [`PluginKind`]; unknown values yield `None`.
 fn parse_kind(s: &str) -> Option<PluginKind> {
     match s {
         "source" => Some(PluginKind::Source),
@@ -132,6 +141,10 @@ pub struct BookclerkPackageMetadata {
 
 impl BookclerkPackageMetadata {
     /// Ensure metadata matches the crate naming taxonomy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn validate_against_crate_name(&self, crate_name: &str) -> Result<()> {
         let parsed = PluginCrateName::parse(crate_name)?;
         if parsed.kind != self.kind {

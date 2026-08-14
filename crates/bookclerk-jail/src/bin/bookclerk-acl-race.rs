@@ -7,6 +7,7 @@
 
 use std::process::ExitCode;
 
+/// Entry point for the ACL race helper (Windows-only body).
 fn main() -> ExitCode {
     #[cfg(not(windows))]
     {
@@ -26,6 +27,11 @@ fn main() -> ExitCode {
 }
 
 #[cfg(windows)]
+/// Grants and revokes a Package SID ACE repeatedly to stress DACL RMW races.
+///
+/// # Errors
+///
+/// Returns an error when CLI args are invalid or a grant/revoke/DACL check fails.
 fn run() -> Result<(), String> {
     use std::env;
     use std::path::PathBuf;

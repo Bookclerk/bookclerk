@@ -1,4 +1,5 @@
 //! Framing / protocol constant conformance for the guest SDK.
+#![allow(clippy::missing_panics_doc)]
 
 use bookclerk_plugin_sdk::{
     methods, HOST_API_VERSION_MAX, HOST_API_VERSION_MIN, MAX_RPC_LINE_BYTES, PLUGIN_API_VERSION,

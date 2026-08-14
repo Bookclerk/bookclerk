@@ -12,6 +12,7 @@ use bookclerk_source::{
 };
 use serde_json::Value;
 
+/// External Chirp storefront guest (`kind = source`, password portal auth).
 struct ChirpPlugin;
 
 #[async_trait]

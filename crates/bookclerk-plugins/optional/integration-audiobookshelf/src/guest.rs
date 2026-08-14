@@ -20,15 +20,22 @@ use tracing::{debug, info, warn};
 use crate::client::AbsApiClient;
 use crate::listening::collect_listening_snapshots;
 
+/// Integration id written on listening rows and external-user records.
 const PROVIDER: &str = "audiobookshelf";
 
 /// Shared guest state for the ABS external plugin process.
 pub struct AbsGuestState {
+    /// Parsed `[integrations.audiobookshelf]` / handshake JSON.
     config: AudiobookshelfConfig,
+    /// HTTP client when `api_key` is present and the base URL parsed.
     client: Option<AbsApiClient>,
+    /// Why the client is missing (empty API key or constructor failure).
     config_error: Option<String>,
+    /// ABS user ids already seen by the watch loop (dedupes event-poll queue).
     known_users: HashSet<String>,
+    /// Newly observed users waiting for the host to claim via `guest_event_poll`.
     queued_users: VecDeque<ExternalUserDto>,
+    /// True after the background user-watch task has been spawned.
     watch_started: bool,
 }
 
@@ -68,6 +75,7 @@ impl AbsGuestState {
         }
     }
 
+    /// Returns the live ABS client, or the stored config-error message.
     fn require_client(&self) -> Result<&AbsApiClient> {
         self.client.as_ref().ok_or_else(|| {
             IntegrationError::message(
@@ -80,6 +88,10 @@ impl AbsGuestState {
 }
 
 /// Start ABS guest background work (user watch → queue for [`guest_event_poll`]).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_start(state: Arc<Mutex<AbsGuestState>>) -> Result<()> {
     let (client, watch_users) = {
         let mut g = state.lock().await;
@@ -161,6 +173,10 @@ pub async fn guest_event_poll(state: &Mutex<AbsGuestState>) -> EventPollResultDt
 ///
 /// Misconfiguration (no client) yields `ok: false` with a detail message rather
 /// than an RPC error so diagnose/health UIs can render it.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_health(state: &Mutex<AbsGuestState>) -> Result<HealthDto> {
     let g = state.lock().await;
     let Some(client) = g.client.as_ref() else {
@@ -191,6 +207,10 @@ pub async fn guest_health(state: &Mutex<AbsGuestState>) -> Result<HealthDto> {
 }
 
 /// Runs connectivity checks and returns human-readable diagnose lines (libraries listed).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_diagnose(state: &Mutex<AbsGuestState>) -> Result<Vec<String>> {
     let g = state.lock().await;
     let client = g.require_client()?;
@@ -213,6 +233,10 @@ pub async fn guest_diagnose(state: &Mutex<AbsGuestState>) -> Result<Vec<String>>
 ///
 /// * `state` - Shared guest state with ABS client + config.
 /// * `force` - When true, request a forced rescan from ABS.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_scan_library(state: &Mutex<AbsGuestState>, force: bool) -> Result<()> {
     let g = state.lock().await;
     let client = g.require_client()?;
@@ -225,6 +249,10 @@ pub async fn guest_scan_library(state: &Mutex<AbsGuestState>, force: bool) -> Re
 }
 
 /// Collect listening progress as protocol DTOs (host upserts).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_sync_listening(state: &Mutex<AbsGuestState>) -> Result<SyncListeningResultDto> {
     let g = state.lock().await;
     let client = g.require_client()?;
@@ -251,6 +279,10 @@ pub async fn guest_sync_listening(state: &Mutex<AbsGuestState>) -> Result<SyncLi
 }
 
 /// Username/password login against ABS (when allowed).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_authenticate_user(
     state: &Mutex<AbsGuestState>,
     username: &str,
@@ -268,6 +300,10 @@ pub async fn guest_authenticate_user(
 }
 
 /// Handle host-forwarded integration events (e.g. book_acquired → scan).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_on_event(state: &Mutex<AbsGuestState>, params: &Value) -> Result<()> {
     let event = params
         .get("type")

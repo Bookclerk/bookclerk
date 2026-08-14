@@ -80,8 +80,11 @@ pub const CLIENT_ID: &str = "";
 /// Authenticated Libro.fm HTTP helper.
 #[derive(Debug, Clone)]
 pub struct LibroClient {
+    /// Shared HTTP client (timeouts/tests override via [`LibroClient::with_http`]).
     http: reqwest::Client,
+    /// API origin without a trailing slash (default [`DEFAULT_BASE_URL`]).
     base_url: String,
+    /// Bearer token stored after login; required for authenticated routes.
     access_token: Option<String>,
 }
 
@@ -129,6 +132,7 @@ impl LibroClient {
         &self.base_url
     }
 
+    /// Builds Android-app headers; `with_auth` requires a stored bearer token.
     fn headers(&self, with_auth: bool) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -156,11 +160,16 @@ impl LibroClient {
         Ok(headers)
     }
 
+    /// Joins `path` onto the configured origin.
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base_url)
     }
 
     /// Password-grant login. Returns token metadata and stores the access token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn login(&mut self, email: &str, password: &str) -> Result<TokenResponse> {
         let mut body = serde_json::json!({
             "grant_type": "password",
@@ -202,6 +211,10 @@ impl LibroClient {
     }
 
     /// Fetch one library page (`page` is 1-based).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn library_page(&self, page: u32) -> Result<LibraryPage> {
         let resp = self
             .http
@@ -218,6 +231,10 @@ impl LibroClient {
     /// Pass [`ManifestFormat::M4b`] to request a single `.m4b` part (same asset as
     /// [`Self::packaged_m4b`]) plus tracks in one response. [`ManifestFormat::Zip`]
     /// (or omitting `format`) returns multi-part `.zip` URLs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn download_manifest(
         &self,
         isbn: &str,
@@ -236,6 +253,10 @@ impl LibroClient {
     }
 
     /// Packaged M4B metadata when available (`None` on 404 / missing URL).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn packaged_m4b(&self, isbn: &str) -> Result<Option<PackagedM4b>> {
         let path = PACKAGED_M4B_PATH.replace("{isbn}", isbn);
         let resp = self
@@ -272,6 +293,10 @@ impl LibroClient {
     }
 
     /// Download arbitrary URL bytes (CDN part or M4B). Sends auth headers for libro.fm hosts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn download_bytes(&self, url: &str) -> Result<bytes::Bytes> {
         let mut req = self.http.get(url);
         if url_is_libro_host(url) {
@@ -285,6 +310,7 @@ impl LibroClient {
         Ok(resp.bytes().await?)
     }
 
+    /// Decodes a JSON body, or maps HTTP / `{error,message}` payloads to [`LibroError`].
     async fn json_or_error<T: for<'de> Deserialize<'de>>(resp: reqwest::Response) -> Result<T> {
         let status = resp.status();
         let text = resp.text().await?;
@@ -301,6 +327,7 @@ impl LibroClient {
     }
 }
 
+/// True when `url` is `libro.fm` or a subdomain (auth headers are then sent).
 fn url_is_libro_host(url: &str) -> bool {
     // Avoid a hard dependency on the `url` crate — parse host between scheme and path/query.
     let rest = url
@@ -340,6 +367,7 @@ pub struct TokenResponse {
     pub error: Option<String>,
 }
 
+/// Default `token_type` when the OAuth response omits it (`Bearer`).
 fn default_bearer() -> String {
     String::from("Bearer")
 }
@@ -411,31 +439,41 @@ pub struct Audiobook {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+/// Genre tag from a library-page audiobook (`name` may be missing).
 pub struct Genre {
     #[serde(default)]
+    /// Display name of the genre when the API includes it.
     pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+/// Narrator / duration / part counts nested under a library audiobook.
 pub struct AudiobookInfo {
     #[serde(default)]
+    /// Narrator display names when present.
     pub narrators: Option<Vec<String>>,
     /// Duration in seconds.
     #[serde(default)]
     pub duration: Option<u64>,
     #[serde(default)]
+    /// Chapter/track count advertised by the catalog.
     pub track_count: Option<u32>,
     #[serde(default)]
+    /// Download-part count (ZIP pieces or a single M4B).
     pub parts_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+/// Per-user library flags (added date, finished, hidden).
 pub struct UserMetadata {
     #[serde(default)]
+    /// When the title was added to the user's library (API date string).
     pub added_at: Option<String>,
     #[serde(default)]
+    /// True when the user marked the title finished.
     pub finished: Option<bool>,
     #[serde(default)]
+    /// True when the user hid the title from the library list.
     pub hidden: Option<bool>,
 }
 
@@ -504,11 +542,15 @@ pub struct PackagedM4b {
 }
 
 #[derive(Debug, Deserialize)]
+/// Error object some Libro.fm endpoints return alongside a 2xx or 4xx body.
 struct ApiErrorBody {
+    /// Machine/error token when the API uses an `error` field.
     error: Option<String>,
+    /// Human-readable message when the API uses `message` instead.
     message: Option<String>,
 }
 
+/// Accepts ISBN as a JSON string or number (mobile API is inconsistent).
 fn deserialize_isbn<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -523,6 +565,7 @@ where
     }
 }
 
+/// Same as [`deserialize_isbn`] but treats missing/null as `None`.
 fn deserialize_optional_isbn<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<String>, D::Error>
@@ -540,6 +583,7 @@ where
     }
 }
 
+/// Accepts authors as a string, string array, or `{name}` objects.
 fn deserialize_authors<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<Vec<String>>, D::Error>

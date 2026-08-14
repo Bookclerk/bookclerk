@@ -20,6 +20,7 @@ use crate::secrets::{
     SecretStore,
 };
 
+/// Wraps a message as [`LibraryError::Other`] for token resolve/seal failures.
 fn err(msg: impl Into<String>) -> LibraryError {
     LibraryError::Other(anyhow::anyhow!(msg.into()))
 }
@@ -44,6 +45,10 @@ pub enum ResolveOperatorToken {
 }
 
 /// Read `BOOKCLERK_OPERATOR_TOKEN` when set and non-empty.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn env_operator_token() -> Result<Option<String>> {
     match std::env::var("BOOKCLERK_OPERATOR_TOKEN") {
         Ok(v) => {
@@ -62,6 +67,10 @@ pub fn env_operator_token() -> Result<Option<String>> {
 }
 
 /// Load the operator token from `encrypted_secrets`, if present.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn load_operator_token(db: &DatabaseConnection) -> Result<Option<String>> {
     let store = SecretStore::new(db);
     let Some(record) = store
@@ -91,6 +100,10 @@ pub async fn load_operator_token(db: &DatabaseConnection) -> Result<Option<Strin
 }
 
 /// Persist an operator token into `encrypted_secrets` (sealed-v1).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn save_operator_token(db: &DatabaseConnection, token: &str) -> Result<()> {
     let token = validate_operator_token(token, "operator token").map_err(|e| err(e.to_string()))?;
     register_secret(&token);
@@ -109,6 +122,10 @@ pub async fn save_operator_token(db: &DatabaseConnection, token: &str) -> Result
 /// Mint a new operator token, store it, and return it.
 ///
 /// Refuses when `BOOKCLERK_OPERATOR_TOKEN` is set (env override would still win).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn rotate_operator_token(db: &DatabaseConnection) -> Result<String> {
     if env_operator_token()?.is_some() {
         return Err(err(
@@ -125,6 +142,10 @@ pub async fn rotate_operator_token(db: &DatabaseConnection) -> Result<String> {
 ///
 /// When `create` is true, mints and stores a token if none exists (daemon startup).
 /// When `create` is false, returns `Ok(None)` if no env/DB/legacy source provides one.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn resolve_operator_token(
     config: &Config,
     db: &DatabaseConnection,
@@ -153,6 +174,10 @@ pub async fn resolve_operator_token(
 }
 
 /// Read-or-create for daemon startup when auth is enabled.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn read_or_create_operator_token(
     config: &Config,
     db: &DatabaseConnection,
@@ -163,6 +188,7 @@ pub async fn read_or_create_operator_token(
     }
 }
 
+/// Imports `operator.token` into sealed `encrypted_secrets` and deletes or renames the leftover file.
 async fn migrate_legacy_token_file(
     config: &Config,
     db: &DatabaseConnection,

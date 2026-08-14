@@ -13,7 +13,7 @@ authors = [{ name = "Bookclerk contributors" }]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.11"]
 # Google-style API reference via pdoc (`./scripts/generate-api-docs.sh` installs
 # this extra into a throwaway venv; local use: pip install -e ".[docs]").
 docs = ["pdoc>=15"]
@@ -31,3 +31,28 @@ bookclerk_plugin_sdk = [
     "workerd-pin.json",
     "bridge/*",
 ]
+
+[tool.ruff]
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["D"]
+# Keep Google-style pydocstyle; soften a few rules that fight generated/ABI
+# surfaces and one-line module docstrings already present.
+ignore = [
+  "D100",  # missing module docstring — package modules use package README / rustdoc
+  "D104",  # missing package docstring
+  "D105",  # magic methods
+  "D107",  # __init__ docstring (prefer class docstring)
+  "D203",  # conflicts with D211 (Google)
+  "D213",  # conflicts with D212 (Google multi-line summary)
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+"**/generated.py" = ["D"]
+"**/abi.py" = ["D"]

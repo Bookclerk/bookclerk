@@ -31,8 +31,11 @@ pub(crate) const MULTIPART_PART_SIZE: usize = 8 * 1024 * 1024;
 /// S3-compatible object storage.
 #[derive(Debug, Clone)]
 pub struct S3Backend {
+    /// AWS SDK S3 client (endpoint/path-style already applied).
     client: Client,
+    /// Target bucket; empty is rejected at construction.
     bucket: String,
+    /// Normalized key prefix prepended to every object key.
     prefix: String,
 }
 
@@ -47,6 +50,10 @@ impl S3Backend {
     /// 3. AWS SDK default provider chain (`~/.aws/credentials`, SSO, EC2/ECS/EKS roles, etc.)
     ///
     /// `prefix` should already be the normalized destination prefix for this S3 plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn from_config(
         cfg: &OutputS3Config,
         prefix: &str,
@@ -57,6 +64,10 @@ impl S3Backend {
     }
 
     /// Build with explicit credentials (external output guests).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn from_parts(
         cfg: &OutputS3Config,
         prefix: &str,
@@ -105,6 +116,7 @@ impl S3Backend {
         })
     }
 
+    /// Prepends the destination prefix to `key` (no-op when the prefix is empty).
     fn full_key(&self, key: &str) -> String {
         if self.prefix.is_empty() {
             key.to_string()
@@ -113,6 +125,7 @@ impl S3Backend {
         }
     }
 
+    /// Single `PutObject` with Bookclerk metadata headers.
     async fn put_body(&self, key: &str, body: ByteStream, meta: ObjectMeta) -> Result<()> {
         let req = apply_meta_put(
             self.client
@@ -129,6 +142,7 @@ impl S3Backend {
         Ok(())
     }
 
+    /// Streams a local file as fixed-size parts (used above [`MULTIPART_THRESHOLD`]).
     async fn put_file_multipart(&self, key: &str, path: &Path, meta: ObjectMeta) -> Result<()> {
         use tokio::io::AsyncReadExt;
 
@@ -449,6 +463,7 @@ pub(crate) fn use_multipart(content_length: u64) -> bool {
     content_length >= MULTIPART_THRESHOLD
 }
 
+/// Copies content-type/length and `x-amz-meta-*` identity fields onto a PutObject.
 fn apply_meta_put(mut req: PutObjectFluentBuilder, meta: &ObjectMeta) -> PutObjectFluentBuilder {
     if let Some(ct) = &meta.content_type {
         req = req.content_type(ct.clone());
@@ -474,6 +489,7 @@ fn apply_meta_put(mut req: PutObjectFluentBuilder, meta: &ObjectMeta) -> PutObje
     req
 }
 
+/// Copies the same metadata onto `CreateMultipartUpload` (no content-length).
 fn apply_meta_multipart(
     mut req: CreateMultipartUploadFluentBuilder,
     meta: &ObjectMeta,
@@ -513,12 +529,14 @@ pub(crate) fn normalize_s3_endpoint(endpoint: &str) -> String {
     }
 }
 
+/// Parses an RFC3339 timestamp into non-negative Unix seconds for `mtime` metadata.
 fn rfc3339_unix_secs(raw: &str) -> Option<u64> {
     chrono::DateTime::parse_from_rfc3339(raw)
         .ok()
         .map(|dt| dt.timestamp().max(0) as u64)
 }
 
+/// Reads a metadata key, falling back to the lowercase form S3 may return.
 fn meta_get(map: Option<&std::collections::HashMap<String, String>>, key: &str) -> Option<String> {
     map.and_then(|m| {
         m.get(key)

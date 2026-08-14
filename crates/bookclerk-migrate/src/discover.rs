@@ -74,10 +74,12 @@ pub fn discover_source(root: &Path) -> Result<ClassicSource> {
     })
 }
 
+/// First path in `candidates` that is an existing file (case-variant Settings/Accounts names).
 fn first_existing(candidates: &[PathBuf]) -> Option<PathBuf> {
     candidates.iter().find(|p| p.is_file()).cloned()
 }
 
+/// The sole `*.db` file under `root` when classic `LibationContext.db` is missing; `None` if zero or many.
 fn find_single_db(root: &Path) -> Option<PathBuf> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return None;

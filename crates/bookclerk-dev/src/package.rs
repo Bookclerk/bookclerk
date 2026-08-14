@@ -126,6 +126,10 @@ pub fn uses_zip_archive(triple_or_target: &str) -> bool {
 /// # Errors
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub fn package_plugins(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     let staged = root.join("target").join("plugin-artifacts-pack");
     plugins::stage_optional_for_pack(root, &staged, true)?;
@@ -169,6 +173,10 @@ pub fn package_plugins(root: &Path, out_dir: &Path, version: &str) -> Result<()>
 /// # Errors
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     ensure_ui_built(root)?;
     build_hosts(root)?;
@@ -224,6 +232,10 @@ pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     ensure_ui_built(root)?;
     plugins::build_selection(
@@ -281,10 +293,12 @@ pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()
     Ok(())
 }
 
+/// Directory name inside a platform archive (`bookclerk-{version}-{target}`).
 fn bundle_dir_name(version: &str) -> String {
     format!("bookclerk-{}-{}", version, bookclerk_target())
 }
 
+/// Copies the pinned `workerd` binary and version stamp into the platform bundle.
 fn copy_pinned_workerd(root: &Path, bundle: &Path) -> Result<()> {
     let workerd = crate::ensure_workerd_for_profile(root, true)?;
     let dest_name = bookclerk_workerd::binary_name();
@@ -318,10 +332,12 @@ fn archive_path(out_dir: &Path, crate_name: &str, version: &str, target: &str) -
     out_dir.join(format!("{crate_name}-{version}-{target}.{ext}"))
 }
 
+/// Archives a staged plugin directory as zip on Windows and tar.gz elsewhere.
 fn write_plugin_archive(plugin_dir: &Path, archive: &Path) -> Result<()> {
     write_dir_archive(plugin_dir, archive)
 }
 
+/// Writes `src_dir` as zip (Windows) or tar.gz (Unix) at `archive`.
 fn write_dir_archive(src_dir: &Path, archive: &Path) -> Result<()> {
     if cfg!(target_os = "windows") {
         write_zip_dir(src_dir, archive)
@@ -330,6 +346,7 @@ fn write_dir_archive(src_dir: &Path, archive: &Path) -> Result<()> {
     }
 }
 
+/// Walks `src_dir` into a gzip tar, skipping the root directory entry.
 fn write_tar_gz_dir(src_dir: &Path, archive: &Path) -> Result<()> {
     let file = File::create(archive).with_context(|| format!("create {}", archive.display()))?;
     let enc = GzEncoder::new(file, Compression::default());
@@ -353,6 +370,7 @@ fn write_tar_gz_dir(src_dir: &Path, archive: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Walks files under `src_dir` into a deflated zip with POSIX-style relative paths.
 fn write_zip_dir(src_dir: &Path, archive: &Path) -> Result<()> {
     let file = File::create(archive).with_context(|| format!("create {}", archive.display()))?;
     let mut zip = ZipWriter::new(BufWriter::new(file));
@@ -376,11 +394,13 @@ fn write_zip_dir(src_dir: &Path, archive: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Hex-encoded SHA-256 of the entire file (used for SHA256SUMS sidecars).
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
+/// Requires `ui/dist/index.html` so packaged `bookclerkd` can embed the SPA.
 fn ensure_ui_built(root: &Path) -> Result<()> {
     let ui_dist = root.join("ui").join("dist");
     if ui_dist.join("index.html").is_file() {
@@ -392,6 +412,7 @@ fn ensure_ui_built(root: &Path) -> Result<()> {
     );
 }
 
+/// Builds the platform host selection (CLI, daemon, helpers) in `root`.
 fn build_hosts(root: &Path) -> Result<()> {
     plugins::build_selection(
         root,
@@ -403,6 +424,7 @@ fn build_hosts(root: &Path) -> Result<()> {
     )
 }
 
+/// Resolves a host binary in `bin_dir`, appending `.exe` on Windows; missing files error.
 fn resolve_host_binary(bin_dir: &Path, name: &str) -> Result<PathBuf> {
     let plain = bin_dir.join(exe_name(name));
     if plain.is_file() {
@@ -411,6 +433,7 @@ fn resolve_host_binary(bin_dir: &Path, name: &str) -> Result<PathBuf> {
     bail!("missing host binary: {}", plain.display());
 }
 
+/// Host binary filename, with `.exe` on Windows.
 fn exe_name(base: &str) -> String {
     if cfg!(target_os = "windows") {
         format!("{base}.exe")
@@ -419,6 +442,7 @@ fn exe_name(base: &str) -> String {
     }
 }
 
+/// Recursively copies `src` to `dest`, marking copied files executable on Unix.
 fn copy_dir_all(src: &Path, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest).with_context(|| format!("create {}", dest.display()))?;
     for entry in WalkDir::new(src) {
@@ -445,6 +469,7 @@ fn copy_dir_all(src: &Path, dest: &Path) -> Result<()> {
 }
 
 #[cfg(unix)]
+/// Sets Unix mode `0o755` on a packaged host or helper binary.
 fn set_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mut perms = fs::metadata(path)

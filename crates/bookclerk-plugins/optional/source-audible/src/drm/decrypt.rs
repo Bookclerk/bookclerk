@@ -12,11 +12,26 @@ use super::crypto::{decrypt_aavd_sample_in_place, decrypt_cenc_sample_in_place};
 #[derive(Debug, Clone)]
 pub enum SampleCipher {
     /// Audible Adrm AES-128-CBC, one IV for the whole track (from the voucher).
-    Adrm { key: [u8; 16], iv: [u8; 16] },
+    Adrm {
+        /// AES-128 key bytes from the Audible voucher.
+        key: [u8; 16],
+        /// CBC initialization vector for the whole track.
+        iv: [u8; 16],
+    },
     /// CENC AES-CTR, one IV for the whole track (`tenc` constant_IV).
-    CencConstantIv { key: [u8; 16], iv: [u8; 16] },
+    CencConstantIv {
+        /// AES-128 key bytes for CENC decryption.
+        key: [u8; 16],
+        /// Constant CTR initialization vector for every sample.
+        iv: [u8; 16],
+    },
     /// CENC AES-CTR, one IV per sample in full track order (`saiz`/`saio`).
-    CencSampleIvs { key: [u8; 16], ivs: Vec<[u8; 16]> },
+    CencSampleIvs {
+        /// AES-128 key bytes for CENC decryption.
+        key: [u8; 16],
+        /// Per-sample CTR initialization vectors in full track order.
+        ivs: Vec<[u8; 16]>,
+    },
     /// Already clear — a plain `mp4a` track that only needs remuxing.
     Clear,
 }
@@ -24,11 +39,13 @@ pub enum SampleCipher {
 /// Decrypts payloads in place as [`bookclerk_mp4::remux_progressive`] streams them.
 #[derive(Debug)]
 pub struct Decryptor {
+    /// Per-title cipher applied in place as the remuxer streams each sample.
     cipher: SampleCipher,
 }
 
 impl Decryptor {
     #[must_use]
+    /// Wraps `cipher` for use as a [`SampleTransform`] during remux.
     pub fn new(cipher: SampleCipher) -> Self {
         Self { cipher }
     }

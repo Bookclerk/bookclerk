@@ -24,6 +24,10 @@ pub struct StorageIndex {
 
 impl StorageIndex {
     /// Build an index by listing the storage backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn from_storage(storage: &dyn StorageBackend) -> Result<Self> {
         let objects = storage.list("").await?;
         let mut index = Self::default();
@@ -112,6 +116,10 @@ impl Default for ReconcileOptions {
 }
 
 /// Scan storage and update library acquire status / storage_key for matches.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn reconcile_library(
     library: &LibraryStore,
     storage: &dyn StorageBackend,
@@ -305,6 +313,7 @@ pub async fn find_existing_for_request(
     index.best_key_for_asin(&req.asin).map(str::to_string)
 }
 
+/// Looks up the planned storage key (preferred ext, then alternates) in the index.
 async fn find_exact_planned(
     index: &StorageIndex,
     library: &LibraryStore,
@@ -327,6 +336,7 @@ async fn find_exact_planned(
     None
 }
 
+/// Matches a planned key with wildcard replacement rules against indexed objects.
 async fn find_wildcard_planned<'a>(
     index: &'a StorageIndex,
     library: &LibraryStore,
@@ -342,6 +352,7 @@ async fn find_wildcard_planned<'a>(
     None
 }
 
+/// Builds an acquire request from a library row for storage-key reconciliation.
 pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -> AcquireRequest {
     AcquireRequest {
         asin: book.download_product_id().to_string(),
@@ -361,6 +372,7 @@ pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -
     }
 }
 
+/// Extensions tried when matching an existing object, packaged formats first.
 fn planned_extensions() -> &'static [&'static str] {
     // Prefer packaged outputs first; include plain passthrough containers that
     // Chirp / GraphicAudio may store under noop/`as_is` output.
@@ -399,6 +411,7 @@ pub fn extract_asins_from_key(key: &str) -> Vec<String> {
     found
 }
 
+/// Appends an uppercase ASIN or hyphen-stripped ISBN-13 when `raw` looks like one.
 fn push_id_candidate(out: &mut Vec<String>, raw: &str) {
     let trimmed = raw.trim();
     if looks_like_asin(trimmed) {
@@ -435,6 +448,7 @@ fn normalize_isbn13(s: &str) -> Option<String> {
     }
 }
 
+/// Chooses the candidate with the best packaged-format rank (`m4b` over `mp3`, …).
 fn pick_best_media_key(candidates: &[String]) -> Option<&str> {
     candidates
         .iter()
@@ -442,6 +456,7 @@ fn pick_best_media_key(candidates: &[String]) -> Option<&str> {
         .map(String::as_str)
 }
 
+/// Lower is better: packaged `m4b`/`m4a`/`mp3` beat DRM leftovers (`aaxc`).
 fn media_rank(key: &str) -> u8 {
     let ext = key.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {

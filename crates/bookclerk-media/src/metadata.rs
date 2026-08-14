@@ -100,6 +100,7 @@ pub async fn fixup_audiobook(req: FixupRequest) -> Result<MediaOutcome> {
     Ok(MediaOutcome { output })
 }
 
+/// Copies input to output when needed, then writes MP3 or M4B tags from the fixup request.
 pub(crate) fn fixup_audiobook_sync(req: &FixupRequest) -> Result<()> {
     tracing::info!(
         input = %req.input.display(),
@@ -126,6 +127,7 @@ pub(crate) fn fixup_audiobook_sync(req: &FixupRequest) -> Result<()> {
     }
 }
 
+/// Encoder/tool tag: request override, or the Bookclerk binary name and version.
 fn tool_string(req: &FixupRequest) -> String {
     req.tool
         .clone()
@@ -133,6 +135,7 @@ fn tool_string(req: &FixupRequest) -> String {
         .unwrap_or_else(bookclerk_tool_tag)
 }
 
+/// ABS-style album string: `title: subtitle` when a subtitle is present.
 fn album_title(req: &FixupRequest) -> String {
     // ABS `getFFMetadataObject` uses `title: subtitle` for album when subtitle exists.
     match req.subtitle.as_deref().filter(|s| !s.is_empty()) {
@@ -141,6 +144,7 @@ fn album_title(req: &FixupRequest) -> String {
     }
 }
 
+/// Normalizes catalog genre lists to `; `-separated ABS tags, preserving comma-in-name genres.
 fn genres_for_abs(raw: &str) -> String {
     // ABS accepts `/`, `//`, or `;` as genre separators.
     // Prefer `;` when present so catalog names that contain commas
@@ -160,6 +164,7 @@ fn genres_for_abs(raw: &str) -> String {
         .join("; ")
 }
 
+/// ABS grouping string: `series #index` when an index is present.
 fn grouping_for_abs(series: &str, index: Option<&str>) -> String {
     match index.filter(|s| !s.is_empty()) {
         Some(idx) => format!("{series} #{idx}"),
@@ -167,6 +172,7 @@ fn grouping_for_abs(series: &str, index: Option<&str>) -> String {
     }
 }
 
+/// Writes a non-empty iTunes/Tone freeform atom; no-ops on empty values.
 fn set_freeform(tag: &mut Mp4Tag, mean: &'static str, name: &'static str, value: &str) {
     if value.is_empty() {
         return;
@@ -177,6 +183,7 @@ fn set_freeform(tag: &mut Mp4Tag, mean: &'static str, name: &'static str, value:
     );
 }
 
+/// Writes audiobook MP4 tags and optional QuickTime chapters onto an existing M4B.
 fn fixup_m4b(req: &FixupRequest) -> Result<()> {
     let mut tag = Mp4Tag::read_from_path(&req.output)
         .map_err(|err| MediaError::Native(format!("mp4ameta read failed: {err}")))?;
@@ -331,6 +338,7 @@ fn write_tags(path: &Path, tag: &Mp4Tag, cfg: &WriteConfig) -> Result<()> {
     crate::moov::write_moov(path, at, edited)
 }
 
+/// Adds a non-empty ID3 TXXX frame; no-ops on empty values.
 fn set_txxx(tag: &mut Id3Tag, description: &str, value: &str) {
     if value.is_empty() {
         return;
@@ -341,6 +349,7 @@ fn set_txxx(tag: &mut Id3Tag, description: &str, value: &str) {
     });
 }
 
+/// Writes ID3v2.4 audiobook tags onto an MP3; chapters stay in cue/json sidecars.
 fn fixup_mp3(req: &FixupRequest) -> Result<()> {
     let mut tag = Id3Tag::read_from_path(&req.output).unwrap_or_else(|_| Id3Tag::new());
     let tool = tool_string(req);
@@ -426,6 +435,7 @@ fn fixup_mp3(req: &FixupRequest) -> Result<()> {
     Ok(())
 }
 
+/// Detects PNG/BMP/JPEG from magic bytes, then falls back to the file extension.
 fn guess_img_fmt(path: &Path, bytes: &[u8]) -> ImgFmt {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         return ImgFmt::Png;

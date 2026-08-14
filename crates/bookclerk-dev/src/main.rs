@@ -15,15 +15,18 @@ use clap::{Parser, Subcommand};
     name = "bookclerk-dev",
     about = "Bookclerk dev workflow (cargo alias target)"
 )]
+/// Top-level clap parser for `cargo` aliases (`dev`, `build-app`, `reset`, …).
 struct Cli {
     /// Use release profile for builds and host binaries.
     #[arg(long, global = true)]
     release: bool,
     #[command(subcommand)]
+    /// Subcommand to run (build, stage, package, reset, or exec a host).
     command: Commands,
 }
 
 #[derive(Subcommand)]
+/// Dev-workflow subcommands dispatched by the `cargo` aliases.
 enum Commands {
     /// Build installer / guest packages selected by directory tier.
     ///
@@ -48,17 +51,22 @@ enum Commands {
     /// (see `cargo dev` / `install-platform`).
     StagePlugins {
         #[arg(long, env = "BOOKCLERK_PLUGIN_ARTIFACTS")]
+        /// Staging directory for optional/example guests (default: `target/plugin-artifacts`).
         dest: Option<PathBuf>,
         #[arg(long)]
+        /// When set, stage guests under `plugins/optional/`.
         optional: bool,
         #[arg(long, env = "BOOKCLERK_DEV_EXAMPLES")]
+        /// When set, also include reference guests under `examples/`.
         examples: bool,
         #[arg(long)]
+        /// Skip Cargo build and only install/stage already-built artifacts.
         skip_build: bool,
     },
     /// Install platform guests into `$BOOKCLERK_FILES_DIR/plugins/`.
     InstallPlatform {
         #[arg(long)]
+        /// Skip Cargo build and only install/stage already-built artifacts.
         skip_build: bool,
     },
     /// Full platform build (`default-members` + platform guests), install, run bookclerkd.
@@ -69,58 +77,76 @@ enum Commands {
         #[arg(long)]
         optional: bool,
         #[arg(long, env = "BOOKCLERK_DEV_EXAMPLES")]
+        /// When set, also include reference guests under `examples/`.
         examples: bool,
         #[arg(long)]
+        /// Skip Cargo build and only install/stage already-built artifacts.
         skip_build: bool,
         #[arg(last = true, allow_hyphen_values = true)]
+        /// Extra argv forwarded to the host binary after install/stage.
         args: Vec<String>,
     },
     /// Deprecated alias for [`Commands::Dev`].
     DevDaemon {
         #[arg(long)]
+        /// Also build and stage optional guests under `plugins/optional/`.
         optional: bool,
         #[arg(long, env = "BOOKCLERK_DEV_EXAMPLES")]
+        /// When set, also include reference guests under `examples/`.
         examples: bool,
         #[arg(long)]
+        /// Skip Cargo build and only install/stage already-built artifacts.
         skip_build: bool,
         #[arg(last = true, allow_hyphen_values = true)]
+        /// Extra argv forwarded to the host binary after install/stage.
         args: Vec<String>,
     },
     /// Same as `dev` but runs the CLI binary (same full platform build).
     DevCli {
         #[arg(long)]
+        /// Also build and stage optional guests under `plugins/optional/`.
         optional: bool,
         #[arg(long, env = "BOOKCLERK_DEV_EXAMPLES")]
+        /// When set, also include reference guests under `examples/`.
         examples: bool,
         #[arg(long)]
+        /// Skip Cargo build and only install/stage already-built artifacts.
         skip_build: bool,
         #[arg(last = true, allow_hyphen_values = true)]
+        /// Extra argv forwarded to the host binary after install/stage.
         args: Vec<String>,
     },
     /// Stage optional + examples, then run the staged handshake integration test.
     TestStaged {
         #[arg(long)]
+        /// Skip Cargo build and only install/stage already-built artifacts.
         skip_build: bool,
     },
     /// Build release **optional** plugins and write per-crate archives.
     PackagePlugins {
         #[arg(long)]
+        /// Output directory for per-crate plugin archives (default: `target/dist/plugins`).
         out: Option<PathBuf>,
         #[arg(long)]
+        /// Version stamped into archive names (default: workspace version).
         version: Option<String>,
     },
     /// Build release host binaries (+ jail, media-worker, workerd) archive.
     PackageHosts {
         #[arg(long)]
+        /// Output directory for the host archive (default: `target/dist`).
         out: Option<PathBuf>,
         #[arg(long)]
+        /// Version stamped into the archive name (default: workspace version).
         version: Option<String>,
     },
     /// Build hosts + platform guests (`sqlite`, `local`) installer archive.
     PackagePlatform {
         #[arg(long)]
+        /// Output directory for the platform installer archive (default: `target/dist`).
         out: Option<PathBuf>,
         #[arg(long)]
+        /// Version stamped into the archive name (default: workspace version).
         version: Option<String>,
     },
     /// Download/update the pinned Cloudflare `workerd` binary into `target/<profile>/`.
@@ -152,6 +178,7 @@ fn main() -> ExitCode {
     }
 }
 
+/// Parses argv and dispatches the selected cargo-alias workflow.
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let root = workspace_root()?;
@@ -317,12 +344,16 @@ fn run() -> Result<()> {
 }
 
 #[derive(Clone, Copy)]
+/// Which host binary `dev` / `dev-cli` execs after the platform build.
 enum Host {
+    /// Long-running `bookclerkd` control-plane host.
     Daemon,
+    /// Headless `bookclerk` CLI host.
     Cli,
 }
 
 impl Host {
+    /// Cargo binary name for this host (`bookclerkd` or `bookclerk`).
     fn binary_name(self) -> &'static str {
         match self {
             Host::Daemon => "bookclerkd",
@@ -331,6 +362,7 @@ impl Host {
     }
 }
 
+/// `target/` profile directory name (`release` or `debug`).
 fn profile_dir(release: bool) -> &'static str {
     if release {
         "release"
@@ -339,6 +371,7 @@ fn profile_dir(release: bool) -> &'static str {
     }
 }
 
+/// Prepends `target/<profile>` so jail/media-worker/workerd resolve beside hosts.
 fn prepend_helper_path(root: &Path, release: bool, cmd: &mut Command) {
     let helper_dir = root.join("target").join(profile_dir(release));
     let path = std::env::var_os("PATH").unwrap_or_default();
@@ -347,12 +380,14 @@ fn prepend_helper_path(root: &Path, release: bool, cmd: &mut Command) {
     cmd.env("PATH", std::env::join_paths(paths).unwrap_or(path));
 }
 
+/// Builds a `cargo` command rooted at the workspace (honors `$CARGO`).
 fn cargo(root: &Path) -> Command {
     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     cmd.current_dir(root);
     cmd
 }
 
+/// Builds/installs platform guests, optionally stages extras, then execs the host.
 fn dev_host(
     root: &Path,
     release: bool,
@@ -416,6 +451,7 @@ fn dev_host(
     }
 }
 
+/// Stages optional+example guests and runs the host handshake integration test.
 fn test_staged(root: &Path, release: bool, skip_build: bool) -> Result<()> {
     let files_dir = default_files_dir();
     let artifacts = default_artifacts(root);

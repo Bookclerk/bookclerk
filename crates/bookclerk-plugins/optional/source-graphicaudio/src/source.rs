@@ -28,6 +28,7 @@ use crate::sync::{scan_library, ScanOptions as GaScanOptions};
 /// Handshake / config id for this store (`graphicaudio` in `[sources.graphicaudio]`).
 pub const ID: &str = "graphicaudio";
 
+/// Alternate config / CLI ids accepted for this storefront (`ga`, `graphic-audio`).
 const ALIASES: &[&str] = &["ga", "graphic-audio"];
 
 /// GraphicAudio storefront adapter implementing [`ContentSource`].
@@ -168,6 +169,10 @@ impl GraphicAudioSource {
     ///
     /// - `access=web|zip`: Magento customer login only (no Access App device slot).
     /// - `access=device`: Access App `activation/login` (registers a device).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn login_account(
         &self,
         library: &SourceScope,
@@ -260,6 +265,10 @@ impl GraphicAudioSource {
     }
 
     /// Delete a GraphicAudio account from the DB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_account(&self, library: &SourceScope, account_id: &str) -> Result<()> {
         delete_auth_from_db(library, account_id).await
     }
@@ -573,6 +582,7 @@ impl ContentSource for GraphicAudioSource {
     }
 }
 
+/// Maps a Magento catalog product onto a [`CatalogHit`] (no authors or pricing).
 fn ga_catalog_hit(p: &MagentoCatalogProduct, origin: String) -> CatalogHit {
     CatalogHit {
         product_id: p.product_id.clone(),
@@ -604,6 +614,7 @@ fn pick_ga_purchase_hit<'a>(
         })
 }
 
+/// Lowercased alphanumeric fold with collapsed whitespace for GraphicAudio title compares.
 fn normalize_ga_title(raw: &str) -> String {
     raw.chars()
         .map(|c| {
@@ -619,6 +630,7 @@ fn normalize_ga_title(raw: &str) -> String {
         .join(" ")
 }
 
+/// True on exact fold or a contiguous phrase match when the shorter title is ≥8 chars and ≥55% of the longer.
 fn ga_titles_match(query: &str, hit: &str) -> bool {
     if query.is_empty() || hit.is_empty() {
         return false;
@@ -644,6 +656,7 @@ fn ga_titles_match(query: &str, hit: &str) -> bool {
             || longer.contains(&format!(" {shorter} ")))
 }
 
+/// Ranking score in `[0, 1]`: 1.0 on exact fold, otherwise shorter/longer length when contained.
 fn ga_title_score(query: &str, hit: &str) -> f32 {
     if query == hit {
         return 1.0;
@@ -660,6 +673,7 @@ fn ga_title_score(query: &str, hit: &str) -> f32 {
     }
 }
 
+/// Fetches a Magento product page and parses USD cents plus a display label; `None` on HTTP/parse failure.
 async fn fetch_ga_price(
     product_url: Option<&str>,
     product_id: &str,
@@ -680,6 +694,7 @@ async fn fetch_ga_price(
     parse_ga_price_html(&html)
 }
 
+/// Reads `data-price-amount` or a `$` amount near Magento price wrappers; returns cents and a USD label.
 fn parse_ga_price_html(html: &str) -> Option<(i64, String)> {
     if let Some(idx) = html.find("data-price-amount=\"") {
         let rest = &html[idx + "data-price-amount=\"".len()..];
@@ -705,6 +720,7 @@ fn parse_ga_price_html(html: &str) -> Option<(i64, String)> {
     None
 }
 
+/// Parses `$12.34` / `FREE` into integer cents; commas ignored, first number wins.
 fn parse_money_label_to_cents(raw: &str) -> Option<i64> {
     let s = raw.trim();
     if s.is_empty() {
@@ -734,6 +750,7 @@ fn parse_money_label_to_cents(raw: &str) -> Option<i64> {
     Some((amount * 100.0).round() as i64)
 }
 
+/// Formats cents as `$D.CC`, or `FREE` when the amount is zero or negative.
 fn format_usd(cents: i64) -> String {
     if cents <= 0 {
         return String::from("FREE");
@@ -741,6 +758,7 @@ fn format_usd(cents: i64) -> String {
     format!("${}.{:02}", cents / 100, (cents % 100).unsigned_abs())
 }
 
+/// Settings knobs for access path, Access App bitrate, and ZIP container preference.
 const GA_CONFIG_OPTIONS: &[bookclerk_source::SourceConfigOption] = &[
     bookclerk_source::SourceConfigOption {
         key: "access",
@@ -798,6 +816,7 @@ const GA_CONFIG_OPTIONS: &[bookclerk_source::SourceConfigOption] = &[
     },
 ];
 
+/// Builds a scan-enabled [`SourceAccount`] from a saved GraphicAudio auth blob.
 fn source_account_from_auth(auth: &GraphicAudioAuthFile) -> SourceAccount {
     SourceAccount {
         account_id: auth.account_id().to_string(),

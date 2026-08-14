@@ -14,6 +14,7 @@ mod cookie_flags;
 mod database;
 mod desktop;
 mod diagnostics;
+/// [`ConfigError`] and the crate [`Result`] alias.
 mod error;
 mod extras;
 mod isolation;

@@ -10,6 +10,10 @@ use bookclerk_config::AudioQuality;
 use crate::error::{AudibleError, Result};
 
 /// Fetch curated chapter metadata (`chapter_info` object).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn fetch_chapter_info(
     client: &Client,
     marketplace: &str,
@@ -31,6 +35,10 @@ pub async fn fetch_chapter_info(
 }
 
 /// Fetch full catalog metadata for a title (classic `metadata.json` sidecar).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn fetch_product_metadata(
     client: &Client,
     marketplace: &str,
@@ -48,6 +56,10 @@ pub async fn fetch_product_metadata(
 }
 
 /// Fetch clips/bookmarks/notes sidecar (classic `DownloadClipsBookmarks`).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn fetch_clips_bookmarks(
     client: &Client,
     asin: &str,
@@ -61,6 +73,10 @@ pub async fn fetch_clips_bookmarks(
 }
 
 /// Download companion PDF via the authenticated companion-file endpoint.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn download_companion_pdf(
     client: &Client,
     marketplace: &str,
@@ -99,6 +115,10 @@ pub async fn download_companion_pdf(
 }
 
 /// Download a JPEG cover at `size` (e.g. `500`, `1215`, or `native`).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn download_cover_jpeg(
     client: &Client,
     marketplace: &str,
@@ -134,6 +154,7 @@ pub async fn download_cover_jpeg(
     Ok(Some(path))
 }
 
+/// Picks a cover URL for `size` (`500`, `native`, …), rewriting an anchor size when needed.
 fn pick_cover_url(
     images: &serde_json::Map<String, serde_json::Value>,
     size: &str,
@@ -166,6 +187,7 @@ fn pick_cover_url(
         .map(str::to_string)
 }
 
+/// Rewrites an Audible cover URL stem to `._SL{size}_.{ext}` (audible-rs size convention).
 fn rewrite_cover_size(url: &str, size: &str) -> Option<String> {
     let (stem, extension) = url.rsplit_once('.')?;
     let base = match stem.rsplit_once('.') {

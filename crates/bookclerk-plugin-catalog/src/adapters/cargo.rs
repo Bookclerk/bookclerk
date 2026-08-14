@@ -13,12 +13,14 @@ use crate::error::{CatalogError, Result};
 use crate::kind::PluginKind;
 use crate::manifest::BookclerkPackageManifest;
 
+/// crates.io User-Agent identifying this Bookclerk catalog client.
 const UA: &str = concat!(
     "bookclerk/",
     env!("CARGO_PKG_VERSION"),
     " (+https://github.com/fritz-fritz/bookclerk; plugin-catalog)"
 );
 
+/// Required crate-name prefix (`bookclerk-plugin-{kind}-{id}`).
 const PREFIX: &str = "bookclerk-plugin-";
 
 /// crates.io discovery + `.crate` metadata hydration.
@@ -138,6 +140,7 @@ pub fn parse_bookclerk_metadata_from_crate(bytes: &[u8]) -> Result<BookclerkPack
     ))
 }
 
+/// Reads `[package.metadata.bookclerk]` from a `Cargo.toml` and fills id from the package name.
 fn parse_metadata_bookclerk_toml(text: &str) -> Result<BookclerkPackageManifest> {
     let value: toml::Value = toml::from_str(text)?;
     let meta = value
@@ -165,6 +168,7 @@ fn parse_metadata_bookclerk_toml(text: &str) -> Result<BookclerkPackageManifest>
     Ok(manifest)
 }
 
+/// Splits `bookclerk-plugin-{kind}-{id}` into a [`PluginKind`] and plugin id.
 fn parse_crate_name(name: &str) -> Option<(PluginKind, String)> {
     let rest = name.strip_prefix(PREFIX)?;
     let (kind_str, id) = rest.split_once('-')?;
@@ -172,6 +176,7 @@ fn parse_crate_name(name: &str) -> Option<(PluginKind, String)> {
     Some((kind, id.to_string()))
 }
 
+/// GET `url` as JSON; non-success HTTP statuses become [`CatalogError`].
 fn http_get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
     let mut response = ureq::get(url)
         .header("User-Agent", UA)
@@ -190,6 +195,7 @@ fn http_get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
         .map_err(|e| CatalogError::message(format!("crates.io JSON decode failed: {e}")))
 }
 
+/// GET `url` as bytes, capped at 32 MiB, for an inert `.crate` download.
 fn http_get_bytes(url: &str) -> Result<Vec<u8>> {
     let mut response = ureq::get(url)
         .header("User-Agent", UA)
@@ -210,6 +216,7 @@ fn http_get_bytes(url: &str) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// application/x-www-form-urlencoded encoding (spaces as `+`) for crates.io search queries.
 fn urlencoding_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -225,34 +232,48 @@ fn urlencoding_encode(s: &str) -> String {
 }
 
 #[derive(Debug, Deserialize)]
+/// crates.io `/api/v1/crates` search envelope.
 struct CratesSearchResponse {
+    /// Search hits; names that lack the plugin prefix are dropped later.
     crates: Vec<CrateHit>,
 }
 
 #[derive(Debug, Deserialize)]
+/// One crate from a crates.io search response.
 struct CrateHit {
+    /// crates.io package name (`bookclerk-plugin-…`).
     name: String,
     #[serde(default)]
+    /// crates.io short description shown in catalog search.
     description: Option<String>,
     #[serde(default)]
+    /// Lifetime download count used as a search ranking hint.
     downloads: Option<u64>,
     #[serde(default)]
+    /// docs.rs or other documentation URL from the crate record.
     documentation: Option<String>,
     #[serde(default)]
+    /// Source-control URL from the crate record.
     repository: Option<String>,
     #[serde(default)]
+    /// Project homepage URL from the crate record.
     homepage: Option<String>,
     #[serde(default)]
+    /// Highest published semver string; empty when crates.io omits it.
     max_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+/// crates.io crate-detail envelope used to list published versions.
 struct CrateDetail {
     #[serde(default)]
+    /// Published versions; `num` is the semver string.
     versions: Vec<VersionHit>,
 }
 
 #[derive(Debug, Deserialize)]
+/// One published version on a crate-detail response.
 struct VersionHit {
+    /// Semver string as published on crates.io (`1.2.3`).
     num: String,
 }

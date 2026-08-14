@@ -16,6 +16,7 @@
 
 pub mod boxutil;
 pub mod edit;
+/// [`Mp4Error`] and the crate [`Result`] alias.
 mod error;
 #[cfg(feature = "fixtures")]
 pub mod fixture;

@@ -195,6 +195,7 @@ pub struct RankedQueueEntry {
 }
 
 impl RankedQueueEntry {
+    /// Ranks a global-queue row by combining local taste with a multi-user wishlist boost.
     fn from_global(entry: GlobalQueueEntry, taste_score: f64, mut reasons: Vec<String>) -> Self {
         if entry.wish_count > 1 {
             reasons.push(format!("wishlisted by {} people", entry.wish_count));
@@ -238,7 +239,9 @@ pub fn combine_wishlist_score(taste_score: f64, wish_count: i64) -> f64 {
 /// Per-series local signal used for completion / listening heuristics.
 #[derive(Debug, Clone, Default)]
 struct SeriesAffinity {
+    /// Owned titles in this series (any acquire status).
     owned_count: usize,
+    /// Owned titles in this series marked finished.
     finished_count: usize,
     /// Owned books in this series that have listening activity.
     listening_count: usize,
@@ -248,6 +251,7 @@ struct SeriesAffinity {
     active_listen_weight: f64,
     /// Sum of continuous engagement across listened titles in the series.
     listen_engagement_sum: f64,
+    /// Highest parsed series index among owned titles, used to boost the next book.
     max_owned_index: Option<f64>,
 }
 
@@ -656,14 +660,21 @@ async fn recommend_all(
     Ok(recs)
 }
 
+/// Weighted author/narrator/category likes, series affinity, and optional embedding centroid.
 struct TasteProfile {
+    /// Lowercased author → finish/rating/listen weight.
     liked_authors: HashMap<String, f64>,
+    /// Lowercased narrator → finish/rating weight.
     liked_narrators: HashMap<String, f64>,
+    /// Lowercased category/subject → finish/rating weight.
     liked_categories: HashMap<String, f64>,
+    /// Lowercased series name → ownership and listening affinity.
     series_affinity: HashMap<String, SeriesAffinity>,
+    /// Mean embedding of seed works when embeddings are available.
     seed_centroid: Option<Vec<f32>>,
 }
 
+/// Accumulates liked people/categories, series affinity, and a seed embedding centroid.
 async fn build_taste_profile(
     library: &LibraryStore,
     books: &[BookRecord],
@@ -747,6 +758,7 @@ async fn build_taste_profile(
     })
 }
 
+/// Scores a candidate against liked people, series completion, and embedding similarity.
 fn score_work_against_taste(
     title: &str,
     authors: Option<&str>,
@@ -807,6 +819,7 @@ fn score_work_against_taste(
     (score, reasons, categories)
 }
 
+/// Joins title, authors, narrators, and series into embedder input text.
 fn wishlist_embed_text(
     title: &str,
     authors: Option<&str>,
@@ -826,6 +839,7 @@ fn wishlist_embed_text(
     parts.join("\n")
 }
 
+/// Seeds trusted storefront purchase URLs, then looks up remaining hints live.
 async fn attach_purchase_hints(
     recs: &mut [Recommendation],
     registry: &SourceRegistry,
@@ -908,6 +922,7 @@ fn library_owns_identity(
     })
 }
 
+/// Inserts or merges a recommendation when ASIN/ISBN/title identity already exists.
 fn upsert_recommendation(map: &mut HashMap<String, Recommendation>, rec: Recommendation) {
     let match_key = map.iter().find_map(|(key, existing)| {
         if identities_match(
@@ -946,6 +961,7 @@ fn upsert_recommendation(map: &mut HashMap<String, Recommendation>, rec: Recomme
     map.insert(key, rec);
 }
 
+/// Builds shelf-ranking taste from owned sources, liked people, and listening weights.
 fn build_shelf_taste(
     books: &[BookRecord],
     listening: &[ListeningProgressRecord],
@@ -1014,6 +1030,7 @@ fn build_shelf_taste(
     taste
 }
 
+/// Aggregates per-series ownership, finish counts, and in-progress listen depth.
 fn build_series_affinity(
     books: &[BookRecord],
     listening: &[ListeningProgressRecord],
@@ -1208,6 +1225,7 @@ pub fn listening_engagement(row: &ListeningProgressRecord) -> f64 {
 
 pub use crate::identity::parse_series_index;
 
+/// Averages stored work embeddings for seed ids; returns `None` when none are stored.
 async fn seed_embedding_centroid(
     library: &LibraryStore,
     seed_work_ids: &HashSet<String>,
@@ -1246,6 +1264,7 @@ async fn seed_embedding_centroid(
     }
 }
 
+/// Opens the configured embedder, or a hash embedder when models are disabled/missing.
 fn open_candidate_embedder(opts: &RecommendOptions) -> Result<Option<Box<dyn Embedder>>> {
     if !opts.embeddings_enabled {
         return Ok(None);
@@ -1261,6 +1280,7 @@ fn open_candidate_embedder(opts: &RecommendOptions) -> Result<Option<Box<dyn Emb
     )?))
 }
 
+/// Splits a display list on `,; /|&` and trims empty tokens.
 fn split_tokens_display(s: &str) -> Vec<String> {
     s.split([',', ';', '/', '|', '&'])
         .map(str::trim)

@@ -12,6 +12,7 @@ use bookclerk_plugin_sdk::{
     StatementDto, PLUGIN_API_VERSION,
 };
 
+/// External SQLite database guest (`kind = database`, id `sqlite`).
 struct SqlitePlugin;
 
 #[async_trait]

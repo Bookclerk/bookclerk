@@ -1,0 +1,3 @@
+# Used by the publish-crate Clippy step (CLIPPY_CONF_DIR=clippy-publish).
+# Extends section lints to private items for the ABI/manifest/SDK trio.
+check-private-items = true

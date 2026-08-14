@@ -19,6 +19,7 @@ Start here if you are new:
 11. [Dev Container](devcontainer.md) — consistent Rust/OpenSSL/Node build env (Cursor / VS Code)
 12. [GUI](gui.md) — web UI, operator auth, tray companion
 13. [Desktop path](gui-desktop-path.md) — tray vs deferred Tauri / OSV constraints
+14. [Continuous integration](ci.md) — dependency-aware planner, selective docs, `CI Gate`
 
 ## Extending Bookclerk
 

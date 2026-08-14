@@ -57,15 +57,22 @@ pub struct UploadPayload {
     pub events: Vec<BufferedEvent>,
 }
 
+/// In-memory ring of redacted events plus burst clocks for automatic upload.
 struct RingState {
+    /// Oldest-first ring of redacted log events (evicts from the front at capacity).
     events: VecDeque<BufferedEvent>,
+    /// Maximum events retained (at least 1).
     capacity: usize,
+    /// Monotonic instants of ERROR events inside the burst window.
     error_timestamps: VecDeque<Instant>,
+    /// Monotonic instants of WARN events inside the burst window.
     warn_timestamps: VecDeque<Instant>,
+    /// Instant of the last successful upload, used for the 300s burst cooldown.
     last_upload: Option<Instant>,
 }
 
 impl RingState {
+    /// Allocates an empty ring with `capacity` clamped to `1..=512`.
     fn new(capacity: usize) -> Self {
         Self {
             events: VecDeque::with_capacity(capacity.min(512)),
@@ -76,6 +83,7 @@ impl RingState {
         }
     }
 
+    /// Appends an event, dropping the oldest when the ring is full.
     fn push(&mut self, event: BufferedEvent) {
         if self.events.len() >= self.capacity {
             self.events.pop_front();
@@ -83,6 +91,7 @@ impl RingState {
         self.events.push_back(event);
     }
 
+    /// Oldest-first clone of the ring for crash or burst upload.
     fn snapshot(&self) -> Vec<BufferedEvent> {
         self.events.iter().cloned().collect()
     }
@@ -91,12 +100,17 @@ impl RingState {
 /// Process-global diagnostics handle installed by [`crate::logging::init_tracing_with`].
 #[derive(Clone)]
 pub struct DiagnosticsHandle {
+    /// Shared process state behind the cloneable handle.
     inner: Arc<DiagnosticsInner>,
 }
 
+/// Config, version, ring, and upload serialization for the process-global handle.
 struct DiagnosticsInner {
+    /// Operator knobs for ring size, burst thresholds, and collector URL.
     config: DiagnosticsConfig,
+    /// Bookclerk version string recorded when the subscriber was installed.
     version: String,
+    /// Mutex-protected ring and burst clocks (recovers from poison).
     ring: Mutex<RingState>,
     /// Advisory flag so burst paths do not spawn a thread per event.
     upload_in_flight: AtomicBool,
@@ -109,6 +123,7 @@ struct DiagnosticsInner {
 }
 
 impl DiagnosticsHandle {
+    /// Installs a handle with ring capacity from config (at least 1).
     pub(crate) fn new(config: DiagnosticsConfig, version: impl Into<String>) -> Self {
         let capacity = config.ring_buffer_capacity.max(1) as usize;
         Self {
@@ -275,6 +290,7 @@ impl DiagnosticsHandle {
         self.spawn_claimed(trigger);
     }
 
+    /// Spawns a background upload after `upload_in_flight` is already claimed; releases the flag if spawn fails.
     fn spawn_claimed(&self, trigger: &'static str) {
         let handle = self.clone();
         if std::thread::Builder::new()
@@ -286,6 +302,7 @@ impl DiagnosticsHandle {
         }
     }
 
+    /// Serializes HTTP, sanitizes events, and POSTs; refuses the body if a registered secret remains.
     fn run_upload(&self, trigger: &str) {
         // Serialize HTTP so a crash/explicit waiter never overlaps a burst POST.
         let _gate = self
@@ -336,6 +353,7 @@ impl DiagnosticsHandle {
     }
 }
 
+/// Records a timestamp and returns true when the burst threshold is hit and cooldown has elapsed.
 fn note_level_and_check_burst(
     timestamps: &mut VecDeque<Instant>,
     last_upload: Option<Instant>,
@@ -364,6 +382,7 @@ fn note_level_and_check_burst(
     true
 }
 
+/// Redacts and truncates message, target, and fields before anything leaves the process.
 fn sanitize_event_for_upload(mut event: BufferedEvent) -> BufferedEvent {
     use crate::redact::truncate_upload_message;
     event.message = truncate_upload_message(&sanitize_for_remote_upload("message", &event.message));
@@ -379,6 +398,7 @@ fn sanitize_event_for_upload(mut event: BufferedEvent) -> BufferedEvent {
     event
 }
 
+/// POSTs the JSON payload; fail-closed if a registered secret is still visible after redaction.
 fn post_http_payload(
     config: &DiagnosticsConfig,
     payload: &UploadPayload,
@@ -411,6 +431,7 @@ fn post_http_payload(
     Ok(url)
 }
 
+/// Wall-clock Unix milliseconds, or `0` if the clock is before the epoch.
 fn unix_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -420,11 +441,13 @@ fn unix_now_ms() -> u64 {
 
 /// Tracing layer that feeds the diagnostics ring buffer.
 pub struct DiagnosticsLayer {
+    /// Ring handle that receives every tracing event.
     handle: DiagnosticsHandle,
 }
 
 impl DiagnosticsLayer {
     #[must_use]
+    /// Wraps an existing handle as a tracing layer.
     pub fn new(handle: DiagnosticsHandle) -> Self {
         Self { handle }
     }
@@ -439,6 +462,7 @@ where
     }
 }
 
+/// Process-global handle; first [`install_global`] wins.
 static GLOBAL_DIAGNOSTICS: OnceLock<DiagnosticsHandle> = OnceLock::new();
 
 /// Install (or replace is not allowed — first wins) the process-global diagnostics handle
@@ -456,6 +480,7 @@ pub fn global() -> Option<&'static DiagnosticsHandle> {
     GLOBAL_DIAGNOSTICS.get()
 }
 
+/// Installs a once-only panic hook that records a redacted line and uploads `crash`.
 fn install_panic_hook() {
     static HOOK_SET: AtomicBool = AtomicBool::new(false);
     if HOOK_SET
@@ -485,6 +510,7 @@ fn install_panic_hook() {
     }));
 }
 
+/// Extracts a `&str` or `String` panic payload, else a placeholder.
 fn panic_message(info: &PanicHookInfo<'_>) -> String {
     if let Some(s) = info.payload().downcast_ref::<&str>() {
         (*s).to_string()

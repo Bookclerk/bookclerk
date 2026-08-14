@@ -44,6 +44,10 @@ fn children_start(kind: &[u8], box_start: usize) -> Option<usize> {
 /// # Errors
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub fn find_box_range(buf: &[u8], fourcc: &[u8; 4]) -> Result<Option<(usize, usize)>> {
     let mut stack = vec![(0usize, buf.len())];
     while let Some((start, end)) = stack.pop() {
@@ -120,6 +124,10 @@ pub fn find_direct_child(
 /// # Errors
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub fn find_child_in_range(
     buf: &[u8],
     start: usize,

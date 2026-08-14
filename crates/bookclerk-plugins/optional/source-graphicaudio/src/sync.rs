@@ -70,6 +70,10 @@ impl Default for ScanContext<'_> {
 ///
 /// Accounts are resolved from `encrypted_secrets` (DB-backed); no
 /// `Accounts/*.ga.auth` files are read.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn scan_library(
     library: &SourceScope,
     options: ScanOptions,
@@ -168,6 +172,10 @@ pub async fn scan_library(
 /// For web/zip (default), use Magento Browser Player library so we do not
 /// depend on a device slot for ownership listing. Falls back to Access App
 /// when a legacy device token exists and Magento password is unavailable.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn collect_account_books(
     auth: &GraphicAudioAuthFile,
@@ -210,6 +218,7 @@ pub async fn collect_account_books(
     Ok((books, 1))
 }
 
+/// Lists Access App products as [`NewBook`] rows, optionally skipping sample SKUs.
 async fn collect_access_products(
     access_base: &str,
     auth: &GraphicAudioAuthFile,
@@ -266,6 +275,7 @@ pub fn product_to_new_book(product: &Product, account_id: &str, marketplace: &st
     }
 }
 
+/// Maps a Browser Player library card onto a [`NewBook`] (title falls back to `GraphicAudio {id}`).
 fn library_item_to_new_book(item: &LibraryItem, account_id: &str, marketplace: &str) -> NewBook {
     let title = item
         .title
@@ -297,6 +307,7 @@ fn library_item_to_new_book(item: &LibraryItem, account_id: &str, marketplace: &
     }
 }
 
+/// Parses `10 hrs 30 mins`, `10:30`, or a bare minute count into minutes; `None` when unparseable.
 fn parse_running_time_minutes(raw: &str) -> Option<i64> {
     // Examples seen / expected: "10 hrs 30 mins", "630", "10:30"
     let lower = raw.to_ascii_lowercase();
@@ -327,6 +338,7 @@ fn parse_running_time_minutes(raw: &str) -> Option<i64> {
     raw.trim().parse::<i64>().ok()
 }
 
+/// Parses Access App unix seconds, RFC 3339, or `YYYY-MM-DD` into UTC; `None` when unparseable.
 fn parse_ga_date(raw: &str) -> Option<DateTime<Utc>> {
     let trimmed = raw.trim();
     if let Ok(secs) = trimmed.parse::<i64>() {

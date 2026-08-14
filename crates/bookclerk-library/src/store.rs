@@ -41,6 +41,7 @@ use crate::wishlist_merge::apply_merged_sources;
 /// cheaply cloneable (shared connection), so `LibraryStore` is `Clone`.
 #[derive(Clone)]
 pub struct LibraryStore {
+    /// Shared SeaORM connection opened by the database plugin (SQLite / D1 / Postgres).
     db: DatabaseConnection,
     /// When set, named security methods run as one guest `dbAtomic` command
     /// instead of a local SeaORM transaction.
@@ -104,6 +105,7 @@ impl LibraryStore {
         Ok(())
     }
 
+    /// Counts active `owner` users on `conn` (used by last-owner guards).
     async fn count_active_owners_on<C: ConnectionTrait>(conn: &C) -> Result<u64> {
         users::Entity::find()
             .filter(users::Column::Role.eq(UserRole::Owner.as_str()))
@@ -113,6 +115,7 @@ impl LibraryStore {
             .map_err(LibraryError::Orm)
     }
 
+    /// Deletes Operator sessions minted via this user's elevate-to-operator flow.
     async fn delete_elevated_operator_sessions_for_user_on<C: ConnectionTrait>(
         conn: &C,
         user_id: i64,
@@ -126,6 +129,10 @@ impl LibraryStore {
     }
 
     /// Revoke Operator sessions minted by this user's elevate-to-operator flow.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_elevated_operator_sessions_for_user(&self, user_id: i64) -> Result<u64> {
         Self::delete_elevated_operator_sessions_for_user_on(&self.db, user_id).await
     }
@@ -134,6 +141,10 @@ impl LibraryStore {
     ///
     /// `source` is required — there is no audible default. Content sources should
     /// prefer [`crate::SourceScope::upsert_account`], which forces the plugin id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn upsert_account(
         &self,
         account_id: &str,
@@ -150,6 +161,10 @@ impl LibraryStore {
     ///
     /// `source` is required — there is no audible default. Content sources should
     /// prefer [`crate::SourceScope::ensure_account`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn ensure_account(
         &self,
         account_id: &str,
@@ -161,6 +176,7 @@ impl LibraryStore {
             .await
     }
 
+    /// Inserts or updates a store account; optionally overwrites `scan_enabled`.
     async fn upsert_account_inner(
         &self,
         account_id: &str,
@@ -217,6 +233,10 @@ impl LibraryStore {
     ///
     /// Used when classic Libation stored an email `AccountId` and a later
     /// login/scan discovers Audible `customer_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn remap_account_id(&self, from: &str, to: &str) -> Result<()> {
         if from == to {
             return Ok(());
@@ -304,6 +324,10 @@ impl LibraryStore {
     }
 
     /// Remap any existing alias account ids onto `canonical_id`, then upsert.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn reconcile_account_id(
         &self,
         canonical_id: &str,
@@ -366,6 +390,10 @@ impl LibraryStore {
     }
 
     /// Count account rows (SQL `COUNT`, not a full fetch).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn count_accounts(&self) -> Result<i64> {
         let count = accounts::Entity::find()
             .count(&self.db)
@@ -375,6 +403,10 @@ impl LibraryStore {
     }
 
     /// Resolve an account row by id or nickname (`label`), case-insensitive.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn find_account(&self, identifier: &str) -> Result<Option<AccountRecord>> {
         let needle = identifier.to_ascii_lowercase();
         Ok(self.list_accounts().await?.into_iter().find(|a| {
@@ -387,6 +419,10 @@ impl LibraryStore {
     }
 
     /// Toggle whether an account is included in automatic library scans.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn set_scan_enabled(&self, account_id: &str, scan_enabled: bool) -> Result<()> {
         let model = accounts::Entity::find()
             .filter(accounts::Column::AccountId.eq(account_id))
@@ -402,6 +438,10 @@ impl LibraryStore {
     }
 
     /// Mark bookstore credentials active again (after reconnect).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn mark_connection_active(&self, account_id: &str) -> Result<()> {
         let model = accounts::Entity::find()
             .filter(accounts::Column::AccountId.eq(account_id))
@@ -418,11 +458,19 @@ impl LibraryStore {
     }
 
     /// Delete all `encrypted_secrets` rows for an account (source auth + Widevine CDM).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_account_secrets(&self, account_id: &str) -> Result<()> {
         crate::secrets::delete_secrets_for_account(&self.db, account_id).await
     }
 
     /// Mark bookstore credentials revoked without deleting the account or books.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn revoke_credentials(&self, account_id: &str) -> Result<()> {
         let model = accounts::Entity::find()
             .filter(accounts::Column::AccountId.eq(account_id))
@@ -442,6 +490,10 @@ impl LibraryStore {
     ///
     /// Ensures a first-party [`UserRecord`] (role `member`) is linked via
     /// `portal_identities.user_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn upsert_portal_identity(
         &self,
         provider: &str,
@@ -480,6 +532,10 @@ impl LibraryStore {
     }
 
     /// Create a first-party user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn create_user(
         &self,
         role: UserRole,
@@ -491,6 +547,10 @@ impl LibraryStore {
     }
 
     /// Create a first-party user with optional local login_name and email.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn create_user_with_login(
         &self,
         role: UserRole,
@@ -503,6 +563,10 @@ impl LibraryStore {
     }
 
     /// Create a first-party user with login, email, and optional password hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn create_user_with_profile(
         &self,
         role: UserRole,
@@ -529,6 +593,10 @@ impl LibraryStore {
     }
 
     /// Look up a first-party user by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_user(&self, id: i64) -> Result<Option<UserRecord>> {
         Ok(users::Entity::find_by_id(id)
             .one(&self.db)
@@ -538,6 +606,10 @@ impl LibraryStore {
     }
 
     /// Look up by local login_name (case-insensitive).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_user_by_login_name(&self, login_name: &str) -> Result<Option<UserRecord>> {
         let Some(key) = normalize_login_name(Some(login_name)) else {
             return Ok(None);
@@ -551,6 +623,10 @@ impl LibraryStore {
     }
 
     /// Look up by email (case-insensitive).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<UserRecord>> {
         let Some(key) = normalize_email(Some(email)) else {
             return Ok(None);
@@ -564,6 +640,10 @@ impl LibraryStore {
     }
 
     /// Raw password hash for verification (never expose via API).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_user_password_hash(&self, id: i64) -> Result<Option<String>> {
         Ok(users::Entity::find_by_id(id)
             .one(&self.db)
@@ -573,6 +653,10 @@ impl LibraryStore {
     }
 
     /// List all first-party users (admin tooling).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_users(&self) -> Result<Vec<UserRecord>> {
         Ok(users::Entity::find()
             .order_by_asc(users::Column::Id)
@@ -593,6 +677,10 @@ impl LibraryStore {
     /// Not used by `GET /api/users`: loading every identity/session/link/listen
     /// row is unbounded on a small VPS, and exposing listening to admins is a
     /// privacy decision deferred until a bounded query exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_user_presence_extras(
         &self,
         listening_within: chrono::Duration,
@@ -756,6 +844,10 @@ impl LibraryStore {
     /// Removes portal identities, account links, wishlist rows, claim tickets,
     /// sessions, and prefs for the user. Acquired library books are retained.
     /// Refuses to delete the last active owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_user(&self, id: i64) -> Result<()> {
         if let Some(atomic) = &self.atomic {
             return atomic.delete_user(id).await;
@@ -763,6 +855,7 @@ impl LibraryStore {
         crate::db_atomic::delete_user(&self.db, id).await
     }
 
+    /// Deletes a user and related portal rows inside an open transaction; refuses the last owner.
     pub(crate) async fn delete_user_on<C: ConnectionTrait>(txn: &C, id: i64) -> Result<()> {
         Self::lock_active_owners(txn).await?;
         let model = users::Entity::find_by_id(id)
@@ -881,6 +974,10 @@ impl LibraryStore {
     /// Set user status (`active` / `disabled`).
     ///
     /// Refuses to disable the last active owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn set_user_status(&self, id: i64, status: UserStatus) -> Result<UserRecord> {
         if let Some(atomic) = &self.atomic {
             return atomic.set_user_status(id, status).await;
@@ -888,6 +985,7 @@ impl LibraryStore {
         crate::db_atomic::set_user_status(&self.db, id, status).await
     }
 
+    /// Sets user status inside an open transaction; disabling the last owner fails.
     pub(crate) async fn set_user_status_on<C: ConnectionTrait>(
         txn: &C,
         id: i64,
@@ -918,6 +1016,10 @@ impl LibraryStore {
     }
 
     /// Set display name (does not bump security_version).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn set_user_display_name(
         &self,
         id: i64,
@@ -939,6 +1041,10 @@ impl LibraryStore {
     }
 
     /// Set or clear Argon2id password hash; bumps `security_version`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn set_user_password_hash(
         &self,
         id: i64,
@@ -950,6 +1056,7 @@ impl LibraryStore {
         crate::db_atomic::set_user_password_hash(&self.db, id, password_hash).await
     }
 
+    /// Sets or clears the Argon2id password hash inside an open transaction and bumps `security_version`.
     pub(crate) async fn set_user_password_hash_on<C: ConnectionTrait>(
         txn: &C,
         id: i64,
@@ -971,6 +1078,10 @@ impl LibraryStore {
     }
 
     /// Set login_name (unique); does not bump security_version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn set_user_login_name(
         &self,
         id: i64,
@@ -989,6 +1100,10 @@ impl LibraryStore {
     }
 
     /// Set contact email (unique when set); does not bump security_version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn set_user_email(&self, id: i64, email: Option<&str>) -> Result<UserRecord> {
         let model = users::Entity::find_by_id(id)
             .one(&self.db)
@@ -1003,6 +1118,10 @@ impl LibraryStore {
     }
 
     /// Delete all portal sessions for identities linked to `user_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_portal_sessions_for_user(&self, user_id: i64) -> Result<u64> {
         let identities = portal_identities::Entity::find()
             .filter(portal_identities::Column::UserId.eq(user_id))
@@ -1022,6 +1141,10 @@ impl LibraryStore {
     }
 
     /// Insert a user invite (store hash only).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn insert_user_invite(
         &self,
         token_hash: &str,
@@ -1047,6 +1170,10 @@ impl LibraryStore {
     }
 
     /// Atomically redeem a user invite.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn redeem_user_invite(
         &self,
         token_hash: &str,
@@ -1079,6 +1206,10 @@ impl LibraryStore {
     /// Set user role (`owner` / `administrator` / `member`).
     ///
     /// Refuses to demote the last active owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn set_user_role(&self, id: i64, role: UserRole) -> Result<UserRecord> {
         if let Some(atomic) = &self.atomic {
             return atomic.set_user_role(id, role).await;
@@ -1086,6 +1217,7 @@ impl LibraryStore {
         crate::db_atomic::set_user_role(&self.db, id, role).await
     }
 
+    /// Sets user role inside an open transaction; demoting the last active owner fails.
     pub(crate) async fn set_user_role_on<C: ConnectionTrait>(
         txn: &C,
         id: i64,
@@ -1117,6 +1249,10 @@ impl LibraryStore {
     }
 
     /// Count administrators (includes disabled).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn count_administrators(&self) -> Result<u64> {
         users::Entity::find()
             .filter(users::Column::Role.eq(UserRole::Administrator.as_str()))
@@ -1126,6 +1262,10 @@ impl LibraryStore {
     }
 
     /// Count administrators with status `active`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn count_active_administrators(&self) -> Result<u64> {
         users::Entity::find()
             .filter(users::Column::Role.eq(UserRole::Administrator.as_str()))
@@ -1136,6 +1276,10 @@ impl LibraryStore {
     }
 
     /// Count owners (includes disabled) — bootstrap / inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn count_owners(&self) -> Result<u64> {
         users::Entity::find()
             .filter(users::Column::Role.eq(UserRole::Owner.as_str()))
@@ -1145,6 +1289,10 @@ impl LibraryStore {
     }
 
     /// Count owners with status `active` (last-owner demote/disable/delete guard).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn count_active_owners(&self) -> Result<u64> {
         users::Entity::find()
             .filter(users::Column::Role.eq(UserRole::Owner.as_str()))
@@ -1158,6 +1306,10 @@ impl LibraryStore {
     ///
     /// Safe to call repeatedly after migrations. Does not link CLI-created store
     /// accounts that have no `account_links` (avoids widening access).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn ensure_users_bridged(&self) -> Result<usize> {
         let orphans = portal_identities::Entity::find()
             .filter(portal_identities::Column::UserId.is_null())
@@ -1210,6 +1362,7 @@ impl LibraryStore {
         Ok(bridged)
     }
 
+    /// Creates a member user and attaches it when the portal identity has no `user_id` yet.
     async fn bridge_portal_identity_to_user(
         &self,
         model: portal_identities::Model,
@@ -1226,6 +1379,10 @@ impl LibraryStore {
     }
 
     /// Ensure a `local` portal identity exists for a first-party user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn ensure_local_portal_identity(
         &self,
         user_id: i64,
@@ -1276,6 +1433,10 @@ impl LibraryStore {
     }
 
     /// Look up portal identity by row id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_portal_identity_by_id(
         &self,
         id: i64,
@@ -1288,6 +1449,10 @@ impl LibraryStore {
     }
 
     /// Insert a claim ticket (store only the hash).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn insert_claim_ticket(
         &self,
         token_hash: &str,
@@ -1334,6 +1499,10 @@ impl LibraryStore {
     }
 
     /// List unredeemed, unexpired claim tickets (newest first).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_open_claim_tickets(&self) -> Result<Vec<crate::models::ClaimTicketRecord>> {
         let now = now_str();
         Ok(claim_tickets::Entity::find()
@@ -1352,6 +1521,10 @@ impl LibraryStore {
     ///
     /// Uses a single `UPDATE … WHERE redeemed_at IS NULL AND expires_at > now` so
     /// concurrent redeemers cannot both succeed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn redeem_claim_ticket(
         &self,
         token_hash: &str,
@@ -1438,6 +1611,7 @@ impl LibraryStore {
         .await
     }
 
+    /// Consumes an unredeemed, unexpired claim ticket and mints a portal session in one transaction.
     pub(crate) async fn redeem_claim_ticket_to_session_on<C: ConnectionTrait>(
         txn: &C,
         token_hash: &str,
@@ -1521,6 +1695,10 @@ impl LibraryStore {
     }
 
     /// Create a portal session (hash only).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn insert_portal_session(
         &self,
         token_hash: &str,
@@ -1532,6 +1710,10 @@ impl LibraryStore {
     }
 
     /// Create a portal session with optional client metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn insert_portal_session_with_client(
         &self,
         token_hash: &str,
@@ -1556,6 +1738,10 @@ impl LibraryStore {
     }
 
     /// Delete a portal session by token hash (logout / revoke).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_portal_session(&self, token_hash: &str) -> Result<bool> {
         let result = portal_sessions::Entity::delete_many()
             .filter(portal_sessions::Column::TokenHash.eq(token_hash))
@@ -1566,6 +1752,10 @@ impl LibraryStore {
     }
 
     /// List portal sessions for an identity (id, created_at, expires_at).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_portal_sessions_for_identity(
         &self,
         identity_id: i64,
@@ -1579,6 +1769,10 @@ impl LibraryStore {
     }
 
     /// List portal sessions with client metadata for session management UIs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_portal_session_records_for_identity(
         &self,
         identity_id: i64,
@@ -1606,6 +1800,10 @@ impl LibraryStore {
     }
 
     /// Delete a portal session by id only if it belongs to `identity_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_portal_session_by_id_for_identity(
         &self,
         id: i64,
@@ -1621,6 +1819,10 @@ impl LibraryStore {
     }
 
     /// Count account_links referencing `account_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn count_account_links_for_account(&self, account_id: &str) -> Result<u64> {
         account_links::Entity::find()
             .filter(account_links::Column::AccountId.eq(account_id))
@@ -1630,6 +1832,10 @@ impl LibraryStore {
     }
 
     /// Resolve a valid portal session to its identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_portal_session_identity(
         &self,
         token_hash: &str,
@@ -1648,6 +1854,10 @@ impl LibraryStore {
     }
 
     /// Create a durable operator session (hash only).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn insert_operator_session(
         &self,
         token_hash: &str,
@@ -1658,6 +1868,10 @@ impl LibraryStore {
     }
 
     /// Create a durable operator session with optional client metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn insert_operator_session_with_client(
         &self,
         token_hash: &str,
@@ -1682,6 +1896,10 @@ impl LibraryStore {
     }
 
     /// Create an elevated operator session (Administrator reauth → short TTL).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn insert_elevated_operator_session(
         &self,
         token_hash: &str,
@@ -1698,6 +1916,10 @@ impl LibraryStore {
     }
 
     /// Create an elevated operator session with optional client metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn insert_elevated_operator_session_with_client(
         &self,
         token_hash: &str,
@@ -1723,6 +1945,10 @@ impl LibraryStore {
     }
 
     /// Look up a valid operator session (touches `last_used_at`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_operator_session(
         &self,
         token_hash: &str,
@@ -1782,11 +2008,19 @@ impl LibraryStore {
     }
 
     /// Return whether a hashed operator session is still valid (and touch last_used).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn operator_session_valid(&self, token_hash: &str) -> Result<bool> {
         Ok(self.get_operator_session(token_hash).await?.is_some())
     }
 
     /// Set or clear impersonation on an operator session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn set_operator_session_impersonating(
         &self,
         token_hash: &str,
@@ -1818,6 +2052,10 @@ impl LibraryStore {
     }
 
     /// Delete an operator session by token hash (logout / revoke).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_operator_session(&self, token_hash: &str) -> Result<bool> {
         let result = operator_sessions::Entity::delete_many()
             .filter(operator_sessions::Column::TokenHash.eq(token_hash))
@@ -1828,6 +2066,10 @@ impl LibraryStore {
     }
 
     /// Delete an operator session by row id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_operator_session_by_id(&self, id: i64) -> Result<bool> {
         let result = operator_sessions::Entity::delete_by_id(id)
             .exec(&self.db)
@@ -1837,6 +2079,10 @@ impl LibraryStore {
     }
 
     /// Delete expired operator sessions (bounded cleanup).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn prune_expired_operator_sessions(&self) -> Result<u64> {
         let now = now_str();
         let result = operator_sessions::Entity::delete_many()
@@ -1848,6 +2094,10 @@ impl LibraryStore {
     }
 
     /// List active operator sessions (newest first) for remote sign-out UI.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_operator_sessions(
         &self,
     ) -> Result<Vec<crate::models::OperatorSessionRecord>> {
@@ -1875,6 +2125,10 @@ impl LibraryStore {
     }
 
     /// First portal identity linked to a first-party user (for impersonation scoping).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn first_portal_identity_for_user(
         &self,
         user_id: i64,
@@ -1889,6 +2143,10 @@ impl LibraryStore {
     }
 
     /// All portal identities linked to a first-party user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_portal_identities_for_user(
         &self,
         user_id: i64,
@@ -1908,6 +2166,10 @@ impl LibraryStore {
     ///
     /// Creates the identity row when missing. Refuses to steal an identity already
     /// bound to a different user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn link_portal_identity_to_user(
         &self,
         provider: &str,
@@ -1951,6 +2213,10 @@ impl LibraryStore {
     }
 
     /// Insert a short-lived OIDC RP authorize state row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     #[allow(clippy::too_many_arguments)]
     pub async fn insert_oidc_rp_state(
         &self,
@@ -1987,6 +2253,10 @@ impl LibraryStore {
     ///
     /// Find + delete run in one transaction so concurrent callbacks cannot both
     /// observe the same unused state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn take_oidc_rp_state(
         &self,
         state_hash: &str,
@@ -1997,6 +2267,7 @@ impl LibraryStore {
         crate::db_atomic::take_oidc_rp_state(&self.db, state_hash).await
     }
 
+    /// Deletes and returns one-shot OIDC RP state by hash; `None` if missing or already taken.
     pub(crate) async fn take_oidc_rp_state_on<C: ConnectionTrait>(
         txn: &C,
         state_hash: &str,
@@ -2030,6 +2301,10 @@ impl LibraryStore {
     }
 
     /// Store a WebAuthn credential for a user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn insert_webauthn_credential(
         &self,
         user_id: i64,
@@ -2049,6 +2324,10 @@ impl LibraryStore {
     }
 
     /// Passkeys registered to a user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_webauthn_credentials(
         &self,
         user_id: i64,
@@ -2065,6 +2344,10 @@ impl LibraryStore {
     }
 
     /// Count passkeys for a user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn count_webauthn_credentials(&self, user_id: i64) -> Result<u64> {
         webauthn_credentials::Entity::find()
             .filter(webauthn_credentials::Column::UserId.eq(user_id))
@@ -2074,6 +2357,10 @@ impl LibraryStore {
     }
 
     /// Look up a passkey by credential id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_webauthn_credential_by_cred_id(
         &self,
         credential_id: &str,
@@ -2087,6 +2374,10 @@ impl LibraryStore {
     }
 
     /// Replace passkey JSON after a successful assertion (counter update).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn update_webauthn_credential(&self, id: i64, passkey_json: &str) -> Result<()> {
         let model = webauthn_credentials::Entity::find_by_id(id)
             .one(&self.db)
@@ -2101,6 +2392,10 @@ impl LibraryStore {
     }
 
     /// Delete a passkey owned by `user_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_webauthn_credential(&self, user_id: i64, id: i64) -> Result<bool> {
         let res = webauthn_credentials::Entity::delete_many()
             .filter(webauthn_credentials::Column::Id.eq(id))
@@ -2112,6 +2407,10 @@ impl LibraryStore {
     }
 
     /// Insert a WebAuthn ceremony state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn insert_webauthn_challenge(
         &self,
         challenge_id: &str,
@@ -2140,6 +2439,10 @@ impl LibraryStore {
     }
 
     /// Consume a WebAuthn ceremony by id (transactional delete-and-return).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn take_webauthn_challenge(
         &self,
         challenge_id: &str,
@@ -2151,6 +2454,7 @@ impl LibraryStore {
         crate::db_atomic::take_webauthn_challenge(&self.db, challenge_id, kind).await
     }
 
+    /// Deletes and returns a one-shot WebAuthn challenge; `None` if missing or already taken.
     pub(crate) async fn take_webauthn_challenge_on<C: ConnectionTrait>(
         txn: &C,
         challenge_id: &str,
@@ -2180,6 +2484,10 @@ impl LibraryStore {
     }
 
     /// Drop expired OIDC RP states (bounded cleanup).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn prune_expired_oidc_rp_states(&self) -> Result<u64> {
         let now = now_str();
         let result = oidc_rp_states::Entity::delete_many()
@@ -2191,6 +2499,10 @@ impl LibraryStore {
     }
 
     /// Drop expired WebAuthn challenges (bounded cleanup).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn prune_expired_webauthn_challenges(&self) -> Result<u64> {
         let now = now_str();
         let result = webauthn_challenges::Entity::delete_many()
@@ -2202,6 +2514,10 @@ impl LibraryStore {
     }
 
     /// Count pending OIDC RP states (for public-begin caps).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn count_oidc_rp_states(&self) -> Result<u64> {
         oidc_rp_states::Entity::find()
             .count(&self.db)
@@ -2210,6 +2526,10 @@ impl LibraryStore {
     }
 
     /// Count pending WebAuthn challenges (for public-begin caps).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn count_webauthn_challenges(&self) -> Result<u64> {
         webauthn_challenges::Entity::find()
             .count(&self.db)
@@ -2218,6 +2538,10 @@ impl LibraryStore {
     }
 
     /// Created-at of a still-valid portal session (recent-auth checks).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn portal_session_created_at(
         &self,
         token_hash: &str,
@@ -2236,6 +2560,10 @@ impl LibraryStore {
     }
 
     /// Overwrite `created_at` for a portal session (tests / recent-auth fixtures).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn set_portal_session_created_at(
         &self,
         token_hash: &str,
@@ -2294,6 +2622,10 @@ impl LibraryStore {
     }
 
     /// Upsert an OIDC client (public clients may omit secret hash).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn upsert_oidc_client(
         &self,
         client_id: &str,
@@ -2412,6 +2744,10 @@ impl LibraryStore {
     }
 
     /// Atomically consume an auth code; returns (client_id, user_id, redirect_uri, challenge, method, scope).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn consume_oidc_auth_code(
         &self,
         code_hash: &str,
@@ -2548,6 +2884,10 @@ impl LibraryStore {
     }
 
     /// List recent security audit events (newest first).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_security_audit_events(
         &self,
         limit: u64,
@@ -2573,6 +2913,10 @@ impl LibraryStore {
     ///
     /// Account links are exclusive: an `account_id` may belong to only one
     /// identity (`idx_account_links_account_exclusive`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn link_account(
         &self,
         identity_id: i64,
@@ -2640,6 +2984,10 @@ impl LibraryStore {
     }
 
     /// Remove an account link row (does not delete the account).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn unlink_account(&self, identity_id: i64, account_id: &str) -> Result<()> {
         let res = account_links::Entity::delete_many()
             .filter(account_links::Column::IdentityId.eq(identity_id))
@@ -2659,6 +3007,10 @@ impl LibraryStore {
     /// merge fields with Audible-precedence rules (a Libro rescan without an
     /// ASIN must not wipe Audible enrichment). Expressed as load-then-merge over
     /// the `books` entity so the precedence logic is explicit and portable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
         // Only clone when HTML entities are present — hot scan paths stay allocation-light.
         let decoded;
@@ -2798,6 +3150,10 @@ impl LibraryStore {
     }
 
     /// Look up a book by its public `uuid`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_book_by_uuid(&self, uuid: &str) -> Result<Option<BookRecord>> {
         books::Entity::find()
             .filter(books::Column::Uuid.eq(uuid))
@@ -2812,6 +3168,10 @@ impl LibraryStore {
     ///
     /// Prefer exact uuid / product_id matches, then asin, then isbn; ties break
     /// by `source` ascending.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_book(&self, title_id: &str, account_id: &str) -> Result<Option<BookRecord>> {
         let mut matches = books::Entity::find()
             .filter(books::Column::AccountId.eq(account_id))
@@ -2834,6 +3194,10 @@ impl LibraryStore {
     }
 
     /// All ownership rows sharing an ISBN (cross-account / cross-store enrichment).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn find_books_by_isbn(&self, isbn: &str) -> Result<Vec<BookRecord>> {
         books::Entity::find()
             .filter(books::Column::Isbn.eq(isbn))
@@ -2875,6 +3239,10 @@ impl LibraryStore {
     }
 
     /// Count book rows (SQL `COUNT`, not a full fetch).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn count_books(&self, account_id: Option<&str>) -> Result<i64> {
         let mut query = books::Entity::find();
         if let Some(account_id) = account_id {
@@ -2910,6 +3278,10 @@ impl LibraryStore {
     }
 
     /// Update user-defined fields (tags, ratings, finished) without touching scan metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn update_user_fields(
         &self,
         title_id: &str,
@@ -3101,6 +3473,10 @@ impl LibraryStore {
     /// Bulk-update acquire status (classic `set-status --force`).
     ///
     /// When `asins` is non-empty, matches against uuid, product_id, isbn, or asin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn bulk_set_acquire_status(
         &self,
         account: Option<&str>,
@@ -3140,6 +3516,10 @@ impl LibraryStore {
     }
 
     /// List saved quick-filter expressions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_saved_filters(&self) -> Result<Vec<SavedFilterRecord>> {
         Ok(saved_filters::Entity::find()
             .order_by_asc(saved_filters::Column::Name)
@@ -3260,6 +3640,10 @@ impl LibraryStore {
     }
 
     /// Persist enrichment fields without touching scan / ownership columns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn update_catalog_enrichment(
         &self,
         book_uuid: &str,
@@ -3302,6 +3686,10 @@ impl LibraryStore {
     }
 
     /// Upsert a canonical work row (COALESCE-preserve on conflict).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn upsert_work(&self, work: &NewWork) -> Result<WorkRecord> {
         let now = now_str();
         let id = work
@@ -3394,6 +3782,10 @@ impl LibraryStore {
     }
 
     /// Find work by Amazon ASIN identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn find_work_by_asin(&self, asin: &str) -> Result<Option<WorkRecord>> {
         Ok(works::Entity::find()
             .filter(works::Column::CanonicalAsin.eq(asin))
@@ -3404,6 +3796,10 @@ impl LibraryStore {
     }
 
     /// Finds a canonical work whose preferred ISBN matches `isbn`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn find_work_by_isbn(&self, isbn: &str) -> Result<Option<WorkRecord>> {
         Ok(works::Entity::find()
             .filter(works::Column::CanonicalIsbn.eq(isbn))
@@ -3747,6 +4143,10 @@ impl LibraryStore {
     }
 
     /// Upsert per-storefront snapshots for a wishlist row, then return the merged record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn upsert_title_request_sources(
         &self,
         title_request_id: i64,
@@ -3909,6 +4309,7 @@ impl LibraryStore {
             .collect())
     }
 
+    /// Loads one wishlist title request and attaches merged storefront sources.
     async fn get_title_request_by_id(&self, id: i64) -> Result<Option<TitleRequestRecord>> {
         let Some(model) = title_requests::Entity::find_by_id(id)
             .one(&self.db)
@@ -3923,6 +4324,7 @@ impl LibraryStore {
         Ok(Some(row))
     }
 
+    /// Attaches storefront source rows to a page of title requests in one query.
     async fn attach_sources_batch(
         &self,
         rows: Vec<TitleRequestRecord>,
@@ -3989,6 +4391,10 @@ impl LibraryStore {
     }
 
     /// Open wishlist row for this identity + work key, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn find_open_wishlist(
         &self,
         identity_id: Option<i64>,
@@ -4016,6 +4422,10 @@ impl LibraryStore {
     }
 
     /// Open wishlist row that matches bibliographic identity even when `work_key` differs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn find_open_wishlist_matching(
         &self,
         identity_id: Option<i64>,
@@ -4045,6 +4455,10 @@ impl LibraryStore {
     }
 
     /// Personal open wishlist for a portal identity, or operator (`identity_id` null).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_wishlist(&self, identity_id: Option<i64>) -> Result<Vec<TitleRequestRecord>> {
         let mut query = title_requests::Entity::find()
             .filter(title_requests::Column::Status.eq("open"))
@@ -4067,6 +4481,10 @@ impl LibraryStore {
     ///
     /// Sorted by wish count as a simple default; Discover re-ranks with local
     /// taste plus a heavy per-wisher boost for the Wishlist sidebar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_global_request_queue(&self) -> Result<Vec<GlobalQueueEntry>> {
         let open = self.list_title_requests(Some(RequestStatus::Open)).await?;
         let mut by_key: std::collections::HashMap<String, GlobalQueueEntry> =
@@ -4475,6 +4893,10 @@ impl LibraryStore {
     }
 
     /// Load per-user GUI / Discover preferences by subject key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_user_preferences(&self, subject_key: &str) -> Result<Option<UserPreferences>> {
         Ok(user_preferences::Entity::find()
             .filter(user_preferences::Column::SubjectKey.eq(subject_key))
@@ -4485,6 +4907,10 @@ impl LibraryStore {
     }
 
     /// Preferences for `subject_key`, or in-memory defaults when no row exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_user_preferences_or_default(
         &self,
         subject_key: &str,
@@ -4497,6 +4923,10 @@ impl LibraryStore {
     }
 
     /// Insert or replace preferences for a subject (operator or portal identity).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     #[allow(clippy::too_many_arguments)]
     pub async fn upsert_user_preferences(
         &self,
@@ -5178,6 +5608,7 @@ pub fn fallback_work_key(
 
 // ── Entity → record mapping ─────────────────────────────────────────────────
 
+/// Current UTC timestamp as RFC 3339 text for SeaORM `TEXT` columns.
 fn now_str() -> String {
     Utc::now().to_rfc3339()
 }
@@ -5206,16 +5637,19 @@ fn normalize_email(email: Option<&str>) -> Option<String> {
     })
 }
 
+/// Parses an RFC 3339 timestamp as UTC; unparseable values fall back to now.
 fn parse_dt(value: &str) -> chrono::DateTime<Utc> {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now())
 }
 
+/// Parses an optional RFC 3339 timestamp; `None` stays `None`.
 fn parse_dt_opt(value: Option<&str>) -> Option<chrono::DateTime<Utc>> {
     value.map(parse_dt)
 }
 
+/// Maps an `accounts` row to [`AccountRecord`] (`scan_enabled` is stored as 0/1).
 fn map_account(m: accounts::Model) -> AccountRecord {
     AccountRecord {
         id: m.id,
@@ -5230,6 +5664,7 @@ fn map_account(m: accounts::Model) -> AccountRecord {
     }
 }
 
+/// Maps a `portal_identities` row to the public portal-identity record.
 fn map_portal_identity(m: portal_identities::Model) -> crate::models::PortalIdentity {
     crate::models::PortalIdentity {
         id: m.id,
@@ -5241,6 +5676,7 @@ fn map_portal_identity(m: portal_identities::Model) -> crate::models::PortalIden
     }
 }
 
+/// Maps a `users` row to [`UserRecord`]; unknown role/status fall back to member/active.
 fn map_user(m: users::Model) -> UserRecord {
     UserRecord {
         id: m.id,
@@ -5256,6 +5692,7 @@ fn map_user(m: users::Model) -> UserRecord {
     }
 }
 
+/// Maps a `user_invites` row to the public invite record (token is stored as a hash).
 fn map_user_invite(m: user_invites::Model) -> crate::models::UserInviteRecord {
     crate::models::UserInviteRecord {
         id: m.id,
@@ -5270,6 +5707,7 @@ fn map_user_invite(m: user_invites::Model) -> crate::models::UserInviteRecord {
     }
 }
 
+/// Maps a `claim_tickets` row to the public ticket record (token is stored as a hash).
 fn map_claim_ticket(m: claim_tickets::Model) -> crate::models::ClaimTicketRecord {
     crate::models::ClaimTicketRecord {
         id: m.id,
@@ -5282,6 +5720,7 @@ fn map_claim_ticket(m: claim_tickets::Model) -> crate::models::ClaimTicketRecord
     }
 }
 
+/// Maps an `account_links` row (portal identity ↔ store account) to the public record.
 fn map_account_link(m: account_links::Model) -> crate::models::AccountLinkRecord {
     crate::models::AccountLinkRecord {
         id: m.id,
@@ -5292,6 +5731,7 @@ fn map_account_link(m: account_links::Model) -> crate::models::AccountLinkRecord
     }
 }
 
+/// Maps a `user_preferences` row, parsing JSON shelf/source lists and normalizing Discover sort.
 fn map_user_preferences(m: user_preferences::Model) -> UserPreferences {
     let disabled_shelves: Vec<String> =
         serde_json::from_str(&m.disabled_shelves_json).unwrap_or_default();
@@ -5311,6 +5751,7 @@ fn map_user_preferences(m: user_preferences::Model) -> UserPreferences {
     }
 }
 
+/// Canonical Discover sort key; unknown values become `relevance`.
 fn normalize_discover_sort(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "popularity" => String::from("popularity"),
@@ -5323,6 +5764,7 @@ fn normalize_discover_sort(raw: &str) -> String {
     }
 }
 
+/// Canonical Discover sort direction; anything other than `asc`/`ascending` is `desc`.
 fn normalize_discover_sort_dir(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "asc" | "ascending" => String::from("asc"),
@@ -5330,6 +5772,7 @@ fn normalize_discover_sort_dir(raw: &str) -> String {
     }
 }
 
+/// Maps a `saved_filters` row to the public saved-filter record.
 fn map_saved_filter(m: saved_filters::Model) -> SavedFilterRecord {
     SavedFilterRecord {
         id: m.id,
@@ -5340,6 +5783,7 @@ fn map_saved_filter(m: saved_filters::Model) -> SavedFilterRecord {
     }
 }
 
+/// Maps a `works` row to [`WorkRecord`] (canonical ASIN/ISBN and bibliographic fields).
 fn map_work(m: works::Model) -> WorkRecord {
     WorkRecord {
         id: m.id,
@@ -5361,6 +5805,7 @@ fn map_work(m: works::Model) -> WorkRecord {
     }
 }
 
+/// Maps a `listening_progress` row; `is_finished` is stored as 0/1.
 fn map_listening(m: listening_progress::Model) -> ListeningProgressRecord {
     ListeningProgressRecord {
         id: m.id,
@@ -5383,6 +5828,7 @@ fn map_listening(m: listening_progress::Model) -> ListeningProgressRecord {
     }
 }
 
+/// Maps a `title_requests` row; storefront sources are filled later by attach helpers.
 fn map_request(m: title_requests::Model) -> TitleRequestRecord {
     TitleRequestRecord {
         id: m.id,
@@ -5416,6 +5862,7 @@ fn map_request(m: title_requests::Model) -> TitleRequestRecord {
     }
 }
 
+/// Maps a `title_request_sources` row including observed list/member prices in cents.
 fn map_source(m: title_request_sources::Model) -> TitleRequestSourceRecord {
     TitleRequestSourceRecord {
         id: m.id,
@@ -5451,12 +5898,14 @@ fn map_source(m: title_request_sources::Model) -> TitleRequestSourceRecord {
     }
 }
 
+/// Trims an optional string; empty or whitespace becomes `None`.
 fn trim_opt(s: Option<&str>) -> Option<String> {
     s.map(str::trim)
         .filter(|t| !t.is_empty())
         .map(str::to_string)
 }
 
+/// Prefers a non-empty incoming string over the current optional value.
 fn prefer_opt(current: Option<String>, incoming: Option<&str>) -> Option<String> {
     let next = trim_opt(incoming);
     match (current, next) {
@@ -5466,6 +5915,7 @@ fn prefer_opt(current: Option<String>, incoming: Option<&str>) -> Option<String>
     }
 }
 
+/// Builds an ActiveModel that merges incoming storefront fields onto an existing source row.
 fn merged_source_active(
     model: title_request_sources::Model,
     src: &NewTitleRequestSource,
@@ -5519,6 +5969,7 @@ fn merged_source_active(
     }
 }
 
+/// Maps a `books` row to [`BookRecord`], parsing acquire/pdf status and RFC 3339 timestamps.
 fn map_book(m: books::Model) -> Result<BookRecord> {
     Ok(BookRecord {
         id: m.id,

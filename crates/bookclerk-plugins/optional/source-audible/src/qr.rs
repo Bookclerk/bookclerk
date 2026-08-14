@@ -16,6 +16,10 @@ pub enum QrRenderMode {
 }
 
 /// Render `url` as a terminal QR code string (plus the raw URL).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn render_login_qr(url: &str, mode: QrRenderMode) -> Result<String> {
     let code = QrCode::new(url.as_bytes())
         .map_err(|err| AudibleError::Auth(format!("failed to encode QR: {err}")))?;

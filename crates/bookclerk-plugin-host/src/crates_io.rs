@@ -5,6 +5,7 @@ use serde::Deserialize;
 use crate::registry::{PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, REGISTRY_KEYWORD};
 use crate::{PluginError, Result};
 
+/// crates.io User-Agent (`bookclerk/<version>` plus catalog contact URL).
 const CRATES_IO_USER_AGENT: &str = concat!(
     "bookclerk/",
     env!("CARGO_PKG_VERSION"),
@@ -15,6 +16,10 @@ const CRATES_IO_USER_AGENT: &str = concat!(
 ///
 /// Uses keyword [`REGISTRY_KEYWORD`] plus optional free text, then keeps hits
 /// whose crate name starts with [`CRATE_NAME_PREFIX`] and parses cleanly.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn search_crates_io(query: Option<&str>, per_page: u32) -> Result<Vec<PluginCatalogEntry>> {
     let per_page = per_page.clamp(1, 100);
     let q = match query.map(str::trim).filter(|s| !s.is_empty()) {
@@ -50,6 +55,7 @@ pub fn search_crates_io(query: Option<&str>, per_page: u32) -> Result<Vec<Plugin
     Ok(out)
 }
 
+/// GET `url` as JSON; non-2xx or decode failures become [`PluginError`].
 fn http_get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
     let mut response = ureq::get(url)
         .header("User-Agent", CRATES_IO_USER_AGENT)
@@ -84,24 +90,34 @@ fn urlencoding_encode(s: &str) -> String {
 }
 
 #[derive(Debug, Deserialize)]
+/// crates.io search envelope (`crates` array).
 struct CratesSearchResponse {
+    /// Hits from `/api/v1/crates` before prefix / parse filtering.
     crates: Vec<CrateHit>,
 }
 
 #[derive(Debug, Deserialize)]
+/// One crates.io search hit; only `bookclerk-plugin-*` names are kept.
 struct CrateHit {
+    /// Crate name on crates.io.
     name: String,
     #[serde(default)]
+    /// crates.io description when published.
     description: Option<String>,
     #[serde(default)]
+    /// Lifetime download count; treated as `0` when omitted.
     downloads: Option<u64>,
     #[serde(default)]
+    /// docs.rs (or other) documentation URL when published.
     documentation: Option<String>,
     #[serde(default)]
+    /// Source repository URL when published.
     repository: Option<String>,
     #[serde(default)]
+    /// Project homepage URL when published.
     homepage: Option<String>,
     #[serde(default)]
+    /// Highest published version; empty string when crates.io omitted it.
     max_version: Option<String>,
 }
 

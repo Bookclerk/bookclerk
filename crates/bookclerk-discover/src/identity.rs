@@ -370,6 +370,7 @@ fn subtitle_portion(title: &str) -> Option<&str> {
     None
 }
 
+/// True for boilerplate subtitles (`a novel`, `unabridged`, …) that must not distinguish editions.
 fn is_generic_subtitle(cleaned: &str) -> bool {
     matches!(
         cleaned,
@@ -462,6 +463,7 @@ pub fn parse_series_index(raw: Option<&str>) -> Option<f64> {
     }
 }
 
+/// True when both sides parse to numbers that differ by more than 0.001.
 fn series_indices_conflict(a: Option<&str>, b: Option<&str>) -> bool {
     match (parse_series_index(a), parse_series_index(b)) {
         (Some(x), Some(y)) => (x - y).abs() > 0.001,
@@ -469,6 +471,7 @@ fn series_indices_conflict(a: Option<&str>, b: Option<&str>) -> bool {
     }
 }
 
+/// True when both sides parse to numbers within 0.001; missing values do not agree.
 fn series_indices_agree(a: Option<&str>, b: Option<&str>) -> bool {
     match (parse_series_index(a), parse_series_index(b)) {
         (Some(x), Some(y)) => (x - y).abs() <= 0.001,
@@ -516,6 +519,7 @@ fn title_contains_other(a: &str, b: &str) -> bool {
     longer.contains(&format!(" {shorter} "))
 }
 
+/// First cleaned author after splitting roles and punctuation, if any.
 fn primary_author_cleaned(authors: Option<&str>) -> Option<String> {
     cleaned_author_list(authors).into_iter().next()
 }
@@ -545,6 +549,7 @@ fn cleaned_author_list(authors: Option<&str>) -> Vec<String> {
     out
 }
 
+/// Drops ` - editor` / `(foreword)` style role suffixes so contributor roles do not block merges.
 fn strip_author_role_suffix(name: &str) -> &str {
     let name = name.trim();
     if let Some((left, _)) = name.split_once(" - ") {
@@ -938,6 +943,7 @@ pub fn merge_global_queue_entries(entries: Vec<GlobalQueueEntry>) -> Vec<GlobalQ
     merged
 }
 
+/// Appends a wishlist edition unless source or source+id already exists; empty ids are dropped.
 fn push_wishlist_edition(
     editions: &mut Vec<bookclerk_library::WishlistStoreEdition>,
     edition: bookclerk_library::WishlistStoreEdition,
@@ -960,6 +966,7 @@ fn push_wishlist_edition(
     editions.push(edition);
 }
 
+/// Merges overlapping hint fields (richest-wins) or appends a new source+id row.
 fn push_wishlist_purchase_hint(
     hints: &mut Vec<bookclerk_library::WishlistPurchaseHint>,
     hint: bookclerk_library::WishlistPurchaseHint,
@@ -998,6 +1005,7 @@ fn push_wishlist_purchase_hint(
     hints.push(hint);
 }
 
+/// Fills an empty optional string, or replaces it when the incoming value is longer.
 fn fill_opt_string(slot: &mut Option<String>, incoming: Option<&str>) {
     let Some(v) = incoming.map(str::trim).filter(|s| !s.is_empty()) else {
         return;

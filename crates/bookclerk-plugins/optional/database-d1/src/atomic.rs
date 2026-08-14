@@ -22,8 +22,11 @@ pub(crate) type SqlStmt = (String, Vec<JsonValue>);
 
 /// Planned batch plus the index of the application-status `SELECT`.
 struct AtomicPlan {
+    /// Ordered D1 HTTP batch statements that run as one SQL transaction.
     statements: Vec<SqlStmt>,
+    /// Index of the application-status `SELECT` inside [`AtomicPlan::statements`].
     outcome_index: usize,
+    /// Index of the payload `SELECT` when the op returns a user or identity row.
     payload_index: Option<usize>,
     /// `DELETE … RETURNING` consume-once; when set, expiry uses this cutoff.
     consume_once: Option<(ConsumeOnceKind, String)>,
@@ -31,27 +34,42 @@ struct AtomicPlan {
     receipt_select_index: Option<usize>,
     /// Receipt `SELECT` immediately after prune; a row means this attempt is a replay.
     prior_receipt_index: Option<usize>,
+    /// SHA-256 hex of the idempotency-relevant request; compared on receipt replay.
     expected_hash: Option<String>,
 }
 
+/// Bindings shared by every receipt prune/select/insert in one atomic attempt.
 struct ReceiptCtx {
+    /// Caller-owned idempotency key reused across HTTP retries of the same attempt.
     operation_id: String,
+    /// SHA-256 hex of the operation payload; a mismatch is an idempotency conflict.
     request_hash: String,
+    /// Wire operation name stored on the receipt (`deleteUser`, `redeemClaimTicket`, …).
     kind: &'static str,
+    /// RFC 3339 timestamp shared by every statement in this batch.
     now: String,
+    /// RFC 3339 cutoff after which this receipt may be pruned (24 hours from `now`).
     expires_at: String,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Which consume-once table a `DELETE … RETURNING` plan targets.
 enum ConsumeOnceKind {
+    /// OIDC RP state row consumed from `oidc_rp_states`.
     OidcRpState,
+    /// WebAuthn challenge row consumed from `webauthn_challenges`.
     WebauthnChallenge,
 }
 
+/// Maximum D1 HTTP batch attempts, including retries after ambiguous responses.
 const ATOMIC_HTTP_ATTEMPTS: usize = 3;
 
 impl D1Proxy {
     /// Runs a named library operation as one D1 HTTP batch (one SQL transaction).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn run_atomic(
         &self,
         req: DbAtomicRequest,
@@ -94,6 +112,7 @@ impl D1Proxy {
     }
 }
 
+/// Waits before a D1 retry, honoring `Retry-After` or a capped exponential backoff.
 async fn sleep_before_d1_retry(attempt: usize, retry_after: Option<Duration>) {
     let delay = retry_after.unwrap_or_else(|| {
         Duration::from_millis((50u64.saturating_mul(3u64.saturating_pow(attempt as u32))).min(400))
@@ -125,6 +144,7 @@ pub fn plugin_error_from_d1(err: DbErr) -> bookclerk_plugin_sdk::PluginError {
     bookclerk_plugin_sdk::PluginError::internal(err.to_string())
 }
 
+/// Extracts a permanent `D1 HTTP {status}` code from a [`DbErr`], if present.
 fn permanent_http_status(err: &DbErr) -> Option<u16> {
     let text = err.to_string();
     let idx = text.find("D1 HTTP ")?;
@@ -135,10 +155,12 @@ fn permanent_http_status(err: &DbErr) -> Option<u16> {
         .ok()
 }
 
+/// Builds a [`DbErr`] whose message marks the batch as possibly already committed.
 fn ambiguous_d1(msg: impl std::fmt::Display) -> DbErr {
     DbErr::Custom(format!("D1 ambiguous response: {msg}"))
 }
 
+/// Sums D1 `sql_duration_ms` timings from a batch response and returns microseconds.
 fn d1_sql_duration_us(raw: &JsonValue) -> Option<u64> {
     let arr = raw.get("result")?.as_array()?;
     let mut ms = 0.0_f64;
@@ -157,10 +179,12 @@ fn d1_sql_duration_us(raw: &JsonValue) -> Option<u64> {
     any.then_some((ms * 1000.0) as u64)
 }
 
+/// SHA-256 hex of the idempotency-relevant fields of `op`, mapped to [`DbErr`].
 fn request_hash(op: &DbAtomicParams) -> std::result::Result<String, DbErr> {
     bookclerk_library::db_atomic_request_hash(op).map_err(|err| DbErr::Custom(err.to_string()))
 }
 
+/// Wire `operationKind` string stored on `db_atomic_receipts` for `op`.
 fn operation_kind(op: &DbAtomicParams) -> &'static str {
     match op {
         DbAtomicParams::DeleteUser { .. } => "deleteUser",
@@ -173,6 +197,7 @@ fn operation_kind(op: &DbAtomicParams) -> &'static str {
     }
 }
 
+/// RFC 3339 timestamp 24 hours after `now`, or `now` when the input is unparseable.
 fn receipt_expiry(now: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(now)
         .map(|dt| (dt + chrono::Duration::hours(24)).to_rfc3339())
@@ -207,6 +232,7 @@ fn plan_atomic(req: &DbAtomicRequest, now: &str) -> std::result::Result<AtomicPl
     })
 }
 
+/// Compiles `op` into the inner SQL statements before receipt wrapping.
 fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
     match op {
         DbAtomicParams::DeleteUser { user_id } => plan_delete_user(*user_id),
@@ -244,18 +270,22 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
     }
 }
 
+/// Pairs a SQL text with JSON bind parameters for a D1 batch statement.
 fn sql(text: &str, params: Vec<JsonValue>) -> SqlStmt {
     (text.to_string(), params)
 }
 
+/// JSON number bind for a signed 64-bit integer column.
 fn j_i64(n: i64) -> JsonValue {
     JsonValue::from(n)
 }
 
+/// JSON string bind; the value is copied into the batch body.
 fn j_str(s: &str) -> JsonValue {
     JsonValue::String(s.to_string())
 }
 
+/// JSON string bind, or JSON null when the optional value is absent.
 fn j_opt_str(s: Option<&str>) -> JsonValue {
     match s {
         Some(v) => JsonValue::String(v.to_string()),
@@ -263,12 +293,20 @@ fn j_opt_str(s: Option<&str>) -> JsonValue {
     }
 }
 
+/// Which receipt payload `SELECT` to attach after a status-gated write.
 enum PayloadKind {
+    /// No payload row; the receipt stores status only.
     None,
-    User { user_id: i64 },
+    /// Scoped to a concrete library user id.
+    User {
+        /// Library user id for this atomic scope.
+        user_id: i64,
+    },
+    /// Portal-identity JSON payload after a successful claim redeem.
     Identity,
 }
 
+/// Deletes expired receipts except the current `operation_id` so a replay can still match.
 fn prune_receipts(ctx: &ReceiptCtx) -> SqlStmt {
     sql(
         "DELETE FROM db_atomic_receipts WHERE expires_at <= ? AND operation_id != ?",
@@ -276,6 +314,7 @@ fn prune_receipts(ctx: &ReceiptCtx) -> SqlStmt {
     )
 }
 
+/// Selects the receipt row for this `operation_id`, if one already exists.
 fn select_receipt(ctx: &ReceiptCtx) -> SqlStmt {
     sql(
         "SELECT operation_id, request_hash, status, payload, created_at \
@@ -284,6 +323,7 @@ fn select_receipt(ctx: &ReceiptCtx) -> SqlStmt {
     )
 }
 
+/// Appends a `NOT EXISTS` receipt gate so writes skip when this attempt already ran.
 fn gate_write(sql_text: String, mut params: Vec<JsonValue>, operation_id: &str) -> SqlStmt {
     let trimmed = sql_text.trim_start();
     let is_write = trimmed.starts_with("INSERT")
@@ -301,6 +341,7 @@ fn gate_write(sql_text: String, mut params: Vec<JsonValue>, operation_id: &str) 
     )
 }
 
+/// Restricts a later write to run only after this attempt's receipt claimed `ok`.
 fn gate_claimed_ok(sql_text: String, mut params: Vec<JsonValue>, operation_id: &str) -> SqlStmt {
     let trimmed = sql_text.trim_start();
     let is_write = trimmed.starts_with("INSERT")
@@ -322,6 +363,7 @@ fn gate_claimed_ok(sql_text: String, mut params: Vec<JsonValue>, operation_id: &
     )
 }
 
+/// SQL that builds the guest user JSON object (password present as a boolean).
 fn user_payload_json_sql() -> &'static str {
     "SELECT json_object(\
         'id', id, 'role', role, 'status', status, \
@@ -331,6 +373,7 @@ fn user_payload_json_sql() -> &'static str {
      ) AS payload FROM users WHERE id = ?"
 }
 
+/// Opening SQL for wrapping a portal-identity subquery as receipt payload JSON.
 fn identity_payload_json_sql() -> &'static str {
     "SELECT json_object(\
         'id', id, 'provider', provider, 'external_user_id', external_user_id, \
@@ -338,6 +381,7 @@ fn identity_payload_json_sql() -> &'static str {
      ) AS payload FROM ("
 }
 
+/// Wraps a status-gated plan with prune, prior-receipt select, gated writes, and a final receipt select.
 fn wrap_status_op(plan: AtomicPlan, ctx: &ReceiptCtx, payload: PayloadKind) -> AtomicPlan {
     let outcome_index = plan.outcome_index;
     let payload_index = plan.payload_index;
@@ -376,6 +420,7 @@ fn wrap_status_op(plan: AtomicPlan, ctx: &ReceiptCtx, payload: PayloadKind) -> A
     }
 }
 
+/// Inserts a receipt whose status comes from the plan's outcome `SELECT`, skipping if one exists.
 fn receipt_insert_from_outcome(ctx: &ReceiptCtx, outcome: &SqlStmt) -> SqlStmt {
     let insert_sql = format!(
         "INSERT INTO db_atomic_receipts (\
@@ -396,6 +441,7 @@ fn receipt_insert_from_outcome(ctx: &ReceiptCtx, outcome: &SqlStmt) -> SqlStmt {
     (insert_sql, params)
 }
 
+/// Updates an `ok` receipt with user or identity JSON when the payload is still null.
 fn receipt_payload_update(
     ctx: &ReceiptCtx,
     payload: PayloadKind,
@@ -427,6 +473,7 @@ fn receipt_payload_update(
     }
 }
 
+/// Builds the consume-once batch that copies then deletes an OIDC RP state row.
 fn wrap_consume_oidc(state_hash: &str, now: &str, ctx: &ReceiptCtx) -> AtomicPlan {
     wrap_consume(
         ctx,
@@ -442,6 +489,7 @@ fn wrap_consume_oidc(state_hash: &str, now: &str, ctx: &ReceiptCtx) -> AtomicPla
     )
 }
 
+/// Builds the consume-once batch that copies then deletes a WebAuthn challenge row.
 fn wrap_consume_webauthn(
     challenge_id: &str,
     kind: &str,
@@ -461,6 +509,7 @@ fn wrap_consume_webauthn(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Copies a consume-once row into a receipt (unique `consume_key`), then deletes the source.
 fn wrap_consume(
     ctx: &ReceiptCtx,
     kind: &str,
@@ -553,10 +602,12 @@ fn last_owner_sql() -> &'static str {
       AND (SELECT COUNT(*) FROM users WHERE role = 'owner' AND status = 'active') <= 1)"
 }
 
+/// Bind parameters for [`last_owner_sql`], which references `user_id` twice.
 fn last_owner_params(user_id: i64) -> Vec<JsonValue> {
     vec![j_i64(user_id), j_i64(user_id)]
 }
 
+/// `WHERE` fragment that allows mutation only when the user exists and is not the last active owner.
 fn allow_mutate_sql() -> String {
     format!(
         "EXISTS (SELECT 1 FROM users WHERE id = ?) AND NOT {}",
@@ -564,12 +615,14 @@ fn allow_mutate_sql() -> String {
     )
 }
 
+/// Bind parameters for [`allow_mutate_sql`]: user id plus the last-owner pair.
 fn allow_mutate_params(user_id: i64) -> Vec<JsonValue> {
     let mut p = vec![j_i64(user_id)];
     p.extend(last_owner_params(user_id));
     p
 }
 
+/// Plans cascading deletes for a user, refusing when they are the last active owner.
 fn plan_delete_user(user_id: i64) -> AtomicPlan {
     let mut statements = vec![
         sql(
@@ -688,6 +741,7 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
     }
 }
 
+/// Plans a status update that refuses disabling the last active owner and drops elevated sessions.
 fn plan_set_user_status(user_id: i64, status: &str, now: &str) -> AtomicPlan {
     let last_owner_disable = format!("(? = 'disabled' AND {})", last_owner_sql());
     let mut outcome_params = vec![j_i64(user_id), j_str(status)];
@@ -746,6 +800,7 @@ fn plan_set_user_status(user_id: i64, status: &str, now: &str) -> AtomicPlan {
     }
 }
 
+/// Plans a password-hash write that bumps `security_version` and clears elevated sessions.
 fn plan_set_user_password_hash(user_id: i64, password_hash: Option<&str>, now: &str) -> AtomicPlan {
     AtomicPlan {
         statements: vec![
@@ -786,6 +841,7 @@ fn plan_set_user_password_hash(user_id: i64, password_hash: Option<&str>, now: &
     }
 }
 
+/// Plans a role change that refuses demoting the last active owner and drops elevated sessions.
 fn plan_set_user_role(user_id: i64, role: &str, now: &str) -> AtomicPlan {
     let last_owner_demote = format!("(? != 'owner' AND {})", last_owner_sql());
     let mut outcome_params = vec![j_i64(user_id), j_str(role)];
@@ -851,6 +907,7 @@ fn plan_set_user_role(user_id: i64, role: &str, now: &str) -> AtomicPlan {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Marks a claim ticket redeemed, optionally sets a local password, and inserts the portal session.
 fn plan_redeem_claim(
     token_hash: &str,
     session_hash: &str,
@@ -998,6 +1055,7 @@ fn plan_redeem_claim(
     }
 }
 
+/// Inner `DELETE … RETURNING` for an OIDC RP state; wrapping adds the receipt copy.
 fn plan_take_oidc_rp_state(state_hash: &str, now: &str) -> AtomicPlan {
     AtomicPlan {
         statements: vec![sql(
@@ -1015,6 +1073,7 @@ fn plan_take_oidc_rp_state(state_hash: &str, now: &str) -> AtomicPlan {
     }
 }
 
+/// Inner `DELETE … RETURNING` for a WebAuthn challenge; wrapping adds the receipt copy.
 fn plan_take_webauthn_challenge(challenge_id: &str, kind: &str, now: &str) -> AtomicPlan {
     AtomicPlan {
         statements: vec![sql(
@@ -1033,10 +1092,13 @@ fn plan_take_webauthn_challenge(challenge_id: &str, kind: &str, now: &str) -> At
 }
 
 #[derive(Debug, Clone)]
+/// Rows returned by one statement in a D1 HTTP batch response.
 struct BatchStmtResult {
+    /// Result rows for this statement; empty when the statement did not return rows.
     rows: Vec<JsonValue>,
 }
 
+/// Parses a D1 batch response and checks receipt rows match `operation_id` and statement count.
 fn parse_and_validate_batch(
     plan: &AtomicPlan,
     value: &JsonValue,
@@ -1064,6 +1126,7 @@ fn parse_and_validate_batch(
     Ok(results)
 }
 
+/// Reads a required non-empty string field from a receipt row, or marks the response ambiguous.
 fn required_receipt_string<'a>(
     row: &'a JsonValue,
     field: &str,
@@ -1075,6 +1138,7 @@ fn required_receipt_string<'a>(
         .ok_or_else(|| ambiguous_d1(format!("malformed receipt row: missing {field}")))
 }
 
+/// Requires `operation_id`, `request_hash`, `status`, and `created_at`, and checks the id matches.
 fn validate_receipt_row(
     row: &JsonValue,
     expected_operation_id: &str,
@@ -1091,6 +1155,7 @@ fn validate_receipt_row(
     Ok(())
 }
 
+/// Parses the D1 `result` array; a `success: false` entry is a hard statement failure.
 fn parse_batch_results(value: &JsonValue) -> std::result::Result<Vec<BatchStmtResult>, DbErr> {
     let Some(arr) = value.get("result").and_then(JsonValue::as_array) else {
         return Err(ambiguous_d1("batch response missing result array"));
@@ -1112,6 +1177,7 @@ fn parse_batch_results(value: &JsonValue) -> std::result::Result<Vec<BatchStmtRe
     Ok(out)
 }
 
+/// Maps batch rows onto a [`DbAtomicResult`], preferring a prior or final receipt when present.
 fn interpret_atomic(plan: &AtomicPlan, results: &[BatchStmtResult]) -> DbAtomicResult {
     if let Some(idx) = plan.prior_receipt_index {
         if let Some(row) = results.get(idx).and_then(|r| r.rows.first()) {
@@ -1151,6 +1217,7 @@ fn interpret_atomic(plan: &AtomicPlan, results: &[BatchStmtResult]) -> DbAtomicR
     }
 }
 
+/// Decodes a receipt row, flagging an idempotency conflict when `request_hash` differs.
 fn interpret_receipt(
     row: Option<&JsonValue>,
     expected_hash: &str,
@@ -1187,6 +1254,7 @@ fn interpret_receipt(
     result
 }
 
+/// Parses a receipt `payload` cell, accepting JSON objects or a JSON-encoded string.
 fn decode_receipt_payload(value: Option<&JsonValue>) -> Option<JsonValue> {
     match value {
         None | Some(JsonValue::Null) => None,
@@ -1197,6 +1265,7 @@ fn decode_receipt_payload(value: Option<&JsonValue>) -> Option<JsonValue> {
     }
 }
 
+/// Interprets a consume-once `RETURNING` row as empty when missing or already expired.
 fn interpret_consume_once(
     kind: ConsumeOnceKind,
     now: &str,
@@ -1219,6 +1288,7 @@ fn interpret_consume_once(
     }
 }
 
+/// Guest user JSON: `has_password` is derived; the hash itself is never returned.
 fn user_payload(row: &JsonValue) -> JsonValue {
     let has_password = match row.get("password_hash") {
         Some(JsonValue::Null) | None => false,
@@ -1239,6 +1309,7 @@ fn user_payload(row: &JsonValue) -> JsonValue {
     })
 }
 
+/// Guest portal-identity JSON after a successful claim redeem.
 fn identity_payload(row: &JsonValue) -> JsonValue {
     json!({
         "id": row.get("id").cloned().unwrap_or(JsonValue::Null),
@@ -1250,6 +1321,7 @@ fn identity_payload(row: &JsonValue) -> JsonValue {
     })
 }
 
+/// Guest OIDC RP-state JSON (provider, PKCE verifier, nonce, purpose, user).
 fn oidc_rp_state_payload(row: &JsonValue) -> JsonValue {
     json!({
         "provider_id": row.get("provider_id").cloned().unwrap_or(JsonValue::Null),
@@ -1260,6 +1332,7 @@ fn oidc_rp_state_payload(row: &JsonValue) -> JsonValue {
     })
 }
 
+/// Guest WebAuthn challenge JSON (`user_id` plus opaque `state_json`).
 fn webauthn_challenge_payload(row: &JsonValue) -> JsonValue {
     json!({
         "user_id": row.get("user_id").cloned().unwrap_or(JsonValue::Null),

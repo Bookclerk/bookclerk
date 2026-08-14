@@ -43,15 +43,21 @@ pub const AUTH_PASSWORD_ENV: &str = "BOOKCLERK_AUTH_PASSWORD";
 /// Bootstrap key file under `BOOKCLERK_FILES_DIR` (auto-minted when missing).
 pub const MASTER_KEY_FILE_NAME: &str = "master.key";
 
+/// On-disk magic for an unwrapped 32-byte DEK (`BCK1` + key bytes).
 const MAGIC_RAW: &[u8; 4] = b"BCK1"; // raw DEK (no password wrap)
+/// On-disk magic for a password-wrapped DEK (`BCK2` + salt + nonce + ciphertext).
 const MAGIC_WRAPPED: &[u8; 4] = b"BCK2"; // Argon2id + XChaCha wrap
+/// Data-encryption key length in bytes (XChaCha20-Poly1305 key).
 const DEK_LEN: usize = 32;
+/// Argon2id salt length in bytes for wrapping `master.key`.
 const SALT_LEN: usize = 16;
+/// XChaCha20-Poly1305 nonce length in bytes (wrap and per-row seal).
 const NONCE_LEN: usize = 24;
 
 /// Process-wide cached DEK (filled by [`configure_master_key`] / [`resolve_master_key`]).
 static CACHED_DEK: OnceLock<Mutex<Option<MasterKey>>> = OnceLock::new();
 
+/// Process-wide cached DEK slot filled by [`configure_master_key`] / [`resolve_master_key`].
 fn cache_slot() -> &'static Mutex<Option<MasterKey>> {
     CACHED_DEK.get_or_init(|| Mutex::new(None))
 }
@@ -68,6 +74,7 @@ pub enum MasterKeyFormat {
 /// 32-byte data-encryption key (zeroized on drop).
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct MasterKey {
+    /// 32-byte DEK used to seal `encrypted_secrets`; zeroized on drop. Only this process can unseal after load/unwrap.
     bytes: [u8; DEK_LEN],
 }
 
@@ -78,12 +85,14 @@ impl MasterKey {
         &self.bytes
     }
 
+    /// Mints a fresh 32-byte DEK from the OS CSPRNG.
     fn random() -> Result<Self> {
         let mut bytes = [0u8; DEK_LEN];
         rand::rngs::OsRng.fill_bytes(&mut bytes);
         Ok(Self { bytes })
     }
 
+    /// Wraps already-unwrapped DEK bytes (from `BCK1` or after password unwrap).
     fn from_bytes(bytes: [u8; DEK_LEN]) -> Self {
         Self { bytes }
     }
@@ -109,6 +118,10 @@ pub fn master_key_path(files_dir: &Path) -> PathBuf {
 }
 
 /// Inspect the on-disk envelope without unlocking (missing → `None`).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn inspect_master_key(files_dir: &Path) -> Result<Option<MasterKeyFormat>> {
     let path = master_key_path(files_dir);
     if !path.is_file() {
@@ -142,6 +155,10 @@ pub fn inspect_master_key(files_dir: &Path) -> Result<Option<MasterKeyFormat>> {
 /// [`configure_master_key_with`] when `[auth].password` may apply.
 ///
 /// Call once at CLI/daemon startup after `paths.ensure_dirs()`.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn configure_master_key(files_dir: &Path) -> Result<MasterKey> {
     configure_master_key_with(files_dir, read_auth_password_env().as_deref())
 }
@@ -155,6 +172,10 @@ pub fn configure_master_key(files_dir: &Path) -> Result<MasterKey> {
 /// If the resolved DEK identity differs from the previously cached one (e.g. a
 /// replaced `master.key`), the plaintext unseal cache is flushed so callers
 /// cannot observe stale plaintext under the new key.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn configure_master_key_with(files_dir: &Path, password: Option<&str>) -> Result<MasterKey> {
     let password = password
         .map(str::trim)
@@ -175,6 +196,10 @@ pub fn configure_master_key_with(files_dir: &Path, password: Option<&str>) -> Re
 }
 
 /// Return the process-cached DEK, or resolve from `files_dir` if not configured.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn require_master_key(files_dir: Option<&Path>) -> Result<MasterKey> {
     if let Ok(guard) = cache_slot().lock() {
         if let Some(key) = guard.as_ref() {
@@ -190,11 +215,19 @@ pub fn require_master_key(files_dir: Option<&Path>) -> Result<MasterKey> {
 }
 
 /// Resolve the DEK from env + `master.key` (minting when needed).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn resolve_master_key(files_dir: &Path) -> Result<MasterKey> {
     resolve_master_key_with(files_dir, read_auth_password_env().as_deref())
 }
 
 /// Resolve the DEK with an explicit password override.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn resolve_master_key_with(files_dir: &Path, password: Option<&str>) -> Result<MasterKey> {
     let path = master_key_path(files_dir);
     let password = password
@@ -219,6 +252,10 @@ pub fn resolve_master_key_with(files_dir: &Path, password: Option<&str>) -> Resu
 ///
 /// No-op (still unlocks) when already `BCK2` and `password` is correct.
 /// Fails if the file is missing — mint via [`configure_master_key_with`] first.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn wrap_master_key(files_dir: &Path, password: &str) -> Result<MasterKey> {
     let password = password.trim();
     if password.is_empty() {
@@ -237,6 +274,7 @@ pub fn wrap_master_key(files_dir: &Path, password: &str) -> Result<MasterKey> {
     configure_master_key_with(files_dir, Some(password))
 }
 
+/// Reads `BOOKCLERK_AUTH_PASSWORD` and registers it for log redaction; empty is treated as absent.
 fn read_auth_password_env() -> Option<String> {
     let v = std::env::var(AUTH_PASSWORD_ENV).ok()?;
     let trimmed = v.trim();
@@ -247,6 +285,7 @@ fn read_auth_password_env() -> Option<String> {
     Some(trimmed.to_string())
 }
 
+/// Creates `master.key` (mode 0600): raw `BCK1` or password-wrapped `BCK2`. Only a later unwrap with the same password can recover a wrapped DEK.
 fn mint_master_key(path: &Path, password: Option<&str>) -> Result<MasterKey> {
     let dek = MasterKey::random()?;
     if let Some(parent) = path.parent() {
@@ -296,6 +335,7 @@ fn mint_master_key(path: &Path, password: Option<&str>) -> Result<MasterKey> {
     }
 }
 
+/// Loads a `BCK1`/`BCK2` file; `BCK2` requires the auth password to unwrap. A new password re-wraps `BCK1` in place (same DEK).
 fn parse_master_key_file(raw: &[u8], password: Option<&str>, path: &Path) -> Result<MasterKey> {
     if raw.len() < 4 {
         return Err(LibraryError::Other(anyhow::anyhow!(
@@ -349,6 +389,7 @@ fn parse_master_key_file(raw: &[u8], password: Option<&str>, path: &Path) -> Res
     }
 }
 
+/// Serializes an unwrapped DEK as `BCK1` plus 32 raw bytes (anyone with the file can unseal secrets).
 fn encode_raw_master_key(dek: &MasterKey) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + DEK_LEN);
     out.extend_from_slice(MAGIC_RAW);
@@ -356,6 +397,7 @@ fn encode_raw_master_key(dek: &MasterKey) -> Vec<u8> {
     out
 }
 
+/// Seals the DEK with Argon2id + XChaCha20-Poly1305; only the auth password can unwrap it.
 fn encode_wrapped_master_key(dek: &MasterKey, password: &str) -> Result<Vec<u8>> {
     let salt = random_bytes(SALT_LEN);
     let nonce = random_bytes(NONCE_LEN);
@@ -382,6 +424,7 @@ fn encode_wrapped_master_key(dek: &MasterKey, password: &str) -> Result<Vec<u8>>
     Ok(out)
 }
 
+/// Unwraps a `BCK2` body with the auth password; wrong password fails closed (secrets stay sealed).
 fn decode_wrapped_master_key(body: &[u8], password: &str, path: &Path) -> Result<MasterKey> {
     if body.len() < SALT_LEN + NONCE_LEN + 16 {
         return Err(LibraryError::Other(anyhow::anyhow!(
@@ -417,6 +460,7 @@ fn decode_wrapped_master_key(body: &[u8], password: &str, path: &Path) -> Result
     Ok(MasterKey::from_bytes(bytes))
 }
 
+/// Derives the 32-byte wrap key from the auth password and salt (Argon2id).
 fn derive_wrapping_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
     let params = ArgonParams::new(KDF_M_COST, KDF_T_COST, KDF_P_COST, Some(32))
         .map_err(|e| LibraryError::Other(anyhow::anyhow!("argon2 params: {e}")))?;
@@ -429,6 +473,7 @@ fn derive_wrapping_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
     Ok(key)
 }
 
+/// Fills `len` bytes from the OS CSPRNG (salts, nonces, temp-file suffixes).
 fn random_bytes(len: usize) -> Vec<u8> {
     let mut out = vec![0u8; len];
     rand::rngs::OsRng.fill_bytes(&mut out);
@@ -497,12 +542,14 @@ fn write_secret_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Sets Unix mode `0700` (dir) or `0600` (file) so only the process owner can read `master.key`.
 fn harden_path(path: &Path, is_dir: bool) -> Result<()> {
     harden_path_io(path, is_dir).map_err(|e| {
         LibraryError::Other(anyhow::anyhow!("failed to harden {}: {e}", path.display()))
     })
 }
 
+/// Applies owner-only permissions; no-op on non-Unix hosts.
 fn harden_path_io(path: &Path, is_dir: bool) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -515,6 +562,10 @@ fn harden_path_io(path: &Path, is_dir: bool) -> std::io::Result<()> {
 }
 
 /// Seal plaintext with the DEK (random nonce). Fast — no Argon2.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn seal_with_dek(plaintext: &[u8], dek: &MasterKey) -> Result<(Vec<u8>, Vec<u8>)> {
     let nonce = random_bytes(NONCE_LEN);
     let cipher = XChaCha20Poly1305::new_from_slice(dek.as_bytes())
@@ -528,6 +579,10 @@ pub fn seal_with_dek(plaintext: &[u8], dek: &MasterKey) -> Result<(Vec<u8>, Vec<
 }
 
 /// Unseal ciphertext with the DEK.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn unseal_with_dek(ciphertext: &[u8], nonce: &[u8], dek: &MasterKey) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new_from_slice(dek.as_bytes())
         .map_err(|e| LibraryError::Other(anyhow::anyhow!("cipher init: {e}")))?;

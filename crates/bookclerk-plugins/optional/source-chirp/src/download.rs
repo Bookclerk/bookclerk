@@ -8,6 +8,10 @@ use crate::client::ChirpClient;
 use crate::error::{ChirpError, Result};
 
 /// Fetch one audiobook id into `cache_dir` via AndroidSingleAudiobook track URLs.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn fetch_title_materials(
     client: &ChirpClient,
     audiobook_id: &str,
@@ -79,6 +83,7 @@ pub async fn fetch_title_materials(
     })
 }
 
+/// Sniffs a Chirp part URL and bytes for an audio extension, defaulting to `.bin`.
 fn audio_extension(url: &str, bytes: &[u8]) -> &'static str {
     bookclerk_source::audio_extension(url, Some(bytes), None, ".bin")
 }

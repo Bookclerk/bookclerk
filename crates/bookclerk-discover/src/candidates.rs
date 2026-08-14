@@ -258,6 +258,7 @@ pub async fn gather_storefront_candidates(
     Ok(by_key.into_values().collect())
 }
 
+/// Whether this storefront id is included in the current candidate fetch options.
 fn source_enabled(id: &str, opts: &CandidateFetchOptions) -> bool {
     if id.eq_ignore_ascii_case("audible") {
         return opts.include_audible;
@@ -274,6 +275,7 @@ fn source_enabled(id: &str, opts: &CandidateFetchOptions) -> bool {
     true
 }
 
+/// Projects a catalog hit into a [`StorefrontCandidate`] (HTML entities decoded).
 pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCandidate {
     let hit = hit.decode_html_entities();
     StorefrontCandidate {
@@ -308,11 +310,13 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
     }
 }
 
+/// True when the title looks like a boxed series set (usually dropped from recs).
 fn looks_like_series_set(hit: &CatalogHit) -> bool {
     let title = hit.title.to_ascii_lowercase();
     title.contains("series set") || title.ends_with(" set")
 }
 
+/// Copies seed title/categories onto a candidate when those fields are still empty.
 fn apply_seed(mut c: StorefrontCandidate, seed: &BookRecord) -> StorefrontCandidate {
     if c.seed_title.is_none() {
         c.seed_title = Some(seed.title.clone());
@@ -328,6 +332,7 @@ fn apply_seed(mut c: StorefrontCandidate, seed: &BookRecord) -> StorefrontCandid
     c
 }
 
+/// Dedupes comma/semicolon/pipe-separated category tokens into `into`.
 fn merge_category_strings(into: &mut Option<String>, extra: Option<&str>) {
     let Some(extra) = extra.map(str::trim).filter(|s| !s.is_empty()) else {
         return;
@@ -355,6 +360,7 @@ fn merge_category_strings(into: &mut Option<String>, extra: Option<&str>) {
     }
 }
 
+/// Inserts a candidate unless its ASIN, ISBN, or source:product id is already owned.
 fn insert_candidate(
     map: &mut HashMap<String, StorefrontCandidate>,
     mut c: StorefrontCandidate,

@@ -25,6 +25,7 @@ use crate::tickets::{
 };
 use crate::types::ExternalUser;
 
+/// Cookie name for the portal session token shared by `/api/portal` and the SPA.
 const SESSION_COOKIE: &str = "bookclerk_portal_session";
 
 /// Drop the next N successful redeem HTTP responses after the DB commit.
@@ -35,6 +36,7 @@ pub fn redeem_lose_next_responses(n: i32) {
     REDEEM_LOSE_HTTP_RESPONSES.store(n, Ordering::SeqCst);
 }
 
+/// Remaining successful redeem replies to drop after the ticket is committed (tests only).
 static REDEEM_LOSE_HTTP_RESPONSES: AtomicI32 = AtomicI32::new(0);
 
 /// Shared state for portal handlers.
@@ -51,6 +53,7 @@ pub struct PortalState {
 }
 
 impl PortalState {
+    /// Clones the current library store so a handler can drop the state lock.
     async fn library_snapshot(&self) -> LibraryStore {
         self.library.read().await.clone()
     }
@@ -101,7 +104,9 @@ pub async fn portal_identity_from_headers(
 }
 
 #[derive(Debug, Deserialize)]
+/// JSON body for `POST /redeem` (claim ticket plus retry nonce).
 struct RedeemBody {
+    /// Raw claim-ticket token to redeem into a portal session.
     ticket: String,
     /// Browser-generated one-time nonce persisted across HTTP retries.
     nonce: String,
@@ -110,6 +115,7 @@ struct RedeemBody {
     password: Option<String>,
 }
 
+/// Redeems a claim ticket, optionally setting a first password, and sets the session cookie.
 async fn redeem(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -200,12 +206,17 @@ async fn redeem(
 }
 
 #[derive(Debug, Deserialize)]
+/// JSON body for `POST /login/integration` (provider credential login).
 struct IntegrationLoginBody {
+    /// Integration plugin id (must be enabled in config).
     provider: String,
+    /// Provider login name forwarded to `authenticate_user`.
     username: String,
+    /// Provider password; never logged.
     password: String,
 }
 
+/// Authenticates against an enabled integration and mints a portal session.
 async fn login_integration(
     State(state): State<PortalState>,
     Json(body): Json<IntegrationLoginBody>,
@@ -252,6 +263,7 @@ async fn login_integration(
     Ok(session_response(session, &state).await)
 }
 
+/// Revokes the portal session row and clears the session cookie.
 async fn logout(State(state): State<PortalState>, headers: HeaderMap) -> Response {
     if let Some(raw) = cookie_value(&headers, SESSION_COOKIE) {
         let library = state.library_snapshot().await;
@@ -272,6 +284,7 @@ async fn logout(State(state): State<PortalState>, headers: HeaderMap) -> Respons
     (StatusCode::OK, out, Json(serde_json::json!({ "ok": true }))).into_response()
 }
 
+/// Returns the signed-in portal identity, or 401 when the cookie is missing or expired.
 async fn me(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -285,12 +298,17 @@ async fn me(
 }
 
 #[derive(Debug, Serialize)]
+/// JSON body for `GET /me`.
 struct MeResponse {
+    /// Identity provider id (`local` or an integration plugin id).
     provider: String,
+    /// Provider-scoped user id stored on the portal identity row.
     external_user_id: String,
+    /// Optional display label from the identity row.
     label: Option<String>,
 }
 
+/// Lists enabled content sources with portal auth mode, config options, and brand colors.
 async fn sources(State(state): State<PortalState>) -> Json<SourcesResponse> {
     let cfg = state.config.read().await;
     let sources = state.sources.read().await;
@@ -334,47 +352,71 @@ async fn sources(State(state): State<PortalState>) -> Json<SourcesResponse> {
 }
 
 #[derive(Debug, Serialize)]
+/// JSON body for `GET /sources`.
 struct SourcesResponse {
+    /// Enabled storefronts the SPA may offer for connect / login.
     sources: Vec<SourceInfo>,
 }
 
 #[derive(Debug, Serialize)]
+/// One enabled storefront as shown on the portal Accounts page.
 struct SourceInfo {
+    /// Source plugin id (`audible`, `libro`, …).
     id: String,
+    /// Operator-facing storefront name.
     name: String,
+    /// Portal auth mode (`password` or `oauth`).
     auth: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Store-specific knobs the SPA can present (omitted when empty).
     config_options: Vec<SourceConfigOptionInfo>,
+    /// Storefront colors and logo href for the Accounts UI.
     brand: BrandInfo,
 }
 
 #[derive(Debug, Serialize)]
+/// One storefront config option (key, label, allowed values).
 struct SourceConfigOptionInfo {
+    /// Config table key (for example `container`).
     key: String,
+    /// Operator-facing option name.
     label: String,
+    /// Allowed values the SPA may offer for this option.
     values: Vec<ConfigOptionValueInfo>,
 }
 
 #[derive(Debug, Serialize)]
+/// One allowed value for a storefront config option.
 struct ConfigOptionValueInfo {
+    /// Stored option value (for example `m4b`).
     id: String,
+    /// Operator-facing value label.
     label: String,
 }
 
 #[derive(Debug, Serialize)]
+/// CSS colors and logo href for a storefront or integration brand.
 struct BrandInfo {
+    /// Background color (`#RRGGBB`).
     bg: String,
+    /// Foreground / text color (`#RRGGBB`).
     fg: String,
+    /// Accent color (`#RRGGBB`).
     accent: String,
+    /// Logo image href (often a favicon URL).
     logo: String,
 }
 
 #[derive(Debug, Deserialize)]
+/// JSON body for password-store connect (`email` + `password`).
 struct PasswordLoginBody {
+    /// Store account email / username.
     email: String,
+    /// Store account password; never logged.
     password: String,
 }
 
+/// Connects a password storefront, upserts the account, and links it to the signed-in identity.
 async fn source_password_login(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -429,6 +471,7 @@ async fn source_password_login(
     })))
 }
 
+/// Starts interactive OAuth for an OAuth storefront and returns the browser login URL.
 async fn source_oauth_start(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -448,6 +491,7 @@ async fn source_oauth_start(
     Ok(Json(serde_json::json!({ "url": url })))
 }
 
+/// Legacy `POST /libro/login` alias that forwards to the Libro password-login handler.
 async fn libro_login_legacy(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -456,6 +500,7 @@ async fn libro_login_legacy(
     source_password_login(State(state), headers, Path("libro".into()), Json(body)).await
 }
 
+/// Legacy `POST /audible/start` alias that forwards to Audible OAuth start.
 async fn audible_start(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -518,6 +563,7 @@ async fn start_source_oauth_session(
     Ok(url)
 }
 
+/// Lists store accounts linked to the signed-in identity, including disabled sources.
 async fn connections(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -563,22 +609,31 @@ async fn connections(
 }
 
 #[derive(Debug, Serialize)]
+/// JSON body for `GET /connections`.
 struct ConnectionsResponse {
+    /// Linked store accounts the SPA may show or revoke.
     connections: Vec<ConnectionInfo>,
 }
 
 #[derive(Debug, Serialize)]
+/// One linked store account on the portal Accounts page.
 struct ConnectionInfo {
+    /// Store account id (unique within its source).
     account_id: String,
+    /// Source plugin id that owns this account.
     source: String,
+    /// Operator-facing account label when the store provided one.
     label: Option<String>,
+    /// Connection state (`active`, revoked, …); defaults to `active` if the account row is missing.
     connection_status: String,
     /// Whether `[sources.<id>] enabled` is currently true (new connects blocked when false).
     source_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Storefront or integration brand when a plugin or fallback palette is available.
     brand: Option<BrandInfo>,
 }
 
+/// Unlinks a store account from this identity and deletes secrets when no other identity remains.
 async fn revoke_connection(
     State(state): State<PortalState>,
     headers: HeaderMap,
@@ -605,6 +660,7 @@ async fn revoke_connection(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// Resolves the portal identity from the session cookie, or returns 401.
 async fn require_identity(
     state: &PortalState,
     headers: &HeaderMap,
@@ -617,6 +673,7 @@ async fn require_identity(
         .ok_or_else(|| PortalError::unauthorized("session expired"))
 }
 
+/// Rejects connect/login when the source is disabled or not registered.
 async fn require_source_enabled(state: &PortalState, id: &str) -> Result<(), PortalError> {
     let cfg = state.config.read().await;
     if !cfg.sources.is_enabled(id) {
@@ -629,10 +686,12 @@ async fn require_source_enabled(state: &PortalState, id: &str) -> Result<(), Por
     Ok(())
 }
 
+/// Looks up a content source by plugin id or alias.
 async fn find_source(state: &PortalState, id_or_alias: &str) -> Option<Arc<dyn ContentSource>> {
     state.sources.read().await.get(id_or_alias)
 }
 
+/// Sets the portal session cookie (`Path=/`, TTL from `portal_session_ttl_hours`) and returns `{ ok: true }`.
 async fn session_response(session: String, state: &PortalState) -> Response {
     let cfg = state.config.read().await;
     let max_age = cfg.integrations.portal_session_ttl_hours * 3600;
@@ -647,6 +706,7 @@ async fn session_response(session: String, state: &PortalState) -> Response {
         .into_response()
 }
 
+/// Extracts a named cookie value from the `Cookie` header, if present.
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
     for part in cookie.split(';') {
@@ -702,12 +762,16 @@ pub async fn mint_for_external_user(
 }
 
 #[derive(Debug)]
+/// Handler error mapped to an HTTP status and `{ "error": ... }` JSON body.
 struct PortalError {
+    /// HTTP status returned to the SPA.
     status: StatusCode,
+    /// Operator-facing error text (no structured code).
     message: String,
 }
 
 impl PortalError {
+    /// Builds a 400 response for invalid input or a disabled/unknown source.
     fn bad(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -715,6 +779,7 @@ impl PortalError {
         }
     }
 
+    /// Builds a 401 response for a missing or expired portal session.
     fn unauthorized(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
@@ -722,6 +787,7 @@ impl PortalError {
         }
     }
 
+    /// Builds a 503 response for a transient store outage (redeem retry path).
     fn unavailable(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,

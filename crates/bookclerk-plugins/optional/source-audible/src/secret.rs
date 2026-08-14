@@ -20,6 +20,10 @@ pub const AUTH_PASSWORD_ENV: &str = "BOOKCLERK_AUTH_PASSWORD";
 ///
 /// Used for reading legacy `json-encrypted` rows and loading external
 /// audible-rs files that were previously encrypted with this passphrase.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn resolve_auth_password() -> Result<Option<SecretString>> {
     if let Ok(value) = std::env::var(AUTH_PASSWORD_ENV) {
         let trimmed = value.trim();

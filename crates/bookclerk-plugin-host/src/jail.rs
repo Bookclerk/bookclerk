@@ -54,6 +54,10 @@ const JAIL_BIN_ENV: &str = "BOOKCLERK_PLUGIN_JAIL";
 ///
 /// `plugin_id` must satisfy [`bookclerk_plugin_manifest::validate_plugin_id`];
 /// invalid ids are rejected (no lossy rewriting).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn plugin_data_dir(config: &Config, plugin_id: &str) -> Result<PathBuf> {
     Ok(plugin_state_root(config, plugin_id)?.join("data"))
 }
@@ -166,10 +170,18 @@ pub(crate) fn ensure_plugin_state_within_budget_limit(
 #[derive(Debug)]
 pub(crate) enum Start {
     /// Through the launcher, which applies `spec` and then becomes the guest.
-    Confined { launcher: PathBuf, spec: Box<Spec> },
+    Confined {
+        /// Path to the `bookclerk-jail` launcher binary.
+        launcher: PathBuf,
+        /// Confinement policy applied before `exec`.
+        spec: Box<Spec>,
+    },
     /// Directly, with no jail. Only reachable when the operator turned isolation
     /// off, or asked for best-effort on a host that cannot confine.
-    Unconfined { reason: String },
+    Unconfined {
+        /// Operator-visible reason confinement was skipped.
+        reason: String,
+    },
 }
 
 /// A guest's directories plus the decision about how to start it.
@@ -179,6 +191,7 @@ pub(crate) struct GuestJail {
     pub data: PathBuf,
     /// Scratch directory, the guest's `TMPDIR`.
     pub scratch: PathBuf,
+    /// Confined launcher + spec, or an unconfined start with the skip reason.
     pub start: Start,
     /// Side channel for passing one fetch directory at a time (host end).
     #[cfg(unix)]
@@ -398,6 +411,7 @@ fn build_spec(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Builds a jail `Spec`: install/command reads, data/tmp (and granted output/SQLite) writes, and grant-derived net/resources.
 fn build_spec_with_grant(
     plugin: &DiscoveredPlugin,
     config: &Config,
@@ -466,6 +480,7 @@ fn build_spec_with_grant(
     }
 }
 
+/// Tightens guest memory/CPU/process ceilings using `[plugins.jail]` without widening filesystem grants.
 fn apply_global_jail_resource_overrides(
     resources: &mut bookclerk_sandbox::ResourceLimits,
     jail: &bookclerk_config::PluginsJailConfig,
@@ -507,6 +522,7 @@ fn apply_global_jail_resource_overrides(
     }
 }
 
+/// Maps manifest network need and a deny grant onto Landlock/AppContainer `NetPolicy` (workerd Listen stays `OutboundListen`).
 fn jail_net_policy(plugin: &DiscoveredPlugin, grant: Option<&PluginGrant>) -> NetPolicy {
     let denied = grant.is_some_and(|g| g.network_mode.eq_ignore_ascii_case("deny"));
     match plugin.manifest.jail_network_need() {
@@ -579,11 +595,13 @@ fn guest_spec_resource_limits(
     }
 }
 
+/// True when this guest is the `sqlite` database plugin and may be granted `library.db` sidecars.
 fn is_sqlite_database_plugin(plugin: &DiscoveredPlugin) -> bool {
     plugin.manifest.kind == crate::PluginKind::Database
         && plugin.manifest.id.eq_ignore_ascii_case("sqlite")
 }
 
+/// Filename of the pinned Cloudflare `workerd` binary (`workerd.exe` on Windows).
 fn cloudflare_workerd_bin_name() -> &'static str {
     if cfg!(windows) {
         "workerd.exe"
@@ -685,6 +703,7 @@ fn resolve_launcher(config: &Config, isolation: Isolation) -> std::result::Resul
     ))
 }
 
+/// Accepts `path` as the jail launcher when it is a file; otherwise returns a source-labeled error.
 fn check_launcher(path: &Path, source: &str) -> std::result::Result<PathBuf, String> {
     if path.is_file() {
         Ok(path.to_path_buf())
@@ -696,6 +715,7 @@ fn check_launcher(path: &Path, source: &str) -> std::result::Result<PathBuf, Str
     }
 }
 
+/// Absolute `[output.local].root`, joined to `files_dir` when the config path is relative.
 fn resolved_local_output_root(config: &Config) -> PathBuf {
     let root = &config.output.local.root;
     if root.is_absolute() {

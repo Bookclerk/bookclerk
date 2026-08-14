@@ -92,6 +92,7 @@ pub struct DownloadOptions {
     pub save_podcasts_to_parent_folder: bool,
 }
 
+/// True when path sanitization should use the NTFS reserved-character map (`Windows`, or `Auto` on a non-S3 Windows host).
 fn path_sanitization_is_windows(mode: PathSanitizationMode, storage_is_s3: bool) -> bool {
     match mode {
         PathSanitizationMode::Windows => true,

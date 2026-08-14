@@ -17,6 +17,7 @@ use tracing::{debug, error, info, warn};
 use crate::brand::BRAND;
 use crate::client::AbsApiClient;
 
+/// Integration id written on events and health (`audiobookshelf`).
 const PROVIDER: &str = "audiobookshelf";
 
 /// Audiobookshelf outbound integration.
@@ -25,11 +26,15 @@ const PROVIDER: &str = "audiobookshelf";
 /// URL) is missing, the adapter stays registered, reports unhealthy, and
 /// refuses operational calls so the misconfiguration is visible.
 pub struct AbsIntegration {
+    /// Operator ABS settings (base URL, API key, library id).
     config: AudiobookshelfConfig,
+    /// HTTP client when API key and base URL are valid; `None` stays registered but unhealthy.
     client: Option<AbsApiClient>,
+    /// Why the client could not be built (missing key or constructor error); operational calls fail closed.
     config_error: Option<String>,
     /// Debounce overlapping acquire→scan bursts.
     scan_lock: Mutex<()>,
+    /// External user ids already seen by the watch loop (used to emit only new users).
     known_users: Arc<Mutex<HashSet<String>>>,
     /// Set by [`Self::stop`] to end the user-watch poll loop.
     watch_cancel: Arc<AtomicBool>,
@@ -40,6 +45,10 @@ pub struct AbsIntegration {
 impl AbsIntegration {
     /// Build an ABS integration. Prefer [`Self::from_config`] — this only fails
     /// on client construction bugs, not missing API keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn new(config: AudiobookshelfConfig) -> Result<Self> {
         Ok(Self::from_config(config))
     }
@@ -75,6 +84,7 @@ impl AbsIntegration {
         }
     }
 
+    /// Returns the HTTP client, or the stored config error (fail-closed when misconfigured).
     fn require_client(&self) -> Result<&AbsApiClient> {
         self.client.as_ref().ok_or_else(|| {
             IntegrationError::message(
@@ -103,6 +113,7 @@ impl AbsIntegration {
         self.config_error.as_deref()
     }
 
+    /// Asks ABS to scan `library_id` under a debounce lock; skips when the id is unset.
     async fn trigger_scan(&self) -> Result<()> {
         let client = self.require_client()?;
         let Some(library_id) = self.config.library_id.as_deref().filter(|s| !s.is_empty()) else {
@@ -115,6 +126,10 @@ impl AbsIntegration {
     }
 
     /// Trigger a library scan (optional force).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn scan_now(&self, force: bool) -> Result<()> {
         let client = self.require_client()?;
         let Some(library_id) = self.config.library_id.as_deref().filter(|s| !s.is_empty()) else {

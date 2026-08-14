@@ -1,9 +1,11 @@
 //! `bookclerk` CLI — Bookclerk-native headless library manager.
 
 mod cli_plugin;
+/// Subcommand implementations (`library`, `discover`, `daemon`, …).
 mod commands;
 mod format_out;
 mod progress;
+/// CLI helpers that open the library store and source/integration registries.
 mod registry;
 
 use std::path::PathBuf;
@@ -24,6 +26,7 @@ use crate::format_out::OutputFormat;
     about = "Headless multi-source audiobook library manager",
     long_about = None
 )]
+/// Top-level `bookclerk` clap parser (files dir, config, verbosity, output format).
 struct Cli {
     /// Bookclerk files directory (`BOOKCLERK_FILES_DIR`).
     #[arg(
@@ -47,66 +50,79 @@ struct Cli {
     format: OutputFormat,
 
     #[command(subcommand)]
+    /// Selected top-level verb (`library`, `discover`, `daemon`, …).
     command: Commands,
 }
 
 #[derive(Debug, Subcommand)]
+/// Top-level `bookclerk` verbs; hidden aliases keep classic Libation command names.
 enum Commands {
     /// Library scan, acquire, search, accounts, and status.
     Library {
         #[command(subcommand)]
+        /// Nested `library` verb (scan, acquire, search, accounts).
         command: commands::library::LibraryCommand,
     },
     /// Recommendations, embeddings, listening sync, and title requests.
     Discover {
         #[command(subcommand)]
+        /// Nested `discover` verb (recommend, embed, wishlist).
         command: commands::discover::DiscoverCommand,
     },
     /// Outbound integrations (Audiobookshelf) and claim tickets.
     Integrations {
         #[command(subcommand)]
+        /// Nested `integrations` verb (Audiobookshelf, claim tickets).
         command: commands::integrations::IntegrationsCommand,
     },
     /// Dynamically discovered third-party plugins.
     Plugins {
         #[command(subcommand)]
+        /// Nested `plugins` verb, including dynamically discovered plugin ids.
         command: commands::plugins::PluginsCommand,
     },
     /// Read or write configuration values.
     Config {
         #[command(subcommand)]
+        /// Nested `config` verb (get/set keys, master-key wrap, S3 credentials).
         command: commands::config_cmd::ConfigCommand,
     },
     /// Export library data, backups, or Libation-compatible files.
     Export {
         #[command(subcommand)]
+        /// Nested `export` verb (library dump, backups, Postgres copy).
         command: commands::export_cmd::ExportCommand,
     },
     /// Import native backups or classic Libation Files.
     Import {
         #[command(subcommand)]
+        /// Nested `import` verb (native backups or classic Libation Files).
         command: commands::import_cmd::ImportCommand,
     },
     /// Talk to a running bookclerkd control plane.
     Daemon {
         #[command(subcommand)]
+        /// Nested `daemon` verb (health, jobs, operator token).
         command: commands::daemon_cmd::DaemonCommand,
     },
     /// Diagnostics ring buffer and opt-in upload.
     Diagnostics {
         #[command(subcommand)]
+        /// Nested `diagnostics` verb (ring buffer dump, opt-in upload).
         command: commands::diagnostics_cmd::DiagnosticsCommand,
     },
     /// Import classic Libation Files (alias of `import libation`).
     #[command(hide = true)]
     Migrate {
         #[command(subcommand)]
+        /// Hidden `migrate` alias forwarded to `import libation`.
         command: commands::migrate::MigrateCommand,
     },
     /// Copy library.db to PostgreSQL (alias of `export postgres`).
     #[command(hide = true, name = "copydb")]
     CopyDb {
         #[command(flatten)]
+        /// Hidden `copydb` alias forwarded to `export postgres`.
         args: commands::copydb::CopyDbArgs,
     },
     /// Print version information.
@@ -214,6 +230,7 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Builds the clap command tree, injecting dynamically discovered plugin subcommands.
 fn build_cli(config: &Config) -> clap::Command {
     let mut cmd = Cli::command();
     if let Some(plugins_cmd) = cmd.find_subcommand_mut("plugins") {
@@ -271,6 +288,7 @@ fn plugin_cli_args(argv: &[String]) -> Option<(&str, &[String])> {
     None
 }
 
+/// Dispatches the parsed verb after ensuring files-dir layout and the master key.
 async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     if let Some(paths) = &config.paths {
         paths.ensure_dirs()?;

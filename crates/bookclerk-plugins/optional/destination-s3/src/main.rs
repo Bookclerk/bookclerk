@@ -9,6 +9,7 @@ use bookclerk_plugin_sdk::{
     OutputPutParams, OutputTouchFileParams, PluginError, PLUGIN_API_VERSION,
 };
 
+/// External S3 / MinIO destination guest (`kind = output`).
 struct S3Plugin;
 
 #[async_trait]

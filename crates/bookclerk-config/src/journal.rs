@@ -15,6 +15,7 @@ use tracing_subscriber::layer::{Context, Layer};
 use crate::redact::RedactingVisitor;
 
 #[cfg(target_os = "linux")]
+/// systemd journal datagram socket path (`/run/systemd/journal/socket`).
 const JOURNALD_PATH: &str = "/run/systemd/journal/socket";
 
 /// Which OS facility was attached (if any).
@@ -30,28 +31,43 @@ pub enum OsLogFacility {
 
 /// Structured sink that writes **redacted** events to the platform log facility.
 pub struct OsLogLayer {
+    /// Platform backend chosen at construction (journald, os_log, or Event Log).
     inner: OsLogInner,
     /// Journald `SYSLOG_IDENTIFIER`; also included in Event Log / os_log lines.
     syslog_identifier: String,
 }
 
+/// Concrete OS log handle; one variant is compiled in per target.
 enum OsLogInner {
     #[cfg(target_os = "linux")]
+    /// Linux systemd journal via a connected datagram socket.
     Journald {
         #[cfg(unix)]
+        /// Unbound datagram socket used to `send_to` the journal socket.
         socket: std::os::unix::net::UnixDatagram,
     },
     #[cfg(target_os = "macos")]
-    OsLog { logger: oslog::OsLog },
+    /// Unified Logging (`os_log`) backend for macOS.
+    OsLog {
+        /// Logger handle used to emit structured OS log records.
+        logger: oslog::OsLog,
+    },
     #[cfg(windows)]
-    EventLog { handle: EventLogHandle },
+    /// Windows Event Log backend.
+    EventLog {
+        /// Registered Event Log source handle.
+        handle: EventLogHandle,
+    },
 }
 
 /// Newtype so the Event Log `HANDLE` (`*mut c_void`) can sit in a tracing
 /// `Layer` (requires `Send + Sync`). Reporting from other threads is supported
 /// by the Win32 Event Log API for a registered source handle.
 #[cfg(windows)]
-struct EventLogHandle(windows_sys::Win32::Foundation::HANDLE);
+struct EventLogHandle(
+    /// Raw Win32 Event Log source `HANDLE`.
+    windows_sys::Win32::Foundation::HANDLE,
+);
 
 #[cfg(windows)]
 // SAFETY: `ReportEventW` / `DeregisterEventSource` accept a source HANDLE from
@@ -62,6 +78,10 @@ unsafe impl Sync for EventLogHandle {}
 
 impl OsLogLayer {
     /// Connect to the platform facility. Returns `Err` when unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn new(syslog_identifier: impl Into<String>) -> io::Result<Self> {
         let syslog_identifier = syslog_identifier.into();
         let inner = open_inner(&syslog_identifier)?;
@@ -85,6 +105,7 @@ impl OsLogLayer {
     }
 }
 
+/// Opens the platform facility, or returns `Unsupported` on other OSes.
 fn open_inner(identifier: &str) -> io::Result<OsLogInner> {
     #[cfg(target_os = "linux")]
     {
@@ -246,6 +267,7 @@ where
 }
 
 #[cfg(windows)]
+/// Maps a tracing level to a Windows Event Log event identifier.
 fn level_as_event_id(level: &tracing::Level) -> u32 {
     match *level {
         tracing::Level::ERROR => 1,
@@ -257,6 +279,7 @@ fn level_as_event_id(level: &tracing::Level) -> u32 {
 }
 
 #[cfg(target_os = "linux")]
+/// Writes journald `PRIORITY` (3–7) from a tracing level.
 fn put_priority_ascii(buf: &mut Vec<u8>, level: &tracing::Level) {
     let code: u8 = match *level {
         tracing::Level::ERROR => b'3',
@@ -269,6 +292,7 @@ fn put_priority_ascii(buf: &mut Vec<u8>, level: &tracing::Level) {
 }
 
 #[cfg(target_os = "linux")]
+/// Appends a journald field in the native length-prefixed binary form.
 fn put_wellformed(buf: &mut Vec<u8>, name: &str, value: &[u8]) {
     buf.extend_from_slice(name.as_bytes());
     buf.push(b'\n');
@@ -278,6 +302,7 @@ fn put_wellformed(buf: &mut Vec<u8>, name: &str, value: &[u8]) {
 }
 
 #[cfg(target_os = "linux")]
+/// Appends a journald field after sanitizing `name`, then length-prefixes the value.
 fn put_length_encoded(buf: &mut Vec<u8>, name: &str, write_value: impl FnOnce(&mut Vec<u8>)) {
     sanitize_name(name, buf);
     buf.push(b'\n');
@@ -290,6 +315,7 @@ fn put_length_encoded(buf: &mut Vec<u8>, name: &str, write_value: impl FnOnce(&m
 }
 
 #[cfg(target_os = "linux")]
+/// Uppercases a journald field name and strips characters journald would reject.
 fn sanitize_name(name: &str, buf: &mut Vec<u8>) {
     buf.extend(
         name.bytes()

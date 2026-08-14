@@ -117,6 +117,10 @@ impl AcquireDestinations {
     ///
     /// Prefer this over a second [`bookclerk_storage::from_config`] call when
     /// acquire already built destinations (avoids decrypting S3 secrets twice).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn listing_backend(&self) -> Result<Box<dyn StorageBackend>> {
         let backends = self
             .items
@@ -131,6 +135,10 @@ impl AcquireDestinations {
     }
 
     /// Consumes this set and returns a listing backend over the primary destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn into_listing_backend(self) -> Result<Box<dyn StorageBackend>> {
         let backends = self
             .items

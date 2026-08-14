@@ -130,6 +130,7 @@ impl OperatorGrantEnv {
         limits
     }
 
+    /// Grant CPU budget in milliseconds, clamped to [`WorkerdLimits`] hard maxes.
     fn clamped_cpu_ms(&self) -> Option<u32> {
         self.cpu_ms.map(|cpu_ms| {
             WorkerdLimits {
@@ -141,6 +142,7 @@ impl OperatorGrantEnv {
         })
     }
 
+    /// Grant subrequest budget, clamped to [`WorkerdLimits`] hard maxes.
     fn clamped_subrequests(&self) -> Option<u32> {
         self.subrequests.map(|subrequests| {
             WorkerdLimits {
@@ -153,6 +155,7 @@ impl OperatorGrantEnv {
     }
 }
 
+/// Parses `deny` or `outbound`; any other string is ignored (manifest policy wins).
 fn parse_network_mode(raw: &str) -> Option<NetworkMode> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "deny" => Some(NetworkMode::Deny),
@@ -161,6 +164,7 @@ fn parse_network_mode(raw: &str) -> Option<NetworkMode> {
     }
 }
 
+/// Parses a non-empty env var as `u32`; missing or non-numeric values are ignored.
 fn parse_u32_env(key: &str) -> Option<u32> {
     std::env::var(key).ok().and_then(|v| v.trim().parse().ok())
 }

@@ -18,6 +18,7 @@ use bookclerk_storage::{
     ObjectInfo, ObjectMeta, ObjectProbe, S3Backend, S3Credentials, StorageBackend,
 };
 
+/// Guest RPC result; errors are operator-facing strings returned to the host.
 type Result<T> = std::result::Result<T, String>;
 
 /// Uploads object bytes to `params.key` under the configured bucket/prefix.
@@ -94,7 +95,7 @@ pub async fn guest_get(params: GetParams) -> Result<GetResultDto> {
     })
 }
 
-/// Returns whether an object exists at `params.key`.
+/// Reports whether an object exists at `params.key` (HeadObject / existence check).
 ///
 /// # Arguments
 ///
@@ -209,6 +210,7 @@ pub async fn guest_touch_file(params: TouchFileParams) -> Result<()> {
         .map_err(|err| err.to_string())
 }
 
+/// Builds an [`S3Backend`] from the host-injected bucket/region/endpoint context.
 async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
     let cfg = OutputS3Config {
         enabled: true,
@@ -225,6 +227,7 @@ async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
         .map_err(|err| err.to_string())
 }
 
+/// Copies ABI credential fields into the storage crate's credential struct.
 fn credentials_from_dto(dto: &S3CredentialsDto) -> S3Credentials {
     S3Credentials {
         access_key_id: dto.access_key_id.clone(),
@@ -234,6 +237,7 @@ fn credentials_from_dto(dto: &S3CredentialsDto) -> S3Credentials {
     }
 }
 
+/// Maps an ABI [`ObjectMetaDto`] onto [`ObjectMeta`] for Put/PutFile.
 fn meta_from_dto(dto: ObjectMetaDto) -> ObjectMeta {
     ObjectMeta {
         content_type: dto.content_type,
@@ -245,6 +249,7 @@ fn meta_from_dto(dto: ObjectMetaDto) -> ObjectMeta {
     }
 }
 
+/// Maps a listed object's key and size onto the ABI DTO.
 fn object_info_to_dto(info: ObjectInfo) -> ObjectInfoDto {
     ObjectInfoDto {
         key: info.key,
@@ -252,6 +257,7 @@ fn object_info_to_dto(info: ObjectInfo) -> ObjectInfoDto {
     }
 }
 
+/// Maps a HeadObject-style probe (size + metadata) onto the ABI DTO.
 fn object_probe_to_dto(probe: ObjectProbe) -> ObjectProbeDto {
     ObjectProbeDto {
         key: probe.key,
@@ -268,6 +274,7 @@ fn object_probe_to_dto(probe: ObjectProbe) -> ObjectProbeDto {
     }
 }
 
+/// Parses an RFC3339 timestamp into [`SystemTime`]; invalid strings become `None`.
 fn parse_rfc3339(raw: &str) -> Option<SystemTime> {
     chrono::DateTime::parse_from_rfc3339(raw)
         .ok()

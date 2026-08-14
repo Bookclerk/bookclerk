@@ -6,7 +6,9 @@ use ctr::cipher::StreamCipher;
 
 use super::error::{DrmError, Result};
 
+/// AES-128-CBC decryptor for Adrm AAC samples (no padding; trailing bytes stay clear).
 type Aes128CbcDec = cbc::Decryptor<Aes128>;
+/// AES-128-CTR (big-endian counter) decryptor for CENC sample decryption.
 type Aes128Ctr128BE = ctr::Ctr128BE<Aes128>;
 
 /// Decode a hex key/IV string into a fixed 16-byte array.

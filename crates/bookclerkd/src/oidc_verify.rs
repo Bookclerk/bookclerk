@@ -27,6 +27,7 @@ struct ExtraIdTokenClaims(HashMap<String, Value>);
 
 impl AdditionalClaims for ExtraIdTokenClaims {}
 
+/// `openidconnect` ID token carrying leftover claims (`groups`, realm roles) after standard-claim filtering.
 type BookclerkIdToken = IdToken<
     ExtraIdTokenClaims,
     CoreGenderClaim,
@@ -37,9 +38,13 @@ type BookclerkIdToken = IdToken<
 /// Verified upstream identity used for JIT / link / role mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpstreamProfile {
+    /// Stable upstream subject (`sub`, or GitHub numeric `id` / login).
     pub sub: String,
+    /// Email from the ID token or userinfo; persist only via [`Self::verified_email`].
     pub email: Option<String>,
+    /// True when the IdP marked the email verified (required for allowlist / `link_by_email`).
     pub email_verified: bool,
+    /// Display name from userinfo / ID token / provider profile.
     pub name: Option<String>,
 }
 
@@ -145,6 +150,7 @@ pub fn json_subject(value: Option<&Value>) -> Option<String> {
     }
 }
 
+/// Non-empty trimmed string claim from a JSON object, if present.
 fn string_claim(obj: &Value, key: &str) -> Option<String> {
     obj.get(key)
         .and_then(Value::as_str)
@@ -153,6 +159,7 @@ fn string_claim(obj: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Interprets a JSON bool, `"true"`, or `1` as true; anything else is false.
 fn claim_bool(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(b)) => *b,
@@ -162,6 +169,7 @@ fn claim_bool(value: Option<&Value>) -> bool {
     }
 }
 
+/// Prefers ID-token email + `email_verified`; falls back to userinfo when the token omitted email.
 fn oidc_email(claims: &Value, userinfo: &Value) -> (Option<String>, bool) {
     let claims_email = string_claim(claims, "email");
     let claims_verified = claim_bool(claims.get("email_verified"));

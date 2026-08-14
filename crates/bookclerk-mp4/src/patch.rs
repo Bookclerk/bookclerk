@@ -153,6 +153,10 @@ pub fn strip_trailing_free(moov: &mut Vec<u8>) -> Result<bool> {
 /// [`Mp4Error::NoRoom`] when `moov` is already longer than `total`, or when the
 /// gap is too small to express — a `free` box cannot be shorter than its own
 /// header, so one to seven spare bytes are as unusable as none.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub fn pad_moov_to(moov: &mut Vec<u8>, total: usize) -> Result<()> {
     if moov.len() == total {
         return Ok(());
@@ -204,6 +208,10 @@ pub fn pad_moov_to(moov: &mut Vec<u8>, total: usize) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub fn shift_chunk_offsets(moov: &mut [u8], above: u64, delta: i64) -> Result<()> {
     if delta == 0 {
         return Ok(());
@@ -283,6 +291,7 @@ pub fn write_moov_in_place(path: &Path, at: MoovLocation, moov: &[u8]) -> Result
 /// Boxes that can hold a chunk offset table somewhere beneath them.
 const OFFSET_ANCESTORS: &[&[u8; 4]] = &[b"moov", b"trak", b"mdia", b"minf", b"stbl"];
 
+/// Walks `moov` descendants and records `stco`/`co64` byte ranges for offset patching.
 fn collect_chunk_offset_boxes(
     buf: &[u8],
     start: usize,

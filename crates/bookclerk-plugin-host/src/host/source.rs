@@ -37,12 +37,19 @@ use crate::Result;
 
 /// External content source backed by a discovered plugin binary.
 pub struct ExternalSource {
+    /// RPC client to the jailed guest process (never given `library.db`).
     client: PluginClient,
+    /// Operator-facing storefront name from handshake or the manifest.
     display_name: String,
+    /// UI brand colors and icon from handshake, or a slate fallback.
     brand: SourceBrand,
+    /// `oauth` vs password login, from the guest handshake.
     auth_mode: PortalAuthMode,
+    /// Leaked handshake aliases used as extra storefront ids.
     aliases: &'static [&'static str],
+    /// Optional env var the guest accepts for a password (never put on argv).
     password_env: Option<&'static str>,
+    /// Registry sort order from handshake (`200` when the guest omits it).
     sort_key: u32,
     /// Scoped data directory for this plugin only.
     plugin_data_dir: PathBuf,
@@ -52,6 +59,10 @@ pub struct ExternalSource {
 
 impl ExternalSource {
     /// Spawn and handshake a source plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> Result<Self> {
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
@@ -88,12 +99,14 @@ impl ExternalSource {
         })
     }
 
+    /// True when the guest advertised OAuth plus `loginStart`/`loginComplete`.
     fn supports_oauth_rpc(&self) -> bool {
         self.auth_mode == PortalAuthMode::Oauth
             && self.client.has_capability("loginStart")
             && self.client.has_capability("loginComplete")
     }
 
+    /// Builds guest login params; host fills callback IPC after starting the proxy.
     fn login_params(plugin_data_dir: String, opts: LoginOptions) -> LoginParams {
         LoginParams {
             plugin_data_dir,
@@ -113,6 +126,7 @@ impl ExternalSource {
         }
     }
 
+    /// Password login RPC; requires the `secrets` binding when a password is sent.
     async fn password_login(
         &self,
         scope: &SourceScope,
@@ -135,6 +149,7 @@ impl ExternalSource {
         seal_login_result(scope, self.id(), result).await
     }
 
+    /// Host-owned OAuth callback proxy plus `loginStart`/`loginComplete` RPCs.
     async fn oauth_login(
         &self,
         scope: &SourceScope,
@@ -197,6 +212,10 @@ impl ExternalSource {
 /// (from [`crate::discover_plugins`]). When an external id is already registered
 /// in-process (dual-load `register()` path), the external copy is skipped so
 /// `cargo run` keeps the linked adapter.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn load_external_sources(config: &Config, registry: &mut SourceRegistry) -> Result<()> {
     for plugin in crate::discover_plugins(config)? {
         if plugin.manifest.kind != crate::PluginKind::Source {
@@ -582,6 +601,7 @@ pub(crate) fn source_fetch_from_dto(dto: SourceFetchDto) -> SourceFetch {
     }
 }
 
+/// Maps a guest catalog DTO onto a host [`CatalogHit`], decoding HTML entities.
 fn catalog_hit_from_dto(dto: CatalogHitDto) -> CatalogHit {
     CatalogHit {
         product_id: dto.product_id,
@@ -612,6 +632,7 @@ fn catalog_hit_from_dto(dto: CatalogHitDto) -> CatalogHit {
     .decode_html_entities()
 }
 
+/// Maps a guest purchase-hint DTO onto a host hint, decoding HTML entities.
 fn purchase_hint_from_dto(dto: PurchaseHintDto) -> SourcePurchaseHint {
     SourcePurchaseHint {
         product_id: dto.product_id,
@@ -670,6 +691,7 @@ async fn scan_credentials_for(
     Ok(out)
 }
 
+/// Maps a scan DTO onto [`NewBook`], forcing `source` to the plugin id.
 fn scan_book_to_new(plugin_id: &str, book: ScanBookDto) -> NewBook {
     NewBook {
         uuid: None,
@@ -696,6 +718,7 @@ fn scan_book_to_new(plugin_id: &str, book: ScanBookDto) -> NewBook {
     }
 }
 
+/// Maps a guest account DTO onto a host [`SourceAccount`].
 fn account_from_dto(dto: SourceAccountDto) -> SourceAccount {
     SourceAccount {
         account_id: dto.account_id,
@@ -706,6 +729,7 @@ fn account_from_dto(dto: SourceAccountDto) -> SourceAccount {
     }
 }
 
+/// Upserts the account and seals guest credentials via [`SourceScope`] (plugin cannot write the DB).
 async fn seal_login_result(
     scope: &SourceScope,
     plugin_id: &str,
@@ -732,6 +756,7 @@ async fn seal_login_result(
     Ok(account)
 }
 
+/// Leaks handshake strings into `'static` slices for [`SourceBrand`] / aliases.
 fn leak_str_slice(owned: &[String], fallback: &[&'static str]) -> &'static [&'static str] {
     if owned.is_empty() {
         return Box::leak(fallback.to_vec().into_boxed_slice());
@@ -743,6 +768,7 @@ fn leak_str_slice(owned: &[String], fallback: &[&'static str]) -> &'static [&'st
     Box::leak(leaked.into_boxed_slice())
 }
 
+/// Builds a [`SourceBrand`] from handshake, or a slate fallback using plugin id/name.
 fn brand_from_dto(dto: Option<&crate::protocol::BrandDto>, id: &str, name: &str) -> SourceBrand {
     if let Some(b) = dto {
         SourceBrand {
@@ -765,6 +791,7 @@ fn brand_from_dto(dto: Option<&crate::protocol::BrandDto>, id: &str, name: &str)
     }
 }
 
+/// Converts a TOML value tree into JSON for handshake `config` delivery.
 fn toml_to_json(value: &toml::Value) -> Value {
     match value {
         toml::Value::String(s) => Value::String(s.clone()),

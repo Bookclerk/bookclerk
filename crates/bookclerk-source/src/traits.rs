@@ -202,6 +202,10 @@ pub trait ContentSource: Send + Sync {
 }
 
 /// Shared revoke path for plugins that seal as `.plugin.auth` (and legacy names).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn revoke_credentials_default(scope: &SourceScope, account_id: &str) -> Result<()> {
     let plugin_name = format!("{account_id}.plugin.auth");
     let _ = scope.delete_source_auth(account_id, &plugin_name).await;

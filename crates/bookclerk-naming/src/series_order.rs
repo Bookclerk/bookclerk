@@ -3,17 +3,23 @@
 use crate::dotnet_format::format_number;
 
 #[derive(Debug, Clone)]
+/// One run of literal text or a parsed number inside a series-order string.
 enum OrderPart {
+    /// Non-numeric run copied verbatim into the formatted order.
     Text(String),
+    /// Parsed finite number formatted with an optional .NET-style specifier.
     Num(f64),
 }
 
 #[derive(Debug, Clone, Default)]
+/// Series index split into text and number runs (Libation `SeriesOrder`).
 pub(crate) struct SeriesOrder {
+    /// Alternating text and number runs in source order.
     parts: Vec<OrderPart>,
 }
 
 impl SeriesOrder {
+    /// Splits an optional order string into text and greedy positive-number runs.
     pub fn parse(order: Option<&str>) -> Self {
         let mut parts = Vec::new();
         let mut remaining = order.map(str::to_string);
@@ -40,6 +46,7 @@ impl SeriesOrder {
         Self { parts }
     }
 
+    /// Renders parts, applying `format` to numbers or a default integer/float form.
     pub fn to_display(&self, format: Option<&str>) -> String {
         let mut out = String::new();
         for part in &self.parts {
@@ -54,11 +61,13 @@ impl SeriesOrder {
         out.trim().to_string()
     }
 
+    /// True when the source string was missing or contained no parts.
     pub fn is_empty(&self) -> bool {
         self.parts.is_empty()
     }
 }
 
+/// Default number rendering: integer when the value is a whole number below 1e15.
 fn default_num(f: f64) -> String {
     if f.fract() == 0.0 && f.abs() < 1e15 {
         format!("{}", f as i64)

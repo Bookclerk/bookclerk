@@ -15,6 +15,10 @@ pub enum ResolveOperatorTokenEnv {
 }
 
 /// Read `BOOKCLERK_OPERATOR_TOKEN` when set and non-empty.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn read_operator_token_env() -> Result<Option<(String, ResolveOperatorTokenEnv)>> {
     if let Ok(v) = std::env::var("BOOKCLERK_OPERATOR_TOKEN") {
         let trimmed = v.trim();
@@ -32,6 +36,10 @@ pub fn read_operator_token_env() -> Result<Option<(String, ResolveOperatorTokenE
 /// Generated tokens are hex. Env overrides must stay printable single-line and
 /// free of whitespace / control characters so they cannot inject into
 /// `#token=…` fragments or `Authorization` headers.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn validate_operator_token(token: &str, source: &str) -> Result<String> {
     if token.is_empty() {
         return Err(ConfigError::Invalid(format!("{source} is empty")));
@@ -54,6 +62,10 @@ pub fn validate_operator_token(token: &str, source: &str) -> Result<String> {
 }
 
 /// Generate a 32-byte hex operator token.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn generate_operator_token() -> Result<String> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes)
@@ -61,6 +73,7 @@ pub fn generate_operator_token() -> Result<String> {
     Ok(encode_hex(&bytes))
 }
 
+/// Encodes random token bytes as lowercase hex for the operator API secret.
 fn encode_hex(bytes: &[u8]) -> String {
     const HEX: &[u8] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);

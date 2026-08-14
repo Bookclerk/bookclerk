@@ -26,6 +26,7 @@
 mod brand;
 mod chapter_align;
 mod chapters_mp4;
+/// Media-worker error types (`MediaError`) for remux, encode, and pool failures.
 mod error;
 mod job;
 mod metadata;

@@ -72,6 +72,7 @@ impl std::fmt::Debug for S3Credentials {
     }
 }
 
+/// Debug-only access-key redaction (first 4 chars + stars); never used for sealing or logs of the secret key.
 fn redact_access_key(access_key_id: &str) -> String {
     if access_key_id.len() <= 4 {
         return "****".into();
@@ -80,11 +81,16 @@ fn redact_access_key(access_key_id: &str) -> String {
     format!("{prefix}{}", "*".repeat(rest.len().min(8)))
 }
 
+/// Maps a library/secrets error (seal, unseal, or upsert) to [`StorageError::S3`].
 fn map_lib(err: bookclerk_library::LibraryError) -> StorageError {
     StorageError::S3(format!("encrypted_secrets: {err}"))
 }
 
 /// Persist S3 credentials into `encrypted_secrets` using sealed-v1.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn save_s3_credentials(db: &DatabaseConnection, creds: &S3Credentials) -> Result<()> {
     if creds.access_key_id.trim().is_empty() || creds.secret_access_key.trim().is_empty() {
         return Err(StorageError::S3(
@@ -121,6 +127,10 @@ pub async fn save_s3_credentials(db: &DatabaseConnection, creds: &S3Credentials)
 /// that case.
 ///
 /// Returns `None` only when no DB row exists at all.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn load_s3_credentials(db: &DatabaseConnection) -> Result<Option<S3Credentials>> {
     let store = bookclerk_library::SecretStore::new(db);
     let Some(record) = store
@@ -154,6 +164,10 @@ pub async fn load_s3_credentials(db: &DatabaseConnection) -> Result<Option<S3Cre
 }
 
 /// Delete stored S3 credentials from `encrypted_secrets`.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn delete_s3_credentials(db: &DatabaseConnection) -> Result<()> {
     delete_secret(
         db,

@@ -15,11 +15,16 @@ use crate::traits::{ObjectInfo, ObjectMeta, ObjectProbe, StorageBackend};
 /// Mutations (`put*`, `copy`, `rename`, `delete`, `touch_file`) run on every
 /// child. Reads try children in order and succeed on the first hit.
 pub struct FanoutBackend {
+    /// Enabled destinations; writes hit every child, reads succeed on the first hit.
     backends: Vec<Box<dyn StorageBackend>>,
 }
 
 impl FanoutBackend {
     /// Build a fan-out over `backends` (must be non-empty).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn new(backends: Vec<Box<dyn StorageBackend>>) -> Result<Self> {
         if backends.is_empty() {
             return Err(StorageError::InvalidKey(
@@ -29,6 +34,7 @@ impl FanoutBackend {
         Ok(Self { backends })
     }
 
+    /// True when a child reported [`StorageError::NotFound`], allowing fallback to the next backend.
     fn is_not_found(err: &StorageError) -> bool {
         matches!(err, StorageError::NotFound(_))
     }

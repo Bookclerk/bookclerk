@@ -31,13 +31,20 @@ use crate::{PluginError, Result as PluginResult};
 /// External database backend spawned for `[database].plugin`.
 #[derive(Clone)]
 pub struct ExternalDatabase {
+    /// JSON-RPC client for the jailed database guest process.
     client: Arc<PluginClient>,
+    /// Manifest id (`sqlite`, `d1`, `postgres`) used to build connect params.
     plugin_id: String,
+    /// Guest HOME / data directory passed on `db.connect`.
     plugin_data_dir: std::path::PathBuf,
 }
 
 impl ExternalDatabase {
     /// Spawn and handshake a database plugin (connection happens later).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> PluginResult<Self> {
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
@@ -50,6 +57,10 @@ impl ExternalDatabase {
     }
 
     /// Open the library connection through the guest (`db.connect` + optional fd pass).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn connect(
         &self,
         config: &Config,
@@ -97,6 +108,7 @@ impl ExternalDatabase {
 /// Long-lived external database plugin for the active `[database].plugin`.
 #[derive(Default, Clone)]
 pub struct DatabaseRegistry {
+    /// Spawned guest matching `[database].plugin`, if handshake succeeded.
     active: Option<Arc<ExternalDatabase>>,
 }
 
@@ -112,6 +124,10 @@ impl DatabaseRegistry {
 ///
 /// Guests are required: when the matching database plugin is missing or fails to
 /// start, [`open_library_store`] returns an error (no in-process engine).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn load_external_database(config: &Config) -> PluginResult<DatabaseRegistry> {
     let mut registry = DatabaseRegistry::default();
     let active = config.database.plugin.trim().to_ascii_lowercase();
@@ -168,6 +184,10 @@ pub async fn load_external_database(config: &Config) -> PluginResult<DatabaseReg
 }
 
 /// Open [`bookclerk_library::LibraryStore`] via the external database guest (required).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn open_library_store(
     config: &Config,
     registry: &DatabaseRegistry,
@@ -191,6 +211,10 @@ pub async fn open_library_store(
 }
 
 /// Open the library for a specific `[database].plugin` id (ignoring the active config value).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn open_library_store_for_plugin(
     config: &Config,
     plugin_id: &str,
@@ -204,6 +228,10 @@ pub async fn open_library_store_for_plugin(
 }
 
 /// Copy library data from one database plugin backend to another.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn migrate_database_plugin(
     config: &Config,
     from_plugin: &str,
@@ -221,11 +249,15 @@ pub async fn migrate_database_plugin(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// Per-task identity used to stack nested SeaORM / guest transaction ids.
 enum TaskKey {
+    /// Tokio task id when the proxy runs inside a runtime task.
     Tokio(TaskId),
+    /// OS thread id when no Tokio task id is available (blocking paths).
     Thread(ThreadId),
 }
 
+/// Current Tokio task id, or the OS thread id outside a task.
 fn task_key() -> TaskKey {
     match try_id() {
         Some(id) => TaskKey::Tokio(id),
@@ -234,7 +266,9 @@ fn task_key() -> TaskKey {
 }
 
 #[derive(Clone)]
+/// SeaORM [`ProxyDatabaseTrait`] that forwards query/exec/txn RPCs to the guest.
 struct RpcDatabaseProxy {
+    /// JSON-RPC client shared with [`ExternalDatabase`].
     client: Arc<PluginClient>,
     /// Per-task stack of guest txn ids (nested SeaORM begin = nested RPC).
     txn_stacks: Arc<Mutex<HashMap<TaskKey, Vec<String>>>>,
@@ -247,10 +281,12 @@ impl std::fmt::Debug for RpcDatabaseProxy {
 }
 
 impl RpcDatabaseProxy {
+    /// Locks the per-task txn stack, recovering a poisoned mutex.
     fn lock_stacks(&self) -> std::sync::MutexGuard<'_, HashMap<TaskKey, Vec<String>>> {
         self.txn_stacks.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Innermost guest txn id for this task, if a `db.begin` is open.
     fn current_txn_id(&self) -> Option<String> {
         self.lock_stacks()
             .get(&task_key())
@@ -258,6 +294,7 @@ impl RpcDatabaseProxy {
             .cloned()
     }
 
+    /// Pushes a guest txn id after a successful `db.begin` (supports nesting).
     fn push_txn(&self, txn_id: String) {
         self.lock_stacks()
             .entry(task_key())
@@ -265,6 +302,7 @@ impl RpcDatabaseProxy {
             .push(txn_id);
     }
 
+    /// Pops the innermost guest txn id and drops an empty per-task stack.
     fn pop_txn(&self) -> Option<String> {
         let mut stacks = self.lock_stacks();
         let key = task_key();
@@ -275,12 +313,14 @@ impl RpcDatabaseProxy {
         id
     }
 
+    /// Serializes a SeaORM statement and attaches the current guest txn id.
     fn statement_dto(&self, statement: &Statement) -> StatementDto {
         let mut dto = statement_to_dto(statement);
         dto.txn_id = self.current_txn_id();
         dto
     }
 
+    /// Starts a guest transaction, optionally nested under `parent`.
     async fn rpc_begin(&self, parent: Option<String>) -> std::result::Result<String, DbErr> {
         let result: DbBeginResult = self
             .client
@@ -296,6 +336,7 @@ impl RpcDatabaseProxy {
         Ok(result.txn_id)
     }
 
+    /// Commits or rolls back the guest transaction identified by `txn_id`.
     async fn rpc_finish(&self, commit: bool, txn_id: String) -> std::result::Result<(), DbErr> {
         let method = if commit {
             methods::DB_COMMIT
@@ -433,11 +474,14 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
     }
 }
 
+/// Host [`AtomicTxnBackend`] that runs named security ops as one guest `dbAtomic`.
 struct RpcAtomicBackend {
+    /// JSON-RPC client used for a single `db.atomic` round-trip per operation.
     client: Arc<PluginClient>,
 }
 
 impl RpcAtomicBackend {
+    /// Sends one `db.atomic` RPC; ambiguous transport maps to [`LibraryError::Unavailable`].
     async fn call(&self, params: DbAtomicParams) -> bookclerk_library::Result<DbAtomicResult> {
         let operation_id = bookclerk_library::db_atomic_operation_id(&params);
         let request = DbAtomicRequest {
@@ -459,6 +503,7 @@ impl RpcAtomicBackend {
     }
 }
 
+/// Maps guest RPC failures: lost/ambiguous replies become [`LibraryError::Unavailable`].
 fn map_plugin_err(err: crate::PluginError) -> bookclerk_library::LibraryError {
     if err.is_ambiguous_transport() {
         bookclerk_library::LibraryError::Unavailable(err.to_string())
@@ -467,6 +512,7 @@ fn map_plugin_err(err: crate::PluginError) -> bookclerk_library::LibraryError {
     }
 }
 
+/// Translates a guest atomic status string into a library error, or `None` on `ok`.
 fn atomic_app_err(
     status: &str,
     not_found: bookclerk_library::LibraryError,
@@ -492,6 +538,7 @@ fn atomic_app_err(
     }
 }
 
+/// Deserializes the atomic result payload; errors when the guest omitted it.
 fn decode_payload<T: serde::de::DeserializeOwned>(
     payload: Option<Value>,
     what: &str,
@@ -667,22 +714,32 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
 }
 
 #[derive(serde::Deserialize)]
+/// One-shot OIDC RP state returned by guest `takeOidcRpState` (consumed on read).
 struct AtomicOidcRpState {
+    /// Configured OIDC provider id that minted this state.
     provider_id: String,
+    /// PKCE code verifier for the pending authorization-code exchange.
     pkce_verifier: String,
+    /// Nonce that must match the verified ID token.
     nonce: String,
+    /// Login vs link (or other) purpose recorded when the state was stored.
     purpose: String,
     #[serde(default)]
+    /// Existing user to link when this is not a JIT signup, if any.
     user_id: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
+/// One-shot WebAuthn challenge returned by guest `takeWebauthnChallenge`.
 struct AtomicWebauthnChallenge {
     #[serde(default)]
+    /// User this challenge was issued for; `None` during usernameless login.
     user_id: Option<i64>,
+    /// Opaque webauthn-rs state JSON needed to finish the ceremony.
     state_json: String,
 }
 
+/// Builds guest `db.connect` params (SQLite path, D1 token, or Postgres URL) from host config.
 fn connect_params(
     config: &Config,
     plugin_id: &str,
@@ -725,6 +782,7 @@ fn connect_params(
     }
 }
 
+/// Maps the guest-reported dialect string to a SeaORM [`DbBackend`].
 fn dialect_to_backend(dialect: &str) -> Result<DbBackend, DbErr> {
     match dialect.trim().to_ascii_lowercase().as_str() {
         "sqlite" => Ok(DbBackend::Sqlite),
@@ -735,18 +793,22 @@ fn dialect_to_backend(dialect: &str) -> Result<DbBackend, DbErr> {
     }
 }
 
+/// Wraps a plugin RPC failure as a SeaORM [`DbErr::Custom`].
 fn map_rpc_err(err: crate::PluginError) -> DbErr {
     DbErr::Custom(err.to_string())
 }
 
+/// Wraps a JSON serialize failure for database RPC params as [`DbErr::Custom`].
 fn map_json_err(err: serde_json::Error) -> DbErr {
     DbErr::Custom(format!("serialize database RPC params: {err}"))
 }
 
+/// Wraps a host config error (missing D1 token / Postgres URL) as [`DbErr::Custom`].
 fn map_config_err(err: bookclerk_config::ConfigError) -> DbErr {
     DbErr::Custom(err.to_string())
 }
 
+/// Converts plugin settings TOML to JSON for guest spawn; invalid values become `null`.
 fn toml_to_json(value: &toml::Value) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }

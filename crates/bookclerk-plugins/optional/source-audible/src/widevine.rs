@@ -33,6 +33,7 @@ pub const DEFAULT_WIDEVINE_CDM_PROVIDER: &str =
 
 /// Loaded Widevine CDM client.
 pub struct WidevineCdm {
+    /// Initialized Widevine L3 device used to mint license challenges.
     cdm: Cdm,
     /// Security level.
     pub security_level: u8,
@@ -59,6 +60,10 @@ pub fn effective_cdm_provider(configured: Option<&str>) -> Option<&str> {
 /// This is a one-shot import path only (no `Accounts/`). Search order:
 /// 1. Explicit `output.widevine_cdm` path (absolute, or relative to `files_dir`)
 /// 2. `{files_dir}/widevine.wvd`
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn load_widevine_cdm(
     files_dir: &Path,
     configured: Option<&Path>,
@@ -96,6 +101,10 @@ pub fn load_widevine_cdm(
 ///
 /// Widevine drmlicense requires an **Android**-registered account
 /// (`bookclerk auth login` always registers as Android). Spatial/Atmos (L1) remains unavailable.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn ensure_widevine_cdm(
     files_dir: &Path,
     configured: Option<&Path>,
@@ -223,6 +232,7 @@ fn load_cdm_from_bytes(bytes: &[u8], label: &str) -> Result<(WidevineCdm, PathBu
     ))
 }
 
+/// Candidate `.wvd` paths: configured (resolved against `files_dir`) then `widevine.wvd`.
 fn cdm_candidates(files_dir: &Path, configured: Option<&Path>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(path) = configured {
@@ -236,6 +246,7 @@ fn cdm_candidates(files_dir: &Path, configured: Option<&Path>) -> Vec<PathBuf> {
     out
 }
 
+/// Reads a `.wvd` from disk and initializes a CDM; parse or I/O errors fail closed.
 fn load_cdm_at(path: &Path) -> Result<WidevineCdm> {
     let bytes = std::fs::read(path).map_err(|err| {
         AudibleError::Widevine(format!("failed to read CDM {}: {err}", path.display()))
@@ -253,6 +264,7 @@ fn load_cdm_at(path: &Path) -> Result<WidevineCdm> {
     })
 }
 
+/// Maps Bookclerk [`AudioQuality`] onto audible-rs `Quality` for license requests.
 fn to_quality(q: AudioQuality) -> Quality {
     match q {
         AudioQuality::High => Quality::High,
@@ -260,6 +272,7 @@ fn to_quality(q: AudioQuality) -> Quality {
     }
 }
 
+/// Lowercase hex encoding of a KID or content key.
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -286,8 +299,11 @@ pub struct WidevineDownload {
 }
 
 #[derive(Debug, Clone)]
+/// Hex-encoded CENC KID/key pair cached beside a download (mode `0o600` on Unix).
 struct CachedKey {
+    /// 16-byte content key id as lowercase hex.
     kid: String,
+    /// 16-byte CENC content key as lowercase hex; never logged.
     key: String,
 }
 
@@ -399,6 +415,7 @@ pub async fn fetch_widevine_download(
     }
 }
 
+/// Returns a cached `.wvkey` or runs a CDM challenge/`drmlicense` exchange and writes the pair.
 async fn obtain_content_key(
     client: &Client,
     marketplace: &str,
@@ -432,6 +449,7 @@ async fn obtain_content_key(
     Ok(cached)
 }
 
+/// Loads a `.wvkey` JSON pair when both hex fields decode to 16 bytes; otherwise `None`.
 fn read_wvkey(path: &Path) -> Option<CachedKey> {
     #[derive(serde::Deserialize)]
     struct KidKey {
@@ -448,6 +466,7 @@ fn read_wvkey(path: &Path) -> Option<CachedKey> {
     })
 }
 
+/// Writes the KID/key JSON with Unix mode `0o600` so the content key is not world-readable.
 fn write_wvkey(path: &Path, key: &CachedKey) -> Result<()> {
     let json = serde_json::json!({
         "kid": key.kid,
@@ -463,6 +482,7 @@ fn write_wvkey(path: &Path, key: &CachedKey) -> Result<()> {
     Ok(())
 }
 
+/// Decodes even-length hex; odd length or non-hex digits yield `None`.
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return None;
@@ -473,6 +493,7 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// GETs an MPD or license URL as text using the CENC user-agent; HTTP errors fail closed.
 async fn fetch_text(url: &str) -> Result<String> {
     let text = downloader::plain_http_client()
         .map_err(|err| AudibleError::Download(err.to_string()))?

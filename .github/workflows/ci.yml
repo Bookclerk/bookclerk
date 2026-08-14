@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
+
+# Cancel superseded PR runs; never cancel merge_group / main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Least privilege: checkout + local cargo build/test only.
 permissions:
@@ -13,20 +20,209 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: "-D warnings"
+  # Selective PR CI (#157). Keep "0" (shadow) until representative PRs have
+  # executed the selective command branches. When "1", job/step selection
+  # follows the planner; merge_group / main still force full_suite via
+  # --force-full. execute_full_suite collapses to plan.full_suite when
+  # selection is on.
+  SELECTIVE_CI: "0"
 
 jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    outputs:
+      full_suite: ${{ steps.plan.outputs.full_suite }}
+      ui: ${{ steps.plan.outputs.ui }}
+      ts_sdk: ${{ steps.plan.outputs.ts_sdk }}
+      python_sdk: ${{ steps.plan.outputs.python_sdk }}
+      abi_sync: ${{ steps.plan.outputs.abi_sync }}
+      build_app_platform: ${{ steps.plan.outputs.build_app_platform }}
+      build_app_optional: ${{ steps.plan.outputs.build_app_optional }}
+      build_app_examples: ${{ steps.plan.outputs.build_app_examples }}
+      confinement: ${{ steps.plan.outputs.confinement }}
+      tray: ${{ steps.plan.outputs.tray }}
+      store_free: ${{ steps.plan.outputs.store_free }}
+      release: ${{ steps.plan.outputs.release }}
+      docs_markdown: ${{ steps.plan.outputs.docs_markdown }}
+      rust_packages: ${{ steps.plan.outputs.rust_packages }}
+      rust_doc_packages: ${{ steps.plan.outputs.rust_doc_packages }}
+      rust_doctest_packages: ${{ steps.plan.outputs.rust_doctest_packages }}
+      rust_package_count: ${{ steps.plan.outputs.rust_package_count }}
+      # Execution gate: true in shadow (SELECTIVE_CI!=1) or when the planner
+      # predicts full_suite. Job/step selection and cargo package targeting use
+      # this; ``full_suite`` above stays the unmodified prediction for reports.
+      execute_full_suite: ${{ steps.flags.outputs.execute_full_suite }}
+      run_rust: ${{ steps.flags.outputs.run_rust }}
+      run_ui: ${{ steps.flags.outputs.run_ui }}
+      run_docs: ${{ steps.flags.outputs.run_docs }}
+      run_sdk: ${{ steps.flags.outputs.run_sdk }}
+      run_build_app: ${{ steps.flags.outputs.run_build_app }}
+      run_confinement: ${{ steps.flags.outputs.run_confinement }}
+      run_tray: ${{ steps.flags.outputs.run_tray }}
+      run_release: ${{ steps.flags.outputs.run_release }}
+      run_store_free: ${{ steps.flags.outputs.run_store_free }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve base / head
+        id: shas
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event_name }}" = "merge_group" ]; then
+            BASE="${{ github.event.merge_group.base_sha }}"
+            HEAD="${{ github.sha }}"
+          else
+            # push to main: previous commit as base when available
+            HEAD="${{ github.sha }}"
+            if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+              BASE="$(git rev-parse HEAD^)"
+            else
+              BASE="$HEAD"
+            fi
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+
+      - name: Run planner unit tests
+        run: python3 scripts/tests/test_ci_plan.py -q
+
+      - name: Private-docs lint regression
+        run: python3 scripts/tests/test_private_docs_lint.py
+
+      - name: Compute CI plan
+        id: plan
+        run: |
+          set -euo pipefail
+          EXTRA=()
+          # Full suite on merge_group / main push regardless of paths.
+          if [ "${{ github.event_name }}" = "merge_group" ] || [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            EXTRA+=(--force-full)
+          fi
+          python3 scripts/ci-plan.py \
+            --base "${{ steps.shas.outputs.base }}" \
+            --head "${{ steps.shas.outputs.head }}" \
+            --format github-output \
+            --write-summary \
+            "${EXTRA[@]+"${EXTRA[@]}"}"
+          python3 scripts/ci-plan.py \
+            --base "${{ steps.shas.outputs.base }}" \
+            --head "${{ steps.shas.outputs.head }}" \
+            --format json \
+            "${EXTRA[@]+"${EXTRA[@]}"}" > ci-plan.json
+
+      - name: Shadow mode notice
+        if: env.SELECTIVE_CI != '1'
+        run: |
+          {
+            echo "## Selective CI shadow mode"
+            echo ""
+            echo "\`SELECTIVE_CI\` is \`${{ env.SELECTIVE_CI }}\`: the planner still"
+            echo "records predicted skip/run decisions (\`full_suite\` and surface"
+            echo "flags) while \`execute_full_suite=true\` forces the full command"
+            echo "baseline so predictions can be compared safely."
+            echo "Flip \`SELECTIVE_CI\` to \`1\` after representative PR plans look correct."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Derive run flags
+        id: flags
+        run: |
+          set -euo pipefail
+          FULL="${{ steps.plan.outputs.full_suite }}"
+          SEL="${{ env.SELECTIVE_CI }}"
+          # Execution vs prediction: shadow (SELECTIVE_CI!=1) always executes the
+          # full baseline; planner ``full_suite`` remains the reported prediction.
+          if [ "$SEL" != "1" ] || [ "$FULL" = "true" ]; then
+            echo "execute_full_suite=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "execute_full_suite=false" >> "$GITHUB_OUTPUT"
+          fi
+          # When shadowing or the plan predicts full_suite, every job runs.
+          if [ "$SEL" != "1" ] || [ "$FULL" = "true" ]; then
+            echo "run_rust=true" >> "$GITHUB_OUTPUT"
+            echo "run_ui=true" >> "$GITHUB_OUTPUT"
+            echo "run_docs=true" >> "$GITHUB_OUTPUT"
+            echo "run_sdk=true" >> "$GITHUB_OUTPUT"
+            echo "run_build_app=true" >> "$GITHUB_OUTPUT"
+            echo "run_confinement=true" >> "$GITHUB_OUTPUT"
+            echo "run_tray=true" >> "$GITHUB_OUTPUT"
+            echo "run_release=true" >> "$GITHUB_OUTPUT"
+            echo "run_store_free=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Selective PR path (SELECTIVE_CI=1 and plan.full_suite=false).
+          COUNT="${{ steps.plan.outputs.rust_package_count }}"
+          if [ "${COUNT:-0}" != "0" ]; then
+            echo "run_rust=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_rust=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "run_ui=${{ steps.plan.outputs.ui }}" >> "$GITHUB_OUTPUT"
+          # Docs job: markdown-only changes still skip heavy API generation unless
+          # a language surface is affected; rust/ts/python flags drive generate.
+          if [ "${{ steps.plan.outputs.ui }}" = "true" ] \
+            || [ "${{ steps.plan.outputs.ts_sdk }}" = "true" ] \
+            || [ "${{ steps.plan.outputs.python_sdk }}" = "true" ] \
+            || [ "${COUNT:-0}" != "0" ]; then
+            echo "run_docs=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_docs=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "${{ steps.plan.outputs.abi_sync }}" = "true" ] \
+            || [ "${{ steps.plan.outputs.ts_sdk }}" = "true" ] \
+            || [ "${{ steps.plan.outputs.python_sdk }}" = "true" ]; then
+            echo "run_sdk=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_sdk=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "${{ steps.plan.outputs.build_app_platform }}" = "true" ] \
+            || [ "${{ steps.plan.outputs.build_app_optional }}" = "true" ] \
+            || [ "${{ steps.plan.outputs.build_app_examples }}" = "true" ]; then
+            echo "run_build_app=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_build_app=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "run_confinement=${{ steps.plan.outputs.confinement }}" >> "$GITHUB_OUTPUT"
+          echo "run_tray=${{ steps.plan.outputs.tray }}" >> "$GITHUB_OUTPUT"
+          echo "run_release=${{ steps.plan.outputs.release }}" >> "$GITHUB_OUTPUT"
+          echo "run_store_free=${{ steps.plan.outputs.store_free }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-plan
+          path: ci-plan.json
+          if-no-files-found: error
+
   check:
     name: fmt / clippy / test
+    needs: plan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
+        if: needs.plan.outputs.run_rust == 'true' || needs.plan.outputs.run_docs == 'true' || needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.run_build_app == 'true' || needs.plan.outputs.run_store_free == 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
+      - name: Install Rust toolchain (fmt only)
+        if: needs.plan.outputs.run_rust != 'true' && needs.plan.outputs.run_docs != 'true' && needs.plan.outputs.run_sdk != 'true' && needs.plan.outputs.run_build_app != 'true' && needs.plan.outputs.run_store_free != 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
       - name: Install Node.js
+        if: needs.plan.outputs.run_ui == 'true' || needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.run_docs == 'true' || needs.plan.outputs.run_build_app == 'true' || needs.plan.outputs.run_release == 'true'
         uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -36,6 +232,7 @@ jobs:
             packages/plugin-sdk/package-lock.json
 
       - name: Cache cargo
+        if: needs.plan.outputs.run_rust == 'true' || needs.plan.outputs.run_docs == 'true' || needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.run_build_app == 'true' || needs.plan.outputs.run_store_free == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           env-vars: RUSTFLAGS
@@ -43,12 +240,16 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build UI
+        if: needs.plan.outputs.run_ui == 'true' || needs.plan.outputs.run_build_app == 'true' || needs.plan.outputs.execute_full_suite == 'true'
         run: |
           cd ui
           npm ci
+          npm run lint
+          npm run test:safe-html
           npm run build
 
       - name: Plugin SDK ABI schema drift check
+        if: needs.plan.outputs.run_sdk == 'true'
         run: |
           python3 scripts/gen-plugin-abi.py --check
           python3 scripts/sync-workerd-pin.py --check
@@ -56,78 +257,195 @@ jobs:
           npm ci
           npm run check-schema
           npm run build
+          npm run lint
           npm run test:tools
 
       - name: Python plugin SDK tools conformance
+        if: needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.python_sdk == 'true'
         run: |
           python3 -m venv .venv-ci-plugin-sdk
-          .venv-ci-plugin-sdk/bin/pip install -e packages/plugin-sdk-python pytest
+          .venv-ci-plugin-sdk/bin/pip install -e "packages/plugin-sdk-python[dev,docs]"
+          .venv-ci-plugin-sdk/bin/ruff check packages/plugin-sdk-python
           .venv-ci-plugin-sdk/bin/pytest packages/plugin-sdk-python/tests -q
 
       - name: Rust plugin SDK tools conformance
+        if: needs.plan.outputs.run_sdk == 'true'
         run: cargo test -p bookclerk-plugin-sdk --features tools --test tools_conformance
 
       - name: Format
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        if: needs.plan.outputs.run_rust == 'true'
+        run: |
+          set -euo pipefail
+          # `-D missing_errors_doc` / `missing_panics_doc` enforce Google-style
+          # section *existence* on public items (prose quality is review-only).
+          # Private-item section checks use CLIPPY_CONF_DIR=clippy-publish below.
+          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
+            cargo clippy --workspace --all-targets -- \
+              -D warnings \
+              -D clippy::missing_docs_in_private_items \
+              -D clippy::missing_errors_doc \
+              -D clippy::missing_panics_doc
+          else
+            PKGS="${{ needs.plan.outputs.rust_packages }}"
+            ARGS=()
+            for p in $PKGS; do ARGS+=(-p "$p"); done
+            cargo clippy "${ARGS[@]}" --all-targets -- \
+              -D warnings \
+              -D clippy::missing_docs_in_private_items \
+              -D clippy::missing_errors_doc \
+              -D clippy::missing_panics_doc
+          fi
 
-      # Google-style API docs → docs/api/ (see docs/code-documentation.md).
-      # --check generates into a temp dir so the workspace tree stays clean.
+      - name: Clippy publish-crate doc lints
+        if: needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.execute_full_suite == 'true'
+        env:
+          # Private items included for the publish trio only.
+          CLIPPY_CONF_DIR: ${{ github.workspace }}/clippy-publish
+        run: >
+          cargo clippy -p bookclerk-plugin-abi -p bookclerk-plugin-manifest
+          -p bookclerk-plugin-sdk --all-targets --
+          -D warnings
+          -D clippy::missing_errors_doc
+          -D clippy::missing_panics_doc
       - name: Generate API docs
-        run: ./scripts/generate-api-docs.sh --check
+        if: needs.plan.outputs.run_docs == 'true'
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
+            ./scripts/generate-api-docs.sh --check --all
+          else
+            ARGS=(--check)
+            DOC_PKGS="${{ needs.plan.outputs.rust_doc_packages }}"
+            for p in $DOC_PKGS; do ARGS+=(--rust-package "$p"); done
+            if [ "${{ needs.plan.outputs.ts_sdk }}" = "true" ]; then
+              ARGS+=(--typescript-sdk)
+            fi
+            if [ "${{ needs.plan.outputs.ui }}" = "true" ]; then
+              ARGS+=(--ui)
+            fi
+            if [ "${{ needs.plan.outputs.python_sdk }}" = "true" ]; then
+              ARGS+=(--python)
+            fi
+            # If only rust packages selected, still generate rust docs.
+            if [ -z "$DOC_PKGS" ] && [ "${{ needs.plan.outputs.ts_sdk }}" != "true" ] \
+              && [ "${{ needs.plan.outputs.ui }}" != "true" ] \
+              && [ "${{ needs.plan.outputs.python_sdk }}" != "true" ]; then
+              echo "No API doc surfaces selected; skipping"
+              exit 0
+            fi
+            ./scripts/generate-api-docs.sh "${ARGS[@]}"
+          fi
+
+      - name: Explicit doctests
+        if: needs.plan.outputs.run_rust == 'true'
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
+            cargo test --workspace --doc --all-features
+          else
+            PKGS="${{ needs.plan.outputs.rust_doctest_packages }}"
+            if [ -z "${PKGS}" ]; then
+              echo "No doctestable packages in plan; skipping cargo test --doc"
+              exit 0
+            fi
+            ARGS=()
+            for p in $PKGS; do ARGS+=(-p "$p"); done
+            cargo test "${ARGS[@]}" --doc --all-features
+          fi
 
       - name: Plugin host without in-process sources
+        if: needs.plan.outputs.run_store_free == 'true'
         run: cargo check -p bookclerk-plugin-host --no-default-features
 
-      # A packager who may not ship DRM code needs the hosts themselves to build
-      # without a store, not just the plugin host crate. The script also asserts
-      # no cipher survives in that graph, which is the part a refactor can break
-      # silently.
       - name: Hosts build store-free, and stay cipher-free
+        if: needs.plan.outputs.run_store_free == 'true'
         run: |
           cargo clippy -p bookclerk-cli -p bookclerkd --no-default-features \
             --all-targets -- -D warnings
           ./scripts/check-store-free-hosts.sh
 
-      # Package list comes from directory discovery (platform / optional / examples).
-      # `build-app --platform` also ensures the pinned Cloudflare `workerd` binary.
       - name: Build app (platform + optional + examples)
-        run: cargo build-app --platform --optional --examples
+        if: needs.plan.outputs.run_build_app == 'true'
+        run: |
+          set -euo pipefail
+          ARGS=()
+          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ] \
+            || [ "${{ needs.plan.outputs.build_app_platform }}" = "true" ]; then
+            ARGS+=(--platform)
+          fi
+          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ] \
+            || [ "${{ needs.plan.outputs.build_app_optional }}" = "true" ]; then
+            ARGS+=(--optional)
+          fi
+          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ] \
+            || [ "${{ needs.plan.outputs.build_app_examples }}" = "true" ]; then
+            ARGS+=(--examples)
+          fi
+          if [ ${#ARGS[@]} -eq 0 ]; then
+            ARGS=(--platform)
+          fi
+          cargo build-app "${ARGS[@]}"
 
       - name: Pinned workerd present beside helpers
+        if: needs.plan.outputs.run_build_app == 'true' && (needs.plan.outputs.build_app_platform == 'true' || needs.plan.outputs.execute_full_suite == 'true')
         run: |
           test -x target/debug/bookclerk-workerd
           test -x target/debug/workerd
           test -f target/debug/workerd.version
 
       - name: Install platform guests into FILES_DIR
+        if: needs.plan.outputs.run_build_app == 'true' && (needs.plan.outputs.build_app_platform == 'true' || needs.plan.outputs.execute_full_suite == 'true')
         env:
           BOOKCLERK_FILES_DIR: ${{ runner.temp }}/BookclerkFiles
         run: cargo install-platform --skip-build
 
       - name: Stage optional plugins + reference examples
+        if: needs.plan.outputs.run_build_app == 'true' && (needs.plan.outputs.build_app_optional == 'true' || needs.plan.outputs.build_app_examples == 'true' || needs.plan.outputs.execute_full_suite == 'true')
         env:
           BOOKCLERK_PLUGIN_ARTIFACTS: ${{ runner.temp }}/bookclerk-plugins
-        run: cargo stage-plugins --optional --examples --skip-build
+        run: |
+          set -euo pipefail
+          ARGS=(--skip-build)
+          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ] \
+            || [ "${{ needs.plan.outputs.build_app_optional }}" = "true" ]; then
+            ARGS+=(--optional)
+          fi
+          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ] \
+            || [ "${{ needs.plan.outputs.build_app_examples }}" = "true" ]; then
+            ARGS+=(--examples)
+          fi
+          cargo stage-plugins "${ARGS[@]}"
 
       - name: Test
+        if: needs.plan.outputs.run_rust == 'true'
         env:
           BOOKCLERK_FILES_DIR: ${{ runner.temp }}/BookclerkFiles
           BOOKCLERK_PLUGIN_ARTIFACTS: ${{ runner.temp }}/bookclerk-plugins
           BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: "1"
           BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
           BOOKCLERK_WORKERD_BIN: ${{ github.workspace }}/target/debug/workerd
-        # Prepend helpers in-shell. Do not use `env.PATH` — workflow `env:` has
-        # no PATH key, so `${{ env.PATH }}` is empty and wiped `cargo` off PATH.
-        # `$GITHUB_PATH` only affects *later* steps, not this one.
         run: |
+          set -euo pipefail
           export PATH="${{ github.workspace }}/target/debug:$PATH"
-          cargo test --workspace
+          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
+            # `--lib --bins --tests` keeps unit + integration tests and skips
+            # doctests (already run in "Explicit doctests"). `--tests` alone
+            # would drop `src/` unit tests.
+            cargo test --workspace --lib --bins --tests
+          else
+            PKGS="${{ needs.plan.outputs.rust_packages }}"
+            ARGS=()
+            for p in $PKGS; do ARGS+=(-p "$p"); done
+            cargo test "${ARGS[@]}" --lib --bins --tests
+          fi
 
   release:
     name: release build
+    needs: plan
+    if: needs.plan.outputs.run_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -155,7 +473,6 @@ jobs:
           npm ci
           npm run build
 
-      # Hosts + helpers + platform guests from directory discovery.
       - name: Build release binaries
         env:
           BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
@@ -169,13 +486,10 @@ jobs:
           test -x target/release/workerd
           test -f target/release/workerd.version
 
-  # The confinement backends are entirely per-OS, so an ubuntu-only run says
-  # nothing about Seatbelt or the Windows path. This also exercises the negative
-  # tests for both jailed tiers — the media worker's per-job allowlist and the
-  # launcher's hand-off to a plugin guest — which are what prove neither can
-  # reach anything it did not declare.
   confinement:
     name: sandbox + jailed tiers (${{ matrix.os }})
+    needs: plan
+    if: needs.plan.outputs.run_confinement == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -202,28 +516,18 @@ jobs:
           -p bookclerk-media-worker -p bookclerk-jail
           --all-targets -- -D warnings
 
-      # Every enforcement test no-ops without a backend, so a runner that lost
-      # Landlock would report green while proving nothing. Demand enforcement
-      # where we expect it:
-      # - REQUIRE_ENFORCEMENT — self-confine (Landlock/Seatbelt); empty on Windows
-      # - REQUIRE_SPAWN_ENFORCEMENT — CreateProcess AppContainer (jail + media)
       - name: Test
         env:
-          # Written the "true" way round on purpose: an empty string is falsy
-          # in a GitHub expression, so `os == 'windows' && '' || '1'` collapses
-          # to '1' everywhere and silently demands self-confine on Windows too.
           BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: ${{ matrix.os != 'windows-latest' && '1' || '' }}
           BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
-        # DACL mutations are serialized in-process / cross-process via
-        # Local\bookclerk-dacl-tx; cargo can run these tests in parallel.
         run: >
           cargo test -p bookclerk-sandbox -p bookclerk-media -p bookclerk-media-worker
           -p bookclerk-jail
 
-  # Explicit tray matrix so each OS backend is compiled (ksni on Linux,
-  # tray-icon without GTK features on Windows/macOS).
   tray:
     name: tray (${{ matrix.os }})
+    needs: plan
+    if: needs.plan.outputs.run_tray == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -249,3 +553,33 @@ jobs:
 
       - name: Test bookclerk-tray
         run: cargo test -p bookclerk-tray
+
+  ci-gate:
+    name: CI Gate
+    needs: [plan, check, release, confinement, tray]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate required jobs
+        env:
+          PLAN: ${{ needs.plan.result }}
+          CHECK: ${{ needs.check.result }}
+          RELEASE: ${{ needs.release.result }}
+          CONFINEMENT: ${{ needs.confinement.result }}
+          TRAY: ${{ needs.tray.result }}
+        run: |
+          set -euo pipefail
+          echo "plan=$PLAN check=$CHECK release=$RELEASE confinement=$CONFINEMENT tray=$TRAY"
+          fail=0
+          for pair in "plan:$PLAN" "check:$CHECK" "release:$RELEASE" "confinement:$CONFINEMENT" "tray:$TRAY"; do
+            job="${pair%%:*}"
+            result="${pair#*:}"
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "required job $job failed: $result"
+                fail=1
+                ;;
+            esac
+          done
+          exit "$fail"

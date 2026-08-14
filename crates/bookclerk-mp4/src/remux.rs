@@ -41,12 +41,20 @@ pub trait SampleTransform {
     /// Called once before any payload, so a transform holding per-sample state
     /// (a table of initialization vectors, say) can narrow it to the same
     /// selection and then index it by output position.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     fn retain(&mut self, kept: &[usize]) -> Result<()> {
         let _ = kept;
         Ok(())
     }
 
     /// Rewrite output sample `index` in place. The length must not change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     fn sample(&mut self, index: usize, payload: &mut [u8]) -> Result<()>;
 }
 
@@ -261,6 +269,7 @@ where
     Ok(())
 }
 
+/// Encodes an `ftyp` box with major brand `M4B ` and compatible `mp42`/`isom`/`iso2`.
 fn build_m4b_ftyp() -> Vec<u8> {
     // major=M4B , minor=0, brands: M4B , mp42, isom, iso2
     let brands: &[&[u8; 4]] = &[b"M4B ", b"mp42", b"isom", b"iso2"];
@@ -385,6 +394,7 @@ fn clear_protection_markup(moov: &[u8], type_rel: usize) -> Result<Vec<u8>> {
     Ok(body)
 }
 
+/// Drops named direct children of `stbl` (CENC `saiz`/`saio`) after a decrypt remux.
 fn remove_stbl_children_named(moov: &[u8], names: &[&[u8; 4]]) -> Result<Vec<u8>> {
     let mut body = moov.to_vec();
     loop {
@@ -407,6 +417,7 @@ fn remove_stbl_children_named(moov: &[u8], names: &[&[u8; 4]]) -> Result<Vec<u8>
     Ok(body)
 }
 
+/// Run-length encodes sample durations into an `stts` box (timescale units).
 fn encode_stts(durations: &[u32]) -> Vec<u8> {
     // Run-length encode.
     let mut runs: Vec<(u32, u32)> = Vec::new();
@@ -432,6 +443,7 @@ fn encode_stts(durations: &[u32]) -> Vec<u8> {
     buf
 }
 
+/// Encodes an `stsc` with one sample per chunk (first_chunk=1, desc=1).
 fn encode_stsc_one_per_chunk() -> Vec<u8> {
     // first_chunk=1, samples_per_chunk=1, desc=1 — one entry covers all chunks.
     let size = 8 + 4 + 4 + 12;
@@ -446,6 +458,7 @@ fn encode_stsc_one_per_chunk() -> Vec<u8> {
     buf
 }
 
+/// Encodes an `stsz` with `sample_size=0` and a per-sample size table (bytes).
 fn encode_stsz(sizes: &[u32]) -> Vec<u8> {
     let size = 8 + 4 + 4 + 4 + sizes.len() * 4;
     let mut buf = Vec::with_capacity(size);
@@ -460,6 +473,7 @@ fn encode_stsz(sizes: &[u32]) -> Vec<u8> {
     buf
 }
 
+/// Encodes 32-bit chunk offsets into an `stco` box (file offsets in bytes).
 fn encode_stco(offsets: &[u32]) -> Vec<u8> {
     let size = 8 + 4 + 4 + offsets.len() * 4;
     let mut buf = Vec::with_capacity(size);
@@ -473,6 +487,7 @@ fn encode_stco(offsets: &[u32]) -> Vec<u8> {
     buf
 }
 
+/// Encodes 64-bit chunk offsets into a `co64` box when any offset exceeds `u32::MAX`.
 fn encode_co64(offsets: &[u64]) -> Vec<u8> {
     let size = 8 + 4 + 4 + offsets.len() * 8;
     let mut buf = Vec::with_capacity(size);
@@ -495,6 +510,7 @@ fn replace_stbl_child(moov: &[u8], fourcc: &[u8; 4], replacement: &[u8]) -> Resu
     splice_replace(moov, child.0, child.1, replacement)
 }
 
+/// Replaces `stco` or `co64` inside `stbl`; errors if neither is present.
 fn replace_chunk_offset_box(moov: &[u8], replacement: &[u8]) -> Result<Vec<u8>> {
     let (stbl_start, stbl_end) =
         find_box_range(moov, b"stbl")?.ok_or_else(|| Mp4Error::container("moov missing stbl"))?;
@@ -507,6 +523,7 @@ fn replace_chunk_offset_box(moov: &[u8], replacement: &[u8]) -> Result<Vec<u8>> 
     Err(Mp4Error::container("stbl missing stco/co64"))
 }
 
+/// Writes media duration into `mdhd` and movie duration into `mvhd`/`tkhd`.
 fn patch_duration_fields(moov: &mut [u8], media_duration: u64, movie_duration: u64) -> Result<()> {
     // Patch first mvhd, first tkhd (audio), first mdhd durations.
     patch_named_duration(moov, b"mvhd", movie_duration)?;
@@ -515,6 +532,7 @@ fn patch_duration_fields(moov: &mut [u8], media_duration: u64, movie_duration: u
     Ok(())
 }
 
+/// Patches the duration field of the first `mvhd`/`tkhd`/`mdhd`, honoring version-0/1 layouts.
 fn patch_named_duration(moov: &mut [u8], fourcc: &[u8; 4], duration: u64) -> Result<()> {
     let Some((start, end)) = find_box_range(moov, fourcc)? else {
         return Ok(());

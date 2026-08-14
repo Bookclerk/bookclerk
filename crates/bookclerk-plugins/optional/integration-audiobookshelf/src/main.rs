@@ -15,17 +15,21 @@ use bookclerk_plugin_sdk::{
 };
 use tokio::sync::Mutex;
 
+/// Audiobookshelf integration guest; state is created at handshake.
 struct AbsPlugin {
+    /// Shared guest state after handshake; `None` until the host calls handshake.
     state: Mutex<Option<Arc<Mutex<AbsGuestState>>>>,
 }
 
 impl AbsPlugin {
+    /// Empty plugin; handshake must run before any other RPC.
     fn new() -> Self {
         Self {
             state: Mutex::new(None),
         }
     }
 
+    /// Returns handshake state, or `invalid_params` if handshake has not run.
     async fn require_state(&self) -> Result<Arc<Mutex<AbsGuestState>>, PluginError> {
         self.state
             .lock()

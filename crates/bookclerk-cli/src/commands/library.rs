@@ -16,6 +16,7 @@ use crate::progress::BatchProgress;
 use crate::registry::{default_registry_with_plugins, resolve_source_id};
 
 #[derive(Debug, Subcommand)]
+/// `bookclerk library` subcommands for scan, acquire, accounts, and export.
 pub enum LibraryCommand {
     /// List configured bookstore accounts.
     Accounts {
@@ -104,6 +105,7 @@ pub enum LibraryCommand {
     /// Falls back to ASIN/ISBN tokens embedded in the object key.
     SetStatus {
         #[arg(long)]
+        /// Limit matching to this account id, stem, or nickname.
         account: Option<String>,
         /// Do not clear Acquired status when the file is missing.
         #[arg(long)]
@@ -122,12 +124,15 @@ pub enum LibraryCommand {
         #[arg(long)]
         fix_layout: bool,
         #[arg(value_name = "ASIN")]
+        /// Title ids to update (UUID, ASIN, ISBN, or product id); empty means all matching the account filter.
         asins: Vec<String>,
     },
     /// Fetch a content license for an ASIN.
     GetLicense {
+        /// Title id to resolve to an Audible ASIN (UUID, ASIN, ISBN, or product id).
         asin: String,
         #[arg(long)]
+        /// Audible account when the title is missing or owned on multiple accounts.
         account: Option<String>,
         /// Emit full license summary as JSON.
         #[arg(long)]
@@ -159,53 +164,69 @@ pub enum LibraryCommand {
         #[arg(short, long)]
         path: std::path::PathBuf,
         #[arg(long)]
+        /// Write CSV (default when no format flag is set and the path ends in `.csv`).
         csv: bool,
         #[arg(long)]
+        /// Write JSON.
         json: bool,
         #[arg(long)]
+        /// Write XLSX.
         xlsx: bool,
         /// Limit to specific ASINs.
         asins: Vec<String>,
         #[arg(long)]
+        /// Limit the export to this account id, stem, or nickname.
         account: Option<String>,
     },
     /// List books in the local library DB.
     List {
         #[arg(long)]
+        /// Limit listed rows to this account id, stem, or nickname.
         account: Option<String>,
         #[arg(long)]
+        /// Filter by acquire status (`acquired`, `not_downloaded`, …).
         status: Option<String>,
     },
     /// Convert acquired m4b/m4a to mp3.
     Convert {
         #[arg(long)]
+        /// Limit conversion to this account id, stem, or nickname.
         account: Option<String>,
         #[arg(short, long)]
+        /// Re-encode even when an MP3 already exists in storage.
         force: bool,
         #[arg(value_name = "ASIN")]
+        /// Title ids to convert; empty means all acquired titles matching the account filter.
         asins: Vec<String>,
     },
     /// Manage saved quick filters.
     Filters {
         #[command(subcommand)]
+        /// Nested saved-filter list/save/delete action.
         command: FilterCommand,
     },
 }
 
 #[derive(Debug, Subcommand)]
+/// Nested `library filters` actions for named Lucene quick filters.
 pub(crate) enum FilterCommand {
     /// List saved filters.
     List,
     /// Save or update a named filter.
     Save {
+        /// Saved filter name to create or overwrite.
         name: String,
         /// Lucene-style query string.
         query: String,
     },
     /// Delete a saved filter.
-    Delete { name: String },
+    Delete {
+        /// Saved filter name to delete.
+        name: String,
+    },
 }
 
+/// Dispatches a `library` subcommand against the opened library store.
 pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()> {
     let paths = config.paths();
     let store = crate::registry::open_library(config).await?;
@@ -911,6 +932,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
     }
 }
 
+/// Prints storefront plus DB-only accounts, optionally filtered by source id.
 async fn list_all_accounts(
     config: &Config,
     source_filter: Option<&str>,
@@ -1000,6 +1022,7 @@ async fn list_all_accounts(
     Ok(())
 }
 
+/// Formats a boolean as `yes` / `no` for tabular CLI output.
 fn yes_no(v: bool) -> &'static str {
     if v {
         "yes"
@@ -1082,6 +1105,7 @@ async fn resolve_license_target(
     }
 }
 
+/// Whether `id` matches the book's UUID, product id, ISBN, or ASIN (case-insensitive).
 fn title_id_matches(book: &bookclerk_library::BookRecord, id: &str) -> bool {
     id.eq_ignore_ascii_case(&book.uuid)
         || id.eq_ignore_ascii_case(&book.product_id)
@@ -1095,6 +1119,7 @@ fn title_id_matches(book: &bookclerk_library::BookRecord, id: &str) -> bool {
             .is_some_and(|a| id.eq_ignore_ascii_case(a))
 }
 
+/// Builds the destination storage backend from config and loaded destination plugins.
 async fn storage_for_config(
     config: &Config,
     store: &LibraryStore,

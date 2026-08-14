@@ -30,6 +30,8 @@ except ImportError:  # authoring / unit tests outside the isolate
             return None
 
     class WorkerEntrypoint:  # type: ignore[no-redef]
+        """Authoring stub for Cloudflare's ``WorkerEntrypoint`` base class."""
+
         def __init__(self, *_a, **_k):
             self.env = None
 

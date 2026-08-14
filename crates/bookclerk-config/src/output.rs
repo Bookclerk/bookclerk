@@ -101,6 +101,7 @@ impl DestinationNaming {
     }
 }
 
+/// Serde default for [`OutputLocalConfig::enabled`] when the TOML key is omitted.
 fn default_true() -> bool {
     true
 }

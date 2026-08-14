@@ -824,6 +824,10 @@ impl Config {
     }
 
     /// Soft validation of cross-field constraints.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn validate(&self) -> Result<()> {
         self.database.validate()?;
         self.output.validate_destinations()?;
@@ -1019,6 +1023,10 @@ impl Config {
     /// On Unix, `rename` replaces the destination. On Windows, `std::fs::rename`
     /// cannot replace an existing file, so this uses `MoveFileExW` with
     /// `MOVEFILE_REPLACE_EXISTING` instead of delete-then-rename.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn write_toml_file(&self, path: &Path) -> Result<()> {
         let dir = match path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => {
@@ -1047,6 +1055,10 @@ impl Config {
     }
 
     /// Serialize to a TOML string suitable for `config.toml`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn to_toml_string(&self) -> Result<String> {
         // Clone without paths so they are not written.
         let mut out = self.clone();
@@ -1055,6 +1067,10 @@ impl Config {
     }
 
     /// Resolved paths (panic only if `load` was not used — callers should use `load`).
+    ///
+    /// # Panics
+    ///
+    /// Panics when an internal invariant does not hold.
     #[must_use]
     pub fn paths(&self) -> &Paths {
         self.paths
@@ -1097,6 +1113,7 @@ pub(crate) fn staging_toml_path(dir: &Path, dest: &Path) -> PathBuf {
     ))
 }
 
+/// Parses `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`; other strings are `None`.
 fn parse_bool(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Some(true),

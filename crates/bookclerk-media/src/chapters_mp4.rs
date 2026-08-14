@@ -24,6 +24,7 @@ const CHAPTER_TIMESCALE: u32 = 1000;
 /// Nero `chpl` start-time timescale (mp4ameta / Nero default).
 const CHPL_TIMESCALE: u64 = 10_000_000;
 
+/// Trailing UTF-8 `encd` atom appended to each QuickTime chapter sample.
 const ENCD: [u8; 12] = [
     0, 0, 0, 12, // size
     b'e', b'n', b'c', b'd', //
@@ -144,6 +145,7 @@ fn append_chapter_media(path: &Path, payload: &[u8]) -> Result<u64> {
     Ok(end + header_len)
 }
 
+/// Builds chapter sample payload, sizes, and millisecond deltas from titles and start times.
 fn build_chapter_samples(
     chapters: &[(String, u64)],
     duration_ms: u64,
@@ -172,6 +174,7 @@ fn build_chapter_samples(
     Ok((payload, sizes, deltas))
 }
 
+/// Assembles an AVFoundation-readable QuickTime chapter `trak` (tkhd/edts/mdia).
 fn build_chapter_trak(
     track_id: u32,
     movie_timescale: u32,
@@ -194,6 +197,7 @@ fn build_chapter_trak(
     Ok(wrap_container(b"trak", &[tkhd, edts, mdia]))
 }
 
+/// Track header with TrackInMovie flags, identity matrix, and zero width/height.
 fn build_tkhd(track_id: u32, movie_duration: u32) -> Vec<u8> {
     let mut body = Vec::with_capacity(84);
     body.push(0); // version
@@ -214,6 +218,7 @@ fn build_tkhd(track_id: u32, movie_duration: u32) -> Vec<u8> {
     wrap_atom(b"tkhd", &body)
 }
 
+/// Edit list mapping the chapter media onto the movie timeline at rate 1.0.
 fn build_edts(movie_duration: u32) -> Vec<u8> {
     let mut elst = Vec::with_capacity(20);
     elst.extend_from_slice(&0u32.to_be_bytes()); // ver/flags
@@ -224,6 +229,7 @@ fn build_edts(movie_duration: u32) -> Vec<u8> {
     wrap_container(b"edts", &[wrap_atom(b"elst", &elst)])
 }
 
+/// Media header using the chapter timescale (milliseconds) and `und` language.
 fn build_mdhd(timescale: u32, duration: u32) -> Vec<u8> {
     let mut body = Vec::with_capacity(24);
     body.extend_from_slice(&0u32.to_be_bytes()); // ver/flags
@@ -236,6 +242,7 @@ fn build_mdhd(timescale: u32, duration: u32) -> Vec<u8> {
     wrap_atom(b"mdhd", &body)
 }
 
+/// Handler atom declaring a `text` chapter track (`ChapterHandler`).
 fn build_hdlr_text() -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(&0u32.to_be_bytes());
@@ -246,6 +253,7 @@ fn build_hdlr_text() -> Vec<u8> {
     wrap_atom(b"hdlr", &body)
 }
 
+/// Media information box: `gmhd` + `dinf` + sample table for chapter titles.
 fn build_minf(sample_sizes: &[u32], sample_deltas: &[u32], sample_offset: u64) -> Result<Vec<u8>> {
     let gmhd = build_gmhd();
     let dinf = build_dinf();
@@ -253,6 +261,7 @@ fn build_minf(sample_sizes: &[u32], sample_deltas: &[u32], sample_offset: u64) -
     Ok(wrap_container(b"minf", &[gmhd, dinf, stbl]))
 }
 
+/// Generic media header with `gmin` and ffmpeg-compatible Text Media Information.
 fn build_gmhd() -> Vec<u8> {
     let mut gmin = Vec::with_capacity(16);
     gmin.extend_from_slice(&0u32.to_be_bytes());
@@ -266,6 +275,7 @@ fn build_gmhd() -> Vec<u8> {
     wrap_container(b"gmhd", &[wrap_atom(b"gmin", &gmin), text])
 }
 
+/// Data information box pointing at a self-contained `url ` reference.
 fn build_dinf() -> Vec<u8> {
     let mut url = Vec::with_capacity(4);
     url.extend_from_slice(&0u32.to_be_bytes());
@@ -278,6 +288,7 @@ fn build_dinf() -> Vec<u8> {
     wrap_container(b"dinf", &[wrap_atom(b"dref", &dref)])
 }
 
+/// Sample table for chapter titles (`stsd`/`stts`/`stsc`/`stsz`/`stco` or `co64`).
 fn build_stbl(sample_sizes: &[u32], sample_deltas: &[u32], sample_offset: u64) -> Result<Vec<u8>> {
     let mut stsd_body = Vec::new();
     stsd_body.extend_from_slice(&0u32.to_be_bytes());
@@ -328,6 +339,7 @@ fn build_stbl(sample_sizes: &[u32], sample_deltas: &[u32], sample_offset: u64) -
     Ok(wrap_container(b"stbl", &[stsd, stts, stsc, stsz, stco]))
 }
 
+/// 3×3 identity transformation matrix used in `tkhd` (16.16 / 2.30 fixed point).
 fn identity_matrix() -> [u8; 36] {
     let mut m = [0u8; 36];
     m[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
@@ -336,6 +348,7 @@ fn identity_matrix() -> [u8; 36] {
     m
 }
 
+/// Prefixes a 32-bit size and fourcc onto a leaf atom body.
 fn wrap_atom(fourcc: &[u8; 4], body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + body.len());
     out.extend_from_slice(&((8 + body.len()) as u32).to_be_bytes());
@@ -344,6 +357,7 @@ fn wrap_atom(fourcc: &[u8; 4], body: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Prefixes a 32-bit size and fourcc onto concatenated child atoms.
 fn wrap_container(fourcc: &[u8; 4], children: &[Vec<u8>]) -> Vec<u8> {
     let body_len: usize = children.iter().map(Vec::len).sum();
     let mut out = Vec::with_capacity(8 + body_len);
@@ -355,6 +369,7 @@ fn wrap_container(fourcc: &[u8; 4], children: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
+/// Writes an 8- or 16-byte atom header; sizes above `u32::MAX` use the 64-bit form.
 fn write_atom_header(buf: &mut Vec<u8>, size: u64, fourcc: [u8; 4]) -> Result<()> {
     if size > u64::from(u32::MAX) {
         buf.extend_from_slice(&1u32.to_be_bytes());
@@ -368,9 +383,13 @@ fn write_atom_header(buf: &mut Vec<u8>, size: u64, fourcc: [u8; 4]) -> Result<()
 }
 
 #[derive(Clone, Copy)]
+/// Byte range of one ISO-BMFF atom inside a `moov` buffer.
 struct AtomSpan {
+    /// Byte offset of the atom header from the start of the buffer.
     offset: usize,
+    /// Total atom size in bytes, including the header.
     size: usize,
+    /// Header length in bytes (8, or 16 when the 64-bit size form is used).
     header: usize,
 }
 
@@ -407,6 +426,7 @@ fn find_atom(data: &[u8], start: usize, end: usize, fourcc: [u8; 4]) -> Option<A
     None
 }
 
+/// Immediate child atoms of `parent`; stops on a truncated or invalid size.
 fn iter_children(data: &[u8], parent: AtomSpan) -> Vec<AtomSpan> {
     let mut out = Vec::new();
     let mut pos = parent.offset + parent.header;
@@ -437,12 +457,14 @@ fn iter_children(data: &[u8], parent: AtomSpan) -> Vec<AtomSpan> {
     out
 }
 
+/// Fourcc at `atom.offset + 4`; `[0; 4]` when the header is too short.
 fn atom_type(data: &[u8], atom: AtomSpan) -> [u8; 4] {
     data[atom.offset + 4..atom.offset + 8]
         .try_into()
         .unwrap_or([0; 4])
 }
 
+/// Writes a 32-bit atom size at `atom_offset`; fails when the size exceeds `u32::MAX`.
 fn set_atom_size(buf: &mut [u8], atom_offset: usize, new_size: usize) -> Result<()> {
     if new_size > u32::MAX as usize {
         return Err(MediaError::Native(
@@ -453,6 +475,7 @@ fn set_atom_size(buf: &mut [u8], atom_offset: usize, new_size: usize) -> Result<
     Ok(())
 }
 
+/// Treats the whole buffer as a `moov` atom whose header is the first 8 bytes.
 fn moov_span(moov: &[u8]) -> AtomSpan {
     AtomSpan {
         offset: 0,
@@ -461,6 +484,7 @@ fn moov_span(moov: &[u8]) -> AtomSpan {
     }
 }
 
+/// Reads movie timescale and duration from `mvhd` (version 0 or 1).
 fn read_mvhd_timing(moov: &[u8]) -> Result<(u32, u64)> {
     let mvhd = iter_children(moov, moov_span(moov))
         .into_iter()
@@ -479,6 +503,7 @@ fn read_mvhd_timing(moov: &[u8]) -> Result<(u32, u64)> {
     }
 }
 
+/// Track id from a `tkhd` atom (version 0 or 1 layout).
 fn read_tkhd_id(data: &[u8], tkhd: AtomSpan) -> u32 {
     let p = tkhd.offset + tkhd.header;
     if data[p] == 0 {
@@ -488,6 +513,7 @@ fn read_tkhd_id(data: &[u8], tkhd: AtomSpan) -> u32 {
     }
 }
 
+/// Handler type fourcc (`soun`, `text`, …) from the `hdlr` inside `mdia`.
 fn hdlr_type(data: &[u8], mdia: AtomSpan) -> Option<[u8; 4]> {
     let hdlr = iter_children(data, mdia)
         .into_iter()
@@ -496,6 +522,7 @@ fn hdlr_type(data: &[u8], mdia: AtomSpan) -> Option<[u8; 4]> {
     data.get(p + 8..p + 12)?.try_into().ok()
 }
 
+/// Track id of the first `soun` handler, or `None` when the movie has no audio track.
 fn first_audio_track_id(moov: &[u8]) -> Result<Option<u32>> {
     for trak in iter_children(moov, moov_span(moov))
         .into_iter()
@@ -523,6 +550,7 @@ fn first_audio_track_id(moov: &[u8]) -> Result<Option<u32>> {
     Ok(None)
 }
 
+/// One past the highest existing track id, at least 2 so chapter tracks are never id 1.
 fn next_track_id(moov: &[u8]) -> u32 {
     let mut max_id = 0u32;
     for trak in iter_children(moov, moov_span(moov))
@@ -539,6 +567,7 @@ fn next_track_id(moov: &[u8]) -> u32 {
     max_id.saturating_add(1).max(2)
 }
 
+/// Removes text-handler tracks, `chap` references, and Nero `chpl` before rewriting chapters.
 fn strip_existing_chapters(moov: &mut Vec<u8>) -> Result<()> {
     // Collect chapter track IDs referenced by chap, plus any text handler traks.
     let mut remove_ids = Vec::new();
@@ -657,6 +686,7 @@ fn strip_existing_chapters(moov: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
+/// Inserts the chapter `trak` before `udta` when present, otherwise appends it.
 fn insert_chapter_trak(moov: &mut Vec<u8>, chapter_trak: &[u8]) -> Result<()> {
     // Insert before udta when present, else append.
     let children = iter_children(moov, moov_span(moov));
@@ -671,6 +701,7 @@ fn insert_chapter_trak(moov: &mut Vec<u8>, chapter_trak: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Points the audio track's `tref`/`chap` at the new chapter track id (QuickTime order).
 fn set_audio_chap_ref(
     moov: &mut Vec<u8>,
     audio_track_id: u32,
@@ -735,6 +766,7 @@ fn set_audio_chap_ref(
     Ok(())
 }
 
+/// Replaces or creates a Nero `chpl` atom (start times in 10_000_000 Hz units, max 255 chapters).
 fn upsert_nero_chpl(moov: &mut Vec<u8>, chapters: &[(String, u64)]) -> Result<()> {
     let mut chpl_body = Vec::new();
     chpl_body.extend_from_slice(&0u32.to_be_bytes()); // ver/flags

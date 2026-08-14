@@ -8,6 +8,7 @@ use bookclerk_plugin_manifest::{EgressPolicy, NetworkMode, PluginManifest};
 /// [`bookclerk_plugin_manifest::EgressPolicy`].
 #[derive(Debug, Clone)]
 pub struct EgressProxy {
+    /// Approved initial-host allowlist and redirect-hop budget from the guest manifest.
     inner: EgressPolicy,
 }
 

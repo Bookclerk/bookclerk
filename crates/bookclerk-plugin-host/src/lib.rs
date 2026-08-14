@@ -102,6 +102,10 @@ pub use registry::{
 pub use rpc::PluginClient;
 
 /// Register discovered external plugins into the in-process registries.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn register_discovered(
     config: &bookclerk_config::Config,
     sources: &mut bookclerk_source::SourceRegistry,

@@ -44,6 +44,10 @@ pub struct SampleInfo {
 /// # Errors
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub fn build_samples(
     stts: &[(u32, u32)],
     stsc: &[ChunkMapEntry],

@@ -5,8 +5,10 @@ use chrono::{Datelike, NaiveDateTime, Timelike};
 use regex::Regex;
 use std::sync::OnceLock;
 
+/// Fallback .NET date pattern (`yyyy-MM-dd`) when the caller omits a format.
 pub(crate) const DEFAULT_DATE_FORMAT: &str = "yyyy-MM-dd";
 
+/// Cached regex for optional left-truncate length plus `u`/`l`/`t`/`T` case flags.
 fn string_format_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^\s*(?P<left>\d+)?\s*(?P<case>[uUlLtT])?\s*$").unwrap())
@@ -105,6 +107,7 @@ pub(crate) fn float_formatter(value: f64, format: Option<&str>) -> String {
     }
 }
 
+/// Formats a float without a fraction when it is an integer whose magnitude is below `1e15`.
 fn default_number(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 1e15 {
         format!("{}", value as i64)
@@ -134,6 +137,7 @@ pub(crate) fn format_number(value: f64, format: &str) -> String {
     format_custom(value, format)
 }
 
+/// Applies .NET `F`/`N`/`D` standard numeric formats; `None` when the pattern is custom.
 fn try_standard(value: f64, format: &str) -> Option<String> {
     let mut chars = format.chars();
     let letter = chars.next()?;
@@ -168,6 +172,7 @@ fn try_standard(value: f64, format: &str) -> Option<String> {
     }
 }
 
+/// Inserts commas into the integer part of a decimal string (preserves a leading minus).
 fn group_thousands(num: &str) -> String {
     let (int_part, frac_part) = match num.split_once('.') {
         Some((i, f)) => (i, Some(f)),
@@ -196,13 +201,19 @@ fn group_thousands(num: &str) -> String {
 }
 
 #[derive(Debug)]
+/// One token of a custom numeric pattern (`0`, `#`, `,`, or a quoted/escaped literal).
 enum NumToken {
+    /// Required digit placeholder (`0`); pads with zero when no digit remains.
     Zero,
+    /// Optional digit placeholder (`#`); omitted when no digit remains.
     Hash,
+    /// Quoted, escaped, or other literal text copied into the output.
     Literal(String),
+    /// Thousands-separator placeholder (`,`) in the integer pattern.
     Group,
 }
 
+/// Splits a custom numeric pattern into integer and fractional token lists at `.`.
 fn tokenize_number_format(format: &str) -> (Vec<NumToken>, Vec<NumToken>) {
     let mut int_tokens = Vec::new();
     let mut frac_tokens = Vec::new();
@@ -248,6 +259,7 @@ fn tokenize_number_format(format: &str) -> (Vec<NumToken>, Vec<NumToken>) {
     (int_tokens, frac_tokens)
 }
 
+/// Renders `value` with custom `0`/`#`/`,` placeholders and optional grouping.
 fn format_custom(value: f64, format: &str) -> String {
     let (int_tokens, frac_tokens) = tokenize_number_format(format);
 
@@ -291,6 +303,7 @@ fn format_custom(value: f64, format: &str) -> String {
     out
 }
 
+/// Walks integer tokens right-to-left, flushing leftover digits on the leftmost placeholder.
 fn render_integer(tokens: &[NumToken], digits: &str, has_grouping: bool) -> String {
     let digit_chars: Vec<char> = digits.chars().collect();
     let placeholder_count = tokens
@@ -361,6 +374,7 @@ fn render_integer(tokens: &[NumToken], digits: &str, has_grouping: bool) -> Stri
     out
 }
 
+/// Walks fractional tokens left-to-right and strips trailing `#` zeros.
 fn render_fraction(tokens: &[NumToken], digits: &str) -> String {
     let digit_chars: Vec<char> = digits.chars().collect();
     let mut out = String::new();
@@ -402,6 +416,7 @@ fn render_fraction(tokens: &[NumToken], digits: &str) -> String {
 
 // --- .NET-style date formatting ---------------------------------------------
 
+/// Expands .NET date tokens (`y`/`M`/`d`/`H`/`h`/`m`/`s`/`t`/`f`) and quoted literals.
 fn format_datetime(value: NaiveDateTime, format: &str) -> String {
     let mut out = String::new();
     let chars: Vec<char> = format.chars().collect();
@@ -444,6 +459,7 @@ fn format_datetime(value: NaiveDateTime, format: &str) -> String {
     out
 }
 
+/// Formats one repeated date specifier; width follows the token's character count.
 fn format_date_token(value: NaiveDateTime, ch: char, count: usize) -> String {
     match ch {
         'y' => match count {

@@ -10,21 +10,32 @@ use winit::window::WindowId;
 use crate::client::{SharedTrayConfig, TrayConfig};
 use crate::icon;
 
+/// Events forwarded from the tray icon and menu into the winit loop.
 #[derive(Debug)]
 enum UserEvent {
+    /// Tray icon interaction (click, move, leave).
     Tray(TrayIconEvent),
+    /// Context-menu item activation.
     Menu(MenuEvent),
 }
 
+/// Owns the shared tray configuration and runs the native event loop.
 pub struct BookclerkTray {
+    /// Shared daemon listen URL / operator token for tray actions.
     config: SharedTrayConfig,
 }
 
 impl BookclerkTray {
+    /// Creates a tray runner bound to `config`.
     pub fn new(config: SharedTrayConfig) -> Self {
         Self { config }
     }
 
+    /// Builds the tray icon and blocks on the platform event loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the event loop or tray icon cannot be created.
     pub fn run(self) -> anyhow::Result<()> {
         let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
         let proxy = event_loop.create_proxy();
@@ -54,16 +65,28 @@ impl BookclerkTray {
     }
 }
 
+/// Winit application state for the Bookclerk tray icon and menu.
 struct App {
+    /// Shared config used by menu actions.
     client: SharedTrayConfig,
+    /// Live tray icon handle, if creation succeeded.
     tray_icon: Option<TrayIcon>,
+    /// Menu id for "Open Bookclerk".
     open_id: Option<tray_icon::menu::MenuId>,
+    /// Menu id for "Scan library".
     scan_id: Option<tray_icon::menu::MenuId>,
+    /// Menu id for "Copy operator token".
     token_id: Option<tray_icon::menu::MenuId>,
+    /// Menu id for "Hide tray".
     quit_id: Option<tray_icon::menu::MenuId>,
 }
 
 impl App {
+    /// Creates the tray icon and menu on first event-loop init.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the menu or tray icon cannot be built.
     fn ensure_tray(&mut self) -> anyhow::Result<()> {
         if self.tray_icon.is_some() {
             return Ok(());
@@ -103,6 +126,7 @@ impl App {
         Ok(())
     }
 
+    /// Runs `f` with the locked tray config, logging poison errors.
     fn with_client<R>(&self, f: impl FnOnce(&TrayConfig) -> R) {
         match self.client.lock() {
             Ok(guard) => {
@@ -112,6 +136,7 @@ impl App {
         }
     }
 
+    /// Opens the Bookclerk UI in the default browser.
     fn open_ui(&self) {
         self.with_client(|cfg| {
             if let Err(err) = cfg.open_ui() {
@@ -120,6 +145,7 @@ impl App {
         });
     }
 
+    /// Triggers a library scan via the daemon control plane.
     fn scan(&self) {
         self.with_client(|cfg| {
             if let Err(err) = cfg.trigger_scan() {
@@ -128,6 +154,7 @@ impl App {
         });
     }
 
+    /// Copies the operator auth token to the system clipboard.
     fn copy_token(&self) {
         self.with_client(TrayConfig::copy_operator_token);
     }

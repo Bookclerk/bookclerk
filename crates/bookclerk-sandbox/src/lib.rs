@@ -101,15 +101,25 @@ pub enum NetPolicy {
 /// Landlock rule on a missing path is an error rather than a wider grant.
 #[derive(Debug, Clone)]
 pub struct Policy {
+    /// Diagnostics label only (also drives Job default heuristics).
     label: String,
+    /// Paths the confined process may read; missing paths are skipped.
     reads: Vec<PathBuf>,
+    /// Paths the confined process may write; missing paths are skipped.
     writes: Vec<PathBuf>,
+    /// Network grant ([`NetPolicy`]); default is deny.
     net: NetPolicy,
+    /// When true, the jail permits `exec` of allowed binaries.
     allow_exec: bool,
+    /// When true, include the usual system library/loader paths on the allowlist.
     system_paths: bool,
+    /// Whether a layer that cannot engage is an error ([`Enforcement::Required`]).
     enforcement: Enforcement,
+    /// Optional process memory ceiling in bytes (Job / cgroup).
     memory_bytes: Option<u64>,
+    /// Optional cap on concurrent processes in the jail.
     active_processes: Option<u32>,
+    /// Optional CPU hard-cap as percent of one logical CPU (1..=cores×100).
     cpu_rate_percent: Option<u32>,
 }
 
@@ -546,6 +556,7 @@ pub struct Report {
 }
 
 impl Report {
+    /// Report used when enforcement is [`Enforcement::Disabled`] (no layers requested).
     fn disabled(label: &str) -> Self {
         Self {
             label: label.to_string(),
@@ -564,6 +575,7 @@ impl Report {
         self.filesystem.is_active()
     }
 
+    /// Errors if any requested layer reported [`LayerStatus::Unsupported`].
     fn require_enforced(&self) -> Result<(), SandboxError> {
         for (layer, status) in [
             ("filesystem", &self.filesystem),

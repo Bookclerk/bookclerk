@@ -30,6 +30,7 @@ pub const PASSWORD_ENV: &str = "BOOKCLERK_CHIRP_PASSWORD";
 /// [`ChirpSource::with_graphql_url`] for wiremock / staging.
 #[derive(Debug, Clone)]
 pub struct ChirpSource {
+    /// Chirp GraphQL origin; production default or a wiremock/staging override.
     graphql_url: String,
 }
 
@@ -69,6 +70,10 @@ impl ChirpSource {
     }
 
     /// Logs in with email/password and seals credentials into `encrypted_secrets`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn login_account(
         &self,
         library: &SourceScope,
@@ -123,6 +128,10 @@ impl ChirpSource {
     }
 
     /// Delete a Chirp account from the DB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_account(&self, library: &SourceScope, account_id: &str) -> Result<()> {
         delete_auth_from_db(library, account_id).await
     }
@@ -526,6 +535,7 @@ impl ContentSource for ChirpSource {
     }
 }
 
+/// True on exact fold or a contiguous phrase match when the shorter title is ≥8 chars and ≥55% of the longer.
 fn chirp_purchase_title_matches(query: &str, hit_title: &str) -> bool {
     let norm = |s: &str| -> String {
         s.chars()
@@ -564,6 +574,7 @@ fn chirp_purchase_title_matches(query: &str, hit_title: &str) -> bool {
             || longer.contains(&format!(" {shorter} ")))
 }
 
+/// Maps a Chirp catalog audiobook onto a [`CatalogHit`], including duration in minutes.
 fn catalog_hit(book: &CatalogAudiobook, origin: String) -> CatalogHit {
     let categories = chirp_genres(book);
     CatalogHit {
@@ -611,6 +622,7 @@ fn catalog_hit(book: &CatalogAudiobook, origin: String) -> CatalogHit {
     }
 }
 
+/// Semicolon-joined promoted-tag display names, or `None` when none are present.
 fn chirp_genres(book: &CatalogAudiobook) -> Option<String> {
     let names: Vec<&str> = book
         .promoted_tags
@@ -637,6 +649,7 @@ fn language_matches(hit_language: Option<&str>, preferred: Option<&str>) -> bool
     }
 }
 
+/// First non-empty author token split on comma, semicolon, or ampersand.
 fn primary_author(authors: Option<&str>) -> Option<&str> {
     authors?
         .split([',', ';', '&'])
@@ -644,6 +657,7 @@ fn primary_author(authors: Option<&str>) -> Option<&str> {
         .find(|s| !s.is_empty())
 }
 
+/// Sets USD cents/label (and optional purchase URL) from Chirp product pricing; no-op when unparseable.
 fn apply_chirp_pricing(
     hint: &mut SourcePurchaseHint,
     pricing: &crate::client::ChirpProductPricing,
@@ -679,6 +693,7 @@ fn apply_chirp_pricing(
     }
 }
 
+/// Parses `$12.34` / `FREE` into integer cents; commas ignored, first number wins.
 fn parse_money_label_to_cents(raw: &str) -> Option<i64> {
     let s = raw.trim();
     if s.is_empty() {
@@ -708,6 +723,7 @@ fn parse_money_label_to_cents(raw: &str) -> Option<i64> {
     Some((amount * 100.0).round() as i64)
 }
 
+/// Builds a scan-enabled [`SourceAccount`] from a saved Chirp auth blob.
 fn source_account_from_auth(auth: &ChirpAuthFile) -> SourceAccount {
     SourceAccount {
         account_id: auth.account_id().to_string(),

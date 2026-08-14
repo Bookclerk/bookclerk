@@ -100,6 +100,12 @@ pub fn fd_proc_path(fd: i32) -> PathBuf {
 use std::io;
 
 #[cfg(unix)]
+/// Receives exactly one SCM_RIGHTS descriptor from the host side-channel socket.
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when `recvmsg` fails or the control message does not
+/// carry exactly one passed file descriptor.
 fn recv_one_fd(socket: i32) -> io::Result<i32> {
     let mut byte = [0u8];
     let mut iov = [libc::iovec {

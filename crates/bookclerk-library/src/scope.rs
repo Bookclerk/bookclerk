@@ -22,7 +22,9 @@ use crate::store::{LibraryStore, NewBook};
 /// host adapter). Secrets and books for other plugins are invisible.
 #[derive(Clone)]
 pub struct SourceScope {
+    /// Full library store; all accessors filter to [`Self::source_id`].
     store: LibraryStore,
+    /// Plugin id (`audible`, `libro`, …) that owns rows visible through this scope.
     source_id: String,
 }
 
@@ -53,6 +55,10 @@ impl SourceScope {
     // ── Accounts ─────────────────────────────────────────────────────────────
 
     /// Upsert an account row; `source` is forced to this plugin id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn upsert_account(
         &self,
         account_id: &str,
@@ -72,6 +78,10 @@ impl SourceScope {
     }
 
     /// Ensure an account exists without flipping `scan_enabled` on conflict.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn ensure_account(
         &self,
         account_id: &str,
@@ -102,6 +112,10 @@ impl SourceScope {
     }
 
     /// Fetch one account if it belongs to this plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_account(&self, account_id: &str) -> Result<Option<AccountRecord>> {
         let Some(acct) = self.store.get_account(account_id).await? else {
             return Ok(None);
@@ -116,6 +130,10 @@ impl SourceScope {
     // ── Books ────────────────────────────────────────────────────────────────
 
     /// Upsert a book; `source` is forced to this plugin id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
         let mut book = book.clone();
         book.source = self.source_id.clone();
@@ -125,6 +143,10 @@ impl SourceScope {
     // ── Secrets (provider locked to plugin id) ───────────────────────────────
 
     /// Seal and store a `source_auth` credential for `account_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn save_source_auth(
         &self,
         account_id: &str,
@@ -146,6 +168,10 @@ impl SourceScope {
     ///
     /// Used for Widevine CDMs (`secret_kind::WIDEVINE`) and similar. Provider is
     /// always this plugin id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn save_secret(
         &self,
         kind: &str,
@@ -165,12 +191,20 @@ impl SourceScope {
     }
 
     /// Load and unseal a `source_auth` credential for this plugin only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn load_source_auth(&self, account_id: &str, name: &str) -> Result<Option<Vec<u8>>> {
         self.load_secret(secret_kind::SOURCE_AUTH, account_id, name)
             .await
     }
 
     /// Load and unseal a secret for this plugin only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn load_secret(
         &self,
         kind: &str,
@@ -193,6 +227,10 @@ impl SourceScope {
     }
 
     /// Fetch the sealed record (for formats that need custom unseal, e.g. Audible).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_source_auth_record(
         &self,
         account_id: &str,
@@ -203,6 +241,10 @@ impl SourceScope {
     }
 
     /// Fetch a sealed record of any kind for this plugin (custom unseal / legacy formats).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_secret_record(
         &self,
         kind: &str,
@@ -221,6 +263,10 @@ impl SourceScope {
     }
 
     /// List `source_auth` secrets for this plugin only (never other providers).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_source_auth(&self) -> Result<Vec<EncryptedSecretRecord>> {
         let all = list_secrets(self.store.db(), secret_kind::SOURCE_AUTH).await?;
         Ok(all
@@ -235,6 +281,10 @@ impl SourceScope {
     }
 
     /// Delete a `source_auth` secret for this plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_source_auth(&self, account_id: &str, name: &str) -> Result<()> {
         delete_secret(
             self.store.db(),
@@ -248,6 +298,10 @@ impl SourceScope {
     }
 
     /// Delete a secret of any kind for this plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_secret(&self, kind: &str, account_id: &str, name: &str) -> Result<()> {
         delete_secret(
             self.store.db(),
@@ -261,6 +315,10 @@ impl SourceScope {
     }
 
     /// Upsert opaque JSON credentials (external plugin login blob).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn save_credentials_json(&self, account_id: &str, credentials: &Value) -> Result<()> {
         let bytes = serde_json::to_vec(credentials)
             .map_err(|e| LibraryError::Other(anyhow::anyhow!("credentials JSON: {e}")))?;
@@ -269,6 +327,10 @@ impl SourceScope {
     }
 
     /// Load opaque JSON credentials for an external (or first-party) account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn load_credentials_json(&self, account_id: &str) -> Result<Option<Value>> {
         let name = format!("{account_id}.plugin.auth");
         let Some(bytes) = self.load_source_auth(account_id, &name).await? else {

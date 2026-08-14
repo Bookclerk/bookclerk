@@ -6,11 +6,16 @@ use chrono::{TimeZone, Utc};
 
 use crate::client::AbsApiClient;
 
+/// `listening_progress.provider` value written for AudioBookshelf snapshots (`audiobookshelf`).
 const PROVIDER: &str = "audiobookshelf";
 
 /// Collect listening-progress snapshots from ABS without writing the library DB.
 ///
 /// Used by both the in-process sync path and the external plugin guest RPC.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn collect_listening_snapshots(
     client: &AbsApiClient,
 ) -> Result<Vec<ListeningProgressSnapshot>> {
@@ -79,6 +84,10 @@ pub async fn collect_listening_snapshots(
 /// Best-effort matches rows to `book_uuid` / `work_id` via ASIN, ISBN, or title.
 /// Prefer calling this through [`bookclerk_integrations::Integration::sync_listening_progress`]
 /// on the registered ABS adapter rather than from host binaries.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn sync_listening_progress(
     library: &LibraryStore,
     client: &AbsApiClient,

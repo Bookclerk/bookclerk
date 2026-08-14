@@ -9,6 +9,7 @@ use bookclerk_plugin_sdk::{
     PLUGIN_API_VERSION,
 };
 
+/// Cloudflare D1 database guest; handshake advertises query/execute/atomic RPCs.
 struct D1Plugin;
 
 #[async_trait]

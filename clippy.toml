@@ -1,0 +1,6 @@
+# Clippy lint configuration for the Bookclerk workspace.
+# https://doc.rust-lang.org/clippy/lint_configuration.html
+
+# Public API only by default. Publish-crate CI sets CLIPPY_CONF_DIR to
+# `clippy-publish/` so `# Errors` / `# Panics` also cover private items there.
+# check-private-items = false

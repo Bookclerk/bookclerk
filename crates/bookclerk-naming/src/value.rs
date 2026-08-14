@@ -6,17 +6,22 @@ use chrono::{Datelike, NaiveDate, NaiveDateTime};
 /// conditional evaluators.
 #[derive(Debug, Clone)]
 pub(crate) enum Value {
+    /// Missing or unknown tag; compares as empty and has no int conversion.
     Null,
+    /// Text tag (title, author, …); int conversion is Unicode scalar count.
     Str(String),
+    /// Integer tag (chapter index, channel count, …).
     Int(i64),
     /// A `TimeSpan` expressed as total minutes.
     Minutes(f64),
+    /// Calendar datetime; int conversion is OLE Automation days since 1899-12-30.
     Date(NaiveDateTime),
     /// A list of already-stringified members (names, series, tags, ...).
     List(Vec<String>),
 }
 
 impl Value {
+    /// True when the tag resolved to missing/unknown rather than a concrete value.
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
     }

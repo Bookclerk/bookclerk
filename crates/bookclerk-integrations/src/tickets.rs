@@ -174,6 +174,10 @@ pub async fn inspect_claim_ticket(
 /// process DEK so a lost `dbAtomic` reply plus a new HTTP request reuse the
 /// same operation id. Possession of the used magic link without the nonce
 /// cannot recover the session.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn redeem_ticket_to_session_with_client(
     library: &LibraryStore,
     integrations: &IntegrationsConfig,
@@ -226,6 +230,10 @@ pub async fn session_for_identity(
 }
 
 /// Create a portal session for an identity with optional client metadata.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn session_for_identity_with_client(
     library: &LibraryStore,
     integrations: &IntegrationsConfig,

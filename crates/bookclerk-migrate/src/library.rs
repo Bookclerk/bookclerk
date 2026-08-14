@@ -13,10 +13,15 @@ use crate::error::{MigrateError, Result};
 use crate::files::{storage_key_for, AudioPathMap};
 
 #[derive(Debug, Default)]
+/// Counts and warnings from importing a classic `LibationContext.db`.
 pub struct LibraryImportSummary {
+    /// Library rows upserted from classic `LibraryBooks` (deleted rows skipped).
     pub books: usize,
+    /// Titles whose classic `BookStatus` maps to [`AcquireStatus::Acquired`].
     pub acquired: usize,
+    /// Titles that resolved a local audio path under `books_root`.
     pub storage_keys: usize,
+    /// Operator-facing import notes (reserved; currently unused by the importer).
     pub warnings: Vec<String>,
 }
 
@@ -275,30 +280,53 @@ pub async fn import_library_db(
     Ok(summary)
 }
 
+/// One classic Libation library row collected before async store writes.
 struct ClassicBookRow {
+    /// Audible product id (`AudibleProductId`); empty rows are skipped.
     asin: String,
+    /// Classic `Books.Title` without the subtitle suffix.
     title: String,
+    /// Classic subtitle; empty string when the column is null.
     subtitle: String,
+    /// Marketplace locale (`us`, `uk`, …); defaults to `us` when missing.
     locale: String,
+    /// Classic EF Core `ContentType` discriminant mapped via `content_kind_from_classic`.
     content_type: i64,
+    /// Runtime in minutes from `LengthInMinutes`, when present.
     length_minutes: Option<i64>,
+    /// True when classic `IsAbridged` is non-zero.
     is_abridged: bool,
+    /// Classic publish date string; parsed later by [`parse_dt`].
     date_published: Option<String>,
+    /// Classic `LibraryBooks.Account` id used to look up the Bookclerk account.
     account: String,
+    /// Classic `DateAdded` string used as `purchased_at` when parseable.
     date_added: Option<String>,
+    /// Classic `UserDefinedItem.BookStatus` mapped onto [`AcquireStatus`].
     book_status: i64,
+    /// Operator tags from `UserDefinedItem.Tags`.
     tags: Option<String>,
+    /// Overall star rating from classic `Rating_OverallRating`.
     rating_overall: Option<f32>,
+    /// Narration/performance star rating from classic `Rating_PerformanceRating`.
     rating_performance: Option<f32>,
+    /// Story star rating from classic `Rating_StoryRating`.
     rating_story: Option<f32>,
+    /// True when classic `IsFinished` is non-zero.
     is_finished: bool,
+    /// Comma-separated contributor names with classic role 1 (authors).
     authors: Option<String>,
+    /// Comma-separated contributor names with classic role 2 (narrators).
     narrators: Option<String>,
+    /// First linked series name, when the title belongs to a series.
     series_name: Option<String>,
+    /// Classic series `Order` string; cleared for podcast parents on import.
     series_order: Option<String>,
+    /// Audible series id (`AudibleSeriesId`) of the first linked series.
     series_asin: Option<String>,
 }
 
+/// Parses a classic date as RFC 3339 or `YYYY-MM-DD HH:MM:SS[.frac]`; returns `None` when unparseable.
 fn parse_dt(value: &str) -> Option<DateTime<Utc>> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
         return Some(dt.with_timezone(&Utc));

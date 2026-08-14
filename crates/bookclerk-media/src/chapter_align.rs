@@ -141,17 +141,24 @@ pub fn align_chapter_starts(
     out
 }
 
+/// Seekable decoder reused across chapter windows (one probe, one seek index).
 struct AlignReader {
+    /// Symphonia demuxer with a prebuilt seek index.
     format: Box<dyn FormatReader>,
+    /// Audio decoder reset between windows as needed.
     decoder: Box<dyn AudioDecoder>,
+    /// Selected audio track id; packets for other tracks are skipped.
     track_id: u32,
+    /// Track sample rate in Hz, used to convert window ms to timestamps.
     sample_rate: u32,
+    /// Channel count used when downmixing to mono for RMS.
     channels: usize,
     /// Interleaved PCM scratch reused across packets/windows (avoids per-AU alloc).
     interleaved_scratch: Vec<i16>,
 }
 
 impl AlignReader {
+    /// Probes `path` and builds a seek index; failure keeps original chapter starts.
     fn open(path: &Path) -> Result<Self> {
         let file = File::open(path)?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -298,6 +305,7 @@ impl AlignReader {
     }
 }
 
+/// Snaps one chapter start to a speech-band onset plus adaptive lead-in, or `None`.
 fn snap_chapter_start(
     reader: &mut AlignReader,
     expected_ms: u64,
@@ -399,14 +407,20 @@ fn adaptive_lead_in(
 /// band) contribute much less energy than spoken titles.
 #[derive(Debug, Clone, Copy)]
 struct Bandpass {
+    /// High-pass coefficient `exp(-2π f_low / fs)`.
     hp_a: f32,
+    /// Previous high-pass input sample.
     hp_x: f32,
+    /// Previous high-pass output sample.
     hp_y: f32,
+    /// Low-pass coefficient `exp(-2π f_high / fs)`.
     lp_a: f32,
+    /// Previous low-pass output sample.
     lp_y: f32,
 }
 
 impl Bandpass {
+    /// Builds one-pole coefficients for `low_hz`–`high_hz`, clamped below Nyquist.
     fn new(sample_rate: f32, low_hz: f32, high_hz: f32) -> Self {
         let sr = sample_rate.max(1.0);
         let low = low_hz.clamp(20.0, sr * 0.45);
@@ -423,6 +437,7 @@ impl Bandpass {
         }
     }
 
+    /// Filters one sample through the cascaded high-pass then low-pass.
     fn process(&mut self, x: f32) -> f32 {
         // High-pass
         let hp = self.hp_a * (self.hp_y + x - self.hp_x);
@@ -434,6 +449,7 @@ impl Bandpass {
     }
 }
 
+/// Speech-band RMS of `samples` after the stateful bandpass (s16 scale).
 fn vocal_band_rms(samples: &[i16], filter: &mut Bandpass) -> f32 {
     if samples.is_empty() {
         return 0.0;
@@ -446,6 +462,7 @@ fn vocal_band_rms(samples: &[i16], filter: &mut Bandpass) -> f32 {
     (sum_sq / samples.len() as f64).sqrt() as f32
 }
 
+/// Appends decoded frames as mono i16, downmixing when the source is multi-channel.
 fn append_mono_i16(
     buf: &GenericAudioBufferRef<'_>,
     channels: usize,
@@ -481,6 +498,7 @@ fn append_mono_i16(
     }
 }
 
+/// `q`-quantile (0–1) of window RMS values; empty window is `0.0`.
 fn percentile(energies: &[(u64, f32)], q: f32) -> f32 {
     if energies.is_empty() {
         return 0.0;
@@ -491,6 +509,7 @@ fn percentile(energies: &[(u64, f32)], q: f32) -> f32 {
     vals[idx.min(vals.len() - 1)]
 }
 
+/// Ensures chapter starts strictly increase by at least 1 ms after snapping.
 fn enforce_monotonic(chapters: &mut [(String, u64)]) {
     let mut prev = 0u64;
     for (idx, ch) in chapters.iter_mut().enumerate() {

@@ -175,6 +175,7 @@ pub struct OidcBrokerConfig {
     pub secret_generation: u64,
 }
 
+/// Serde skip predicate: omit `secret_generation` when it is the legacy `0`.
 fn u64_is_zero(v: &u64) -> bool {
     *v == 0
 }
@@ -244,6 +245,10 @@ impl OidcBrokerConfig {
     }
 
     /// Reject operator maps, unknown roles, duplicate ids, and empty ids when enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn validate(&self) -> Result<()> {
         if !self.enabled {
             return Ok(());
@@ -255,6 +260,10 @@ impl OidcBrokerConfig {
     ///
     /// Used by the Settings API so a disabled-but-invalid draft cannot be
     /// written and then fail [`Config::load`] when later enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn validate_providers(&self) -> Result<()> {
         let mut seen = std::collections::BTreeSet::new();
         for provider in &self.providers {
@@ -323,6 +332,7 @@ impl OidcBrokerConfig {
     }
 }
 
+/// Accepts `owner` / `administrator` / `member`; rejects `operator` and unknown roles.
 fn validate_role(role: &str, field: &str) -> Result<()> {
     match role.trim() {
         "owner" | "administrator" | "member" => Ok(()),

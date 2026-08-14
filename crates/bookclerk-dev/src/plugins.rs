@@ -6,8 +6,11 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
+/// Workspace-relative directory of always-shipped platform guests (`sqlite`, `local`).
 const PLATFORM_PLUGINS_DIR: &str = "crates/bookclerk-plugins/platform";
+/// Workspace-relative directory of optional storefront and database guests.
 const OPTIONAL_PLUGINS_DIR: &str = "crates/bookclerk-plugins/optional";
+/// Workspace-relative directory of CI/dev-only Echo example guests.
 const EXAMPLES_DIR: &str = "examples";
 
 /// Helper binaries that ship beside hosts (also listed in workspace `default-members`).
@@ -351,6 +354,7 @@ pub fn discover_examples(root: &Path) -> Result<Vec<DiscoveredGuest>> {
     Ok(out)
 }
 
+/// Discovers guests that have a `plugin.toml` under a workspace-relative tier directory.
 fn discover_tier(root: &Path, rel: &str) -> Result<Vec<DiscoveredGuest>> {
     let base = root.join(rel);
     if !base.is_dir() {
@@ -370,6 +374,7 @@ fn discover_tier(root: &Path, rel: &str) -> Result<Vec<DiscoveredGuest>> {
     Ok(out)
 }
 
+/// Reads `plugin.toml` (and optional `Cargo.toml`) from `dir`; `None` when no manifest exists.
 fn try_discover_guest(root: &Path, dir: &Path) -> Result<Option<DiscoveredGuest>> {
     let manifest = dir.join("plugin.toml");
     if !manifest.is_file() {
@@ -421,6 +426,7 @@ fn try_discover_guest(root: &Path, dir: &Path) -> Result<Option<DiscoveredGuest>
     }))
 }
 
+/// `[package].name` from `dir/Cargo.toml`, or `None` when the file is missing.
 fn read_cargo_package(dir: &Path) -> Result<Option<String>> {
     let path = dir.join("Cargo.toml");
     if !path.is_file() {
@@ -436,6 +442,7 @@ fn read_cargo_package(dir: &Path) -> Result<Option<String>> {
         .map(str::to_string))
 }
 
+/// First `[[bin]].name` in `Cargo.toml`, falling back to the package name.
 fn read_cargo_bin_name(dir: &Path, package: &str) -> Result<Option<String>> {
     let path = dir.join("Cargo.toml");
     let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
@@ -451,6 +458,7 @@ fn read_cargo_bin_name(dir: &Path, package: &str) -> Result<Option<String>> {
     Ok(Some(package.to_string()))
 }
 
+/// Cargo package names of workspace `default-members` (hosts and helper binaries).
 fn default_members(root: &Path) -> Result<Vec<String>> {
     let path = root.join("Cargo.toml");
     let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
@@ -476,6 +484,7 @@ fn default_members(root: &Path) -> Result<Vec<String>> {
     Ok(pkgs)
 }
 
+/// Copies a guest's `plugin.toml`, binary or modules, and embedded logo into the staging root.
 fn stage_guest(
     root: &Path,
     bin_dir: &Path,
@@ -707,6 +716,7 @@ fn stage_echo_native_python(
     Ok(())
 }
 
+/// Locates a built guest binary under `target/{debug,release}/`, including a Windows `.exe`.
 fn resolve_binary(bin_dir: &Path, name: &str) -> Result<PathBuf> {
     let candidates = if cfg!(windows) {
         vec![bin_dir.join(format!("{name}.exe")), bin_dir.join(name)]
@@ -724,6 +734,7 @@ fn resolve_binary(bin_dir: &Path, name: &str) -> Result<PathBuf> {
     )
 }
 
+/// Rewrites the staged `plugin.toml` `command` to `./{bin_name}` beside the manifest.
 fn patch_command(manifest_path: &Path, bin_name: &str) -> Result<()> {
     let text = fs::read_to_string(manifest_path)
         .with_context(|| format!("read {}", manifest_path.display()))?;
@@ -745,6 +756,7 @@ fn patch_command(manifest_path: &Path, bin_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Recursively copies `src` into `dest`, creating missing directories.
 fn copy_dir_all(src: &Path, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest).with_context(|| format!("create {}", dest.display()))?;
     for entry in walkdir::WalkDir::new(src) {
@@ -769,6 +781,7 @@ fn copy_dir_all(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Runs `cargo build [-p …]` for the selected packages; inherits stdio and fails on non-zero exit.
 fn build_packages(root: &Path, release: bool, packages: &[String]) -> Result<()> {
     let mut cmd = cargo(root);
     cmd.arg("build");
@@ -793,12 +806,14 @@ fn build_packages(root: &Path, release: bool, packages: &[String]) -> Result<()>
     Ok(())
 }
 
+/// `cargo` command (`$CARGO` or `cargo`) with cwd set to the workspace root.
 fn cargo(root: &Path) -> Command {
     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     cmd.current_dir(root);
     cmd
 }
 
+/// Cargo profile directory name: `release` or `debug`.
 fn profile_dir(release: bool) -> &'static str {
     if release {
         "release"
@@ -807,6 +822,7 @@ fn profile_dir(release: bool) -> &'static str {
     }
 }
 
+/// Appends `pkg` when it is not already in the Cargo `-p` list.
 fn push_unique(pkgs: &mut Vec<String>, pkg: String) {
     if !pkgs.iter().any(|p| p == &pkg) {
         pkgs.push(pkg);
@@ -814,6 +830,7 @@ fn push_unique(pkgs: &mut Vec<String>, pkg: String) {
 }
 
 #[cfg(unix)]
+/// Sets Unix mode `0o755` on a staged launcher or binary.
 fn set_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mut perms = fs::metadata(path)

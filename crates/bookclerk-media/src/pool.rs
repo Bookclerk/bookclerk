@@ -127,6 +127,7 @@ impl From<&bookclerk_config::MediaConfig> for MediaPoolConfig {
 /// Worker binary plus optional spawn-time jail launcher.
 #[derive(Debug, Clone)]
 struct WorkerLaunch {
+    /// Absolute path of `bookclerk-media-worker` used for each job.
     bin: PathBuf,
     /// When set, the pool runs `jail -- worker` so AppContainer can be applied
     /// at CreateProcess (Windows). Absent on platforms that self-confine.
@@ -150,10 +151,12 @@ enum Runner {
 /// Bounded pool of confined media workers.
 #[derive(Debug)]
 pub struct MediaPool {
+    /// Concurrency limiter; one permit is held for the lifetime of each job.
     permits: Arc<Semaphore>,
     /// Normalized settings this pool was built from, kept so a later config can
     /// be compared against what is actually running.
     config: MediaPoolConfig,
+    /// Where jobs run: confined worker, in-process, or refuse-every-job.
     runner: Runner,
 }
 
@@ -310,6 +313,7 @@ impl MediaPool {
         }
     }
 
+    /// Serializes `job` to stdin of the worker (optionally via `bookclerk-jail`).
     async fn run_in_worker(&self, launch: WorkerLaunch, job: MediaJob) -> Result<MediaJobOutput> {
         let label = job.label();
         let request = serde_json::to_vec(&job).map_err(|err| MediaError::Worker {
@@ -452,6 +456,7 @@ impl Default for MediaPool {
     }
 }
 
+/// Runs a job on a blocking thread in this process (isolation off only).
 async fn run_in_process(job: MediaJob) -> Result<MediaJobOutput> {
     let label = job.label();
     tokio::task::spawn_blocking(move || job.run())
@@ -611,10 +616,12 @@ fn resolve_worker_bin(configured: Option<&Path>) -> std::result::Result<PathBuf,
     ))
 }
 
+/// Confirms a configured worker path is a regular file, else returns `source` in the error.
 fn check_worker_bin(path: &Path, source: &str) -> std::result::Result<PathBuf, String> {
     check_bin(path, source)
 }
 
+/// Confirms `path` is a regular file; failures name `source` (env var or config key).
 fn check_bin(path: &Path, source: &str) -> std::result::Result<PathBuf, String> {
     if path.is_file() {
         Ok(path.to_path_buf())
@@ -667,6 +674,7 @@ fn worker_env_allowed(key: &str) -> bool {
 /// [`replace_pool`].
 static POOL: RwLock<Option<Arc<MediaPool>>> = RwLock::new(None);
 
+/// Read-locks the process-wide pool, recovering from poison so later jobs still run.
 fn read_pool() -> std::sync::RwLockReadGuard<'static, Option<Arc<MediaPool>>> {
     // A panic in a `[media]` code path should not take every later media job
     // with it; the data behind this lock is a single `Arc`, so there is no
@@ -675,6 +683,7 @@ fn read_pool() -> std::sync::RwLockReadGuard<'static, Option<Arc<MediaPool>>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Write-locks the process-wide pool, recovering from poison so reloads still work.
 fn write_pool() -> std::sync::RwLockWriteGuard<'static, Option<Arc<MediaPool>>> {
     POOL.write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

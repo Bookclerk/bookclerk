@@ -11,14 +11,18 @@ use bookclerk_plugin_manifest::{
 
 use crate::egress::EgressProxy;
 
+/// Host↔isolate RPC bridge script materialized into the workerd state dir.
 const BRIDGE_JS: &str = include_str!("../bridge/bridge.js");
+/// Isolate-side egress proxy that enforces the operator domain grant.
 const EGRESS_JS: &str = include_str!("../bridge/egress.js");
+/// Stub `host` module injected so guest JS can call host RPCs inside the isolate.
 const HOST_STUB_JS: &str = include_str!("../bridge/host_stub.js");
 /// Injected as `@bookclerk/plugin-sdk` + `@bookclerk/plugin-sdk/workerd`.
 const SDK_WORKERD_JS: &str = include_str!("../../../packages/plugin-sdk/embed/bookclerk_plugin.js");
 /// Injected as `bookclerk_plugin_sdk/workerd.py`.
 const SDK_WORKERD_PY: &str =
     include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/workerd.py");
+/// Sparse `bookclerk_plugin_sdk/__init__.py` pointing authors at the workerd guest SDK.
 const SDK_PY_INIT: &str = concat!(
     "\"\"\"Bookclerk plugin SDK (workerd isolate).\n\n",
     "Use: from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js\n\n",
@@ -476,6 +480,7 @@ pub fn egress_domains_for(needs_python: bool, mode: NetworkMode, base: &[String]
     with_python_runtime_hosts(needs_python, mode, base)
 }
 
+/// Cap'n Proto module field (`esModule`, `pythonModule`, `wasm`, …) for a guest file name.
 fn module_field_for(name: &str) -> Result<(&'static str, bool)> {
     let lower = name.to_ascii_lowercase();
     if lower.ends_with(".py") {
@@ -493,6 +498,7 @@ fn module_field_for(name: &str) -> Result<(&'static str, bool)> {
     }
 }
 
+/// True when the path is a legacy SDK embed that workerd injects itself (skip packaging twice).
 fn is_legacy_sdk_embed(name: &str) -> bool {
     let n = name.replace('\\', "/");
     matches!(
@@ -507,6 +513,7 @@ fn is_legacy_sdk_embed(name: &str) -> bool {
     )
 }
 
+/// Sorted list of `.js`/`.mjs`/`.py`/`.wasm`/`.json` files under a guest directory.
 fn collect_modules(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     collect_modules_inner(dir, &mut out)?;
@@ -514,6 +521,7 @@ fn collect_modules(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+/// Recursively appends workerd-loadable module files under `dir`.
 fn collect_modules_inner(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -539,6 +547,7 @@ fn collect_modules_inner(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// Escapes backslashes and quotes for a Cap'n Proto string literal.
 fn escape_capnp(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }

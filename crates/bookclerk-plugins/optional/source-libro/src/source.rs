@@ -26,6 +26,7 @@ pub const ID: &str = "libro";
 /// Env var read for non-interactive password login when Accounts UI is unavailable.
 pub const PASSWORD_ENV: &str = "BOOKCLERK_LIBRO_PASSWORD";
 
+/// Extra ids accepted by the source registry (`libro.fm`, `librofm`).
 const ALIASES: &[&str] = &["libro.fm", "librofm"];
 
 /// Libro.fm storefront adapter implementing [`ContentSource`].
@@ -34,6 +35,7 @@ const ALIASES: &[&str] = &["libro.fm", "librofm"];
 /// [`LibroSource::with_base_url`] for wiremock / staging.
 #[derive(Debug, Clone)]
 pub struct LibroSource {
+    /// Libro.fm API origin (production default, or a wiremock / staging URL).
     base_url: String,
     /// Preferred download container (`[sources.libro] container`).
     pub container: LibroContainer,
@@ -95,6 +97,10 @@ impl LibroSource {
     ///
     /// Call from Accounts connect or CLI helpers; the guest path returns
     /// credential JSON without writing secrets (see [`crate::guest::guest_login`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn login_account(
         &self,
         library: &SourceScope,
@@ -158,6 +164,10 @@ impl LibroSource {
     }
 
     /// Delete a Libro.fm account from the DB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn delete_account(&self, library: &SourceScope, account_id: &str) -> Result<()> {
         delete_auth_from_db(library, account_id).await
     }
@@ -291,6 +301,7 @@ impl ContentSource for LibroSource {
     }
 }
 
+/// Portal knobs for preferred download container (`m4b` vs ZIP of MP3 parts).
 const LIBRO_CONFIG_OPTIONS: &[bookclerk_source::SourceConfigOption] =
     &[bookclerk_source::SourceConfigOption {
         key: "container",
@@ -307,6 +318,7 @@ const LIBRO_CONFIG_OPTIONS: &[bookclerk_source::SourceConfigOption] =
         ],
     }];
 
+/// Builds a [`SourceAccount`] from a stored Libro auth file (label falls back to email).
 fn source_account_from_auth(auth: &LibroAuthFile) -> SourceAccount {
     SourceAccount {
         account_id: auth.account_id().to_string(),

@@ -118,6 +118,7 @@ pub async fn export_libation(opts: LibationExportOptions) -> Result<LibationExpo
     Ok(summary)
 }
 
+/// Projects Bookclerk account rows into classic `AccountsSettings.json` shape.
 fn accounts_to_libation_json(accounts: &[bookclerk_library::AccountRecord]) -> Value {
     let list: Vec<Value> = accounts
         .iter()
@@ -135,6 +136,7 @@ fn accounts_to_libation_json(accounts: &[bookclerk_library::AccountRecord]) -> V
     json!({ "Accounts": list })
 }
 
+/// Creates a classic `LibationContext.db` and inserts books, contributors, and series.
 fn write_libation_context_db(path: &Path, books: &[bookclerk_library::BookRecord]) -> Result<()> {
     let conn = Connection::open(path)?;
     conn.execute_batch(CLASSIC_SQLITE_DDL)?;
@@ -278,6 +280,7 @@ fn write_libation_context_db(path: &Path, books: &[bookclerk_library::BookRecord
     Ok(())
 }
 
+/// Minimal classic Libation SQLite schema used for export (Books, Contributors, Series, …).
 const CLASSIC_SQLITE_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS "Books" (
     "BookId" INTEGER PRIMARY KEY,

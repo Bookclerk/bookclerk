@@ -17,10 +17,12 @@ const PUBLIC_USER_AGENT: &str = concat!(
     env!("CARGO_PKG_VERSION")
 );
 
+/// Shared reqwest client for unauthenticated Libro.fm explore and product pages.
 fn public_http_client() -> reqwest::Client {
     reqwest::Client::new()
 }
 
+/// GET builder that attaches the browser-like UA Libro's WAF accepts.
 fn public_get(http: &reqwest::Client, url: impl Into<String>) -> reqwest::RequestBuilder {
     http.get(url.into()).header("user-agent", PUBLIC_USER_AGENT)
 }
@@ -35,6 +37,10 @@ fn public_get(http: &reqwest::Client, url: impl Into<String>) -> reqwest::Reques
 /// Lean HTML search hits stay sparse on purpose — Discover enriches the
 /// **final page** via [`catalog_detail`] so we do not N+1 product fetches
 /// inside each store search (that blew the daemon’s 12s search budget).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn search_catalog(opts: &CatalogSearchOpts) -> bookclerk_source::Result<Vec<CatalogHit>> {
     let q = opts.query.trim();
     if q.is_empty() || opts.limit == 0 {
@@ -56,6 +62,10 @@ pub async fn search_catalog(opts: &CatalogSearchOpts) -> bookclerk_source::Resul
 /// Prefers product HTML (JSON-LD + `.audiobook-genres`) — reliable under WAF —
 /// and falls back to `explore/audiobook_details` when HTML misses. Explore is
 /// tried second because it often 403s and wasted a round-trip before HTML.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn catalog_detail(product_id: &str) -> bookclerk_source::Result<Option<CatalogHit>> {
     let key = product_id.trim();
     let Some(key) = isbn_or_slug(key) else {
@@ -77,14 +87,17 @@ pub async fn catalog_detail(product_id: &str) -> bookclerk_source::Result<Option
         .map(CatalogHit::decode_html_entities))
 }
 
+/// True when categories or abridged status are still missing after HTML parse.
 fn hit_needs_html_extras(h: &CatalogHit) -> bool {
     !non_empty_opt(&h.categories) || h.is_abridged.is_none()
 }
 
+/// True when the option holds a non-empty trimmed string.
 fn non_empty_opt(s: &Option<String>) -> bool {
     s.as_deref().map(str::trim).is_some_and(|v| !v.is_empty())
 }
 
+/// Copies missing bibliographic fields from `fill` onto `base` without overwriting set values.
 fn merge_catalog_hits(mut base: CatalogHit, fill: CatalogHit) -> CatalogHit {
     if base.title.trim().is_empty() {
         base.title = fill.title;
@@ -126,6 +139,7 @@ fn merge_catalog_hits(mut base: CatalogHit, fill: CatalogHit) -> CatalogHit {
     base
 }
 
+/// Replaces an empty optional string slot with a non-empty fill value.
 fn fill_opt(slot: &mut Option<String>, fill: Option<String>) {
     if !non_empty_opt(slot) {
         *slot = fill.filter(|s| !s.trim().is_empty());
@@ -133,6 +147,10 @@ fn fill_opt(slot: &mut Option<String>, fill: Option<String>) {
 }
 
 /// Expand via `explore/audiobook_details/{isbn}` → `related_audiobooks`.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn expand_candidates(
     seed: &ExpandSeed,
     limit: usize,
@@ -202,6 +220,10 @@ pub async fn expand_candidates(
 }
 
 /// Resolve a Libro.fm purchase URL (ISBN or catalog search), optionally priced.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn purchase_hint(
     opts: &PurchaseHintOpts,
 ) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
@@ -303,40 +325,59 @@ async fn libro_product_page_ok(isbn_or_slug: &str) -> bool {
 }
 
 #[derive(Debug, Deserialize)]
+/// Explore JSON search envelope (`audiobook_collection`).
 struct LibroExploreSearch {
     #[serde(default)]
+    /// Paged audiobook list from explore search; absent when the query missed.
     audiobook_collection: Option<LibroCollection>,
 }
 
 #[derive(Debug, Deserialize)]
+/// Explore collection wrapper around raw audiobook JSON objects.
 struct LibroCollection {
     #[serde(default)]
+    /// Raw audiobook objects; each is parsed independently so one bad row cannot fail the page.
     audiobooks: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
+/// Sparse HTML-search book row (ISBN, title, authors, slug, series, cover).
 struct LibroBook {
+    /// ISBN-10/13 digits when the storefront URL or JSON included them.
     isbn: Option<String>,
+    /// Display title from explore JSON or the HTML search label.
     title: Option<String>,
     #[serde(default)]
+    /// Comma-separated author names when the payload included them.
     authors: Option<String>,
+    /// Storefront path slug (`{isbn}-{title-words}`) used as `product_id` when present.
     slug: Option<String>,
     #[serde(default)]
+    /// Series name as a string or `{ name }` object from explore JSON.
     series: Option<LibroSeriesField>,
     #[serde(default)]
+    /// Series position as a number or string; converted to a display index later.
     series_num: Option<Value>,
     #[serde(default, alias = "coverUrl", alias = "image_url", alias = "cover")]
+    /// Cover image URL (`coverUrl` / `image_url` / `cover` aliases accepted).
     cover_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
+/// Series name that may arrive as a bare string or a named object.
 enum LibroSeriesField {
+    /// Bare series title string from explore JSON.
     Name(String),
-    Object { name: Option<String> },
+    /// Named object entry from the Libro catalog payload.
+    Object {
+        /// Optional display name for the catalog object.
+        name: Option<String>,
+    },
 }
 
 impl LibroSeriesField {
+    /// Extracts a non-empty series title from either payload shape.
     fn name(self) -> Option<String> {
         match self {
             Self::Name(s) => Some(s).filter(|v| !v.trim().is_empty()),
@@ -346,19 +387,25 @@ impl LibroSeriesField {
 }
 
 #[derive(Debug, Deserialize)]
+/// Explore `audiobook_details` JSON envelope.
 struct LibroDetailsResponse {
     #[serde(default)]
+    /// Details payload; `None` when explore returned an empty body.
     data: Option<LibroDetailsData>,
 }
 
 #[derive(Debug, Deserialize)]
+/// Primary audiobook plus related titles from explore details.
 struct LibroDetailsData {
     #[serde(default)]
+    /// Raw primary audiobook object for [`parse_libro_book`].
     audiobook: Option<Value>,
     #[serde(default)]
+    /// Related-title objects used by Discover expand.
     related_audiobooks: Vec<Value>,
 }
 
+/// Fetches related audiobooks from explore details; empty on non-success HTTP.
 async fn libro_related(
     http: &reqwest::Client,
     isbn: &str,
@@ -386,6 +433,7 @@ async fn libro_related(
         .collect())
 }
 
+/// Loads one audiobook from explore details by ISBN digits (slug suffix stripped).
 async fn libro_explore_audiobook(
     http: &reqwest::Client,
     isbn_or_slug: &str,
@@ -424,6 +472,7 @@ async fn libro_explore_audiobook(
     }))
 }
 
+/// Scrapes the public product HTML page into a [`CatalogHit`] when the WAF allows it.
 async fn libro_product_html_hit(
     http: &reqwest::Client,
     isbn_or_slug: &str,
@@ -465,6 +514,7 @@ fn parse_libro_product_html(html: &str, page_url: &str) -> Option<CatalogHit> {
     Some(hit)
 }
 
+/// Maps a Libro JSON object (explore or JSON-LD) to a [`CatalogHit`]; `None` without ISBN and title.
 fn parse_libro_book(v: &Value) -> Option<CatalogHit> {
     let isbn = v
         .get("isbn")
@@ -580,6 +630,7 @@ fn parse_libro_book(v: &Value) -> Option<CatalogHit> {
     })
 }
 
+/// Interprets bool, 0/1, or `abridged`/`unabridged` strings as an abridged flag.
 fn parse_abridged_flag(v: Option<&Value>) -> Option<bool> {
     match v? {
         Value::Bool(b) => Some(*b),
@@ -628,6 +679,7 @@ fn parse_libro_html_genres(html: &str) -> Option<String> {
     }
 }
 
+/// Reads Unabridged/Abridged badges or JSON-LD flags from product HTML.
 fn parse_libro_html_abridged(html: &str) -> Option<bool> {
     let lower = html.to_ascii_lowercase();
     if lower.contains("<span>unabridged</span>")
@@ -680,6 +732,7 @@ fn parse_libro_json_ld_audiobook(html: &str) -> Option<CatalogHit> {
     None
 }
 
+/// Collects schema.org Audiobook/Book nodes from a JSON-LD document or `@graph`.
 fn json_ld_audiobook_candidates(v: &Value) -> Vec<&Value> {
     match v {
         Value::Array(arr) => arr
@@ -700,6 +753,7 @@ fn json_ld_audiobook_candidates(v: &Value) -> Vec<&Value> {
     }
 }
 
+/// True when `@type` is `Audiobook` or `Book` (absolute URIs accepted).
 fn json_ld_type_is_audiobook(v: &Value) -> bool {
     match v.get("@type") {
         Some(Value::String(s)) => {
@@ -716,6 +770,7 @@ fn json_ld_type_is_audiobook(v: &Value) -> bool {
     }
 }
 
+/// Joins author/narrator names from a string, `{ name }`, or array of either.
 fn parse_person_names(v: Option<&Value>) -> Option<String> {
     let v = v?;
     if let Some(s) = v.as_str() {
@@ -744,6 +799,7 @@ fn parse_person_names(v: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Reads a display string from a JSON string or `{ "name": … }` object.
 fn parse_named_string(v: Option<&Value>) -> Option<String> {
     let v = v?;
     v.as_str()
@@ -759,6 +815,7 @@ fn parse_named_string(v: Option<&Value>) -> Option<String> {
         })
 }
 
+/// Joins genre names from a string or array of strings/`{ name }` objects.
 fn parse_genres(v: Option<&Value>) -> Option<String> {
     let v = v?;
     if let Some(s) = v.as_str() {
@@ -782,6 +839,7 @@ fn parse_genres(v: Option<&Value>) -> Option<String> {
     }
 }
 
+/// Runtime in whole minutes from `length_minutes`, duration seconds, or ISO-8601 `PT…`.
 fn length_minutes_from_value(v: &Value) -> Option<i64> {
     if let Some(mins) = v
         .get("length_minutes")
@@ -842,6 +900,7 @@ fn parse_iso8601_duration_minutes(raw: &str) -> Option<i64> {
     (total_secs > 0).then_some(total_secs / 60)
 }
 
+/// List price in cents plus currency/label from JSON-LD `offers` or a `price` field.
 fn price_fields_from_value(v: &Value) -> (Option<i64>, Option<String>, Option<String>) {
     let offers = v.get("offers");
     let low = offers
@@ -866,6 +925,7 @@ fn price_fields_from_value(v: &Value) -> (Option<i64>, Option<String>, Option<St
     (cents, currency, label)
 }
 
+/// Resolves a purchase hint by searching title (and optional author) and taking the first ISBN.
 async fn libro_title_search(
     http: &reqwest::Client,
     title: &str,
@@ -920,6 +980,7 @@ async fn libro_search_hits(
     libro_html_search(http, query, limit).await
 }
 
+/// Explore JSON search; errors on non-success HTTP so the caller can fall back to HTML.
 async fn libro_explore_json_search(
     http: &reqwest::Client,
     query: &str,
@@ -956,6 +1017,7 @@ async fn libro_explore_json_search(
     Ok(hits)
 }
 
+/// Public HTML search fallback (page 1 only); empty on non-success HTTP.
 async fn libro_html_search(
     http: &reqwest::Client,
     query: &str,
@@ -1020,6 +1082,7 @@ fn isbn_or_slug(raw: &str) -> Option<&str> {
     }
 }
 
+/// True for ISBN-10 (digits plus optional trailing X) or ISBN-13 digit strings.
 fn is_isbn_digits(s: &str) -> bool {
     let b = s.as_bytes();
     match b.len() {
@@ -1068,6 +1131,7 @@ fn parse_libro_search_html(html: &str, limit: usize) -> Vec<LibroBook> {
     out
 }
 
+/// Pulls title/author from a nearby "View audiobook …" label, else title-cases the slug.
 fn title_authors_from_search_html(
     html: &str,
     slug: &str,
@@ -1091,6 +1155,7 @@ fn title_authors_from_search_html(
     (title_from_libro_slug(slug), None)
 }
 
+/// Splits a "View audiobook [of] TITLE by AUTHOR" aria/alt label into title and author.
 fn parse_view_audiobook_label(window: &str) -> Option<(Option<String>, Option<String>)> {
     for (prefix, by) in [
         ("View audiobook of ", " by "),
@@ -1124,6 +1189,7 @@ fn parse_view_audiobook_label(window: &str) -> Option<(Option<String>, Option<St
     None
 }
 
+/// Title-cases the slug words after the leading ISBN segment.
 fn title_from_libro_slug(slug: &str) -> Option<String> {
     let rest = slug.split_once('-').map(|(_, r)| r).unwrap_or(slug);
     let title = rest.replace('-', " ");
@@ -1148,14 +1214,21 @@ fn title_from_libro_slug(slug: &str) -> Option<String> {
     }
 }
 
+/// Member vs list prices scraped from product HTML or explore JSON.
 struct DualPriced {
+    /// ISO 4217 code; Libro product HTML is treated as USD.
     currency: String,
+    /// Non-member list price in integer cents.
     list_cents: Option<i64>,
+    /// Formatted list price (`$12.99`) when list cents are known.
     list_label: Option<String>,
+    /// Membership CTA / JSON-LD lowPrice in integer cents when distinct from list.
     member_cents: Option<i64>,
+    /// Formatted member price when member cents are known.
     member_label: Option<String>,
 }
 
+/// Writes list and member prices onto a purchase hint; primary price prefers member.
 fn apply_dual_price(hint: &mut SourcePurchaseHint, priced: &DualPriced) {
     hint.currency = Some(priced.currency.clone());
     hint.list_price_cents = priced.list_cents;
@@ -1169,6 +1242,7 @@ fn apply_dual_price(hint: &mut SourcePurchaseHint, priced: &DualPriced) {
         .or_else(|| priced.list_label.clone());
 }
 
+/// Fetches dual prices from product HTML, then explore JSON; `None` when neither parses.
 async fn fetch_libro_price(isbn_or_slug: &str) -> Option<DualPriced> {
     let http = public_http_client();
     // Product HTML is more reliable than explore JSON (often 403/500) and
@@ -1216,12 +1290,17 @@ async fn fetch_libro_price(isbn_or_slug: &str) -> Option<DualPriced> {
     })
 }
 
+/// One price found by walking explore JSON (used when HTML has no dual prices).
 struct SinglePriced {
+    /// Amount in integer cents (USD unless the JSON named another currency).
     cents: i64,
+    /// ISO 4217 code from the JSON node, defaulting to USD.
     currency: String,
+    /// Display string (`$12.99` or the original money text).
     label: String,
 }
 
+/// Extracts list and member prices from product HTML sidebar, CTA, and JSON-LD.
 fn parse_libro_html_prices(html: &str) -> Option<DualPriced> {
     let lower = html.to_ascii_lowercase();
     let mut list_cents = money_after_marker(html, &lower, "class=\"price\"");
@@ -1282,6 +1361,7 @@ fn member_price_from_cta(html: &str, lower: &str) -> Option<i64> {
     parse_money_label_to_cents(&window[dollar..])
 }
 
+/// First numeric or quoted money value after a JSON key in raw HTML.
 fn json_string_number(html: &str, key: &str) -> Option<i64> {
     let needle = format!("\"{key}\"");
     let idx = html.find(&needle)?;
@@ -1299,6 +1379,7 @@ fn json_string_number(html: &str, key: &str) -> Option<i64> {
     parse_money_label_to_cents(&rest[..end])
 }
 
+/// Depth-first search for a `price` / `amount` node in explore details JSON.
 fn find_price_in_json(value: &Value) -> Option<SinglePriced> {
     match value {
         Value::Object(map) => {
@@ -1332,6 +1413,7 @@ fn find_price_in_json(value: &Value) -> Option<SinglePriced> {
     }
 }
 
+/// Interprets a price string, major-unit float, or `{ amount, currency }` object as cents.
 fn price_from_json_node(v: &Value) -> Option<SinglePriced> {
     if let Some(s) = v.as_str() {
         if let Some(cents) = parse_money_label_to_cents(s) {
@@ -1376,6 +1458,7 @@ fn price_from_json_node(v: &Value) -> Option<SinglePriced> {
     None
 }
 
+/// Stringifies a series position from int, float, or non-empty string.
 fn series_num_to_index(v: Option<&Value>) -> Option<String> {
     let v = v?;
     if let Some(n) = v.as_i64() {
@@ -1396,6 +1479,7 @@ fn series_num_to_index(v: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Parses `$12.99`, `12.99`, or `FREE` into integer cents; `None` when no digits.
 fn parse_money_label_to_cents(raw: &str) -> Option<i64> {
     let s = raw.trim();
     if s.is_empty() {
@@ -1425,6 +1509,7 @@ fn parse_money_label_to_cents(raw: &str) -> Option<i64> {
     Some((amount * 100.0).round() as i64)
 }
 
+/// Formats integer cents as `$`/`£`/`€` or `{amount} CODE`; non-positive is `FREE`.
 fn format_money_label(cents: i64, currency: &str) -> String {
     if cents <= 0 {
         return String::from("FREE");
@@ -1439,6 +1524,7 @@ fn format_money_label(cents: i64, currency: &str) -> String {
     }
 }
 
+/// First author token split on comma, semicolon, or ampersand.
 fn primary_author(authors: Option<&str>) -> Option<&str> {
     authors?
         .split([',', ';', '&'])
@@ -1446,6 +1532,7 @@ fn primary_author(authors: Option<&str>) -> Option<&str> {
         .find(|s| !s.is_empty())
 }
 
+/// application/x-www-form-urlencoded encoding (spaces as `+`) for explore query strings.
 fn urlencode_minimal(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.as_bytes() {

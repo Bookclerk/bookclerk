@@ -30,13 +30,19 @@ enum AuTiming<'a> {
 /// somewhere first, which for a book is a second full-size write and a full-size
 /// read back.
 pub struct AacM4bWriter {
+    /// Buffered output file; `mdat` is streamed, then `moov` is appended on finish.
     out: BufWriter<File>,
     /// Where the `mdat` largesize field sits, to be patched on [`Self::finish`].
     size_field: u64,
+    /// File offset of the first AAC access unit inside `mdat`.
     first_sample: u64,
+    /// Audio sample rate in Hz, used as the media timescale.
     sample_rate: u32,
+    /// Channel count written into the `mp4a` sample entry.
     channels: u16,
+    /// MPEG-4 AudioSpecificConfig bytes embedded in `esds`.
     asc: Vec<u8>,
+    /// Per-access-unit payload sizes in bytes, in encode order.
     sizes: Vec<u32>,
     /// The duration the first unit claimed, and the one the rest are compared to.
     uniform: Option<u32>,
@@ -44,10 +50,12 @@ pub struct AacM4bWriter {
     /// encoder's output. A book runs to a couple of million units, so the table
     /// nobody needs is worth not keeping.
     durations: Vec<u32>,
+    /// Total AAC payload bytes written into `mdat` (excludes the 16-byte header).
     payload: u64,
 }
 
 impl AacM4bWriter {
+    /// Opens `output`, writes `ftyp`, and reserves a 64-bit `mdat` size field.
     pub fn create(output: &Path, sample_rate: u32, channels: u16, asc: &[u8]) -> Result<Self> {
         if sample_rate == 0 {
             return Err(MediaError::Mp4("sample rate must be non-zero".into()));
@@ -86,6 +94,7 @@ impl AacM4bWriter {
         })
     }
 
+    /// Appends one AAC access unit and records its size and duration in timescale ticks.
     pub fn push(&mut self, au: &[u8], duration: u32) -> Result<()> {
         if au.is_empty() {
             return Err(MediaError::Mp4("AAC access unit is empty".into()));
@@ -108,10 +117,12 @@ impl AacM4bWriter {
         Ok(())
     }
 
+    /// Number of AAC access units written so far.
     pub fn samples(&self) -> usize {
         self.sizes.len()
     }
 
+    /// Writes `moov`, patches the `mdat` length, and syncs the file; empty input fails.
     pub fn finish(mut self) -> Result<()> {
         if self.sizes.is_empty() {
             return Err(MediaError::Mp4("no AAC samples to mux".into()));
@@ -148,6 +159,7 @@ impl AacM4bWriter {
 /// A `size == 1` header: the four-byte marker, the type, and the real length.
 const MDAT_HEADER_BYTES: u64 = 16;
 
+/// Sums access-unit durations in timescale ticks; zero durations or count mismatches fail.
 fn media_duration(timing: AuTiming<'_>, samples: usize) -> Result<u64> {
     match timing {
         AuTiming::Uniform(duration) => {
@@ -171,6 +183,7 @@ fn media_duration(timing: AuTiming<'_>, samples: usize) -> Result<u64> {
     }
 }
 
+/// Builds an `ftyp` box with major brand `M4B ` and compatible `mp42`/`isom`.
 fn build_m4b_ftyp() -> Vec<u8> {
     let brands: &[&[u8; 4]] = &[b"M4B ", b"mp42", b"isom"];
     let size = 8 + 8 + brands.len() * 4;
@@ -185,6 +198,7 @@ fn build_m4b_ftyp() -> Vec<u8> {
     buf
 }
 
+/// Builds a single-track `moov` (`mvhd`/`trak`/`mdia`/`stbl`) for the streamed `mdat`.
 fn build_moov(
     sample_rate: u32,
     channels: u16,
@@ -223,6 +237,7 @@ fn build_moov(
     Ok(wrap_box(b"moov", &[mvhd, trak].concat()))
 }
 
+/// Encodes `stsd` with one `mp4a` sample entry and an `esds` AudioSpecificConfig.
 fn encode_stsd_mp4a(sample_rate: u32, channels: u16, asc: &[u8]) -> Result<Vec<u8>> {
     let esds = encode_esds(asc)?;
     // AudioSampleEntry (`mp4a`) body after size+type.
@@ -294,6 +309,7 @@ fn encode_esds(asc: &[u8]) -> Result<Vec<u8>> {
     Ok(esds)
 }
 
+/// Encodes an ISO 14496-1 expandable length (1–4 bytes); lengths above 28 bits fail.
 fn encode_expandable_length(len: usize) -> Result<Vec<u8>> {
     // ISO 14496-1 expandable length: 1–4 bytes with continuation bits.
     if len < 0x80 {
@@ -318,6 +334,7 @@ fn encode_expandable_length(len: usize) -> Result<Vec<u8>> {
     }
 }
 
+/// Encodes `stts` as a single run when every access unit has the same duration.
 fn encode_stts_uniform(sample_count: u32, duration: u32) -> Vec<u8> {
     let mut buf = Vec::new();
     let size = 8 + 4 + 4 + 8;
@@ -330,6 +347,7 @@ fn encode_stts_uniform(sample_count: u32, duration: u32) -> Vec<u8> {
     buf
 }
 
+/// Encodes `stts` as run-length pairs when access-unit durations vary.
 fn encode_stts_variable(durations: &[u32]) -> Vec<u8> {
     let mut runs: Vec<(u32, u32)> = Vec::new();
     for &d in durations {
@@ -354,6 +372,7 @@ fn encode_stts_variable(durations: &[u32]) -> Vec<u8> {
     buf
 }
 
+/// Encodes `stsc` with one chunk that holds every sample.
 fn encode_stsc_all_in_one_chunk(samples_per_chunk: u32) -> Vec<u8> {
     let size = 8 + 4 + 4 + 12;
     let mut buf = Vec::with_capacity(size);
@@ -367,6 +386,7 @@ fn encode_stsc_all_in_one_chunk(samples_per_chunk: u32) -> Vec<u8> {
     buf
 }
 
+/// Encodes `stsz` with a per-sample size table (`sample_size` field left at 0).
 fn encode_stsz(sizes: &[u32]) -> Vec<u8> {
     let size = 8 + 4 + 4 + 4 + sizes.len() * 4;
     let mut buf = Vec::with_capacity(size);
@@ -381,6 +401,7 @@ fn encode_stsz(sizes: &[u32]) -> Vec<u8> {
     buf
 }
 
+/// Encodes 32-bit `stco` chunk offsets when every offset fits in `u32`.
 fn encode_stco(offsets: &[u32]) -> Vec<u8> {
     let size = 8 + 4 + 4 + offsets.len() * 4;
     let mut buf = Vec::with_capacity(size);
@@ -394,6 +415,7 @@ fn encode_stco(offsets: &[u32]) -> Vec<u8> {
     buf
 }
 
+/// Encodes 64-bit `co64` chunk offsets when any offset exceeds `u32::MAX`.
 fn encode_co64(offsets: &[u64]) -> Vec<u8> {
     let size = 8 + 4 + 4 + offsets.len() * 8;
     let mut buf = Vec::with_capacity(size);
@@ -407,6 +429,7 @@ fn encode_co64(offsets: &[u64]) -> Vec<u8> {
     buf
 }
 
+/// Encodes a zero-balance `smhd` sound-media header.
 fn encode_smhd() -> Vec<u8> {
     let mut b = Vec::with_capacity(16);
     b.extend_from_slice(&16u32.to_be_bytes());
@@ -416,6 +439,7 @@ fn encode_smhd() -> Vec<u8> {
     b
 }
 
+/// Encodes `dinf`/`dref` with a self-contained `url ` entry (media is in this file).
 fn encode_dinf() -> Vec<u8> {
     let mut dref_entry = Vec::new();
     dref_entry.extend_from_slice(&12u32.to_be_bytes());
@@ -431,6 +455,7 @@ fn encode_dinf() -> Vec<u8> {
     wrap_box(b"dinf", &dref)
 }
 
+/// Encodes an `hdlr` box with handler type `soun`.
 fn encode_hdlr() -> Vec<u8> {
     let name = b"SoundHandler\0";
     let size = 8 + 4 + 4 + 4 + 12 + name.len();
@@ -445,6 +470,7 @@ fn encode_hdlr() -> Vec<u8> {
     b
 }
 
+/// Encodes `mdhd` (version 1 when duration exceeds `u32::MAX`) with language `und`.
 fn encode_mdhd(timescale: u32, duration: u64) -> Vec<u8> {
     if duration > u64::from(u32::MAX) {
         // version 1
@@ -476,6 +502,7 @@ fn encode_mdhd(timescale: u32, duration: u64) -> Vec<u8> {
     }
 }
 
+/// Encodes `tkhd` with the track enabled in the movie and preview.
 fn encode_tkhd(track_id: u32, duration: u64) -> Vec<u8> {
     // version 0, flags=TrackEnabled|TrackInMovie|TrackInPreview
     let size = 92;
@@ -503,6 +530,7 @@ fn encode_tkhd(track_id: u32, duration: u64) -> Vec<u8> {
     b
 }
 
+/// Encodes `mvhd` with `next_track_ID` 2 (single audio track).
 fn encode_mvhd(timescale: u32, duration: u64) -> Vec<u8> {
     let size = 108;
     let mut b = Vec::with_capacity(size);
@@ -527,6 +555,7 @@ fn encode_mvhd(timescale: u32, duration: u64) -> Vec<u8> {
     b
 }
 
+/// Prefixes `content` with a 32-bit size and a fourcc to form an ISO-BMFF box.
 fn wrap_box(kind: &[u8; 4], content: &[u8]) -> Vec<u8> {
     let size = 8 + content.len();
     let mut b = Vec::with_capacity(size);

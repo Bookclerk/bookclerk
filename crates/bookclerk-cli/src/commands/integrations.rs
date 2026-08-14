@@ -9,6 +9,7 @@ use bookclerk_integrations::{mint_for_external_user, ExternalUser};
 use clap::Subcommand;
 
 #[derive(Debug, Subcommand)]
+/// `bookclerk integrations` subcommands (status, test, tickets, remote scan).
 pub enum IntegrationsCommand {
     /// Show health of configured integrations.
     Status,
@@ -21,6 +22,7 @@ pub enum IntegrationsCommand {
     /// Claim ticket management.
     Tickets {
         #[command(subcommand)]
+        /// Nested ticket subcommand (`create` or `list`).
         command: TicketsCommand,
     },
     /// Trigger a remote library scan on an integration that supports it.
@@ -35,6 +37,7 @@ pub enum IntegrationsCommand {
 }
 
 #[derive(Debug, Subcommand)]
+/// Claim-ticket subcommands under `bookclerk integrations tickets`.
 pub enum TicketsCommand {
     /// Mint a claim ticket for an external identity.
     Create {
@@ -52,6 +55,7 @@ pub enum TicketsCommand {
     List,
 }
 
+/// Dispatches an integrations CLI command against the loaded registry and library.
 pub async fn run(command: IntegrationsCommand, config: &Config) -> anyhow::Result<()> {
     let paths = config.paths().clone();
     paths.ensure_dirs()?;

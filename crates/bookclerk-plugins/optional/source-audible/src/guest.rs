@@ -43,11 +43,15 @@ use crate::options::DownloadOptions;
 use crate::source::ID;
 use crate::sync::collect_account_books;
 
+/// In-flight LoginServer OAuth waiting for [`guest_login_complete`].
 struct PendingGuestLogin {
+    /// Operator-facing account label to persist after OAuth completes.
     label: Option<String>,
+    /// Background task that finishes LoginServer and registers the device.
     handle: JoinHandle<Result<Authenticator>>,
 }
 
+/// Process-wide map of `session_id` → in-flight guest OAuth (host never sees the authenticator).
 fn pending_logins() -> &'static Mutex<HashMap<String, PendingGuestLogin>> {
     static PENDING: OnceLock<Mutex<HashMap<String, PendingGuestLogin>>> = OnceLock::new();
     PENDING.get_or_init(|| Mutex::new(HashMap::new()))
@@ -60,6 +64,10 @@ fn pending_logins() -> &'static Mutex<HashMap<String, PendingGuestLogin>> {
 /// When the host sets `callback_ipc` + `callback_public_base`, the guest does
 /// **not** bind TCP — it connects to the host IPC tunnel and serves LoginServer
 /// on forwarded streams (required under Windows AppContainer).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_login_start(params: &LoginParams) -> Result<(String, String)> {
     let marketplace = if params.marketplace.trim().is_empty() {
         String::from("us")
@@ -134,6 +142,7 @@ pub async fn guest_login_start(params: &LoginParams) -> Result<(String, String)>
     Ok((session_id, url))
 }
 
+/// Exchanges the LoginServer authorization code for an audible-rs [`Authenticator`].
 async fn register_after_login(
     login: audible_rs::auth::login::ServerLogin,
 ) -> Result<Authenticator> {
@@ -154,6 +163,7 @@ async fn register_after_login(
 }
 
 #[cfg(unix)]
+/// Connects to the host callback tunnel (Unix socket) so LoginServer can run without binding TCP.
 async fn connect_callback_ipc(endpoint: &str) -> Result<tokio::net::UnixStream> {
     tokio::net::UnixStream::connect(endpoint)
         .await
@@ -171,6 +181,10 @@ async fn connect_callback_ipc(
 }
 
 /// Await a pending OAuth session and return account + credential JSON.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_login_complete(session_id: &str) -> Result<LoginResultDto> {
     let pending = pending_logins()
         .lock()
@@ -203,6 +217,10 @@ pub async fn guest_login_complete(session_id: &str) -> Result<LoginResultDto> {
 }
 
 /// Scan libraries for host-injected credential blobs.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_scan(
     credentials: &BTreeMap<String, Value>,
     account_filter: &[String],
@@ -269,6 +287,10 @@ pub async fn guest_scan(
 /// `download` is the host [`DownloadOptions`] JSON from the ABI
 /// `FetchTitleParams.download` field.
 /// Plugin bitrate from `source_config` overlays `quality` (same as in-process).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_fetch_title(
     credentials: &Value,
     title_id: &str,
@@ -468,6 +490,10 @@ fn download_options_from_host(download: &Value, source_config: &Value) -> Downlo
 }
 
 /// Build credential JSON from an authenticator (optional Widevine CDM bytes).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn credentials_json_from_auth(auth: &Authenticator, widevine: Option<&[u8]>) -> Result<Value> {
     let plain = export_authfile_plain_bytes(auth)?;
     let mut obj = serde_json::Map::new();
@@ -478,6 +504,7 @@ pub fn credentials_json_from_auth(auth: &Authenticator, widevine: Option<&[u8]>)
     Ok(Value::Object(obj))
 }
 
+/// Rebuilds an [`Authenticator`] from host-unsealed `authfile_b64` JSON (this guest never opens the library DB).
 fn authenticator_from_credentials(creds: &Value) -> Result<Authenticator> {
     let b64 = creds
         .get("authfile_b64")
@@ -490,6 +517,7 @@ fn authenticator_from_credentials(creds: &Value) -> Result<Authenticator> {
         .map_err(|e| AudibleError::Auth(format!("failed to decode audible auth: {e}")))
 }
 
+/// Parses the OAuth callback bind address; empty defaults to `127.0.0.1:0`.
 fn parse_callback_bind(raw: Option<&str>) -> Result<SocketAddr> {
     match raw.map(str::trim).filter(|s| !s.is_empty()) {
         None => Ok("127.0.0.1:0".parse().expect("valid socket addr")),
@@ -499,6 +527,7 @@ fn parse_callback_bind(raw: Option<&str>) -> Result<SocketAddr> {
     }
 }
 
+/// Maps guest `bitrate` (`high` / `normal`) to [`AudioQuality`]; unknown values use the default.
 fn resolve_bitrate(source_config: &Value) -> AudioQuality {
     source_config
         .get("bitrate")
@@ -511,6 +540,7 @@ fn resolve_bitrate(source_config: &Value) -> AudioQuality {
         .unwrap_or_default()
 }
 
+/// Copies a library [`NewBook`] into the guest scan DTO sent back to the host.
 fn new_book_to_scan(book: bookclerk_library::NewBook) -> ScanBookDto {
     ScanBookDto {
         account_id: book.account_id,
@@ -530,6 +560,7 @@ fn new_book_to_scan(book: bookclerk_library::NewBook) -> ScanBookDto {
     }
 }
 
+/// Flattens Audible `chapter_info` into `(title, start_ms)` pairs, sorted and deduped by start.
 fn flatten_chapters(info: &Value) -> Vec<(String, u64)> {
     let mut out = Vec::new();
     if let Some(arr) = info.get("chapters").and_then(Value::as_array) {
@@ -540,6 +571,7 @@ fn flatten_chapters(info: &Value) -> Vec<(String, u64)> {
     out
 }
 
+/// Depth-first walk of nested `chapters` arrays, emitting each node's title and start offset.
 fn flatten_chapter_nodes(nodes: &[Value], out: &mut Vec<(String, u64)>) {
     for node in nodes {
         if let Some(nested) = node.get("chapters").and_then(Value::as_array) {

@@ -77,6 +77,7 @@ pub struct EgressPolicy {
     pub subrequests: Option<u32>,
 }
 
+/// Serde default for [`EgressPolicy::max_redirects`] when the wire field is omitted (`10`).
 fn default_max_redirects() -> u32 {
     DEFAULT_MAX_REDIRECTS
 }
@@ -326,6 +327,7 @@ pub fn manifest_needs_python(manifest: &PluginManifest) -> bool {
     })
 }
 
+/// True when the workerd runtime names a `.py` main module or `python_workers` flag.
 fn workerd_declares_python(w: &WorkerdRuntimeManifest) -> bool {
     w.main_module.to_ascii_lowercase().ends_with(".py")
         || w.compatibility_flags.iter().any(|f| f == "python_workers")
@@ -390,6 +392,11 @@ pub fn consent_domains_for(manifest: &PluginManifest) -> Result<Vec<String>, Str
     ))
 }
 
+/// IDNA-normalizes and deduplicates allowlist patterns; any invalid entry fails the list.
+///
+/// # Errors
+///
+/// Returns a string when any domain fails [`normalize_domain_pattern`].
 fn normalize_domain_list(domains: &[String]) -> Result<Vec<String>, String> {
     let mut out = Vec::with_capacity(domains.len());
     for d in domains {
@@ -454,7 +461,7 @@ pub fn normalize_domain_pattern(pattern: &str) -> Option<String> {
     }
 }
 
-/// Returns whether `host` matches an allowlist `pattern`.
+/// True when an IDNA-normalized request host is covered by an allowlist pattern.
 ///
 /// Both sides are IDNA-normalized first; invalid hosts or patterns never
 /// match. Wildcard patterns (`*.cdn.example.com`) match the bare suffix and
@@ -489,6 +496,7 @@ pub fn host_matches(host: &str, pattern: &str) -> bool {
     host_matches_normalized(&host, &pattern)
 }
 
+/// Exact or `*.suffix` match on already-normalized host and pattern strings.
 fn host_matches_normalized(host: &str, pattern: &str) -> bool {
     // `host` and policy `domains` are already IDNA-normalized by callers
     // (`allows_initial` / `try_from_network`). Do not re-run IDNA here.
@@ -500,6 +508,7 @@ fn host_matches_normalized(host: &str, pattern: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
 

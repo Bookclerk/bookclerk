@@ -22,41 +22,66 @@ pub struct TemplatePart {
 }
 
 #[derive(Debug, Clone)]
+/// One node in the parsed naming-template AST.
 enum Node {
+    /// Verbatim template text copied into the rendered path.
     Literal(String),
+    /// Book or chapter property tag, optionally with a format specifier.
     Property {
+        /// Canonical tag name after alias resolution (`id`, `firstauthor`, …).
         canon: String,
+        /// Optional `[format]` specifier from `<tag [format]>`.
         format: Option<String>,
     },
+    /// Block rendered only when `cond` (optionally negated) is true.
     Conditional {
+        /// When true, the `!` prefix inverted the condition.
         not: bool,
+        /// Predicate evaluated against the book/chapter context.
         cond: Cond,
+        /// Nested nodes rendered when the condition holds.
         children: Vec<Node>,
     },
 }
 
 #[derive(Debug, Clone)]
+/// Predicate for a naming-template conditional block.
 enum Cond {
+    /// True when the book is in a series or is a podcast parent.
     IfSeries,
+    /// True when the book is a podcast episode or podcast parent.
     IfPodcast,
+    /// True only for a podcast-parent (show) title.
     IfPodcastParent,
+    /// True for a book series that is not a podcast.
     IfBookseries,
+    /// True when the edition is marked abridged.
     IfAbridged,
+    /// True when the named property has a non-empty value.
     Has {
+        /// Property name tested for a non-empty value; omitted uses the empty property.
         property: Option<String>,
     },
+    /// True when the property matches an `[is]` check (empty, numeric, …).
     Is {
+        /// Property name compared against the optional `[check]`.
         property: Option<String>,
+        /// Optional `[check]` argument for `eval_is` (for example `empty`).
         check: Option<String>,
     },
+    /// Compares two property values with a symbolic or `:named:` operator.
     Cmp {
+        /// Left-hand property name.
         p1: String,
+        /// Comparison operator token (`=`, `:contains:`, …).
         op: String,
+        /// Right-hand property name.
         p2: String,
     },
 }
 
 impl Cond {
+    /// Canonical close-tag name that matches this condition (`<-has>`, `<-ifseries>`).
     fn close_canon(&self) -> &'static str {
         match self {
             Cond::IfSeries => "ifseries",
@@ -74,6 +99,7 @@ impl Cond {
 /// A parsed naming template (internal AST wrapper).
 #[derive(Debug, Clone)]
 pub(crate) struct Template {
+    /// Top-level AST nodes of the parsed template.
     nodes: Vec<Node>,
 }
 
@@ -81,13 +107,17 @@ pub(crate) struct Template {
 // Parsing
 // ---------------------------------------------------------------------------
 
+/// Open conditional (or root) while scanning the template left to right.
 struct Frame {
+    /// Open condition and its `!` flag; `None` on the root frame.
     cond: Option<(bool, Cond)>,
     /// Legacy `<if X>` frames close on `<end if>` rather than `<-name>`.
     legacy: bool,
+    /// Nodes accumulated inside this open frame.
     children: Vec<Node>,
 }
 
+/// Parses a naming template into an AST, accepting Libation and legacy tag forms.
 pub(crate) fn parse_template(template: &str) -> Template {
     let mut stack: Vec<Frame> = vec![Frame {
         cond: None,
@@ -174,6 +204,7 @@ pub(crate) fn parse_template(template: &str) -> Template {
     }
 }
 
+/// Closes a frame into a [`Node::Conditional`] (or empty literal) and appends it to the parent.
 fn wrap_and_attach(parent: &mut Frame, frame: Frame) {
     let node = match frame.cond {
         Some((not, cond)) => Node::Conditional {
@@ -186,6 +217,7 @@ fn wrap_and_attach(parent: &mut Frame, frame: Frame) {
     parent.children.push(node);
 }
 
+/// Unwinds to the matching open tag; unmatched closers are dropped.
 fn close_frame(stack: &mut Vec<Frame>, close_canon: &str, legacy: bool) {
     // Find the nearest matching open frame.
     let mut idx = None;
@@ -232,8 +264,10 @@ fn tag_name_regex(name: &str) -> String {
     out
 }
 
+/// Regex fragment for an optional `[format]` group (quoted, escaped, or bare).
 const FORMAT_GROUP: &str = r#"(?:\\.|'[^']*'|"[^"]*"|[^'"\\\]])*"#;
 
+/// Cached `<tag>` / `<tag [format]>` regexes, longest display names first so prefixes do not shadow.
 fn property_matchers() -> &'static [(Regex, String)] {
     static M: OnceLock<Vec<(Regex, String)>> = OnceLock::new();
     M.get_or_init(|| {
@@ -274,6 +308,7 @@ fn property_matchers() -> &'static [(Regex, String)] {
     })
 }
 
+/// Consumes a leading `<property>` tag, returning bytes consumed, canonical name, and format.
 fn match_property(rest: &str) -> Option<(usize, String, Option<String>)> {
     if !rest.starts_with('<') {
         return None;
@@ -288,6 +323,7 @@ fn match_property(rest: &str) -> Option<(usize, String, Option<String>)> {
     None
 }
 
+/// Cached `<if …->` regexes for boolean conditionals, longest names first.
 fn bool_conditionals() -> &'static [(Regex, Cond)] {
     static M: OnceLock<Vec<(Regex, Cond)>> = OnceLock::new();
     M.get_or_init(|| {
@@ -308,6 +344,7 @@ fn bool_conditionals() -> &'static [(Regex, Cond)] {
     })
 }
 
+/// Cached prefix regex for `<has`, `<is`, or `<cmp`, including an optional `!`.
 fn checked_name_matcher(name: &str) -> &'static Regex {
     // Cheap per-name cache via boxed leak is overkill; build once for the three.
     match name {
@@ -326,6 +363,7 @@ fn checked_name_matcher(name: &str) -> &'static Regex {
     }
 }
 
+/// Consumes a leading open conditional (`<if series->`, `<has …->`, …) or returns `None`.
 fn match_open_conditional(rest: &str) -> Option<(usize, bool, Cond)> {
     if !rest.starts_with('<') {
         return None;
@@ -376,6 +414,7 @@ fn match_open_conditional(rest: &str) -> Option<(usize, bool, Cond)> {
     None
 }
 
+/// Consumes `<-name>` or legacy `<end if>`; the third value is `true` for the legacy form.
 fn match_close(rest: &str) -> Option<(usize, String, bool)> {
     if !rest.starts_with("<-") && !rest.starts_with("<end") {
         return None;
@@ -397,6 +436,7 @@ fn match_close(rest: &str) -> Option<(usize, String, bool)> {
     None
 }
 
+/// Consumes a legacy `<if series>` (no `->`) open tag, or `None` for unknown names.
 fn match_legacy_open(rest: &str) -> Option<(usize, Cond)> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"^<if\s+([a-zA-Z]+)>").unwrap());
@@ -422,6 +462,7 @@ fn match_legacy_open(rest: &str) -> Option<(usize, Cond)> {
     Some((caps.get(0).unwrap().end(), cond))
 }
 
+/// Consumes a legacy `%alias%` property tag when the alias is a known property.
 fn match_percent(rest: &str) -> Option<(usize, String, Option<String>)> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"^%([^%]+)%").unwrap());
@@ -645,6 +686,7 @@ fn top_level_tokens(t: &str) -> Vec<(usize, usize)> {
 // Evaluation
 // ---------------------------------------------------------------------------
 
+/// Evaluates the AST against book/chapter context into literal and tag fragments.
 pub(crate) fn evaluate_parts(
     template: &Template,
     book: &BookContext,
@@ -655,6 +697,7 @@ pub(crate) fn evaluate_parts(
     out
 }
 
+/// Walks AST nodes, appending rendered fragments; false conditionals emit nothing.
 fn eval_nodes(
     nodes: &[Node],
     book: &BookContext,
@@ -696,6 +739,7 @@ fn eval_nodes(
     }
 }
 
+/// Evaluates a condition against the current book and optional chapter context.
 fn eval_cond(cond: &Cond, book: &BookContext, chapter: Option<&ChapterContext>) -> bool {
     match cond {
         Cond::IfSeries => book.is_series() || book.is_podcast_parent(),

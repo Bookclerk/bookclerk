@@ -12,6 +12,7 @@ use bookclerk_source::{
 };
 use serde_json::Value;
 
+/// GraphicAudio source guest; password login via `BOOKCLERK_GA_PASSWORD` or Accounts.
 struct GraphicAudioPlugin;
 
 #[async_trait]

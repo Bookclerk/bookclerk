@@ -120,6 +120,10 @@ pub fn purchase_hint_to_dto(hint: SourcePurchaseHint) -> PurchaseHintDto {
 /// - `access=device`: Access App `activation/login` (registers a device).
 ///
 /// Does not write to `encrypted_secrets` — the host seals `credentials`.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_login(
     access_base_url: &str,
     store_base_url: &str,
@@ -174,6 +178,10 @@ pub async fn guest_login(
 }
 
 /// RPC login: build [`LoginOptions`] from params and return a protocol DTO.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_login_rpc(
     access_base_url: &str,
     store_base_url: &str,
@@ -211,6 +219,10 @@ pub async fn guest_login_rpc(
 ///
 /// `magento_password` is required for Magento web/zip listing unless a device
 /// token is present on the credentials (legacy Access App fallback).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn guest_scan(
     access_base_url: &str,
@@ -269,6 +281,10 @@ pub async fn guest_scan(
 }
 
 /// RPC scan: return protocol [`ScanSummaryDto`] (host upserts books).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_scan_rpc(
     access_base_url: &str,
     store_base_url: &str,
@@ -297,6 +313,10 @@ pub async fn guest_scan_rpc(
 }
 
 /// Download one title into `cache_dir` using host-injected credentials.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn guest_fetch_title(
     access_base_url: &str,
@@ -348,6 +368,10 @@ pub async fn guest_fetch_title(
 }
 
 /// RPC fetch: return protocol [`SourceFetchDto`].
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 #[allow(clippy::too_many_arguments)]
 pub async fn guest_fetch_title_rpc(
     access_base_url: &str,

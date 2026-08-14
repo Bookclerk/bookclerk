@@ -12,6 +12,7 @@ use bookclerk_plugin_sdk::{
     PLUGIN_API_VERSION,
 };
 
+/// Database guest that opens a Postgres URL and serves SeaORM RPC through `bookclerk-db-guest`.
 struct PostgresPlugin;
 
 #[async_trait]

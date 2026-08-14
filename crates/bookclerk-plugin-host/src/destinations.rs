@@ -9,6 +9,10 @@ use bookclerk_storage::{LocalFsBackend, S3Backend, StorageBackend};
 use crate::host::DestinationRegistry;
 
 /// Build destination backends for acquire, preferring external output plugins when loaded.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn build_acquire_destinations(
     config: &Config,
     library: Option<&LibraryStore>,
@@ -61,6 +65,10 @@ pub async fn build_acquire_destinations(
 }
 
 /// Build listing/storage backends (mirrors [`bookclerk_storage::from_config`]).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn build_storage_backend(
     config: &Config,
     library: Option<&LibraryStore>,

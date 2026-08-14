@@ -14,6 +14,7 @@ pub mod entities;
 mod error;
 pub mod master_key;
 pub mod migrations;
+/// Public library DTOs and status enums (`BookRecord`, `AcquireStatus`, prefs) re-exported from this crate.
 mod models;
 pub mod operator_token;
 pub mod password;

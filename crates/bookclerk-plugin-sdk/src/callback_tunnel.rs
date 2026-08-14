@@ -25,14 +25,22 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::{Result, SdkError};
 
+/// Frame type byte for opening a multiplexed connection.
 const TYPE_OPEN: u8 = 1;
+/// Frame type byte for payload bytes on an open connection.
 const TYPE_DATA: u8 = 2;
+/// Frame type byte for closing a multiplexed connection.
 const TYPE_CLOSE: u8 = 3;
+/// Maximum Data-frame payload in bytes (1 MiB); larger writes are split.
 const MAX_FRAME_PAYLOAD: usize = 1024 * 1024;
 
+/// Outbound frame queued for the background writer task.
 enum OutFrame {
+    /// Announce a new logical connection id to the peer.
     Open(u32),
+    /// Payload bytes for one connection (already capped at 1 MiB).
     Data(u32, Vec<u8>),
+    /// Tear down a logical connection after shutdown or drop.
     Close(u32),
 }
 
@@ -43,9 +51,13 @@ enum OutFrame {
 /// connection, then `tokio::io::copy_bidirectional` between the TCP socket and
 /// the returned [`TunnelStream`].
 pub struct TunnelHost {
+    /// Channel into the host writer task (Open/Data/Close toward the guest).
     out_tx: mpsc::UnboundedSender<OutFrame>,
+    /// Next connection id; starts at `1` and is never reused.
     next_id: AtomicU32,
+    /// Per-connection inbound data senders keyed by connection id.
     inbound: Arc<Mutex<HashMap<u32, mpsc::UnboundedSender<Vec<u8>>>>>,
+    /// Reader/writer tasks kept alive for the lifetime of the host.
     _tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -55,7 +67,9 @@ pub struct TunnelHost {
 /// [`TunnelGuest::accept`] and feed each [`TunnelStream`] into the guest HTTP
 /// server (same `AsyncRead` + `AsyncWrite` surface as a TCP stream).
 pub struct TunnelGuest {
+    /// Newly opened streams delivered by the guest reader task.
     accept_rx: mpsc::UnboundedReceiver<TunnelStream>,
+    /// Reader/writer tasks kept alive for the lifetime of the guest.
     _tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -65,10 +79,15 @@ pub struct TunnelGuest {
 /// Open/Data/Close frames. Writes larger than the 1 MiB frame payload cap are
 /// split into multiple Data frames (partial write semantics).
 pub struct TunnelStream {
+    /// Host-assigned connection id echoed in every frame for this stream.
     id: u32,
+    /// Channel into the local writer task for Data/Close frames.
     out_tx: mpsc::UnboundedSender<OutFrame>,
+    /// Inbound payload chunks from the peer for this connection.
     data_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    /// Leftover bytes when a Data chunk exceeded the last `poll_read` buffer.
     read_buf: Vec<u8>,
+    /// True after peer EOF or local shutdown; further writes fail with `BrokenPipe`.
     closed: bool,
 }
 
@@ -246,6 +265,7 @@ impl TunnelGuest {
     }
 }
 
+/// Serializes queued frames onto the IPC writer until the channel or write fails.
 async fn writer_task<W: AsyncWrite + Unpin>(
     mut writer: W,
     mut out_rx: mpsc::UnboundedReceiver<OutFrame>,
@@ -265,12 +285,39 @@ async fn writer_task<W: AsyncWrite + Unpin>(
     }
 }
 
+/// Parsed inbound frame after length and type checks.
 enum Frame {
-    Open { conn_id: u32 },
-    Data { conn_id: u32, payload: Vec<u8> },
-    Close { conn_id: u32 },
+    /// Opens a multiplexed callback connection.
+    Open {
+        /// Identifier of the callback connection being opened.
+        conn_id: u32,
+    },
+    /// Carries payload bytes for an open callback connection.
+    Data {
+        /// Identifier of the callback connection receiving data.
+        conn_id: u32,
+        /// Raw payload bytes for this frame.
+        payload: Vec<u8>,
+    },
+    /// Closes a multiplexed callback connection.
+    Close {
+        /// Identifier of the callback connection being closed.
+        conn_id: u32,
+    },
 }
 
+/// Reads one length-prefixed frame; rejects unknown types and oversize payloads.
+///
+/// # Errors
+///
+/// Returns [`SdkError::message`] when the frame length is invalid, I/O fails,
+/// or the frame type is unknown.
+///
+/// # Panics
+///
+/// Panics if the frame header is shorter than four bytes. Valid frames always
+/// include at least five bytes (`type` + `conn_id`), so this should not occur
+/// after the length check.
 async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Frame> {
     let len = reader.read_u32().await.map_err(io_err)?;
     if len < 5 || (len as usize) > MAX_FRAME_PAYLOAD + 5 {
@@ -293,6 +340,12 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Frame> {
     }
 }
 
+/// Writes one big-endian frame (`len | type | conn_id | payload`) and flushes.
+///
+/// # Errors
+///
+/// Propagates I/O failures from the underlying async writer as
+/// [`SdkError::message`].
 async fn write_raw<W: AsyncWrite + Unpin>(
     writer: &mut W,
     typ: u8,
@@ -310,6 +363,7 @@ async fn write_raw<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// Maps a std I/O error onto [`SdkError::message`] for the tunnel protocol.
 fn io_err(err: std::io::Error) -> SdkError {
     SdkError::message(err.to_string())
 }
@@ -388,6 +442,7 @@ impl AsyncWrite for TunnelStream {
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};

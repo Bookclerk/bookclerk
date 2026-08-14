@@ -11,15 +11,21 @@ pub fn is_interactive() -> bool {
 
 /// Simple batch progress: `[####------] 2/5 title`.
 pub struct BatchProgress {
+    /// Expected item count (clamped to at least 1 so the bar fraction is defined).
     total: usize,
+    /// Items completed so far, used for the bar fill and ETA.
     current: usize,
+    /// Verb shown after the counts (`scan`, `acquire`, …).
     label: String,
+    /// When the bar started; used to estimate remaining minutes.
     started: Instant,
+    /// False when stderr is not a TTY (progress is a no-op).
     enabled: bool,
 }
 
 impl BatchProgress {
     #[must_use]
+    /// Starts a bar for `total` items; disabled automatically when stderr is redirected.
     pub fn new(total: usize, label: impl Into<String>) -> Self {
         Self {
             total: total.max(1),
@@ -30,6 +36,7 @@ impl BatchProgress {
         }
     }
 
+    /// Rewrites the current line with bar, counts, detail, and remaining minutes.
     pub fn set(&mut self, current: usize, detail: &str) {
         if !self.enabled {
             return;
@@ -59,6 +66,7 @@ impl BatchProgress {
         let _ = io::stderr().flush();
     }
 
+    /// Ends the current progress line so later stderr output starts on a new line.
     pub fn finish(&mut self) {
         if self.enabled {
             eprintln!();

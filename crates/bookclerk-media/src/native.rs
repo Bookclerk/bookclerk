@@ -8,6 +8,10 @@ use crate::error::{MediaError, Result};
 use crate::MediaOutcome;
 
 /// Remux a progressive clear M4B/M4A with an optional media-time trim (chapter split).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn remux_trimmed(input: &Path, output: &Path, trim: TrimRange) -> Result<MediaOutcome> {
     if !input.exists() {
         return Err(MediaError::InputMissing(input.to_path_buf()));

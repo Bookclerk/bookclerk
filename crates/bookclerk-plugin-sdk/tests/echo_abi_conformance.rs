@@ -3,6 +3,7 @@
 //! These checks are schema/constant level so they do not require spawning a
 //! workerd binary. Runtime Echo guests (native `BookclerkPlugin` + workerd
 //! `modules/index.js`) must implement the same method names and handshake shape.
+#![allow(clippy::missing_panics_doc)]
 
 use bookclerk_plugin_abi::{
     methods, HandshakeResult, HostToPluginEvent, API_VERSION, METHOD_NAMES,

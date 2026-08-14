@@ -8,6 +8,7 @@
 
 use std::process::ExitCode;
 
+/// Entry point for the AppContainer probe (Windows-only body).
 fn main() -> ExitCode {
     #[cfg(not(windows))]
     {
@@ -27,6 +28,11 @@ fn main() -> ExitCode {
 }
 
 #[cfg(windows)]
+/// Parses CLI flags and reports AppContainer / filesystem probe results as JSON.
+///
+/// # Errors
+///
+/// Returns an error when arguments are invalid or a probe step fails.
 fn run() -> Result<(), String> {
     use std::env;
     use std::fs;
@@ -245,6 +251,11 @@ fn run() -> Result<(), String> {
 }
 
 #[cfg(windows)]
+/// Polls `pred` until it succeeds or `timeout` elapses.
+///
+/// # Errors
+///
+/// Returns an error labeled `label` when the timeout expires.
 fn wait_until(
     mut pred: impl FnMut() -> bool,
     timeout: std::time::Duration,
@@ -261,6 +272,11 @@ fn wait_until(
 }
 
 #[cfg(windows)]
+/// Returns whether the current process token is an AppContainer token.
+///
+/// # Errors
+///
+/// Returns an error when Win32 token queries fail.
 fn token_is_app_container() -> Result<bool, String> {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::Security::{GetTokenInformation, TokenIsAppContainer, TOKEN_QUERY};

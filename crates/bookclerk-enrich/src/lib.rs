@@ -9,6 +9,7 @@
 //! audio that lacks Audible brand intro/outro.
 
 mod enrich;
+/// Enrichment error type and [`Result`] alias for Audnexus / catalog lookups.
 mod error;
 mod match_score;
 mod public_meta;

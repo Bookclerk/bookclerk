@@ -99,6 +99,10 @@ impl ArchiveFormat {
 }
 
 /// Select an artifact entry matching the host (or override) target.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn select_target<'a, T>(
     artifacts: &'a [T],
     target_of: impl Fn(&T) -> &str,

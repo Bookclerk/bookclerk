@@ -40,6 +40,10 @@ impl From<&bookclerk_source::ScanOptions> for ScanOptions {
 ///
 /// Accounts are resolved from `encrypted_secrets` (DB-backed); no
 /// `Accounts/*.libro.auth` files are read.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn scan_library(
     library: &SourceScope,
     options: ScanOptions,
@@ -113,6 +117,10 @@ pub async fn scan_library(
 }
 
 /// Fetch all library pages for one client and collect books (no DB writes).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn collect_account_books(
     client: &LibroClient,
     account_id: &str,
@@ -152,6 +160,10 @@ pub async fn collect_account_books(
 }
 
 /// Fetch all library pages for one client and upsert books.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn scan_account_into_library(
     library: &SourceScope,
     client: &LibroClient,
@@ -229,6 +241,7 @@ pub fn audiobook_to_new_book(book: &Audiobook, account_id: &str, marketplace: &s
     }
 }
 
+/// Parses a Libro.fm date as RFC 3339 or `YYYY-MM-DD` (midnight UTC); `None` when unparseable.
 fn parse_libro_datetime(raw: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .map(|dt| dt.with_timezone(&Utc))

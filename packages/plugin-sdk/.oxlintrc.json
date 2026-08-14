@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "oxc", "jsdoc"],
+  "rules": {
+    "jsdoc/check-property-names": "error",
+    "jsdoc/check-tag-names": "error",
+    "jsdoc/require-param": "error",
+    "jsdoc/require-param-name": "error",
+    "jsdoc/require-returns": "error",
+    "jsdoc/require-param-description": "off",
+    "jsdoc/require-returns-description": "off"
+  },
+  "ignorePatterns": [
+    "dist/**",
+    "node_modules/**",
+    "src/generated.ts",
+    "embed/**",
+    "bridge/**"
+  ]
+}

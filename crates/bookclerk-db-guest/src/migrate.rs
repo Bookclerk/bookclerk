@@ -99,6 +99,7 @@ pub fn typed_null(decl_type: Option<&str>, column: &str) -> Value {
     null_kind_for_column(column)
 }
 
+/// Typed SQL `NULL` from a well-known column name when `decl_type` is missing.
 fn null_kind_for_column(column: &str) -> Value {
     const INTEGER_COLUMNS: &[&str] = &[
         "id",
@@ -138,6 +139,7 @@ fn null_kind_for_column(column: &str) -> Value {
     }
 }
 
+/// Splits a migration script on `;` and drops empty fragments.
 fn split_sql_statements(sql: &str) -> Vec<String> {
     sql.split(';')
         .map(str::trim)

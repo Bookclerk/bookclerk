@@ -134,6 +134,7 @@ pub struct AccountRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Serde default for account `connection_status` when the column is missing (`active`).
 fn default_connection_status() -> String {
     String::from("active")
 }

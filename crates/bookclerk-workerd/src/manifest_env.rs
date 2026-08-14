@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use bookclerk_plugin_manifest::PluginManifest;
 
+/// Reads and validates `plugin.toml` from the guest install root.
 pub fn load_manifest(root: &Path) -> Result<PluginManifest> {
     let path = root.join("plugin.toml");
     let text =

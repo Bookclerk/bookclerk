@@ -16,6 +16,16 @@
   "validation": {
     "notExported": false,
     "invalidLink": true,
-    "notDocumented": false
-  }
+    "notDocumented": true
+  },
+  "treatValidationWarningsAsErrors": true,
+  "requiredToBeDocumented": [
+    "Enum",
+    "EnumMember",
+    "Variable",
+    "Function",
+    "Class",
+    "Interface",
+    "TypeAlias"
+  ]
 }

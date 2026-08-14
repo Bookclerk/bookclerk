@@ -1,8 +1,23 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
+  "plugins": ["react", "typescript", "oxc", "jsdoc"],
   "rules": {
     "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    "jsdoc/check-property-names": "error",
+    "jsdoc/check-tag-names": "error",
+    "jsdoc/require-param-name": "error",
+    "jsdoc/require-param-description": "off",
+    "jsdoc/require-returns-description": "off"
+  },
+  "overrides": [
+    {
+      "files": ["src/lib/**/*.{ts,tsx}"],
+      "rules": {
+        "jsdoc/require-param": "error",
+        "jsdoc/require-returns": "error"
+      }
+    }
+  ],
+  "ignorePatterns": ["dist/**", "node_modules/**"]
 }

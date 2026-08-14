@@ -8,14 +8,17 @@ use crate::{Capabilities, LayerStatus, Policy, Report, SandboxError};
 /// Backend name reported in diagnostics.
 pub const BACKEND: &str = "none";
 
+/// Returns an empty read allowlist; no backend grants system paths on this target.
 pub fn system_read_paths() -> &'static [&'static str] {
     &[]
 }
 
+/// Returns an empty write allowlist; no backend grants system paths on this target.
 pub fn system_write_paths() -> &'static [&'static str] {
     &[]
 }
 
+/// Reports that no confinement backend is available on this target.
 pub fn capabilities() -> Capabilities {
     Capabilities {
         backend: BACKEND,
@@ -27,6 +30,7 @@ pub fn capabilities() -> Capabilities {
     }
 }
 
+/// Builds a confinement report marking every layer unsupported on this target.
 pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> {
     let detail = format!("no confinement backend for {}", std::env::consts::OS);
     Ok(Report {

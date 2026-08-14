@@ -70,6 +70,7 @@ fn rebuild_around_moov(path: &Path, at: MoovLocation, mut moov: Vec<u8>) -> Resu
     Ok(())
 }
 
+/// Copies exactly `len` bytes; errors if the source ends early (truncated M4B header).
 fn copy_exact(src: &mut impl Read, dst: &mut impl Write, len: u64) -> Result<()> {
     let copied = std::io::copy(&mut src.take(len), dst)?;
     if copied != len {

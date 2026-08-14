@@ -22,8 +22,10 @@ use crate::protocol::{
 use crate::rpc::PluginClient;
 use crate::Result as PluginResult;
 
+/// Manifest id of the platform local-filesystem destination guest.
 const LOCAL_PLUGIN_ID: &str = "local";
 
+/// Absolute local output root: `output.local.root`, or that path joined to `files_dir` when relative.
 fn resolved_local_output_root(config: &Config) -> PathBuf {
     let root = &config.output.local.root;
     if root.is_absolute() {
@@ -36,9 +38,13 @@ fn resolved_local_output_root(config: &Config) -> PathBuf {
 /// External local filesystem destination backed by a discovered output plugin.
 #[derive(Clone)]
 pub struct ExternalLocalDestination {
+    /// RPC client for the jailed local output guest.
     client: Arc<PluginClient>,
+    /// Guest `HOME` / data directory under `plugins/local/data`.
     plugin_data_dir: PathBuf,
+    /// Absolute directory that destination keys are resolved against.
     root: PathBuf,
+    /// Normalized key prefix from `[output.local].prefix`.
     prefix: String,
 }
 
@@ -59,6 +65,7 @@ impl ExternalLocalDestination {
         })
     }
 
+    /// Side-channel context (data dir, root, prefix) sent with every local output RPC.
     fn ctx(&self) -> OutputLocalContextDto {
         OutputLocalContextDto {
             plugin_data_dir: self.plugin_data_dir.display().to_string(),
@@ -67,6 +74,7 @@ impl ExternalLocalDestination {
         }
     }
 
+    /// Maps a plugin RPC error onto [`StorageError`] (`Io` stays `Io`).
     fn map_err(err: crate::PluginError) -> StorageError {
         match err {
             crate::PluginError::Io(io) => StorageError::Io(io),
@@ -74,6 +82,7 @@ impl ExternalLocalDestination {
         }
     }
 
+    /// Copies host [`ObjectMeta`] into the guest wire DTO.
     fn meta_to_dto(meta: &ObjectMeta) -> ObjectMetaDto {
         ObjectMetaDto {
             content_type: meta.content_type.clone(),
@@ -85,6 +94,7 @@ impl ExternalLocalDestination {
         }
     }
 
+    /// Copies a guest wire DTO back into host [`ObjectMeta`].
     fn meta_from_dto(dto: ObjectMetaDto) -> ObjectMeta {
         ObjectMeta {
             content_type: dto.content_type,
@@ -96,6 +106,7 @@ impl ExternalLocalDestination {
         }
     }
 
+    /// Formats a filesystem timestamp as RFC 3339 UTC for `touchFile`.
     fn rfc3339(time: SystemTime) -> Option<String> {
         Some(DateTime::<Utc>::from(time).to_rfc3339())
     }
@@ -291,6 +302,7 @@ impl StorageBackend for ExternalLocalDestination {
     }
 }
 
+/// Spawns the local output guest when enabled; logs and falls back in-process on failure.
 pub(crate) async fn try_load_local(
     plugin: &DiscoveredPlugin,
     config: &Config,
@@ -322,14 +334,17 @@ pub(crate) async fn try_load_local(
     }
 }
 
+/// Converts a plugin settings TOML table to JSON for guest handshake; `Null` on failure.
 fn toml_to_json(value: &toml::Value) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
+/// Wraps a serde JSON error as [`StorageError::Other`] when encoding RPC params.
 fn map_json_err(err: serde_json::Error) -> StorageError {
     StorageError::Other(anyhow::anyhow!("serialize output RPC params: {err}"))
 }
 
+/// Reads the boolean `exists` field from a guest `exists` RPC result.
 fn parse_exists_response(value: &Value) -> bookclerk_storage::Result<bool> {
     value
         .get("exists")

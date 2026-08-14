@@ -3,6 +3,10 @@
  * and serialize assertion/attestation responses back to JSON.
  */
 
+/**
+ * @param value
+ * @returns
+ */
 function b64urlToBuf(value: string): ArrayBuffer {
   const pad = "=".repeat((4 - (value.length % 4)) % 4);
   const b64 = (value + pad).replace(/-/g, "+").replace(/_/g, "/");
@@ -37,6 +41,9 @@ export interface PasskeyCeremonyOptions {
 
 /**
  * Decode a registration `publicKey` for `navigator.credentials.create`.
+ *
+ * @param publicKey
+ * @returns
  */
 export function creationOptionsFromJson(
   publicKey: Record<string, unknown>,
@@ -68,6 +75,9 @@ export function creationOptionsFromJson(
 
 /**
  * Decode an assertion `publicKey` for `navigator.credentials.get`.
+ *
+ * @param publicKey
+ * @returns
  */
 export function requestOptionsFromJson(
   publicKey: Record<string, unknown>,
@@ -93,6 +103,9 @@ export function requestOptionsFromJson(
 
 /**
  * Serialize a WebAuthn credential for the daemon finish endpoints.
+ *
+ * @param cred
+ * @returns
  */
 export function credentialToJson(cred: PublicKeyCredential): Record<string, unknown> {
   const response = cred.response;
@@ -122,6 +135,9 @@ export function credentialToJson(cred: PublicKeyCredential): Record<string, unkn
 
 /**
  * Run a registration ceremony and return JSON for `/register/finish`.
+ *
+ * @param options
+ * @returns
  */
 export async function createPasskey(
   options: PasskeyCeremonyOptions,
@@ -137,6 +153,9 @@ export async function createPasskey(
 
 /**
  * Run an assertion ceremony and return JSON for login/elevate finish.
+ *
+ * @param options
+ * @returns
  */
 export async function assertPasskey(
   options: PasskeyCeremonyOptions,

@@ -47,9 +47,13 @@ use crate::jobs::{enqueue_acquire, enqueue_scan};
 
 /// Shared daemon state.
 pub struct AppState {
+    /// Live daemon config swapped under `reload_lock`; handlers clone then drop the read lock.
     pub config: Arc<RwLock<Config>>,
+    /// Shared library store; clone the handle and drop the lock before awaiting DB I/O.
     pub library: Arc<RwLock<LibraryStore>>,
+    /// Loaded database plugin guests; replaced when `[database].plugin` reloads.
     pub database_registry: Arc<RwLock<DatabaseRegistry>>,
+    /// In-memory scan/acquire job list returned by `GET /api/jobs`.
     pub jobs: Arc<RwLock<Vec<JobInfo>>>,
     /// Serialize scan/acquire work so jobs do not thrash the same accounts.
     ///
@@ -61,8 +65,11 @@ pub struct AppState {
     /// Cap concurrent discover/embed work so ONNX load + inference cannot saturate
     /// the Tokio blocking pool (and starve accept / `/health`) under page refresh.
     pub discover_gate: Arc<Semaphore>,
+    /// Loaded integration guests used by watchers, the portal, and listening sync.
     pub integrations: Arc<RwLock<IntegrationRegistry>>,
+    /// Loaded storefront source guests used by scan, acquire, and discover.
     pub sources: Arc<RwLock<SourceRegistry>>,
+    /// Loaded output destinations that receive acquire artifacts.
     pub destinations: Arc<RwLock<DestinationRegistry>>,
     /// Operator auth runtime (enabled flag + token + sessions). Replaced on reload.
     ///
@@ -92,22 +99,33 @@ impl AppState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Snapshot of one queued or running control-plane job.
 pub struct JobInfo {
+    /// Opaque job id returned to the client when the job is accepted.
     pub id: String,
+    /// Job type (`scan`, `acquire`, and similar).
     pub kind: String,
+    /// Lifecycle string (`queued`, `running`, `ok`, `error`).
     pub status: String,
+    /// Optional operator-facing progress or error text.
     pub detail: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
+/// Liveness payload for unauthenticated `GET /health`.
 struct HealthResponse {
+    /// Always `ok` when the process can serve HTTP.
     status: &'static str,
 }
 
 #[derive(Debug, Serialize)]
+/// Library and daemon snapshot for `GET /api/status`.
 struct StatusResponse {
+    /// Count of configured store accounts.
     accounts: usize,
+    /// Total title rows in the library.
     books: usize,
+    /// Titles whose `acquire_status` is `acquired`.
     acquired: i64,
     /// Titles still needing acquire (`not_acquired`).
     pending: i64,
@@ -115,55 +133,77 @@ struct StatusResponse {
     error: i64,
     /// Titles currently `queued` or `downloading`.
     in_progress: i64,
+    /// Comma-joined `daemon.listen` addresses from live config.
     listen: String,
+    /// Comma-joined enabled destination plugin ids, or `none`.
     storage_backend: String,
     /// Whether the live auth middleware requires operator credentials.
     auth_enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
+/// One `config.toml` key/value pair from a settings PATCH.
 struct SettingsUpdate {
+    /// Dotted config key; rejected unless it passes the settings allowlist.
     key: String,
+    /// Raw string value, normalized before it is written.
     value: String,
 }
 
 #[derive(Debug, Deserialize)]
+/// Body for `PATCH /api/settings`.
 struct PatchSettingsRequest {
+    /// Key/value pairs to validate, persist, and reload.
     settings: Vec<SettingsUpdate>,
 }
 
 #[derive(Debug, Serialize)]
+/// One selectable value for a Settings dropdown.
 struct PluginSettingChoice {
+    /// Stored config value; empty string means use the plugin default.
     value: String,
+    /// Operator-facing choice caption.
     label: String,
 }
 
 #[derive(Debug, Serialize)]
+/// One editable setting shown in the Settings UI.
 struct PluginSettingOption {
+    /// Dotted `config.toml` key for this option.
     key: String,
+    /// Operator-facing field caption.
     label: String,
+    /// Current string form of the setting.
     value: String,
+    /// UI widget hint (`boolean`, `string`, or `number`).
     value_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional dropdown values; omitted for free-form fields.
     choices: Option<Vec<PluginSettingChoice>>,
 }
 
 #[derive(Debug, Serialize)]
+/// Settings UI group for one discovered or loaded plugin.
 struct PluginSettingsGroup {
+    /// Plugin id (`audible`, `sqlite`, and similar).
     id: String,
+    /// Plugin kind wire label (`source`, `integration`, `output`, `database`).
     kind: String,
     /// Google favicon (or portal brand) URL for Settings list rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     logo: Option<String>,
+    /// Editable options for this plugin, including `.enabled`.
     settings: Vec<PluginSettingOption>,
 }
 
 #[derive(Debug, Serialize)]
+/// Settings page payload: file values, effective runtime, and plugin groups.
 struct SettingsResponse {
     /// Values as written in config.toml (and env overlays).
     settings: std::collections::BTreeMap<String, String>,
     /// Runtime-effective values after the last successful reload (auth, plugins).
     effective: std::collections::BTreeMap<String, String>,
+    /// Per-plugin setting groups rendered by the Settings UI.
     plugins: Vec<PluginSettingsGroup>,
     /// Host max jail CPU in cores (2 d.p.; equals logical CPU count).
     host_cpu_cores_max: f64,
@@ -173,23 +213,38 @@ struct SettingsResponse {
 }
 
 #[derive(Debug, Serialize)]
+/// Optional branding shown on the plugin consent dialog.
 struct PluginConsentBrand {
+    /// Display name from the portal brand or plugin manifest.
     name: String,
+    /// Background CSS color from the portal brand, when known.
     bg: Option<String>,
+    /// Foreground CSS color from the portal brand, when known.
     fg: Option<String>,
+    /// Accent CSS color from the portal brand, when known.
     accent: Option<String>,
+    /// Logo URL or host-served embed path.
     logo: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
+/// Host-capped resource defaults shown on the consent dialog.
 struct PluginConsentLimits {
+    /// Requested workerd CPU budget in milliseconds.
     cpu_ms: u32,
+    /// Requested workerd subrequest budget.
     subrequests: u32,
+    /// Host hard cap for workerd CPU milliseconds.
     max_cpu_ms: u32,
+    /// Host hard cap for workerd subrequests.
     max_subrequests: u32,
+    /// Default plugin state disk budget in mebibytes.
     disk_mib: u32,
+    /// Host hard cap for plugin state disk in mebibytes.
     max_disk_mib: u32,
+    /// Default jail memory in mebibytes.
     memory_mib: u32,
+    /// Host hard cap for jail memory in mebibytes.
     max_memory_mib: u32,
     /// Manifest / default jail CPU in cores (2 d.p.).
     cpu_cores: f64,
@@ -210,20 +265,31 @@ struct PluginConsentLimits {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PluginGrantView {
+    /// Plugin id this grant applies to.
     plugin_id: String,
+    /// Plugin kind string copied from the stored grant.
     kind: String,
+    /// Approved egress mode (`deny`, `allowlist`, and similar).
     network_mode: String,
+    /// Hostnames the operator approved for egress.
     domains: Vec<String>,
+    /// Host bindings the operator approved.
     bindings: Vec<String>,
+    /// Extra compatibility flags stored on the grant.
     compatibility_flags: Vec<String>,
+    /// RFC 3339 timestamp when the grant was last approved.
     approved_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional workerd CPU budget in milliseconds.
     cpu_ms: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional workerd subrequest budget.
     subrequests: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional plugin state disk budget in mebibytes.
     disk_mib: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional jail memory in mebibytes.
     memory_mib: Option<u32>,
     /// Jail CPU in cores (2 d.p.); absent for workerd.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -234,6 +300,7 @@ struct PluginGrantView {
 }
 
 impl PluginGrantView {
+    /// Projects a stored grant into operator-facing camelCase JSON, converting CPU percent to cores.
     fn from_grant(grant: &PluginGrant) -> Self {
         Self {
             plugin_id: grant.plugin_id.clone(),
@@ -254,38 +321,57 @@ impl PluginGrantView {
 }
 
 #[derive(Debug, Serialize)]
+/// Consent dialog payload for one plugin.
 struct PluginConsentResponse {
+    /// Plugin id whose grant is being reviewed.
     plugin_id: String,
     /// Guest runtime (`native` or `workerd`) — drives which controls are enforceable.
     runtime: String,
+    /// Manifest-derived grant the plugin is asking for.
     request: PluginGrantView,
+    /// True when an existing on-disk grant already satisfies the request.
     covered: bool,
+    /// Operator-facing bullet list of requested capabilities.
     summary: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Previously approved grant, when one is stored.
     existing: Option<PluginGrantView>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional portal or manifest branding for the dialog.
     brand: Option<PluginConsentBrand>,
     /// Host-capped resource defaults (workerd budgets + shared disk). Always set.
     limits: PluginConsentLimits,
 }
 
 #[derive(Debug, Deserialize)]
+/// Body for `POST /api/plugins/{id}/consent`.
 struct PluginConsentApproveRequest {
+    /// Must be true; a false value is rejected with 400.
     approve: bool,
     #[serde(default)]
+    /// Optional operator overrides applied on top of the manifest request.
     grant: Option<PluginGrantOverride>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+/// Operator-supplied grant fields that replace matching request values.
 struct PluginGrantOverride {
+    /// Override egress mode when set.
     network_mode: Option<String>,
+    /// Override approved hostnames when set.
     domains: Option<Vec<String>>,
+    /// Override approved host bindings when set.
     bindings: Option<Vec<String>>,
+    /// Override compatibility flags when set.
     compatibility_flags: Option<Vec<String>>,
+    /// Override workerd CPU milliseconds when set.
     cpu_ms: Option<u32>,
+    /// Override workerd subrequest budget when set.
     subrequests: Option<u32>,
+    /// Override disk budget in mebibytes when set.
     disk_mib: Option<u32>,
+    /// Override jail memory in mebibytes when set.
     memory_mib: Option<u32>,
     /// Jail CPU in cores (2 d.p.); converted to Spec percent server-side.
     cpu_cores: Option<f64>,
@@ -294,39 +380,57 @@ struct PluginGrantOverride {
 }
 
 #[derive(Debug, Serialize)]
+/// Generic mutation result with success flag, message, and optional job id.
 struct ActionResponse {
+    /// True when the action was accepted or completed.
     ok: bool,
+    /// Operator-facing status text.
     message: String,
+    /// Queued job id, or empty when the action is synchronous.
     job_id: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
+/// Optional body for `POST /api/library/scan`.
 pub struct ScanRequest {
+    /// When set, scan this account even if `scan_enabled` is false.
     pub account: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
+/// Optional body for `POST /api/library/acquire`.
 pub struct AcquireRequestBody {
+    /// Audible ASIN filter; first of uuid/asin/isbn/product_id wins.
     pub asin: Option<String>,
+    /// Library title UUID filter.
     pub uuid: Option<String>,
+    /// ISBN filter for non-Audible stores.
     pub isbn: Option<String>,
+    /// Store product id filter.
     pub product_id: Option<String>,
+    /// Restrict acquire to this store account.
     pub account: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
+/// Optional body for `POST /integrations/{id}/scan`.
 pub struct IntegrationScanRequest {
+    /// When true, the integration rescans even if it considers itself current.
     pub force: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
+/// Body for copying library rows between database plugins.
 struct DatabaseMigrateRequest {
     /// Source plugin id. Defaults to the active `[database].plugin` before reload.
     from: Option<String>,
+    /// Destination database plugin id to copy into.
     to: String,
     #[serde(default)]
+    /// When true, count rows without writing.
     dry_run: bool,
     #[serde(default)]
+    /// When true, overwrite a destination that is not empty.
     force: bool,
     /// Update `[database].plugin` in config.toml after a successful copy.
     #[serde(default)]
@@ -334,19 +438,30 @@ struct DatabaseMigrateRequest {
 }
 
 #[derive(Debug, Deserialize, Default)]
+/// Query string for `GET /api/library/books`.
 struct BooksQuery {
+    /// Restrict results to this store account id.
     account: Option<String>,
+    /// Optional `AcquireStatus` wire-string filter.
     status: Option<String>,
+    /// Full-text search query; empty skips the search index.
     q: Option<String>,
+    /// Page size, clamped to 1–500 (default 40).
     limit: Option<usize>,
+    /// Number of matching titles to skip.
     offset: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
+/// Paginated library listing.
 struct BooksResponse {
+    /// Current page of title records.
     books: Vec<BookRecord>,
+    /// Match count before pagination.
     total: usize,
+    /// Applied page size.
     limit: usize,
+    /// Applied skip count.
     offset: usize,
 }
 
@@ -564,6 +679,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         )
 }
 
+/// Opens the discover embedder on a blocking thread so ONNX load cannot stall the HTTP runtime.
 async fn open_embedder_blocking(
     models_dir: PathBuf,
     embed_intra_threads: usize,
@@ -582,6 +698,7 @@ async fn open_embedder_blocking(
     .map_err(internal_err)
 }
 
+/// Enforces per-path API deadlines and returns 504 when a `/api/` handler overruns its budget.
 async fn api_timeout_middleware(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
     let method = req.method().to_string();
@@ -608,6 +725,7 @@ async fn api_timeout_middleware(req: Request, next: Next) -> Response {
     }
 }
 
+/// Selects the request deadline in seconds for a control-plane path (8s default; longer for discover).
 fn api_timeout_for_path(path: &str) -> Duration {
     match path {
         "/api/discover/purchase-hints"
@@ -663,6 +781,7 @@ pub fn resolve_ui_dist() -> Option<PathBuf> {
     })
 }
 
+/// Serves `GET /health` with a static `ok` payload for liveness probes.
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
@@ -918,6 +1037,7 @@ pub fn validate_daemon_listen_against_auth(
     Ok(())
 }
 
+/// Pushes the reloaded listen set and auth flags into the optional tray companion.
 async fn refresh_tray_after_reload(state: &AppState, config: &Config) {
     let tray = state.tray.read().await.clone();
     let Some(tray) = tray else {
@@ -1025,6 +1145,7 @@ pub async fn revert_listen_after_bind_failure(state: &AppState) -> bool {
     true
 }
 
+/// True when `key` is a Settings-editable dotted path (global knobs or `kind.id.field`).
 fn allowed_setting_key(key: &str) -> bool {
     if matches!(
         key,
@@ -1063,6 +1184,7 @@ fn allowed_setting_key(key: &str) -> bool {
         || valid_scoped_key(key, "database.")
 }
 
+/// Validates and canonicalizes a Settings value; returns an error string for invalid input.
 fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
     match key {
         "library.scan_interval_minutes" => value
@@ -1144,6 +1266,7 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
     }
 }
 
+/// Builds the file-backed Settings map from live `Config` (listen, isolation, jail, sources).
 fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<String, String> {
     let mut settings = std::collections::BTreeMap::new();
     settings.insert("daemon.listen".into(), config.daemon.listen.join_comma());
@@ -1216,6 +1339,7 @@ fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<Stri
     settings
 }
 
+/// Turns a snake_case setting key fragment into Title Case UI copy.
 fn setting_label(key: &str) -> String {
     key.replace('_', " ")
         .split_whitespace()
@@ -1230,6 +1354,7 @@ fn setting_label(key: &str) -> String {
         .join(" ")
 }
 
+/// True when `id` is the active plugin for `kind` in the current config.
 fn plugin_enabled(config: &Config, kind: bookclerk_plugin_host::PluginKind, id: &str) -> bool {
     match kind {
         bookclerk_plugin_host::PluginKind::Source => config.sources.is_enabled(id),
@@ -1243,6 +1368,7 @@ fn plugin_enabled(config: &Config, kind: bookclerk_plugin_host::PluginKind, id: 
     }
 }
 
+/// Dotted `config.toml` prefix for a plugin (`sources.id`, `database.id`, …).
 fn plugin_prefix(kind: bookclerk_plugin_host::PluginKind, id: &str) -> String {
     match kind {
         bookclerk_plugin_host::PluginKind::Source => format!("sources.{id}"),
@@ -1252,6 +1378,7 @@ fn plugin_prefix(kind: bookclerk_plugin_host::PluginKind, id: &str) -> String {
     }
 }
 
+/// Wire label for a plugin kind (`source`, `integration`, `output`, `database`).
 fn plugin_kind_label(kind: bookclerk_plugin_host::PluginKind) -> &'static str {
     match kind {
         bookclerk_plugin_host::PluginKind::Source => "source",
@@ -1278,6 +1405,7 @@ fn settings_logo_from_manifest(plugin: &bookclerk_plugin_host::DiscoveredPlugin)
     }
 }
 
+/// Returns a trimmed logo URL, or `None` when the string is empty.
 fn non_empty_logo(url: &str) -> Option<String> {
     let t = url.trim();
     if t.is_empty() {
@@ -1287,6 +1415,7 @@ fn non_empty_logo(url: &str) -> Option<String> {
     }
 }
 
+/// Builds a free-form Settings option with no dropdown choices.
 fn plugin_setting_option(
     key: String,
     label: impl Into<String>,
@@ -1302,6 +1431,7 @@ fn plugin_setting_option(
     }
 }
 
+/// Builds one dropdown choice for a Settings option.
 fn plugin_setting_choice(
     value: impl Into<String>,
     label: impl Into<String>,
@@ -1312,6 +1442,7 @@ fn plugin_setting_choice(
     }
 }
 
+/// Builds a Settings option that exposes a dropdown when `choices` is non-empty.
 fn plugin_setting_option_with_choices(
     key: String,
     label: impl Into<String>,
@@ -1332,6 +1463,7 @@ fn plugin_setting_option_with_choices(
     }
 }
 
+/// Prepends an empty-value Default choice to a fixed list of id/label pairs.
 fn plugin_choices_with_default(
     default_label: &str,
     values: impl IntoIterator<Item = (&'static str, &'static str)>,
@@ -1345,6 +1477,7 @@ fn plugin_choices_with_default(
     out
 }
 
+/// Hard-coded Settings options for first-party plugins (bitrate, container, S3, D1, …).
 fn built_in_plugin_settings(
     config: &Config,
     kind: bookclerk_plugin_host::PluginKind,
@@ -1646,6 +1779,7 @@ fn built_in_plugin_settings(
     }
 }
 
+/// Assembles a Settings group from a live source guest plus its TOML table.
 fn build_source_settings_group(
     config: &Config,
     source: &dyn bookclerk_source::ContentSource,
@@ -1720,6 +1854,7 @@ fn build_source_settings_group(
     }
 }
 
+/// Assembles a Settings group for an integration, overlaying portal-brand logo when present.
 fn build_integration_settings_group(
     config: &Config,
     integration: &dyn bookclerk_integrations::Integration,
@@ -1738,6 +1873,7 @@ fn build_integration_settings_group(
     group
 }
 
+/// Assembles a generic Settings group (enabled + built-ins + leftover TOML keys).
 fn build_plugin_settings_group(
     config: &Config,
     kind: bookclerk_plugin_host::PluginKind,
@@ -1811,6 +1947,7 @@ fn build_plugin_settings_group(
     }
 }
 
+/// Merges discovered and in-process plugins into Settings groups keyed by kind and id.
 fn plugin_settings_snapshot(
     config: &Config,
     sources: &SourceRegistry,
@@ -1890,6 +2027,7 @@ fn plugin_settings_snapshot(
     groups_by_key.into_values().collect()
 }
 
+/// Discovers plugins on a blocking thread with a 2s timeout; returns empty on failure.
 async fn discover_plugins_for_settings(
     config: &Config,
 ) -> Vec<bookclerk_plugin_host::DiscoveredPlugin> {
@@ -1914,6 +2052,7 @@ async fn discover_plugins_for_settings(
     }
 }
 
+/// Applies `database.<id>.enabled` toggles so at most one backend remains selected.
 fn apply_database_enable_updates(
     config: &mut Config,
     updates: &[(String, String)],
@@ -1956,6 +2095,7 @@ fn apply_database_enable_updates(
     Ok(())
 }
 
+/// True for truthy Settings strings (`1`, `true`, `yes`, `on`).
 fn setting_value_is_enabled(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
@@ -2032,6 +2172,7 @@ fn database_backends_requiring_grant(
     ids
 }
 
+/// Returns HTTP 409 `consent_required` JSON when enabling a plugin needs a grant.
 fn consent_required_response(plugin_id: &str, message: String, summary: Vec<String>) -> Response {
     (
         StatusCode::CONFLICT,
@@ -2149,6 +2290,7 @@ fn sanitize_svg_logo(input: &[u8]) -> Result<Vec<u8>, StatusCode> {
     Ok(out)
 }
 
+/// Resolves consent-dialog branding from the live guest, falling back to the manifest logo.
 async fn plugin_consent_brand(
     state: &AppState,
     plugin: &bookclerk_plugin_host::DiscoveredPlugin,
@@ -2203,6 +2345,7 @@ async fn plugin_consent_brand(
     }
 }
 
+/// Builds host-capped consent sliders from workerd limits and jail defaults.
 fn plugin_consent_limits(
     plugin: &bookclerk_plugin_host::DiscoveredPlugin,
     jail_cpu_rate_percent: Option<u32>,
@@ -2242,6 +2385,7 @@ fn plugin_consent_limits(
     }
 }
 
+/// Merges operator overrides onto the manifest grant and rejects values outside host caps.
 fn build_approved_grant(
     baseline: &PluginGrant,
     grant_override: Option<PluginGrantOverride>,
@@ -2287,6 +2431,7 @@ fn build_approved_grant(
     })
 }
 
+/// Trims, drops empties, and collects strings into a `BTreeSet`.
 fn vec_to_set(values: Vec<String>) -> BTreeSet<String> {
     values
         .into_iter()
@@ -2295,6 +2440,7 @@ fn vec_to_set(values: Vec<String>) -> BTreeSet<String> {
         .collect()
 }
 
+/// Loads the consent dialog for one plugin, including coverage against the stored grant.
 async fn get_plugin_consent(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -2334,6 +2480,7 @@ async fn get_plugin_consent(
     }))
 }
 
+/// Persists an approved plugin grant after validating operator overrides.
 async fn post_plugin_consent(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -2379,6 +2526,7 @@ async fn post_plugin_consent(
     }))
 }
 
+/// Returns file-backed and runtime-effective Settings plus per-plugin groups.
 async fn get_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SettingsResponse>, StatusCode> {
@@ -2424,6 +2572,7 @@ async fn get_settings(
     }))
 }
 
+/// Validates, writes, and reloads allowlisted Settings keys under `reload_lock`.
 async fn patch_settings(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PatchSettingsRequest>,
@@ -2581,6 +2730,7 @@ async fn patch_settings(
         .map_err(IntoResponse::into_response)
 }
 
+/// Reloads `config.toml` and republishes daemon runtime without a process restart.
 async fn reload_config(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
@@ -2627,6 +2777,7 @@ pub(crate) async fn apply_migrated_database_plugin(
     Ok(config_path)
 }
 
+/// Copies library rows between database plugins and optionally switches `[database].plugin`.
 async fn migrate_database(
     State(state): State<Arc<AppState>>,
     Json(body): Json<DatabaseMigrateRequest>,
@@ -2698,6 +2849,7 @@ async fn migrate_database(
     }
 }
 
+/// Returns library counts, listen addresses, storage backends, and whether operator auth is on.
 async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusResponse>, StatusCode> {
     let library = state.library_snapshot().await;
     let accounts = library
@@ -2755,6 +2907,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
     }))
 }
 
+/// Enqueues a library scan job and returns the accepted job id.
 async fn trigger_scan(
     State(state): State<Arc<AppState>>,
     body: Option<Json<ScanRequest>>,
@@ -2768,6 +2921,7 @@ async fn trigger_scan(
     })
 }
 
+/// Enqueues an acquire job, optionally filtered by title id and account.
 async fn trigger_acquire(
     State(state): State<Arc<AppState>>,
     body: Option<Json<AcquireRequestBody>>,
@@ -2782,10 +2936,12 @@ async fn trigger_acquire(
     })
 }
 
+/// Returns the in-memory scan/acquire job list.
 async fn list_jobs(State(state): State<Arc<AppState>>) -> Json<Vec<JobInfo>> {
     Json(state.jobs.read().await.clone())
 }
 
+/// Runs a library scan on one integration; 404 if missing, 400 if unsupported.
 async fn trigger_integration_scan(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -2806,6 +2962,7 @@ async fn trigger_integration_scan(
     Ok(Json(serde_json::json!({ "ok": true, "integration": id })))
 }
 
+/// Lists or searches library titles with optional account/status filters and pagination.
 async fn list_books(
     State(state): State<Arc<AppState>>,
     _headers: HeaderMap,
@@ -2874,6 +3031,7 @@ async fn list_books(
     }))
 }
 
+/// Returns one title by UUID, or 404 when it is absent.
 async fn get_book(
     State(state): State<Arc<AppState>>,
     AxumPath(uuid): AxumPath<String>,
@@ -2887,6 +3045,7 @@ async fn get_book(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
+/// Serves the local JPEG cover sidecar for a title, or 404 when local output is off.
 async fn get_book_cover(
     State(state): State<Arc<AppState>>,
     AxumPath(uuid): AxumPath<String>,
@@ -2918,6 +3077,7 @@ async fn get_book_cover(
         .into_response())
 }
 
+/// Joins local output root, prefix, and object key while dropping `.` / `..` segments.
 fn resolve_local_key(root: &Path, prefix: &str, key: &str) -> PathBuf {
     let mut path = root.to_path_buf();
     let prefix = prefix.trim_matches('/');
@@ -2955,6 +3115,7 @@ async fn book_for_search_hit(
     Ok(None)
 }
 
+/// Yields the original title id plus case-folded variants for search-hit lookup.
 fn title_id_candidates(id: &str) -> Vec<String> {
     let mut out = Vec::with_capacity(3);
     if id.is_empty() {
@@ -2973,10 +3134,14 @@ fn title_id_candidates(id: &str) -> Vec<String> {
 }
 
 #[derive(Debug, Deserialize, Default)]
+/// Query string for `GET /api/discover/recommendations`.
 struct RecommendQuery {
+    /// Maximum recommendations to return.
     limit: Option<usize>,
+    /// Optional external user id used to bias the feed.
     user: Option<String>,
     #[serde(default)]
+    /// When true, skip storefront price/availability enrichment.
     no_purchase_hints: Option<bool>,
     /// When true, ignore listening_progress (owned-library taste only).
     #[serde(default)]
@@ -2987,11 +3152,17 @@ struct RecommendQuery {
 }
 
 #[derive(Debug, Deserialize)]
+/// Wishlist / title-request create body from Discover or the portal.
 struct CreateRequestBody {
+    /// Required title text; empty values are rejected with 400.
     title: String,
+    /// Optional author list as a single display string.
     authors: Option<String>,
+    /// Optional Audible ASIN used for work-key identity.
     asin: Option<String>,
+    /// Optional ISBN used for work-key identity.
     isbn: Option<String>,
+    /// Optional operator or member note stored on the request.
     notes: Option<String>,
     /// Known storefront editions to persist as `title_request_sources`.
     #[serde(default)]
@@ -2999,25 +3170,40 @@ struct CreateRequestBody {
     /// Optional priced storefront links snapshotted at wishlist time.
     #[serde(default)]
     purchase_hints: Vec<bookclerk_discover::PurchaseHint>,
+    /// Optional stable work key; when omitted one is derived from bib fields.
     work_key: Option<String>,
+    /// Optional cover image URL snapshotted onto the request.
     cover_url: Option<String>,
+    /// Optional plot/summary text persisted with the request.
     description: Option<String>,
+    /// Optional subtitle stored on the request and source rows.
     subtitle: Option<String>,
+    /// Optional narrator list as a single display string.
     narrators: Option<String>,
+    /// Optional series name.
     series: Option<String>,
+    /// Optional series position as a display string.
     series_index: Option<String>,
+    /// Optional publisher name.
     publisher: Option<String>,
+    /// Optional runtime in minutes.
     length_minutes: Option<i64>,
+    /// Optional publication date as a display string.
     published_at: Option<String>,
+    /// Optional genre list as a single display string.
     genres: Option<String>,
+    /// Optional content language code.
     language: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+/// Query string for multi-store Discover catalog search.
 struct CatalogSearchQuery {
+    /// Search text; queries shorter than two characters return an empty page.
     q: Option<String>,
     /// Alias for [`Self::page_size`] (typeahead / legacy).
     limit: Option<usize>,
+    /// Page size (1–48); falls back to `limit` then 24.
     page_size: Option<usize>,
     /// Opaque cursor from a previous [`bookclerk_discover::CatalogSearchPage`].
     cursor: Option<String>,
@@ -3025,6 +3211,7 @@ struct CatalogSearchQuery {
     sort: Option<String>,
     /// `asc` / `desc` (defaults per sort when omitted).
     sort_dir: Option<String>,
+    /// Storefront region code (default `us`).
     region: Option<String>,
     /// Optional facet scope: `author` / `narrator` / `series` / `genre`.
     field: Option<String>,
@@ -3037,9 +3224,13 @@ struct CatalogSearchQuery {
     all_languages: Option<bool>,
     /// Comma-separated include filters (OR within a kind).
     author: Option<String>,
+    /// Comma-separated narrator include filters.
     narrator: Option<String>,
+    /// Comma-separated series include filters.
     series: Option<String>,
+    /// Comma-separated genre include filters.
     genre: Option<String>,
+    /// Comma-separated store ids to include.
     source: Option<String>,
     /// Comma-separated store ids to exclude.
     exclude_source: Option<String>,
@@ -3047,10 +3238,13 @@ struct CatalogSearchQuery {
     exclude_narrator: Option<String>,
     /// Minimum overall rating (0–5); missing ratings still pass.
     min_rating: Option<f64>,
+    /// Minimum runtime in minutes; values ≤ 0 are ignored.
     min_length_minutes: Option<i64>,
+    /// Maximum runtime in minutes; values ≤ 0 are ignored.
     max_length_minutes: Option<i64>,
 }
 
+/// Builds the Discover recommendation feed, skipping embed work on an empty library.
 async fn discover_recommendations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3163,6 +3357,7 @@ async fn discover_recommendations(
     Ok(Json(feed))
 }
 
+/// Resolves storefront price/availability for one title, forcing server-side preferred stores.
 async fn discover_purchase_hints(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3179,16 +3374,21 @@ async fn discover_purchase_hints(
 }
 
 #[derive(Debug, serde::Deserialize)]
+/// Body for batched purchase-hint lookups (max 24 queries).
 struct PurchaseHintsBatchBody {
     #[serde(default)]
+    /// Per-title purchase-hint queries in this batch.
     queries: Vec<bookclerk_discover::PurchaseHintsQuery>,
 }
 
 #[derive(Debug, serde::Serialize)]
+/// Parallel purchase-hint results aligned with the request queries.
 struct PurchaseHintsBatchResponse {
+    /// One purchase-hint response per query, in request order.
     results: Vec<bookclerk_discover::PurchaseHintsResponse>,
 }
 
+/// Resolves up to 24 purchase-hint queries with caller-derived preferred stores.
 async fn discover_purchase_hints_batch(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3218,6 +3418,7 @@ async fn discover_purchase_hints_batch(
     Ok(Json(PurchaseHintsBatchResponse { results }))
 }
 
+/// Rejects a purchase-hint query that has no title, ASIN, ISBN, or product id.
 fn validate_purchase_hints_query(
     body: &bookclerk_discover::PurchaseHintsQuery,
 ) -> Result<(), (StatusCode, String)> {
@@ -3239,6 +3440,7 @@ fn validate_purchase_hints_query(
     Ok(())
 }
 
+/// Resolves Audnexus-style title metadata for one query.
 async fn discover_title_meta(
     State(state): State<Arc<AppState>>,
     Json(body): Json<bookclerk_discover::TitleMetaQuery>,
@@ -3251,6 +3453,7 @@ async fn discover_title_meta(
     Ok(Json(meta))
 }
 
+/// Fetches Audnexus reviews for an ASIN; rejects an empty ASIN with 400.
 async fn discover_title_reviews(
     Json(body): Json<bookclerk_discover::TitleReviewsQuery>,
 ) -> Result<Json<bookclerk_discover::TitleReviewsPage>, (StatusCode, String)> {
@@ -3264,16 +3467,21 @@ async fn discover_title_reviews(
 }
 
 #[derive(Debug, serde::Deserialize)]
+/// Body for batched title-metadata lookups (max 24 queries).
 struct TitleMetaBatchBody {
     #[serde(default)]
+    /// Per-title metadata queries in this batch.
     queries: Vec<bookclerk_discover::TitleMetaQuery>,
 }
 
 #[derive(Debug, serde::Serialize)]
+/// Title-metadata results aligned with the request; failed items are `null`.
 struct TitleMetaBatchResponse {
+    /// One optional metadata payload per query; enrichment errors become `None`.
     results: Vec<Option<bookclerk_discover::TitleMeta>>,
 }
 
+/// Resolves up to 24 title-metadata queries without failing the whole batch on one error.
 async fn discover_title_meta_batch(
     State(state): State<Arc<AppState>>,
     Json(body): Json<TitleMetaBatchBody>,
@@ -3306,6 +3514,7 @@ async fn discover_title_meta_batch(
     Ok(Json(TitleMetaBatchResponse { results }))
 }
 
+/// Rejects a title-metadata query that has no title, ASIN, or ISBN.
 fn validate_title_meta_query(
     body: &bookclerk_discover::TitleMetaQuery,
 ) -> Result<(), (StatusCode, String)> {
@@ -3354,6 +3563,7 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
         .unwrap_or_default()
 }
 
+/// Runs a multi-store catalog search with a 15s wall budget and empty-query short circuit.
 async fn discover_catalog_search(
     State(state): State<Arc<AppState>>,
     Query(q): Query<CatalogSearchQuery>,
@@ -3437,6 +3647,7 @@ async fn discover_catalog_search(
     Ok(Json(page))
 }
 
+/// Splits a comma-separated query parameter into trimmed non-empty tokens.
 fn split_csv_query(raw: Option<&str>) -> Vec<String> {
     raw.unwrap_or("")
         .split(',')
@@ -3446,6 +3657,7 @@ fn split_csv_query(raw: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+/// Returns the client work key, or derives one from ASIN/ISBN/title/edition identity.
 fn work_key_for_request(body: &CreateRequestBody) -> String {
     if let Some(key) = body
         .work_key
@@ -3470,6 +3682,7 @@ fn work_key_for_request(body: &CreateRequestBody) -> String {
     )
 }
 
+/// Lists open wishlist rows for the caller (portal identity or operator-owned).
 async fn list_wishlist(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3485,6 +3698,7 @@ async fn list_wishlist(
     Ok(Json(rows))
 }
 
+/// Creates a wishlist / title-request row for the authenticated caller.
 async fn create_wishlist(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3493,6 +3707,7 @@ async fn create_wishlist(
     create_request_inner(&state, &headers, body).await
 }
 
+/// Cancels an open wishlist item the caller owns; others get 403.
 async fn delete_wishlist(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3544,6 +3759,7 @@ async fn delete_wishlist(
         ))
 }
 
+/// Ranks the shared open-request queue without warming ONNX embeddings.
 async fn list_request_queue(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<bookclerk_discover::RankedQueueEntry>>, (StatusCode, String)> {
@@ -3600,6 +3816,7 @@ async fn list_request_queue(
     Ok(Json(rows))
 }
 
+/// Inserts a title request after requiring a non-empty title and deriving a work key.
 async fn create_request_inner(
     state: &AppState,
     headers: &HeaderMap,
@@ -3667,6 +3884,7 @@ async fn create_request_inner(
     Ok(Json(row))
 }
 
+/// Builds persistable store-edition rows from editions, purchase hints, or ASIN fallback.
 fn wishlist_sources_from_body(body: &CreateRequestBody) -> Vec<NewTitleRequestSource> {
     let mut out: Vec<NewTitleRequestSource> = Vec::new();
     for ed in &body.store_editions {
@@ -3740,6 +3958,7 @@ fn wishlist_sources_from_body(body: &CreateRequestBody) -> Vec<NewTitleRequestSo
     out
 }
 
+/// Maps one purchase hint onto a `title_request_sources` row, filling bib gaps from the body.
 fn source_from_purchase_hint(
     hint: &bookclerk_discover::PurchaseHint,
     body: &CreateRequestBody,
@@ -3773,6 +3992,7 @@ fn source_from_purchase_hint(
     }
 }
 
+/// Pulls listening progress from every enabled capable integration; 400 when none are loaded.
 async fn sync_listening(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<bookclerk_integrations::SyncListeningSummary>, (StatusCode, String)> {
@@ -3789,29 +4009,42 @@ async fn sync_listening(
 }
 
 #[derive(Debug, Serialize)]
+/// Normalized Discover/library preferences for the authenticated subject.
 struct PreferencesResponse {
+    /// Landing view id (`library`, `discover`, …) after normalization.
     default_view: String,
+    /// Lowercased Discover shelf ids the user has hidden.
     disabled_shelves: Vec<String>,
+    /// Discover sort key (`relevance`, `popularity`, …).
     discover_sort: String,
+    /// Discover sort direction (`asc` or `desc`).
     discover_sort_dir: String,
     /// `null` = use browser language on the client.
     discover_language: Option<String>,
+    /// Lowercased store ids hidden from Discover results.
     discover_excluded_sources: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
+/// Partial preferences update; omitted fields keep their stored values.
 struct PatchPreferencesBody {
+    /// Replacement landing view when set.
     default_view: Option<String>,
+    /// Replacement hidden-shelf list when set.
     disabled_shelves: Option<Vec<String>>,
+    /// Replacement Discover sort key when set.
     discover_sort: Option<String>,
+    /// Replacement Discover sort direction when set.
     discover_sort_dir: Option<String>,
     /// Present + value sets language; present + `null` clears to browser default;
     /// omitted leaves unchanged.
     #[serde(default, deserialize_with = "deserialize_patch_opt_string")]
     discover_language: Option<Option<String>>,
+    /// Replacement excluded-store list when set.
     discover_excluded_sources: Option<Vec<String>>,
 }
 
+/// Treats a present JSON value (including `null`) as an explicit language patch.
 fn deserialize_patch_opt_string<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -3819,6 +4052,7 @@ where
     Ok(Some(Option::<String>::deserialize(deserializer)?))
 }
 
+/// Loads preferences for the caller with a 3s timeout, creating defaults when missing.
 async fn get_preferences(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3843,6 +4077,7 @@ async fn get_preferences(
     Ok(Json(preferences_response(&prefs)))
 }
 
+/// Merges a preferences PATCH onto the caller’s stored row and writes it back.
 async fn patch_preferences(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3921,6 +4156,7 @@ async fn patch_preferences(
     Ok(Json(preferences_response(&saved)))
 }
 
+/// Projects stored preferences through the same normalizers the PATCH path uses.
 fn preferences_response(prefs: &bookclerk_library::UserPreferences) -> PreferencesResponse {
     PreferencesResponse {
         default_view: auth::normalize_default_view(&prefs.default_view),
@@ -3932,6 +4168,7 @@ fn preferences_response(prefs: &bookclerk_library::UserPreferences) -> Preferenc
     }
 }
 
+/// Maps a sort string onto a known Discover key, defaulting unknown values to `relevance`.
 fn normalize_discover_sort_pref(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "popularity" => String::from("popularity"),
@@ -3944,6 +4181,7 @@ fn normalize_discover_sort_pref(raw: &str) -> String {
     }
 }
 
+/// Maps a sort-direction string to `asc` or `desc` (default `desc`).
 fn normalize_discover_sort_dir_pref(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "asc" | "ascending" => String::from("asc"),
@@ -3951,6 +4189,7 @@ fn normalize_discover_sort_dir_pref(raw: &str) -> String {
     }
 }
 
+/// Lowercases, trims, and de-duplicates shelf or source id lists.
 fn normalize_disabled_shelves(raw: Vec<String>) -> Vec<String> {
     let mut out = Vec::new();
     for item in raw {
@@ -3965,6 +4204,7 @@ fn normalize_disabled_shelves(raw: Vec<String>) -> Vec<String> {
     out
 }
 
+/// Maps an internal error into HTTP 500 plus the display string.
 fn internal_err(err: impl std::fmt::Display) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
 }

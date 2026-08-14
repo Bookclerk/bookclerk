@@ -20,6 +20,7 @@ use crate::SandboxError;
 /// descriptor onto the pipe object.
 pub struct NamedPipeSecurity {
     #[cfg(windows)]
+    /// Win32 `SECURITY_ATTRIBUTES` backing [`Self::as_mut_ptr`].
     attrs: windows::Win32::Security::SECURITY_ATTRIBUTES,
 }
 
@@ -49,6 +50,11 @@ impl NamedPipeSecurity {
         }
     }
 
+    /// Builds pipe security attributes from an SDDL string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SandboxError::Backend`] when Win32 rejects the SDDL.
     #[cfg(windows)]
     fn from_sddl(sddl: &str) -> Result<Self, SandboxError> {
         use std::mem::size_of;
@@ -95,6 +101,7 @@ impl NamedPipeSecurity {
     }
 
     #[cfg(not(windows))]
+    /// Non-Windows stub: named-pipe security descriptors are unavailable and always fail.
     fn from_sddl(_sddl: &str) -> Result<Self, SandboxError> {
         Err(SandboxError::Backend {
             label: "appcontainer".into(),
@@ -145,6 +152,7 @@ fn validate_package_sid(sid: &str) -> Result<(), SandboxError> {
     Ok(())
 }
 
+/// Builds the DACL/SACL SDDL that grants a Package SID duplex access at Low integrity.
 fn sddl_for_package(package_sid: &str) -> String {
     // FA = FILE_ALL_ACCESS for host/system trustees; GRGW = duplex client open.
     // ML;;NW;;;LW = Low integrity label so Low-IL AppContainer clients pass MIC.

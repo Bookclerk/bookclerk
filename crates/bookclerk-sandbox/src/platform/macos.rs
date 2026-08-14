@@ -54,6 +54,7 @@ pub fn system_write_paths() -> &'static [&'static str] {
     &["/dev/null"]
 }
 
+/// Reports which Seatbelt layers this backend can enforce for the current host.
 pub fn capabilities() -> Capabilities {
     Capabilities {
         backend: BACKEND,
@@ -70,6 +71,12 @@ pub fn capabilities() -> Capabilities {
     }
 }
 
+/// Applies the Seatbelt profile for `policy` to the current process.
+///
+/// # Errors
+///
+/// Returns [`SandboxError`] when the profile cannot be encoded or `sandbox_init`
+/// rejects it.
 pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> {
     let profile = build_profile(policy);
     let c_profile = CString::new(profile)
@@ -127,6 +134,7 @@ pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> 
     })
 }
 
+/// Builds the Seatbelt profile text for `policy` (deny-default SBPL).
 fn build_profile(policy: &Policy) -> String {
     let mut out = String::from("(version 1)\n(deny default)\n");
 

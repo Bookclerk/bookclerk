@@ -116,6 +116,10 @@ pub fn purchase_hint_to_dto(hint: SourcePurchaseHint) -> PurchaseHintDto {
 /// Login against Chirp and return account metadata + credential JSON.
 ///
 /// Does not write to `encrypted_secrets` — the host seals `credentials`.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_login(
     graphql_url: &str,
     opts: LoginOptions,
@@ -157,6 +161,10 @@ pub async fn guest_login(
 }
 
 /// RPC login: build [`LoginOptions`] from params and return a protocol DTO.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_login_rpc(graphql_url: &str, params: LoginParams) -> Result<LoginResultDto> {
     let (account_id, marketplace, label, scan_enabled, credentials) = guest_login(
         graphql_url,
@@ -184,6 +192,10 @@ pub async fn guest_login_rpc(graphql_url: &str, params: LoginParams) -> Result<L
 }
 
 /// Scan libraries for the credential blobs the host injected.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_scan(
     graphql_url: &str,
     credentials: &BTreeMap<String, Value>,
@@ -233,6 +245,10 @@ pub async fn guest_scan(
 }
 
 /// RPC scan: return protocol [`ScanSummaryDto`] (host upserts books).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_scan_rpc(graphql_url: &str, params: &ScanParams) -> Result<ScanSummaryDto> {
     let (books, accounts, pages) = guest_scan(
         graphql_url,
@@ -252,6 +268,10 @@ pub async fn guest_scan_rpc(graphql_url: &str, params: &ScanParams) -> Result<Sc
 }
 
 /// Download one title into `cache_dir` using host-injected credentials.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_fetch_title(
     graphql_url: &str,
     credentials: &Value,
@@ -265,6 +285,10 @@ pub async fn guest_fetch_title(
 }
 
 /// RPC fetch: return protocol [`SourceFetchDto`].
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn guest_fetch_title_rpc(
     graphql_url: &str,
     params: &FetchTitleParams,

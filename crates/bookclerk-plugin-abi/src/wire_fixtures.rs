@@ -1,6 +1,7 @@
 //! Golden wire JSON fixtures (`fixtures/wire/`) — camelCase ABI DTOs.
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use std::collections::BTreeSet;
 
@@ -21,6 +22,10 @@ mod tests {
 
     /// Object keys must be camelCase: no `_` in keys, enforced recursively on
     /// fixture JSON. Opaque SQL row maps are not present in these goldens.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a fixture key contains `_` or nested values violate the rule.
     fn assert_camel_case_keys(value: &Value, path: &str) {
         match value {
             Value::Object(map) => {

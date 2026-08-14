@@ -20,6 +20,10 @@ use serde_json::Value;
 /// (`author=` / `narrator=` / series-name filter / Genres `category_id`) so facet
 /// links return the right catalog slice. General queries use `keywords=` only
 /// and preserve Audible relevance order (host merge soft-prefers language).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn search_catalog(opts: &CatalogSearchOpts) -> bookclerk_source::Result<Vec<CatalogHit>> {
     let q = opts.query.trim();
     if q.is_empty() || opts.limit == 0 {
@@ -132,6 +136,10 @@ pub async fn search_catalog(opts: &CatalogSearchOpts) -> bookclerk_source::Resul
 /// Expand author / series / narrator / series-ASIN candidates from a taste seed.
 ///
 /// Soft-fails individual HTTP calls; budgets returned hits by `limit`.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn expand_candidates(
     seed: &ExpandSeed,
     limit: usize,
@@ -309,6 +317,10 @@ pub async fn expand_candidates(
 }
 
 /// Resolve a purchase / catalog URL (optionally with live price).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn purchase_hint(
     opts: &PurchaseHintOpts,
 ) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
@@ -406,6 +418,7 @@ pub async fn purchase_hint(
     Ok(Some(hint))
 }
 
+/// Maps an Audible catalog product to a [`CatalogHit`] (ASIN is both `product_id` and `asin`).
 fn product_to_hit(p: CatalogProduct, origin: String) -> CatalogHit {
     CatalogHit {
         product_id: p.asin.clone(),
@@ -433,6 +446,7 @@ fn product_to_hit(p: CatalogProduct, origin: String) -> CatalogHit {
     }
 }
 
+/// First author/narrator token split on comma, semicolon, or ampersand.
 fn primary_person(people: Option<&str>) -> Option<&str> {
     people?
         .split([',', ';', '&'])
@@ -440,6 +454,7 @@ fn primary_person(people: Option<&str>) -> Option<&str> {
         .find(|s| !s.is_empty())
 }
 
+/// Audible storefront host suffix for a marketplace (`us` → `.com`, `uk` → `.co.uk`, …).
 fn region_host_suffix(region: &str) -> &'static str {
     match normalize_region(region).as_str() {
         "uk" => ".co.uk",
@@ -455,14 +470,21 @@ fn region_host_suffix(region: &str) -> &'static str {
     }
 }
 
+/// List vs member prices from the Audible catalog `price` object.
 struct DualPriced {
+    /// ISO 4217 code from `list_price` / `lowest_price`, defaulting to USD.
     currency: String,
+    /// Catalog list price in integer cents.
     list_cents: Option<i64>,
+    /// Formatted list price (`$25.22`) when list cents are known.
     list_label: Option<String>,
+    /// Member / lowest price in integer cents when distinct from list.
     member_cents: Option<i64>,
+    /// Formatted member price when member cents are known.
     member_label: Option<String>,
 }
 
+/// Writes list and member prices onto a purchase hint; primary price prefers member.
 fn apply_dual_price(hint: &mut SourcePurchaseHint, priced: &DualPriced) {
     hint.currency = Some(priced.currency.clone());
     hint.list_price_cents = priced.list_cents;
@@ -478,6 +500,7 @@ fn apply_dual_price(hint: &mut SourcePurchaseHint, priced: &DualPriced) {
     hint.price_label = primary_label;
 }
 
+/// Fetches list/member prices from the public catalog products API; `None` on HTTP or parse failure.
 async fn fetch_audible_price(asin: &str, region: &str) -> Option<DualPriced> {
     let http = public_http_client().ok()?;
     let region = normalize_region(region);
@@ -508,6 +531,7 @@ async fn fetch_audible_price(asin: &str, region: &str) -> Option<DualPriced> {
     parse_audible_price_value(product.get("price")?)
 }
 
+/// Reads `base` (major units) and `currency_code` from a catalog amount object as cents.
 fn audible_amount_node(node: &Value) -> Option<(i64, String)> {
     let amount = node.get("base")?.as_f64()?;
     let currency = node
@@ -519,6 +543,7 @@ fn audible_amount_node(node: &Value) -> Option<(i64, String)> {
     Some((cents.max(0), currency))
 }
 
+/// Splits catalog `list_price` and `lowest_price` into list vs member cents when they differ.
 fn parse_audible_price_value(price: &Value) -> Option<DualPriced> {
     let list = price.get("list_price").and_then(audible_amount_node);
     let lowest = price.get("lowest_price").and_then(|node| {
@@ -574,6 +599,7 @@ fn parse_audible_price_value(price: &Value) -> Option<DualPriced> {
     })
 }
 
+/// Formats integer cents as `$`/`£`/`€` or `{amount} CODE`; non-positive is `FREE`.
 fn format_money_label(cents: i64, currency: &str) -> String {
     if cents <= 0 {
         return String::from("FREE");

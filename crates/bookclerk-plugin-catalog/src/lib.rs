@@ -79,6 +79,7 @@ pub fn federated_search(
     Ok(all)
 }
 
+/// Picks a registry adapter for `coord`; local-archive coordinates require `--archive`.
 fn adapter_for_coordinate(
     coord: &PackageCoordinate,
     static_indexes: &[(String, StaticIndex)],
@@ -109,6 +110,10 @@ fn adapter_for_coordinate(
 }
 
 /// Resolve a coordinate to a manifest using the matching adapter.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn fetch_manifest_for_coordinate(
     coord: &PackageCoordinate,
     static_indexes: &[(String, StaticIndex)],
@@ -117,6 +122,10 @@ pub fn fetch_manifest_for_coordinate(
 }
 
 /// List published versions for a coordinate's package name.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn list_versions_for_coordinate(
     coord: &PackageCoordinate,
     static_indexes: &[(String, StaticIndex)],
@@ -125,6 +134,10 @@ pub fn list_versions_for_coordinate(
 }
 
 /// Resolve the newest version newer than `coord.version`, if any.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn resolve_newer_version(
     coord: &PackageCoordinate,
     static_indexes: &[(String, StaticIndex)],

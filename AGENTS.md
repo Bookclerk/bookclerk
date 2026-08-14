@@ -77,6 +77,9 @@ stay on the bind mount so you can run built Linux binaries on the host afterward
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings` (CI treats
   warnings as errors via `RUSTFLAGS="-D warnings"`).
 - Test: `cargo test --workspace`
+- CI planner (selective PR checks): `python3 scripts/ci-plan.py --base <sha> --head <sha> --format summary`
+  and `python3 scripts/tests/test_ci_plan.py -q` — see [`docs/ci.md`](docs/ci.md).
+  Branch protection should require the stable **`CI Gate`** job (not every matrix child).
 - Release binaries: `cargo build --release -p bookclerk-cli -p bookclerkd
   -p bookclerk-media-worker -p bookclerk-jail -p bookclerk-workerd`
   (helpers are not optional — see above)

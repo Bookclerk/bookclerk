@@ -9,6 +9,7 @@ use crate::commands::import_cmd::{self, ImportCommand};
 use crate::format_out::OutputFormat;
 
 #[derive(Debug, Subcommand)]
+/// Hidden `bookclerk migrate` alias of `import libation` (classic Files directory).
 pub enum MigrateCommand {
     /// Import Settings.json, AccountsSettings.json, and LibationContext.db.
     ///
@@ -29,6 +30,7 @@ pub enum MigrateCommand {
     },
 }
 
+/// Forwards `migrate import` to [`import_cmd::run`] with text output.
 pub async fn run(command: MigrateCommand, config: &Config) -> anyhow::Result<()> {
     match command {
         MigrateCommand::Import {

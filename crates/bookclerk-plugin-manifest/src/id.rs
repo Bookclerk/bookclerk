@@ -65,6 +65,7 @@ pub fn validate_plugin_id(id: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
 

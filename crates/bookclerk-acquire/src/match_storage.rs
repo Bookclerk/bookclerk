@@ -110,6 +110,10 @@ pub struct MatchStorageSummary {
 }
 
 /// List audio in storage, probe metadata (no body download), match to library.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn match_storage_to_library(
     library: &LibraryStore,
     storage: &dyn StorageBackend,
@@ -256,6 +260,7 @@ pub async fn match_storage_to_library(
     Ok(summary)
 }
 
+/// Uppercased title/ASIN/ISBN/UUID tokens used to match an audio object to a book.
 fn book_identity_tokens(book: &BookRecord) -> Vec<String> {
     let mut ids = Vec::new();
     for raw in [
@@ -277,6 +282,7 @@ fn book_identity_tokens(book: &BookRecord) -> Vec<String> {
     ids
 }
 
+/// Resolves a book’s audio key from a still-present `storage_key`, then identity-token lookup.
 fn find_audio_for_book(
     book: &BookRecord,
     by_id: &HashMap<String, String>,
@@ -296,6 +302,7 @@ fn find_audio_for_book(
     None
 }
 
+/// Renames audio and known companions; fails if the destination audio key already exists.
 async fn relocate_with_sidecars(
     storage: &dyn StorageBackend,
     all_keys: &HashSet<String>,
@@ -388,6 +395,7 @@ fn accompanying_keys(all_keys: &HashSet<String>, audio_key: &str) -> Vec<String>
     out
 }
 
+/// Rewrites a sidecar or bare-folder companion key to follow a renamed audio object.
 fn remap_companion_key(from_audio: &str, to_audio: &str, companion: &str) -> String {
     let from_stem = from_audio
         .rsplit_once('.')
@@ -407,14 +415,17 @@ fn remap_companion_key(from_audio: &str, to_audio: &str, companion: &str) -> Str
     companion.to_string()
 }
 
+/// Directory prefix of a storage key, or empty for a root-level object.
 fn parent_dir(key: &str) -> &str {
     key.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("")
 }
 
+/// Final path segment of a storage key.
 fn basename(key: &str) -> &str {
     key.rsplit_once('/').map(|(_, name)| name).unwrap_or(key)
 }
 
+/// Joins a directory prefix and basename with `/`, omitting the slash at the root.
 fn join_key(dir: &str, name: &str) -> String {
     if dir.is_empty() {
         name.to_string()
@@ -423,12 +434,14 @@ fn join_key(dir: &str, name: &str) -> String {
     }
 }
 
+/// Appends `key` when it is not already in the list.
 fn push_unique(out: &mut Vec<String>, key: String) {
     if !out.iter().any(|k| k == &key) {
         out.push(key);
     }
 }
 
+/// Preference rank for audio extensions (`m4b` first); non-audio ranks last.
 fn media_rank(key: &str) -> u8 {
     let ext = key
         .rsplit_once('.')

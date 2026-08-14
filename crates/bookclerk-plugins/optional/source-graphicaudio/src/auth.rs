@@ -24,6 +24,7 @@ pub struct GraphicAudioAuthFile {
     pub label: Option<String>,
 }
 
+/// Default marketplace / locale hint (`us`) when the auth JSON omits it.
 fn default_marketplace() -> String {
     String::from("us")
 }

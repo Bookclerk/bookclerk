@@ -20,10 +20,15 @@ use crate::Result;
 
 /// External integration backed by a discovered plugin binary.
 pub struct ExternalIntegration {
+    /// JSON-RPC client for the jailed integration guest.
     client: Arc<PluginClient>,
+    /// Operator-facing name from the handshake (falls back to the manifest id).
     display_name: String,
+    /// Whether this integration is enabled in host config after handshake.
     enabled: bool,
+    /// Portal brand colors/icon leaked from the handshake DTO, if the guest supplied one.
     brand: Option<Brand>,
+    /// When true, the host may call the guest credential-login RPC (username/password).
     allow_credential_login: bool,
     /// Cancels the host-side `event_poll` loop from [`Self::start`].
     poll_cancel: Arc<AtomicBool>,
@@ -33,6 +38,10 @@ pub struct ExternalIntegration {
 
 impl ExternalIntegration {
     /// Spawn and handshake an integration plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> Result<Self> {
         let table = crate::settings_table(config, plugin);
         let config_json = Value::Object(
@@ -70,6 +79,10 @@ impl ExternalIntegration {
 /// Duplicate `(kind, id)` claims among discovered manifests are a hard error
 /// (from [`crate::discover_plugins`]). When an external id is already registered
 /// in-process (dual-load `register()` path), the external copy is skipped.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn load_external_integrations(
     config: &Config,
     registry: &mut IntegrationRegistry,
@@ -345,6 +358,7 @@ impl Integration for ExternalIntegration {
     }
 }
 
+/// Copies a handshake brand DTO into a `'static` [`Brand`] (strings are leaked once at load).
 fn brand_from_dto(dto: Option<&crate::protocol::BrandDto>) -> Option<Brand> {
     let b = dto?;
     Some(Brand {
@@ -357,6 +371,7 @@ fn brand_from_dto(dto: Option<&crate::protocol::BrandDto>) -> Option<Brand> {
     })
 }
 
+/// Converts plugin settings TOML to JSON for guest spawn (tables, arrays, and datetimes).
 fn toml_to_json(value: &toml::Value) -> Value {
     match value {
         toml::Value::String(s) => Value::String(s.clone()),

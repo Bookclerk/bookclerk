@@ -10,8 +10,10 @@ use bookclerk_plugin_abi::{
 };
 use serde_json::{json, Value};
 
+/// Handshake / health plugin id (`echo_workerd_rust`); must match `plugin.toml`.
 const PLUGIN_ID: &str = "echo_workerd_rust";
 
+/// CLI schema advertised at handshake and `cliDescribe` (`ping --message`).
 fn cli_schema() -> CliSchema {
     CliSchema {
         commands: vec![CliCommandSpec {

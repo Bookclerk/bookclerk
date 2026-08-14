@@ -23,6 +23,10 @@ use serde_json::{json, Value as JsonValue};
 use tokio::sync::Mutex as AsyncMutex;
 
 /// Open Cloudflare D1 with an explicit API token (host-mediated).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn open(
     api_base: String,
     account_id: String,
@@ -40,9 +44,11 @@ pub async fn open(
     Ok(db)
 }
 
+/// Operator-facing reason recorded when SeaORM `begin` is rejected on D1 HTTP.
 const D1_INTERACTIVE_TXN_UNSUPPORTED: &str = "D1 does not support interactive transactions; \
      each HTTP request commits immediately. Use dbAtomic for claim redeem, last-owner guards, and consume-once tokens";
 
+/// Process-wide D1 proxy installed by [`open`] so `dbAtomic` can reuse the same HTTP client.
 static SHARED: OnceLock<D1Proxy> = OnceLock::new();
 
 /// Stores the process-wide D1 proxy used by `dbAtomic` after [`open`].
@@ -56,11 +62,17 @@ pub fn shared_proxy() -> Option<D1Proxy> {
     SHARED.get().cloned()
 }
 
+/// Cloudflare account/database ids plus the HTTP client used by [`D1Proxy`].
 struct D1Inner {
+    /// Cloudflare API origin with no trailing slash (e.g. `https://api.cloudflare.com/client/v4`).
     api_base: String,
+    /// Cloudflare account id that owns the D1 database.
     account_id: String,
+    /// D1 database UUID used in `/d1/database/{id}/query`.
     database_id: String,
+    /// Cloudflare API token injected by the host; never logged.
     api_token: String,
+    /// Shared HTTP client with connect/request timeouts below the host RPC deadline.
     client: reqwest::Client,
     /// Serializes HTTP requests to a single D1 database.
     http: AsyncMutex<()>,
@@ -69,6 +81,7 @@ struct D1Inner {
 /// SeaORM proxy that executes statements against Cloudflare D1's HTTP API.
 #[derive(Clone)]
 pub struct D1Proxy {
+    /// Shared connection state; [`D1Proxy`] is cheaply cloneable.
     inner: Arc<D1Inner>,
 }
 
@@ -83,6 +96,7 @@ impl std::fmt::Debug for D1Proxy {
 
 /// HTTP budget for one D1 request, well below the host plugin RPC deadline (300s).
 const D1_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+/// TCP connect budget for one D1 request (10s), well below the 20s request timeout.
 const D1_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Classified D1 HTTP / transport failure.
@@ -90,14 +104,22 @@ const D1_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) enum D1Error {
     /// Transport, timeout, incomplete/garbled 2xx, or retryable HTTP (408/429/5xx).
     Ambiguous {
+        /// Operator-facing transport / timeout / 5xx text (truncated upstream).
         message: String,
+        /// Optional `Retry-After` delay parsed from the Cloudflare response, in seconds.
         retry_after: Option<Duration>,
     },
     /// Permanent HTTP failure (typical 4xx). Do not retry.
-    Permanent { status: u16, message: String },
+    Permanent {
+        /// HTTP status returned by D1 / Cloudflare.
+        status: u16,
+        /// Operator-facing error text from the upstream response.
+        message: String,
+    },
 }
 
 impl D1Error {
+    /// Classifies a transport or incomplete-2xx failure as retryable with no Retry-After.
     fn ambiguous(message: impl Into<String>) -> Self {
         Self::Ambiguous {
             message: message.into(),
@@ -105,10 +127,12 @@ impl D1Error {
         }
     }
 
+    /// True for ambiguous transport / 408 / 429 / 5xx failures that the guest may retry.
     pub(crate) fn is_retryable(&self) -> bool {
         matches!(self, Self::Ambiguous { .. })
     }
 
+    /// Suggested backoff from `Retry-After` on ambiguous errors; `None` for permanent failures.
     pub(crate) fn retry_after(&self) -> Option<Duration> {
         match self {
             Self::Ambiguous { retry_after, .. } => *retry_after,
@@ -136,12 +160,14 @@ impl From<D1Error> for DbErr {
     }
 }
 
+/// True for HTTP 408, 429, or any 5xx (safe to retry the same D1 statement).
 fn retryable_http_status(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::REQUEST_TIMEOUT
         || status == reqwest::StatusCode::TOO_MANY_REQUESTS
         || status.is_server_error()
 }
 
+/// Parses a numeric `Retry-After` header as seconds; HTTP-date values are ignored.
 fn parse_retry_after(response: &reqwest::Response) -> Option<Duration> {
     let raw = response.headers().get(reqwest::header::RETRY_AFTER)?;
     let s = raw.to_str().ok()?.trim();
@@ -174,6 +200,7 @@ impl D1Proxy {
         }
     }
 
+    /// Cloudflare D1 `/query` URL for this account and database.
     fn query_url(&self) -> String {
         format!(
             "{}/accounts/{}/d1/database/{}/query",
@@ -181,6 +208,7 @@ impl D1Proxy {
         )
     }
 
+    /// POSTs a JSON body with the API token; serializes concurrent requests to one database.
     async fn post_json(
         &self,
         url: &str,
@@ -221,6 +249,7 @@ impl D1Proxy {
         self.post_json(&self.query_url(), body).await
     }
 
+    /// Runs one autocommit `{ sql, params }` statement (not an interactive transaction).
     async fn run_sql(
         &self,
         sql: &str,
@@ -296,6 +325,7 @@ impl ProxyDatabaseTrait for D1Proxy {
     }
 }
 
+/// Reads a D1 HTTP response; retryable statuses become [`D1Error::Ambiguous`], others permanent.
 async fn parse_d1_response(response: reqwest::Response) -> std::result::Result<JsonValue, D1Error> {
     let status = response.status();
     let retry_after = parse_retry_after(&response);
@@ -329,6 +359,7 @@ async fn parse_d1_response(response: reqwest::Response) -> std::result::Result<J
     Ok(value)
 }
 
+/// Last entry in the D1 `result` array (batch responses keep per-statement results).
 fn first_result_entry(value: &JsonValue) -> Option<&JsonValue> {
     value
         .get("result")
@@ -336,6 +367,7 @@ fn first_result_entry(value: &JsonValue) -> Option<&JsonValue> {
         .and_then(|arr| arr.last())
 }
 
+/// Row objects from the last result entry's `results` array, or empty.
 fn first_result_rows(value: &JsonValue) -> Vec<JsonValue> {
     first_result_entry(value)
         .and_then(|first| first.get("results"))
@@ -344,10 +376,12 @@ fn first_result_rows(value: &JsonValue) -> Vec<JsonValue> {
         .unwrap_or_default()
 }
 
+/// `meta` object (`changes`, `last_row_id`) from the last result entry.
 fn first_result_meta(value: &JsonValue) -> Option<&JsonValue> {
     first_result_entry(value).and_then(|first| first.get("meta"))
 }
 
+/// Converts SeaORM bound values to the JSON array D1's REST body expects.
 fn statement_json_params(statement: &Statement) -> Vec<JsonValue> {
     match &statement.values {
         Some(values) => values.0.iter().map(sea_value_to_json).collect(),
@@ -355,6 +389,7 @@ fn statement_json_params(statement: &Statement) -> Vec<JsonValue> {
     }
 }
 
+/// Maps a SeaORM [`Value`] to JSON; BLOBs become `b64:…` strings because D1 has no binary type.
 fn sea_value_to_json(v: &Value) -> JsonValue {
     match v {
         Value::Bool(Some(b)) => JsonValue::Bool(*b),
@@ -384,10 +419,12 @@ const BINARY_COLUMNS: &[&str] = &[
     "vector", // embeddings BLOB
 ];
 
+/// True for `encrypted_secrets` / embeddings columns that must decode as bytes even without a `b64:` prefix.
 fn is_binary_column(column: &str) -> bool {
     BINARY_COLUMNS.contains(&column)
 }
 
+/// Maps a D1 JSON cell back to a SeaORM [`Value`], decoding `b64:` or known binary columns.
 fn json_to_sea_value(v: &JsonValue, column: &str) -> Value {
     match v {
         JsonValue::Null => bookclerk_db_guest::migrate::typed_null(None, column),
@@ -418,6 +455,7 @@ fn json_to_sea_value(v: &JsonValue, column: &str) -> Value {
     }
 }
 
+/// Truncates an error body to `max` bytes so logs stay bounded.
 fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
         s

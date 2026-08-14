@@ -5,6 +5,7 @@
 
 mod crypto;
 mod decrypt;
+/// DRM-specific error types (`DrmError`) returned to the Audible source plugin.
 mod error;
 mod mp4;
 mod native;
@@ -18,27 +19,39 @@ use std::path::PathBuf;
 /// Input for an Adrm aaxc decrypt job.
 #[derive(Debug, Clone)]
 pub struct DecryptRequest {
+    /// Encrypted aaxc/AAX path that must already exist.
     pub input: PathBuf,
+    /// Destination path for the decrypted progressive file (parents are created).
     pub output: PathBuf,
+    /// Hex AES-128 key from the voucher; required together with [`Self::audible_iv`].
     pub audible_key: Option<String>,
+    /// Hex CBC IV from the voucher; required together with [`Self::audible_key`].
     pub audible_iv: Option<String>,
+    /// Legacy AAX activation bytes; this native path rejects them as unsupported.
     pub activation_bytes: Option<String>,
+    /// Optional media-time trim applied during remux (chapter/start-end).
     pub trim: Option<TrimRange>,
 }
 
 /// Input for a Widevine CENC decrypt job.
 #[derive(Debug, Clone)]
 pub struct CencDecryptRequest {
+    /// Encrypted CENC (DASH or progressive `enca`) path that must already exist.
     pub input: PathBuf,
+    /// Destination path for the decrypted file (parents are created).
     pub output: PathBuf,
+    /// Widevine key id (hex) used to select the content key.
     pub kid: String,
+    /// Widevine content key (hex) for AES-CTR sample decrypt.
     pub key: String,
+    /// Optional media-time trim applied during remux.
     pub trim: Option<TrimRange>,
 }
 
 /// Outcome of a successful decrypt.
 #[derive(Debug, Clone)]
 pub struct DecryptOutcome {
+    /// Path written on success (same as the request's output).
     pub output: PathBuf,
 }
 

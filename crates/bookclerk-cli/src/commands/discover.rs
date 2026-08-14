@@ -8,6 +8,7 @@ use clap::Subcommand;
 use crate::format_out::{self, OutputFormat};
 
 #[derive(Debug, Subcommand)]
+/// `bookclerk discover` verbs: recommend, enrich, embed, listening sync, wishlist.
 pub enum DiscoverCommand {
     /// Rebuild works graph, optionally enrich + embed, then print recommendations.
     Recommend {
@@ -42,30 +43,41 @@ pub enum DiscoverCommand {
     /// Personal wishlist helpers (also feed the shared global queue).
     Wishlist {
         #[command(subcommand)]
+        /// Nested wishlist verb (add, list, remove).
         command: WishlistCommand,
     },
 }
 
 #[derive(Debug, Subcommand)]
+/// Personal wishlist helpers that also feed the shared global queue.
 pub enum WishlistCommand {
     /// Add an open wishlist item.
     Add {
+        /// Display title for the wishlist row (required positional).
         title: String,
         #[arg(long)]
+        /// Optional author list stored on the request.
         authors: Option<String>,
         #[arg(long)]
+        /// Optional Audible ASIN used for identity matching.
         asin: Option<String>,
         #[arg(long)]
+        /// Optional ISBN-13 used for identity matching.
         isbn: Option<String>,
         #[arg(long)]
+        /// Optional operator notes stored on the request.
         notes: Option<String>,
     },
     /// List open wishlist items (operator-owned when no portal identity).
     List,
     /// Un-wishlist by uuid (sets status to cancelled).
-    Remove { uuid: String },
+    Remove {
+        /// Wishlist entry UUID to cancel.
+        uuid: String,
+    },
 }
 
+/// Dispatches a discover verb against the library store and source registry.
 pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -> Result<()> {
     let library = crate::registry::open_library(cfg).await?;
     let registry = crate::registry::default_registry_with_plugins(cfg).await?;
@@ -252,6 +264,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
     Ok(())
 }
 
+/// Embeds dirty works with ONNX when enabled, otherwise the local-hash embedder.
 async fn embed_works(cfg: &Config, library: &LibraryStore, prefer_onnx: bool) -> Result<usize> {
     let mut embedder = bookclerk_discover::open_embedder(
         &cfg.paths().models_dir,
@@ -261,6 +274,7 @@ async fn embed_works(cfg: &Config, library: &LibraryStore, prefer_onnx: bool) ->
     Ok(bookclerk_discover::embed_dirty_works(library, embedder.as_mut()).await?)
 }
 
+/// Pulls listening progress from every capable integration into the library DB.
 async fn sync_listening(
     cfg: &Config,
     library: &LibraryStore,

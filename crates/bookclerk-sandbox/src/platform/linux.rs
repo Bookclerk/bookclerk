@@ -106,6 +106,7 @@ fn probe_abi() -> Result<i32, i32> {
     }
 }
 
+/// Reports Landlock ABI, seccomp, and whether filesystem/network confinement is available.
 pub fn capabilities() -> Capabilities {
     let (filesystem, detail) = match probe_abi() {
         Ok(abi) if abi >= 1 => (true, format!("landlock ABI v{abi}")),
@@ -127,6 +128,7 @@ pub fn capabilities() -> Capabilities {
     }
 }
 
+/// Applies cgroup ceilings, Landlock, and seccomp to this process; fails closed on FS/net.
 pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> {
     // Resolve before touching the kernel so a bad path fails loudly first.
     let reads = policy.resolved_reads();
@@ -228,6 +230,7 @@ fn try_apply_cgroup_v2(limits: &crate::ResourceLimits) -> Result<(), String> {
     }
 }
 
+/// Reads this process's cgroup v2 path from `/proc/self/cgroup` (`0::…`).
 fn current_cgroup_v2_path() -> Result<String, String> {
     let raw = std::fs::read_to_string("/proc/self/cgroup")
         .map_err(|err| format!("read /proc/self/cgroup: {err}"))?;
@@ -240,6 +243,7 @@ fn current_cgroup_v2_path() -> Result<String, String> {
     Err("no cgroup v2 entry in /proc/self/cgroup".into())
 }
 
+/// Enables `memory`/`cpu`/`pids` on the parent cgroup when those controllers exist.
 fn enable_subtree_controllers(parent: &Path) -> Result<(), String> {
     let available = std::fs::read_to_string(parent.join("cgroup.controllers"))
         .map_err(|err| format!("read cgroup.controllers: {err}"))?;
@@ -260,6 +264,7 @@ fn enable_subtree_controllers(parent: &Path) -> Result<(), String> {
         .map_err(|err| format!("write cgroup.subtree_control ({enable}): {err}"))
 }
 
+/// Writes `memory.max`, `cpu.max` (100 ms period), and `pids.max` when the policy set them.
 fn write_cgroup_limits(dir: &Path, limits: &crate::ResourceLimits) -> Result<(), String> {
     if let Some(bytes) = limits.memory_bytes {
         write_cgroup_file(dir, "memory.max", &bytes.to_string())?;
@@ -278,11 +283,13 @@ fn write_cgroup_limits(dir: &Path, limits: &crate::ResourceLimits) -> Result<(),
     Ok(())
 }
 
+/// Writes one cgroup attribute file; errors include the target path.
 fn write_cgroup_file(dir: &Path, name: &str, value: &str) -> Result<(), String> {
     let path = dir.join(name);
     std::fs::write(&path, value).map_err(|err| format!("write {}: {err}", path.display()))
 }
 
+/// Moves this PID into `dir/cgroup.procs` so limits apply only to this leaf.
 fn move_self_into_cgroup(dir: &Path) -> Result<(), String> {
     let path = dir.join("cgroup.procs");
     let pid = std::process::id().to_string();
@@ -427,6 +434,7 @@ fn denied_syscalls() -> Vec<i64> {
     denied
 }
 
+/// Installs a seccomp-bpf filter denying privileged syscalls and, when asked, IP sockets.
 fn apply_seccomp(policy: &Policy) -> Result<LayerStatus, SandboxError> {
     let arch: TargetArch = std::env::consts::ARCH.try_into().map_err(|_| {
         SandboxError::backend(policy.label(), "unsupported architecture for seccomp")

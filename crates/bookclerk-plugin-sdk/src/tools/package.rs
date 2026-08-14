@@ -143,6 +143,7 @@ pub fn package_plugin(plugin_dir: &Path, out_dir: &Path) -> Result<PathBuf> {
     Ok(archive_path)
 }
 
+/// Bookclerk target triple for this host (`linux-x64-gnu`, `macos-arm64`, …).
 fn host_bookclerk_target() -> String {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
@@ -156,6 +157,12 @@ fn host_bookclerk_target() -> String {
     }
 }
 
+/// Recursively copies `src` into `dst`, creating directories as needed.
+///
+/// # Errors
+///
+/// Propagates filesystem errors from directory creation, traversal, or file copy
+/// as [`SdkError`].
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst).map_err(SdkError::from)?;
     for entry in std::fs::read_dir(src).map_err(SdkError::from)? {
@@ -171,6 +178,11 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Writes `staging` as a gzip tar with `.` as the archive root.
+///
+/// # Errors
+///
+/// Propagates archive or compression failures as [`SdkError`].
 fn write_tar_gz(staging: &Path, archive_path: &Path) -> Result<()> {
     let file = File::create(archive_path).map_err(SdkError::from)?;
     let enc = GzEncoder::new(file, Compression::default());
@@ -186,6 +198,11 @@ fn write_tar_gz(staging: &Path, archive_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Hex-encoded SHA-256 of `path`, streamed in 8 KiB chunks.
+///
+/// # Errors
+///
+/// Propagates file open or read failures as [`SdkError`].
 fn sha256_file(path: &Path) -> Result<String> {
     let mut f = File::open(path).map_err(SdkError::from)?;
     let mut hasher = Sha256::new();

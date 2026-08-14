@@ -38,6 +38,7 @@ pub fn system_write_paths() -> &'static [&'static str] {
     &[]
 }
 
+/// Reports which isolation layers AppContainer can apply on Windows.
 pub fn capabilities() -> Capabilities {
     Capabilities {
         backend: BACKEND,
@@ -53,6 +54,7 @@ pub fn capabilities() -> Capabilities {
     }
 }
 
+/// Builds a confinement report for the current process; Windows cannot self-confine after start.
 pub fn confine_current_process(policy: &Policy) -> Result<Report, SandboxError> {
     let unsupported = LayerStatus::Unsupported(
         "Windows cannot confine a running process; spawn into an AppContainer instead".to_string(),

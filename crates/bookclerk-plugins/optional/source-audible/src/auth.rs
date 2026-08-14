@@ -187,6 +187,7 @@ pub(crate) fn login_server_url(server: &LoginServer, bind: SocketAddr) -> (Strin
     (url, addr)
 }
 
+/// Runs the local callback server, waits for the Amazon redirect, and registers the device.
 pub(crate) async fn login_via_server(
     opts: &AuthLoginOptions,
     device_kind: DeviceKind,
@@ -224,6 +225,7 @@ pub(crate) async fn login_via_server(
     Ok(auth)
 }
 
+/// Prints the authorize URL and registers after the operator pastes the redirect.
 async fn login_via_external(
     opts: &AuthLoginOptions,
     device_kind: DeviceKind,
@@ -332,6 +334,7 @@ pub(crate) fn export_authfile_plain_bytes(auth: &Authenticator) -> Result<Vec<u8
     Ok(plain.into_bytes())
 }
 
+/// HTTP client for Amazon register calls (30s connect timeout).
 fn reqwest_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
@@ -339,6 +342,7 @@ fn reqwest_client() -> Result<reqwest::Client> {
         .map_err(|err| AudibleError::Auth(err.to_string()))
 }
 
+/// Prompts on stderr and reads one redirect URL line from stdin; empty input fails.
 fn read_redirect_from_stdin() -> Result<String> {
     use std::io::{self, BufRead, Write};
     eprint!("Paste the redirect URL, then press Enter:\n> ");
@@ -380,6 +384,7 @@ pub(crate) async fn load_authenticator(path: &Path) -> Result<Authenticator> {
     Ok(auth)
 }
 
+/// Registers access/refresh tokens with the diagnostics redaction set.
 fn register_authenticator_secrets(auth: &Authenticator) {
     use secrecy::ExposeSecret;
     if let Some(t) = auth.access_token() {

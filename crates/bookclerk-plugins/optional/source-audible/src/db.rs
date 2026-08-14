@@ -19,6 +19,7 @@ use crate::error::{AudibleError, Result};
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
+/// Secret name for an Audible account (`<account>.audible.auth`) under `encrypted_secrets`.
 fn audible_name(account_name: &str) -> String {
     format!("{account_name}.audible.auth")
 }
@@ -29,6 +30,14 @@ fn audible_name(account_name: &str) -> String {
 ///
 /// The audible-rs envelope is serialized with `Protection::Plain` (no inner
 /// Argon2), then sealed with the process DEK (`sealed-v1`).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub async fn save_authenticator_to_db(
     auth: &Authenticator,
     scope: &SourceScope,
@@ -67,6 +76,14 @@ pub async fn save_authenticator_to_db(
 /// exchanges persist back to the DB automatically.
 ///
 /// Returns `None` when no secret for the given `account_name` exists.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub async fn load_authenticator_from_db(
     scope: &SourceScope,
     account_name: &str,
@@ -173,6 +190,10 @@ fn unseal_record_for_audible(
 /// List all Audible accounts stored in the DB for this scope.
 ///
 /// Returns `(account_id, name)` tuples extracted from `encrypted_secrets` rows.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn list_audible_accounts_from_db(scope: &SourceScope) -> Result<Vec<(String, String)>> {
     let records = scope
         .list_source_auth()
@@ -190,6 +211,10 @@ pub async fn list_audible_accounts_from_db(scope: &SourceScope) -> Result<Vec<(S
 // ── Delete ───────────────────────────────────────────────────────────────────
 
 /// Remove an Audible account secret from the DB.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn delete_audible_account_from_db(scope: &SourceScope, account_name: &str) -> Result<()> {
     let name = audible_name(account_name);
     scope
@@ -208,6 +233,10 @@ pub async fn delete_audible_account_from_db(scope: &SourceScope, account_name: &
 ///
 /// `account_id` identifies which account the CDM was provisioned for.
 /// The blob is sealed with the process DEK (`sealed-v1`).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn save_widevine_cdm_to_db(
     scope: &SourceScope,
     account_id: &str,
@@ -225,6 +254,10 @@ pub async fn save_widevine_cdm_to_db(
 /// Load a Widevine `.wvd` device blob from `encrypted_secrets`.
 ///
 /// Returns `None` when no CDM for `account_id` is stored yet.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn load_widevine_cdm_from_db(
     scope: &SourceScope,
     account_id: &str,
@@ -264,6 +297,7 @@ pub async fn load_widevine_cdm_from_db(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/// Registers access/refresh tokens with the redaction set so logs never print them.
 fn register_authenticator_secrets(auth: &Authenticator) {
     use secrecy::ExposeSecret;
     if let Some(t) = auth.access_token() {

@@ -20,6 +20,7 @@ use clap::Subcommand;
 use crate::format_out::{emit, OutputFormat};
 
 #[derive(Debug, Subcommand)]
+/// `bookclerk config` subcommands for settings, secrets, templates, and database migrate.
 pub enum ConfigCommand {
     /// Print a configuration value by dotted key or classic Settings.json name.
     Get {
@@ -43,26 +44,31 @@ pub enum ConfigCommand {
     /// Manage S3 destination credentials in `encrypted_secrets`.
     S3Credentials {
         #[command(subcommand)]
+        /// Nested S3 credential set/show/clear action (sealed in `encrypted_secrets`).
         command: S3CredentialsCommand,
     },
     /// Inspect or wrap `{files_dir}/master.key` (BCK1 ↔ BCK2).
     MasterKey {
         #[command(subcommand)]
+        /// Nested master-key status/wrap action (BCK1 raw vs BCK2 sealed).
         command: MasterKeyCommand,
     },
     /// Naming template helpers.
     Template {
         #[command(subcommand)]
+        /// Nested naming-template tags/profiles/preview action.
         command: TemplateCommand,
     },
     /// Database backend helpers (plugin switch / migration).
     Database {
         #[command(subcommand)]
+        /// Nested database-plugin migrate action.
         command: DatabaseCommand,
     },
 }
 
 #[derive(Debug, Subcommand)]
+/// Nested `config database` actions for copying rows between backend plugins.
 pub enum DatabaseCommand {
     /// Copy library data from one `[database].plugin` backend to another.
     ///
@@ -87,6 +93,7 @@ pub enum DatabaseCommand {
 }
 
 #[derive(Debug, Subcommand)]
+/// Nested `config master-key` actions for inspecting or wrapping `master.key`.
 pub enum MasterKeyCommand {
     /// Show whether `master.key` exists and if it is raw (BCK1) or wrapped (BCK2).
     Status,
@@ -97,6 +104,7 @@ pub enum MasterKeyCommand {
 }
 
 #[derive(Debug, Subcommand)]
+/// Nested `config s3-credentials` actions that seal or delete destination keys.
 pub enum S3CredentialsCommand {
     /// Save S3 credentials from `BOOKCLERK_AWS_ACCESS_KEY_ID` / `BOOKCLERK_AWS_SECRET_ACCESS_KEY`
     /// (optional `BOOKCLERK_AWS_SESSION_TOKEN`) into `encrypted_secrets` (sealed with master key).
@@ -115,6 +123,7 @@ pub enum S3CredentialsCommand {
 }
 
 #[derive(Debug, Subcommand)]
+/// Nested `config template` actions for naming tags, profiles, and path preview.
 pub enum TemplateCommand {
     /// List supported naming template property tags.
     Tags,
@@ -142,6 +151,7 @@ pub enum TemplateCommand {
     },
 }
 
+/// Dispatches a `config` subcommand against the loaded configuration.
 pub async fn run(
     command: ConfigCommand,
     config: &Config,
@@ -368,6 +378,7 @@ pub async fn run(
     }
 }
 
+/// Reports `master.key` format or wraps BCK1 with the configured passphrase (never argv).
 fn run_master_key(
     command: MasterKeyCommand,
     config: &Config,
@@ -428,6 +439,7 @@ fn run_master_key(
     }
 }
 
+/// Seals S3 keys from env into `encrypted_secrets`, shows a redacted row, or deletes it; missing master key fails closed.
 async fn run_s3_credentials(
     command: S3CredentialsCommand,
     config: &Config,
@@ -505,6 +517,7 @@ async fn run_s3_credentials(
     }
 }
 
+/// Keeps the first four characters of an access key id and masks the rest.
 fn redact_access_key(access_key_id: &str) -> String {
     if access_key_id.len() <= 4 {
         return "****".into();
@@ -513,6 +526,7 @@ fn redact_access_key(access_key_id: &str) -> String {
     format!("{prefix}{}", "*".repeat(rest.len().min(8)))
 }
 
+/// Lists naming tags/profiles or previews a storage key for a library title.
 async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()> {
     match command {
         TemplateCommand::Tags => {
@@ -611,6 +625,7 @@ async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Resu
     }
 }
 
+/// Copies library rows between database plugins and optionally writes `[database].plugin`.
 async fn run_database(
     command: DatabaseCommand,
     config: &Config,
@@ -688,6 +703,7 @@ async fn run_database(
     }
 }
 
+/// Resolves a library row by ASIN/ISBN/UUID, requiring `--account` when several match.
 async fn resolve_book_for_preview(
     store: &LibraryStore,
     asin: &str,
@@ -731,6 +747,7 @@ async fn resolve_book_for_preview(
     }
 }
 
+/// Formats one dotted config key as a string for `config get`.
 fn lookup(config: &Config, key: &str) -> Option<String> {
     let paths = config.paths.as_ref();
     Some(match key {

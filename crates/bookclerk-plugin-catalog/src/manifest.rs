@@ -30,6 +30,7 @@ impl Default for SandboxRequest {
     }
 }
 
+/// Publisher-requested sandbox network when omitted (`outbound`; host still must approve).
 fn default_network() -> String {
     "outbound".into()
 }
@@ -81,6 +82,7 @@ pub struct ArtifactTarget {
     pub executable_sha256: Option<String>,
 }
 
+/// Default path inside the archive to the plugin root (`.`).
 fn default_root() -> String {
     ".".into()
 }
@@ -163,6 +165,10 @@ impl BookclerkPackageManifest {
     }
 
     /// Validate schema + require digests for install-grade manifests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn validate_for_install(&self) -> Result<()> {
         if self.schema_version != MANIFEST_SCHEMA_VERSION {
             return Err(CatalogError::message(format!(
@@ -204,11 +210,19 @@ impl BookclerkPackageManifest {
     }
 
     /// Parses a package manifest from a JSON document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn from_json(text: &str) -> Result<Self> {
         Ok(serde_json::from_str(text)?)
     }
 
     /// Parse from TOML (`[package.metadata.bookclerk]` style flat table or root).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn from_toml(text: &str) -> Result<Self> {
         Ok(toml::from_str(text)?)
     }
@@ -217,6 +231,10 @@ impl BookclerkPackageManifest {
 /// Normalize optional `protocol` for Workers RPC packages.
 ///
 /// Accepts absent / empty / `workers-rpc` only.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn normalize_protocol(protocol: Option<&str>) -> Result<String> {
     let trimmed = protocol.map(str::trim).filter(|s| !s.is_empty());
     match trimmed {
@@ -229,6 +247,10 @@ pub fn normalize_protocol(protocol: Option<&str>) -> Result<String> {
 }
 
 /// Validate lowercase hex SHA-256 (64 chars).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn validate_sha256_hex(s: &str) -> Result<()> {
     validate_sha256_hex_field("sha256", s)
 }
@@ -244,6 +266,10 @@ pub fn validate_sha256_hex_field(field: &str, s: &str) -> Result<()> {
 }
 
 /// Decode hex SHA-256 into 32 bytes.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn parse_sha256_hex(s: &str) -> Result<[u8; 32]> {
     validate_sha256_hex(s)?;
     let bytes = hex::decode(s).map_err(|e| CatalogError::message(e.to_string()))?;

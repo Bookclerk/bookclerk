@@ -9,6 +9,7 @@ mod oidc;
 mod oidc_rp;
 mod oidc_verify;
 mod passkeys;
+/// Builds the daemon source / integration registry for [`AppState`].
 mod registry;
 mod scheduler;
 mod tray_companion;
@@ -34,6 +35,7 @@ use crate::scheduler::spawn_scheduler;
 
 #[derive(Debug, Parser)]
 #[command(name = "bookclerkd", version, about = "Bookclerk background daemon")]
+/// `bookclerkd` CLI flags (files dir, config path, listen overrides).
 struct Args {
     /// Bookclerk files directory.
     #[arg(
@@ -239,6 +241,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Completes when the process should exit or listeners must rebind after a config reload.
 async fn serve_shutdown(listen_reload: Arc<Notify>, process_shutdown: Arc<AtomicBool>) {
     let process = shutdown_signal();
     tokio::select! {
@@ -249,6 +252,7 @@ async fn serve_shutdown(listen_reload: Arc<Notify>, process_shutdown: Arc<Atomic
     }
 }
 
+/// Installs a SIGHUP handler that reloads daemon config (no-op on non-Unix).
 fn spawn_config_reload_signals(state: Arc<AppState>) {
     #[cfg(unix)]
     {
@@ -275,6 +279,7 @@ fn spawn_config_reload_signals(state: Arc<AppState>) {
     }
 }
 
+/// Waits for Ctrl+C or SIGTERM before tearing down HTTP listeners.
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()

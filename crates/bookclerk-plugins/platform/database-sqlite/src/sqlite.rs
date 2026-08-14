@@ -17,15 +17,20 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::OwnedMutexGuard;
 use tokio::task::{try_id, Id as TaskId};
 
+/// Warn when a proxied statement takes longer than this many milliseconds.
 const SLOW_SQL_WARN_MS: u128 = 250;
 
 #[derive(Debug)]
+/// Shared rusqlite connection plus nested-transaction depth.
 struct SqliteState {
+    /// Process-wide rusqlite handle used by the SeaORM proxy.
     conn: Connection,
+    /// Open transaction nesting (`0` = autocommit; savepoints when `> 1`).
     txn_depth: u32,
 }
 
 impl SqliteState {
+    /// Starts `BEGIN IMMEDIATE` or a numbered savepoint; increments `txn_depth`.
     fn begin(&mut self) -> rusqlite::Result<()> {
         if self.txn_depth == 0 {
             self.conn.execute_batch("BEGIN IMMEDIATE")?;
@@ -37,6 +42,7 @@ impl SqliteState {
         Ok(())
     }
 
+    /// Commits the outer transaction or releases the innermost savepoint; no-op at depth 0.
     fn commit(&mut self) -> rusqlite::Result<()> {
         if self.txn_depth == 0 {
             return Ok(());
@@ -51,6 +57,7 @@ impl SqliteState {
         Ok(())
     }
 
+    /// Rolls back the outer transaction or the innermost savepoint; no-op at depth 0.
     fn rollback(&mut self) -> rusqlite::Result<()> {
         if self.txn_depth == 0 {
             return Ok(());
@@ -71,22 +78,28 @@ impl SqliteState {
 
 /// Exclusive connection lease for an open SeaORM transaction.
 struct TxnLease {
+    /// Held until the outer transaction ends so other tasks cannot interleave statements.
     _guard: OwnedMutexGuard<()>,
+    /// Tokio task that opened the transaction (`None` under `#[tokio::test]` `block_on`).
     owner: Option<TaskId>,
 }
 
 /// Held for the duration of one statement so it cannot run inside another
 /// task's open transaction on this shared connection.
 enum StatementPermit {
+    /// This task already holds the exclusive transaction lease.
     OwnedByTxn,
+    /// Short-lived gate lock for a statement outside an open transaction.
     Transient(#[allow(dead_code)] OwnedMutexGuard<()>),
 }
 
 /// SeaORM proxy over a shared rusqlite connection.
 pub struct SqliteProxy {
+    /// Shared rusqlite state (connection + transaction depth).
     conn: Arc<Mutex<SqliteState>>,
     /// Serializes top-level transactions and statements from other tasks.
     txn_gate: Arc<AsyncMutex<()>>,
+    /// Current exclusive transaction lease, if a task has begun one.
     txn_lease: Arc<Mutex<Option<TxnLease>>>,
 }
 
@@ -103,6 +116,7 @@ impl SqliteProxy {
         }
     }
 
+    /// True when `owner` is this Tokio task, or both sides lack a task id (sync tests).
     fn same_task(owner: Option<TaskId>) -> bool {
         match (owner, try_id()) {
             (Some(a), Some(b)) => a == b,
@@ -113,14 +127,17 @@ impl SqliteProxy {
         }
     }
 
+    /// Locks the rusqlite state, recovering from a poisoned mutex.
     fn lock_state(&self) -> std::sync::MutexGuard<'_, SqliteState> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Locks the transaction lease, recovering from a poisoned mutex.
     fn lock_lease(&self) -> std::sync::MutexGuard<'_, Option<TxnLease>> {
         self.txn_lease.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Drops the exclusive lease once transaction depth returns to zero.
     fn release_lease_if_idle(&self, depth: u32) {
         if depth == 0 {
             *self.lock_lease() = None;
@@ -451,6 +468,7 @@ impl ProxyDatabaseTrait for SqliteProxy {
     }
 }
 
+/// Collapses whitespace and truncates SQL to 180 characters for slow-query logs.
 fn summarize_sql(raw: &str) -> String {
     let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     const MAX_LEN: usize = 180;
@@ -463,6 +481,7 @@ fn summarize_sql(raw: &str) -> String {
     }
 }
 
+/// Converts SeaORM bind values into rusqlite parameters (empty when unbound).
 fn statement_binds(statement: &Statement) -> Vec<rusqlite::types::Value> {
     match &statement.values {
         Some(values) => values.0.iter().map(sea_to_rusqlite).collect(),
@@ -470,6 +489,7 @@ fn statement_binds(statement: &Statement) -> Vec<rusqlite::types::Value> {
     }
 }
 
+/// Maps a SeaORM [`Value`] to rusqlite; unhandled / NULL variants become SQL NULL.
 fn sea_to_rusqlite(v: &Value) -> rusqlite::types::Value {
     use rusqlite::types::Value as R;
     match v {
@@ -495,6 +515,7 @@ fn sea_to_rusqlite(v: &Value) -> rusqlite::types::Value {
     }
 }
 
+/// Maps a rusqlite cell back to SeaORM, using `decl_type` for typed NULLs.
 fn rusqlite_to_sea(v: rusqlite::types::Value, decl_type: Option<&str>, column: &str) -> Value {
     match v {
         rusqlite::types::Value::Null => bookclerk_db_guest::migrate::typed_null(decl_type, column),

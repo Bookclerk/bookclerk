@@ -45,6 +45,10 @@ pub trait Embedder: Send {
     /// Length of each embedding vector produced by this backend.
     fn dimensions(&self) -> usize;
     /// Embeds each input text into a dense float vector of [`Self::dimensions`] length.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 }
 
@@ -55,6 +59,7 @@ pub trait Embedder: Send {
 /// cosine) for CI and constrained hosts.
 #[derive(Debug, Default)]
 pub struct HashEmbedder {
+    /// Embedding length after clamp to `8..=384`.
     dims: usize,
 }
 
@@ -90,6 +95,7 @@ impl Embedder for HashEmbedder {
     }
 }
 
+/// Deterministic token-hash vector (SHA-256 bucket + sign), then L2-normalized.
 fn hash_embed(text: &str, dims: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; dims];
     for (i, tok) in text.to_lowercase().split_whitespace().enumerate() {
@@ -106,8 +112,11 @@ fn hash_embed(text: &str, dims: usize) -> Vec<f32> {
 
 /// ONNX MiniLM embedder (fastembed). Loaded on demand; drop to free RAM.
 pub struct OnnxEmbedder {
+    /// Loaded ONNX MiniLM session (dropped to free RAM).
     model: fastembed::TextEmbedding,
+    /// Stable id stored beside vectors in SQLite (`all-minilm-l6-v2-q`).
     model_id: String,
+    /// Output length of each MiniLM vector (384).
     dims: usize,
 }
 
@@ -248,6 +257,7 @@ pub fn bytes_to_vector(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// Scales `v` to unit L2 length in place; a near-zero vector is left unchanged.
 fn l2_normalize(v: &mut [f32]) {
     let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 1e-12 {

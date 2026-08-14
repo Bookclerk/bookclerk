@@ -27,13 +27,18 @@ pub async fn brand_error_responses(req: Request, next: Next) -> Response {
 }
 
 #[derive(Debug, Clone)]
+/// Branded 4xx/5xx payload (slug, message, status) before HTML/JSON encoding.
 struct ErrorBody {
+    /// HTTP status written on the rewritten response.
     status: StatusCode,
+    /// Stable machine slug (`unauthorized`, `not_found`, …).
     code: &'static str,
+    /// Operator-facing explanation shown in HTML or JSON.
     message: &'static str,
 }
 
 impl ErrorBody {
+    /// Maps `status` to a slug and operator-facing message via [`describe`].
     fn new(status: StatusCode) -> Self {
         let (code, message) = describe(status);
         Self {
@@ -43,6 +48,7 @@ impl ErrorBody {
         }
     }
 
+    /// Encodes this body as JSON or branded HTML according to `prefer_json`.
     fn into_response_for(self, prefer_json: bool) -> Response {
         if prefer_json {
             (
@@ -61,12 +67,17 @@ impl ErrorBody {
 }
 
 #[derive(Debug, Serialize)]
+/// JSON error object (`error`, `message`, numeric `status`) for API clients.
 struct ErrorJson {
+    /// Machine slug (same as [`ErrorBody::code`]).
     error: &'static str,
+    /// Operator-facing explanation.
     message: &'static str,
+    /// Numeric HTTP status (duplicates the response status for clients).
     status: u16,
 }
 
+/// Maps common statuses to a slug and Bookclerk-branded message.
 fn describe(status: StatusCode) -> (&'static str, &'static str) {
     match status {
         StatusCode::BAD_REQUEST => ("bad_request", "The request could not be understood."),
@@ -101,6 +112,7 @@ fn describe(status: StatusCode) -> (&'static str, &'static str) {
     }
 }
 
+/// Fallback kebab slug for statuses not listed in [`describe`].
 fn status_code_slug(status: StatusCode) -> &'static str {
     match status.as_u16() {
         400 => "bad_request",
@@ -140,6 +152,7 @@ fn wants_json(headers: &HeaderMap, path: &str) -> bool {
     path_looks_like_api(path)
 }
 
+/// True for `/api/…`, `/health`, and legacy control-plane paths.
 fn path_looks_like_api(path: &str) -> bool {
     path == "/status"
         || path == "/scan"
@@ -151,6 +164,7 @@ fn path_looks_like_api(path: &str) -> bool {
         || path.starts_with("/integrations/")
 }
 
+/// True when a `Content-Type` / media token is JSON or `+json`.
 fn media_prefers_json(value: Option<&HeaderValue>) -> bool {
     let Some(raw) = value.and_then(|v| v.to_str().ok()) else {
         return false;
@@ -164,6 +178,7 @@ fn media_prefers_json(value: Option<&HeaderValue>) -> bool {
     media == "application/json" || media.ends_with("+json")
 }
 
+/// True when a media token is `text/html` or XHTML.
 fn media_prefers_html(value: Option<&HeaderValue>) -> bool {
     let Some(raw) = value.and_then(|v| v.to_str().ok()) else {
         return false;
@@ -221,6 +236,7 @@ fn accept_preference(value: Option<&HeaderValue>) -> Option<bool> {
 /// Full wordmark (same asset as the login page), inlined so errors work without `ui/dist`.
 const LOGO_SVG: &str = include_str!("../../../assets/brand/svg/bookclerk-logo.svg");
 
+/// Inlines the wordmark and branded CSS so errors work without `ui/dist`.
 fn render_html(status: StatusCode, message: &str) -> String {
     let code = status.as_u16();
     let reason = html_escape(status.canonical_reason().unwrap_or("Error"));
@@ -352,6 +368,7 @@ a.secondary:hover {{ background: var(--fold); }}
     )
 }
 
+/// Escapes `& < > " '` so status text cannot break the error HTML.
 fn html_escape(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for c in input.chars() {

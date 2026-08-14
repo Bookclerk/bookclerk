@@ -14,9 +14,11 @@ use crate::drm::error::{DrmError, Result};
 /// Parsed `tenc` (Track Encryption) defaults.
 #[derive(Debug, Clone)]
 pub struct TencInfo {
+    /// 16-byte key id from `tenc`; used to select the CENC content key.
     pub kid: [u8; 16],
     /// 0 means constant IV; 8 or 16 means per-sample IVs.
     pub per_sample_iv_size: u8,
+    /// Constant IV (8 or 16 bytes) when `per_sample_iv_size` is 0; otherwise `None`.
     pub constant_iv: Option<Vec<u8>>,
 }
 
@@ -66,6 +68,7 @@ pub fn parse_tenc_from_enca_entry(
     parse_tenc(file, &tenc)
 }
 
+/// Reads a `tenc` box: key id, per-sample IV size, and optional constant IV.
 pub fn parse_tenc(file: &mut (impl Read + Seek), tenc: &BoxHeader) -> Result<TencInfo> {
     file.seek(SeekFrom::Start(tenc.content_start()))?;
     let (version, _) = read_full_box_version_flags(file)?;
@@ -124,6 +127,7 @@ pub fn progressive_sample_ivs(
     ivs.into_iter().map(|iv| normalize_cenc_iv(&iv)).collect()
 }
 
+/// Reads per-sample IVs from `saiz`/`saio`; sizes must match `tenc` IV size.
 fn read_saio_saiz_ivs(
     file: &mut File,
     stbl: &BoxHeader,
@@ -175,6 +179,7 @@ fn read_saio_saiz_ivs(
     Ok(out)
 }
 
+/// Reads `saiz` sample-info sizes; `sample_count` must match the track.
 fn parse_saiz(file: &mut File, saiz: &BoxHeader, expect_count: usize) -> Result<Vec<u8>> {
     file.seek(SeekFrom::Start(saiz.content_start()))?;
     let (_version, flags) = read_full_box_version_flags(file)?;
@@ -197,6 +202,7 @@ fn parse_saiz(file: &mut File, saiz: &BoxHeader, expect_count: usize) -> Result<
     Ok(sizes)
 }
 
+/// Reads `saio` auxiliary-info offsets (32-bit when version 0, else 64-bit).
 fn parse_saio(file: &mut File, saio: &BoxHeader) -> Result<Vec<u64>> {
     file.seek(SeekFrom::Start(saio.content_start()))?;
     let (version, flags) = read_full_box_version_flags(file)?;

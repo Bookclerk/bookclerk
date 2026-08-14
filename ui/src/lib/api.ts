@@ -611,6 +611,8 @@ export interface ListedPasskey {
 
 /**
  * Public list of SSO providers for the login page.
+ *
+ * @returns
  */
 export async function listOidcProviders(): Promise<{
   enabled: boolean;
@@ -648,6 +650,8 @@ export async function putOidcConfig(body: OidcBrokerConfigUpdate): Promise<OidcB
 
 /**
  * Linked login identities for the current User.
+ *
+ * @returns
  */
 export async function listOidcIdentities(): Promise<LinkedIdentity[]> {
   const res = await fetch("/api/auth/oidc/identities", { credentials: "include" });
@@ -657,6 +661,8 @@ export async function listOidcIdentities(): Promise<LinkedIdentity[]> {
 
 /**
  * Passkeys registered to the current User.
+ *
+ * @returns
  */
 export async function listPasskeys(): Promise<ListedPasskey[]> {
   const res = await fetch("/api/auth/passkeys", { credentials: "include" });
@@ -666,6 +672,9 @@ export async function listPasskeys(): Promise<ListedPasskey[]> {
 
 /**
  * Begin WebAuthn registration (authenticated).
+ *
+ * @param currentPassword
+ * @returns
  */
 export async function passkeyRegisterBegin(currentPassword?: string): Promise<{
   challenge_id: string;
@@ -684,6 +693,9 @@ export async function passkeyRegisterBegin(currentPassword?: string): Promise<{
 
 /**
  * Finish WebAuthn registration.
+ *
+ * @param body
+ * @returns
  */
 export async function passkeyRegisterFinish(body: {
   challenge_id: string;
@@ -700,6 +712,10 @@ export async function passkeyRegisterFinish(body: {
 
 /**
  * Delete a passkey owned by the current User.
+ *
+ * @param id
+ * @param currentPassword
+ * @returns
  */
 export async function deletePasskey(
   id: number,
@@ -718,6 +734,9 @@ export async function deletePasskey(
 
 /**
  * Begin identifier-first passkey login.
+ *
+ * @param login
+ * @returns
  */
 export async function passkeyLoginBegin(login: string): Promise<{
   challenge_id: string;
@@ -734,6 +753,9 @@ export async function passkeyLoginBegin(login: string): Promise<{
 
 /**
  * Finish passkey login (sets the portal session cookie).
+ *
+ * @param body
+ * @returns
  */
 export async function passkeyLoginFinish(body: {
   challenge_id: string;
@@ -750,6 +772,8 @@ export async function passkeyLoginFinish(body: {
 
 /**
  * Begin passkey Owner elevation.
+ *
+ * @returns
  */
 export async function passkeyElevateBegin(): Promise<{
   challenge_id: string;
@@ -766,6 +790,9 @@ export async function passkeyElevateBegin(): Promise<{
 
 /**
  * Finish passkey Owner elevation.
+ *
+ * @param body
+ * @returns
  */
 export async function passkeyElevateFinish(body: {
   challenge_id: string;
@@ -1251,6 +1278,7 @@ export async function fetchPluginConsent(id: string): Promise<PluginConsentRespo
  * Approves network consent for a plugin.
  *
  * @param id - Plugin id.
+ * @param grant
  * @returns Updated consent response after approval.
  */
 export async function approvePluginConsent(
@@ -1429,6 +1457,9 @@ function claimRedeemNonceKey(ticket: string): string {
  *
  * The nonce binds the committed session to the initiating browser so a used
  * magic-link URL alone cannot replay the receipt.
+ *
+ * @param ticket
+ * @returns
  */
 function claimRedeemNonce(ticket: string): string {
   const key = claimRedeemNonceKey(ticket);

@@ -174,6 +174,7 @@ pub fn decrypt_cenc_native(
     finish_cenc_output(output)
 }
 
+/// Confirms the decrypted M4B exists and returns its path; missing output fails closed.
 fn finish_cenc_output(output: &Path) -> Result<DecryptOutcome> {
     if !output.exists() {
         return Err(DrmError::OutputMissing(output.to_path_buf()));

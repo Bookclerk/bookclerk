@@ -198,10 +198,12 @@ pub fn init_tracing(format: LogFormat, default_level: &str) -> LoggingHandle {
 /// `MakeWriter` adapter: redact then hand bytes to the non-blocking stderr worker.
 #[derive(Clone)]
 struct SharedRedactingWriter {
+    /// Shared redacting stderr writer; secrets registered with the process are stripped.
     inner: std::sync::Arc<Mutex<RedactingWriter<NonBlocking>>>,
 }
 
 impl SharedRedactingWriter {
+    /// Wraps a non-blocking stderr worker with the process-wide secret redactor.
     fn new(nb: NonBlocking) -> Self {
         Self {
             inner: std::sync::Arc::new(Mutex::new(RedactingWriter::new(nb))),
@@ -217,7 +219,9 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedRedactingWriter {
     }
 }
 
+/// `MakeWriter` guard that locks the redactor for one tracing event.
 struct SharedRedactingWriterGuard<'a> {
+    /// Mutex around the redacting non-blocking writer (poison is recovered).
     inner: &'a Mutex<RedactingWriter<NonBlocking>>,
 }
 

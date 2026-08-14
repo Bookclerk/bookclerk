@@ -261,7 +261,7 @@ export function catalogLanguageSelectOptions(
  * Builds the server filter payload from UI multi-select state.
  *
  * @param opts - Include lists, exclusions, rating, and runtime bucket.
- * @returns {@link CatalogSearchFilters} for `searchCatalog`.
+ * @returns `CatalogSearchFilters` for `searchCatalog`.
  */
 export function buildCatalogSearchFilters(opts: {
   authors: string[];

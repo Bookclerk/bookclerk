@@ -10,6 +10,7 @@ use crate::error::{CatalogError, Result};
 use crate::kind::RuntimeIdentity;
 use crate::manifest::BookclerkPackageManifest;
 
+/// User-Agent sent on registry search and packument requests.
 const UA: &str = concat!(
     "bookclerk/",
     env!("CARGO_PKG_VERSION"),
@@ -113,6 +114,7 @@ impl RegistryAdapter for NpmAdapter {
     }
 }
 
+/// GETs `url` as JSON with the catalog User-Agent; maps non-success HTTP into `CatalogError`.
 fn http_get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
     let mut response = ureq::get(url)
         .header("User-Agent", UA)
@@ -131,6 +133,7 @@ fn http_get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
         .map_err(|e| CatalogError::message(e.to_string()))
 }
 
+/// Percent-encodes a search `text` query using `+` for spaces (npm `/-/v1/search`).
 fn urlencoding_encode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -146,28 +149,39 @@ fn urlencoding_encode(s: &str) -> String {
 }
 
 #[derive(Debug, Deserialize)]
+/// npm `/-/v1/search` envelope.
 struct NpmSearchResponse {
     #[serde(default)]
+    /// Hit wrappers from the registry search response.
     objects: Vec<NpmSearchObject>,
 }
 
 #[derive(Debug, Deserialize)]
+/// One npm search hit wrapper.
 struct NpmSearchObject {
+    /// Package identity and links for this search hit.
     package: NpmPackage,
 }
 
 #[derive(Debug, Deserialize)]
+/// Subset of an npm search package object used to build a catalog hit.
 struct NpmPackage {
+    /// Scoped or unscoped package name on the registry.
     name: String,
+    /// Latest version string returned by search.
     version: String,
     #[serde(default)]
+    /// Optional package description from the registry.
     description: Option<String>,
     #[serde(default)]
+    /// Optional homepage and related links.
     links: Option<NpmLinks>,
 }
 
 #[derive(Debug, Deserialize)]
+/// Link bag from an npm search package object.
 struct NpmLinks {
     #[serde(default)]
+    /// Package homepage URL when the registry provides one.
     homepage: Option<String>,
 }

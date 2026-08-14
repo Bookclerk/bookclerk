@@ -5,6 +5,7 @@ use std::path::Path;
 use bookclerk_library::{BookRecord, LibraryStore};
 use rust_xlsxwriter::Workbook;
 
+/// Writes library rows as CSV with the classic export column set.
 pub fn export_csv(path: &Path, books: &[BookRecord]) -> anyhow::Result<()> {
     let mut writer = csv::Writer::from_path(path)?;
     writer.write_record([
@@ -40,12 +41,14 @@ pub fn export_csv(path: &Path, books: &[BookRecord]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Writes library rows as pretty-printed JSON (`BookRecord` array).
 pub fn export_json(path: &Path, books: &[BookRecord]) -> anyhow::Result<()> {
     let text = serde_json::to_string_pretty(books)?;
     std::fs::write(path, text)?;
     Ok(())
 }
 
+/// Writes library rows to an `.xlsx` workbook with the same columns as CSV.
 pub fn export_xlsx(path: &Path, books: &[BookRecord]) -> anyhow::Result<()> {
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
@@ -83,6 +86,7 @@ pub fn export_xlsx(path: &Path, books: &[BookRecord]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Keeps books whose uuid, product id, ISBN, or ASIN matches `asins` (case-insensitive).
 pub fn filter_books(books: Vec<BookRecord>, asins: Option<&[String]>) -> Vec<BookRecord> {
     match asins {
         None | Some([]) => books,
@@ -104,6 +108,7 @@ pub fn filter_books(books: Vec<BookRecord>, asins: Option<&[String]>) -> Vec<Boo
     }
 }
 
+/// Lists library books, optionally scoped to one account id.
 pub async fn load_books(
     store: &LibraryStore,
     account: Option<&str>,

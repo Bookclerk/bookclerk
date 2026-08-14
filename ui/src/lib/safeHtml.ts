@@ -83,7 +83,7 @@ const NAMED_ENTITIES: Record<string, string> = {
  *
  * @param raw - Text that may contain entities.
  * @returns Decoded string. Unknown named entities are left unchanged; numeric
- *   entities use {@link String.fromCodePoint} when valid.
+ *   entities use `String.fromCodePoint` when valid.
  */
 export function decodeHtmlEntities(raw: string): string {
   if (!raw.includes("&")) return raw;
@@ -169,7 +169,7 @@ export function parseGuidedReviewBody(raw: string): GuidedReviewSection[] | null
  * `i`/`em` / lists (no attributes). Guided JSON bodies return empty string
  * (render structured React instead).
  *
- * Uses {@link sanitizeMarkupToAllowlist} (string token walk). See the module
+ * Uses `sanitizeMarkupToAllowlist` (string token walk). See the module
  * comment for why we avoid `DOMParser` / `innerHTML` and when to reconsider.
  *
  * @param raw - Store or review description.

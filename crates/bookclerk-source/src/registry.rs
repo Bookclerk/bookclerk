@@ -17,6 +17,7 @@ use crate::types::{ScanOptions, ScanSummary, SourceAccount};
 /// Maps source id → installed [`ContentSource`] implementations.
 #[derive(Clone, Default)]
 pub struct SourceRegistry {
+    /// Installed sources keyed by canonical plugin id (`audible`, `libro`, …).
     sources: HashMap<String, Arc<dyn ContentSource>>,
 }
 
@@ -79,6 +80,10 @@ impl SourceRegistry {
     /// When `opts.accounts` is non-empty, each source only receives the subset of
     /// account needles that resolve to an account on that source. Sources with no
     /// matching accounts are skipped instead of failing the whole multi-source scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn scan_all(&self, library: &LibraryStore, opts: ScanOptions) -> Result<ScanSummary> {
         let mut total = ScanSummary::default();
         let mut any = false;
@@ -144,6 +149,7 @@ async fn filter_scan_opts_for_source(
     Ok(Some(out))
 }
 
+/// True when `needle` matches an account id or display label, ignoring ASCII case.
 fn account_needle_matches(needle: &str, accounts: &[SourceAccount]) -> bool {
     accounts.iter().any(|a| {
         a.account_id.eq_ignore_ascii_case(needle)

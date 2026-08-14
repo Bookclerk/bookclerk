@@ -8,14 +8,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{ConfigError, Result};
 
+/// Default `[database].plugin` id (`sqlite`) when the key is omitted.
 fn default_plugin() -> String {
     String::from("sqlite")
 }
 
+/// Serde default for per-backend `enabled` flags (ignored unless that plugin is active).
 fn default_true() -> bool {
     true
 }
 
+/// Default Cloudflare API origin for D1 HTTP (`https://api.cloudflare.com/client/v4`).
 fn default_d1_api_base() -> String {
     String::from("https://api.cloudflare.com/client/v4")
 }
@@ -86,6 +89,10 @@ impl Default for DatabaseConfig {
 
 impl DatabaseConfig {
     /// Parsed active plugin, or error if unknown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn active_plugin(&self) -> Result<DatabasePluginKind> {
         DatabasePluginKind::parse(&self.plugin).ok_or_else(|| {
             ConfigError::Invalid(format!(
@@ -244,6 +251,10 @@ impl Default for DatabasePostgresConfig {
 /// Resolve the D1 API token from the environment (host-mediated secret).
 ///
 /// Uses `BOOKCLERK_D1_API_TOKEN`, falling back to `CLOUDFLARE_API_TOKEN`.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn resolve_d1_api_token() -> Result<String> {
     if let Ok(v) = std::env::var("BOOKCLERK_D1_API_TOKEN") {
         let t = v.trim();
@@ -267,6 +278,10 @@ pub fn resolve_d1_api_token() -> Result<String> {
 /// Resolve the Postgres connection URL from config (env already applied).
 ///
 /// `url_file` takes precedence over `url`.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn resolve_postgres_url(config: &crate::Config) -> Result<String> {
     if let Some(path) = &config.database.postgres.url_file {
         let raw = std::fs::read_to_string(path).map_err(|e| {

@@ -75,6 +75,7 @@ pub type Result<T> = std::result::Result<T, NamingError>;
 /// A parsed, reusable naming template.
 #[derive(Debug, Clone)]
 pub struct Template {
+    /// Parsed tag/literal sequence evaluated against book and optional chapter context.
     inner: engine::Template,
 }
 
@@ -179,6 +180,7 @@ pub fn remove_spaces(parts: &[String]) -> String {
     parts.concat()
 }
 
+/// Borrows `rules` as-is; an empty slice means no character replacement.
 fn or_default_rules(rules: &[ReplacementRule]) -> std::borrow::Cow<'_, [ReplacementRule]> {
     // Empty means "no replacement" — callers that want a profile must pass
     // resolved rules from `bookclerk_config::resolve_replacement_characters`.
@@ -217,6 +219,10 @@ pub fn expand_filename(
 ///
 /// # Errors
 /// Returns [`NamingError::Parse`] if the template is fundamentally invalid.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub fn expand_folder(
     template: &str,
     book: &BookContext,

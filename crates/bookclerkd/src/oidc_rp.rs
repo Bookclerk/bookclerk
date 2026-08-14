@@ -75,10 +75,13 @@ pub fn router(state: Arc<AppState>) -> Router {
 }
 
 #[derive(Debug, Deserialize)]
+/// Optional `?provider=` query on login and elevate starts.
 struct ProviderQuery {
+    /// IdP id to start; omitted when the caller has only one enabled provider.
     provider: Option<String>,
 }
 
+/// Lists enabled IdPs for the login picker (id and display name only).
 async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Value> {
     let cfg = state.config.read().await;
     let providers: Vec<Value> = cfg
@@ -100,47 +103,76 @@ async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 #[derive(Debug, Serialize)]
+/// Operator-facing OIDC broker snapshot; secret material is never included.
 struct OidcConfigResponse {
+    /// Whether the broker accepts new authorize starts.
     enabled: bool,
+    /// Broker-wide email domain allowlist applied before per-provider rules.
     allowed_email_domains: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Absolute `/api/auth/oidc/callback` derived from `public_origin`, if set.
     callback_url: Option<String>,
+    /// Configured IdPs with presence flags instead of secret material.
     providers: Vec<OidcProviderView>,
 }
 
 #[derive(Debug, Serialize)]
+/// One IdP as shown to an operator (no client secret or Apple PEM).
 struct OidcProviderView {
+    /// Stable provider id used in authorize URLs and sealed-row names.
     id: String,
+    /// Operator-facing display name.
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Built-in social preset (`google`, `github`, `apple`, `discord`) when not a generic issuer.
     preset: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// OpenID issuer URL for discovery when no social preset applies.
     issuer: Option<String>,
+    /// OAuth client id registered at the IdP.
     client_id: String,
+    /// OAuth scopes requested at authorize.
     scopes: Vec<String>,
+    /// How a first login becomes a portal user (JIT, mapped role, allowlist, invite-only).
     provision: OidcProvisionMode,
+    /// Portal role used when no mapped claim matches (`member` by default).
     default_role: String,
+    /// Claim name read from id_token/userinfo for role mapping (`groups` by default).
     role_claim: String,
+    /// IdP group/role claim values mapped onto Bookclerk portal roles.
     role_map: BTreeMap<String, String>,
+    /// When true, a verified email may attach this IdP to an existing user.
     link_by_email: bool,
+    /// Per-provider email domain allowlist (in addition to the broker-wide list).
     allowed_email_domains: Vec<String>,
+    /// Exact emails permitted under allowlist provision.
     allowed_emails: Vec<String>,
+    /// Exact IdP subject ids permitted under allowlist provision.
     allowed_subjects: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Apple Developer team id used to mint the client-secret JWT.
     apple_team_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Apple Sign In key id paired with the sealed private key.
     apple_key_id: Option<String>,
+    /// Whether a client secret exists in env, TOML, or the sealed store (value never returned).
     has_client_secret: bool,
+    /// Whether an Apple PEM exists in env, TOML, or the sealed store (PEM never returned).
     has_apple_private_key: bool,
+    /// Where the client secret was found: `env`, `config`, `store`, or `none`.
     secret_source: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
+/// Operator PUT body that replaces the broker table (secrets omitted or replaced).
 struct OidcConfigPut {
+    /// Whether the broker should accept authorize starts after this write.
     enabled: bool,
     #[serde(default)]
+    /// Replacement broker-wide email domain allowlist.
     allowed_email_domains: Vec<String>,
     #[serde(default)]
+    /// Full replacement list of IdPs (omitted secrets keep the previous generation).
     providers: Vec<OidcProviderPut>,
     /// Required for a non-elevated Owner whose portal session is older than 15 minutes.
     #[serde(default)]
@@ -148,53 +180,73 @@ struct OidcConfigPut {
 }
 
 #[derive(Debug, Deserialize)]
+/// One IdP in a PUT: omit secret fields to keep, empty string to clear.
 struct OidcProviderPut {
+    /// Stable provider id; also the logical name of the sealed client-secret row.
     id: String,
     #[serde(default)]
+    /// Operator-facing display name stored in config.toml.
     name: String,
     #[serde(default)]
+    /// Built-in social preset; empty or omitted means a generic OpenID issuer.
     preset: Option<String>,
     #[serde(default)]
+    /// OpenID issuer URL required when `preset` is unset.
     issuer: Option<String>,
+    /// OAuth client id registered at the IdP.
     client_id: String,
     /// Omit to keep; empty string to clear; non-empty to store.
     #[serde(default)]
     client_secret: Option<String>,
     #[serde(default)]
+    /// OAuth scopes; empty is replaced with the provider default set.
     scopes: Vec<String>,
     #[serde(default)]
+    /// JIT, mapped-role, allowlist, or invite-only policy for first login.
     provision: OidcProvisionMode,
     #[serde(default = "default_member_role")]
+    /// Fallback portal role when no mapped claim matches.
     default_role: String,
     #[serde(default = "default_groups_claim")]
+    /// Claim name used for role mapping (defaults to `groups`).
     role_claim: String,
     #[serde(default)]
+    /// Claim value to portal role mapping applied at provision time.
     role_map: BTreeMap<String, String>,
     #[serde(default)]
+    /// When true, verified email may attach this IdP to an existing user.
     link_by_email: bool,
     #[serde(default)]
+    /// Per-provider email domain allowlist.
     allowed_email_domains: Vec<String>,
     #[serde(default)]
+    /// Exact emails permitted under allowlist provision.
     allowed_emails: Vec<String>,
     #[serde(default)]
+    /// Exact IdP subject ids permitted under allowlist provision.
     allowed_subjects: Vec<String>,
     #[serde(default)]
+    /// Apple Developer team id for client-secret JWT minting.
     apple_team_id: Option<String>,
     #[serde(default)]
+    /// Apple Sign In key id paired with the sealed private key.
     apple_key_id: Option<String>,
     /// Omit to keep; empty string to clear; non-empty to store.
     #[serde(default)]
     apple_private_key: Option<String>,
 }
 
+/// Default portal role when a PUT omits `default_role`.
 fn default_member_role() -> String {
     "member".into()
 }
 
+/// Default role-claim name (`groups`) when a PUT omits `role_claim`.
 fn default_groups_claim() -> String {
     "groups".into()
 }
 
+/// JSON error body for operator config mutations (`error: oidc_config`).
 fn oidc_config_error(status: StatusCode, message: impl Into<String>) -> Response {
     (
         status,
@@ -206,6 +258,7 @@ fn oidc_config_error(status: StatusCode, message: impl Into<String>) -> Response
         .into_response()
 }
 
+/// Builds `{public_origin}/api/auth/oidc/callback`, or `None` when origin is unset.
 fn oidc_callback_url(public_origin: Option<&str>) -> Option<String> {
     let origin = public_origin.map(str::trim).filter(|s| !s.is_empty())?;
     Some(format!(
@@ -214,12 +267,14 @@ fn oidc_callback_url(public_origin: Option<&str>) -> Option<String> {
     ))
 }
 
+/// True when the provider's `BOOKCLERK_OIDC_*` env var is a non-empty secret.
 fn env_has_client_secret(provider_id: &str) -> bool {
     std::env::var(oidc_client_secret_env_key(provider_id))
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false)
 }
 
+/// True when config.toml still embeds a non-empty client secret (legacy).
 fn toml_has_client_secret(provider: &OidcProviderConfig) -> bool {
     provider
         .client_secret
@@ -228,10 +283,12 @@ fn toml_has_client_secret(provider: &OidcProviderConfig) -> bool {
         .is_some_and(|s| !s.is_empty())
 }
 
+/// Current secret-generation counter used to name sealed OIDC rows.
 async fn live_oidc_generation(state: &AppState) -> u64 {
     state.config.read().await.auth.oidc.secret_generation
 }
 
+/// True when a sealed `oidc_client` row exists for this provider generation.
 async fn store_has_client_secret(state: &AppState, provider_id: &str) -> bool {
     let generation = live_oidc_generation(state).await;
     let library = state.library_snapshot().await;
@@ -250,6 +307,7 @@ async fn store_has_client_secret(state: &AppState, provider_id: &str) -> bool {
         .is_some()
 }
 
+/// Reports where a client secret can be read: env, TOML, sealed store, or none.
 async fn secret_source_for(state: &AppState, provider: &OidcProviderConfig) -> &'static str {
     if env_has_client_secret(&provider.id) {
         return "env";
@@ -263,6 +321,7 @@ async fn secret_source_for(state: &AppState, provider: &OidcProviderConfig) -> &
     "none"
 }
 
+/// Trims and drops empty strings from allowlist and scope vectors.
 fn trim_list(values: Vec<String>) -> Vec<String> {
     values
         .into_iter()
@@ -271,6 +330,7 @@ fn trim_list(values: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// Maps a PUT provider into config, leaving secrets unset so they stay sealed.
 fn provider_from_put(p: OidcProviderPut) -> OidcProviderConfig {
     let mut cfg = OidcProviderConfig {
         id: p.id.trim().to_string(),
@@ -316,16 +376,19 @@ fn provider_from_put(p: OidcProviderPut) -> OidcProviderConfig {
     cfg
 }
 
+/// Logical secret name for the Apple PEM (`{provider_id}__apple_key`).
 fn apple_key_secret_name(provider_id: &str) -> String {
     format!("{}__apple_key", provider_id.trim())
 }
 
+/// True when the provider's Apple PEM env var is non-empty.
 fn env_has_apple_private_key(provider_id: &str) -> bool {
     std::env::var(oidc_apple_private_key_env_key(provider_id))
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false)
 }
 
+/// True when config.toml still embeds a non-empty Apple PEM (legacy).
 fn toml_has_apple_private_key(provider: &OidcProviderConfig) -> bool {
     provider
         .apple_private_key
@@ -334,6 +397,7 @@ fn toml_has_apple_private_key(provider: &OidcProviderConfig) -> bool {
         .is_some_and(|s| !s.is_empty())
 }
 
+/// True when a sealed Apple PEM row exists for this provider generation.
 async fn store_has_apple_private_key(state: &AppState, provider_id: &str) -> bool {
     let generation = live_oidc_generation(state).await;
     let library = state.library_snapshot().await;
@@ -362,6 +426,7 @@ static SECRET_MUTATION_SUCCESSES_REMAINING: std::sync::atomic::AtomicI32 =
 static CONFIG_WRITE_SUCCESSES_REMAINING: std::sync::atomic::AtomicI32 =
     std::sync::atomic::AtomicI32::new(-1);
 
+/// Test-only: fail the next sealed-secret write after N successes (`-1` = off).
 fn oidc_secret_mutation_failpoint() -> Result<(), String> {
     #[cfg(test)]
     {
@@ -377,6 +442,7 @@ fn oidc_secret_mutation_failpoint() -> Result<(), String> {
     Ok(())
 }
 
+/// Test-only: fail the config.toml publish after N successes (`-1` = off).
 fn oidc_config_write_failpoint() -> Result<(), String> {
     #[cfg(test)]
     {
@@ -392,6 +458,7 @@ fn oidc_config_write_failpoint() -> Result<(), String> {
     Ok(())
 }
 
+/// Loads one operator `oidc_client` row by sealed-store name; fail-closed on DB error.
 async fn load_oidc_secret_row(
     state: &AppState,
     name: &str,
@@ -409,6 +476,7 @@ async fn load_oidc_secret_row(
         .map_err(|e| format!("could not load secret snapshot: {e}"))
 }
 
+/// Copies a sealed OIDC row to the next generation name without unsealing plaintext.
 async fn copy_oidc_secret_row(
     state: &AppState,
     from_name: &str,
@@ -429,6 +497,7 @@ async fn copy_oidc_secret_row(
         .map_err(|e| format!("could not copy secret: {e}"))
 }
 
+/// Seals plaintext with the process DEK and upserts an operator `oidc_client` row.
 async fn persist_oidc_secret_named(
     state: &AppState,
     name: &str,
@@ -453,6 +522,7 @@ async fn persist_oidc_secret_named(
     Ok(())
 }
 
+/// Seals a client secret under the generation-qualified provider name.
 async fn persist_oidc_secret(
     state: &AppState,
     provider_id: &str,
@@ -467,6 +537,7 @@ async fn persist_oidc_secret(
     .await
 }
 
+/// Seals an Apple PEM under the generation-qualified `{id}__apple_key` name.
 async fn persist_apple_private_key(
     state: &AppState,
     provider_id: &str,
@@ -481,6 +552,7 @@ async fn persist_apple_private_key(
     .await
 }
 
+/// Deletes one operator `oidc_client` row by name (used on generation rollback).
 async fn delete_named_oidc_secret(state: &AppState, name: &str) -> Result<(), String> {
     let library = state.library_snapshot().await;
     SecretStore::new(library.db())
@@ -495,6 +567,7 @@ async fn delete_named_oidc_secret(state: &AppState, name: &str) -> Result<(), St
         .map_err(|e| format!("could not delete secret: {e}"))
 }
 
+/// Operator GET: broker settings plus secret-presence flags (never plaintext).
 async fn get_oidc_config(State(state): State<Arc<AppState>>) -> Json<OidcConfigResponse> {
     let (enabled, allowed_email_domains, callback_url, configured) = {
         let cfg = state.config.read().await;
@@ -540,6 +613,7 @@ async fn get_oidc_config(State(state): State<Arc<AppState>>) -> Json<OidcConfigR
     })
 }
 
+/// Operator PUT: writes next-generation sealed secrets, then publishes config.toml.
 async fn put_oidc_config(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -765,6 +839,7 @@ async fn put_oidc_config(
     Ok(get_oidc_config(State(state.clone())).await)
 }
 
+/// Lists OIDC portal identities for the cookie-authenticated caller.
 async fn list_identities(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -792,6 +867,7 @@ async fn list_identities(
     Ok(Json(serde_json::json!({ "identities": identities })))
 }
 
+/// Starts an OIDC login authorize redirect, honoring login throttle.
 async fn login_start(
     State(state): State<Arc<AppState>>,
     ClientIp(client_key): ClientIp,
@@ -819,6 +895,7 @@ async fn login_start(
     }
 }
 
+/// Starts an Owner re-auth elevate flow against a linked IdP (`prompt=login`).
 async fn elevate_start(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -854,6 +931,7 @@ async fn elevate_start(
     start_authorize(&state, Some(&provider_id), "elevate", Some(user.id)).await
 }
 
+/// Persists hashed RP state and redirects to the IdP authorize URL with PKCE.
 async fn start_authorize(
     state: &AppState,
     provider_id: Option<&str>,
@@ -932,14 +1010,19 @@ async fn start_authorize(
 }
 
 #[derive(Debug, Deserialize)]
+/// Query or form_post fields from the IdP callback.
 struct CallbackParams {
+    /// Authorization code to exchange; required unless `error` is set.
     code: Option<String>,
+    /// CSRF `state` that must match the `bookclerk_oidc_tx` cookie.
     state: Option<String>,
+    /// IdP-reported deny/error; redirects the browser to `/?sso_error=denied`.
     error: Option<String>,
     /// Apple first-login name/email JSON (form_post only).
     user: Option<String>,
 }
 
+/// GET callback (most IdPs); finishes the code exchange.
 async fn callback_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -948,6 +1031,7 @@ async fn callback_get(
     finish_callback(&state, &headers, q).await
 }
 
+/// POST callback (Apple `form_post`); finishes the code exchange.
 async fn callback_post(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -956,6 +1040,7 @@ async fn callback_post(
     finish_callback(&state, &headers, form).await
 }
 
+/// Consumes one-time RP state, verifies tokens, then provisions or elevates.
 async fn finish_callback(
     state: &AppState,
     headers: &HeaderMap,
@@ -1153,12 +1238,17 @@ async fn finish_callback(
     }
 }
 
+/// Application outcomes from JIT/link that become SSO error redirects.
 enum ProvisionError {
+    /// Caller is not allowed to sign in (allowlist, domain, invite-only, disabled).
     Denied,
+    /// Identity or email is already linked to a different user.
     Conflict,
+    /// Library/DB failure while creating or linking the user.
     Internal,
 }
 
+/// JIT-creates, email-links, or role-syncs a portal user from a verified IdP profile.
 async fn provision_user(
     state: &AppState,
     library: &bookclerk_library::LibraryStore,
@@ -1326,6 +1416,7 @@ async fn provision_user(
     Ok(user)
 }
 
+/// Updates display name and verified email when the IdP profile changed.
 async fn refresh_profile(
     library: &bookclerk_library::LibraryStore,
     user: &UserRecord,
@@ -1347,15 +1438,23 @@ async fn refresh_profile(
     Ok(())
 }
 
+/// Resolved authorize, token, userinfo, and JWKS URLs for one IdP.
 struct Endpoints {
+    /// Authorization endpoint used for the browser redirect.
     authorize: String,
+    /// Token endpoint used for the authorization-code exchange.
     token: String,
+    /// UserInfo URL; empty for Apple (profile comes from the id_token).
     userinfo: String,
+    /// JWKS URL for id_token signature verification; absent for GitHub/Discord.
     jwks_uri: Option<String>,
+    /// Expected `iss` claim; discovery fails closed if it disagrees with the well-known issuer.
     issuer: String,
+    /// Allowed id_token signing algorithms from discovery or the Apple preset.
     id_token_signing_algs: Vec<CoreJwsSigningAlgorithm>,
 }
 
+/// Uses a social preset or OpenID discovery; fails closed on issuer mismatch.
 async fn resolve_endpoints(provider: &OidcProviderConfig) -> Result<Endpoints, ()> {
     match provider.social_preset() {
         Some("google") => {
@@ -1402,6 +1501,7 @@ async fn resolve_endpoints(provider: &OidcProviderConfig) -> Result<Endpoints, (
     discovery(issuer).await
 }
 
+/// Reqwest client that refuses redirects (token/userinfo must not hop).
 fn http_client() -> Result<reqwest::Client, ()> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -1409,6 +1509,7 @@ fn http_client() -> Result<reqwest::Client, ()> {
         .map_err(|_| ())
 }
 
+/// Fetches `/.well-known/openid-configuration` and checks the returned issuer.
 async fn discovery(issuer: &str) -> Result<Endpoints, ()> {
     let issuer = issuer.trim().trim_end_matches('/');
     let url = format!("{issuer}/.well-known/openid-configuration");
@@ -1441,6 +1542,7 @@ async fn discovery(issuer: &str) -> Result<Endpoints, ()> {
     })
 }
 
+/// POSTs the authorization code and PKCE verifier to the token endpoint.
 async fn exchange_code(
     token_url: &str,
     client_id: &str,
@@ -1471,6 +1573,7 @@ async fn exchange_code(
     resp.json().await.map_err(|_| ())
 }
 
+/// GETs UserInfo with the access token; fails when the URL is empty.
 async fn fetch_userinfo(url: &str, access_token: &str) -> Result<Value, ()> {
     if url.trim().is_empty() {
         return Err(());
@@ -1490,6 +1593,7 @@ async fn fetch_userinfo(url: &str, access_token: &str) -> Result<Value, ()> {
         .map_err(|_| ())
 }
 
+/// Resolves the client secret from env, TOML, or a sealed store row (Apple mints a JWT).
 async fn client_secret(state: &AppState, provider: &OidcProviderConfig) -> Option<String> {
     if provider.social_preset() == Some("apple") {
         return apple_client_secret(state, provider).await;
@@ -1531,6 +1635,7 @@ async fn client_secret(state: &AppState, provider: &OidcProviderConfig) -> Optio
     None
 }
 
+/// Unseals one operator `oidc_client` row; returns `None` if missing or unseal fails.
 async fn load_named_secret(state: &AppState, name: &str) -> Option<String> {
     let library = state.library_snapshot().await;
     let store = SecretStore::new(library.db());
@@ -1554,6 +1659,7 @@ async fn load_named_secret(state: &AppState, name: &str) -> Option<String> {
     }
 }
 
+/// Resolves the Apple PEM from env, TOML, or the sealed store (operator-only).
 async fn apple_private_key_pem(state: &AppState, provider: &OidcProviderConfig) -> Option<String> {
     if let Ok(v) = std::env::var(oidc_apple_private_key_env_key(&provider.id)) {
         let trimmed = v.trim().to_string();
@@ -1579,6 +1685,7 @@ async fn apple_private_key_pem(state: &AppState, provider: &OidcProviderConfig) 
     .await
 }
 
+/// Mints a 30-day Apple client-secret JWT from team id, key id, and the PEM.
 async fn apple_client_secret(state: &AppState, provider: &OidcProviderConfig) -> Option<String> {
     let team_id = provider
         .apple_team_id
@@ -1603,6 +1710,7 @@ async fn apple_client_secret(state: &AppState, provider: &OidcProviderConfig) ->
     .ok()
 }
 
+/// Loads GitHub `/user/emails` and returns the primary verified address.
 async fn fetch_github_verified_email(access_token: &str) -> Result<Option<String>, ()> {
     let emails: Value = http_client()?
         .get("https://api.github.com/user/emails")
@@ -1620,6 +1728,7 @@ async fn fetch_github_verified_email(access_token: &str) -> Result<Option<String
     Ok(github_verified_email(&emails))
 }
 
+/// Trimmed `integrations.public_origin`, or loopback `http://127.0.0.1:8787`.
 fn public_origin(cfg: &bookclerk_config::Config) -> String {
     cfg.integrations
         .public_origin
@@ -1629,6 +1738,7 @@ fn public_origin(cfg: &bookclerk_config::Config) -> String {
         .unwrap_or_else(|| String::from("http://127.0.0.1:8787"))
 }
 
+/// Gathers role/group strings from userinfo, id_token, and Keycloak `realm_access.roles`.
 fn collect_role_claims(
     verified_claims: Option<&Value>,
     userinfo: &Value,
@@ -1652,6 +1762,7 @@ fn collect_role_claims(
     out
 }
 
+/// Appends a string or string-array claim onto the role-mapping input.
 fn push_claim_values(obj: &Value, claim: &str, out: &mut Vec<String>) {
     match obj.get(claim) {
         Some(Value::String(s)) => out.push(s.clone()),
@@ -1666,17 +1777,20 @@ fn push_claim_values(obj: &Value, claim: &str, out: &mut Vec<String>) {
     }
 }
 
+/// S256 PKCE challenge (`BASE64URL(SHA256(verifier))`).
 fn pkce_challenge(verifier: &str) -> String {
     let digest = Sha256::digest(verifier.as_bytes());
     URL_SAFE_NO_PAD.encode(digest)
 }
 
+/// Cryptographic random bytes encoded as unpadded URL-safe Base64.
 fn random_b64url(nbytes: usize) -> String {
     let mut buf = vec![0u8; nbytes];
     rand::thread_rng().fill_bytes(&mut buf);
     URL_SAFE_NO_PAD.encode(buf)
 }
 
+/// Percent-encodes a query value, leaving RFC 3986 unreserved characters.
 fn urlencoding(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {

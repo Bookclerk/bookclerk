@@ -111,6 +111,10 @@ pub async fn acquire_book(
 ///
 /// Fetch always goes through [`ContentSource::fetch_title`] (Plain only;
 /// Audible decrypts Adrm/CENC inside the plugin before returning).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn acquire_book_indexed(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
@@ -263,27 +267,38 @@ pub async fn acquire_book_indexed(
     }
 }
 
+/// Library status row key: book UUID when known, otherwise the store product id.
 fn status_key(req: &AcquireRequest) -> &str {
     req.book_uuid.as_deref().unwrap_or(&req.asin)
 }
 
 #[derive(Debug)]
+/// Whether acquire can skip, copy between destinations, or must fetch from the store.
 enum ExistingPlan {
     /// Every destination already has the title — skip acquire.
-    Skip { primary_key: String },
+    Skip {
+        /// Primary library key for the already-acquired title.
+        primary_key: String,
+    },
     /// Copy from a present destination into missing ones (no store fetch).
     SyncMissing {
+        /// Storage key already present on the primary (or first present) destination.
         primary_key: String,
+        /// Destination that already holds the title and will be copied from.
         source_kind: OutputBackendKind,
+        /// Object key on `source_kind` to copy into missing destinations.
         source_key: String,
+        /// Destinations that lack the title, paired with the planned target key.
         missing: Vec<(OutputBackendKind, String)>,
     },
     /// Run the full acquire pipeline (`only_kinds` limits writes when set).
     Fetch {
+        /// When set, restrict the fetch write to these destination kinds; `None` writes all.
         only_kinds: Option<Vec<OutputBackendKind>>,
     },
 }
 
+/// Inspects each destination for an existing object and chooses skip, sync, or fetch.
 async fn plan_existing_destinations(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
@@ -371,8 +386,10 @@ async fn plan_existing_destinations(
     }
 }
 
+/// Retries per destination `put` before the acquire write is treated as failed.
 const DEST_WRITE_ATTEMPTS: u32 = 3;
 
+/// Copies an existing object from one destination into destinations that lack it.
 async fn sync_missing_destinations(
     destinations: &AcquireDestinations,
     source_kind: OutputBackendKind,
@@ -439,37 +456,53 @@ async fn sync_missing_destinations(
 }
 
 #[derive(Debug, Clone, Copy)]
+/// How prepared audio files are named when written to storage.
 enum AudioKeyPlan {
+    /// One packaged file using the title-level file template.
     Single,
+    /// One file per chapter using the chapter-file template.
     SplitChapters,
+    /// One file per source part, with part index baked into the product id.
     PlainParts,
 }
 
 #[derive(Debug, Clone)]
+/// Local audio file ready to upload, with the title and extension used for naming.
 struct PreparedAudioFile {
+    /// Absolute path of the packaged or source audio on disk.
     path: PathBuf,
+    /// Chapter or part title substituted into naming templates.
     title: String,
+    /// File extension without a leading dot (`m4b`, `mp3`, …).
     ext: String,
 }
 
 #[derive(Debug, Clone)]
+/// First object key written to one destination during this acquire.
 struct DestinationStoredKey {
+    /// Destination backend that received the write (`local`, `s3`, …).
     kind: OutputBackendKind,
+    /// Object key of the first file written to that destination.
     key: String,
 }
 
 #[derive(Debug, Clone)]
+/// Keys written this acquire, plus the primary destination's first key for status.
 struct StoredKeys {
+    /// First key on the primary destination (or the first successful write).
     primary_key: String,
+    /// Per-destination first keys used for sidecar writes and result reporting.
     keys: Vec<DestinationStoredKey>,
 }
 
 impl StoredKeys {
+    /// First object key written on each destination, in destination order.
     fn all_keys(&self) -> Vec<String> {
         self.keys.iter().map(|stored| stored.key.clone()).collect()
     }
 }
 
+/// Clones the acquire request with this destination's naming and download options.
 fn request_for_destination(
     req: &AcquireRequest,
     destination: &AcquireDestination,
@@ -479,6 +512,7 @@ fn request_for_destination(
     dest_req
 }
 
+/// Writes prepared audio to every enabled destination, retrying each destination independently.
 async fn store_prepared_audio_files(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
@@ -550,6 +584,7 @@ async fn store_prepared_audio_files(
     Ok(StoredKeys { primary_key, keys })
 }
 
+/// Uploads each prepared file to one destination and returns the first key plus all keys written.
 async fn write_prepared_files_to_destination(
     library: &LibraryStore,
     dest: &AcquireDestination,
@@ -578,6 +613,7 @@ async fn write_prepared_files_to_destination(
     Ok((first_key.unwrap_or_default(), written_keys))
 }
 
+/// Storage key for one prepared file under the single, chapter, or part naming plan.
 async fn planned_key_for_prepared_file(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -592,6 +628,7 @@ async fn planned_key_for_prepared_file(
     }
 }
 
+/// Chapter-file storage key using 1-based index and the chapter title.
 async fn planned_chapter_storage_key(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -614,6 +651,7 @@ async fn planned_chapter_storage_key(
     )
 }
 
+/// Part-file storage key with a `-pNNN` product-id suffix so parts do not collide.
 async fn planned_plain_part_storage_key(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -639,6 +677,7 @@ async fn planned_plain_part_storage_key(
     )
 }
 
+/// Marks the title as downloading, then fetches and stores it from the content source.
 async fn run_pipeline(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
@@ -658,6 +697,7 @@ async fn run_pipeline(
     run_source_pipeline(library, destinations, req, source).await
 }
 
+/// Fetches the title into the acquire cache and stores the resulting plain audio.
 async fn run_source_pipeline(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
@@ -684,6 +724,7 @@ async fn run_source_pipeline(
     store_plain_fetch(library, destinations, req, &work_dir, fetch).await
 }
 
+/// Packages or stores a source `PlainFetch` according to output options and chapter overlay.
 async fn store_plain_fetch(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
@@ -1053,6 +1094,7 @@ async fn store_plain_fetch(
     })
 }
 
+/// Stores a multi-part plain fetch as separate files and optional cover sidecars.
 async fn store_plain_parts(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
@@ -1327,6 +1369,7 @@ async fn store_flat_chapter_sidecars(
     }
 }
 
+/// Object metadata (content type, length, ASIN, timestamps) for a stored audio file.
 async fn object_meta_for(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -1356,6 +1399,7 @@ async fn object_asin_for(library: &LibraryStore, req: &AcquireRequest) -> String
         .unwrap_or_else(|| req.asin.clone())
 }
 
+/// Formats a `SystemTime` as RFC 3339 UTC, using the Unix epoch when the instant is invalid.
 fn system_time_rfc3339(t: SystemTime) -> String {
     let secs = t
         .duration_since(std::time::UNIX_EPOCH)
@@ -1366,6 +1410,7 @@ fn system_time_rfc3339(t: SystemTime) -> String {
         .to_rfc3339()
 }
 
+/// Object metadata for a cover or chapter sidecar, without creation or modified timestamps.
 async fn sidecar_meta(asin: &str, title: &str, content_type: &str, path: &Path) -> ObjectMeta {
     let content_length = tokio::fs::metadata(path).await.ok().map(|m| m.len());
     ObjectMeta {
@@ -1378,6 +1423,7 @@ async fn sidecar_meta(asin: &str, title: &str, content_type: &str, path: &Path) 
     }
 }
 
+/// MIME type for a well-known audio extension; unknown extensions become `application/octet-stream`.
 fn content_type_for_ext(ext: &str) -> &'static str {
     match ext.to_ascii_lowercase().as_str() {
         "mp3" => "audio/mpeg",
@@ -1390,6 +1436,7 @@ fn content_type_for_ext(ext: &str) -> &'static str {
     }
 }
 
+/// Default audio extension when the source path has none (`mp3`, `opus`, or `m4b`).
 fn fallback_audio_ext(options: &DownloadOptions) -> &'static str {
     if options.wants_mp3() {
         "mp3"
@@ -1401,22 +1448,37 @@ fn fallback_audio_ext(options: &DownloadOptions) -> &'static str {
 }
 
 #[derive(Debug, Clone, Default)]
+/// Optional Audnexus catalog overlay applied to plain-audio metadata and tags.
 struct PlainAudibleCatalog {
+    /// Catalog title used for tags when the store title is empty or less specific.
     title: Option<String>,
+    /// Comma-joined author names from Audnexus.
     authors: Option<String>,
+    /// Comma-joined narrator names from Audnexus.
     narrators: Option<String>,
+    /// Primary series name from Audnexus `seriesPrimary`.
     series: Option<String>,
+    /// Series position string from Audnexus (may be non-integer).
     series_index: Option<String>,
+    /// Subtitle from Audnexus, when present.
     subtitle: Option<String>,
+    /// Publisher display name from Audnexus.
     publisher: Option<String>,
+    /// ISBN-13 when Audnexus reports one.
     isbn: Option<String>,
+    /// Semicolon-joined genre/tag names from Audnexus.
     categories: Option<String>,
+    /// Four-digit publication year derived from the Audnexus release date.
     year: Option<String>,
+    /// Long description or summary from Audnexus.
     description: Option<String>,
+    /// Content language from Audnexus (for example `english`).
     language: Option<String>,
+    /// Downloaded cover image used for tagging when the source omitted one.
     cover_path: Option<PathBuf>,
 }
 
+/// True when the library row has an enrichment Audible ASIN distinct from the store product id.
 async fn plain_source_has_audible_asin(library: &LibraryStore, req: &AcquireRequest) -> bool {
     resolve_book(library, req)
         .await
@@ -1579,6 +1641,7 @@ async fn fetch_plain_catalog_overlay(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Builds a media fix-up request, preferring Audnexus overlay fields over the library row.
 async fn build_fixup_request(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -1651,6 +1714,7 @@ async fn build_fixup_request(
     }
 }
 
+/// Applies configured creation/modified times to written keys; timestamp failures are logged only.
 async fn apply_storage_timestamps(
     storage: &dyn StorageBackend,
     library: &LibraryStore,
@@ -1670,6 +1734,7 @@ async fn apply_storage_timestamps(
     }
 }
 
+/// Resolves a file-timestamp mode to a `SystemTime` (`now`, purchase time, or publication time).
 fn resolve_timestamp(
     mode: FileTimestampMode,
     book: Option<&bookclerk_library::BookRecord>,
@@ -1685,6 +1750,7 @@ fn resolve_timestamp(
     }
 }
 
+/// Loads the library row by UUID first, then by product id and account.
 async fn resolve_book(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -1754,6 +1820,7 @@ async fn overlay_audible_chapters_for_plain(
     }
 }
 
+/// Probes MP4-family duration in milliseconds; returns `None` for other containers or parse failure.
 fn probe_audio_duration_ms(path: &Path) -> Option<u64> {
     let ext = path
         .extension()
@@ -1771,6 +1838,7 @@ fn probe_audio_duration_ms(path: &Path) -> Option<u64> {
     None
 }
 
+/// Builds a naming context from the request, filling gaps from the library row.
 async fn naming_ctx(library: &LibraryStore, req: &AcquireRequest) -> NamingContext {
     let book = resolve_book(library, req).await;
     NamingContext {
@@ -1887,6 +1955,10 @@ pub async fn planned_storage_key(library: &LibraryStore, req: &AcquireRequest) -
 /// Download and store companion PDF only (classic `acquire --pdf`).
 ///
 /// Fetches via [`ContentSource::fetch_title`]; requires `PlainFetch.pdf_url`, then HTTP GETs that URL.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn acquire_pdf_only(
     library: &LibraryStore,
     destinations: &AcquireDestinations,

@@ -118,6 +118,10 @@ impl ProgressiveFixture {
     /// # Errors
     ///
     /// Returns an error when the underlying I/O, parse, network, or store operation fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics when an internal invariant does not hold.
     pub fn write(&self, path: &Path) -> Result<()> {
         assert!(
             !self.samples.is_empty(),
@@ -173,6 +177,7 @@ impl ProgressiveFixture {
         Ok(())
     }
 
+    /// Builds a minimal movie box (one `soun` track) for fixture MP4s used in tests.
     fn build_moov(&self, sizes: &[u32], chunk_offsets: &[u32]) -> Vec<u8> {
         let media_duration = u64::from(self.sample_duration) * self.samples.len() as u64;
         let movie_timescale = 1000u32;
@@ -340,12 +345,14 @@ impl ProgressiveFixture {
     }
 }
 
+/// Identity 3×3 transformation matrix written into fixture `mvhd` / `tkhd` atoms.
 const UNITY_MATRIX: [u8; 36] = [
     0x00, 0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, //
     0, 0, 0, 0, 0x00, 0x01, 0x00, 0x00, 0, 0, 0, 0, //
     0, 0, 0, 0, 0, 0, 0, 0, 0x40, 0x00, 0x00, 0x00,
 ];
 
+/// Prefixes a 32-bit size and fourcc onto a fixture atom body.
 fn boxed(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + body.len());
     out.extend_from_slice(&((8 + body.len()) as u32).to_be_bytes());
@@ -354,6 +361,7 @@ fn boxed(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Concatenates byte slices into one fixture atom payload.
 fn concat(parts: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::with_capacity(parts.iter().map(|p| p.len()).sum());
     for part in parts {

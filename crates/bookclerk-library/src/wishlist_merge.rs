@@ -2,12 +2,14 @@
 
 use crate::models::{TitleRequestRecord, WishlistPurchaseHint, WishlistStoreEdition};
 
+/// Trims `s` and returns `None` when empty.
 fn nonempty(s: Option<&str>) -> Option<String> {
     s.map(str::trim)
         .filter(|t| !t.is_empty())
         .map(str::to_string)
 }
 
+/// True when `raw` contains both `<` and `>` (used to prefer HTML blurbs).
 fn has_html(raw: &str) -> bool {
     raw.contains('<') && raw.contains('>')
 }
@@ -46,10 +48,12 @@ pub fn pick_better_description(a: Option<&str>, b: Option<&str>) -> Option<Strin
     }
 }
 
+/// First non-empty trimmed string of `a` then `b`.
 fn pick_str(a: Option<&str>, b: Option<&str>) -> Option<String> {
     nonempty(a).or_else(|| nonempty(b))
 }
 
+/// Scores a purchase hint by URL, display price, and list/member cents (higher wins on merge).
 fn hint_richness(h: &WishlistPurchaseHint) -> u8 {
     let mut score = 0u8;
     if nonempty(h.url.as_deref()).is_some() {
@@ -64,6 +68,7 @@ fn hint_richness(h: &WishlistPurchaseHint) -> u8 {
     score
 }
 
+/// Fills empty title/url/price fields on `into` from `from` without overwriting set values.
 fn merge_hint(into: &mut WishlistPurchaseHint, from: &WishlistPurchaseHint) {
     if nonempty(into.title.as_deref()).is_none() {
         into.title = from.title.clone();

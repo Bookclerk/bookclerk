@@ -26,6 +26,7 @@ pub struct ChirpAuthFile {
     pub label: Option<String>,
 }
 
+/// Default Chirp marketplace/locale stored on the sealed auth blob (`us`).
 fn default_marketplace() -> String {
     String::from("us")
 }

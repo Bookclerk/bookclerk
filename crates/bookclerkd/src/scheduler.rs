@@ -14,6 +14,7 @@ pub fn spawn_scheduler(state: Arc<AppState>) {
     spawn_listen_sync_loop(state);
 }
 
+/// Tokio task that sleeps `scan_interval_minutes` then runs scan (and optional auto-acquire).
 fn spawn_scan_loop(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
@@ -79,6 +80,7 @@ fn spawn_scan_loop(state: Arc<AppState>) {
     });
 }
 
+/// Tokio task that sleeps `listen_sync_interval_minutes` then syncs listening progress.
 fn spawn_listen_sync_loop(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {

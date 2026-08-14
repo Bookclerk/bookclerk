@@ -12,6 +12,7 @@ use clap::{Args, ValueEnum};
 use rusqlite::Connection;
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
+/// Destination schema for `bookclerk export postgres` (classic Libation vs native flat).
 pub enum CopyDbFormat {
     /// Classic Libation EF / Postgres schema.
     Classic,
@@ -21,6 +22,7 @@ pub enum CopyDbFormat {
 }
 
 #[derive(Debug, Args)]
+/// CLI flags for copying `library.db` into PostgreSQL.
 pub struct CopyDbArgs {
     /// PostgreSQL connection string.
     #[arg(short = 'c', long)]
@@ -33,6 +35,7 @@ pub struct CopyDbArgs {
     format: CopyDbFormat,
 }
 
+/// Opens the source SQLite read-only and writes the chosen schema to PostgreSQL.
 pub async fn run(args: CopyDbArgs, config: &Config) -> anyhow::Result<()> {
     let paths = config.paths();
     let source = args.source.unwrap_or_else(|| paths.library_db.clone());
@@ -53,6 +56,7 @@ pub async fn run(args: CopyDbArgs, config: &Config) -> anyhow::Result<()> {
     }
 }
 
+/// Wipes classic Libation tables and inserts Books / LibraryBooks / contributors / series.
 async fn export_classic(
     conn: &Connection,
     client: &mut tokio_postgres::Client,
@@ -255,6 +259,7 @@ async fn export_classic(
     Ok(())
 }
 
+/// Recreates native `accounts` / `books` / `saved_filters` and copies every SQLite row.
 async fn export_flat(
     conn: &Connection,
     client: &mut tokio_postgres::Client,
@@ -452,43 +457,79 @@ async fn export_flat(
 }
 
 #[derive(Debug)]
+/// One `books` row loaded from SQLite for either export format.
 struct FlatBook {
+    /// SQLite `books.id` used as classic `BookId`.
     id: i64,
+    /// Public library UUID (unique per title).
     uuid: String,
+    /// Source plugin id; missing SQLite values become `audible`.
     source: String,
+    /// Owning store account id.
     account_id: String,
+    /// Storefront product / SKU id.
     product_id: String,
+    /// Amazon ASIN when the storefront exposed one.
     asin: Option<String>,
+    /// ISBN when the storefront exposed one.
     isbn: Option<String>,
+    /// Storefront marketplace / locale (classic `Locale`).
     marketplace: String,
+    /// Primary title; may still contain a `: ` subtitle split.
     title: String,
+    /// Display author string (not split on commas).
     authors: Option<String>,
+    /// Display narrator string (not split on commas).
     narrators: Option<String>,
+    /// Series name when applicable.
     series: Option<String>,
+    /// Series sequence label; cleared for podcast parents in classic export.
     series_index: Option<String>,
+    /// Audible series ASIN, or a generated `name:` key when absent.
     series_asin: Option<String>,
+    /// Acquire status string parsed into classic `BookStatus`.
     acquire_status: String,
+    /// Destination object key for the primary audio file.
     storage_key: Option<String>,
+    /// Last acquire error text when the download failed.
     error_message: Option<String>,
+    /// Purchase / library-add time (UTC); falls back to `created_at` for classic `DateAdded`.
     purchased_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Operator tags as a single stored string.
     tags: Option<String>,
+    /// Overall rating when set (classic `Rating_OverallRating`).
     rating_overall: Option<f32>,
+    /// Performance rating when set.
     rating_performance: Option<f32>,
+    /// Story rating when set.
     rating_story: Option<f32>,
+    /// Whether the listener marked the title finished.
     is_finished: bool,
+    /// Companion-PDF acquire status string.
     pdf_status: String,
+    /// Destination object key for the companion PDF.
     pdf_storage_key: Option<String>,
+    /// Publisher name when known.
     publisher: Option<String>,
+    /// Runtime in whole minutes (classic `LengthInMinutes`).
     length_minutes: Option<i64>,
+    /// Whether the edition is abridged.
     is_abridged: bool,
+    /// Content classification (`book`, `podcast`, …).
     content_kind: String,
+    /// Category / genre labels as a single stored string.
     categories: Option<String>,
+    /// Subtitle when stored separately from `title`.
     subtitle: Option<String>,
+    /// Publication time (UTC) when known.
     published_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Row creation time (UTC); unparseable SQLite values become now.
     created_at: chrono::DateTime<chrono::Utc>,
+    /// Row update time (UTC); unparseable SQLite values become now.
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Reads every `books` row from SQLite, defaulting missing `source` to `audible`.
 fn load_flat_books(conn: &Connection) -> anyhow::Result<Vec<FlatBook>> {
     let mut stmt = conn.prepare(
         "SELECT id, uuid, source, account_id, product_id, asin, isbn, marketplace, title, authors,
@@ -553,6 +594,7 @@ fn load_flat_books(conn: &Connection) -> anyhow::Result<Vec<FlatBook>> {
     Ok(out)
 }
 
+/// Prefers an explicit subtitle, otherwise splits `title` on the first `: `.
 fn split_title_subtitle(title: &str, subtitle: Option<&str>) -> (String, String) {
     if let Some(sub) = subtitle.filter(|s| !s.trim().is_empty()) {
         return (title.to_string(), sub.trim().to_string());
@@ -564,6 +606,7 @@ fn split_title_subtitle(title: &str, subtitle: Option<&str>) -> (String, String)
     }
 }
 
+/// Parses RFC 3339 or `YYYY-MM-DD HH:MM:SS[.frac]` as UTC; returns `None` when none match.
 fn parse_dt(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
         return Some(dt.with_timezone(&chrono::Utc));
@@ -615,6 +658,7 @@ async fn reset_serial_sequence(
     }
 }
 
+/// `CREATE TABLE IF NOT EXISTS` DDL for the classic Libation EF / Postgres schema.
 const CLASSIC_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS "Books" (
     "BookId" SERIAL PRIMARY KEY,

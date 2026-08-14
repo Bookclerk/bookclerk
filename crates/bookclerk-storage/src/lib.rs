@@ -8,11 +8,13 @@
 //! Product narrative: destination sections in `docs/configuration.md`. Style:
 //! `docs/code-documentation.md`.
 
+/// Error types returned by destination storage backends.
 mod error;
 mod fanout;
 mod local;
 mod s3;
 mod s3_credentials;
+/// [`StorageBackend`] trait plus object metadata and audio-key helpers.
 mod traits;
 
 pub use error::{Result, StorageError};
@@ -84,6 +86,7 @@ pub async fn from_config(
     Ok(Box::new(FanoutBackend::new(backends)?))
 }
 
+/// Trims and normalizes a destination key prefix (same rules as config).
 pub(crate) fn normalize_prefix(prefix: &str) -> String {
     normalize_storage_prefix(prefix)
 }

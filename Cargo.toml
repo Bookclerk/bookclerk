@@ -208,3 +208,6 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 # Keep CI green on defaults; tighten pedantic lints as crates mature.
 pedantic = { level = "allow", priority = -1 }
+# Google-style private-item docs (binaries + libs). CI promotes warnings to
+# errors via RUSTFLAGS="-D warnings". See docs/code-documentation.md.
+missing_docs_in_private_items = "warn"

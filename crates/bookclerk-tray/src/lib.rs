@@ -58,6 +58,10 @@ pub fn run_blocking(config: SharedTrayConfig) -> anyhow::Result<()> {
 /// # Errors
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub fn spawn(config: SharedTrayConfig) -> std::thread::JoinHandle<anyhow::Result<()>> {
     std::thread::Builder::new()
         .name("bookclerk-tray".into())

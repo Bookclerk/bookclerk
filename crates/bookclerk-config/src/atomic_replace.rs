@@ -27,12 +27,18 @@ pub(crate) fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(windows)]
+/// Atomically replaces `to` with `from` via `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`.
+///
+/// # Errors
+///
+/// Returns an I/O error when `MoveFileExW` fails.
 fn replace_file_windows(from: &Path, to: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
+    /// Encodes `path` as a NUL-terminated wide string for Win32 APIs.
     fn wide(path: &Path) -> Vec<u16> {
         path.as_os_str()
             .encode_wide()

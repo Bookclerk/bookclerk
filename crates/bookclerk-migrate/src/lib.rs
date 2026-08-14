@@ -7,6 +7,7 @@
 
 mod accounts;
 mod discover;
+/// Migration error types (`MigrateError`) returned to CLI import/export commands.
 mod error;
 mod export_libation;
 mod files;

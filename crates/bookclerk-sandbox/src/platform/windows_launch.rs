@@ -56,36 +56,52 @@ use windows::Win32::System::Threading::{
 
 use crate::SandboxError;
 
+/// `SE_GROUP_ENABLED` attribute applied to AppContainer capability SIDs.
 const SE_GROUP_ENABLED: u32 = 0x0000_0004;
 
 /// Limits applied to the kill-on-close Job Object that owns the guest tree.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JobResourceLimits {
+    /// Maximum committed memory for the Job Object, when set.
     pub memory_bytes: Option<usize>,
+    /// CPU rate cap as a percent of one logical processor, when set.
     pub cpu_rate_percent: Option<u32>,
+    /// Maximum active processes in the Job Object, when set.
     pub active_processes: Option<u32>,
 }
 
 /// Inputs for an AppContainer CreateProcess launch.
 #[derive(Debug)]
 pub struct LaunchRequest<'a> {
+    /// Guest executable path passed as `lpApplicationName`.
     pub exe: &'a Path,
+    /// Full `lpCommandLine` including quoted argv[0].
     pub cmdline: String,
+    /// Working directory for CreateProcess.
     pub cwd: PathBuf,
+    /// Child environment block entries as key/value pairs.
     pub env: Vec<(OsString, OsString)>,
+    /// AppContainer security capabilities for extended startup info.
     pub sec: &'a SecurityCapabilities,
+    /// Resource limits applied to the kill-on-close Job Object.
     pub job: JobResourceLimits,
 }
 
 /// A running AppContainer guest with proxied stdio and a kill-on-close Job.
 #[derive(Debug)]
 pub struct LaunchedGuest {
+    /// Process ID of the primary guest process.
     #[allow(dead_code)]
     pub pid: u32,
+    /// Parent write end of the guest stdin pipe.
     pub stdin: Option<File>,
+    /// Parent read end of the guest stdout pipe.
     pub stdout: Option<File>,
+    /// Parent read end of the guest stderr pipe.
     pub stderr: Option<File>,
+    /// Primary process handle kept until drop or [`Self::wait`].
     process: HANDLE,
+    /// Kill-on-close Job Object owning the guest tree.
     job: HANDLE,
 }
 
@@ -162,6 +178,11 @@ pub fn launch_appcontainer_guest(
     unsafe { launch_impl(request) }
 }
 
+/// Creates an AppContainer child with stdio pipes and Job Object membership.
+///
+/// # Safety
+///
+/// Caller must ensure `request` paths and Win32 inputs are valid for CreateProcess.
 unsafe fn launch_impl(request: LaunchRequest<'_>) -> Result<LaunchedGuest, SandboxError> {
     let owned_caps = OwnedSecurityCapabilities::from_rappct(request.sec)?;
 
@@ -421,6 +442,11 @@ unsafe fn launch_impl(request: LaunchRequest<'_>) -> Result<LaunchedGuest, Sandb
     })
 }
 
+/// Applies memory, CPU rate, and process limits plus kill-on-close to `job`.
+///
+/// # Errors
+///
+/// Returns [`SandboxError::Backend`] when `SetInformationJobObject` fails.
 fn configure_job(job: HANDLE, limits: &JobResourceLimits) -> Result<(), SandboxError> {
     unsafe {
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
@@ -465,12 +491,20 @@ fn configure_job(job: HANDLE, limits: &JobResourceLimits) -> Result<(), SandboxE
     Ok(())
 }
 
+/// Owned `PROC_THREAD_ATTRIBUTE_LIST` buffer for `STARTUPINFOEXW`.
 struct AttributeList {
+    /// Backing storage for the attribute list.
     _buf: Vec<u8>,
+    /// Pointer into `_buf` passed to Win32 APIs.
     ptr: LPPROC_THREAD_ATTRIBUTE_LIST,
 }
 
 impl AttributeList {
+    /// Allocates an attribute list with `count` entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SandboxError::Backend`] when `InitializeProcThreadAttributeList` fails.
     fn new(count: u32) -> Result<Self, SandboxError> {
         let mut bytes = 0usize;
         unsafe {
@@ -485,10 +519,16 @@ impl AttributeList {
         Ok(Self { _buf: buf, ptr })
     }
 
+    /// Returns the list pointer for `STARTUPINFOEXW.lpAttributeList`.
     fn as_mut_ptr(&mut self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
         self.ptr
     }
 
+    /// Sets `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` on the list.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SandboxError::Backend`] when `UpdateProcThreadAttribute` fails.
     fn set_security_capabilities(
         &mut self,
         caps: &OwnedSecurityCapabilities,
@@ -507,6 +547,11 @@ impl AttributeList {
         }
     }
 
+    /// Sets `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` for stdio inheritance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SandboxError::Backend`] when `UpdateProcThreadAttribute` fails.
     fn set_handle_list(&mut self, handles: &[HANDLE]) -> Result<(), SandboxError> {
         unsafe {
             UpdateProcThreadAttribute(
@@ -522,6 +567,11 @@ impl AttributeList {
         }
     }
 
+    /// Sets `PROC_THREAD_ATTRIBUTE_JOB_LIST` for pre-create Job assignment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SandboxError::Backend`] when `UpdateProcThreadAttribute` fails.
     fn set_job_list(&mut self, jobs: &[HANDLE]) -> Result<(), SandboxError> {
         unsafe {
             UpdateProcThreadAttribute(
@@ -546,14 +596,24 @@ impl Drop for AttributeList {
     }
 }
 
+/// Keeps AppContainer SID allocations alive for `SECURITY_CAPABILITIES`.
 struct OwnedSecurityCapabilities {
+    /// Package SID converted from rappct.
     _app_sid: LocalSid,
+    /// Capability SIDs converted from rappct.
     _cap_sids: Vec<LocalSid>,
+    /// `SID_AND_ATTRIBUTES` slice referenced by `sc`.
     _caps: Box<[SID_AND_ATTRIBUTES]>,
+    /// Win32 structure passed to CreateProcess extended attributes.
     sc: SECURITY_CAPABILITIES,
 }
 
 impl OwnedSecurityCapabilities {
+    /// Builds owned Win32 security capabilities from rappct inputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SandboxError::Backend`] when SID SDDL conversion fails.
     fn from_rappct(sec: &SecurityCapabilities) -> Result<Self, SandboxError> {
         let app = LocalSid::from_sddl(sec.package.as_string())?;
         let mut cap_sids = Vec::with_capacity(sec.caps.len());
@@ -582,16 +642,24 @@ impl OwnedSecurityCapabilities {
         })
     }
 
+    /// Returns a pointer to the embedded `SECURITY_CAPABILITIES`.
     fn as_ptr(&self) -> *const SECURITY_CAPABILITIES {
         &self.sc
     }
 }
 
+/// Owned PSID allocated with `ConvertStringSidToSidW`.
 struct LocalSid {
+    /// Win32 SID pointer freed on drop.
     psid: PSID,
 }
 
 impl LocalSid {
+    /// Parses an SDDL string into an owned SID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SandboxError::Backend`] when Win32 rejects the SDDL.
     fn from_sddl(sddl: &str) -> Result<Self, SandboxError> {
         let wide = wide_str(sddl);
         let mut psid = PSID(ptr::null_mut());
@@ -602,6 +670,7 @@ impl LocalSid {
         Ok(Self { psid })
     }
 
+    /// Returns the raw PSID for Win32 trustee and capability structs.
     fn as_psid(&self) -> PSID {
         self.psid
     }
@@ -629,10 +698,12 @@ fn create_pipe_pair(sa: &mut SECURITY_ATTRIBUTES) -> Result<(HANDLE, HANDLE), Sa
     Ok((read, write))
 }
 
+/// Wraps a Win32 handle in a `File` that closes the handle on drop.
 fn file_from_handle(handle: HANDLE) -> File {
     unsafe { File::from_raw_handle(handle.0 as RawHandle) }
 }
 
+/// Closes every non-invalid handle in `handles`, ignoring errors.
 fn cleanup_handles(handles: &[HANDLE]) {
     for &h in handles {
         if !h.is_invalid() && h != HANDLE::default() {
@@ -643,14 +714,17 @@ fn cleanup_handles(handles: &[HANDLE]) {
     }
 }
 
+/// Encodes a Rust str as a NUL-terminated UTF-16 vector for Win32 APIs.
 fn wide_str(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// Encodes an `OsStr` as a NUL-terminated UTF-16 vector for Win32 APIs.
 fn wide_os(s: &OsStr) -> Vec<u16> {
     s.encode_wide().chain(std::iter::once(0)).collect()
 }
 
+/// Builds a double-NUL-terminated environment block for `CreateProcessW`.
 fn build_env_block(env: &[(OsString, OsString)]) -> Vec<u16> {
     let mut block = Vec::new();
     for (k, v) in env {
@@ -664,6 +738,7 @@ fn build_env_block(env: &[(OsString, OsString)]) -> Vec<u16> {
     block
 }
 
+/// Formats an AppContainer launch failure as [`SandboxError::Backend`].
 fn launch_err(stage: &str, detail: &str) -> SandboxError {
     SandboxError::Backend {
         label: "appcontainer".into(),

@@ -104,6 +104,10 @@ pub async fn package_m4b_from_mp3(
 ///
 /// Feeds PCM in bounded chunks so callers with large buffers still do not
 /// duplicate the full stream as AAC access units in memory.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn package_m4b_from_pcm(
     pcm: &[i16],
     sample_rate: u32,
@@ -146,6 +150,7 @@ pub fn package_m4b_from_pcm(
     ))
 }
 
+/// Remuxes AAC MP4 parts losslessly, otherwise transcodes through fdk-aac.
 pub(crate) fn package_m4b_from_parts_native(
     req: &PackageM4bRequest,
 ) -> Result<(MediaOutcome, Vec<(String, u64)>)> {
@@ -155,6 +160,7 @@ pub(crate) fn package_m4b_from_parts_native(
     package_m4b_transcode_parts(req)
 }
 
+/// True when the path or `ftyp` major brand looks like clear AAC MP4/M4A/M4B.
 fn looks_like_aac_mp4_part(path: &Path) -> bool {
     match path
         .extension()
@@ -173,6 +179,7 @@ fn looks_like_aac_mp4_part(path: &Path) -> bool {
     }
 }
 
+/// Reads the 4-byte `ftyp` major brand, or `None` if the header is not ISO-BMFF.
 fn sniff_ftyp_major_brand(path: &Path) -> Option<[u8; 4]> {
     let mut file = File::open(path).ok()?;
     let mut hdr = [0u8; 12];
@@ -310,6 +317,7 @@ fn package_m4b_remux_aac_parts(
     ))
 }
 
+/// Decodes each part to PCM and encodes a progressive AAC M4B via fdk-aac.
 fn package_m4b_transcode_parts(
     req: &PackageM4bRequest,
 ) -> Result<(MediaOutcome, Vec<(String, u64)>)> {
@@ -405,13 +413,19 @@ fn package_m4b_transcode_parts(
 struct StreamingAacSession {
     /// Channel count of PCM fed via [`Self::push_pcm`].
     pcm_channels: u16,
+    /// fdk-aac encoder writing raw AAC access units.
     encoder: Encoder,
+    /// Encoder frame length in samples per channel.
     frame_length: u32,
+    /// Interleaved samples required for one encoder frame.
     samples_per_frame: usize,
+    /// Encoder input channel count (may differ from PCM after up/downmix).
     out_channels: usize,
     /// Interleaved PCM awaiting encode (encoder input channel layout).
     staging: Vec<i16>,
+    /// Scratch buffer sized to the encoder's max access-unit bytes.
     out_buf: Vec<u8>,
+    /// Progressive M4B writer that receives each encoded access unit.
     out: AacM4bWriter,
 }
 
@@ -460,6 +474,7 @@ impl StreamingAacSession {
         })
     }
 
+    /// Stages converted PCM and encodes every full encoder frame.
     fn push_pcm(&mut self, pcm: &[i16]) -> Result<()> {
         if pcm.is_empty() {
             return Ok(());
@@ -468,6 +483,7 @@ impl StreamingAacSession {
         self.encode_full_frames()
     }
 
+    /// Zero-pads a partial frame, encodes the remainder, and finishes the M4B.
     fn finish(mut self) -> Result<()> {
         // Pad to a whole number of encoder frames so we never need EOF flush.
         let rem = self.staging.len() % self.samples_per_frame;
@@ -485,6 +501,7 @@ impl StreamingAacSession {
         self.out.finish()
     }
 
+    /// Up/downmixes PCM to the encoder channel layout before staging.
     fn append_converted(&mut self, pcm: &[i16]) {
         match (self.pcm_channels, self.out_channels) {
             (1, 2) => {
@@ -506,6 +523,7 @@ impl StreamingAacSession {
         }
     }
 
+    /// Encodes complete frames from `staging` until fewer than one frame remain.
     fn encode_full_frames(&mut self) -> Result<()> {
         while self.staging.len() >= self.samples_per_frame {
             let enc = self
@@ -624,6 +642,7 @@ where
     Ok(())
 }
 
+/// Appends decoded frames as interleaved i16 in the requested output channel count.
 fn append_pcm_i16(
     buf: &GenericAudioBufferRef<'_>,
     out_channels: u16,

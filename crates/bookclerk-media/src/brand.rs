@@ -39,10 +39,12 @@ pub fn runtime_length_ms_from_chapter_info(info: &Value) -> Option<u64> {
     json_u64_opt_keys(info, &["runtime_length_ms", "runtimeLengthMs"])
 }
 
+/// First matching u64 among `keys` (snake_case or camelCase); `0` when none are present.
 fn json_u64_keys(info: &Value, keys: &[&str]) -> u64 {
     json_u64_opt_keys(info, keys).unwrap_or(0)
 }
 
+/// First matching non-negative integer/float among `keys`; `None` when none parse.
 fn json_u64_opt_keys(info: &Value, keys: &[&str]) -> Option<u64> {
     for key in keys {
         if let Some(v) = info.get(*key).and_then(|v| {

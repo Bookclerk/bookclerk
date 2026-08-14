@@ -1,7 +1,16 @@
 {
   "$schema": "https://typedoc.org/schema.json",
-  "entryPoints": ["src"],
-  "entryPointStrategy": "expand",
+  "entryPoints": [
+    "src/lib/api.ts",
+    "src/lib/safeHtml.ts",
+    "src/lib/routes.ts",
+    "src/lib/webauthn.ts",
+    "src/lib/utils.ts",
+    "src/lib/catalogTitle.ts",
+    "src/lib/enabledSources.ts",
+    "src/lib/libraryFilters.ts"
+  ],
+  "entryPointStrategy": "resolve",
   "out": "../docs/api/ui",
   "name": "bookclerk-ui",
   "excludePrivate": true,
@@ -9,7 +18,17 @@
   "exclude": ["**/*.test.ts", "**/*.test.tsx"],
   "validation": {
     "notExported": false,
-    "invalidLink": false,
-    "notDocumented": false
-  }
+    "invalidLink": true,
+    "notDocumented": true
+  },
+  "treatValidationWarningsAsErrors": true,
+  "requiredToBeDocumented": [
+    "Enum",
+    "EnumMember",
+    "Variable",
+    "Function",
+    "Class",
+    "Interface",
+    "TypeAlias"
+  ]
 }

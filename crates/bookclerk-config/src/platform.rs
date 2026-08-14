@@ -22,6 +22,7 @@ pub fn detect_distro() -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
+/// Reads `/etc/os-release` and prefers `PRETTY_NAME`, else `NAME` + `VERSION`.
 fn linux_os_release() -> Option<String> {
     let text = std::fs::read_to_string("/etc/os-release").ok()?;
     let mut pretty = None;
@@ -49,6 +50,7 @@ fn linux_os_release() -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
+/// Strips matching single or double quotes from an os-release value.
 fn unquote(v: &str) -> String {
     let v = v.trim();
     if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
@@ -59,6 +61,7 @@ fn unquote(v: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
+/// Reads the macOS product version via `sw_vers` for diagnostics.
 fn macos_product_version() -> Option<String> {
     let out = std::process::Command::new("sw_vers")
         .arg("-productVersion")
@@ -76,6 +79,7 @@ fn macos_product_version() -> Option<String> {
 }
 
 #[cfg(target_os = "windows")]
+/// Returns a lightweight Windows OS label from the environment.
 fn windows_caption() -> Option<String> {
     // Prefer env-based approximation without spawning PowerShell in hot paths.
     let ver = std::env::var("OS").ok().unwrap_or_else(|| "Windows".into());

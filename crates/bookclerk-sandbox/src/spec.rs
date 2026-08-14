@@ -96,6 +96,7 @@ pub struct Spec {
     pub cpu_rate_percent: Option<u32>,
 }
 
+/// Default for [`Spec::system_paths`]: include system library/loader paths.
 fn default_system_paths() -> bool {
     true
 }

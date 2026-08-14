@@ -540,6 +540,10 @@ pub fn effective_grant(existing: &PluginGrant, requested: &PluginGrant) -> Plugi
 ///
 /// Returns [`PluginError`] when identity mismatches, network mode is invalid,
 /// a binding is unknown, or a domain pattern cannot be normalized.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 pub fn validate_approved_grant(
     approved: &PluginGrant,
     baseline: &PluginGrant,
@@ -640,6 +644,7 @@ pub fn validate_approved_grant(
     })
 }
 
+/// Clamps an optional CPU budget through [`WorkerdLimits::effective`].
 fn normalize_cpu_ms(value: Option<u32>) -> Option<u32> {
     value.map(|cpu_ms| {
         WorkerdLimits {
@@ -651,6 +656,7 @@ fn normalize_cpu_ms(value: Option<u32>) -> Option<u32> {
     })
 }
 
+/// Clamps an optional subrequest budget through [`WorkerdLimits::effective`].
 fn normalize_subrequests(value: Option<u32>) -> Option<u32> {
     value.map(|subrequests| {
         WorkerdLimits {
@@ -754,6 +760,10 @@ pub fn grant_has_binding(grant: &PluginGrant, name: &str) -> bool {
 }
 
 /// Fail closed when a delivery site needs a binding the covering grant lacks.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn require_binding(grant: &PluginGrant, name: &str) -> Result<()> {
     if grant_has_binding(grant, name) {
         Ok(())
@@ -808,6 +818,10 @@ pub fn ensure_platform_grant(files_dir: &Path, manifest: &PluginManifest) -> Res
 }
 
 /// Resolve the covering grant for spawn: platform auto-grant, else [`require_grant`].
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn spawn_grant(files_dir: &Path, manifest: &PluginManifest) -> Result<PluginGrant> {
     if is_platform_plugin_id(&manifest.id) {
         ensure_platform_grant(files_dir, manifest)
@@ -852,6 +866,7 @@ pub fn is_platform_plugin_id(id: &str) -> bool {
     matches!(id.to_ascii_lowercase().as_str(), "sqlite" | "local")
 }
 
+/// True when a platform grant is deny-network with only `config` / `work_fs` bindings.
 fn is_safe_platform_request(grant: &PluginGrant) -> bool {
     grant.network_mode == "deny"
         && grant.domains.is_empty()
@@ -863,6 +878,10 @@ fn is_safe_platform_request(grant: &PluginGrant) -> bool {
 }
 
 /// Reject handshake claims that exceed the manifest (and covering grant).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn validate_handshake_capabilities(
     manifest: &PluginManifest,
     grant: &PluginGrant,

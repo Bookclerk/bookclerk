@@ -27,6 +27,10 @@ pub fn register_builtin_sources(config: &Config, registry: &mut SourceRegistry) 
 ///
 /// Misconfigured-but-enabled ABS is still registered so health/diagnose surface
 /// the error (same behavior as the former in-crate factory).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn register_builtin_integrations(
     config: &Config,
     registry: &mut IntegrationRegistry,
@@ -41,6 +45,10 @@ pub fn register_builtin_integrations(
 }
 
 /// Built-in sources plus discovered external source plugins.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn load_sources(config: &Config) -> crate::Result<SourceRegistry> {
     let mut registry = SourceRegistry::new();
     register_builtin_sources(config, &mut registry);
@@ -49,6 +57,10 @@ pub async fn load_sources(config: &Config) -> crate::Result<SourceRegistry> {
 }
 
 /// Built-in integrations plus discovered external integration plugins.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn load_integrations(config: &Config) -> crate::Result<IntegrationRegistry> {
     let mut registry = IntegrationRegistry::new();
     register_builtin_integrations(config, &mut registry)?;

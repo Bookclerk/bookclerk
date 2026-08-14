@@ -20,9 +20,21 @@ pub trait RegistryAdapter: Send + Sync {
     /// Returns the adapter source kind string (`cargo`, `npm`, `pypi`, `static`).
     fn source_kind(&self) -> &'static str;
     /// Searches this registry for packages matching `query`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     fn search(&self, q: &SearchQuery) -> Result<Vec<CatalogHit>>;
     /// Fetches and parses the Bookclerk package manifest for `coordinate`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     fn fetch_manifest(&self, coord: &PackageCoordinate) -> Result<BookclerkPackageManifest>;
     /// Lists known versions for `name` in this registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     fn list_versions(&self, name: &str) -> Result<Vec<String>>;
 }

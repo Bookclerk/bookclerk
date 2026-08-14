@@ -24,6 +24,7 @@ use crate::models::{PortalIdentity, UserRecord};
 use crate::store::LibraryStore;
 use crate::SessionClientInfo;
 
+/// How long an idempotency receipt is kept, in hours, before sweep.
 const RECEIPT_TTL_HOURS: i64 = 24;
 
 /// Runs `req` as one native SQL transaction, inserting or replaying a receipt.
@@ -68,6 +69,7 @@ pub async fn execute_db_atomic(
     Ok(out)
 }
 
+/// Deletes a user in one native `dbAtomic` transaction (fails closed on last owner).
 pub(crate) async fn delete_user(db: &DatabaseConnection, id: i64) -> Result<()> {
     unit_from_atomic(
         execute_db_atomic(db, request(DbAtomicParams::DeleteUser { user_id: id })).await?,
@@ -75,6 +77,7 @@ pub(crate) async fn delete_user(db: &DatabaseConnection, id: i64) -> Result<()> 
     )
 }
 
+/// Sets a user's status (`active`/`disabled`) inside a `dbAtomic` transaction.
 pub(crate) async fn set_user_status(
     db: &DatabaseConnection,
     id: i64,
@@ -93,6 +96,7 @@ pub(crate) async fn set_user_status(
     )
 }
 
+/// Replaces or clears a user's Argon2 password hash inside a `dbAtomic` transaction.
 pub(crate) async fn set_user_password_hash(
     db: &DatabaseConnection,
     id: i64,
@@ -111,6 +115,7 @@ pub(crate) async fn set_user_password_hash(
     )
 }
 
+/// Changes a user's portal role inside a `dbAtomic` transaction (fails closed on last owner).
 pub(crate) async fn set_user_role(
     db: &DatabaseConnection,
     id: i64,
@@ -129,6 +134,7 @@ pub(crate) async fn set_user_role(
     )
 }
 
+/// Consumes a claim ticket and mints a portal session in one `dbAtomic` transaction.
 pub(crate) async fn redeem_claim_ticket_to_session(
     db: &DatabaseConnection,
     token_hash: &str,
@@ -156,6 +162,7 @@ pub(crate) async fn redeem_claim_ticket_to_session(
     )
 }
 
+/// Consumes one-time OIDC RP state (PKCE verifier, nonce) keyed by hashed `state`.
 pub(crate) async fn take_oidc_rp_state(
     db: &DatabaseConnection,
     state_hash: &str,
@@ -183,6 +190,7 @@ pub(crate) async fn take_oidc_rp_state(
     )))
 }
 
+/// Consumes a one-time WebAuthn challenge row for login or registration.
 pub(crate) async fn take_webauthn_challenge(
     db: &DatabaseConnection,
     challenge_id: &str,
@@ -236,6 +244,10 @@ pub fn db_atomic_operation_id(op: &DbAtomicParams) -> String {
 /// Claim redeem omits `expires_at`, client metadata, and the randomized Argon2
 /// `new_password_hash`. Idempotency uses `password_fingerprint` (HMAC of the
 /// plaintext password) so a retry with a fresh Argon2 salt still matches.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn db_atomic_request_hash(op: &DbAtomicParams) -> Result<String> {
     let bytes = match op {
         DbAtomicParams::RedeemClaimTicket {
@@ -255,6 +267,7 @@ pub fn db_atomic_request_hash(op: &DbAtomicParams) -> Result<String> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
+/// Wraps an operation with a stable idempotency key for consume-once ops.
 fn request(operation: DbAtomicParams) -> DbAtomicRequest {
     DbAtomicRequest {
         operation_id: db_atomic_operation_id(&operation),
@@ -262,6 +275,7 @@ fn request(operation: DbAtomicParams) -> DbAtomicRequest {
     }
 }
 
+/// Wire kind stored on the receipt (`deleteUser`, `takeOidcRpState`, …).
 fn operation_kind(op: &DbAtomicParams) -> &'static str {
     match op {
         DbAtomicParams::DeleteUser { .. } => "deleteUser",
@@ -274,6 +288,7 @@ fn operation_kind(op: &DbAtomicParams) -> &'static str {
     }
 }
 
+/// Runs the operation under a savepoint, then inserts or replays a 24-hour receipt.
 async fn execute_in_txn(
     txn: &DatabaseTransaction,
     req: &DbAtomicRequest,
@@ -349,6 +364,7 @@ async fn execute_in_txn(
     Ok(result)
 }
 
+/// Rebuilds a result from a stored receipt; hash mismatch is an idempotency conflict.
 fn result_from_receipt(
     row: &db_atomic_receipts::Model,
     expected_hash: &str,
@@ -374,6 +390,7 @@ fn result_from_receipt(
     result
 }
 
+/// Dispatches one `DbAtomicParams` variant onto `LibraryStore` inside the savepoint.
 async fn run_operation(
     txn: &DatabaseTransaction,
     op: &DbAtomicParams,
@@ -461,6 +478,7 @@ async fn run_operation(
     }
 }
 
+/// Builds optional session client metadata; missing fields become `unknown`.
 fn session_client(
     user_agent: &Option<String>,
     device_type: &Option<String>,
@@ -476,10 +494,12 @@ fn session_client(
     })
 }
 
+/// Serializes a receipt payload; failure becomes a library error, not a silent drop.
 fn to_json<T: serde::Serialize>(value: &T) -> Result<JsonValue> {
     serde_json::to_value(value).map_err(|err| LibraryError::Other(anyhow::anyhow!(err.to_string())))
 }
 
+/// Maps known application errors onto atomic status codes so the savepoint can roll back.
 fn map_app_status(err: &LibraryError) -> Option<&'static str> {
     match err {
         LibraryError::NotFound(_) => Some(atomic_status::NOT_FOUND),
@@ -498,6 +518,7 @@ fn map_app_status(err: &LibraryError) -> Option<&'static str> {
     }
 }
 
+/// Turns an atomic status back into `LibraryError` for crate-internal callers.
 fn app_err(status: &str, not_found: String) -> Option<LibraryError> {
     match status {
         s if s == atomic_status::OK => None,
@@ -518,6 +539,7 @@ fn app_err(status: &str, not_found: String) -> Option<LibraryError> {
     }
 }
 
+/// Accepts an OK unit result or maps a non-OK status onto `LibraryError`.
 fn unit_from_atomic(result: DbAtomicResult, not_found: String) -> Result<()> {
     if let Some(err) = app_err(&result.status, not_found) {
         return Err(err);
@@ -525,6 +547,7 @@ fn unit_from_atomic(result: DbAtomicResult, not_found: String) -> Result<()> {
     Ok(())
 }
 
+/// Decodes a user record from an OK payload, or maps status onto `LibraryError`.
 fn user_from_atomic(result: DbAtomicResult, not_found: String) -> Result<UserRecord> {
     if let Some(err) = app_err(&result.status, not_found) {
         return Err(err);
@@ -532,6 +555,7 @@ fn user_from_atomic(result: DbAtomicResult, not_found: String) -> Result<UserRec
     decode_payload(result.payload, "user")
 }
 
+/// Decodes a portal identity from an OK payload, or maps status onto `LibraryError`.
 fn identity_from_atomic(result: DbAtomicResult) -> Result<PortalIdentity> {
     if let Some(err) = app_err(&result.status, "claim ticket not found".into()) {
         return Err(err);
@@ -539,6 +563,7 @@ fn identity_from_atomic(result: DbAtomicResult) -> Result<PortalIdentity> {
     decode_payload(result.payload, "portal identity")
 }
 
+/// Deserializes an OK payload; missing or malformed JSON fails closed.
 fn decode_payload<T: serde::de::DeserializeOwned>(
     payload: Option<JsonValue>,
     what: &str,
@@ -554,19 +579,28 @@ fn decode_payload<T: serde::de::DeserializeOwned>(
 }
 
 #[derive(serde::Deserialize)]
+/// Payload of a consumed OIDC RP state row (one-time; hashed `state` is the key).
 struct AtomicOidcRpState {
+    /// IdP id that started this authorize.
     provider_id: String,
+    /// PKCE verifier needed for the token exchange (never logged).
     pkce_verifier: String,
+    /// Nonce expected in the id_token.
     nonce: String,
+    /// `login` or `elevate`.
     purpose: String,
     #[serde(default)]
+    /// Owner user id when purpose is elevate; absent for login.
     user_id: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
+/// Payload of a consumed WebAuthn challenge (one-time).
 struct AtomicWebauthnChallenge {
     #[serde(default)]
+    /// User id for registration; absent for discoverable login.
     user_id: Option<i64>,
+    /// Serialized webauthn-rs challenge state needed to finish the ceremony.
     state_json: String,
 }
 

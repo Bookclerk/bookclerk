@@ -170,6 +170,7 @@ pub fn sync_embed(plugin_dir: &Path) -> Result<String> {
     ))
 }
 
+/// Resolves a plugin command against `root` unless the path is already absolute.
 fn resolve_plugin_path(root: &Path, command: &Path) -> PathBuf {
     if command.is_absolute() {
         command.to_path_buf()

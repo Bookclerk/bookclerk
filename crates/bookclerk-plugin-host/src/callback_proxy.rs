@@ -18,10 +18,15 @@ use crate::{PluginError, Result};
 
 /// Active host callback proxy for one OAuth session.
 pub struct CallbackProxy {
+    /// Browser-facing origin (`http://127.0.0.1:<port>`) advertised to the guest.
     pub public_base: String,
+    /// Unix socket path or Windows pipe name the guest LoginServer connects to.
     pub ipc_endpoint: String,
+    /// Actual TCP address of the host callback listener (may be port 0 resolved).
     bind_addr: SocketAddr,
+    /// Unix socket path removed on drop; `None` on Windows named pipes.
     _cleanup: Option<PathBuf>,
+    /// Accept/forward task aborted when the proxy is dropped.
     join: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -72,6 +77,7 @@ impl CallbackProxy {
     }
 
     #[must_use]
+    /// Bound TCP address the browser (and guest) should use for the callback.
     pub fn bind_addr(&self) -> SocketAddr {
         self.bind_addr
     }
@@ -89,6 +95,7 @@ impl Drop for CallbackProxy {
 }
 
 #[cfg(unix)]
+/// Binds a 0600 unix socket under `scratch` and forwards accepted TCP streams through it.
 async fn start_unix(
     tcp: TcpListener,
     bound: SocketAddr,
@@ -172,6 +179,7 @@ async fn start_windows(
     })
 }
 
+/// Accepts browser TCP connections and copies each bidirectionally over the guest tunnel.
 async fn run_forward_loop<S>(tcp: TcpListener, ipc: S)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,

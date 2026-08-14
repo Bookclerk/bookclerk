@@ -11,6 +11,7 @@ use crate::types::{IntegrationEvent, IntegrationHealth};
 /// Fan-out registry for configured integrations.
 #[derive(Clone, Default)]
 pub struct IntegrationRegistry {
+    /// Registered adapters in registration order; events fan out to each.
     integrations: Vec<Arc<dyn Integration>>,
 }
 

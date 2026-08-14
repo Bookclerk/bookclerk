@@ -23,12 +23,14 @@ use bookclerk_source::{CatalogHit, SourceRegistry};
 use crate::error::Result;
 use crate::ttl_cache::{cache_key, TtlCache};
 
+/// Process-wide TTL cache of resolved title-meta payloads (6 hours, 512 entries).
 fn title_meta_cache() -> &'static TtlCache<Option<TitleMeta>> {
     static CACHE: OnceLock<TtlCache<Option<TitleMeta>>> = OnceLock::new();
     // Bump key prefix below when the payload shape changes.
     CACHE.get_or_init(|| TtlCache::new(Duration::from_secs(6 * 60 * 60), 512))
 }
 
+/// Process-wide TTL cache of paginated Audible review pages (30 minutes, 256 entries).
 fn title_reviews_cache() -> &'static TtlCache<TitleReviewsPage> {
     static CACHE: OnceLock<TtlCache<TitleReviewsPage>> = OnceLock::new();
     CACHE.get_or_init(|| TtlCache::new(Duration::from_secs(30 * 60), 256))
@@ -55,6 +57,7 @@ pub struct TitleMetaQuery {
     pub region: String,
 }
 
+/// Marketplace default (`us`) when a title-meta or reviews query omits `region`.
 fn default_region() -> String {
     String::from("us")
 }
@@ -135,14 +138,17 @@ pub struct TitleReviewsQuery {
     pub sort_by: String,
 }
 
+/// First reviews page (1-based) when the client omits `page`.
 fn default_reviews_page() -> u32 {
     1
 }
 
+/// Default reviews page size (5); the handler still clamps to 1..=20.
 fn default_reviews_page_size() -> u32 {
     5
 }
 
+/// Default Audible reviews sort (`MostHelpful`) when the client omits `sort_by`.
 fn default_reviews_sort() -> String {
     String::from("MostHelpful")
 }
@@ -201,6 +207,7 @@ impl From<CatalogReview> for TitleReview {
 }
 
 impl TitleMeta {
+    /// Copies Audnexus / catalog enrichment into a detail-panel payload (ratings stay unset).
     fn from_enrichment(e: Enrichment) -> Self {
         Self {
             asin: Some(e.asin).filter(|s| !s.is_empty()),
@@ -229,6 +236,7 @@ impl TitleMeta {
         }
     }
 
+    /// Overlays Audible community rating counts onto an already-built title-meta payload.
     fn with_ratings(mut self, rating: bookclerk_enrich::CatalogRating) -> Self {
         self.rating_overall = rating.overall;
         self.rating_performance = rating.performance;
@@ -238,6 +246,7 @@ impl TitleMeta {
         self
     }
 
+    /// Copies a storefront [`CatalogHit`] (Libro HTML/JSON-LD) into a detail-panel payload.
     fn from_catalog_hit(hit: CatalogHit) -> Self {
         Self {
             asin: hit.asin.filter(|s| !s.is_empty()),
@@ -266,6 +275,7 @@ impl TitleMeta {
     }
 }
 
+/// True when the option holds a non-empty trimmed string.
 fn non_empty(s: Option<&String>) -> bool {
     s.map(|v| !v.trim().is_empty()).unwrap_or(false)
 }
@@ -284,6 +294,7 @@ fn title_meta_needs_store_fill(meta: Option<&TitleMeta>) -> bool {
     }
 }
 
+/// Fills missing bibliographic fields from `fill` without overwriting set values.
 fn merge_title_meta(base: Option<TitleMeta>, fill: TitleMeta) -> TitleMeta {
     let Some(mut b) = base else {
         return fill;
@@ -342,6 +353,7 @@ fn merge_title_meta(base: Option<TitleMeta>, fill: TitleMeta) -> TitleMeta {
     b
 }
 
+/// True for compact ISBN-10 (digits plus optional trailing X) or ISBN-13 digit strings.
 fn isbn_like(raw: &str) -> bool {
     let compact: String = raw.chars().filter(|c| *c != '-').collect();
     let b = compact.as_bytes();
@@ -355,6 +367,7 @@ fn isbn_like(raw: &str) -> bool {
     }
 }
 
+/// Gap-fills sparse Audible/Audnexus results via Libro `catalog_detail` keyed by ISBN.
 async fn fill_from_source_catalog(
     query: &TitleMetaQuery,
     sources: Option<&SourceRegistry>,
@@ -432,6 +445,7 @@ pub async fn resolve_title_meta(
     Ok(resolved)
 }
 
+/// Resolves title metadata without the TTL cache (Audnexus by ASIN, then storefront fill).
 async fn resolve_title_meta_uncached(
     query: &TitleMetaQuery,
     region: &str,

@@ -53,6 +53,10 @@ impl Paths {
     }
 
     /// Ensure directories that Bookclerk expects to exist are present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.files_dir)?;
         std::fs::create_dir_all(&self.cache_dir)?;

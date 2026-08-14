@@ -18,6 +18,7 @@ use crate::trust::TrustPolicy;
 
 /// Download / install limits.
 pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+/// Maximum HTTP redirects permitted while fetching a package artifact (`5`).
 pub const MAX_REDIRECTS: u32 = 5;
 /// Hard cap on downloaded artifact size in bytes.
 pub const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
@@ -310,6 +311,10 @@ impl Installer {
     }
 
     /// Discard a replace backup after a successful health check (or when none).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn commit(outcome: &InstallOutcome) -> Result<()> {
         if let Some(bak) = &outcome.previous {
             if bak.exists() {
@@ -320,6 +325,10 @@ impl Installer {
     }
 
     /// Restore the previous install after a failed health check.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn rollback(outcome: &InstallOutcome) -> Result<()> {
         let Some(bak) = &outcome.previous else {
             return Ok(());
@@ -342,6 +351,10 @@ impl Installer {
     }
 
     /// Install from a local archive path using an explicit manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn install_local_archive(
         archive: &Path,
         manifest: &BookclerkPackageManifest,
@@ -375,6 +388,10 @@ impl Installer {
     }
 
     /// Remove an installed plugin directory; optionally purge data/tmp state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn remove(plugins_root: &Path, id: &str, purge_state: bool) -> Result<()> {
         validate_plugin_id(id)?;
         let dest = safe_join(plugins_root, Path::new(id))?;
@@ -409,6 +426,7 @@ impl Installer {
     }
 }
 
+/// Builds an [`InstallReceipt`] from the package manifest, chosen artifact, and trust policy.
 fn build_receipt(
     manifest: &BookclerkPackageManifest,
     coordinate: &PackageCoordinate,
@@ -451,6 +469,7 @@ fn validate_plugin_id(id: &str) -> Result<()> {
         .map_err(|e| CatalogError::message(e.to_string()))
 }
 
+/// Checks extracted `plugin.toml` id/kind/network/command against the package identity.
 fn validate_plugin_toml(
     text: &str,
     runtime: &RuntimeIdentity,
@@ -505,6 +524,7 @@ fn validate_plugin_toml(
     Ok(())
 }
 
+/// True when `command` and `executable` share a file name (ignoring a leading `./`).
 fn command_matches_executable(command: &str, executable: &str) -> bool {
     let cmd = Path::new(command.trim_start_matches("./"));
     let exe = Path::new(executable.trim_start_matches("./"));
@@ -514,6 +534,7 @@ fn command_matches_executable(command: &str, executable: &str) -> bool {
     }
 }
 
+/// Moves `data/` and `tmp/` aside so a replace install can restore guest state.
 fn peel_plugin_state(plugin_root: &Path, hold: &Path) -> Result<()> {
     let data = plugin_root.join("data");
     let tmp = plugin_root.join("tmp");
@@ -538,6 +559,7 @@ fn peel_plugin_state(plugin_root: &Path, hold: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Moves peeled `data/` and `tmp/` back into the plugin root after activate or rollback.
 fn restore_plugin_state(hold: &Path, plugin_root: &Path) -> Result<()> {
     if !hold.exists() {
         return Ok(());
@@ -559,6 +581,7 @@ fn restore_plugin_state(hold: &Path, plugin_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Copies a `file://` or local path, or HTTPS/localhost HTTP, refusing oversized bodies.
 fn download_to(url: &str, dest: &Path, offline: bool) -> Result<()> {
     if let Some(path) = url.strip_prefix("file://") {
         fs::copy(path, dest)?;
@@ -609,6 +632,7 @@ fn download_to(url: &str, dest: &Path, offline: bool) -> Result<()> {
     Ok(())
 }
 
+/// Recursively copies `src` into `dest`, creating missing parent directories.
 fn copy_dir_all(src: &Path, dest: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dest)?;
     for entry in walkdir::WalkDir::new(src) {
@@ -631,6 +655,7 @@ fn copy_dir_all(src: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Retries `remove_dir_all` up to five times (50 ms apart) for transient Windows locks.
 fn remove_dir_retry(path: &Path) -> Result<()> {
     let mut last = None;
     for _ in 0..5 {

@@ -13,6 +13,7 @@ use bookclerk_source::{
     CatalogSearchOpts, CatalogSearchSort, ContentSource, ExpandSeed, PurchaseHintOpts,
 };
 
+/// Audible source guest; OAuth login uses the host-owned callback tunnel.
 struct AudiblePlugin;
 
 #[async_trait]

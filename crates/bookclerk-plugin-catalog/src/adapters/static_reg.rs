@@ -33,6 +33,10 @@ pub struct StaticPackage {
 }
 
 /// Load a static index from a file path or `file://` URL.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn load_static_index(path_or_url: &str) -> Result<StaticIndex> {
     let path = path_or_url.strip_prefix("file://").unwrap_or(path_or_url);
     if Path::new(path).exists() {
@@ -71,11 +75,16 @@ pub fn load_static_index(path_or_url: &str) -> Result<StaticIndex> {
 pub struct StaticAdapter {
     /// Absolute URL of the static registry index document.
     pub index_url: String,
+    /// Parsed static registry index used for search and manifest hydration.
     index: StaticIndex,
 }
 
 impl StaticAdapter {
     /// Downloads and parses a static registry index from `index_url`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn open(index_url: impl Into<String>) -> Result<Self> {
         let index_url = index_url.into();
         let index = load_static_index(&index_url)?;

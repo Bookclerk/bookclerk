@@ -81,7 +81,7 @@ the pinned Cloudflare `workerd` into `~/.cache/bookclerk/workerd` (override with
 `BOOKCLERK_WORKERD_CACHE` / `BOOKCLERK_WORKERD_BIN`), materializes Cap’n Proto +
 bridge under the plugin dir, then POSTs `handshake` / `health` to `/rpc`.
 
-See Echo examples under [`examples/`](../../examples/).
+See Echo examples under `examples/` at the repository root.
 
 ## API docs
 

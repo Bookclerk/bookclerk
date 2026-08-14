@@ -9,8 +9,10 @@ use crate::error::{ChirpError, Result};
 /// Android Mockingjay GraphQL endpoint.
 pub const DEFAULT_GRAPHQL_URL: &str = "https://api.chirpbooks.com/api/graphql";
 
+/// Android Mockingjay User-Agent expected by Chirp's GraphQL edge.
 const USER_AGENT_VALUE: &str = "okhttp/4.12.0 Chirp/Bookclerk";
 
+/// `signIn` mutation that returns user id, API token, optional web token, and email.
 const SIGN_IN: &str = r#"
 mutation signIn($email: String!, $password: String!) {
   signIn(email: $email, password: $password) {
@@ -19,6 +21,7 @@ mutation signIn($email: String!, $password: String!) {
 }
 "#;
 
+/// Paginated `currentUserAudiobooks` query (title A–Z, Chirp-audio capable).
 const LIBRARY_PAGE: &str = r#"
 query AndroidCurrentUserAudiobooks($page: Int!, $pageSize: Int!) {
   currentUserAudiobooks(
@@ -47,6 +50,7 @@ query AndroidCurrentUserAudiobooks($page: Int!, $pageSize: Int!) {
 }
 "#;
 
+/// Single-title query including track media URLs and chapter/part offsets.
 const SINGLE_AUDIOBOOK: &str = r#"
 query AndroidSingleAudiobook($id: ID!) {
   audiobook(id: $id, clientCapabilities: [CHIRP_AUDIO]) {
@@ -76,6 +80,7 @@ query AndroidSingleAudiobook($id: ID!) {
 // Catalog queries below also select `language`, `abridged`, and `promotedTags`
 // (Chirp genre chips) so Discover can filter language and show genres.
 
+/// Catalog search query used by Discover (language, abridged, genre chips, series).
 const CATALOG_SEARCH: &str = r#"
 query BookclerkCatalogSearch($query: String!, $page: Int!, $pageSize: Int!) {
   audiobooks(query: $query, page: $page, pageSize: $pageSize) {
@@ -107,6 +112,7 @@ query BookclerkCatalogSearch($query: String!, $page: Int!, $pageSize: Int!) {
 }
 "#;
 
+/// Related-titles query plus the seed title's series membership.
 const RELATED_AUDIOBOOKS: &str = r#"
 query BookclerkRelatedAudiobooks($id: ID!) {
   audiobook(id: $id) {
@@ -139,6 +145,7 @@ query BookclerkRelatedAudiobooks($id: ID!) {
 }
 "#;
 
+/// Series-by-slug query listing promotable audiobooks in that series.
 const SERIES_AUDIOBOOKS: &str = r#"
 query BookclerkSeriesAudiobooks($slug: String!) {
   series(slug: $slug) {
@@ -170,6 +177,7 @@ query BookclerkSeriesAudiobooks($slug: String!) {
 }
 "#;
 
+/// Author-by-slug query returning the storefront's summary audiobook list.
 const AUTHOR_SUMMARY: &str = r#"
 query BookclerkAuthorSummary($slug: String!) {
   author(slug: $slug) {
@@ -196,6 +204,7 @@ query BookclerkAuthorSummary($slug: String!) {
 }
 "#;
 
+/// Typeahead query returning matching audiobooks and authors for a search term.
 const TYPEAHEAD: &str = r#"
 query BookclerkTypeahead($searchTerm: String!) {
   typeahead(searchTerm: $searchTerm) {
@@ -215,6 +224,7 @@ query BookclerkTypeahead($searchTerm: String!) {
 }
 "#;
 
+/// Storefront top-deals query used by Discover deal shelves.
 const TOP_DEALS: &str = r#"
 query BookclerkTopDeals($count: Int!) {
   topDealsAudiobooks(count: $count) {
@@ -236,6 +246,7 @@ query BookclerkTopDeals($count: Int!) {
 }
 "#;
 
+/// Storefront free-deals query used by Discover deal shelves.
 const FREE_DEALS: &str = r#"
 query BookclerkFreeDeals {
   freeDeals {
@@ -257,6 +268,7 @@ query BookclerkFreeDeals {
 }
 "#;
 
+/// Live `currentProduct` pricing query (discount, listing price, purchase URL).
 const AUDIOBOOK_PRICING: &str = r#"
 query BookclerkAudiobookPricing($id: ID!) {
   audiobook(id: $id) {
@@ -281,8 +293,11 @@ query BookclerkAudiobookPricing($id: ID!) {
 /// Authenticated Chirp GraphQL helper.
 #[derive(Debug, Clone)]
 pub struct ChirpClient {
+    /// Shared HTTP client used for GraphQL and binary downloads.
     http: reqwest::Client,
+    /// Mockingjay GraphQL endpoint (defaults to [`DEFAULT_GRAPHQL_URL`]).
     graphql_url: String,
+    /// Bearer token from `signIn`; `None` until login or `with_token`.
     access_token: Option<String>,
 }
 
@@ -329,6 +344,7 @@ impl ChirpClient {
         &self.graphql_url
     }
 
+    /// JSON GraphQL headers plus an optional `Authorization: Bearer` token.
     fn headers(&self, with_auth: bool) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -352,6 +368,7 @@ impl ChirpClient {
         Ok(headers)
     }
 
+    /// Posts a GraphQL operation and returns the `data` object; HTTP/GraphQL errors fail.
     async fn graphql(
         &self,
         operation_name: &str,
@@ -402,6 +419,10 @@ impl ChirpClient {
     }
 
     /// GraphQL `signIn` mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn login(&mut self, email: &str, password: &str) -> Result<SignInUser> {
         let parsed = self
             .graphql(
@@ -430,6 +451,10 @@ impl ChirpClient {
     }
 
     /// Paginated owned library (`currentUserAudiobooks`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn library_page(&self, page: u32, page_size: u32) -> Result<Vec<LibraryItem>> {
         let parsed = self
             .graphql(
@@ -447,6 +472,10 @@ impl ChirpClient {
     }
 
     /// Full audiobook with track `mediaUrl`s.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn audiobook(&self, id: &str) -> Result<Audiobook> {
         let parsed = self
             .graphql(
@@ -467,6 +496,10 @@ impl ChirpClient {
     }
 
     /// Live deal / list pricing for a Chirp audiobook (public GraphQL).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn audiobook_pricing(&self, id: &str) -> Result<Option<ChirpProductPricing>> {
         let id = id.trim();
         if id.is_empty() {
@@ -490,6 +523,10 @@ impl ChirpClient {
     }
 
     /// Catalog search (`audiobooks(query:)`) — no auth required.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn search_catalog(
         &self,
         query: &str,
@@ -514,6 +551,10 @@ impl ChirpClient {
     }
 
     /// Related titles for a Chirp audiobook id — no auth required.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn related_audiobooks(&self, id: &str) -> Result<RelatedCatalog> {
         let parsed = self
             .graphql(
@@ -532,6 +573,10 @@ impl ChirpClient {
     }
 
     /// Series catalog by slug (`mistborn-audiobooks`, …) — no auth required.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn series_catalog(&self, slug: &str) -> Result<Option<SeriesCatalog>> {
         let slug = slug.trim();
         if slug.is_empty() {
@@ -558,6 +603,10 @@ impl ChirpClient {
     }
 
     /// Author summary titles by slug — no auth required.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn author_summary(&self, slug: &str) -> Result<Option<AuthorCatalog>> {
         let slug = slug.trim();
         if slug.is_empty() {
@@ -584,6 +633,10 @@ impl ChirpClient {
     }
 
     /// Typeahead for author slug resolution and quick title hits — no auth required.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn typeahead(&self, search_term: &str) -> Result<TypeaheadCatalog> {
         let search_term = search_term.trim();
         if search_term.is_empty() {
@@ -612,6 +665,10 @@ impl ChirpClient {
     ///
     /// Deliberately no substring fallback — short needles like `"ann"` would
     /// otherwise resolve to unrelated authors and pollute candidate expansion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn resolve_author_slug(&self, author_name: &str) -> Result<Option<String>> {
         let tip = self.typeahead(author_name).await?;
         let want = author_name.trim();
@@ -626,6 +683,10 @@ impl ChirpClient {
     }
 
     /// Try common Chirp series slug forms derived from a series title.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn resolve_series_catalog(&self, series_name: &str) -> Result<Option<SeriesCatalog>> {
         for slug in chirp_slug_candidates(series_name) {
             match self.series_catalog(&slug).await {
@@ -641,6 +702,10 @@ impl ChirpClient {
     }
 
     /// Current Chirp top deals — no auth required.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn top_deals(&self, count: u32) -> Result<Vec<CatalogAudiobook>> {
         let count = count.clamp(1, 40);
         let parsed = self
@@ -657,6 +722,10 @@ impl ChirpClient {
     }
 
     /// Current Chirp free deals — no auth required.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn free_deals(&self) -> Result<Vec<CatalogAudiobook>> {
         let parsed = self
             .graphql("BookclerkFreeDeals", FREE_DEALS, json!({}), false)
@@ -667,6 +736,10 @@ impl ChirpClient {
     }
 
     /// Download bytes from an absolute media URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn download_bytes(&self, url: &str) -> Result<bytes::Bytes> {
         let resp = self
             .http
@@ -684,6 +757,7 @@ impl ChirpClient {
     }
 }
 
+/// Deserializes a paginated `objects` array into catalog audiobooks; missing JSON yields empty.
 fn parse_paginated_audiobooks(value: Option<&Value>) -> Vec<CatalogAudiobook> {
     let Some(value) = value else {
         return Vec::new();
@@ -709,6 +783,7 @@ pub fn chirp_slug_candidates(name: &str) -> Vec<String> {
     out
 }
 
+/// Lowercases ASCII alphanumerics and collapses other runs to `-` for Chirp slug guesses.
 fn slugify(name: &str) -> String {
     let mut out = String::new();
     let mut prev_dash = false;
@@ -727,6 +802,7 @@ fn slugify(name: &str) -> String {
     out
 }
 
+/// Truncates `s` to `max` bytes for error snippets (assumes ASCII GraphQL text).
 fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
         s
@@ -738,10 +814,14 @@ fn truncate(s: &str, max: usize) -> &str {
 /// User object from `signIn`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SignInUser {
+    /// Chirp user id returned by `signIn`.
     pub id: String,
+    /// API bearer token used for authenticated GraphQL.
     pub token: String,
     #[serde(default, rename = "webToken")]
+    /// Optional web-session token (wire `webToken`); unused by the Android client.
     pub web_token: Option<String>,
+    /// Account email from `signIn`.
     pub email: String,
 }
 
@@ -829,6 +909,7 @@ pub struct ChirpProductPricing {
     pub salable_in_current_country: Option<bool>,
 }
 
+/// Accepts a JSON string, number, or other value as an optional id string.
 fn deserialize_id_string_opt<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<String>, D::Error>
@@ -897,6 +978,7 @@ pub struct CatalogAudiobook {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogTag {
     #[serde(default, rename = "displayName")]
+    /// Storefront genre-chip label (wire `displayName`).
     pub display_name: Option<String>,
 }
 
@@ -923,9 +1005,12 @@ impl CatalogAudiobook {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SeriesAudiobookRef {
     #[serde(default)]
+    /// Numeric series position when Chirp reports one.
     pub number: Option<i64>,
     #[serde(default, rename = "displayNumber")]
+    /// Storefront-facing series position (wire `displayNumber`, may be non-integer).
     pub display_number: Option<String>,
+    /// Series identity (id, name, slug) this title belongs to.
     pub series: CatalogSeries,
 }
 
@@ -1014,6 +1099,7 @@ pub struct Track {
     pub display_name: Option<String>,
 }
 
+/// Accepts a JSON string, number, or other value as a required id string.
 fn deserialize_id_string<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,

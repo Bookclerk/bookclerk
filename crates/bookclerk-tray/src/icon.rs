@@ -36,6 +36,7 @@ pub fn tray_icon_rgba() -> anyhow::Result<tray_icon::Icon> {
         .map_err(|err| anyhow::anyhow!("tray icon: {err}"))
 }
 
+/// Decodes a packaged PNG into width, height, and tightly packed RGBA pixels.
 fn decode_png_rgba(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
     let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     let mut reader = decoder.read_info().expect("tray png header");

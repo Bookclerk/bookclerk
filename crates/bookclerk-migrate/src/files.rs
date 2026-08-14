@@ -59,6 +59,7 @@ pub fn load_audio_paths(path: &Path) -> Result<AudioPathMap> {
     Ok(out)
 }
 
+/// Picks the first V2 entry with `FileType` audio (1), else the first path-like entry.
 fn first_audio_path(entries: &Value) -> Option<PathBuf> {
     let arr = entries.as_array()?;
     // Prefer FileType Audio (1); fall back to first path-like entry.
@@ -78,6 +79,7 @@ fn first_audio_path(entries: &Value) -> Option<PathBuf> {
     arr.iter().find_map(audio_path_from_entry)
 }
 
+/// Reads `Path.Path` / `Path` / `path` from one file-location entry.
 fn audio_path_from_entry(entry: &Value) -> Option<PathBuf> {
     let path = entry
         .get("Path")

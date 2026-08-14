@@ -8,14 +8,19 @@ use unicode_normalization::UnicodeNormalization;
 
 /// Weights used by AudioBookshelf (duration dominates).
 const W_DURATION: f64 = 0.7;
+/// Title similarity weight when narrator is unused (0.2; duration remains 0.7).
 const W_TITLE: f64 = 0.2;
+/// Author similarity weight when narrator is unused (0.1).
 const W_AUTHOR: f64 = 0.1;
 
 /// When both query and candidate have narrators, fold a light narrator weight in
 /// (Libro often has this; ABS scoring does not).
 const W_DURATION_WITH_NARRATOR: f64 = 0.65;
+/// Title similarity weight when both sides have a narrator (0.18).
 const W_TITLE_WITH_NARRATOR: f64 = 0.18;
+/// Author similarity weight when both sides have a narrator (0.09).
 const W_AUTHOR_WITH_NARRATOR: f64 = 0.09;
+/// Narrator similarity weight folded in when both query and candidate name a narrator (0.08).
 const W_NARRATOR: f64 = 0.08;
 
 /// On exact ISBN match, close this fraction of the remaining gap to 1.0.
@@ -226,6 +231,7 @@ pub fn isbn_exact_match(query_isbn: Option<&str>, book_isbn: Option<&str>) -> bo
     q == b
 }
 
+/// Joins title and subtitle with `: ` unless the subtitle is already contained in the title.
 fn composed_title(title: &str, subtitle: Option<&str>) -> String {
     let title = title.trim();
     let Some(sub) = subtitle.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -244,6 +250,7 @@ fn composed_title(title: &str, subtitle: Option<&str>) -> String {
     }
 }
 
+/// Best Levenshtein score of a cleaned query name against a candidate or its comma-separated parts.
 fn people_similarity(
     query: Option<&str>,
     candidate: Option<&str>,
@@ -274,6 +281,7 @@ fn people_similarity(
     max_part_score
 }
 
+/// Levenshtein similarity of cleaned titles, optionally keeping subtitle text.
 fn title_similarity(title_query: &str, book: &ScoreInput<'_>, keep_subtitle: bool) -> f64 {
     let clean_title = clean_title_for_compares(book.title, keep_subtitle);
     let clean_subtitle = if keep_subtitle {
@@ -289,10 +297,12 @@ fn title_similarity(title_query: &str, book: &ScoreInput<'_>, keep_subtitle: boo
     levenshtein_similarity(&norm_title_query, &norm_book_title)
 }
 
+/// True when the title already embeds a subtitle after `: ` or ` - `.
 fn has_subtitle(title: &str) -> bool {
     title.contains(": ") || title.contains(" - ")
 }
 
+/// Drops the first `: ` or ` - ` suffix so compares can ignore subtitles.
 fn strip_subtitle(title: &str) -> String {
     if let Some((left, _)) = title.split_once(": ") {
         left.trim().to_string()
@@ -303,12 +313,14 @@ fn strip_subtitle(title: &str) -> String {
     }
 }
 
+/// NFD-decomposes and strips combining marks so accented letters compare as ASCII.
 fn replace_accented_chars(s: &str) -> String {
     s.nfd()
         .filter(|c| !unicode_normalization::char::is_combining_mark(*c))
         .collect()
 }
 
+/// Collapses Unicode whitespace runs to a single ASCII space.
 fn strip_redundant_spaces(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -377,6 +389,7 @@ pub fn clean_author_for_compares(author: &str) -> String {
     clean
 }
 
+/// Inserts a space after `x.y` so initials tokenize like AudioBookshelf (`j.k.` → `j. k.`).
 fn separate_initials(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(s.len() + 4);
@@ -398,6 +411,7 @@ fn separate_initials(s: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
+/// Removes middle initials between a surname-like token and a following two-letter word.
 fn strip_middle_initials(s: &str) -> String {
     let b = s.as_bytes();
     let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
@@ -445,6 +459,7 @@ fn strip_middle_initials(s: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
+/// Drops a trailing ` et al` / ` et al.` suffix used on multi-author credits.
 fn strip_et_al(s: &str) -> String {
     const SUFFIX: &[u8] = b" et al";
     let mut out = Vec::with_capacity(s.len());

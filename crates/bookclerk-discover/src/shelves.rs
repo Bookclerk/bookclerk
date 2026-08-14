@@ -52,9 +52,13 @@ pub struct ShelfTaste {
     pub owned_sources: HashSet<String>,
 }
 
+/// Maximum items kept on one Discover shelf after score sort and de-dupe.
 const SHELF_CAP: usize = 48;
+/// How many “more from {Author}” shelves to emit from top taste weights.
 const AUTHOR_SHELVES: usize = 3;
+/// How many “if you like {Author}” shelves to emit from top taste weights.
 const BECAUSE_SHELVES: usize = 2;
+/// How many “because you like {Genre}” shelves to emit from top categories.
 const GENRE_SHELVES: usize = 3;
 
 /// Shelf kinds Discover can emit (for config / UI ignore lists).
@@ -75,6 +79,7 @@ pub fn shelf_kind_catalog() -> Vec<ShelfKindInfo> {
     ]
 }
 
+/// Builds one catalog entry for the operator ignore-list UI.
 fn kind(id: &str, label: &str) -> ShelfKindInfo {
     ShelfKindInfo {
         id: id.to_string(),
@@ -325,10 +330,12 @@ pub fn build_discover_feed(
     }
 }
 
+/// True when the recommendation lists `kind` among its categories (case-insensitive).
 fn has_category(r: &Recommendation, kind: &str) -> bool {
     r.categories.iter().any(|c| c.eq_ignore_ascii_case(kind))
 }
 
+/// True when a genre-tagged rec shares a seed category with the liked genre.
 fn category_overlap(r: &Recommendation, liked_category: &str) -> bool {
     if !has_category(r, "genre") {
         return false;
@@ -344,6 +351,7 @@ fn category_overlap(r: &Recommendation, liked_category: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Operator-facing storefront name (`audible` → `Audible`); unknown ids are title-cased.
 fn store_display_name(source: &str) -> String {
     match source {
         "audible" => String::from("Audible"),
@@ -360,6 +368,7 @@ fn store_display_name(source: &str) -> String {
     }
 }
 
+/// True when a rec is related/similar to a liked author but not by that author.
 fn because_you_like(r: &Recommendation, liked_author: &str, taste: &ShelfTaste) -> bool {
     if r.from_request || has_category(r, "author") {
         return false;
@@ -416,6 +425,7 @@ fn because_you_like(r: &Recommendation, liked_author: &str, taste: &ShelfTaste) 
     false
 }
 
+/// Filters recommendations by `pred` and sorts remaining items by descending score.
 fn filter_sorted(
     recs: &[Recommendation],
     pred: impl Fn(&Recommendation) -> bool,
@@ -429,6 +439,7 @@ fn filter_sorted(
     out
 }
 
+/// Appends a non-empty, de-duped shelf unless its id is on the ignore list.
 fn push_shelf(
     shelves: &mut Vec<DiscoverShelf>,
     id: &str,
@@ -456,6 +467,7 @@ fn push_shelf(
     });
 }
 
+/// Splits a contributor/category string on `,`, `;`, `&`, and `/`.
 fn split_people(s: &str) -> Vec<String> {
     s.split([',', ';', '&', '/'])
         .map(str::trim)
@@ -464,6 +476,7 @@ fn split_people(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Lowercase ASCII slug used in shelf ids (`More from Jane Doe` → `jane-doe`).
 fn slugish(s: &str) -> String {
     let mut out = String::new();
     let mut dash = false;

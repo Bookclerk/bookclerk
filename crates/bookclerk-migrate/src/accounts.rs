@@ -12,10 +12,13 @@ use serde_json::Value;
 use crate::error::{MigrateError, Result};
 
 #[derive(Debug, Default)]
+/// Result of importing classic `AccountsSettings.json` metadata (credentials are never sealed here).
 pub struct AccountsImportSummary {
+    /// Number of account metadata rows upserted (or that would be, on dry-run).
     pub accounts: usize,
     /// Always `0` — credentials are not written by migrate.
     pub credentials: usize,
+    /// Non-fatal skip/parse warnings collected during the import.
     pub warnings: Vec<String>,
     /// Classic AccountId (email) + locale → canonical account_id used in DB.
     pub account_id_map: HashMap<(String, String), String>,

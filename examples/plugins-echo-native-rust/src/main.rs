@@ -16,8 +16,10 @@ use bookclerk_plugin_abi::{
 };
 use bookclerk_plugin_sdk::{BookclerkPlugin, BookclerkPluginGuest};
 
+/// Manifest / handshake id for the reference Echo integration (`echo_native_rust`).
 const PLUGIN_ID: &str = "echo_native_rust";
 
+/// CLI schema advertised at handshake (`ping --message`).
 fn cli_schema() -> CliSchema {
     CliSchema {
         commands: vec![CliCommandSpec {
@@ -37,6 +39,7 @@ fn cli_schema() -> CliSchema {
     }
 }
 
+/// Reference Echo integration guest (health, diagnose, events, and `ping`).
 struct EchoPlugin;
 
 #[async_trait]

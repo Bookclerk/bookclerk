@@ -19,6 +19,7 @@ use bookclerk_mp4::{remux_progressive, CopySamples, RemuxOptions};
 /// AAC-LC at 44.1 kHz is 1024 samples a frame, so ~43 frames a second, and 372
 /// bytes a frame is about 128 kbit/s — a typical retail audiobook.
 const FRAMES_PER_SECOND: usize = 43;
+/// Synthetic AAC frame size in bytes (~128 kbit/s at 43 frames/s).
 const BYTES_PER_FRAME: usize = 372;
 
 fn main() {

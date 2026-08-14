@@ -255,6 +255,7 @@ pub fn encode_to_mp3_native(
     })
 }
 
+/// Encodes 1152×8-frame PCM chunks through LAME and appends MP3 bytes to `out_file`.
 fn drain_encode_chunks(
     encoder: &mut Encoder,
     pcm: &mut Vec<i16>,
@@ -276,15 +277,18 @@ fn drain_encode_chunks(
 
 /// Streaming linear resampler for interleaved PCM.
 struct LinearResampler {
+    /// Interleaved channel count; `0` makes `push`/`emit` no-ops.
     channels: usize,
     /// Input-frame advance per output frame (`in_hz / out_hz`).
     step: f64,
     /// Position in `buf` (input frames) for the next output sample.
     pos: f64,
+    /// Pending interleaved input samples not yet consumed by `pos`.
     buf: Vec<i16>,
 }
 
 impl LinearResampler {
+    /// Builds a linear resampler from `from_hz` to `to_hz` for interleaved PCM.
     fn new(from_hz: u32, to_hz: u32, channels: usize) -> Self {
         Self {
             channels,
@@ -294,6 +298,7 @@ impl LinearResampler {
         }
     }
 
+    /// Appends interleaved input and emits as many output frames as the buffer allows.
     fn push(&mut self, input: &[i16], out: &mut Vec<i16>) {
         if self.channels == 0 || input.is_empty() {
             return;
@@ -302,12 +307,14 @@ impl LinearResampler {
         self.emit(out, false);
     }
 
+    /// Emits a held last frame if needed, then clears the input buffer and position.
     fn flush(&mut self, out: &mut Vec<i16>) {
         self.emit(out, true);
         self.buf.clear();
         self.pos = 0.0;
     }
 
+    /// Linear-interpolates output frames; on final flush, holds the last input frame.
     fn emit(&mut self, out: &mut Vec<i16>, final_flush: bool) {
         let ch = self.channels;
         if ch == 0 {
@@ -387,6 +394,7 @@ fn encode_pcm_chunk(
     Ok(())
 }
 
+/// Copies or down/up-mixes a Symphonia buffer into interleaved i16 at `out_channels`.
 fn append_pcm_i16(
     buf: &GenericAudioBufferRef<'_>,
     out_channels: u32,

@@ -30,20 +30,30 @@ use crate::protocol::{
 use crate::rpc::PluginClient;
 use crate::Result as PluginResult;
 
+/// Manifest id of the platform S3 output plugin (`s3`).
 const S3_PLUGIN_ID: &str = "s3";
 
 /// External S3 destination backed by a discovered output plugin.
 #[derive(Clone)]
 pub struct ExternalDestination {
+    /// JSON-RPC client for the jailed S3 output guest.
     client: Arc<PluginClient>,
+    /// Guest HOME / data directory injected on each output RPC.
     plugin_data_dir: PathBuf,
+    /// Host `[output.s3]` bucket, region, endpoint, and path-style settings.
     s3_config: OutputS3Config,
+    /// Normalized object-key prefix from `[output.s3].prefix`.
     prefix: String,
+    /// Host-resolved AWS keys (env override or unsealed `encrypted_secrets`); omitted unless the guest has the `secrets` binding.
     credentials: Option<S3Credentials>,
 }
 
 impl ExternalDestination {
     /// Spawn and handshake an S3 output plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn spawn(
         plugin: &DiscoveredPlugin,
         config: &Config,
@@ -67,6 +77,7 @@ impl ExternalDestination {
         })
     }
 
+    /// Per-RPC S3 context (bucket/prefix/region); credentials are included only with a `secrets` grant.
     fn ctx(&self) -> OutputS3ContextDto {
         let credentials = if crate::consent::grant_has_binding(self.client.grant(), "secrets") {
             self.credentials.as_ref().map(credentials_to_dto)
@@ -84,10 +95,12 @@ impl ExternalDestination {
         }
     }
 
+    /// Wraps a plugin RPC failure as [`StorageError::S3`].
     fn map_err(err: crate::PluginError) -> StorageError {
         StorageError::S3(err.to_string())
     }
 
+    /// Copies object metadata into the guest DTO (content type, length, ASIN, timestamps).
     fn meta_to_dto(meta: &ObjectMeta) -> ObjectMetaDto {
         ObjectMetaDto {
             content_type: meta.content_type.clone(),
@@ -99,6 +112,7 @@ impl ExternalDestination {
         }
     }
 
+    /// Rebuilds host [`ObjectMeta`] from a guest metadata DTO.
     fn meta_from_dto(dto: ObjectMetaDto) -> ObjectMeta {
         ObjectMeta {
             content_type: dto.content_type,
@@ -110,6 +124,7 @@ impl ExternalDestination {
         }
     }
 
+    /// Formats a filesystem `SystemTime` as RFC 3339 UTC for guest touch/list RPCs.
     fn rfc3339(time: SystemTime) -> Option<String> {
         Some(DateTime::<Utc>::from(time).to_rfc3339())
     }
@@ -308,7 +323,9 @@ impl StorageBackend for ExternalDestination {
 /// Long-lived external output plugins loaded at host startup.
 #[derive(Default, Clone)]
 pub struct DestinationRegistry {
+    /// Spawned S3 output guest when `[output.s3].enabled` and handshake succeeded.
     s3: Option<Arc<ExternalDestination>>,
+    /// Spawned local-filesystem output guest when that plugin loaded.
     local: Option<Arc<super::destination_local::ExternalLocalDestination>>,
 }
 
@@ -325,6 +342,7 @@ impl DestinationRegistry {
         self.local.clone()
     }
 
+    /// Records the local-filesystem output guest after a successful spawn.
     pub(crate) fn set_local(
         &mut self,
         dest: Arc<super::destination_local::ExternalLocalDestination>,
@@ -334,6 +352,10 @@ impl DestinationRegistry {
 }
 
 /// Discover and spawn external output plugins.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn load_external_destinations(
     config: &Config,
     db: Option<&DatabaseConnection>,
@@ -372,6 +394,7 @@ pub async fn load_external_destinations(
     Ok(registry)
 }
 
+/// Resolves AWS keys from `BOOKCLERK_AWS_*` env, else unseals the operator `encrypted_secrets` row (process DEK).
 async fn resolve_host_credentials(
     db: Option<&DatabaseConnection>,
 ) -> std::result::Result<Option<S3Credentials>, StorageError> {
@@ -393,6 +416,7 @@ async fn resolve_host_credentials(
     Ok(None)
 }
 
+/// Copies host AWS keys into the guest DTO (only sent when the `secrets` binding is granted).
 fn credentials_to_dto(creds: &S3Credentials) -> S3CredentialsDto {
     S3CredentialsDto {
         access_key_id: creds.access_key_id.clone(),
@@ -401,14 +425,17 @@ fn credentials_to_dto(creds: &S3Credentials) -> S3CredentialsDto {
     }
 }
 
+/// Converts plugin settings TOML to JSON for guest spawn; invalid values become `null`.
 fn toml_to_json(value: &toml::Value) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
+/// Wraps a JSON serialize failure for output RPC params as [`StorageError::S3`].
 fn map_json_err(err: serde_json::Error) -> StorageError {
     StorageError::S3(format!("serialize output RPC params: {err}"))
 }
 
+/// Reads the guest `exists` boolean; errors when the field is missing or not a bool.
 fn parse_exists_response(value: &Value) -> bookclerk_storage::Result<bool> {
     value
         .get("exists")

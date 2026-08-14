@@ -38,6 +38,10 @@ impl ListenAddrs {
 
     /// Parse a single address or a comma-separated list
     /// (`127.0.0.1:8787,[::1]:8787`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn parse_list(raw: &str) -> Result<Self, String> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -77,6 +81,10 @@ impl ListenAddrs {
     }
 
     /// Parse each entry as a [`SocketAddr`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn socket_addrs(&self) -> Result<Vec<SocketAddr>, String> {
         self.0
             .iter()
@@ -88,6 +96,10 @@ impl ListenAddrs {
     }
 
     /// Validate every entry parses as a socket address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn validate(&self) -> Result<(), String> {
         if self.0.is_empty() {
             return Err("daemon.listen must not be empty".into());

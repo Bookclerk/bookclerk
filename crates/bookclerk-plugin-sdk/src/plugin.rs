@@ -763,6 +763,12 @@ impl BookclerkPluginGuest {
     }
 }
 
+/// Deserializes an RPC `params` object into `T` for `method`.
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] when `params` cannot be deserialized
+/// into the requested type.
 fn parse_params<T: serde::de::DeserializeOwned>(
     method: &str,
     params: Value,
@@ -771,10 +777,21 @@ fn parse_params<T: serde::de::DeserializeOwned>(
         .map_err(|e| PluginError::invalid_params(format!("{method} params: {e}")))
 }
 
+/// Serializes a plugin result into the JSON value placed on the RPC reply.
+///
+/// # Errors
+///
+/// Returns [`PluginError::internal`] when JSON serialization fails.
 fn to_value<T: serde::Serialize>(value: T) -> std::result::Result<Value, PluginError> {
     serde_json::to_value(value).map_err(|e| PluginError::internal(e.to_string()))
 }
 
+/// Routes one host RPC method to the corresponding [`BookclerkPlugin`] trait method.
+///
+/// # Errors
+///
+/// Returns [`PluginError`] when parameter parsing, plugin method execution, or
+/// result serialization fails, or when `method` is not recognized.
 async fn dispatch<P: BookclerkPlugin>(
     plugin: &P,
     method: &str,

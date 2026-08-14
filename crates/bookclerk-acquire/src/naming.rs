@@ -30,6 +30,7 @@ pub fn resolve_templates(
     )
 }
 
+/// Folder/file/chapter templates from the default naming profile (no overrides).
 fn profile_defaults() -> ResolvedNamingTemplates {
     resolve_templates(NamingProfile::default(), None, None, None)
 }
@@ -101,6 +102,7 @@ fn split_names(joined: Option<&str>) -> Vec<Contributor> {
         .collect()
 }
 
+/// Maps a store `item_kind` string to book / episode / podcast-parent for templates.
 fn map_content_kind(kind: Option<&str>) -> ContentKind {
     match kind.map(|s| s.to_ascii_lowercase()).as_deref() {
         Some("episode") => ContentKind::Episode,

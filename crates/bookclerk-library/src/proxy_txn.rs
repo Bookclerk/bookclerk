@@ -15,11 +15,15 @@ use sea_orm::DbErr;
 use tokio::task::{try_id, Id as TaskId};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// Per-task identity used to pin sticky begin/commit faults.
 enum TaskKey {
+    /// Tokio task id when running inside the runtime.
     Tokio(TaskId),
+    /// OS thread id when no Tokio task is available.
     Thread(ThreadId),
 }
 
+/// Current task key: Tokio id if present, otherwise the OS thread.
 fn task_key() -> TaskKey {
     match try_id() {
         Some(id) => TaskKey::Tokio(id),
@@ -27,13 +31,17 @@ fn task_key() -> TaskKey {
     }
 }
 
+/// Sticky begin/commit fault messages keyed by task (fail-closed after a hook error).
 static FAULTS: LazyLock<Mutex<HashMap<TaskKey, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Remaining injected `BEGIN` failures for tests, keyed by task.
 static INJECT_BEGIN: LazyLock<Mutex<HashMap<TaskKey, u32>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Remaining injected `COMMIT` failures for tests, keyed by task.
 static INJECT_COMMIT: LazyLock<Mutex<HashMap<TaskKey, u32>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Locks the fault map, recovering a poisoned mutex so fail-closed still works.
 fn lock_faults() -> std::sync::MutexGuard<'static, HashMap<TaskKey, String>> {
     FAULTS.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -98,6 +106,7 @@ pub fn consume_commit_injection() -> bool {
     consume_injection(&INJECT_COMMIT)
 }
 
+/// Decrements one injected failure for this task; returns true when a fault should fire.
 fn consume_injection(map: &Mutex<HashMap<TaskKey, u32>>) -> bool {
     let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
     let key = task_key();

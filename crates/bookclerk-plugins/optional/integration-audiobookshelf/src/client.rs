@@ -7,18 +7,26 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Integration id written onto [`ExternalUser::provider`] (`audiobookshelf`).
 const PROVIDER: &str = "audiobookshelf";
 
 /// Thin ABS REST client using Bearer auth.
 #[derive(Clone)]
 pub struct AbsApiClient {
+    /// Shared HTTP client for ABS REST calls.
     http: reqwest::Client,
+    /// Scheme+host with no trailing slash (required; empty is rejected in `new`).
     base_url: String,
+    /// Bearer API token sent on authenticated routes.
     api_key: String,
 }
 
 impl AbsApiClient {
     /// Build a client. `base_url` should be scheme+host (no trailing slash).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Result<Self> {
         let base = base_url.into().trim_end_matches('/').to_string();
         if base.is_empty() {
@@ -39,6 +47,7 @@ impl AbsApiClient {
         &self.base_url
     }
 
+    /// Joins `path` onto `base_url`, or returns `path` unchanged when it is already absolute.
     fn url(&self, path: &str) -> String {
         if path.starts_with("http://") || path.starts_with("https://") {
             return path.to_string();
@@ -54,11 +63,16 @@ impl AbsApiClient {
         )
     }
 
+    /// `Authorization` header value (`Bearer <api_key>`).
     fn bearer(&self) -> String {
         format!("Bearer {}", self.api_key)
     }
 
     /// `POST /api/authorize` — validate API token / key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn authorize(&self) -> Result<AuthorizeResponse> {
         let resp = self
             .http
@@ -71,6 +85,10 @@ impl AbsApiClient {
     }
 
     /// Username/password login (`POST /login`). Password is never logged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn login(&self, username: &str, password: &str) -> Result<LoginResponse> {
         let body = LoginRequest {
             username: username.to_string(),
@@ -87,6 +105,10 @@ impl AbsApiClient {
     }
 
     /// Map a successful login into an [`ExternalUser`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn authenticate_user(&self, username: &str, password: &str) -> Result<ExternalUser> {
         let login = self.login(username, password).await?;
         let user = login.user.ok_or_else(|| {
@@ -101,6 +123,10 @@ impl AbsApiClient {
     }
 
     /// `GET /api/users/{id}` — full user including `mediaProgress`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_user(&self, user_id: &str) -> Result<AbsUserDetail> {
         let resp = self
             .http
@@ -113,6 +139,10 @@ impl AbsApiClient {
     }
 
     /// `GET /api/items/{id}` — library item metadata for matching.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn get_library_item(&self, item_id: &str) -> Result<AbsLibraryItem> {
         let resp = self
             .http
@@ -125,6 +155,10 @@ impl AbsApiClient {
     }
 
     /// `GET /api/libraries`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_libraries(&self) -> Result<Vec<AbsLibrary>> {
         let resp = self
             .http
@@ -138,6 +172,10 @@ impl AbsApiClient {
     }
 
     /// `POST /api/libraries/{id}/scan`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn scan_library(&self, library_id: &str, force: bool) -> Result<()> {
         let mut req = self
             .http
@@ -154,6 +192,10 @@ impl AbsApiClient {
     }
 
     /// `GET /api/users` (admin).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn list_users(&self) -> Result<Vec<AbsUser>> {
         let resp = self
             .http
@@ -167,6 +209,10 @@ impl AbsApiClient {
     }
 
     /// `GET /api/libraries/{id}/search?q=`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn search_library(&self, library_id: &str, q: &str) -> Result<Value> {
         let resp = self
             .http
@@ -179,6 +225,7 @@ impl AbsApiClient {
         Self::json(resp).await
     }
 
+    /// Decodes a successful JSON body; non-2xx becomes [`IntegrationError::api`].
     async fn json<T: for<'de> Deserialize<'de>>(resp: reqwest::Response) -> Result<T> {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
@@ -197,6 +244,7 @@ impl AbsApiClient {
         })
     }
 
+    /// Accepts 200/204 with no body; any other status becomes [`IntegrationError::api`].
     async fn ok_empty(resp: reqwest::Response) -> Result<()> {
         let status = resp.status();
         if status == StatusCode::OK || status == StatusCode::NO_CONTENT {
@@ -215,22 +263,31 @@ impl AbsApiClient {
 }
 
 #[derive(Debug, Serialize)]
+/// JSON body for `POST /login` (username/password; password is never logged).
 struct LoginRequest {
+    /// ABS login name.
     username: String,
+    /// ABS password; never logged.
     password: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+/// `POST /login` payload; `user` is required to map an [`ExternalUser`].
 pub struct LoginResponse {
+    /// Authenticated ABS user; missing `user` fails `authenticate_user`.
     pub user: Option<AbsUser>,
     #[serde(default)]
+    /// Optional server settings object from ABS (unused by Bookclerk).
     pub server_settings: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+/// `POST /api/authorize` payload used to validate an API token.
 pub struct AuthorizeResponse {
+    /// User bound to the API token when authorize succeeds.
     pub user: Option<AbsUser>,
     #[serde(default)]
+    /// Optional server settings object from ABS (unused by Bookclerk).
     pub server_settings: Option<Value>,
 }
 
@@ -302,20 +359,27 @@ pub struct AbsLibraryItem {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+/// Nested `media` object on an ABS library item.
 pub struct AbsItemMedia {
     #[serde(default)]
+    /// Title / author / ASIN / ISBN used to match Bookclerk library rows.
     pub metadata: Option<AbsItemMetadata>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+/// Matching fields from ABS item metadata (all optional).
 pub struct AbsItemMetadata {
     #[serde(default)]
+    /// Title string when ABS stored one.
     pub title: Option<String>,
     #[serde(default)]
+    /// Display author name when ABS stored one.
     pub author_name: Option<String>,
     #[serde(default)]
+    /// Amazon ASIN when ABS stored one.
     pub asin: Option<String>,
     #[serde(default)]
+    /// ISBN when ABS stored one.
     pub isbn: Option<String>,
 }
 
@@ -332,14 +396,18 @@ pub struct AbsLibrary {
 }
 
 #[derive(Debug, Deserialize)]
+/// Wrapper for `GET /api/libraries` (`libraries` array).
 struct LibrariesResponse {
     #[serde(default)]
+    /// Libraries visible to the API token (empty when ABS omitted the field).
     libraries: Vec<AbsLibrary>,
 }
 
 #[derive(Debug, Deserialize)]
+/// Wrapper for admin `GET /api/users` (`users` array).
 struct UsersResponse {
     #[serde(default)]
+    /// ABS users visible to an admin token (empty when omitted).
     users: Vec<AbsUser>,
 }
 

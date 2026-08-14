@@ -33,16 +33,24 @@ use crate::{PluginError, Result};
 const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 #[derive(Debug, Serialize)]
+/// Outbound newline-delimited JSON-RPC request written to guest stdin.
 struct Request {
+    /// Monotonic request id matched against the guest's response.
     id: u64,
+    /// Workers RPC method name (`handshake`, `fetchTitle`, …).
     method: String,
+    /// JSON params object for the method (may be `null`).
     params: Value,
 }
 
 #[derive(Debug, Deserialize)]
+/// Inbound JSON-RPC response read from guest stdout.
 struct Response {
+    /// Request id; `None` is treated as unmatched / protocol error.
     id: Option<u64>,
+    /// Successful result payload when `error` is absent.
     result: Option<Value>,
+    /// Structured guest error matching the ABI `PluginError` JSON.
     error: Option<AbiRpcError>,
 }
 
@@ -51,23 +59,35 @@ struct Response {
 struct AbiRpcError {
     #[serde(default)]
     #[allow(dead_code)]
+    /// Optional ABI error code (`unauthorized`, `not_found`, …).
     code: Option<String>,
+    /// Operator-facing error text from the guest.
     message: String,
 }
 
+/// Host path handed to the guest via FD pass (Unix) or ACL grant (Windows).
 enum SidePass<'a> {
+    /// Directory the guest may write downloaded title files into.
     FetchDir(&'a Path),
+    /// Packaged file the destination guest may read for `putFile`.
     UploadFile(&'a Path),
+    /// SQLite file opened before `db.connect` (host-owned path).
     DbFile(&'a Path),
 }
 
 /// Host-side client that owns a plugin child process.
 pub struct PluginClient {
+    /// Plugin id from the handshake / manifest (diagnostics and errors).
     id: String,
+    /// Jailed child process; killed on quarantine or drop.
     child: Arc<Mutex<Child>>,
+    /// Child stdin used to write newline-delimited RPC requests.
     stdin: Arc<Mutex<ChildStdin>>,
+    /// In-flight request ids waiting for a matching stdout response.
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>,
+    /// Next RPC request id (relaxed increment; uniqueness is enough).
     next_id: AtomicU64,
+    /// Negotiated handshake result (capabilities, CLI schema, api version).
     handshake: HandshakeResult,
     /// Covering operator grant checked at spawn and privilege delivery.
     grant: PluginGrant,
@@ -395,6 +415,10 @@ impl PluginClient {
     }
 
     /// Fail closed when a delivery site needs a binding this guest was not granted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn require_binding(&self, name: &str) -> Result<()> {
         require_binding(&self.grant, name)
     }
@@ -437,6 +461,10 @@ impl PluginClient {
     }
 
     /// Call a JSON-RPC method and deserialize the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn call<T: DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {
         let value = self.call_raw(method, params).await?;
         Ok(serde_json::from_value(value)?)
@@ -462,6 +490,10 @@ impl PluginClient {
 
     /// Like [`Self::call_raw`], but passes an open fetch work directory first when
     /// the guest is jailed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn call_raw_with_fetch_dir(
         &self,
         method: &str,
@@ -473,6 +505,10 @@ impl PluginClient {
     }
 
     /// Like [`Self::call_raw`], but passes an open local file before `put_file`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn call_raw_with_upload_file(
         &self,
         method: &str,
@@ -484,6 +520,10 @@ impl PluginClient {
     }
 
     /// Like [`Self::call_raw`], but passes an open database file before `db.connect`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn call_raw_with_db_file(
         &self,
         method: &str,
@@ -494,6 +534,7 @@ impl PluginClient {
             .await
     }
 
+    /// Sends one RPC after optionally passing a fetch/upload/db path to the jail.
     async fn call_raw_with_side_pass(
         &self,
         method: &str,
@@ -576,6 +617,7 @@ impl PluginClient {
         self.call_raw_inner(method, params).await
     }
 
+    /// Writes one JSON-RPC line and waits for the matching response or timeout.
     async fn call_raw_inner(&self, method: &str, params: Value) -> Result<Value> {
         if self.quarantined.load(Ordering::SeqCst) {
             return Err(PluginError::message(format!(
@@ -662,6 +704,10 @@ impl PluginClient {
     }
 
     /// Notify-style call that ignores a missing method (optional capability).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn call_optional<T: DeserializeOwned>(
         &self,
         method: &str,
@@ -679,6 +725,10 @@ impl PluginClient {
     }
 
     /// Resolve CLI schema: `cli.describe` when capable, else handshake `cli`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn cli_describe(&self) -> Result<crate::protocol::CliSchema> {
         use crate::protocol::CliSchema;
         if self.has_capability("cli") {
@@ -696,6 +746,10 @@ impl PluginClient {
     }
 
     /// Invoke a declared plugin CLI command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn cli_invoke(
         &self,
         params: crate::protocol::CliInvokeParams,
@@ -711,6 +765,10 @@ impl PluginClient {
     }
 
     /// Run `diagnose`, accepting either `{ "lines": [...] }` or a bare string array.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub async fn diagnose(&self) -> Result<Vec<String>> {
         let value: Value = self
             .call(methods::DIAGNOSE, Value::Object(Default::default()))
@@ -719,6 +777,7 @@ impl PluginClient {
     }
 }
 
+/// Accepts `{ "lines": [...] }` or a bare string array from `diagnose`.
 fn parse_diagnose_lines(value: Value) -> Vec<String> {
     if let Some(arr) = value.as_array() {
         return arr
@@ -791,6 +850,7 @@ async fn read_rpc_line<R: tokio::io::AsyncBufRead + Unpin>(
     }
 }
 
+/// Index of the first `\n` in `bytes`, if any.
 fn memchr_newline(bytes: &[u8]) -> Option<usize> {
     bytes.iter().position(|&b| b == b'\n')
 }

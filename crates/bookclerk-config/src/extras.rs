@@ -80,6 +80,7 @@ pub enum FileTimestampMode {
     Published,
 }
 
+/// Builds [`ReplacementRule`]s from find/replace string pairs for path sanitization.
 fn rules_from_pairs(pairs: &[(&str, &str)]) -> Vec<ReplacementRule> {
     pairs
         .iter()

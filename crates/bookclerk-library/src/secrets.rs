@@ -100,25 +100,35 @@ pub const FORMAT_SEALED_V1: &str = "sealed-v1";
 // Libro/Chirp/GA/Audible stay cache-unaware. Upsert/delete invalidate.
 
 #[derive(Clone, Eq, PartialEq, Hash)]
+/// Identity columns that uniquely name a sealed `encrypted_secrets` row.
 struct SecretCacheKey {
+    /// Secret kind (`source_auth`, `oidc_client`, `s3`, …).
     kind: String,
+    /// Provider / plugin id, or empty when the row has no provider.
     provider: String,
+    /// Ownership namespace (`integration` or `operator`).
     account_type: String,
+    /// Account id, or empty when the row is operator-scoped.
     account_id: String,
+    /// Logical secret name within that identity.
     name: String,
 }
 
+/// Process-local unseal cache entry; plaintext is never written back to the DB.
 struct CachedPlaintext {
     /// Fingerprint of ciphertext (+ nonce) so a stale identity cannot hit.
     fingerprint: u64,
+    /// Unsealed bytes; only the process that holds the DEK can populate this.
     plaintext: Vec<u8>,
 }
 
+/// Process-wide unseal cache; poisoned lock is treated as a miss (fail open for cache only).
 fn plaintext_cache() -> &'static Mutex<HashMap<SecretCacheKey, CachedPlaintext>> {
     static CACHE: OnceLock<Mutex<HashMap<SecretCacheKey, CachedPlaintext>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Builds a cache key from a sealed row's identity columns.
 fn cache_key_for(record: &EncryptedSecretRecord) -> SecretCacheKey {
     SecretCacheKey {
         kind: record.kind.clone(),
@@ -129,6 +139,7 @@ fn cache_key_for(record: &EncryptedSecretRecord) -> SecretCacheKey {
     }
 }
 
+/// Builds a cache key from identity parts used by upsert/delete invalidation.
 fn cache_key_parts(
     kind: &str,
     provider: Option<&str>,
@@ -145,6 +156,7 @@ fn cache_key_parts(
     }
 }
 
+/// Hashes format, ciphertext, nonce, and salt so a rotated blob cannot hit stale plaintext.
 fn ciphertext_fingerprint(record: &EncryptedSecretRecord) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -156,6 +168,7 @@ fn ciphertext_fingerprint(record: &EncryptedSecretRecord) -> u64 {
     h.finish()
 }
 
+/// Returns cached plaintext only when the ciphertext fingerprint still matches.
 fn cache_get(record: &EncryptedSecretRecord) -> Option<Vec<u8>> {
     let key = cache_key_for(record);
     let fp = ciphertext_fingerprint(record);
@@ -171,6 +184,7 @@ fn cache_get(record: &EncryptedSecretRecord) -> Option<Vec<u8>> {
     })
 }
 
+/// Stores unsealed bytes keyed by identity plus ciphertext fingerprint.
 fn cache_put(record: &EncryptedSecretRecord, plaintext: &[u8]) {
     let Ok(mut guard) = plaintext_cache().lock() else {
         return;
@@ -184,12 +198,14 @@ fn cache_put(record: &EncryptedSecretRecord, plaintext: &[u8]) {
     );
 }
 
+/// Drops the cached plaintext for one identity after upsert or delete.
 fn cache_invalidate_key(key: &SecretCacheKey) {
     if let Ok(mut guard) = plaintext_cache().lock() {
         guard.remove(key);
     }
 }
 
+/// Drops every cached plaintext belonging to an integration account id.
 fn cache_invalidate_account(account_id: &str) {
     if let Ok(mut guard) = plaintext_cache().lock() {
         guard.retain(|k, _| k.account_id != account_id);
@@ -267,6 +283,7 @@ pub const KDF_P_COST: u32 = 1;
 pub const KDF_ALGORITHM: &str = "argon2id";
 /// Cipher algorithm identifier stored alongside ciphertext rows.
 pub const CIPHER_ALGORITHM: &str = "xchacha20poly1305";
+/// Legacy Argon2id salt length in bytes (16).
 const SALT_LEN: usize = 16;
 /// XChaCha20 uses a 192-bit (24-byte) nonce.
 const NONCE_LEN: usize = 24;
@@ -295,6 +312,7 @@ fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
     Ok(key)
 }
 
+/// Fills an `N`-byte array from the OS CSPRNG (salt and nonce generation).
 fn random_bytes_array<const N: usize>() -> [u8; N] {
     let mut out = vec![0_u8; N];
     rand::rngs::OsRng.fill_bytes(&mut out);
@@ -305,6 +323,10 @@ fn random_bytes_array<const N: usize>() -> [u8; N] {
 ///
 /// Use [`build_sealed_record`] for new writes. This function is retained for
 /// legacy test compat and the json-encrypted migration path.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn encrypt_secret(plaintext: &[u8], password: &str) -> Result<EncryptedBlob> {
     let salt = random_bytes_array::<SALT_LEN>().to_vec();
     let nonce_bytes = random_bytes_array::<NONCE_LEN>().to_vec();
@@ -328,6 +350,10 @@ pub fn encrypt_secret(plaintext: &[u8], password: &str) -> Result<EncryptedBlob>
 /// Decrypt ciphertext using Argon2id + XChaCha20-Poly1305 (legacy `json-encrypted`).
 ///
 /// Use [`unseal_secret`] for new reads. This function handles legacy DB rows.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn decrypt_secret(
     ciphertext: &[u8],
     password: &str,
@@ -353,6 +379,10 @@ pub fn decrypt_secret(
 ///
 /// Callers must fill in `kind`, `provider`, `account_type`, `account_id`,
 /// `name`, and timestamps before upserting.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn build_sealed_record(
     plaintext: &[u8],
     kind: &str,
@@ -393,6 +423,10 @@ pub fn build_sealed_record(
 /// Successful unseals are cached process-wide (keyed by secret identity +
 /// ciphertext fingerprint) so repeated loads during acquire/scan do not
 /// re-decrypt. Callers — including content-source plugins — need not cache.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn unseal_secret(record: &EncryptedSecretRecord) -> Result<Vec<u8>> {
     if let Some(cached) = cache_get(record) {
         return Ok(cached);
@@ -402,6 +436,7 @@ pub fn unseal_secret(record: &EncryptedSecretRecord) -> Result<Vec<u8>> {
     Ok(plain)
 }
 
+/// Unseals with the process DEK (`sealed-v1`) or legacy password; plaintext `json` fails closed.
 fn unseal_secret_uncached(record: &EncryptedSecretRecord) -> Result<Vec<u8>> {
     match record.format.as_str() {
         FORMAT_SEALED_V1 => {
@@ -441,6 +476,7 @@ fn unseal_secret_uncached(record: &EncryptedSecretRecord) -> Result<Vec<u8>> {
     }
 }
 
+/// Reads `BOOKCLERK_AUTH_PASSWORD` to migrate a legacy `json-encrypted` row; empty fails closed.
 fn read_auth_password_for_legacy(name: &str) -> Result<String> {
     let v = std::env::var(crate::master_key::AUTH_PASSWORD_ENV).map_err(|_| {
         LibraryError::Other(anyhow::anyhow!(
@@ -478,6 +514,7 @@ pub fn b64_string_to_bytes(s: &str) -> Option<Vec<u8>> {
 /// Construct with [`SecretStore::new`] or call the standalone `async fn`
 /// helpers directly. All methods are `async`.
 pub struct SecretStore<'a> {
+    /// SeaORM connection used for `encrypted_secrets` CRUD (ciphertext only; unseal is separate).
     db: &'a DatabaseConnection,
 }
 
@@ -583,6 +620,10 @@ impl<'a> SecretStore<'a> {
 /// Insert or replace a secret in the DB using a single ON CONFLICT statement.
 ///
 /// provider and account_id should always be `Some` for new writes.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn upsert_secret(db: &DatabaseConnection, record: &EncryptedSecretRecord) -> Result<()> {
     let now = now_str();
     let am = encrypted_secrets::ActiveModel {
@@ -646,6 +687,10 @@ pub async fn upsert_secret(db: &DatabaseConnection, record: &EncryptedSecretReco
 }
 
 /// Fetch a single secret by its composite key. Returns `None` if not found.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn get_secret(
     db: &DatabaseConnection,
     kind: &str,
@@ -662,6 +707,10 @@ pub async fn get_secret(
 }
 
 /// List all secrets of a given `kind`.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn list_secrets(
     db: &DatabaseConnection,
     kind: &str,
@@ -679,6 +728,10 @@ pub async fn list_secrets(
 /// Operator-typed secrets (e.g. S3 destination credentials) are never
 /// matched — they have `account_type = "operator"` and survive account
 /// revocation.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn delete_secrets_for_account(db: &DatabaseConnection, account_id: &str) -> Result<()> {
     encrypted_secrets::Entity::delete_many()
         .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
@@ -691,6 +744,10 @@ pub async fn delete_secrets_for_account(db: &DatabaseConnection, account_id: &st
 }
 
 /// Delete a secret by its composite key. No-op if it does not exist.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn delete_secret(
     db: &DatabaseConnection,
     kind: &str,
@@ -724,10 +781,12 @@ pub async fn delete_secret(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+/// RFC 3339 UTC timestamp for `created_at` / `updated_at`.
 fn now_str() -> String {
     Utc::now().to_rfc3339()
 }
 
+/// Loads one `encrypted_secrets` row by composite identity; `None` when missing.
 async fn find_model(
     db: &DatabaseConnection,
     kind: &str,
@@ -751,6 +810,7 @@ async fn find_model(
     q.one(db).await.map_err(LibraryError::Orm)
 }
 
+/// Maps a SeaORM row onto [`EncryptedSecretRecord`] (ciphertext stays sealed).
 fn model_to_record(model: encrypted_secrets::Model) -> EncryptedSecretRecord {
     EncryptedSecretRecord {
         id: Some(model.id),

@@ -37,12 +37,15 @@ pub enum RegistrySource {
     LocalArchive,
 }
 
+/// Default Cargo registry URL (`https://crates.io`) when omitted in JSON.
 fn default_crates_io() -> String {
     "https://crates.io".into()
 }
+/// Default npm registry URL (`https://registry.npmjs.org`) when omitted in JSON.
 fn default_npm() -> String {
     "https://registry.npmjs.org".into()
 }
+/// Default PyPI simple-API origin (`https://pypi.org`) when omitted in JSON.
 fn default_pypi() -> String {
     "https://pypi.org".into()
 }
@@ -81,6 +84,10 @@ pub struct PackageCoordinate {
 
 impl PackageCoordinate {
     /// Parse a source-qualified coordinate string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
     pub fn parse(raw: &str) -> Result<Self> {
         let raw = raw.trim();
         if let Some(path) = raw.strip_prefix("local:") {
@@ -146,6 +153,7 @@ impl PackageCoordinate {
     }
 }
 
+/// Splits on the last `sep` so scoped npm names (`@scope/pkg@ver`) stay intact.
 fn split_at_version(s: &str, sep: char) -> Result<(String, String)> {
     // npm scoped packages: @scope/name@version — split on last @
     let idx = s.rfind(sep).ok_or_else(|| {

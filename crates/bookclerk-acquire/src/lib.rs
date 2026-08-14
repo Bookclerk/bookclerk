@@ -8,6 +8,7 @@
 mod convert;
 mod cue;
 mod destinations;
+/// Acquire-pipeline error types (`AcquireError`) returned to host callers.
 mod error;
 mod match_storage;
 mod naming;

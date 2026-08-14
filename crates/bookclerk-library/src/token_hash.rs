@@ -98,6 +98,7 @@ pub fn derive_claim_password_fingerprint(dek: &MasterKey, nonce: &str, password:
     ))
 }
 
+/// HMAC-SHA256 over concatenated `parts` with a 32-byte key (process DEK or derived subkey).
 fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     let mut mac = Hmac::<Sha256>::new_from_slice(key)
         .unwrap_or_else(|_| unreachable!("HMAC-SHA256 accepts a 32-byte key"));

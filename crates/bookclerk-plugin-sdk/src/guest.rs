@@ -127,6 +127,11 @@ impl PluginGuest {
 }
 
 /// Read one newline-delimited RPC line, rejecting oversize frames.
+///
+/// # Errors
+///
+/// Returns [`SdkError::message`] when the line exceeds [`MAX_RPC_LINE_BYTES`],
+/// or propagates I/O failures from the async reader.
 async fn read_rpc_line<R: AsyncBufRead + AsyncBufReadExt + Unpin>(
     reader: &mut R,
 ) -> Result<Option<String>> {

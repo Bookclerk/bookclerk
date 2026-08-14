@@ -20,39 +20,61 @@ use sea_orm::{
 };
 use tokio::sync::{mpsc, oneshot, Mutex, OwnedMutexGuard};
 
+/// Guest RPC result; errors are operator-facing strings (no structured code).
 type Result<T> = std::result::Result<T, String>;
 
+/// Process-wide SeaORM connection and txn-id → worker routing table.
 struct Session {
+    /// Opened engine connection; `None` until [`set_connection`] runs.
     conn: Option<DatabaseConnection>,
     /// Every live txn id (root and nested) routes to its worker.
     routes: HashMap<String, mpsc::Sender<TxnOp>>,
 }
 
+/// Work item sent to a dedicated transaction worker task.
 enum TxnOp {
+    /// Runs a read-only statement on the named txn (or nested savepoint).
     Query {
+        /// Opaque txn id the host attached to this statement or finish call.
         txn_id: String,
+        /// RPC statement DTO (SQL + params) from the host bridge.
         dto: StatementDto,
+        /// Oneshot used to return query rows to the RPC task.
         reply: oneshot::Sender<Result<QueryResultDto>>,
     },
+    /// Runs a mutating statement on the named txn (or nested savepoint).
     Execute {
+        /// Opaque txn id the host attached to this statement or finish call.
         txn_id: String,
+        /// RPC statement DTO (SQL + params) from the host bridge.
         dto: StatementDto,
+        /// Oneshot used to return last-insert id / rows-affected to the RPC task.
         reply: oneshot::Sender<Result<ExecResultDto>>,
     },
+    /// Opens a nested savepoint on the parent worker and returns a new txn id.
     BeginNested {
+        /// Parent txn id that must be the innermost savepoint on this worker.
         parent_txn_id: String,
+        /// Oneshot used to return the nested txn id (or an error string).
         reply: oneshot::Sender<Result<String>>,
     },
+    /// Commits the named txn or savepoint; root commit ends the worker.
     Commit {
+        /// Opaque txn id the host attached to this statement or finish call.
         txn_id: String,
+        /// Oneshot used to return commit/rollback success or an engine error.
         reply: oneshot::Sender<Result<()>>,
     },
+    /// Rolls back the named txn or savepoint; root rollback ends the worker.
     Rollback {
+        /// Opaque txn id the host attached to this statement or finish call.
         txn_id: String,
+        /// Oneshot used to return commit/rollback success or an engine error.
         reply: oneshot::Sender<Result<()>>,
     },
 }
 
+/// Process-wide session; one connection and a map of live txn routes.
 static SESSION: LazyLock<Mutex<Session>> = LazyLock::new(|| {
     Mutex::new(Session {
         conn: None,
@@ -60,6 +82,7 @@ static SESSION: LazyLock<Mutex<Session>> = LazyLock::new(|| {
     })
 });
 
+/// Mutex that serializes top-level begins so SQLite never interleaves writers.
 fn txn_gate() -> Arc<Mutex<()>> {
     static GATE: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
     GATE.get_or_init(|| Arc::new(Mutex::new(()))).clone()
@@ -252,6 +275,7 @@ pub async fn guest_execute(dto: StatementDto) -> Result<ExecResultDto> {
     execute_on(&conn, dto).await
 }
 
+/// Sends commit or rollback to the worker and drops the route on success.
 async fn finish_txn(txn_id: String, commit: bool) -> Result<()> {
     let tx = route(&txn_id).await?;
     if commit && bookclerk_library::consume_commit_injection() {
@@ -287,6 +311,7 @@ async fn finish_txn(txn_id: String, commit: bool) -> Result<()> {
     Ok(())
 }
 
+/// Looks up the worker channel for a live txn id.
 async fn route(txn_id: &str) -> Result<mpsc::Sender<TxnOp>> {
     SESSION
         .lock()
@@ -297,6 +322,7 @@ async fn route(txn_id: &str) -> Result<mpsc::Sender<TxnOp>> {
         .ok_or_else(|| format!("unknown txn {txn_id}"))
 }
 
+/// Clones the opened connection, or errors if [`set_connection`] was never called.
 async fn connection() -> Result<DatabaseConnection> {
     SESSION
         .lock()
@@ -306,6 +332,7 @@ async fn connection() -> Result<DatabaseConnection> {
         .ok_or_else(|| "database not connected — call db.connect first".into())
 }
 
+/// Owns one SeaORM transaction and serializes nested ops until the root ends.
 async fn txn_worker(
     conn: DatabaseConnection,
     _permit: OwnedMutexGuard<()>,
@@ -376,6 +403,7 @@ async fn txn_worker(
     let _ = rollback_stack(&mut stack).await;
 }
 
+/// Returns the savepoint matching `txn_id`, or errors if it is unknown.
 fn stack_txn<'a>(
     stack: &'a [(String, DatabaseTransaction)],
     txn_id: &str,
@@ -387,6 +415,7 @@ fn stack_txn<'a>(
         .ok_or_else(|| format!("unknown txn {txn_id}"))
 }
 
+/// Begins a nested savepoint only when `parent_txn_id` is the innermost txn.
 async fn begin_nested(
     stack: &mut Vec<(String, DatabaseTransaction)>,
     parent_txn_id: &str,
@@ -419,6 +448,7 @@ async fn begin_nested(
     Ok(id)
 }
 
+/// Commits or rolls back the innermost txn; rejects out-of-order ids.
 async fn pop_finish(
     stack: &mut Vec<(String, DatabaseTransaction)>,
     txn_id: &str,
@@ -443,6 +473,7 @@ async fn pop_finish(
     }
 }
 
+/// Rolls back every remaining savepoint when the worker channel closes.
 async fn rollback_stack(stack: &mut Vec<(String, DatabaseTransaction)>) -> Result<()> {
     while let Some((_, txn)) = stack.pop() {
         txn.rollback().await.map_err(|e| e.to_string())?;
@@ -450,6 +481,7 @@ async fn rollback_stack(stack: &mut Vec<(String, DatabaseTransaction)>) -> Resul
     Ok(())
 }
 
+/// Executes a read-only statement and projects rows into [`QueryResultDto`].
 async fn query_on<C: ConnectionTrait>(conn: &C, dto: StatementDto) -> Result<QueryResultDto> {
     let backend = conn.get_database_backend();
     let stmt = statement_from_dto(dto, backend);
@@ -461,6 +493,7 @@ async fn query_on<C: ConnectionTrait>(conn: &C, dto: StatementDto) -> Result<Que
     Ok(QueryResultDto { rows: out })
 }
 
+/// Executes a mutating statement and returns last-insert id plus rows-affected.
 async fn execute_on<C: ConnectionTrait>(conn: &C, dto: StatementDto) -> Result<ExecResultDto> {
     let backend = conn.get_database_backend();
     let stmt = statement_from_dto(dto, backend);
@@ -480,6 +513,10 @@ async fn execute_on<C: ConnectionTrait>(conn: &C, dto: StatementDto) -> Result<E
 /// # Returns
 ///
 /// `ProxyRowDto` result.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 #[must_use]
 pub fn row_to_dto(row: &sea_orm::QueryResult) -> ProxyRowDto {
     let proxy = from_query_result_to_proxy_row(row);

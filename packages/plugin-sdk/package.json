@@ -45,6 +45,7 @@
     "check-wire": "node scripts/check-wire-fixtures.mjs",
     "docs": "typedoc --options typedoc.json",
     "docs:check": "typedoc --options typedoc.json",
+    "lint": "oxlint",
     "prepare": "npm run build",
     "test:tools": "node scripts/test-tools.mjs"
   },
@@ -56,6 +57,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
+    "oxlint": "^1.78.0",
     "typedoc": "^0.28.20",
     "typescript": "^5.8.2"
   },

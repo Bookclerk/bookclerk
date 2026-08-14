@@ -47,6 +47,7 @@ pub fn close_inherited(_preserve: &[i32]) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
+/// Linux `close_range` from fd 3 upward; false means the listing fallback must run.
 fn close_range_above_stdio() -> bool {
     let first = libc::c_uint::try_from(libc::STDERR_FILENO).unwrap_or(2) + 1;
     // SAFETY: a raw syscall taking three scalars. The range starts above stdio,

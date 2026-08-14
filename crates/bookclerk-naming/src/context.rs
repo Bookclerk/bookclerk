@@ -145,10 +145,12 @@ impl BookContext {
         })
     }
 
+    /// True when at least one series name is present for naming templates.
     pub(crate) fn is_series(&self) -> bool {
         !self.series.is_empty()
     }
 
+    /// True for podcast, podcast-parent, or episode content kinds.
     pub(crate) fn is_podcast(&self) -> bool {
         matches!(
             self.content_kind,
@@ -156,6 +158,7 @@ impl BookContext {
         )
     }
 
+    /// True for show-level podcast kinds (`PodcastParent` or legacy `Podcast`).
     pub(crate) fn is_podcast_parent(&self) -> bool {
         matches!(
             self.content_kind,

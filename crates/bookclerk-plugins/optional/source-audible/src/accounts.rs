@@ -14,6 +14,10 @@ use crate::error::{AudibleError, Result};
 /// Reads (decrypting via `BOOKCLERK_AUTH_PASSWORD` when needed) a user-supplied
 /// auth file, then persists the authenticator into the DB. No `Accounts/` file
 /// is written.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn import_auth_file(
     scope: &SourceScope,
     source: &Path,
@@ -48,6 +52,10 @@ pub async fn import_auth_file(
 }
 
 /// Import mkb79/audible-cli legacy auth JSON (LibationCli: `import-account`).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub async fn import_mkb79_auth_json(
     scope: &SourceScope,
     source: &Path,
@@ -84,6 +92,7 @@ pub async fn import_mkb79_auth_json(
     Ok(info)
 }
 
+/// Seals an imported authenticator into `encrypted_secrets`, refusing overwrite unless `force`.
 async fn persist_imported_auth(
     scope: &SourceScope,
     auth: &audible_rs::auth::Authenticator,
@@ -181,6 +190,10 @@ impl AccountStatus {
 /// IdentityTokens are not converted (discarded file-based auth path). Use
 /// [`import_auth_file`] / [`import_mkb79_auth_json`] or interactive login for
 /// credentials.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
 pub fn import_libation_accounts_json(path: &Path) -> Result<Vec<AccountInfo>> {
     let text = std::fs::read_to_string(path)?;
     let value: serde_json::Value = serde_json::from_str(&text)

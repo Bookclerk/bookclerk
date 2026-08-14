@@ -126,6 +126,7 @@ pub async fn migrate_library_backend(
     Ok(summary)
 }
 
+/// Copies every row of one SeaORM entity from `source` into the destination transaction.
 async fn copy_entity<E>(source: &DatabaseConnection, dest: &impl ConnectionTrait) -> Result<usize>
 where
     E: EntityTrait,
@@ -143,10 +144,12 @@ where
     Ok(count)
 }
 
+/// Sums library-table row counts on the destination (used to refuse a non-empty target).
 async fn dest_row_count(db: &DatabaseConnection) -> Result<usize> {
     Ok(dry_run_counts(db).await?.values().sum())
 }
 
+/// Counts rows per library table without writing (dry-run summary).
 async fn dry_run_counts(
     source: &DatabaseConnection,
 ) -> Result<std::collections::BTreeMap<String, usize>> {

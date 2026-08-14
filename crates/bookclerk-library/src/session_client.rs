@@ -17,6 +17,10 @@ pub struct SessionClientInfo {
 ///
 /// * `user_agent` - Optional `User-Agent` header value.
 /// * `is_api` - When true (no browser UA / bearer-style client), label as API.
+///
+/// # Panics
+///
+/// Panics when an internal invariant does not hold.
 #[must_use]
 pub fn classify_session_client(user_agent: Option<&str>, is_api: bool) -> SessionClientInfo {
     let ua_trim = user_agent.map(str::trim).filter(|s| !s.is_empty());

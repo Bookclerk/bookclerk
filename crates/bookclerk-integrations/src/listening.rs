@@ -101,6 +101,7 @@ pub async fn match_book_uuid(
     Ok(match_book_uuid_in(&books, asin, isbn, title))
 }
 
+/// Matches a snapshot to an owned book by ASIN, then ISBN, then exact title (case-insensitive).
 fn match_book_uuid_in(
     books: &[BookRecord],
     asin: Option<&str>,
