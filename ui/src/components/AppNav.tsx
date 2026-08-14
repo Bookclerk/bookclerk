@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import type { AppView, AuthRole } from "@/lib/api";
+import { navLinksForRole } from "@/lib/nav";
 import { pathForView } from "@/lib/routes";
 
 /**
@@ -12,32 +13,6 @@ export interface AppNavProps {
   onNavigate: (view: AppView) => void;
   /** Effective session role (Settings is available to all signed-in roles). */
   role?: AuthRole;
-}
-
-const BASE_LINKS: { id: AppView; label: string }[] = [
-  { id: "discover", label: "Discover" },
-  { id: "wishlist", label: "Wishlist" },
-  { id: "library", label: "Library" },
-  { id: "accounts", label: "Accounts" },
-];
-
-/**
- * Whether Settings appears in primary nav for this role.
- *
- * All signed-in roles get Settings (Account with Profile / Security / Sessions).
- * User Management / Server / Plugins tabs are gated inside the page by role.
- */
-export function showSettingsNav(_role?: AuthRole): boolean {
-  return true;
-}
-
-/**
- * Primary nav links for an effective role (Settings always included).
- */
-export function navLinksForRole(
-  _role?: AuthRole,
-): { id: AppView; label: string }[] {
-  return [...BASE_LINKS, { id: "settings", label: "Settings" }];
 }
 
 /**

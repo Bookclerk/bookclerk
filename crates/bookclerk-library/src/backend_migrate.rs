@@ -8,10 +8,10 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, 
 
 use crate::entities::{
     account_links, accounts, books, claim_tickets, embeddings, encrypted_secrets, ignored_titles,
-    listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
-    operator_sessions, portal_identities, portal_sessions, saved_filters, security_audit_events,
-    title_request_sources, title_requests, user_invites, user_preferences, users,
-    webauthn_challenges, webauthn_credentials, work_editions, works,
+    job_temp_paths, jobs, listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens,
+    oidc_rp_states, operator_sessions, portal_identities, portal_sessions, saved_filters,
+    security_audit_events, title_request_sources, title_requests, user_invites, user_preferences,
+    users, webauthn_challenges, webauthn_credentials, work_editions, works,
 };
 use crate::error::{LibraryError, Result};
 
@@ -121,6 +121,8 @@ pub async fn migrate_library_backend(
     copy!(oidc_rp_states, "oidc_rp_states");
     copy!(webauthn_credentials, "webauthn_credentials");
     copy!(webauthn_challenges, "webauthn_challenges");
+    copy!(jobs, "jobs");
+    copy!(job_temp_paths, "job_temp_paths");
 
     txn.commit().await.map_err(LibraryError::Orm)?;
     Ok(summary)
@@ -189,5 +191,7 @@ async fn dry_run_counts(
     count!(oidc_rp_states, "oidc_rp_states");
     count!(webauthn_credentials, "webauthn_credentials");
     count!(webauthn_challenges, "webauthn_challenges");
+    count!(jobs, "jobs");
+    count!(job_temp_paths, "job_temp_paths");
     Ok(tables)
 }

@@ -10,6 +10,16 @@ enrich_min_confidence = 90
 # When matching storage, relocate matched audio + sidecars onto the naming-profile layout.
 # fix_storage_layout = false
 
+# Durable daemon job queue (scan / acquire / listen_sync). See docs/jobs.md.
+[jobs]
+max_pending = 32
+lease_seconds = 60
+max_attempts = 3
+retention_days = 7
+# temp_quota_bytes = 2147483648
+[jobs.concurrency]
+network = 1
+
 # Library database plugin — exactly one backend (default: local SQLite).
 # See docs/database.md (SeaORM; Cloudflare D1 and PostgreSQL supported).
 [database]

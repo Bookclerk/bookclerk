@@ -80,6 +80,7 @@ impl SourceRegistry {
     /// When `opts.accounts` is non-empty, each source only receives the subset of
     /// account needles that resolve to an account on that source. Sources with no
     /// matching accounts are skipped instead of failing the whole multi-source scan.
+    /// [`ScanOptions::cancel`] is checked between sources.
     ///
     /// # Errors
     ///
@@ -88,6 +89,11 @@ impl SourceRegistry {
         let mut total = ScanSummary::default();
         let mut any = false;
         for source in self.all() {
+            if opts.is_cancelled() {
+                return Err(crate::error::SourceError::Other(anyhow::anyhow!(
+                    "cancelled"
+                )));
+            }
             let scope = library.scope(source.id());
             let source_opts =
                 match filter_scan_opts_for_source(source.as_ref(), &scope, &opts).await {

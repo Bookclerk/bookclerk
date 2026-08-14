@@ -11,7 +11,7 @@ const dest = resolve(dist, "cloudflare-workers.d.ts");
 mkdirSync(dist, { recursive: true });
 copyFileSync(src, dest);
 
-const ref = '/// <reference path="./cloudflare-workers.d.ts" />\n';
+const ref = 'import "./cloudflare-workers.d.ts";\n';
 for (const name of ["index.d.ts", "bookclerk-plugin.d.ts", "workerd.d.ts"]) {
   const path = resolve(dist, name);
   const text = readFileSync(path, "utf8");

@@ -306,6 +306,8 @@ async fn fetch_via_content_source() {
                 download: bookclerk_source::DownloadOptions::default(),
                 cache_dir: cache.path().to_path_buf(),
                 files_dir: cache.path().to_path_buf(),
+                max_cache_bytes: None,
+                cancel: None,
             },
         )
         .await

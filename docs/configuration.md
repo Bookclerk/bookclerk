@@ -32,6 +32,7 @@ Classic Libation setting names are accepted as aliases where documented in
 | `[integrations]` / `[integrations.<id>]` | Portal + outbound integrations |
 | `[discovery]` | Recommendations, embeddings, Open Library, listening sync |
 | `[diagnostics]` | Opt-in report sharing |
+| `[jobs]` / `[jobs.concurrency]` | Durable queue admission, leases, network-class concurrency |
 
 ## Important environment variables
 
@@ -55,6 +56,12 @@ Classic Libation setting names are accepted as aliases where documented in
 | `BOOKCLERK_DISCOVERY_EMBEDDINGS_ENABLED` | Local ONNX embeddings on/off |
 | `BOOKCLERK_DISCOVERY_OPENLIBRARY_ENABLED` | Open Library enrichment on/off |
 | `BOOKCLERK_DISCOVERY_RECOMMEND_LIMIT` | Default recommendation count |
+| `BOOKCLERK_JOBS_MAX_PENDING` | Cap on pending+running daemon jobs (default 32) |
+| `BOOKCLERK_JOBS_LEASE_SECONDS` | Worker lease length (default 60) |
+| `BOOKCLERK_JOBS_MAX_ATTEMPTS` | Claims before a job fails terminally (default 3) |
+| `BOOKCLERK_JOBS_RETENTION_DAYS` | Days to keep terminal job rows (default 7) |
+| `BOOKCLERK_JOBS_TEMP_QUOTA_BYTES` | Acquire scratch quota (default 2 GiB) |
+| `BOOKCLERK_JOBS_CONCURRENCY_NETWORK` | Network-class workers (default 1) |
 | `BOOKCLERK_MEDIA_WORKERS` | Concurrent codec jobs (`0` = one per core, capped at 8) |
 | `BOOKCLERK_MEDIA_ISOLATION` | `required` / `best-effort` / `off` |
 | `BOOKCLERK_MEDIA_WORKER` | Path to `bookclerk-media-worker` |
@@ -77,6 +84,23 @@ enrich_from_audible = true
 enrich_min_confidence = 90
 # fix_storage_layout = false
 ```
+
+## Jobs
+
+```toml
+[jobs]
+max_pending = 32
+lease_seconds = 60
+max_attempts = 3
+retention_days = 7
+# temp_quota_bytes = 2147483648
+
+[jobs.concurrency]
+network = 1
+```
+
+See [jobs.md](jobs.md) for the state machine, `409`/`429` admission, and crash
+recovery.
 
 ## Identity broker (`[auth.oidc]`)
 

@@ -185,6 +185,12 @@ export interface JobInfo {
   kind: string;
   status: string;
   detail: string | null;
+  progress?: string | null;
+  attempt_count?: number;
+  max_attempts?: number;
+  error_kind?: string | null;
+  created_at?: string | null;
+  finished_at?: string | null;
 }
 
 /**
@@ -194,6 +200,7 @@ export interface ActionResponse {
   ok: boolean;
   message: string;
   job_id: string;
+  error?: string | null;
 }
 
 /**
@@ -373,6 +380,25 @@ async function parseJson<T>(res: Response): Promise<T> {
     throw new ApiError(res.status, message, { code, pluginId, summary });
   }
   return res.json() as Promise<T>;
+}
+
+/**
+ * Parses scan/acquire admission: 200 created, 409 existing job, other errors throw.
+ *
+ * @param res - Fetch response from a job-enqueue endpoint.
+ * @returns Action ack including `job_id` for both created and duplicate admits.
+ */
+async function parseJobAdmit(res: Response): Promise<ActionResponse> {
+  if (res.status === 409) {
+    const body = (await res.json()) as ActionResponse;
+    return {
+      ok: true,
+      message: body.message,
+      job_id: body.job_id,
+      error: body.error ?? "conflict",
+    };
+  }
+  return parseJson(res);
 }
 
 async function fetchWithTimeout(
@@ -1695,7 +1721,7 @@ export async function triggerScan(): Promise<ActionResponse> {
     headers: { "Content-Type": "application/json" },
     body: "{}",
   });
-  return parseJson(res);
+  return parseJobAdmit(res);
 }
 
 /**
@@ -1713,6 +1739,22 @@ export async function triggerAcquire(body: {
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+  return parseJobAdmit(res);
+}
+
+/**
+ * Requests cancel of a pending job or cooperative stop of a running job.
+ *
+ * @param id - Durable job id from `/api/jobs`.
+ * @returns Action ack including the job id.
+ */
+export async function cancelJob(id: string): Promise<ActionResponse> {
+  const res = await fetch(`/api/jobs/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
   });
   return parseJson(res);
 }

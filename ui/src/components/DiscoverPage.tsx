@@ -16,13 +16,12 @@ import { DiscoverFilterRail } from "@/components/DiscoverFilterRail";
 import { StarRating } from "@/components/StarRating";
 import { StoreLogo } from "@/components/StoreLogo";
 import { WaveformThrobber } from "@/components/WaveformThrobber";
-import { useRegisterShelvesChangeListener } from "@/components/PreferencesDialog";
+import { useRegisterShelvesChangeListener } from "@/components/usePreferences";
 import {
   TitleDetailModal,
-  titleDetailFromCatalog,
-  type TitleDetail,
   type TitleMetaSearchKind,
 } from "@/components/TitleDetailModal";
+import { titleDetailFromCatalog, type TitleDetail } from "@/lib/titleDetail";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { loadEnabledSources } from "@/lib/enabledSources";

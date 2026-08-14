@@ -4,10 +4,13 @@
 //!
 //! Host job runners and [`crate::ContentSource`] implementors.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::SourceError;
 use crate::options::DownloadOptions;
 
 /// One allowed value for a [`SourceConfigOption`].
@@ -121,6 +124,8 @@ pub struct ScanOptions {
     pub import_episodes: bool,
     /// Import catalog Plus / non-owned titles — consumed by plugins that support it.
     pub import_plus_titles: bool,
+    /// Cooperative cancel checked between sources and pages.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Default for ScanOptions {
@@ -130,7 +135,18 @@ impl Default for ScanOptions {
             page_size: 50,
             import_episodes: true,
             import_plus_titles: true,
+            cancel: None,
         }
+    }
+}
+
+impl ScanOptions {
+    /// True when a job fence asked this scan to stop.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
     }
 }
 
@@ -168,6 +184,60 @@ pub struct FetchOptions {
     /// resolution by Audible. Non-auth operations only; auth is loaded from the
     /// [`bookclerk_library::LibraryStore`] passed directly to the trait method.
     pub files_dir: PathBuf,
+    /// Optional on-disk budget for `cache_dir` (bytes). Sources should call
+    /// [`Self::enforce_cache_budget`] between chunks.
+    pub max_cache_bytes: Option<u64>,
+    /// Cooperative cancel for mid-fetch quota or a lost job fence.
+    pub cancel: Option<Arc<AtomicBool>>,
+}
+
+impl FetchOptions {
+    /// Fails when cancel is set or `cache_dir` exceeds [`Self::max_cache_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::Other`] when the fetch was cancelled or the
+    /// cache directory is over the remaining scratch quota.
+    pub fn enforce_cache_budget(&self) -> crate::error::Result<()> {
+        if self
+            .cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            return Err(SourceError::Other(anyhow::anyhow!("cancelled")));
+        }
+        if let Some(max) = self.max_cache_bytes {
+            let used = sync_dir_size(&self.cache_dir);
+            if used > max {
+                return Err(SourceError::Other(anyhow::anyhow!(
+                    "acquire scratch quota exceeded ({used} > {max} bytes)"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Recursive directory size; missing paths count as zero.
+fn sync_dir_size(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    total
 }
 
 /// One DRM-free audio part (chapter file or single book).

@@ -1,7 +1,5 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useId,
   useRef,
@@ -30,31 +28,14 @@ import {
   storeLabel,
 } from "@/lib/catalogTitle";
 import { loadEnabledSources } from "@/lib/enabledSources";
+import {
+  PreferencesContext,
+  ShelvesChangeRegistrationContext,
+  type ShelvesListener,
+} from "@/components/preferencesContext";
+import { usePreferences } from "@/components/usePreferences";
 
 const LANG_BROWSER = "__browser__";
-
-type ShelvesListener = () => void;
-
-type PreferencesContextValue = {
-  openPreferences: () => void;
-  preferencesOpen: boolean;
-};
-
-const PreferencesContext = createContext<PreferencesContextValue | null>(null);
-
-/**
- * Reads the preferences context (must be under {@link PreferencesProvider}).
- *
- * @returns Preferences context value.
- * @throws When used outside {@link PreferencesProvider}.
- */
-export function usePreferences(): PreferencesContextValue {
-  const ctx = useContext(PreferencesContext);
-  if (!ctx) {
-    throw new Error("usePreferences must be used within PreferencesProvider");
-  }
-  return ctx;
-}
 
 /**
  * Header control that opens the preferences dialog — safe on every authenticated page.
@@ -114,27 +95,6 @@ export function PreferencesProvider({
       />
     </PreferencesContext.Provider>
   );
-}
-
-const ShelvesChangeRegistrationContext = createContext<
-  ((fn: ShelvesListener | null) => void) | null
->(null);
-
-/**
- * Registers a listener invoked when Discover shelf visibility prefs change.
- *
- * @param listener - Callback, or `null` to clear.
- */
-export function useRegisterShelvesChangeListener(listener: ShelvesListener | null) {
-  const setOnShelvesChange = useContext(ShelvesChangeRegistrationContext);
-  const listenerRef = useRef(listener);
-  listenerRef.current = listener;
-
-  useEffect(() => {
-    if (!setOnShelvesChange) return;
-    setOnShelvesChange(() => listenerRef.current?.());
-    return () => setOnShelvesChange(null);
-  }, [setOnShelvesChange]);
 }
 
 function PreferencesDialog({

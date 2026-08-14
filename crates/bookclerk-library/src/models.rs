@@ -962,6 +962,374 @@ pub fn user_prefs_key(user_id: i64) -> String {
     format!("user:{user_id}")
 }
 
+/// Kind of durable daemon work stored in the `jobs` table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobKind {
+    /// Library scan for one account or every scan-enabled account.
+    Scan,
+    /// Acquire pending titles (optional title / account filter).
+    Acquire,
+    /// Sync listening progress from capable integrations.
+    ListenSync,
+    /// Remote integration library scan (Audiobookshelf, …).
+    IntegrationScan,
+    /// Terminal placeholder after an unreadable persisted command is rejected.
+    Invalid,
+}
+
+impl JobKind {
+    /// Returns the canonical snake_case wire string.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Scan => "scan",
+            Self::Acquire => "acquire",
+            Self::ListenSync => "listen_sync",
+            Self::IntegrationScan => "integration_scan",
+            Self::Invalid => "invalid",
+        }
+    }
+
+    /// Parses the canonical wire string; returns `None` when unknown.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "scan" => Some(Self::Scan),
+            "acquire" => Some(Self::Acquire),
+            "listen_sync" => Some(Self::ListenSync),
+            "integration_scan" => Some(Self::IntegrationScan),
+            "invalid" => Some(Self::Invalid),
+            _ => None,
+        }
+    }
+
+    /// Resource class used for admission and worker concurrency.
+    #[must_use]
+    pub fn resource_class(self) -> JobResourceClass {
+        JobResourceClass::Network
+    }
+
+    /// Idempotency key unique among pending/running jobs of the same work.
+    #[must_use]
+    pub fn dedup_key(self, payload: &JobPayload) -> String {
+        let account = payload.account.as_deref().unwrap_or("all");
+        match self {
+            Self::Scan => format!("scan:account={account}"),
+            Self::Acquire => {
+                let title = payload.title.as_deref().unwrap_or("all");
+                format!("acquire:title={title}:account={account}")
+            }
+            Self::ListenSync => "listen_sync".into(),
+            Self::IntegrationScan => {
+                let id = payload.integration_id.as_deref().unwrap_or("all");
+                format!("integration_scan:id={id}:force={}", u8::from(payload.force))
+            }
+            Self::Invalid => "invalid".into(),
+        }
+    }
+}
+
+/// Lifecycle state of a durable job row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobState {
+    /// Admitted and waiting to be claimed.
+    Pending,
+    /// Claimed by a worker that holds a live lease.
+    Running,
+    /// Finished successfully.
+    Succeeded,
+    /// Exhausted retries or failed without retry.
+    Failed,
+    /// Cancelled by an operator before or during execution.
+    Cancelled,
+}
+
+impl JobState {
+    /// Returns the canonical snake_case wire string.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Parses the canonical wire string; returns `None` when unknown.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(Self::Pending),
+            "running" => Some(Self::Running),
+            "succeeded" => Some(Self::Succeeded),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+
+    /// True when the job may still be claimed or is executing.
+    #[must_use]
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Pending | Self::Running)
+    }
+
+    /// True when the job will not run again.
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+    }
+}
+
+/// Concurrency class that bounds how many jobs of this type run at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobResourceClass {
+    /// Store HTTP / scan / acquire / listening-sync work.
+    Network,
+    /// Codec / remux work (reserved; media pool remains separate).
+    Media,
+    /// Speech-to-text / derived transcript work (reserved for #121).
+    Transcription,
+    /// Search-index / embedding work (reserved).
+    Indexing,
+}
+
+impl JobResourceClass {
+    /// Returns the canonical snake_case wire string.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Network => "network",
+            Self::Media => "media",
+            Self::Transcription => "transcription",
+            Self::Indexing => "indexing",
+        }
+    }
+
+    /// Parses the canonical wire string; returns `None` when unknown.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "network" => Some(Self::Network),
+            "media" => Some(Self::Media),
+            "transcription" => Some(Self::Transcription),
+            "indexing" => Some(Self::Indexing),
+            _ => None,
+        }
+    }
+
+    /// Canonical wire strings for every known class.
+    pub const ALL: &'static [&'static str] = &["network", "media", "transcription", "indexing"];
+}
+
+/// Who admitted the job (API vs periodic scheduler).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobTrigger {
+    /// Enqueued from the HTTP control plane, tray, or CLI daemon commands.
+    #[default]
+    Api,
+    /// Enqueued by the daemon interval scheduler.
+    Scheduler,
+}
+
+impl JobTrigger {
+    /// Returns the canonical snake_case wire string.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Api => "api",
+            Self::Scheduler => "scheduler",
+        }
+    }
+
+    /// Parses the canonical wire string; returns `None` when unknown.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "api" => Some(Self::Api),
+            "scheduler" => Some(Self::Scheduler),
+            _ => None,
+        }
+    }
+}
+
+/// Current job command envelope version stored in [`JobPayload::v`].
+pub const JOB_PAYLOAD_VERSION: u32 = 1;
+
+/// JSON command envelope stored on a job row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobPayload {
+    /// Envelope schema version; must equal [`JOB_PAYLOAD_VERSION`].
+    #[serde(default = "default_job_payload_version")]
+    pub v: u32,
+    /// Optional account filter (`None` = all eligible accounts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// Optional title filter (uuid / ASIN / ISBN / product id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Admission source (`api` or `scheduler`).
+    #[serde(default)]
+    pub trigger: JobTrigger,
+    /// Integration plugin id for [`JobKind::IntegrationScan`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_id: Option<String>,
+    /// When true, an integration scan asks the remote to rescan.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
+}
+
+/// Default envelope version for missing `v` on well-formed legacy rows.
+fn default_job_payload_version() -> u32 {
+    JOB_PAYLOAD_VERSION
+}
+
+impl Default for JobPayload {
+    fn default() -> Self {
+        Self {
+            v: JOB_PAYLOAD_VERSION,
+            account: None,
+            title: None,
+            trigger: JobTrigger::Api,
+            integration_id: None,
+            force: false,
+        }
+    }
+}
+
+/// Admission request for [`crate::LibraryStore::enqueue_job`].
+#[derive(Debug, Clone)]
+pub struct EnqueueJobSpec {
+    /// Job kind to run.
+    pub kind: JobKind,
+    /// Kind-specific filters and trigger metadata.
+    pub payload: JobPayload,
+    /// Higher values are claimed first (default 0).
+    pub priority: i64,
+    /// Maximum claims before a failure is terminal.
+    pub max_attempts: i64,
+    /// Global cap on pending+running rows; enqueue fails when at the cap.
+    pub max_pending: i64,
+    /// Optional delay before the job becomes claimable.
+    pub run_after: Option<DateTime<Utc>>,
+}
+
+/// Result of admitting a job into the durable queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnqueueOutcome {
+    /// A new row was inserted.
+    Created {
+        /// New job id.
+        id: String,
+    },
+    /// An equivalent pending/running job already exists.
+    Duplicate {
+        /// Existing job id that satisfies the dedup key.
+        existing_id: String,
+    },
+    /// `pending + running` already equals `max_pending`.
+    QueueFull,
+}
+
+/// Durable job row returned to the daemon API and worker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobRecord {
+    /// Stable job id (`scan-{uuid}`, …).
+    pub id: String,
+    /// Job kind (`scan`, `acquire`, `listen_sync`).
+    pub kind: JobKind,
+    /// Lifecycle state.
+    pub state: JobState,
+    /// Higher values are claimed first.
+    pub priority: i64,
+    /// Concurrency class.
+    pub resource_class: JobResourceClass,
+    /// Kind-specific filters and trigger metadata.
+    pub payload: JobPayload,
+    /// Human-readable progress string.
+    pub progress: Option<String>,
+    /// Number of times a worker has claimed this row.
+    pub attempt_count: i64,
+    /// Maximum claims before a failure becomes terminal.
+    pub max_attempts: i64,
+    /// Earliest time a pending job may be claimed.
+    pub run_after: DateTime<Utc>,
+    /// Worker id that currently holds the lease.
+    pub lease_owner: Option<String>,
+    /// Lease expiry; stale running rows are reclaimed after this.
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    /// Idempotency key among pending/running rows.
+    pub dedup_key: String,
+    /// Structured error kind when failed or cancelled.
+    pub error_kind: Option<String>,
+    /// Operator-facing error text.
+    pub error_message: Option<String>,
+    /// Cooperative cancel flag.
+    pub cancel_requested: bool,
+    /// When the row was inserted.
+    pub created_at: DateTime<Utc>,
+    /// When the row was last modified.
+    pub updated_at: DateTime<Utc>,
+    /// When a worker first claimed the row.
+    pub started_at: Option<DateTime<Utc>>,
+    /// When the row reached a terminal state.
+    pub finished_at: Option<DateTime<Utc>>,
+    /// Per-claim generation used to fence heartbeat and finalization.
+    pub lease_generation: i64,
+}
+
+impl JobRecord {
+    /// Lease identity for heartbeat and finalization, when this row is claimed.
+    #[must_use]
+    pub fn fence(&self) -> Option<JobFence> {
+        Some(JobFence {
+            job_id: self.id.clone(),
+            owner: self.lease_owner.clone()?,
+            generation: self.lease_generation,
+        })
+    }
+}
+
+/// Lease identity a worker must present to mutate a running job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobFence {
+    /// Job id that was claimed.
+    pub job_id: String,
+    /// Worker id stored in `lease_owner`.
+    pub owner: String,
+    /// `lease_generation` assigned by the successful claim.
+    pub generation: i64,
+}
+
+/// Scratch path registered against a job for crash cleanup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobTempPath {
+    /// Surrogate primary key.
+    pub id: i64,
+    /// Owning job id.
+    pub job_id: String,
+    /// Absolute filesystem path.
+    pub path: String,
+    /// When the path was registered.
+    pub created_at: DateTime<Utc>,
+    /// Bytes reserved against the job temp quota for this path.
+    pub reserved_bytes: u64,
+}
+
+/// Next `run_after` after a failed attempt, exponential from a 5s base (capped).
+#[must_use]
+pub fn job_backoff_run_after(attempt_count: i64, now: DateTime<Utc>) -> DateTime<Utc> {
+    let exp = u32::try_from(attempt_count.saturating_sub(1).clamp(0, 8)).unwrap_or(0);
+    let secs = 5u64.saturating_mul(2u64.saturating_pow(exp)).min(15 * 60);
+    now + chrono::Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX))
+}
+
 impl BookRecord {
     /// Public stable id used for CLI / API / acquire lookups.
     #[must_use]

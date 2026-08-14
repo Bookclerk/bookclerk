@@ -1,7 +1,7 @@
 //! Libro.fm content source: auth, library sync, and DRM-free download.
 //!
 //! Uses the unofficial mobile API documented by community clients (see
-//! [`client`] module). Audible ASIN enrichment (metadata confidence matching)
+//! `client` module). Audible ASIN enrichment (metadata confidence matching)
 //! lives in `bookclerk-enrich` / CLI — this crate must not depend on
 //! `bookclerk-audible` or `bookclerk-enrich`. Public explore catalog helpers
 //! live in [`catalog`] (reqwest, no enrich).

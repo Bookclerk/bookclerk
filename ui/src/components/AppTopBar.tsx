@@ -1,8 +1,9 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { LogOut, Menu, Settings2, X } from "lucide-react";
-import { AppNav, navLinksForRole, type AppNavProps } from "@/components/AppNav";
-import { usePreferences } from "@/components/PreferencesDialog";
+import { AppNav, type AppNavProps } from "@/components/AppNav";
+import { usePreferences } from "@/components/usePreferences";
+import { navLinksForRole } from "@/lib/nav";
 import { Button } from "@/components/ui/button";
 import { pathForView } from "@/lib/routes";
 import { cn } from "@/lib/utils";

@@ -259,7 +259,7 @@ impl OidcBrokerConfig {
     /// Validate provider rows even when the broker is disabled.
     ///
     /// Used by the Settings API so a disabled-but-invalid draft cannot be
-    /// written and then fail [`Config::load`] when later enabled.
+    /// written and then fail [`crate::Config::load`] when later enabled.
     ///
     /// # Errors
     ///

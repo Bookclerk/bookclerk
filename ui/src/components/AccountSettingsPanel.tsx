@@ -78,7 +78,7 @@ export function AccountSettingsPanel({
   }, []);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user?.id) return;
     let cancelled = false;
     void (async () => {
       try {

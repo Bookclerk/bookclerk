@@ -39,13 +39,14 @@ pub use master_key::{
 };
 pub use models::{
     content_kind_from_classic, content_kind_to_classic, is_downloadable, is_episode,
-    is_podcast_parent, portal_prefs_key, user_prefs_key, AccountLinkRecord, AccountRecord,
-    AcquireStatus, BookRecord, ClaimTicketRecord, EmbeddingRecord, GlobalQueueEntry,
-    ListeningProgressRecord, OperatorSessionRecord, PortalIdentity, PortalSessionRecord,
-    RequestStatus, SecurityAuditEvent, TitleRequestRecord, TitleRequestSourceRecord,
-    UserIntegrationHint, UserInviteRecord, UserListeningHint, UserPreferences, UserPresenceExtras,
-    UserRecord, UserRole, UserStatus, WishlistPurchaseHint, WishlistStoreEdition, WorkRecord,
-    OPERATOR_PREFS_KEY,
+    is_podcast_parent, job_backoff_run_after, portal_prefs_key, user_prefs_key, AccountLinkRecord,
+    AccountRecord, AcquireStatus, BookRecord, ClaimTicketRecord, EmbeddingRecord, EnqueueJobSpec,
+    EnqueueOutcome, GlobalQueueEntry, JobFence, JobKind, JobPayload, JobRecord, JobResourceClass,
+    JobState, JobTempPath, JobTrigger, ListeningProgressRecord, OperatorSessionRecord,
+    PortalIdentity, PortalSessionRecord, RequestStatus, SecurityAuditEvent, TitleRequestRecord,
+    TitleRequestSourceRecord, UserIntegrationHint, UserInviteRecord, UserListeningHint,
+    UserPreferences, UserPresenceExtras, UserRecord, UserRole, UserStatus, WishlistPurchaseHint,
+    WishlistStoreEdition, WorkRecord, JOB_PAYLOAD_VERSION, OPERATOR_PREFS_KEY,
 };
 pub use operator_token::{
     env_operator_token, legacy_operator_token_file, load_operator_token,

@@ -414,6 +414,36 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 config.library.scan_interval_minutes = n;
             }
         }
+        "jobs.max_pending" => {
+            if let Ok(n) = v.parse::<u32>() {
+                config.jobs.max_pending = n.max(1);
+            }
+        }
+        "jobs.lease_seconds" => {
+            if let Ok(n) = v.parse::<u64>() {
+                config.jobs.lease_seconds = n.max(5);
+            }
+        }
+        "jobs.max_attempts" => {
+            if let Ok(n) = v.parse::<u32>() {
+                config.jobs.max_attempts = n.max(1);
+            }
+        }
+        "jobs.retention_days" => {
+            if let Ok(n) = v.parse::<u64>() {
+                config.jobs.retention_days = n.max(1);
+            }
+        }
+        "jobs.temp_quota_bytes" => {
+            if let Ok(n) = v.parse::<u64>() {
+                config.jobs.temp_quota_bytes = n;
+            }
+        }
+        "jobs.concurrency.network" => {
+            if let Ok(n) = v.parse::<u32>() {
+                config.jobs.concurrency.network = n.max(1);
+            }
+        }
         "discovery.embeddings_enabled" => {
             config.discovery.embeddings_enabled = parse_bool(v).unwrap_or(true);
         }

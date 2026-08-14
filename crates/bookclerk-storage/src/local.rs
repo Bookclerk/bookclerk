@@ -16,7 +16,7 @@ use crate::traits::{
 
 /// Stores objects under a root directory; keys map to relative paths.
 ///
-/// An optional [`Self::prefix`] is prepended to every key (same model as S3),
+/// An optional key prefix is prepended to every key (same model as S3),
 /// so library `storage_key` values stay relative to the prefix.
 #[derive(Debug, Clone)]
 pub struct LocalFsBackend {

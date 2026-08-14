@@ -219,6 +219,10 @@ pub mod atomic_status {
     pub const PASSWORD_REQUIRED: &str = "passwordRequired";
     /// Same `operationId` reused with a different request body.
     pub const IDEMPOTENCY_CONFLICT: &str = "idempotencyConflict";
+    /// Job admit found an equivalent pending/running row.
+    pub const DUPLICATE: &str = "duplicate";
+    /// Job admit refused because the pending+running cap was reached.
+    pub const QUEUE_FULL: &str = "queueFull";
 }
 
 /// Named atomic library operation for [`crate::methods::db_atomic`].
@@ -302,6 +306,45 @@ pub enum DbAtomicParams {
         challenge_id: String,
         /// `register`, `login`, or `elevate`.
         kind: String,
+    },
+    /// Admit a durable job (dedup + pending cap + insert).
+    #[serde(rename_all = "camelCase")]
+    EnqueueJob {
+        /// Job kind wire string (`scan`, `acquire`, `listen_sync`, `integration_scan`).
+        kind: String,
+        /// Versioned command envelope JSON.
+        payload_json: String,
+        /// Higher values are claimed first.
+        priority: i64,
+        /// Maximum claims before a failure is terminal.
+        max_attempts: i64,
+        /// Global cap on pending+running rows.
+        max_pending: i64,
+        /// Optional RFC 3339 delay before the job becomes claimable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_after: Option<String>,
+    },
+    /// Claim the next ready job in `resource_class` for `owner`.
+    #[serde(rename_all = "camelCase")]
+    ClaimNextJob {
+        /// Resource class wire string (`network`, …).
+        resource_class: String,
+        /// Worker id stored as `lease_owner`.
+        owner: String,
+        /// Lease length in seconds.
+        lease_secs: i64,
+    },
+    /// Reserve scratch-quota bytes for one job path.
+    #[serde(rename_all = "camelCase")]
+    ReserveJobTemp {
+        /// Owning job id.
+        job_id: String,
+        /// Absolute filesystem path.
+        path: String,
+        /// Bytes to reserve for this path.
+        reserved_bytes: i64,
+        /// Global reserved-bytes cap.
+        quota_bytes: i64,
     },
 }
 

@@ -446,6 +446,8 @@ async fn content_source_scan_and_fetch_title() {
                 download: Default::default(),
                 cache_dir: cache.path().to_path_buf(),
                 files_dir: cache.path().to_path_buf(),
+                max_cache_bytes: None,
+                cancel: None,
             },
         )
         .await

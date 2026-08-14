@@ -248,8 +248,10 @@ running the codec so this reports the path rather than a bare `No such file`
 from inside a decoder.
 
 **Everything is slow with plenty of idle cores** — `media.workers` is the cap.
-Note that acquires themselves are still serialized daemon-wide by the job
-lock; the pool bounds codec concurrency within an acquire, not across them.
+Note that acquire **batches** are still serialized by the durable job queue
+`network` class (default concurrency 1) plus the daemon `work_lock`; the pool
+bounds codec concurrency within an acquire, not across them. See
+[jobs.md](jobs.md).
 
 ## Related
 

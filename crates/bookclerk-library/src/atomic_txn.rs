@@ -11,7 +11,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::error::Result;
-use crate::models::{PortalIdentity, UserRecord, UserRole, UserStatus};
+use crate::models::{
+    EnqueueJobSpec, EnqueueOutcome, JobRecord, JobResourceClass, PortalIdentity, UserRecord,
+    UserRole, UserStatus,
+};
 use crate::SessionClientInfo;
 
 /// Backend that runs [`crate::LibraryStore`] named security operations as a
@@ -66,4 +69,25 @@ pub trait AtomicTxnBackend: Send + Sync {
         challenge_id: &str,
         kind: &str,
     ) -> Result<Option<(Option<i64>, String)>>;
+
+    /// Admit a durable job in one `dbAtomic` transaction.
+    async fn enqueue_job(&self, spec: EnqueueJobSpec) -> Result<EnqueueOutcome>;
+
+    /// Claim the next ready job; `operation_id` makes a lost response replay-safe.
+    async fn claim_next_job(
+        &self,
+        resource_class: JobResourceClass,
+        owner: &str,
+        lease_secs: u64,
+        operation_id: &str,
+    ) -> Result<Option<JobRecord>>;
+
+    /// Reserve scratch-quota bytes for `path` on `job_id`.
+    async fn reserve_job_temp_path(
+        &self,
+        job_id: &str,
+        path: &str,
+        reserved_bytes: u64,
+        quota_bytes: u64,
+    ) -> Result<()>;
 }

@@ -20,7 +20,11 @@ use sha2::{Digest, Sha256};
 
 use crate::entities::db_atomic_receipts;
 use crate::error::{LibraryError, Result};
-use crate::models::{PortalIdentity, UserRecord};
+use crate::models::{
+    EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobResourceClass, PortalIdentity,
+    UserRecord,
+};
+use crate::store::job_queue::{claim_next_job_on, enqueue_job_on, reserve_job_temp_path_on};
 use crate::store::LibraryStore;
 use crate::SessionClientInfo;
 
@@ -285,6 +289,9 @@ fn operation_kind(op: &DbAtomicParams) -> &'static str {
         DbAtomicParams::RedeemClaimTicket { .. } => "redeemClaimTicket",
         DbAtomicParams::TakeOidcRpState { .. } => "takeOidcRpState",
         DbAtomicParams::TakeWebauthnChallenge { .. } => "takeWebauthnChallenge",
+        DbAtomicParams::EnqueueJob { .. } => "enqueueJob",
+        DbAtomicParams::ClaimNextJob { .. } => "claimNextJob",
+        DbAtomicParams::ReserveJobTemp { .. } => "reserveJobTemp",
     }
 }
 
@@ -474,6 +481,83 @@ async fn run_operation(
                 )),
                 None => Ok((atomic_status::EMPTY.to_string(), None)),
             }
+        }
+        DbAtomicParams::EnqueueJob {
+            kind,
+            payload_json,
+            priority,
+            max_attempts,
+            max_pending,
+            run_after,
+        } => {
+            let kind = JobKind::parse(kind)
+                .ok_or_else(|| LibraryError::Other(anyhow::anyhow!("invalid job kind `{kind}`")))?;
+            let payload: JobPayload = serde_json::from_str(payload_json)
+                .map_err(|err| LibraryError::Other(anyhow::anyhow!(err.to_string())))?;
+            let run_after = run_after
+                .as_deref()
+                .map(|s| {
+                    DateTime::parse_from_rfc3339(s)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .map_err(|err| LibraryError::Other(anyhow::anyhow!(err.to_string())))
+                })
+                .transpose()?;
+            match enqueue_job_on(
+                txn,
+                EnqueueJobSpec {
+                    kind,
+                    payload,
+                    priority: *priority,
+                    max_attempts: *max_attempts,
+                    max_pending: *max_pending,
+                    run_after,
+                },
+            )
+            .await?
+            {
+                EnqueueOutcome::Created { id } => Ok((
+                    atomic_status::OK.to_string(),
+                    Some(serde_json::json!({"id": id})),
+                )),
+                EnqueueOutcome::Duplicate { existing_id } => Ok((
+                    atomic_status::DUPLICATE.to_string(),
+                    Some(serde_json::json!({"id": existing_id})),
+                )),
+                EnqueueOutcome::QueueFull => Ok((atomic_status::QUEUE_FULL.to_string(), None)),
+            }
+        }
+        DbAtomicParams::ClaimNextJob {
+            resource_class,
+            owner,
+            lease_secs,
+        } => {
+            let class = JobResourceClass::parse(resource_class).ok_or_else(|| {
+                LibraryError::Other(anyhow::anyhow!(
+                    "invalid job resource class `{resource_class}`"
+                ))
+            })?;
+            match claim_next_job_on(txn, class, owner, u64::try_from(*lease_secs).unwrap_or(60))
+                .await?
+            {
+                Some(job) => Ok((atomic_status::OK.to_string(), Some(to_json(&job)?))),
+                None => Ok((atomic_status::EMPTY.to_string(), None)),
+            }
+        }
+        DbAtomicParams::ReserveJobTemp {
+            job_id,
+            path,
+            reserved_bytes,
+            quota_bytes,
+        } => {
+            reserve_job_temp_path_on(
+                txn,
+                job_id,
+                path,
+                u64::try_from(*reserved_bytes).unwrap_or(0),
+                u64::try_from(*quota_bytes).unwrap_or(0),
+            )
+            .await?;
+            Ok((atomic_status::OK.to_string(), None))
         }
     }
 }

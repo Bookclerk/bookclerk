@@ -4,9 +4,9 @@ import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import {
   TitleDetailModal,
-  titleDetailFromBook,
   type TitleMetaSearchKind,
 } from "@/components/TitleDetailModal";
+import { titleDetailFromBook } from "@/lib/titleDetail";
 import { BookRow } from "@/components/BookRow";
 import { JobsStrip } from "@/components/JobsStrip";
 import { Button } from "@/components/ui/button";
@@ -363,7 +363,9 @@ export function LibraryPage({
         />
       ) : null}
 
-      {canAcquire ? <JobsStrip status={status} jobs={jobs} /> : null}
+      {canAcquire ? (
+        <JobsStrip status={status} jobs={jobs} onChanged={() => void refreshMeta()} />
+      ) : null}
       <style>{`
         @keyframes rowIn {
           from { opacity: 0; transform: translateY(6px); }

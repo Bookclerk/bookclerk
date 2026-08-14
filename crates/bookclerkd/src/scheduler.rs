@@ -1,12 +1,14 @@
-//! Background scan / auto-acquire / listening-sync scheduler.
+//! Periodic scan / auto-acquire / listening-sync scheduler (queue producers).
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::{error, info, warn};
+use bookclerk_library::JobTrigger;
+use tracing::{info, warn};
 
 use crate::api::AppState;
-use crate::jobs::{run_acquire, run_scan};
+use crate::job_worker::jittered_delay;
+use crate::jobs::{enqueue_acquire, enqueue_listen_sync, enqueue_scan};
 
 /// Spawn periodic library scan and optional listening-sync loops.
 pub fn spawn_scheduler(state: Arc<AppState>) {
@@ -14,7 +16,7 @@ pub fn spawn_scheduler(state: Arc<AppState>) {
     spawn_listen_sync_loop(state);
 }
 
-/// Tokio task that sleeps `scan_interval_minutes` then runs scan (and optional auto-acquire).
+/// Periodically admits a library scan (and optional auto-acquire) with jitter.
 fn spawn_scan_loop(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
@@ -24,32 +26,17 @@ fn spawn_scan_loop(state: Arc<AppState>) {
             };
             if interval_mins == 0 {
                 info!("scan scheduler disabled (scan_interval_minutes = 0)");
-                // Sleep long and re-check in case config is reloaded later.
                 tokio::time::sleep(Duration::from_secs(300)).await;
                 continue;
             }
 
-            let sleep_for = Duration::from_secs(interval_mins.saturating_mul(60));
+            let sleep_for = jittered_delay(Duration::from_secs(interval_mins.saturating_mul(60)));
             info!(?sleep_for, "scheduler sleeping until next scan");
             tokio::time::sleep(sleep_for).await;
 
-            let started = std::time::Instant::now();
-            match run_scan(&state, None).await {
-                Ok(detail) => info!(
-                    %detail,
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    "scheduled scan complete"
-                ),
-                Err(err) => {
-                    error!(
-                        error = %err,
-                        elapsed_ms = started.elapsed().as_millis() as u64,
-                        "scheduled scan failed"
-                    );
-                    if let Some(diag) = bookclerk_config::diagnostics_global() {
-                        diag.request_upload("job_failed");
-                    }
-                }
+            match enqueue_scan(state.clone(), None, JobTrigger::Scheduler).await {
+                Ok(admit) => info!(?admit, "scheduled scan enqueued"),
+                Err(err) => warn!(error = %err, "scheduled scan enqueue failed"),
             }
 
             let auto = {
@@ -57,30 +44,16 @@ fn spawn_scan_loop(state: Arc<AppState>) {
                 cfg.library.auto_acquire
             };
             if auto {
-                let started = std::time::Instant::now();
-                match run_acquire(&state, None, None).await {
-                    Ok(detail) => info!(
-                        %detail,
-                        elapsed_ms = started.elapsed().as_millis() as u64,
-                        "scheduled auto-acquire complete"
-                    ),
-                    Err(err) => {
-                        error!(
-                            error = %err,
-                            elapsed_ms = started.elapsed().as_millis() as u64,
-                            "scheduled auto-acquire failed"
-                        );
-                        if let Some(diag) = bookclerk_config::diagnostics_global() {
-                            diag.request_upload("job_failed");
-                        }
-                    }
+                match enqueue_acquire(state.clone(), None, None, JobTrigger::Scheduler).await {
+                    Ok(admit) => info!(?admit, "scheduled auto-acquire enqueued"),
+                    Err(err) => warn!(error = %err, "scheduled auto-acquire enqueue failed"),
                 }
             }
         }
     });
 }
 
-/// Tokio task that sleeps `listen_sync_interval_minutes` then syncs listening progress.
+/// Periodically admits a listening-progress sync with jitter.
 fn spawn_listen_sync_loop(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
@@ -94,32 +67,65 @@ fn spawn_listen_sync_loop(state: Arc<AppState>) {
                 continue;
             }
 
-            let sleep_for = Duration::from_secs(interval_mins.saturating_mul(60));
+            let sleep_for = jittered_delay(Duration::from_secs(interval_mins.saturating_mul(60)));
             info!(?sleep_for, "scheduler sleeping until next listening sync");
             tokio::time::sleep(sleep_for).await;
 
-            let started = std::time::Instant::now();
-            let library = state.library.read().await.clone();
-            let integrations = state.integrations.read().await.clone();
-            let summary = integrations.sync_listening_progress_all(&library).await;
-            if summary.by_provider.is_empty() {
-                info!(
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    "scheduled listening sync skipped (no capable integrations)"
-                );
-                continue;
-            }
-            info!(
-                upserted = summary.upserted,
-                providers = summary.by_provider.len(),
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                "scheduled listening sync complete"
-            );
-            for p in &summary.by_provider {
-                if let Some(err) = &p.error {
-                    warn!(id = %p.id, %err, "listening sync provider failed");
-                }
+            match enqueue_listen_sync(state.clone(), JobTrigger::Scheduler).await {
+                Ok(admit) => info!(?admit, "scheduled listening sync enqueued"),
+                Err(err) => warn!(error = %err, "scheduled listening sync enqueue failed"),
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::jobs::AdmitJob;
+    use bookclerk_library::{EnqueueJobSpec, JobKind, JobPayload, JobTrigger, LibraryStore};
+
+    #[tokio::test]
+    async fn scheduler_helpers_enqueue_rather_than_run() {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let first = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Scan,
+                payload: JobPayload {
+                    account: None,
+                    title: None,
+                    trigger: JobTrigger::Scheduler,
+                    ..Default::default()
+                },
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 8,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        let bookclerk_library::EnqueueOutcome::Created { id } = first else {
+            panic!("expected created");
+        };
+        let again = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Scan,
+                payload: JobPayload {
+                    account: None,
+                    title: None,
+                    trigger: JobTrigger::Scheduler,
+                    ..Default::default()
+                },
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 8,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(AdmitJob::from(again), AdmitJob::Duplicate(id));
+    }
 }

@@ -18,8 +18,8 @@ use bookclerk_acquire::sidecar_key;
 use bookclerk_config::{Config, ListenAddrs};
 use bookclerk_integrations::{portal_spa_router, IntegrationRegistry, PortalState};
 use bookclerk_library::{
-    configure_master_key_with, AcquireStatus, BookRecord, LibraryStore, NewTitleRequest,
-    NewTitleRequestSource, RequestStatus, TitleRequestRecord,
+    configure_master_key_with, AcquireStatus, BookRecord, JobRecord, JobTrigger, LibraryStore,
+    NewTitleRequest, NewTitleRequestSource, RequestStatus, TitleRequestRecord,
 };
 use bookclerk_plugin_host::{
     consent_request, consent_summary, cores_to_percent, effective_cpu_cores, format_cpu_cores,
@@ -43,7 +43,9 @@ use tracing::Level;
 
 use crate::auth::{self, OperatorAuthState};
 use crate::http_error;
-use crate::jobs::{enqueue_acquire, enqueue_scan};
+use crate::jobs::{
+    enqueue_acquire, enqueue_integration_scan, enqueue_listen_sync, enqueue_scan, AdmitJob,
+};
 
 /// Shared daemon state.
 pub struct AppState {
@@ -53,8 +55,14 @@ pub struct AppState {
     pub library: Arc<RwLock<LibraryStore>>,
     /// Loaded database plugin guests; replaced when `[database].plugin` reloads.
     pub database_registry: Arc<RwLock<DatabaseRegistry>>,
-    /// In-memory scan/acquire job list returned by `GET /api/jobs`.
-    pub jobs: Arc<RwLock<Vec<JobInfo>>>,
+    /// Wakes the durable job worker when a new row is admitted.
+    pub job_notify: Arc<Notify>,
+    /// Shared barrier covering admission, claim, and handler execution.
+    ///
+    /// Workers and admit hold a read permit. A database plugin swap takes the
+    /// write permit so it cannot observe `jobs_in_flight == 0` while a worker
+    /// is about to claim.
+    pub job_runtime: Arc<RwLock<()>>,
     /// Serialize scan/acquire work so jobs do not thrash the same accounts.
     ///
     /// This is about store rate limits and the shared `StorageIndex`, not about
@@ -103,12 +111,30 @@ impl AppState {
 pub struct JobInfo {
     /// Opaque job id returned to the client when the job is accepted.
     pub id: String,
-    /// Job type (`scan`, `acquire`, and similar).
+    /// Job type (`scan`, `acquire`, `listen_sync`).
     pub kind: String,
-    /// Lifecycle string (`queued`, `running`, `ok`, `error`).
+    /// Lifecycle string (`pending`, `running`, `succeeded`, `failed`, `cancelled`).
     pub status: String,
     /// Optional operator-facing progress or error text.
     pub detail: Option<String>,
+    /// Human-readable progress string while the job is running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<String>,
+    /// Number of times a worker has claimed this row.
+    #[serde(default)]
+    pub attempt_count: i64,
+    /// Maximum claims before a failure is terminal.
+    #[serde(default)]
+    pub max_attempts: i64,
+    /// Structured error kind when failed or cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    /// RFC 3339 timestamp when the row was inserted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// RFC 3339 timestamp when the row reached a terminal state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -388,6 +414,9 @@ struct ActionResponse {
     message: String,
     /// Queued job id, or empty when the action is synchronous.
     job_id: String,
+    /// Machine slug when admission failed (`conflict`, `queue_full`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -482,9 +511,11 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route("/scan", post(trigger_scan))
         .route("/acquire", post(trigger_acquire))
         .route("/jobs", get(list_jobs))
+        .route("/jobs/{id}/cancel", post(cancel_job))
         .route("/integrations/{id}/scan", post(trigger_integration_scan))
         .route("/api/status", get(status))
         .route("/api/jobs", get(list_jobs))
+        .route("/api/jobs/{id}/cancel", post(cancel_job))
         .route("/api/library/scan", post(trigger_scan))
         .route("/api/library/acquire", post(trigger_acquire))
         .route("/api/discover/sync-listening", post(sync_listening))
@@ -792,6 +823,11 @@ async fn health() -> Json<HealthResponse> {
 /// mutation routes so config publication stays under `reload_lock`.
 #[allow(dead_code)]
 pub async fn reload_library_store(state: &AppState, config: &Config) -> anyhow::Result<()> {
+    let _runtime = timeout(Duration::from_secs(60), state.job_runtime.write())
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("timed out waiting for in-flight jobs before database swap")
+        })?;
     let registry = bookclerk_plugin_host::load_external_database(config).await?;
     let library = bookclerk_plugin_host::open_library_store(config, &registry).await?;
     let destinations =
@@ -909,6 +945,17 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     // Build the full candidate before mutating live state.
     let db_plugin_changed = !old_db_plugin.eq_ignore_ascii_case(&new_cfg.database.plugin);
 
+    let _job_runtime = if db_plugin_changed {
+        Some(
+            timeout(Duration::from_secs(60), state.job_runtime.write())
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!("timed out waiting for in-flight jobs before database swap")
+                })?,
+        )
+    } else {
+        None
+    };
     let (candidate_db_registry, candidate_library) = if db_plugin_changed {
         let registry = bookclerk_plugin_host::load_external_database(&new_cfg).await?;
         let library = bookclerk_plugin_host::open_library_store(&new_cfg, &registry).await?;
@@ -1153,6 +1200,12 @@ fn allowed_setting_key(key: &str) -> bool {
             | "daemon.auth.enabled"
             | "library.auto_acquire"
             | "library.scan_interval_minutes"
+            | "jobs.max_pending"
+            | "jobs.lease_seconds"
+            | "jobs.max_attempts"
+            | "jobs.retention_days"
+            | "jobs.temp_quota_bytes"
+            | "jobs.concurrency.network"
             | "database.plugin"
             | "plugins.isolation"
             | "media.isolation"
@@ -1191,6 +1244,14 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
             .parse::<u64>()
             .map(|_| value.to_string())
             .map_err(|_| "library.scan_interval_minutes must be a non-negative integer".into()),
+        "jobs.max_pending" | "jobs.max_attempts" | "jobs.concurrency.network" => value
+            .parse::<u32>()
+            .map(|n| n.max(1).to_string())
+            .map_err(|_| format!("{key} must be a positive integer")),
+        "jobs.lease_seconds" | "jobs.retention_days" | "jobs.temp_quota_bytes" => value
+            .parse::<u64>()
+            .map(|n| n.to_string())
+            .map_err(|_| format!("{key} must be a non-negative integer")),
         "library.auto_acquire" | "daemon.auth.enabled" => {
             match value.trim().to_ascii_lowercase().as_str() {
                 "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off" => Ok(value.to_string()),
@@ -1281,6 +1342,30 @@ fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<Stri
     settings.insert(
         "library.scan_interval_minutes".into(),
         config.library.scan_interval_minutes.to_string(),
+    );
+    settings.insert(
+        "jobs.max_pending".into(),
+        config.jobs.max_pending.to_string(),
+    );
+    settings.insert(
+        "jobs.lease_seconds".into(),
+        config.jobs.lease_seconds.to_string(),
+    );
+    settings.insert(
+        "jobs.max_attempts".into(),
+        config.jobs.max_attempts.to_string(),
+    );
+    settings.insert(
+        "jobs.retention_days".into(),
+        config.jobs.retention_days.to_string(),
+    );
+    settings.insert(
+        "jobs.temp_quota_bytes".into(),
+        config.jobs.temp_quota_bytes.to_string(),
+    );
+    settings.insert(
+        "jobs.concurrency.network".into(),
+        config.jobs.concurrency.network.to_string(),
     );
     settings.insert(
         "plugins.isolation".into(),
@@ -2739,6 +2824,7 @@ async fn reload_config(
             ok: true,
             message,
             job_id: String::new(),
+            error: None,
         })),
         Err(err) => {
             tracing::error!(error = %err, "config reload failed");
@@ -2840,6 +2926,7 @@ async fn migrate_database(
                 ok: true,
                 message,
                 job_id: String::new(),
+                error: None,
             }))
         }
         Err(err) => {
@@ -2911,55 +2998,154 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
 async fn trigger_scan(
     State(state): State<Arc<AppState>>,
     body: Option<Json<ScanRequest>>,
-) -> Json<ActionResponse> {
+) -> impl IntoResponse {
     let account = body.and_then(|Json(b)| b.account);
-    let id = enqueue_scan(state, account).await;
-    Json(ActionResponse {
-        ok: true,
-        message: format!("scan job {id} accepted"),
-        job_id: id,
-    })
+    match enqueue_scan(state, account, JobTrigger::Api).await {
+        Ok(admit) => admit_response("scan", admit),
+        Err(err) => enqueue_error_response(err),
+    }
 }
 
 /// Enqueues an acquire job, optionally filtered by title id and account.
 async fn trigger_acquire(
     State(state): State<Arc<AppState>>,
     body: Option<Json<AcquireRequestBody>>,
-) -> Json<ActionResponse> {
+) -> impl IntoResponse {
     let body = body.map(|Json(b)| b).unwrap_or_default();
     let title_filter = body.uuid.or(body.asin).or(body.isbn).or(body.product_id);
-    let id = enqueue_acquire(state, title_filter, body.account).await;
-    Json(ActionResponse {
-        ok: true,
-        message: format!("acquire job {id} accepted"),
-        job_id: id,
-    })
+    match enqueue_acquire(state, title_filter, body.account, JobTrigger::Api).await {
+        Ok(admit) => admit_response("acquire", admit),
+        Err(err) => enqueue_error_response(err),
+    }
 }
 
-/// Returns the in-memory scan/acquire job list.
-async fn list_jobs(State(state): State<Arc<AppState>>) -> Json<Vec<JobInfo>> {
-    Json(state.jobs.read().await.clone())
+/// Maps a durable job row onto the control-plane `JobInfo` JSON.
+fn job_info_from_record(job: JobRecord) -> JobInfo {
+    let detail = job.progress.clone().or(job.error_message.clone());
+    JobInfo {
+        id: job.id,
+        kind: job.kind.as_str().to_string(),
+        status: job.state.as_str().to_string(),
+        detail,
+        progress: job.progress,
+        attempt_count: job.attempt_count,
+        max_attempts: job.max_attempts,
+        error_kind: job.error_kind,
+        created_at: Some(job.created_at.to_rfc3339()),
+        finished_at: job.finished_at.map(|t| t.to_rfc3339()),
+    }
 }
 
-/// Runs a library scan on one integration; 404 if missing, 400 if unsupported.
+/// Maps an admission outcome onto HTTP 200, 409, or 429 with `ActionResponse`.
+fn admit_response(kind: &str, admit: AdmitJob) -> Response {
+    match admit {
+        AdmitJob::Created(id) => (
+            StatusCode::OK,
+            Json(ActionResponse {
+                ok: true,
+                message: format!("{kind} job {id} accepted"),
+                job_id: id,
+                error: None,
+            }),
+        )
+            .into_response(),
+        AdmitJob::Duplicate(id) => (
+            StatusCode::CONFLICT,
+            Json(ActionResponse {
+                ok: false,
+                message: format!("{kind} already pending or running"),
+                job_id: id,
+                error: Some("conflict".into()),
+            }),
+        )
+            .into_response(),
+        AdmitJob::QueueFull => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ActionResponse {
+                ok: false,
+                message: "job queue is full".into(),
+                job_id: String::new(),
+                error: Some("queue_full".into()),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// Returns HTTP 503 when admission is paused, otherwise 500.
+fn enqueue_error_response(err: anyhow::Error) -> Response {
+    tracing::error!(error = %err, "job enqueue failed");
+    let paused = err.to_string().contains("admission paused");
+    let status = if paused {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    let error = if paused {
+        "admission_paused"
+    } else {
+        "internal_error"
+    };
+    (
+        status,
+        Json(ActionResponse {
+            ok: false,
+            message: err.to_string(),
+            job_id: String::new(),
+            error: Some(error.into()),
+        }),
+    )
+        .into_response()
+}
+
+/// Returns durable scan/acquire/listen_sync jobs, newest first.
+async fn list_jobs(State(state): State<Arc<AppState>>) -> Result<Json<Vec<JobInfo>>, StatusCode> {
+    let library = state.library_snapshot().await;
+    let jobs = library
+        .list_jobs(100)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(jobs.into_iter().map(job_info_from_record).collect()))
+}
+
+/// Cancel a pending job or request cooperative stop of a running job.
+async fn cancel_job(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<ActionResponse>, StatusCode> {
+    let library = state.library_snapshot().await;
+    match library.request_job_cancel(&id).await {
+        Ok(Some(job)) => Ok(Json(ActionResponse {
+            ok: true,
+            message: format!("job {id} {}", job.state.as_str()),
+            job_id: id,
+            error: None,
+        })),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// Enqueues a remote integration library scan; 404 if missing, 400 if unsupported.
 async fn trigger_integration_scan(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
     body: Option<Json<IntegrationScanRequest>>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Response {
     let force = body.and_then(|Json(b)| b.force).unwrap_or(false);
-    let integrations = state.integrations.read().await;
-    let Some(integration) = integrations.get(&id) else {
-        return Err(StatusCode::NOT_FOUND);
-    };
-    if !integration.supports_library_scan() {
-        return Err(StatusCode::BAD_REQUEST);
+    {
+        let integrations = state.integrations.read().await;
+        let Some(integration) = integrations.get(&id) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        if !integration.supports_library_scan() {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
     }
-    integration
-        .scan_library(force)
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
-    Ok(Json(serde_json::json!({ "ok": true, "integration": id })))
+    match enqueue_integration_scan(state, id, force, JobTrigger::Api).await {
+        Ok(admit) => admit_response("integration_scan", admit),
+        Err(err) => enqueue_error_response(err),
+    }
 }
 
 /// Lists or searches library titles with optional account/status filters and pagination.
@@ -3992,20 +4178,25 @@ fn source_from_purchase_hint(
     }
 }
 
-/// Pulls listening progress from every enabled capable integration; 400 when none are loaded.
-async fn sync_listening(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<bookclerk_integrations::SyncListeningSummary>, (StatusCode, String)> {
-    let library = state.library_snapshot().await;
-    let integrations = state.integrations.read().await.clone();
-    let summary = integrations.sync_listening_progress_all(&library).await;
-    if summary.by_provider.is_empty() {
-        return Err((
+/// Enqueues a listening-progress sync; 400 when no capable integrations are loaded.
+async fn sync_listening(State(state): State<Arc<AppState>>) -> Response {
+    if state
+        .integrations
+        .read()
+        .await
+        .listening_sync_providers()
+        .is_empty()
+    {
+        return (
             StatusCode::BAD_REQUEST,
-            "no listening-capable integrations are enabled".into(),
-        ));
+            "no listening-capable integrations are enabled",
+        )
+            .into_response();
     }
-    Ok(Json(summary))
+    match enqueue_listen_sync(state, JobTrigger::Api).await {
+        Ok(admit) => admit_response("listen_sync", admit),
+        Err(err) => enqueue_error_response(err),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -4236,6 +4427,8 @@ mod tests {
         assert!(allowed_setting_key("daemon.auth.enabled"));
         assert!(allowed_setting_key("library.auto_acquire"));
         assert!(allowed_setting_key("library.scan_interval_minutes"));
+        assert!(allowed_setting_key("jobs.max_pending"));
+        assert!(allowed_setting_key("jobs.concurrency.network"));
         assert!(allowed_setting_key("sources.audible.region"));
         assert!(allowed_setting_key("sources.libro.enabled_mode"));
         assert!(!allowed_setting_key("sources"));
@@ -4873,7 +5066,8 @@ mode = "deny"
             config: Arc::new(RwLock::new(cfg)),
             library: Arc::new(RwLock::new(library)),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
-            jobs: Arc::new(RwLock::new(Vec::new())),
+            job_notify: Arc::new(Notify::new()),
+            job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
@@ -4935,5 +5129,149 @@ mode = "deny"
             .await
             .unwrap();
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn scan_admit_returns_200_then_409_and_cancel() {
+        use std::sync::Arc;
+
+        use axum::body::Body;
+        use axum::http::{header, Request, StatusCode};
+        use axum::routing::{get, post};
+        use axum::Router;
+        use bookclerk_integrations::IntegrationRegistry;
+        use bookclerk_library::LibraryStore;
+        use bookclerk_plugin_host::{DatabaseRegistry, DestinationRegistry};
+        use bookclerk_source::SourceRegistry;
+        use http_body_util::BodyExt;
+        use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
+        use tower::ServiceExt;
+
+        use crate::api::AppState;
+        use crate::auth::OperatorAuthState;
+
+        let library = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        let mut cfg = Config::default();
+        cfg.daemon.auth.enabled = false;
+        cfg.jobs.max_pending = 1;
+
+        let state = Arc::new(AppState {
+            config: Arc::new(RwLock::new(cfg)),
+            library: Arc::new(RwLock::new(library)),
+            database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
+            job_notify: Arc::new(Notify::new()),
+            job_runtime: Arc::new(RwLock::new(())),
+            work_lock: Mutex::new(()),
+            discover_gate: Arc::new(Semaphore::new(1)),
+            integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
+            sources: Arc::new(RwLock::new(SourceRegistry::new())),
+            destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
+            auth: Arc::new(RwLock::new(Arc::new(OperatorAuthState::new(
+                String::new(),
+                12,
+                false,
+                5,
+                30,
+            )))),
+            reload_lock: Mutex::new(()),
+            listen_reload: Arc::new(Notify::new()),
+            last_bound_listen: RwLock::new(None),
+            tray: RwLock::new(None),
+        });
+
+        let app = Router::new()
+            .route("/api/library/scan", post(super::trigger_scan))
+            .route("/api/library/acquire", post(super::trigger_acquire))
+            .route("/api/jobs", get(super::list_jobs))
+            .route("/api/jobs/{id}/cancel", post(super::cancel_job))
+            .with_state(state);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/library/scan")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = first.into_body().collect().await.unwrap().to_bytes();
+        let first_json: serde_json::Value = serde_json::from_slice(&first_body).unwrap();
+        let job_id = first_json["job_id"].as_str().unwrap().to_string();
+        assert!(first_json["ok"].as_bool().unwrap());
+
+        let dup = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/library/scan")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dup.status(), StatusCode::CONFLICT);
+        let dup_body = dup.into_body().collect().await.unwrap().to_bytes();
+        let dup_json: serde_json::Value = serde_json::from_slice(&dup_body).unwrap();
+        assert_eq!(dup_json["job_id"], job_id);
+        assert_eq!(dup_json["error"], "conflict");
+
+        let full = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/library/acquire")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(full.status(), StatusCode::TOO_MANY_REQUESTS);
+        let full_json: serde_json::Value =
+            serde_json::from_slice(&full.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(full_json["error"], "queue_full");
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/jobs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let jobs: Vec<serde_json::Value> =
+            serde_json::from_slice(&listed.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["id"], job_id);
+        assert_eq!(jobs[0]["status"], "pending");
+
+        let cancel = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/jobs/{job_id}/cancel"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cancel.status(), StatusCode::OK);
     }
 }

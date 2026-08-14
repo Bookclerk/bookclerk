@@ -369,6 +369,8 @@ pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -
         cache_dir: PathBuf::new(),
         force: false,
         write_destinations: None,
+        job_id: None,
+        temp_quota_bytes: None,
     }
 }
 

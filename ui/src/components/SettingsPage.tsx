@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import { AccountSettingsPanel } from "@/components/AccountSettingsPanel";
 import type { AppNavProps } from "@/components/AppNav";
@@ -488,7 +488,7 @@ export function SettingsPage({
     }
   }
 
-  async function prefetchConsentCoverage(nextSettings: SettingsResponse) {
+  const prefetchConsentCoverage = useCallback(async (nextSettings: SettingsResponse) => {
     const entries = await Promise.all(
       nextSettings.plugins.map(async (plugin) => {
         try {
@@ -504,7 +504,7 @@ export function SettingsPage({
         return acc;
       }, {}),
     );
-  }
+  }, []);
 
   function parseBooleanLike(value: string): boolean {
     const normalized = value.trim().toLowerCase();
@@ -615,7 +615,7 @@ export function SettingsPage({
     pluginsIsolation,
   ]);
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     setError(null);
     setOperatorLoadError(null);
     setUsersError(null);
@@ -705,11 +705,11 @@ export function SettingsPage({
     } finally {
       setLoading(false);
     }
-  }
+  }, [canManageOperator, onSessionExpired, prefetchConsentCoverage, showUserAdmin]);
 
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [refresh]);
 
   async function saveOperatorSettings(): Promise<SettingsResponse> {
     const pluginUpdates = Object.entries(pluginValues).map(([key, value]) => ({ key, value }));

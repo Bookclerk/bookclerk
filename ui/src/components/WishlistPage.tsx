@@ -5,10 +5,9 @@ import { AppTopBar } from "@/components/AppTopBar";
 import { CoverThumb } from "@/components/CoverThumb";
 import {
   TitleDetailModal,
-  titleDetailFromCatalog,
-  type TitleDetail,
   type TitleMetaSearchKind,
 } from "@/components/TitleDetailModal";
+import { titleDetailFromCatalog, type TitleDetail } from "@/lib/titleDetail";
 import { Button } from "@/components/ui/button";
 import {
   applyTitleMeta,

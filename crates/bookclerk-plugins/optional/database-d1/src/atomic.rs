@@ -194,6 +194,9 @@ fn operation_kind(op: &DbAtomicParams) -> &'static str {
         DbAtomicParams::RedeemClaimTicket { .. } => "redeemClaimTicket",
         DbAtomicParams::TakeOidcRpState { .. } => "takeOidcRpState",
         DbAtomicParams::TakeWebauthnChallenge { .. } => "takeWebauthnChallenge",
+        DbAtomicParams::EnqueueJob { .. } => "enqueueJob",
+        DbAtomicParams::ClaimNextJob { .. } => "claimNextJob",
+        DbAtomicParams::ReserveJobTemp { .. } => "reserveJobTemp",
     }
 }
 
@@ -228,6 +231,11 @@ fn plan_atomic(req: &DbAtomicRequest, now: &str) -> std::result::Result<AtomicPl
         }
         DbAtomicParams::RedeemClaimTicket { .. } => {
             wrap_status_op(inner, &ctx, PayloadKind::Identity)
+        }
+        DbAtomicParams::EnqueueJob { .. }
+        | DbAtomicParams::ClaimNextJob { .. }
+        | DbAtomicParams::ReserveJobTemp { .. } => {
+            wrap_status_op(inner, &ctx, PayloadKind::JsonFromPlan)
         }
     })
 }
@@ -267,6 +275,33 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
         DbAtomicParams::TakeWebauthnChallenge { challenge_id, kind } => {
             plan_take_webauthn_challenge(challenge_id, kind, now)
         }
+        DbAtomicParams::EnqueueJob {
+            kind,
+            payload_json,
+            priority,
+            max_attempts,
+            max_pending,
+            run_after,
+        } => plan_enqueue_job(
+            kind,
+            payload_json,
+            *priority,
+            *max_attempts,
+            *max_pending,
+            run_after.as_deref(),
+            now,
+        ),
+        DbAtomicParams::ClaimNextJob {
+            resource_class,
+            owner,
+            lease_secs,
+        } => plan_claim_next_job(resource_class, owner, *lease_secs, now),
+        DbAtomicParams::ReserveJobTemp {
+            job_id,
+            path,
+            reserved_bytes,
+            quota_bytes,
+        } => plan_reserve_job_temp(job_id, path, *reserved_bytes, *quota_bytes, now),
     }
 }
 
@@ -304,6 +339,8 @@ enum PayloadKind {
     },
     /// Portal-identity JSON payload after a successful claim redeem.
     Identity,
+    /// Use the inner plan's payload `SELECT` as receipt JSON.
+    JsonFromPlan,
 }
 
 /// Deletes expired receipts except the current `operation_id` so a replay can still match.
@@ -465,6 +502,18 @@ fn receipt_payload_update(
                  WHERE operation_id = ? AND status = '{ok}' AND payload IS NULL",
                 identity_payload_json_sql(),
                 ok = atomic_status::OK,
+            );
+            let mut params = inner_params;
+            params.push(j_str(&ctx.operation_id));
+            Some((sql, params))
+        }
+        PayloadKind::JsonFromPlan => {
+            let (inner_sql, inner_params) = payload_stmt?;
+            let sql = format!(
+                "UPDATE db_atomic_receipts SET payload = ({inner_sql}) \
+                 WHERE operation_id = ? AND status IN ('{ok}', '{dup}') AND payload IS NULL",
+                ok = atomic_status::OK,
+                dup = atomic_status::DUPLICATE,
             );
             let mut params = inner_params;
             params.push(j_str(&ctx.operation_id));
@@ -1089,6 +1138,291 @@ fn plan_take_webauthn_challenge(challenge_id: &str, kind: &str, now: &str) -> At
         prior_receipt_index: None,
         expected_hash: None,
     }
+}
+
+/// Write-locks the singleton queue-control row for this D1 batch.
+fn plan_lock_job_queue() -> SqlStmt {
+    sql("UPDATE job_queue_control SET id = 1 WHERE id = 1", vec![])
+}
+
+/// Marks pending rows that cannot be decoded as `invalid_job` before claim.
+///
+/// `json(payload)` aborts a D1 batch. Rewriting the envelope in the same
+/// transaction keeps a malformed highest-priority row from poisoning claim.
+fn plan_mark_unreadable_pending_jobs(now: &str) -> SqlStmt {
+    sql(
+        "UPDATE jobs SET \
+            state = 'failed', \
+            kind = 'invalid', \
+            resource_class = 'network', \
+            payload = '{\"v\":1}', \
+            error_kind = 'invalid_job', \
+            error_message = CASE \
+                WHEN json_valid(payload) = 0 THEN 'malformed job payload JSON' \
+                WHEN IFNULL(CAST(json_extract(payload, '$.v') AS INTEGER), -1) != 1 \
+                    THEN 'unsupported job payload version' \
+                WHEN resource_class NOT IN ('network', 'media', 'transcription', 'indexing') \
+                    THEN 'unknown job resource class' \
+                ELSE 'unknown job kind' \
+            END, \
+            finished_at = ?, \
+            updated_at = ?, \
+            lease_owner = NULL, \
+            lease_expires_at = NULL \
+         WHERE state = 'pending' AND ( \
+            json_valid(payload) = 0 \
+            OR IFNULL(CAST(json_extract(payload, '$.v') AS INTEGER), -1) != 1 \
+            OR kind NOT IN ('scan', 'acquire', 'listen_sync', 'integration_scan') \
+            OR resource_class NOT IN ('network', 'media', 'transcription', 'indexing') \
+         )",
+        vec![j_str(now), j_str(now)],
+    )
+}
+
+/// Dedup + cap + insert for a durable job row.
+fn plan_enqueue_job(
+    kind: &str,
+    payload_json: &str,
+    priority: i64,
+    max_attempts: i64,
+    max_pending: i64,
+    run_after: Option<&str>,
+    now: &str,
+) -> AtomicPlan {
+    let run_after = run_after.unwrap_or(now);
+    let dedup = match kind {
+        "scan" => format!("scan:account={}", json_account_from_payload(payload_json)),
+        "acquire" => format!(
+            "acquire:title={}:account={}",
+            json_title_from_payload(payload_json),
+            json_account_from_payload(payload_json)
+        ),
+        "listen_sync" => "listen_sync".into(),
+        "integration_scan" => format!(
+            "integration_scan:id={}:force={}",
+            json_integration_from_payload(payload_json),
+            json_force_from_payload(payload_json)
+        ),
+        other => format!("{other}:unknown"),
+    };
+    AtomicPlan {
+        statements: vec![
+            plan_lock_job_queue(),
+            sql(
+                "INSERT INTO jobs (\
+                    id, kind, state, priority, resource_class, payload, progress, \
+                    attempt_count, max_attempts, run_after, lease_owner, lease_expires_at, \
+                    dedup_key, error_kind, error_message, cancel_requested, \
+                    created_at, updated_at, started_at, finished_at, lease_generation\
+                 ) SELECT ? || '-' || lower(hex(randomblob(16))), ?, 'pending', ?, 'network', ?, \
+                    NULL, 0, ?, ?, NULL, NULL, ?, NULL, NULL, 0, ?, ?, NULL, NULL, 0 \
+                 WHERE NOT EXISTS (\
+                    SELECT 1 FROM jobs WHERE dedup_key = ? AND state IN ('pending', 'running')\
+                 ) AND (SELECT COUNT(*) FROM jobs WHERE state IN ('pending', 'running')) < ?",
+                vec![
+                    j_str(kind),
+                    j_str(kind),
+                    j_i64(priority),
+                    j_str(payload_json),
+                    j_i64(max_attempts.max(1)),
+                    j_str(run_after),
+                    j_str(&dedup),
+                    j_str(now),
+                    j_str(now),
+                    j_str(&dedup),
+                    j_i64(max_pending.max(0)),
+                ],
+            ),
+            sql(
+                "SELECT CASE \
+                    WHEN EXISTS (SELECT 1 FROM jobs WHERE dedup_key = ? AND state IN ('pending','running') \
+                         AND created_at = ?) THEN 'ok' \
+                    WHEN EXISTS (SELECT 1 FROM jobs WHERE dedup_key = ? AND state IN ('pending','running')) \
+                         THEN 'duplicate' \
+                    ELSE 'queueFull' END AS status",
+                vec![j_str(&dedup), j_str(now), j_str(&dedup)],
+            ),
+            sql(
+                "SELECT json_object('id', id) AS payload FROM jobs \
+                 WHERE dedup_key = ? AND state IN ('pending','running') \
+                 ORDER BY created_at ASC LIMIT 1",
+                vec![j_str(&dedup)],
+            ),
+        ],
+        outcome_index: 2,
+        payload_index: Some(3),
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
+    }
+}
+
+/// Conditional claim of the next pending job in `resource_class`.
+fn plan_claim_next_job(
+    resource_class: &str,
+    owner: &str,
+    lease_secs: i64,
+    now: &str,
+) -> AtomicPlan {
+    let expires = chrono::DateTime::parse_from_rfc3339(now)
+        .map(|dt| (dt + chrono::Duration::seconds(lease_secs.max(5))).to_rfc3339())
+        .unwrap_or_else(|_| now.to_string());
+    AtomicPlan {
+        statements: vec![
+            plan_mark_unreadable_pending_jobs(now),
+            sql(
+                "UPDATE jobs SET \
+                    state = 'running', \
+                    attempt_count = attempt_count + 1, \
+                    lease_owner = ?, \
+                    lease_expires_at = ?, \
+                    lease_generation = lease_generation + 1, \
+                    started_at = COALESCE(started_at, ?), \
+                    updated_at = ?, \
+                    error_kind = NULL, \
+                    error_message = NULL \
+                 WHERE id = (\
+                    SELECT id FROM jobs \
+                     WHERE resource_class = ? AND state = 'pending' AND run_after <= ? \
+                       AND cancel_requested = 0 \
+                       AND json_valid(payload) = 1 \
+                       AND IFNULL(CAST(json_extract(payload, '$.v') AS INTEGER), -1) = 1 \
+                       AND kind IN ('scan', 'acquire', 'listen_sync', 'integration_scan') \
+                       AND resource_class IN ('network', 'media', 'transcription', 'indexing') \
+                     ORDER BY priority DESC, created_at ASC LIMIT 1\
+                 ) AND state = 'pending'",
+                vec![
+                    j_str(owner),
+                    j_str(&expires),
+                    j_str(now),
+                    j_str(now),
+                    j_str(resource_class),
+                    j_str(now),
+                ],
+            ),
+            sql(
+                "SELECT CASE WHEN EXISTS (\
+                    SELECT 1 FROM jobs WHERE lease_owner = ? AND state = 'running' AND updated_at = ?\
+                 ) THEN 'ok' ELSE 'empty' END AS status",
+                vec![j_str(owner), j_str(now)],
+            ),
+            sql(
+                "SELECT json_object(\
+                    'id', id, 'kind', kind, 'state', state, 'priority', priority, \
+                    'resource_class', resource_class, 'payload', json(payload), \
+                    'progress', progress, 'attempt_count', attempt_count, \
+                    'max_attempts', max_attempts, 'run_after', run_after, \
+                    'lease_owner', lease_owner, 'lease_expires_at', lease_expires_at, \
+                    'dedup_key', dedup_key, 'error_kind', error_kind, \
+                    'error_message', error_message, \
+                    'cancel_requested', json(CASE WHEN cancel_requested != 0 THEN 'true' ELSE 'false' END), \
+                    'created_at', created_at, 'updated_at', updated_at, \
+                    'started_at', started_at, 'finished_at', finished_at, \
+                    'lease_generation', lease_generation\
+                 ) AS payload FROM jobs \
+                 WHERE lease_owner = ? AND state = 'running' AND updated_at = ? \
+                 ORDER BY started_at DESC LIMIT 1",
+                vec![j_str(owner), j_str(now)],
+            ),
+        ],
+        outcome_index: 2,
+        payload_index: Some(3),
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
+    }
+}
+
+/// Reserve scratch bytes when the sum of reservations stays at or under the quota.
+fn plan_reserve_job_temp(
+    job_id: &str,
+    path: &str,
+    reserved_bytes: i64,
+    quota_bytes: i64,
+    now: &str,
+) -> AtomicPlan {
+    AtomicPlan {
+        statements: vec![
+            plan_lock_job_queue(),
+            sql(
+                "INSERT OR IGNORE INTO job_temp_paths (job_id, path, created_at, reserved_bytes) \
+                 VALUES (?, ?, ?, 0)",
+                vec![j_str(job_id), j_str(path), j_str(now)],
+            ),
+            sql(
+                "UPDATE job_temp_paths SET reserved_bytes = ? \
+                 WHERE job_id = ? AND path = ? \
+                   AND (SELECT COALESCE(SUM(reserved_bytes), 0) FROM job_temp_paths) \
+                       - reserved_bytes + ? <= ?",
+                vec![
+                    j_i64(reserved_bytes),
+                    j_str(job_id),
+                    j_str(path),
+                    j_i64(reserved_bytes),
+                    j_i64(quota_bytes),
+                ],
+            ),
+            sql(
+                "SELECT CASE WHEN EXISTS (\
+                    SELECT 1 FROM job_temp_paths WHERE job_id = ? AND path = ? AND reserved_bytes = ?\
+                 ) THEN 'ok' ELSE 'notFound' END AS status",
+                vec![j_str(job_id), j_str(path), j_i64(reserved_bytes)],
+            ),
+        ],
+        outcome_index: 3,
+        payload_index: None,
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
+    }
+}
+
+/// Best-effort account filter from a job payload JSON string.
+fn json_account_from_payload(payload_json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .ok()
+        .and_then(|v| {
+            v.get("account")
+                .and_then(|a| a.as_str())
+                .map(str::to_string)
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "all".into())
+}
+
+/// Best-effort title filter from a job payload JSON string.
+fn json_title_from_payload(payload_json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .ok()
+        .and_then(|v| v.get("title").and_then(|a| a.as_str()).map(str::to_string))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "all".into())
+}
+
+/// Best-effort `force` flag from a job payload JSON string (`0` or `1`).
+fn json_force_from_payload(payload_json: &str) -> u8 {
+    u8::from(
+        serde_json::from_str::<serde_json::Value>(payload_json)
+            .ok()
+            .and_then(|v| v.get("force").and_then(JsonValue::as_bool))
+            .unwrap_or(false),
+    )
+}
+
+/// Best-effort integration id from a job payload JSON string.
+fn json_integration_from_payload(payload_json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .ok()
+        .and_then(|v| {
+            v.get("integration_id")
+                .and_then(|a| a.as_str())
+                .map(str::to_string)
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "all".into())
 }
 
 #[derive(Debug, Clone)]
@@ -1972,5 +2306,156 @@ mod tests {
         let parsed = parse_and_validate_batch(&plan, &value, &req.operation_id).unwrap();
         let result = interpret_atomic(&plan, &parsed);
         assert_eq!(result.status, atomic_status::IDEMPOTENCY_CONFLICT);
+    }
+
+    fn seed_pending_job(conn: &Connection, id: &str, kind: &str, payload: &str, priority: i64) {
+        seed_pending_job_class(conn, id, kind, "network", payload, priority);
+    }
+
+    fn seed_pending_job_class(
+        conn: &Connection,
+        id: &str,
+        kind: &str,
+        resource_class: &str,
+        payload: &str,
+        priority: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO jobs (\
+                id, kind, state, priority, resource_class, payload, progress, \
+                attempt_count, max_attempts, run_after, lease_owner, lease_expires_at, \
+                dedup_key, error_kind, error_message, cancel_requested, \
+                created_at, updated_at, started_at, finished_at, lease_generation\
+             ) VALUES (?, ?, 'pending', ?, ?, ?, NULL, 0, 3, \
+                '2020-01-01T00:00:00Z', NULL, NULL, ?, NULL, NULL, 0, \
+                '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z', NULL, NULL, 0)",
+            rusqlite::params![id, kind, priority, resource_class, payload, id],
+        )
+        .unwrap();
+    }
+
+    fn claim_row(conn: &Connection, id: &str) -> (String, String, Option<String>, Option<String>) {
+        conn.query_row(
+            "SELECT state, kind, error_kind, payload FROM jobs WHERE id = ?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn claim_marks_malformed_json_invalid_without_aborting_batch() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_pending_job(&conn, "bad-json", "scan", "{not-json", 10);
+        seed_pending_job(&conn, "good", "scan", r#"{"v":1}"#, 0);
+        let result = run_plan(
+            &conn,
+            &plan_claim_next_job("network", "worker-1", 60, "2024-06-01T00:00:00Z"),
+        );
+        assert_eq!(result.status, atomic_status::OK);
+        let (state, kind, error, payload) = claim_row(&conn, "bad-json");
+        assert_eq!(state, "failed");
+        assert_eq!(kind, "invalid");
+        assert_eq!(error.as_deref(), Some("invalid_job"));
+        assert_eq!(payload.as_deref(), Some(r#"{"v":1}"#));
+        let claimed: String = conn
+            .query_row("SELECT id FROM jobs WHERE state = 'running'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(claimed, "good");
+    }
+
+    #[test]
+    fn claim_marks_unknown_kind_and_unsupported_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_pending_job(&conn, "bad-kind", "nope", r#"{"v":1}"#, 5);
+        seed_pending_job(&conn, "bad-ver", "scan", r#"{"v":99}"#, 4);
+        let result = run_plan(
+            &conn,
+            &plan_claim_next_job("network", "worker-1", 60, "2024-06-01T00:00:00Z"),
+        );
+        assert_eq!(result.status, atomic_status::EMPTY);
+        for id in ["bad-kind", "bad-ver"] {
+            let (state, kind, error, _) = claim_row(&conn, id);
+            assert_eq!(state, "failed");
+            assert_eq!(kind, "invalid");
+            assert_eq!(error.as_deref(), Some("invalid_job"));
+        }
+    }
+
+    #[test]
+    fn claim_marks_unknown_resource_class_and_still_claims_valid() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_pending_job_class(&conn, "bad-class", "scan", "not_a_class", r#"{"v":1}"#, 10);
+        seed_pending_job(&conn, "good", "scan", r#"{"v":1}"#, 0);
+        let result = run_plan(
+            &conn,
+            &plan_claim_next_job("network", "worker-1", 60, "2024-06-01T00:00:00Z"),
+        );
+        assert_eq!(result.status, atomic_status::OK);
+        let (state, kind, error, _) = claim_row(&conn, "bad-class");
+        assert_eq!(state, "failed");
+        assert_eq!(kind, "invalid");
+        assert_eq!(error.as_deref(), Some("invalid_job"));
+        let claimed: String = conn
+            .query_row("SELECT id FROM jobs WHERE state = 'running'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(claimed, "good");
+    }
+
+    #[test]
+    fn enqueue_keeps_forced_integration_scan_distinct() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let now = "2024-06-01T00:00:00Z";
+        let normal = run_plan(
+            &conn,
+            &plan_enqueue_job(
+                "integration_scan",
+                r#"{"v":1,"integration_id":"echo"}"#,
+                0,
+                3,
+                8,
+                None,
+                now,
+            ),
+        );
+        assert_eq!(normal.status, atomic_status::OK);
+        let forced = run_plan(
+            &conn,
+            &plan_enqueue_job(
+                "integration_scan",
+                r#"{"v":1,"integration_id":"echo","force":true}"#,
+                0,
+                3,
+                8,
+                None,
+                "2024-06-01T00:00:01Z",
+            ),
+        );
+        assert_eq!(forced.status, atomic_status::OK);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+        let again = run_plan(
+            &conn,
+            &plan_enqueue_job(
+                "integration_scan",
+                r#"{"v":1,"integration_id":"echo","force":true}"#,
+                0,
+                3,
+                8,
+                None,
+                "2024-06-01T00:00:02Z",
+            ),
+        );
+        assert_eq!(again.status, atomic_status::DUPLICATE);
     }
 }

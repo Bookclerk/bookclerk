@@ -1,4 +1,4 @@
-/// <reference path="./cloudflare-workers.d.ts" />
+import "./cloudflare-workers.d.ts";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type {
   BookclerkEnv,

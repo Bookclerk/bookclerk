@@ -142,7 +142,7 @@ pub struct PluginRegistryEntry {
 
 /// Optional global resource ceilings for plugin guest jails under `[plugins.jail]`.
 ///
-/// These override label defaults when building a guest [`bookclerk_sandbox::Spec`].
+/// These override label defaults when building a guest jail spec.
 /// Guest filesystem access remains install read-only plus host-managed data/tmp —
 /// not a free-form path widen.
 ///

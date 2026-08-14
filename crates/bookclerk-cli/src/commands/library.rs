@@ -249,6 +249,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 page_size: 50,
                 import_episodes: config.library.import_episodes,
                 import_plus_titles: config.library.import_plus_titles,
+                cancel: None,
             };
             let summary = if let Some(needle) = source {
                 let id = resolve_source_id(&registry, &needle)?;
@@ -428,6 +429,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     cache_dir: cfg.download_cache_dir(),
                     force,
                     write_destinations: None,
+                    job_id: None,
+                    temp_quota_bytes: None,
                 };
                 if dry_run {
                     let key = if pdf {
@@ -587,6 +590,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                         download,
                         cache_dir: paths.cache_dir.clone(),
                         files_dir: paths.files_dir.clone(),
+                        max_cache_bytes: None,
+                        cancel: None,
                     },
                 )
                 .await?;

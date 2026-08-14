@@ -1904,7 +1904,8 @@ mod http_tests {
             config: Arc::new(RwLock::new(cfg)),
             library: Arc::new(RwLock::new(library.clone())),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
-            jobs: Arc::new(RwLock::new(Vec::new())),
+            job_notify: Arc::new(Notify::new()),
+            job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
@@ -2178,11 +2179,7 @@ mod http_tests {
         tempfile::TempDir,
         tokio::sync::MutexGuard<'static, ()>,
     ) {
-        static DEK_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-        let dek = DEK_LOCK
-            .get_or_init(|| tokio::sync::Mutex::new(()))
-            .lock()
-            .await;
+        let dek = crate::auth::tests::process_dek_lock().await;
         let dir = tempfile::tempdir().unwrap();
         bookclerk_library::configure_master_key(dir.path()).unwrap();
         let (state, app, library) = harness(false, vec![]).await;

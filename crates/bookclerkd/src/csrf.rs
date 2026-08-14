@@ -116,7 +116,7 @@ fn origin_matches(origin_or_url: &str, public_origin: Option<&str>, host: Option
     }
 }
 
-/// Host[:port] from an http(s) URL or bare host; `None` for other schemes.
+/// Host\[:port\] from an http(s) URL or bare host; `None` for other schemes.
 fn host_from_url(url: &str) -> Option<String> {
     let url = url.trim();
     if let Some(rest) = url
@@ -133,7 +133,7 @@ fn host_from_url(url: &str) -> Option<String> {
     Some(url.split('/').next()?.to_ascii_lowercase())
 }
 
-/// Case-insensitive host[:port] equality.
+/// Case-insensitive host\[:port\] equality.
 fn hosts_equal(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }

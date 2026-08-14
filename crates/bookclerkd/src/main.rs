@@ -4,6 +4,8 @@ mod api;
 mod auth;
 mod csrf;
 mod http_error;
+mod job_handler;
+mod job_worker;
 mod jobs;
 mod oidc;
 mod oidc_rp;
@@ -30,6 +32,7 @@ use crate::api::{
     revert_listen_after_bind_failure, router, start_integration_watchers, validate_daemon_listen,
     AppState,
 };
+use crate::job_worker::start_job_runtime;
 use crate::registry::default_registry_with_plugins;
 use crate::scheduler::spawn_scheduler;
 
@@ -129,7 +132,8 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         library: library.clone(),
         database_registry: database_registry.clone(),
-        jobs: Arc::new(RwLock::new(Vec::new())),
+        job_notify: Arc::new(Notify::new()),
+        job_runtime: Arc::new(RwLock::new(())),
         work_lock: Mutex::new(()),
         discover_gate: Arc::new(Semaphore::new(1)),
         integrations: Arc::new(RwLock::new(integrations)),
@@ -146,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
     if let Err(err) = crate::oidc::ensure_default_abs_client(&state).await {
         tracing::warn!(error = %err, "failed to register default OIDC ABS client");
     }
+    start_job_runtime(state.clone()).await;
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 

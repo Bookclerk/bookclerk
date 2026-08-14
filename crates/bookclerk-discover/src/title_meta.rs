@@ -162,7 +162,7 @@ pub struct TitleReviewsPage {
     pub page: u32,
     /// Maximum number of items returned in this page.
     pub page_size: u32,
-    /// When true, another page is available via [`Self::next_cursor`].
+    /// When true, another page is available by incrementing [`Self::page`].
     pub has_more: bool,
     /// Remote sort key for reviews (`most_helpful`, `most_recent`, …).
     pub sort_by: String,

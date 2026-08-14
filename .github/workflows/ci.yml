@@ -196,7 +196,7 @@ jobs:
           echo "run_release=${{ steps.plan.outputs.release }}" >> "$GITHUB_OUTPUT"
           echo "run_store_free=${{ steps.plan.outputs.store_free }}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ci-plan
           path: ci-plan.json
@@ -343,6 +343,9 @@ jobs:
         if: needs.plan.outputs.run_rust == 'true'
         run: |
           set -euo pipefail
+          # Compiles every library's rustdoc `# Examples`. Most crates have
+          # zero runnable examples (Google-style docs are prose-first); that
+          # is not a skip. Unit/integration tests run in the Test step.
           if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
             cargo test --workspace --doc --all-features
           else
@@ -554,9 +557,47 @@ jobs:
       - name: Test bookclerk-tray
         run: cargo test -p bookclerk-tray
 
+  postgres-jobs:
+    name: postgres job queue
+    needs: plan
+    if: needs.plan.outputs.run_rust == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Postgres job-queue tests
+        env:
+          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
+        run: cargo test -p bookclerk-library --lib postgres_ -- --ignored --nocapture
+
   ci-gate:
     name: CI Gate
-    needs: [plan, check, release, confinement, tray]
+    needs: [plan, check, release, confinement, tray, postgres-jobs]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -567,11 +608,12 @@ jobs:
           RELEASE: ${{ needs.release.result }}
           CONFINEMENT: ${{ needs.confinement.result }}
           TRAY: ${{ needs.tray.result }}
+          POSTGRES_JOBS: ${{ needs.postgres-jobs.result }}
         run: |
           set -euo pipefail
-          echo "plan=$PLAN check=$CHECK release=$RELEASE confinement=$CONFINEMENT tray=$TRAY"
+          echo "plan=$PLAN check=$CHECK release=$RELEASE confinement=$CONFINEMENT tray=$TRAY postgres-jobs=$POSTGRES_JOBS"
           fail=0
-          for pair in "plan:$PLAN" "check:$CHECK" "release:$RELEASE" "confinement:$CONFINEMENT" "tray:$TRAY"; do
+          for pair in "plan:$PLAN" "check:$CHECK" "release:$RELEASE" "confinement:$CONFINEMENT" "tray:$TRAY" "postgres-jobs:$POSTGRES_JOBS"; do
             job="${pair%%:*}"
             result="${pair#*:}"
             case "$result" in

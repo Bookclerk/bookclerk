@@ -18,6 +18,7 @@ mod diagnostics;
 mod error;
 mod extras;
 mod isolation;
+mod jobs;
 mod journal;
 mod listen;
 mod logging;
@@ -53,6 +54,7 @@ pub use extras::{
     ReplacementRule, RECONCILE_WILDCARD,
 };
 pub use isolation::Isolation;
+pub use jobs::{JobsConcurrencyConfig, JobsConfig};
 pub use journal::{journald_available, os_log_available, OsLogFacility, OsLogLayer};
 pub use listen::ListenAddrs;
 pub use logging::{init_tracing, init_tracing_with, LogFormat, LoggingHandle, TracingOptions};

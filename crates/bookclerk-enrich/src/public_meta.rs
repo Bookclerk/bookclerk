@@ -1170,7 +1170,7 @@ fn join_named_people(value: Option<&Value>) -> Option<String> {
 
 /// Community ratings from a single Audible catalog product (`response_groups=rating`).
 ///
-/// Kept off bulk Discover catalog calls (see [`CATALOG_RESPONSE_GROUPS`]); use from
+/// Kept off bulk Discover catalog calls (see `CATALOG_RESPONSE_GROUPS`); use from
 /// title-detail paths only.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CatalogRating {
@@ -1307,7 +1307,7 @@ pub struct CatalogReviewsPage {
     pub page: u32,
     /// Maximum number of items returned in this page.
     pub page_size: usize,
-    /// When true, another page is available via [`Self::next_cursor`].
+    /// When true, another page is available by incrementing [`Self::page`].
     pub has_more: bool,
     /// Remote sort key for reviews (`most_helpful`, `most_recent`, …).
     pub sort_by: CatalogReviewsSort,

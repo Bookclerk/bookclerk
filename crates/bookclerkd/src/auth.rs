@@ -2685,7 +2685,7 @@ pub fn normalize_default_view(raw: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[tokio::test]
@@ -2756,6 +2756,17 @@ mod tests {
     /// startup. Claim redeem HMACs the portal session from that key so HTTP
     /// retries reuse the same `dbAtomic` operation id.
     ///
+    /// Holds the process DEK stable while a test derives claim fingerprints.
+    ///
+    /// `oidc_rp` persist tests replace `master.key`; without this lock a redeem
+    /// retry can HMAC with a different DEK and get 400.
+    pub(crate) async fn process_dek_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await
+    }
+
     /// Serialized: parallel harness setup must not race on creating/reading a
     /// half-written `master.key` (CI saw `truncated` under `--test-threads>1`).
     fn ensure_process_dek() {
@@ -2808,7 +2819,8 @@ mod tests {
             config: Arc::new(RwLock::new(cfg)),
             library: Arc::new(RwLock::new(library.clone())),
             database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
-            jobs: Arc::new(RwLock::new(Vec::new())),
+            job_notify: Arc::new(Notify::new()),
+            job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
@@ -3182,7 +3194,8 @@ mod tests {
                 config: Arc::new(RwLock::new(cfg)),
                 library: Arc::new(RwLock::new(library.clone())),
                 database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
-                jobs: Arc::new(RwLock::new(Vec::new())),
+                job_notify: Arc::new(Notify::new()),
+                job_runtime: Arc::new(RwLock::new(())),
                 work_lock: Mutex::new(()),
                 discover_gate: Arc::new(Semaphore::new(1)),
                 integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
@@ -3310,6 +3323,7 @@ mod tests {
         // Hold the redeem-lose mutex for the whole test: later redeem calls must
         // not consume a parallel lost-response injection (global AtomicI32).
         let _redeem_lock = redeem_lose_lock().await;
+        let _dek = process_dek_lock().await;
         let (_state, app, library) = phase2_harness("op-token-phase2").await;
         let initial_password = ["initial", "-", "pass"].concat();
         let hash = hash_password(&initial_password).unwrap();
@@ -3478,6 +3492,7 @@ mod tests {
         use uuid::Uuid;
 
         let _lock = redeem_lose_lock().await;
+        let _dek = process_dek_lock().await;
         let _guard = RedeemLoseGuard;
         let (_state, app, library) = phase2_harness("op-token-phase2").await;
         let hash = bookclerk_library::hash_password(&["already", "-", "set"].concat()).unwrap();
@@ -3590,6 +3605,7 @@ mod tests {
         use uuid::Uuid;
 
         let _lock = redeem_lose_lock().await;
+        let _dek = process_dek_lock().await;
         let _guard = RedeemLoseGuard;
         let (_state, app, library) = phase2_harness("op-token-phase2").await;
         let user = library

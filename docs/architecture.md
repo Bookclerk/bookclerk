@@ -44,7 +44,9 @@ integrations.
    address space with the master key or `library.db`. See [media.md](media.md).
 4. **Integrations** — receive `book_acquired` (and related) events; may trigger
    remote library scans or portal identity flows.
-5. **Daemon** — runs scan/auto-acquire on an interval and exposes the control plane.
+5. **Daemon** — admits scan / auto-acquire / listen-sync as durable `jobs`
+   rows (API and scheduler use the same queue) and exposes the control plane.
+   See [jobs.md](jobs.md).
 
 ## Plugin kinds
 

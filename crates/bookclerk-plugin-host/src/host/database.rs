@@ -484,6 +484,15 @@ impl RpcAtomicBackend {
     /// Sends one `db.atomic` RPC; ambiguous transport maps to [`LibraryError::Unavailable`].
     async fn call(&self, params: DbAtomicParams) -> bookclerk_library::Result<DbAtomicResult> {
         let operation_id = bookclerk_library::db_atomic_operation_id(&params);
+        self.call_with_id(operation_id, params).await
+    }
+
+    /// Sends `db.atomic` with a caller-chosen idempotency key (replay-safe claims).
+    async fn call_with_id(
+        &self,
+        operation_id: String,
+        params: DbAtomicParams,
+    ) -> bookclerk_library::Result<DbAtomicResult> {
         let request = DbAtomicRequest {
             operation_id,
             operation: params,
@@ -710,6 +719,114 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         }
         let row: AtomicWebauthnChallenge = decode_payload(result.payload, "webauthn challenge")?;
         Ok(Some((row.user_id, row.state_json)))
+    }
+
+    async fn enqueue_job(
+        &self,
+        spec: bookclerk_library::EnqueueJobSpec,
+    ) -> bookclerk_library::Result<bookclerk_library::EnqueueOutcome> {
+        let payload_json = serde_json::to_string(&spec.payload).map_err(|err| {
+            bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string()))
+        })?;
+        let result = self
+            .call(DbAtomicParams::EnqueueJob {
+                kind: spec.kind.as_str().to_string(),
+                payload_json,
+                priority: spec.priority,
+                max_attempts: spec.max_attempts,
+                max_pending: spec.max_pending,
+                run_after: spec.run_after.map(|t| t.to_rfc3339()),
+            })
+            .await?;
+        match result.status.as_str() {
+            s if s == atomic_status::OK => {
+                let id = result
+                    .payload
+                    .as_ref()
+                    .and_then(|v| v.get("id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+                            "enqueueJob ok without id"
+                        ))
+                    })?
+                    .to_string();
+                Ok(bookclerk_library::EnqueueOutcome::Created { id })
+            }
+            s if s == atomic_status::DUPLICATE => {
+                let existing_id = result
+                    .payload
+                    .as_ref()
+                    .and_then(|v| v.get("id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+                            "enqueueJob duplicate without id"
+                        ))
+                    })?
+                    .to_string();
+                Ok(bookclerk_library::EnqueueOutcome::Duplicate { existing_id })
+            }
+            s if s == atomic_status::QUEUE_FULL => Ok(bookclerk_library::EnqueueOutcome::QueueFull),
+            other => Err(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+                "enqueueJob failed: {other}"
+            ))),
+        }
+    }
+
+    async fn claim_next_job(
+        &self,
+        resource_class: bookclerk_library::JobResourceClass,
+        owner: &str,
+        lease_secs: u64,
+        operation_id: &str,
+    ) -> bookclerk_library::Result<Option<bookclerk_library::JobRecord>> {
+        let result = self
+            .call_with_id(
+                operation_id.to_string(),
+                DbAtomicParams::ClaimNextJob {
+                    resource_class: resource_class.as_str().to_string(),
+                    owner: owner.to_string(),
+                    lease_secs: i64::try_from(lease_secs).unwrap_or(60),
+                },
+            )
+            .await?;
+        if result.status == atomic_status::EMPTY {
+            return Ok(None);
+        }
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::NotFound("job".into()),
+        ) {
+            return Err(err);
+        }
+        decode_payload(result.payload, "job")
+    }
+
+    async fn reserve_job_temp_path(
+        &self,
+        job_id: &str,
+        path: &str,
+        reserved_bytes: u64,
+        quota_bytes: u64,
+    ) -> bookclerk_library::Result<()> {
+        let result = self
+            .call(DbAtomicParams::ReserveJobTemp {
+                job_id: job_id.to_string(),
+                path: path.to_string(),
+                reserved_bytes: i64::try_from(reserved_bytes).unwrap_or(i64::MAX),
+                quota_bytes: i64::try_from(quota_bytes).unwrap_or(i64::MAX),
+            })
+            .await?;
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+                "acquire scratch quota exceeded"
+            )),
+        ) {
+            return Err(err);
+        }
+        Ok(())
     }
 }
 

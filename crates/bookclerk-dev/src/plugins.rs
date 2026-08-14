@@ -23,11 +23,11 @@ pub const HELPER_PACKAGES: &[&str] = &[
 /// Which guest trees (and installer stack) a build/stage should include.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BuildSelection {
-    /// Workspace `default-members` + platform guests under [`PLATFORM_PLUGINS_DIR`].
+    /// Workspace `default-members` + platform guests under `crates/bookclerk-plugins/platform`.
     pub platform: bool,
-    /// Guests under [`OPTIONAL_PLUGINS_DIR`].
+    /// Guests under `crates/bookclerk-plugins/optional`.
     pub optional: bool,
-    /// Guests under [`EXAMPLES_DIR`].
+    /// Guests under `examples`.
     pub examples: bool,
 }
 

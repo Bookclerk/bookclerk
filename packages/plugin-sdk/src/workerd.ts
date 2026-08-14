@@ -1,4 +1,3 @@
-/// <reference path="./cloudflare-workers.d.ts" />
 /**
  * Workerd / Workers RPC guest entry — re-exports {@link BookclerkPlugin}.
  *
@@ -17,6 +16,8 @@
  * }
  * ```
  */
+
+import "./cloudflare-workers.d.ts";
 
 export { BookclerkPlugin } from "./bookclerk-plugin.js";
 export type {

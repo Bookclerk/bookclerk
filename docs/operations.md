@@ -24,10 +24,11 @@ HTTP control plane (default `127.0.0.1:8787`):
 | `GET` / `POST` `/api/plugins/{id}/consent` | operator | Plugin grant status / approve (widen or narrow; host-capped) |
 | `GET` / `PATCH` `/api/settings` | operator | Daemon, library, plugins, confinement knobs |
 | `GET /api/status` (also `/status`) | yes | Status snapshot |
-| `POST /api/library/scan` (also `/scan`) | yes | Queue scan (`Content-Type: application/json`) |
-| `POST /api/library/acquire` (also `/acquire`) | yes | Queue acquire |
+| `POST /api/library/scan` (also `/scan`) | yes | Queue scan (`Content-Type: application/json`); `409` if already pending/running, `429` if the queue is full |
+| `POST /api/library/acquire` (also `/acquire`) | yes | Queue acquire (`409` / `429` as above) |
 | `GET /api/library/books` | yes | Book rows for the GUI |
-| `GET /api/jobs` (also `/jobs`) | yes | Job list |
+| `GET /api/jobs` (also `/jobs`) | yes | Durable job list (progress, attempts, timestamps) |
+| `POST /api/jobs/{id}/cancel` | yes | Cancel pending work or request cooperative stop |
 | `/` static UI | no | Built React SPA when `ui/dist` is present |
 
 Override listen with `BOOKCLERK_DAEMON_LISTEN` or `daemon.listen`. Defaults to

@@ -69,7 +69,7 @@ pub struct ScoreInput<'a> {
 /// (or other) query metadata is richer:
 /// - **Narrator** (both sides present): small extra weight in the blend
 /// - **Exact ISBN** (normalized digits): boost by closing
-///   [`ISBN_MATCH_GAP_CLOSE`] of the remaining gap to 1.0 (not a forced accept)
+///   `ISBN_MATCH_GAP_CLOSE` of the remaining gap to 1.0 (not a forced accept)
 ///
 /// When the query title is an ASIN, returns `1.0`.
 ///

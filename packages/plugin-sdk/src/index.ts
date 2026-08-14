@@ -1,4 +1,3 @@
-/// <reference path="./cloudflare-workers.d.ts" />
 /**
  * `@bookclerk/plugin-sdk` — ABI types + dual-runtime entrypoints.
  *
@@ -16,6 +15,8 @@
  *
  * See `docs/plugins.md` and `docs/code-documentation.md`.
  */
+
+import "./cloudflare-workers.d.ts";
 
 export { BookclerkPlugin } from "./bookclerk-plugin.js";
 

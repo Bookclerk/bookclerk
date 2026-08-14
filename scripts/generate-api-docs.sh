@@ -125,11 +125,14 @@ fi
 if [[ "$RUN_RUST" -eq 1 ]]; then
   echo "==> rustdoc"
   rm -rf "$DOC_TARGET/doc"
+  # `--no-deps` cannot resolve rustdoc paths into other workspace crates, so
+  # those must be prose (backticks), not intra-doc links. Deny broken, private,
+  # and redundant links rather than warning.
+  WORKSPACE_RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::redundant_explicit_links -D rustdoc::invalid_html_tags -D rustdoc::bare_urls -D rustdoc::invalid_codeblock_attributes"
   if [[ "$DO_ALL" -eq 1 ]]; then
-    # Workspace-wide: warn on broken intra-doc links (many intentional cross-crate
-    # prose refs); deny high-signal stable rustdoc lints. Exclude the publish
-    # trio here — they are documented once below under stricter rustdoc flags.
-    RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -W rustdoc::broken_intra_doc_links -D rustdoc::invalid_html_tags -D rustdoc::bare_urls -D rustdoc::invalid_codeblock_attributes" \
+    # Exclude the publish trio here — they are documented once below under
+    # stricter rustdoc flags (crate-level docs).
+    RUSTDOCFLAGS="$WORKSPACE_RUSTDOCFLAGS" \
       cargo doc --workspace --exclude bookclerk-plugin-abi \
         --exclude bookclerk-plugin-manifest --exclude bookclerk-plugin-sdk \
         --no-deps --all-features --target-dir "$DOC_TARGET"
@@ -142,14 +145,14 @@ if [[ "$RUN_RUST" -eq 1 ]]; then
       ARGS+=(-p "$p")
     done
     if [[ ${#ARGS[@]} -gt 0 ]]; then
-      RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D rustdoc::broken_intra_doc_links -D rustdoc::invalid_html_tags -D rustdoc::bare_urls -D rustdoc::invalid_codeblock_attributes" \
+      RUSTDOCFLAGS="$WORKSPACE_RUSTDOCFLAGS" \
         cargo doc "${ARGS[@]}" --no-deps --all-features --target-dir "$DOC_TARGET"
     fi
   fi
 
   if [[ "$DO_ALL" -eq 1 ]] || contains_publish; then
     echo "==> rustdoc (publish crates: deny broken links + crate docs)"
-    RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::invalid_html_tags -D rustdoc::bare_urls -D rustdoc::invalid_codeblock_attributes -D rustdoc::missing_crate_level_docs" \
+    RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::redundant_explicit_links -D rustdoc::invalid_html_tags -D rustdoc::bare_urls -D rustdoc::invalid_codeblock_attributes -D rustdoc::missing_crate_level_docs" \
       cargo doc -p bookclerk-plugin-abi -p bookclerk-plugin-manifest \
         -p bookclerk-plugin-sdk --no-deps --all-features --target-dir "$DOC_TARGET"
   fi

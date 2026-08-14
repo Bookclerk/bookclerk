@@ -4,9 +4,9 @@
 //! backends: integer columns are `i64`, reals `f64`, blobs `Vec<u8>`, and text
 //! (including RFC 3339 timestamps) `String`. Timestamps stay as `String` to
 //! match the `TEXT` columns without relying on SeaORM's proxy chrono decoding;
-//! [`crate::store`] parses them into `chrono::DateTime<Utc>` at the record
-//! boundary. [`LibraryStore`](crate::LibraryStore) uses these entities
-//! (`Entity::find`, `ActiveModel`) for the majority of CRUD.
+//! [`LibraryStore`](crate::LibraryStore) parses them into `chrono::DateTime<Utc>`
+//! at the record boundary and uses these entities (`Entity::find`,
+//! `ActiveModel`) for the majority of CRUD.
 
 pub mod account_links;
 pub mod accounts;
@@ -16,6 +16,8 @@ pub mod db_atomic_receipts;
 pub mod embeddings;
 pub mod encrypted_secrets;
 pub mod ignored_titles;
+pub mod job_temp_paths;
+pub mod jobs;
 pub mod listening_progress;
 pub mod oidc_auth_codes;
 pub mod oidc_clients;

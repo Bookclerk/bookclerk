@@ -49,6 +49,9 @@ pub struct Config {
     /// Media decode / encode worker pool (`[media]`).
     #[serde(default)]
     pub media: crate::MediaConfig,
+    /// Durable job queue (`[jobs]`).
+    #[serde(default)]
+    pub jobs: crate::JobsConfig,
     /// How external plugin guests are run (`[plugins]`).
     #[serde(default)]
     pub plugins: crate::PluginsConfig,
@@ -484,6 +487,7 @@ impl Config {
                 parse_bool(&v).unwrap_or(self.output.s3.force_path_style);
         }
         self.media.apply_env_overrides();
+        self.jobs.apply_env_overrides();
         self.plugins.apply_env_overrides();
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_LISTEN") {
             match crate::ListenAddrs::parse_list(&v) {
