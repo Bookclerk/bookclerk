@@ -27,7 +27,7 @@ The SPA supports operator and first-party user sessions:
 
 | Role | How to sign in | Capabilities |
 | --- | --- | --- |
-| **Operator** | Paste operator token (`bookclerk daemon token`) | Full library, scan/acquire, jobs, Discover, Wishlist, Settings (daemon/plugins/confinement), impersonate; **cannot** connect bookstore sources |
+| **Operator** | Paste operator token (`bookclerk daemon token`) or system tray Open Bookclerk | Full library, scan/acquire, jobs, Discover, Wishlist, Settings (daemon/plugins/confinement), impersonate; **cannot** connect bookstore sources. Tray handoff is loopback-only (`GET /api/auth/tray-handoff?code=` with a 60s one-time code, never the durable token). |
 | **Owner** | Invite magic link / password / passkey / SSO / integration login | Administrator powers + **elevate** to operator (IdP step-up, passkey, or password). Server/Plugins + impersonation |
 | **Administrator** | Invite magic link / password / passkey / SSO / integration login | Member powers + acquire/scan/jobs; provision users (no elevate) |
 | **Member** | Invite magic link, password, passkey, SSO, or integration return-visit | Discover, Wishlist, shared library browse, Accounts (store connect); Settings Account (Profile / Security / Sessions) |
@@ -153,7 +153,16 @@ BOOKCLERK_FILES_DIR=/tmp/BookclerkFiles cargo run -p bookclerkd
 ```
 
 Menu: Open Bookclerk · Scan library · Print operator token · Quit. Left-click
-opens the browser. The tray lives in `bookclerk-tray` (workspace member, not a
+opens `http://localhost:<port>/api/auth/tray-handoff?code=…`. The
+tray first `POST`s `/api/auth/tray-handoff/prepare` with the durable Bearer token
+to mint a 60-second hashed one-time code (wildcard `0.0.0.0`/`::` binds still
+use `localhost`), then the GET consumes that exact code and sets
+`bookclerk_operator_session` on localhost (`Referrer-Policy: no-referrer`).
+Same-host reverse proxies are refused (`Host` must be a single loopback
+authority; any `X-Forwarded-*` / `Forwarded` / `Via` / `X-Real-IP` header fails
+closed, including empty values). Use the
+public origin for Users; Operator UI is localhost (or Owner elevate on the
+public hostname). The tray lives in `bookclerk-tray` (workspace member, not a
 `default-member`) and is linked into `bookclerkd`.
 
 `tray-icon` is depended on only for Windows/macOS **and** with

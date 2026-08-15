@@ -124,12 +124,21 @@ impl ListenAddrs {
             .unwrap_or(false)
     }
 
-    /// Prefer `http://localhost:<port>` when any loopback is configured; else
-    /// the first concrete bind (bracket IPv6 as needed).
+    /// Whether any configured bind is unspecified (`0.0.0.0` / `::`).
+    #[must_use]
+    pub fn has_unspecified(&self) -> bool {
+        self.socket_addrs()
+            .map(|addrs| addrs.iter().any(|a| a.ip().is_unspecified()))
+            .unwrap_or(false)
+    }
+
+    /// Prefer `http://localhost:<port>` when any loopback or unspecified bind is
+    /// configured (wildcard listeners still accept loopback); else the first
+    /// concrete bind (bracket IPv6 as needed).
     #[must_use]
     pub fn tray_base_url(&self) -> String {
         let port = self.ui_port();
-        if self.has_loopback() {
+        if self.has_loopback() || self.has_unspecified() {
             return format!("http://localhost:{port}");
         }
         match self.socket_addrs().ok().and_then(|a| a.into_iter().next()) {
@@ -235,7 +244,8 @@ mod tests {
         let a = ListenAddrs::parse_list("0.0.0.0:9000,[::]:9000").unwrap();
         assert_eq!(a.as_slice(), ["0.0.0.0:9000", "[::]:9000"]);
         assert!(!a.has_loopback());
-        assert_eq!(a.tray_base_url(), "http://0.0.0.0:9000");
+        assert!(a.has_unspecified());
+        assert_eq!(a.tray_base_url(), "http://localhost:9000");
     }
 
     #[test]

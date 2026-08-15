@@ -13,6 +13,7 @@ anyhow.workspace = true
 arboard = "3"
 open = "5"
 png = "0.18"
+serde = { workspace = true }
 tracing.workspace = true
 ureq.workspace = true
 

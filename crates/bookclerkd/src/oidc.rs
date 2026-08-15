@@ -779,6 +779,7 @@ mod tests {
             listen_reload: Arc::new(Notify::new()),
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
+            tray_handoff: Mutex::new(None),
         });
         ensure_default_abs_client(&state)
             .await

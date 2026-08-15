@@ -18,20 +18,6 @@ import { cn } from "@/lib/utils";
 
 type Tab = "operator" | "password" | "claim" | "return";
 
-/** Pull `#token=…` / `#operator_token=…` from the tray's open-UI URL. */
-function tokenFromHash(): string | null {
-  const raw = window.location.hash.replace(/^#/, "");
-  if (!raw) return null;
-  const params = new URLSearchParams(raw);
-  const token = params.get("token") ?? params.get("operator_token");
-  return token?.trim() || null;
-}
-
-function clearHash() {
-  const { pathname, search } = window.location;
-  window.history.replaceState(null, "", `${pathname}${search}`);
-}
-
 function ssoErrorMessage(code: string | null): string | null {
   switch (code) {
     case "denied":
@@ -106,35 +92,6 @@ export function LoginPage({
       cancelled = true;
     };
   }, []);
-
-  // Tray "Open Bookclerk" links carry the operator token in the fragment.
-  useEffect(() => {
-    const fromHash = tokenFromHash();
-    if (!fromHash) return;
-    clearHash();
-    setTab("operator");
-    setToken(fromHash);
-    setBusy(true);
-    setError(null);
-    let cancelled = false;
-    void (async () => {
-      try {
-        const session = await login(fromHash);
-        if (!cancelled) onSuccess(session);
-      } catch (err) {
-        if (!cancelled) {
-          setError(
-            err instanceof Error ? err.message : "Invalid operator token.",
-          );
-        }
-      } finally {
-        if (!cancelled) setBusy(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [onSuccess]);
 
   async function finishPortal() {
     const session = await authMe();

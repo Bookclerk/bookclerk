@@ -2079,6 +2079,7 @@ dependencies = [
  "objc2-core-foundation",
  "open",
  "png",
+ "serde",
  "tokio",
  "tracing",
  "tray-icon",

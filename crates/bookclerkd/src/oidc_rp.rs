@@ -1922,6 +1922,7 @@ mod http_tests {
             listen_reload: Arc::new(Notify::new()),
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
+            tray_handoff: Mutex::new(None),
         });
         let app = crate::api::router(state.clone(), None);
         (state, app, library)

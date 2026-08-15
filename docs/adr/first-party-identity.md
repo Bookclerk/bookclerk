@@ -88,6 +88,10 @@ Optional multi-IdP broker + WebAuthn (Phase 6) landed in
 - Operator prefs subject remains `operator`; user prefs use `user:{id}`.
 - Docs: [gui.md](../gui.md), [operations.md](../operations.md),
   [integrations.md](../integrations.md), [database.md](../database.md).
+- Operator tray login never puts the durable token in a GET URL. Open Bookclerk
+  mints a 60-second hashed one-time loopback code (`POST /api/auth/tray-handoff/prepare`
+  + `GET /api/auth/tray-handoff?code=`). A same-host reverse proxy cannot complete
+  that handoff; the operator session cookie is set on localhost only.
 - The Owner / Administrator / Member role split is **greenfield**. There is no
   in-place upgrade that promotes existing Administrators to Owner. Testing and
   development deployments that already have a `library.db` from before this

@@ -144,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
         listen_reload: listen_reload.clone(),
         last_bound_listen: RwLock::new(None),
         tray: RwLock::new(None),
+        tray_handoff: Mutex::new(None),
     });
 
     start_integration_watchers(&state).await;

@@ -60,6 +60,7 @@ fn is_csrf_exempt(path: &str) -> bool {
             | "/api/auth/password"
             | "/api/auth/bootstrap"
             | "/api/auth/tray-handoff"
+            | "/api/auth/tray-handoff/prepare"
             | "/api/portal/redeem"
             | "/api/portal/login/integration"
             | "/api/auth/oidc/callback"
@@ -174,6 +175,8 @@ mod tests {
     #[test]
     fn oidc_callback_is_csrf_exempt() {
         assert!(is_csrf_exempt("/api/auth/oidc/callback"));
+        assert!(is_csrf_exempt("/api/auth/tray-handoff"));
+        assert!(is_csrf_exempt("/api/auth/tray-handoff/prepare"));
         assert!(!is_csrf_exempt("/api/auth/logout"));
     }
 }

@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::Request;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -92,6 +92,16 @@ pub struct AppState {
     pub last_bound_listen: RwLock<Option<ListenAddrs>>,
     /// Optional tray handle so reload can refresh token / auth_enabled / listen.
     pub tray: RwLock<Option<bookclerk_tray::SharedTrayConfig>>,
+    /// Single-use tray Open Bookclerk ticket (hash + deadline). Replaced on prepare; restart clears it.
+    pub tray_handoff: Mutex<Option<TrayHandoffTicket>>,
+}
+
+/// In-process tray Open Bookclerk ticket: hash of a one-time code plus expiry.
+pub struct TrayHandoffTicket {
+    /// SHA-256 hex of the plaintext code returned to the tray (never the code itself).
+    pub code_hash: String,
+    /// Instant after which GET must fail closed.
+    pub deadline: Instant,
 }
 
 impl AppState {
@@ -590,6 +600,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     let mut app = Router::new()
         .route("/health", get(health))
         .route("/api/auth/login", post(auth::login))
+        .route(
+            "/api/auth/tray-handoff/prepare",
+            post(auth::tray_handoff_prepare),
+        )
         .route("/api/auth/tray-handoff", get(auth::tray_handoff))
         .route("/api/auth/me", get(auth::me))
         .route("/api/auth/elevate", post(auth::elevate))
@@ -5084,6 +5098,7 @@ mode = "deny"
             listen_reload: Arc::new(Notify::new()),
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
+            tray_handoff: Mutex::new(None),
         });
 
         let app = Router::new()
@@ -5181,6 +5196,7 @@ mode = "deny"
             listen_reload: Arc::new(Notify::new()),
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
+            tray_handoff: Mutex::new(None),
         });
 
         let app = Router::new()

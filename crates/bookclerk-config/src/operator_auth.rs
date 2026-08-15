@@ -35,7 +35,7 @@ pub fn read_operator_token_env() -> Result<Option<(String, ResolveOperatorTokenE
 ///
 /// Generated tokens are hex. Env overrides must stay printable single-line and
 /// free of whitespace / control characters so they cannot inject into
-/// `#token=…` fragments or `Authorization` headers.
+/// `Authorization` headers.
 ///
 /// # Errors
 ///
