@@ -628,7 +628,7 @@ mod tests {
     #[test]
     fn workerd_manifest_injects_clamped_subrequests() {
         let toml = r#"
-api_version = 1
+api_version = 2
 id = "limits_demo"
 kind = "integration"
 runtime = "workerd"
@@ -646,7 +646,7 @@ domains = ["api.example.com"]
         let policy = EgressPolicy::from_manifest(&manifest);
         assert_eq!(policy.subrequests, Some(50));
         let over = r#"
-api_version = 1
+api_version = 2
 id = "limits_over"
 kind = "integration"
 runtime = "workerd"
@@ -669,7 +669,7 @@ mode = "deny"
     #[test]
     fn python_outbound_includes_pyodide_hosts() {
         let toml = r#"
-api_version = 1
+api_version = 2
 id = "py_demo"
 kind = "integration"
 runtime = "workerd"
@@ -703,7 +703,7 @@ domains = ["api.example.com"]
     #[test]
     fn js_outbound_omits_pyodide_hosts() {
         let toml = r#"
-api_version = 1
+api_version = 2
 id = "js_demo"
 kind = "integration"
 runtime = "workerd"

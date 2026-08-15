@@ -231,6 +231,12 @@ jobs:
             ui/package-lock.json
             packages/plugin-sdk/package-lock.json
 
+      - name: Install capnproto
+        if: needs.plan.outputs.run_rust == 'true' || needs.plan.outputs.run_docs == 'true' || needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.run_build_app == 'true' || needs.plan.outputs.run_store_free == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
+
       - name: Cache cargo
         if: needs.plan.outputs.run_rust == 'true' || needs.plan.outputs.run_docs == 'true' || needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.run_build_app == 'true' || needs.plan.outputs.run_store_free == 'true'
         uses: Swatinem/rust-cache@v2
@@ -432,6 +438,10 @@ jobs:
           BOOKCLERK_WORKERD_BIN: ${{ github.workspace }}/target/debug/workerd
         run: |
           set -euo pipefail
+          if [ -n "${BOOKCLERK_V2_SKIP_WORKERD:-}" ]; then
+            echo "CI must run the workerd v2 contract (do not set BOOKCLERK_V2_SKIP_WORKERD)" >&2
+            exit 1
+          fi
           export PATH="${{ github.workspace }}/target/debug:$PATH"
           if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
             # `--lib --bins --tests` keeps unit + integration tests and skips
@@ -462,6 +472,11 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: ui/package-lock.json
+
+      - name: Install capnproto
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -582,6 +597,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install capnproto
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -594,6 +614,12 @@ jobs:
           BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
           BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
         run: cargo test -p bookclerk-library --lib postgres_ -- --ignored --nocapture
+
+      - name: Postgres guest page tests
+        env:
+          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
+        run: cargo test -p bookclerk-db-guest --lib postgres_ -- --ignored --nocapture
 
   ci-gate:
     name: CI Gate

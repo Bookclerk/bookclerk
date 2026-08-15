@@ -1,10 +1,28 @@
-api_version = 1
+api_version = 2
 id = "echo_native_python"
 name = "Echo Integration (native Python)"
 kind = "integration"
 version = "0.1.0"
-runtime = "native"
-command = "./bookclerk-plugin-echo-native-python"
+runtime = "workerd"
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = [
+    "python_workers",
+    "disable_python_external_sdk",
+]
+main_module = "plugin.py"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 50
+
+[[modules]]
+name = "plugin.py"
+path = "plugin.py"
+type = "python"
 
 [capabilities.network]
 mode = "deny"
@@ -13,7 +31,7 @@ mode = "deny"
 config = true
 
 [capabilities.methods]
-list = ["handshake", "health", "diagnose", "onEvent", "cli"]
+list = ["describe", "integration", "health", "diagnose", "onEvent", "cli"]
 
 [cli]
 [[cli.commands]]

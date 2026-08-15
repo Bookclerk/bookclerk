@@ -2,21 +2,21 @@
   "name": "bookclerk-plugin-echo-native-node",
   "version": "0.1.0",
   "private": true,
-  "description": "Reference Echo integration — native Node (SEA) for Bookclerk",
+  "description": "Echo integration (id echo_native_node) — workerd guest, not a Node Cap'n Proto stack",
   "type": "module",
-  "main": "src/echo.mjs",
+  "main": "modules/index.js",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node src/echo.mjs",
     "sea:blob": "node --experimental-sea-config sea-config.json",
     "sea:build": "node scripts/build-sea.mjs"
   },
   "keywords": [
     "bookclerk",
     "bookclerk-plugin",
-    "bookclerk-integration"
+    "bookclerk-integration",
+    "workerd"
   ],
   "license": "MIT"
 }

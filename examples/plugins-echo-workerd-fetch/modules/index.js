@@ -1,5 +1,5 @@
 /**
- * Echo Fetch workerd guest module.
+ * Echo Fetch workerd guest module (api_version = 2).
  *
  * Extends package `BookclerkPlugin` from `@bookclerk/plugin-sdk/workerd`
  * (injected by bookclerk-workerd). Keep in sync with `src/index.ts`.
@@ -8,9 +8,13 @@
  * Success = egress allowed a Response; HTTP status is best-effort only.
  */
 
-import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd";
+import {
+  BookclerkPlugin,
+  Integration,
+  PRODUCT_API_VERSION,
+  FEATURE_SCALAR_LIMITS,
+} from "@bookclerk/plugin-sdk/workerd";
 
-const API_VERSION = 1;
 const PLUGIN_ID = "echo_workerd_fetch";
 const KIND = "integration";
 const EXAMPLE_URL = "https://www.example.com/";
@@ -57,17 +61,13 @@ async function probeExampleFetch() {
   }
 }
 
-export default class EchoFetchPlugin extends BookclerkPlugin {
-  /** @param {{ apiVersion: number, config?: object }} _params */
-  async handshake(_params) {
-    return {
-      apiVersion: API_VERSION,
-      id: PLUGIN_ID,
-      kind: KIND,
-      displayName: "Echo Fetch (workerd)",
-      capabilities: ["health", "diagnose", "onEvent", "cli"],
-      cli: CLI,
-    };
+class EchoFetchIntegration extends Integration {
+  /**
+   * @param {Record<string, unknown> | undefined} env
+   */
+  constructor(env) {
+    super();
+    this.env = env;
   }
 
   async health() {
@@ -93,21 +93,43 @@ export default class EchoFetchPlugin extends BookclerkPlugin {
   }
 
   /**
-   * @param {{ type: string, payload?: { titleId?: string } }} event
+   * @param {{ type?: string, eventType?: string, payload?: { titleId?: string } }} event
    */
   async onEvent(event) {
-    if (event?.type === "book_acquired") {
-      const titleId = event.payload?.titleId ?? "";
-      if (this.env?.HOST?.notify) {
-        await this.env.HOST.notify({
-          type: "plugin_log",
-          payload: {
-            level: "info",
-            message: `echo_workerd_fetch saw book_acquired titleId=${titleId}`,
-          },
-        });
-      }
+    const type = event?.type || event?.eventType || "";
+    const titleId = event?.payload?.titleId ?? "";
+    if (type === "book_acquired" && this.env?.HOST?.notify) {
+      await this.env.HOST.notify({
+        type: "plugin_log",
+        payload: {
+          level: "info",
+          message: `echo_workerd_fetch saw book_acquired titleId=${titleId}`,
+        },
+      });
     }
+    return { kind: "ack" };
+  }
+}
+
+export default class EchoFetchPlugin extends BookclerkPlugin {
+  async describe() {
+    return {
+      apiVersion: PRODUCT_API_VERSION ?? 2,
+      id: PLUGIN_ID,
+      kind: KIND,
+      displayName: "Echo Fetch (workerd)",
+      rpcFeatures: [FEATURE_SCALAR_LIMITS ?? "rpc.scalarLimits"],
+      scalarLimits: {
+        maxScalarBytes: 262144,
+        maxStreamWindowBytes: 1048576,
+        maxListPage: 256,
+      },
+      supportedRoles: ["integration"],
+    };
+  }
+
+  integration() {
+    return new EchoFetchIntegration(this.env);
   }
 
   async cliDescribe() {
@@ -115,19 +137,21 @@ export default class EchoFetchPlugin extends BookclerkPlugin {
   }
 
   /**
-   * @param {{ command: string, args?: Record<string, unknown> }} params
+   * @param {string | { command: string, args?: Record<string, unknown> }} params
    */
   async cliInvoke(params) {
-    if (params?.command === "ping") {
+    const parsed =
+      typeof params === "string" ? JSON.parse(params || "{}") : params || {};
+    if (parsed?.command === "ping") {
       const message =
-        typeof params.args?.message === "string" ? params.args.message : "hi";
+        typeof parsed.args?.message === "string" ? parsed.args.message : "hi";
       return {
         exitCode: 0,
         stdout: `pong: ${message}\n`,
         json: { pong: message },
       };
     }
-    if (params?.command === "fetch-example") {
+    if (parsed?.command === "fetch-example") {
       const probe = await probeExampleFetch();
       return {
         exitCode: probe.allowed ? 0 : 1,
@@ -137,7 +161,7 @@ export default class EchoFetchPlugin extends BookclerkPlugin {
     }
     return {
       exitCode: 2,
-      stderr: `unknown command ${params?.command ?? ""}`,
+      stderr: `unknown command ${parsed?.command ?? ""}`,
     };
   }
 }

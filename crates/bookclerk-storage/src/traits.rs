@@ -2,9 +2,11 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::pin::Pin;
 use std::time::SystemTime;
+use tokio::io::AsyncRead;
 
-use crate::error::Result;
+use crate::error::{Result, StorageError};
 
 /// Metadata attached to a stored object.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -71,6 +73,33 @@ pub fn bookclerk_meta_sidecar_key(audio_or_object_key: &str) -> String {
         .map(|(stem, _)| stem)
         .unwrap_or(audio_or_object_key);
     format!("{base}.bookclerk-meta.json")
+}
+
+/// Inclusive byte range for a streamed read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ByteRange {
+    /// Starting offset.
+    pub offset: u64,
+    /// Number of bytes; `None` means to end of object.
+    pub length: Option<u64>,
+}
+
+/// One page of [`ObjectInfo`] from [`StorageBackend::list_page`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListPage {
+    /// Objects in this page.
+    pub objects: Vec<ObjectInfo>,
+    /// Continuation token; `None` when this is the last page.
+    pub next_cursor: Option<String>,
+}
+
+/// Result of [`StorageBackend::put_stream`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PutStreamResult {
+    /// Bytes accepted from the body stream.
+    pub bytes_written: u64,
+    /// Backend etag when available.
+    pub etag: Option<String>,
 }
 
 /// Pluggable storage for acquired audio and sidecar files.
@@ -144,6 +173,57 @@ pub trait StorageBackend: Send + Sync {
 
     /// Delete an object (no-op if missing).
     async fn delete(&self, key: &str) -> Result<()>;
+
+    /// Probe metadata without downloading the body.
+    ///
+    /// Default maps [`Self::probe`] absence onto `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates backend probe failures other than not-found.
+    async fn head(&self, key: &str) -> Result<Option<ObjectProbe>> {
+        match self.probe(key).await {
+            Ok(probe) => Ok(Some(probe)),
+            Err(StorageError::NotFound(_)) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// One page of keys under `prefix` (cursor is the last key or backend token).
+    ///
+    /// # Errors
+    ///
+    /// Returns listing failures from the backend.
+    async fn list_page(&self, prefix: &str, cursor: Option<&str>, limit: u32) -> Result<ListPage>;
+
+    /// Streamed read. Never reassembles the object into host `Bytes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::NotFound`] when missing, and I/O or S3 failures
+    /// otherwise.
+    async fn get_stream(
+        &self,
+        key: &str,
+        range: Option<ByteRange>,
+    ) -> Result<(ObjectProbe, Pin<Box<dyn AsyncRead + Send>>)>;
+
+    /// Streamed write. `body` ownership is transferred to the backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O or S3 failures from the sink.
+    async fn put_stream(
+        &self,
+        key: &str,
+        body: Pin<Box<dyn AsyncRead + Send>>,
+        meta: ObjectMeta,
+    ) -> Result<PutStreamResult>;
+
+    /// True when [`Self::copy`] is a server-side operation (no download).
+    fn supports_server_copy(&self) -> bool {
+        true
+    }
 
     /// Set filesystem timestamps (local) or best-effort logical timestamp tags (S3).
     ///

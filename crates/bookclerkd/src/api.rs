@@ -4785,7 +4785,7 @@ mod tests {
             root.join("plugin.toml"),
             format!(
                 r#"
-api_version = 1
+api_version = 2
 id = "logo_echo"
 kind = "integration"
 version = "0.1.0"

@@ -118,11 +118,11 @@ fn push_manifest(
 ) -> Result<()> {
     let text = std::fs::read_to_string(manifest_path)?;
     let manifest = PluginManifest::parse(&text)?;
-    if manifest.api_version > crate::PLUGIN_API_VERSION {
+    if manifest.api_version > crate::HOST_MANIFEST_API_VERSION_MAX {
         tracing::warn!(
             id = %manifest.id,
             plugin_api = manifest.api_version,
-            host_api = crate::PLUGIN_API_VERSION,
+            host_api = crate::HOST_MANIFEST_API_VERSION_MAX,
             "plugin api_version newer than host; skipping"
         );
         return Ok(());
@@ -174,7 +174,7 @@ fn resolve_spawn_command(root: &Path, manifest: &PluginManifest) -> Result<PathB
 }
 
 /// Finds `bookclerk-workerd` beside the host executable or on `PATH`.
-fn resolve_workerd_runtime() -> Result<PathBuf> {
+pub(crate) fn resolve_workerd_runtime() -> Result<PathBuf> {
     const NAME: &str = if cfg!(windows) {
         "bookclerk-workerd.exe"
     } else {
@@ -319,7 +319,7 @@ mod tests {
         fs::write(
             nested.join("plugin.toml"),
             r#"
-api_version = 1
+api_version = 2
 id = "echo"
 kind = "integration"
 runtime = "native"
@@ -365,7 +365,7 @@ mode = "deny"
             dir.join("plugin.toml"),
             format!(
                 r#"
-api_version = 1
+api_version = 2
 id = "{id}"
 kind = "{kind}"
 runtime = "native"

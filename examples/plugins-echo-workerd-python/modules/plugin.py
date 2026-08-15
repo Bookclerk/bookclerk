@@ -1,16 +1,17 @@
-"""Echo workerd guest — package import for BookclerkPlugin.
+"""Echo workerd guest — BookclerkPlugin v2 (`describe` + `integration`).
 
-    from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js
+    from bookclerk_plugin_sdk.workerd import BookclerkPlugin, Integration, js
 
 `bookclerk-workerd` injects the SDK under that module path. Native guests use
-`from bookclerk_plugin_sdk import BookclerkPlugin, BookclerkPluginGuest` instead.
+`from bookclerk_plugin_sdk import BookclerkPlugin, BookclerkPluginGuest` is
+removed; native guests use Rust `serve`. This module is workerd-only.
 """
 
 from __future__ import annotations
 
-from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js
+from bookclerk_plugin_sdk.workerd import BookclerkPlugin, Integration, js
 
-API_VERSION = 1
+API_VERSION = 2
 PLUGIN_ID = "echo_workerd_python"
 KIND = "integration"
 
@@ -44,20 +45,11 @@ def _get(obj, key, default=None):
     return getattr(obj, key, default)
 
 
-class Default(BookclerkPlugin):
-    """Bookclerk plugin entrypoint (workerd `entrypoint = \"default\"`)."""
+class EchoIntegration(Integration):
+    """Integration RpcTarget: health / diagnose / onEvent."""
 
-    async def handshake(self, _params=None):
-        return js(
-            {
-                "apiVersion": API_VERSION,
-                "id": PLUGIN_ID,
-                "kind": KIND,
-                "displayName": "Echo Integration (workerd Python)",
-                "capabilities": ["health", "diagnose", "onEvent", "cli"],
-                "cli": CLI,
-            }
-        )
+    def __init__(self, env=None):
+        self.env = env
 
     async def health(self, _params=None):
         return js(
@@ -73,10 +65,11 @@ class Default(BookclerkPlugin):
         return js({"lines": ["echo_workerd_python: ok"]})
 
     async def onEvent(self, event=None):
-        if _get(event, "type") == "book_acquired":
+        event_type = _get(event, "type") or _get(event, "eventType")
+        if event_type == "book_acquired":
             payload = _get(event, "payload") or {}
             title_id = _get(payload, "titleId") or ""
-            host = getattr(self.env, "HOST", None)
+            host = getattr(self.env, "HOST", None) if self.env is not None else None
             if host is not None and hasattr(host, "notify"):
                 await host.notify(
                     js(
@@ -89,12 +82,40 @@ class Default(BookclerkPlugin):
                         }
                     )
                 )
-        return None
+        return js({"kind": "ack"})
+
+
+class Default(BookclerkPlugin):
+    """Bookclerk plugin entrypoint (workerd `entrypoint = \"default\"`)."""
+
+    async def describe(self):
+        return js(
+            {
+                "apiVersion": API_VERSION,
+                "id": PLUGIN_ID,
+                "kind": KIND,
+                "displayName": "Echo Integration (workerd Python)",
+                "rpcFeatures": ["rpc.scalarLimits"],
+                "scalarLimits": {
+                    "maxScalarBytes": 262144,
+                    "maxStreamWindowBytes": 1048576,
+                    "maxListPage": 256,
+                },
+                "supportedRoles": ["integration"],
+            }
+        )
+
+    def integration(self, _ctx=None):
+        return EchoIntegration(getattr(self, "env", None))
 
     async def cliDescribe(self, _params=None):
         return js(CLI)
 
     async def cliInvoke(self, params=None):
+        if isinstance(params, str):
+            import json
+
+            params = json.loads(params or "{}")
         command = _get(params, "command")
         if command != "ping":
             return js(

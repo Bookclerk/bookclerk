@@ -35,7 +35,7 @@
 //! use bookclerk_plugin_manifest::parse;
 //!
 //! let manifest = parse(r#"
-//! api_version = 1
+//! api_version = 2
 //! id = "echo"
 //! kind = "integration"
 //! runtime = "native"
@@ -99,7 +99,7 @@ pub const PLUGIN_TOML_SCHEMA_JSON: &str = include_str!("../schema/plugin-toml.js
 /// use bookclerk_plugin_manifest::parse;
 ///
 /// let m = parse(r#"
-/// api_version = 1
+/// api_version = 2
 /// id = "sqlite"
 /// kind = "database"
 /// runtime = "native"

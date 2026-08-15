@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use bookclerk_library::{migrations, LibraryError, LibraryStore, Result};
+use bookclerk_plugin_sdk::v2::MAX_SCALAR_BYTES;
 use rusqlite::Connection;
 use sea_orm::{
     Database, DatabaseConnection, DbBackend, DbErr, ProxyDatabaseTrait, ProxyExecResult, ProxyRow,
@@ -285,6 +286,17 @@ impl ProxyDatabaseTrait for SqliteProxy {
             while let Some(row) = rows.next().map_err(|e| DbErr::Custom(e.to_string()))? {
                 let mut values = BTreeMap::new();
                 for (i, name) in names.iter().enumerate() {
+                    let vref = row.get_ref(i).map_err(|e| DbErr::Custom(e.to_string()))?;
+                    let nbytes = match vref {
+                        rusqlite::types::ValueRef::Blob(b) => b.len(),
+                        rusqlite::types::ValueRef::Text(t) => t.len(),
+                        _ => 0,
+                    };
+                    if nbytes > MAX_SCALAR_BYTES as usize {
+                        return Err(DbErr::Custom(format!(
+                            "column `{name}` is {nbytes} bytes; exceeds {MAX_SCALAR_BYTES}"
+                        )));
+                    }
                     let v: rusqlite::types::Value =
                         row.get(i).map_err(|e| DbErr::Custom(e.to_string()))?;
                     let decl = decltypes.get(i).and_then(Option::as_deref);

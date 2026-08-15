@@ -12,7 +12,7 @@
 //!    `cargo run` works without staging binaries.
 //! 2. **External guests** — separate executables (or `bookclerk-workerd` +
 //!    modules) discovered from install directories (`plugin.toml`) over
-//!    newline-delimited Workers RPC on stdio.
+//!    Cap'n Proto `api_version = 2` on stdio.
 //!
 //! External plugins are **untrusted** relative to the host: the host never
 //! passes `library.db` / `master.key` / the files-dir root, clears
@@ -46,6 +46,8 @@ mod jail;
 mod manifest;
 mod registry;
 mod rpc;
+mod rpc_v2;
+mod spawn_stdio;
 #[cfg(windows)]
 mod windows_acl;
 
@@ -55,11 +57,12 @@ pub use bookclerk_plugin_sdk::{
     CliInvokeParams, CliInvokeResult, CliSchema, CredentialsUpdateParams, EventPollResultDto,
     ExpandCandidatesParams, ExternalUserDto, FetchTitleParams, HandshakeResult, HealthDto,
     ListeningProgressDto, LoginCompleteParams, LoginParams, LoginResultDto, LoginStartResultDto,
-    PlainPartDto, PluginGuest, PurchaseHintDto, PurchaseHintParams, ScanBookDto, ScanParams,
-    ScanSummaryDto, SearchCatalogParams, SourceAccountDto, SourceFetchDto, SyncListeningResultDto,
-    PLUGIN_API_VERSION,
+    PlainPartDto, PurchaseHintDto, PurchaseHintParams, ScanBookDto, ScanParams, ScanSummaryDto,
+    SearchCatalogParams, SourceAccountDto, SourceFetchDto, SyncListeningResultDto,
+    HOST_MANIFEST_API_VERSION_MAX, PLUGIN_API_VERSION, PROTOCOL_NAME,
 };
 
+pub use bookclerk_plugin_sdk::v2::{JobCheckpoint, JobInvocationLease, JobOutcome};
 pub use builtins::{
     load_integrations, load_sources, register_builtin_integrations, register_builtin_sources,
 };
@@ -86,7 +89,7 @@ pub use host::{
     load_external_database, load_external_destinations, load_external_integrations,
     load_external_sources, migrate_database_plugin, open_library_store,
     open_library_store_for_plugin, DatabaseRegistry, DestinationRegistry, ExternalDatabase,
-    ExternalDestination, ExternalIntegration, ExternalSource,
+    ExternalIntegration, ExternalSource,
 };
 pub use jail::plugin_data_dir;
 pub use manifest::{
@@ -99,7 +102,10 @@ pub use registry::{
     host_target_triple, kind_keyword, validate_plugin_id, BookclerkPackageMetadata,
     PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, PRODUCT_KEYWORD, REGISTRY_KEYWORD,
 };
-pub use rpc::PluginClient;
+pub use rpc_v2::{
+    plugin_instance_key, ExecutorIdentity, V2PluginSession, V2Storage, HOST_SHARED_ACCOUNT,
+    OPERATOR_ACCOUNT,
+};
 
 /// Register discovered external plugins into the in-process registries.
 ///

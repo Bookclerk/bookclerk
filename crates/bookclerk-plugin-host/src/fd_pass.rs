@@ -7,6 +7,7 @@
 
 #![cfg(unix)]
 #![allow(unsafe_code)]
+#![allow(dead_code)] // retained for native fetch/upload side-channel once v2 sessions wire SCM_RIGHTS
 
 use std::fs::OpenOptions;
 use std::io;

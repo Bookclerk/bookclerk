@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::job_handler::{InProcessJobTransport, JobCommand, JobExecCtx, JobTransport};
-use crate::jobs::note_job_failure;
+use crate::jobs::{note_job_failure, JOB_SUSPENDED_DETAIL_PREFIX};
 
 /// How long a worker may hold the [`AppState::job_runtime`] read permit while
 /// replaying a lost `claim_next_job` RPC with the same operation id.
@@ -257,6 +257,11 @@ async fn run_claimed_job(state: Arc<AppState>, _owner: &str, job: JobRecord, lea
     let ctx = JobExecCtx {
         fence: fence.clone(),
         cancel: Arc::new(AtomicBool::new(false)),
+        attempt_count: job.attempt_count,
+        dedup_key: job.dedup_key.clone(),
+        lease_expires_at: job.lease_expires_at,
+        checkpoint: job.payload.checkpoint.clone(),
+        invocation_sequence: job.payload.invocation_sequence.unwrap_or(1).max(1),
     };
     if job.state == JobState::Cancelled || job.cancel_requested {
         ctx.request_cancel();
@@ -317,6 +322,14 @@ async fn run_claimed_job(state: Arc<AppState>, _owner: &str, job: JobRecord, lea
     heartbeat.abort();
     let library = state.library_snapshot().await;
     match result {
+        Ok(detail) if detail.starts_with(JOB_SUSPENDED_DETAIL_PREFIX) => {
+            info!(
+                job_id = %fence.job_id,
+                kind = job.kind.as_str(),
+                %detail,
+                "job suspended until checkpoint wake"
+            );
+        }
         Ok(detail) => {
             info!(job_id = %fence.job_id, kind = job.kind.as_str(), %detail, "job succeeded");
             match library.complete_job(&fence, Some(&detail)).await {

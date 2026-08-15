@@ -26,8 +26,7 @@ SDK_PY_INIT = '''"""Bookclerk plugin SDK (workerd isolate).
 
 Use: from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js
 
-Native stdio guests use the pip package's BookclerkPlugin +
-BookclerkPluginGuest.serve instead.
+Native guests use Rust serve() / PluginRoot instead.
 """
 '''
 """Source text embedded as ``bookclerk_plugin_sdk/__init__.py`` in the isolate."""

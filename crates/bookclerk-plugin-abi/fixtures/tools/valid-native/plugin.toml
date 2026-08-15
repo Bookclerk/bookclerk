@@ -1,4 +1,4 @@
-api_version = 1
+api_version = 2
 id = "echo_tools"
 name = "Echo Tools"
 kind = "integration"

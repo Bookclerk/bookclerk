@@ -19,7 +19,7 @@ fn write_mini_archive(dir: &std::path::Path) -> (std::path::PathBuf, String) {
         let file = fs::File::create(&archive).unwrap();
         let enc = GzEncoder::new(file, Compression::default());
         let mut tar = Builder::new(enc);
-        let toml = br#"api_version = 1
+        let toml = br#"api_version = 2
 id = "echo"
 kind = "integration"
 command = "./echo"

@@ -778,7 +778,9 @@ impl std::fmt::Debug for S3CredentialsDto {
 #[serde(rename_all = "camelCase")]
 pub struct OutputS3ContextDto {
     /// Scoped writable directory for this plugin only (`…/plugins/<id>/data`,
-    /// wire `pluginDataDir`).
+    /// wire `pluginDataDir`). Empty on the v2 logical ABI (jail layout is
+    /// transport-private).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub plugin_data_dir: String,
     /// Target bucket name.
     pub bucket: String,
@@ -804,9 +806,13 @@ pub struct OutputS3ContextDto {
 #[serde(rename_all = "camelCase")]
 pub struct OutputLocalContextDto {
     /// Scoped writable directory for this plugin only (`…/plugins/<id>/data`,
-    /// wire `pluginDataDir`).
+    /// wire `pluginDataDir`). Empty on the v2 logical ABI (jail layout is
+    /// transport-private).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub plugin_data_dir: String,
-    /// Library output root (`[output.local].root`).
+    /// Library output root (`[output.local].root`). Empty on the v2 logical
+    /// ABI; native guests read `BOOKCLERK_OUTPUT_LOCAL_ROOT` instead.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub root: String,
     /// Key prefix under `root` (`[output.local].prefix`).
     pub prefix: String,

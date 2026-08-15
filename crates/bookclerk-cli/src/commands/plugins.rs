@@ -9,9 +9,9 @@ use bookclerk_plugin_catalog::{
     StaticAdapter, TrustPolicy,
 };
 use bookclerk_plugin_host::{
-    consent_request, consent_summary, host_target_triple, methods, require_grant, search_crates_io,
-    CliInvokeParams, CliSchema, DiscoveredPlugin, PluginClient, PluginGrantStore, PluginKind,
-    CRATE_NAME_PREFIX,
+    consent_request, consent_summary, host_target_triple, require_grant, search_crates_io,
+    CliInvokeParams, CliInvokeResult, CliSchema, DiscoveredPlugin, PluginGrantStore, PluginKind,
+    V2PluginSession, CRATE_NAME_PREFIX, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
 use clap::{Subcommand, ValueEnum};
 use serde::Serialize;
@@ -835,18 +835,57 @@ fn resolve_coordinate(raw: &str) -> anyhow::Result<PackageCoordinate> {
     );
 }
 
+/// Account id for a CLI spawn: sources/integrations cannot use the operator isolate.
+fn cli_account(plugin: &DiscoveredPlugin) -> &'static str {
+    match plugin.manifest.kind {
+        PluginKind::Source | PluginKind::Integration => HOST_SHARED_ACCOUNT,
+        _ => OPERATOR_ACCOUNT,
+    }
+}
+
+/// Spawns a v2 guest for CLI health / invoke / diagnose.
+async fn spawn_cli_session(
+    config: &Config,
+    plugin: &DiscoveredPlugin,
+) -> anyhow::Result<V2PluginSession> {
+    let settings = bookclerk_plugin_host::settings_table(config, plugin);
+    Ok(V2PluginSession::spawn_for_account(
+        plugin,
+        config,
+        toml_table_to_json(&settings),
+        cli_account(plugin),
+    )
+    .await?)
+}
+
 /// Spawns the guest, handshakes, and calls `health` when advertised.
 async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<String> {
     let plugin = find_plugin(config, id)?;
-    let settings = bookclerk_plugin_host::settings_table(config, &plugin);
-    let client = PluginClient::spawn(&plugin, config, toml_table_to_json(&settings)).await?;
-    let api = client.handshake().api_version;
-    let caps = client.handshake().capabilities.len();
-    if client.has_capability("health") {
-        let _: serde_json::Value = client.call(methods::HEALTH, json!({})).await?;
+    let session = spawn_cli_session(config, &plugin).await?;
+    let api = session.describe_snapshot().api_version;
+    let caps = session.describe_snapshot().supported_roles.len();
+    if session.has_capability("health") {
+        match plugin.manifest.kind {
+            PluginKind::Source => {
+                let _ = session.content_source_json("{}", "health", "{}").await?;
+            }
+            PluginKind::Integration => {
+                let _ = session.integration_json("{}", "health", "{}").await?;
+            }
+            PluginKind::Database => {
+                probe_database(&session, config, &plugin).await?;
+            }
+            PluginKind::Output => {
+                anyhow::bail!(
+                    "plugin `{}` advertises health but output guests have no health RPC",
+                    plugin.manifest.id
+                );
+            }
+        }
+        Ok(format!("health=ok handshake_api={api} caps={caps}"))
+    } else {
+        Ok(format!("handshake_api={api} caps={caps}"))
     }
-    let _ = client.shutdown().await;
-    Ok(format!("health=ok handshake_api={api} caps={caps}"))
 }
 
 /// Invoke `bookclerk plugins <plugin-id> <command> …` via JSON-RPC `cli.invoke`.
@@ -866,7 +905,7 @@ pub async fn run_plugin_cli(
     let help_only = argv.iter().any(|a| a == "--help" || a == "-h");
 
     // Help uses manifest schema (no spawn / enable required).
-    let (schema, client) = if help_only {
+    let (schema, session) = if help_only {
         (plugin.manifest.cli.clone().unwrap_or_default(), None)
     } else {
         if !is_enabled(config, &plugin) {
@@ -876,10 +915,9 @@ pub async fn run_plugin_cli(
                 plugin.manifest.id
             );
         }
-        let settings = bookclerk_plugin_host::settings_table(config, &plugin);
-        let client = PluginClient::spawn(&plugin, config, toml_table_to_json(&settings)).await?;
-        let schema = resolve_schema(&client, &plugin).await?;
-        (schema, Some(client))
+        let session = spawn_cli_session(config, &plugin).await?;
+        let schema = resolve_schema(&session, &plugin).await?;
+        (schema, Some(session))
     };
 
     if schema.commands.is_empty() && !help_only {
@@ -908,7 +946,7 @@ pub async fn run_plugin_cli(
         }
     };
 
-    let Some(client) = client else {
+    let Some(session) = session else {
         return Ok(());
     };
 
@@ -922,12 +960,14 @@ pub async fn run_plugin_cli(
         )
     })?;
     let args = matches_to_invoke_args(spec, cmd_matches)?;
-    let result = client
-        .cli_invoke(CliInvokeParams {
-            command: cmd_name.to_string(),
-            args,
-        })
+    let params = CliInvokeParams {
+        command: cmd_name.to_string(),
+        args,
+    };
+    let raw = session
+        .cli_invoke_json(serde_json::to_string(&params)?)
         .await?;
+    let result: CliInvokeResult = serde_json::from_str(&raw)?;
 
     if format.is_json() {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -998,16 +1038,31 @@ pub fn augment_plugins_command(mut plugins_cmd: clap::Command, config: &Config) 
 
 /// Prefers live `cli.describe`, then handshake CLI, then the on-disk manifest schema.
 async fn resolve_schema(
-    client: &PluginClient,
+    session: &V2PluginSession,
     plugin: &DiscoveredPlugin,
 ) -> anyhow::Result<CliSchema> {
-    if client.has_capability("cli") {
-        return Ok(client.cli_describe().await?);
+    if session.has_capability("cli") {
+        let raw = session.cli_describe().await?;
+        return Ok(serde_json::from_str(&raw)?);
     }
-    if let Some(cli) = &client.handshake().cli {
-        return Ok(cli.clone());
+    if let Some(cli) = session.handshake_metadata().cli {
+        return Ok(cli);
     }
     Ok(plugin.manifest.cli.clone().unwrap_or_default())
+}
+
+/// Opens the database guest and issues `SELECT 1` as the health/diagnose probe.
+async fn probe_database(
+    session: &V2PluginSession,
+    config: &Config,
+    plugin: &DiscoveredPlugin,
+) -> anyhow::Result<()> {
+    let settings = bookclerk_plugin_host::settings_table(config, plugin);
+    session
+        .db_open(toml_table_to_json(&settings).to_string())
+        .await?;
+    let _ = session.db_query("SELECT 1 AS ok", "[]").await?;
+    Ok(())
 }
 
 /// Spawns the guest and collects `diagnose` probe lines, or notes a missing capability.
@@ -1015,19 +1070,52 @@ async fn diagnose_plugin(
     config: &Config,
     plugin: &DiscoveredPlugin,
 ) -> anyhow::Result<Vec<String>> {
-    let settings = bookclerk_plugin_host::settings_table(config, plugin);
-    let client = PluginClient::spawn(plugin, config, toml_table_to_json(&settings)).await?;
-    if !client.has_capability("diagnose") {
+    let session = spawn_cli_session(config, plugin).await?;
+    if !session.has_capability("diagnose") {
         return Ok(vec![format!(
             "plugin `{}` has no diagnose capability",
             plugin.manifest.id
         )]);
     }
-    let lines = client
-        .diagnose()
-        .await
-        .unwrap_or_else(|err| vec![format!("diagnose failed: {err:#}")]);
-    Ok(lines)
+    let raw: anyhow::Result<String> = match plugin.manifest.kind {
+        PluginKind::Source => session
+            .content_source_json("{}", "diagnose", "{}")
+            .await
+            .map_err(anyhow::Error::from),
+        PluginKind::Integration => session
+            .integration_json("{}", "diagnose", "{}")
+            .await
+            .map_err(anyhow::Error::from),
+        PluginKind::Database => probe_database(&session, config, plugin)
+            .await
+            .map(|()| r#"["ping=ok"]"#.to_string()),
+        PluginKind::Output => {
+            return Ok(vec![format!(
+                "plugin `{}` advertises diagnose but output guests have no diagnose RPC",
+                plugin.manifest.id
+            )]);
+        }
+    };
+    match raw {
+        Ok(text) => Ok(parse_diagnose_lines(&text)),
+        Err(err) => Ok(vec![format!("diagnose failed: {err:#}")]),
+    }
+}
+
+/// Parses a diagnose JSON array, `{ "lines": [...] }`, or a raw fallback string.
+fn parse_diagnose_lines(raw: &str) -> Vec<String> {
+    if let Ok(lines) = serde_json::from_str::<Vec<String>>(raw) {
+        return lines;
+    }
+    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(raw) {
+        if let Some(arr) = obj.get("lines").and_then(|v| v.as_array()) {
+            return arr
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+        }
+    }
+    vec![raw.to_string()]
 }
 
 /// Interactively (or `--yes`) records a network/binding grant for the plugin.
@@ -1182,4 +1270,25 @@ fn is_enabled(config: &Config, plugin: &DiscoveredPlugin) -> bool {
 /// Converts a plugin settings TOML table to JSON, substituting `{}` if serialization fails.
 fn toml_table_to_json(table: &toml::Table) -> serde_json::Value {
     serde_json::to_value(table).unwrap_or_else(|_| json!({}))
+}
+
+#[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_diagnose_lines_reads_json_array() {
+        assert_eq!(
+            parse_diagnose_lines(r#"["ping=ok","wal=ok"]"#),
+            vec!["ping=ok".to_string(), "wal=ok".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_diagnose_lines_does_not_treat_cli_schema_as_probes() {
+        let schema = r#"{"name":"d1","commands":[{"name":"query"}]}"#;
+        let lines = parse_diagnose_lines(schema);
+        assert_eq!(lines, vec![schema.to_string()]);
+    }
 }

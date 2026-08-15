@@ -26,8 +26,8 @@ pub use s3_credentials::{
     ENV_AWS_ACCESS_KEY_ID, ENV_AWS_SECRET_ACCESS_KEY, ENV_AWS_SESSION_TOKEN, S3_SECRET_NAME,
 };
 pub use traits::{
-    bookclerk_meta_sidecar_key, is_audio_key, ObjectInfo, ObjectMeta, ObjectProbe, StorageBackend,
-    AUDIO_EXTENSIONS,
+    bookclerk_meta_sidecar_key, is_audio_key, ByteRange, ListPage, ObjectInfo, ObjectMeta,
+    ObjectProbe, PutStreamResult, StorageBackend, AUDIO_EXTENSIONS,
 };
 
 use bookclerk_config::{normalize_storage_prefix, Config, OutputBackendKind};

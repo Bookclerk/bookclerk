@@ -77,6 +77,7 @@ Definition: [`.devcontainer/`](../.devcontainer/).
 | --- | --- |
 | `rust:1.85-bookworm` | Shared with Cloud Agents; `rust-toolchain.toml` selects `stable` + rustfmt/clippy |
 | `pkg-config` + `libssl-dev` | Fixes the local OpenSSL / `openssl-sys` failure mode |
+| `capnproto` | Compiles `schema/plugin_v2.capnp` (ABI v2 native RPC) |
 | `libdbus-1-dev` + `xdg-utils` | Linux tray (`ksni` / zbus) and `xdg-open` for “Open Bookclerk” |
 | `openssh-client` | SSH commit signing in the Dev Container |
 | Node.js 22 | `ui/` Vite build |

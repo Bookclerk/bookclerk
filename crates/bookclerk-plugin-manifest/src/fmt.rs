@@ -31,7 +31,7 @@ use crate::types::PluginManifest;
 /// use bookclerk_plugin_manifest::{format_manifest, parse};
 ///
 /// let m = parse(r#"
-/// api_version = 1
+/// api_version = 2
 /// id = "echo"
 /// kind = "integration"
 /// runtime = "native"
@@ -61,7 +61,7 @@ mod tests {
     #[test]
     fn fmt_roundtrip_parse() {
         let raw = r#"
-api_version = 1
+api_version = 2
 id = "echo"
 kind = "integration"
 runtime = "native"

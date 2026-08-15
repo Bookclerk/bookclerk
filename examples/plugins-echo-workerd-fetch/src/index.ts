@@ -1,14 +1,41 @@
 import {
   BookclerkPlugin,
-  type CliInvokeParams,
-  type CliInvokeResult,
-  type DiagnoseResult,
-  type HandshakeParams,
-  type HandshakeResult,
-  type HostToPluginEvent,
+  Integration,
+  PRODUCT_API_VERSION,
+  FEATURE_SCALAR_LIMITS,
+  MAX_LIST_PAGE,
+  MAX_SCALAR_BYTES,
+  MAX_STREAM_WINDOW_BYTES,
+  type DomainEvent,
+  type EventResult,
+  type PluginDescribe,
 } from "@bookclerk/plugin-sdk/workerd";
 
+const PLUGIN_ID = "echo_workerd_fetch";
 const EXAMPLE_URL = "https://www.example.com/";
+
+const CLI = {
+  commands: [
+    {
+      name: "ping",
+      about: "Probe echo plugin",
+      args: [
+        {
+          name: "message",
+          long: "message",
+          kind: "string",
+          default: "hi",
+        },
+      ],
+    },
+    {
+      name: "fetch-example",
+      about:
+        "GET https://www.example.com/ (succeeds if allowlisted; HTTP status ignored)",
+      args: [],
+    },
+  ],
+};
 
 /**
  * Probe `www.example.com` under the `*.example.com` consent allowlist.
@@ -34,44 +61,19 @@ async function probeExampleFetch(): Promise<{ allowed: boolean; detail: string }
   }
 }
 
-/**
- * Echo Fetch — workerd guest that requests outbound `*.example.com` and probes
- * `https://www.example.com/` from diagnose / CLI.
- */
-export default class EchoFetchPlugin extends BookclerkPlugin {
-  async handshake(_params: HandshakeParams): Promise<HandshakeResult> {
+class EchoFetchIntegration extends Integration {
+  constructor(private readonly pluginEnv: BookclerkPlugin["env"]) {
+    super();
+  }
+
+  override async health() {
     return {
-      apiVersion: 1,
-      id: "echo_workerd_fetch",
-      kind: "integration",
-      displayName: "Echo Fetch (workerd)",
-      capabilities: ["health", "diagnose", "onEvent", "cli"],
-      cli: {
-        commands: [
-          {
-            name: "ping",
-            about: "Probe echo plugin",
-            args: [
-              {
-                name: "message",
-                long: "message",
-                kind: "string",
-                default: "hi",
-              },
-            ],
-          },
-          {
-            name: "fetch-example",
-            about:
-              "GET https://www.example.com/ (succeeds if allowlisted; HTTP status ignored)",
-            args: [],
-          },
-        ],
-      },
+      ok: true,
+      detail: "echo workerd fetch plugin ready",
     };
   }
 
-  async diagnose(): Promise<DiagnoseResult> {
+  override async diagnose() {
     const probe = await probeExampleFetch();
     return {
       lines: [
@@ -84,34 +86,75 @@ export default class EchoFetchPlugin extends BookclerkPlugin {
     };
   }
 
-  async onEvent(event: HostToPluginEvent): Promise<void> {
-    if (event.type === "book_acquired") {
-      await this.env.HOST.notify({
+  override async onEvent(event: DomainEvent): Promise<EventResult> {
+    const host = (this.pluginEnv as { HOST?: { notify?: (e: unknown) => Promise<void> } })
+      ?.HOST;
+    if (host?.notify) {
+      await host.notify({
         type: "plugin_log",
         payload: {
           level: "info",
-          message: `echo_workerd_fetch saw book_acquired titleId=${event.payload.titleId}`,
+          message: `echo_workerd_fetch saw event ${event.eventType}`,
         },
       });
     }
+    return { kind: "ack" };
+  }
+}
+
+/**
+ * Echo Fetch — workerd guest that requests outbound `*.example.com` and probes
+ * `https://www.example.com/` from diagnose / CLI.
+ */
+export default class EchoFetchPlugin extends BookclerkPlugin {
+  async describe(): Promise<PluginDescribe> {
+    return {
+      apiVersion: PRODUCT_API_VERSION,
+      id: PLUGIN_ID,
+      kind: "integration",
+      displayName: "Echo Fetch (workerd)",
+      rpcFeatures: [FEATURE_SCALAR_LIMITS],
+      scalarLimits: {
+        maxScalarBytes: MAX_SCALAR_BYTES,
+        maxStreamWindowBytes: MAX_STREAM_WINDOW_BYTES,
+        maxListPage: MAX_LIST_PAGE,
+      },
+      supportedRoles: ["integration"],
+    };
   }
 
-  async cliInvoke(params: CliInvokeParams): Promise<CliInvokeResult> {
+  integration() {
+    return new EchoFetchIntegration(this.env);
+  }
+
+  override async cliDescribe(): Promise<string> {
+    return JSON.stringify(CLI);
+  }
+
+  override async cliInvoke(paramsJson: string): Promise<string> {
+    const params = JSON.parse(paramsJson || "{}") as {
+      command?: string;
+      args?: { message?: string };
+    };
     if (params.command === "ping") {
-      return {
+      const message = params.args?.message ?? "hi";
+      return JSON.stringify({
         exitCode: 0,
-        stdout: `pong: ${String(params.args?.message ?? "hi")}\n`,
-      };
+        stdout: `pong: ${message}\n`,
+        json: { pong: message },
+      });
     }
     if (params.command === "fetch-example") {
       const probe = await probeExampleFetch();
-      // Exit 0 when egress allowed a Response; HTTP status is informational only.
-      return {
+      return JSON.stringify({
         exitCode: probe.allowed ? 0 : 1,
         stdout: `${probe.detail}\n`,
         json: { allowed: probe.allowed, detail: probe.detail, url: EXAMPLE_URL },
-      };
+      });
     }
-    return { exitCode: 2, stderr: `unknown command ${params.command}` };
+    return JSON.stringify({
+      exitCode: 2,
+      stderr: `unknown command ${params.command ?? ""}`,
+    });
   }
 }

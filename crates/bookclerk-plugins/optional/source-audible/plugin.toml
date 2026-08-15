@@ -1,4 +1,4 @@
-api_version = 1
+api_version = 2
 id = "audible"
 name = "Audible"
 kind = "source"
@@ -14,3 +14,17 @@ config = true
 secrets = true
 work_fs = true
 oauth = true
+
+[capabilities.methods]
+list = [
+    "health",
+    "diagnose",
+    "loginStart",
+    "loginComplete",
+    "scan",
+    "fetchTitle",
+    "searchCatalog",
+    "expandCandidates",
+    "purchaseHint",
+    "listDeals",
+]

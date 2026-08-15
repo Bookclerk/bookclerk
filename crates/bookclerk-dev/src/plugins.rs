@@ -486,7 +486,7 @@ fn default_members(root: &Path) -> Result<Vec<String>> {
 
 /// Copies a guest's `plugin.toml`, binary or modules, and embedded logo into the staging root.
 fn stage_guest(
-    root: &Path,
+    _root: &Path,
     bin_dir: &Path,
     dest_root: &Path,
     guest: &DiscoveredGuest,
@@ -522,10 +522,6 @@ fn stage_guest(
             .with_context(|| format!("copy {} -> {}", src_bin.display(), dest_bin.display()))?;
         set_executable(&dest_bin)?;
         patch_command(&manifest_dest, bin_name)?;
-    } else if guest.id == "echo_native_node" {
-        stage_echo_native_node(root, &guest.dir, &out, &manifest_dest)?;
-    } else if guest.id == "echo_native_python" {
-        stage_echo_native_python(root, &guest.dir, &out, &manifest_dest)?;
     } else {
         bail!(
             "native guest `{}` has no Cargo package and no known script stage path ({})",
@@ -566,153 +562,6 @@ fn stage_embedded_logo(guest_dir: &Path, out: &Path, manifest_src: &Path) -> Res
     }
     fs::copy(&src, &dest)
         .with_context(|| format!("copy logo {} -> {}", src.display(), dest.display()))?;
-    Ok(())
-}
-
-/// Stage Node Echo as an executable launcher + vendored `@bookclerk/plugin-sdk/native`.
-///
-/// SEA packaging remains the publisher path (`scripts/build-sea.mjs`); CI/dev use
-/// this wrapper so handshake smoke works without postject.
-///
-/// The Node interpreter is vendored under `runtime/` (hardlink when possible) so
-/// the guest jail can exec it — host PATH entries like GitHub Actions'
-/// `/opt/hostedtoolcache/...` are outside Landlock `system_paths`.
-fn stage_echo_native_node(
-    root: &Path,
-    guest_dir: &Path,
-    out: &Path,
-    manifest_dest: &Path,
-) -> Result<()> {
-    let sdk_dist = root.join("packages/plugin-sdk/dist");
-    let native_js = sdk_dist.join("native.js");
-    if !native_js.is_file() {
-        bail!(
-            "missing {} — run `npm run build` in packages/plugin-sdk before staging echo_native_node",
-            native_js.display()
-        );
-    }
-    let sdk_out = out.join("sdk");
-    fs::create_dir_all(&sdk_out)?;
-    for name in ["native.js", "generated.js"] {
-        let src = sdk_dist.join(name);
-        if !src.is_file() {
-            bail!("missing SDK dist file {}", src.display());
-        }
-        fs::copy(&src, sdk_out.join(name))?;
-    }
-    let script_src = guest_dir.join("src/echo.mjs");
-    if !script_src.is_file() {
-        bail!("missing {}", script_src.display());
-    }
-    fs::create_dir_all(out.join("src"))?;
-    fs::copy(&script_src, out.join("src/echo.mjs"))?;
-    let readme = guest_dir.join("README.md");
-    if readme.is_file() {
-        let _ = fs::copy(&readme, out.join("README.md"));
-    }
-
-    let node_src = resolve_host_command("BOOKCLERK_NODE", &["node"])?;
-    let node_name = if cfg!(windows) { "node.exe" } else { "node" };
-    let node_dest = out.join("runtime").join(node_name);
-    vendor_into(&node_src, &node_dest).with_context(|| {
-        format!(
-            "vendor node {} -> {}",
-            node_src.display(),
-            node_dest.display()
-        )
-    })?;
-    set_executable(&node_dest)?;
-
-    let bin_name = "bookclerk-plugin-echo-native-node";
-    let launcher = out.join(bin_name);
-    let body = format!(
-        "#!/usr/bin/env bash\nset -euo pipefail\nHERE=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nexport BOOKCLERK_PLUGIN_SDK_NATIVE=\"$HERE/sdk/native.js\"\nexec \"$HERE/runtime/{node_name}\" \"$HERE/src/echo.mjs\"\n"
-    );
-    fs::write(&launcher, body)?;
-    set_executable(&launcher)?;
-    patch_command(manifest_dest, bin_name)?;
-    Ok(())
-}
-
-/// Resolve `ENV` if set, otherwise the first `names` entry found on `PATH`.
-fn resolve_host_command(env_key: &str, names: &[&str]) -> Result<PathBuf> {
-    if let Ok(explicit) = std::env::var(env_key) {
-        let path = PathBuf::from(&explicit);
-        if path.is_file() {
-            return Ok(path);
-        }
-        bail!("{env_key}={explicit} is not a file");
-    }
-    let path_os = std::env::var_os("PATH").unwrap_or_default();
-    for dir in std::env::split_paths(&path_os) {
-        for name in names {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-            #[cfg(windows)]
-            {
-                let with_exe = dir.join(format!("{name}.exe"));
-                if with_exe.is_file() {
-                    return Ok(with_exe);
-                }
-            }
-        }
-    }
-    bail!(
-        "could not find {} on PATH (set {env_key} to an absolute interpreter path)",
-        names.join("/")
-    );
-}
-
-/// Prefer a hard link into the staged tree; fall back to copy (cross-device).
-fn vendor_into(src: &Path, dest: &Path) -> Result<()> {
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-    if dest.exists() {
-        fs::remove_file(dest).with_context(|| format!("remove {}", dest.display()))?;
-    }
-    if fs::hard_link(src, dest).is_ok() {
-        return Ok(());
-    }
-    fs::copy(src, dest).map(|_| ()).with_context(|| {
-        format!(
-            "hardlink/copy {} -> {} failed",
-            src.display(),
-            dest.display()
-        )
-    })
-}
-
-/// Stage Python Echo as an executable launcher + vendored `bookclerk_plugin_sdk`.
-fn stage_echo_native_python(
-    root: &Path,
-    guest_dir: &Path,
-    out: &Path,
-    manifest_dest: &Path,
-) -> Result<()> {
-    let sdk_src = root.join("packages/plugin-sdk-python/src/bookclerk_plugin_sdk");
-    if !sdk_src.is_dir() {
-        bail!("missing Python SDK at {}", sdk_src.display());
-    }
-    copy_dir_all(&sdk_src, &out.join("sdk/bookclerk_plugin_sdk"))?;
-    let script_src = guest_dir.join("echo_plugin.py");
-    if !script_src.is_file() {
-        bail!("missing {}", script_src.display());
-    }
-    fs::copy(&script_src, out.join("echo_plugin.py"))?;
-    let readme = guest_dir.join("README.md");
-    if readme.is_file() {
-        let _ = fs::copy(&readme, out.join("README.md"));
-    }
-
-    let bin_name = "bookclerk-plugin-echo-native-python";
-    let launcher = out.join(bin_name);
-    let body = "#!/usr/bin/env bash\nset -euo pipefail\nHERE=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nexport BOOKCLERK_PLUGIN_SDK_PYTHON=\"$HERE/sdk\"\nexport PYTHONPATH=\"$HERE/sdk${PYTHONPATH:+:$PYTHONPATH}\"\nexec \"${BOOKCLERK_PYTHON:-python3}\" \"$HERE/echo_plugin.py\"\n";
-    fs::write(&launcher, body)?;
-    set_executable(&launcher)?;
-    patch_command(manifest_dest, bin_name)?;
     Ok(())
 }
 
@@ -961,6 +810,8 @@ mod tests {
             assert!(seen.insert(g.id.as_str()), "duplicate {}", g.id);
         }
         assert!(seen.contains("echo_native_rust"));
+        assert!(seen.contains("echo_native_node"));
+        assert!(seen.contains("echo_native_python"));
         assert!(seen.contains("echo_workerd_ts"));
         assert!(seen.contains("echo_workerd_python"));
         assert!(seen.contains("echo_workerd_rust"));

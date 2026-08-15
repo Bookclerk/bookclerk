@@ -334,7 +334,7 @@ fn default_module_type() -> String {
 ///
 /// # Validation highlights
 ///
-/// - `api_version` must be `1`
+/// - `api_version` must be `2` (object-capability ABI)
 /// - `id` must pass [`crate::validate_plugin_id`]
 /// - native requires `command`; workerd requires `[workerd]` with date + main
 /// - `domains` forbidden on native; required for workerd + outbound
@@ -342,7 +342,7 @@ fn default_module_type() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PluginManifest {
-    /// ABI / schema version. Must be `1` (validated).
+    /// ABI / schema version. Must be `2` (object-capability Cap'n Proto).
     pub api_version: u32,
     /// Globally unique plugin id (`[a-z0-9_]{2,32}` grammar).
     pub id: String,
@@ -444,7 +444,7 @@ impl PluginManifest {
     /// use bookclerk_plugin_manifest::PluginManifest;
     ///
     /// let m = PluginManifest::parse(r#"
-    /// api_version = 1
+    /// api_version = 2
     /// id = "echo"
     /// kind = "integration"
     /// runtime = "native"
@@ -481,8 +481,8 @@ impl PluginManifest {
         // Validate the raw id (non-lossy): do not trim before grammar checks.
         crate::validate_plugin_id(&self.id)
             .map_err(|e| Error::message(format!("plugin.toml: {e}")))?;
-        if self.api_version != 1 {
-            return Err(Error::message("plugin.toml: `api_version` must be 1"));
+        if self.api_version != 2 {
+            return Err(Error::message("plugin.toml: `api_version` must be 2"));
         }
         if let Some(logo) = self.logo.as_deref() {
             let _ = crate::validate_logo(logo)?;
@@ -654,7 +654,7 @@ mod tests {
     fn parse_workerd_echo() {
         let m = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "echo"
 kind = "integration"
 version = "1.0.0"
@@ -677,10 +677,27 @@ config = true
     }
 
     #[test]
-    fn workerd_outbound_requires_domains() {
+    fn api_version_1_is_rejected() {
         let err = PluginManifest::parse(
             r#"
 api_version = 1
+id = "echo"
+kind = "integration"
+runtime = "native"
+command = "./echo"
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .expect_err("api_version 1 is removed");
+        assert!(err.to_string().contains("must be 2"), "{err}");
+    }
+
+    #[test]
+    fn workerd_outbound_requires_domains() {
+        let err = PluginManifest::parse(
+            r#"
+api_version = 2
 id = "xx"
 kind = "source"
 runtime = "workerd"
@@ -699,7 +716,7 @@ mode = "outbound"
     fn native_outbound_forbids_domains() {
         let err = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "audible"
 kind = "source"
 runtime = "native"
@@ -720,7 +737,7 @@ secrets = true
     fn native_outbound_without_domains_ok() {
         let m = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "audible"
 kind = "source"
 runtime = "native"
@@ -753,7 +770,7 @@ secrets = true
     fn workerd_outbound_with_domains_ok() {
         let m = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "echo"
 kind = "integration"
 runtime = "workerd"
@@ -776,7 +793,7 @@ config = true
     fn logo_https_ok() {
         let m = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "audible"
 kind = "source"
 runtime = "native"
@@ -797,7 +814,7 @@ mode = "outbound"
     fn logo_relative_path_ok() {
         let m = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "echo"
 kind = "integration"
 runtime = "native"
@@ -818,7 +835,7 @@ mode = "deny"
     fn logo_javascript_rejected() {
         let err = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "echo"
 kind = "integration"
 runtime = "native"
@@ -837,7 +854,7 @@ mode = "deny"
         for padded in [" echo", "echo "] {
             let toml = format!(
                 r#"
-api_version = 1
+api_version = 2
 id = "{padded}"
 kind = "integration"
 runtime = "native"

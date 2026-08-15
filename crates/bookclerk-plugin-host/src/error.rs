@@ -30,6 +30,14 @@ pub enum PluginError {
     /// Catch-all for otherwise unclassified failures.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+    /// Guest ABI error with a preserved wire `code` (including `unknown`).
+    #[error("{code}: {message}")]
+    Abi {
+        /// Wire error code (`not_found`, `unknown`, …).
+        code: String,
+        /// Operator-facing explanation.
+        message: String,
+    },
 }
 
 impl PluginError {
@@ -58,10 +66,13 @@ impl PluginError {
     #[must_use]
     pub fn from_abi(code: Option<&str>, message: impl Into<String>) -> Self {
         let message = message.into();
-        if code == Some("unavailable") {
-            Self::unavailable(message)
-        } else {
-            Self::message(message)
+        match code {
+            Some("unavailable") => Self::unavailable(message),
+            Some(code) => Self::Abi {
+                code: code.to_string(),
+                message,
+            },
+            None => Self::message(message),
         }
     }
 

@@ -86,6 +86,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "aliasable"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "250f629c0161ad8107cf89319e990051fae62832fd343083bea452d93e2205fd"
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1431,8 +1437,11 @@ name = "bookclerk-db-guest"
 version = "0.1.0"
 dependencies = [
  "bookclerk-library",
+ "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
+ "futures",
  "sea-orm",
+ "serde_json",
  "tokio",
  "uuid",
 ]
@@ -1637,10 +1646,19 @@ dependencies = [
 name = "bookclerk-plugin-abi"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "capnp",
+ "capnp-rpc",
+ "capnpc",
  "chrono",
+ "futures",
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -2073,6 +2091,7 @@ name = "bookclerk-workerd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-manifest",
  "flate2",
@@ -2262,6 +2281,46 @@ dependencies = [
  "rustix 0.38.44",
  "slab",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "capnp"
+version = "0.25.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4777a3bc19b8f8e5fb2d0196c6b5dfcbbcc8b2fe08ae57f873f2f35f15cfc210"
+dependencies = [
+ "embedded-io",
+]
+
+[[package]]
+name = "capnp-futures"
+version = "0.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73b69dfddccc57844f9a90f9d72b44b97c326914851ea94fb7da40ef9cad6e8d"
+dependencies = [
+ "capnp",
+ "futures-channel",
+ "futures-util",
+]
+
+[[package]]
+name = "capnp-rpc"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3c74c337e87f75f3174ffb3513738ab0acc631c04f64cc33b867c60f84771da"
+dependencies = [
+ "capnp",
+ "capnp-futures",
+ "futures",
+]
+
+[[package]]
+name = "capnpc"
+version = "0.25.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fca02be865c8c5a78bfc24b9819006ab6b59bef238467203928e26459557af93"
+dependencies = [
+ "capnp",
 ]
 
 [[package]]
@@ -3472,6 +3531,12 @@ dependencies = [
  "subtle",
  "zeroize",
 ]
+
+[[package]]
+name = "embedded-io"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
 
 [[package]]
 name = "encode_unicode"
@@ -6127,6 +6192,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "ouroboros"
+version = "0.18.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e0f050db9c44b97a94723127e6be766ac5c340c48f2c4bb3ffa11713744be59"
+dependencies = [
+ "aliasable",
+ "ouroboros_macro",
+ "static_assertions",
+]
+
+[[package]]
+name = "ouroboros_macro"
+version = "0.18.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c7028bdd3d43083f6d8d4d5187680d0d3560d54df4cc9d752005268b41e64d0"
+dependencies = [
+ "heck 0.4.1",
+ "proc-macro2",
+ "proc-macro2-diagnostics",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6573,6 +6662,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "proc-macro2-diagnostics"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af066a9c399a26e020ada66a034357a868728e72cd426f3adcd35f80d88d88c8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "version_check",
+ "yansi",
 ]
 
 [[package]]
@@ -7518,6 +7620,7 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "mac_address",
+ "ouroboros",
  "pgvector",
  "rust_decimal",
  "sea-orm-arrow",
@@ -8964,6 +9067,7 @@ checksum = "494815d09bf52b5548659851081238f0ca39ff638363907596da739561c62c52"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "libc",
  "pin-project-lite",
@@ -10179,6 +10283,12 @@ name = "xmlparser"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
+
+[[package]]
+name = "yansi"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
 
 [[package]]
 name = "yoke"

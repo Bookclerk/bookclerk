@@ -1068,7 +1068,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manifest = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "demo"
 kind = "source"
 runtime = "native"
@@ -1099,7 +1099,7 @@ config = true
 
         let manifest = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "demo"
 kind = "source"
 runtime = "native"
@@ -1130,7 +1130,7 @@ secrets = true
 
         let manifest = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "demo"
 kind = "source"
 runtime = "workerd"
@@ -1158,7 +1158,7 @@ config = true
         let dir = tempfile::tempdir().unwrap();
         let manifest = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "sqlite"
 kind = "database"
 runtime = "native"
@@ -1197,7 +1197,7 @@ work_fs = true
 
         let manifest = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "sqlite"
 kind = "database"
 runtime = "native"
@@ -1232,7 +1232,7 @@ config = true
 
         let manifest = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "sqlite"
 kind = "database"
 runtime = "native"
@@ -1283,7 +1283,7 @@ secrets = true
 
         let narrowed = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "demo"
 kind = "source"
 runtime = "native"
@@ -1302,7 +1302,7 @@ config = true
 
         let widened = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "demo"
 kind = "source"
 runtime = "native"
@@ -1374,7 +1374,7 @@ plugin_kv = true
     fn validate_handshake_rejects_oauth_without_binding() {
         let manifest = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "demo"
 kind = "source"
 runtime = "native"
@@ -1404,7 +1404,7 @@ config = true
     fn validate_handshake_rejects_undeclared_methods() {
         let manifest = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "demo"
 kind = "integration"
 runtime = "native"
@@ -1434,7 +1434,7 @@ list = ["handshake", "health"]
     fn validate_handshake_allows_core_entrypoint_methods() {
         let manifest = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "demo"
 kind = "integration"
 runtime = "native"
@@ -1467,7 +1467,7 @@ list = ["handshake", "health", "diagnose", "onEvent", "cli"]
     fn python_outbound_consent_includes_pyodide_hosts() {
         let manifest = PluginManifest::parse(
             r#"
-api_version = 1
+api_version = 2
 id = "echo_workerd_python"
 kind = "integration"
 runtime = "workerd"

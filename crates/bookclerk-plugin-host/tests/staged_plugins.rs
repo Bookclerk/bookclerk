@@ -8,8 +8,9 @@ use std::path::PathBuf;
 
 use bookclerk_config::{Config, Paths};
 use bookclerk_plugin_host::{
-    consent_request, discover_plugins, methods, CatalogHitDto, CliInvokeParams, HealthDto,
-    PluginClient, PluginGrantStore, PluginKind, SearchCatalogParams,
+    consent_request, discover_plugins, CatalogHitDto, CliInvokeParams, CliInvokeResult,
+    PluginGrantStore, PluginKind, SearchCatalogParams, V2PluginSession, HOST_SHARED_ACCOUNT,
+    OPERATOR_ACCOUNT,
 };
 
 fn artifacts_dir() -> Option<PathBuf> {
@@ -89,60 +90,80 @@ async fn staged_first_party_plugins_handshake() {
     }
 
     for plugin in &plugins {
-        let client = PluginClient::spawn(plugin, &config, serde_json::json!({}))
-            .await
-            .unwrap_or_else(|e| panic!("spawn {}: {e}", plugin.manifest.id));
-        let hs = client.handshake();
-        assert_eq!(hs.id, plugin.manifest.id);
-        assert_eq!(hs.api_version, bookclerk_plugin_host::PLUGIN_API_VERSION);
-        match plugin.manifest.kind {
-            PluginKind::Source => assert_eq!(hs.kind, "source"),
-            PluginKind::Integration => assert_eq!(hs.kind, "integration"),
-            PluginKind::Output => assert_eq!(hs.kind, "output"),
-            PluginKind::Database => assert_eq!(hs.kind, "database"),
-        }
-        let health: HealthDto = client
-            .call(methods::HEALTH, serde_json::json!({}))
-            .await
-            .expect("health");
-        // ABS (and similar) report ok=false until base_url/api_key are configured;
-        // the handshake smoke test only requires the method to answer.
-        if plugin.manifest.id != "audiobookshelf" {
-            assert!(
-                health.ok,
-                "{} health not ok: {:?}",
-                plugin.manifest.id, health
-            );
-        }
-        // Real workerd isolate (not a JS-less shim): Echo guests must return module detail.
-        let expected_detail = match plugin.manifest.id.as_str() {
-            "echo_workerd_ts" => Some("echo workerd plugin ready"),
-            "echo_workerd_python" => Some("echo workerd python plugin ready"),
-            "echo_workerd_rust" => Some("echo workerd rust wasm plugin ready"),
-            "echo_workerd_fetch" => Some("echo workerd fetch plugin ready"),
-            "echo_native_node" => Some("echo_native_node ready"),
-            "echo_native_python" => Some("echo_native_python ready"),
-            _ => None,
+        assert_eq!(
+            plugin.manifest.api_version, 2,
+            "plugin `{}` must be api_version 2",
+            plugin.manifest.id
+        );
+        let account = match plugin.manifest.kind {
+            PluginKind::Source | PluginKind::Integration => HOST_SHARED_ACCOUNT,
+            _ => OPERATOR_ACCOUNT,
         };
-        if let Some(detail) = expected_detail {
-            assert_eq!(
-                health.detail.as_deref(),
-                Some(detail),
-                "{} must run under real workerd (run cargo ensure-workerd)",
-                plugin.manifest.id
-            );
+        let session =
+            V2PluginSession::spawn_for_account(plugin, &config, serde_json::json!({}), account)
+                .await
+                .unwrap_or_else(|e| panic!("spawn v2 {}: {e}", plugin.manifest.id));
+        assert_eq!(session.id(), plugin.manifest.id);
+        let desc = session
+            .describe()
+            .await
+            .unwrap_or_else(|e| panic!("describe v2 {}: {e}", plugin.manifest.id));
+        assert_eq!(desc.api_version, 2);
+        assert_eq!(desc.id, plugin.manifest.id);
+        match plugin.manifest.kind {
+            PluginKind::Source => assert_eq!(desc.kind, "source"),
+            PluginKind::Integration => assert_eq!(desc.kind, "integration"),
+            PluginKind::Output => assert_eq!(desc.kind, "output"),
+            PluginKind::Database => assert_eq!(desc.kind, "database"),
         }
 
-        // Best-effort outbound probe: allowlist success = Response received.
-        // HTTP status from example.com is informational only — do not assert 2xx.
-        if plugin.manifest.id == "echo_workerd_fetch" && client.has_capability("cli") {
-            let result = client
-                .cli_invoke(CliInvokeParams {
-                    command: "fetch-example".into(),
-                    args: Default::default(),
-                })
+        if session.has_capability("health") {
+            let health_json = match plugin.manifest.kind {
+                PluginKind::Source => session.content_source_json("{}", "health", "{}").await.ok(),
+                PluginKind::Integration => {
+                    session.integration_json("{}", "health", "{}").await.ok()
+                }
+                _ => None,
+            };
+            if let Some(raw) = health_json {
+                let health: serde_json::Value =
+                    serde_json::from_str(&raw).unwrap_or(serde_json::json!({}));
+                let ok = health.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+                if plugin.manifest.id != "audiobookshelf" {
+                    assert!(ok, "{} health not ok: {health}", plugin.manifest.id);
+                }
+                let detail = health.get("detail").and_then(|v| v.as_str());
+                let expected_detail = match plugin.manifest.id.as_str() {
+                    "echo_workerd_ts" => Some("echo workerd plugin ready"),
+                    "echo_workerd_python" => Some("echo workerd python plugin ready"),
+                    "echo_workerd_rust" => Some("echo workerd rust wasm plugin ready"),
+                    "echo_workerd_fetch" => Some("echo workerd fetch plugin ready"),
+                    "echo_native_node" => Some("echo_native_node ready"),
+                    "echo_native_python" => Some("echo_native_python ready"),
+                    _ => None,
+                };
+                if let Some(expected) = expected_detail {
+                    assert_eq!(
+                        detail,
+                        Some(expected),
+                        "{} must run under real workerd (run cargo ensure-workerd)",
+                        plugin.manifest.id
+                    );
+                }
+            }
+        }
+
+        if plugin.manifest.id == "echo_workerd_fetch" && session.has_capability("cli") {
+            let params = CliInvokeParams {
+                command: "fetch-example".into(),
+                args: Default::default(),
+            };
+            let raw = session
+                .cli_invoke_json(serde_json::to_string(&params).expect("cli params"))
                 .await
                 .unwrap_or_else(|e| panic!("echo_workerd_fetch fetch-example must answer: {e}"));
+            let result: CliInvokeResult =
+                serde_json::from_str(&raw).unwrap_or_else(|e| panic!("cli result: {e}"));
             let allowed = result
                 .json
                 .as_ref()
@@ -157,8 +178,6 @@ async fn staged_first_party_plugins_handshake() {
                     );
                 }
                 Some(false) | None => {
-                    // Origin / DNS / sandbox may block the hop; allowlist semantics
-                    // are still covered by the guest returning a structured answer.
                     eprintln!(
                         "echo_workerd_fetch fetch-example best-effort skip (no Response): exit={} stdout={:?} stderr={:?}",
                         result.exit_code, result.stdout, result.stderr
@@ -167,24 +186,19 @@ async fn staged_first_party_plugins_handshake() {
             }
         }
 
-        // Catalog RPC smoke: must return Ok (empty vec is fine) without crashing.
-        if plugin.manifest.kind == PluginKind::Source
-            && client.has_capability(methods::SEARCH_CATALOG)
-        {
-            let hits: Vec<CatalogHitDto> = client
-                .call(
-                    methods::SEARCH_CATALOG,
-                    serde_json::to_value(SearchCatalogParams {
-                        query: "test".into(),
-                        region: "us".into(),
-                        limit: 1,
-                        page: 1,
-                        sort: None,
-                        field: None,
-                        language: None,
-                    })
-                    .expect("search params"),
-                )
+        if plugin.manifest.kind == PluginKind::Source && session.has_capability("searchCatalog") {
+            let params = serde_json::to_string(&SearchCatalogParams {
+                query: "test".into(),
+                region: "us".into(),
+                limit: 1,
+                page: 1,
+                sort: None,
+                field: None,
+                language: None,
+            })
+            .expect("search params");
+            let raw = session
+                .content_source_json("{}", "searchCatalog", params)
                 .await
                 .unwrap_or_else(|e| {
                     panic!(
@@ -192,6 +206,7 @@ async fn staged_first_party_plugins_handshake() {
                         plugin.manifest.id
                     )
                 });
+            let hits: Vec<CatalogHitDto> = serde_json::from_str(&raw).unwrap_or_default();
             assert!(
                 hits.len() <= 1,
                 "{} search_catalog returned more than limit: {}",
@@ -200,12 +215,16 @@ async fn staged_first_party_plugins_handshake() {
             );
         }
 
-        // Chirp deals do not need credentials; skip fetch_title (needs auth).
-        if plugin.manifest.id == "chirp" && client.has_capability(methods::LIST_DEALS) {
-            let deals: Vec<CatalogHitDto> = client
-                .call(methods::LIST_DEALS, serde_json::json!({ "limit": 1 }))
+        if plugin.manifest.id == "chirp" && session.has_capability("listDeals") {
+            let raw = session
+                .content_source_json(
+                    "{}",
+                    "listDeals",
+                    serde_json::json!({ "limit": 1 }).to_string(),
+                )
                 .await
                 .unwrap_or_else(|e| panic!("chirp list_deals must succeed (empty ok): {e}"));
+            let deals: Vec<CatalogHitDto> = serde_json::from_str(&raw).unwrap_or_default();
             assert!(
                 deals.len() <= 1,
                 "chirp list_deals over limit: {}",

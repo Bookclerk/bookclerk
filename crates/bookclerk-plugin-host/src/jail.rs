@@ -228,7 +228,7 @@ impl GuestJail {
         }
         // Availability: refuse spawn/reload when state already exceeds the host
         // budget (runaway cache / tmp from a previous session). Runtime growth
-        // is re-checked before write-heavy side-passes on [`PluginClient`].
+        // is re-checked before write-heavy side-passes on the v2 session.
         let grant = crate::consent::spawn_grant(&config.paths().files_dir, &plugin.manifest).ok();
         let disk_budget = crate::consent::effective_disk_budget_bytes(grant.as_ref());
         ensure_plugin_state_within_budget_limit(id, &data, &scratch, disk_budget)?;
@@ -765,7 +765,7 @@ mod tests {
         };
         DiscoveredPlugin {
             manifest: crate::PluginManifest {
-                api_version: 1,
+                api_version: 2,
                 id: id.to_string(),
                 name: None,
                 kind: crate::PluginKind::Source,

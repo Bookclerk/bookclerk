@@ -94,7 +94,7 @@ Release (or upload to S3/R2/CDN), and pin digests in your static registry /
 
 ## Related experimental templates
 
-- TypeScript (Node SEA): [`../plugins-echo-native-node/`](../plugins-echo-native-node/)
-- Python (PyInstaller): [`../plugins-echo-native-python/`](../plugins-echo-native-python/)
+- TypeScript (workerd, id `echo_native_node`): [`../plugins-echo-native-node/`](../plugins-echo-native-node/)
+- Python (workerd, id `echo_native_python`): [`../plugins-echo-native-python/`](../plugins-echo-native-python/)
 - Workerd TypeScript: [`../plugins-echo-workerd-ts/`](../plugins-echo-workerd-ts/)
 - Native Rust: [`../plugins-echo-native-rust/`](../plugins-echo-native-rust/)

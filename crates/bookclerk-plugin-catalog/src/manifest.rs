@@ -7,7 +7,7 @@ use crate::error::{CatalogError, Result};
 use crate::kind::{PluginKind, RuntimeIdentity};
 use crate::target::{normalize_target, ArchiveFormat};
 
-/// Product wire protocol for Workers RPC (`api_version = 1`).
+/// Product wire protocol for Workers RPC (`api_version = 2`).
 pub const PROTOCOL_WORKERS_RPC: &str = "workers-rpc";
 
 /// Current package manifest schema.

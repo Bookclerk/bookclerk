@@ -1,4 +1,4 @@
-api_version = 1
+api_version = 2
 id = "echo_workerd_python"
 name = "Echo Integration (workerd Python)"
 kind = "integration"
@@ -35,4 +35,4 @@ config = true
 plugin_kv = true
 
 [capabilities.methods]
-list = ["handshake", "health", "diagnose", "onEvent", "cli"]
+list = ["describe", "integration", "health", "diagnose", "onEvent", "cli"]

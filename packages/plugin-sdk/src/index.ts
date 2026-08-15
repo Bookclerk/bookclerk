@@ -6,19 +6,60 @@
  * imports when writing guests:
  *
  * - Workerd: `import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd"`
- * - Native:  `import { BookclerkPlugin, BookclerkPluginGuest } from "@bookclerk/plugin-sdk/native"`
+ * - Native:  `import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd"` (JS/TS)
+ *   or Rust `serve` / `PluginRoot`
  * - Tools: `npx bookclerk-plugin check|fmt|package`
  * - Sparse workerd: `import { runSmoke } from "@bookclerk/plugin-sdk/sparse-workerd"`
  *
- * `BookclerkPlugin` is the guest contract on both stacks; `BookclerkPluginGuest`
- * is the native stdio Workers RPC runner (workerd uses WorkerEntrypoint hosting).
+ * `BookclerkPlugin` is the guest contract. Authors export the raw class.
  *
  * See `docs/plugins.md` and `docs/code-documentation.md`.
  */
 
 import "./cloudflare-workers.d.ts";
 
-export { BookclerkPlugin } from "./bookclerk-plugin.js";
+export {
+  BookclerkPlugin,
+  ContentSource,
+  Destination,
+  Integration,
+  JobHandler,
+  PluginError,
+  ProgressSink,
+  Source,
+  wrapV2PluginFromBinding,
+  wrapV2PluginFromNative,
+  PRODUCT_API_VERSION,
+  MAX_SCALAR_BYTES,
+  MAX_STREAM_WINDOW_BYTES,
+  MAX_LIST_PAGE,
+  FEATURE_SCALAR_LIMITS,
+  FEATURE_STREAMS,
+  FEATURE_STORAGE_COPY,
+  ENVELOPE_VERSION,
+} from "./v2.js";
+export type {
+  AdapterEnv,
+  BookclerkContext,
+  BookclerkPluginEnv,
+  CopyResult,
+  DestinationContext,
+  JobContext,
+  JobInvocation,
+  JobOutcome,
+  ListOptions,
+  ListPage,
+  ObjectInfo as V2ObjectInfo,
+  ObjectMetadata,
+  PluginDescribe,
+  PutResult,
+  ReadOptions,
+  ReadResult,
+  ScalarLimits,
+  SourceContext,
+  WorkerContext,
+  WriteOptions,
+} from "./v2.js";
 
 export {
   API_VERSION,
@@ -65,7 +106,7 @@ export {
   type MethodName,
   type ObjectMetaDto,
   type OutputS3Context,
-  type PluginError,
+  type PluginError as AbiPluginError,
   type PluginErrorCode,
   type PluginKind,
   type PluginLogLevel,

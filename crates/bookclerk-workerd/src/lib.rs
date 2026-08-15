@@ -11,9 +11,17 @@ pub mod config;
 pub mod egress;
 pub mod ensure;
 pub mod grant;
+pub mod granted;
+pub mod native_broker;
 pub mod notify;
 pub mod pin;
+pub mod v2_http;
+pub mod v2_stdio;
 
+pub use config::{
+    adapter_binding_plan, generated_backend_proxy_plan, materialize_native_backend, BindingSpec,
+    BindingTarget, EntrypointSource, GeneratedConfig, ListenSpec,
+};
 pub use egress::EgressProxy;
 pub use ensure::{ensure_workerd, workerd_bin_path};
 pub use grant::OperatorGrantEnv;

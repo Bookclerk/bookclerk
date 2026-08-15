@@ -33,7 +33,7 @@ pub async fn build_acquire_destinations(
         let backend: Box<dyn StorageBackend> = match kind {
             OutputBackendKind::Local => {
                 if let Some(ext) = destinations.local() {
-                    Box::new(ext.as_ref().clone())
+                    ext.clone_box()
                 } else {
                     let prefix = normalize_storage_prefix(config.output.local.prefix.trim());
                     Box::new(LocalFsBackend::with_prefix(
@@ -44,7 +44,7 @@ pub async fn build_acquire_destinations(
             }
             OutputBackendKind::S3 => {
                 if let Some(ext) = destinations.s3() {
-                    Box::new(ext.as_ref().clone())
+                    ext.clone_box()
                 } else {
                     let prefix = normalize_storage_prefix(config.output.s3.prefix.trim());
                     Box::new(S3Backend::from_config(&config.output.s3, &prefix, db).await?)
@@ -87,7 +87,7 @@ pub async fn build_storage_backend(
         match kind {
             OutputBackendKind::Local => {
                 if let Some(ext) = destinations.local() {
-                    backends.push(Box::new(ext.as_ref().clone()));
+                    backends.push(ext.clone_box());
                 } else {
                     let prefix = normalize_storage_prefix(config.output.local.prefix.trim());
                     backends.push(Box::new(LocalFsBackend::with_prefix(
@@ -98,7 +98,7 @@ pub async fn build_storage_backend(
             }
             OutputBackendKind::S3 => {
                 if let Some(ext) = destinations.s3() {
-                    backends.push(Box::new(ext.as_ref().clone()));
+                    backends.push(ext.clone_box());
                 } else {
                     let prefix = normalize_storage_prefix(config.output.s3.prefix.trim());
                     backends.push(Box::new(

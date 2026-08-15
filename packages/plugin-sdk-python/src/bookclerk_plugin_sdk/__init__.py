@@ -1,16 +1,11 @@
 """Bookclerk Python plugin guest SDK.
 
-Provides the dual-stack guest surface for native stdio Workers RPC and
-(via :mod:`bookclerk_plugin_sdk.workerd`) Cloudflare Python Workers.
+Provides the workerd guest surface via :mod:`bookclerk_plugin_sdk.workerd`.
+Authors subclass :class:`BookclerkPlugin` and export the raw class. Native
+guests use the Rust SDK (`serve` / `PluginRoot`). See ``docs/plugins.md``.
 
-Authors subclass :class:`BookclerkPlugin` and either call
-:meth:`BookclerkPluginGuest.serve` (native) or export a
-``WorkerEntrypoint`` subclass under workerd. See ``docs/plugins.md`` and
-``docs/code-documentation.md``.
+Typical import:
 
-Typical imports:
-
-- Native: ``from bookclerk_plugin_sdk import BookclerkPlugin, BookclerkPluginGuest``
 - Workerd: ``from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js``
 """
 

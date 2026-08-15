@@ -8,29 +8,41 @@ Bookclerk is built around pluggable **sources**, **destinations**, and
 jail, consent, and Workers RPC — distinct from the runtime install tree
 `$BOOKCLERK_FILES_DIR/plugins/`.
 
-The product ABI is **Workers RPC** at `api_version = 1` (no `protocol` key; no
-JSON-RPC 2.0 as the product ABI). Decision record:
+The product ABI is **object-capability Workers RPC** at `api_version = 2`
+(role classes, transferred `ReadableStream` / Cap'n Proto byte sources, no
+public `handleId` / `writeChunk` / base64 media). Native guests serve the
+Bookclerk Cap'n Proto schema on stdio; workerd guests keep isolate `RpcTarget`
+stubs. Each HTTP/RPC request is **invocation-scoped**: the trusted adapter
+creates the role, invokes the method, and disposes the stub before the
+request completes. Survival across suspend is checkpoint data plus stable
+binding identifiers — never an in-memory `RpcTarget`, adapter map id, PID,
+or open connection. Decision record:
 [`docs/adr/plugin-workers-rpc-workerd.md`](adr/plugin-workers-rpc-workerd.md).
-Authoritative schema:
-[`crates/bookclerk-plugin-abi/schema/abi.json`](../crates/bookclerk-plugin-abi/schema/abi.json).
+Authoritative artifacts: Cap'n Proto
+[`schema/plugin_v2.capnp`](../crates/bookclerk-plugin-abi/schema/plugin_v2.capnp)
+(append-only ordinals; unknown union members fail closed or return typed
+`unsupported`) and TypeScript
+[`packages/plugin-sdk/src/v2.ts`](../packages/plugin-sdk/src/v2.ts).
 
-Authors implement the branded guest base **`BookclerkPlugin`** via a minimal
-language SDK. Each SDK covers **both** `native` and `workerd`, plus in-process
-author tools (`check` / `fmt` / `sync-embed` / `package` / `smoke`) that are
-**self-contained** for that language (vendoring the `BookclerkPlugin` embed
-and, for Python Workers, the required compatibility flags). Workerd `smoke`
-downloads the pinned Cloudflare `workerd` binary and runs handshake/health
-without a built Rust `bookclerk-workerd` launcher — see
-[packaging.md](packaging.md#plugin-author-tools-check--fmt--sync-embed--package--smoke).
+Authors implement the branded guest base **`BookclerkPlugin`** (`describe` /
+`destination` / `source` / `worker` / `contentSource` / `integration` /
+`database`). Native guests implement Rust `PluginRoot` and call `serve` (alias
+`serve_v2`). The trusted adapter constructs a frozen `BookclerkContext`
+(`bindings`, optional `native`, `invocation`). Authors never see
+`PLUGIN_BACKEND`, HTTP endpoints, PIDs, credentials, or Cap'n Proto.
+`PLUGIN_BACKEND` may exist as private workerd config only. Byte `Source` is
+the job input opener; storefronts use a separately named `contentSource()`
+factory. JSON is allowed only for plugin-specific extensible config
+(`schemaVersion` + `mediaType`/`schemaId` + bounded payload).
 
-On native guests, `BookclerkPluginGuest.serve` is the stdin/stdout Workers RPC
-runner — authors still subclass (or implement) `BookclerkPlugin`.
+On native guests, `serve` / `serve_v2` is the stdin/stdout Cap'n Proto runner for
+`api_version = 2`.
 
 | Language | Package | Notes |
 | --- | --- | --- |
-| TypeScript / Node | [`@bookclerk/plugin-sdk`](../packages/plugin-sdk/) | `/workerd` + `/native` both export `BookclerkPlugin`; native adds `BookclerkPluginGuest` |
-| Python | [`bookclerk-plugin-sdk`](../packages/plugin-sdk-python/) | `BookclerkPlugin` + `BookclerkPluginGuest`; workerd `BookclerkPlugin` |
-| Rust | [`bookclerk-plugin-sdk`](../crates/bookclerk-plugin-sdk/) | `BookclerkPlugin` trait + `BookclerkPluginGuest`; workerd embed + `wasmBookclerkPlugin` |
+| TypeScript | [`@bookclerk/plugin-sdk`](../packages/plugin-sdk/) | `/workerd` exports `BookclerkPlugin`; authors export the raw class |
+| Python | [`bookclerk-plugin-sdk`](../packages/plugin-sdk-python/) | `from bookclerk_plugin_sdk.workerd import BookclerkPlugin` |
+| Rust | [`bookclerk-plugin-sdk`](../crates/bookclerk-plugin-sdk/) | `PluginRoot` + `serve`; workerd embed + `wasmBookclerkPlugin` |
 
 Runtimes in `plugin.toml`:
 
@@ -58,8 +70,7 @@ standalone author repos: [plugin-registry.md](plugin-registry.md).
 | **Plugin package** | Rust crate under `crates/bookclerk-plugins/`, or a workerd archive (`plugin.toml` + `modules/`) |
 | **In-process fallback** | When a platform guest is missing or fails to start, hosts fall back to logic in `bookclerk-library` / `bookclerk-storage` |
 | **`bundled-plugins`** | Optional host feature linking storefronts in-process (dev only; omit for release packaging) |
-| **`BookclerkPlugin`** | Branded guest contract (TS/Python class / Rust trait) on both native and workerd; app code never depends on bare platform entrypoints |
-| **`BookclerkPluginGuest`** | Native-only stdio Workers RPC runner that dispatches to a `BookclerkPlugin` (sibling of low-level `PluginGuest`) |
+| **`BookclerkPlugin`** | Product `api_version = 2` guest base (`describe` / `destination` / `source` / `worker` / `contentSource` / `integration` / `database`); TS extends `WorkerEntrypoint`, Rust implements `PluginRoot` + `serve` |
 
 ## Local development (external guests)
 
@@ -102,9 +113,9 @@ so values like `a/b` and `a_b` cannot collide after sanitization.
 
 | Path | Runtime |
 | --- | --- |
-| [`examples/plugins-echo-native-rust`](../examples/plugins-echo-native-rust/) | native Rust |
-| [`examples/plugins-echo-native-node`](../examples/plugins-echo-native-node/) | native Node SEA |
-| [`examples/plugins-echo-native-python`](../examples/plugins-echo-native-python/) | native Python |
+| [`examples/plugins-echo-native-rust`](../examples/plugins-echo-native-rust/) | native Rust (`api_version = 2`) |
+| [`examples/plugins-echo-native-node`](../examples/plugins-echo-native-node/) | workerd JS (id `echo_native_node`) |
+| [`examples/plugins-echo-native-python`](../examples/plugins-echo-native-python/) | workerd Python (id `echo_native_python`) |
 | [`examples/plugins-echo-workerd-ts`](../examples/plugins-echo-workerd-ts/) | workerd TypeScript |
 | [`examples/plugins-echo-workerd-python`](../examples/plugins-echo-workerd-python/) | workerd Python Workers |
 | [`examples/plugins-echo-workerd-rust`](../examples/plugins-echo-workerd-rust/) | workerd Rust/Wasm |
@@ -138,7 +149,7 @@ is narrow on top of that:
 | Host-mediated secrets | `login` returns `{ account, credentials }`; host seals into `encrypted_secrets` with `provider = plugin id`. `scan` and `fetchTitle` receive those blobs from the host |
 | Host-mediated library writes | `scan` returns book DTOs; host upserts with `source` forced to the plugin id. Account listing for a plugin id is answered from the host accounts table |
 | Scoped identity | Plugin cannot claim another storefront’s `source` / `provider` |
-| Network consent | Operator runs `bookclerk plugins approve` before enable; the **same covering grant is required again at every external spawn** and at privileged delivery (`config` / `secrets` / `work_fs` / `oauth`). **Workerd** guests enforce `capabilities.network.domains` as the isolate hostname allowlist (**initial host only**, IDNA-normalized; redirect hops stay free by design). **Native** guests with `mode = "outbound"` get coarse jail internet — **no hostname filter**; `domains` must not be declared |
+| Network consent | Operator runs `bookclerk plugins approve` before enable; the **same covering grant is required again at every external spawn** and at privileged delivery (`config` / `secrets` / `work_fs` / `oauth`). **Every redirect hop** is checked (not only the initial host). Resolved IPs are checked against private/local/metadata ranges; Host/SNI mismatch and DNS rebinding are rejected (broker IP/SNI enforcement is follow-up — do not treat initial-host-only as the frozen contract). Brokered HTTP uses the same domain grants; **raw TCP, UDP, and listen are distinct capabilities**. Native outbound is jail default-deny, not permanently coarse-unrestricted |
 
 First-party guests ship under `crates/bookclerk-plugins/` with the guest SDK
 contract. Host binaries (`bookclerk`, `bookclerkd`) depend on
@@ -299,46 +310,48 @@ mode = "outbound"
 domains = ["api.example.com", "www.example.com"]   # required; isolate allowlist
 ```
 
-**Native** (coarse jail outbound — **no domain list**):
+**Native** (jail default-deny; brokered HTTP uses the same domain grants):
 
 ```toml
 runtime = "native"
 command = "./my-plugin"
 
 [capabilities.network]
-mode = "outbound"   # deny | outbound — do NOT set `domains`
+mode = "outbound"
+# domains are the product grant. Full native broker enforcement (every hop,
+# resolved IP, Host/SNI) is follow-up — do not treat native as permanently
+# coarse-unrestricted, and do not freeze initial-host-only into the ABI.
 ```
 
 | Network `mode` | Native | Workerd |
 | --- | --- | --- |
 | `deny` | no IP sockets (`NetPolicy::Deny`, including OAuth listen) | OS jail stays `OutboundListen` for the RPC bridge; isolate `globalOutbound` → blocked (grant is isolate-enforced; see the ADR) |
-| `outbound` | coarse jail internet (`NetPolicy::Outbound`, or `OutboundListen` with oauth) — **not** hostname-filtered | isolate egress allowlist; **`domains` required** |
+| `outbound` | jail internet with brokered HTTP on the same domain grants; **raw TCP, UDP, and listen are distinct capabilities** | isolate egress allowlist; **`domains` required**; **every redirect hop** is checked |
 
-`capabilities.network.domains` is **workerd-only**. Declaring `domains` on a
-native plugin is a validate/schema error. Do **not** invent domains on native
-plugins for Settings favicons — use optional top-level `logo` instead. Native
-storefronts (Audible, Libro, Chirp, GraphicAudio), destinations (S3), and
-databases (Postgres, D1 HTTP) that need the network use `mode = "outbound"` and
-dial with normal OS sockets under the jail. There is no host HTTP/TCP domain
-proxy for native guests: AppContainer
-blocks loopback `HTTP_PROXY`, and an HTTP-only IPC mediator cannot carry
-Postgres TCP, the AWS SDK, or libraries that embed their own HTTP client.
+`capabilities.network.domains` is the product grant for both runtimes. Today's
+native spawn still cannot hostname-filter raw sockets without a mediator;
+AppContainer blocks loopback `HTTP_PROXY`, and an HTTP-only IPC mediator cannot
+carry Postgres TCP, the AWS SDK, or libraries that embed their own HTTP client.
+That is an enforcement gap to close in the broker, **not** the frozen ABI.
+Do **not** invent domains on native plugins for Settings favicons — use optional
+top-level `logo` instead.
 
-When you need enforceable hostname allowlists, ship a **workerd** plugin. The
-operator still **approves** native `outbound` (with an explicit warning that the
-guest can reach the open internet).
+When you need enforceable hostname allowlists today, ship a **workerd** plugin.
+The operator still **approves** native `outbound` (with an explicit warning).
 
 Workerd egress matching (shared `EgressPolicy` + `bridge/egress.js`):
 
-- **Initial host only.** The first request URL's host must be on
-  `capabilities.network.domains` (with `*.` prefix wildcards). Matching uses
+- **Every hop.** The request URL's host must be on
+  `capabilities.network.domains` (with `*.` prefix wildcards), including
+  **redirect hops** — not only the initial host. Matching uses
   **IDNA ToASCII** on both the request host and allowlist patterns; percent-encoded
   hosts and failed IDNA are **rejected** (fail closed). Unicode and Punycode forms
   of the same name match after normalization.
-- **Redirect hops stay free (intentional).** After an allowed initial host,
-  `Location` redirects are followed up to `maxRedirects` **without** re-checking
-  the domain allowlist. Do not treat hop hosts as consented domains — operators
-  approve the initial allowlist only. Cross-origin redirects drop `Authorization`
+- **IP / SNI.** Resolved IPs are checked against private, local, and metadata
+  ranges. DNS rebinding and Host/SNI mismatch are rejected. Full native-broker
+  enforcement of this contract is follow-up; the ABI/manifest must not freeze
+  the opposite (initial-host-only, native=coarse).
+- Cross-origin redirects drop `Authorization`
   (Fetch CORS non-wildcard request-header) plus `Cookie` / `Cookie2` /
   `Proxy-Authorization` as defense in depth. Method/body follow Fetch
   HTTP-redirect fetch: 301/302 convert **POST→GET** only; 303 converts
@@ -620,7 +633,7 @@ the staging tree does not take the plugin's state with it.
 Native Echo:
 
 ```toml
-api_version = 1
+api_version = 2
 id = "echo"
 name = "Echo Integration"
 kind = "integration"          # source | integration | output | database
@@ -654,7 +667,7 @@ Workerd Echo (TypeScript / Python / Rust-Wasm under
 [`examples/plugins-echo-workerd-*`](../examples/); TOML shape matches TS):
 
 ```toml
-api_version = 1
+api_version = 2
 id = "echo"
 name = "Echo Integration"
 kind = "integration"
@@ -679,7 +692,7 @@ config = true
 plugin_kv = true
 ```
 
-There is **no** `protocol` key. `api_version` must be `1`. Optional top-level
+There is **no** `protocol` key. `api_version` must be `2`. Optional top-level
 `logo` sets the Settings favicon: an `https://` / `http://` URL (browser loads
 it directly) or a relative image path under the plugin install root (host serves
 `GET /api/plugins/{kind}/{id}/logo`). Embedded `.svg` logos are kept, but the
@@ -803,22 +816,90 @@ enabled = true
 # … opaque knobs …
 ```
 
-## ABI (api_version = 1, Workers RPC)
+## ABI (api_version = 2, object-capability Workers RPC)
 
-Host ↔ plugin: Workers RPC method calls with structured (camelCase) payloads.
-The schema in
-[`crates/bookclerk-plugin-abi/schema/abi.json`](../crates/bookclerk-plugin-abi/schema/abi.json)
-is authoritative; Rust (`bookclerk-plugin-abi` / `bookclerk-plugin-sdk`) and
-TypeScript (`@bookclerk/plugin-sdk`) are generated projections of that contract.
-Method names on the wire are **camelCase** (`onEvent`, `cliInvoke`, `fetchTitle`,
-…). Guests outside the host’s supported API version fail handshake cleanly.
+Public types are **classes and streams**, not transport verbs. Chunking,
+`handleId`, `readChunk`, `writeChunk`, `finalize`, and `abort` are not ABI
+methods (abort is stream cancel / `RpcTarget` disposal).
 
-Native guests implement `BookclerkPlugin` and speak the ABI over stdio via
-`BookclerkPluginGuest::serve` / `BookclerkPluginGuest.serve`. Workerd guests
-expose the same methods on a `BookclerkPlugin` entrypoint loaded by
-`bookclerk-workerd` (no separate guest runner — the isolate hosts the class).
+```ts
+class BookclerkPlugin extends WorkerEntrypoint<BookclerkPluginEnv> {
+  describe(): Promise<PluginDescribe>;
+  destination(context: DestinationContext): Destination;
+  source(context: SourceContext): Source;
+  worker(context: WorkerContext): JobHandler;
+  contentSource(context: SourceContext): ContentSource;
+  integration(context: SourceContext): Integration;
+  database(context: SourceContext): Database;
+}
 
-### Reverse channel (`HOST.notify`)
+export default class MyPlugin extends BookclerkPlugin { /* … */ }
+
+interface Destination {
+  head(key: string): Promise<ObjectMetadata | null>;
+  list(options: ListOptions): Promise<ListPage>;
+  get(key: string, options?: ReadOptions): Promise<ReadResult>; // body is a ReadableStream
+  put(key: string, body: ReadableStream<Uint8Array>, options?: WriteOptions): Promise<PutResult>;
+  copy?(from: string, to: string): Promise<CopyResult>;
+}
+
+interface JobHandler {
+  handle(invocation: JobInvocation, context: JobContext): Promise<JobOutcome>;
+}
+```
+
+Authors may `extend WorkerEntrypoint<BookclerkPluginEnv>`. Adapter-private
+`GRANTED` / `BRIDGE_TOKEN` / `PLUGIN_BACKEND` live only on the wrapper
+(`AdapterEnv`). `JobContext.signal` is a **locally created** `AbortSignal`
+projected from the transport cancellation capability — AbortSignal does not
+serialize as a Workers RPC value.
+
+`JobInvocation` is a versioned durable **command envelope** (envelope schema
+version and payload schema version are separate). Idempotency keys are scoped
+to `(account, plugin, commandType)` until a terminal fenced outcome is
+committed; they are not reusable across accounts. `deadlineUnixMs` is a guest
+hint; the host fence/lease is authoritative and must not be outlived.
+Suspension is durable only after Bookclerk atomically commits the fenced
+outcome.
+
+`JobContext` grants `input` / `output` / `progress` stubs for one durable
+invocation. Media flows through those streams. Progress, checkpoints,
+completion, retry class, and cancellation stay job state — not chunk messages.
+
+Workerd is the **control-plane** front door (invocation / policy / binding /
+lifecycle / outcome). Isolate vs native-jail vs future container are backends
+behind `PLUGIN_BACKEND`. Large streams may take a broker → destination **media
+fast path** without entering JavaScript; Cap'n Proto remains the broker↔native
+protocol. Direct native Cap'n Proto is host-selected fallback, not
+plugin-selectable policy bypass. The OS jail is still required.
+
+List pagination is **opaque and bounded**. Missing/stale cursors return
+`invalid_cursor` (never silently restart at page one). Concurrent mutation is
+weakly consistent. Local backends do not promise a lexicographic walk over an
+unsorted directory without an index.
+
+Scalar RPC values are capped at **256 KiB** (`payload_too_large` if exceeded).
+List pages are clamped. Integrity metadata (etag / sha256) rides on
+`PutResult` / `ReadResult`. Optional facilities *within* v2 are feature flags
+(`rpc.streams`, `rpc.scalarLimits`, `storage.copy`), not a substitute for
+`apiVersion`. Spawn **negotiates** `apiVersion == 2`, matching signed
+`id`/`kind`, required `rpc.streams` + `rpc.scalarLimits`, and rejects
+zero/unsafe limits.
+
+**Transports** (same observable contract):
+
+| Runtime | Wire |
+| --- | --- |
+| **workerd** | Isolate keeps `RpcTarget` stubs; `bookclerk-workerd` serves Bookclerk Cap'n Proto on stdio and talks HTTP/JSRPC to the isolate with streamed bodies (`capnpConnectHost = "plugin"` on the rpc socket) |
+| **native** | Guest SDK `serve_v2` serves `schema/plugin_v2.capnp` (`capnp-rpc`) with windowed byte streams |
+
+FD passing / `localPath` remain native-only optimizations behind the stream
+adapter, never author-facing. Handshake rejects unsupported versions.
+
+First-party destinations (`local`, `s3`) and remaining product guests speak v2.
+Echo examples are `api_version = 2` Integration.
+
+## Reverse channel (`HOST.notify`)
 
 Workerd guests may call `env.HOST.notify(event)` with a `PluginToHost`-style
 payload. `bookclerk-workerd` wires the isolate `HOST` binding to a loopback
@@ -849,7 +930,7 @@ integrations/jobs.
 | `cliDescribe` | Declared CLI command schema (`CliSchema`) |
 | `cliInvoke` | Run a declared command (`CliInvokeParams` → `CliInvokeResult`) |
 
-Handshake params include `{ "apiVersion": 1, "config": {…} }` — the plugin’s
+Handshake params include `{ "apiVersion": 2, "config": {…} }` — the plugin’s
 `[sources.<id>]` / `[integrations.<id>]` table from **main** `config.toml` as JSON
 (empty object if the table is missing).
 
@@ -922,25 +1003,21 @@ content keys on the wire — decrypt in the guest when needed.
 
 ### Output plugins
 
-`kind = "output"` guests implement storage over Workers RPC. The host
-never grants them the acquire cache or output library: `putFile` delivers the
-local media file over the same side channel as source `fetchTitle` directories
-(fd 3 is the preserved `SCM_RIGHTS` socket; the open file descriptor arrives
-over that socket immediately before the RPC). When no side channel is wired
-(unconfined / best-effort), the host sends an absolute local path in the RPC
-params instead. S3 credentials and bucket config are injected on each RPC —
-guests do not inherit `BOOKCLERK_AWS_*` or read `encrypted_secrets`.
+`kind = "output"` guests on **v2** implement [`Destination`](../packages/plugin-sdk/src/v2.ts):
+`head` / `list` (paginated) / streamed `get` / streamed `put` / optional
+`copy`. The host never reassembles a large object into `Bytes` and never writes
+the full object to guest scratch then `put_file`. S3 guests feed the existing
+multipart sink as bytes arrive.
 
-| Method | Notes |
-| --- | --- |
-| `put` | Small objects (covers, sidecars): key + data + meta |
-| `putFile` | Large audiobooks: host passes file fd, then RPC key + meta |
-| `get` / `exists` / `list` / `probe` / `copy` / `delete` / `touchFile` | Mirror in-process storage |
+v1 JSON output methods (`put`, `putFile`, …) remain only on the temporary
+adapter. Oversized scalar `put`/`get` fail closed. `putFile` / fd passing is a
+native-only optimization behind the v2 stream adapter, not a public `handleId`
+protocol.
 
-First-party S3 ships as `bookclerk-plugin-destination-s3`. When the guest is
-discovered under `plugins/s3/` and `[output.s3].enabled = true`, the host
-loads it at startup via external destination loading instead of the in-process
-S3 backend.
+First-party S3 ships as `bookclerk-plugin-destination-s3` (`api_version = 2`).
+When the guest is discovered under `plugins/s3/` and `[output.s3].enabled = true`,
+the host loads it at startup via external destination loading instead of the
+in-process S3 backend.
 
 ### Database plugins
 

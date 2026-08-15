@@ -27,7 +27,7 @@ Start here if you are new:
 | Doc | When to read |
 | --- | --- |
 | [Plugins](plugins.md) | Ship or host a third-party source/integration (Workers RPC ABI, jail, workerd) |
-| [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Greenfield `api_version = 1` decision: ABI, `BookclerkPlugin`, consent |
+| [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Product `api_version = 2` decision: class ABI, streams, Cap'n Proto / JSRPC |
 | [ADR: First-party identity](adr/first-party-identity.md) | Operator / Owner / Administrator / Member, optional multi-IdP broker, passkeys, OIDC for ABS |
 | [Plugin registry](plugin-registry.md) | crates.io taxonomy, native vs workerd archives, catalog roadmap |
 | [Packaging](packaging.md) | `cargo package-*` aliases, platform bundles, release CI |
@@ -41,7 +41,7 @@ Start here if you are new:
 | --- | --- |
 | [Migration](migration.md) | Moving from classic Libation Files |
 | [Libation parity](libation-parity.md) | Headless CLI/settings matrix vs Libation Chardonnay |
-| [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Plugin ABI target state (not Cap’n Proto / not legacy JSON-RPC product ABI) |
+| [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Plugin ABI target state (object-capability Cap'n Proto / Workers RPC; not newline JSON as the product ABI) |
 
 ## API reference (generated)
 

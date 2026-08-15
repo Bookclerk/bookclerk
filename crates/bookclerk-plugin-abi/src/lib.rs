@@ -1,4 +1,9 @@
-//! Authoritative Bookclerk plugin ABI (`api_version = 1`).
+//! Authoritative Bookclerk plugin ABI (`api_version` 2).
+//!
+//! Version 2 is the product object-capability ABI (Cap'n Proto RPC, role
+//! classes, transferred byte streams). JSON DTOs in this crate remain as a
+//! versioned escape hatch for plugin-specific config and wrapped guest
+//! internals — not as a spawn handshake.
 //!
 //! # Audience
 //!
@@ -28,11 +33,10 @@
 //!
 //! # Versioning
 //!
-//! [`API_VERSION`] is currently `1`. Guests that advertise a different
-//! `apiVersion` on [`types::HandshakeParams`] fail handshake cleanly. There is
-//! no `protocol` key — only `api_version` / wire `apiVersion`. Bumping the
-//! version requires a coordinated schema + SDK change; do not invent ad-hoc
-//! fields outside `$defs`.
+//! [`API_VERSION`] is the JSON DTO schema version used by wrapped guest
+//! handshake payloads. [`v2::PRODUCT_API_VERSION`] is `2` (object-capability
+//! Cap'n Proto / Workers RPC). Product spawn requires `plugin.toml`
+//! `api_version = 2`. There is no `protocol` key.
 //!
 //! # Modules
 //!
@@ -43,7 +47,7 @@
 //! | [`kind`] | Kind-specific DTOs (source / integration / output) |
 //! | [`db`] | Database-guest connect / query / execute DTOs |
 //! | [`error`] | [`PluginError`] / [`PluginErrorCode`] |
-//! | [`events`] | Host↔plugin typed event envelopes |
+//! | [`v2`] | Object-capability ABI (`apiVersion` 2, Cap'n Proto, streams) |
 
 pub mod db;
 pub mod error;
@@ -51,6 +55,26 @@ pub mod events;
 pub mod kind;
 pub mod methods;
 pub mod types;
+pub mod v2;
+
+/// Generated Cap'n Proto RPC interfaces (`schema/plugin_v2.capnp`).
+///
+/// Included at crate root because `capnpc` emits `crate::plugin_v2_capnp` paths.
+#[allow(
+    dead_code,
+    missing_docs,
+    unused_imports,
+    unused_parens,
+    clippy::all,
+    clippy::pedantic,
+    rustdoc::all,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::missing_docs_in_private_items
+)]
+pub mod plugin_v2_capnp {
+    include!(concat!(env!("OUT_DIR"), "/plugin_v2_capnp.rs"));
+}
 
 #[cfg(test)]
 mod wire_fixtures;
@@ -66,10 +90,10 @@ pub use kind::*;
 pub use methods::METHOD_NAMES;
 pub use types::*;
 
-/// Negotiated Workers RPC API version for all guests (`1`).
+/// Negotiated JSON-adapter API version (`1`).
 ///
-/// Sent as wire field `apiVersion` on handshake params/results. Must match the
-/// `const` in `schema/abi.json`.
+/// Sent as wire field `apiVersion` on v1 handshake params/results. Product
+/// object-capability guests use [`v2::PRODUCT_API_VERSION`] (`2`) instead.
 pub const API_VERSION: u32 = 1;
 
 /// Embedded bytes of `schema/abi.json` (CI and docs tooling can compare

@@ -21,7 +21,7 @@ portal for services like [Audiobookshelf](https://www.audiobookshelf.org/).
 | **Acquire** | Native Adrm + Widevine/CENC decrypt, optional MP3, covers/PDFs/cues/chapters |
 | **Destinations** | Local filesystem and/or S3/MinIO (write to every enabled destination) |
 | **Integrations** | Audiobookshelf scan notify, claim tickets, SPA Accounts |
-| **Plugins** | External source/integration plugins over Workers RPC (`api_version = 1`), each in a host-imposed jail |
+| **Plugins** | External source/integration plugins over Workers RPC (`api_version = 2`), each in a host-imposed jail |
 | **Ops** | `bookclerk` CLI + `bookclerkd` daemon, Docker, systemd |
 | **GUI** | Shared React web UI served by `bookclerkd` (native/tray deferred) |
 

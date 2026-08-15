@@ -100,6 +100,10 @@ bookclerk-plugin-host = { path = "crates/bookclerk-plugin-host", default-feature
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "io-std", "sync", "time", "process", "signal", "net"] }
 async-trait = "0.1"
 futures = "0.3"
+tokio-util = { version = "0.7", features = ["compat", "io"] }
+capnp = "0.25"
+capnp-rpc = "0.25"
+capnpc = "0.25"
 
 # Error / logging
 anyhow = "1"
@@ -135,6 +139,7 @@ sea-orm = { version = "2.0.0", default-features = false, features = [
     "proxy",
     "sqlx-postgres",
     "runtime-tokio-rustls",
+    "stream",
 ] }
 # Crypto for encrypted_secrets (Argon2id KDF + XChaCha20-Poly1305 cipher).
 # These are already in the dependency tree via audible-rs — adding them as

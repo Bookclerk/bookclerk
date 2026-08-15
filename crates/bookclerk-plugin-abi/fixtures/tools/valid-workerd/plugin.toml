@@ -1,4 +1,4 @@
-api_version = 1
+api_version = 2
 id = "echo_workerd_tools"
 kind = "integration"
 version = "0.1.0"

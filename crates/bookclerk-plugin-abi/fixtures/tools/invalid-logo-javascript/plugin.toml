@@ -1,4 +1,4 @@
-api_version = 1
+api_version = 2
 id = "bad_logo_js"
 kind = "integration"
 version = "0.1.0"

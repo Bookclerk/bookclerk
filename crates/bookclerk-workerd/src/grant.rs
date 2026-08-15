@@ -182,7 +182,7 @@ mod tests {
             .join(",\n");
         parse(&format!(
             r#"
-api_version = 1
+api_version = 2
 id = "echo"
 kind = "integration"
 runtime = "workerd"

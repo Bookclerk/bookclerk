@@ -1,26 +1,18 @@
-# Echo Integration (native Node)
+# Echo Integration (id `echo_native_node`)
 
-Reference **native** Bookclerk guest. Subclasses `BookclerkPlugin` and runs with
-`BookclerkPluginGuest.serve` (`api_version = 1`, id `echo_native_node`).
-
-**Dev / CI staging** (`cargo stage-plugins --examples`) installs a small shell
-launcher that runs a **vendored** `runtime/node` (hardlinked/copied from
-`BOOKCLERK_NODE` or `PATH`) against `src/echo.mjs` with `@bookclerk/plugin-sdk/native`
-under `sdk/`. Vendoring keeps the interpreter inside the guest install tree so
-Landlock can exec it — host toolcache paths are outside jail `system_paths`.
-Requires `npm run build` in `packages/plugin-sdk` first.
-
-**Publisher path:** experimental Node SEA via `npm run sea:build` (see
-`scripts/build-sea.mjs`) — pack `plugin.toml` + the SEA binary as
-`bookclerk-plugin-echo-native-node`.
+This example now validates **workerd** hosting (`runtime = "workerd"`,
+`api_version = 2`), not a Node Cap'n Proto stack. The guest class lives in
+[`modules/index.js`](modules/index.js) and matches
+[`plugins-echo-workerd-ts`](../plugins-echo-workerd-ts/).
 
 ```bash
-cd packages/plugin-sdk && npm run build
-cd examples/plugins-echo-native-node
-node src/echo.mjs
-# or after staging:
-# target/plugin-artifacts/echo_native_node/bookclerk-plugin-echo-native-node
+cargo ensure-workerd
+cargo stage-plugins --examples --skip-build
 ```
+
+Historical Node SEA sketches under `scripts/build-sea.mjs` and
+`.github/workflows/package.yml` are **not** the guest entry. Keep them only as
+publisher notes; they do not speak the product ABI.
 
 Sibling examples: `plugins-echo-native-rust`, `plugins-echo-native-python`,
 `plugins-echo-workerd-*`.

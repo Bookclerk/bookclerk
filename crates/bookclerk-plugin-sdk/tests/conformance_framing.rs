@@ -2,7 +2,7 @@
 #![allow(clippy::missing_panics_doc)]
 
 use bookclerk_plugin_sdk::{
-    methods, HOST_API_VERSION_MAX, HOST_API_VERSION_MIN, MAX_RPC_LINE_BYTES, PLUGIN_API_VERSION,
+    methods, v2::PRODUCT_API_VERSION, HOST_MANIFEST_API_VERSION_MAX, MAX_RPC_LINE_BYTES,
     PROTOCOL_NAME,
 };
 
@@ -17,14 +17,9 @@ fn max_rpc_line_bytes_is_16_mib() {
 }
 
 #[test]
-fn host_api_version_range_covers_current() {
-    assert_eq!(HOST_API_VERSION_MIN, 1);
-    assert_eq!(HOST_API_VERSION_MAX, 1);
-    assert_eq!(PLUGIN_API_VERSION, 1);
-    const {
-        assert!(PLUGIN_API_VERSION >= HOST_API_VERSION_MIN);
-        assert!(PLUGIN_API_VERSION <= HOST_API_VERSION_MAX);
-    }
+fn product_api_version_is_2() {
+    assert_eq!(PRODUCT_API_VERSION, 2);
+    assert_eq!(HOST_MANIFEST_API_VERSION_MAX, 2);
 }
 
 #[test]

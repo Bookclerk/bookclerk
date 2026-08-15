@@ -1,4 +1,4 @@
-api_version = 1
+api_version = 2
 id = "d1"
 name = "Cloudflare D1"
 kind = "database"
@@ -12,3 +12,14 @@ mode = "outbound"
 [capabilities.bindings]
 config = true
 secrets = true
+
+[capabilities.methods]
+list = [
+    "health",
+    "diagnose",
+    "dbConnect",
+    "dbPing",
+    "dbQuery",
+    "dbExecute",
+    "dbAtomic",
+]

@@ -1,19 +1,19 @@
 //! Echo workerd guest logic compiled to Wasm.
 //!
 //! JS `modules/index.js` loads this module and forwards Workers RPC methods.
-//! Types come from [`bookclerk_plugin_abi`] — the same ABI as
-//! `bookclerk_plugin_sdk::BookclerkPlugin`.
+//! Identity is advertised by JS `describe()` (`api_version = 2`). Wasm still
+//! implements health / diagnose / onEvent / CLI.
 
 use bookclerk_plugin_abi::{
     CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-    DiagnoseResult, HandshakeResult, HealthResult, API_VERSION,
+    DiagnoseResult, HealthResult,
 };
 use serde_json::{json, Value};
 
 /// Handshake / health plugin id (`echo_workerd_rust`); must match `plugin.toml`.
 const PLUGIN_ID: &str = "echo_workerd_rust";
 
-/// CLI schema advertised at handshake and `cliDescribe` (`ping --message`).
+/// CLI schema advertised at `cliDescribe` (`ping --message`).
 fn cli_schema() -> CliSchema {
     CliSchema {
         commands: vec![CliCommandSpec {
@@ -35,12 +35,12 @@ fn cli_schema() -> CliSchema {
 
 /// Dispatches one Workers RPC method and returns the JSON result payload.
 ///
-/// Called from the JS `WorkerEntrypoint` glue (and unit tests). Unknown methods
+/// Called from the JS `BookclerkPlugin` glue (and unit tests). Unknown methods
 /// return `Err`; successful handlers serialize ABI DTOs as JSON text.
 ///
 /// # Arguments
 ///
-/// * `method` - Workers RPC method name (`handshake`, `health`, `cliInvoke`, …).
+/// * `method` - Workers RPC method name (`health`, `cliInvoke`, …).
 /// * `params_json` - JSON params object, or empty/`null` when the method takes none.
 ///
 /// # Returns
@@ -58,21 +58,19 @@ pub fn dispatch_json(method: &str, params_json: &str) -> Result<String, String> 
         serde_json::from_str(params_json).map_err(|e| e.to_string())?
     };
     let result = match method {
-        "handshake" => serde_json::to_value(HandshakeResult {
-            api_version: API_VERSION,
-            id: PLUGIN_ID.into(),
-            kind: "integration".into(),
-            display_name: Some("Echo Integration (workerd Rust/Wasm)".into()),
-            capabilities: vec![
-                "health".into(),
-                "diagnose".into(),
-                "onEvent".into(),
-                "cli".into(),
-            ],
-            cli: Some(cli_schema()),
-            ..HandshakeResult::default()
-        })
-        .map_err(|e| e.to_string())?,
+        "describe" => json!({
+            "apiVersion": 2,
+            "id": PLUGIN_ID,
+            "kind": "integration",
+            "displayName": "Echo Integration (workerd Rust/Wasm)",
+            "rpcFeatures": ["rpc.scalarLimits"],
+            "scalarLimits": {
+                "maxScalarBytes": 262144,
+                "maxStreamWindowBytes": 1048576,
+                "maxListPage": 256,
+            },
+            "supportedRoles": ["integration"],
+        }),
         "shutdown" => Value::Null,
         "health" => serde_json::to_value(HealthResult {
             ok: true,
@@ -85,7 +83,7 @@ pub fn dispatch_json(method: &str, params_json: &str) -> Result<String, String> 
             lines: vec!["echo_workerd_rust: ok".into()],
         })
         .map_err(|e| e.to_string())?,
-        "onEvent" => Value::Null,
+        "onEvent" => json!({ "kind": "ack" }),
         "cliDescribe" => serde_json::to_value(cli_schema()).map_err(|e| e.to_string())?,
         "cliInvoke" => {
             let p: CliInvokeParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -157,5 +155,12 @@ mod tests {
     fn health_detail() {
         let out = dispatch_json("health", "{}").unwrap();
         assert!(out.contains("echo workerd rust wasm plugin ready"));
+    }
+
+    #[test]
+    fn describe_v2() {
+        let out = dispatch_json("describe", "{}").unwrap();
+        assert!(out.contains("\"apiVersion\":2"));
+        assert!(out.contains("echo_workerd_rust"));
     }
 }

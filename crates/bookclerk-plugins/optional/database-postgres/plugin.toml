@@ -1,4 +1,4 @@
-api_version = 1
+api_version = 2
 id = "postgres"
 name = "PostgreSQL"
 kind = "database"
@@ -14,3 +14,17 @@ mode = "outbound"
 [capabilities.bindings]
 config = true
 secrets = true
+
+[capabilities.methods]
+list = [
+    "health",
+    "diagnose",
+    "dbConnect",
+    "dbPing",
+    "dbQuery",
+    "dbExecute",
+    "dbBegin",
+    "dbCommit",
+    "dbRollback",
+    "dbAtomic",
+]

@@ -1,10 +1,9 @@
 """check / fmt / package / sync-embed — mirrors Rust/TS author tools.
 
 Validates ``plugin.toml``, formats manifests, vendors workerd embeds, and packs
-release archives. Dual-stack Python SDK:
+release archives. Workerd authors:
 
-- Native: ``from bookclerk_plugin_sdk import BookclerkPlugin, BookclerkPluginGuest``
-- Workerd: ``from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js``
+- ``from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js``
   (``bookclerk-workerd`` injects that module — no relative filepath embed)
 
 See ``docs/plugins.md`` for manifest fields and runtime requirements.
@@ -160,8 +159,8 @@ def validate_manifest(m: dict[str, Any]) -> None:
         validate_plugin_id(str(m["id"]))
     except ValueError as exc:
         raise ValueError(f"plugin.toml: {exc}") from exc
-    if m.get("api_version") != 1:
-        raise ValueError("plugin.toml: `api_version` must be 1")
+    if m.get("api_version") != 2:
+        raise ValueError("plugin.toml: `api_version` must be 2")
     if m.get("logo") is not None:
         validate_logo(str(m["logo"]))
     kind = m.get("kind")

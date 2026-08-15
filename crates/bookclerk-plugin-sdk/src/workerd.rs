@@ -1,9 +1,9 @@
-//! Workerd guest bridge — same [`crate::BookclerkPlugin`] contract as native.
+//! Workerd guest bridge — same [`crate::PluginRoot`] contract as native.
 //!
 //! Audience: authors of `runtime = "workerd"` plugins (JS modules and optional
 //! Rust→Wasm). Dual-stack with native guests:
 //!
-//! - **Native:** `use bookclerk_plugin_sdk::{BookclerkPlugin, BookclerkPluginGuest};`
+//! - **Native:** `use bookclerk_plugin_sdk::{PluginRoot, serve};`
 //! - **Workerd:** JS modules import the package; Rust implements ABI dispatch:
 //!
 //! ```js
@@ -28,7 +28,7 @@
 //! src/lib.rs                  ABI-typed `dispatch_json`
 //! ```
 
-pub use crate::plugin::BookclerkPlugin;
+pub use crate::v2::PluginRoot;
 
 /// Suggested main module filename for JS+Wasm workerd guests.
 ///

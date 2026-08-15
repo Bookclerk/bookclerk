@@ -211,7 +211,7 @@ pub async fn guest_touch_file(params: TouchFileParams) -> Result<()> {
 }
 
 /// Builds an [`S3Backend`] from the host-injected bucket/region/endpoint context.
-async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
+pub(crate) async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
     let cfg = OutputS3Config {
         enabled: true,
         bucket: ctx.bucket.clone(),

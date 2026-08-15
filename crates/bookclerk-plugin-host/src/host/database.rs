@@ -11,10 +11,10 @@ use std::thread::ThreadId;
 
 use async_trait::async_trait;
 use bookclerk_config::{resolve_d1_api_token, resolve_postgres_url, Config, DatabasePluginKind};
+use bookclerk_plugin_sdk::v2::PRODUCT_API_VERSION;
 use bookclerk_plugin_sdk::{
-    atomic_status, exec_result_from_dto, methods, proxy_rows_from_dto, statement_to_dto,
-    DbAtomicParams, DbAtomicRequest, DbAtomicResult, DbBeginParams, DbBeginResult, DbConnectParams,
-    DbConnectResult, DbTxnParams, ExecResultDto, QueryResultDto, StatementDto,
+    atomic_status, exec_result_from_dto, proxy_rows_from_dto, statement_to_dto, DbAtomicParams,
+    DbAtomicRequest, DbAtomicResult, DbConnectParams, DbConnectResult, ExecResultDto, ProxyRowDto,
 };
 use sea_orm::{
     Database, DatabaseConnection, DbBackend, DbErr, ProxyDatabaseTrait, ProxyExecResult, ProxyRow,
@@ -25,14 +25,14 @@ use tokio::task::{try_id, Id as TaskId};
 
 use crate::discover::DiscoveredPlugin;
 use crate::jail::plugin_data_dir;
-use crate::rpc::PluginClient;
+use crate::rpc_v2::{V2PluginSession, OPERATOR_ACCOUNT};
 use crate::{PluginError, Result as PluginResult};
 
 /// External database backend spawned for `[database].plugin`.
 #[derive(Clone)]
 pub struct ExternalDatabase {
-    /// JSON-RPC client for the jailed database guest process.
-    client: Arc<PluginClient>,
+    /// Cap'n Proto v2 session (vat holds the database session).
+    session: Arc<V2PluginSession>,
     /// Manifest id (`sqlite`, `d1`, `postgres`) used to build connect params.
     plugin_id: String,
     /// Guest HOME / data directory passed on `db.connect`.
@@ -46,17 +46,46 @@ impl ExternalDatabase {
     ///
     /// Returns an error when the operation fails.
     pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> PluginResult<Self> {
+        if plugin.manifest.api_version != PRODUCT_API_VERSION {
+            return Err(PluginError::message(format!(
+                "plugin `{}` api_version {} is not v2",
+                plugin.manifest.id, plugin.manifest.api_version
+            )));
+        }
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
-        let client = Arc::new(PluginClient::spawn(plugin, config, config_json).await?);
+        let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
+        let extra_env;
+        let extra_refs: &[(&str, std::ffi::OsString)];
+        if plugin.manifest.id.eq_ignore_ascii_case("sqlite") {
+            let path = config.database.sqlite_path(&config.paths().files_dir);
+            extra_env = vec![(
+                "BOOKCLERK_SQLITE_PATH",
+                std::ffi::OsString::from(path.as_os_str()),
+            )];
+            extra_refs = &extra_env;
+        } else {
+            extra_env = Vec::new();
+            extra_refs = &extra_env;
+        }
+        let session = Arc::new(
+            V2PluginSession::spawn_for_account_with_env(
+                plugin,
+                config,
+                config_json,
+                OPERATOR_ACCOUNT,
+                extra_refs,
+            )
+            .await?,
+        );
         Ok(Self {
-            client,
+            session,
             plugin_id: plugin.manifest.id.clone(),
-            plugin_data_dir: plugin_data_dir(config, &plugin.manifest.id)?,
+            plugin_data_dir,
         })
     }
 
-    /// Open the library connection through the guest (`db.connect` + optional fd pass).
+    /// Open the library connection through the guest (`database.openSession`).
     ///
     /// # Errors
     ///
@@ -65,40 +94,30 @@ impl ExternalDatabase {
         &self,
         config: &Config,
     ) -> Result<(DatabaseConnection, DbConnectResult), DbErr> {
-        let params = connect_params(config, &self.plugin_id, &self.plugin_data_dir, &self.client)?;
-        let value = serde_json::to_value(&params).map_err(|err| DbErr::Custom(err.to_string()))?;
+        let params = connect_params(
+            config,
+            &self.plugin_id,
+            &self.plugin_data_dir,
+            &self.session,
+        )?;
+        let ctx = serde_json::to_string(&params).map_err(|err| DbErr::Custom(err.to_string()))?;
+        self.session.db_open(ctx).await.map_err(map_rpc_err)?;
 
-        let connect_result: DbConnectResult = if self.plugin_id.eq_ignore_ascii_case("sqlite") {
-            let path = config.database.sqlite_path(&config.paths().files_dir);
-            let raw = if self.client.has_side_channel() || self.client.has_acl_grants() {
-                self.client
-                    .call_raw_with_db_file(methods::DB_CONNECT, value, &path)
-                    .await
-                    .map_err(map_rpc_err)?
-            } else {
-                self.client
-                    .call_raw(methods::DB_CONNECT, value)
-                    .await
-                    .map_err(map_rpc_err)?
-            };
-            serde_json::from_value(raw)
-                .map_err(|err| DbErr::Custom(format!("db.connect result: {err}")))?
-        } else {
-            self.client
-                .call(methods::DB_CONNECT, value)
-                .await
-                .map_err(map_rpc_err)?
-        };
-
-        self.client
-            .call::<Value>(methods::DB_PING, Value::Null)
+        let _ = self
+            .session
+            .db_query("SELECT 1", "[]")
             .await
             .map_err(map_rpc_err)?;
 
+        let connect_result = match DatabasePluginKind::parse(&self.plugin_id) {
+            Some(DatabasePluginKind::Postgres) => DbConnectResult::postgres(),
+            Some(DatabasePluginKind::D1) => DbConnectResult::d1(),
+            _ => DbConnectResult::sqlite(),
+        };
         let backend = dialect_to_backend(&connect_result.dialect)?;
         let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(RpcDatabaseProxy {
-            client: self.client.clone(),
-            txn_stacks: Arc::new(Mutex::new(HashMap::new())),
+            session: self.session.clone(),
+            txn_depth: Arc::new(Mutex::new(HashMap::new())),
         }));
         let db = Database::connect_proxy(backend, proxy).await?;
         Ok((db, connect_result))
@@ -203,7 +222,7 @@ pub async fn open_library_store(
         .map_err(bookclerk_library::LibraryError::Orm)?;
     let store = bookclerk_library::LibraryStore::from_connection(db).with_atomic_txn(Arc::new(
         RpcAtomicBackend {
-            client: ext.client.clone(),
+            session: ext.session.clone(),
         },
     ));
     store.ensure_users_bridged().await?;
@@ -268,10 +287,10 @@ fn task_key() -> TaskKey {
 #[derive(Clone)]
 /// SeaORM [`ProxyDatabaseTrait`] that forwards query/exec/txn RPCs to the guest.
 struct RpcDatabaseProxy {
-    /// JSON-RPC client shared with [`ExternalDatabase`].
-    client: Arc<PluginClient>,
-    /// Per-task stack of guest txn ids (nested SeaORM begin = nested RPC).
-    txn_stacks: Arc<Mutex<HashMap<TaskKey, Vec<String>>>>,
+    /// Cap'n Proto v2 session shared with [`ExternalDatabase`].
+    session: Arc<V2PluginSession>,
+    /// Per-task nested begin depth (vat holds a single transaction).
+    txn_depth: Arc<Mutex<HashMap<TaskKey, usize>>>,
 }
 
 impl std::fmt::Debug for RpcDatabaseProxy {
@@ -281,76 +300,47 @@ impl std::fmt::Debug for RpcDatabaseProxy {
 }
 
 impl RpcDatabaseProxy {
-    /// Locks the per-task txn stack, recovering a poisoned mutex.
-    fn lock_stacks(&self) -> std::sync::MutexGuard<'_, HashMap<TaskKey, Vec<String>>> {
-        self.txn_stacks.lock().unwrap_or_else(|e| e.into_inner())
+    /// Locks the per-task txn depth map, recovering a poisoned mutex.
+    fn lock_depth(&self) -> std::sync::MutexGuard<'_, HashMap<TaskKey, usize>> {
+        self.txn_depth.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Innermost guest txn id for this task, if a `db.begin` is open.
-    fn current_txn_id(&self) -> Option<String> {
-        self.lock_stacks()
-            .get(&task_key())
-            .and_then(|stack| stack.last())
-            .cloned()
+    /// Current nested begin depth for this task.
+    fn depth(&self) -> usize {
+        self.lock_depth().get(&task_key()).copied().unwrap_or(0)
     }
 
-    /// Pushes a guest txn id after a successful `db.begin` (supports nesting).
-    fn push_txn(&self, txn_id: String) {
-        self.lock_stacks()
-            .entry(task_key())
-            .or_default()
-            .push(txn_id);
+    /// Increments depth; returns the previous depth.
+    fn push_depth(&self) -> usize {
+        let mut map = self.lock_depth();
+        let entry = map.entry(task_key()).or_insert(0);
+        let prev = *entry;
+        *entry = prev.saturating_add(1);
+        prev
     }
 
-    /// Pops the innermost guest txn id and drops an empty per-task stack.
-    fn pop_txn(&self) -> Option<String> {
-        let mut stacks = self.lock_stacks();
+    /// Decrements depth; returns the depth after decrement (`0` means fully closed).
+    fn pop_depth(&self) -> Option<usize> {
+        let mut map = self.lock_depth();
         let key = task_key();
-        let id = stacks.get_mut(&key).and_then(Vec::pop);
-        if stacks.get(&key).is_some_and(Vec::is_empty) {
-            stacks.remove(&key);
+        let entry = map.get_mut(&key)?;
+        if *entry == 0 {
+            map.remove(&key);
+            return None;
         }
-        id
+        *entry -= 1;
+        let next = *entry;
+        if next == 0 {
+            map.remove(&key);
+        }
+        Some(next)
     }
 
-    /// Serializes a SeaORM statement and attaches the current guest txn id.
-    fn statement_dto(&self, statement: &Statement) -> StatementDto {
-        let mut dto = statement_to_dto(statement);
-        dto.txn_id = self.current_txn_id();
-        dto
-    }
-
-    /// Starts a guest transaction, optionally nested under `parent`.
-    async fn rpc_begin(&self, parent: Option<String>) -> std::result::Result<String, DbErr> {
-        let result: DbBeginResult = self
-            .client
-            .call(
-                methods::DB_BEGIN,
-                serde_json::to_value(DbBeginParams {
-                    parent_txn_id: parent,
-                })
-                .map_err(map_json_err)?,
-            )
-            .await
-            .map_err(map_rpc_err)?;
-        Ok(result.txn_id)
-    }
-
-    /// Commits or rolls back the guest transaction identified by `txn_id`.
-    async fn rpc_finish(&self, commit: bool, txn_id: String) -> std::result::Result<(), DbErr> {
-        let method = if commit {
-            methods::DB_COMMIT
-        } else {
-            methods::DB_ROLLBACK
-        };
-        self.client
-            .call::<Value>(
-                method,
-                serde_json::to_value(DbTxnParams { txn_id }).map_err(map_json_err)?,
-            )
-            .await
-            .map_err(map_rpc_err)?;
-        Ok(())
+    /// Serializes a SeaORM statement into SQL + JSON bind values.
+    fn statement_parts(statement: &Statement) -> (String, String) {
+        let dto = statement_to_dto(statement);
+        let values_json = serde_json::to_string(&dto.values).unwrap_or_else(|_| "[]".into());
+        (dto.sql, values_json)
     }
 }
 
@@ -360,37 +350,52 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
         if bookclerk_library::is_txn_broken() {
             return Err(bookclerk_library::txn_broken_err());
         }
-        let dto = self.statement_dto(&statement);
-        let result: QueryResultDto = self
-            .client
-            .call(
-                methods::DB_QUERY,
-                serde_json::to_value(dto).map_err(map_json_err)?,
-            )
-            .await
-            .map_err(map_rpc_err)?;
-        Ok(proxy_rows_from_dto(result.rows))
+        let (sql, values_json) = Self::statement_parts(&statement);
+        let mut rows = Vec::new();
+        let mut cursor = String::new();
+        // 4096 pages × MAX_LIST_PAGE (256) is a hard stop against a malicious next_cursor loop.
+        for _ in 0..4096 {
+            let page = self
+                .session
+                .db_query_page(sql.clone(), values_json.clone(), cursor.clone(), 0)
+                .await
+                .map_err(map_rpc_err)?;
+            let page_rows: Vec<ProxyRowDto> = if page.rows_json.trim().is_empty() {
+                Vec::new()
+            } else {
+                serde_json::from_str(&page.rows_json)
+                    .map_err(|err| DbErr::Custom(format!("database plugin query rows: {err}")))?
+            };
+            rows.extend(page_rows);
+            match page.next_cursor {
+                Some(next) if !next.is_empty() && next != cursor => cursor = next,
+                _ => return Ok(proxy_rows_from_dto(rows)),
+            }
+        }
+        Err(DbErr::Custom(
+            "database plugin query exceeded 4096 pages".into(),
+        ))
     }
 
     async fn execute(&self, statement: Statement) -> std::result::Result<ProxyExecResult, DbErr> {
         if bookclerk_library::is_txn_broken() {
             return Err(bookclerk_library::txn_broken_err());
         }
-        let dto = self.statement_dto(&statement);
-        let result: ExecResultDto = self
-            .client
-            .call(
-                methods::DB_EXECUTE,
-                serde_json::to_value(dto).map_err(map_json_err)?,
-            )
+        let (sql, values_json) = Self::statement_parts(&statement);
+        let result = self
+            .session
+            .db_execute(sql, values_json)
             .await
             .map_err(map_rpc_err)?;
-        Ok(exec_result_from_dto(result))
+        Ok(exec_result_from_dto(ExecResultDto {
+            last_insert_id: u64::try_from(result.last_insert_id).unwrap_or(0),
+            rows_affected: result.rows_affected,
+        }))
     }
 
     async fn ping(&self) -> std::result::Result<(), DbErr> {
-        self.client
-            .call::<Value>(methods::DB_PING, Value::Null)
+        self.session
+            .db_query("SELECT 1", "[]")
             .await
             .map_err(map_rpc_err)?;
         Ok(())
@@ -401,20 +406,21 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
             bookclerk_library::note_begin_failed("injected begin failure");
             return;
         }
-        let parent = self.current_txn_id();
-        match self.rpc_begin(parent).await {
-            Ok(txn_id) => self.push_txn(txn_id),
-            Err(err) => {
-                bookclerk_library::note_begin_failed(&err);
-                tracing::error!(error = %err, "database plugin dbBegin failed");
-            }
+        let prev = self.push_depth();
+        if prev != 0 {
+            return;
+        }
+        if let Err(err) = self.session.db_begin().await {
+            self.pop_depth();
+            bookclerk_library::note_begin_failed(&err);
+            tracing::error!(error = %err, "database plugin dbBegin failed");
         }
     }
 
     async fn commit(&self) {
         if bookclerk_library::consume_commit_injection() {
-            if let Some(txn_id) = self.pop_txn() {
-                if let Err(err) = self.rpc_finish(false, txn_id).await {
+            if self.pop_depth().is_some() && self.depth() == 0 {
+                if let Err(err) = self.session.db_rollback().await {
                     tracing::error!(
                         error = %err,
                         "database plugin dbRollback after injected commit failure"
@@ -424,50 +430,51 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
             bookclerk_library::note_commit_failed("injected commit failure");
             return;
         }
-        let Some(txn_id) = self.pop_txn() else {
+        let Some(next) = self.pop_depth() else {
             if bookclerk_library::is_txn_broken() {
                 return;
             }
             bookclerk_library::note_commit_failed("no open transaction to commit");
             return;
         };
-        if let Err(err) = self.rpc_finish(true, txn_id.clone()).await {
+        if next != 0 {
+            return;
+        }
+        if let Err(err) = self.session.db_commit().await {
             bookclerk_library::note_commit_failed(&err);
             tracing::error!(error = %err, "database plugin dbCommit failed");
-            if let Err(rb) = self.rpc_finish(false, txn_id).await {
+            if let Err(rb) = self.session.db_rollback().await {
                 tracing::error!(error = %rb, "database plugin dbRollback after commit failure");
             }
         }
     }
 
     async fn rollback(&self) {
-        let Some(txn_id) = self.pop_txn() else {
+        let Some(next) = self.pop_depth() else {
             return;
         };
-        if let Err(err) = self.rpc_finish(false, txn_id).await {
+        if next != 0 {
+            return;
+        }
+        if let Err(err) = self.session.db_rollback().await {
             tracing::error!(error = %err, "database plugin dbRollback failed");
         }
     }
 
     fn start_rollback(&self) {
-        let Some(txn_id) = self.pop_txn() else {
+        let Some(next) = self.pop_depth() else {
             return;
         };
-        let client = self.client.clone();
-        let Ok(params) = serde_json::to_value(DbTxnParams { txn_id }) else {
+        if next != 0 {
             return;
-        };
+        }
+        let session = self.session.clone();
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             tracing::error!("database plugin dbRollback skipped: no tokio runtime");
             return;
         };
         if let Err(err) = tokio::task::block_in_place(|| {
-            handle.block_on(async move {
-                client
-                    .call::<Value>(methods::DB_ROLLBACK, params)
-                    .await
-                    .map(|_| ())
-            })
+            handle.block_on(async move { session.db_rollback().await.map(|_| ()) })
         }) {
             tracing::error!(error = %err, "database plugin dbRollback failed");
         }
@@ -476,18 +483,18 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
 
 /// Host [`AtomicTxnBackend`] that runs named security ops as one guest `dbAtomic`.
 struct RpcAtomicBackend {
-    /// JSON-RPC client used for a single `db.atomic` round-trip per operation.
-    client: Arc<PluginClient>,
+    /// Cap'n Proto v2 session used for a single `bookclerk.atomic` query per operation.
+    session: Arc<V2PluginSession>,
 }
 
 impl RpcAtomicBackend {
-    /// Sends one `db.atomic` RPC; ambiguous transport maps to [`LibraryError::Unavailable`].
+    /// Sends one `bookclerk.atomic` query; ambiguous transport maps to [`LibraryError::Unavailable`].
     async fn call(&self, params: DbAtomicParams) -> bookclerk_library::Result<DbAtomicResult> {
         let operation_id = bookclerk_library::db_atomic_operation_id(&params);
         self.call_with_id(operation_id, params).await
     }
 
-    /// Sends `db.atomic` with a caller-chosen idempotency key (replay-safe claims).
+    /// Sends `bookclerk.atomic` with a caller-chosen idempotency key (replay-safe claims).
     async fn call_with_id(
         &self,
         operation_id: String,
@@ -497,16 +504,15 @@ impl RpcAtomicBackend {
             operation_id,
             operation: params,
         };
-        let payload = serde_json::to_value(&request).map_err(|err| {
+        let payload = serde_json::to_string(&request).map_err(|err| {
             bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string()))
         })?;
-        // Single host RPC. The D1 guest already retries incomplete 2xx / missing
-        // receipts with the same operation id; multiplying attempts here used to
-        // submit the batch up to 27 times. Guest `unavailable` (lost reply after
-        // those inner retries) maps to [`LibraryError::Unavailable`] so the HTTP
-        // client retries the whole redeem with the same derived session token.
-        match self.client.call(methods::DB_ATOMIC, payload).await {
-            Ok(result) => Ok(result),
+        match self.session.db_query("bookclerk.atomic", payload).await {
+            Ok(page) => serde_json::from_str(&page.rows_json).map_err(|err| {
+                bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+                    "database atomic result: {err}"
+                ))
+            }),
             Err(err) => Err(map_plugin_err(err)),
         }
     }
@@ -861,7 +867,7 @@ fn connect_params(
     config: &Config,
     plugin_id: &str,
     plugin_data_dir: &Path,
-    client: &PluginClient,
+    session: &V2PluginSession,
 ) -> Result<DbConnectParams, DbErr> {
     let data_dir = plugin_data_dir.display().to_string();
     match DatabasePluginKind::parse(plugin_id) {
@@ -873,7 +879,7 @@ fn connect_params(
             })
         }
         Some(DatabasePluginKind::D1) => {
-            client
+            session
                 .require_binding("secrets")
                 .map_err(|err| DbErr::Custom(err.to_string()))?;
             Ok(DbConnectParams::D1 {
@@ -885,7 +891,7 @@ fn connect_params(
             })
         }
         Some(DatabasePluginKind::Postgres) => {
-            client
+            session
                 .require_binding("secrets")
                 .map_err(|err| DbErr::Custom(err.to_string()))?;
             Ok(DbConnectParams::Postgres {
@@ -913,11 +919,6 @@ fn dialect_to_backend(dialect: &str) -> Result<DbBackend, DbErr> {
 /// Wraps a plugin RPC failure as a SeaORM [`DbErr::Custom`].
 fn map_rpc_err(err: crate::PluginError) -> DbErr {
     DbErr::Custom(err.to_string())
-}
-
-/// Wraps a JSON serialize failure for database RPC params as [`DbErr::Custom`].
-fn map_json_err(err: serde_json::Error) -> DbErr {
-    DbErr::Custom(format!("serialize database RPC params: {err}"))
 }
 
 /// Wraps a host config error (missing D1 token / Postgres URL) as [`DbErr::Custom`].

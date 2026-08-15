@@ -15,6 +15,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::Engine as _;
 use bookclerk_library::{b64_string_to_bytes, bytes_to_b64_string, LibraryError, Result};
+use bookclerk_plugin_sdk::v2::MAX_SCALAR_BYTES;
 use sea_orm::{
     Database, DatabaseConnection, DbBackend, DbErr, ProxyDatabaseTrait, ProxyExecResult, ProxyRow,
     Statement, Value,
@@ -209,6 +210,9 @@ impl D1Proxy {
     }
 
     /// POSTs a JSON body with the API token; serializes concurrent requests to one database.
+    ///
+    /// Every D1 JSON body is read incrementally and aborted at
+    /// [`max_d1_http_body_bytes`] (page scalar budget plus a narrow envelope).
     async fn post_json(
         &self,
         url: &str,
@@ -269,16 +273,28 @@ impl ProxyDatabaseTrait for D1Proxy {
             return Err(bookclerk_library::txn_broken_err());
         }
         let params = statement_json_params(&statement);
+        let paged = sql_is_bookclerk_page(&statement.sql);
         let value = self.run_sql(&statement.sql, params).await?;
-        let results = first_result_rows(&value);
+        let results = first_result_rows_ref(&value);
         let mut rows = Vec::with_capacity(results.len());
+        let mut encoded = 1usize;
         for row in results {
             let Some(obj) = row.as_object() else {
                 continue;
             };
             let mut values = BTreeMap::new();
             for (k, v) in obj {
-                values.insert(k.clone(), json_to_sea_value(v, k));
+                reject_oversized_json_cell(v, k)?;
+                if paged {
+                    let extra = json_cell_byte_len(v).saturating_add(k.len());
+                    if encoded.saturating_add(extra) > MAX_SCALAR_BYTES as usize {
+                        return Err(DbErr::Custom(format!(
+                            "JSON result would exceed {MAX_SCALAR_BYTES}"
+                        )));
+                    }
+                    encoded = encoded.saturating_add(extra);
+                }
+                values.insert(k.clone(), json_to_sea_value(v, k)?);
             }
             rows.push(ProxyRow { values });
         }
@@ -326,15 +342,18 @@ impl ProxyDatabaseTrait for D1Proxy {
 }
 
 /// Reads a D1 HTTP response; retryable statuses become [`D1Error::Ambiguous`], others permanent.
+///
+/// The body is pulled in chunks and aborted at byte `max + 1` so a chunked or
+/// lying-small `Content-Length` cannot buffer past the page scalar budget plus
+/// a narrow D1 JSON envelope.
 async fn parse_d1_response(response: reqwest::Response) -> std::result::Result<JsonValue, D1Error> {
     let status = response.status();
     let retry_after = parse_retry_after(&response);
-    let text = response
-        .text()
-        .await
-        .map_err(|e| D1Error::ambiguous(format!("read body: {e}")))?;
+    let max = max_d1_http_body_bytes();
+    let bytes = read_body_capped(response, max).await?;
+    let text = String::from_utf8_lossy(&bytes);
     if !status.is_success() {
-        let message = truncate(&text, 500).to_string();
+        let message = truncate(text.as_ref(), 500).to_string();
         return Err(if retryable_http_status(status) {
             D1Error::Ambiguous {
                 message: format!("HTTP {status}: {message}"),
@@ -347,16 +366,52 @@ async fn parse_d1_response(response: reqwest::Response) -> std::result::Result<J
             }
         });
     }
-    let value: JsonValue = serde_json::from_str(&text).map_err(|e| {
-        D1Error::ambiguous(format!("JSON parse: {e}; body={}", truncate(&text, 200)))
+    let value: JsonValue = serde_json::from_slice(&bytes).map_err(|e| {
+        D1Error::ambiguous(format!(
+            "JSON parse: {e}; body={}",
+            truncate(text.as_ref(), 200)
+        ))
     })?;
     if value.get("success").and_then(|v| v.as_bool()) == Some(false) {
         return Err(D1Error::Permanent {
             status: status.as_u16(),
-            message: format!("API unsuccessful: {}", truncate(&text, 500)),
+            message: format!("API unsuccessful: {}", truncate(text.as_ref(), 500)),
         });
     }
     Ok(value)
+}
+
+/// Incrementally reads `response` and errors if the body would exceed `max`.
+async fn read_body_capped(
+    mut response: reqwest::Response,
+    max: usize,
+) -> std::result::Result<Vec<u8>, D1Error> {
+    if let Some(len) = response.content_length() {
+        if len > max as u64 {
+            return Err(D1Error::Permanent {
+                status: response.status().as_u16(),
+                message: format!("D1 body {len} bytes exceeds {max}"),
+            });
+        }
+    }
+    let mut buf = Vec::new();
+    loop {
+        let chunk = response
+            .chunk()
+            .await
+            .map_err(|e| D1Error::ambiguous(format!("read body: {e}")))?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        if buf.len().saturating_add(chunk.len()) > max {
+            return Err(D1Error::Permanent {
+                status: response.status().as_u16(),
+                message: format!("D1 body exceeds {max}"),
+            });
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 /// Last entry in the D1 `result` array (batch responses keep per-statement results).
@@ -368,12 +423,12 @@ fn first_result_entry(value: &JsonValue) -> Option<&JsonValue> {
 }
 
 /// Row objects from the last result entry's `results` array, or empty.
-fn first_result_rows(value: &JsonValue) -> Vec<JsonValue> {
+fn first_result_rows_ref(value: &JsonValue) -> &[JsonValue] {
     first_result_entry(value)
         .and_then(|first| first.get("results"))
         .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 /// `meta` object (`changes`, `last_row_id`) from the last result entry.
@@ -425,34 +480,88 @@ fn is_binary_column(column: &str) -> bool {
 }
 
 /// Maps a D1 JSON cell back to a SeaORM [`Value`], decoding `b64:` or known binary columns.
-fn json_to_sea_value(v: &JsonValue, column: &str) -> Value {
+///
+/// String and blob cells larger than [`MAX_SCALAR_BYTES`] are rejected before
+/// clone or base64 decode.
+fn json_to_sea_value(v: &JsonValue, column: &str) -> std::result::Result<Value, DbErr> {
+    reject_oversized_json_cell(v, column)?;
     match v {
-        JsonValue::Null => bookclerk_db_guest::migrate::typed_null(None, column),
-        JsonValue::Bool(b) => Value::Bool(Some(*b)),
+        JsonValue::Null => Ok(bookclerk_db_guest::migrate::typed_null(None, column)),
+        JsonValue::Bool(b) => Ok(Value::Bool(Some(*b))),
         JsonValue::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Value::BigInt(Some(i))
+                Ok(Value::BigInt(Some(i)))
             } else if let Some(f) = n.as_f64() {
-                Value::Double(Some(f))
+                Ok(Value::Double(Some(f)))
             } else {
-                Value::String(Some(n.to_string()))
+                Ok(Value::String(Some(n.to_string())))
             }
         }
         JsonValue::String(s) => {
             // Decode b64:-prefixed strings or known binary columns.
             if let Some(bytes) = b64_string_to_bytes(s) {
-                return Value::Bytes(Some(bytes));
+                if bytes.len() > MAX_SCALAR_BYTES as usize {
+                    return Err(oversized_cell_err(column, bytes.len()));
+                }
+                return Ok(Value::Bytes(Some(bytes)));
             }
             if is_binary_column(column) {
                 // Legacy: try base64 without prefix (shouldn't happen with new writes).
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(s.as_bytes()) {
-                    return Value::Bytes(Some(bytes));
+                    if bytes.len() > MAX_SCALAR_BYTES as usize {
+                        return Err(oversized_cell_err(column, bytes.len()));
+                    }
+                    return Ok(Value::Bytes(Some(bytes)));
                 }
             }
-            Value::String(Some(s.clone()))
+            Ok(Value::String(Some(s.clone())))
         }
-        other => Value::String(Some(other.to_string())),
+        other => {
+            let encoded = other.to_string();
+            if encoded.len() > MAX_SCALAR_BYTES as usize {
+                return Err(oversized_cell_err(column, encoded.len()));
+            }
+            Ok(Value::String(Some(encoded)))
+        }
     }
+}
+
+/// True when SQL is the guest page wrapper (`AS _bookclerk_page LIMIT …`).
+fn sql_is_bookclerk_page(sql: &str) -> bool {
+    sql.contains("_bookclerk_page")
+}
+
+/// Cloudflare JSON envelope around row payload (`success` / `result` / `meta`).
+const D1_JSON_ENVELOPE_BYTES: usize = 4096;
+
+/// HTTP-body ceiling for every D1 JSON response: one page of scalars plus envelope.
+fn max_d1_http_body_bytes() -> usize {
+    (MAX_SCALAR_BYTES as usize).saturating_add(D1_JSON_ENVELOPE_BYTES)
+}
+
+/// UTF-8 / JSON length of one D1 cell, used to accumulate a page budget.
+fn json_cell_byte_len(v: &JsonValue) -> usize {
+    match v {
+        JsonValue::String(s) => s.len(),
+        JsonValue::Array(_) | JsonValue::Object(_) => v.to_string().len(),
+        _ => 0,
+    }
+}
+
+/// Rejects a string or blob JSON cell before it is cloned into a SeaORM value.
+fn reject_oversized_json_cell(v: &JsonValue, column: &str) -> std::result::Result<(), DbErr> {
+    let nbytes = json_cell_byte_len(v);
+    if nbytes > MAX_SCALAR_BYTES as usize {
+        return Err(oversized_cell_err(column, nbytes));
+    }
+    Ok(())
+}
+
+/// Operator-facing error when one decoded cell exceeds [`MAX_SCALAR_BYTES`].
+fn oversized_cell_err(column: &str, nbytes: usize) -> DbErr {
+    DbErr::Custom(format!(
+        "column `{column}` is {nbytes} bytes; exceeds {MAX_SCALAR_BYTES}"
+    ))
 }
 
 /// Truncates an error body to `max` bytes so logs stay bounded.
@@ -963,5 +1072,140 @@ mod tests {
             "single-statement D1 query must use {{ sql, params }}"
         );
         assert_eq!(queries[0]["sql"], "SELECT 1");
+    }
+
+    fn page_rows_ok(n: usize) -> ResponseTemplate {
+        let results: Vec<JsonValue> = (0..n).map(|i| json!({ "id": i })).collect();
+        ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "result": [{
+                "results": results,
+                "success": true,
+                "meta": {}
+            }]
+        }))
+    }
+
+    #[test]
+    fn sql_is_bookclerk_page_detects_alias() {
+        assert!(sql_is_bookclerk_page(
+            "SELECT * FROM (SELECT id FROM t) AS _bookclerk_page LIMIT 11 OFFSET 0"
+        ));
+        assert!(!sql_is_bookclerk_page("SELECT 1"));
+    }
+
+    #[test]
+    fn json_to_sea_value_rejects_oversized_string_before_clone() {
+        let huge = "x".repeat(MAX_SCALAR_BYTES as usize + 1);
+        let err = json_to_sea_value(&JsonValue::String(huge), "v").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&MAX_SCALAR_BYTES.to_string()) || msg.contains("exceeds"),
+            "expected scalar-cap error, got {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn paged_query_uses_one_http_request_not_per_row() {
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/query$"))
+            .respond_with(page_rows_ok(11))
+            .mount(&server)
+            .await;
+
+        let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
+        let db = Database::connect_proxy(DbBackend::Sqlite, Arc::new(Box::new(proxy)))
+            .await
+            .unwrap();
+        bookclerk_db_guest::set_connection(db).await;
+        let page = bookclerk_db_guest::guest_query_page(
+            bookclerk_plugin_sdk::StatementDto {
+                sql: "SELECT id FROM t".into(),
+                values: Vec::new(),
+                txn_id: None,
+            },
+            "",
+            10,
+        )
+        .await
+        .unwrap();
+        let rows: Vec<JsonValue> = serde_json::from_str(&page.rows_json).unwrap();
+        assert_eq!(rows.len(), 10);
+        assert_eq!(page.next_cursor.as_deref(), Some("10"));
+        let requests = server.received_requests().await.unwrap();
+        let hits = requests
+            .iter()
+            .filter(|r| r.url.path().ends_with("/query"))
+            .count();
+        assert_eq!(
+            hits, 1,
+            "paged D1 query must be one LIMIT+1 HTTP request, got {hits}"
+        );
+        let body: JsonValue = serde_json::from_slice(&requests[0].body).unwrap();
+        let sql = body["sql"].as_str().unwrap();
+        assert!(sql.contains("_bookclerk_page"), "{sql}");
+        assert!(sql.contains("LIMIT 11"), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn paged_query_rejects_oversized_cell_during_decode() {
+        let huge = "x".repeat(MAX_SCALAR_BYTES as usize + 8);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/query$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true,
+                "result": [{
+                    "results": [{"v": huge}],
+                    "success": true,
+                    "meta": {}
+                }]
+            })))
+            .mount(&server)
+            .await;
+        let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
+        let sql = "SELECT * FROM (SELECT v FROM t) AS _bookclerk_page LIMIT 2 OFFSET 0";
+        let err = proxy
+            .query(Statement::from_string(DatabaseBackend::Sqlite, sql))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&MAX_SCALAR_BYTES.to_string()) || msg.contains("exceeds"),
+            "expected decode-time scalar-cap error, got {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_aborts_http_body_past_page_budget() {
+        let huge = "x".repeat(max_d1_http_body_bytes() + 1);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/query$"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(huge))
+            .mount(&server)
+            .await;
+        let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
+        let err = proxy
+            .query(Statement::from_string(DatabaseBackend::Sqlite, "SELECT 1"))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exceeds"),
+            "expected incremental body cap, got {msg}"
+        );
+    }
+
+    #[test]
+    fn d1_http_body_ceiling_is_page_budget_plus_envelope() {
+        assert_eq!(
+            max_d1_http_body_bytes(),
+            MAX_SCALAR_BYTES as usize + D1_JSON_ENVELOPE_BYTES
+        );
+        assert!(max_d1_http_body_bytes() < (MAX_SCALAR_BYTES as usize).saturating_mul(2));
     }
 }

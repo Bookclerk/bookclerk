@@ -19,6 +19,9 @@
 
 FROM rust:1.85-bookworm AS builder
 WORKDIR /src
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends capnproto \
+    && rm -rf /var/lib/apt/lists/*
 COPY . .
 # Neither helper is optional. Codec work runs in bookclerk-media-worker and
 # plugin guests are started by bookclerk-jail; a host without them refuses media

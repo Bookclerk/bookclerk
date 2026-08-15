@@ -251,6 +251,128 @@ impl S3Backend {
             }
         }
     }
+
+    /// Streams `body` as multipart parts (bounded window; no full-object buffer).
+    async fn put_stream_multipart(
+        &self,
+        key: &str,
+        mut body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        meta: ObjectMeta,
+    ) -> Result<u64> {
+        use tokio::io::AsyncReadExt;
+
+        let full_key = self.full_key(key);
+        let created = apply_meta_multipart(
+            self.client
+                .create_multipart_upload()
+                .bucket(&self.bucket)
+                .key(&full_key),
+            &meta,
+        )
+        .send()
+        .await
+        .map_err(|err| StorageError::S3(err.to_string()))?;
+
+        let upload_id = created.upload_id().ok_or_else(|| {
+            StorageError::S3("CreateMultipartUpload returned no upload id".into())
+        })?;
+
+        let upload = async {
+            let mut part_number: i32 = 1;
+            let mut completed = Vec::new();
+            let mut buffer = vec![0u8; MULTIPART_PART_SIZE];
+            let mut total = 0u64;
+
+            loop {
+                let mut filled = 0usize;
+                while filled < MULTIPART_PART_SIZE {
+                    let n = body.read(&mut buffer[filled..]).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    filled += n;
+                }
+                if filled == 0 {
+                    break;
+                }
+                total += filled as u64;
+
+                let uploaded = self
+                    .client
+                    .upload_part()
+                    .bucket(&self.bucket)
+                    .key(&full_key)
+                    .upload_id(upload_id)
+                    .part_number(part_number)
+                    .body(ByteStream::from(Bytes::copy_from_slice(&buffer[..filled])))
+                    .send()
+                    .await
+                    .map_err(|err| StorageError::S3(err.to_string()))?;
+
+                let etag = uploaded.e_tag().ok_or_else(|| {
+                    StorageError::S3(format!("UploadPart {part_number} returned no ETag"))
+                })?;
+                completed.push(
+                    CompletedPart::builder()
+                        .part_number(part_number)
+                        .e_tag(etag)
+                        .build(),
+                );
+                part_number += 1;
+            }
+
+            if completed.is_empty() {
+                self.client
+                    .abort_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(&full_key)
+                    .upload_id(upload_id)
+                    .send()
+                    .await
+                    .ok();
+                self.put(key, Bytes::new(), meta.clone()).await?;
+                return Ok(0);
+            }
+
+            self.client
+                .complete_multipart_upload()
+                .bucket(&self.bucket)
+                .key(&full_key)
+                .upload_id(upload_id)
+                .multipart_upload(
+                    CompletedMultipartUpload::builder()
+                        .set_parts(Some(completed))
+                        .build(),
+                )
+                .send()
+                .await
+                .map_err(|err| StorageError::S3(err.to_string()))?;
+            Ok(total)
+        };
+
+        match upload.await {
+            Ok(n) => Ok(n),
+            Err(err) => {
+                if let Err(abort_err) = self
+                    .client
+                    .abort_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(&full_key)
+                    .upload_id(upload_id)
+                    .send()
+                    .await
+                {
+                    tracing::warn!(
+                        key = %full_key,
+                        upload_id,
+                        error = %abort_err,
+                        "failed to abort multipart upload after error"
+                    );
+                }
+                Err(err)
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -454,6 +576,113 @@ impl StorageBackend for S3Backend {
         // but stores the Tagging XML as a new object body, destroying media.
         let _ = (key, created, modified);
         Ok(())
+    }
+
+    async fn list_page(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<crate::ListPage> {
+        let full_prefix = self.full_key(prefix);
+        let limit = if limit == 0 { 256 } else { limit };
+        let mut req = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(&full_prefix)
+            .max_keys(i32::try_from(limit).unwrap_or(256));
+        if let Some(token) = cursor {
+            req = req.continuation_token(token);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|err| StorageError::S3(err.to_string()))?;
+        let mut objects = Vec::new();
+        for obj in resp.contents() {
+            let Some(raw_key) = obj.key() else { continue };
+            let key = raw_key
+                .strip_prefix(&self.prefix)
+                .unwrap_or(raw_key)
+                .to_string();
+            objects.push(ObjectInfo {
+                key,
+                size: obj.size().unwrap_or(0) as u64,
+            });
+        }
+        let next_cursor = if resp.is_truncated().unwrap_or(false) {
+            resp.next_continuation_token().map(str::to_string)
+        } else {
+            None
+        };
+        Ok(crate::ListPage {
+            objects,
+            next_cursor,
+        })
+    }
+
+    async fn get_stream(
+        &self,
+        key: &str,
+        range: Option<crate::ByteRange>,
+    ) -> Result<(
+        ObjectProbe,
+        std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+    )> {
+        let mut req = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(self.full_key(key));
+        if let Some(range) = range {
+            let header = match range.length {
+                Some(len) if len > 0 => {
+                    format!(
+                        "bytes={}-{}",
+                        range.offset,
+                        range.offset.saturating_add(len - 1)
+                    )
+                }
+                _ => format!("bytes={}-", range.offset),
+            };
+            req = req.range(header);
+        }
+        let out = req.send().await.map_err(|err| {
+            let msg = err.to_string();
+            if msg.contains("NoSuchKey") || msg.contains("404") || msg.contains("NotFound") {
+                StorageError::NotFound(key.into())
+            } else {
+                StorageError::S3(msg)
+            }
+        })?;
+        let size = out.content_length().unwrap_or(0) as u64;
+        let content_type = out.content_type().map(str::to_string);
+        let probe = ObjectProbe {
+            key: key.to_string(),
+            size,
+            content_type: content_type.clone(),
+            meta: ObjectMeta {
+                content_type,
+                content_length: Some(size),
+                ..Default::default()
+            },
+        };
+        let reader = out.body.into_async_read();
+        Ok((probe, Box::pin(reader)))
+    }
+
+    async fn put_stream(
+        &self,
+        key: &str,
+        body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        meta: ObjectMeta,
+    ) -> Result<crate::PutStreamResult> {
+        let n = self.put_stream_multipart(key, body, meta).await?;
+        Ok(crate::PutStreamResult {
+            bytes_written: n,
+            etag: None,
+        })
     }
 }
 

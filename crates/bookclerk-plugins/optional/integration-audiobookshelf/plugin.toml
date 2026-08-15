@@ -1,4 +1,4 @@
-api_version = 1
+api_version = 2
 id = "audiobookshelf"
 name = "Audiobookshelf"
 kind = "integration"
@@ -13,3 +13,15 @@ mode = "outbound"
 # alone is insufficient for talking to your library instance.
 [capabilities.bindings]
 config = true
+
+[capabilities.methods]
+list = [
+    "pollEvents",
+    "start",
+    "health",
+    "diagnose",
+    "scanLibrary",
+    "syncListening",
+    "authenticateUser",
+    "onEvent",
+]

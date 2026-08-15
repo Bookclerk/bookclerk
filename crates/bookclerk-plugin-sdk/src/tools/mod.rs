@@ -9,7 +9,7 @@
 //! | --- | --- | --- |
 //! | [`check_plugin`] / [`fmt_plugin_toml`] / [`package_plugin`] | always | Validate, format, archive |
 //! | [`sync_embed`] | always | Optional workerd JS vendor |
-//! | [`run_tools_cli`] / [`smoke_plugin`] | `tools` | CLI entry + live workerd smoke |
+//! | `run_tools_cli` / `smoke_plugin` | `tools` | CLI entry + live workerd smoke |
 //!
 //! See `docs/plugins.md` and the crate README.
 

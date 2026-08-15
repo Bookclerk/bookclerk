@@ -12,7 +12,7 @@ keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-integration", "audiobook
 categories = ["multimedia", "command-line-utilities"]
 
 [package.metadata.bookclerk]
-api_version = 1
+api_version = 2
 kind = "integration"
 id = "echo_native_rust"
 display_name = "Echo Integration (native Rust)"

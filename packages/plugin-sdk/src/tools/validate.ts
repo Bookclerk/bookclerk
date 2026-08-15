@@ -11,7 +11,7 @@
  * (camelCase). See `docs/plugins.md` for the full manifest contract.
  */
 export type Manifest = {
-  /** ABI version declared in `plugin.toml`; must be `1` for current hosts. */
+  /** ABI version declared in `plugin.toml`; must be `2`. */
   api_version: number;
   /** Globally unique plugin id matching `[a-z0-9_]{2,32}` (no leading/trailing `_`). */
   id: string;
@@ -222,8 +222,8 @@ export function validateManifest(m: Manifest): void {
   } catch (err) {
     throw new Error(`plugin.toml: ${(err as Error).message}`);
   }
-  if (m.api_version !== 1) {
-    throw new Error("plugin.toml: `api_version` must be 1");
+  if (m.api_version !== 2) {
+    throw new Error("plugin.toml: `api_version` must be 2");
   }
   if (m.logo != null) {
     validateLogo(String(m.logo));

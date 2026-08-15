@@ -11,7 +11,6 @@
  * {@link BookclerkPluginLike}.
  */
 
-import * as readline from "node:readline";
 import type {
   CliInvokeParams,
   CliInvokeResult,
@@ -782,210 +781,20 @@ export abstract class BookclerkPlugin implements BookclerkPluginLike {
   }
 }
 
-type RpcRequest = { id?: unknown; method?: string; params?: unknown };
-
 /**
- * Native guest runner — hosts a {@link BookclerkPlugin} on stdin/stdout.
- *
- * Analogous to Rust `BookclerkPluginGuest` / low-level `PluginGuest`. Reads
- * newline-delimited JSON-RPC-style frames (`{ id, method, params }`) and writes
- * `{ id, result }` or `{ id, error }` responses.
- *
- * @example
- * ```ts
- * class Echo extends BookclerkPlugin {
- *   handshake() {
- *     return { apiVersion: 1, id: "echo", kind: "source", capabilities: ["health"] };
- *   }
- * }
- * await BookclerkPluginGuest.serve(new Echo());
- * ```
+ * Native guest runner. Newline JSON `serve` was removed; JS/TS authors export a
+ * workerd {@link BookclerkPlugin}. Native guests use Rust `serve` / `PluginRoot`.
  */
 export class BookclerkPluginGuest {
   /**
-   * Runs the Workers RPC loop until stdin closes or after a successful `shutdown`.
+   * Throws: newline JSON native serve is no longer part of the product ABI.
    *
-   * @param plugin - Guest implementing {@link BookclerkPluginLike}.
-   * @returns Resolves when the RPC loop exits cleanly.
-   *
-   * @example
-   * ```ts
-   * await BookclerkPluginGuest.serve(new MyPlugin());
-   * ```
+   * @param _plugin - Ignored.
    */
-  static async serve(plugin: BookclerkPluginLike): Promise<void> {
-    const rl = readline.createInterface({ input: process.stdin, terminal: false });
-    for await (const line of rl) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let req: RpcRequest;
-      try {
-        req = JSON.parse(trimmed) as RpcRequest;
-      } catch (err) {
-        writeError(null, `invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
-        continue;
-      }
-      const id = req.id ?? null;
-      const method = req.method ?? "";
-      try {
-        const result = await dispatch(plugin, method, req.params);
-        writeResult(id, result);
-        if (method === "shutdown") {
-          rl.close();
-          return;
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const code =
-          err && typeof err === "object" && "code" in err
-            ? String((err as { code: unknown }).code)
-            : "internal";
-        writeError(id, message, code);
-      }
-    }
-  }
-}
-
-async function dispatch(
-  plugin: BookclerkPluginLike,
-  method: string,
-  params: unknown,
-): Promise<unknown> {
-  switch (method) {
-    case "handshake":
-      return plugin.handshake((params ?? {}) as HandshakeParams);
-    case "shutdown":
-      await plugin.shutdown?.();
-      return null;
-    case "health":
-      return (await plugin.health?.()) ?? { ok: true };
-    case "diagnose":
-      return (await plugin.diagnose?.()) ?? { lines: [] };
-    case "onEvent":
-      if (!plugin.onEvent) throw unsupported("onEvent");
-      await plugin.onEvent(params as HostToPluginEvent);
-      return { ok: true };
-    case "cliDescribe":
-      return (await plugin.cliDescribe?.()) ?? { commands: [] };
-    case "cliInvoke":
-      if (!plugin.cliInvoke) throw unsupported("cliInvoke");
-      return plugin.cliInvoke(params as CliInvokeParams);
-    case "start":
-      if (!plugin.start) throw unsupported("start");
-      await plugin.start(params);
-      return null;
-    case "pollEvents":
-      if (!plugin.pollEvents) throw unsupported("pollEvents");
-      return plugin.pollEvents();
-    case "scanLibrary":
-      if (!plugin.scanLibrary) throw unsupported("scanLibrary");
-      await plugin.scanLibrary(params);
-      return null;
-    case "syncListening":
-      if (!plugin.syncListening) throw unsupported("syncListening");
-      return plugin.syncListening();
-    case "authenticateUser":
-      if (!plugin.authenticateUser) throw unsupported("authenticateUser");
-      return plugin.authenticateUser(params);
-    case "login":
-      if (!plugin.login) throw unsupported("login");
-      return plugin.login(params);
-    case "loginStart":
-      if (!plugin.loginStart) throw unsupported("loginStart");
-      return plugin.loginStart(params);
-    case "loginComplete":
-      if (!plugin.loginComplete) throw unsupported("loginComplete");
-      return plugin.loginComplete(params);
-    case "credentialsUpdate":
-      if (!plugin.credentialsUpdate) throw unsupported("credentialsUpdate");
-      await plugin.credentialsUpdate(params);
-      return null;
-    case "scan":
-      if (!plugin.scan) throw unsupported("scan");
-      return plugin.scan(params);
-    case "fetchTitle":
-      if (!plugin.fetchTitle) throw unsupported("fetchTitle");
-      return plugin.fetchTitle(params);
-    case "searchCatalog":
-      if (!plugin.searchCatalog) throw unsupported("searchCatalog");
-      return plugin.searchCatalog(params);
-    case "expandCandidates":
-      if (!plugin.expandCandidates) throw unsupported("expandCandidates");
-      return plugin.expandCandidates(params);
-    case "purchaseHint":
-      if (!plugin.purchaseHint) throw unsupported("purchaseHint");
-      return plugin.purchaseHint(params);
-    case "listDeals":
-      if (!plugin.listDeals) throw unsupported("listDeals");
-      return plugin.listDeals(params);
-    case "listAccounts":
-      if (!plugin.listAccounts) throw unsupported("listAccounts");
-      return plugin.listAccounts(params);
-    case "catalogDetail":
-      if (!plugin.catalogDetail) throw unsupported("catalogDetail");
-      return plugin.catalogDetail(params);
-    case "put":
-      if (!plugin.put) throw unsupported("put");
-      await plugin.put(params);
-      return null;
-    case "putFile":
-      if (!plugin.putFile) throw unsupported("putFile");
-      await plugin.putFile(params);
-      return null;
-    case "get":
-      if (!plugin.get) throw unsupported("get");
-      return plugin.get(params);
-    case "exists":
-      if (!plugin.exists) throw unsupported("exists");
-      return plugin.exists(params);
-    case "list":
-      if (!plugin.list) throw unsupported("list");
-      return plugin.list(params);
-    case "probe":
-      if (!plugin.probe) throw unsupported("probe");
-      return plugin.probe(params);
-    case "copy":
-      if (!plugin.copy) throw unsupported("copy");
-      await plugin.copy(params);
-      return null;
-    case "delete":
-      if (!plugin.delete) throw unsupported("delete");
-      await plugin.delete(params);
-      return null;
-    case "touchFile":
-      if (!plugin.touchFile) throw unsupported("touchFile");
-      await plugin.touchFile(params);
-      return null;
-    case "dbConnect":
-      if (!plugin.dbConnect) throw unsupported("dbConnect");
-      return plugin.dbConnect(params);
-    case "dbPing":
-      if (!plugin.dbPing) throw unsupported("dbPing");
-      await plugin.dbPing();
-      return null;
-    case "dbQuery":
-      if (!plugin.dbQuery) throw unsupported("dbQuery");
-      return plugin.dbQuery(params);
-    case "dbExecute":
-      if (!plugin.dbExecute) throw unsupported("dbExecute");
-      return plugin.dbExecute(params);
-    case "dbBegin":
-      if (!plugin.dbBegin) throw unsupported("dbBegin");
-      return plugin.dbBegin(params);
-    case "dbCommit":
-      if (!plugin.dbCommit) throw unsupported("dbCommit");
-      await plugin.dbCommit(params);
-      return null;
-    case "dbRollback":
-      if (!plugin.dbRollback) throw unsupported("dbRollback");
-      await plugin.dbRollback(params);
-      return null;
-    case "dbAtomic":
-      if (!plugin.dbAtomic) throw unsupported("dbAtomic");
-      return plugin.dbAtomic(params);
-    default:
-      if (plugin.callRaw) return plugin.callRaw(method, params);
-      throw unsupported(method);
+  static async serve(_plugin: BookclerkPluginLike): Promise<void> {
+    throw new Error(
+      "newline JSON native serve was removed; export a workerd BookclerkPlugin or use Rust serve()/PluginRoot",
+    );
   }
 }
 
@@ -993,12 +802,4 @@ function unsupported(method: string): Error {
   return Object.assign(new Error(`${method} not implemented`), {
     code: "unsupported" as const,
   });
-}
-
-function writeResult(id: unknown, result: unknown): void {
-  process.stdout.write(JSON.stringify({ id, result }) + "\n");
-}
-
-function writeError(id: unknown, message: string, code = "internal"): void {
-  process.stdout.write(JSON.stringify({ id, error: { code, message } }) + "\n");
 }

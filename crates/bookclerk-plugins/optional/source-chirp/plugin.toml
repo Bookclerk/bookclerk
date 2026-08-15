@@ -1,4 +1,4 @@
-api_version = 1
+api_version = 2
 id = "chirp"
 name = "Chirp"
 kind = "source"
@@ -17,3 +17,16 @@ mode = "outbound"
 config = true
 secrets = true
 work_fs = true
+
+[capabilities.methods]
+list = [
+    "health",
+    "diagnose",
+    "login",
+    "scan",
+    "fetchTitle",
+    "searchCatalog",
+    "expandCandidates",
+    "purchaseHint",
+    "listDeals",
+]

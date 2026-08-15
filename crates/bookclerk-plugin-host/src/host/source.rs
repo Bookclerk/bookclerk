@@ -27,18 +27,21 @@ use serde_json::Value;
 use crate::discover::DiscoveredPlugin;
 use crate::jail::plugin_data_dir;
 use crate::protocol::{
-    methods, CatalogDetailParams, CatalogHitDto, ExpandCandidatesParams, FetchTitleParams,
+    CatalogDetailParams, CatalogHitDto, ExpandCandidatesParams, FetchTitleParams,
     LoginCompleteParams, LoginParams, LoginResultDto, LoginStartResultDto, PurchaseHintDto,
     PurchaseHintParams, ScanBookDto, ScanParams, ScanSummaryDto, SearchCatalogParams,
     SourceAccountDto, SourceFetchDto,
 };
-use crate::rpc::PluginClient;
+use crate::rpc_v2::{V2PluginSession, HOST_SHARED_ACCOUNT};
 use crate::Result;
+use bookclerk_plugin_sdk::v2::PRODUCT_API_VERSION;
 
 /// External content source backed by a discovered plugin binary.
 pub struct ExternalSource {
-    /// RPC client to the jailed guest process (never given `library.db`).
-    client: PluginClient,
+    /// Cap'n Proto v2 session (never given `library.db`).
+    session: Arc<V2PluginSession>,
+    /// JSON factory context (plugin config table).
+    ctx_json: String,
     /// Operator-facing storefront name from handshake or the manifest.
     display_name: String,
     /// UI brand colors and icon from handshake, or a slate fallback.
@@ -64,11 +67,25 @@ impl ExternalSource {
     ///
     /// Returns an error when the operation fails.
     pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> Result<Self> {
+        if plugin.manifest.api_version != PRODUCT_API_VERSION {
+            return Err(crate::PluginError::message(format!(
+                "plugin `{}` api_version {} is not v2",
+                plugin.manifest.id, plugin.manifest.api_version
+            )));
+        }
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
-        let client = PluginClient::spawn(plugin, config, config_json.clone()).await?;
-        let source_config = crate::handshake_config_for_grant(client.grant(), config_json);
-        let hs = client.handshake().clone();
+        let session = Arc::new(
+            V2PluginSession::spawn_for_account(
+                plugin,
+                config,
+                config_json.clone(),
+                HOST_SHARED_ACCOUNT,
+            )
+            .await?,
+        );
+        let source_config = crate::handshake_config_for_grant(session.grant(), config_json);
+        let hs = session.handshake_metadata();
         let display_name = hs
             .display_name
             .clone()
@@ -84,10 +101,11 @@ impl ExternalSource {
             .password_env_var
             .as_deref()
             .map(|s| Box::leak(s.to_string().into_boxed_str()) as &'static str);
-        // Created while the jail was being planned, since the allowlist names it.
         let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
+        let ctx_json = source_config.to_string();
         Ok(Self {
-            client,
+            session,
+            ctx_json,
             display_name,
             brand,
             auth_mode,
@@ -99,11 +117,34 @@ impl ExternalSource {
         })
     }
 
+    /// Forwards one content-source RPC through the v2 session and deserializes the JSON result.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the session call fails, params cannot be serialized, or the JSON result cannot be decoded.
+    async fn cs_call<T: serde::de::DeserializeOwned>(
+        &self,
+        op: &str,
+        params: Value,
+    ) -> bookclerk_source::Result<T> {
+        let raw = self
+            .session
+            .content_source_json(
+                self.ctx_json.clone(),
+                op,
+                serde_json::to_string(&params)
+                    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
+            )
+            .await
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        serde_json::from_str(&raw).map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
+    }
+
     /// True when the guest advertised OAuth plus `loginStart`/`loginComplete`.
     fn supports_oauth_rpc(&self) -> bool {
         self.auth_mode == PortalAuthMode::Oauth
-            && self.client.has_capability("loginStart")
-            && self.client.has_capability("loginComplete")
+            && self.session.has_capability("loginStart")
+            && self.session.has_capability("loginComplete")
     }
 
     /// Builds guest login params; host fills callback IPC after starting the proxy.
@@ -133,12 +174,11 @@ impl ExternalSource {
         opts: LoginOptions,
     ) -> bookclerk_source::Result<SourceAccount> {
         if opts.password.is_some() {
-            self.client.require_binding("secrets")?;
+            self.session.require_binding("secrets")?;
         }
         let result: LoginResultDto = self
-            .client
-            .call(
-                methods::LOGIN,
+            .cs_call(
+                "login",
                 serde_json::to_value(Self::login_params(
                     self.plugin_data_dir.display().to_string(),
                     opts,
@@ -156,13 +196,13 @@ impl ExternalSource {
         opts: LoginOptions,
         on_progress: &(dyn Fn(OAuthProgress) + Send + Sync),
     ) -> bookclerk_source::Result<SourceAccount> {
-        self.client.require_binding("oauth")?;
+        self.session.require_binding("oauth")?;
         // Host owns the browser TCP listener and forwards bytes to the guest
         // over IPC — required under Windows AppContainer loopback isolation.
         let proxy = crate::callback_proxy::CallbackProxy::start(
             opts.callback_bind.as_deref(),
-            self.client.scratch_dir(),
-            self.client.package_sid(),
+            self.session.scratch_dir(),
+            self.session.package_sid(),
         )
         .await
         .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
@@ -172,9 +212,8 @@ impl ExternalSource {
         params.callback_public_base = Some(proxy.public_base.clone());
 
         let start: LoginStartResultDto = self
-            .client
-            .call(
-                methods::LOGIN_START,
+            .cs_call(
+                "loginStart",
                 serde_json::to_value(params)
                     .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
             )
@@ -188,9 +227,8 @@ impl ExternalSource {
         });
         on_progress(OAuthProgress::WaitingForCallback);
         let result: LoginResultDto = self
-            .client
-            .call(
-                methods::LOGIN_COMPLETE,
+            .cs_call(
+                "loginComplete",
                 serde_json::to_value(LoginCompleteParams {
                     session_id: start.session_id,
                 })
@@ -248,7 +286,7 @@ pub async fn load_external_sources(config: &Config, registry: &mut SourceRegistr
 #[async_trait]
 impl ContentSource for ExternalSource {
     fn id(&self) -> &str {
-        self.client.plugin_id()
+        self.session.id()
     }
 
     fn display_name(&self) -> &str {
@@ -326,12 +364,11 @@ impl ContentSource for ExternalSource {
     ) -> bookclerk_source::Result<ScanSummary> {
         let credentials = scan_credentials_for(scope, &opts.accounts).await?;
         if !credentials.is_empty() {
-            self.client.require_binding("secrets")?;
+            self.session.require_binding("secrets")?;
         }
         let dto: ScanSummaryDto = self
-            .client
-            .call(
-                methods::SCAN,
+            .cs_call(
+                "scan",
                 serde_json::to_value(ScanParams {
                     plugin_data_dir: self.plugin_data_dir.display().to_string(),
                     accounts: opts.accounts,
@@ -375,14 +412,13 @@ impl ContentSource for ExternalSource {
             .await
             .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?;
         if credentials.is_some() {
-            self.client.require_binding("secrets")?;
+            self.session.require_binding("secrets")?;
         }
         let download = serde_json::to_value(&opts.download)
             .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
-        let value = self
-            .client
-            .call_raw_with_fetch_dir(
-                methods::FETCH_TITLE,
+        let dto: SourceFetchDto = self
+            .cs_call(
+                "fetchTitle",
                 serde_json::to_value(FetchTitleParams {
                     plugin_data_dir: self.plugin_data_dir.display().to_string(),
                     account_id: account_id.to_string(),
@@ -393,12 +429,8 @@ impl ContentSource for ExternalSource {
                     download,
                 })
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
-                Some(&opts.cache_dir),
             )
-            .await
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
-        let dto: SourceFetchDto = serde_json::from_value(value)
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+            .await?;
         Ok(source_fetch_from_dto(dto))
     }
 
@@ -406,7 +438,7 @@ impl ContentSource for ExternalSource {
         &self,
         opts: &CatalogSearchOpts,
     ) -> bookclerk_source::Result<Vec<CatalogHit>> {
-        if !self.client.has_capability(methods::SEARCH_CATALOG) {
+        if !self.session.has_capability("searchCatalog") {
             return Ok(Vec::new());
         }
         let params = SearchCatalogParams {
@@ -419,9 +451,8 @@ impl ContentSource for ExternalSource {
             language: opts.language.clone(),
         };
         match self
-            .client
-            .call::<Vec<CatalogHitDto>>(
-                methods::SEARCH_CATALOG,
+            .cs_call::<Vec<CatalogHitDto>>(
+                "searchCatalog",
                 serde_json::to_value(params)
                     .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
             )
@@ -429,8 +460,6 @@ impl ContentSource for ExternalSource {
         {
             Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_dto).collect()),
             Err(err) => {
-                // Discover typeahead depends on this path; keep failures visible at warn
-                // so empty UI results are diagnosable (debug is often off in daemon runs).
                 tracing::warn!(
                     plugin = %self.id(),
                     error = %err,
@@ -445,7 +474,7 @@ impl ContentSource for ExternalSource {
         &self,
         product_id: &str,
     ) -> bookclerk_source::Result<Option<CatalogHit>> {
-        if !self.client.has_capability(methods::CATALOG_DETAIL) {
+        if !self.session.has_capability("catalogDetail") {
             return Ok(None);
         }
         let params = CatalogDetailParams {
@@ -453,9 +482,8 @@ impl ContentSource for ExternalSource {
             isbn: None,
         };
         match self
-            .client
-            .call::<Option<CatalogHitDto>>(
-                methods::CATALOG_DETAIL,
+            .cs_call::<Option<CatalogHitDto>>(
+                "catalogDetail",
                 serde_json::to_value(params)
                     .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
             )
@@ -478,7 +506,7 @@ impl ContentSource for ExternalSource {
         seed: &ExpandSeed,
         limit: usize,
     ) -> bookclerk_source::Result<Vec<CatalogHit>> {
-        if !self.client.has_capability(methods::EXPAND_CANDIDATES) {
+        if !self.session.has_capability("expandCandidates") {
             return Ok(Vec::new());
         }
         let params = ExpandCandidatesParams {
@@ -495,9 +523,8 @@ impl ContentSource for ExternalSource {
             limit,
         };
         match self
-            .client
-            .call::<Vec<CatalogHitDto>>(
-                methods::EXPAND_CANDIDATES,
+            .cs_call::<Vec<CatalogHitDto>>(
+                "expandCandidates",
                 serde_json::to_value(params)
                     .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
             )
@@ -519,7 +546,7 @@ impl ContentSource for ExternalSource {
         &self,
         opts: &PurchaseHintOpts,
     ) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
-        if !self.client.has_capability(methods::PURCHASE_HINT) {
+        if !self.session.has_capability("purchaseHint") {
             return Ok(None);
         }
         let params = PurchaseHintParams {
@@ -532,9 +559,8 @@ impl ContentSource for ExternalSource {
             with_price: opts.with_price,
         };
         match self
-            .client
-            .call::<Option<PurchaseHintDto>>(
-                methods::PURCHASE_HINT,
+            .cs_call::<Option<PurchaseHintDto>>(
+                "purchaseHint",
                 serde_json::to_value(params)
                     .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
             )
@@ -553,12 +579,11 @@ impl ContentSource for ExternalSource {
     }
 
     async fn list_deals(&self, limit: usize) -> bookclerk_source::Result<Vec<CatalogHit>> {
-        if !self.client.has_capability(methods::LIST_DEALS) {
+        if !self.session.has_capability("listDeals") {
             return Ok(Vec::new());
         }
         match self
-            .client
-            .call::<Vec<CatalogHitDto>>(methods::LIST_DEALS, serde_json::json!({ "limit": limit }))
+            .cs_call::<Vec<CatalogHitDto>>("listDeals", serde_json::json!({ "limit": limit }))
             .await
         {
             Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_dto).collect()),

@@ -4,7 +4,7 @@
 //! `bookclerk-jail`'s own tests check that a policy survives `exec`. Neither
 //! proves the two halves meet: a host that assembled a perfect spec and then
 //! spawned the guest directly would pass both. So these tests go through
-//! [`PluginClient::spawn`] — the same call the daemon makes — and have the guest
+//! [`V2PluginSession`] spawn — the same call the daemon makes — and have the guest
 //! report what it could open.
 //!
 //! The guest is a shell script rather than one of the plugins we ship, because
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use bookclerk_config::{Config, Isolation, Paths};
 use bookclerk_plugin_host::{
     consent_request, discover_plugins, grant_has_binding, plugin_data_dir, require_grant,
-    DiscoveredPlugin, PluginClient, PluginGrantStore,
+    DiscoveredPlugin, PluginGrantStore, V2PluginSession, HOST_SHARED_ACCOUNT,
 };
 
 /// Where cargo left the launcher for this test run.
@@ -104,10 +104,10 @@ try_write() {
     // depend on where the host's request counter started.
     body.push_str(
         r#"
-while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
-  printf '{"id":%s,"result":{"apiVersion":1,"id":"probe","kind":"integration","capabilities":[]}}\n' "$id"
-done
+# Probes finished. Stay alive until stdin closes so the host spawn can observe
+# the report even if the v2 Cap'n Proto handshake fails (this fixture is a
+# shell script, not a PluginRoot guest).
+cat >/dev/null
 "#,
     );
     body
@@ -142,7 +142,7 @@ impl Fixture {
         write_script(&install.join("guest.sh"), &probe_script(&probes(&paths)));
         std::fs::write(
             install.join("plugin.toml"),
-            "api_version = 1\nid = \"probe\"\nkind = \"integration\"\n\
+            "api_version = 2\nid = \"probe\"\nkind = \"integration\"\n\
              runtime = \"native\"\ncommand = \"./guest.sh\"\n\n\
              [capabilities.network]\nmode = \"deny\"\n",
         )
@@ -183,14 +183,18 @@ impl Fixture {
     /// Spawn the guest through the host and collect what it reported.
     async fn probe_results(&self) -> BTreeMap<String, String> {
         let plugin = self.plugin();
-        let client = PluginClient::spawn(&plugin, &self.config, serde_json::json!({}))
-            .await
-            .expect("spawn the jailed guest");
-        // A completed handshake means the guest ran, execed by the launcher,
-        // with its probes already written.
-        assert_eq!(client.handshake().id, "probe");
-        drop(client);
-
+        // Shell probe guests cannot speak Cap'n Proto; spawn still applies the
+        // jail and runs probes before the handshake fails.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            V2PluginSession::spawn_for_account(
+                &plugin,
+                &self.config,
+                serde_json::json!({}),
+                HOST_SHARED_ACCOUNT,
+            ),
+        )
+        .await;
         let report = plugin_data_dir(&self.config, "probe")
             .expect("valid plugin id")
             .join("probe-report");
@@ -297,7 +301,13 @@ async fn a_guest_that_cannot_be_jailed_is_not_spawned() {
     config.plugins.isolation = Isolation::Required;
     config.plugins.jail_bin = Some(fixture.files.path().join("no-such-launcher"));
 
-    let message = match PluginClient::spawn(&fixture.plugin(), &config, serde_json::json!({})).await
+    let message = match V2PluginSession::spawn_for_account(
+        &fixture.plugin(),
+        &config,
+        serde_json::json!({}),
+        HOST_SHARED_ACCOUNT,
+    )
+    .await
     {
         Ok(_) => panic!("a guest must not start unconfined under `required`"),
         Err(err) => err.to_string(),
@@ -320,10 +330,11 @@ async fn spawn_fails_without_consent_grant() {
     let grants_path = fixture.config.paths().files_dir.join("plugin-grants.json");
     std::fs::remove_file(&grants_path).expect("remove grants");
 
-    let message = match PluginClient::spawn(
+    let message = match V2PluginSession::spawn_for_account(
         &fixture.plugin(),
         &fixture.config,
         serde_json::json!({}),
+        HOST_SHARED_ACCOUNT,
     )
     .await
     {
@@ -349,7 +360,7 @@ async fn spawn_keeps_stored_grant_when_manifest_widens() {
         .join("probe");
     std::fs::write(
         install.join("plugin.toml"),
-        "api_version = 1\nid = \"probe\"\nkind = \"integration\"\n\
+        "api_version = 2\nid = \"probe\"\nkind = \"integration\"\n\
          runtime = \"native\"\ncommand = \"./guest.sh\"\n\n\
          [capabilities.network]\nmode = \"deny\"\n\n\
          [capabilities.bindings]\nconfig = true\nsecrets = true\n",
@@ -364,12 +375,28 @@ async fn spawn_keeps_stored_grant_when_manifest_widens() {
         "extra manifest bindings must stay off the effective grant"
     );
 
-    match PluginClient::spawn(&plugin, &fixture.config, serde_json::json!({})).await {
-        Ok(_) => {}
-        Err(err) => {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        V2PluginSession::spawn_for_account(
+            &plugin,
+            &fixture.config,
+            serde_json::json!({}),
+            HOST_SHARED_ACCOUNT,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Err(_) => {
+            // Shell probe cannot complete Cap'n Proto handshake; timeout is not
+            // a grant failure.
+        }
+        Ok(Err(err)) => {
             let message = err.to_string();
             assert!(
-                !message.contains("capabilities widened")
+                !message.contains("no permission grant")
+                    && !message.contains("approve")
+                    && !message.contains("capabilities widened")
                     && !message.contains("re-approve")
                     && !message.contains("grant does not match"),
                 "stored grant must still cover spawn after widening; got: {message}"

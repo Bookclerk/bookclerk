@@ -1,5 +1,6 @@
 //! Local filesystem storage backend.
 
+use std::collections::BinaryHeap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -297,6 +298,139 @@ impl StorageBackend for LocalFsBackend {
         }
         Ok(())
     }
+
+    async fn list_page(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<crate::ListPage> {
+        let limit = if limit == 0 { 256 } else { limit as usize };
+        let want = limit.saturating_add(1);
+        let mut heap: BinaryHeap<(String, u64)> = BinaryHeap::new();
+        let mut found_cursor = cursor.is_none();
+        let full_prefix = self.full_key(prefix);
+        bounded_list_page_walk(
+            &self.root,
+            &self.root,
+            &full_prefix,
+            &self.prefix,
+            cursor,
+            want,
+            &mut heap,
+            &mut found_cursor,
+        )
+        .await?;
+        if cursor.is_some() && !found_cursor {
+            return Err(StorageError::InvalidCursor(
+                "stale or unknown list cursor".into(),
+            ));
+        }
+        let collected: Vec<(String, u64)> = heap.into_sorted_vec();
+        let next_cursor = if collected.len() > limit {
+            collected
+                .get(limit.saturating_sub(1))
+                .map(|(key, _)| key.clone())
+        } else {
+            None
+        };
+        Ok(crate::ListPage {
+            objects: collected
+                .into_iter()
+                .take(limit)
+                .map(|(key, size)| ObjectInfo { key, size })
+                .collect(),
+            next_cursor,
+        })
+    }
+
+    async fn get_stream(
+        &self,
+        key: &str,
+        range: Option<crate::ByteRange>,
+    ) -> Result<(
+        ObjectProbe,
+        std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+    )> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        let probe = self.probe(key).await?;
+        let path = self.resolve(key)?;
+        let mut file = tokio::fs::File::open(&path).await.map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                StorageError::NotFound(key.into())
+            } else {
+                StorageError::Io(err)
+            }
+        })?;
+        if let Some(range) = range {
+            file.seek(std::io::SeekFrom::Start(range.offset)).await?;
+            if let Some(len) = range.length {
+                return Ok((probe, Box::pin(file.take(len))));
+            }
+        }
+        Ok((probe, Box::pin(file)))
+    }
+
+    async fn put_stream(
+        &self,
+        key: &str,
+        mut body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        meta: ObjectMeta,
+    ) -> Result<crate::PutStreamResult> {
+        use tokio::io::AsyncWriteExt;
+        let path = self.resolve(key)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let tmp = sibling_temp_path(&path);
+        let put = async {
+            let mut file = tokio::fs::File::create(&tmp).await?;
+            let bytes_written = tokio::io::copy(&mut body, &mut file).await?;
+            if let Some(expected) = meta.content_length {
+                if bytes_written != expected {
+                    return Err(StorageError::Io(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        format!(
+                            "put_stream length mismatch: wrote {bytes_written}, expected {expected}"
+                        ),
+                    )));
+                }
+            }
+            file.flush().await?;
+            file.sync_all().await?;
+            drop(file);
+            tokio::fs::rename(&tmp, &path).await?;
+            Ok(bytes_written)
+        };
+        match put.await {
+            Ok(bytes_written) => {
+                write_local_meta_sidecar(self, key, &meta).await?;
+                Ok(crate::PutStreamResult {
+                    bytes_written,
+                    etag: None,
+                })
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&tmp).await;
+                Err(err)
+            }
+        }
+    }
+}
+
+/// Deterministic directory listing (sorted by path).
+async fn sorted_dir_entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
+    let mut read_dir = match fs::read_dir(dir).await {
+        Ok(rd) => rd,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(StorageError::Io(err)),
+    };
+    let mut entries = Vec::new();
+    while let Some(entry) = read_dir.next_entry().await? {
+        entries.push(entry);
+    }
+    entries.sort_by_key(|e| e.path());
+    Ok(entries)
 }
 
 /// Walks `dir` and appends files whose relative key starts with `prefix`.
@@ -306,13 +440,8 @@ async fn list_recursive(
     prefix: &str,
     out: &mut Vec<ObjectInfo>,
 ) -> Result<()> {
-    let mut read_dir = match fs::read_dir(dir).await {
-        Ok(rd) => rd,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(StorageError::Io(err)),
-    };
-
-    while let Some(entry) = read_dir.next_entry().await? {
+    let entries = sorted_dir_entries(dir).await?;
+    for entry in entries {
         let path = entry.path();
         let file_type = entry.file_type().await?;
         if file_type.is_dir() {
@@ -320,6 +449,13 @@ async fn list_recursive(
             continue;
         }
         if !file_type.is_file() {
+            continue;
+        }
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with('.') && n.contains(".bookclerk-tmp-"))
+        {
             continue;
         }
         let rel = path
@@ -336,6 +472,124 @@ async fn list_recursive(
         });
     }
     Ok(())
+}
+
+/// Unique sibling temp path used for atomic [`LocalFsBackend::put_stream`].
+fn sibling_temp_path(final_path: &Path) -> PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let name = final_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "object".into());
+    final_path.with_file_name(format!(".{name}.bookclerk-tmp-{nonce}"))
+}
+
+/// Opaque, bounded directory walk. Memory is O(depth + page), not O(namespace).
+///
+/// Entries are scanned unsorted. Only the smallest `want` keys strictly after
+/// `cursor` are retained (max-heap of page size). Concurrent mutation is weakly
+/// consistent. A cursor that is not observed during this walk fails closed as
+/// [`StorageError::InvalidCursor`].
+#[allow(clippy::too_many_arguments)]
+async fn bounded_list_page_walk(
+    root: &Path,
+    dir: &Path,
+    full_prefix: &str,
+    storage_prefix: &str,
+    cursor: Option<&str>,
+    want: usize,
+    heap: &mut BinaryHeap<(String, u64)>,
+    found_cursor: &mut bool,
+) -> Result<()> {
+    let mut read_dir = match fs::read_dir(dir).await {
+        Ok(rd) => rd,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(StorageError::Io(err)),
+    };
+    while let Some(entry) = read_dir.next_entry().await? {
+        let path = entry.path();
+        let file_type = entry.file_type().await?;
+        if file_type.is_dir() {
+            Box::pin(bounded_list_page_walk(
+                root,
+                &path,
+                full_prefix,
+                storage_prefix,
+                cursor,
+                want,
+                heap,
+                found_cursor,
+            ))
+            .await?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with('.') && n.contains(".bookclerk-tmp-"))
+        {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .map_err(|_| StorageError::InvalidKey(path.display().to_string()))?;
+        let key_full = rel.to_string_lossy().replace('\\', "/");
+        if !full_prefix.is_empty() && !key_full.starts_with(full_prefix) {
+            continue;
+        }
+        let key = if storage_prefix.is_empty() {
+            key_full
+        } else {
+            match key_full.strip_prefix(storage_prefix) {
+                Some(rest) => rest.to_string(),
+                None => continue,
+            }
+        };
+        if cursor == Some(key.as_str()) {
+            *found_cursor = true;
+            continue;
+        }
+        if cursor.is_some_and(|c| key.as_str() <= c) {
+            continue;
+        }
+        if heap.len() < want {
+            let meta = fs::metadata(&path).await?;
+            heap.push((key, meta.len()));
+            track_list_page_retained(heap.len());
+            continue;
+        }
+        if heap
+            .peek()
+            .is_some_and(|(top, _)| key.as_str() < top.as_str())
+        {
+            let meta = fs::metadata(&path).await?;
+            heap.pop();
+            heap.push((key, meta.len()));
+            track_list_page_retained(heap.len());
+        }
+    }
+    Ok(())
+}
+
+// Test-only high-water mark of keys retained by `bounded_list_page_walk`.
+// Thread-local so parallel `cargo test` workers do not share a counter.
+#[cfg(test)]
+thread_local! {
+    static LIST_PAGE_MAX_RETAINED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Records how many keys the page heap held after an insert (tests assert this).
+fn track_list_page_retained(n: usize) {
+    #[cfg(test)]
+    LIST_PAGE_MAX_RETAINED.with(|held| held.set(held.get().max(n)));
+    #[cfg(not(test))]
+    let _ = n;
 }
 
 /// Writes a `.bookclerk-meta.json` sidecar when ASIN or title is present.
@@ -484,5 +738,137 @@ mod tests {
         let listed = backend.list_audio("").await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].key, "Author/Book.m4b");
+    }
+
+    #[tokio::test]
+    async fn put_stream_roundtrip_does_not_buffer_get() {
+        use tokio::io::AsyncReadExt;
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        let key = "stream.bin";
+        let payload = vec![0xA5u8; 1024 * 64];
+        backend
+            .put_stream(
+                key,
+                Box::pin(std::io::Cursor::new(payload.clone())),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        let (probe, mut body) = backend.get_stream(key, None).await.unwrap();
+        assert_eq!(probe.size, payload.len() as u64);
+        let mut out = Vec::new();
+        body.read_to_end(&mut out).await.unwrap();
+        assert_eq!(out, payload);
+        let page = backend.list_page("", None, 10).await.unwrap();
+        assert!(page.objects.iter().any(|o| o.key == key));
+    }
+
+    #[tokio::test]
+    async fn list_page_stale_cursor_is_invalid() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        backend
+            .put("a.bin", Bytes::from_static(b"a"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let err = backend
+            .list_page("", Some("missing-cursor"), 10)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::InvalidCursor(_)));
+    }
+
+    #[tokio::test]
+    async fn list_page_is_bounded_over_large_namespace() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        for i in 0..80 {
+            backend
+                .put(
+                    &format!("n{i:03}.bin"),
+                    Bytes::from_static(b"x"),
+                    ObjectMeta::default(),
+                )
+                .await
+                .unwrap();
+        }
+        let mut cursor = None;
+        let mut total = 0usize;
+        loop {
+            let page = backend.list_page("", cursor.as_deref(), 10).await.unwrap();
+            assert!(page.objects.len() <= 10);
+            total += page.objects.len();
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert!(total >= 80, "paged through {total} objects");
+    }
+
+    #[tokio::test]
+    async fn list_page_flat_dir_retains_only_page_sized_heap() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        for i in 0..400 {
+            backend
+                .put(
+                    &format!("f{i:04}.bin"),
+                    Bytes::from_static(b"x"),
+                    ObjectMeta::default(),
+                )
+                .await
+                .unwrap();
+        }
+        LIST_PAGE_MAX_RETAINED.with(|held| held.set(0));
+        let page = backend.list_page("", None, 7).await.unwrap();
+        assert_eq!(page.objects.len(), 7);
+        let retained = LIST_PAGE_MAX_RETAINED.with(|held| held.get());
+        assert!(
+            retained <= 8,
+            "list_page heap retained {retained} entries (limit+1 is 8) over a 400-object flat dir"
+        );
+        assert_eq!(page.objects[0].key, "f0000.bin");
+        assert_eq!(page.next_cursor.as_deref(), Some("f0006.bin"));
+    }
+
+    #[tokio::test]
+    async fn put_stream_does_not_truncate_existing_on_failure() {
+        use tokio::io::AsyncRead;
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        backend
+            .put(
+                "keep.bin",
+                Bytes::from_static(b"original"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        struct FailRead;
+        impl AsyncRead for FailRead {
+            fn poll_read(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+                _buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Err(std::io::Error::other("source exploded")))
+            }
+        }
+        let err = backend
+            .put_stream(
+                "keep.bin",
+                Box::pin(FailRead),
+                ObjectMeta {
+                    content_length: Some(100),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Io(_)));
+        let got = backend.get("keep.bin").await.unwrap();
+        assert_eq!(&got[..], b"original");
     }
 }

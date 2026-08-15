@@ -1,13 +1,17 @@
 /**
- * Echo workerd guest module.
+ * Echo workerd guest module (api_version = 2).
  *
  * Extends package `BookclerkPlugin` from `@bookclerk/plugin-sdk/workerd`
  * (injected by bookclerk-workerd). Keep in sync with `src/index.ts`.
  */
 
-import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd";
+import {
+  BookclerkPlugin,
+  Integration,
+  PRODUCT_API_VERSION,
+  FEATURE_SCALAR_LIMITS,
+} from "@bookclerk/plugin-sdk/workerd";
 
-const API_VERSION = 1;
 const PLUGIN_ID = "echo_workerd_ts";
 const KIND = "integration";
 
@@ -28,17 +32,13 @@ const CLI = {
   ],
 };
 
-export default class EchoPlugin extends BookclerkPlugin {
-  /** @param {{ apiVersion: number, config?: object }} _params */
-  async handshake(_params) {
-    return {
-      apiVersion: API_VERSION,
-      id: PLUGIN_ID,
-      kind: KIND,
-      displayName: "Echo Integration (workerd TypeScript)",
-      capabilities: ["health", "diagnose", "onEvent", "cli"],
-      cli: CLI,
-    };
+class EchoIntegration extends Integration {
+  /**
+   * @param {Record<string, unknown> | undefined} env
+   */
+  constructor(env) {
+    super();
+    this.env = env;
   }
 
   async health() {
@@ -55,21 +55,47 @@ export default class EchoPlugin extends BookclerkPlugin {
   }
 
   /**
-   * @param {{ type: string, payload?: { titleId?: string } }} event
+   * @param {{ type?: string, eventType?: string, payload?: { titleId?: string } | Uint8Array }} event
    */
   async onEvent(event) {
-    if (event?.type === "book_acquired") {
-      const titleId = event.payload?.titleId ?? "";
-      if (this.env?.HOST?.notify) {
-        await this.env.HOST.notify({
-          type: "plugin_log",
-          payload: {
-            level: "info",
-            message: `echo saw book_acquired titleId=${titleId}`,
-          },
-        });
-      }
+    const type = event?.type || event?.eventType || "";
+    let titleId = "";
+    const payload = event?.payload;
+    if (payload && typeof payload === "object" && "titleId" in payload) {
+      titleId = payload.titleId ?? "";
     }
+    if (type === "book_acquired" && this.env?.HOST?.notify) {
+      await this.env.HOST.notify({
+        type: "plugin_log",
+        payload: {
+          level: "info",
+          message: `echo saw book_acquired titleId=${titleId}`,
+        },
+      });
+    }
+    return { kind: "ack" };
+  }
+}
+
+export default class EchoPlugin extends BookclerkPlugin {
+  async describe() {
+    return {
+      apiVersion: PRODUCT_API_VERSION ?? 2,
+      id: PLUGIN_ID,
+      kind: KIND,
+      displayName: "Echo Integration (workerd TypeScript)",
+      rpcFeatures: [FEATURE_SCALAR_LIMITS ?? "rpc.scalarLimits"],
+      scalarLimits: {
+        maxScalarBytes: 262144,
+        maxStreamWindowBytes: 1048576,
+        maxListPage: 256,
+      },
+      supportedRoles: ["integration"],
+    };
+  }
+
+  integration() {
+    return new EchoIntegration(this.env);
   }
 
   async cliDescribe() {
@@ -77,17 +103,19 @@ export default class EchoPlugin extends BookclerkPlugin {
   }
 
   /**
-   * @param {{ command: string, args?: Record<string, unknown> }} params
+   * @param {string | { command: string, args?: Record<string, unknown> }} params
    */
   async cliInvoke(params) {
-    if (params?.command !== "ping") {
+    const parsed =
+      typeof params === "string" ? JSON.parse(params || "{}") : params || {};
+    if (parsed?.command !== "ping") {
       return {
         exitCode: 2,
-        stderr: `unknown command ${params?.command ?? ""}`,
+        stderr: `unknown command ${parsed?.command ?? ""}`,
       };
     }
     const message =
-      typeof params.args?.message === "string" ? params.args.message : "hi";
+      typeof parsed.args?.message === "string" ? parsed.args.message : "hi";
     return {
       exitCode: 0,
       stdout: `pong: ${message}\n`,

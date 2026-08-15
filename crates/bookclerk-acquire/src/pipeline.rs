@@ -2864,6 +2864,38 @@ mod tests {
         async fn delete(&self, key: &str) -> bookclerk_storage::Result<()> {
             self.inner.delete(key).await
         }
+
+        async fn list_page(
+            &self,
+            prefix: &str,
+            cursor: Option<&str>,
+            limit: u32,
+        ) -> bookclerk_storage::Result<bookclerk_storage::ListPage> {
+            self.puts.fetch_add(1, Ordering::SeqCst);
+            self.inner.list_page(prefix, cursor, limit).await
+        }
+
+        async fn get_stream(
+            &self,
+            key: &str,
+            range: Option<bookclerk_storage::ByteRange>,
+        ) -> bookclerk_storage::Result<(
+            bookclerk_storage::ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            self.puts.fetch_add(1, Ordering::SeqCst);
+            self.inner.get_stream(key, range).await
+        }
+
+        async fn put_stream(
+            &self,
+            key: &str,
+            body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            meta: ObjectMeta,
+        ) -> bookclerk_storage::Result<bookclerk_storage::PutStreamResult> {
+            self.puts.fetch_add(1, Ordering::SeqCst);
+            self.inner.put_stream(key, body, meta).await
+        }
     }
 
     fn counting_destinations(

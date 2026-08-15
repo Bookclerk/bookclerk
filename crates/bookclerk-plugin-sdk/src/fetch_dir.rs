@@ -1,8 +1,7 @@
 //! Receive host-passed descriptors for fetch and upload side channels.
 //!
 //! Audience: source and destination plugin authors implementing
-//! [`crate::BookclerkPlugin::fetch_title`] or
-//! [`crate::BookclerkPlugin::put_file`]. Prefer these helpers over reading
+//! [`crate::PluginRoot`] storefront `fetch_title` or destination `put`. Prefer these helpers over reading
 //! `cache_dir` / `local_path` strings alone when the host sets
 //! [`crate::PLUGIN_FD_CHANNEL_ENV`] — the jail may not grant a usable path
 //! string, only an SCM_RIGHTS descriptor.

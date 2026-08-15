@@ -1776,6 +1776,258 @@ async fn stale_fence_cannot_finalize_or_heartbeat() {
 }
 
 #[tokio::test]
+async fn suspend_job_commits_checkpoint_and_stale_fence_cannot() {
+    use bookclerk_plugin_abi::v2::JobCheckpoint;
+
+    let store = test_store().await;
+    let created = store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::PluginCopy,
+            payload: JobPayload {
+                plugin_id: Some("local".into()),
+                source_key: Some("from".into()),
+                dest_key: Some("to".into()),
+                trigger: JobTrigger::Api,
+                ..Default::default()
+            },
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 8,
+            run_after: None,
+        })
+        .await
+        .unwrap();
+    let EnqueueOutcome::Created { id } = created else {
+        panic!("expected created: {created:?}");
+    };
+    let first = claim_job(&store, "worker-suspend").await;
+    let fence = fence_of(&first);
+    let checkpoint = JobCheckpoint {
+        schema_version: 1,
+        json: r#"{"offset":12}"#.into(),
+    };
+    let wake = chrono::Utc::now() + chrono::Duration::hours(1);
+    assert!(store.suspend_job(&fence, &checkpoint, wake).await.unwrap());
+    let parked = store.get_job(&id).await.unwrap().unwrap();
+    assert_eq!(parked.state, JobState::Pending);
+    assert!(parked.lease_owner.is_none());
+    assert_eq!(parked.progress.as_deref(), Some("suspended"));
+    assert_eq!(
+        parked.payload.checkpoint.as_ref().map(|c| c.json.as_str()),
+        Some(r#"{"offset":12}"#)
+    );
+    assert!(parked.payload.resume_pending);
+    assert_eq!(parked.payload.invocation_sequence, Some(2));
+
+    assert!(store
+        .claim_next_job(
+            JobResourceClass::Network,
+            "worker-early",
+            60,
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap()
+        .is_none());
+
+    assert!(!store.suspend_job(&fence, &checkpoint, wake).await.unwrap());
+}
+
+#[tokio::test]
+async fn suspend_lost_fence_does_not_commit_and_reclaim_sees_checkpoint() {
+    use bookclerk_plugin_abi::v2::JobCheckpoint;
+
+    let store = test_store().await;
+    let created = store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::PluginCopy,
+            payload: JobPayload {
+                plugin_id: Some("local".into()),
+                source_key: Some("from".into()),
+                dest_key: Some("to".into()),
+                trigger: JobTrigger::Api,
+                ..Default::default()
+            },
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 8,
+            run_after: None,
+        })
+        .await
+        .unwrap();
+    let EnqueueOutcome::Created { id } = created else {
+        panic!("expected created: {created:?}");
+    };
+    let first = claim_job(&store, "worker-old").await;
+    let stale = fence_of(&first);
+    let checkpoint = JobCheckpoint {
+        schema_version: 1,
+        json: r#"{"offset":99}"#.into(),
+    };
+
+    let model = crate::entities::jobs::Entity::find_by_id(&id)
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut am: crate::entities::jobs::ActiveModel = model.into();
+    am.lease_expires_at = sea_orm::ActiveValue::Set(Some(
+        (chrono::Utc::now() - chrono::Duration::seconds(5)).to_rfc3339(),
+    ));
+    am.update(store.db()).await.unwrap();
+    assert_eq!(store.reclaim_expired_leases().await.unwrap(), 1);
+
+    let second = claim_job(&store, "worker-new").await;
+    assert_eq!(second.attempt_count, 2);
+    assert!(!store
+        .suspend_job(
+            &stale,
+            &checkpoint,
+            chrono::Utc::now() + chrono::Duration::minutes(5)
+        )
+        .await
+        .unwrap());
+    let still_running = store.get_job(&id).await.unwrap().unwrap();
+    assert_eq!(still_running.state, JobState::Running);
+    assert!(still_running.payload.checkpoint.is_none());
+
+    assert!(store
+        .suspend_job(
+            &fence_of(&second),
+            &checkpoint,
+            chrono::Utc::now() - chrono::Duration::seconds(1)
+        )
+        .await
+        .unwrap());
+    let resumed = claim_job(&store, "worker-resume").await;
+    assert_eq!(resumed.id, id);
+    assert_eq!(
+        resumed.payload.checkpoint.as_ref().map(|c| c.json.as_str()),
+        Some(r#"{"offset":99}"#)
+    );
+    assert!(resumed.attempt_count >= 2);
+}
+
+#[tokio::test]
+async fn suspend_resume_then_retryable_failures_still_reach_max_attempts() {
+    use bookclerk_plugin_abi::v2::JobCheckpoint;
+
+    let store = test_store().await;
+    let created = store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::PluginCopy,
+            payload: JobPayload {
+                plugin_id: Some("local".into()),
+                source_key: Some("from".into()),
+                dest_key: Some("to".into()),
+                trigger: JobTrigger::Api,
+                ..Default::default()
+            },
+            priority: 0,
+            max_attempts: 2,
+            max_pending: 8,
+            run_after: None,
+        })
+        .await
+        .unwrap();
+    let EnqueueOutcome::Created { id } = created else {
+        panic!("expected created: {created:?}");
+    };
+    let first = claim_job(&store, "worker-suspend").await;
+    assert_eq!(first.attempt_count, 1);
+    let checkpoint = JobCheckpoint {
+        schema_version: 1,
+        json: r#"{"offset":1}"#.into(),
+    };
+    assert!(store
+        .suspend_job(
+            &fence_of(&first),
+            &checkpoint,
+            chrono::Utc::now() - chrono::Duration::seconds(1)
+        )
+        .await
+        .unwrap());
+    let parked = store.get_job(&id).await.unwrap().unwrap();
+    assert!(parked.payload.resume_pending);
+    assert!(parked.payload.checkpoint.is_some());
+
+    let resumed = claim_job(&store, "worker-resume").await;
+    assert_eq!(resumed.attempt_count, 1);
+    assert!(!resumed.payload.resume_pending);
+    assert_eq!(
+        resumed.payload.checkpoint.as_ref().map(|c| c.json.as_str()),
+        Some(r#"{"offset":1}"#)
+    );
+
+    for owner in ["worker-fail-1", "worker-fail-2"] {
+        let running = store.get_job(&id).await.unwrap().unwrap();
+        assert_eq!(running.state, JobState::Running);
+        assert!(store
+            .fail_job(&fence_of(&running), "handler", "transient")
+            .await
+            .unwrap());
+        let after = store.get_job(&id).await.unwrap().unwrap();
+        if after.state == JobState::Pending {
+            assert!(!after.payload.resume_pending);
+            let model = crate::entities::jobs::Entity::find_by_id(&id)
+                .one(store.db())
+                .await
+                .unwrap()
+                .unwrap();
+            let mut am: crate::entities::jobs::ActiveModel = model.into();
+            am.run_after = sea_orm::ActiveValue::Set(chrono::Utc::now().to_rfc3339());
+            am.update(store.db()).await.unwrap();
+            let _ = claim_job(&store, owner).await;
+        } else {
+            assert_eq!(after.state, JobState::Failed);
+            assert_eq!(after.attempt_count, 2);
+        }
+    }
+    let terminal = store.get_job(&id).await.unwrap().unwrap();
+    assert_eq!(terminal.state, JobState::Failed);
+    assert_eq!(terminal.attempt_count, 2);
+}
+
+#[tokio::test]
+async fn set_job_progress_writes_row_and_rejects_stale_generation() {
+    let store = test_store().await;
+    let created = store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::PluginCopy,
+            payload: JobPayload {
+                plugin_id: Some("local".into()),
+                source_key: Some("from".into()),
+                dest_key: Some("to".into()),
+                trigger: JobTrigger::Api,
+                ..Default::default()
+            },
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 8,
+            run_after: None,
+        })
+        .await
+        .unwrap();
+    let EnqueueOutcome::Created { id } = created else {
+        panic!("expected created: {created:?}");
+    };
+    let claimed = claim_job(&store, "worker-progress").await;
+    let fence = fence_of(&claimed);
+    assert!(store.set_job_progress(&fence, "10% staging").await.unwrap());
+    let visible = store.get_job(&id).await.unwrap().unwrap();
+    assert_eq!(visible.progress.as_deref(), Some("10% staging"));
+
+    let stale = JobFence {
+        job_id: fence.job_id.clone(),
+        owner: fence.owner.clone(),
+        generation: fence.generation.saturating_sub(1),
+    };
+    assert!(!store.set_job_progress(&stale, "stale").await.unwrap());
+    let unchanged = store.get_job(&id).await.unwrap().unwrap();
+    assert_eq!(unchanged.progress.as_deref(), Some("10% staging"));
+}
+
+#[tokio::test]
 async fn malformed_payload_is_marked_invalid_and_not_claimed() {
     let store = test_store().await;
     let now = chrono::Utc::now().to_rfc3339();
@@ -1917,6 +2169,37 @@ async fn unknown_resource_class_is_marked_invalid_and_does_not_block_claim() {
         bad.error_message
     );
     assert_eq!(store.count_active_jobs().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn plugin_copy_admits_and_claims() {
+    let store = test_store().await;
+    let spec = EnqueueJobSpec {
+        kind: JobKind::PluginCopy,
+        payload: JobPayload {
+            plugin_id: Some("local".into()),
+            source_key: Some("a".into()),
+            dest_key: Some("b".into()),
+            trigger: JobTrigger::Api,
+            ..Default::default()
+        },
+        priority: 0,
+        max_attempts: 3,
+        max_pending: 8,
+        run_after: None,
+    };
+    assert_eq!(
+        JobKind::PluginCopy.dedup_key(&spec.payload),
+        "plugin_copy:plugin=local:from=a:to=b"
+    );
+    assert_eq!(JobKind::parse("plugin_copy"), Some(JobKind::PluginCopy));
+    let created = store.enqueue_job(spec).await.unwrap();
+    let EnqueueOutcome::Created { id } = created else {
+        panic!("expected created: {created:?}");
+    };
+    let claimed = claim_job(&store, "worker-copy").await;
+    assert_eq!(claimed.id, id);
+    assert_eq!(claimed.kind, JobKind::PluginCopy);
 }
 
 fn integration_scan_spec(integration_id: &str, force: bool, max_pending: i64) -> EnqueueJobSpec {

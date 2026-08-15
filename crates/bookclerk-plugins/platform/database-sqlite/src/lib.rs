@@ -6,6 +6,10 @@
 //! [`open_store`] from hosts; guests speak the DB ABI
 //! through `bookclerk-plugin-sdk`.
 
+/// Plugin id advertised in describe and `plugin.toml`.
+pub const ID: &str = "sqlite";
+
 pub mod sqlite;
+pub mod v2;
 
 pub use sqlite::{open, open_memory, open_store, open_store_memory};

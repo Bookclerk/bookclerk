@@ -1,4 +1,4 @@
-api_version = 1
+api_version = 2
 id = "bad_native_domains"
 kind = "source"
 runtime = "native"

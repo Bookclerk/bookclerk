@@ -47,6 +47,10 @@ pending → running → succeeded
   until the last confirmed lease expiry; past that deadline the worker
   cancels locally and ignores the result. It must not finalize the row as
   `cancelled` unless `cancel_requested` is set.
+- Destination **publish** is not atomic with that fence. `plugin_copy`
+  stream-copy is at-least-once: a lost lease can still make object bytes
+  visible after the last heartbeat. Duplicates are absorbed by retry-stable
+  `commit_token`s (idempotent local/S3 `commit` when the dest already exists).
 - Reclaim also requires `lease_expires_at` to still be null or `<= now`, so a
   heartbeat that extends the same generation cannot be stolen.
 - `POST /api/jobs/{id}/cancel` cancels `pending` immediately and flags
@@ -64,6 +68,7 @@ pending → running → succeeded
 | `acquire` | `acquire:title={id\|all}:account={id\|all}` | `network` | `run_acquire` |
 | `listen_sync` | `listen_sync` | `network` | `run_listen_sync` |
 | `integration_scan` | `integration_scan:id={id}:force={0\|1}` | `network` | `run_integration_scan` |
+| `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI v2 `JobHandler` stream-copy (`run_plugin_copy`) |
 
 Reserved classes (no worker in this release): `media`, `transcription`,
 `indexing`.

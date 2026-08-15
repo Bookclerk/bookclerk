@@ -9,6 +9,8 @@ declare module "cloudflare:workers" {
     passThroughOnException(): void;
   }
 
+  export class RpcTarget {}
+
   export class WorkerEntrypoint<Env = unknown> {
     constructor(ctx: ExecutionContext, env: Env);
     readonly ctx: ExecutionContext;

@@ -8,12 +8,33 @@ Cloudflare `workerd`.
 Authoring: `src/index.ts` and `modules/index.js` both use
 
 ```ts
-import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd";
+import { BookclerkPlugin, Integration } from "@bookclerk/plugin-sdk/workerd";
+
+export default class EchoPlugin extends BookclerkPlugin {
+  async describe() {
+    return {
+      apiVersion: 2,
+      id: "echo_workerd_ts",
+      kind: "integration",
+      displayName: "Echo Integration (workerd TypeScript)",
+      rpcFeatures: ["rpc.scalarLimits"],
+      scalarLimits: {
+        maxScalarBytes: 262144,
+        maxStreamWindowBytes: 1048576,
+        maxListPage: 256,
+      },
+      supportedRoles: ["integration"],
+    };
+  }
+  integration() {
+    return new EchoIntegration(this.env);
+  }
+}
 ```
 
 (`package.json` depends on `@bookclerk/plugin-sdk`; the isolate import is
-injected by `bookclerk-workerd`). Native Node guests use
-`@bookclerk/plugin-sdk/native` instead.
+injected by `bookclerk-workerd`). The `echo_native_node` example is also a
+workerd guest (same JS class ABI).
 
 See [docs/adr/plugin-workers-rpc-workerd.md](../../docs/adr/plugin-workers-rpc-workerd.md).
 

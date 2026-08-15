@@ -11,7 +11,7 @@ publish = false
 keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-output", "local"]
 
 [package.metadata.bookclerk]
-api_version = 1
+api_version = 2
 kind = "output"
 id = "local"
 display_name = "Local filesystem"

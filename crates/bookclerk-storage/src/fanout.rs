@@ -141,6 +141,106 @@ impl StorageBackend for FanoutBackend {
         }
         Ok(())
     }
+
+    async fn list_page(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<crate::ListPage> {
+        let all = self.list(prefix).await?;
+        if let Some(c) = cursor {
+            if !all.iter().any(|o| o.key.as_str() == c) {
+                return Err(StorageError::InvalidCursor(
+                    "stale or unknown list cursor".into(),
+                ));
+            }
+        }
+        let start = cursor
+            .and_then(|c| all.iter().position(|o| o.key.as_str() == c).map(|i| i + 1))
+            .unwrap_or(0);
+        let limit = if limit == 0 { 256 } else { limit as usize };
+        let slice: Vec<_> = all.into_iter().skip(start).take(limit + 1).collect();
+        let next_cursor = if slice.len() > limit {
+            slice.get(limit.saturating_sub(1)).map(|o| o.key.clone())
+        } else {
+            None
+        };
+        Ok(crate::ListPage {
+            objects: slice.into_iter().take(limit).collect(),
+            next_cursor,
+        })
+    }
+
+    async fn get_stream(
+        &self,
+        key: &str,
+        range: Option<crate::ByteRange>,
+    ) -> Result<(
+        crate::ObjectProbe,
+        std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+    )> {
+        let mut last_not_found = None;
+        for backend in &self.backends {
+            match backend.get_stream(key, range).await {
+                Ok(got) => return Ok(got),
+                Err(err) if Self::is_not_found(&err) => last_not_found = Some(err),
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_not_found.unwrap_or_else(|| StorageError::NotFound(key.into())))
+    }
+
+    async fn put_stream(
+        &self,
+        key: &str,
+        mut body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        meta: ObjectMeta,
+    ) -> Result<crate::PutStreamResult> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        if self.backends.len() == 1 {
+            return self.backends[0].put_stream(key, body, meta).await;
+        }
+        let mut joins = Vec::new();
+        let mut writers = Vec::new();
+        for backend in &self.backends {
+            let (reader, writer) = tokio::io::duplex(64 * 1024);
+            let boxed = backend.clone_box();
+            let key = key.to_string();
+            let meta = meta.clone();
+            joins.push(tokio::spawn(async move {
+                boxed.put_stream(&key, Box::pin(reader), meta).await
+            }));
+            writers.push(writer);
+        }
+        let mut total = 0u64;
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = body.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            total += n as u64;
+            for writer in &mut writers {
+                writer.write_all(&buf[..n]).await?;
+            }
+        }
+        drop(writers);
+        let mut last = crate::PutStreamResult {
+            bytes_written: total,
+            etag: None,
+        };
+        for join in joins {
+            last = join.await.map_err(|err| {
+                StorageError::Other(anyhow::anyhow!("fan-out put_stream: {err}"))
+            })??;
+        }
+        Ok(last)
+    }
+
+    fn supports_server_copy(&self) -> bool {
+        self.backends.iter().all(|b| b.supports_server_copy())
+    }
 }
 
 #[cfg(test)]

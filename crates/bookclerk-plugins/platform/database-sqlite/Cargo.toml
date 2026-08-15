@@ -11,7 +11,7 @@ publish = false
 keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-database"]
 
 [package.metadata.bookclerk]
-api_version = 1
+api_version = 2
 kind = "database"
 id = "sqlite"
 display_name = "SQLite"

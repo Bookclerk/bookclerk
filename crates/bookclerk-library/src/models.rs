@@ -974,6 +974,8 @@ pub enum JobKind {
     ListenSync,
     /// Remote integration library scan (Audiobookshelf, …).
     IntegrationScan,
+    /// ABI v2 `JobHandler` stream-copy vertical slice (`plugin_copy`).
+    PluginCopy,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,
 }
@@ -987,6 +989,7 @@ impl JobKind {
             Self::Acquire => "acquire",
             Self::ListenSync => "listen_sync",
             Self::IntegrationScan => "integration_scan",
+            Self::PluginCopy => "plugin_copy",
             Self::Invalid => "invalid",
         }
     }
@@ -999,6 +1002,7 @@ impl JobKind {
             "acquire" => Some(Self::Acquire),
             "listen_sync" => Some(Self::ListenSync),
             "integration_scan" => Some(Self::IntegrationScan),
+            "plugin_copy" => Some(Self::PluginCopy),
             "invalid" => Some(Self::Invalid),
             _ => None,
         }
@@ -1024,6 +1028,12 @@ impl JobKind {
             Self::IntegrationScan => {
                 let id = payload.integration_id.as_deref().unwrap_or("all");
                 format!("integration_scan:id={id}:force={}", u8::from(payload.force))
+            }
+            Self::PluginCopy => {
+                let plugin = payload.plugin_id.as_deref().unwrap_or("local");
+                let from = payload.source_key.as_deref().unwrap_or("-");
+                let to = payload.dest_key.as_deref().unwrap_or("-");
+                format!("plugin_copy:plugin={plugin}:from={from}:to={to}")
             }
             Self::Invalid => "invalid".into(),
         }
@@ -1183,6 +1193,27 @@ pub struct JobPayload {
     /// When true, an integration scan asks the remote to rescan.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub force: bool,
+    /// Destination plugin id for [`JobKind::PluginCopy`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
+    /// Source object key for [`JobKind::PluginCopy`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_key: Option<String>,
+    /// Destination object key for [`JobKind::PluginCopy`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dest_key: Option<String>,
+    /// Bounded checkpoint restored after [`bookclerk_plugin_abi::v2::JobOutcome::Suspended`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<bookclerk_plugin_abi::v2::JobCheckpoint>,
+    /// Resume ordinal; distinct from failure [`Self`] attempt_count on the job row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation_sequence: Option<u32>,
+    /// One-shot: the next claim is a suspend-resume and must not consume a failure attempt.
+    ///
+    /// Cleared when that claim is taken. A leftover [`Self::checkpoint`] after a
+    /// retryable failure must not keep later claims in the resume path.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resume_pending: bool,
 }
 
 /// Default envelope version for missing `v` on well-formed legacy rows.
@@ -1199,6 +1230,12 @@ impl Default for JobPayload {
             trigger: JobTrigger::Api,
             integration_id: None,
             force: false,
+            plugin_id: None,
+            source_key: None,
+            dest_key: None,
+            checkpoint: None,
+            invocation_sequence: None,
+            resume_pending: false,
         }
     }
 }

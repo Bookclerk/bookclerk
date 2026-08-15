@@ -1,4 +1,4 @@
-api_version = 1
+api_version = 2
 id = "s3"
 name = "S3 output"
 kind = "output"

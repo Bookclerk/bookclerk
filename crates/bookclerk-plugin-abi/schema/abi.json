@@ -155,7 +155,9 @@
             "not_found",
             "unavailable",
             "unsupported",
-            "internal"
+            "internal",
+            "payload_too_large",
+            "deadline_exceeded"
           ]
         },
         "message": {

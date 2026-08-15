@@ -3,15 +3,14 @@
 Guest-only Bookclerk plugin SDK for Rust authors of native and workerd plugins.
 
 Depend on this crate from a standalone plugin workspace — not
-`bookclerk-plugin-host`. Implement [`BookclerkPlugin`] and serve it with
-[`BookclerkPluginGuest`] (native stdio) or the workerd / npm bridge described in
-`src/workerd.rs`.
+`bookclerk-plugin-host`. Implement [`PluginRoot`] and call [`serve`] (native Cap'n Proto) or use the workerd /
+npm bridge described in `src/workerd.rs`.
 
 ## Features
 
 | Feature | Purpose |
 | --- | --- |
-| *(default)* | Stdio guest runner, FD side channels, callback tunnel, ABI re-exports |
+| *(default)* | Cap'n Proto guest runner, FD side channels, callback tunnel, ABI re-exports |
 | `db` | SeaORM ↔ Workers RPC DTO helpers for database guests |
 | `tools` | `bookclerk-plugin` author CLI (`check` / `fmt` / `package` / `smoke`) |
 
@@ -35,9 +34,3 @@ HTML lands under `docs/api/rust/` (gitignored). Style expectations are in
 [`docs/code-documentation.md`](../../docs/code-documentation.md). Product
 guides: [`docs/plugins.md`](../../docs/plugins.md),
 [`docs/plugin-registry.md`](../../docs/plugin-registry.md).
-
-## See also
-
-- `bookclerk-plugin-abi` — wire DTOs and method names
-- `bookclerk-plugin-manifest` — `plugin.toml` parse / format
-- Examples under `examples/plugins-echo-*`

@@ -1,10 +1,25 @@
-api_version = 1
+api_version = 2
 id = "echo_native_node"
 name = "Echo Integration (native Node)"
 kind = "integration"
 version = "0.1.0"
-runtime = "native"
-command = "./bookclerk-plugin-echo-native-node"
+runtime = "workerd"
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 50
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
 
 [capabilities.network]
 mode = "deny"
@@ -13,7 +28,7 @@ mode = "deny"
 config = true
 
 [capabilities.methods]
-list = ["handshake", "health", "diagnose", "onEvent", "cli"]
+list = ["describe", "integration", "health", "diagnose", "onEvent", "cli"]
 
 [cli]
 [[cli.commands]]

@@ -1150,9 +1150,9 @@ class BookclerkPluginGuest:
 
     @staticmethod
     def serve(
-        plugin: Any = None,
+        plugin: Any = None,  # noqa: ARG001 — signature kept for callers
         *,
-        handlers: Mapping[str, Callable[[Any], Any]] | None = None,
+        handlers: Mapping[str, Callable[[Any], Any]] | None = None,  # noqa: ARG001
     ) -> None:
         """Serve Workers RPC frames for ``plugin`` or an explicit ``handlers`` map.
 
@@ -1165,34 +1165,12 @@ class BookclerkPluginGuest:
             TypeError: If neither a valid plugin nor handlers provide ``handshake``.
 
         Examples:
-            >>> # await / run until stdin closes:
-            >>> # BookclerkPluginGuest.serve(MyPlugin())
+            >>> # BookclerkPluginGuest.serve is removed; use workerd BookclerkPlugin.
         """
-        dispatch = dict(handlers) if handlers is not None else _dispatch_from_plugin(plugin)
-        for raw in sys.stdin:
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                req = json.loads(line)
-            except json.JSONDecodeError as err:
-                _write({"id": None, "error": {"code": "internal", "message": f"invalid JSON: {err}"}})
-                continue
-            req_id = req.get("id")
-            method = req.get("method") or ""
-            params = req.get("params")
-            try:
-                if method not in dispatch:
-                    err = RuntimeError(f"unsupported method: {method}")
-                    err.code = "unsupported"  # type: ignore[attr-defined]
-                    raise err
-                result = dispatch[method](params)
-                _write({"id": req_id, "result": result})
-                if method == "shutdown":
-                    return
-            except Exception as err:  # noqa: BLE001 — RPC boundary
-                code = getattr(err, "code", "internal")
-                _write({"id": req_id, "error": {"code": code, "message": str(err)}})
+        raise RuntimeError(
+            "newline JSON native serve was removed; export a workerd "
+            "BookclerkPlugin or use a Rust PluginRoot with serve()"
+        )
 
 
 def _dispatch_from_plugin(plugin: Any) -> dict[str, Callable[[Any], Any]]:

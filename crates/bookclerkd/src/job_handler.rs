@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use bookclerk_library::{JobFence, JobKind, JobPayload, JobRecord, JOB_PAYLOAD_VERSION};
+use bookclerk_plugin_host::JobCheckpoint;
+use chrono::{DateTime, Utc};
 
 use crate::api::AppState;
 use crate::jobs::{run_acquire, run_integration_scan, run_listen_sync, run_scan};
@@ -21,6 +23,16 @@ pub struct JobExecCtx {
     pub fence: JobFence,
     /// Set when the heartbeat loses the fence or the operator cancels.
     pub cancel: Arc<AtomicBool>,
+    /// 1-based attempt counter from the claim that produced this fence.
+    pub attempt_count: i64,
+    /// Durable dedup key; stable across reclaim of the same command.
+    pub dedup_key: String,
+    /// Lease expiry; used as the guest `deadlineUnixMs` hint.
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    /// Checkpoint restored after a prior suspension, when present.
+    pub checkpoint: Option<JobCheckpoint>,
+    /// Resume ordinal from the durable payload; distinct from [`Self::attempt_count`].
+    pub invocation_sequence: u32,
 }
 
 impl JobExecCtx {
@@ -124,6 +136,16 @@ impl JobTransport for InProcessJobTransport {
                         anyhow::anyhow!("integration_scan missing integration_id")
                     })?;
                 run_integration_scan(&self.state, id, cmd.payload.force, Some(&ctx)).await
+            }
+            JobKind::PluginCopy => {
+                crate::jobs::run_plugin_copy(
+                    &self.state,
+                    cmd.payload.plugin_id.as_deref(),
+                    cmd.payload.source_key.as_deref(),
+                    cmd.payload.dest_key.as_deref(),
+                    Some(&ctx),
+                )
+                .await
             }
             JobKind::Invalid => anyhow::bail!("invalid_job"),
         }

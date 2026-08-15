@@ -1,42 +1,40 @@
 # @bookclerk/plugin-sdk
 
-TypeScript / Node guest SDK for Bookclerk plugins (`api_version = 1`).
-**Dual-stack:** workerd isolates and native stdio guests.
+TypeScript guest SDK for Bookclerk plugins (`api_version = 2`).
+Workerd isolates host the author class. Native guests use Rust `serve` /
+`PluginRoot`.
 
 | Import | Runtime |
 | --- | --- |
 | `@bookclerk/plugin-sdk/workerd` | `BookclerkPlugin` extends `WorkerEntrypoint` |
-| `@bookclerk/plugin-sdk/native` | `BookclerkPlugin` + `BookclerkPluginGuest.serve()` |
-| `@bookclerk/plugin-sdk` | ABI types + `BookclerkPlugin` (workerd, backwards compatible) |
+| `@bookclerk/plugin-sdk` | ABI types + workerd `BookclerkPlugin` |
 
-`BookclerkPlugin` is the guest contract on both stacks. `BookclerkPluginGuest`
-is the native stdin/stdout Workers RPC runner (workerd hosts the class via
-`WorkerEntrypoint` instead).
-
-Depend on the package (npm / `file:` / workspace) — do **not** import a relative
-embed path. `bookclerk-workerd` injects `@bookclerk/plugin-sdk/workerd` into the
-isolate under that exact module name.
-
-## Workerd
+Authors export the raw class:
 
 ```ts
-import {
-  BookclerkPlugin,
-  type HandshakeParams,
-  type HandshakeResult,
-} from "@bookclerk/plugin-sdk/workerd";
+import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd";
+import type { PluginDescribe } from "@bookclerk/plugin-sdk/workerd";
 
 export default class MyPlugin extends BookclerkPlugin {
-  async handshake(_params: HandshakeParams): Promise<HandshakeResult> {
+  async describe(): Promise<PluginDescribe> {
     return {
-      apiVersion: 1,
-      id: "my-plugin",
+      apiVersion: 2,
+      id: "my_plugin",
       kind: "integration",
-      capabilities: ["health"],
+      rpcFeatures: [],
+      scalarLimits: {
+        maxScalarBytes: 262144,
+        maxStreamWindowBytes: 1048576,
+        maxListPage: 256,
+      },
     };
   }
 }
 ```
+
+Depend on the package (npm / `file:` / workspace) — do **not** import a relative
+embed path. `bookclerk-workerd` injects `@bookclerk/plugin-sdk/workerd` into the
+isolate under that exact module name.
 
 `package.json`:
 
@@ -48,49 +46,15 @@ export default class MyPlugin extends BookclerkPlugin {
 }
 ```
 
-## Native Node
-
-```js
-import { BookclerkPlugin, BookclerkPluginGuest } from "@bookclerk/plugin-sdk/native";
-
-class MyPlugin extends BookclerkPlugin {
-  handshake() {
-    return {
-      apiVersion: 1,
-      id: "my-plugin",
-      kind: "integration",
-      capabilities: ["health"],
-    };
-  }
-}
-
-await BookclerkPluginGuest.serve(new MyPlugin());
-```
-
 ## Author tools
 
 ```bash
 npx bookclerk-plugin check .
 npx bookclerk-plugin fmt [--check] plugin.toml
 npx bookclerk-plugin package --out dist/plugins .
-npx bookclerk-plugin smoke .   # workerd plugins: download pin, handshake + health
+npx bookclerk-plugin smoke .   # workerd plugins: download pin, describe + health
 ```
 
 `smoke` does **not** need a built Rust `bookclerk-workerd` binary. It downloads
 the pinned Cloudflare `workerd` into `~/.cache/bookclerk/workerd` (override with
-`BOOKCLERK_WORKERD_CACHE` / `BOOKCLERK_WORKERD_BIN`), materializes Cap’n Proto +
-bridge under the plugin dir, then POSTs `handshake` / `health` to `/rpc`.
-
-See Echo examples under `examples/` at the repository root.
-
-## API docs
-
-Public exports use Google-style JSDoc. Generate HTML with TypeDoc:
-
-```bash
-npm run docs
-# or from the repo root:
-./scripts/generate-api-docs.sh
-```
-
-Conventions: [`docs/code-documentation.md`](../../docs/code-documentation.md).
+`BOOKCLERK_WORKERD_CACHE` / `BOOKCLERK_WORKERD_BIN`).

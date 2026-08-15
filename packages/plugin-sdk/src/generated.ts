@@ -28,7 +28,9 @@ export type PluginErrorCode =
   | "not_found"
   | "unavailable"
   | "unsupported"
-  | "internal";
+  | "internal"
+  | "payload_too_large"
+  | "deadline_exceeded";
 
 /**
  * RPC or plugin failure payload returned on the wire.

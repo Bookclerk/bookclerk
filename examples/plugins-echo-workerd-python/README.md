@@ -12,7 +12,7 @@ from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js
 
 ## Contract
 
-- `handshake` / `health` / `diagnose` / `onEvent` / `cliDescribe` / `cliInvoke`
+- `describe` / `integration` / `health` / `diagnose` / `onEvent` / `cliDescribe` / `cliInvoke`
 - Health detail: `echo workerd python plugin ready`
 
 ## Try it

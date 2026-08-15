@@ -691,7 +691,7 @@ mod tests {
             let enc = GzEncoder::new(file, Compression::default());
             let mut tar = Builder::new(enc);
             let toml =
-                b"api_version = 1\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./echo\"\n";
+                b"api_version = 2\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./echo\"\n";
             let mut h = tar::Header::new_gnu();
             h.set_size(toml.len() as u64);
             h.set_mode(0o644);
@@ -814,7 +814,7 @@ mod tests {
         existing.store(&dest).unwrap();
         fs::write(
             dest.join("plugin.toml"),
-            "api_version = 1\nid = \"echo\"\nkind = \"source\"\ncommand = \"./echo\"\n",
+            "api_version = 2\nid = \"echo\"\nkind = \"source\"\ncommand = \"./echo\"\n",
         )
         .unwrap();
 
@@ -869,12 +869,12 @@ mod tests {
     #[test]
     fn toml_binds_sandbox_and_command() {
         let runtime = RuntimeIdentity::new(PluginKind::Integration, "echo");
-        let ok = "api_version = 1\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./echo\"\n[sandbox]\nnetwork = \"none\"\n";
+        let ok = "api_version = 2\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./echo\"\n[sandbox]\nnetwork = \"none\"\n";
         validate_plugin_toml(ok, &runtime, "none", "echo").unwrap();
-        let bad_net = "api_version = 1\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./echo\"\n[sandbox]\nnetwork = \"listen\"\n";
+        let bad_net = "api_version = 2\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./echo\"\n[sandbox]\nnetwork = \"listen\"\n";
         assert!(validate_plugin_toml(bad_net, &runtime, "none", "echo").is_err());
         let bad_cmd =
-            "api_version = 1\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./other\"\n";
+            "api_version = 2\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./other\"\n";
         assert!(validate_plugin_toml(bad_cmd, &runtime, "outbound", "echo").is_err());
     }
 }

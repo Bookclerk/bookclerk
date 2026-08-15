@@ -3,7 +3,7 @@
 Example main module for ``runtime = "workerd"`` guests. Authors copy and adapt
 this file as ``modules/plugin.py``:
 
-    from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js
+    from bookclerk_plugin_sdk.workerd import BookclerkPlugin, Integration, js
 
 ``plugin.toml`` should declare:
 
@@ -12,16 +12,15 @@ this file as ``modules/plugin.py``:
     main_module = "plugin.py"
     compatibility_flags = ["python_workers", "disable_python_external_sdk"]
 
-``bookclerk-workerd`` injects the SDK. Native guests instead use:
-
-    from bookclerk_plugin_sdk import BookclerkPlugin, BookclerkPluginGuest
+``bookclerk-workerd`` injects the SDK. Native guests use Rust ``serve`` /
+``PluginRoot``.
 """
 
 from __future__ import annotations
 
 from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js
 
-API_VERSION = 1
+API_VERSION = 2
 """Handshake ``apiVersion`` returned by this template guest."""
 
 PLUGIN_ID = "my_python_plugin"

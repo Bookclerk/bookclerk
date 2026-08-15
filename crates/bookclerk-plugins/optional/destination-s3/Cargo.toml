@@ -11,7 +11,7 @@ publish = false
 keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-output", "s3"]
 
 [package.metadata.bookclerk]
-api_version = 1
+api_version = 2
 kind = "output"
 id = "s3"
 display_name = "S3 / MinIO"

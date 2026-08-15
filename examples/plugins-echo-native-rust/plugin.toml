@@ -1,4 +1,4 @@
-api_version = 1
+api_version = 2
 id = "echo_native_rust"
 name = "Echo Integration (native Rust)"
 kind = "integration"
@@ -13,7 +13,7 @@ mode = "deny"
 config = true
 
 [capabilities.methods]
-list = ["handshake", "health", "diagnose", "onEvent", "cli"]
+list = ["describe", "integration", "health", "diagnose", "onEvent", "cli"]
 
 [cli]
 [[cli.commands]]

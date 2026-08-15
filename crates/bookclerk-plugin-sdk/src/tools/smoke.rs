@@ -72,7 +72,9 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
         limits,
         listen,
         None,
+        None,
         &bridge_token,
+        None,
     )
     .map_err(|e| format!("materialize config: {e:#}"))?;
     let base = generated.listen.client_base_url();

@@ -1,69 +1,127 @@
 import {
   BookclerkPlugin,
-  type CliInvokeParams,
-  type CliInvokeResult,
-  type DiagnoseResult,
-  type HandshakeParams,
-  type HandshakeResult,
-  type HostToPluginEvent,
+  Integration,
+  PRODUCT_API_VERSION,
+  FEATURE_SCALAR_LIMITS,
+  MAX_LIST_PAGE,
+  MAX_SCALAR_BYTES,
+  MAX_STREAM_WINDOW_BYTES,
+  type DomainEvent,
+  type EventResult,
+  type PluginDescribe,
 } from "@bookclerk/plugin-sdk/workerd";
 
+const PLUGIN_ID = "echo_workerd_ts";
+
+const CLI = {
+  commands: [
+    {
+      name: "ping",
+      about: "Probe echo plugin",
+      args: [
+        {
+          name: "message",
+          long: "message",
+          kind: "string",
+          default: "hi",
+        },
+      ],
+    },
+  ],
+};
+
+class EchoIntegration extends Integration {
+  constructor(private readonly pluginEnv: BookclerkPlugin["env"]) {
+    super();
+  }
+
+  override async health() {
+    return {
+      ok: true,
+      detail: "echo workerd plugin ready",
+    };
+  }
+
+  override async diagnose() {
+    return { lines: ["echo: ok"] };
+  }
+
+  override async onEvent(event: DomainEvent): Promise<EventResult> {
+    const payload = event.payload;
+    let titleId = "";
+    if (payload && payload.byteLength > 0) {
+      try {
+        const parsed = JSON.parse(new TextDecoder().decode(payload)) as {
+          titleId?: string;
+          payload?: { titleId?: string };
+        };
+        titleId = parsed.titleId ?? parsed.payload?.titleId ?? "";
+      } catch {
+        titleId = "";
+      }
+    }
+    const host = (this.pluginEnv as { HOST?: { notify?: (event: unknown) => Promise<void> } })
+      ?.HOST;
+    if (host?.notify) {
+      await host.notify({
+        type: "plugin_log",
+        payload: {
+          level: "info",
+          message: `echo saw book_acquired titleId=${titleId}`,
+        },
+      });
+    }
+    return { kind: "ack" };
+  }
+}
+
 /**
- * Echo — branded BookclerkPlugin, not raw WorkerEntrypoint.
+ * Echo — branded BookclerkPlugin v2 (`describe` + `integration` RpcTarget).
  *
  * Authoring source for the workerd guest. Ship `modules/index.js` (built or
  * hand-maintained MVP sibling) beside `plugin.toml`.
  */
 export default class EchoPlugin extends BookclerkPlugin {
-  async handshake(_params: HandshakeParams): Promise<HandshakeResult> {
+  async describe(): Promise<PluginDescribe> {
     return {
-      apiVersion: 1,
-      id: "echo_workerd_ts",
+      apiVersion: PRODUCT_API_VERSION,
+      id: PLUGIN_ID,
       kind: "integration",
       displayName: "Echo Integration (workerd TypeScript)",
-      capabilities: ["health", "diagnose", "onEvent", "cli"],
-      cli: {
-        commands: [
-          {
-            name: "ping",
-            about: "Probe echo plugin",
-            args: [
-              {
-                name: "message",
-                long: "message",
-                kind: "string",
-                default: "hi",
-              },
-            ],
-          },
-        ],
+      rpcFeatures: [FEATURE_SCALAR_LIMITS],
+      scalarLimits: {
+        maxScalarBytes: MAX_SCALAR_BYTES,
+        maxStreamWindowBytes: MAX_STREAM_WINDOW_BYTES,
+        maxListPage: MAX_LIST_PAGE,
       },
+      supportedRoles: ["integration"],
     };
   }
 
-  async diagnose(): Promise<DiagnoseResult> {
-    return { lines: ["echo: ok"] };
+  integration() {
+    return new EchoIntegration(this.env);
   }
 
-  async onEvent(event: HostToPluginEvent): Promise<void> {
-    if (event.type === "book_acquired") {
-      await this.env.HOST.notify({
-        type: "plugin_log",
-        payload: {
-          level: "info",
-          message: `echo saw book_acquired titleId=${event.payload.titleId}`,
-        },
+  override async cliDescribe(): Promise<string> {
+    return JSON.stringify(CLI);
+  }
+
+  override async cliInvoke(paramsJson: string): Promise<string> {
+    const params = JSON.parse(paramsJson || "{}") as {
+      command?: string;
+      args?: { message?: string };
+    };
+    if (params.command !== "ping") {
+      return JSON.stringify({
+        exitCode: 2,
+        stderr: `unknown command ${params.command ?? ""}`,
       });
     }
-  }
-
-  async cliInvoke(params: CliInvokeParams): Promise<CliInvokeResult> {
-    if (params.command !== "ping") {
-      return { exitCode: 2, stderr: `unknown command ${params.command}` };
-    }
-    return {
+    const message = params.args?.message ?? "hi";
+    return JSON.stringify({
       exitCode: 0,
-      stdout: `pong: ${String(params.args?.message ?? "hi")}\n`,
-    };
+      stdout: `pong: ${message}\n`,
+      json: { pong: message },
+    });
   }
 }
