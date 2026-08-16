@@ -116,6 +116,19 @@ impl ListenAddrs {
             .unwrap_or(8787)
     }
 
+    /// Distinct TCP ports from configured bind addresses.
+    #[must_use]
+    pub fn ports(&self) -> Vec<u16> {
+        self.socket_addrs()
+            .map(|addrs| {
+                let mut ports: Vec<u16> = addrs.iter().map(SocketAddr::port).collect();
+                ports.sort_unstable();
+                ports.dedup();
+                ports
+            })
+            .unwrap_or_else(|_| vec![self.ui_port()])
+    }
+
     /// Whether any configured bind is loopback.
     #[must_use]
     pub fn has_loopback(&self) -> bool {
@@ -235,6 +248,7 @@ mod tests {
         let d = ListenAddrs::default();
         assert_eq!(d.as_slice(), ["127.0.0.1:8787", "[::1]:8787"]);
         assert_eq!(d.ui_port(), 8787);
+        assert_eq!(d.ports(), vec![8787]);
         assert!(d.has_loopback());
         assert_eq!(d.tray_base_url(), "http://localhost:8787");
     }

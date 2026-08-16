@@ -24,9 +24,10 @@ use crate::models::{
     EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobResourceClass, PortalIdentity,
     UserRecord,
 };
+use crate::secrets::EncryptedSecretRecord;
 use crate::store::job_queue::{claim_next_job_on, enqueue_job_on, reserve_job_temp_path_on};
 use crate::store::LibraryStore;
-use crate::SessionClientInfo;
+use crate::{b64_string_to_bytes, bytes_to_b64_string, SessionClientInfo};
 
 /// How long an idempotency receipt is kept, in hours, before sweep.
 const RECEIPT_TTL_HOURS: i64 = 24;
@@ -52,6 +53,13 @@ pub async fn execute_db_atomic(
     let db_execution_us = u64::try_from(sql_started.elapsed().as_micros()).unwrap_or(u64::MAX);
     let mut out = match result {
         Ok(value) => {
+            if crate::consume_commit_injection() {
+                let _ = txn.rollback().await;
+                let _ = crate::take_txn_fault();
+                return Err(LibraryError::Orm(sea_orm::DbErr::Custom(
+                    "database commit failed: injected commit failure".into(),
+                )));
+            }
             txn.commit().await.map_err(LibraryError::Orm)?;
             if let Some(fault) = crate::take_txn_fault() {
                 return Err(LibraryError::Orm(sea_orm::DbErr::Custom(fault)));
@@ -194,6 +202,26 @@ pub(crate) async fn take_oidc_rp_state(
     )))
 }
 
+/// Promotes a sealed TOTP secret to `primary` and sets `totp_enabled` in one `dbAtomic` transaction.
+pub(crate) async fn confirm_totp_enrollment(
+    db: &DatabaseConnection,
+    user_id: i64,
+    record: &EncryptedSecretRecord,
+) -> Result<()> {
+    unit_from_atomic(
+        execute_db_atomic(db, request(confirm_totp_params(user_id, record))).await?,
+        "user".into(),
+    )
+}
+
+/// Deletes TOTP secrets and clears `totp_enabled` in one `dbAtomic` transaction.
+pub(crate) async fn disable_user_totp(db: &DatabaseConnection, user_id: i64) -> Result<()> {
+    unit_from_atomic(
+        execute_db_atomic(db, request(DbAtomicParams::DisableUserTotp { user_id })).await?,
+        "user".into(),
+    )
+}
+
 /// Consumes a one-time WebAuthn challenge row for login or registration.
 pub(crate) async fn take_webauthn_challenge(
     db: &DatabaseConnection,
@@ -292,6 +320,8 @@ fn operation_kind(op: &DbAtomicParams) -> &'static str {
         DbAtomicParams::EnqueueJob { .. } => "enqueueJob",
         DbAtomicParams::ClaimNextJob { .. } => "claimNextJob",
         DbAtomicParams::ReserveJobTemp { .. } => "reserveJobTemp",
+        DbAtomicParams::ConfirmTotpEnrollment { .. } => "confirmTotpEnrollment",
+        DbAtomicParams::DisableUserTotp { .. } => "disableUserTotp",
     }
 }
 
@@ -559,6 +589,98 @@ async fn run_operation(
             .await?;
             Ok((atomic_status::OK.to_string(), None))
         }
+        DbAtomicParams::ConfirmTotpEnrollment { user_id, .. } => {
+            let record = sealed_totp_primary(op)?;
+            LibraryStore::confirm_totp_enrollment_on(txn, *user_id, &record).await?;
+            Ok((atomic_status::OK.to_string(), None))
+        }
+        DbAtomicParams::DisableUserTotp { user_id } => {
+            LibraryStore::disable_user_totp_on(txn, *user_id).await?;
+            Ok((atomic_status::OK.to_string(), None))
+        }
+    }
+}
+
+/// Wire params for confirming TOTP with an already-sealed primary secret.
+fn confirm_totp_params(user_id: i64, record: &EncryptedSecretRecord) -> DbAtomicParams {
+    DbAtomicParams::ConfirmTotpEnrollment {
+        user_id,
+        format: record.format.clone(),
+        ciphertext: bytes_to_b64_string(&record.ciphertext),
+        cipher_algorithm: record.cipher_algorithm.clone(),
+        cipher_nonce: record.cipher_nonce.as_deref().map(bytes_to_b64_string),
+        kdf_algorithm: record.kdf_algorithm.clone(),
+        kdf_salt: record.kdf_salt.as_deref().map(bytes_to_b64_string),
+        kdf_m_cost: record.kdf_m_cost.map(i64::from),
+        kdf_t_cost: record.kdf_t_cost.map(i64::from),
+        kdf_p_cost: record.kdf_p_cost.map(i64::from),
+        created_at: record.created_at.clone(),
+    }
+}
+
+/// Rebuilds a sealed TOTP primary row from `dbAtomic` wire fields.
+fn sealed_totp_primary(op: &DbAtomicParams) -> Result<EncryptedSecretRecord> {
+    let DbAtomicParams::ConfirmTotpEnrollment {
+        user_id,
+        format,
+        ciphertext,
+        cipher_algorithm,
+        cipher_nonce,
+        kdf_algorithm,
+        kdf_salt,
+        kdf_m_cost,
+        kdf_t_cost,
+        kdf_p_cost,
+        created_at,
+    } = op
+    else {
+        return Err(LibraryError::Other(anyhow::anyhow!(
+            "expected confirmTotpEnrollment params"
+        )));
+    };
+    Ok(EncryptedSecretRecord {
+        id: None,
+        kind: crate::secrets::secret_kind::TOTP.to_string(),
+        provider: Some("local".into()),
+        account_type: crate::secrets::secret_account_type::USER.to_string(),
+        account_id: Some(user_id.to_string()),
+        name: "primary".into(),
+        format: format.clone(),
+        ciphertext: require_b64("ciphertext", ciphertext)?,
+        kdf_algorithm: kdf_algorithm.clone(),
+        kdf_salt: optional_b64("kdf_salt", kdf_salt.as_deref())?,
+        kdf_m_cost: optional_u32("kdf_m_cost", *kdf_m_cost)?,
+        kdf_t_cost: optional_u32("kdf_t_cost", *kdf_t_cost)?,
+        kdf_p_cost: optional_u32("kdf_p_cost", *kdf_p_cost)?,
+        cipher_algorithm: cipher_algorithm.clone(),
+        cipher_nonce: optional_b64("cipher_nonce", cipher_nonce.as_deref())?,
+        created_at: created_at.clone(),
+        updated_at: created_at.clone(),
+    })
+}
+
+/// Decodes a required `b64:` field; missing prefix fails closed.
+fn require_b64(field: &str, value: &str) -> Result<Vec<u8>> {
+    b64_string_to_bytes(value).ok_or_else(|| {
+        LibraryError::Other(anyhow::anyhow!("invalid {field} encoding for totp secret"))
+    })
+}
+
+/// Decodes an optional `b64:` field.
+fn optional_b64(field: &str, value: Option<&str>) -> Result<Option<Vec<u8>>> {
+    match value {
+        None | Some("") => Ok(None),
+        Some(s) => Ok(Some(require_b64(field, s)?)),
+    }
+}
+
+/// Converts an optional wire integer onto a `u32` secret field.
+fn optional_u32(field: &str, value: Option<i64>) -> Result<Option<u32>> {
+    match value {
+        None => Ok(None),
+        Some(n) => u32::try_from(n)
+            .map(Some)
+            .map_err(|_| LibraryError::Other(anyhow::anyhow!("invalid {field} for totp secret"))),
     }
 }
 

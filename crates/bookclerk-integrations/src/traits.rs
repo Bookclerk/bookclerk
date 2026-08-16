@@ -133,4 +133,30 @@ pub trait Integration: Send + Sync {
     fn portal_brand(&self) -> Option<Brand> {
         None
     }
+
+    /// Plugin-provided Bookclerk-as-IdP client templates (`oidcClients` RPC).
+    ///
+    /// Empty when the guest is not a relying party or the method is unsupported.
+    async fn provided_oidc_clients(&self) -> Result<Vec<ProvidedOidcClient>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Host-side copy of a guest `oidcClients` template (no ABI crate dependency).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvidedOidcClient {
+    /// OAuth `client_id`.
+    pub client_id: String,
+    /// Operator-facing card title.
+    pub display_name: String,
+    /// Path appended to the plugin origin.
+    pub callback_path: String,
+    /// Public PKCE when true.
+    pub public_client: bool,
+    /// Scopes for first materialization.
+    pub default_scopes: Vec<String>,
+    /// Whether new rows may issue refresh tokens.
+    pub issue_refresh_token: bool,
+    /// Dotted config key for the player origin.
+    pub origin_config_key: String,
 }

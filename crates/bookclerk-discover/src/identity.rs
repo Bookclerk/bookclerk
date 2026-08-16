@@ -769,6 +769,13 @@ pub fn merge_recommendation(into: &mut Recommendation, mut from: Recommendation)
             into.purchase_hints.push(hint);
         }
     }
+    for wisher in from.wishers {
+        bookclerk_library::push_queue_wisher(&mut into.wishers, wisher);
+    }
+    into.wish_count = into
+        .wish_count
+        .max(from.wish_count)
+        .max(into.wishers.len() as i64);
     into.work_key = recommendation_map_key(into);
 }
 
@@ -860,6 +867,9 @@ pub fn merge_global_queue_entries(entries: Vec<GlobalQueueEntry>) -> Vec<GlobalQ
                 if !existing.sample_uuids.contains(&uuid) {
                     existing.sample_uuids.push(uuid);
                 }
+            }
+            for wisher in entry.wishers {
+                existing.push_wisher(wisher);
             }
             if entry.first_requested_at < existing.first_requested_at {
                 existing.first_requested_at = entry.first_requested_at;
@@ -1066,7 +1076,7 @@ mod tests {
 
     #[test]
     fn merge_queue_sums_wish_counts_across_asin_isbn() {
-        use bookclerk_library::{WishlistPurchaseHint, WishlistStoreEdition};
+        use bookclerk_library::{QueueWisher, WishlistPurchaseHint, WishlistStoreEdition};
         use chrono::Utc;
         let now = Utc::now();
         let merged = merge_global_queue_entries(vec![
@@ -1099,6 +1109,11 @@ mod tests {
                     ..Default::default()
                 }],
                 wish_count: 1,
+                wishers: vec![QueueWisher {
+                    identity_id: Some(1),
+                    display_name: Some("alice".into()),
+                    ..QueueWisher::default()
+                }],
                 sample_uuids: vec!["a".into()],
                 first_requested_at: now,
                 last_requested_at: now,
@@ -1135,6 +1150,11 @@ mod tests {
                     ..Default::default()
                 }],
                 wish_count: 2,
+                wishers: vec![QueueWisher {
+                    identity_id: Some(2),
+                    display_name: Some("bob".into()),
+                    ..QueueWisher::default()
+                }],
                 sample_uuids: vec!["b".into()],
                 first_requested_at: now,
                 last_requested_at: now,
@@ -1158,6 +1178,7 @@ mod tests {
         assert_eq!(merged[0].length_minutes, Some(960));
         assert_eq!(merged[0].store_editions.len(), 2);
         assert_eq!(merged[0].purchase_hints.len(), 2);
+        assert_eq!(merged[0].wishers.len(), 2);
     }
 
     #[test]
@@ -1389,5 +1410,49 @@ mod tests {
         push_edition(&mut editions, StoreEdition::new("audible", "B00B"));
         assert_eq!(editions.len(), 2);
         assert_eq!(editions[1].source, "libro");
+    }
+
+    #[test]
+    fn merge_recommendation_unions_wishers() {
+        use bookclerk_library::QueueWisher;
+        let mut into = Recommendation {
+            title: "Hail Mary".into(),
+            asin: Some("B00HAIL".into()),
+            wishers: vec![QueueWisher {
+                identity_id: Some(1),
+                display_name: Some("alice".into()),
+                ..Default::default()
+            }],
+            wish_count: 1,
+            ..Default::default()
+        };
+        let from = Recommendation {
+            title: "Project Hail Mary".into(),
+            isbn: Some("9781234567890".into()),
+            from_request: true,
+            wishers: vec![
+                QueueWisher {
+                    identity_id: Some(1),
+                    display_name: Some("alice".into()),
+                    picture_url: Some("https://img.example/a.png".into()),
+                    ..Default::default()
+                },
+                QueueWisher {
+                    identity_id: Some(2),
+                    display_name: Some("bob".into()),
+                    ..Default::default()
+                },
+            ],
+            wish_count: 2,
+            ..Default::default()
+        };
+        merge_recommendation(&mut into, from);
+        assert!(into.from_request);
+        assert_eq!(into.wishers.len(), 2);
+        assert_eq!(into.wish_count, 2);
+        assert_eq!(
+            into.wishers[0].picture_url.as_deref(),
+            Some("https://img.example/a.png")
+        );
     }
 }

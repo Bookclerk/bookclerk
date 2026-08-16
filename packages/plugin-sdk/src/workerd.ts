@@ -49,6 +49,7 @@ export type {
   JobContext,
   JobInvocation,
   JobOutcome,
+  OidcClientTemplate,
   PluginDescribe,
   WorkerContext,
 } from "./v2.js";

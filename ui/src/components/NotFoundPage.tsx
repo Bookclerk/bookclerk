@@ -1,3 +1,5 @@
+import { BookclerkLogo } from "@/components/BookclerkLogo";
+
 /**
  * Client-side unknown-path screen (Vite SPA fallback / in-app navigation).
  */
@@ -7,11 +9,7 @@ export function NotFoundPage() {
   return (
     <div className="flex min-h-full items-center justify-center px-4 py-10">
       <div className="w-full max-w-md animate-[fadeUp_420ms_ease-out]">
-        <img
-          src="/bookclerk-logo.svg"
-          alt="Bookclerk"
-          className="mb-8 h-auto w-full"
-        />
+        <BookclerkLogo className="mb-8 h-auto w-full" />
         <p className="text-xs font-semibold uppercase tracking-wider text-brick">
           404 · Not Found
         </p>

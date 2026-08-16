@@ -37,7 +37,7 @@ import { cn, pageWidthClass } from "@/lib/utils";
 const PAGE_SIZE = 40;
 
 const selectClassName =
-  "rounded-md border border-ink/15 bg-white/80 px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
+  "rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
 
 /**
  * Library view — searchable, filterable owned titles with acquire actions.
@@ -320,7 +320,7 @@ export function LibraryPage({
 
       <div className="min-h-0 flex-1 overflow-auto">
       <main className={cn("w-full", pageWidthClass)}>
-        <div className="animate-[rowIn_500ms_ease-out] bg-white/35 shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
+        <div className="animate-[rowIn_500ms_ease-out] bg-card shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
           {visibleBooks.length === 0 ? (
             <p className="px-4 py-16 text-center text-sm text-ink/60">
               No books match this view.

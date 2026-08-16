@@ -2,7 +2,7 @@
 
 - **Status:** Accepted (Phases 0–6 landed on `main`)
 - **Date:** 2026-08-11
-- **Updated:** 2026-08-13 (#150 RBAC Settings / Owner; #152 OIDC broker + WebAuthn)
+- **Updated:** 2026-08-15 (plugin-provided OIDC clients; see [plugin-oidc-clients.md](plugin-oidc-clients.md))
 - **Tracking:** [#117](https://github.com/fritz-fritz/bookclerk/issues/117) (closed via [#129](https://github.com/fritz-fritz/bookclerk/pull/129)); follow-ups [#150](https://github.com/fritz-fritz/bookclerk/pull/150), [#152](https://github.com/fritz-fritz/bookclerk/pull/152)
 - **Prerequisite:** [#116](https://github.com/fritz-fritz/bookclerk/issues/116) (atomic config reload; closed)
 
@@ -26,7 +26,7 @@ upstream issuer) is not supportable.
 
 | Principal | Powers |
 | --- | --- |
-| **Operator** | Control plane via shared operator token + durable hashed sessions. **Cannot** connect bookstore sources. Can **impersonate** any User. Creates the linked **Owner** on bootstrap. **Never** an OAuth/OIDC subject — not JIT’d, linked, or offered on the SSO login page. |
+| **Operator** | Control plane via shared operator token + durable hashed sessions. **Cannot** connect bookstore sources. Can **impersonate** any User. Creates the linked **Owner** on bootstrap. **Never** an OAuth/OIDC subject — not JIT’d, linked, or offered on the SSO login page. SPA operator-token paste is offered only before an active Owner exists; afterwards use tray handoff or Owner elevate. |
 | **Owner** | Super-user (multiple allowed). Administrator caps plus **elevate to Operator** after step-up (IdP `prompt=login`, passkey, or local password). Last active Owner cannot be demoted/disabled/deleted. Non-elevated Owners may provision Members and Administrators, not other Owners. May be mapped from an upstream IdP role. |
 | **Administrator** | Normal User + admin caps (provision Members only; cannot create, assign, or manage Administrator or Owner). **Cannot** elevate. May be JIT / role-synced from an IdP. |
 | **Member** | Normal User; may connect sources under policy. May be JIT from IdP or social provision policies. |
@@ -39,7 +39,9 @@ upstream issuer) is not supportable.
 - Optional contact `email` on users supports invites and SSO `link_by_email`.
 - Bookclerk is the OIDC authorization server for Audiobookshelf (core AS;
   plugins do not implement the protocol). Tokens are bound to a **User**, never
-  minted from the operator token alone.
+  minted from the operator token alone. Plugin-provided relying-party clients
+  (ABS and later guests) are declared by the plugin and gated with an enable
+  toggle; see [plugin-provided OIDC clients](plugin-oidc-clients.md).
 - Bookclerk may optionally act as an OIDC/OAuth **relying party** (identity
   broker) for one or more upstream providers. Upstream login creates or links a
   first-party User; ABS still trusts Bookclerk’s issuer. IdP passwords are never
@@ -50,7 +52,12 @@ upstream issuer) is not supportable.
 - Owner elevation uses IdP step-up, a local passkey, or a Bookclerk password —
   not a copied SSO password.
 - **Passkeys (WebAuthn)** are the User-plane hatch when an IdP is down. The
-  Operator token remains host break-glass.
+  Operator token remains host break-glass. The relying party ID is a hostname
+  (`integrations.public_origin`, or `localhost` on loopback) — never a raw IP.
+  Passkeys are named at registration. Optional TOTP (authenticator app) is a
+  second factor for **password** login only; passkey sign-in does not also
+  require a TOTP code. Owners/operators may set `daemon.auth.require_second_factor`
+  so password login must use TOTP or the user must sign in with a passkey.
 
 ### CLI
 
@@ -87,7 +94,8 @@ Optional multi-IdP broker + WebAuthn (Phase 6) landed in
 - Portal cookies and `/api/portal/*` resolve to a first-party `users` row.
 - Operator prefs subject remains `operator`; user prefs use `user:{id}`.
 - Docs: [gui.md](../gui.md), [operations.md](../operations.md),
-  [integrations.md](../integrations.md), [database.md](../database.md).
+  [integrations.md](../integrations.md), [database.md](../database.md),
+  [plugin-provided OIDC clients](plugin-oidc-clients.md).
 - Operator tray login never puts the durable token in a GET URL. Open Bookclerk
   mints a 60-second hashed one-time loopback code (`POST /api/auth/tray-handoff/prepare`
   + `GET /api/auth/tray-handoff?code=`). A same-host reverse proxy cannot complete

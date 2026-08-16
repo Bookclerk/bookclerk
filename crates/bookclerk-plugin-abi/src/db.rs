@@ -107,8 +107,9 @@ pub struct ExecResultDto {
 /// Tagged connect params for [`crate::methods::db_connect`].
 ///
 /// Discriminant is wire field `backend` with lowercase tags. SQLite guests
-/// typically receive `library.db` on the side-channel FD at connect time;
-/// D1 / Postgres receive host-injected credentials in the params.
+/// open `library.db` at [`Self::Sqlite::sqlite_path`] (also injected as
+/// `BOOKCLERK_SQLITE_PATH`); D1 / Postgres receive host-injected credentials
+/// in the params.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "backend", rename_all = "lowercase")]
 pub enum DbConnectParams {
@@ -118,9 +119,8 @@ pub enum DbConnectParams {
         /// Scoped writable directory for this plugin
         /// (`…/plugins/<id>/data`, wire `pluginDataDir`).
         plugin_data_dir: String,
-        /// Host fallback absolute path to the DB file when no FD side channel
-        /// is wired (unconfined / best-effort). Omitted when FD 3 carries the
-        /// open file (wire `sqlitePath`).
+        /// Absolute path to the DB file (wire `sqlitePath`). The sqlite jail
+        /// grants this file and its journal sidecars at spawn.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sqlite_path: Option<String>,
     },
@@ -345,6 +345,48 @@ pub enum DbAtomicParams {
         reserved_bytes: i64,
         /// Global reserved-bytes cap.
         quota_bytes: i64,
+    },
+    /// Promote a sealed TOTP secret to `primary` and set `users.totp_enabled`.
+    ///
+    /// The host seals with the process DEK first. Ciphertext, nonce, and salt
+    /// are `b64:`-prefixed strings (same encoding as D1 BLOB binds).
+    #[serde(rename_all = "camelCase")]
+    ConfirmTotpEnrollment {
+        /// `users.id` to enroll.
+        user_id: i64,
+        /// Payload format (`sealed-v1`).
+        format: String,
+        /// Sealed TOTP secret bytes (`b64:…`).
+        ciphertext: String,
+        /// Cipher algorithm identifier, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cipher_algorithm: Option<String>,
+        /// AEAD nonce (`b64:…`), if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cipher_nonce: Option<String>,
+        /// Legacy KDF algorithm, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kdf_algorithm: Option<String>,
+        /// Legacy KDF salt (`b64:…`), if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kdf_salt: Option<String>,
+        /// Legacy Argon2 memory cost in KiB, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kdf_m_cost: Option<i64>,
+        /// Legacy Argon2 time cost, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kdf_t_cost: Option<i64>,
+        /// Legacy Argon2 parallelism, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kdf_p_cost: Option<i64>,
+        /// RFC 3339 timestamp to store as `created_at` on the primary row.
+        created_at: String,
+    },
+    /// Delete TOTP secrets and clear `users.totp_enabled`.
+    #[serde(rename_all = "camelCase")]
+    DisableUserTotp {
+        /// `users.id` to disable.
+        user_id: i64,
     },
 }
 

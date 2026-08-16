@@ -49,7 +49,7 @@ Generated docs must be **human-readable**. Reject identifier-echo stubs:
 | --- | --- |
 | `/// Cache dir.` | `/// Absolute path to the guest download cache for this fetch.` |
 | `/// Message variant.` | `/// Operator-facing error text with no structured code.` |
-| `/// Path.` | `/// Filesystem path resolved from the host side-channel FD or params.` |
+| `/// Path.` | `/// Filesystem path from host params (jail-granted).` |
 | `/** Force. */` | `/** When true, overwrite an existing credential blob. */` |
 
 Minimum expectations:

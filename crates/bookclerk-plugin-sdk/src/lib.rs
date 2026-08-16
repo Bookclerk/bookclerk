@@ -11,7 +11,7 @@
 //! | Need | Entry point |
 //! | --- | --- |
 //! | Native guest (`runtime = "native"`) | [`PluginRoot`] / [`serve`] (`api_version = 2`) |
-//! | Fetch / upload FD side channels | [`fetch_work_dir`], [`upload_file_path`] |
+//! | Fetch / upload work paths | [`fetch_work_dir`], [`upload_file_path`] |
 //! | OAuth callback without guest listen | [`callback_tunnel`] |
 //! | Workerd / Wasm guests | [`workerd`] + npm `@bookclerk/plugin-sdk` |
 //! | ABI DTOs / method names | [`protocol`] (re-exports `bookclerk-plugin-abi`) |
@@ -45,7 +45,7 @@
 //! # Re-exports
 //!
 //! Crate-root `pub use` items are the stable import surface for guests
-//! (handshake DTOs, [`PluginError`], FD helpers, tunnel types). Prefer
+//! (handshake DTOs, [`PluginError`], fetch path helpers, tunnel types). Prefer
 //! `use bookclerk_plugin_sdk::…` over reaching into submodules unless you need
 //! module-level docs.
 

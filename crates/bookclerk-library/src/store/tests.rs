@@ -492,6 +492,7 @@ async fn user_preferences_roundtrip_operator_and_portal() {
         .await
         .unwrap();
     assert_eq!(defaults.default_view, "discover");
+    assert_eq!(defaults.theme, "system");
     assert!(defaults.disabled_shelves.is_empty());
     assert!(store
         .get_user_preferences(OPERATOR_PREFS_KEY)
@@ -509,6 +510,7 @@ async fn user_preferences_roundtrip_operator_and_portal() {
             "asc",
             Some("en"),
             &["chirp".into()],
+            "dark",
         )
         .await
         .unwrap();
@@ -518,6 +520,7 @@ async fn user_preferences_roundtrip_operator_and_portal() {
     assert_eq!(saved.discover_sort_dir, "asc");
     assert_eq!(saved.discover_language.as_deref(), Some("en"));
     assert_eq!(saved.discover_excluded_sources, vec!["chirp"]);
+    assert_eq!(saved.theme, "dark");
 
     let again = store
         .get_user_preferences(OPERATOR_PREFS_KEY)
@@ -543,12 +546,14 @@ async fn user_preferences_roundtrip_operator_and_portal() {
             "desc",
             None,
             &[],
+            "system",
         )
         .await
         .unwrap();
     assert_eq!(portal.identity_id, Some(identity.id));
     assert_eq!(portal.default_view, "accounts");
     assert_eq!(portal.disabled_shelves, vec!["narrator"]);
+    assert_eq!(portal.theme, "system");
     assert!(portal.discover_language.is_none());
     assert!(portal.discover_excluded_sources.is_empty());
 
@@ -700,12 +705,27 @@ async fn wishlist_is_personal_and_global_queue_ranks_by_wish_count() {
     assert_eq!(queue.len(), 3);
     assert_eq!(queue[0].wish_count, 2);
     assert_eq!(queue[0].work_key, work);
+    assert_eq!(queue[0].wishers.len(), 2);
+    assert!(queue[0]
+        .wishers
+        .iter()
+        .any(|w| w.display_name.as_deref() == Some("alice")));
+    assert!(queue[0]
+        .wishers
+        .iter()
+        .any(|w| w.display_name.as_deref() == Some("bob")));
     assert!(queue
         .iter()
         .any(|e| e.wish_count == 1 && e.title.contains("Martian")));
     assert!(queue
         .iter()
         .any(|e| e.wish_count == 1 && e.title.contains("Solo")));
+    let solo = queue
+        .iter()
+        .find(|e| e.title.contains("Solo"))
+        .expect("solo wish");
+    assert_eq!(solo.wishers.len(), 1);
+    assert!(solo.wishers[0].operator);
 }
 
 #[tokio::test]
@@ -817,6 +837,123 @@ async fn operator_sessions_persist_and_revoke() {
     assert!(store.operator_session_valid(hash).await.unwrap());
     assert!(store.delete_operator_session(hash).await.unwrap());
     assert!(!store.operator_session_valid(hash).await.unwrap());
+}
+
+#[tokio::test]
+async fn user_presence_extras_session_listening_and_last_used_touch() {
+    use crate::entities::portal_sessions;
+    use crate::hash_token;
+    use crate::models::UserRole;
+    use chrono::{Duration as ChronoDuration, Utc};
+    use sea_orm::Set;
+
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let user = store
+        .create_user(UserRole::Member, Some("Pat"), None)
+        .await
+        .unwrap();
+    let idle = store
+        .create_user(UserRole::Member, Some("Idle"), None)
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(user.id, Some("Pat"))
+        .await
+        .unwrap();
+    let _idle_identity = store
+        .ensure_local_portal_identity(idle.id, Some("Idle"))
+        .await
+        .unwrap();
+    let raw = "presence-session-token";
+    let token_hash = hash_token(raw);
+    store
+        .insert_portal_session(
+            &token_hash,
+            identity.id,
+            Utc::now() + ChronoDuration::hours(1),
+        )
+        .await
+        .unwrap();
+
+    store
+        .upsert_listening_progress(&NewListeningProgress {
+            identity_id: Some(identity.id),
+            provider: "audiobookshelf".into(),
+            external_user_id: "pat".into(),
+            book_uuid: None,
+            work_id: None,
+            external_item_id: "item-1".into(),
+            title: Some("Dune".into()),
+            authors: None,
+            asin: None,
+            isbn: None,
+            progress: Some(0.2),
+            current_time_seconds: Some(120.0),
+            duration_seconds: Some(600.0),
+            is_finished: false,
+            last_listened_at: Some(Utc::now()),
+        })
+        .await
+        .unwrap();
+
+    let extras = store
+        .list_user_presence_extras(ChronoDuration::minutes(30))
+        .await
+        .unwrap();
+    let extra = extras.get(&user.id).expect("presence row");
+    assert!(extra.online);
+    assert!(extra.last_active_at.is_some());
+    assert_eq!(
+        extra.listening.as_ref().unwrap().title.as_deref(),
+        Some("Dune")
+    );
+    assert_eq!(extras.get(&idle.id).map(|e| e.online), Some(false));
+    let seen = store.get_user(user.id).await.unwrap().unwrap();
+    assert!(seen.last_seen_at.is_some());
+    let never = store.get_user(idle.id).await.unwrap().unwrap();
+    assert!(never.last_seen_at.is_none());
+
+    let session = portal_sessions::Entity::find()
+        .one(&store.db)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut am: portal_sessions::ActiveModel = session.into();
+    am.last_used_at = Set(Some(
+        (Utc::now() - ChronoDuration::minutes(10)).to_rfc3339(),
+    ));
+    am.update(&store.db).await.unwrap();
+
+    store
+        .get_portal_session_identity(&token_hash)
+        .await
+        .unwrap()
+        .expect("identity");
+    let extras = store
+        .list_user_presence_extras(ChronoDuration::minutes(30))
+        .await
+        .unwrap();
+    let extra = extras.get(&user.id).expect("presence row");
+    let age = Utc::now() - extra.last_active_at.expect("last_active");
+    assert!(age < ChronoDuration::seconds(5));
+    let seen = store.get_user(user.id).await.unwrap().unwrap();
+    let seen_age = Utc::now() - seen.last_seen_at.expect("last_seen");
+    assert!(seen_age < ChronoDuration::seconds(5));
+
+    store.delete_portal_session(&token_hash).await.unwrap();
+    let extras = store
+        .list_user_presence_extras(ChronoDuration::minutes(30))
+        .await
+        .unwrap();
+    let extra = extras.get(&user.id).expect("presence row");
+    assert!(!extra.online);
+    assert!(extra.last_active_at.is_none());
+    let seen = store.get_user(user.id).await.unwrap().unwrap();
+    assert!(seen.last_seen_at.is_some());
 }
 
 #[tokio::test]
@@ -1214,12 +1351,13 @@ async fn webauthn_credential_crud() {
         .await
         .unwrap();
     store
-        .insert_webauthn_credential(user.id, "cred-1", "{\"ok\":true}")
+        .insert_webauthn_credential(user.id, "cred-1", "{\"ok\":true}", Some("Laptop"))
         .await
         .unwrap();
     let listed = store.list_webauthn_credentials(user.id).await.unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].1, "cred-1");
+    assert_eq!(listed[0].credential_id, "cred-1");
+    assert_eq!(listed[0].name.as_deref(), Some("Laptop"));
     let got = store
         .get_webauthn_credential_by_cred_id("cred-1")
         .await
@@ -1262,6 +1400,216 @@ async fn webauthn_credential_crud() {
 }
 
 #[tokio::test]
+async fn totp_enabled_flag_round_trip() {
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let user = store
+        .create_user(UserRole::Member, Some("Mfa User"), None)
+        .await
+        .unwrap();
+    assert!(!user.totp_enabled);
+    store.set_user_totp_enabled(user.id, true).await.unwrap();
+    let reloaded = store.get_user(user.id).await.unwrap().unwrap();
+    assert!(reloaded.totp_enabled);
+    store.set_user_totp_enabled(user.id, false).await.unwrap();
+    let cleared = store.get_user(user.id).await.unwrap().unwrap();
+    assert!(!cleared.totp_enabled);
+}
+
+async fn totp_secret_names(store: &LibraryStore, user_id: i64) -> Vec<String> {
+    let uid = user_id.to_string();
+    let mut names: Vec<String> = crate::list_secrets(store.db(), crate::secret_kind::TOTP)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|row| row.account_id.as_deref() == Some(uid.as_str()))
+        .map(|row| row.name)
+        .collect();
+    names.sort();
+    names
+}
+
+async fn store_pending_totp(store: &LibraryStore, user_id: i64, secret: &str) {
+    let record = crate::build_sealed_record(
+        secret.as_bytes(),
+        crate::secret_kind::TOTP,
+        "local",
+        crate::secret_account_type::USER,
+        &user_id.to_string(),
+        "pending",
+    )
+    .unwrap();
+    crate::upsert_secret(store.db(), &record).await.unwrap();
+}
+
+#[tokio::test]
+async fn totp_enrollment_and_disable_round_trip() {
+    let _dek = crate::master_key::master_key_test_read_lock_async().await;
+    crate::master_key::ensure_shared_test_dek();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let user = store
+        .create_user(UserRole::Member, Some("Totp Round Trip"), None)
+        .await
+        .unwrap();
+    store_pending_totp(&store, user.id, "JBSWY3DPEHPK3PXP").await;
+    store
+        .confirm_totp_enrollment(user.id, "JBSWY3DPEHPK3PXP")
+        .await
+        .unwrap();
+    let enrolled = store.get_user(user.id).await.unwrap().unwrap();
+    assert!(enrolled.totp_enabled);
+    assert_eq!(totp_secret_names(&store, user.id).await, vec!["primary"]);
+
+    store.disable_user_totp(user.id).await.unwrap();
+    let cleared = store.get_user(user.id).await.unwrap().unwrap();
+    assert!(!cleared.totp_enabled);
+    assert!(totp_secret_names(&store, user.id).await.is_empty());
+}
+
+#[tokio::test]
+async fn totp_enroll_and_disable_missing_user_leave_no_leftover_secrets() {
+    let _dek = crate::master_key::master_key_test_read_lock_async().await;
+    crate::master_key::ensure_shared_test_dek();
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let other = store
+        .create_user(UserRole::Member, Some("Keep Totp"), None)
+        .await
+        .unwrap();
+    store_pending_totp(&store, other.id, "JBSWY3DPEHPK3PXP").await;
+    let missing = 999_i64;
+    let enroll_err = store
+        .confirm_totp_enrollment(missing, "JBSWY3DPEHPK3PXP")
+        .await
+        .unwrap_err();
+    assert!(matches!(enroll_err, LibraryError::NotFound(_)));
+    assert!(totp_secret_names(&store, missing).await.is_empty());
+    assert_eq!(totp_secret_names(&store, other.id).await, vec!["pending"]);
+    assert!(
+        !store
+            .get_user(other.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .totp_enabled
+    );
+
+    let disable_err = store.disable_user_totp(missing).await.unwrap_err();
+    assert!(matches!(disable_err, LibraryError::NotFound(_)));
+    assert_eq!(totp_secret_names(&store, other.id).await, vec!["pending"]);
+}
+
+#[tokio::test]
+async fn plugin_oidc_upsert_rejects_custom_and_cross_plugin_client_id() {
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let custom = store
+        .insert_oidc_client(
+            "shared-client",
+            None,
+            &[String::from("https://player.example/callback")],
+            Some("Custom"),
+            true,
+            &["openid".into()],
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(custom.plugin_id.is_none());
+    assert!(custom.enabled);
+
+    let custom_err = store
+        .upsert_plugin_oidc_client(
+            "shared-client",
+            "audiobookshelf",
+            "Audiobookshelf",
+            &[String::from("http://127.0.0.1:13378/auth/openid/callback")],
+            true,
+            &["openid".into(), "profile".into()],
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(custom_err, LibraryError::Conflict(_)));
+    let unchanged = store
+        .get_oidc_client("shared-client")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(unchanged.plugin_id.is_none());
+    assert!(unchanged.enabled);
+    assert_eq!(unchanged.name.as_deref(), Some("Custom"));
+
+    store
+        .upsert_plugin_oidc_client(
+            "plugin-owned",
+            "audiobookshelf",
+            "Audiobookshelf",
+            &[String::from("http://127.0.0.1:13378/auth/openid/callback")],
+            true,
+            &["openid".into()],
+        )
+        .await
+        .unwrap();
+    let cross_err = store
+        .upsert_plugin_oidc_client(
+            "plugin-owned",
+            "other-player",
+            "Other",
+            &[String::from("http://127.0.0.1:9999/callback")],
+            false,
+            &["openid".into()],
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(cross_err, LibraryError::Conflict(_)));
+    let owned = store
+        .get_oidc_client("plugin-owned")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(owned.plugin_id.as_deref(), Some("audiobookshelf"));
+    assert_eq!(
+        owned.redirect_uris,
+        vec![String::from("http://127.0.0.1:13378/auth/openid/callback")]
+    );
+
+    let refreshed = store
+        .upsert_plugin_oidc_client(
+            "plugin-owned",
+            "audiobookshelf",
+            "Ignored name",
+            &[String::from("https://abs.home:13378/auth/openid/callback")],
+            false,
+            &["openid".into(), "email".into()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(refreshed.plugin_id.as_deref(), Some("audiobookshelf"));
+    assert_eq!(refreshed.name.as_deref(), Some("Audiobookshelf"));
+    assert!(!refreshed.enabled);
+    assert!(refreshed.issue_refresh_token);
+    assert_eq!(refreshed.allowed_scopes, vec!["openid"]);
+    assert_eq!(
+        refreshed.redirect_uris,
+        vec![String::from("https://abs.home:13378/auth/openid/callback")]
+    );
+}
+
+#[tokio::test]
 async fn delete_user_removes_webauthn_and_oidc_rows() {
     use chrono::{Duration as ChronoDuration, Utc};
 
@@ -1279,7 +1627,7 @@ async fn delete_user_removes_webauthn_and_oidc_rows() {
         .await
         .unwrap();
     store
-        .insert_webauthn_credential(doomed.id, "cred-reuse", "{\"ok\":true}")
+        .insert_webauthn_credential(doomed.id, "cred-reuse", "{\"ok\":true}", None)
         .await
         .unwrap();
     store
@@ -1323,7 +1671,7 @@ async fn delete_user_removes_webauthn_and_oidc_rows() {
         .unwrap()
         .is_none());
     store
-        .insert_webauthn_credential(owner.id, "cred-reuse", "{\"ok\":true}")
+        .insert_webauthn_credential(owner.id, "cred-reuse", "{\"ok\":true}", None)
         .await
         .unwrap();
     assert_eq!(store.count_webauthn_credentials(owner.id).await.unwrap(), 1);
@@ -2427,6 +2775,28 @@ fn postgres_url_with_db(url: &str, db_name: &str) -> String {
     }
 }
 
+/// True when Postgres conformance tests should run (URL present).
+///
+/// `BOOKCLERK_REQUIRE_POSTGRES_TESTS=1` without a URL is a hard failure so CI
+/// cannot skip these cases. A missing URL without that flag skips so the
+/// default workspace suite does not need a server.
+fn postgres_tests_enabled() -> bool {
+    let url = std::env::var("BOOKCLERK_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    if url.is_some() {
+        return true;
+    }
+    assert!(
+        std::env::var("BOOKCLERK_REQUIRE_POSTGRES_TESTS")
+            .ok()
+            .as_deref()
+            != Some("1"),
+        "BOOKCLERK_TEST_POSTGRES_URL is required when BOOKCLERK_REQUIRE_POSTGRES_TESTS=1"
+    );
+    false
+}
+
 /// Opens a disposable Postgres database with a multi-connection pool.
 ///
 /// Requires `BOOKCLERK_TEST_POSTGRES_URL`. Setup failures are fatal so a
@@ -2531,4 +2901,190 @@ async fn postgres_concurrent_reserves_respect_quota() {
     let (ra, rb) = tokio::join!(a, b);
     let ok = u32::from(ra.unwrap().is_ok()) + u32::from(rb.unwrap().is_ok());
     assert_eq!(ok, 1);
+}
+
+#[tokio::test]
+async fn avatar_source_and_sso_pictures() {
+    use chrono::{Duration as ChronoDuration, Utc};
+
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let user = store
+        .create_user_with_profile(
+            UserRole::Member,
+            Some("Alex"),
+            None,
+            Some("alex@example.com"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(user.avatar_source, None);
+    let updated = store
+        .set_user_avatar_source(user.id, Some("gravatar"))
+        .await
+        .unwrap();
+    assert_eq!(updated.avatar_source.as_deref(), Some("gravatar"));
+
+    store
+        .link_portal_identity_to_user("oidc:google", "g-sub", user.id, Some("Alex"))
+        .await
+        .unwrap();
+    store
+        .link_portal_identity_to_user("oidc:github", "gh-sub", user.id, Some("Alex"))
+        .await
+        .unwrap();
+    store
+        .set_portal_identity_picture(
+            "oidc:google",
+            "g-sub",
+            Some("https://example.com/google.png"),
+        )
+        .await
+        .unwrap();
+    store
+        .set_portal_identity_picture(
+            "oidc:github",
+            "gh-sub",
+            Some("https://example.com/github.png"),
+        )
+        .await
+        .unwrap();
+    let google = store
+        .get_portal_identity("oidc:google", "g-sub")
+        .await
+        .unwrap()
+        .unwrap();
+    let github = store
+        .get_portal_identity("oidc:github", "gh-sub")
+        .await
+        .unwrap()
+        .unwrap();
+    let expires = Utc::now() + ChronoDuration::hours(1);
+    store
+        .insert_portal_session("hash-google", google.id, expires)
+        .await
+        .unwrap();
+    store
+        .insert_portal_session("hash-github", github.id, expires)
+        .await
+        .unwrap();
+
+    let pics = store.list_user_sso_pictures(user.id).await.unwrap();
+    assert_eq!(pics.len(), 2);
+    assert!(pics.iter().all(|p| p.last_used_at.is_some()));
+    assert!(pics
+        .iter()
+        .any(|p| p.provider == "oidc:github" && p.picture_url == "https://example.com/github.png"));
+}
+
+#[tokio::test]
+async fn postgres_totp_enroll_and_disable_round_trip() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let _dek = crate::master_key::master_key_test_read_lock_async().await;
+    crate::master_key::ensure_shared_test_dek();
+    let store = postgres_test_store().await;
+    let user = store
+        .create_user(UserRole::Member, Some("Totp Pg"), None)
+        .await
+        .unwrap();
+    store_pending_totp(&store, user.id, "JBSWY3DPEHPK3PXP").await;
+    store
+        .confirm_totp_enrollment(user.id, "JBSWY3DPEHPK3PXP")
+        .await
+        .unwrap();
+    let enrolled = store.get_user(user.id).await.unwrap().unwrap();
+    assert!(enrolled.totp_enabled);
+    assert_eq!(totp_secret_names(&store, user.id).await, vec!["primary"]);
+
+    store.disable_user_totp(user.id).await.unwrap();
+    let cleared = store.get_user(user.id).await.unwrap().unwrap();
+    assert!(!cleared.totp_enabled);
+    assert!(totp_secret_names(&store, user.id).await.is_empty());
+}
+
+#[tokio::test]
+async fn postgres_totp_enroll_and_disable_missing_user_leave_no_leftover_secrets() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let _dek = crate::master_key::master_key_test_read_lock_async().await;
+    crate::master_key::ensure_shared_test_dek();
+    let store = postgres_test_store().await;
+    let other = store
+        .create_user(UserRole::Member, Some("Keep Totp Pg"), None)
+        .await
+        .unwrap();
+    store_pending_totp(&store, other.id, "JBSWY3DPEHPK3PXP").await;
+    let missing = 999_i64;
+    let enroll_err = store
+        .confirm_totp_enrollment(missing, "JBSWY3DPEHPK3PXP")
+        .await
+        .unwrap_err();
+    assert!(matches!(enroll_err, LibraryError::NotFound(_)));
+    assert!(totp_secret_names(&store, missing).await.is_empty());
+    assert_eq!(totp_secret_names(&store, other.id).await, vec!["pending"]);
+    assert!(
+        !store
+            .get_user(other.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .totp_enabled
+    );
+
+    let disable_err = store.disable_user_totp(missing).await.unwrap_err();
+    assert!(matches!(disable_err, LibraryError::NotFound(_)));
+    assert_eq!(totp_secret_names(&store, other.id).await, vec!["pending"]);
+}
+
+#[tokio::test]
+async fn postgres_totp_injected_commit_failure_rolls_back_enroll_and_disable() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let _dek = crate::master_key::master_key_test_read_lock_async().await;
+    crate::master_key::ensure_shared_test_dek();
+    let store = postgres_test_store().await;
+    let user = store
+        .create_user(UserRole::Member, Some("Totp Pg Inject"), None)
+        .await
+        .unwrap();
+    store_pending_totp(&store, user.id, "JBSWY3DPEHPK3PXP").await;
+    crate::inject_commit_failures(1);
+    let enroll_err = store
+        .confirm_totp_enrollment(user.id, "JBSWY3DPEHPK3PXP")
+        .await
+        .unwrap_err();
+    assert!(
+        enroll_err.to_string().contains("commit failed"),
+        "expected enroll commit failure, got {enroll_err}"
+    );
+    assert!(!store.get_user(user.id).await.unwrap().unwrap().totp_enabled);
+    assert_eq!(totp_secret_names(&store, user.id).await, vec!["pending"]);
+
+    store
+        .confirm_totp_enrollment(user.id, "JBSWY3DPEHPK3PXP")
+        .await
+        .unwrap();
+    assert!(store.get_user(user.id).await.unwrap().unwrap().totp_enabled);
+    assert_eq!(totp_secret_names(&store, user.id).await, vec!["primary"]);
+
+    crate::inject_commit_failures(1);
+    let disable_err = store.disable_user_totp(user.id).await.unwrap_err();
+    assert!(
+        disable_err.to_string().contains("commit failed"),
+        "expected disable commit failure, got {disable_err}"
+    );
+    assert!(store.get_user(user.id).await.unwrap().unwrap().totp_enabled);
+    assert_eq!(totp_secret_names(&store, user.id).await, vec!["primary"]);
+
+    store.disable_user_totp(user.id).await.unwrap();
+    assert!(!store.get_user(user.id).await.unwrap().unwrap().totp_enabled);
+    assert!(totp_secret_names(&store, user.id).await.is_empty());
 }

@@ -9,8 +9,10 @@ Bookclerk hosts a core OIDC authorization server (`/.well-known/openid-configura
 OpenID with:
 
 - Issuer: Bookclerk `integrations.public_origin` (or the daemon base URL)
-- Client id: `audiobookshelf` (public PKCE client; register redirects such as
-  `http://127.0.0.1:13378/auth/openid/callback`)
+- Client id: `audiobookshelf` (plugin-provided public PKCE client; enable it
+  under Settings → Sign-in). Redirect URIs are derived from this plugin’s
+  `base_url` plus `/auth/openid/callback` (ABS’s own UI, default port 13378 —
+  not Bookclerk’s 8787 listen port) and are not edited by hand.
 - Auth method: none / PKCE S256
 
 Consent and token minting require a **User** portal session. The shared operator

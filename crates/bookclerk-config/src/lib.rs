@@ -57,7 +57,9 @@ pub use isolation::Isolation;
 pub use jobs::{JobsConcurrencyConfig, JobsConfig};
 pub use journal::{journald_available, os_log_available, OsLogFacility, OsLogLayer};
 pub use listen::ListenAddrs;
-pub use logging::{init_tracing, init_tracing_with, LogFormat, LoggingHandle, TracingOptions};
+pub use logging::{
+    init_tracing, init_tracing_with, strip_ansi_escapes, LogFormat, LoggingHandle, TracingOptions,
+};
 pub use media::MediaConfig;
 pub use naming_profile::{NamingProfile, NamingProfileTemplates, ResolvedNamingTemplates};
 pub use oidc_broker::{
@@ -96,5 +98,6 @@ pub use redact::{
 };
 pub use settings::{
     AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig, DiagnosticsConfig,
-    DiscoveryConfig, LibraryConfig,
+    DiscoveryConfig, LibraryConfig, TRAY_HANDOFF_TTL_SECS_DEFAULT, TRAY_HANDOFF_TTL_SECS_MAX,
+    TRAY_HANDOFF_TTL_SECS_MIN,
 };

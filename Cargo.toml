@@ -124,7 +124,6 @@ directories = "6"
 clap = { version = "4", features = ["derive", "env", "string"] }
 axum = "0.8"
 tower-http = { version = "0.7", features = ["trace", "fs", "normalize-path"] }
-qrcode = { version = "0.14", default-features = false }
 
 # DB / storage — rusqlite 0.37 shares libsqlite3-sys 0.35 with SeaORM's sqlx-sqlite
 # (rusqlite 0.40 needs ^0.38 and cannot coexist in one binary). Vendored audible-rs
@@ -152,6 +151,8 @@ base64 = "0.23"
 reqwest = { version = "0.13", default-features = true, features = ["json", "form"] }
 url = "2"
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+totp-rs = { version = "5.7", default-features = false, features = ["otpauth", "gen_secret"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 jsonwebtoken = { version = "10.3", features = ["rust_crypto"] }
 openidconnect = { version = "4", default-features = false }
 # aws-sdk-s3's default `rustls` feature enables smithy's *legacy* rustls 0.21
@@ -170,6 +171,7 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 tempfile = "3"
 uuid = { version = "1", features = ["v4", "serde"] }
+email_address = "0.2"
 tantivy = "0.26"
 csv = "1"
 filetime = "0.2"

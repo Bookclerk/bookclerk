@@ -75,7 +75,8 @@ mod env_tests {
         assert!(!plugin_env_allowed("BOOKCLERK_DATABASE_POSTGRES_URL"));
     }
 
-    /// Mirrors the side-pass gate: growth after a lean check must deny the next
+    /// Mirrors the spawn/reload disk-budget gate: growth after a lean check must deny the next
+    /// plan.
     /// write-capable pass without needing a live guest.
     #[test]
     fn side_pass_budget_gate_denies_after_growth() {

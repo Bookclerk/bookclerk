@@ -7,7 +7,7 @@ pub const PRODUCT_API_VERSION: u32 = 2;
 pub const ABI_MAJOR: u32 = 2;
 
 /// Minor ABI number. Hosts ignore unknown optional fields.
-pub const ABI_MINOR: u32 = 2;
+pub const ABI_MINOR: u32 = 3;
 
 /// Maximum decoded size of an ordinary RPC scalar value (not a stream window).
 pub const MAX_SCALAR_BYTES: u32 = 262_144;

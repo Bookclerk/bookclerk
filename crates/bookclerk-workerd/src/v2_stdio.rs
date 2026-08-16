@@ -14,9 +14,10 @@ use async_trait::async_trait;
 use bookclerk_plugin_abi::v2::{
     serve_plugin_stdio, ByteRange, CopyResult, Destination, DestinationContext, DomainEvent,
     EventResult, HealthOk, Integration, IntegrationContext, JobHandler, JobHandlerContext,
-    JobInvocation, JobOutcome, ListOptions, ListPage, ObjectInfo, ObjectMetadata, PluginDescribe,
-    PluginRoot, PutResult, ReadResult, ScalarLimitsDto, Source, SourceContext, WorkerContext,
-    WriteOptions, MAX_LIST_PAGE, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    JobInvocation, JobOutcome, ListOptions, ListPage, ObjectInfo, ObjectMetadata,
+    OidcClientTemplate, PluginDescribe, PluginRoot, PutResult, ReadResult, ScalarLimitsDto, Source,
+    SourceContext, WorkerContext, WriteOptions, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
+    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_abi::{PluginError, Result as AbiResult};
 use tokio::io::AsyncRead;
@@ -193,6 +194,19 @@ impl PluginRoot for WorkerdV2Root {
             .and_then(|x| x.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| v.to_string()))
+    }
+
+    async fn oidc_clients(&self) -> AbiResult<Vec<OidcClientTemplate>> {
+        let v = self
+            .http
+            .json_post("/v2/oidcClients", &serde_json::json!({}))
+            .await
+            .map_err(map_http)?;
+        let clients = v
+            .get("clients")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+        serde_json::from_value(clients).map_err(|err| PluginError::internal(err.to_string()))
     }
 }
 

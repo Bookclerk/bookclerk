@@ -10,6 +10,7 @@
 mod atomic_txn;
 mod backend_migrate;
 mod db_atomic;
+pub mod email;
 pub mod entities;
 mod error;
 pub mod master_key;
@@ -30,6 +31,7 @@ mod wishlist_merge;
 pub use atomic_txn::AtomicTxnBackend;
 pub use backend_migrate::{migrate_library_backend, BackendMigrateOptions, BackendMigrateSummary};
 pub use db_atomic::{db_atomic_operation_id, db_atomic_request_hash, execute_db_atomic};
+pub use email::{gravatar_hash, is_valid_user_email, normalize_user_email};
 pub use error::{LibraryError, Result};
 pub use master_key::{
     configure_master_key, configure_master_key_with, inspect_master_key, master_key_path,
@@ -39,14 +41,16 @@ pub use master_key::{
 };
 pub use models::{
     content_kind_from_classic, content_kind_to_classic, is_downloadable, is_episode,
-    is_podcast_parent, job_backoff_run_after, portal_prefs_key, user_prefs_key, AccountLinkRecord,
-    AccountRecord, AcquireStatus, BookRecord, ClaimTicketRecord, EmbeddingRecord, EnqueueJobSpec,
-    EnqueueOutcome, GlobalQueueEntry, JobFence, JobKind, JobPayload, JobRecord, JobResourceClass,
-    JobState, JobTempPath, JobTrigger, ListeningProgressRecord, OperatorSessionRecord,
-    PortalIdentity, PortalSessionRecord, RequestStatus, SecurityAuditEvent, TitleRequestRecord,
-    TitleRequestSourceRecord, UserIntegrationHint, UserInviteRecord, UserListeningHint,
-    UserPreferences, UserPresenceExtras, UserRecord, UserRole, UserStatus, WishlistPurchaseHint,
-    WishlistStoreEdition, WorkRecord, JOB_PAYLOAD_VERSION, OPERATOR_PREFS_KEY,
+    is_podcast_parent, job_backoff_run_after, normalize_theme, portal_prefs_key, push_queue_wisher,
+    user_prefs_key, AccountLinkRecord, AccountRecord, AcquireStatus, BookRecord, ClaimTicketRecord,
+    EmbeddingRecord, EnqueueJobSpec, EnqueueOutcome, GlobalQueueEntry, JobFence, JobKind,
+    JobPayload, JobRecord, JobResourceClass, JobState, JobTempPath, JobTrigger,
+    ListeningProgressRecord, OidcClientRecord, OperatorSessionRecord, PortalIdentity,
+    PortalSessionRecord, QueueWisher, RequestStatus, SecurityAuditEvent, StoredPasskey,
+    TitleRequestRecord, TitleRequestSourceRecord, UserIntegrationHint, UserInviteRecord,
+    UserListeningHint, UserPreferences, UserPresenceExtras, UserRecord, UserRole, UserSsoPicture,
+    UserStatus, WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, JOB_PAYLOAD_VERSION,
+    MAX_QUEUE_WISHERS, OPERATOR_PREFS_KEY,
 };
 pub use operator_token::{
     env_operator_token, legacy_operator_token_file, load_operator_token,

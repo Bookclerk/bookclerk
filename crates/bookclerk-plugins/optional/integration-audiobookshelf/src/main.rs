@@ -98,6 +98,12 @@ impl PluginRoot for AbsRoot {
         })
     }
 
+    async fn oidc_clients(
+        &self,
+    ) -> Result<Vec<bookclerk_plugin_sdk::v2::OidcClientTemplate>, PluginError> {
+        Ok(bookclerk_plugin_integration_audiobookshelf::oidc_client_templates())
+    }
+
     async fn integration(
         &self,
         context: IntegrationContext,

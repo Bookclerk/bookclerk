@@ -34,6 +34,7 @@ pub use rpc::{
 pub use types::{
     CopyResult, DestinationContext, DomainEvent, EventResult, ExecResult, ExtensibleConfig,
     HealthOk, JobCheckpoint, JobInvocation, JobInvocationLease, JobOutcome, ListOptions, ListPage,
-    ObjectInfo, ObjectMetadata, PluginDescribe, PutResult, QueryPage, ScalarLimitsDto,
-    SourceContext, Statement, WorkerContext, WriteOptions, ENVELOPE_VERSION, MAX_CHECKPOINT_BYTES,
+    ObjectInfo, ObjectMetadata, OidcClientTemplate, PluginDescribe, PutResult, QueryPage,
+    ScalarLimitsDto, SourceContext, Statement, WorkerContext, WriteOptions, ENVELOPE_VERSION,
+    MAX_CHECKPOINT_BYTES,
 };

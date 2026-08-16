@@ -19,6 +19,8 @@ pub struct Model {
     pub user_id: Option<i64>,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
+    /// Last HTTPS profile picture URL supplied by the identity provider, when any.
+    pub picture_url: Option<String>,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

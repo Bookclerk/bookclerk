@@ -43,28 +43,61 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Builds a WebAuthn relying party from `origin` (`rp_id` = host); 500 when the URL is invalid.
+/// Builds a WebAuthn relying party from `origin` (`rp_id` = host).
+///
+/// # Arguments
+///
+/// * `origin` - Absolute origin (`scheme://host[:port]`). Loopback IPs should
+///   already have been rewritten to `localhost` by [`crate::origin::rewrite_loopback_host`].
+///
+/// # Errors
+///
+/// Returns 400 when the URL has no registrable domain (raw IPs are not valid
+/// WebAuthn RP IDs). Returns 500 when the builder otherwise fails.
 fn build_webauthn(origin: &str) -> Result<Webauthn, StatusCode> {
     let origin = origin.trim().trim_end_matches('/');
-    let url = Url::parse(origin).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let rp_id = url.host_str().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let url = Url::parse(origin).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let rp_id = url.host_str().ok_or(StatusCode::BAD_REQUEST)?;
+    if url.domain().is_none() {
+        tracing::warn!(
+            origin,
+            rp_id,
+            "webauthn RP origin has no domain (use localhost or integrations.public_origin)"
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    }
     WebauthnBuilder::new(rp_id, &url)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|err| {
+            tracing::error!(origin, rp_id, %err, "webauthn relying party rejected origin");
+            StatusCode::BAD_REQUEST
+        })?
         .rp_name("Bookclerk")
         .build()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|err| {
+            tracing::error!(origin, %err, "webauthn builder failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
-/// Uses `integrations.public_origin`, or `http://127.0.0.1:8787` when unset.
-async fn origin_webauthn(state: &AppState) -> Result<Webauthn, StatusCode> {
+/// Rewrites loopback IP origins to `localhost` so webauthn-rs can treat them as
+/// an effective domain (`Url::domain()` is `None` for `127.0.0.1` / `::1`).
+///
+/// Uses `integrations.public_origin`, else the request `Origin`, else localhost.
+///
+/// Loopback IPs are rewritten to `localhost`. The tray and `cargo dev` open
+/// `http://localhost:8787`; `http://127.0.0.1` is not a valid WebAuthn RP ID.
+///
+/// # Arguments
+///
+/// * `state` - Daemon state (reads `integrations.public_origin`).
+/// * `headers` - Used for `Origin` when `public_origin` is unset.
+///
+/// # Errors
+///
+/// Returns 400 when the resolved origin is not a valid WebAuthn RP.
+async fn origin_webauthn(state: &AppState, headers: &HeaderMap) -> Result<Webauthn, StatusCode> {
     let cfg = state.config.read().await;
-    let origin = cfg
-        .integrations
-        .public_origin
-        .as_deref()
-        .map(|s| s.trim().trim_end_matches('/').to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| String::from("http://127.0.0.1:8787"));
+    let origin = crate::origin::effective_origin_from_config(&cfg, Some(headers));
     drop(cfg);
     build_webauthn(&origin)
 }
@@ -88,6 +121,24 @@ fn ceremony_json<T: serde::Serialize>(
 /// Encodes a credential id as URL-safe base64 without padding.
 fn cred_id_b64(id: impl AsRef<[u8]>) -> String {
     URL_SAFE_NO_PAD.encode(id.as_ref())
+}
+
+/// Trims a passkey label and falls back to `Passkey` when empty (max 80 chars).
+///
+/// # Arguments
+///
+/// * `name` - Optional label from the register-finish body.
+///
+/// # Returns
+///
+/// A non-empty display name of at most 80 characters.
+fn normalize_passkey_name(name: Option<&str>) -> String {
+    let trimmed: String = name.unwrap_or("").trim().chars().take(80).collect();
+    if trimmed.is_empty() {
+        String::from("Passkey")
+    } else {
+        trimmed
+    }
 }
 
 /// Resolves the signed-in local user from the portal session, or 401.
@@ -123,7 +174,13 @@ async fn list_passkeys(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let passkeys: Vec<Value> = rows
         .into_iter()
-        .map(|(id, cred_id, _)| serde_json::json!({ "id": id, "credential_id": cred_id }))
+        .map(|row| {
+            serde_json::json!({
+                "id": row.id,
+                "credential_id": row.credential_id,
+                "name": row.name.as_deref().unwrap_or("Passkey"),
+            })
+        })
         .collect();
     Ok(Json(serde_json::json!({ "passkeys": passkeys })))
 }
@@ -164,14 +221,14 @@ async fn register_begin(
         require_recent_portal_reauth(&state, &headers, user.id, body.current_password.as_deref())
             .await?;
     }
-    let webauthn = origin_webauthn(&state).await?;
+    let webauthn = origin_webauthn(&state, &headers).await?;
     let existing = library
         .list_webauthn_credentials(user.id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let exclude: Vec<Passkey> = existing
         .iter()
-        .filter_map(|(_, _, json)| serde_json::from_str(json).ok())
+        .filter_map(|row| serde_json::from_str(&row.passkey_json).ok())
         .collect();
     let exclude_ids = exclude.iter().map(|pk| pk.cred_id().clone()).collect();
     let user_uuid = uuid_for_user(user.id);
@@ -207,6 +264,9 @@ struct CeremonyFinish {
     challenge_id: String,
     /// Browser `PublicKeyCredential` JSON for `finish_*`.
     credential: Value,
+    #[serde(default)]
+    /// Label stored with the credential (`Passkey` when empty).
+    name: Option<String>,
 }
 
 /// Completes registration, stores the passkey, and revokes elevated operator sessions.
@@ -216,7 +276,7 @@ async fn register_finish(
     Json(body): Json<CeremonyFinish>,
 ) -> Result<Json<Value>, StatusCode> {
     let user = require_user(&state, &headers).await?;
-    let webauthn = origin_webauthn(&state).await?;
+    let webauthn = origin_webauthn(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let Some((Some(uid), state_json)) = library
         .take_webauthn_challenge(&body.challenge_id, "register")
@@ -238,8 +298,9 @@ async fn register_finish(
     let cred_id = cred_id_b64(passkey.cred_id());
     let passkey_json =
         serde_json::to_string(&passkey).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let name = normalize_passkey_name(body.name.as_deref());
     library
-        .insert_webauthn_credential(user.id, &cred_id, &passkey_json)
+        .insert_webauthn_credential(user.id, &cred_id, &passkey_json, Some(&name))
         .await
         .map_err(|_| StatusCode::CONFLICT)?;
     let _ = library
@@ -286,13 +347,14 @@ struct LoginBegin {
 async fn login_begin(
     State(state): State<Arc<AppState>>,
     ClientIp(client_key): ClientIp,
+    headers: HeaderMap,
     Json(body): Json<LoginBegin>,
 ) -> Result<Json<Value>, StatusCode> {
     let auth = state.auth_snapshot().await;
     if auth.login_throttle_check(&client_key).await.is_some() {
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
-    match login_begin_inner(&state, body).await {
+    match login_begin_inner(&state, &headers, body).await {
         Ok(json) => {
             auth.clear_login_failures(&client_key).await;
             Ok(json)
@@ -305,7 +367,22 @@ async fn login_begin(
 }
 
 /// Issues a login challenge for an enabled user that already has passkeys (404 if none).
-async fn login_begin_inner(state: &AppState, body: LoginBegin) -> Result<Json<Value>, StatusCode> {
+///
+/// # Arguments
+///
+/// * `state` - Daemon state for library + WebAuthn origin.
+/// * `headers` - Request headers (Origin used when `public_origin` is unset).
+/// * `body` - Login name or email from the SPA.
+///
+/// # Errors
+///
+/// Returns 401/403/404 when the user cannot start a ceremony, or 400/500 from
+/// WebAuthn origin construction.
+async fn login_begin_inner(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: LoginBegin,
+) -> Result<Json<Value>, StatusCode> {
     let library = state.library_snapshot().await;
     let user = match library
         .get_user_by_login_name(&body.login)
@@ -331,12 +408,12 @@ async fn login_begin_inner(state: &AppState, body: LoginBegin) -> Result<Json<Va
     }
     let passkeys: Vec<Passkey> = rows
         .iter()
-        .filter_map(|(_, _, json)| serde_json::from_str(json).ok())
+        .filter_map(|row| serde_json::from_str(&row.passkey_json).ok())
         .collect();
     if passkeys.is_empty() {
         return Err(StatusCode::NOT_FOUND);
     }
-    let webauthn = origin_webauthn(state).await?;
+    let webauthn = origin_webauthn(state, headers).await?;
     let (rcr, auth_state) = webauthn
         .start_passkey_authentication(&passkeys)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -362,7 +439,7 @@ async fn login_finish(
     headers: HeaderMap,
     Json(body): Json<CeremonyFinish>,
 ) -> Result<Response, StatusCode> {
-    let webauthn = origin_webauthn(&state).await?;
+    let webauthn = origin_webauthn(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let Some((Some(uid), state_json)) = library
         .take_webauthn_challenge(&body.challenge_id, "login")
@@ -428,9 +505,9 @@ async fn elevate_begin(
     }
     let passkeys: Vec<Passkey> = rows
         .iter()
-        .filter_map(|(_, _, json)| serde_json::from_str(json).ok())
+        .filter_map(|row| serde_json::from_str(&row.passkey_json).ok())
         .collect();
-    let webauthn = origin_webauthn(&state).await?;
+    let webauthn = origin_webauthn(&state, &headers).await?;
     let (rcr, auth_state) = webauthn
         .start_passkey_authentication(&passkeys)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -460,7 +537,7 @@ async fn elevate_finish(
     if user.role != UserRole::Owner {
         return Err(StatusCode::FORBIDDEN);
     }
-    let webauthn = origin_webauthn(&state).await?;
+    let webauthn = origin_webauthn(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let Some((Some(uid), state_json)) = library
         .take_webauthn_challenge(&body.challenge_id, "elevate")
@@ -518,5 +595,47 @@ mod tests {
     fn user_uuid_is_stable() {
         assert_eq!(uuid_for_user(1), uuid_for_user(1));
         assert_ne!(uuid_for_user(1), uuid_for_user(2));
+    }
+
+    #[test]
+    fn localhost_origin_builds() {
+        assert!(build_webauthn("http://localhost:8787").is_ok());
+        assert!(build_webauthn("https://bookclerk.example.com").is_ok());
+    }
+
+    #[test]
+    fn loopback_ip_origin_does_not_build_until_rewritten() {
+        assert!(build_webauthn("http://127.0.0.1:8787").is_err());
+        assert!(build_webauthn("http://[::1]:8787").is_err());
+        assert!(build_webauthn(&crate::origin::rewrite_loopback_host(
+            "http://127.0.0.1:8787"
+        ))
+        .is_ok());
+        assert!(build_webauthn(&crate::origin::rewrite_loopback_host("http://[::1]:8787")).is_ok());
+    }
+
+    /// Empty labels become `Passkey`; names are trimmed and capped at 80 characters.
+    #[test]
+    fn passkey_name_trims_and_falls_back() {
+        assert_eq!(normalize_passkey_name(None), "Passkey");
+        assert_eq!(normalize_passkey_name(Some("  ")), "Passkey");
+        assert_eq!(normalize_passkey_name(Some(" Laptop ")), "Laptop");
+        assert_eq!(normalize_passkey_name(Some(&"x".repeat(90))).len(), 80);
+    }
+
+    #[test]
+    fn normalize_rewrites_loopback_ips_to_localhost() {
+        assert_eq!(
+            crate::origin::rewrite_loopback_host("http://127.0.0.1:8787"),
+            "http://localhost:8787"
+        );
+        assert_eq!(
+            crate::origin::rewrite_loopback_host("http://[::1]:8787/"),
+            "http://localhost:8787"
+        );
+        assert_eq!(
+            crate::origin::rewrite_loopback_host("https://bookclerk.example.com"),
+            "https://bookclerk.example.com"
+        );
     }
 }

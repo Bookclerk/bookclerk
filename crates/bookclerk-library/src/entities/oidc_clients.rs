@@ -1,4 +1,4 @@
-//! SeaORM entity for the `oidc_clients` — registered OAuth/OIDC clients (ABS, etc.).
+//! SeaORM entity for the `oidc_clients` — registered OAuth/OIDC clients.
 
 use sea_orm::entity::prelude::*;
 
@@ -20,6 +20,14 @@ pub struct Model {
     pub name: Option<String>,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
+    /// When true, token responses include a refresh token.
+    pub issue_refresh_token: i64,
+    /// JSON array of scopes this client may be granted.
+    pub allowed_scopes_json: String,
+    /// When non-zero, authorize and token endpoints accept this client.
+    pub enabled: i64,
+    /// Plugin id that owns this client; `None` for operator-created clients.
+    pub plugin_id: Option<String>,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

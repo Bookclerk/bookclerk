@@ -4,7 +4,8 @@
 //!
 //! External plugins are untrusted. This host adapter:
 //! - never passes `library.db` or the Bookclerk files-dir root
-//! - gives only a scoped `plugin_data_dir` (`…/plugins/<id>/data`) and fetch `cache_dir`
+//! - gives only a scoped `plugin_data_dir` (`…/plugins/<id>/data`) and fetch
+//!   scratch under the guest `TMPDIR` (`…/plugins/<id>/tmp/fetch`)
 //! - seals login credentials via [`SourceScope`] (`provider = plugin id`)
 //! - loads those credentials for `scan` and `fetch_title` (plugin never opens the DB)
 //! - upserts scan book DTOs via [`SourceScope`] with `source` forced to the plugin id
@@ -416,6 +417,14 @@ impl ContentSource for ExternalSource {
         }
         let download = serde_json::to_value(&opts.download)
             .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        // Jail-granted scratch (already TMPDIR), not the host download cache.
+        let cache_dir = {
+            let dir = self.session.scratch_dir().join("fetch");
+            tokio::fs::create_dir_all(&dir)
+                .await
+                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+            dir
+        };
         let dto: SourceFetchDto = self
             .cs_call(
                 "fetchTitle",
@@ -423,7 +432,7 @@ impl ContentSource for ExternalSource {
                     plugin_data_dir: self.plugin_data_dir.display().to_string(),
                     account_id: account_id.to_string(),
                     title_id: title_id.to_string(),
-                    cache_dir: opts.cache_dir.display().to_string(),
+                    cache_dir: cache_dir.display().to_string(),
                     credentials,
                     source_config: self.source_config.clone(),
                     download,

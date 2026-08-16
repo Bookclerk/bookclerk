@@ -204,7 +204,7 @@ export type BookclerkPluginLike = {
   /**
    * Uploads a local file to a destination object key.
    *
-   * @param params - Object key and absolute source path (or side-channel FD).
+   * @param params - Object key and absolute source path.
    * @returns Resolves when the upload completes.
    */
   putFile?(params: unknown): Promise<void> | void;

@@ -12,6 +12,7 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
+use crate::ensure_ui_dist;
 use crate::plugins::{self, BuildSelection};
 
 /// `(cargo package, on-disk binary name)` for host + helper archives from default-members.
@@ -178,7 +179,7 @@ pub fn package_plugins(root: &Path, out_dir: &Path, version: &str) -> Result<()>
 ///
 /// Panics when an internal invariant does not hold.
 pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
-    ensure_ui_built(root)?;
+    ensure_ui_dist(root)?;
     build_hosts(root)?;
     let bundle = out_dir.join(bundle_dir_name(version));
     if bundle.exists() {
@@ -237,7 +238,7 @@ pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
 ///
 /// Panics when an internal invariant does not hold.
 pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
-    ensure_ui_built(root)?;
+    ensure_ui_dist(root)?;
     plugins::build_selection(
         root,
         true,
@@ -398,18 +399,6 @@ fn write_zip_dir(src_dir: &Path, archive: &Path) -> Result<()> {
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     Ok(hex::encode(Sha256::digest(bytes)))
-}
-
-/// Requires `ui/dist/index.html` so packaged `bookclerkd` can embed the SPA.
-fn ensure_ui_built(root: &Path) -> Result<()> {
-    let ui_dist = root.join("ui").join("dist");
-    if ui_dist.join("index.html").is_file() {
-        return Ok(());
-    }
-    bail!(
-        "ui/dist missing — run `cd ui && npm ci && npm run build` before packaging hosts \
-         (bookclerkd embeds the web UI)"
-    );
 }
 
 /// Builds the platform host selection (CLI, daemon, helpers) in `root`.

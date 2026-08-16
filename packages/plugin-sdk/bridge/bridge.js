@@ -356,6 +356,17 @@ async function handleV2(request, env, url) {
     }
   }
 
+  if (request.method === "POST" && url.pathname === "/v2/oidcClients") {
+    try {
+      const clients =
+        typeof plugin.oidcClients === "function" ? await plugin.oidcClients() : [];
+      return Response.json({ clients: Array.isArray(clients) ? clients : [] });
+    } catch (err) {
+      const { code, message } = catchErr(err);
+      return errJson(null, code, message);
+    }
+  }
+
   const roleMatch = url.pathname.match(/^\/v2\/(contentSource|integration)\/([^/]+)$/);
   if (roleMatch && request.method === "POST") {
     try {

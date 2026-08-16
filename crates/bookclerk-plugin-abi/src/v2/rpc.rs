@@ -25,9 +25,10 @@ use super::plugin_v2_capnp::{
     destination_reply, domain_event, empty_reply, event_result as event_result_capnp,
     event_result_reply, exec_reply, get_reply, handle_reply, head_reply, health_reply,
     integration as integration_capnp, integration_reply, job_handler, job_invocation, job_outcome,
-    json_reply, list_reply, object_metadata, open_reply, plugin_describe, plugin_error,
-    progress_sink, pull_reply, put_reply, query_reply, session_reply, source as source_capnp,
-    source_reply, transaction as transaction_capnp, transaction_reply, worker_reply, write_options,
+    json_reply, list_reply, object_metadata, oidc_client_template, oidc_clients_reply, open_reply,
+    plugin_describe, plugin_error, progress_sink, pull_reply, put_reply, query_reply,
+    session_reply, source as source_capnp, source_reply, transaction as transaction_capnp,
+    transaction_reply, worker_reply, write_options,
 };
 use super::roles::{
     ByteRange, Cancellation, ContentSource, ContentSourceContext, Database, DatabaseContext,
@@ -36,9 +37,9 @@ use super::roles::{
 };
 use super::types::{
     CopyResult, DestinationContext, DomainEvent, EventResult, ExecResult, HealthOk, JobCheckpoint,
-    JobInvocation, JobOutcome, ListOptions, ListPage, ObjectInfo, ObjectMetadata, PluginDescribe,
-    PutResult, QueryPage, SourceContext, Statement, WorkerContext, WriteOptions, ENVELOPE_VERSION,
-    MAX_CHECKPOINT_BYTES,
+    JobInvocation, JobOutcome, ListOptions, ListPage, ObjectInfo, ObjectMetadata,
+    OidcClientTemplate, PluginDescribe, PutResult, QueryPage, SourceContext, Statement,
+    WorkerContext, WriteOptions, ENVELOPE_VERSION, MAX_CHECKPOINT_BYTES,
 };
 use crate::{PluginError, Result};
 
@@ -1447,6 +1448,75 @@ impl bookclerk_plugin::Server for PluginServer {
         write_json_reply(result, self.inner.cli_invoke(&json).await);
         Ok(())
     }
+
+    async fn oidc_clients(
+        self: Rc<Self>,
+        _params: bookclerk_plugin::OidcClientsParams,
+        mut results: bookclerk_plugin::OidcClientsResults,
+    ) -> capnp::Result<()> {
+        let result = results.get().init_result();
+        match self.inner.oidc_clients().await {
+            Ok(clients) => fill_oidc_clients(result.init_ok(), &clients)?,
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+}
+
+/// Encode plugin OIDC client templates into a Cap'n Proto `oidcClients` ok payload.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the `clients` list cannot be initialized.
+fn fill_oidc_clients(
+    mut ok: super::plugin_v2_capnp::oidc_clients_ok::Builder<'_>,
+    clients: &[OidcClientTemplate],
+) -> capnp::Result<()> {
+    let mut list = ok.reborrow().init_clients(clients.len() as u32);
+    for (i, tmpl) in clients.iter().enumerate() {
+        fill_oidc_client_template(list.reborrow().get(i as u32), tmpl);
+    }
+    Ok(())
+}
+
+/// Encode one [`OidcClientTemplate`] onto a Cap'n Proto builder.
+fn fill_oidc_client_template(mut b: oidc_client_template::Builder<'_>, tmpl: &OidcClientTemplate) {
+    b.set_client_id(&tmpl.client_id);
+    b.set_display_name(&tmpl.display_name);
+    b.set_callback_path(&tmpl.callback_path);
+    b.set_public_client(tmpl.public_client);
+    {
+        let mut scopes = b
+            .reborrow()
+            .init_default_scopes(tmpl.default_scopes.len() as u32);
+        for (i, scope) in tmpl.default_scopes.iter().enumerate() {
+            scopes.set(i as u32, scope);
+        }
+    }
+    b.set_issue_refresh_token(tmpl.issue_refresh_token);
+    b.set_origin_config_key(&tmpl.origin_config_key);
+}
+
+/// Decode one OIDC client template from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns [`PluginError`] when a text or list field cannot be read.
+fn read_oidc_client_template(r: oidc_client_template::Reader<'_>) -> Result<OidcClientTemplate> {
+    let scopes = r.get_default_scopes().map_err(from_capnp)?;
+    let mut default_scopes = Vec::new();
+    for scope in scopes.iter() {
+        default_scopes.push(scope.map_err(from_capnp)?.to_string().unwrap_or_default());
+    }
+    Ok(OidcClientTemplate {
+        client_id: text_of(r.get_client_id().map_err(from_capnp)?),
+        display_name: text_of(r.get_display_name().map_err(from_capnp)?),
+        callback_path: text_of(r.get_callback_path().map_err(from_capnp)?),
+        public_client: r.get_public_client(),
+        default_scopes,
+        issue_refresh_token: r.get_issue_refresh_token(),
+        origin_config_key: text_of(r.get_origin_config_key().map_err(from_capnp)?),
+    })
 }
 
 fn write_json_reply(result: json_reply::Builder<'_>, outcome: Result<String>) {
@@ -2490,6 +2560,34 @@ impl PluginClient {
                 .map_err(from_capnp)?,
         )
     }
+
+    /// Lists plugin-provided OIDC authorization-server client templates.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the RPC fails. Older guests that lack
+    /// `oidcClients` surface `unsupported` / transport errors.
+    pub async fn oidc_clients(&self) -> Result<Vec<OidcClientTemplate>> {
+        let req = self.client.oidc_clients_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        match result.which().map_err(from_capnp)? {
+            oidc_clients_reply::Ok(ok) => {
+                let ok = ok.map_err(from_capnp)?;
+                let list = ok.get_clients().map_err(from_capnp)?;
+                let mut out = Vec::new();
+                for item in list.iter() {
+                    out.push(read_oidc_client_template(item)?);
+                }
+                Ok(out)
+            }
+            oidc_clients_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
+        }
+    }
 }
 
 /// Decode a JSON success/error union.
@@ -3265,6 +3363,18 @@ mod tests {
         async fn worker(&self, _context: WorkerContext) -> Result<Box<dyn JobHandler>> {
             Err(PluginError::unsupported("worker"))
         }
+
+        async fn oidc_clients(&self) -> Result<Vec<OidcClientTemplate>> {
+            Ok(vec![OidcClientTemplate {
+                client_id: "abs".into(),
+                display_name: "Audiobookshelf".into(),
+                callback_path: "/auth/openid/callback".into(),
+                public_client: true,
+                default_scopes: vec!["openid".into(), "profile".into()],
+                issue_refresh_token: true,
+                origin_config_key: "integrations.audiobookshelf.base_url".into(),
+            }])
+        }
     }
 
     struct DestClone(Arc<MemDest>);
@@ -3382,6 +3492,37 @@ mod tests {
         async fn worker(&self, _context: WorkerContext) -> Result<Box<dyn JobHandler>> {
             Ok(Box::new(SlowHandler))
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn oidc_clients_roundtrip() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (client_end, server_end) = duplex(64 * 1024);
+                let (server_r, server_w) = tokio::io::split(server_end);
+                let (client_r, client_w) = tokio::io::split(client_end);
+                let plugin = Arc::new(TestPlugin {
+                    dest: Arc::new(MemDest {
+                        store: Mutex::new(HashMap::new()),
+                    }),
+                });
+                tokio::task::spawn_local(async move {
+                    let _ = serve_plugin(plugin, server_r, server_w, 64 * 1024).await;
+                });
+                let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
+                tokio::task::spawn_local(rpc);
+                let clients = client.oidc_clients().await.expect("oidcClients");
+                assert_eq!(clients.len(), 1);
+                assert_eq!(clients[0].client_id, "abs");
+                assert_eq!(clients[0].callback_path, "/auth/openid/callback");
+                assert_eq!(
+                    clients[0].origin_config_key,
+                    "integrations.audiobookshelf.base_url"
+                );
+                assert_eq!(clients[0].scopes_or_default(), vec!["openid", "profile"]);
+            })
+            .await;
     }
 
     #[tokio::test(flavor = "current_thread")]

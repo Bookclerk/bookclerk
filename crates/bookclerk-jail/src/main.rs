@@ -204,8 +204,8 @@ fn confine(spec: &Spec) -> Result<(), String> {
         .confine_current_process()
         .map_err(|err| err.to_string())?;
 
-    // stderr is inherited from the host, so this lands in the daemon's log next
-    // to whatever the guest goes on to say.
+    // Hosts pipe guest stderr and re-emit via tracing so bookclerkd JSON logs
+    // stay structured. Direct test spawns still see this human line on stderr.
     eprintln!("bookclerk-jail: {}", report.summary());
     Ok(())
 }

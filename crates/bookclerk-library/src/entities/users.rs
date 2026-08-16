@@ -27,6 +27,12 @@ pub struct Model {
     pub created_at: String,
     /// RFC 3339 timestamp when the row was last modified.
     pub updated_at: String,
+    /// RFC 3339 time of the last authenticated portal use; survives logout.
+    pub last_seen_at: Option<String>,
+    /// Selected picture source (`monogram`, `gravatar`, `upload`, `sso:{id}`); `NULL` is auto.
+    pub avatar_source: Option<String>,
+    /// `1` when a TOTP authenticator has been confirmed for this user.
+    pub totp_enabled: i64,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

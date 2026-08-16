@@ -11,7 +11,7 @@ use bookclerk_plugin_sdk::v2::{
     Database, DatabaseContext, DatabaseSession, ExecResult, PluginDescribe, PluginRoot, QueryPage,
     ScalarLimits, Statement, Transaction, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
-use bookclerk_plugin_sdk::{upload_file_path, DbAtomicRequest, PluginError, StatementDto};
+use bookclerk_plugin_sdk::{DbAtomicRequest, PluginError, StatementDto};
 
 use crate::ID;
 
@@ -65,6 +65,9 @@ impl PluginRoot for SqliteRoot {
 }
 
 async fn connect_from_context(ctx: &DatabaseContext) -> Result<()> {
+    // Jail-granted path from spawn (`BOOKCLERK_SQLITE_PATH`) or v2 context
+    // (`sqlitePath`). Do not call `upload_file_path`: that waits on an SCM_RIGHTS
+    // send the v2 host does not perform, and deadlocks `database()`.
     let path = std::env::var("BOOKCLERK_SQLITE_PATH")
         .ok()
         .filter(|s| !s.is_empty())
@@ -78,13 +81,12 @@ async fn connect_from_context(ctx: &DatabaseContext) -> Result<()> {
                 })
         })
         .unwrap_or_default();
-    let path = upload_file_path(if path.is_empty() {
-        None
-    } else {
-        Some(path.as_str())
-    })
-    .map_err(|e| PluginError::internal(e.to_string()))?;
-    let db = crate::open(path.as_ref())
+    if path.is_empty() {
+        return Err(PluginError::internal(
+            "sqlite database path missing (BOOKCLERK_SQLITE_PATH or context sqlitePath)",
+        ));
+    }
+    let db = crate::open(std::path::Path::new(&path))
         .await
         .map_err(|e| PluginError::internal(e.to_string()))?;
     set_connection(db).await;

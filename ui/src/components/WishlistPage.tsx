@@ -4,18 +4,20 @@ import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { CoverThumb } from "@/components/CoverThumb";
 import {
-  TitleDetailModal,
+  CatalogTitleDetailModal,
   type TitleMetaSearchKind,
 } from "@/components/TitleDetailModal";
-import { titleDetailFromCatalog, type TitleDetail } from "@/lib/titleDetail";
+import { WisherAvatars } from "@/components/WisherAvatars";
+import { type TitleDetail } from "@/lib/titleDetail";
 import { Button } from "@/components/ui/button";
 import {
   applyTitleMeta,
+  attachWishersFromQueue,
   catalogTitleFromQueueEntry,
   catalogTitleFromRequest,
   discoverSearchFromMeta,
   formatSeriesLabel,
-  titleNeedsMeta,
+  titleNeedsShelfMeta,
   type CatalogTitle,
 } from "@/lib/catalogTitle";
 import {
@@ -58,7 +60,7 @@ export function WishlistPage({
   async function enrichTitles(titles: CatalogTitle[]): Promise<CatalogTitle[]> {
     const sparse = titles
       .map((t, index) => ({ t, index }))
-      .filter(({ t }) => titleNeedsMeta(t));
+      .filter(({ t }) => titleNeedsShelfMeta(t));
     if (sparse.length === 0) return titles;
     try {
       const metas = await fetchTitleMetaBatch(
@@ -89,7 +91,9 @@ export function WishlistPage({
       setMine(w);
       setQueue(q);
       const myKeys = new Map(w.map((r) => [r.work_key, r.uuid]));
-      const baseMine = w.map((r) => catalogTitleFromRequest(r));
+      const baseMine = w.map((r) =>
+        attachWishersFromQueue(catalogTitleFromRequest(r), q),
+      );
       const baseQueue = q.map((entry) =>
         catalogTitleFromQueueEntry(entry, myKeys.get(entry.work_key) ?? null),
       );
@@ -218,7 +222,7 @@ export function WishlistPage({
                 Nothing yet — wishlist from Discover cards or catalog search.
               </p>
             ) : (
-              <ul className="divide-y divide-ink/10 border border-ink/10 bg-white/35">
+              <ul className="divide-y divide-ink/10 border border-ink/10 bg-card">
                 {mineTitles.map((title) => (
                   <li
                     key={title.wishlist_uuid ?? title.work_key}
@@ -233,10 +237,23 @@ export function WishlistPage({
                         url={title.cover_url}
                         className="h-14 w-14"
                       />
-                      <div className="min-w-0">
-                        <p className="font-medium text-ink hover:underline">
-                          {title.title}
-                        </p>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="font-medium text-ink hover:underline">
+                            {title.title}
+                          </p>
+                          {(title.wishers?.length ?? 0) > 0 ? (
+                            <span className="flex shrink-0 items-center gap-1.5">
+                              <WisherAvatars
+                                wishers={title.wishers ?? []}
+                                wishCount={title.wish_count}
+                              />
+                              <span className="tabular-nums text-xs font-semibold text-teal">
+                                ×{title.wish_count ?? title.wishers?.length}
+                              </span>
+                            </span>
+                          ) : null}
+                        </div>
                         <p className="text-xs text-ink/50">
                           {[
                             title.authors ?? "Unknown author",
@@ -251,6 +268,14 @@ export function WishlistPage({
                             .filter(Boolean)
                             .join(" · ")}
                         </p>
+                        {(title.wish_count ?? title.wishers?.length ?? 0) > 0 ? (
+                          <p className="text-[11px] text-ink/40">
+                            wishlisted by {title.wish_count ?? title.wishers?.length}{" "}
+                            {(title.wish_count ?? title.wishers?.length) === 1
+                              ? "person"
+                              : "people"}
+                          </p>
+                        ) : null}
                       </div>
                     </button>
                     <Button
@@ -301,13 +326,19 @@ export function WishlistPage({
                           className="h-12 w-12"
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-baseline justify-between gap-2">
+                          <div className="flex items-center justify-between gap-2">
                             <p className="truncate font-medium text-ink hover:underline">
                               {title.title}
                             </p>
                             {entry ? (
-                              <span className="shrink-0 tabular-nums text-xs font-semibold text-teal">
-                                ×{entry.wish_count}
+                              <span className="flex shrink-0 items-center gap-1.5">
+                                <WisherAvatars
+                                  wishers={entry.wishers ?? []}
+                                  wishCount={entry.wish_count}
+                                />
+                                <span className="tabular-nums text-xs font-semibold text-teal">
+                                  ×{entry.wish_count}
+                                </span>
                               </span>
                             ) : null}
                           </div>
@@ -338,9 +369,9 @@ export function WishlistPage({
       </div>
 
       {selected ? (
-        <TitleDetailModal
-          key={selected.work_key || selected.wishlist_uuid || selected.title}
-          detail={titleDetailFromCatalog(selected)}
+        <CatalogTitleDetailModal
+          title={selected}
+          wishlist={mine}
           busy={busy}
           onClose={() => setSelected(null)}
           onWishlist={(t) => void onWishlistFromDetail(t)}

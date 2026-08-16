@@ -23,7 +23,7 @@ Workspace-local caches (gitignored; travel with the bind-mounted checkout):
 
 | Path | Role |
 | --- | --- |
-| `.cargo-home/` | `CARGO_HOME` (registry + git) — set in Dev Container / Cloud Agent / `.envrc` |
+| `.cargo-home/` | `CARGO_HOME` (registry + git) — set in Dev Container / Cloud Agent / local `.envrc` (gitignored; copy `.envrc.example`) |
 | `target/` | `CARGO_TARGET_DIR` (also `[build].target-dir` in `.cargo/config.toml`) |
 | `.tmp/` | `TMPDIR` for `cc` / build-script temps (avoids host `/tmp` quota) |
 | `BookclerkFiles/` | default `$BOOKCLERK_FILES_DIR` for `cargo dev` |
@@ -62,8 +62,9 @@ Optional companion (workspace member, not a default-member):
   web UI in the browser; Linux `ksni`; Windows/macOS `tray-icon` with GTK
   features off). See `docs/gui.md`.
 
-Frontend sources live in `ui/` (Vite/React); build with `npm ci && npm run build`
-so `bookclerkd` can serve `ui/dist`. Do not add Tauri/GTK3-pinned shells while
+Frontend sources live in `ui/` (Vite/React); `cargo dev` / `cargo build-app --platform`
+rebuild `ui/dist` when SPA sources are newer than the last Vite output. Manual:
+`npm ci && npm run build` in `ui/` so `bookclerkd` can serve `ui/dist`. Do not add Tauri/GTK3-pinned shells while
 RUSTSEC advisories remain (tracked in `#44`).
 
 ### Build / lint / test (mirrors `.github/workflows/ci.yml`)
@@ -98,7 +99,7 @@ examples under `examples/` are CI/dev-only (never packaged).
 
 ```bash
 cargo reset --yes             # wipe BookclerkFiles/ (stale DB / config)
-cargo dev                     # platform: hosts + helpers + sqlite/local, then bookclerkd
+cargo dev                     # platform: hosts + helpers + sqlite/local + UI, then bookclerkd
 cargo dev --optional          # also build/stage optional storefronts
 cargo dev --examples          # also stage reference Echo examples
 cargo dev --skip-build        # install/stage + exec when target/ is already warm
@@ -144,8 +145,10 @@ diagnostics ring always keeps TRACE+; stderr/OS facility honor `BOOKCLERK_LOG` /
   `POST /api/auth/login`, authenticated `/api/status`, `/api/jobs`,
   `/api/library/*` (legacy `/status` `/scan` `/acquire` `/jobs` also gated).
   `POST` bodies require the `Content-Type: application/json` header (send `{}`
-  for defaults), otherwise the request is rejected. Show/rotate the token with
-  `bookclerk daemon token` / `bookclerk daemon token rotate`.
+  for defaults), otherwise the request is rejected. Show/rotate the Bearer token
+  with `bookclerk daemon token` / `bookclerk daemon token rotate`. Print a
+  loopback operator sign-in URL with `bookclerk login` (requires a running
+  daemon).
 
 ### Live store / storage testing constraints
 

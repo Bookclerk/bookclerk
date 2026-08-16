@@ -160,6 +160,17 @@ pub struct Recommendation {
     /// BCP-47 / storefront language code (`en`, `de`, …) when known.
     #[serde(default)]
     pub language: Option<String>,
+    /// Distinct people who have this title on an open wishlist.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wishers: Vec<bookclerk_library::QueueWisher>,
+    /// Number of distinct users who wishlisted this title (may exceed `wishers.len()`).
+    #[serde(default, skip_serializing_if = "wish_count_is_zero")]
+    pub wish_count: i64,
+}
+
+/// True when `wish_count` should be omitted from JSON (zero / unset).
+fn wish_count_is_zero(n: &i64) -> bool {
+    *n == 0
 }
 
 /// Global wishlist queue entry ranked by overall/operator recommend taste +
@@ -180,6 +191,9 @@ pub struct RankedQueueEntry {
     pub cover_url: Option<String>,
     /// Number of distinct users who wishlisted this title.
     pub wish_count: i64,
+    /// Distinct people who have this title on an open wishlist.
+    #[serde(default)]
+    pub wishers: Vec<bookclerk_library::QueueWisher>,
     /// Sample Bookclerk user UUIDs who requested this title (privacy-capped).
     pub sample_uuids: Vec<String>,
     /// UTC timestamp of the earliest wishlist request for this work.
@@ -211,6 +225,7 @@ impl RankedQueueEntry {
             isbn: entry.isbn,
             cover_url: entry.cover_url,
             wish_count: entry.wish_count,
+            wishers: entry.wishers,
             sample_uuids: entry.sample_uuids,
             first_requested_at: entry.first_requested_at,
             last_requested_at: entry.last_requested_at,
@@ -559,6 +574,7 @@ async fn recommend_all(
                 published_at: c.published_at,
                 genres: c.categories,
                 language: c.language,
+                ..Default::default()
             };
             rec.work_key = recommendation_map_key(&rec);
             upsert_recommendation(&mut scored, rec);
@@ -637,6 +653,8 @@ async fn recommend_all(
             language: entry.language,
             store_editions,
             purchase_hints,
+            wishers: entry.wishers,
+            wish_count: entry.wish_count,
             ..Default::default()
         };
         if rec.work_key.trim().is_empty() {

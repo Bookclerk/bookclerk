@@ -529,6 +529,61 @@ pub struct CopyResult {
     pub bytes_copied: u64,
 }
 
+/// Plugin-declared Bookclerk-as-IdP relying-party template.
+///
+/// The host materializes `oidc_clients` rows. Plugins never mint tokens.
+/// `origin_config_key` is a dotted config path such as
+/// `integrations.audiobookshelf.base_url`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OidcClientTemplate {
+    /// Stable OAuth `client_id` registered with Bookclerk's authorization server.
+    pub client_id: String,
+    /// Operator-facing card title.
+    #[serde(default)]
+    pub display_name: String,
+    /// Path appended to the plugin origin (e.g. `/auth/openid/callback`).
+    pub callback_path: String,
+    /// When true, the client is public PKCE (no secret).
+    #[serde(default = "default_true")]
+    pub public_client: bool,
+    /// Scopes offered on first materialization (`openid` / `profile` typical).
+    #[serde(default)]
+    pub default_scopes: Vec<String>,
+    /// When true, `/oidc/token` may issue refresh tokens for new rows.
+    #[serde(default = "default_true")]
+    pub issue_refresh_token: bool,
+    /// Dotted config key that supplies the player origin.
+    pub origin_config_key: String,
+}
+
+/// Serde default for `public_client` and `issue_refresh_token`.
+fn default_true() -> bool {
+    true
+}
+
+impl OidcClientTemplate {
+    /// Scopes used when the guest omitted `defaultScopes`.
+    #[must_use]
+    pub fn scopes_or_default(&self) -> Vec<String> {
+        if self.default_scopes.is_empty() {
+            vec!["openid".into(), "profile".into()]
+        } else {
+            self.default_scopes.clone()
+        }
+    }
+
+    /// Card title, falling back to `client_id`.
+    #[must_use]
+    pub fn display_name_or_id(&self) -> &str {
+        if self.display_name.trim().is_empty() {
+            self.client_id.as_str()
+        } else {
+            self.display_name.as_str()
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::missing_panics_doc)]
 mod tests {

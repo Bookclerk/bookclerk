@@ -40,12 +40,20 @@ pub enum LibraryError {
     #[error("cannot demote or disable the last active owner")]
     LastOwner,
 
+    /// Contact email failed library-backed syntax validation.
+    #[error("invalid email address")]
+    InvalidEmail,
+
     /// Backend temporarily unreachable or an atomic RPC response was lost.
     ///
     /// Callers that still hold the original consume-once / session token should
     /// retry the same `dbAtomic` operation id rather than minting a new one.
     #[error("unavailable: {0}")]
     Unavailable(String),
+
+    /// Identity or ownership conflict (for example a taken OIDC `client_id`).
+    #[error("{0}")]
+    Conflict(String),
 
     /// Catch-all for otherwise unclassified failures.
     #[error(transparent)]

@@ -513,7 +513,7 @@ class DbAtomicRequest(TypedDict, total=False):
 
     Attributes:
         operationId: Idempotency key reused after an ambiguous outcome.
-        operation: Named operation params (``deleteUser``, ``takeOidcRpState``, …).
+        operation: Named operation params (``deleteUser``, ``takeOidcRpState``, ``confirmTotpEnrollment``, …).
     """
 
     operationId: str
@@ -524,7 +524,7 @@ class DbAtomicParams(TypedDict, total=False):
     """Params for ``dbAtomic`` (wire camelCase tagged ``op``).
 
     Attributes:
-        op: Named operation (``deleteUser``, ``redeemClaimTicket``, ``takeOidcRpState``, …).
+        op: Named operation (``deleteUser``, ``redeemClaimTicket``, ``takeOidcRpState``, ``confirmTotpEnrollment``, ``disableUserTotp``, …).
     """
 
     op: str

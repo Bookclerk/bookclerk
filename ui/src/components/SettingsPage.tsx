@@ -313,7 +313,7 @@ function FieldBlock({
 }
 
 const selectClassName =
-  "w-full rounded-md border border-ink/15 bg-white/80 px-3 py-2 text-sm text-ink shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
+  "w-full rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm text-ink shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
 
 /**
  * Operator/user Settings — daemon listen, plugins, consent, and user admin.
@@ -412,9 +412,9 @@ export function SettingsPage({
   const confinementHasErrors = Boolean(jailMemoryError || jailCpuError || jailProcessError);
   const isImpersonating = Boolean(session?.impersonating);
   const showOperatorChrome = role === "operator" && !isImpersonating;
-  const showSignInSettings = (role === "operator" || role === "owner") && !isImpersonating;
+  const showSignInSettings = role === "operator" || role === "owner";
   const canManageUsers = role === "operator" || role === "owner" || role === "administrator";
-  const showUserAdmin = canManageUsers && (!isImpersonating || role === "administrator");
+  const showUserAdmin = canManageUsers;
   const canManageOperator = showOperatorChrome;
   const showBootstrap = showOperatorChrome && !loading && users.length === 0;
   const adminCount = useMemo(
@@ -436,21 +436,6 @@ export function SettingsPage({
       setTabInitialized(true);
     }
   }, [loading, tabInitialized]);
-
-  useEffect(() => {
-    if (!isImpersonating) return;
-    if (activeTab === "server" || activeTab === "plugins") {
-      setActiveTab("account");
-      return;
-    }
-    // Impersonating a non-privileged user: hide User Management.
-    if (activeTab === "users" && role !== "administrator" && role !== "owner") {
-      setActiveTab("account");
-    }
-    if (activeTab === "signin") {
-      setActiveTab("account");
-    }
-  }, [isImpersonating, activeTab, role]);
 
   useEffect(() => {
     if (!showUserAdmin && activeTab === "users") {
@@ -1044,7 +1029,7 @@ export function SettingsPage({
           </div>
 
           <div
-            className="flex flex-wrap gap-1 rounded-md border border-ink/10 bg-white/40 p-1"
+            className="flex flex-wrap gap-1 rounded-md border border-ink/10 bg-card p-1"
             role="tablist"
             aria-label="Settings sections"
           >
@@ -1212,7 +1197,7 @@ export function SettingsPage({
                     How bookclerkd listens and whether operator auth is required.
                   </p>
                 </div>
-                <div className="divide-y divide-ink/10 bg-white/35 px-3">
+                <div className="divide-y divide-ink/10 bg-card px-3">
                   <div className="space-y-4 py-3">
                     <div className="space-y-2">
                       <p className="text-sm font-medium text-ink">Listen on</p>
@@ -1391,7 +1376,7 @@ export function SettingsPage({
                     Behavior for scheduled scans and pending titles.
                   </p>
                 </div>
-                <div className="divide-y divide-ink/10 bg-white/35 px-3">
+                <div className="divide-y divide-ink/10 bg-card px-3">
                   <ToggleRow
                     id="auto-acquire"
                     label="Auto acquire"
@@ -1409,7 +1394,7 @@ export function SettingsPage({
                     Host isolation policy for plugins and media workers.
                   </p>
                 </div>
-                <div className="grid gap-4 bg-white/35 px-3 py-3 sm:grid-cols-2">
+                <div className="grid gap-4 bg-card px-3 py-3 sm:grid-cols-2">
                   <FieldBlock label="Plugin isolation" htmlFor="plugins-isolation">
                     <select
                       id="plugins-isolation"
@@ -1513,7 +1498,7 @@ export function SettingsPage({
                   Array.from(pluginsByKind.entries()).map(([kind, plugins]) => (
                     <div key={kind} className="space-y-2">
                       <h3 className="text-sm font-semibold text-ink/70">{kindLabel(kind)}</h3>
-                      <ul className="divide-y divide-ink/10 bg-white/35">
+                      <ul className="divide-y divide-ink/10 bg-card">
                         {plugins.map((plugin) => {
                           const rowKey = pluginRowKey(plugin);
                           const expanded = expandedPlugins.has(rowKey);

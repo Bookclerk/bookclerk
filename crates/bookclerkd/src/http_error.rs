@@ -66,6 +66,25 @@ impl ErrorBody {
     }
 }
 
+/// Branded HTML error for browser document routes (`GET /invite`, …).
+///
+/// # Arguments
+///
+/// * `status` - HTTP status written on the response.
+/// * `message` - Operator-facing explanation shown in the page body.
+///
+/// # Returns
+///
+/// HTML response with `Content-Type: text/html`.
+pub fn document_error(status: StatusCode, message: &'static str) -> Response {
+    ErrorBody {
+        status,
+        code: describe(status).0,
+        message,
+    }
+    .into_response_for(false)
+}
+
 #[derive(Debug, Serialize)]
 /// JSON error object (`error`, `message`, numeric `status`) for API clients.
 struct ErrorJson {
@@ -87,6 +106,7 @@ fn describe(status: StatusCode) -> (&'static str, &'static str) {
         ),
         StatusCode::FORBIDDEN => ("forbidden", "You do not have access to this resource."),
         StatusCode::NOT_FOUND => ("not_found", "That page or resource was not found."),
+        StatusCode::GONE => ("gone", "This resource is no longer available."),
         StatusCode::METHOD_NOT_ALLOWED => ("method_not_allowed", "This method is not allowed."),
         StatusCode::UNSUPPORTED_MEDIA_TYPE => (
             "unsupported_media_type",
@@ -253,7 +273,8 @@ fn render_html(status: StatusCode, message: &str) -> String {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<meta name="theme-color" content="#0B3553"/>
+<meta name="theme-color" content="#0B3553" media="(prefers-color-scheme: light)"/>
+<meta name="theme-color" content="#121c26" media="(prefers-color-scheme: dark)"/>
 <title>{code} {reason} · Bookclerk</title>
 <style>
 :root {{
@@ -266,6 +287,19 @@ fn render_html(status: StatusCode, message: &str) -> String {
   --paper: #fbf7ee;
   --font-display: "Literata", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
   --font-sans: "Source Sans 3", "Segoe UI", Candara, sans-serif;
+}}
+html {{ color-scheme: light; }}
+@media (prefers-color-scheme: dark) {{
+  :root {{
+    --ink: #f3e5c6;
+    --ink-soft: #d4c4a0;
+    --teal: #5aa8a2;
+    --brick: #e06a52;
+    --parchment: #1a2834;
+    --fold: #243240;
+    --paper: #121c26;
+  }}
+  html {{ color-scheme: dark; }}
 }}
 * {{ box-sizing: border-box; }}
 html, body {{ height: 100%; }}
@@ -283,6 +317,14 @@ body {{
   justify-content: center;
   padding: 2rem 1.25rem;
 }}
+@media (prefers-color-scheme: dark) {{
+  body {{
+    background:
+      radial-gradient(1200px 600px at 10% -10%, #1a2834 0%, transparent 55%),
+      radial-gradient(900px 500px at 100% 0%, #1a3a38 0%, transparent 50%),
+      linear-gradient(180deg, var(--paper) 0%, #0d1620 100%);
+  }}
+}}
 main {{
   width: min(28rem, 100%);
   animation: fadeUp 420ms ease-out;
@@ -295,6 +337,9 @@ main {{
   display: block;
   width: 100%;
   height: auto;
+}}
+.brand .bookclerk-wordmark {{
+  fill: currentColor;
 }}
 .status {{
   font-size: 0.8rem;
@@ -340,7 +385,7 @@ a.primary {{
 }}
 a.primary:hover {{ background: var(--ink-soft); }}
 a.secondary {{
-  background: color-mix(in srgb, var(--fold) 70%, white);
+  background: color-mix(in srgb, var(--fold) 70%, var(--paper));
   color: var(--ink);
   border: 1px solid color-mix(in srgb, var(--fold) 80%, var(--ink));
 }}
@@ -472,8 +517,33 @@ mod tests {
         assert!(body.contains("viewBox=\"0 0 1800 600\""));
         assert!(body.contains("403"));
         assert!(body.contains("--ink: #0b3553"));
+        assert!(body.contains("prefers-color-scheme: dark"));
+        assert!(body.contains("--ink: #f3e5c6"));
         assert!(body.contains(".brand svg"));
+        assert!(body.contains(".brand .bookclerk-wordmark"));
         assert!(body.contains("width: 100%"));
+    }
+
+    #[tokio::test]
+    async fn document_error_uses_custom_message() {
+        async fn gone() -> Response {
+            document_error(StatusCode::GONE, "This invite link has already been used.")
+        }
+        let app = Router::new().route("/invite", get(gone));
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/invite")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::GONE);
+        let body = String::from_utf8(res.into_body().collect().await.unwrap().to_bytes().to_vec())
+            .unwrap();
+        assert!(body.contains("already been used"));
+        assert!(body.contains("410"));
     }
 
     #[tokio::test]

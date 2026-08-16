@@ -207,6 +207,14 @@ class BookclerkPlugin(WorkerEntrypoint):
         """
         raise PluginError.from_wire("unsupported", "cliInvoke not implemented")
 
+    async def oidcClients(self):
+        """Plugin-provided OIDC authorization-server client templates.
+
+        Returns:
+            Empty list when the guest is not a relying party.
+        """
+        return js([])
+
     async def shutdown(self):
         """Release guest resources.
 

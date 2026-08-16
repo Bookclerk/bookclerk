@@ -3,7 +3,8 @@
 #
 # Workspace-local Cargo output: keep `target/` on the bind mount so builds
 # travel between host / Dev Container / Cloud Agent. Registry/git cache lives in
-# `.cargo-home/` when `CARGO_HOME` is set (see `.envrc`, Dev Container, AGENTS.md).
+# `.cargo-home/` when `CARGO_HOME` is set (see `.envrc.example`, Dev Container,
+# AGENTS.md).
 
 [build]
 target-dir = "target"
@@ -11,7 +12,7 @@ target-dir = "target"
 [env]
 # Applied to `cargo run` / `cargo test` / build scripts (aliases use `cargo run`).
 # CARGO_HOME cannot be set here for Cargo's own registry — export it in the shell
-# (`.envrc`) or container env instead.
+# (`.envrc.example` / `scripts/workspace-env.sh`) or container env instead.
 CARGO_TARGET_DIR = { value = "target", relative = true }
 BOOKCLERK_FILES_DIR = { value = "BookclerkFiles", relative = true }
 TMPDIR = { value = ".tmp", relative = true }

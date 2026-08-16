@@ -46,6 +46,8 @@ pub struct UpstreamProfile {
     pub email_verified: bool,
     /// Display name from userinfo / ID token / provider profile.
     pub name: Option<String>,
+    /// HTTPS profile picture from userinfo / ID token / provider profile.
+    pub picture_url: Option<String>,
 }
 
 impl UpstreamProfile {
@@ -67,11 +69,15 @@ impl UpstreamProfile {
         let name = string_claim(userinfo, "name")
             .or_else(|| string_claim(claims, "name"))
             .or_else(|| string_claim(userinfo, "preferred_username"));
+        let picture_url = http_picture_url(
+            string_claim(userinfo, "picture").or_else(|| string_claim(claims, "picture")),
+        );
         Some(Self {
             sub,
             email,
             email_verified,
             name,
+            picture_url,
         })
     }
 
@@ -86,6 +92,7 @@ impl UpstreamProfile {
             email: verified_email,
             email_verified,
             name,
+            picture_url: http_picture_url(string_claim(user, "avatar_url")),
         })
     }
 
@@ -101,6 +108,7 @@ impl UpstreamProfile {
             email: email.clone(),
             email_verified: verified && email.is_some(),
             name,
+            picture_url: discord_picture_url(user),
         })
     }
 
@@ -179,6 +187,39 @@ fn oidc_email(claims: &Value, userinfo: &Value) -> (Option<String>, bool) {
     let info_email = string_claim(userinfo, "email");
     let info_verified = claim_bool(userinfo.get("email_verified"));
     (info_email, info_verified)
+}
+
+/// Accepts only `https://` picture URLs (max 2048 bytes) so avatars cannot be `javascript:` / `data:`.
+fn http_picture_url(raw: Option<String>) -> Option<String> {
+    let value = raw?;
+    if value.len() > 2048 {
+        return None;
+    }
+    let scheme = value.split_once("://").map(|(s, _)| s)?;
+    if scheme.eq_ignore_ascii_case("https") {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+/// Discord CDN avatar, or the default embed avatar when the user has none.
+fn discord_picture_url(user: &Value) -> Option<String> {
+    let id = json_subject(user.get("id"))?;
+    if let Some(avatar) = string_claim(user, "avatar") {
+        let ext = if avatar.starts_with("a_") {
+            "gif"
+        } else {
+            "png"
+        };
+        return http_picture_url(Some(format!(
+            "https://cdn.discordapp.com/avatars/{id}/{avatar}.{ext}"
+        )));
+    }
+    let index = id.parse::<u64>().map(|n| (n >> 22) % 6).unwrap_or(0);
+    http_picture_url(Some(format!(
+        "https://cdn.discordapp.com/embed/avatars/{index}.png"
+    )))
 }
 
 /// Fetch JWKS and verify an ID token via `openidconnect` (sig, iss, aud/azp, exp, nonce).
@@ -457,6 +498,50 @@ FH3237ykNZH07RjLf0TT1uK2n8GsLFSPqO2lwIyWcLl2TCF17T2d5nYR
     }
 
     #[test]
+    fn github_and_oidc_capture_https_pictures() {
+        let github = json!({
+            "id": 1,
+            "login": "octocat",
+            "avatar_url": "https://avatars.githubusercontent.com/u/1"
+        });
+        let profile = UpstreamProfile::from_github_user(&github, None).unwrap();
+        assert_eq!(
+            profile.picture_url.as_deref(),
+            Some("https://avatars.githubusercontent.com/u/1")
+        );
+
+        let claims = json!({
+            "sub": "user-1",
+            "picture": "https://lh3.googleusercontent.com/a/photo"
+        });
+        let oidc = UpstreamProfile::from_oidc(&claims, &json!({})).unwrap();
+        assert_eq!(
+            oidc.picture_url.as_deref(),
+            Some("https://lh3.googleusercontent.com/a/photo")
+        );
+
+        let bad = json!({"sub": "user-1", "picture": "javascript:alert(1)"});
+        assert!(UpstreamProfile::from_oidc(&bad, &json!({}))
+            .unwrap()
+            .picture_url
+            .is_none());
+    }
+
+    #[test]
+    fn discord_builds_cdn_avatar_url() {
+        let user = json!({
+            "id": "99",
+            "username": "dee",
+            "avatar": "abcdef"
+        });
+        let profile = UpstreamProfile::from_discord(&user).unwrap();
+        assert_eq!(
+            profile.picture_url.as_deref(),
+            Some("https://cdn.discordapp.com/avatars/99/abcdef.png")
+        );
+    }
+
+    #[test]
     fn github_emails_prefer_primary_verified() {
         let emails = json!([
             {"email": "old@x.test", "verified": true, "primary": false},
@@ -476,6 +561,7 @@ FH3237ykNZH07RjLf0TT1uK2n8GsLFSPqO2lwIyWcLl2TCF17T2d5nYR
             email: None,
             email_verified: false,
             name: None,
+            picture_url: None,
         };
         profile.merge_apple_user_json(
             r#"{"name":{"firstName":"Ada","lastName":"Lovelace"},"email":"ada@privaterelay.appleid.com"}"#,
@@ -490,6 +576,7 @@ FH3237ykNZH07RjLf0TT1uK2n8GsLFSPqO2lwIyWcLl2TCF17T2d5nYR
             email: Some("ada@privaterelay.appleid.com".into()),
             email_verified: true,
             name: None,
+            picture_url: None,
         };
         verified.merge_apple_user_json(
             r#"{"name":{"firstName":"Ada","lastName":"Lovelace"},"email":"attacker@evil.example"}"#,

@@ -97,7 +97,9 @@ singleton) so `COUNT` then `INSERT` cannot exceed `max_pending` under
 concurrency tests against a disposable multi-connection database
 (`BOOKCLERK_TEST_POSTGRES_URL` + `BOOKCLERK_REQUIRE_POSTGRES_TESTS=1`).
 They are `#[ignore]` in the default workspace suite so a missing Postgres
-cannot false-pass.
+cannot false-pass. TOTP enroll/disable `dbAtomic` conformance
+(`postgres_totp_*`) is not ignored: the same job provisions Postgres and
+runs those tests automatically (`BOOKCLERK_REQUIRE_POSTGRES_TESTS=1`).
 
 Claim (native and D1) marks pending rows with malformed JSON, an unknown kind,
 an unknown `resource_class`, or an unsupported envelope version as

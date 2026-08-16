@@ -651,8 +651,8 @@ export interface PutParams extends OutputS3Context {
 /**
  * Parameters for destination `putFile`.
  *
- * Jailed guests often receive the local file over a side-channel FD; when no
- * side channel is wired, the host sets {@link PutFileParams.localPath}.
+ * v2 destinations ingest via streamed `put`. Native guests that still expose
+ * `putFile` take {@link PutFileParams.localPath}.
  */
 export interface PutFileParams extends OutputS3Context {
   /** Destination object key (relative to `prefix`). */
@@ -660,8 +660,7 @@ export interface PutFileParams extends OutputS3Context {
   /** Optional object metadata to store with the upload. */
   meta?: ObjectMetaDto;
   /**
-   * Absolute path to the local file when no SCM_RIGHTS side channel is wired
-   * (unconfined / best-effort hosts).
+   * Absolute path to the local file to upload.
    */
   localPath?: string;
 }
@@ -788,7 +787,7 @@ export interface DbConnectResult {
 /**
  * Named atomic library operation for `dbAtomic`.
  * Tagged `op`: `deleteUser`, `redeemClaimTicket`, `takeOidcRpState`,
- * `takeWebauthnChallenge`, …
+ * `takeWebauthnChallenge`, `confirmTotpEnrollment`, `disableUserTotp`, …
  */
 export type DbAtomicParams = JsonObject;
 

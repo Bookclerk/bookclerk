@@ -1,12 +1,18 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { Fingerprint, KeyRound, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { Camera, Fingerprint, KeyRound, Pencil, RefreshCw, Shield, Smartphone, Trash2 } from "lucide-react";
+import { SsoSignInButton } from "@/components/SsoProviderMark";
+import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
 import { SessionsPanel } from "@/components/SessionsPanel";
+import { TotpSetupHint } from "@/components/TotpSetupHint";
+import { UserAvatar, userDisplayLabel } from "@/components/UserAvatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   deletePasskey,
+  deleteProfileAvatar,
   deleteUser,
+  disableTotp,
   elevate,
   endElevate,
   isApiError,
@@ -17,17 +23,29 @@ import {
   passkeyElevateFinish,
   passkeyRegisterBegin,
   passkeyRegisterFinish,
+  patchProfile,
   setPassword,
+  totpEnrollBegin,
+  totpEnrollFinish,
+  uploadProfileAvatar,
   type AuthSession,
   type LinkedIdentity,
   type ListedPasskey,
   type ListedSession,
   type OidcProvider,
 } from "@/lib/api";
-import { assertPasskey, createPasskey } from "@/lib/webauthn";
+import { assertPasskey, createPasskey, passkeysSupported } from "@/lib/webauthn";
+import { isOptionalEmailValid } from "@/lib/email";
+import { cn } from "@/lib/utils";
 
 /**
  * Account tab: Profile, Security, Sessions (and Owner elevation).
+ *
+ * Security (password, passkeys, authenticator app, linked IdPs, delete) is omitted while an
+ * operator is impersonating, because those controls belong to the target user.
+ * Profile edits are also disabled while impersonating. Own-account Profile
+ * defaults to the same rendered view, with hover edit controls for name,
+ * email, and picture.
  */
 export function AccountSettingsPanel({
   session,
@@ -52,6 +70,7 @@ export function AccountSettingsPanel({
 }) {
   const user = session?.user;
   const isOperatorOnly = session?.role === "operator" && !user;
+  const isImpersonating = Boolean(session?.impersonating);
   const canElevate =
     session?.role === "owner" && !session.impersonating && !session.elevated;
   const showElevationControls =
@@ -67,8 +86,31 @@ export function AccountSettingsPanel({
   const [elevateBusy, setElevateBusy] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState("");
   const [passkeys, setPasskeys] = useState<ListedPasskey[]>([]);
+  const [passkeyName, setPasskeyName] = useState("");
+  const [totpEnabled, setTotpEnabled] = useState(false);
+  const [totpEnroll, setTotpEnroll] = useState<{
+    secret: string;
+    otpauth_url: string;
+    qr_svg: string;
+  } | null>(null);
+  const [totpCode, setTotpCode] = useState("");
   const [identities, setIdentities] = useState<LinkedIdentity[]>([]);
   const [oidcProviders, setOidcProviders] = useState<OidcProvider[]>([]);
+  const [displayName, setDisplayName] = useState(user?.display_name ?? "");
+  const [email, setEmail] = useState(user?.email ?? "");
+  const [avatarKey, setAvatarKey] = useState(0);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [editingField, setEditingField] = useState<"name" | "email" | null>(
+    null,
+  );
+  const skipProfileBlur = useRef(false);
+  const canEditProfile = Boolean(user) && !isImpersonating;
+
+  useEffect(() => {
+    setDisplayName(user?.display_name ?? "");
+    setEmail(user?.email ?? "");
+    setEditingField(null);
+  }, [user?.id, user?.display_name, user?.email]);
 
   useEffect(() => {
     const code = new URLSearchParams(window.location.search).get("sso_error");
@@ -78,7 +120,11 @@ export function AccountSettingsPanel({
   }, []);
 
   useEffect(() => {
-    if (!user?.id) return;
+    setTotpEnabled(Boolean(session?.second_factor?.totp));
+  }, [session?.second_factor?.totp]);
+
+  useEffect(() => {
+    if (!user?.id || isImpersonating) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -101,7 +147,7 @@ export function AccountSettingsPanel({
     return () => {
       cancelled = true;
     };
-  }, [user?.id]);
+  }, [user?.id, isImpersonating]);
 
   async function onChangePassword(e: FormEvent) {
     e.preventDefault();
@@ -207,9 +253,14 @@ export function AccountSettingsPanel({
         passkeys.length > 0 ? currentPassword || undefined : undefined,
       );
       const result = await createPasskey(begin);
-      await passkeyRegisterFinish(result);
+      await passkeyRegisterFinish({
+        ...result,
+        name: passkeyName.trim() || undefined,
+      });
       setPasskeys(await listPasskeys());
+      setPasskeyName("");
       setNotice("Passkey registered. You can use it to sign in if SSO is unavailable.");
+      await onSessionChange?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Passkey registration failed");
     } finally {
@@ -223,6 +274,7 @@ export function AccountSettingsPanel({
     try {
       await deletePasskey(id, currentPassword || undefined);
       setPasskeys(await listPasskeys());
+      await onSessionChange?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to remove passkey");
     } finally {
@@ -245,13 +297,193 @@ export function AccountSettingsPanel({
     }
   }
 
+  async function onBeginTotp() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const begin = await totpEnrollBegin(currentPassword || undefined);
+      setTotpEnroll(begin);
+      setTotpCode("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start authenticator setup");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onConfirmTotp(e: FormEvent) {
+    e.preventDefault();
+    if (!totpEnroll) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await totpEnrollFinish(totpCode.trim());
+      setTotpEnroll(null);
+      setTotpCode("");
+      setTotpEnabled(true);
+      setNotice("Authenticator app enabled. You will need a code when signing in with a password.");
+      await onSessionChange?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid authenticator code");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDisableTotp() {
+    setBusy(true);
+    setError(null);
+    try {
+      await disableTotp(currentPassword || undefined);
+      setTotpEnabled(false);
+      setTotpEnroll(null);
+      setNotice("Authenticator app disabled.");
+      await onSessionChange?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disable authenticator");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function cancelProfileEdit() {
+    skipProfileBlur.current = true;
+    setDisplayName(user?.display_name ?? "");
+    setEmail(user?.email ?? "");
+    setEditingField(null);
+  }
+
+  async function commitDisplayName() {
+    if (!canEditProfile) return;
+    const next = displayName.trim();
+    const prev = (user?.display_name ?? "").trim();
+    if (next === prev) {
+      setDisplayName(user?.display_name ?? "");
+      setEditingField(null);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await patchProfile({ display_name: next });
+      await onSessionChange?.();
+      setEditingField(null);
+    } catch (err) {
+      setError(isApiError(err) ? err.message : "Failed to save display name");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function commitEmail() {
+    if (!canEditProfile) return;
+    if (!isOptionalEmailValid(email)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    const next = email.trim();
+    const prev = (user?.email ?? "").trim();
+    if (next === prev) {
+      setEmail(user?.email ?? "");
+      setEditingField(null);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await patchProfile({ email: next });
+      await onSessionChange?.();
+      setEditingField(null);
+    } catch (err) {
+      setError(isApiError(err) ? err.message : "Failed to save email");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onProfileFieldKey(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      cancelProfileEdit();
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.currentTarget.blur();
+    }
+  }
+
+  async function onPickAvatar(file: File | undefined) {
+    if (!file || !canEditProfile) return;
+    if (file.size > 1_500_000) {
+      setError("Choose an image smaller than 1.5 MB.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await uploadProfileAvatar(file);
+      setAvatarKey(Date.now());
+      await onSessionChange?.();
+      setNotice("Profile picture updated.");
+    } catch (err) {
+      setError(isApiError(err) ? err.message : "Failed to update profile picture");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onSelectAvatarSource(source: string) {
+    if (!canEditProfile) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await patchProfile({ avatar_source: source });
+      await onSessionChange?.();
+    } catch (err) {
+      setError(isApiError(err) ? err.message : "Failed to update profile picture");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRemoveAvatar() {
+    if (!canEditProfile) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await deleteProfileAvatar();
+      setAvatarKey(Date.now());
+      await onSessionChange?.();
+      setNotice("Profile picture removed.");
+    } catch (err) {
+      setError(isApiError(err) ? err.message : "Failed to remove profile picture");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const oidcIdentities = identities.filter((i) => i.provider.startsWith("oidc:"));
   const linkedProviderIds = new Set(
     oidcIdentities.map((i) => i.provider.replace(/^oidc:/, "")),
   );
   const elevateProviders = oidcProviders.filter((p) => linkedProviderIds.has(p.id));
   const showPasskeyBanner = Boolean(user) && oidcIdentities.length > 0 && passkeys.length === 0;
+  const canUsePasskeys = passkeysSupported();
   const hasPassword = session?.user?.has_password === true;
+  const profileLabel = isOperatorOnly
+    ? "Operator"
+    : userDisplayLabel({
+        display_name: displayName || user?.display_name,
+        email: email || user?.email,
+        login_name: user?.login_name,
+      });
 
   return (
     <div className="flex flex-col gap-10">
@@ -273,25 +505,79 @@ export function AccountSettingsPanel({
             How this session identifies you on this Bookclerk host.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-4 bg-white/35 px-4 py-4">
-          <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-ink/10 text-lg font-semibold text-ink">
-            {(user?.display_name || session?.role || "?")
-              .trim()
-              .charAt(0)
-              .toUpperCase()}
-            {session?.authenticated ? (
-              <span
-                className="absolute bottom-0.5 right-0.5 h-3 w-3 rounded-full border-2 border-paper bg-teal"
-                title="Signed in"
-              />
-            ) : null}
-          </div>
-          <div className="min-w-0 space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="font-semibold text-ink">
-                {user?.display_name?.trim() ||
-                  (isOperatorOnly ? "Operator" : "Account")}
-              </p>
+        <div className="group/profile flex items-center gap-4 bg-card px-4 py-4">
+          <button
+            type="button"
+            className="group relative shrink-0 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal disabled:cursor-default"
+            disabled={!canEditProfile || busy}
+            onClick={() => setPickerOpen(true)}
+            aria-label={
+              canEditProfile ? "Change profile picture" : "Profile picture"
+            }
+          >
+            <UserAvatar
+              userId={user?.id}
+              label={profileLabel}
+              hasAvatar={user?.has_avatar}
+              avatarSource={user?.avatar_source}
+              gravatarHash={user?.gravatar_hash}
+              ssoPictures={user?.sso_pictures}
+              cacheKey={avatarKey}
+              className="h-14 w-14 text-lg"
+            >
+              {session?.authenticated ? (
+                <span
+                  className="absolute bottom-0.5 right-0.5 h-3 w-3 rounded-full border-2 border-paper bg-teal"
+                  title="Signed in"
+                />
+              ) : null}
+              {canEditProfile ? (
+                <span className="absolute inset-0 flex items-center justify-center rounded-full bg-ink/45 text-paper opacity-0 transition-opacity group-hover/profile:opacity-100 group-focus-within/profile:opacity-100">
+                  <Camera className="h-5 w-5" aria-hidden />
+                </span>
+              ) : null}
+            </UserAvatar>
+          </button>
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {editingField === "name" ? (
+                <Input
+                  className="max-w-xs"
+                  autoFocus
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  onBlur={() => {
+                    if (skipProfileBlur.current) {
+                      skipProfileBlur.current = false;
+                      return;
+                    }
+                    void commitDisplayName();
+                  }}
+                  onKeyDown={onProfileFieldKey}
+                  maxLength={80}
+                  autoComplete="nickname"
+                  placeholder="Display name"
+                  aria-label="Display name"
+                  disabled={busy}
+                />
+              ) : canEditProfile ? (
+                <button
+                  type="button"
+                  className="flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
+                  onClick={() => setEditingField("name")}
+                  aria-label="Edit display name"
+                >
+                  <span className="truncate font-semibold text-ink">
+                    {profileLabel}
+                  </span>
+                  <Pencil
+                    className="h-3.5 w-3.5 shrink-0 text-ink/40 opacity-0 transition-opacity group-hover/profile:opacity-100 group-focus-within/profile:opacity-100"
+                    aria-hidden
+                  />
+                </button>
+              ) : (
+                <p className="truncate font-semibold text-ink">{profileLabel}</p>
+              )}
               <Badge className="bg-ink/10 text-ink normal-case tracking-normal">
                 {session?.role ?? "unknown"}
               </Badge>
@@ -301,90 +587,149 @@ export function AccountSettingsPanel({
                 </Badge>
               ) : null}
             </div>
-            <p className="text-sm text-ink/55">
-              {user
-                ? `User #${user.id}`
-                : isOperatorOnly
-                  ? "Daemon operator token session"
-                  : "No first-party user on this session"}
-            </p>
+            {editingField === "email" ? (
+              <Input
+                className="max-w-sm"
+                type="email"
+                autoFocus
+                value={email}
+                aria-invalid={!isOptionalEmailValid(email)}
+                onChange={(e) => setEmail(e.target.value)}
+                onBlur={() => {
+                  if (skipProfileBlur.current) {
+                    skipProfileBlur.current = false;
+                    return;
+                  }
+                  void commitEmail();
+                }}
+                onKeyDown={onProfileFieldKey}
+                autoComplete="email"
+                placeholder="you@example.com"
+                aria-label="Email"
+                disabled={busy}
+              />
+            ) : canEditProfile ? (
+              <button
+                type="button"
+                className="flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
+                onClick={() => setEditingField("email")}
+                aria-label="Edit email"
+              >
+                <span
+                  className={cn(
+                    "truncate text-sm",
+                    email.trim() ? "text-ink/55" : "text-ink/40",
+                  )}
+                >
+                  {email.trim() || "Add email"}
+                </span>
+                <Pencil
+                  className="h-3.5 w-3.5 shrink-0 text-ink/40 opacity-0 transition-opacity group-hover/profile:opacity-100 group-focus-within/profile:opacity-100"
+                  aria-hidden
+                />
+              </button>
+            ) : (
+              <p className="truncate text-sm text-ink/55">
+                {user?.email?.trim() ||
+                  (isOperatorOnly
+                    ? "Daemon operator token session"
+                    : "No email")}
+              </p>
+            )}
           </div>
         </div>
       </section>
 
-      <section className="space-y-3">
-        <div className="space-y-1">
+      {!isImpersonating ? (
+      <section className="flex flex-col gap-4">
+        <div className="flex flex-col gap-1">
           <h2 className="text-lg font-semibold text-ink">Security</h2>
           <p className="text-sm text-ink/55">
-            Password, passkeys, linked identity providers, and Owner elevation.
+            Password, passkeys, authenticator app, linked identity providers, and Owner elevation.
           </p>
         </div>
 
+        {user && session?.second_factor?.required && !session.second_factor.enrolled ? (
+          <div className="rounded-md border border-brick/30 bg-brick/10 px-3 py-2.5 text-sm text-ink/80">
+            This host requires a passkey or authenticator app. Add one below to keep using the library.
+          </div>
+        ) : null}
+
         {user ? (
-          <>
-            <form
-              className="grid max-w-xl gap-3 bg-white/35 px-4 py-4 sm:grid-cols-2"
-              onSubmit={(e) => void onChangePassword(e)}
+          <div className="grid gap-4 lg:grid-cols-2">
+            <SecurityCard
+              icon={<KeyRound className="h-4 w-4" aria-hidden />}
+              title="Password"
+              description="Sign in with a Bookclerk password on this host."
             >
-              {user?.has_password ? (
-                <Input
-                  className="sm:col-span-2"
-                  type="password"
-                  autoComplete="current-password"
-                  placeholder="Current password"
-                  aria-label="Current password"
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  disabled={busy}
-                />
-              ) : null}
-              <Input
-                type="password"
-                autoComplete="new-password"
-                placeholder="New password"
-                aria-label="New password"
-                value={password}
-                onChange={(e) => setPasswordValue(e.target.value)}
-                disabled={busy}
-              />
-              <Input
-                type="password"
-                autoComplete="new-password"
-                placeholder="Confirm password"
-                aria-label="Confirm password"
-                value={passwordConfirm}
-                onChange={(e) => setPasswordConfirm(e.target.value)}
-                disabled={busy}
-              />
-              <div className="sm:col-span-2">
-                <Button type="submit" disabled={busy || !password}>
+              <form
+                className="flex flex-col gap-3"
+                onSubmit={(e) => void onChangePassword(e)}
+              >
+                {user.has_password ? (
+                  <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                    Current password
+                    <Input
+                      type="password"
+                      autoComplete="current-password"
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                      disabled={busy}
+                    />
+                  </label>
+                ) : null}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                    New password
+                    <Input
+                      type="password"
+                      autoComplete="new-password"
+                      value={password}
+                      onChange={(e) => setPasswordValue(e.target.value)}
+                      disabled={busy}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                    Confirm
+                    <Input
+                      type="password"
+                      autoComplete="new-password"
+                      value={passwordConfirm}
+                      onChange={(e) => setPasswordConfirm(e.target.value)}
+                      disabled={busy}
+                    />
+                  </label>
+                </div>
+                <Button
+                  type="submit"
+                  className="self-start"
+                  disabled={busy || !password}
+                >
                   <KeyRound className="h-4 w-4" />
-                  {busy ? "Saving…" : "Update password"}
+                  {busy
+                    ? "Saving…"
+                    : user.has_password
+                      ? "Update password"
+                      : "Set password"}
                 </Button>
-              </div>
-            </form>
-            {showPasskeyBanner ? (
-              <div className="flex items-start gap-3 border border-teal/30 bg-teal/10 px-4 py-3 text-sm text-ink/70">
-                <Fingerprint className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <div>
+              </form>
+            </SecurityCard>
+
+            <SecurityCard
+              icon={<Fingerprint className="h-4 w-4" aria-hidden />}
+              title="Passkeys"
+              description="Phishing-resistant sign-in that stays on this Bookclerk host."
+            >
+              {showPasskeyBanner ? (
+                <div className="rounded-md border border-teal/30 bg-teal/10 px-3 py-2.5 text-sm text-ink/70">
                   <p className="font-medium text-ink">Register a passkey</p>
-                  <p>
-                    SSO created this account. Add a passkey so you can still sign
-                    in (and Owners can elevate) if the identity provider is down.
+                  <p className="mt-0.5">
+                    SSO created this account. Add a passkey so you can still
+                    sign in (and Owners can elevate) if the identity provider
+                    is down.
                   </p>
                 </div>
-              </div>
-            ) : null}
-            <div className="flex flex-col gap-3 bg-white/35 px-4 py-4">
-              <div className="flex items-start gap-3 text-sm text-ink/70">
-                <Fingerprint className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <div>
-                  <p className="font-medium text-ink">Passkeys</p>
-                  <p>
-                    Phishing-resistant sign-in that stays on this Bookclerk host.
-                  </p>
-                </div>
-              </div>
+              ) : null}
               {passkeys.length === 0 ? (
                 <p className="text-sm text-ink/55">No passkeys registered.</p>
               ) : (
@@ -392,14 +737,19 @@ export function AccountSettingsPanel({
                   {passkeys.map((pk) => (
                     <li
                       key={pk.id}
-                      className="flex items-center justify-between gap-3 text-sm"
+                      className="flex items-center justify-between gap-3 rounded-md border border-ink/10 bg-card-mid px-3 py-2 text-sm"
                     >
-                      <span className="truncate font-mono text-ink/70">
-                        {pk.credential_id.slice(0, 16)}…
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium text-ink">
+                          {pk.name?.trim() || "Passkey"}
+                        </span>
+                        <span className="block truncate font-mono text-xs text-ink/45">
+                          {pk.credential_id.slice(0, 16)}…
+                        </span>
                       </span>
                       <Button
                         type="button"
-                        variant="secondary"
+                        variant="ghost"
                         disabled={busy}
                         onClick={() => void onDeletePasskey(pk.id)}
                       >
@@ -409,162 +759,266 @@ export function AccountSettingsPanel({
                   ))}
                 </ul>
               )}
+              <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                Name
+                <Input
+                  value={passkeyName}
+                  onChange={(e) => setPasskeyName(e.target.value)}
+                  maxLength={80}
+                  placeholder="Laptop, YubiKey, …"
+                  disabled={busy}
+                />
+              </label>
               <Button
                 type="button"
                 variant="secondary"
-                disabled={busy}
+                className="self-start"
+                disabled={busy || !canUsePasskeys}
+                title={
+                  canUsePasskeys
+                    ? undefined
+                    : "This browser does not support passkeys"
+                }
                 onClick={() => void onRegisterPasskey()}
               >
                 <Fingerprint className="h-4 w-4" />
                 {busy ? "Waiting…" : "Add passkey"}
               </Button>
-            </div>
-            {oidcIdentities.length > 0 ? (
-              <div className="flex flex-col gap-2 bg-white/35 px-4 py-4">
-                <p className="text-sm font-medium text-ink">Linked sign-in</p>
-                <ul className="flex flex-wrap gap-1.5">
-                  {oidcIdentities.map((id) => (
-                    <li key={`${id.provider}:${id.external_user_id}`}>
-                      <Badge className="bg-ink/8 text-ink normal-case tracking-normal">
-                        {id.provider.replace(/^oidc:/, "")}
-                        {id.label ? ` · ${id.label}` : ""}
-                      </Badge>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+              {oidcIdentities.length > 0 ? (
+                <div className="flex flex-col gap-2 border-t border-ink/10 pt-3">
+                  <p className="text-sm font-medium text-ink">Linked sign-in</p>
+                  <ul className="flex flex-wrap gap-1.5">
+                    {oidcIdentities.map((id) => (
+                      <li key={`${id.provider}:${id.external_user_id}`}>
+                        <Badge className="bg-ink/8 text-ink normal-case tracking-normal">
+                          {id.provider.replace(/^oidc:/, "")}
+                          {id.label ? ` · ${id.label}` : ""}
+                        </Badge>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </SecurityCard>
+
+            <SecurityCard
+              icon={<Smartphone className="h-4 w-4" aria-hidden />}
+              title="Authenticator app"
+              description="Time-based codes (TOTP) for password sign-in. Passkey sign-in does not need a code."
+            >
+              {totpEnabled ? (
+                <>
+                  <p className="text-sm text-ink/70">
+                    Authenticator app is enabled for this account.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="self-start"
+                    disabled={busy}
+                    onClick={() => void onDisableTotp()}
+                  >
+                    Disable authenticator
+                  </Button>
+                </>
+              ) : totpEnroll ? (
+                <form className="flex flex-col gap-3" onSubmit={(e) => void onConfirmTotp(e)}>
+                  <TotpSetupHint
+                    secret={totpEnroll.secret}
+                    otpauthUrl={totpEnroll.otpauth_url}
+                    qrSvg={totpEnroll.qr_svg}
+                  />
+                  <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                    Authenticator code
+                    <Input
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      value={totpCode}
+                      onChange={(e) => setTotpCode(e.target.value)}
+                      maxLength={8}
+                      disabled={busy}
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="submit" disabled={busy || totpCode.trim().length < 6}>
+                      Confirm
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => {
+                        setTotpEnroll(null);
+                        setTotpCode("");
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </form>
+              ) : (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="self-start"
+                  disabled={busy}
+                  onClick={() => void onBeginTotp()}
+                >
+                  <Smartphone className="h-4 w-4" />
+                  Set up authenticator
+                </Button>
+              )}
+            </SecurityCard>
+
+            {showElevationControls ? (
+              <SecurityCard
+                icon={<Shield className="h-4 w-4" aria-hidden />}
+                title="Operator elevation"
+                description="Unlocks Server Settings, Plugins, and impersonation for this session. The Operator token is a separate local login, not elevation."
+              >
+                {session?.elevated ? (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-teal/10 px-3 py-2.5">
+                    <p className="text-sm text-ink">
+                      Elevation active for this session.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={elevateBusy}
+                      onClick={() => void onEndElevate()}
+                    >
+                      {elevateBusy ? "Ending…" : "End elevation"}
+                    </Button>
+                  </div>
+                ) : canElevate ? (
+                  <div className="flex flex-col gap-3">
+                    {elevateProviders.length > 0 || passkeys.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {elevateProviders.map((p) => (
+                          <SsoSignInButton
+                            key={p.id}
+                            preset={p.preset}
+                            name={p.name}
+                            disabled={elevateBusy}
+                            onClick={() => {
+                              window.location.href = `/api/auth/oidc/elevate?provider=${encodeURIComponent(p.id)}`;
+                            }}
+                          />
+                        ))}
+                        {passkeys.length > 0 ? (
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            disabled={elevateBusy || !canUsePasskeys}
+                            title={
+                              canUsePasskeys
+                                ? undefined
+                                : "This browser does not support passkeys — confirm your password instead"
+                            }
+                            onClick={() => void onElevatePasskey()}
+                          >
+                            <Fingerprint className="h-4 w-4" />
+                            {elevateBusy
+                              ? "Waiting for passkey…"
+                              : "Elevate with passkey"}
+                          </Button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {hasPassword ? (
+                      <form
+                        className="flex flex-col gap-3"
+                        onSubmit={(e) => void onElevate(e)}
+                      >
+                        <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                          Confirm password
+                          <Input
+                            type="password"
+                            value={elevatePassword}
+                            onChange={(e) => setElevatePassword(e.target.value)}
+                            autoComplete="current-password"
+                            disabled={elevateBusy}
+                          />
+                        </label>
+                        <Button
+                          type="submit"
+                          className="self-start"
+                          disabled={elevateBusy || !elevatePassword.trim()}
+                        >
+                          {elevateBusy ? "Elevating…" : "Elevate to Operator"}
+                        </Button>
+                      </form>
+                    ) : (
+                      <p className="text-sm text-ink/55">
+                        This Owner has no local password. Use SSO step-up or a
+                        passkey, or sign in with the Operator token on the host.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
+              </SecurityCard>
             ) : null}
-          </>
+
+            <SecurityCard
+              icon={<Trash2 className="h-4 w-4" aria-hidden />}
+              title="Delete account"
+              description="Removes your wishlist, store links, and sessions. Acquired library titles remain on this host."
+              className="border-brick/20 bg-brick/5"
+              titleClassName="text-brick"
+              iconClassName="text-brick/70"
+            >
+              <div className="flex flex-col gap-3">
+                <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
+                  Type delete to confirm
+                  <Input
+                    placeholder='Type "delete"'
+                    value={deleteConfirm}
+                    onChange={(e) => setDeleteConfirm(e.target.value)}
+                    disabled={busy}
+                    autoComplete="off"
+                  />
+                </label>
+                <Button
+                  type="button"
+                  variant="danger"
+                  className="self-start"
+                  disabled={busy || deleteConfirm.trim().toLowerCase() !== "delete"}
+                  onClick={() => void onDeleteAccount()}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete my account
+                </Button>
+              </div>
+            </SecurityCard>
+          </div>
         ) : (
-          <div className="space-y-2 bg-white/35 px-4 py-4 text-sm text-ink/60">
+          <div className="max-w-xl rounded-md border border-ink/10 bg-card p-4 text-sm text-ink/60">
             <p>
               Operator-only sessions use the daemon token. Sign in as an owner,
               administrator, or member to manage a local password.
             </p>
           </div>
         )}
-
-        {showElevationControls ? (
-          <div className="space-y-3 border border-ink/10 bg-white/30 px-4 py-4">
-            <div className="space-y-1">
-              <h3 className="text-base font-semibold text-ink">
-                Operator elevation
-              </h3>
-              <p className="text-sm text-ink/55">
-                Owners can elevate to Operator with a fresh IdP login, a
-                passkey, or a local password. Elevation unlocks Server Settings,
-                Plugins, and impersonation. The Operator token is a separate
-                local session, not elevation.
-              </p>
-            </div>
-            {session?.elevated ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 bg-teal/10 px-3 py-3">
-                <p className="text-sm text-ink">
-                  Elevation active for this session.
-                </p>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={elevateBusy}
-                  onClick={() => void onEndElevate()}
-                >
-                  {elevateBusy ? "Ending…" : "End elevation"}
-                </Button>
-              </div>
-            ) : canElevate ? (
-              <div className="flex flex-col gap-3">
-                {elevateProviders.map((p) => (
-                  <Button
-                    key={p.id}
-                    type="button"
-                    variant="secondary"
-                    disabled={elevateBusy}
-                    onClick={() => {
-                      window.location.href = `/api/auth/oidc/elevate?provider=${encodeURIComponent(p.id)}`;
-                    }}
-                  >
-                    Continue with {p.name}
-                  </Button>
-                ))}
-                {passkeys.length > 0 ? (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    disabled={elevateBusy}
-                    onClick={() => void onElevatePasskey()}
-                  >
-                    <Fingerprint className="h-4 w-4" />
-                    {elevateBusy ? "Waiting for passkey…" : "Elevate with passkey"}
-                  </Button>
-                ) : null}
-                {hasPassword ? (
-                  <form
-                    className="flex flex-wrap gap-2"
-                    onSubmit={(e) => void onElevate(e)}
-                  >
-                    <Input
-                      className="min-w-64 flex-1"
-                      type="password"
-                      value={elevatePassword}
-                      onChange={(e) => setElevatePassword(e.target.value)}
-                      placeholder="Confirm your password"
-                      autoComplete="current-password"
-                      aria-label="Confirm password to elevate"
-                    />
-                    <Button
-                      type="submit"
-                      disabled={elevateBusy || !elevatePassword.trim()}
-                    >
-                      {elevateBusy ? "Elevating…" : "Elevate to Operator"}
-                    </Button>
-                  </form>
-                ) : (
-                  <p className="text-sm text-ink/55">
-                    This Owner has no local password. Use SSO step-up or a
-                    passkey, or sign in with the Operator token on the host.
-                  </p>
-                )}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {user ? (
-          <div className="max-w-xl space-y-3 border border-brick/20 bg-brick/5 px-4 py-4">
-            <div className="space-y-1">
-              <h3 className="text-base font-semibold text-brick">Delete account</h3>
-              <p className="text-sm text-ink/55">
-                Removes your wishlist, store links, and sessions. Acquired
-                library titles remain on this host.
-              </p>
-            </div>
-            <Input
-              aria-label="Type delete to confirm"
-              placeholder='Type "delete" to confirm'
-              value={deleteConfirm}
-              onChange={(e) => setDeleteConfirm(e.target.value)}
-              disabled={busy}
-              autoComplete="off"
-            />
-            <Button
-              type="button"
-              variant="danger"
-              disabled={busy || deleteConfirm.trim().toLowerCase() !== "delete"}
-              onClick={() => void onDeleteAccount()}
-            >
-              <Trash2 className="h-4 w-4" />
-              Delete my account
-            </Button>
-          </div>
-        ) : null}
       </section>
+      ) : null}
 
       <section className="space-y-3">
-        <div className="space-y-1">
-          <h2 className="text-lg font-semibold text-ink">Sessions</h2>
-          <p className="text-sm text-ink/55">
-            Devices signed in as you. Revoke any session you do not recognize.
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold text-ink">Sessions</h2>
+            <p className="text-sm text-ink/55">
+              Devices signed in as you. Revoke any session you do not recognize.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={sessionsBusy}
+            onClick={onRefreshSessions}
+          >
+            <RefreshCw className="h-4 w-4" />
+            Refresh
+          </Button>
         </div>
         <SessionsPanel
           sessions={sessions}
@@ -576,6 +1030,71 @@ export function AccountSettingsPanel({
           embedded
         />
       </section>
+      {user?.id && canEditProfile ? (
+        <AvatarPickerDialog
+          open={pickerOpen}
+          onOpenChange={setPickerOpen}
+          userId={user.id}
+          label={profileLabel}
+          fields={{
+            has_avatar: user.has_avatar,
+            avatar_source: user.avatar_source,
+            gravatar_hash: user.gravatar_hash,
+            sso_pictures: user.sso_pictures,
+          }}
+          cacheKey={avatarKey}
+          busy={busy}
+          onSelectSource={onSelectAvatarSource}
+          onUpload={(file) => void onPickAvatar(file)}
+          onRemoveUpload={() => void onRemoveAvatar()}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * One Security subsection (password, passkeys, authenticator, elevation, or delete).
+ *
+ * @param props - Icon, title, description, and card body.
+ * @returns A bordered card with a consistent header and the subsection body.
+ */
+function SecurityCard({
+  icon,
+  title,
+  description,
+  children,
+  className,
+  titleClassName,
+  iconClassName,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+  children: ReactNode;
+  className?: string;
+  titleClassName?: string;
+  iconClassName?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex h-full flex-col gap-4 rounded-md border border-ink/10 bg-card p-4",
+        className,
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <span className={cn("mt-0.5 shrink-0 text-ink/50", iconClassName)}>
+          {icon}
+        </span>
+        <div className="min-w-0 flex-1">
+          <h3 className={cn("text-sm font-semibold text-ink", titleClassName)}>
+            {title}
+          </h3>
+          <p className="mt-0.5 text-sm text-ink/55">{description}</p>
+        </div>
+      </div>
+      {children}
     </div>
   );
 }

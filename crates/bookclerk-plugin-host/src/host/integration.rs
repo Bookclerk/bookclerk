@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_integrations::{
     Brand, ExternalUser, Integration, IntegrationContext, IntegrationEvent, IntegrationHealth,
-    IntegrationRegistry,
+    IntegrationRegistry, ProvidedOidcClient,
 };
 use bookclerk_plugin_sdk::v2::{DomainEvent, HealthOk, PRODUCT_API_VERSION};
 use serde_json::Value;
@@ -355,6 +355,37 @@ impl Integration for ExternalIntegration {
 
     fn portal_brand(&self) -> Option<Brand> {
         self.brand
+    }
+
+    async fn provided_oidc_clients(
+        &self,
+    ) -> bookclerk_integrations::Result<Vec<ProvidedOidcClient>> {
+        match self.session.oidc_clients().await {
+            Ok(clients) => Ok(clients
+                .into_iter()
+                .map(|t| {
+                    let display_name = t.display_name_or_id().to_string();
+                    let default_scopes = t.scopes_or_default();
+                    ProvidedOidcClient {
+                        client_id: t.client_id,
+                        display_name,
+                        callback_path: t.callback_path,
+                        public_client: t.public_client,
+                        default_scopes,
+                        issue_refresh_token: t.issue_refresh_token,
+                        origin_config_key: t.origin_config_key,
+                    }
+                })
+                .collect()),
+            Err(err) => {
+                tracing::debug!(
+                    plugin = %self.session.id(),
+                    %err,
+                    "oidcClients RPC unavailable; falling back to plugin.toml"
+                );
+                Ok(Vec::new())
+            }
+        }
     }
 }
 

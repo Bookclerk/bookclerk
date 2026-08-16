@@ -84,7 +84,8 @@ and fixtures under
 
 ## Local packaging (current OS/arch)
 
-Requires `ui/dist` for host bundles (`cd ui && npm ci && npm run build`).
+Requires `ui/dist` for host bundles (`cargo package-hosts` rebuilds it when SPA
+sources are stale; or `cd ui && npm ci && npm run build`).
 
 ```bash
 cargo package-plugins      # product plugin archives (no examples) → target/dist/plugins/

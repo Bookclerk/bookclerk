@@ -171,7 +171,7 @@ export function AccountsPage({
           {sources.length === 0 ? (
             <p className="text-sm text-ink/50">No sources enabled.</p>
           ) : (
-            <ul className="divide-y divide-ink/10 bg-white/35">
+            <ul className="divide-y divide-ink/10 bg-card">
               {sources.map((s) => {
                 const open = openSource === s.id;
                 return (
@@ -264,7 +264,7 @@ export function AccountsPage({
           {connections.length === 0 ? (
             <p className="text-sm text-ink/50">No store connections yet.</p>
           ) : (
-            <ul className="divide-y divide-ink/10 bg-white/35">
+            <ul className="divide-y divide-ink/10 bg-card">
               {connections.map((c) => (
                 <li
                   key={c.account_id}

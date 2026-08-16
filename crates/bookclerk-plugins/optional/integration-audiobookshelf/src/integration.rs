@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use bookclerk_config::AudiobookshelfConfig;
 use bookclerk_integrations::{
     Brand, ExternalUser, Integration, IntegrationContext, IntegrationError, IntegrationEvent,
-    IntegrationHealth, Result,
+    IntegrationHealth, ProvidedOidcClient, Result,
 };
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -327,5 +327,24 @@ impl Integration for AbsIntegration {
 
     fn portal_brand(&self) -> Option<Brand> {
         Some(BRAND)
+    }
+
+    async fn provided_oidc_clients(&self) -> Result<Vec<ProvidedOidcClient>> {
+        Ok(crate::oidc_client_templates()
+            .into_iter()
+            .map(|t| {
+                let display_name = t.display_name_or_id().to_string();
+                let default_scopes = t.scopes_or_default();
+                ProvidedOidcClient {
+                    client_id: t.client_id,
+                    display_name,
+                    callback_path: t.callback_path,
+                    public_client: t.public_client,
+                    default_scopes,
+                    issue_refresh_token: t.issue_refresh_token,
+                    origin_config_key: t.origin_config_key,
+                }
+            })
+            .collect())
     }
 }

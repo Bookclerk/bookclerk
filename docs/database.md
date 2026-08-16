@@ -102,8 +102,9 @@ Environment overrides:
 ## Plugin kinds
 
 Built-in **local SQLite** is a **platform-shipped guest**
-(`plugins/sqlite/`, default `[database].plugin = "sqlite"`). The host passes
-`library.db` over the side channel (fd 3); the guest runs with
+(`plugins/sqlite/`, default `[database].plugin = "sqlite"`). The host grants
+`library.db` (and journal sidecars) in the jail allowlist and passes the path as
+`BOOKCLERK_SQLITE_PATH` / context `sqlitePath`; the guest runs with
 `[sandbox].network = none`. The matching guest is **required** — there is no
 in-process engine fallback.
 
@@ -191,8 +192,8 @@ avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
   other writers, and a crash before restore leaves partial writes committed).
 - The D1 guest therefore **rejects** `dbBegin` / `dbCommit` / `dbRollback`.
   Autocommit `dbQuery` / `dbExecute` use the documented REST body
-  `{ "sql", "params" }`. Atomic library operations (claim redeem, last-owner
-  demote/disable/delete, password rotation, consume-once OIDC RP state and
+  `{ "sql", "params" }`.   Atomic library operations (claim redeem, last-owner
+  demote/disable/delete, password rotation, TOTP enroll/disable, consume-once OIDC RP state and
   WebAuthn challenges) use `dbAtomic` on every bundled backend. The D1 plugin
   sends those writes as **one** `{ "batch": [...] }` REST request (a real SQL
   transaction) with control flow encoded in `WHERE` clauses. SQLite and
@@ -269,6 +270,21 @@ unique index on active `dedup_key`s, `job_temp_paths.reserved_bytes`, and a
 unique `(job_id, path)` index so admission, claim, and scratch quota are
 atomic. V14 adds `job_queue_control`, a singleton row used to serialize
 admission and scratch-quota updates under PostgreSQL `READ COMMITTED`.
+V15 adds `users.last_seen_at`, a durable last-authenticated timestamp
+(backfilled from portal sessions, including expired) so User Management can
+tell never-signed-in invites from logged-out users.
+V16 adds `users.avatar_source` (`NULL`/`auto`, `monogram`, `gravatar`,
+`upload`, or `sso:{portal_identities.id}`) and `portal_identities.picture_url`
+for IdP-supplied avatars. Auto-resolve prefers a manual upload, then the
+last-used SSO picture, then Gravatar from the contact email, then the
+monogram.
+V17 adds `webauthn_credentials.name` (label chosen at passkey registration)
+and `users.totp_enabled` (confirmed authenticator-app TOTP). TOTP secrets are
+sealed in `encrypted_secrets` (`kind=totp`, `account_type=user`,
+`account_id` = user id, `name` = `pending` then `primary`).
+V20 adds `user_preferences.theme` (`system`, `light`, or `dark`; default
+`system`). The SPA follows the OS when `system` is set, falling back to the
+designed light theme when the OS hint is missing or not dark.
 
 ## Encrypted secrets
 
@@ -278,9 +294,9 @@ storage for auth credentials, replacing file-based `Accounts/*.auth` files:
 ```sql
 CREATE TABLE encrypted_secrets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL,        -- 'source_auth' | 's3' | 'widevine' | …
-  provider TEXT,             -- 'audible' | 'libro' | 'chirp' | 'graphicaudio' | null
-  account_type TEXT NOT NULL DEFAULT 'integration',  -- 'integration' | 'operator'
+  kind TEXT NOT NULL,        -- 'source_auth' | 's3' | 'widevine' | 'totp' | …
+  provider TEXT,             -- 'audible' | 'libro' | 'chirp' | 'graphicaudio' | 'local' | null
+  account_type TEXT NOT NULL DEFAULT 'integration',  -- 'integration' | 'operator' | 'user'
   account_id TEXT,           -- per-provider account stem or null
   name TEXT NOT NULL,        -- file-stem equivalent
   format TEXT NOT NULL,      -- 'sealed-v1' | 'json-encrypted' (legacy read) | 'audible-rs-auth' (legacy read)

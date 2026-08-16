@@ -51,6 +51,7 @@ export type {
   ListPage,
   ObjectInfo as V2ObjectInfo,
   ObjectMetadata,
+  OidcClientTemplate,
   PluginDescribe,
   PutResult,
   ReadOptions,

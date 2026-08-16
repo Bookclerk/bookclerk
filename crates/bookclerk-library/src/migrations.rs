@@ -839,6 +839,97 @@ const MIGRATION_V14_JOB_QUEUE_CONTROL_POSTGRES: &str = r#"
     INSERT INTO job_queue_control (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 "#;
 
+/// Durable `users.last_seen_at` for presence after logout (SQLite).
+///
+/// Backfills from any portal session (including expired) so existing accounts
+/// that have signed in are not treated as never-seen.
+const MIGRATION_V15_USER_LAST_SEEN_SQLITE: &str = r#"
+    ALTER TABLE users ADD COLUMN last_seen_at TEXT;
+    UPDATE users SET last_seen_at = (
+        SELECT MAX(COALESCE(ps.last_used_at, ps.created_at))
+        FROM portal_sessions ps
+        INNER JOIN portal_identities pi ON pi.id = ps.identity_id
+        WHERE pi.user_id = users.id
+    )
+    WHERE last_seen_at IS NULL;
+"#;
+
+/// Durable `users.last_seen_at` for presence after logout (Postgres / D1).
+const MIGRATION_V15_USER_LAST_SEEN_POSTGRES: &str = r#"
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TEXT;
+    UPDATE users SET last_seen_at = (
+        SELECT MAX(COALESCE(ps.last_used_at, ps.created_at))
+        FROM portal_sessions ps
+        INNER JOIN portal_identities pi ON pi.id = ps.identity_id
+        WHERE pi.user_id = users.id
+    )
+    WHERE last_seen_at IS NULL;
+"#;
+
+/// Profile picture choice plus IdP-supplied avatar URLs (SQLite).
+///
+/// `users.avatar_source` is `NULL`/`auto`, `monogram`, `gravatar`, `upload`, or
+/// `sso:{portal_identities.id}`. `portal_identities.picture_url` stores the last
+/// HTTPS picture from the identity provider.
+const MIGRATION_V16_AVATAR_SOURCE_SQLITE: &str = r#"
+    ALTER TABLE users ADD COLUMN avatar_source TEXT;
+    ALTER TABLE portal_identities ADD COLUMN picture_url TEXT;
+"#;
+
+/// Profile picture choice plus IdP-supplied avatar URLs (Postgres / D1).
+const MIGRATION_V16_AVATAR_SOURCE_POSTGRES: &str = r#"
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_source TEXT;
+    ALTER TABLE portal_identities ADD COLUMN IF NOT EXISTS picture_url TEXT;
+"#;
+
+/// Passkey display names plus a durable TOTP-enrolled flag on users.
+const MIGRATION_V17_PASSKEY_NAME_TOTP_SQLITE: &str = r#"
+    ALTER TABLE webauthn_credentials ADD COLUMN name TEXT;
+    ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;
+"#;
+
+/// Postgres passkey names and TOTP enrolled flag.
+const MIGRATION_V17_PASSKEY_NAME_TOTP_POSTGRES: &str = r#"
+    ALTER TABLE webauthn_credentials ADD COLUMN IF NOT EXISTS name TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BIGINT NOT NULL DEFAULT 0;
+"#;
+
+/// OIDC AS client token policy (refresh + allowed scopes).
+const MIGRATION_V18_OIDC_CLIENT_POLICY_SQLITE: &str = r#"
+    ALTER TABLE oidc_clients ADD COLUMN issue_refresh_token INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE oidc_clients ADD COLUMN allowed_scopes_json TEXT NOT NULL DEFAULT '["openid","profile","email"]';
+"#;
+
+/// Postgres OIDC AS client token policy.
+const MIGRATION_V18_OIDC_CLIENT_POLICY_POSTGRES: &str = r#"
+    ALTER TABLE oidc_clients ADD COLUMN IF NOT EXISTS issue_refresh_token BIGINT NOT NULL DEFAULT 1;
+    ALTER TABLE oidc_clients ADD COLUMN IF NOT EXISTS allowed_scopes_json TEXT NOT NULL DEFAULT '["openid","profile","email"]';
+"#;
+
+/// OIDC client enable flag + plugin ownership (see docs/adr/plugin-oidc-clients.md).
+const MIGRATION_V19_OIDC_CLIENT_PLUGIN_SQLITE: &str = r#"
+    ALTER TABLE oidc_clients ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE oidc_clients ADD COLUMN plugin_id TEXT;
+    UPDATE oidc_clients SET plugin_id = 'audiobookshelf' WHERE client_id = 'audiobookshelf';
+"#;
+
+/// Postgres OIDC client enable flag + plugin ownership.
+const MIGRATION_V19_OIDC_CLIENT_PLUGIN_POSTGRES: &str = r#"
+    ALTER TABLE oidc_clients ADD COLUMN IF NOT EXISTS enabled BIGINT NOT NULL DEFAULT 1;
+    ALTER TABLE oidc_clients ADD COLUMN IF NOT EXISTS plugin_id TEXT;
+    UPDATE oidc_clients SET plugin_id = 'audiobookshelf' WHERE client_id = 'audiobookshelf' AND plugin_id IS NULL;
+"#;
+
+/// Appearance preference (`system` / `light` / `dark`) on user_preferences.
+const MIGRATION_V20_THEME_SQLITE: &str = r#"
+    ALTER TABLE user_preferences ADD COLUMN theme TEXT NOT NULL DEFAULT 'system';
+"#;
+
+/// Postgres appearance preference on user_preferences.
+const MIGRATION_V20_THEME_POSTGRES: &str = r#"
+    ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS theme TEXT NOT NULL DEFAULT 'system';
+"#;
+
 /// Ordered migration list for local SQLite files (`PRAGMA user_version`).
 #[must_use]
 pub fn migration_sql() -> &'static [&'static str] {
@@ -858,6 +949,12 @@ pub fn migration_sql() -> &'static [&'static str] {
         MIGRATION_V12_JOBS_SQLITE,
         MIGRATION_V13_JOB_FENCE_SQLITE,
         MIGRATION_V14_JOB_QUEUE_CONTROL_SQLITE,
+        MIGRATION_V15_USER_LAST_SEEN_SQLITE,
+        MIGRATION_V16_AVATAR_SOURCE_SQLITE,
+        MIGRATION_V17_PASSKEY_NAME_TOTP_SQLITE,
+        MIGRATION_V18_OIDC_CLIENT_POLICY_SQLITE,
+        MIGRATION_V19_OIDC_CLIENT_PLUGIN_SQLITE,
+        MIGRATION_V20_THEME_SQLITE,
     ]
 }
 
@@ -880,6 +977,12 @@ pub fn migration_sql_postgres() -> &'static [&'static str] {
         MIGRATION_V12_JOBS_POSTGRES,
         MIGRATION_V13_JOB_FENCE_POSTGRES,
         MIGRATION_V14_JOB_QUEUE_CONTROL_POSTGRES,
+        MIGRATION_V15_USER_LAST_SEEN_POSTGRES,
+        MIGRATION_V16_AVATAR_SOURCE_POSTGRES,
+        MIGRATION_V17_PASSKEY_NAME_TOTP_POSTGRES,
+        MIGRATION_V18_OIDC_CLIENT_POLICY_POSTGRES,
+        MIGRATION_V19_OIDC_CLIENT_PLUGIN_POSTGRES,
+        MIGRATION_V20_THEME_POSTGRES,
     ]
 }
 

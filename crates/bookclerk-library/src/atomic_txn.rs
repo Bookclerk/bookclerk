@@ -15,6 +15,7 @@ use crate::models::{
     EnqueueJobSpec, EnqueueOutcome, JobRecord, JobResourceClass, PortalIdentity, UserRecord,
     UserRole, UserStatus,
 };
+use crate::secrets::EncryptedSecretRecord;
 use crate::SessionClientInfo;
 
 /// Backend that runs [`crate::LibraryStore`] named security operations as a
@@ -23,7 +24,8 @@ use crate::SessionClientInfo;
 /// Implementations must preserve the same fail-closed semantics as the SeaORM
 /// path: last-owner refusals mutate nothing; a failed claim redeem must not
 /// consume the ticket or write a password/session; consume-once OIDC/WebAuthn
-/// rows must not be observable by a concurrent caller.
+/// rows must not be observable by a concurrent caller; TOTP enroll/disable must
+/// keep `encrypted_secrets` and `users.totp_enabled` in the same transaction.
 #[async_trait]
 pub trait AtomicTxnBackend: Send + Sync {
     /// Delete a first-party user and personal data (last-owner guarded).
@@ -90,4 +92,14 @@ pub trait AtomicTxnBackend: Send + Sync {
         reserved_bytes: u64,
         quota_bytes: u64,
     ) -> Result<()>;
+
+    /// Promote a sealed TOTP secret to `primary` and set `totp_enabled`.
+    async fn confirm_totp_enrollment(
+        &self,
+        user_id: i64,
+        record: &EncryptedSecretRecord,
+    ) -> Result<()>;
+
+    /// Delete TOTP secrets and clear `totp_enabled`.
+    async fn disable_user_totp(&self, user_id: i64) -> Result<()>;
 }

@@ -34,6 +34,11 @@ import {
   type ShelvesListener,
 } from "@/components/preferencesContext";
 import { usePreferences } from "@/components/usePreferences";
+import {
+  ThemePreferenceControl,
+  useTheme,
+} from "@/components/ThemeProvider";
+import type { ThemePreference } from "@/lib/theme";
 
 const LANG_BROWSER = "__browser__";
 
@@ -124,6 +129,8 @@ function PreferencesDialog({
   const [discoverLanguage, setDiscoverLanguage] = useState(LANG_BROWSER);
   const [excludedSources, setExcludedSources] = useState<string[]>([]);
   const [enabledSources, setEnabledSources] = useState<PortalSource[]>([]);
+  const { preference: themePref, setPreference: setThemePreference } = useTheme();
+  const [theme, setTheme] = useState<ThemePreference>(themePref);
 
   useEffect(() => {
     if (!open) return;
@@ -148,6 +155,8 @@ function PreferencesDialog({
         // reapply when those sources are re-enabled later.
         setExcludedSources(prefs.discover_excluded_sources ?? []);
         setEnabledSources(sources);
+        setTheme(prefs.theme);
+        setThemePreference(prefs.theme);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Failed to load preferences");
@@ -159,7 +168,7 @@ function PreferencesDialog({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, setThemePreference]);
 
   useEffect(() => {
     if (!open) return;
@@ -176,6 +185,25 @@ function PreferencesDialog({
       document.body.style.overflow = prevOverflow;
     };
   }, [open, onOpenChange]);
+
+  async function onThemeSelect(next: ThemePreference) {
+    const prev = theme;
+    setTheme(next);
+    setThemePreference(next);
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await patchPreferences({ theme: next });
+      setTheme(saved.theme);
+      setThemePreference(saved.theme);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save appearance");
+      setTheme(prev);
+      setThemePreference(prev);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function onDefaultViewSelect(view: AppView) {
     const prev = prefsView;
@@ -251,7 +279,7 @@ function PreferencesDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/40 px-4 py-10 sm:items-center"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim px-4 py-10 sm:items-center"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onOpenChange(false);
       }}
@@ -294,6 +322,19 @@ function PreferencesDialog({
         ) : (
           <div className="space-y-6">
             <div className="space-y-2">
+              <h3 className="text-base font-semibold text-ink">Appearance</h3>
+              <p className="text-sm text-ink/55">
+                Follows this device when set to System. Light is the designed
+                look; Dark adapts the same palette.
+              </p>
+              <ThemePreferenceControl
+                value={theme}
+                disabled={busy}
+                onChange={(next) => void onThemeSelect(next)}
+              />
+            </div>
+
+            <div className="space-y-2">
               <h3 className="text-base font-semibold text-ink">Default view</h3>
               <p className="text-sm text-ink/55">
                 Where this account opens after sign-in.
@@ -331,7 +372,7 @@ function PreferencesDialog({
                 <label className="space-y-1 text-sm text-ink">
                   <span className="font-medium">Preferred sort</span>
                   <select
-                    className="w-full rounded-md border border-ink/15 bg-white/80 px-3 py-2 shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
+                    className="w-full rounded-md border border-ink/15 bg-card-strong px-3 py-2 shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
                     value={discoverSort}
                     disabled={busy}
                     onChange={(e) => {
@@ -355,7 +396,7 @@ function PreferencesDialog({
                 <label className="space-y-1 text-sm text-ink">
                   <span className="font-medium">Sort direction</span>
                   <select
-                    className="w-full rounded-md border border-ink/15 bg-white/80 px-3 py-2 shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
+                    className="w-full rounded-md border border-ink/15 bg-card-strong px-3 py-2 shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
                     value={discoverSortDir}
                     disabled={busy || discoverSort === "relevance"}
                     onChange={(e) => {
@@ -371,7 +412,7 @@ function PreferencesDialog({
                 <label className="space-y-1 text-sm text-ink sm:col-span-2">
                   <span className="font-medium">Preferred language</span>
                   <select
-                    className="w-full rounded-md border border-ink/15 bg-white/80 px-3 py-2 shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
+                    className="w-full rounded-md border border-ink/15 bg-card-strong px-3 py-2 shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
                     value={discoverLanguage}
                     disabled={busy}
                     onChange={(e) => {

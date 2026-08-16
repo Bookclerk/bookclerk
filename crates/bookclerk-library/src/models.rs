@@ -154,6 +154,21 @@ pub struct PortalIdentity {
     pub user_id: Option<i64>,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: DateTime<Utc>,
+    /// Last HTTPS profile picture URL from the identity provider, when any.
+    pub picture_url: Option<String>,
+}
+
+/// IdP-supplied avatar available as a profile-picture choice.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSsoPicture {
+    /// `portal_identities.id` this picture belongs to.
+    pub identity_id: i64,
+    /// Identity-broker id (`oidc:google`, `oidc:github`, …).
+    pub provider: String,
+    /// HTTPS URL to display (hotlinked from the IdP / CDN).
+    pub picture_url: String,
+    /// Most recent portal session activity for this identity, when any.
+    pub last_used_at: Option<DateTime<Utc>>,
 }
 
 /// First-party user role (`administrator` | `member`).
@@ -263,6 +278,72 @@ pub struct UserRecord {
     pub created_at: DateTime<Utc>,
     /// RFC 3339 timestamp when the row was last modified.
     pub updated_at: DateTime<Utc>,
+    /// Last authenticated portal activity (RFC 3339); survives session expiry.
+    #[serde(default)]
+    pub last_seen_at: Option<DateTime<Utc>>,
+    /// Explicit picture choice (`monogram` / `gravatar` / `upload` / `sso:{id}`); `None` is auto.
+    #[serde(default)]
+    pub avatar_source: Option<String>,
+    /// True when a TOTP authenticator has been confirmed for local password login.
+    #[serde(default)]
+    pub totp_enabled: bool,
+}
+
+/// Registered OIDC authorization-server client (Bookclerk as IdP).
+#[derive(Debug, Clone)]
+pub struct OidcClientRecord {
+    /// Surrogate primary key.
+    pub id: i64,
+    /// Public client_id used at authorize / token.
+    pub client_id: String,
+    /// Hash of the client secret; `None` for public PKCE clients.
+    pub client_secret_hash: Option<String>,
+    /// Allowed OAuth redirect URIs.
+    pub redirect_uris: Vec<String>,
+    /// Operator-facing display name.
+    pub name: Option<String>,
+    /// When true, token responses include a refresh token.
+    pub issue_refresh_token: bool,
+    /// Scopes this client may be granted (`openid`, `profile`, `email`, …).
+    pub allowed_scopes: Vec<String>,
+    /// When true, authorize and token endpoints accept this client.
+    pub enabled: bool,
+    /// Plugin id that owns this client; `None` for operator-created clients.
+    pub plugin_id: Option<String>,
+    /// RFC 3339 timestamp when the row was inserted.
+    pub created_at: String,
+}
+
+impl OidcClientRecord {
+    /// True when a client secret hash is stored (confidential client).
+    #[must_use]
+    pub fn has_secret(&self) -> bool {
+        self.client_secret_hash
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| !s.is_empty())
+    }
+
+    /// True when a plugin owns this client's identity and redirect URIs.
+    #[must_use]
+    pub fn is_plugin_provided(&self) -> bool {
+        self.plugin_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+    }
+}
+
+/// Stored WebAuthn credential (passkey JSON plus the label shown in Settings).
+#[derive(Debug, Clone)]
+pub struct StoredPasskey {
+    /// Surrogate primary key.
+    pub id: i64,
+    /// Base64url credential id.
+    pub credential_id: String,
+    /// Serialized `webauthn_rs` passkey JSON.
+    pub passkey_json: String,
+    /// Label chosen at registration; `None` for rows created before names existed.
+    pub name: Option<String>,
 }
 
 /// Storefront / integration connection summary for admin user lists.
@@ -296,7 +377,7 @@ pub struct UserPresenceExtras {
     pub listening: Option<UserListeningHint>,
     /// Linked storefront / integration accounts across portal identities.
     pub integrations: Vec<UserIntegrationHint>,
-    /// Most recent portal session activity (RFC 3339), when known.
+    /// Most recent *unexpired* portal session activity (RFC 3339), when known.
     pub last_active_at: Option<DateTime<Utc>>,
 }
 
@@ -821,6 +902,63 @@ pub struct TitleRequestRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Compact wisher shown on the global queue (avatar + label).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QueueWisher {
+    /// First-party `users.id` when the portal identity is linked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<i64>,
+    /// Portal identity that created the wish (dedupe for unlinked identities).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_id: Option<i64>,
+    /// Display name, identity label, or `"Operator"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Local login name when the first-party user has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_name: Option<String>,
+    /// True when the wish came from the operator token (no portal user).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub operator: bool,
+    /// True when an uploaded avatar file exists (filled by the daemon).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_avatar: bool,
+    /// Explicit picture choice when the user has set one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_source: Option<String>,
+    /// SHA-256 hex of the contact email for Gravatar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravatar_hash: Option<String>,
+    /// HTTPS picture from the wishing identity, when any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture_url: Option<String>,
+}
+
+impl QueueWisher {
+    /// Returns true when both rows represent the same person for aggregation.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - Candidate wisher to compare.
+    ///
+    /// # Returns
+    ///
+    /// True for two operator wishes, the same `user_id`, or the same unlinked identity.
+    #[must_use]
+    pub fn same_person(&self, other: &Self) -> bool {
+        if self.operator && other.operator {
+            return true;
+        }
+        if let (Some(a), Some(b)) = (self.user_id, other.user_id) {
+            return a == b;
+        }
+        match (self.identity_id, other.identity_id) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
 /// Aggregated global request-queue entry (one work, many wishers).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalQueueEntry {
@@ -874,12 +1012,76 @@ pub struct GlobalQueueEntry {
     pub purchase_hints: Vec<WishlistPurchaseHint>,
     /// Number of users who requested this title.
     pub wish_count: i64,
+    /// Distinct people who have this title on an open wishlist.
+    #[serde(default)]
+    pub wishers: Vec<QueueWisher>,
     /// Sample title-request UUIDs represented in this aggregate row.
     pub sample_uuids: Vec<String>,
     /// Earliest request timestamp in this aggregate group.
     pub first_requested_at: DateTime<Utc>,
     /// Most recent request timestamp in this aggregate group.
     pub last_requested_at: DateTime<Utc>,
+}
+
+/// Maximum distinct people serialized on a global-queue or Discover card.
+pub const MAX_QUEUE_WISHERS: usize = 16;
+
+/// Adds `wisher` when they are not already present (capped at [`MAX_QUEUE_WISHERS`]).
+///
+/// Duplicate people keep the richer picture and name fields.
+///
+/// # Arguments
+///
+/// * `wishers` - Accumulated people for this work.
+/// * `wisher` - Person who has this title on an open wishlist.
+pub fn push_queue_wisher(wishers: &mut Vec<QueueWisher>, wisher: QueueWisher) {
+    if let Some(existing) = wishers.iter_mut().find(|w| w.same_person(&wisher)) {
+        if existing
+            .picture_url
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            existing.picture_url = wisher.picture_url;
+        }
+        if existing.gravatar_hash.is_none() {
+            existing.gravatar_hash = wisher.gravatar_hash;
+        }
+        if existing
+            .display_name
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            existing.display_name = wisher.display_name;
+        }
+        if existing.login_name.is_none() {
+            existing.login_name = wisher.login_name;
+        }
+        if existing.avatar_source.is_none() {
+            existing.avatar_source = wisher.avatar_source;
+        }
+        existing.has_avatar |= wisher.has_avatar;
+        return;
+    }
+    if wishers.len() < MAX_QUEUE_WISHERS {
+        wishers.push(wisher);
+    }
+}
+
+impl GlobalQueueEntry {
+    /// Adds `wisher` when they are not already present (capped at 16).
+    ///
+    /// Duplicate people keep the richer picture and name fields.
+    ///
+    /// # Arguments
+    ///
+    /// * `wisher` - Person who has this title on an open wishlist.
+    pub fn push_wisher(&mut self, wisher: QueueWisher) {
+        push_queue_wisher(&mut self.wishers, wisher);
+    }
 }
 
 /// Stored embedding vector metadata (blob fetched separately when needed).
@@ -924,6 +1126,8 @@ pub struct UserPreferences {
     pub discover_language: Option<String>,
     /// Store ids to hide in Discover. Empty = all sources (including future).
     pub discover_excluded_sources: Vec<String>,
+    /// Appearance preference (`system`, `light`, or `dark`).
+    pub theme: String,
     /// RFC 3339 timestamp when the row was last modified.
     pub updated_at: DateTime<Utc>,
 }
@@ -942,6 +1146,7 @@ impl UserPreferences {
             discover_sort_dir: String::from("desc"),
             discover_language: None,
             discover_excluded_sources: Vec::new(),
+            theme: String::from("system"),
             updated_at: Utc::now(),
         }
     }
@@ -960,6 +1165,16 @@ pub fn portal_prefs_key(identity_id: i64) -> String {
 #[must_use]
 pub fn user_prefs_key(user_id: i64) -> String {
     format!("user:{user_id}")
+}
+
+/// Canonical appearance preference; unknown values become `system`.
+#[must_use]
+pub fn normalize_theme(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "light" => String::from("light"),
+        "dark" => String::from("dark"),
+        _ => String::from("system"),
+    }
 }
 
 /// Kind of durable daemon work stored in the `jobs` table.

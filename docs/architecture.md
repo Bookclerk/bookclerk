@@ -64,10 +64,9 @@ spoken to over the product ABI (`api_version = 2` object-capability Workers
 RPC) on stdio (native Cap'n Proto) or via `bookclerk-workerd` (script isolates
 keep `RpcTarget` stubs). Each guest is started by
 `bookclerk-jail`, which confines it to its own install directory (read-only),
-`plugins/<id>/data`, `plugins/<id>/tmp`, and — for source/output/database
-operations — a **per-call** filesystem grant (Unix descriptor on fd 3; never the
-download cache root) before becoming the plugin, so a storefront parsing hostile
-input cannot reach `master.key` or the files-dir root. See [plugins.md](plugins.md).
+`plugins/<id>/data`, `plugins/<id>/tmp` (fetch scratch lives under that `tmp`),
+and — for the sqlite guest — file-level grants for `library.db` and its journal
+sidecars (never the files-dir parent / `master.key`). See [plugins.md](plugins.md).
 Database backends are selected via `[database].plugin` (see [database.md](database.md));
 external `kind = "database"` guests are loaded when staged under `plugins/`, with
 in-process fallback when a platform guest is missing.
@@ -141,6 +140,9 @@ the API. Config reload swaps auth before listen rebind. See [gui.md](gui.md) and
 | `GET` | `/health` | no | Liveness |
 | `POST` | `/api/auth/login` | no | Operator token → session cookie |
 | `GET` | `/api/auth/me` | yes | SPA bootstrap |
+| `PATCH` | `/api/auth/profile` | yes | Self-service display name / email / picture source |
+| `PUT`/`DELETE` | `/api/auth/profile/avatar` | yes | Self-service uploaded profile picture |
+| `GET` | `/api/users/{id}/avatar` | yes | Stored JPEG/PNG/WebP avatar |
 | `GET` | `/api/status`, `/status` | yes | Counts + listen |
 | `GET` | `/api/jobs`, `/jobs` | yes | Job list |
 | `POST` | `/api/library/scan`, `/scan` | yes | Queue scan |

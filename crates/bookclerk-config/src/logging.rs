@@ -1,18 +1,24 @@
 //! Tracing / logging initialization.
 //!
 //! Sinks:
-//! - **stderr** (always): text or JSON, filtered by `BOOKCLERK_LOG` / `RUST_LOG`
+//! - **stderr** (always): JSON for `bookclerkd`, text for the CLI when `-v` is
+//!   set; filtered by `BOOKCLERK_LOG` / `RUST_LOG`
 //! - **OS facility** (when available): journald / macOS os_log / Windows Event Log —
 //!   same configured filter; Bookclerk does not manage log files or rotation
 //! - **diagnostics ring buffer** (always): retains **all** levels through TRACE so
 //!   crash / burst uploads include deep context even when stderr is quieter
+//!
+//! The CLI default filter is `off` so command tables stay human-readable.
+//! `bookclerkd` defaults to JSON at `bookclerk=info,warn`.
 //!
 //! Stderr is written through a **non-blocking** worker thread. When the consumer
 //! of stderr stalls (full pipe to a parent IDE/terminal capture), logging must
 //! not park Tokio worker threads — that freezes accept and makes even `/health`
 //! time out.
 
+use std::borrow::Cow;
 use std::io;
+use std::io::IsTerminal;
 use std::sync::Mutex;
 
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
@@ -98,20 +104,6 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
 
     let diag_handle = DiagnosticsHandle::new(opts.diagnostics.clone(), opts.version.clone());
     diagnostics::install_global(diag_handle.clone());
-    if opts.diagnostics.share_reports {
-        let url = opts.diagnostics.effective_submit_url();
-        if url.is_empty() {
-            eprintln!(
-                "bookclerk: diagnostics.share_reports=true but collector_url is empty — \
-                 set diagnostics.collector_url or bake BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL \
-                 at cargo build"
-            );
-        } else {
-            eprintln!(
-                "bookclerk: diagnostics.share_reports=true — redacted reports will POST to {url}"
-            );
-        }
-    }
 
     let os_layer = if opts.enable_journald {
         OsLogLayer::new(opts.syslog_identifier.clone()).ok()
@@ -127,10 +119,12 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
     // Non-blocking stderr: a full pipe to a parent process must not stall Tokio.
     let (nb_stderr, stderr_guard) = tracing_appender::non_blocking(std::io::stderr());
     let stderr_writer = SharedRedactingWriter::new(nb_stderr);
+    let text_ansi = std::io::stderr().is_terminal();
 
     let result = match (opts.format, os_layer) {
         (LogFormat::Text, Some(os)) => {
             let fmt_layer = fmt::layer()
+                .with_ansi(text_ansi)
                 .with_target(false)
                 .with_writer(stderr_writer.clone())
                 .with_filter(filter.clone());
@@ -143,6 +137,7 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
         }
         (LogFormat::Text, None) => {
             let fmt_layer = fmt::layer()
+                .with_ansi(text_ansi)
                 .with_target(false)
                 .with_writer(stderr_writer)
                 .with_filter(filter);
@@ -154,6 +149,7 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
         (LogFormat::Json, Some(os)) => {
             let fmt_layer = fmt::layer()
                 .json()
+                .with_ansi(false)
                 .with_current_span(true)
                 .with_writer(stderr_writer.clone())
                 .with_filter(filter.clone());
@@ -167,6 +163,7 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
         (LogFormat::Json, None) => {
             let fmt_layer = fmt::layer()
                 .json()
+                .with_ansi(false)
                 .with_current_span(true)
                 .with_writer(stderr_writer)
                 .with_filter(filter);
@@ -177,6 +174,22 @@ pub fn init_tracing_with(opts: TracingOptions) -> LoggingHandle {
         }
     };
     let _ = result;
+
+    if opts.diagnostics.share_reports {
+        let url = opts.diagnostics.effective_submit_url();
+        if url.is_empty() {
+            tracing::warn!(
+                "diagnostics.share_reports=true but collector_url is empty — \
+                 set diagnostics.collector_url or bake BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL \
+                 at cargo build"
+            );
+        } else {
+            tracing::info!(
+                url = %url,
+                "diagnostics.share_reports=true — redacted reports will POST to collector"
+            );
+        }
+    }
 
     LoggingHandle {
         diagnostics: diag_handle,
@@ -240,5 +253,96 @@ impl io::Write for SharedRedactingWriterGuard<'_> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.flush()
+    }
+}
+
+/// Remove ECMA-48/ANSI escape sequences so piped guest logs stay plain text.
+///
+/// `bookclerk-workerd` and other guests may emit colored `tracing_subscriber`
+/// lines on stderr. The host re-logs those lines into JSON; leaving CSI codes
+/// in place produces `\u001b[…` noise in `daemon.json_logs`.
+#[must_use]
+pub fn strip_ansi_escapes(input: &str) -> Cow<'_, str> {
+    if !input.as_bytes().contains(&0x1b) {
+        return Cow::Borrowed(input);
+    }
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != 0x1b {
+            let ch = input[i..].chars().next().unwrap_or('\u{FFFD}');
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        i += 1;
+        if i >= bytes.len() {
+            break;
+        }
+        match bytes[i] {
+            b'[' => {
+                // CSI: ESC [ … final byte in 0x40..=0x7E
+                i += 1;
+                while i < bytes.len() {
+                    let c = bytes[i];
+                    i += 1;
+                    if (0x40..=0x7E).contains(&c) {
+                        break;
+                    }
+                }
+            }
+            b']' => {
+                // OSC: ESC ] … BEL or ESC \
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == 0x07 {
+                        i += 1;
+                        break;
+                    }
+                    if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'(' | b')' => {
+                i += 1;
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    Cow::Owned(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_ansi_escapes;
+
+    #[test]
+    fn strip_ansi_is_noop_without_escapes() {
+        let line = "bookclerk-jail: plugin:sqlite [landlock+seccomp]: filesystem=enforced";
+        assert!(matches!(
+            strip_ansi_escapes(line),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(strip_ansi_escapes(line).as_ref(), line);
+    }
+
+    #[test]
+    fn strip_ansi_removes_tracing_subscriber_colors() {
+        let colored = "\u{1b}[2m2026-08-16T07:48:17.485269Z\u{1b}[0m \u{1b}[32m INFO\u{1b}[0m \u{1b}[2mbookclerk_workerd\u{1b}[0m\u{1b}[2m:\u{1b}[0m starting isolate \u{1b}[3mplugin\u{1b}[0m\u{1b}[2m=\u{1b}[0mlocal";
+        let plain = strip_ansi_escapes(colored);
+        assert_eq!(
+            plain.as_ref(),
+            "2026-08-16T07:48:17.485269Z  INFO bookclerk_workerd: starting isolate plugin=local"
+        );
+        assert!(!plain.contains('\u{1b}'));
     }
 }

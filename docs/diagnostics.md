@@ -24,7 +24,8 @@ Override with `collector_url` or runtime `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL`.
 ### Local verbosity vs ring buffer
 
 - **stderr / OS facility** (journald, macOS `os_log`, Windows Event Log) honor
-  `BOOKCLERK_LOG` → `RUST_LOG` → default `bookclerk=info,warn`.
+  `BOOKCLERK_LOG` → `RUST_LOG` → daemon default `bookclerk=info,warn`. The CLI
+  default is quiet (`off`); use `-v` / `-vv` / `-vvv` or `BOOKCLERK_LOG`.
 - The **diagnostics ring buffer always retains TRACE and above**, so crash /
   burst uploads include deep context even when the console is quiet.
 - For local investigation: `BOOKCLERK_LOG=bookclerk=debug` (or `-v` / `-vv` on the CLI).

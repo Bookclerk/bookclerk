@@ -121,7 +121,9 @@ title is **not** in the household library.
 - CLI: `bookclerk discover wishlist add|list|remove`
 - Global queue: `GET /api/request-queue` — shared order using **overall /
   operator** taste (not per-portal personalization) plus a heavy wish-count
-  weight
+  weight. Each row includes `wishers` (tiny profile pictures: upload /
+  Gravatar / SSO / monogram) for the people who have the title open. Discover
+  `requests` shelf cards carry the same `wishers` / `wish_count` fields.
 - Identity merge: canonical ISBN-10↔13 when present, else ASIN, else soft
   title+author; ASIN-keyed and ISBN-keyed rows for the same work are merged
   (ISBN is **not** universal across Chirp / GA / Audible public search)
@@ -242,7 +244,7 @@ queue order; Discover personalizes the feed (including wishlist items).
 | From {Store} | `from_store` (`from_audible`, …) | Candidates from storefronts already in the library |
 | Chirp deals right now | `chirp_deals` | Chirp top + free deals |
 | Similar to books you finish | `similar_taste` | Embedding similarity |
-| On the wishlist | `requests` | Open shared wishlist items |
+| On the wishlist | `requests` | Open shared wishlist items (tiny wisher avatars on each card) |
 | Top picks for you | `top_picks` | Fallback when every other shelf is empty |
 
 Shelf **titles** stay dynamic (`More from {Author}`, …). Prefs filter on stable

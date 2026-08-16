@@ -26,7 +26,7 @@ Authoritative artifacts: Cap'n Proto
 
 Authors implement the branded guest base **`BookclerkPlugin`** (`describe` /
 `destination` / `source` / `worker` / `contentSource` / `integration` /
-`database`). Native guests implement Rust `PluginRoot` and call `serve` (alias
+`database` / `oidcClients`). Native guests implement Rust `PluginRoot` and call `serve` (alias
 `serve_v2`). The trusted adapter constructs a frozen `BookclerkContext`
 (`bindings`, optional `native`, `invocation`). Authors never see
 `PLUGIN_BACKEND`, HTTP endpoints, PIDs, credentials, or Cap'n Proto.
@@ -70,7 +70,7 @@ standalone author repos: [plugin-registry.md](plugin-registry.md).
 | **Plugin package** | Rust crate under `crates/bookclerk-plugins/`, or a workerd archive (`plugin.toml` + `modules/`) |
 | **In-process fallback** | When a platform guest is missing or fails to start, hosts fall back to logic in `bookclerk-library` / `bookclerk-storage` |
 | **`bundled-plugins`** | Optional host feature linking storefronts in-process (dev only; omit for release packaging) |
-| **`BookclerkPlugin`** | Product `api_version = 2` guest base (`describe` / `destination` / `source` / `worker` / `contentSource` / `integration` / `database`); TS extends `WorkerEntrypoint`, Rust implements `PluginRoot` + `serve` |
+| **`BookclerkPlugin`** | Product `api_version = 2` guest base (`describe` / `destination` / `source` / `worker` / `contentSource` / `integration` / `database` / `oidcClients`); TS extends `WorkerEntrypoint`, Rust implements `PluginRoot` + `serve` |
 
 ## Local development (external guests)
 
@@ -143,7 +143,7 @@ is narrow on top of that:
 
 | Host guarantees | Detail |
 | --- | --- |
-| No library DB path (sources / integrations / outputs) | `library.db` is never passed on the wire to those kinds — and not reachable if it were. **Database** guests receive the SQLite file only via the fd-3 side channel (or `sqlite_path` when unconfined) at `dbConnect` |
+| No library DB path (sources / integrations / outputs) | `library.db` is never passed on the wire to those kinds — and not reachable if it were. **Database** sqlite guests open the file at a jail-granted path (`BOOKCLERK_SQLITE_PATH` / `sqlitePath` on `dbConnect`) |
 | No files-dir root | Plugins get `plugin_data_dir` (`…/plugins/<id>/data`) and a per-fetch work directory (descriptor) — not `master.key` or the download cache root |
 | Env scrub | Child spawn uses `env_clear` + a small allowlist (`PATH`, locale, …). `BOOKCLERK_*`, `AWS_*`, tokens, and DB URLs are not inherited; `HOME` and `TMPDIR` are replaced with the guest's own directories |
 | Host-mediated secrets | `login` returns `{ account, credentials }`; host seals into `encrypted_secrets` with `provider = plugin id`. `scan` and `fetchTitle` receive those blobs from the host |
@@ -221,8 +221,7 @@ A guest gets four paths and nothing else:
 | --- | --- | --- |
 | its install directory | read-only | `cwd` |
 | `…/plugins/<id>/data` | read/write | `HOME`, and `plugin_data_dir` on the wire |
-| `…/plugins/<id>/tmp` | read/write | `TMPDIR` / `TEMP` / `TMP` |
-| one fetch work directory at a time | write (via descriptor) | passed on fd 3 immediately before each `fetchTitle` |
+| `…/plugins/<id>/tmp` | read/write | `TMPDIR` / `TEMP` / `TMP`; fetch scratch is `tmp/fetch` |
 
 Plus the system read paths every process needs to start (the loader, shared
 libraries, the CA bundle — including `/var/lib/ca-certificates` on
@@ -241,18 +240,25 @@ the ordinary way would fail on a permission error unrelated to anything it was
 denied. `XDG_RUNTIME_DIR` is dropped for the same reason and has no per-guest
 equivalent to point at.
 
-### Why a descriptor per fetch rather than the cache root
+### Why fetch scratch lives under plugin `tmp` rather than the cache root
 
 A guest is long-lived — one process per plugin, serving every call for the life
 of the daemon — and filesystem confinement is fixed at spawn. Granting the whole
-cache would let one fetch read or overwrite every other fetch's scratch.
+download cache would let one plugin read or overwrite every other fetch's
+scratch.
 
-The host therefore opens exactly one work directory per `fetchTitle`, sends it
-over a Unix socket with `SCM_RIGHTS` on fd 3 (preserved through
-`bookclerk-jail`), and the guest resolves `/proc/self/fd/N` (or `/dev/fd/N` on
-macOS), where `N` is the received directory descriptor. The `cache_dir` string
-on the wire remains for logging and for unconfined development; jailed guests
-must use the descriptor.
+The host therefore never grants the cache root. `fetchTitle` receives a
+`cache_dir` under the guest's already-granted `TMPDIR` (`plugins/<id>/tmp/fetch`).
+Returned media paths are under that directory; the unconfined host reads them
+afterward. Destinations ingest **byte streams** over the v2 ABI rather than a
+host file descriptor. SQLite gets spawn-time file grants for `library.db` and
+its journal sidecars (never the files-dir parent).
+
+v1 passed a per-call directory over a Unix socket with `SCM_RIGHTS` on fd 3.
+v2 does not arm that channel: workerd cannot `recvmsg`, and a live
+`BOOKCLERK_PLUGIN_FD_CHANNEL` with no matching send deadlocks the guest. A
+native SCM_RIGHTS shortcut remains a possible host-selected optimization behind
+streams, not the public contract.
 
 A media job is confined far more tightly: one input file, one output directory,
 per job, in a process that exits when the job does. See [media.md](media.md).
@@ -457,10 +463,10 @@ Plugin hosts create the AppContainer profile up front, put
 plugin client drops. Media jobs leave that field unset so the jail creates a
 unique profile per job.
 
-Per-fetch / upload / sqlite paths are not in the spawn allowlist. On Unix the
-host passes an open descriptor over `SCM_RIGHTS`; on Windows it temporarily ACLs
-the path for the Package SID, puts the path on the RPC wire, and revokes
-the ACE when the RPC returns.
+Fetch scratch and plugin state are the spawn-time `data` / `tmp` grants (already
+ACLed for the Package SID). SQLite adds file-level ACLs for `library.db` and
+journal sidecars at confine time. Destinations stream bytes and do not receive
+host cache paths. v2 does not apply a per-RPC extra path ACL for fetch/upload.
 
 #### Interactive listeners (OAuth and similar)
 
@@ -498,15 +504,16 @@ guests use isolate `cpu_ms` for the script budget; their jail CPU rate comes
 from the host default / `[plugins.jail]` per-jail ceiling (default **80**)
 rather than a per-plugin `cpuRatePercent`. On Linux the Spec fields are applied
 best-effort via a dedicated cgroup v2 child (never written onto a shared parent
-slice); on macOS Seatbelt they are ignored (documented as unsupported — FS/net
+slice). Creating that child or writing `memory.max` / `cpu.max` / `pids.max` is
+often refused inside desktop app cgroup scopes (browsers, IDEs); Bookclerk then
+reports resources as not applicable and still enforces filesystem, syscall, and
+network jail. On macOS Seatbelt they are ignored (documented as unsupported — FS/net
 only). `[plugins.jail].cpu_rate_percent` is a **per-jail ceiling** only (not a
 cumulative reservation; default 80). Quotas cap how fast a guest may burn CPU;
 if many plugins’ ceilings sum above host capacity, the OS scheduler shares
 cycles among runnable guests. Each plugin's `data/` and `tmp/` directories are
-capped at **512 MiB each**: the host measures them at jail plan (spawn/reload)
-and again before write-heavy RPC side-passes (fetch directory, upload file,
-database file grants). Over budget refuses the operation, kills the guest, and
-quarantines the client until restart. RPC timeouts and framing violations
+capped at **512 MiB each**: the host measures them at jail plan (spawn/reload).
+Over budget refuses the spawn. RPC timeouts and framing violations
 likewise kill and quarantine. Stdin proxying does not block jail exit after the
 guest terminates.
 
@@ -661,6 +668,17 @@ name = "message"
 long = "message"
 kind = "string"
 default = "hi"
+
+# Optional: Bookclerk-as-IdP client templates without spawning
+# (`oidcClients` RPC wins when the guest is loaded)
+[[oidc.clients]]
+client_id = "my-player"
+display_name = "My Player"
+callback_path = "/auth/openid/callback"
+public_client = true
+default_scopes = ["openid", "profile"]
+issue_refresh_token = true
+origin_config_key = "integrations.echo.base_url"
 ```
 
 Workerd Echo (TypeScript / Python / Rust-Wasm under
@@ -734,7 +752,7 @@ a first-party plugin of the same kind is also rejected.
 Third-party (and newly installed) plugins require an explicit permission grant
 before **enable** and again before **every external spawn**. Privileged delivery
 also checks individual bindings: handshake `config`, host-injected secrets,
-`work_fs` side-channel / ACL passes, and OAuth callback proxy setup.
+`work_fs` (jail `tmp` / streams), and OAuth callback proxy setup.
 
 **Operator Settings** shows a branded consent dialog when enabling a plugin that
 is not yet covered. The dialog starts from the manifest baseline and lets the
@@ -929,6 +947,7 @@ integrations/jobs.
 | `diagnose` | Human-readable CLI probe lines |
 | `cliDescribe` | Declared CLI command schema (`CliSchema`) |
 | `cliInvoke` | Run a declared command (`CliInvokeParams` → `CliInvokeResult`) |
+| `oidcClients` | Bookclerk-as-IdP relying-party templates (`OidcClientTemplate[]`; empty when unused) |
 
 Handshake params include `{ "apiVersion": 2, "config": {…} }` — the plugin’s
 `[sources.<id>]` / `[integrations.<id>]` table from **main** `config.toml` as JSON
@@ -1010,9 +1029,8 @@ the full object to guest scratch then `put_file`. S3 guests feed the existing
 multipart sink as bytes arrive.
 
 v1 JSON output methods (`put`, `putFile`, …) remain only on the temporary
-adapter. Oversized scalar `put`/`get` fail closed. `putFile` / fd passing is a
-native-only optimization behind the v2 stream adapter, not a public `handleId`
-protocol.
+adapter. Oversized scalar `put`/`get` fail closed. `putFile` is not a public
+`handleId` protocol; v2 destinations stream.
 
 First-party S3 ships as `bookclerk-plugin-destination-s3` (`api_version = 2`).
 When the guest is discovered under `plugins/s3/` and `[output.s3].enabled = true`,
@@ -1025,16 +1043,17 @@ in-process S3 backend.
 Engine connect/migrate/proxy code lives in the guest
 (`bookclerk-plugin-database-sqlite` (and optional d1/postgres guests) modules); the host does not link SQL engines.
 The host opens the library through the external database loader (guest required —
-no in-process fallback). SQLite receives `library.db` on fd 3 at `dbConnect`.
+no in-process fallback). SQLite opens `library.db` at the jail-granted path
+(`BOOKCLERK_SQLITE_PATH` / `sqlitePath`) at `dbConnect`.
 
 | Method | Notes |
 | --- | --- |
-| `dbConnect` | Open backend via tagged connect params (`backend`: `sqlite` / `d1` / `postgres`); returns dialect (SQLite: fd 3; D1/Postgres: host-injected credentials) |
+| `dbConnect` | Open backend via tagged connect params (`backend`: `sqlite` / `d1` / `postgres`); returns dialect (SQLite: path grant; D1/Postgres: host-injected credentials) |
 | `dbPing` | Verify connectivity |
 | `dbQuery` / `dbExecute` | Forward SeaORM statement payloads (optional `txnId` from `dbBegin`) |
 | `dbBegin` | Start a native engine transaction (or nested savepoint via `parentTxnId`); returns `txnId`. The host records a sticky per-task fault when this RPC fails so later statements cannot fall back to autocommit. D1 rejects interactive transactions and sets `interactiveTxn: false` on `dbConnect`. |
 | `dbCommit` / `dbRollback` | Finish that transaction. A failed `dbCommit` is surfaced to `LibraryStore` (SeaORM's proxy hook is infallible); the guest is rolled back. |
-| `dbAtomic` | Named library operation (claim redeem, last-owner guards, password hash, consume-once OIDC/WebAuthn) as one SQL transaction, with an `operationId` receipt for lost-response replay. D1 uses `{ "batch": [...] }` on the REST Query API. SQLite and Postgres run the same command in a native local transaction. |
+| `dbAtomic` | Named library operation (claim redeem, last-owner guards, password hash, TOTP enroll/disable, consume-once OIDC/WebAuthn) as one SQL transaction, with an `operationId` receipt for lost-response replay. D1 uses `{ "batch": [...] }` on the REST Query API. SQLite and Postgres run the same command in a native local transaction. |
 
 Built-in ids: `sqlite`, `d1`, `postgres` (match `[database].plugin`).
 

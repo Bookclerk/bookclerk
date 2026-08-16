@@ -1,13 +1,14 @@
-//! Receive host-passed descriptors for fetch and upload side channels.
+//! Receive host-passed work paths for fetch and (legacy) upload helpers.
 //!
-//! Audience: source and destination plugin authors implementing
-//! [`crate::PluginRoot`] storefront `fetch_title` or destination `put`. Prefer these helpers over reading
-//! `cache_dir` / `local_path` strings alone when the host sets
-//! [`crate::PLUGIN_FD_CHANNEL_ENV`] — the jail may not grant a usable path
-//! string, only an SCM_RIGHTS descriptor.
+//! Audience: source plugin authors implementing `fetch_title`. Prefer
+//! [`FetchWorkDir::open`] so a guest writes into the `cache_dir` the host put
+//! on the RPC (v2: a subdirectory of the guest's jail `TMPDIR`).
 //!
-//! See `docs/plugins.md` (guest jail / download cache) and
-//! [`crate::recv_passed_fd`].
+//! [`crate::PLUGIN_FD_CHANNEL_ENV`] is **not** set by current v2 hosts. If it is
+//! set, these helpers still block on `recvmsg` for a future native SCM_RIGHTS
+//! shortcut — do not set the env unless the host is actually sending an FD.
+//!
+//! See `docs/plugins.md` (guest jail / download cache).
 
 #![cfg_attr(unix, allow(unsafe_code))]
 
@@ -36,14 +37,15 @@ pub struct FetchWorkDir {
 impl FetchWorkDir {
     /// Resolves the directory a `fetchTitle` call should write downloaded audio into.
     ///
-    /// When [`PLUGIN_FD_CHANNEL_ENV`] is set, receives one SCM_RIGHTS directory
-    /// FD from the host and maps it via [`fd_proc_path`]. Otherwise uses the
-    /// `cache_dir` field on `params` as an absolute path string.
+    /// Uses the `cache_dir` field on `params` (v2 hosts pass a jail-granted
+    /// directory under the guest `TMPDIR`). When [`PLUGIN_FD_CHANNEL_ENV`] is
+    /// set, receives one SCM_RIGHTS directory FD instead — v2 hosts do not set
+    /// this env; do not arm it without a matching host send.
     ///
     /// # Arguments
     ///
-    /// * `params` - Host `fetchTitle` params; `cache_dir` is used only when the
-    ///   FD side channel is inactive.
+    /// * `params` - Host `fetchTitle` params; `cache_dir` is the work directory
+    ///   unless the unused FD side channel is armed.
     ///
     /// # Returns
     ///
@@ -51,7 +53,7 @@ impl FetchWorkDir {
     ///
     /// # Errors
     ///
-    /// Returns [`SdkError`] when the side channel is required but
+    /// Returns [`SdkError`] when the side channel env is set but
     /// [`recv_passed_fd`] fails, or when FD → path mapping fails on this OS.
     pub fn open(params: &FetchTitleParams) -> Result<Self> {
         if std::env::var(PLUGIN_FD_CHANNEL_ENV).is_ok() {
@@ -102,8 +104,9 @@ pub struct UploadFile {
 impl UploadFile {
     /// Resolves the local file path for a `putFile` upload.
     ///
-    /// Prefer the FD side channel when [`PLUGIN_FD_CHANNEL_ENV`] is set.
-    /// Otherwise requires a non-empty `local_path` from the RPC params.
+    /// Uses `local_path` from the RPC params. When [`PLUGIN_FD_CHANNEL_ENV`] is
+    /// set, receives one SCM_RIGHTS file FD instead — v2 hosts do not set this
+    /// env (destinations stream bytes). Do not arm it without a matching send.
     ///
     /// # Arguments
     ///

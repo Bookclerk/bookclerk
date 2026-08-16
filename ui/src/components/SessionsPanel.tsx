@@ -67,7 +67,7 @@ function CurrentSessionCard({ row }: { row: ListedSession }) {
   return (
     <div className="rounded-md border border-teal/25 bg-teal/5 px-4 py-3">
       <div className="flex items-start gap-3">
-        <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/80 text-ink/70">
+        <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-card-strong text-ink/70">
           <Icon className="h-5 w-5" aria-hidden />
         </div>
         <div className="min-w-0 flex-1 space-y-1">
@@ -148,10 +148,8 @@ export function SessionsPanel({
 
   return (
     <section className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        {embedded ? (
-          <div />
-        ) : (
+      {embedded ? null : (
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
             <h2 className="text-lg font-semibold text-ink">Sessions</h2>
             <p className="text-sm text-ink/55">
@@ -159,12 +157,12 @@ export function SessionsPanel({
               session you do not recognize.
             </p>
           </div>
-        )}
-        <Button type="button" variant="secondary" disabled={busy} onClick={onRefresh}>
-          <RefreshCw className="h-4 w-4" />
-          Refresh
-        </Button>
-      </div>
+          <Button type="button" variant="secondary" disabled={busy} onClick={onRefresh}>
+            <RefreshCw className="h-4 w-4" />
+            Refresh
+          </Button>
+        </div>
+      )}
 
       {error ? (
         <p className="text-sm font-medium text-brick" role="alert">
@@ -173,7 +171,7 @@ export function SessionsPanel({
       ) : null}
 
       {sessions.length === 0 ? (
-        <p className="bg-white/35 px-3 py-3 text-sm text-ink/50">No sessions returned.</p>
+        <p className="bg-card px-3 py-3 text-sm text-ink/50">No sessions returned.</p>
       ) : (
         <>
           {current ? (
@@ -202,7 +200,7 @@ export function SessionsPanel({
               >
                 Log out of all other sessions
               </Button>
-              <ul className="divide-y divide-ink/10 bg-white/35">
+              <ul className="divide-y divide-ink/10 bg-card">
                 {others.map((row) => (
                   <OtherSessionRow
                     key={`${row.kind}-${row.id}`}

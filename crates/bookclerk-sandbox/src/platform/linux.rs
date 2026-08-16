@@ -169,11 +169,20 @@ fn apply_cgroup_v2_limits(policy: &Policy) -> LayerStatus {
     match try_apply_cgroup_v2(&limits) {
         Ok(()) => LayerStatus::Enforced,
         Err(detail) => {
-            tracing::warn!(
-                label = %policy.label(),
-                error = %detail,
-                "cgroup v2 resource limits not applied"
-            );
+            let detail = friendly_cgroup_error(detail);
+            if cgroup_controllers_not_delegated(&detail) {
+                tracing::debug!(
+                    label = %policy.label(),
+                    error = %detail,
+                    "cgroup v2 resource limits not applied"
+                );
+            } else {
+                tracing::warn!(
+                    label = %policy.label(),
+                    error = %detail,
+                    "cgroup v2 resource limits not applied"
+                );
+            }
             LayerStatus::NotApplicable(detail)
         }
     }
@@ -211,15 +220,9 @@ fn try_apply_cgroup_v2(limits: &crate::ResourceLimits) -> Result<(), String> {
     let _ = enable_subtree_controllers(&parent);
 
     match std::fs::create_dir(&child) {
-        Ok(()) => {
-            write_cgroup_limits(&child, limits)?;
-            move_self_into_cgroup(&child)?;
-            Ok(())
-        }
+        Ok(()) => apply_limits_in_child(&child, limits),
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            write_cgroup_limits(&child, limits)?;
-            move_self_into_cgroup(&child)?;
-            Ok(())
+            apply_limits_in_child(&child, limits)
         }
         Err(create_err) => Err(format!(
             "could not create child cgroup {}: {create_err} \
@@ -228,6 +231,44 @@ fn try_apply_cgroup_v2(limits: &crate::ResourceLimits) -> Result<(), String> {
             parent.display()
         )),
     }
+}
+
+/// Writes Spec ceilings into `child` and moves this PID there; removes an empty
+/// child directory when the write fails so leftover `bookclerk-<pid>` nodes
+/// do not accumulate under an undelegateable parent slice.
+fn apply_limits_in_child(child: &Path, limits: &crate::ResourceLimits) -> Result<(), String> {
+    match write_cgroup_limits(child, limits).and_then(|()| move_self_into_cgroup(child)) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = std::fs::remove_dir(child);
+            Err(err)
+        }
+    }
+}
+
+/// Rewrites EPERM/EACCES cgroup writes into an operator-facing explanation.
+///
+/// Desktop app slices (browser/IDE cgroups) often allow creating a child
+/// directory but not enabling `memory`/`cpu`/`pids` on `subtree_control`.
+/// Filesystem/syscall/network jail still apply; resource caps are best-effort.
+fn friendly_cgroup_error(detail: String) -> String {
+    if cgroup_permission_denied(&detail) {
+        "cgroup resource controllers are not delegated in this slice \
+         (common under desktop app scopes); filesystem/syscall/network jail still apply"
+            .into()
+    } else {
+        detail
+    }
+}
+
+/// True when `detail` is the rewritten "controllers not delegated" message.
+fn cgroup_controllers_not_delegated(detail: &str) -> bool {
+    detail.contains("not delegated in this slice")
+}
+
+/// True when a cgroup sysfs write failed with EACCES/EPERM.
+fn cgroup_permission_denied(detail: &str) -> bool {
+    detail.contains("Permission denied") || detail.contains("Operation not permitted")
 }
 
 /// Reads this process's cgroup v2 path from `/proc/self/cgroup` (`0::…`).
@@ -624,6 +665,18 @@ mod tests {
         assert_eq!(
             apply_cgroup_v2_limits(&Policy::new("plugin:echo")),
             LayerStatus::NotRequested
+        );
+    }
+
+    #[test]
+    fn permission_denied_cgroup_write_is_rewritten() {
+        let raw =
+            "write /sys/fs/cgroup/user.slice/app.slice/memory.max: Permission denied (os error 13)";
+        let friendly = friendly_cgroup_error(raw.into());
+        assert!(cgroup_controllers_not_delegated(&friendly), "{friendly}");
+        assert!(
+            !friendly.contains("Permission denied"),
+            "raw sysfs path must not leak into the jail summary: {friendly}"
         );
     }
 }

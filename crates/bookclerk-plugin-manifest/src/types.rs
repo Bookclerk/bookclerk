@@ -136,7 +136,7 @@ pub struct BindingCapabilities {
     /// Guest may use per-plugin key/value storage.
     #[serde(skip_serializing_if = "is_false")]
     pub plugin_kv: bool,
-    /// Guest may use the host work filesystem side-channel.
+    /// Guest may use host-mediated work filesystem (jail `tmp` / streams).
     #[serde(skip_serializing_if = "is_false")]
     pub work_fs: bool,
     /// Guest needs an OAuth-style callback tunnel (host owns the listener).
@@ -380,6 +380,55 @@ pub struct PluginManifest {
     /// `bookclerk-plugin-abi::CliSchema`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli: Option<CliSchema>,
+    /// Optional Bookclerk-as-IdP client templates (`[[oidc.clients]]`).
+    #[serde(default, skip_serializing_if = "OidcManifest::is_empty")]
+    pub oidc: OidcManifest,
+}
+
+/// `[[oidc.clients]]` install-time OIDC AS templates.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OidcManifest {
+    /// Client templates materialized when this plugin is installed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clients: Vec<OidcClientToml>,
+}
+
+impl OidcManifest {
+    /// True when no clients are declared.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.clients.is_empty()
+    }
+}
+
+/// One `[[oidc.clients]]` row (snake_case TOML).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OidcClientToml {
+    /// OAuth `client_id`.
+    pub client_id: String,
+    /// Operator-facing card title.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub display_name: String,
+    /// Path appended to the plugin origin.
+    pub callback_path: String,
+    /// Public PKCE when true (default).
+    #[serde(default = "default_true")]
+    pub public_client: bool,
+    /// Scopes for first materialization.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub default_scopes: Vec<String>,
+    /// Whether new rows may issue refresh tokens (default true).
+    #[serde(default = "default_true")]
+    pub issue_refresh_token: bool,
+    /// Dotted config key for the player origin.
+    pub origin_config_key: String,
+}
+
+/// Serde default for `public_client` and `issue_refresh_token`.
+fn default_true() -> bool {
+    true
 }
 
 impl PluginManifest {
@@ -486,6 +535,23 @@ impl PluginManifest {
         }
         if let Some(logo) = self.logo.as_deref() {
             let _ = crate::validate_logo(logo)?;
+        }
+        for (i, client) in self.oidc.clients.iter().enumerate() {
+            if client.client_id.trim().is_empty() {
+                return Err(Error::message(format!(
+                    "plugin.toml: oidc.clients[{i}].client_id is required"
+                )));
+            }
+            if client.callback_path.trim().is_empty() || !client.callback_path.starts_with('/') {
+                return Err(Error::message(format!(
+                    "plugin.toml: oidc.clients[{i}].callback_path must start with `/`"
+                )));
+            }
+            if client.origin_config_key.trim().is_empty() {
+                return Err(Error::message(format!(
+                    "plugin.toml: oidc.clients[{i}].origin_config_key is required"
+                )));
+            }
         }
         match self.runtime {
             PluginRuntimeKind::Native => {
@@ -674,6 +740,68 @@ config = true
         .unwrap();
         assert_eq!(m.runtime, PluginRuntimeKind::Workerd);
         assert_eq!(m.capabilities.network.mode, NetworkMode::Deny);
+    }
+
+    #[test]
+    fn parse_oidc_clients() {
+        let m = PluginManifest::parse(
+            r#"
+api_version = 2
+id = "echo"
+kind = "integration"
+version = "1.0.0"
+runtime = "native"
+command = "./echo"
+
+[capabilities.network]
+mode = "deny"
+
+[capabilities.bindings]
+config = true
+
+[[oidc.clients]]
+client_id = "echo-player"
+display_name = "Echo Player"
+callback_path = "/auth/openid/callback"
+origin_config_key = "integrations.echo.base_url"
+"#,
+        )
+        .unwrap();
+        assert_eq!(m.oidc.clients.len(), 1);
+        assert_eq!(m.oidc.clients[0].client_id, "echo-player");
+        assert!(m.oidc.clients[0].public_client);
+        assert!(m.oidc.clients[0].issue_refresh_token);
+    }
+
+    #[test]
+    fn oidc_callback_path_must_be_absolute() {
+        let err = PluginManifest::parse(
+            r#"
+api_version = 2
+id = "echo"
+kind = "integration"
+version = "1.0.0"
+runtime = "native"
+command = "./echo"
+
+[capabilities.network]
+mode = "deny"
+
+[capabilities.bindings]
+config = true
+
+[[oidc.clients]]
+client_id = "echo-player"
+callback_path = "auth/callback"
+origin_config_key = "integrations.echo.base_url"
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("callback_path must start with `/`"),
+            "{err}"
+        );
     }
 
     #[test]

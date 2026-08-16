@@ -134,6 +134,87 @@ export function credentialToJson(cred: PublicKeyCredential): Record<string, unkn
 }
 
 /**
+ * How long to wait for a WebAuthn prompt. Browsers without passkey support
+ * (or in-app WebViews that stub the API) can hang forever on
+ * `navigator.credentials.get` / `.create`.
+ */
+export const PASSKEY_PROMPT_TIMEOUT_MS = 45_000;
+
+const PASSKEYS_UNSUPPORTED =
+  "This browser does not support passkeys. Use a password instead.";
+
+const PASSKEY_TIMED_OUT =
+  "Passkey request timed out. This browser may not support passkeys — use a password instead.";
+
+/**
+ * True when the WebAuthn credential API is present.
+ *
+ * @returns Whether `PublicKeyCredential` and credential create/get are available.
+ */
+export function passkeysSupported(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.PublicKeyCredential === "function" &&
+    typeof navigator.credentials?.create === "function" &&
+    typeof navigator.credentials?.get === "function"
+  );
+}
+
+function mapPasskeyError(err: unknown, cancelled: string): Error {
+  if (err instanceof DOMException) {
+    switch (err.name) {
+      case "AbortError":
+        return new Error(PASSKEY_TIMED_OUT);
+      case "NotSupportedError":
+        return new Error(PASSKEYS_UNSUPPORTED);
+      case "NotAllowedError":
+        return new Error(cancelled);
+      case "InvalidStateError":
+        return new Error("This passkey is already registered on this host.");
+      default:
+        break;
+    }
+  }
+  if (err instanceof Error) return err;
+  return new Error(cancelled);
+}
+
+async function withPasskeyTimeout(
+  run: (signal: AbortSignal) => Promise<PublicKeyCredential | null>,
+  cancelled: string,
+): Promise<PublicKeyCredential> {
+  if (!passkeysSupported()) {
+    throw new Error(PASSKEYS_UNSUPPORTED);
+  }
+  const controller = new AbortController();
+  let timedOut = false;
+  try {
+    const cred = await new Promise<PublicKeyCredential | null>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        reject(new DOMException("The operation timed out.", "AbortError"));
+      }, PASSKEY_PROMPT_TIMEOUT_MS);
+      void run(controller.signal).then(
+        (value) => {
+          window.clearTimeout(timer);
+          resolve(value);
+        },
+        (err: unknown) => {
+          window.clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
+    if (!cred) throw new Error(cancelled);
+    return cred;
+  } catch (err) {
+    if (timedOut) throw new Error(PASSKEY_TIMED_OUT);
+    throw mapPasskeyError(err, cancelled);
+  }
+}
+
+/**
  * Run a registration ceremony and return JSON for `/register/finish`.
  *
  * @param options
@@ -142,12 +223,17 @@ export function credentialToJson(cred: PublicKeyCredential): Record<string, unkn
 export async function createPasskey(
   options: PasskeyCeremonyOptions,
 ): Promise<{ challenge_id: string; credential: Record<string, unknown> }> {
-  const cred = (await navigator.credentials.create({
-    publicKey: creationOptionsFromJson(options.publicKey),
-  })) as PublicKeyCredential | null;
-  if (!cred) {
-    throw new Error("Passkey registration was cancelled.");
-  }
+  const cred = await withPasskeyTimeout(
+    (signal) =>
+      navigator.credentials.create({
+        publicKey: {
+          ...creationOptionsFromJson(options.publicKey),
+          timeout: PASSKEY_PROMPT_TIMEOUT_MS,
+        },
+        signal,
+      }) as Promise<PublicKeyCredential | null>,
+    "Passkey registration was cancelled.",
+  );
   return { challenge_id: options.challenge_id, credential: credentialToJson(cred) };
 }
 
@@ -160,11 +246,16 @@ export async function createPasskey(
 export async function assertPasskey(
   options: PasskeyCeremonyOptions,
 ): Promise<{ challenge_id: string; credential: Record<string, unknown> }> {
-  const cred = (await navigator.credentials.get({
-    publicKey: requestOptionsFromJson(options.publicKey),
-  })) as PublicKeyCredential | null;
-  if (!cred) {
-    throw new Error("Passkey sign-in was cancelled.");
-  }
+  const cred = await withPasskeyTimeout(
+    (signal) =>
+      navigator.credentials.get({
+        publicKey: {
+          ...requestOptionsFromJson(options.publicKey),
+          timeout: PASSKEY_PROMPT_TIMEOUT_MS,
+        },
+        signal,
+      }) as Promise<PublicKeyCredential | null>,
+    "Passkey sign-in was cancelled.",
+  );
   return { challenge_id: options.challenge_id, credential: credentialToJson(cred) };
 }

@@ -197,6 +197,8 @@ fn operation_kind(op: &DbAtomicParams) -> &'static str {
         DbAtomicParams::EnqueueJob { .. } => "enqueueJob",
         DbAtomicParams::ClaimNextJob { .. } => "claimNextJob",
         DbAtomicParams::ReserveJobTemp { .. } => "reserveJobTemp",
+        DbAtomicParams::ConfirmTotpEnrollment { .. } => "confirmTotpEnrollment",
+        DbAtomicParams::DisableUserTotp { .. } => "disableUserTotp",
     }
 }
 
@@ -236,6 +238,9 @@ fn plan_atomic(req: &DbAtomicRequest, now: &str) -> std::result::Result<AtomicPl
         | DbAtomicParams::ClaimNextJob { .. }
         | DbAtomicParams::ReserveJobTemp { .. } => {
             wrap_status_op(inner, &ctx, PayloadKind::JsonFromPlan)
+        }
+        DbAtomicParams::ConfirmTotpEnrollment { .. } | DbAtomicParams::DisableUserTotp { .. } => {
+            wrap_status_op(inner, &ctx, PayloadKind::None)
         }
     })
 }
@@ -302,6 +307,33 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
             reserved_bytes,
             quota_bytes,
         } => plan_reserve_job_temp(job_id, path, *reserved_bytes, *quota_bytes, now),
+        DbAtomicParams::ConfirmTotpEnrollment {
+            user_id,
+            format,
+            ciphertext,
+            cipher_algorithm,
+            cipher_nonce,
+            kdf_algorithm,
+            kdf_salt,
+            kdf_m_cost,
+            kdf_t_cost,
+            kdf_p_cost,
+            created_at,
+        } => plan_confirm_totp_enrollment(
+            *user_id,
+            format,
+            ciphertext,
+            cipher_algorithm.as_deref(),
+            cipher_nonce.as_deref(),
+            kdf_algorithm.as_deref(),
+            kdf_salt.as_deref(),
+            *kdf_m_cost,
+            *kdf_t_cost,
+            *kdf_p_cost,
+            created_at,
+            now,
+        ),
+        DbAtomicParams::DisableUserTotp { user_id } => plan_disable_user_totp(*user_id, now),
     }
 }
 
@@ -324,6 +356,14 @@ fn j_str(s: &str) -> JsonValue {
 fn j_opt_str(s: Option<&str>) -> JsonValue {
     match s {
         Some(v) => JsonValue::String(v.to_string()),
+        None => JsonValue::Null,
+    }
+}
+
+/// JSON number bind, or JSON null when the optional value is absent.
+fn j_opt_i64(n: Option<i64>) -> JsonValue {
+    match n {
+        Some(v) => JsonValue::from(v),
         None => JsonValue::Null,
     }
 }
@@ -406,7 +446,8 @@ fn user_payload_json_sql() -> &'static str {
         'id', id, 'role', role, 'status', status, \
         'display_name', display_name, 'login_name', login_name, 'email', email, \
         'has_password', json(CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 'true' ELSE 'false' END), \
-        'security_version', security_version, 'created_at', created_at, 'updated_at', updated_at\
+        'security_version', security_version, 'created_at', created_at, 'updated_at', updated_at, \
+        'last_seen_at', last_seen_at, 'avatar_source', avatar_source\
      ) AS payload FROM users WHERE id = ?"
 }
 
@@ -414,7 +455,7 @@ fn user_payload_json_sql() -> &'static str {
 fn identity_payload_json_sql() -> &'static str {
     "SELECT json_object(\
         'id', id, 'provider', provider, 'external_user_id', external_user_id, \
-        'label', label, 'user_id', user_id, 'created_at', created_at\
+        'label', label, 'user_id', user_id, 'created_at', created_at, 'picture_url', picture_url\
      ) AS payload FROM ("
 }
 
@@ -754,6 +795,16 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         ));
     }
 
+    let mut totp_p = vec![j_str(&user_id.to_string())];
+    totp_p.extend(allow_p.clone());
+    statements.push(sql(
+        &format!(
+            "DELETE FROM encrypted_secrets WHERE kind = 'totp' AND account_type = 'user' \
+             AND account_id = ? AND {allow}"
+        ),
+        totp_p,
+    ));
+
     let mut ident_p = vec![j_i64(user_id)];
     ident_p.extend(allow_p.clone());
     statements.push(sql(
@@ -833,7 +884,7 @@ fn plan_set_user_status(user_id: i64, status: &str, now: &str) -> AtomicPlan {
         ),
         sql(
             "SELECT id, role, status, display_name, login_name, email, password_hash, \
-                    security_version, created_at, updated_at \
+                    security_version, created_at, updated_at, last_seen_at, avatar_source \
              FROM users WHERE id = ?",
             vec![j_i64(user_id)],
         ),
@@ -876,13 +927,129 @@ fn plan_set_user_password_hash(user_id: i64, password_hash: Option<&str>, now: &
             ),
             sql(
                 "SELECT id, role, status, display_name, login_name, email, password_hash, \
-                        security_version, created_at, updated_at \
+                        security_version, created_at, updated_at, last_seen_at, avatar_source \
                  FROM users WHERE id = ?",
                 vec![j_i64(user_id)],
             ),
         ],
         outcome_index: 0,
         payload_index: Some(3),
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
+    }
+}
+
+/// Plans TOTP confirm: replace primary secret, drop pending, set `totp_enabled`.
+#[allow(clippy::too_many_arguments)]
+fn plan_confirm_totp_enrollment(
+    user_id: i64,
+    format: &str,
+    ciphertext: &str,
+    cipher_algorithm: Option<&str>,
+    cipher_nonce: Option<&str>,
+    kdf_algorithm: Option<&str>,
+    kdf_salt: Option<&str>,
+    kdf_m_cost: Option<i64>,
+    kdf_t_cost: Option<i64>,
+    kdf_p_cost: Option<i64>,
+    created_at: &str,
+    now: &str,
+) -> AtomicPlan {
+    let account_id = user_id.to_string();
+    let created = if created_at.is_empty() {
+        now
+    } else {
+        created_at
+    };
+    AtomicPlan {
+        statements: vec![
+            sql(
+                &format!(
+                    "SELECT CASE \
+                       WHEN NOT EXISTS (SELECT 1 FROM users WHERE id = ?) THEN '{not_found}' \
+                       ELSE '{ok}' \
+                     END AS status",
+                    not_found = atomic_status::NOT_FOUND,
+                    ok = atomic_status::OK,
+                ),
+                vec![j_i64(user_id)],
+            ),
+            sql(
+                "DELETE FROM encrypted_secrets \
+                 WHERE kind = 'totp' AND provider = 'local' AND account_type = 'user' \
+                   AND account_id = ? AND name IN ('primary', 'pending')",
+                vec![j_str(&account_id)],
+            ),
+            sql(
+                "INSERT INTO encrypted_secrets (\
+                    kind, provider, account_type, account_id, name, format, ciphertext, \
+                    kdf_algorithm, kdf_salt, kdf_m_cost, kdf_t_cost, kdf_p_cost, \
+                    cipher_algorithm, cipher_nonce, created_at, updated_at\
+                 ) SELECT 'totp', 'local', 'user', ?, 'primary', ?, ?, \
+                    ?, ?, ?, ?, ?, \
+                    ?, ?, ?, ? \
+                 WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)",
+                vec![
+                    j_str(&account_id),
+                    j_str(format),
+                    j_str(ciphertext),
+                    j_opt_str(kdf_algorithm),
+                    j_opt_str(kdf_salt),
+                    j_opt_i64(kdf_m_cost),
+                    j_opt_i64(kdf_t_cost),
+                    j_opt_i64(kdf_p_cost),
+                    j_opt_str(cipher_algorithm),
+                    j_opt_str(cipher_nonce),
+                    j_str(created),
+                    j_str(now),
+                    j_i64(user_id),
+                ],
+            ),
+            sql(
+                "UPDATE users SET totp_enabled = 1, updated_at = ? WHERE id = ?",
+                vec![j_str(now), j_i64(user_id)],
+            ),
+        ],
+        outcome_index: 0,
+        payload_index: None,
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
+    }
+}
+
+/// Plans TOTP disable: drop secrets and clear `totp_enabled`.
+fn plan_disable_user_totp(user_id: i64, now: &str) -> AtomicPlan {
+    let account_id = user_id.to_string();
+    AtomicPlan {
+        statements: vec![
+            sql(
+                &format!(
+                    "SELECT CASE \
+                       WHEN NOT EXISTS (SELECT 1 FROM users WHERE id = ?) THEN '{not_found}' \
+                       ELSE '{ok}' \
+                     END AS status",
+                    not_found = atomic_status::NOT_FOUND,
+                    ok = atomic_status::OK,
+                ),
+                vec![j_i64(user_id)],
+            ),
+            sql(
+                "DELETE FROM encrypted_secrets \
+                 WHERE kind = 'totp' AND provider = 'local' AND account_type = 'user' \
+                   AND account_id = ? AND name IN ('primary', 'pending')",
+                vec![j_str(&account_id)],
+            ),
+            sql(
+                "UPDATE users SET totp_enabled = 0, updated_at = ? WHERE id = ?",
+                vec![j_str(now), j_i64(user_id)],
+            ),
+        ],
+        outcome_index: 0,
+        payload_index: None,
         consume_once: None,
         receipt_select_index: None,
         prior_receipt_index: None,
@@ -941,7 +1108,7 @@ fn plan_set_user_role(user_id: i64, role: &str, now: &str) -> AtomicPlan {
             },
             sql(
                 "SELECT id, role, status, display_name, login_name, email, password_hash, \
-                        security_version, created_at, updated_at \
+                        security_version, created_at, updated_at, last_seen_at, avatar_source \
                  FROM users WHERE id = ?",
                 vec![j_i64(user_id)],
             ),
@@ -1088,7 +1255,8 @@ fn plan_redeem_claim(
                 ],
             ),
             sql(
-                "SELECT i.id, i.provider, i.external_user_id, i.label, i.user_id, i.created_at \
+                "SELECT i.id, i.provider, i.external_user_id, i.label, i.user_id, i.created_at, \
+                        i.picture_url \
                    FROM portal_identities i \
                    JOIN claim_tickets t ON t.identity_id = i.id \
                   WHERE t.token_hash = ? AND t.redeemed_at = ?",
@@ -1640,6 +1808,8 @@ fn user_payload(row: &JsonValue) -> JsonValue {
         "security_version": row.get("security_version").cloned().unwrap_or(JsonValue::from(0)),
         "created_at": row.get("created_at").cloned().unwrap_or(JsonValue::Null),
         "updated_at": row.get("updated_at").cloned().unwrap_or(JsonValue::Null),
+        "last_seen_at": row.get("last_seen_at").cloned().unwrap_or(JsonValue::Null),
+        "avatar_source": row.get("avatar_source").cloned().unwrap_or(JsonValue::Null),
     })
 }
 
@@ -1652,6 +1822,7 @@ fn identity_payload(row: &JsonValue) -> JsonValue {
         "label": row.get("label").cloned().unwrap_or(JsonValue::Null),
         "user_id": row.get("user_id").cloned().unwrap_or(JsonValue::Null),
         "created_at": row.get("created_at").cloned().unwrap_or(JsonValue::Null),
+        "picture_url": row.get("picture_url").cloned().unwrap_or(JsonValue::Null),
     })
 }
 
@@ -2457,5 +2628,124 @@ mod tests {
             ),
         );
         assert_eq!(again.status, atomic_status::DUPLICATE);
+    }
+
+    fn confirm_totp_params(user_id: i64) -> DbAtomicParams {
+        DbAtomicParams::ConfirmTotpEnrollment {
+            user_id,
+            format: "sealed-v1".into(),
+            ciphertext: "b64:AA==".into(),
+            cipher_algorithm: Some("xchacha20poly1305".into()),
+            cipher_nonce: Some("b64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()),
+            kdf_algorithm: None,
+            kdf_salt: None,
+            kdf_m_cost: None,
+            kdf_t_cost: None,
+            kdf_p_cost: None,
+            created_at: "2024-06-01T00:00:00Z".into(),
+        }
+    }
+
+    fn seed_totp_secret(conn: &Connection, user_id: i64, name: &str) {
+        conn.execute(
+            "INSERT INTO encrypted_secrets (\
+                kind, provider, account_type, account_id, name, format, ciphertext, \
+                created_at, updated_at\
+             ) VALUES ('totp', 'local', 'user', ?, ?, 'sealed-v1', x'00', \
+                '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
+            rusqlite::params![user_id.to_string(), name],
+        )
+        .unwrap();
+    }
+
+    fn totp_names(conn: &Connection, user_id: i64) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM encrypted_secrets \
+                 WHERE kind = 'totp' AND account_id = ? ORDER BY name",
+            )
+            .unwrap();
+        stmt.query_map([user_id.to_string()], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    fn totp_enabled(conn: &Connection, user_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT totp_enabled FROM users WHERE id = ?",
+            [user_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn confirm_totp_missing_user_skips_secret_writes() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let other = seed_user(&conn, "member", "active", "Keep");
+        seed_totp_secret(&conn, other, "pending");
+        seed_totp_secret(&conn, 999, "pending");
+        let req = test_req(confirm_totp_params(999), "totp-missing");
+        let result = run_plan(&conn, &plan_atomic(&req, "2024-06-01T00:00:00Z").unwrap());
+        assert_eq!(result.status, atomic_status::NOT_FOUND);
+        assert_eq!(totp_names(&conn, 999), vec!["pending".to_string()]);
+        assert_eq!(totp_names(&conn, other), vec!["pending".to_string()]);
+    }
+
+    #[test]
+    fn confirm_totp_then_disable_round_trip_and_replay() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let user = seed_user(&conn, "member", "active", "Totp");
+        seed_totp_secret(&conn, user, "pending");
+        let now = "2024-06-01T00:00:00Z";
+        let req = test_req(confirm_totp_params(user), "totp-confirm");
+        let plan = plan_atomic(&req, now).unwrap();
+        let first = run_plan(&conn, &plan);
+        assert_eq!(first.status, atomic_status::OK);
+        assert_eq!(totp_names(&conn, user), vec!["primary".to_string()]);
+        assert_eq!(totp_enabled(&conn, user), 1);
+
+        let replay = run_plan(&conn, &plan);
+        assert_eq!(replay.status, atomic_status::OK);
+        assert!(replay.replayed);
+        assert_eq!(totp_names(&conn, user), vec!["primary".to_string()]);
+        assert_eq!(totp_enabled(&conn, user), 1);
+
+        let disable_req = test_req(
+            DbAtomicParams::DisableUserTotp { user_id: user },
+            "totp-disable",
+        );
+        let disable_plan = plan_atomic(&disable_req, now).unwrap();
+        let disabled = run_plan(&conn, &disable_plan);
+        assert_eq!(disabled.status, atomic_status::OK);
+        assert!(totp_names(&conn, user).is_empty());
+        assert_eq!(totp_enabled(&conn, user), 0);
+
+        let disable_replay = run_plan(&conn, &disable_plan);
+        assert_eq!(disable_replay.status, atomic_status::OK);
+        assert!(disable_replay.replayed);
+        assert!(totp_names(&conn, user).is_empty());
+        assert_eq!(totp_enabled(&conn, user), 0);
+    }
+
+    #[test]
+    fn disable_totp_missing_user_skips_writes() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let other = seed_user(&conn, "member", "active", "Keep");
+        seed_totp_secret(&conn, other, "primary");
+        conn.execute("UPDATE users SET totp_enabled = 1 WHERE id = ?", [other])
+            .unwrap();
+        let req = test_req(
+            DbAtomicParams::DisableUserTotp { user_id: 999 },
+            "totp-disable-missing",
+        );
+        let result = run_plan(&conn, &plan_atomic(&req, "2024-06-01T00:00:00Z").unwrap());
+        assert_eq!(result.status, atomic_status::NOT_FOUND);
+        assert_eq!(totp_names(&conn, other), vec!["primary".to_string()]);
+        assert_eq!(totp_enabled(&conn, other), 1);
     }
 }

@@ -11,15 +11,16 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::Json;
 use axum::Router;
 use bookclerk_acquire::sidecar_key;
 use bookclerk_config::{Config, ListenAddrs};
 use bookclerk_integrations::{portal_spa_router, IntegrationRegistry, PortalState};
 use bookclerk_library::{
-    configure_master_key_with, AcquireStatus, BookRecord, JobRecord, JobTrigger, LibraryStore,
-    NewTitleRequest, NewTitleRequestSource, RequestStatus, TitleRequestRecord,
+    configure_master_key_with, hash_token, AcquireStatus, BookRecord, ClaimTicketRecord, JobRecord,
+    JobTrigger, LibraryStore, NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus,
+    TitleRequestRecord,
 };
 use bookclerk_plugin_host::{
     consent_request, consent_summary, cores_to_percent, effective_cpu_cores, format_cpu_cores,
@@ -32,6 +33,7 @@ use bookclerk_plugin_host::{
 };
 use bookclerk_search::{SearchEngine, SearchHit};
 use bookclerk_source::SourceRegistry;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tokio::time::timeout;
@@ -113,6 +115,140 @@ impl AppState {
     /// Clone the live operator auth `Arc` and drop the lock before further `.await`s.
     pub async fn auth_snapshot(&self) -> Arc<OperatorAuthState> {
         self.auth.read().await.clone()
+    }
+}
+
+#[derive(Clone)]
+/// Serves `GET /invite` (validate magic link, then the SPA or a branded 4xx).
+struct InvitePageState {
+    /// Daemon state for library ticket lookup.
+    app: Arc<AppState>,
+    /// `ui/dist/index.html` when the GUI is packaged beside the daemon.
+    index: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+/// Query string for `GET /invite`.
+struct InviteQuery {
+    /// Opaque one-time claim ticket from the magic link.
+    ticket: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why `GET /invite` must not render the accept-invite SPA.
+enum InviteLinkError {
+    /// `?ticket=` missing or blank.
+    MissingTicket,
+    /// Unknown token (never issued).
+    Invalid,
+    /// Unredeemed ticket past `expires_at`.
+    Expired,
+    /// Ticket already consumed.
+    AlreadyRedeemed,
+}
+
+impl InviteLinkError {
+    /// HTTP status for this invite failure.
+    fn status(self) -> StatusCode {
+        match self {
+            Self::MissingTicket | Self::Invalid => StatusCode::BAD_REQUEST,
+            Self::Expired | Self::AlreadyRedeemed => StatusCode::GONE,
+        }
+    }
+
+    /// Operator-facing explanation shown on the branded error page.
+    fn message(self) -> &'static str {
+        match self {
+            Self::MissingTicket => "This invite link is missing a ticket.",
+            Self::Invalid => "This invite link is invalid.",
+            Self::Expired => "This invite link has expired.",
+            Self::AlreadyRedeemed => "This invite link has already been used.",
+        }
+    }
+}
+
+/// Classifies a magic-link ticket for the invite document route.
+///
+/// # Arguments
+///
+/// * `ticket` - Raw `?ticket=` value.
+/// * `record` - Row loaded by token hash, if any.
+/// * `now` - Clock used for expiry.
+///
+/// # Returns
+///
+/// `Some` when the accept-invite page must not be served.
+fn invite_link_error(
+    ticket: Option<&str>,
+    record: Option<&ClaimTicketRecord>,
+    now: DateTime<Utc>,
+) -> Option<InviteLinkError> {
+    if ticket.map(str::trim).filter(|s| !s.is_empty()).is_none() {
+        return Some(InviteLinkError::MissingTicket);
+    }
+    match record {
+        None => Some(InviteLinkError::Invalid),
+        Some(row) if row.redeemed_at.is_some() => Some(InviteLinkError::AlreadyRedeemed),
+        Some(row) if row.expires_at <= now => Some(InviteLinkError::Expired),
+        Some(_) => None,
+    }
+}
+
+/// `GET /invite?ticket=` — branded 4xx when the magic link is unusable.
+///
+/// # Arguments
+///
+/// * `state` - Library handle plus optional SPA index path.
+/// * `q` - Invite query string.
+///
+/// # Returns
+///
+/// SPA `index.html` for a live ticket, or branded 4xx HTML.
+async fn invite_page(
+    State(state): State<InvitePageState>,
+    Query(q): Query<InviteQuery>,
+) -> Response {
+    let ticket = q.ticket.as_deref();
+    let record = if let Some(raw) = ticket.map(str::trim).filter(|s| !s.is_empty()) {
+        let library = state.app.library_snapshot().await;
+        match library.get_claim_ticket_by_hash(&hash_token(raw)).await {
+            Ok(row) => row,
+            Err(_) => {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(err) = invite_link_error(ticket, record.as_ref(), Utc::now()) {
+        return http_error::document_error(err.status(), err.message());
+    }
+    let Some(index) = state.index.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    serve_invite_spa(index).await
+}
+
+/// Reads packaged `index.html` for a still-valid invite ticket.
+///
+/// # Arguments
+///
+/// * `index` - Absolute path to `ui/dist/index.html`.
+///
+/// # Returns
+///
+/// HTML document, or 404 when the file is missing.
+async fn serve_invite_spa(index: &Path) -> Response {
+    match tokio::fs::read(index).await {
+        Ok(bytes) if !bytes.is_empty() => (
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            )],
+            bytes,
+        )
+            .into_response(),
+        _ => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -584,6 +720,12 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/sessions", get(auth::list_sessions))
         .route("/api/auth/sessions/{id}", delete(auth::revoke_session))
+        .route("/api/auth/profile", patch(crate::profile::patch_profile))
+        .route(
+            "/api/auth/profile/avatar",
+            put(crate::profile::put_avatar).delete(crate::profile::delete_avatar),
+        )
+        .route("/api/users/{id}/avatar", get(crate::profile::get_avatar))
         .route(
             "/api/preferences",
             get(get_preferences).patch(patch_preferences),
@@ -600,6 +742,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     let mut app = Router::new()
         .route("/health", get(health))
         .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/signin", get(auth::signin_methods))
         .route(
             "/api/auth/tray-handoff/prepare",
             post(auth::tray_handoff_prepare),
@@ -639,6 +782,18 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     app = app.merge(crate::oidc_rp::router(state.clone()));
     // WebAuthn passkeys (login + Owner elevate).
     app = app.merge(crate::passkeys::router(state.clone()));
+    // TOTP MFA + host second-factor policy.
+    app = app.merge(crate::totp::router(state.clone()));
+
+    let invite_index = ui_dist.as_ref().map(|d| d.join("index.html"));
+    app = app.merge(
+        Router::new()
+            .route("/invite", get(invite_page))
+            .with_state(InvitePageState {
+                app: state.clone(),
+                index: invite_index,
+            }),
+    );
 
     // CSRF for cookie-authenticated mutating /api/* (after routes registered).
     app = app.layer(middleware::from_fn_with_state(
@@ -661,7 +816,6 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 "/wishlist",
                 "/accounts",
                 "/settings",
-                "/invite",
             ];
             for path in SPA_DOC_PATHS {
                 app = app.route_service(path, ServeFile::new(index.clone()));
@@ -675,10 +829,12 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         }
     }
 
+    // HTML documents get Cache-Control: no-cache (`/invite` is no-store).
     // Brand empty 4xx/5xx bodies (auth, missing routes, handler StatusCode).
     // Timeout wraps API handlers; normalize trailing slashes before matching.
     // Trace outermost.
-    app.layer(middleware::from_fn(api_timeout_middleware))
+    app.layer(middleware::from_fn(html_document_no_cache))
+        .layer(middleware::from_fn(api_timeout_middleware))
         .layer(middleware::from_fn(http_error::brand_error_responses))
         .layer(NormalizePathLayer::trim_trailing_slash())
         .layer(
@@ -741,6 +897,35 @@ async fn open_embedder_blocking(
         )
     })?
     .map_err(internal_err)
+}
+
+/// Sets HTML cache headers. `/invite` is `no-store` because the same URL can
+/// change from a live SPA to a 410 after redeem; other documents use `no-cache`
+/// so a rebuilt `ui/dist/index.html` is used on the next navigation. Hashed
+/// JS/CSS under `/assets/` stay cacheable.
+async fn html_document_no_cache(req: Request, next: Next) -> Response {
+    let invite = req.uri().path() == "/invite";
+    let mut res = next.run(req).await;
+    let is_html = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("text/html"));
+    if is_html {
+        res.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(if invite {
+                "no-store, no-cache, must-revalidate"
+            } else {
+                "no-cache"
+            }),
+        );
+        if invite {
+            res.headers_mut()
+                .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+        }
+    }
+    res
 }
 
 /// Enforces per-path API deadlines and returns 504 when a `/api/` handler overruns its budget.
@@ -1040,6 +1225,10 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     // Start watchers for the new integration set (awaited — no untracked race).
     start_integration_watchers(state).await;
 
+    if let Err(err) = crate::oidc::sync_plugin_oidc_clients(state).await {
+        tracing::warn!(error = %err, "failed to sync plugin OIDC clients after config reload");
+    }
+
     refresh_tray_after_reload(state, &new_cfg).await;
 
     let mut detail = format!(
@@ -1212,6 +1401,7 @@ fn allowed_setting_key(key: &str) -> bool {
         key,
         "daemon.listen"
             | "daemon.auth.enabled"
+            | "daemon.auth.require_second_factor"
             | "library.auto_acquire"
             | "library.scan_interval_minutes"
             | "jobs.max_pending"
@@ -1266,7 +1456,7 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
             .parse::<u64>()
             .map(|n| n.to_string())
             .map_err(|_| format!("{key} must be a non-negative integer")),
-        "library.auto_acquire" | "daemon.auth.enabled" => {
+        "library.auto_acquire" | "daemon.auth.enabled" | "daemon.auth.require_second_factor" => {
             match value.trim().to_ascii_lowercase().as_str() {
                 "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off" => Ok(value.to_string()),
                 _ => Err(format!("{key} must be a boolean value")),
@@ -1348,6 +1538,10 @@ fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<Stri
     settings.insert(
         "daemon.auth.enabled".into(),
         config.daemon.auth.enabled.to_string(),
+    );
+    settings.insert(
+        "daemon.auth.require_second_factor".into(),
+        config.daemon.auth.require_second_factor.to_string(),
     );
     settings.insert(
         "library.auto_acquire".into(),
@@ -3551,9 +3745,15 @@ async fn discover_recommendations(
         embeddings_enabled: use_onnx,
     };
     let sources = state.sources.read().await;
-    let feed = bookclerk_discover::recommend_feed(&library, &sources, &opts)
+    let mut feed = bookclerk_discover::recommend_feed(&library, &sources, &opts)
         .await
         .map_err(internal_err)?;
+    let files = crate::profile::files_dir(&state).await;
+    for shelf in &mut feed.shelves {
+        for item in &mut shelf.items {
+            hydrate_queue_wishers(&mut item.wishers, files.as_deref());
+        }
+    }
     Ok(Json(feed))
 }
 
@@ -3959,6 +4159,18 @@ async fn delete_wishlist(
         ))
 }
 
+/// Marks whether each wisher has an uploaded avatar under `$BOOKCLERK_FILES_DIR`.
+fn hydrate_queue_wishers(wishers: &mut [QueueWisher], files: Option<&Path>) {
+    for wisher in wishers {
+        if let Some(id) = wisher.user_id {
+            wisher.has_avatar = files.is_some_and(|d| crate::profile::avatar_exists(d, id));
+            wisher.avatar_source = Some(crate::profile::avatar_source_wire(
+                wisher.avatar_source.as_deref(),
+            ));
+        }
+    }
+}
+
 /// Ranks the shared open-request queue without warming ONNX embeddings.
 async fn list_request_queue(
     State(state): State<Arc<AppState>>,
@@ -4010,9 +4222,13 @@ async fn list_request_queue(
         embeddings_enabled: false,
     };
     let sources = state.sources.read().await;
-    let rows = bookclerk_discover::rank_global_request_queue(&library, &sources, &opts)
+    let mut rows = bookclerk_discover::rank_global_request_queue(&library, &sources, &opts)
         .await
         .map_err(internal_err)?;
+    let files = crate::profile::files_dir(&state).await;
+    for row in &mut rows {
+        hydrate_queue_wishers(&mut row.wishers, files.as_deref());
+    }
     Ok(Json(rows))
 }
 
@@ -4228,6 +4444,8 @@ struct PreferencesResponse {
     discover_language: Option<String>,
     /// Lowercased store ids hidden from Discover results.
     discover_excluded_sources: Vec<String>,
+    /// Appearance preference (`system`, `light`, or `dark`).
+    theme: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4247,6 +4465,8 @@ struct PatchPreferencesBody {
     discover_language: Option<Option<String>>,
     /// Replacement excluded-store list when set.
     discover_excluded_sources: Option<Vec<String>>,
+    /// Replacement appearance preference when set (`system`, `light`, `dark`).
+    theme: Option<String>,
 }
 
 /// Treats a present JSON value (including `null`) as an explicit language patch.
@@ -4335,6 +4555,11 @@ async fn patch_preferences(
         .discover_excluded_sources
         .map(normalize_disabled_shelves)
         .unwrap_or(current.discover_excluded_sources);
+    let theme = body
+        .theme
+        .as_deref()
+        .map(bookclerk_library::normalize_theme)
+        .unwrap_or_else(|| bookclerk_library::normalize_theme(&current.theme));
 
     let saved = timeout(
         PREFERENCES_TIMEOUT,
@@ -4347,6 +4572,7 @@ async fn patch_preferences(
             &discover_sort_dir,
             discover_language.as_deref(),
             &discover_excluded_sources,
+            &theme,
         ),
     )
     .await
@@ -4370,6 +4596,7 @@ fn preferences_response(prefs: &bookclerk_library::UserPreferences) -> Preferenc
         discover_sort_dir: normalize_discover_sort_dir_pref(&prefs.discover_sort_dir),
         discover_language: prefs.discover_language.clone(),
         discover_excluded_sources: prefs.discover_excluded_sources.clone(),
+        theme: bookclerk_library::normalize_theme(&prefs.theme),
     }
 }
 
@@ -4420,7 +4647,8 @@ mod tests {
         allowed_setting_key, apply_database_enable_updates, build_approved_grant,
         build_plugin_settings_group, current_settings_snapshot, database_backends_requiring_grant,
         normalize_disabled_shelves, normalize_setting_value, title_id_candidates,
-        validate_daemon_listen, validate_daemon_listen_against_auth, PluginGrantOverride,
+        validate_daemon_listen, validate_daemon_listen_against_auth, InviteLinkError,
+        PluginGrantOverride,
     };
     use bookclerk_config::{Config, ListenAddrs};
 
@@ -4433,6 +4661,54 @@ mod tests {
         assert_eq!(title_id_candidates("b00test"), vec!["b00test", "B00TEST"]);
         assert_eq!(title_id_candidates("B00TEST"), vec!["B00TEST", "b00test"]);
         assert!(title_id_candidates("").is_empty());
+    }
+
+    #[test]
+    fn invite_link_error_classifies_missing_invalid_expired_redeemed() {
+        use chrono::{Duration, Utc};
+
+        use super::invite_link_error;
+        use bookclerk_library::ClaimTicketRecord;
+
+        let now = Utc::now();
+        let live = ClaimTicketRecord {
+            id: 1,
+            token_hash: "x".into(),
+            identity_id: Some(1),
+            expires_at: now + Duration::hours(1),
+            redeemed_at: None,
+            created_by: "test".into(),
+            created_at: now,
+        };
+        assert_eq!(
+            invite_link_error(None, None, now),
+            Some(InviteLinkError::MissingTicket)
+        );
+        assert_eq!(
+            invite_link_error(Some("  "), None, now),
+            Some(InviteLinkError::MissingTicket)
+        );
+        assert_eq!(
+            invite_link_error(Some("nope"), None, now),
+            Some(InviteLinkError::Invalid)
+        );
+        assert_eq!(invite_link_error(Some("ok"), Some(&live), now), None);
+        let expired = ClaimTicketRecord {
+            expires_at: now - Duration::minutes(1),
+            ..live.clone()
+        };
+        assert_eq!(
+            invite_link_error(Some("ok"), Some(&expired), now),
+            Some(InviteLinkError::Expired)
+        );
+        let redeemed = ClaimTicketRecord {
+            redeemed_at: Some(now),
+            ..live
+        };
+        assert_eq!(
+            invite_link_error(Some("ok"), Some(&redeemed), now),
+            Some(InviteLinkError::AlreadyRedeemed)
+        );
     }
 
     #[test]

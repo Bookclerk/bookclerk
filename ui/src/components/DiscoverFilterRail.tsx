@@ -75,7 +75,7 @@ function SearchableCheckList({
         value={q}
         onChange={(e) => setQ(e.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-md border border-ink/15 bg-white/80 px-2 py-1.5 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
+        className="w-full rounded-md border border-ink/15 bg-card-strong px-2 py-1.5 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
       />
       <ul className="space-y-1 text-sm">
         {visible.length === 0 ? (

@@ -71,6 +71,23 @@ natively.
 
 Definition: [`.devcontainer/`](../.devcontainer/).
 
+## Host Cursor without a container
+
+Do **not** commit a `.envrc`. Cargo still needs workspace-local `CARGO_HOME`,
+`target/` on `PATH` (so `bookclerk` / `bookclerkd` can be invoked without
+`cargo run` argv0 issues in Cursor), and the usual `TMPDIR` /
+`BOOKCLERK_FILES_DIR` layout.
+
+| Mechanism | What it covers |
+| --- | --- |
+| [`.vscode/settings.json`](../.vscode/settings.json) | rust-analyzer + integrated terminal env (committed) |
+| [`scripts/workspace-env.sh`](../scripts/workspace-env.sh) | `source scripts/workspace-env.sh` in any shell |
+| [`.envrc.example`](../.envrc.example) | Copy to gitignored `.envrc`, then `direnv allow` |
+
+`.cargo/config.toml` already sets relative `CARGO_TARGET_DIR`, `TMPDIR`, and
+`BOOKCLERK_FILES_DIR` for Cargo subprocesses. `CARGO_HOME` cannot live there —
+the shell / IDE / container env must export it.
+
 ## What is installed
 
 | Piece | Notes |

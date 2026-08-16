@@ -66,6 +66,7 @@ fn is_csrf_exempt(path: &str) -> bool {
             | "/api/auth/oidc/callback"
             | "/api/auth/passkeys/login/begin"
             | "/api/auth/passkeys/login/finish"
+            | "/api/auth/totp/login"
     )
 }
 

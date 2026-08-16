@@ -41,7 +41,8 @@
       "items": { "$ref": "#/$defs/ModuleSpec" }
     },
     "capabilities": { "$ref": "#/$defs/Capabilities" },
-    "cli": { "$ref": "#/$defs/CliSchema" }
+    "cli": { "$ref": "#/$defs/CliSchema" },
+    "oidc": { "$ref": "#/$defs/OidcManifest" }
   },
   "allOf": [
     {
@@ -228,6 +229,33 @@
         "default": { "type": "string" },
         "about": { "type": "string" },
         "positional": { "type": "boolean" }
+      }
+    },
+    "OidcManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "clients": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/OidcClient" }
+        }
+      }
+    },
+    "OidcClient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client_id", "callback_path", "origin_config_key"],
+      "properties": {
+        "client_id": { "type": "string", "minLength": 1 },
+        "display_name": { "type": "string" },
+        "callback_path": { "type": "string", "pattern": "^/" },
+        "public_client": { "type": "boolean", "default": true },
+        "default_scopes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "issue_refresh_token": { "type": "boolean", "default": true },
+        "origin_config_key": { "type": "string", "minLength": 1 }
       }
     }
   }

@@ -58,7 +58,7 @@ plugins, SDKs).
 | `release build` | When hosts/platform packaging are affected (or full suite). Installs `capnproto`. |
 | `sandbox + jailed tiers` | When confinement packages are affected (or full suite) |
 | `tray` | When `bookclerk-tray` is affected (or full suite) |
-| `postgres job queue` | When Rust runs (or full suite). Installs `capnproto` so `bookclerk-library` can compile its `bookclerk-plugin-abi` dependency. Requires a Postgres service. |
+| `postgres job queue` | When Rust runs (or full suite). Installs `capnproto` so `bookclerk-library` can compile its `bookclerk-plugin-abi` dependency. Requires a Postgres service. Runs ignored job-queue tests and non-ignored TOTP `dbAtomic` conformance (round-trip, leftover, injected commit rollback). |
 | `CI Gate` | Stable required check: succeeds for intentional skips; fails on real failures |
 
 OSV scanning remains a separate workflow/gate.

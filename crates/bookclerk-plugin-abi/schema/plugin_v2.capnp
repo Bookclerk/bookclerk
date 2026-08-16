@@ -25,7 +25,7 @@
 
 const apiVersion :UInt32 = 2;
 const abiMajor :UInt32 = 2;
-const abiMinor :UInt32 = 2;
+const abiMinor :UInt32 = 3;
 const envelopeVersion :UInt32 = 1;
 const maxScalarBytes :UInt32 = 262144;
 const maxStreamWindowBytes :UInt32 = 1048576;
@@ -118,6 +118,30 @@ struct PluginDescribe {
   # Handshake-era identity extras (brand, cli schema, method names, aliases).
   # Versioned JSON escape hatch; not a substitute for typed fields.
   metadataJson @9 :Text;
+}
+
+# Bookclerk-as-IdP relying-party template. Plugins declare callback path and
+# client id; the host materializes `oidc_clients` rows and remains the AS.
+# `originConfigKey` is a dotted config path (e.g. integrations.audiobookshelf.base_url).
+struct OidcClientTemplate {
+  clientId @0 :Text;
+  displayName @1 :Text;
+  callbackPath @2 :Text;
+  publicClient @3 :Bool;
+  defaultScopes @4 :List(Text);
+  issueRefreshToken @5 :Bool;
+  originConfigKey @6 :Text;
+}
+
+struct OidcClientsOk {
+  clients @0 :List(OidcClientTemplate);
+}
+
+struct OidcClientsReply {
+  union {
+    ok @0 :OidcClientsOk;
+    err @1 :PluginError;
+  }
 }
 
 # Plugin-specific extensible config. Not a substitute for typed ABI fields.
@@ -570,4 +594,7 @@ interface BookclerkPlugin {
   database @7 (context :DatabaseContext) -> (result :DatabaseReply);
   cliDescribe @8 () -> (result :JsonReply);
   cliInvoke @9 (paramsJson :Text) -> (result :JsonReply);
+  # Plugin-provided OIDC AS client templates. Empty list when unused.
+  # Hosts ignore `unsupported` from older abiMinor guests.
+  oidcClients @10 () -> (result :OidcClientsReply);
 }

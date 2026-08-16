@@ -77,7 +77,7 @@ pub async fn mint_claim_ticket(
 
 /// Build a shareable SPA claim URL when `public_origin` is configured.
 ///
-/// Opens the Bookclerk GUI login page with `?ticket=` (see `LoginPage`).
+/// Opens the Bookclerk GUI invite page (`/invite?ticket=`).
 ///
 /// # Arguments
 ///

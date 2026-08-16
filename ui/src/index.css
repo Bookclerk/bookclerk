@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-ink: #0b3553;
   --color-teal: #3d7f7a;
@@ -8,9 +10,36 @@
   --color-fold: #e7d3ac;
   --color-paper: #fbf7ee;
   --color-ink-soft: #1a4a6b;
+  --color-card: color-mix(in srgb, white 35%, transparent);
+  --color-card-mid: color-mix(in srgb, white 50%, transparent);
+  --color-card-strong: color-mix(in srgb, white 80%, transparent);
+  /* Modal/drawer overlay — always darkens; not inverted ink. */
+  --color-scrim: color-mix(in srgb, #0b3553 40%, transparent);
   --font-display: "Literata", "Iowan Old Style", "Palatino Linotype", Palatino,
     serif;
   --font-sans: "Source Sans 3", "Segoe UI", Candara, sans-serif;
+  /* Sign in with Google only — Google Sans Medium from fonts.google.com/specimen/Google+Sans */
+  --font-google-sans: "Google Sans", "Source Sans 3", sans-serif;
+}
+
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+  --color-ink: #f3e5c6;
+  --color-ink-soft: #d4c4a0;
+  --color-paper: #121c26;
+  --color-parchment: #1a2834;
+  --color-fold: #243240;
+  --color-teal: #5aa8a2;
+  --color-brick: #e06a52;
+  --color-card: color-mix(in srgb, var(--color-ink) 8%, transparent);
+  --color-card-mid: color-mix(in srgb, var(--color-ink) 12%, transparent);
+  --color-card-strong: color-mix(in srgb, var(--color-ink) 18%, var(--color-paper));
+  --color-scrim: color-mix(in srgb, #000000 72%, transparent);
+  --shadow-xl: 0 25px 50px -12px rgb(0 0 0 / 0.82), 0 12px 24px -8px rgb(0 0 0 / 0.7);
 }
 
 html,
@@ -30,11 +59,27 @@ body {
   background-attachment: fixed;
 }
 
+html.dark body {
+  background:
+    radial-gradient(1200px 600px at 10% -10%, #1a2834 0%, transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, #1a3a38 0%, transparent 50%),
+    linear-gradient(180deg, var(--color-paper) 0%, #0d1620 100%);
+}
+
 ::selection {
   background: color-mix(in srgb, var(--color-teal) 35%, white);
 }
 
-/* Logo waveform bars — used by WaveformThrobber during catalog search. */
+html.dark ::selection {
+  background: color-mix(in srgb, var(--color-teal) 40%, transparent);
+}
+
+/* Inlined lockup: wordmark follows ink (parchment in dark). Mark colors stay. */
+.bookclerk-logo .bookclerk-wordmark {
+  fill: currentColor;
+}
+
+/* Logo waveform bars — WaveformThrobber (catalog search, user presence). */
 @keyframes wavePulse {
   0%,
   100% {

@@ -75,7 +75,7 @@ export function CpuCoresSlider({
             disabled={disabled}
             value={formatCores(cores)}
             aria-label="CPU cores"
-            className="w-24 rounded-md border border-ink/15 bg-white/80 px-2 py-1 text-right text-sm tabular-nums text-ink shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
+            className="w-24 rounded-md border border-ink/15 bg-card-strong px-2 py-1 text-right text-sm tabular-nums text-ink shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
             onChange={(e) => {
               const next = Number.parseFloat(e.target.value);
               if (!Number.isFinite(next)) return;

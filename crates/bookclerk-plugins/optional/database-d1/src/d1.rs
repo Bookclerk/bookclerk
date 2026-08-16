@@ -747,6 +747,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn atomic_confirm_totp_posts_one_multi_statement_batch() {
+        use bookclerk_plugin_sdk::{DbAtomicParams, DbAtomicRequest};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/query$"))
+            .respond_with(EchoBatchOk)
+            .mount(&server)
+            .await;
+
+        let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
+        let _ = proxy
+            .run_atomic(DbAtomicRequest {
+                operation_id: "op-totp".into(),
+                operation: DbAtomicParams::ConfirmTotpEnrollment {
+                    user_id: 7,
+                    format: "sealed-v1".into(),
+                    ciphertext: "b64:AA==".into(),
+                    cipher_algorithm: Some("xchacha20poly1305".into()),
+                    cipher_nonce: Some("b64:AA==".into()),
+                    kdf_algorithm: None,
+                    kdf_salt: None,
+                    kdf_m_cost: None,
+                    kdf_t_cost: None,
+                    kdf_p_cost: None,
+                    created_at: "2024-06-01T00:00:00Z".into(),
+                },
+            })
+            .await;
+
+        let queries: Vec<JsonValue> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path().ends_with("/query"))
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect();
+        assert_eq!(queries.len(), 1);
+        let batch = queries[0]["batch"]
+            .as_array()
+            .expect("dbAtomic must use the documented { batch: [...] } envelope");
+        assert!(
+            batch.len() > 1,
+            "dbAtomic must send a multi-statement D1 batch, got {}",
+            queries[0]
+        );
+        let sql: String = batch
+            .iter()
+            .filter_map(|stmt| stmt["sql"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(sql.contains("encrypted_secrets"), "{sql}");
+        assert!(sql.contains("totp_enabled"), "{sql}");
+        assert!(sql.contains("db_atomic_receipts"), "{sql}");
+    }
+
+    #[tokio::test]
     async fn atomic_take_oidc_posts_delete_returning_batch() {
         use bookclerk_plugin_sdk::{DbAtomicParams, DbAtomicRequest};
 

@@ -10,10 +10,13 @@ mod jobs;
 mod oidc;
 mod oidc_rp;
 mod oidc_verify;
+mod origin;
 mod passkeys;
+mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].
 mod registry;
 mod scheduler;
+mod totp;
 mod tray_companion;
 
 use std::net::SocketAddr;
@@ -148,8 +151,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     start_integration_watchers(&state).await;
-    if let Err(err) = crate::oidc::ensure_default_abs_client(&state).await {
-        tracing::warn!(error = %err, "failed to register default OIDC ABS client");
+    if let Err(err) = crate::oidc::sync_plugin_oidc_clients(&state).await {
+        tracing::warn!(error = %err, "failed to sync plugin OIDC clients");
     }
     start_job_runtime(state.clone()).await;
     spawn_scheduler(state.clone());

@@ -43,7 +43,10 @@ installed.
 - Prefer the SVG logo for websites, documentation, and scalable interfaces.
 - Use the standalone mark for application icons, avatars, and compact layouts.
 - Keep the artwork on white, warm-white, or other light backgrounds.
-- Do not alter the proportions, path geometry, spacing, or colors.
+- Do not alter the proportions, path geometry, spacing, or mark colors.
+- Dark UI surfaces (SPA `html.dark`, daemon HTML `prefers-color-scheme: dark`)
+  recolor **only the wordmark** to parchment `#F3E5C6` (the inverted ink token)
+  so “Bookclerk” meets contrast. The book, card, and waveform stay as drawn.
 
 No monochrome redraw is included because no approved monochrome source was
 provided.

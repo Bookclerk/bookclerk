@@ -4,11 +4,13 @@ import type {
   CatalogSearchSort,
   GlobalQueueEntry,
   PurchaseHint,
+  QueueWisher,
   Recommendation,
   StoreEdition,
   TitleMeta,
   TitleRequest,
 } from "@/lib/api";
+
 /**
  * Unified title shape for Discover / Wishlist detail dialogs and result rows.
  */
@@ -40,6 +42,10 @@ export type CatalogTitle = {
   /** Present when the title is already on the current user’s wishlist. */
   wishlist_uuid?: string | null;
   notes?: string | null;
+  /** People who have this title on an open wishlist. */
+  wishers?: QueueWisher[];
+  /** Distinct wisher count (may exceed `wishers.length`). */
+  wish_count?: number;
 };
 
 /**
@@ -540,7 +546,7 @@ export function catalogTitleFromHit(
   hit: CatalogSearchHit,
   wishlistUuid?: string | null,
 ): CatalogTitle {
-  return {
+  return withAudibleEditionFromAsin({
     work_key: hit.work_key,
     title: hit.title,
     authors: hit.authors,
@@ -563,7 +569,7 @@ export function catalogTitleFromHit(
     is_abridged: hit.is_abridged ?? null,
     rating_overall: hit.rating_overall ?? null,
     wishlist_uuid: wishlistUuid ?? null,
-  };
+  });
 }
 
 /**
@@ -589,7 +595,7 @@ export function catalogTitleFromRec(
     (rec.asin ? `asin:${rec.asin.toUpperCase()}` : "") ||
     (rec.isbn ? `isbn:${rec.isbn.replace(/[^0-9Xx]/g, "").toUpperCase()}` : "") ||
     `soft:${rec.title.trim().toLowerCase()}`;
-  return {
+  return withAudibleEditionFromAsin({
     work_key,
     title: rec.title,
     authors: rec.authors,
@@ -611,7 +617,9 @@ export function catalogTitleFromRec(
     genres: rec.genres,
     language: rec.language,
     wishlist_uuid: wishlistUuid ?? rec.request_uuid,
-  };
+    wishers: rec.wishers,
+    wish_count: rec.wish_count,
+  });
 }
 
 /**
@@ -626,7 +634,7 @@ export function catalogTitleFromRequest(req: TitleRequest): CatalogTitle {
     editions.length > 0
       ? [...new Set(editions.map((e) => e.source))]
       : [];
-  return {
+  return withAudibleEditionFromAsin({
     work_key: req.work_key || `soft:${req.title.trim().toLowerCase()}`,
     title: req.title,
     authors: req.authors,
@@ -648,7 +656,206 @@ export function catalogTitleFromRequest(req: TitleRequest): CatalogTitle {
     language: req.language ?? null,
     wishlist_uuid: req.uuid,
     notes: req.notes,
-  };
+  });
+}
+
+/**
+ * Copies household queue identity onto a personal wishlist title.
+ *
+ * Personal `TitleRequest` rows do not include household wishers or the merged
+ * store editions from the global queue. Discover shelves use that merged row,
+ * so Wishlist must union the same editions or Where-to-buy diverges.
+ *
+ * @param title - Catalog title, typically from {@link catalogTitleFromRequest}.
+ * @param queue - Global request-queue entries.
+ * @returns Title with wishers, identifiers, and store editions from the queue.
+ */
+export function attachWishersFromQueue(
+  title: CatalogTitle,
+  queue: readonly GlobalQueueEntry[],
+): CatalogTitle {
+  const entry = findQueueWisherEntry(title, queue);
+  if (!entry) {
+    return {
+      ...title,
+      wishers: undefined,
+      wish_count: undefined,
+    };
+  }
+  const store_editions = mergeStoreEditions(
+    title.store_editions,
+    entry.store_editions ?? [],
+  );
+  return withAudibleEditionFromAsin({
+    ...title,
+    asin: pickStr(title.asin, entry.asin),
+    isbn: pickStr(title.isbn, entry.isbn),
+    store_editions,
+    sources: [
+      ...new Set([
+        ...(title.sources ?? []),
+        ...store_editions.map((edition) => edition.source),
+      ]),
+    ],
+    purchase_hints: mergePurchaseHints(title.purchase_hints, entry.purchase_hints),
+    wishers: entry.wishers,
+    wish_count: entry.wish_count,
+  });
+}
+
+/**
+ * True when two catalog identities refer to the same work (work key, ASIN, ISBN, or title).
+ *
+ * @param a - First identity.
+ * @param b - Second identity.
+ * @returns Whether the rows should share store editions and wishlist state.
+ */
+export function catalogIdentityMatches(
+  a: {
+    work_key?: string | null;
+    asin?: string | null;
+    isbn?: string | null;
+    title?: string | null;
+  },
+  b: {
+    work_key?: string | null;
+    asin?: string | null;
+    isbn?: string | null;
+    title?: string | null;
+  },
+): boolean {
+  const aKeys = identityKeys(a);
+  for (const key of identityKeys(b)) {
+    if (aKeys.has(key)) return true;
+  }
+  const aTitle = a.title?.trim().toLowerCase();
+  const bTitle = b.title?.trim().toLowerCase();
+  return Boolean(aTitle && bTitle && aTitle === bTitle);
+}
+
+function identityKeys(row: {
+  work_key?: string | null;
+  asin?: string | null;
+  isbn?: string | null;
+}): Set<string> {
+  const keys = new Set<string>();
+  const workKey = row.work_key?.trim();
+  if (workKey) keys.add(workKey);
+  const asin = row.asin?.trim().toUpperCase();
+  if (asin) {
+    keys.add(asin);
+    keys.add(`asin:${asin}`);
+  }
+  const isbn = row.isbn?.replace(/[^0-9Xx]/g, "").toUpperCase();
+  if (isbn) {
+    keys.add(isbn);
+    keys.add(`isbn:${isbn}`);
+  }
+  return keys;
+}
+
+/**
+ * Unions snapshotted wishlist store editions / hints onto a Discover (or other)
+ * catalog title so Where-to-buy matches the Wishlist detail for the same work.
+ *
+ * @param title - Catalog title from search or shelves.
+ * @param wishlist - Open personal wishlist rows.
+ * @returns Title with wishlist commerce merged when a row matches.
+ */
+export function attachWishlistCommerce(
+  title: CatalogTitle,
+  wishlist: readonly TitleRequest[],
+): CatalogTitle {
+  const req = wishlist.find(
+    (row) => row.status === "open" && catalogIdentityMatches(title, row),
+  );
+  if (!req) return title;
+  const fromWish = catalogTitleFromRequest(req);
+  const store_editions = mergeStoreEditions(
+    title.store_editions,
+    fromWish.store_editions,
+  );
+  return withAudibleEditionFromAsin({
+    ...title,
+    asin: pickStr(title.asin, fromWish.asin),
+    isbn: pickStr(title.isbn, fromWish.isbn),
+    notes: pickStr(title.notes, fromWish.notes),
+    store_editions,
+    sources: [
+      ...new Set([
+        ...(title.sources ?? []),
+        ...(fromWish.sources ?? []),
+        ...store_editions.map((edition) => edition.source),
+      ]),
+    ],
+    purchase_hints: mergePurchaseHints(
+      title.purchase_hints,
+      fromWish.purchase_hints,
+    ),
+    wishlist_uuid: title.wishlist_uuid ?? fromWish.wishlist_uuid,
+  });
+}
+
+function mergeStoreEditions(
+  current: StoreEdition[] | undefined,
+  incoming: StoreEdition[],
+): StoreEdition[] {
+  const out = [...(current ?? [])];
+  for (const edition of incoming) {
+    const source = edition.source.trim().toLowerCase();
+    const productId = edition.product_id.trim();
+    if (!source || !productId) continue;
+    if (
+      out.some(
+        (row) =>
+          row.source.trim().toLowerCase() === source &&
+          row.product_id.trim() === productId,
+      )
+    ) {
+      continue;
+    }
+    out.push(edition);
+  }
+  return out;
+}
+
+function mergePurchaseHints(
+  current: PurchaseHint[] | undefined,
+  incoming: PurchaseHint[] | undefined,
+): PurchaseHint[] | undefined {
+  const out = [...(current ?? [])];
+  for (const hint of incoming ?? []) {
+    const source = hint.source.trim().toLowerCase();
+    const productId = hint.product_id.trim();
+    if (!source || !productId) continue;
+    if (
+      out.some(
+        (row) =>
+          row.source.trim().toLowerCase() === source &&
+          row.product_id.trim() === productId,
+      )
+    ) {
+      continue;
+    }
+    out.push(hint);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function findQueueWisherEntry(
+  title: Pick<CatalogTitle, "work_key" | "asin" | "isbn">,
+  queue: readonly GlobalQueueEntry[],
+): GlobalQueueEntry | undefined {
+  const key = title.work_key?.trim();
+  const asin = title.asin?.trim().toUpperCase();
+  const isbn = title.isbn?.replace(/[^0-9Xx]/g, "").toUpperCase();
+  return queue.find((row) => {
+    if (key && row.work_key === key) return true;
+    const rowAsin = row.asin?.trim().toUpperCase();
+    if (asin && rowAsin && asin === rowAsin) return true;
+    const rowIsbn = row.isbn?.replace(/[^0-9Xx]/g, "").toUpperCase();
+    return Boolean(isbn && rowIsbn && isbn === rowIsbn);
+  });
 }
 
 function pickStr(
@@ -706,13 +913,16 @@ export function descriptionLooksComplete(raw: string | null | undefined): boolea
 /**
  * Overlays public Audnexus / catalog metadata onto a sparse {@link CatalogTitle}.
  *
+ * An Audnexus ASIN is a trusted Audible product id (same rule as purchase-hint
+ * resolve), so a missing Audible store edition is filled in for Where-to-buy.
+ *
  * @param title - Existing title.
  * @param meta - Fetched metadata (no-op when nullish).
  * @returns Merged title.
  */
 export function applyTitleMeta(title: CatalogTitle, meta: TitleMeta | null | undefined): CatalogTitle {
   if (!meta) return title;
-  return {
+  return withAudibleEditionFromAsin({
     ...title,
     subtitle: pickStr(title.subtitle, meta.subtitle),
     authors: pickStr(title.authors, meta.authors),
@@ -730,7 +940,36 @@ export function applyTitleMeta(title: CatalogTitle, meta: TitleMeta | null | und
     is_abridged: title.is_abridged ?? meta.is_abridged ?? null,
     language: pickStr(title.language, meta.language),
     rating_overall: title.rating_overall ?? meta.rating_overall ?? null,
-  };
+  });
+}
+
+/**
+ * Adds an Audible store edition when an ASIN is known and no Audible row exists.
+ *
+ * Used by Discover shelves, Wishlist enrichment, and the shared detail modal so
+ * Where-to-buy does not depend on which surface fetched title-meta first.
+ *
+ * @param row - Title or detail fields that carry editions.
+ * @returns The same object, or a copy with an Audible edition appended.
+ */
+export function withAudibleEditionFromAsin<
+  T extends {
+    asin?: string | null;
+    store_editions?: StoreEdition[];
+    sources?: string[];
+  },
+>(row: T): T {
+  const asin = row.asin?.trim();
+  if (!asin) return row;
+  const editions = [...(row.store_editions ?? [])];
+  if (editions.some((edition) => edition.source.toLowerCase() === "audible")) {
+    return row;
+  }
+  editions.push({ source: "audible", product_id: asin });
+  const sources = [
+    ...new Set([...(row.sources ?? []), ...editions.map((edition) => edition.source)]),
+  ];
+  return { ...row, store_editions: editions, sources };
 }
 
 /**
@@ -780,7 +1019,7 @@ export function catalogTitleFromQueueEntry(
     editions.length > 0
       ? [...new Set(editions.map((e) => e.source))]
       : [];
-  return {
+  return withAudibleEditionFromAsin({
     work_key: entry.work_key,
     title: entry.title,
     authors: entry.authors,
@@ -802,7 +1041,9 @@ export function catalogTitleFromQueueEntry(
     language: entry.language ?? null,
     reasons: entry.reasons,
     wishlist_uuid: wishlistUuid ?? null,
-  };
+    wishers: entry.wishers,
+    wish_count: entry.wish_count,
+  });
 }
 
 /**

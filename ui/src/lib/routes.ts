@@ -113,16 +113,47 @@ export function normalizeAppView(v: string | undefined): AppView {
 }
 
 /**
+ * True when this document is the magic-link invite route.
+ *
+ * @param pathname - Document pathname.
+ * @returns True for `/invite` (trailing slash ignored).
+ */
+export function isInvitePath(pathname: string = window.location.pathname): boolean {
+  return normalizePathname(pathname) === "/invite";
+}
+
+/**
+ * Invite magic links are `/invite?ticket=` only. Drop `ticket` on any other
+ * path so `/discover?ticket=` cannot open the accept-invite form.
+ */
+export function dropTicketUnlessInvitePath(): void {
+  if (isInvitePath()) return;
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has("ticket")) return;
+  params.delete("ticket");
+  const search = params.toString();
+  const url = `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
+  window.history.replaceState(null, "", url);
+}
+
+/**
  * Updates the URL bar without a full reload.
+ *
+ * Drops `ticket` and `sso_error` so a claimed invite URL is not kept on
+ * `/discover?ticket=…` (a refresh of that path would skip the 410 invite page).
  *
  * @param view - View to reflect in the path.
  * @param mode - History `push` (default) or `replace`.
  */
 export function syncUrlToView(view: AppView, mode: "push" | "replace" = "push") {
   const next = pathForView(view);
-  const current = normalizePathname(window.location.pathname);
-  if (current === next) return;
-  const url = `${next}${window.location.search}${window.location.hash}`;
+  const params = new URLSearchParams(window.location.search);
+  params.delete("ticket");
+  params.delete("sso_error");
+  const search = params.toString();
+  const url = `${next}${search ? `?${search}` : ""}${window.location.hash}`;
+  const current = `${normalizePathname(window.location.pathname)}${window.location.search}${window.location.hash}`;
+  if (current === url) return;
   if (mode === "replace") {
     window.history.replaceState(null, "", url);
   } else {

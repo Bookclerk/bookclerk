@@ -295,7 +295,8 @@ pub struct IntegrationsConfig {
     /// Hours a connect-portal claim ticket remains valid (default 72).
     pub claim_ticket_ttl_hours: u64,
     /// Public HTTPS origin for portal redirects when behind a reverse proxy
-    /// (e.g. `https://bookclerk.example.com`). `None` derives from the request.
+    /// (e.g. `https://bookclerk.example.com`). `None` accepts only a bound
+    /// loopback `Origin` / `Host`; non-loopback hosts must set this pin.
     pub public_origin: Option<String>,
     /// Hours a portal browser session cookie remains valid (default 12).
     pub portal_session_ttl_hours: u64,

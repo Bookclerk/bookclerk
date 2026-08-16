@@ -318,7 +318,7 @@ export function PluginConsentDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/45 px-4 py-8 sm:items-center sm:py-10"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim px-4 py-8 sm:items-center sm:py-10"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget && !busy) onCancel();
       }}
@@ -328,7 +328,7 @@ export function PluginConsentDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className="consent-dialog-enter w-full max-w-md overflow-hidden rounded-xl border border-ink/10 bg-white shadow-xl outline-none"
+        className="consent-dialog-enter w-full max-w-md overflow-hidden rounded-xl border border-ink/10 bg-paper shadow-xl outline-none"
       >
         <div className="h-1 bg-teal" style={accentStyle} />
 
@@ -401,7 +401,7 @@ export function PluginConsentDialog({
                 : "Native guests use OS-jail allow-or-deny for network (no hostname filter)."}
             </p>
             <select
-              className="w-full rounded-md border border-ink/15 bg-white px-3 py-2 text-sm text-ink shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
+              className="w-full rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm text-ink shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
               value={networkMode}
               disabled={busy}
               onChange={(e) => setNetworkMode(e.target.value)}

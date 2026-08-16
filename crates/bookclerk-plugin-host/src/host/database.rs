@@ -834,6 +834,54 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         }
         Ok(())
     }
+
+    async fn confirm_totp_enrollment(
+        &self,
+        user_id: i64,
+        record: &bookclerk_library::EncryptedSecretRecord,
+    ) -> bookclerk_library::Result<()> {
+        let result = self
+            .call(DbAtomicParams::ConfirmTotpEnrollment {
+                user_id,
+                format: record.format.clone(),
+                ciphertext: bookclerk_library::bytes_to_b64_string(&record.ciphertext),
+                cipher_algorithm: record.cipher_algorithm.clone(),
+                cipher_nonce: record
+                    .cipher_nonce
+                    .as_deref()
+                    .map(bookclerk_library::bytes_to_b64_string),
+                kdf_algorithm: record.kdf_algorithm.clone(),
+                kdf_salt: record
+                    .kdf_salt
+                    .as_deref()
+                    .map(bookclerk_library::bytes_to_b64_string),
+                kdf_m_cost: record.kdf_m_cost.map(i64::from),
+                kdf_t_cost: record.kdf_t_cost.map(i64::from),
+                kdf_p_cost: record.kdf_p_cost.map(i64::from),
+                created_at: record.created_at.clone(),
+            })
+            .await?;
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::NotFound("user".into()),
+        ) {
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    async fn disable_user_totp(&self, user_id: i64) -> bookclerk_library::Result<()> {
+        let result = self
+            .call(DbAtomicParams::DisableUserTotp { user_id })
+            .await?;
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::NotFound("user".into()),
+        ) {
+            return Err(err);
+        }
+        Ok(())
+    }
 }
 
 #[derive(serde::Deserialize)]

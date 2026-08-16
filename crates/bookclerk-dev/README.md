@@ -24,7 +24,7 @@ Every guest is an **external** (jailed) subprocess. Runtimes are **`native`** or
 | `cargo ensure-workerd` | Download/update pinned Cloudflare `workerd` → `target/<profile>/` |
 | `cargo install-platform` | Install platform guests → `$BOOKCLERK_FILES_DIR/plugins/` |
 | `cargo stage-plugins --optional` | Stage optional guests → `target/plugin-artifacts` |
-| **`cargo dev`** | Platform build + ensure workerd, install, exec `bookclerkd` |
+| **`cargo dev`** | Platform build + refresh `ui/dist` if stale + ensure workerd, install, exec `bookclerkd` |
 | `cargo dev --optional` | Also build/stage optional storefronts |
 | `cargo dev --examples` | Also stage reference Echo |
 | `cargo dev-cli` | Same platform build, then CLI binary |
@@ -33,7 +33,8 @@ Every guest is an **external** (jailed) subprocess. Runtimes are **`native`** or
 | `cargo reset --yes --artifacts` | Also clear `target/plugin-artifacts` |
 
 Default `cargo dev` is **one** `cargo build` for the platform package list (not a
-second wave for helpers/hosts). Optional guests are **not** on that list until
+second wave for helpers/hosts), plus a Vite rebuild of `ui/dist` when SPA sources
+are newer than `ui/dist/index.html`. Optional guests are **not** on that list until
 you pass `--optional`. CI uses
 `build-app --platform --optional --examples` for the full graph.
 

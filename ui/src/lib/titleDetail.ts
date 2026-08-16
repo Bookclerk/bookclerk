@@ -2,10 +2,11 @@ import type {
   AcquireStatus,
   BookRecord,
   PurchaseHint,
+  QueueWisher,
   StoreEdition,
   TitleReview,
 } from "@/lib/api";
-import type { CatalogTitle } from "@/lib/catalogTitle";
+import { withAudibleEditionFromAsin, type CatalogTitle } from "@/lib/catalogTitle";
 
 /**
  * Shared detail model for Discover, Wishlist, and Library dialogs.
@@ -48,6 +49,10 @@ export type TitleDetail = {
   sources?: string[];
   /** Seeded hints; modal may refresh when showCommerce. */
   purchase_hints?: PurchaseHint[];
+  /** People who have this title on an open wishlist. */
+  wishers?: QueueWisher[];
+  /** Distinct wisher count (may exceed `wishers.length`). */
+  wish_count?: number;
   acquire_status?: AcquireStatus;
   source?: string | null;
   marketplace?: string | null;
@@ -73,7 +78,7 @@ export function titleDetailFromCatalog(
   title: CatalogTitle,
   extras?: Partial<TitleDetail>,
 ): TitleDetail {
-  return {
+  return withAudibleEditionFromAsin({
     title: title.title,
     subtitle: title.subtitle,
     authors: title.authors,
@@ -90,6 +95,8 @@ export function titleDetailFromCatalog(
     store_editions: title.store_editions,
     sources: title.sources,
     purchase_hints: title.purchase_hints,
+    wishers: title.wishers,
+    wish_count: title.wish_count,
     description: title.description,
     publisher: title.publisher,
     length_minutes: title.length_minutes,
@@ -99,7 +106,7 @@ export function titleDetailFromCatalog(
     is_abridged: title.is_abridged,
     showCommerce: true,
     ...extras,
-  };
+  });
 }
 
 /**

@@ -56,7 +56,9 @@ pub struct OidcProviderConfig {
     pub role_map: BTreeMap<String, String>,
     /// When true, a new `sub` may attach to the unique matching *verified* email User.
     ///
-    /// Defaults off: an unverified upstream email must not attach to an existing Owner.
+    /// Defaults off in TOML for generic issuers: an unverified upstream email
+    /// must not attach to an existing Owner. Settings defaults this **on** for
+    /// Google / GitHub / Apple / Discord presets.
     pub link_by_email: bool,
     /// Sign in with Apple team ID (`iss` of the client-secret JWT).
     #[serde(default, skip_serializing_if = "Option::is_none")]

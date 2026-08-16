@@ -26,6 +26,8 @@ pub struct Model {
     pub discover_language: Option<String>,
     /// JSON list of storefronts excluded from Discover.
     pub discover_excluded_sources_json: String,
+    /// Appearance preference (`system`, `light`, or `dark`).
+    pub theme: String,
     /// RFC 3339 timestamp when the row was last modified.
     pub updated_at: String,
 }

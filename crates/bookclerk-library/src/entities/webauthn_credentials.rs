@@ -16,6 +16,8 @@ pub struct Model {
     pub credential_id: String,
     /// Serialized `webauthn_rs::prelude::Passkey`.
     pub passkey_json: String,
+    /// Operator-facing label chosen at registration (`Passkey` when unset).
+    pub name: Option<String>,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
     /// RFC 3339 last successful assertion, when known.

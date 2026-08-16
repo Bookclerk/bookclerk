@@ -15,23 +15,24 @@ use sea_orm::{
     ActiveModelTrait,
     ActiveValue::{NotSet, Set},
     ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait,
-    QueryFilter, QueryOrder, QuerySelect,
+    QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
 };
 use uuid::Uuid;
 
 use crate::atomic_txn::AtomicTxnBackend;
 use crate::entities::{
-    account_links, accounts, books, claim_tickets, embeddings, ignored_titles, listening_progress,
-    oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states, operator_sessions,
-    portal_identities, portal_sessions, saved_filters, security_audit_events,
+    account_links, accounts, books, claim_tickets, embeddings, encrypted_secrets, ignored_titles,
+    listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
+    operator_sessions, portal_identities, portal_sessions, saved_filters, security_audit_events,
     title_request_sources, title_requests, user_invites, user_preferences, users,
     webauthn_challenges, webauthn_credentials, work_editions, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
     user_prefs_key, AccountRecord, AcquireStatus, BookRecord, GlobalQueueEntry,
-    ListeningProgressRecord, RequestStatus, TitleRequestRecord, TitleRequestSourceRecord,
-    UserPreferences, UserRecord, UserRole, UserStatus, WorkRecord,
+    ListeningProgressRecord, OidcClientRecord, PortalIdentity, QueueWisher, RequestStatus,
+    StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord, UserPreferences, UserRecord,
+    UserRole, UserStatus, WorkRecord,
 };
 use crate::wishlist_merge::apply_merged_sources;
 
@@ -526,6 +527,7 @@ impl LibraryStore {
             label: Set(label.map(str::to_string)),
             user_id: Set(Some(user.id)),
             created_at: Set(now_str()),
+            picture_url: Set(None),
         };
         let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(map_portal_identity(model))
@@ -582,11 +584,14 @@ impl LibraryStore {
             status: Set(UserStatus::Active.as_str().to_string()),
             display_name: Set(display_name.map(str::to_string)),
             login_name: Set(normalize_login_name(login_name)),
-            email: Set(normalize_email(email)),
+            email: Set(crate::email::normalize_user_email(email)?),
             password_hash: Set(password_hash.map(str::to_string)),
             security_version: Set(0),
             created_at: Set(now.clone()),
             updated_at: Set(now),
+            last_seen_at: Set(None),
+            avatar_source: Set(None),
+            totp_enabled: Set(0),
         };
         let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(map_user(model))
@@ -628,7 +633,7 @@ impl LibraryStore {
     ///
     /// Returns an error when the operation fails.
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<UserRecord>> {
-        let Some(key) = normalize_email(Some(email)) else {
+        let Some(key) = crate::email::normalize_email_lookup(Some(email)) else {
             return Ok(None);
         };
         Ok(users::Entity::find()
@@ -672,11 +677,11 @@ impl LibraryStore {
     ///
     /// `online` means any non-expired portal session. `listening` is the newest
     /// unfinished progress row with `last_listened_at` within
-    /// `listening_within` (typical UI window: ~30 minutes).
-    ///
-    /// Not used by `GET /api/users`: loading every identity/session/link/listen
-    /// row is unbounded on a small VPS, and exposing listening to admins is a
-    /// privacy decision deferred until a bounded query exists.
+    /// `listening_within` (typical UI window: ~30 minutes). Used by
+    /// `GET /api/users`. Session activity (`last_active_at`) comes from
+    /// unexpired `portal_sessions.last_used_at`. Durable last-seen lives on
+    /// `users.last_seen_at` (survives logout) and is refreshed with session
+    /// use at most once per minute.
     ///
     /// # Errors
     ///
@@ -946,6 +951,13 @@ impl LibraryStore {
             .exec(txn)
             .await
             .map_err(LibraryError::Orm)?;
+        encrypted_secrets::Entity::delete_many()
+            .filter(encrypted_secrets::Column::Kind.eq(crate::secret_kind::TOTP))
+            .filter(encrypted_secrets::Column::AccountType.eq(crate::secret_account_type::USER))
+            .filter(encrypted_secrets::Column::AccountId.eq(id.to_string()))
+            .exec(txn)
+            .await
+            .map_err(LibraryError::Orm)?;
         oidc_rp_states::Entity::delete_many()
             .filter(oidc_rp_states::Column::UserId.eq(id))
             .exec(txn)
@@ -1111,10 +1123,121 @@ impl LibraryStore {
             .map_err(LibraryError::Orm)?
             .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
         let mut am: users::ActiveModel = model.into();
-        am.email = Set(normalize_email(email));
+        am.email = Set(crate::email::normalize_user_email(email)?);
         am.updated_at = Set(now_str());
         let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(map_user(model))
+    }
+
+    /// Set the user's picture source (`monogram` / `gravatar` / `upload` / `sso:{id}` / auto).
+    ///
+    /// `None` or empty stores auto-resolve (upload, then last-used SSO, then Gravatar).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the user is missing or the write fails.
+    pub async fn set_user_avatar_source(
+        &self,
+        id: i64,
+        source: Option<&str>,
+    ) -> Result<UserRecord> {
+        let model = users::Entity::find_by_id(id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound(format!("user {id}")))?;
+        let mut am: users::ActiveModel = model.into();
+        am.avatar_source = Set(source
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string));
+        am.updated_at = Set(now_str());
+        let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(map_user(model))
+    }
+
+    /// Store or clear the HTTPS picture URL on a portal identity.
+    ///
+    /// Missing identities are ignored so callers can run this after a failed
+    /// lookup without an extra round-trip.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the write fails.
+    pub async fn set_portal_identity_picture(
+        &self,
+        provider: &str,
+        external_user_id: &str,
+        picture_url: Option<&str>,
+    ) -> Result<()> {
+        let Some(existing) = self.get_portal_identity(provider, external_user_id).await? else {
+            return Ok(());
+        };
+        let next = picture_url
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        if existing.picture_url == next {
+            return Ok(());
+        }
+        let model = portal_identities::Entity::find_by_id(existing.id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound("portal identity".into()))?;
+        let mut am: portal_identities::ActiveModel = model.into();
+        am.picture_url = Set(next);
+        am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// IdP pictures linked to `user_id`, with last portal-session activity.
+    ///
+    /// Identities without a `picture_url` are omitted. `last_used_at` is the
+    /// latest session `last_used_at` or `created_at` for that identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the query fails.
+    pub async fn list_user_sso_pictures(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<crate::models::UserSsoPicture>> {
+        let identities = portal_identities::Entity::find()
+            .filter(portal_identities::Column::UserId.eq(user_id))
+            .order_by_asc(portal_identities::Column::Id)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let mut out = Vec::new();
+        for model in identities {
+            let Some(picture_url) = model
+                .picture_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let sessions = portal_sessions::Entity::find()
+                .filter(portal_sessions::Column::IdentityId.eq(model.id))
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            let last_used_at = sessions
+                .iter()
+                .filter_map(|s| s.last_used_at.as_deref().or(Some(s.created_at.as_str())))
+                .max()
+                .map(parse_dt);
+            out.push(crate::models::UserSsoPicture {
+                identity_id: model.id,
+                provider: model.provider,
+                picture_url,
+                last_used_at,
+            });
+        }
+        Ok(out)
     }
 
     /// Delete all portal sessions for identities linked to `user_id`.
@@ -1399,6 +1522,7 @@ impl LibraryStore {
             label: Set(label.map(str::to_string)),
             user_id: Set(Some(user_id)),
             created_at: Set(now_str()),
+            picture_url: Set(None),
         };
         let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(map_portal_identity(model))
@@ -1446,6 +1570,72 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .map(map_portal_identity))
+    }
+
+    /// Loads portal identities keyed by id (missing ids are omitted).
+    ///
+    /// # Arguments
+    ///
+    /// * `ids` - Portal identity primary keys to fetch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the query fails.
+    async fn portal_identities_by_ids(
+        &self,
+        ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, PortalIdentity>> {
+        let mut unique = ids.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let rows = portal_identities::Entity::find()
+            .filter(portal_identities::Column::Id.is_in(unique))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(rows
+            .into_iter()
+            .map(|m| {
+                let mapped = map_portal_identity(m);
+                (mapped.id, mapped)
+            })
+            .collect())
+    }
+
+    /// Loads first-party users keyed by id (missing ids are omitted).
+    ///
+    /// # Arguments
+    ///
+    /// * `ids` - First-party user primary keys to fetch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the query fails.
+    async fn users_by_ids(
+        &self,
+        ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, UserRecord>> {
+        let mut unique = ids.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let rows = users::Entity::find()
+            .filter(users::Column::Id.is_in(unique))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(rows
+            .into_iter()
+            .map(|m| {
+                let mapped = map_user(m);
+                (mapped.id, mapped)
+            })
+            .collect())
     }
 
     /// Insert a claim ticket (store only the hash).
@@ -1685,12 +1875,15 @@ impl LibraryStore {
             identity_id: Set(identity.id),
             expires_at: Set(expires_at.to_rfc3339()),
             created_at: Set(session_now.clone()),
-            last_used_at: Set(Some(session_now)),
+            last_used_at: Set(Some(session_now.clone())),
             user_agent: Set(client.and_then(|c| c.user_agent.clone())),
             device_type: Set(client.map(|c| c.device_type.clone())),
             client_label: Set(client.map(|c| c.client_label.clone())),
         };
         session.insert(txn).await.map_err(LibraryError::Orm)?;
+        if let Some(user_id) = identity.user_id {
+            Self::set_user_last_seen_on(txn, user_id, &session_now).await?;
+        }
         Ok(identity)
     }
 
@@ -1728,12 +1921,13 @@ impl LibraryStore {
             identity_id: Set(identity_id),
             expires_at: Set(expires_at.to_rfc3339()),
             created_at: Set(now.clone()),
-            last_used_at: Set(Some(now)),
+            last_used_at: Set(Some(now.clone())),
             user_agent: Set(client.and_then(|c| c.user_agent.clone())),
             device_type: Set(client.map(|c| c.device_type.clone())),
             client_label: Set(client.map(|c| c.client_label.clone())),
         };
         am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Self::set_last_seen_for_identity_on(&self.db, identity_id, &now).await?;
         Ok(())
     }
 
@@ -1833,6 +2027,10 @@ impl LibraryStore {
 
     /// Resolve a valid portal session to its identity.
     ///
+    /// Refreshes `portal_sessions.last_used_at` and `users.last_seen_at` at most
+    /// once per minute so administrator presence can tell active from idle
+    /// without a write on every request. `last_seen_at` is kept after logout.
+    ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
@@ -1843,14 +2041,76 @@ impl LibraryStore {
         let now = now_str();
         let Some(session) = portal_sessions::Entity::find()
             .filter(portal_sessions::Column::TokenHash.eq(token_hash))
-            .filter(portal_sessions::Column::ExpiresAt.gt(now))
+            .filter(portal_sessions::Column::ExpiresAt.gt(&now))
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
         else {
             return Ok(None);
         };
-        self.get_portal_identity_by_id(session.identity_id).await
+        let identity_id = session.identity_id;
+        let should_touch = match parse_dt_opt(session.last_used_at.as_deref()) {
+            None => true,
+            Some(at) => Utc::now() - at >= PORTAL_SESSION_LAST_USED_MIN_INTERVAL,
+        };
+        if should_touch {
+            let mut am: portal_sessions::ActiveModel = session.into();
+            am.last_used_at = Set(Some(now.clone()));
+            am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        }
+        let identity = self.get_portal_identity_by_id(identity_id).await?;
+        if should_touch {
+            if let Some(user_id) = identity.as_ref().and_then(|row| row.user_id) {
+                Self::set_user_last_seen_on(&self.db, user_id, &now).await?;
+            }
+        }
+        Ok(identity)
+    }
+
+    /// Writes `users.last_seen_at` for the user bound to a portal identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the identity or user update fails.
+    async fn set_last_seen_for_identity_on<C: ConnectionTrait>(
+        txn: &C,
+        identity_id: i64,
+        at: &str,
+    ) -> Result<()> {
+        let Some(identity) = portal_identities::Entity::find_by_id(identity_id)
+            .one(txn)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(());
+        };
+        let Some(user_id) = identity.user_id else {
+            return Ok(());
+        };
+        Self::set_user_last_seen_on(txn, user_id, at).await
+    }
+
+    /// Persists durable last-seen without bumping `users.updated_at`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the user lookup or update fails.
+    async fn set_user_last_seen_on<C: ConnectionTrait>(
+        txn: &C,
+        user_id: i64,
+        at: &str,
+    ) -> Result<()> {
+        let Some(model) = users::Entity::find_by_id(user_id)
+            .one(txn)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(());
+        };
+        let mut am: users::ActiveModel = model.into();
+        am.last_seen_at = Set(Some(at.to_string()));
+        am.update(txn).await.map_err(LibraryError::Orm)?;
+        Ok(())
     }
 
     /// Create a durable operator session (hash only).
@@ -2207,6 +2467,7 @@ impl LibraryStore {
             label: Set(label.map(str::to_string)),
             user_id: Set(Some(user_id)),
             created_at: Set(now_str()),
+            picture_url: Set(None),
         };
         let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(map_portal_identity(model))
@@ -2302,20 +2563,33 @@ impl LibraryStore {
 
     /// Store a WebAuthn credential for a user.
     ///
+    /// # Arguments
+    ///
+    /// * `user_id` - First-party user who owns the passkey.
+    /// * `credential_id` - Base64url credential id.
+    /// * `passkey_json` - Serialized `webauthn_rs` passkey.
+    /// * `name` - Label shown in Settings; empty becomes `None`.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Returns an error when the insert fails (including unique credential id).
     pub async fn insert_webauthn_credential(
         &self,
         user_id: i64,
         credential_id: &str,
         passkey_json: &str,
+        name: Option<&str>,
     ) -> Result<()> {
+        let name = name
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let am = webauthn_credentials::ActiveModel {
             id: NotSet,
             user_id: Set(user_id),
             credential_id: Set(credential_id.to_string()),
             passkey_json: Set(passkey_json.to_string()),
+            name: Set(name),
             created_at: Set(now_str()),
             last_used_at: Set(None),
         };
@@ -2328,10 +2602,7 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn list_webauthn_credentials(
-        &self,
-        user_id: i64,
-    ) -> Result<Vec<(i64, String, String)>> {
+    pub async fn list_webauthn_credentials(&self, user_id: i64) -> Result<Vec<StoredPasskey>> {
         Ok(webauthn_credentials::Entity::find()
             .filter(webauthn_credentials::Column::UserId.eq(user_id))
             .order_by_asc(webauthn_credentials::Column::Id)
@@ -2339,7 +2610,12 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .into_iter()
-            .map(|m| (m.id, m.credential_id, m.passkey_json))
+            .map(|m| StoredPasskey {
+                id: m.id,
+                credential_id: m.credential_id,
+                passkey_json: m.passkey_json,
+                name: m.name,
+            })
             .collect())
     }
 
@@ -2404,6 +2680,131 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         Ok(res.rows_affected > 0)
+    }
+
+    /// Set whether this user has a confirmed TOTP authenticator.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_id` - First-party user id.
+    /// * `enabled` - `true` after a successful enroll confirm; `false` on disable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::NotFound`] when the user does not exist.
+    pub async fn set_user_totp_enabled(&self, user_id: i64, enabled: bool) -> Result<()> {
+        let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
+        match Self::set_user_totp_enabled_on(&txn, user_id, enabled).await {
+            Ok(()) => {
+                txn.commit().await.map_err(LibraryError::Orm)?;
+                if let Some(fault) = crate::take_txn_fault() {
+                    return Err(LibraryError::Orm(sea_orm::DbErr::Custom(fault)));
+                }
+                Ok(())
+            }
+            Err(err) => {
+                let _ = txn.rollback().await;
+                let _ = crate::take_txn_fault();
+                Err(err)
+            }
+        }
+    }
+
+    /// Sets `users.totp_enabled` inside an open transaction.
+    pub(crate) async fn set_user_totp_enabled_on<C: ConnectionTrait>(
+        txn: &C,
+        user_id: i64,
+        enabled: bool,
+    ) -> Result<()> {
+        let model = users::Entity::find_by_id(user_id)
+            .one(txn)
+            .await
+            .map_err(LibraryError::Orm)?
+            .ok_or_else(|| LibraryError::NotFound("user".into()))?;
+        let mut am: users::ActiveModel = model.into();
+        am.totp_enabled = Set(i64::from(enabled));
+        am.updated_at = Set(now_str());
+        am.update(txn).await.map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// Promote a pending TOTP secret to primary and set `totp_enabled` in one transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::NotFound`] when the user does not exist.
+    pub async fn confirm_totp_enrollment(&self, user_id: i64, secret_b32: &str) -> Result<()> {
+        let record = crate::secrets::build_sealed_record(
+            secret_b32.as_bytes(),
+            crate::secrets::secret_kind::TOTP,
+            "local",
+            crate::secrets::secret_account_type::USER,
+            &user_id.to_string(),
+            "primary",
+        )?;
+        if let Some(atomic) = &self.atomic {
+            return atomic.confirm_totp_enrollment(user_id, &record).await;
+        }
+        crate::db_atomic::confirm_totp_enrollment(&self.db, user_id, &record).await
+    }
+
+    /// Promote a sealed TOTP secret to `primary` and set `totp_enabled` inside an open transaction.
+    pub(crate) async fn confirm_totp_enrollment_on<C: ConnectionTrait>(
+        txn: &C,
+        user_id: i64,
+        record: &crate::secrets::EncryptedSecretRecord,
+    ) -> Result<()> {
+        crate::secrets::upsert_secret_on(txn, record).await?;
+        crate::secrets::delete_secret_on(
+            txn,
+            crate::secrets::secret_kind::TOTP,
+            Some("local"),
+            crate::secrets::secret_account_type::USER,
+            Some(&user_id.to_string()),
+            "pending",
+        )
+        .await?;
+        Self::set_user_totp_enabled_on(txn, user_id, true).await?;
+        Ok(())
+    }
+
+    /// Delete TOTP secrets and clear `totp_enabled` in one transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::NotFound`] when the user does not exist.
+    pub async fn disable_user_totp(&self, user_id: i64) -> Result<()> {
+        if let Some(atomic) = &self.atomic {
+            return atomic.disable_user_totp(user_id).await;
+        }
+        crate::db_atomic::disable_user_totp(&self.db, user_id).await
+    }
+
+    /// Delete TOTP secrets and clear `totp_enabled` inside an open transaction.
+    pub(crate) async fn disable_user_totp_on<C: ConnectionTrait>(
+        txn: &C,
+        user_id: i64,
+    ) -> Result<()> {
+        crate::secrets::delete_secret_on(
+            txn,
+            crate::secrets::secret_kind::TOTP,
+            Some("local"),
+            crate::secrets::secret_account_type::USER,
+            Some(&user_id.to_string()),
+            "primary",
+        )
+        .await?;
+        crate::secrets::delete_secret_on(
+            txn,
+            crate::secrets::secret_kind::TOTP,
+            Some("local"),
+            crate::secrets::secret_account_type::USER,
+            Some(&user_id.to_string()),
+            "pending",
+        )
+        .await?;
+        Self::set_user_totp_enabled_on(txn, user_id, false).await?;
+        Ok(())
     }
 
     /// Insert a WebAuthn ceremony state.
@@ -2621,33 +3022,35 @@ impl LibraryStore {
         })
     }
 
-    /// Upsert an OIDC client (public clients may omit secret hash).
+    /// Insert a new OIDC client (public clients may omit secret hash).
+    ///
+    /// Custom (operator) clients pass `plugin_id = None` and typically
+    /// `enabled = true`. Plugin-owned templates pass the plugin id and start
+    /// disabled.
     ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn upsert_oidc_client(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_oidc_client(
         &self,
         client_id: &str,
         client_secret_hash: Option<&str>,
         redirect_uris: &[String],
         name: Option<&str>,
-    ) -> Result<()> {
+        issue_refresh_token: bool,
+        allowed_scopes: &[String],
+        enabled: bool,
+        plugin_id: Option<&str>,
+    ) -> Result<OidcClientRecord> {
         let uris = serde_json::to_string(redirect_uris)
             .map_err(|e| LibraryError::Other(anyhow::anyhow!("redirect_uris json: {e}")))?;
-        if let Some(existing) = oidc_clients::Entity::find()
-            .filter(oidc_clients::Column::ClientId.eq(client_id))
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-        {
-            let mut am: oidc_clients::ActiveModel = existing.into();
-            am.client_secret_hash = Set(client_secret_hash.map(str::to_string));
-            am.redirect_uris_json = Set(uris);
-            am.name = Set(name.map(str::to_string));
-            am.update(&self.db).await.map_err(LibraryError::Orm)?;
-            return Ok(());
-        }
+        let scopes = serde_json::to_string(&normalize_oidc_scopes(allowed_scopes))
+            .map_err(|e| LibraryError::Other(anyhow::anyhow!("allowed_scopes json: {e}")))?;
+        let plugin = plugin_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let am = oidc_clients::ActiveModel {
             id: NotSet,
             client_id: Set(client_id.to_string()),
@@ -2655,28 +3058,188 @@ impl LibraryStore {
             redirect_uris_json: Set(uris),
             name: Set(name.map(str::to_string)),
             created_at: Set(now_str()),
+            issue_refresh_token: Set(i64::from(issue_refresh_token)),
+            allowed_scopes_json: Set(scopes),
+            enabled: Set(i64::from(enabled)),
+            plugin_id: Set(plugin),
         };
-        am.insert(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(())
+        let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(oidc_client_from_model(model))
+    }
+
+    /// Insert a plugin-owned OIDC client when missing; refresh redirect URIs when present.
+    ///
+    /// New rows start **disabled**. Existing rows owned by the **same** plugin keep
+    /// `enabled`, name, scopes, and secret. Collisions with custom (operator) clients
+    /// or a different plugin's `client_id` are hard errors — this never mutates
+    /// an unowned row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Conflict`] when `client_id` is already owned by a
+    /// custom client or another plugin.
+    pub async fn upsert_plugin_oidc_client(
+        &self,
+        client_id: &str,
+        plugin_id: &str,
+        name: &str,
+        redirect_uris: &[String],
+        issue_refresh_token: bool,
+        allowed_scopes: &[String],
+    ) -> Result<OidcClientRecord> {
+        if let Some(existing) = self.get_oidc_client(client_id).await? {
+            let owner = existing
+                .plugin_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            match owner {
+                None => {
+                    return Err(LibraryError::Conflict(format!(
+                        "OIDC client_id `{client_id}` is a custom operator client; \
+                         plugin `{plugin_id}` cannot take it over"
+                    )));
+                }
+                Some(owner) if owner != plugin_id => {
+                    return Err(LibraryError::Conflict(format!(
+                        "OIDC client_id `{client_id}` is owned by plugin `{owner}`, \
+                         not `{plugin_id}`"
+                    )));
+                }
+                Some(_) => {}
+            }
+            let uris = serde_json::to_string(redirect_uris)
+                .map_err(|e| LibraryError::Other(anyhow::anyhow!("redirect_uris json: {e}")))?;
+            let mut am: oidc_clients::ActiveModel = oidc_clients::Entity::find()
+                .filter(oidc_clients::Column::ClientId.eq(client_id))
+                .one(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?
+                .ok_or_else(|| LibraryError::Other(anyhow::anyhow!("oidc client vanished")))?
+                .into();
+            am.redirect_uris_json = Set(uris);
+            let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
+            return Ok(oidc_client_from_model(model));
+        }
+        let scopes = if allowed_scopes.is_empty() {
+            default_oidc_scopes()
+        } else {
+            allowed_scopes.to_vec()
+        };
+        self.insert_oidc_client(
+            client_id,
+            None,
+            redirect_uris,
+            Some(name),
+            issue_refresh_token,
+            &scopes,
+            false,
+            Some(plugin_id),
+        )
+        .await
+    }
+
+    /// Update an existing OIDC client without changing the secret unless `secret_hash` is `Some`.
+    ///
+    /// Pass `Some(None)` as `secret_hash` to clear the secret (public PKCE). Pass `None` to keep.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_oidc_client(
+        &self,
+        client_id: &str,
+        redirect_uris: &[String],
+        name: Option<&str>,
+        issue_refresh_token: bool,
+        allowed_scopes: &[String],
+        enabled: bool,
+        secret_hash: Option<Option<String>>,
+    ) -> Result<Option<OidcClientRecord>> {
+        let Some(existing) = oidc_clients::Entity::find()
+            .filter(oidc_clients::Column::ClientId.eq(client_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        let uris = serde_json::to_string(redirect_uris)
+            .map_err(|e| LibraryError::Other(anyhow::anyhow!("redirect_uris json: {e}")))?;
+        let scopes = serde_json::to_string(&normalize_oidc_scopes(allowed_scopes))
+            .map_err(|e| LibraryError::Other(anyhow::anyhow!("allowed_scopes json: {e}")))?;
+        let mut am: oidc_clients::ActiveModel = existing.into();
+        am.redirect_uris_json = Set(uris);
+        am.name = Set(name.map(str::to_string));
+        am.issue_refresh_token = Set(i64::from(issue_refresh_token));
+        am.allowed_scopes_json = Set(scopes);
+        am.enabled = Set(i64::from(enabled));
+        if let Some(hash) = secret_hash {
+            am.client_secret_hash = Set(hash);
+        }
+        let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(Some(oidc_client_from_model(model)))
+    }
+
+    /// Replace the stored client-secret hash (or clear it).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
+    pub async fn set_oidc_client_secret(
+        &self,
+        client_id: &str,
+        client_secret_hash: Option<&str>,
+    ) -> Result<Option<OidcClientRecord>> {
+        let Some(existing) = oidc_clients::Entity::find()
+            .filter(oidc_clients::Column::ClientId.eq(client_id))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        let mut am: oidc_clients::ActiveModel = existing.into();
+        am.client_secret_hash = Set(client_secret_hash.map(str::to_string));
+        let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(Some(oidc_client_from_model(model)))
+    }
+
+    /// Delete a registered OIDC client by `client_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
+    pub async fn delete_oidc_client(&self, client_id: &str) -> Result<bool> {
+        let res = oidc_clients::Entity::delete_many()
+            .filter(oidc_clients::Column::ClientId.eq(client_id))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(res.rows_affected > 0)
+    }
+
+    /// List registered OIDC clients, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
+    pub async fn list_oidc_clients(&self) -> Result<Vec<OidcClientRecord>> {
+        let rows = oidc_clients::Entity::find()
+            .order_by_asc(oidc_clients::Column::Id)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(rows.into_iter().map(oidc_client_from_model).collect())
     }
 
     /// Loads a registered OIDC client by `client_id`, if present.
     ///
-    /// # Arguments
-    ///
-    /// * `client_id` - OIDC client_id.
-    ///
-    /// # Returns
-    ///
-    /// `Result<Option<(String, Option<String>, Vec<String>, Option<String>)>>` — `Ok` on success.
-    ///
     /// # Errors
     ///
     /// Returns a crate error when the database operation fails or inputs are invalid.
-    pub async fn get_oidc_client(
-        &self,
-        client_id: &str,
-    ) -> Result<Option<(String, Option<String>, Vec<String>, Option<String>)>> {
+    pub async fn get_oidc_client(&self, client_id: &str) -> Result<Option<OidcClientRecord>> {
         let Some(model) = oidc_clients::Entity::find()
             .filter(oidc_clients::Column::ClientId.eq(client_id))
             .one(&self.db)
@@ -2685,13 +3248,7 @@ impl LibraryStore {
         else {
             return Ok(None);
         };
-        let uris: Vec<String> = serde_json::from_str(&model.redirect_uris_json).unwrap_or_default();
-        Ok(Some((
-            model.client_id,
-            model.client_secret_hash,
-            uris,
-            model.name,
-        )))
+        Ok(Some(oidc_client_from_model(model)))
     }
 
     /// Persists a hashed OIDC authorization code with PKCE metadata.
@@ -4487,6 +5044,10 @@ impl LibraryStore {
     /// Returns an error when the operation fails.
     pub async fn list_global_request_queue(&self) -> Result<Vec<GlobalQueueEntry>> {
         let open = self.list_title_requests(Some(RequestStatus::Open)).await?;
+        let identity_ids: Vec<i64> = open.iter().filter_map(|r| r.identity_id).collect();
+        let identities = self.portal_identities_by_ids(&identity_ids).await?;
+        let user_ids: Vec<i64> = identities.values().filter_map(|i| i.user_id).collect();
+        let users = self.users_by_ids(&user_ids).await?;
         let mut by_key: std::collections::HashMap<String, GlobalQueueEntry> =
             std::collections::HashMap::new();
         for row in open {
@@ -4500,9 +5061,10 @@ impl LibraryStore {
             } else {
                 row.work_key.clone()
             };
+            let wisher = queue_wisher_for(row.identity_id, &identities, &users);
             match by_key.entry(key.clone()) {
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(GlobalQueueEntry {
+                    let mut entry = GlobalQueueEntry {
                         work_key: key,
                         title: row.title,
                         authors: row.authors,
@@ -4522,14 +5084,18 @@ impl LibraryStore {
                         store_editions: row.store_editions,
                         purchase_hints: row.purchase_hints,
                         wish_count: 1,
+                        wishers: Vec::new(),
                         sample_uuids: vec![row.uuid],
                         first_requested_at: row.created_at,
                         last_requested_at: row.created_at,
-                    });
+                    };
+                    entry.push_wisher(wisher);
+                    e.insert(entry);
                 }
                 std::collections::hash_map::Entry::Occupied(mut e) => {
                     let entry = e.get_mut();
                     entry.wish_count += 1;
+                    entry.push_wisher(wisher);
                     if entry.sample_uuids.len() < 8 {
                         entry.sample_uuids.push(row.uuid);
                     }
@@ -4938,6 +5504,7 @@ impl LibraryStore {
         discover_sort_dir: &str,
         discover_language: Option<&str>,
         discover_excluded_sources: &[String],
+        theme: &str,
     ) -> Result<UserPreferences> {
         let now = now_str();
         let shelves_json =
@@ -4946,6 +5513,7 @@ impl LibraryStore {
             serde_json::to_string(discover_excluded_sources).unwrap_or_else(|_| String::from("[]"));
         let sort = normalize_discover_sort(discover_sort);
         let sort_dir = normalize_discover_sort_dir(discover_sort_dir);
+        let appearance = crate::normalize_theme(theme);
         let language = discover_language
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -4966,6 +5534,7 @@ impl LibraryStore {
             am.discover_sort_dir = Set(sort_dir);
             am.discover_language = Set(language);
             am.discover_excluded_sources_json = Set(excluded_json);
+            am.theme = Set(appearance);
             am.updated_at = Set(now);
             am.update(&self.db).await.map_err(LibraryError::Orm)?
         } else {
@@ -4979,6 +5548,7 @@ impl LibraryStore {
                 discover_sort_dir: Set(sort_dir),
                 discover_language: Set(language),
                 discover_excluded_sources_json: Set(excluded_json),
+                theme: Set(appearance),
                 updated_at: Set(now),
             };
             am.insert(&self.db).await.map_err(LibraryError::Orm)?
@@ -5613,6 +6183,65 @@ fn now_str() -> String {
     Utc::now().to_rfc3339()
 }
 
+/// Default OpenID scopes granted to a new Bookclerk-as-IdP client.
+fn default_oidc_scopes() -> Vec<String> {
+    vec!["openid".into(), "profile".into(), "email".into()]
+}
+
+/// Keep known OpenID scopes in a stable order, dropping empties.
+fn normalize_oidc_scopes(scopes: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for wanted in ["openid", "profile", "email"] {
+        if scopes.iter().any(|s| s.trim().eq_ignore_ascii_case(wanted)) {
+            out.push(wanted.to_string());
+        }
+    }
+    for scope in scopes {
+        let trimmed = scope.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if out.iter().any(|s| s.eq_ignore_ascii_case(trimmed)) {
+            continue;
+        }
+        out.push(trimmed.to_string());
+    }
+    if out.is_empty() {
+        default_oidc_scopes()
+    } else {
+        out
+    }
+}
+
+/// Map an `oidc_clients` row onto [`OidcClientRecord`].
+fn oidc_client_from_model(model: oidc_clients::Model) -> OidcClientRecord {
+    let uris: Vec<String> = serde_json::from_str(&model.redirect_uris_json).unwrap_or_default();
+    let scopes: Vec<String> = serde_json::from_str(&model.allowed_scopes_json).unwrap_or_default();
+    OidcClientRecord {
+        id: model.id,
+        client_id: model.client_id,
+        client_secret_hash: model.client_secret_hash,
+        redirect_uris: uris,
+        name: model.name,
+        issue_refresh_token: model.issue_refresh_token != 0,
+        allowed_scopes: if scopes.is_empty() {
+            default_oidc_scopes()
+        } else {
+            scopes
+        },
+        enabled: model.enabled != 0,
+        plugin_id: model.plugin_id.and_then(|id| {
+            let trimmed = id.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }),
+        created_at: model.created_at,
+    }
+}
+
 /// Trim + lowercase login; empty/whitespace becomes `None` (no login).
 fn normalize_login_name(login_name: Option<&str>) -> Option<String> {
     login_name.and_then(|s| {
@@ -5625,17 +6254,10 @@ fn normalize_login_name(login_name: Option<&str>) -> Option<String> {
     })
 }
 
-/// Trim + lowercase email; empty/whitespace becomes `None`.
-fn normalize_email(email: Option<&str>) -> Option<String> {
-    email.and_then(|s| {
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_ascii_lowercase())
-        }
-    })
-}
+/// Minimum age of `portal_sessions.last_used_at` before an authenticated
+/// lookup rewrites it. Keeps presence idle/active meaningful without a write
+/// on every request.
+const PORTAL_SESSION_LAST_USED_MIN_INTERVAL: chrono::Duration = chrono::Duration::seconds(60);
 
 /// Parses an RFC 3339 timestamp as UTC; unparseable values fall back to now.
 fn parse_dt(value: &str) -> chrono::DateTime<Utc> {
@@ -5673,6 +6295,60 @@ fn map_portal_identity(m: portal_identities::Model) -> crate::models::PortalIden
         label: m.label,
         user_id: m.user_id,
         created_at: parse_dt(&m.created_at),
+        picture_url: m.picture_url,
+    }
+}
+
+/// Builds a queue-avatar row for one open wishlist request.
+///
+/// # Arguments
+///
+/// * `identity_id` - Portal identity on the title-request row, if any.
+/// * `identities` - Identities loaded for this queue pass.
+/// * `users` - First-party users linked from those identities.
+///
+/// # Returns
+///
+/// Operator placeholder when `identity_id` is none; otherwise the linked user
+/// or unlinked identity label.
+fn queue_wisher_for(
+    identity_id: Option<i64>,
+    identities: &std::collections::HashMap<i64, PortalIdentity>,
+    users: &std::collections::HashMap<i64, UserRecord>,
+) -> QueueWisher {
+    let Some(identity_id) = identity_id else {
+        return QueueWisher {
+            display_name: Some(String::from("Operator")),
+            operator: true,
+            ..QueueWisher::default()
+        };
+    };
+    let ident = identities.get(&identity_id);
+    let user = ident
+        .and_then(|i| i.user_id)
+        .and_then(|uid| users.get(&uid));
+    let picture_url = ident
+        .and_then(|i| i.picture_url.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    QueueWisher {
+        user_id: user.map(|u| u.id),
+        identity_id: Some(identity_id),
+        display_name: user
+            .and_then(|u| u.display_name.clone())
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| ident.and_then(|i| i.label.clone())),
+        login_name: user.and_then(|u| u.login_name.clone()),
+        operator: false,
+        has_avatar: false,
+        avatar_source: user.and_then(|u| u.avatar_source.clone()),
+        gravatar_hash: user
+            .and_then(|u| u.email.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(crate::gravatar_hash),
+        picture_url,
     }
 }
 
@@ -5689,6 +6365,9 @@ fn map_user(m: users::Model) -> UserRecord {
         security_version: m.security_version,
         created_at: parse_dt(&m.created_at),
         updated_at: parse_dt(&m.updated_at),
+        last_seen_at: parse_dt_opt(m.last_seen_at.as_deref()),
+        avatar_source: m.avatar_source,
+        totp_enabled: m.totp_enabled != 0,
     }
 }
 
@@ -5747,6 +6426,7 @@ fn map_user_preferences(m: user_preferences::Model) -> UserPreferences {
         discover_sort_dir: normalize_discover_sort_dir(&m.discover_sort_dir),
         discover_language: m.discover_language.filter(|s| !s.trim().is_empty()),
         discover_excluded_sources,
+        theme: crate::normalize_theme(&m.theme),
         updated_at: parse_dt(&m.updated_at),
     }
 }

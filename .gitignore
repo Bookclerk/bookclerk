@@ -2,7 +2,7 @@
 /target/
 /target-docker/
 # Workspace-local Cargo home (registry + git). Set CARGO_HOME=$PWD/.cargo-home
-# (see .envrc / Dev Container / AGENTS.md). Do not put this under `.cargo/`.
+# (see `.envrc.example`, Dev Container, AGENTS.md). Do not put this under `.cargo/`.
 /.cargo-home/
 # Build-script / cc temp files (aws-lc, etc.) when TMPDIR points here.
 /.tmp/*
@@ -21,9 +21,10 @@ packages/**/dist/
 examples/**/dist/
 examples/**/node_modules/
 
-# IDE
+# IDE (commit shared Cursor/VS Code workspace env only)
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
 *.swp
 *.swo
 *~
@@ -36,6 +37,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+# direnv overlay (copy from `.envrc.example`). Never commit `.envrc`.
+.envrc
 *.auth
 *.auth.json
 config.local.toml

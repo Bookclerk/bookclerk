@@ -38,7 +38,7 @@ login page). Portal HTTP APIs are at `/api/portal/*`.
 
 ```toml
 [integrations]
-# public_origin = "https://bookclerk.example.com"   # shareable SPA ?ticket= URLs
+# public_origin = "https://bookclerk.example.com"   # OIDC issuer, shareable /invite?ticket= URLs
 
 [integrations.audiobookshelf]
 enabled = true
@@ -106,11 +106,25 @@ Discovery: `GET /.well-known/openid-configuration`
 | `/oidc/userinfo` | Bearer access token |
 | `/oidc/revoke` | Refresh token revoke |
 
-Register the ABS client (public PKCE) once after bootstrap, e.g. redirect
-`http://127.0.0.1:13378/auth/openid/callback` and client id `audiobookshelf`.
-Set ABS OpenID issuer to Bookclerk's `integrations.public_origin` (or the
-daemon URL). Access/ID tokens are HS256 JWTs keyed from the operator token
-material (rotate token → existing JWTs stop verifying).
+Register each relying party as an OIDC client (Settings → Sign-in → OIDC
+clients, or `GET`/`POST`/`PUT`/`DELETE /api/auth/oidc/clients`). Every client
+has an **Enabled** toggle; disabled clients cannot authorize. Custom clients
+are operator-defined. When the Audiobookshelf plugin is installed, Bookclerk
+materializes a plugin-owned `audiobookshelf` public PKCE client (**disabled**
+until you turn it on) from the guest `oidcClients` RPC (or `[[oidc.clients]]`
+in `plugin.toml` when the guest is not loaded). Its redirect URIs are read-only and built from
+`[integrations.audiobookshelf].base_url` plus ABS’s callback path
+(`/auth/openid/callback`) — not from Bookclerk’s listen port. Audiobookshelf’s
+default web UI is port **13378**; Bookclerk stays on `daemon.listen` (default
+**8787**) and does not bind 13378. Set ABS OpenID issuer to Bookclerk's
+`integrations.public_origin` when pinned, or to the bound loopback origin you
+open the UI at (`http://localhost:8787` in tray/`cargo dev`). Off loopback,
+pin `public_origin`; request `Host` / `X-Forwarded-*` are not used as the
+issuer. Access/ID tokens are HS256 JWTs
+keyed from the operator token material (rotate token → existing JWTs stop
+verifying). Clients may opt out of refresh tokens and restrict scopes to
+`openid` / `profile` / `email`. Decision record:
+[plugin-provided OIDC clients](adr/plugin-oidc-clients.md).
 
 See also the ABS plugin notes under
 `crates/bookclerk-plugins/optional/integration-audiobookshelf/`.
@@ -147,6 +161,7 @@ client_id = "....apps.googleusercontent.com"
 provision = "allowlist"
 default_role = "member"
 allowed_email_domains = ["family.example"]
+link_by_email = true
 ```
 
 Client secrets: `BOOKCLERK_OIDC_<ID>_CLIENT_SECRET` (hyphens → underscores),
@@ -155,12 +170,16 @@ Client secrets: `BOOKCLERK_OIDC_<ID>_CLIENT_SECRET` (hyphens → underscores),
 `apple_team_id`, `apple_key_id`, and a `.p8` private key (`BOOKCLERK_OIDC_<ID>_APPLE_PRIVATE_KEY`
 or the sealed store) to mint the ES256 client-secret JWT; the callback is
 `POST` `form_post`. Redirect URI is
-`{integrations.public_origin}/api/auth/oidc/callback`.
+`{effective origin}/api/auth/oidc/callback` (`integrations.public_origin` when
+set, otherwise a bound loopback listen origin — `localhost` in tray/`cargo
+dev`). Off loopback, pin `public_origin`.
 
 Owners (without elevating) and Operators can also manage this from **Settings →
-Sign-in**. The UI writes `[auth.oidc]` to `config.toml` and stores client
-secrets in `encrypted_secrets` rather than TOML. Administrators cannot change
-IdP settings.
+Sign-in**. The UI writes `[auth.oidc]` and `integrations.public_origin` to
+`config.toml` and stores client secrets in `encrypted_secrets` rather than TOML.
+The same page has **SSO into Bookclerk** (upstream Google/GitHub/…) above
+**Bookclerk as identity provider** (detected origin, discovery URLs, and OIDC
+clients). Administrators cannot change IdP settings.
 
 | `provision` | Who gets in |
 | --- | --- |
@@ -170,10 +189,12 @@ IdP settings.
 | `invite_only` | No JIT. SSO only links a pre-created User (`sub` or unique email). |
 
 Primary key is `(provider id, sub)` stored as `portal_identities.provider = oidc:{id}`.
-`link_by_email` (default **off**) attaches a new `sub` to the unique matching
+`link_by_email` attaches a new `sub` to the unique matching
 active User only when the provider adapter proves a **verified** email
 (`email_verified` / GitHub `/user/emails` / Discord `verified` / Apple ID token).
-Mapping a role to `operator` is rejected.
+Social presets (Google, GitHub, Apple, Discord) default **on** in Settings; custom
+OIDC defaults **off** so an unverified upstream email cannot attach to an existing
+Owner. Mapping a role to `operator` is rejected.
 
 Owner elevation uses IdP step-up (`prompt=login` on a linked provider), a
 **passkey**, or a local password — never a stored IdP password. Passkeys are
@@ -184,12 +205,17 @@ session is not terminated.
 | Endpoint | Notes |
 | --- | --- |
 | `GET /api/auth/oidc/providers` | Public list of enabled login buttons |
-| `GET`/`PUT /api/auth/oidc/config` | Owner or Operator: list/replace providers (secrets redacted) |
+| `GET`/`PUT /api/auth/oidc/config` | Owner or Operator: list/replace providers (secrets redacted); `public_origin` pins the issuer; `detected_origin` is this request only when it is a bound loopback listen address |
+| `GET`/`POST /api/auth/oidc/clients` | Owner or Operator: list/create Bookclerk-as-IdP clients (confidential secrets returned once) |
+| `PUT`/`DELETE /api/auth/oidc/clients/{id}` | Update or delete a client |
+| `POST /api/auth/oidc/clients/{id}/rotate-secret` | Mint a new confidential secret (returned once) |
 | `GET /api/auth/oidc/login?provider=` | Start SSO (PKCE + nonce; Apple uses `response_mode=form_post`) |
 | `GET /api/auth/oidc/elevate?provider=` | Owner step-up (`prompt=login`) |
 | `GET`/`POST /api/auth/oidc/callback` | Token exchange + JIT / link (Apple POST `form_post`) |
 | `GET /api/auth/oidc/identities` | Linked IdPs for the current User |
-| `GET`/`POST`/`DELETE /api/auth/passkeys…` | WebAuthn register, login, elevate |
+| `GET`/`POST`/`DELETE /api/auth/passkeys…` | WebAuthn register (optional `name`), login, elevate |
+| `GET`/`PUT /api/auth/mfa-policy` | Owner/operator: require TOTP or passkey for password login |
+| `POST /api/auth/totp/enroll/*` / `GET`/`DELETE /api/auth/totp` / `POST /api/auth/totp/login` | Authenticator-app TOTP |
 
 See [ADR: first-party identity](adr/first-party-identity.md) and
 [gui.md](gui.md).

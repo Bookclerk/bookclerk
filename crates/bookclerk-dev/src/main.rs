@@ -5,8 +5,8 @@ use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::{bail, Context, Result};
 use bookclerk_dev::{
-    default_artifacts, default_files_dir, ensure_workerd_for_profile, package, plugins,
-    reset_files_dir, workspace_root, workspace_version,
+    default_artifacts, default_files_dir, ensure_ui_dist, ensure_workerd_for_profile, package,
+    plugins, reset_files_dir, workspace_root, workspace_version,
 };
 use clap::{Parser, Subcommand};
 
@@ -209,6 +209,7 @@ fn run() -> Result<()> {
             }
             plugins::build_selection(&root, cli.release, sel)?;
             if platform {
+                ensure_ui_dist(&root)?;
                 let bin = ensure_workerd_for_profile(&root, cli.release)?;
                 eprintln!("workerd ready: {}", bin.display());
             }
@@ -411,6 +412,9 @@ fn dev_host(
             },
         )?;
     }
+    // Vite output is not a Cargo artifact: refresh even with --skip-build when
+    // `ui/src` is newer than `ui/dist` (a `git pull` otherwise serves a stale SPA).
+    ensure_ui_dist(root)?;
     let _ = ensure_workerd_for_profile(root, release)?;
     plugins::install_platform(root, &files_dir, release)?;
     if optional || examples {

@@ -381,6 +381,19 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 config.daemon.auth.enabled = b;
             }
         }
+        "daemon.auth.require_second_factor" => {
+            if let Some(b) = parse_bool(v) {
+                config.daemon.auth.require_second_factor = b;
+            }
+        }
+        "daemon.auth.tray_handoff_ttl_secs" => {
+            if let Ok(secs) = v.trim().parse::<u64>() {
+                config.daemon.auth.tray_handoff_ttl_secs = secs.clamp(
+                    crate::TRAY_HANDOFF_TTL_SECS_MIN,
+                    crate::TRAY_HANDOFF_TTL_SECS_MAX,
+                );
+            }
+        }
         "library.auto_acquire" => config.library.auto_acquire = parse_bool(v).unwrap_or(false),
         "library.import_episodes" => {
             config.library.import_episodes = parse_bool(v).unwrap_or(true);
@@ -593,10 +606,16 @@ mod tests {
             &[
                 ("daemon.listen", "[::1]:8787"),
                 ("daemon.auth.enabled", "false"),
+                ("daemon.auth.tray_handoff_ttl_secs", "45"),
             ],
         );
         assert_eq!(cfg.daemon.listen.as_slice(), ["[::1]:8787"]);
         assert!(!cfg.daemon.auth.enabled);
+        assert_eq!(cfg.daemon.auth.tray_handoff_ttl_secs, 45);
+        apply_setting_overrides(&mut cfg, &[("daemon.auth.tray_handoff_ttl_secs", "10")]);
+        assert_eq!(cfg.daemon.auth.tray_handoff_ttl_secs, 30);
+        apply_setting_overrides(&mut cfg, &[("daemon.auth.tray_handoff_ttl_secs", "9999")]);
+        assert_eq!(cfg.daemon.auth.tray_handoff_ttl_secs, 900);
     }
 
     #[test]

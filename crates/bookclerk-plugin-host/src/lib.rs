@@ -39,8 +39,6 @@ mod crates_io;
 mod destinations;
 mod discover;
 mod error;
-#[cfg(unix)]
-mod fd_pass;
 mod host;
 mod jail;
 mod manifest;
@@ -48,8 +46,6 @@ mod registry;
 mod rpc;
 mod rpc_v2;
 mod spawn_stdio;
-#[cfg(windows)]
-mod windows_acl;
 
 pub use bookclerk_plugin_sdk::protocol;
 pub use bookclerk_plugin_sdk::{

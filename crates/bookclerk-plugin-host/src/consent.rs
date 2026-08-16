@@ -915,6 +915,7 @@ pub fn validate_handshake_capabilities(
         "cli",
         "cliDescribe",
         "cliInvoke",
+        "oidcClients",
     ];
     let declared = &manifest.capabilities.methods.list;
     if declared.is_empty() {

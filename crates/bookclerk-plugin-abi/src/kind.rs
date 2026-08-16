@@ -341,8 +341,8 @@ pub struct FetchTitleParams {
     pub account_id: String,
     /// Library / storefront title id to download (wire `titleId`).
     pub title_id: String,
-    /// Absolute path to the host download cache for this fetch (wire
-    /// `cacheDir`). Guests write media here.
+    /// Absolute path the guest should write media into (wire `cacheDir`).
+    /// v2 hosts pass a jail-granted directory under the guest `TMPDIR`.
     pub cache_dir: String,
     /// Host-loaded credential blob for this account (sealed in DB; plugin never
     /// opens DB). `None` when unavailable.
@@ -836,8 +836,8 @@ pub struct LocalPutParams {
 
 /// Params for [`crate::methods::put_file`] against a local filesystem output.
 ///
-/// Large files arrive via FD side channel when confined; otherwise
-/// [`Self::local_path`] is set.
+/// v2 destinations ingest via streamed `put`; this DTO remains for native
+/// guests that still expose `putFile`. [`Self::local_path`] is the source file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalPutFileParams {
@@ -849,8 +849,7 @@ pub struct LocalPutFileParams {
     /// Optional object metadata (default empty).
     #[serde(default)]
     pub meta: ObjectMetaDto,
-    /// Absolute path to the source file when no side channel is wired
-    /// (wire `localPath`).
+    /// Absolute path to the source file (wire `localPath`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_path: Option<String>,
 }
@@ -937,10 +936,8 @@ pub struct PutParams {
 
 /// Params for [`crate::methods::put_file`] against an S3-compatible output.
 ///
-/// Jailed guests receive the local file over the side channel (`SCM_RIGHTS` on
-/// the socket at fd 3) immediately before this RPC. When no side channel is
-/// wired (e.g. unconfined / best-effort), the host sets [`Self::local_path`]
-/// instead.
+/// v2 destinations ingest via streamed `put`; this DTO remains for native
+/// guests that still expose `putFile`. [`Self::local_path`] is the source file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PutFileParams {
@@ -952,8 +949,7 @@ pub struct PutFileParams {
     /// Optional object metadata (default empty).
     #[serde(default)]
     pub meta: ObjectMetaDto,
-    /// Absolute path to the source file when no side channel is wired
-    /// (wire `localPath`).
+    /// Absolute path to the source file (wire `localPath`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_path: Option<String>,
 }

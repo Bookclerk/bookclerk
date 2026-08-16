@@ -98,7 +98,8 @@ fn confine(job: &MediaJob) -> Result<(), String> {
         .confine_current_process()
         .map_err(|err| err.to_string())?;
 
-    // stderr is inherited from the host, so this lands in the daemon's log.
+    // Hosts pipe worker stderr and re-emit via tracing so daemon JSON logs stay
+    // structured. Direct test spawns still see this human line on stderr.
     eprintln!("bookclerk-media-worker: {}", report.summary());
     Ok(())
 }

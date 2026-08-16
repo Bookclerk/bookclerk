@@ -18,9 +18,10 @@ use bookclerk_config::Config;
 use bookclerk_plugin_sdk::v2::{
     connect_plugin, negotiate_rpc_features, ByteRange as AbiByteRange, Cancellation, CopyResult,
     Database, Destination, DestinationContext, JobInvocation, JobInvocationLease, ListOptions,
-    ObjectMetadata, PluginClient, PluginDescribe, PutResult, ReadResult, ScalarLimits, Source,
-    StreamCopySpec, WorkerContext, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY,
-    FEATURE_STREAMS, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    ObjectMetadata, OidcClientTemplate, PluginClient, PluginDescribe, PutResult, ReadResult,
+    ScalarLimits, Source, StreamCopySpec, WorkerContext, WriteOptions, FEATURE_SCALAR_LIMITS,
+    FEATURE_STORAGE_COPY, FEATURE_STREAMS, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
+    PRODUCT_API_VERSION,
 };
 use bookclerk_storage::{
     ByteRange, ListPage, ObjectInfo, ObjectMeta, ObjectProbe, PutStreamResult, StorageBackend,
@@ -129,6 +130,9 @@ enum Work {
     CliInvoke {
         params: String,
         reply: oneshot::Sender<Result<String>>,
+    },
+    OidcClients {
+        reply: oneshot::Sender<Result<Vec<OidcClientTemplate>>>,
     },
     DbOpen {
         ctx_json: String,
@@ -655,6 +659,16 @@ impl V2PluginSession {
         .await
     }
 
+    /// Plugin-provided OIDC authorization-server client templates.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the RPC fails. Older guests that lack
+    /// `oidcClients` returns templates, or an empty list when unused.
+    pub async fn oidc_clients(&self) -> Result<Vec<OidcClientTemplate>> {
+        self.call(|reply| Work::OidcClients { reply }).await
+    }
+
     /// Opens a database session (held on the vat until drop).
     ///
     /// # Errors
@@ -1065,6 +1079,9 @@ fn vat_thread(
                         }
                         Work::CliInvoke { params, reply } => {
                             let _ = reply.send(client.cli_invoke(&params).await.map_err(map_abi));
+                        }
+                        Work::OidcClients { reply } => {
+                            let _ = reply.send(client.oidc_clients().await.map_err(map_abi));
                         }
                         Work::DbOpen { ctx_json, reply } => {
                             let out = async {

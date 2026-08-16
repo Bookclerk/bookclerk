@@ -249,7 +249,7 @@ pub mod put {
     pub const NAME: &str = "put";
 }
 
-/// Put a large file into an output destination (FD side channel or path).
+/// Put a large file into an output destination (`localPath` or streamed `put`).
 ///
 /// Params: [`crate::kind::OutputPutFileParams`].
 pub mod put_file {

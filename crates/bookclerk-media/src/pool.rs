@@ -28,7 +28,7 @@ use std::process::Stdio;
 use std::sync::{Arc, RwLock};
 
 use bookclerk_sandbox::{Enforcement, NetPolicy, Spec, SPEC_ENV};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Semaphore;
 
 use crate::error::{MediaError, Result};
@@ -332,7 +332,7 @@ impl MediaPool {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             // The jail keeps the codecs away from the host's files; the
             // environment is the other way they could read them. A worker gets
@@ -368,6 +368,9 @@ impl MediaPool {
             job: label,
             detail: format!("could not spawn {spawned}: {err}"),
         })?;
+        if let Some(stderr) = child.stderr.take() {
+            forward_worker_stderr(label, stderr);
+        }
 
         // Close stdin after the single request so the worker sees EOF and does
         // not wait for a second job.
@@ -406,6 +409,20 @@ impl MediaPool {
 
         interpret_reply(label, &reply, status.success(), &status.to_string())
     }
+}
+
+/// Re-emits worker/jail stderr through tracing so daemon JSON logs stay structured.
+fn forward_worker_stderr(job: &'static str, stderr: tokio::process::ChildStderr) {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let line = bookclerk_config::strip_ansi_escapes(&line);
+            if line.is_empty() {
+                continue;
+            }
+            tracing::info!(job, "{line}");
+        }
+    });
 }
 
 /// Decide what a worker's reply means, given how its process ended.

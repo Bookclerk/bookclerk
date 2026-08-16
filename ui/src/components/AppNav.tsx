@@ -11,6 +11,8 @@ export interface AppNavProps {
   view: AppView;
   /** In-app navigation callback (history is updated by the parent). */
   onNavigate: (view: AppView) => void;
+  /** Signed-in start page (`user_preferences.default_view`). */
+  defaultView: AppView;
   /** Effective session role (Settings is available to all signed-in roles). */
   role?: AuthRole;
 }

@@ -1,13 +1,12 @@
-//! Receive descriptors the host passes over a Unix SCM_RIGHTS side channel.
+//! Receive descriptors the host *could* pass over a Unix SCM_RIGHTS side channel.
 //!
-//! Audience: guest authors that need a directory or file the jail cannot expose
-//! as a normal path string (fetch work dirs, `putFile` sources). The host opens
-//! FD [`PLUGIN_FD_CHANNEL`] (always `3`), sets [`PLUGIN_FD_CHANNEL_ENV`], and
-//! sends one descriptor per RPC that needs it. Pair with [`crate::FetchWorkDir`]
-//! / [`crate::UploadFile`].
+//! Audience: leftover helpers for a native fetch/`putFile` shortcut that v2
+//! does **not** wire. Current hosts never set [`PLUGIN_FD_CHANNEL_ENV`], so
+//! [`crate::FetchWorkDir`] / [`crate::UploadFile`] use path strings. Calling
+//! [`recv_passed_fd`] while the env is unset returns an error; if the env is
+//! set without a matching `sendmsg`, it blocks forever.
 //!
-//! Non-Unix platforms return [`crate::SdkError`] from [`recv_passed_fd`] — there
-//! is no SCM_RIGHTS equivalent in this SDK.
+//! Non-Unix platforms return [`crate::SdkError`] from [`recv_passed_fd`].
 
 #![cfg_attr(unix, allow(unsafe_code))]
 
@@ -21,17 +20,18 @@ use crate::error::{Result, SdkError};
 /// FD for other purposes while the channel is active.
 pub const PLUGIN_FD_CHANNEL: i32 = 3;
 
-/// Environment variable the host sets to the decimal form of [`PLUGIN_FD_CHANNEL`].
+/// Environment variable the host *would* set to the decimal form of [`PLUGIN_FD_CHANNEL`].
 ///
-/// Presence of this variable (value must parse to [`PLUGIN_FD_CHANNEL`]) arms
-/// [`crate::FetchWorkDir::open`] / [`crate::UploadFile::open`] to call
-/// [`recv_passed_fd`] instead of trusting path strings in RPC params.
+/// v2 hosts do **not** set this. Presence still arms [`crate::FetchWorkDir::open`]
+/// / [`crate::UploadFile::open`] to call [`recv_passed_fd`] instead of path
+/// strings — only set it when the host is actually sending an FD.
 pub const PLUGIN_FD_CHANNEL_ENV: &str = "BOOKCLERK_PLUGIN_FD_CHANNEL";
 
 /// Receives one file descriptor from the host side channel (SCM_RIGHTS).
 ///
 /// Blocks until the host sends a control message on [`PLUGIN_FD_CHANNEL`].
-/// Call once per RPC that expects a passed FD (fetch dir or upload file).
+/// v2 hosts do not send; prefer path strings unless you are implementing a
+/// native shortcut that actually `sendmsg`s.
 ///
 /// # Returns
 ///

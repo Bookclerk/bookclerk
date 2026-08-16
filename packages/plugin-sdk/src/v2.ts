@@ -54,6 +54,17 @@ export interface PluginDescribe {
   metadataJson?: string;
 }
 
+/** Bookclerk-as-IdP relying-party template declared by a guest. */
+export interface OidcClientTemplate {
+  clientId: string;
+  displayName?: string;
+  callbackPath: string;
+  publicClient?: boolean;
+  defaultScopes?: string[];
+  issueRefreshToken?: boolean;
+  originConfigKey: string;
+}
+
 /** Injected destination knobs. Opaque JSON only — no OS paths. */
 export interface DestinationContext {
   json?: string;
@@ -930,6 +941,18 @@ export abstract class BookclerkPlugin extends WorkerEntrypoint<BookclerkPluginEn
     throw unsupported("cliInvoke");
   }
 
+  /**
+   * Plugin-provided OIDC authorization-server client templates.
+   *
+   * Empty when the guest is not a relying party. The host materializes
+   * `oidc_clients` rows; plugins never mint tokens.
+   *
+   * @returns Templates (`[]` when unused).
+   */
+  async oidcClients(): Promise<OidcClientTemplate[]> {
+    return [];
+  }
+
   /** Releases guest resources. */
   async shutdown(): Promise<void> {}
 }
@@ -1314,6 +1337,15 @@ function createInvocationAdapter() {
 
     async cliInvoke(paramsJson: string): Promise<string> {
       return this.#plugin().cliInvoke(paramsJson);
+    }
+
+    async oidcClients(): Promise<OidcClientTemplate[]> {
+      const fn = this.#plugin().oidcClients;
+      if (typeof fn !== "function") {
+        return [];
+      }
+      const clients = await fn.call(this.#plugin());
+      return Array.isArray(clients) ? clients : [];
     }
 
     async shutdown(): Promise<void> {

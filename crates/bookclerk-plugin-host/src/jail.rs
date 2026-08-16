@@ -7,39 +7,38 @@
 //! - its own install directory, read-only — the binary and `plugin.toml`
 //! - `…/plugins/<id>/data`, its private state, also exported as `HOME`
 //! - `…/plugins/<id>/tmp`, its scratch, exported as `TMPDIR`
-//! - one fetch work directory at a time, passed over the side channel on fd 3
-//!   (`SCM_RIGHTS` delivers the directory as a separate descriptor)
+//!
+//! Fetch scratch is a subdirectory of that `tmp` (the host passes it as
+//! `cache_dir` on `fetchTitle`). Destinations ingest bytes over Cap'n Proto
+//! streams, so they never need a host path inside the jail.
 //!
 //! That leaves out everything that matters: `master.key`, the operator token,
-//! the output library, the config file, and every other plugin's data directory.
-//! The **sqlite** database guest is the exception: on Linux, Landlock re-checks
-//! the real path when the guest reopens a passed FD via `/proc/self/fd/N`; on
-//! Windows, AppContainer ACLs enforce the same constraint. Either way, that
-//! guest gets file-level write grants for `library.db` and its
+//! the output library, the config file, the download cache root, and every
+//! other plugin's data directory. The **sqlite** database guest is the
+//! exception: it gets file-level write grants for `library.db` and its
 //! `-wal`/`-shm`/`-journal` sidecars — never the files-dir parent (which would
 //! expose `master.key`). Other guests never see the database; credentials and
 //! scan results stay on RPC.
 //!
-//! # Why a descriptor per fetch rather than the cache root
+//! # Why fetch scratch lives under plugin `tmp` rather than the cache root
 //!
 //! A guest is long-lived: one process per plugin, serving every call for the
-//! life of the daemon. Filesystem confinement is fixed at spawn and cannot be
-//! narrowed when `fetch_title` names a work directory, so granting the whole
-//! cache would let one fetch read or overwrite every other fetch's scratch.
-//! The host therefore opens exactly one work directory per fetch and passes it
-//! over a side channel; the guest writes through that descriptor alone.
+//! life of the daemon. Filesystem confinement is fixed at spawn and cannot
+//! grow a new host-cache directory per `fetchTitle`. Granting the whole cache
+//! would let one plugin read or overwrite every other fetch's scratch. Plugin
+//! `tmp` is already in the spawn allowlist and is this guest's principal only.
+//! v1 passed a per-call directory over `SCM_RIGHTS` on fd 3; v2 does not arm
+//! that channel (workerd cannot `recvmsg`; destinations stream).
 //!
 //! # Why a launcher
 //!
 //! The guest cannot be asked to confine itself; see the `bookclerk-jail` crate
 //! docs for why, and for what permitting `execve` costs.
 
-#![cfg_attr(unix, allow(unsafe_code))]
-
 use std::path::{Path, PathBuf};
 
 use bookclerk_config::{Config, Isolation};
-use bookclerk_sandbox::{Enforcement, NetPolicy, Spec, PLUGIN_FD_CHANNEL};
+use bookclerk_sandbox::{Enforcement, NetPolicy, Spec};
 
 use crate::discover::DiscoveredPlugin;
 use crate::manifest::JailNetworkNeed;
@@ -85,10 +84,9 @@ fn plugin_state_root(config: &Config, plugin_id: &str) -> Result<PathBuf> {
 
 /// Default host budget for each of `plugins/<id>/data` and `plugins/<id>/tmp`.
 ///
-/// Checked at jail plan (spawn/reload) and again before write-heavy RPC
-/// side-passes so a running guest cannot fill disk after a lean spawn.
-/// Operators may raise or lower this per plugin via consent `diskMib`, still
-/// clamped to [`crate::consent::PLUGIN_STATE_BUDGET_MIB_MAX`].
+/// Checked at jail plan (spawn/reload) so a guest whose `data`/`tmp` already
+/// exceeds the budget cannot start. Operators may raise or lower this per plugin
+/// via consent `diskMib`, still clamped to [`crate::consent::PLUGIN_STATE_BUDGET_MIB_MAX`].
 pub(crate) const PLUGIN_STATE_BUDGET_BYTES: u64 =
     (crate::consent::PLUGIN_STATE_BUDGET_MIB_DEFAULT as u64) * 1024 * 1024;
 
@@ -193,12 +191,6 @@ pub(crate) struct GuestJail {
     pub scratch: PathBuf,
     /// Confined launcher + spec, or an unconfined start with the skip reason.
     pub start: Start,
-    /// Side channel for passing one fetch directory at a time (host end).
-    #[cfg(unix)]
-    pub fd_channel: Option<std::os::unix::net::UnixStream>,
-    /// Guest end of the side channel, installed on [`PLUGIN_FD_CHANNEL`] at spawn.
-    #[cfg(unix)]
-    pub guest_channel_raw: Option<std::os::fd::RawFd>,
     /// AppContainer Package SID (SDDL) when the guest will run confined on Windows.
     #[cfg(windows)]
     pub package_sid: Option<String>,
@@ -227,8 +219,7 @@ impl GuestJail {
             })?;
         }
         // Availability: refuse spawn/reload when state already exceeds the host
-        // budget (runaway cache / tmp from a previous session). Runtime growth
-        // is re-checked before write-heavy side-passes on the v2 session.
+        // budget (runaway tmp from a previous session).
         let grant = crate::consent::spawn_grant(&config.paths().files_dir, &plugin.manifest).ok();
         let disk_budget = crate::consent::effective_disk_budget_bytes(grant.as_ref());
         ensure_plugin_state_within_budget_limit(id, &data, &scratch, disk_budget)?;
@@ -256,10 +247,6 @@ impl GuestJail {
         }
 
         let isolation = config.plugins.isolation;
-        #[cfg(unix)]
-        let mut fd_channel = None;
-        #[cfg(unix)]
-        let mut guest_channel_raw = None;
         #[cfg(windows)]
         let mut package_sid = None;
         #[cfg(windows)]
@@ -304,38 +291,8 @@ impl GuestJail {
                                 }
                             }
                         }
-                        #[cfg(unix)]
-                        let preserve_fds = {
-                            use std::os::fd::IntoRawFd;
-                            use std::os::unix::net::UnixStream;
-
-                            let (host, guest) = UnixStream::pair().map_err(|err| {
-                                PluginError::message(format!(
-                                    "could not open fetch-directory side channel: {err}"
-                                ))
-                            })?;
-                            let guest_raw = guest.into_raw_fd();
-                            let flags = unsafe { libc::fcntl(guest_raw, libc::F_GETFD) };
-                            if flags < 0 {
-                                return Err(PluginError::message(format!(
-                                    "could not inspect fetch-directory socket: {}",
-                                    std::io::Error::last_os_error()
-                                )));
-                            }
-                            if unsafe {
-                                libc::fcntl(guest_raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC)
-                            } < 0
-                            {
-                                return Err(PluginError::message(format!(
-                                    "could not clear CLOEXEC on fetch-directory socket: {}",
-                                    std::io::Error::last_os_error()
-                                )));
-                            }
-                            fd_channel = Some(host);
-                            guest_channel_raw = Some(guest_raw);
-                            vec![PLUGIN_FD_CHANNEL]
-                        };
-                        #[cfg(not(unix))]
+                        // v2 does not pass per-RPC descriptors; fetch scratch is
+                        // plugin `tmp` and sqlite paths are spawn-time grants.
                         let preserve_fds: Vec<i32> = Vec::new();
 
                         #[cfg(windows)]
@@ -375,10 +332,6 @@ impl GuestJail {
             data,
             scratch,
             start,
-            #[cfg(unix)]
-            fd_channel,
-            #[cfg(unix)]
-            guest_channel_raw,
             #[cfg(windows)]
             package_sid,
             #[cfg(windows)]
@@ -785,6 +738,7 @@ mod tests {
                     methods: Default::default(),
                 },
                 cli: None,
+                oidc: Default::default(),
             },
             root: root.to_path_buf(),
             command,
@@ -809,7 +763,7 @@ mod tests {
             &config,
             &plugin_data_dir(&config, "libro").unwrap(),
             &plugin_scratch_dir(&config, "libro").unwrap(),
-            vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
+            Vec::new(),
             Enforcement::Required,
             None,
         );
@@ -845,9 +799,8 @@ mod tests {
     }
 
     /// The sqlite guest needs file-level write grants for the DB and journal
-    /// sidecars on all platforms (Landlock re-checks `/proc/self/fd/N` on Linux;
-    /// AppContainer ACLs apply the same constraint on Windows) — without
-    /// handing over the files-dir parent (`master.key`, config).
+    /// sidecars on all platforms — without handing over the files-dir parent
+    /// (`master.key`, config).
     #[test]
     fn sqlite_guest_gets_library_db_files_but_not_secrets() {
         let files = tempfile::tempdir().expect("tempdir");
@@ -861,7 +814,7 @@ mod tests {
             &config,
             &plugin_data_dir(&config, "sqlite").unwrap(),
             &plugin_scratch_dir(&config, "sqlite").unwrap(),
-            vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
+            Vec::new(),
             Enforcement::Required,
             None,
         );
@@ -918,7 +871,7 @@ mod tests {
             &config,
             &plugin_data_dir(&config, "libro").unwrap(),
             &plugin_scratch_dir(&config, "libro").unwrap(),
-            vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
+            Vec::new(),
             Enforcement::Required,
             None,
         );
@@ -955,7 +908,7 @@ mod tests {
                 &config,
                 &plugin_data_dir(&config, "xx").unwrap(),
                 &plugin_scratch_dir(&config, "xx").unwrap(),
-                vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
+                Vec::new(),
                 Enforcement::Required,
                 None,
             );
@@ -983,7 +936,7 @@ mod tests {
             &config,
             &plugin_data_dir(&config, "echo").unwrap(),
             &plugin_scratch_dir(&config, "echo").unwrap(),
-            vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
+            Vec::new(),
             Enforcement::Required,
             None,
         );
@@ -1011,7 +964,7 @@ mod tests {
             &config,
             &plugin_data_dir(&config, "echo").unwrap(),
             &plugin_scratch_dir(&config, "echo").unwrap(),
-            vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
+            Vec::new(),
             Enforcement::Required,
             None,
             Some(&deny),
@@ -1026,7 +979,7 @@ mod tests {
             &config,
             &plugin_data_dir(&config, "oauth").unwrap(),
             &plugin_scratch_dir(&config, "oauth").unwrap(),
-            vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
+            Vec::new(),
             Enforcement::Required,
             None,
             Some(&PluginGrant {
@@ -1226,8 +1179,7 @@ mod tests {
         assert!(!data.to_string_lossy().contains(".."));
     }
 
-    /// The download cache root is never granted; fetch scratch arrives one directory
-    /// at a time over a side channel.
+    /// The download cache root is never granted; fetch scratch is plugin `tmp`.
     #[test]
     fn the_cache_root_is_never_granted() {
         let files = tempfile::tempdir().expect("tempdir");
@@ -1239,7 +1191,7 @@ mod tests {
             &config,
             &plugin_data_dir(&config, "libro").unwrap(),
             &plugin_scratch_dir(&config, "libro").unwrap(),
-            vec![bookclerk_sandbox::PLUGIN_FD_CHANNEL],
+            Vec::new(),
             Enforcement::Required,
             None,
         );

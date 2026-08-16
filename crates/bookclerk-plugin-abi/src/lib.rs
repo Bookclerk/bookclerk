@@ -185,6 +185,31 @@ mod tests {
         assert_eq!(cv["challengeId"], "c1");
         assert_eq!(cv["kind"], "login");
 
+        let confirm = DbAtomicParams::ConfirmTotpEnrollment {
+            user_id: 9,
+            format: "sealed-v1".into(),
+            ciphertext: "b64:AA==".into(),
+            cipher_algorithm: Some("xchacha20poly1305".into()),
+            cipher_nonce: Some("b64:AA==".into()),
+            kdf_algorithm: None,
+            kdf_salt: None,
+            kdf_m_cost: None,
+            kdf_t_cost: None,
+            kdf_p_cost: None,
+            created_at: "2024-06-01T00:00:00Z".into(),
+        };
+        let conf_v = serde_json::to_value(&confirm).unwrap();
+        assert_eq!(conf_v["op"], "confirmTotpEnrollment");
+        assert_eq!(conf_v["userId"], 9);
+        assert_eq!(conf_v["ciphertext"], "b64:AA==");
+        let confirm_back: DbAtomicParams = serde_json::from_value(conf_v).unwrap();
+        assert_eq!(confirm_back, confirm);
+
+        let disable = DbAtomicParams::DisableUserTotp { user_id: 9 };
+        let dis_v = serde_json::to_value(&disable).unwrap();
+        assert_eq!(dis_v["op"], "disableUserTotp");
+        assert_eq!(dis_v["userId"], 9);
+
         let d1 = DbConnectResult::d1();
         let rv = serde_json::to_value(&d1).unwrap();
         assert_eq!(rv["dialect"], "sqlite");

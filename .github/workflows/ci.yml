@@ -615,6 +615,12 @@ jobs:
           BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
         run: cargo test -p bookclerk-library --lib postgres_ -- --ignored --nocapture
 
+      - name: Postgres TOTP atomic tests
+        env:
+          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
+        run: cargo test -p bookclerk-library --lib postgres_totp -- --nocapture
+
       - name: Postgres guest page tests
         env:
           BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres

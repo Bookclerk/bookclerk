@@ -3,17 +3,23 @@ import { cn } from "@/lib/utils";
 /**
  * Animated waveform loading indicator.
  *
- * @param props - Optional className and size.
+ * @param props - Optional className and size (`xs` fits an avatar badge).
  */
 export function WaveformThrobber({
   className,
   size = "md",
 }: {
   className?: string;
-  size?: "sm" | "md" | "lg";
+  size?: "xs" | "sm" | "md" | "lg";
 }) {
   const dim =
-    size === "sm" ? "h-3.5 w-4" : size === "lg" ? "h-11 w-14" : "h-9 w-11";
+    size === "xs"
+      ? "h-2.5 w-3"
+      : size === "sm"
+        ? "h-3.5 w-4"
+        : size === "lg"
+          ? "h-11 w-14"
+          : "h-9 w-11";
 
   return (
     <svg

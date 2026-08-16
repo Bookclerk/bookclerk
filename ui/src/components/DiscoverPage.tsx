@@ -16,18 +16,20 @@ import { DiscoverFilterRail } from "@/components/DiscoverFilterRail";
 import { StarRating } from "@/components/StarRating";
 import { StoreLogo } from "@/components/StoreLogo";
 import { WaveformThrobber } from "@/components/WaveformThrobber";
+import { WisherAvatars } from "@/components/WisherAvatars";
 import { useRegisterShelvesChangeListener } from "@/components/usePreferences";
 import {
-  TitleDetailModal,
+  CatalogTitleDetailModal,
   type TitleMetaSearchKind,
 } from "@/components/TitleDetailModal";
-import { titleDetailFromCatalog, type TitleDetail } from "@/lib/titleDetail";
+import { type TitleDetail } from "@/lib/titleDetail";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { loadEnabledSources } from "@/lib/enabledSources";
 import { cn, pageWidthClass } from "@/lib/utils";
 import {
   applyTitleMeta,
+  attachWishersFromQueue,
   buildCatalogSearchFilters,
   CATALOG_LANGUAGE_ALL,
   CATALOG_SORT_OPTIONS,
@@ -56,6 +58,7 @@ import {
   fetchDiscoverFeed,
   fetchPreferences,
   fetchPurchaseHints,
+  fetchRequestQueue,
   fetchTitleMeta,
   fetchTitleMetaBatch,
   fetchWishlist,
@@ -86,7 +89,7 @@ const SHELVES_INITIAL = 6;
 const RESULTS_PAGE_SIZE = 24;
 
 const selectClassName =
-  "rounded-md border border-ink/15 bg-white/80 px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
+  "rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
 
 function normalizeIsbn(raw: string): string {
   return raw.replace(/[^0-9Xx]/g, "").toUpperCase();
@@ -219,6 +222,7 @@ export function DiscoverPage({
     setFeed(f);
     setWishlist(w);
     setVisibleShelvesCount(SHELVES_INITIAL);
+    return { feed: f, wishlist: w };
   }
 
   async function refresh() {
@@ -624,14 +628,22 @@ export function DiscoverPage({
         language: title.language ?? undefined,
         notes: "Wishlisted from Discover",
       });
-      await refreshFeed();
-      setSelected((prev) =>
-        prev &&
-        (prev.work_key === workKey ||
-          prev.title === title.title)
-          ? { ...prev, wishlist_uuid: created.uuid }
-          : prev,
-      );
+      const [, queue] = await Promise.all([
+        refreshFeed(),
+        fetchRequestQueue(),
+      ]);
+      setSelected((prev) => {
+        if (
+          !prev ||
+          !(prev.work_key === workKey || prev.title === title.title)
+        ) {
+          return prev;
+        }
+        return attachWishersFromQueue(
+          { ...prev, wishlist_uuid: created.uuid },
+          queue,
+        );
+      });
     } catch (err) {
       setError(
         userFacingApiError(err, "Couldn't add that title to your wishlist."),
@@ -647,12 +659,14 @@ export function DiscoverPage({
     setError(null);
     try {
       await removeWishlistItem(title.wishlist_uuid);
-      await refreshFeed();
-      setSelected((prev) =>
-        prev && prev.wishlist_uuid === title.wishlist_uuid
-          ? { ...prev, wishlist_uuid: null }
-          : prev,
-      );
+      const [, queue] = await Promise.all([
+        refreshFeed(),
+        fetchRequestQueue(),
+      ]);
+      setSelected((prev) => {
+        if (!prev || prev.wishlist_uuid !== title.wishlist_uuid) return prev;
+        return attachWishersFromQueue({ ...prev, wishlist_uuid: null }, queue);
+      });
     } catch (err) {
       setError(
         userFacingApiError(err, "Couldn't remove that title from your wishlist."),
@@ -929,8 +943,8 @@ export function DiscoverPage({
                   className={cn(
                     "inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm shadow-sm",
                     sortKey === "relevance"
-                      ? "cursor-not-allowed border-ink/10 bg-white/40 text-ink/40"
-                      : "border-ink/15 bg-white/80 text-ink hover:bg-white",
+                      ? "cursor-not-allowed border-ink/10 bg-card text-ink/40"
+                      : "border-ink/15 bg-card-strong text-ink hover:bg-paper",
                   )}
                   disabled={sortKey === "relevance"}
                   aria-label={
@@ -985,7 +999,7 @@ export function DiscoverPage({
                     "h-9 rounded-md border px-3 text-sm shadow-sm",
                     hideVirtualVoice
                       ? "border-teal/40 bg-teal/10 text-ink"
-                      : "border-ink/15 bg-white/80 text-ink/70",
+                      : "border-ink/15 bg-card-strong text-ink/70",
                   )}
                   aria-pressed={hideVirtualVoice}
                   onClick={() => {
@@ -1103,7 +1117,7 @@ export function DiscoverPage({
 
                 {resultsBusy && resultTitles.length === 0 ? (
                   <div
-                    className="flex flex-col items-center justify-center gap-4 border border-dashed border-ink/15 bg-white/25 px-4 py-16 text-center"
+                    className="flex flex-col items-center justify-center gap-4 border border-dashed border-ink/15 bg-card px-4 py-16 text-center"
                     role="status"
                     aria-live="polite"
                     aria-busy="true"
@@ -1124,7 +1138,7 @@ export function DiscoverPage({
                   </p>
                 ) : (
                   <>
-                    <ul className="divide-y divide-ink/10 border border-ink/10 bg-white/35">
+                    <ul className="divide-y divide-ink/10 border border-ink/10 bg-card">
                       {resultTitles.map((title) => (
                         <ResultRow
                           key={title.work_key}
@@ -1204,11 +1218,9 @@ export function DiscoverPage({
       </div>
 
       {selected ? (
-        <TitleDetailModal
-          key={selected.work_key || selected.title}
-          detail={titleDetailFromCatalog(selected, {
-            purchase_hints: selected.purchase_hints,
-          })}
+        <CatalogTitleDetailModal
+          title={selected}
+          wishlist={wishlist}
           busy={busy}
           onClose={() => setSelected(null)}
           onWishlist={(t) => void onWishlistTitle(t)}
@@ -1255,7 +1267,7 @@ function ResultRow({
   const uniqueSources = [...new Set(sources.map((s) => s.trim()).filter(Boolean))];
 
   return (
-    <li className="grid grid-cols-[56px_1fr_auto] items-start gap-3 px-3 py-2.5 transition-colors hover:bg-white/50 sm:grid-cols-[64px_1fr_auto] sm:gap-4 sm:px-4">
+    <li className="grid grid-cols-[56px_1fr_auto] items-start gap-3 px-3 py-2.5 transition-colors hover:bg-card-strong/50 sm:grid-cols-[64px_1fr_auto] sm:gap-4 sm:px-4">
       <button
         type="button"
         className="overflow-hidden rounded-sm"
@@ -1502,7 +1514,7 @@ function ShelfCard({
   return (
     <article
       ref={cardRef}
-      className="w-40 shrink-0 snap-start rounded-lg bg-white/50 p-2.5 shadow-sm ring-1 ring-ink/5 sm:w-44"
+      className="w-40 shrink-0 snap-start rounded-lg bg-card-mid p-2.5 shadow-sm ring-1 ring-ink/5 sm:w-44"
     >
       <button
         type="button"
@@ -1538,8 +1550,24 @@ function ShelfCard({
         ) : null}
       </button>
 
+      {(title.wishers?.length ?? 0) > 0 ? (
+        <div className="mt-1.5">
+          <WisherAvatars
+            wishers={title.wishers ?? []}
+            wishCount={title.wish_count}
+            max={4}
+            avatarClassName="h-4 w-4 text-[8px]"
+          />
+        </div>
+      ) : null}
+
       {title.rating_overall != null ? (
-        <div className="mt-1.5 flex items-center gap-1">
+        <div
+          className={cn(
+            "flex items-center gap-1",
+            (title.wishers?.length ?? 0) > 0 ? "mt-1" : "mt-1.5",
+          )}
+        >
           <StarRating
             value={title.rating_overall}
             starClassName="h-3 w-3"
@@ -1551,7 +1579,13 @@ function ShelfCard({
       ) : null}
 
       {best || pricing === "loading" ? (
-        <div className={title.rating_overall != null ? "mt-1" : "mt-2"}>
+        <div
+          className={
+            title.rating_overall != null || (title.wishers?.length ?? 0) > 0
+              ? "mt-1"
+              : "mt-2"
+          }
+        >
           {best?.url ? (
             <a
               href={best.url}

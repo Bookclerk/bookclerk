@@ -93,6 +93,7 @@ async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Value> {
             serde_json::json!({
                 "id": p.id,
                 "name": p.display_name(),
+                "preset": p.social_preset(),
             })
         })
         .collect();
@@ -110,8 +111,24 @@ struct OidcConfigResponse {
     /// Broker-wide email domain allowlist applied before per-provider rules.
     allowed_email_domains: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Absolute `/api/auth/oidc/callback` derived from `public_origin`, if set.
-    callback_url: Option<String>,
+    /// Configured `integrations.public_origin` (issuer / callback / invite base).
+    public_origin: Option<String>,
+    /// Effective issuer origin (`public_origin`, else this request, else localhost).
+    issuer_url: String,
+    /// Origin detected from this request (loopback IPs rewritten to `localhost`).
+    detected_origin: String,
+    /// Absolute OpenID discovery URL (`/.well-known/openid-configuration`).
+    discovery_url: String,
+    /// Absolute authorization endpoint (`/oidc/authorize`) for Bookclerk-as-IdP.
+    authorization_endpoint: String,
+    /// Absolute token endpoint (`/oidc/token`) for Bookclerk-as-IdP.
+    token_endpoint: String,
+    /// Absolute userinfo endpoint (`/oidc/userinfo`) for Bookclerk-as-IdP.
+    userinfo_endpoint: String,
+    /// Absolute revocation endpoint (`/oidc/revoke`) for Bookclerk-as-IdP.
+    revocation_endpoint: String,
+    /// Absolute `/api/auth/oidc/callback` derived from the effective issuer origin.
+    callback_url: String,
     /// Configured IdPs with presence flags instead of secret material.
     providers: Vec<OidcProviderView>,
 }
@@ -174,6 +191,9 @@ struct OidcConfigPut {
     #[serde(default)]
     /// Full replacement list of IdPs (omitted secrets keep the previous generation).
     providers: Vec<OidcProviderPut>,
+    /// `integrations.public_origin`. Omit to leave unchanged; empty string clears.
+    #[serde(default)]
+    public_origin: Option<String>,
     /// Required for a non-elevated Owner whose portal session is older than 15 minutes.
     #[serde(default)]
     current_password: Option<String>,
@@ -258,13 +278,39 @@ fn oidc_config_error(status: StatusCode, message: impl Into<String>) -> Response
         .into_response()
 }
 
-/// Builds `{public_origin}/api/auth/oidc/callback`, or `None` when origin is unset.
-fn oidc_callback_url(public_origin: Option<&str>) -> Option<String> {
-    let origin = public_origin.map(str::trim).filter(|s| !s.is_empty())?;
-    Some(format!(
-        "{}/api/auth/oidc/callback",
-        origin.trim_end_matches('/')
-    ))
+/// Builds `{origin}/api/auth/oidc/callback` from an effective issuer origin.
+fn oidc_callback_url(origin: &str) -> String {
+    format!("{origin}/api/auth/oidc/callback")
+}
+
+/// Parse Settings / PUT `public_origin`: empty clears; otherwise an http(s) origin.
+fn parse_public_origin_input(raw: &str) -> Result<Option<String>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let parsed = url::Url::parse(trimmed).map_err(|_| {
+        "public origin must be an absolute http(s) URL such as https://bookclerk.example.com"
+            .to_string()
+    })?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("public origin must use http or https".into());
+    }
+    if parsed.host_str().is_none() {
+        return Err("public origin must include a host".into());
+    }
+    if parsed.path() != "/" && !parsed.path().is_empty() {
+        return Err("public origin must not include a path".into());
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("public origin must not include a query or fragment".into());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("public origin must not include credentials".into());
+    }
+    Ok(Some(crate::origin::rewrite_loopback_host(
+        &parsed.origin().ascii_serialization(),
+    )))
 }
 
 /// True when the provider's `BOOKCLERK_OIDC_*` env var is a non-empty secret.
@@ -568,16 +614,20 @@ async fn delete_named_oidc_secret(state: &AppState, name: &str) -> Result<(), St
 }
 
 /// Operator GET: broker settings plus secret-presence flags (never plaintext).
-async fn get_oidc_config(State(state): State<Arc<AppState>>) -> Json<OidcConfigResponse> {
-    let (enabled, allowed_email_domains, callback_url, configured) = {
-        let cfg = state.config.read().await;
-        (
-            cfg.auth.oidc.enabled,
-            cfg.auth.oidc.allowed_email_domains.clone(),
-            oidc_callback_url(cfg.integrations.public_origin.as_deref()),
-            cfg.auth.oidc.providers.clone(),
-        )
-    };
+async fn get_oidc_config(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Json<OidcConfigResponse> {
+    let cfg = state.config.read().await;
+    let enabled = cfg.auth.oidc.enabled;
+    let allowed_email_domains = cfg.auth.oidc.allowed_email_domains.clone();
+    let public_origin =
+        crate::origin::configured_public_origin(cfg.integrations.public_origin.as_deref())
+            .map(|o| crate::origin::rewrite_loopback_host(&o));
+    let configured = cfg.auth.oidc.providers.clone();
+    let detected_origin = crate::origin::detected_origin(&headers, &cfg.daemon.listen);
+    let issuer_url = crate::origin::effective_origin_from_config(&cfg, Some(&headers));
+    drop(cfg);
     let mut providers = Vec::with_capacity(configured.len());
     for provider in &configured {
         let source = secret_source_for(&state, provider).await;
@@ -608,7 +658,15 @@ async fn get_oidc_config(State(state): State<Arc<AppState>>) -> Json<OidcConfigR
     Json(OidcConfigResponse {
         enabled,
         allowed_email_domains,
-        callback_url,
+        public_origin: public_origin.clone(),
+        issuer_url: issuer_url.clone(),
+        detected_origin,
+        discovery_url: format!("{issuer_url}/.well-known/openid-configuration"),
+        authorization_endpoint: format!("{issuer_url}/oidc/authorize"),
+        token_endpoint: format!("{issuer_url}/oidc/token"),
+        userinfo_endpoint: format!("{issuer_url}/oidc/userinfo"),
+        revocation_endpoint: format!("{issuer_url}/oidc/revoke"),
+        callback_url: oidc_callback_url(&issuer_url),
         providers,
     })
 }
@@ -658,6 +716,13 @@ async fn put_oidc_config(
         .map(|p| (p.id.trim().to_string(), p.clone()))
         .collect();
     let next_gen = old_gen.saturating_add(1);
+    let next_public_origin = match body.public_origin.as_deref() {
+        None => None,
+        Some(raw) => match parse_public_origin_input(raw) {
+            Ok(origin) => Some(origin),
+            Err(msg) => return Err(oidc_config_error(StatusCode::BAD_REQUEST, msg)),
+        },
+    };
 
     let mut next = OidcBrokerConfig {
         enabled: body.enabled,
@@ -788,6 +853,9 @@ async fn put_oidc_config(
         {
             let mut staged = state.config.read().await.clone();
             staged.auth.oidc = next.clone();
+            if let Some(origin) = next_public_origin.clone() {
+                staged.integrations.public_origin = origin;
+            }
             staged.register_known_secrets();
             staged
                 .write_toml_file(&config_path)
@@ -796,6 +864,9 @@ async fn put_oidc_config(
         {
             let mut cfg = state.config.write().await;
             cfg.auth.oidc = next.clone();
+            if let Some(origin) = next_public_origin.clone() {
+                cfg.integrations.public_origin = origin;
+            }
             cfg.register_known_secrets();
         }
         for logical in old_logical.union(&next_logical) {
@@ -836,7 +907,7 @@ async fn put_oidc_config(
         ));
     }
 
-    Ok(get_oidc_config(State(state.clone())).await)
+    Ok(get_oidc_config(State(state.clone()), headers).await)
 }
 
 /// Lists OIDC portal identities for the cookie-authenticated caller.
@@ -871,13 +942,14 @@ async fn list_identities(
 async fn login_start(
     State(state): State<Arc<AppState>>,
     ClientIp(client_key): ClientIp,
+    headers: HeaderMap,
     Query(q): Query<ProviderQuery>,
 ) -> Result<Response, StatusCode> {
     let auth = state.auth_snapshot().await;
     if let Some(retry_after) = auth.login_throttle_check(&client_key).await {
         return Ok(too_many_requests(retry_after));
     }
-    match start_authorize(&state, q.provider.as_deref(), "login", None).await {
+    match start_authorize(&state, Some(&headers), q.provider.as_deref(), "login", None).await {
         Ok(res) => {
             auth.clear_login_failures(&client_key).await;
             Ok(res)
@@ -928,12 +1000,20 @@ async fn elevate_start(
                 .ok_or(StatusCode::BAD_REQUEST)?
         }
     };
-    start_authorize(&state, Some(&provider_id), "elevate", Some(user.id)).await
+    start_authorize(
+        &state,
+        Some(&headers),
+        Some(&provider_id),
+        "elevate",
+        Some(user.id),
+    )
+    .await
 }
 
 /// Persists hashed RP state and redirects to the IdP authorize URL with PKCE.
 async fn start_authorize(
     state: &AppState,
+    headers: Option<&HeaderMap>,
     provider_id: Option<&str>,
     purpose: &str,
     user_id: Option<i64>,
@@ -952,7 +1032,7 @@ async fn start_authorize(
         .provider(id)
         .cloned()
         .ok_or(StatusCode::NOT_FOUND)?;
-    let origin = public_origin(&cfg);
+    let origin = crate::origin::effective_origin_from_config(&cfg, headers);
     let tx_flags = oidc_transaction_cookie_flags(cfg.integrations.public_origin.as_deref());
     drop(cfg);
     let endpoints = resolve_endpoints(&provider)
@@ -1077,7 +1157,7 @@ async fn finish_callback(
     let Some(provider) = cfg.auth.oidc.provider(&provider_id).cloned() else {
         return Err(StatusCode::NOT_FOUND);
     };
-    let origin = public_origin(&cfg);
+    let origin = crate::origin::effective_origin_from_config(&cfg, Some(headers));
     let global_domains = cfg.auth.oidc.allowed_email_domains.clone();
     drop(cfg);
     let endpoints = resolve_endpoints(&provider)
@@ -1332,6 +1412,7 @@ async fn provision_user(
             }
         }
         refresh_profile(library, &user, profile).await?;
+        persist_sso_picture(library, &portal_provider, profile).await;
         return library
             .get_user(user.id)
             .await
@@ -1369,6 +1450,7 @@ async fn provision_user(
                     }
                 }
                 refresh_profile(library, &user, profile).await?;
+                persist_sso_picture(library, &portal_provider, profile).await;
                 return library
                     .get_user(user.id)
                     .await
@@ -1401,6 +1483,7 @@ async fn provision_user(
         )
         .await
         .map_err(|_| ProvisionError::Internal)?;
+    persist_sso_picture(library, &portal_provider, profile).await;
     let _ = library
         .insert_security_audit_event(
             &format!("user:{}", user.id),
@@ -1436,6 +1519,20 @@ async fn refresh_profile(
         let _ = library.set_user_email(user.id, Some(email)).await;
     }
     Ok(())
+}
+
+/// Best-effort persist of the IdP picture onto the portal identity row.
+async fn persist_sso_picture(
+    library: &bookclerk_library::LibraryStore,
+    portal_provider: &str,
+    profile: &UpstreamProfile,
+) {
+    let Some(url) = profile.picture_url.as_deref() else {
+        return;
+    };
+    let _ = library
+        .set_portal_identity_picture(portal_provider, &profile.sub, Some(url))
+        .await;
 }
 
 /// Resolved authorize, token, userinfo, and JWKS URLs for one IdP.
@@ -1726,16 +1823,6 @@ async fn fetch_github_verified_email(access_token: &str) -> Result<Option<String
         .await
         .map_err(|_| ())?;
     Ok(github_verified_email(&emails))
-}
-
-/// Trimmed `integrations.public_origin`, or loopback `http://127.0.0.1:8787`.
-fn public_origin(cfg: &bookclerk_config::Config) -> String {
-    cfg.integrations
-        .public_origin
-        .as_deref()
-        .map(|s| s.trim().trim_end_matches('/').to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| String::from("http://127.0.0.1:8787"))
 }
 
 /// Gathers role/group strings from userinfo, id_token, and Keycloak `realm_access.roles`.
@@ -2302,10 +2389,60 @@ mod http_tests {
         assert_eq!(res.status(), StatusCode::OK);
         let json = json_body(res).await;
         assert_eq!(json["enabled"], true);
+        assert_eq!(json["issuer_url"], "http://localhost:8787");
+        assert_eq!(
+            json["discovery_url"],
+            "http://localhost:8787/.well-known/openid-configuration"
+        );
+        assert_eq!(json["detected_origin"], "http://localhost:8787");
+        assert!(json.get("public_origin").is_none() || json["public_origin"].is_null());
         assert_eq!(json["providers"][0]["id"], "github");
         assert_eq!(json["providers"][0]["has_client_secret"], false);
         assert_eq!(json["providers"][0]["secret_source"], "none");
         assert!(json["providers"][0].get("client_secret").is_none());
+    }
+
+    #[tokio::test]
+    async fn oidc_config_detected_origin_rewrites_loopback_and_ignores_untrusted() {
+        let (_state, app, library) = harness(true, vec![github_provider()]).await;
+        let cookie =
+            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
+        let loopback = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/oidc/config")
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .header(axum::http::header::ORIGIN, "http://127.0.0.1:8787")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(loopback.status(), StatusCode::OK);
+        let loopback_json = json_body(loopback).await;
+        assert_eq!(loopback_json["detected_origin"], "http://localhost:8787");
+        assert_eq!(loopback_json["issuer_url"], "http://localhost:8787");
+        assert_eq!(
+            loopback_json["callback_url"],
+            "http://localhost:8787/api/auth/oidc/callback"
+        );
+
+        let fqdn = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/oidc/config")
+                    .header(axum::http::header::COOKIE, cookie)
+                    .header(axum::http::header::ORIGIN, "https://bookclerk.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fqdn.status(), StatusCode::OK);
+        let fqdn_json = json_body(fqdn).await;
+        assert_eq!(fqdn_json["detected_origin"], "http://localhost:8787");
+        assert_eq!(fqdn_json["issuer_url"], "http://localhost:8787");
     }
 
     #[tokio::test]
@@ -2399,6 +2536,110 @@ mod http_tests {
         assert!(on_disk.contains("id = \"github\""), "{on_disk}");
         assert!(on_disk.contains("client_id = \"ui-client\""), "{on_disk}");
         assert!(!on_disk.contains("client_secret"), "{on_disk}");
+    }
+
+    #[tokio::test]
+    async fn oidc_config_put_public_origin_persists() {
+        let (state, app, library, dir, _dek) = persist_harness().await;
+        let cookie =
+            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
+        let body = serde_json::json!({
+            "enabled": false,
+            "providers": [],
+            "public_origin": "https://bookclerk.example.com/"
+        });
+        let (status, json) = put_oidc_json(app.clone(), &cookie, &body).await;
+        assert_eq!(status, StatusCode::OK, "{json:?}");
+        assert_eq!(json["public_origin"], "https://bookclerk.example.com");
+        assert_eq!(json["issuer_url"], "https://bookclerk.example.com");
+        assert_eq!(
+            json["callback_url"],
+            "https://bookclerk.example.com/api/auth/oidc/callback"
+        );
+        assert_eq!(
+            json["discovery_url"],
+            "https://bookclerk.example.com/.well-known/openid-configuration"
+        );
+
+        let live = state.config.read().await;
+        assert_eq!(
+            live.integrations.public_origin.as_deref(),
+            Some("https://bookclerk.example.com")
+        );
+        drop(live);
+
+        let on_disk = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(
+            on_disk.contains("public_origin = \"https://bookclerk.example.com\""),
+            "{on_disk}"
+        );
+
+        let clear = serde_json::json!({
+            "enabled": false,
+            "providers": [],
+            "public_origin": ""
+        });
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/auth/oidc/config")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .header(axum::http::header::ORIGIN, "https://bookclerk.example.com")
+                    .body(Body::from(clear.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let json = json_body(res).await;
+        assert_eq!(status, StatusCode::OK, "{json:?}");
+        assert!(json.get("public_origin").is_none() || json["public_origin"].is_null());
+        assert_eq!(json["issuer_url"], "http://localhost:8787");
+        assert_eq!(json["detected_origin"], "http://localhost:8787");
+        assert!(state
+            .config
+            .read()
+            .await
+            .integrations
+            .public_origin
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn oidc_config_put_rejects_invalid_public_origin() {
+        let (_state, app, library, _dir, _dek) = persist_harness().await;
+        let cookie =
+            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
+        let body = serde_json::json!({
+            "enabled": false,
+            "providers": [],
+            "public_origin": "https://bookclerk.example.com/library"
+        });
+        let (status, json) = put_oidc_json(app, &cookie, &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json:?}");
+        assert_eq!(json["error"], "oidc_config");
+    }
+
+    #[test]
+    fn parse_public_origin_input_accepts_origin_only() {
+        assert_eq!(
+            parse_public_origin_input("https://bookclerk.example.com/")
+                .unwrap()
+                .as_deref(),
+            Some("https://bookclerk.example.com")
+        );
+        assert_eq!(
+            parse_public_origin_input("http://127.0.0.1:8787")
+                .unwrap()
+                .as_deref(),
+            Some("http://localhost:8787")
+        );
+        assert_eq!(parse_public_origin_input("  ").unwrap(), None);
+        assert!(parse_public_origin_input("https://bookclerk.example.com/path").is_err());
+        assert!(parse_public_origin_input("ftp://bookclerk.example.com").is_err());
+        assert!(parse_public_origin_input("not-a-url").is_err());
     }
 
     #[tokio::test]

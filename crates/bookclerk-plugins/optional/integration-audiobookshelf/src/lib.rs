@@ -28,6 +28,20 @@ use tracing::info;
 /// Integration id used in handshake and `[integrations.audiobookshelf]`.
 pub const ID: &str = "audiobookshelf";
 
+/// Bookclerk-as-IdP client templates declared by this plugin (`oidcClients`).
+#[must_use]
+pub fn oidc_client_templates() -> Vec<bookclerk_plugin_sdk::v2::OidcClientTemplate> {
+    vec![bookclerk_plugin_sdk::v2::OidcClientTemplate {
+        client_id: ID.into(),
+        display_name: "Audiobookshelf".into(),
+        callback_path: "/auth/openid/callback".into(),
+        public_client: true,
+        default_scopes: vec!["openid".into(), "profile".into()],
+        issue_refresh_token: true,
+        origin_config_key: "integrations.audiobookshelf.base_url".into(),
+    }]
+}
+
 /// Registers Audiobookshelf when `[integrations.audiobookshelf] enabled`.
 ///
 /// When enabled but misconfigured (e.g. missing API key), the adapter is still

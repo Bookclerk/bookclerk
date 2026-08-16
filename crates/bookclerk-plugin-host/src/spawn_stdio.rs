@@ -1,14 +1,14 @@
 //! Shared jailed-child spawn for Cap'n Proto `api_version = 2` stdio guests.
 
 #![allow(clippy::missing_docs_in_private_items)]
-#![cfg_attr(unix, allow(unsafe_code))]
 
 use std::path::PathBuf;
 use std::process::Stdio;
 
 use bookclerk_config::Config;
 use serde_json::Value;
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
 use crate::consent::{
     handshake_config_for_grant, inject_workerd_grant_env, spawn_grant, PluginGrant,
@@ -17,9 +17,6 @@ use crate::discover::DiscoveredPlugin;
 use crate::jail::{GuestJail, Start};
 use crate::manifest::PluginRuntimeKind;
 use crate::{PluginError, Result};
-
-#[cfg(unix)]
-use bookclerk_sandbox::{PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV};
 
 /// Jailed plugin child with stdio pipes (no handshake yet).
 pub(crate) struct SpawnedStdio {
@@ -39,10 +36,6 @@ pub(crate) struct SpawnedStdio {
     pub data: PathBuf,
     /// Guest TMPDIR / scratch directory.
     pub scratch: PathBuf,
-    /// Host end of the fetch-directory side channel (guest still receives fd 3).
-    #[cfg(unix)]
-    #[allow(dead_code)]
-    pub fd_channel: Option<std::os::unix::net::UnixStream>,
     /// AppContainer package SID.
     #[cfg(windows)]
     pub package_sid: Option<String>,
@@ -99,7 +92,7 @@ pub(crate) async fn spawn_stdio_guest(
     cmd.current_dir(&plugin.root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .env_clear();
     for (key, value) in std::env::vars_os() {
@@ -125,36 +118,13 @@ pub(crate) async fn spawn_stdio_guest(
                 PluginError::message(format!("could not encode the jail spec: {err}"))
             })?,
         );
-        #[cfg(unix)]
-        if jail.guest_channel_raw.is_some() {
-            cmd.env(PLUGIN_FD_CHANNEL_ENV, PLUGIN_FD_CHANNEL.to_string());
-        }
-    }
-
-    #[cfg(unix)]
-    if let Some(guest_raw) = jail.guest_channel_raw {
-        unsafe {
-            cmd.pre_exec(move || {
-                if guest_raw != PLUGIN_FD_CHANNEL {
-                    if libc::dup2(guest_raw, PLUGIN_FD_CHANNEL) < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    libc::close(guest_raw);
-                }
-                Ok(())
-            });
-        }
     }
 
     let mut child = cmd.spawn()?;
 
-    #[cfg(unix)]
-    if let Some(guest_raw) = jail.guest_channel_raw {
-        unsafe {
-            libc::close(guest_raw);
-        }
+    if let Some(stderr) = child.stderr.take() {
+        forward_guest_stderr(id.clone(), stderr);
     }
-
     let stdin = child
         .stdin
         .take()
@@ -173,11 +143,26 @@ pub(crate) async fn spawn_stdio_guest(
         handshake_config,
         data: jail.data,
         scratch: jail.scratch,
-        #[cfg(unix)]
-        fd_channel: jail.fd_channel,
         #[cfg(windows)]
         package_sid: jail.package_sid,
         #[cfg(windows)]
         appcontainer: jail.appcontainer,
     })
+}
+
+/// Re-emits each guest stderr line through tracing so `bookclerkd` JSON logs
+/// stay structured (jail summaries used to land as raw `eprintln!` on the
+/// inherited daemon stderr). ANSI from guest formatters is stripped so JSON
+/// does not encode CSI as `\u001b`.
+fn forward_guest_stderr(plugin: String, stderr: ChildStderr) {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let line = bookclerk_config::strip_ansi_escapes(&line);
+            if line.is_empty() {
+                continue;
+            }
+            tracing::info!(plugin = %plugin, "{line}");
+        }
+    });
 }

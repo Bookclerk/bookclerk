@@ -1,0 +1,31 @@
+{
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.cargo.allFeatures": false,
+  "rust-analyzer.cargo.extraEnv": {
+    "CARGO_HOME": "${workspaceFolder}/.cargo-home",
+    "CARGO_TARGET_DIR": "${workspaceFolder}/target",
+    "TMPDIR": "${workspaceFolder}/.tmp",
+    "BOOKCLERK_FILES_DIR": "${workspaceFolder}/BookclerkFiles"
+  },
+  "terminal.integrated.env.linux": {
+    "CARGO_HOME": "${workspaceFolder}/.cargo-home",
+    "CARGO_TARGET_DIR": "${workspaceFolder}/target",
+    "TMPDIR": "${workspaceFolder}/.tmp",
+    "BOOKCLERK_FILES_DIR": "${workspaceFolder}/BookclerkFiles",
+    "PATH": "${workspaceFolder}/target/debug:${workspaceFolder}/target/release:${env:PATH}"
+  },
+  "terminal.integrated.env.osx": {
+    "CARGO_HOME": "${workspaceFolder}/.cargo-home",
+    "CARGO_TARGET_DIR": "${workspaceFolder}/target",
+    "TMPDIR": "${workspaceFolder}/.tmp",
+    "BOOKCLERK_FILES_DIR": "${workspaceFolder}/BookclerkFiles",
+    "PATH": "${workspaceFolder}/target/debug:${workspaceFolder}/target/release:${env:PATH}"
+  },
+  "terminal.integrated.env.windows": {
+    "CARGO_HOME": "${workspaceFolder}/.cargo-home",
+    "CARGO_TARGET_DIR": "${workspaceFolder}/target",
+    "TMPDIR": "${workspaceFolder}/.tmp",
+    "BOOKCLERK_FILES_DIR": "${workspaceFolder}/BookclerkFiles",
+    "PATH": "${workspaceFolder}/target/debug;${workspaceFolder}/target/release;${env:PATH}"
+  }
+}

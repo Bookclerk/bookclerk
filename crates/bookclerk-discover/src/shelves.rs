@@ -635,4 +635,32 @@ mod tests {
         assert!(feed.shelves.iter().any(|s| s.id.starts_with("genre:")));
         assert!(feed.shelves.iter().any(|s| s.id == "from_libro"));
     }
+
+    #[test]
+    fn requests_shelf_keeps_wishers() {
+        use bookclerk_library::QueueWisher;
+        let mut r = rec("Wished Book", 12.0, &["requests"]);
+        r.from_request = true;
+        r.wish_count = 2;
+        r.wishers = vec![
+            QueueWisher {
+                display_name: Some("Ada".into()),
+                identity_id: Some(1),
+                ..Default::default()
+            },
+            QueueWisher {
+                display_name: Some("Bob".into()),
+                identity_id: Some(2),
+                ..Default::default()
+            },
+        ];
+        let feed = build_discover_feed(&[r], &ShelfTaste::default(), 8, &[]);
+        let shelf = feed
+            .shelves
+            .iter()
+            .find(|s| s.id == "requests")
+            .expect("requests shelf");
+        assert_eq!(shelf.items[0].wishers.len(), 2);
+        assert_eq!(shelf.items[0].wish_count, 2);
+    }
 }

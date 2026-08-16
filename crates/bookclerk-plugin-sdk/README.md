@@ -10,7 +10,7 @@ npm bridge described in `src/workerd.rs`.
 
 | Feature | Purpose |
 | --- | --- |
-| *(default)* | Cap'n Proto guest runner, FD side channels, callback tunnel, ABI re-exports |
+| *(default)* | Cap'n Proto guest runner, fetch/upload path helpers, callback tunnel, ABI re-exports |
 | `db` | SeaORM ↔ Workers RPC DTO helpers for database guests |
 | `tools` | `bookclerk-plugin` author CLI (`check` / `fmt` / `package` / `smoke`) |
 

@@ -2,6 +2,9 @@
 
 pub mod package;
 pub mod plugins;
+mod ui;
+
+pub use ui::ensure_ui_dist;
 
 /// Ensure the pinned Cloudflare `workerd` binary is present under `target/<profile>/`.
 ///

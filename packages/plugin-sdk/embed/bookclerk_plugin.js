@@ -397,6 +397,9 @@ export class BookclerkPlugin extends WorkerEntrypoint {
   async cliInvoke(_paramsJson) {
     throw v2Unsupported("cliInvoke");
   }
+  async oidcClients() {
+    return [];
+  }
   async shutdown() {}
 }
 
@@ -642,6 +645,14 @@ function createInvocationAdapter() {
     }
     async cliInvoke(paramsJson) {
       return this.plugin().cliInvoke(paramsJson);
+    }
+    async oidcClients() {
+      const plugin = this.plugin();
+      if (typeof plugin.oidcClients !== "function") {
+        return [];
+      }
+      const clients = await plugin.oidcClients();
+      return Array.isArray(clients) ? clients : [];
     }
     async shutdown() {
       await this.plugin().shutdown();

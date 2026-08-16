@@ -31,7 +31,7 @@ pub use tickets::{
     redeem_ticket_to_session_with_client, session_for_identity, session_for_identity_with_client,
     ticket_portal_url, MintedClaimTicket,
 };
-pub use traits::{Integration, IntegrationContext};
+pub use traits::{Integration, IntegrationContext, ProvidedOidcClient};
 pub use types::{
     ExternalUser, IntegrationEvent, IntegrationHealth, ListeningProgressSnapshot,
     SyncListeningProviderResult, SyncListeningSummary,

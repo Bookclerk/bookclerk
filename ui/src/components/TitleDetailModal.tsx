@@ -22,17 +22,22 @@ import {
   type TitleMeta,
   type TitleReview,
   type TitleReviewsSort,
+  type TitleRequest,
 } from "@/lib/api";
 import {
+  attachWishlistCommerce,
   descriptionLooksComplete,
   formatPurchasePrices,
   pickBetterDescription,
   splitMetaList,
   storeLabel,
+  withAudibleEditionFromAsin,
+  type CatalogTitle,
 } from "@/lib/catalogTitle";
-import { type TitleDetail } from "@/lib/titleDetail";
+import { titleDetailFromCatalog, type TitleDetail } from "@/lib/titleDetail";
 import { formatDate, formatDuration } from "@/lib/libraryFilters";
 import { StoreLogo } from "@/components/StoreLogo";
+import { WisherAvatars } from "@/components/WisherAvatars";
 import {
   decodeHtmlEntities,
   parseGuidedReviewBody,
@@ -249,19 +254,7 @@ function displayReasons(reasons: string[] | null | undefined): string[] {
 function mergePublicMeta(detail: TitleDetail, meta: TitleMeta): TitleDetail {
   const asin = nonempty(detail.asin) ?? meta.asin;
   const isbn = nonempty(detail.isbn) ?? meta.isbn;
-  const editions = [...(detail.store_editions ?? [])];
-  // Title-meta often supplies an Audible ASIN (ratings/reviews) even when
-  // search only found Chirp/Libro — keep it as a store edition for commerce.
-  if (asin && !editions.some((e) => e.source.toLowerCase() === "audible")) {
-    editions.push({ source: "audible", product_id: asin });
-  }
-  const sources = [
-    ...new Set([
-      ...(detail.sources ?? []),
-      ...editions.map((e) => e.source),
-    ]),
-  ];
-  return {
+  return withAudibleEditionFromAsin({
     ...detail,
     subtitle: nonempty(detail.subtitle) ?? meta.subtitle,
     authors: nonempty(detail.authors) ?? meta.authors,
@@ -278,8 +271,6 @@ function mergePublicMeta(detail: TitleDetail, meta: TitleMeta): TitleDetail {
     cover_url: nonempty(detail.cover_url) ?? meta.cover_url,
     asin,
     isbn,
-    store_editions: editions,
-    sources,
     rating_overall: detail.rating_overall ?? meta.rating_overall ?? null,
     rating_performance: detail.rating_performance ?? meta.rating_performance ?? null,
     rating_story: detail.rating_story ?? meta.rating_story ?? null,
@@ -291,7 +282,7 @@ function mergePublicMeta(detail: TitleDetail, meta: TitleMeta): TitleDetail {
         : meta.reviews && meta.reviews.length > 0
           ? meta.reviews
           : detail.reviews,
-  };
+  });
 }
 
 function formatCount(n: number): string {
@@ -515,14 +506,20 @@ export function TitleDetailModal({
     // stable open-title gate (and pages also remount via `key`).
   }, [identityKey]); // eslint-disable-line react-hooks/exhaustive-deps -- intentional
 
-  // Wishlist add/remove updates the parent prop without changing identityKey.
+  // Wishlist add/remove (and household wisher stacks) update the parent prop
+  // without changing identityKey. Fingerprint avoids re-copying on every
+  // parent render of a new `detail` object.
+  const wishlistSyncKey = `${initial.wishlist_uuid ?? ""}:${initial.wish_count ?? ""}:${(initial.wishers ?? [])
+    .map((wisher) => wisher.user_id ?? wisher.identity_id ?? "")
+    .join(",")}`;
   useEffect(() => {
-    setDetail((d) =>
-      d.wishlist_uuid === initial.wishlist_uuid
-        ? d
-        : { ...d, wishlist_uuid: initial.wishlist_uuid ?? null },
-    );
-  }, [initial.wishlist_uuid]);
+    setDetail((d) => ({
+      ...d,
+      wishlist_uuid: initial.wishlist_uuid ?? null,
+      wishers: initial.wishers,
+      wish_count: initial.wish_count,
+    }));
+  }, [wishlistSyncKey]); // eslint-disable-line react-hooks/exhaustive-deps -- fingerprint is the gate
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -577,13 +574,15 @@ export function TitleDetailModal({
     const hasNarrators = Boolean(initial.narrators?.trim());
     const hasGenres = Boolean(initial.categories?.trim());
     const hasRatings = initial.rating_overall != null;
+    const hasAsin = Boolean(initial.asin?.trim());
     if (
       hasBlurb &&
       hasRuntime &&
       hasPublisher &&
       hasNarrators &&
       hasGenres &&
-      hasRatings
+      hasRatings &&
+      hasAsin
     ) {
       return;
     }
@@ -842,7 +841,7 @@ export function TitleDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-0 backdrop-blur-[2px] sm:items-center sm:p-6 lg:p-8"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim p-0 backdrop-blur-[2px] sm:items-center sm:p-6 lg:p-8"
       role="presentation"
       onClick={onClose}
     >
@@ -918,6 +917,25 @@ export function TitleDetailModal({
                   </Badge>
                 ))}
               </div>
+              {(detail.wishers?.length ?? 0) > 0 ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <WisherAvatars
+                    wishers={detail.wishers ?? []}
+                    wishCount={detail.wish_count}
+                    max={8}
+                    avatarClassName="h-7 w-7 text-[11px]"
+                  />
+                  <p className="text-sm text-ink/60">
+                    Wishlisted by{" "}
+                    <span className="tabular-nums font-medium text-ink">
+                      {detail.wish_count ?? detail.wishers?.length ?? 0}
+                    </span>
+                    {(detail.wish_count ?? detail.wishers?.length ?? 0) === 1
+                      ? " person"
+                      : " people"}
+                  </p>
+                </div>
+              ) : null}
               <dl className="space-y-2">
                 <LinkedListRow
                   label="Authors"
@@ -999,7 +1017,7 @@ export function TitleDetailModal({
                   {commerceHints.map((h) => (
                     <li
                       key={`${h.source}-${h.product_id}`}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-white/50 px-3 py-2 ring-1 ring-ink/5"
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-card-mid px-3 py-2 ring-1 ring-ink/5"
                     >
                       <div className="flex min-w-0 items-start gap-2.5">
                         <StoreLogo source={h.source} className="mt-0.5" />
@@ -1119,7 +1137,7 @@ export function TitleDetailModal({
                   {reviews.map((review, idx) => (
                     <li
                       key={review.id ?? `${review.author_name ?? "review"}-${idx}`}
-                      className="rounded-md bg-white/50 px-3 py-2.5 ring-1 ring-ink/5"
+                      className="rounded-md bg-card-mid px-3 py-2.5 ring-1 ring-ink/5"
                     >
                       <ReviewBlock review={review} />
                     </li>
@@ -1188,5 +1206,49 @@ export function TitleDetailModal({
         }
       `}</style>
     </div>
+  );
+}
+
+type CatalogTitleDetailModalProps = {
+  title: CatalogTitle;
+  /** Personal wishlist rows whose snapshotted stores should appear in Where-to-buy. */
+  wishlist?: TitleRequest[];
+  busy?: boolean;
+  onClose: () => void;
+  onWishlist?: (detail: TitleDetail) => void;
+  onRemoveWishlist?: (detail: TitleDetail) => void;
+  onMetaSearch?: (kind: TitleMetaSearchKind, value: string) => void;
+};
+
+/**
+ * Shared Discover / Wishlist title dialog. Hydrates store editions from the
+ * matching wishlist snapshot so both surfaces show the same Where-to-buy list.
+ *
+ * @param props - Catalog title, optional wishlist rows, and dialog handlers.
+ */
+export function CatalogTitleDetailModal({
+  title,
+  wishlist = [],
+  busy,
+  onClose,
+  onWishlist,
+  onRemoveWishlist,
+  onMetaSearch,
+}: CatalogTitleDetailModalProps) {
+  const hydrated = attachWishlistCommerce(title, wishlist);
+  const commerceKey = (hydrated.store_editions ?? [])
+    .map((edition) => `${edition.source}:${edition.product_id}`)
+    .sort()
+    .join("|");
+  return (
+    <TitleDetailModal
+      key={`${hydrated.work_key}|${hydrated.wishlist_uuid ?? ""}|${commerceKey}`}
+      detail={titleDetailFromCatalog(hydrated)}
+      busy={busy}
+      onClose={onClose}
+      onWishlist={onWishlist}
+      onRemoveWishlist={onRemoveWishlist}
+      onMetaSearch={onMetaSearch}
+    />
   );
 }

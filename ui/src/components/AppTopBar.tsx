@@ -2,6 +2,7 @@ import { useEffect, useId, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { LogOut, Menu, Settings2, X } from "lucide-react";
 import { AppNav, type AppNavProps } from "@/components/AppNav";
+import { BookclerkLogo } from "@/components/BookclerkLogo";
 import { usePreferences } from "@/components/usePreferences";
 import { navLinksForRole } from "@/lib/nav";
 import { Button } from "@/components/ui/button";
@@ -58,11 +59,27 @@ export function AppTopBar({
     <>
       <div className="flex items-center justify-between gap-2 sm:gap-3">
         <div className="flex min-w-0 items-center gap-3 sm:gap-5">
-          <img
-            src="/bookclerk-logo.svg"
-            alt="Bookclerk"
-            className="h-8 w-auto shrink-0 sm:h-9"
-          />
+          <a
+            href="/"
+            aria-label="Go to start page"
+            className="inline-flex shrink-0 rounded-md outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
+            onClick={(e) => {
+              if (
+                e.defaultPrevented ||
+                e.button !== 0 ||
+                e.metaKey ||
+                e.ctrlKey ||
+                e.shiftKey ||
+                e.altKey
+              ) {
+                return;
+              }
+              e.preventDefault();
+              nav.onNavigate(nav.defaultView);
+            }}
+          >
+            <BookclerkLogo className="h-8 w-auto sm:h-9" />
+          </a>
           <div className="hidden min-w-0 lg:block">
             <AppNav {...nav} />
           </div>
@@ -106,7 +123,7 @@ export function AppTopBar({
             <div className="fixed inset-0 z-[60] lg:hidden" role="presentation">
               <button
                 type="button"
-                className="absolute inset-0 bg-ink/40 backdrop-blur-[2px]"
+                className="absolute inset-0 bg-scrim backdrop-blur-[2px]"
                 aria-label="Dismiss menu"
                 onClick={closeMenu}
               />

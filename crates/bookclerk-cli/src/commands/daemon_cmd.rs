@@ -228,6 +228,93 @@ fn daemon_base_url(config: &Config) -> String {
     config.daemon.listen.tray_base_url()
 }
 
+/// Print a loopback operator sign-in URL (requires a running daemon).
+///
+/// Uses the same `POST /api/auth/tray-handoff/prepare` ticket as the tray Copy
+/// sign-in link. Does not print the durable operator token.
+pub async fn run_login(config: &Config, format: OutputFormat) -> anyhow::Result<()> {
+    if !config.daemon.auth.enabled {
+        anyhow::bail!("daemon.auth.enabled is false; a sign-in link is not required");
+    }
+    let base = daemon_base_url(config);
+    let token = operator_bearer(config).await?;
+    let prepare_url = format!("{base}/api/auth/tray-handoff/prepare");
+    let body = post_prepare_async(&prepare_url, token.as_deref()).await?;
+    let (code, expires_in_secs) = parse_prepare_response(&body)?;
+    let url = sign_in_url(&base, &code);
+    emit(
+        format,
+        &serde_json::json!({ "url": url, "expires_in_secs": expires_in_secs }),
+        || {
+            println!("{url}");
+        },
+    )
+}
+
+/// `GET /api/auth/tray-handoff?code=` URL on the daemon's tray/loopback origin.
+fn sign_in_url(base: &str, code: &str) -> String {
+    format!(
+        "{}/api/auth/tray-handoff?code={code}",
+        base.trim_end_matches('/')
+    )
+}
+
+/// Read the one-time code and advertised TTL from a prepare JSON body.
+fn parse_prepare_response(v: &Value) -> anyhow::Result<(String, u64)> {
+    let code = v.get("code").and_then(Value::as_str).unwrap_or("").trim();
+    anyhow::ensure!(!code.is_empty(), "daemon returned an empty handoff code");
+    let expires = v
+        .get("expires_in_secs")
+        .and_then(Value::as_u64)
+        .filter(|&n| n > 0)
+        .unwrap_or(bookclerk_config::TRAY_HANDOFF_TTL_SECS_DEFAULT)
+        .clamp(
+            bookclerk_config::TRAY_HANDOFF_TTL_SECS_MIN,
+            bookclerk_config::TRAY_HANDOFF_TTL_SECS_MAX,
+        );
+    Ok((code.to_string(), expires))
+}
+
+/// Runs a blocking prepare POST on a worker thread and parses the JSON body.
+async fn post_prepare_async(url: &str, bearer: Option<&str>) -> anyhow::Result<Value> {
+    let url = url.to_string();
+    let bearer = bearer.map(str::to_owned);
+    tokio::task::spawn_blocking(move || post_prepare(&url, bearer.as_deref()))
+        .await
+        .map_err(|err| anyhow::anyhow!("daemon POST join: {err}"))?
+}
+
+/// Synchronous prepare POST; maps 403 / connection failures to operator-facing errors.
+fn post_prepare(url: &str, bearer: Option<&str>) -> anyhow::Result<Value> {
+    let mut req = ureq::post(url).header("Content-Type", "application/json");
+    if let Some(token) = bearer {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    let mut response = req
+        .send_json(serde_json::json!({}))
+        .map_err(|err| map_prepare_error(err, url))?;
+    if response.status().as_u16() == 204 {
+        anyhow::bail!("daemon.auth.enabled is false; a sign-in link is not required");
+    }
+    response
+        .body_mut()
+        .read_json()
+        .map_err(|err| anyhow::anyhow!("daemon JSON: {err}"))
+}
+
+/// Turn a ureq prepare failure into a clear "daemon down" or "not loopback" error.
+fn map_prepare_error(err: ureq::Error, url: &str) -> anyhow::Error {
+    match err {
+        ureq::Error::StatusCode(403) => anyhow::anyhow!(
+            "sign-in link refused (403): prepare requires a direct loopback connection to {url}"
+        ),
+        ureq::Error::StatusCode(code) => anyhow::anyhow!("daemon POST {url}: HTTP {code}"),
+        other => anyhow::anyhow!(
+            "daemon is not running at {url} ({other}); start bookclerkd then retry `bookclerk login`"
+        ),
+    }
+}
+
 /// Resolves the operator bearer when daemon auth is enabled; missing tokens fail closed.
 async fn operator_bearer(config: &Config) -> anyhow::Result<Option<String>> {
     if !config.daemon.auth.enabled {
@@ -290,4 +377,40 @@ fn post_json(url: &str, body: Value, bearer: Option<&str>) -> anyhow::Result<Val
         .body_mut()
         .read_json()
         .map_err(|err| anyhow::anyhow!("daemon JSON: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sign_in_url_is_loopback_code_query() {
+        assert_eq!(
+            sign_in_url("http://localhost:8787/", "abc"),
+            "http://localhost:8787/api/auth/tray-handoff?code=abc"
+        );
+        assert!(!sign_in_url("http://localhost:8787", "abc").contains("token="));
+    }
+
+    #[test]
+    fn parse_prepare_response_requires_code_and_ttl() {
+        let (code, ttl) = parse_prepare_response(&serde_json::json!({
+            "code": "deadbeef",
+            "expires_in_secs": 180
+        }))
+        .unwrap();
+        assert_eq!(code, "deadbeef");
+        assert_eq!(ttl, 180);
+
+        let (_, ttl) = parse_prepare_response(&serde_json::json!({ "code": "aa" })).unwrap();
+        assert_eq!(ttl, 180);
+
+        let (_, ttl) =
+            parse_prepare_response(&serde_json::json!({ "code": "aa", "expires_in_secs": 10 }))
+                .unwrap();
+        assert_eq!(ttl, 30);
+
+        assert!(parse_prepare_response(&serde_json::json!({ "code": "" })).is_err());
+        assert!(parse_prepare_response(&serde_json::json!({})).is_err());
+    }
 }

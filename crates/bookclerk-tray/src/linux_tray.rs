@@ -45,7 +45,7 @@ impl BookclerkTray {
         match self.client.lock() {
             Ok(guard) => Some(f(&guard)),
             Err(err) => {
-                eprintln!("bookclerk: tray config lock poisoned: {err}");
+                tracing::error!(%err, "tray config lock poisoned");
                 None
             }
         }
@@ -75,7 +75,7 @@ impl Tray for BookclerkTray {
 
     fn activate(&mut self, _x: i32, _y: i32) {
         if let Some(Err(err)) = self.with_client(TrayConfig::open_ui) {
-            eprintln!("bookclerk: open UI failed: {err}");
+            tracing::warn!(%err, "open UI failed");
         }
     }
 
@@ -91,7 +91,7 @@ impl Tray for BookclerkTray {
                 activate: Box::new(move |_| {
                     if let Ok(guard) = open.lock() {
                         if let Err(err) = guard.open_ui() {
-                            eprintln!("bookclerk: open UI failed: {err}");
+                            tracing::warn!(%err, "open UI failed");
                         }
                     }
                 }),
@@ -103,7 +103,7 @@ impl Tray for BookclerkTray {
                 activate: Box::new(move |_| {
                     if let Ok(guard) = scan.lock() {
                         if let Err(err) = guard.trigger_scan() {
-                            eprintln!("bookclerk: scan failed: {err}");
+                            tracing::warn!(%err, "scan failed");
                         }
                     }
                 }),
@@ -111,10 +111,10 @@ impl Tray for BookclerkTray {
             }
             .into(),
             StandardItem {
-                label: "Copy operator token".into(),
+                label: "Copy sign-in link".into(),
                 activate: Box::new(move |_| {
                     if let Ok(guard) = token.lock() {
-                        guard.copy_operator_token();
+                        guard.copy_sign_in_link();
                     }
                 }),
                 ..Default::default()

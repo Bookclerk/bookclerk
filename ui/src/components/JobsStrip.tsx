@@ -17,7 +17,7 @@ export function JobsStrip({
 }) {
   const recent = jobs.slice(0, 6);
   return (
-    <aside className="border-t border-ink/10 bg-white/40 px-4 py-2 text-xs text-ink/70 backdrop-blur-sm">
+    <aside className="border-t border-ink/10 bg-card px-4 py-2 text-xs text-ink/70 backdrop-blur-sm">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
         {status ? (
           <>

@@ -1,3 +1,5 @@
+import { normalizeThemePreference, type ThemePreference } from "@/lib/theme";
+
 /**
  * Pipeline acquire state for a library book row.
  */
@@ -38,6 +40,19 @@ export interface AuthMeUser {
   status?: string;
   email?: string | null;
   has_password?: boolean;
+  /** True when a profile picture file is stored for this user. */
+  has_avatar?: boolean;
+  /** `auto`, `monogram`, `gravatar`, `upload`, or `sso:{id}`. */
+  avatar_source?: string | null;
+  /** SHA-256 hex of the contact email for Gravatar. */
+  gravatar_hash?: string | null;
+  /** IdP-supplied pictures the user can pick. */
+  sso_pictures?: {
+    identity_id: number;
+    provider: string;
+    picture_url: string;
+    last_used_at?: string | null;
+  }[];
 }
 
 /**
@@ -46,6 +61,16 @@ export interface AuthMeUser {
 export interface AuthMeImpersonating {
   user_id: number;
   display_name: string | null;
+}
+
+/**
+ * Host MFA policy plus this user's TOTP / passkey enrollment.
+ */
+export interface AuthSecondFactor {
+  required: boolean;
+  totp: boolean;
+  passkey_count: number;
+  enrolled: boolean;
 }
 
 /**
@@ -60,6 +85,7 @@ export interface AuthSession {
   impersonating?: AuthMeImpersonating;
   portal?: PortalInfo;
   user?: AuthMeUser;
+  second_factor?: AuthSecondFactor;
 }
 
 /**
@@ -430,6 +456,7 @@ function toAuthSession(body: {
   impersonating?: AuthMeImpersonating;
   portal?: PortalInfo;
   user?: AuthMeUser;
+  second_factor?: AuthSecondFactor;
 }): AuthSession {
   return {
     authenticated: body.authenticated,
@@ -440,6 +467,7 @@ function toAuthSession(body: {
     impersonating: body.impersonating,
     portal: body.portal,
     user: body.user,
+    second_factor: body.second_factor,
   };
 }
 
@@ -465,6 +493,7 @@ export async function authMe(): Promise<AuthSession> {
     impersonating?: AuthMeImpersonating;
     portal?: PortalInfo;
     user?: AuthMeUser;
+    second_factor?: AuthSecondFactor;
   }>(res);
   return toAuthSession(body);
 }
@@ -497,6 +526,32 @@ export async function login(token: string): Promise<AuthSession> {
     role: normalizeRole(body.role) ?? "operator",
     default_view: normalizeView(body.default_view),
     can_acquire: true,
+  };
+}
+
+/**
+ * Public sign-in picker (operator-token availability, SSO, integration logins).
+ *
+ * @returns Whether SPA operator-token login is offered, plus IdP and integration buttons.
+ */
+export async function fetchSigninMethods(): Promise<{
+  operator_token: boolean;
+  oidc: OidcProvider[];
+  integrations: { id: string; name: string }[];
+  require_second_factor: boolean;
+}> {
+  const res = await fetch("/api/auth/signin", { credentials: "include" });
+  const body = await parseJson<{
+    operator_token?: boolean;
+    oidc?: OidcProvider[];
+    integrations?: { id: string; name: string }[];
+    require_second_factor?: boolean;
+  }>(res);
+  return {
+    operator_token: Boolean(body.operator_token),
+    oidc: body.oidc ?? [],
+    integrations: body.integrations ?? [],
+    require_second_factor: Boolean(body.require_second_factor),
   };
 }
 
@@ -552,6 +607,8 @@ export const endElevate = endElevation;
 export interface OidcProvider {
   id: string;
   name: string;
+  /** Built-in social preset (`google`, `github`, `apple`, `discord`) when set. */
+  preset?: string | null;
 }
 
 /** Linked portal identity (local or `oidc:{id}`). */
@@ -594,6 +651,18 @@ export interface OidcProviderConfigView {
 export interface OidcBrokerConfigView {
   enabled: boolean;
   allowed_email_domains: string[];
+  /** Configured `integrations.public_origin` (issuer / callback / invite base). */
+  public_origin?: string | null;
+  /** Effective issuer origin (`public_origin`, else bound loopback, else localhost). */
+  issuer_url?: string;
+  /** Origin detected from this request when it is a bound loopback listen address. */
+  detected_origin?: string;
+  /** Absolute OpenID discovery URL. */
+  discovery_url?: string;
+  authorization_endpoint?: string;
+  token_endpoint?: string;
+  userinfo_endpoint?: string;
+  revocation_endpoint?: string;
   callback_url?: string | null;
   providers: OidcProviderConfigView[];
 }
@@ -626,6 +695,8 @@ export interface OidcBrokerConfigUpdate {
   enabled: boolean;
   allowed_email_domains: string[];
   providers: OidcProviderConfigUpdate[];
+  /** Omit to leave unchanged; empty string clears `integrations.public_origin`. */
+  public_origin?: string | null;
   current_password?: string;
 }
 
@@ -633,6 +704,7 @@ export interface OidcBrokerConfigUpdate {
 export interface ListedPasskey {
   id: number;
   credential_id: string;
+  name?: string | null;
 }
 
 /**
@@ -671,6 +743,126 @@ export async function putOidcConfig(body: OidcBrokerConfigUpdate): Promise<OidcB
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  return parseJson(res);
+}
+
+/** Bookclerk-as-IdP OAuth client (secrets never listed after create/rotate). */
+export interface OidcAsClient {
+  client_id: string;
+  name?: string | null;
+  redirect_uris: string[];
+  confidential: boolean;
+  issue_refresh_token: boolean;
+  allowed_scopes: string[];
+  has_secret: boolean;
+  enabled: boolean;
+  /** Set when a plugin owns this client (redirects are read-only). */
+  plugin_id?: string | null;
+  /** Plaintext secret, returned only on create or rotate. */
+  client_secret?: string | null;
+}
+
+/** Body for creating or updating a Bookclerk-as-IdP client. */
+export interface OidcAsClientWrite {
+  client_id?: string;
+  name?: string | null;
+  redirect_uris: string[];
+  confidential: boolean;
+  issue_refresh_token: boolean;
+  allowed_scopes: string[];
+  enabled: boolean;
+  current_password?: string;
+}
+
+/**
+ * Lists Bookclerk-as-IdP clients (no plaintext secrets).
+ *
+ * @returns Registered OAuth clients.
+ */
+export async function listOidcClients(): Promise<OidcAsClient[]> {
+  const res = await fetch("/api/auth/oidc/clients", { credentials: "include" });
+  const body = await parseJson<{ clients?: OidcAsClient[] }>(res);
+  return body.clients ?? [];
+}
+
+/**
+ * Creates an OIDC client. Confidential clients return `client_secret` once.
+ *
+ * @param body - Client id, redirects, token policy.
+ * @returns Created client; confidential clients include `client_secret` once.
+ */
+export async function createOidcClient(body: OidcAsClientWrite): Promise<OidcAsClient> {
+  const res = await fetch("/api/auth/oidc/clients", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Updates an OIDC client without echoing a secret unless flipping to confidential.
+ *
+ * @param clientId - Existing client_id.
+ * @param body - Redirects and token policy.
+ * @returns Updated client row (no plaintext secret unless flipping to confidential).
+ */
+export async function updateOidcClient(
+  clientId: string,
+  body: OidcAsClientWrite,
+): Promise<OidcAsClient> {
+  const res = await fetch(`/api/auth/oidc/clients/${encodeURIComponent(clientId)}`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Deletes a registered OIDC client.
+ *
+ * @param clientId - Client to remove.
+ * @param currentPassword - Owner re-auth when the session is older than 15 minutes.
+ * @returns Resolves when the client is removed.
+ */
+export async function deleteOidcClient(
+  clientId: string,
+  currentPassword?: string,
+): Promise<void> {
+  const res = await fetch(`/api/auth/oidc/clients/${encodeURIComponent(clientId)}`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword }),
+  });
+  if (!res.ok) {
+    await parseJson(res);
+  }
+}
+
+/**
+ * Rotates a confidential client's secret; plaintext is returned once.
+ *
+ * @param clientId - Confidential client to rotate.
+ * @param currentPassword - Owner re-auth when required.
+ * @returns Client row including the new plaintext secret once.
+ */
+export async function rotateOidcClientSecret(
+  clientId: string,
+  currentPassword?: string,
+): Promise<OidcAsClient> {
+  const res = await fetch(
+    `/api/auth/oidc/clients/${encodeURIComponent(clientId)}/rotate-secret`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ current_password: currentPassword }),
+    },
+  );
   return parseJson(res);
 }
 
@@ -726,6 +918,7 @@ export async function passkeyRegisterBegin(currentPassword?: string): Promise<{
 export async function passkeyRegisterFinish(body: {
   challenge_id: string;
   credential: Record<string, unknown>;
+  name?: string;
 }): Promise<void> {
   const res = await fetch("/api/auth/passkeys/register/finish", {
     method: "POST",
@@ -875,11 +1068,26 @@ export interface ListedUser {
   login_name: string | null;
   email?: string | null;
   has_password: boolean;
-  /** Non-expired portal session present. */
+  /** Non-expired portal session present (`true` even when idle). */
   online?: boolean;
-  /** Most recent portal session activity (RFC 3339). */
+  /** Most recent unexpired portal session activity (RFC 3339). Active vs idle is ~5 minutes. */
   last_active_at?: string | null;
-  /** Unfinished listen within the recent window. */
+  /** Durable last portal use (RFC 3339); survives logout. Null means never signed in. */
+  last_seen_at?: string | null;
+  /** True when a profile picture file is stored for this user. */
+  has_avatar?: boolean;
+  /** `auto`, `monogram`, `gravatar`, `upload`, or `sso:{id}`. */
+  avatar_source?: string | null;
+  /** SHA-256 hex of the contact email for Gravatar. */
+  gravatar_hash?: string | null;
+  /** IdP-supplied pictures the user can pick. */
+  sso_pictures?: {
+    identity_id: number;
+    provider: string;
+    picture_url: string;
+    last_used_at?: string | null;
+  }[];
+  /** Unfinished listen within ~30 minutes (waveform uses the last ~5 minutes). */
   listening?: {
     title: string | null;
     provider: string;
@@ -1126,23 +1334,197 @@ export async function setPassword(body: {
 }
 
 /**
+ * Updates the signed-in user's display name and/or email.
+ *
+ * @param body - Fields to change; omitted keys are left unchanged.
+ * @returns Updated profile snapshot from the daemon.
+ */
+export async function patchProfile(body: {
+  display_name?: string;
+  email?: string;
+  avatar_source?: string;
+}): Promise<{ ok: boolean; user: AuthMeUser }> {
+  const res = await fetch("/api/auth/profile", {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Authenticated URL for a user's stored profile picture.
+ *
+ * @param userId - First-party `users.id`.
+ * @param cacheKey - Optional cache-buster after upload.
+ * @returns Path used by `<img src>`.
+ */
+export function userAvatarUrl(userId: number, cacheKey?: number): string {
+  const base = `/api/users/${userId}/avatar`;
+  return cacheKey ? `${base}?v=${cacheKey}` : base;
+}
+
+/**
+ * Uploads a JPEG/PNG/WebP profile picture for the signed-in user.
+ *
+ * @param file - Image selected from the file picker.
+ */
+export async function uploadProfileAvatar(file: File): Promise<void> {
+  const res = await fetch("/api/auth/profile/avatar", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  await parseJson(res);
+}
+
+/**
+ * Removes the signed-in user's stored profile picture.
+ */
+export async function deleteProfileAvatar(): Promise<void> {
+  const res = await fetch("/api/auth/profile/avatar", {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await parseJson(res);
+}
+
+/**
  * Signs in with username/password via `POST /api/auth/password`.
  *
  * @param login - Username or email.
  * @param password - Account password.
- * @returns Resolves when the session cookie is set.
+ * @returns Session cookie on success, or an MFA challenge when TOTP is enabled.
  */
 export async function passwordLogin(
   login: string,
   password: string,
-): Promise<void> {
+): Promise<{ ok: boolean; mfa?: { method: string; challenge_id: string } }> {
   const res = await fetch("/api/auth/password", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ login, password }),
   });
+  return parseJson(res);
+}
+
+/**
+ * Completes password+TOTP login via `POST /api/auth/totp/login`.
+ *
+ * @param challengeId - Challenge from the password-login MFA payload.
+ * @param code - Six-digit authenticator code.
+ * @returns Resolves when the session cookie is set.
+ */
+export async function totpLogin(challengeId: string, code: string): Promise<void> {
+  const res = await fetch("/api/auth/totp/login", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ challenge_id: challengeId, code }),
+  });
   await parseJson(res);
+}
+
+/**
+ * Whether TOTP is confirmed for the current user.
+ *
+ * @returns `{ enabled }` for the signed-in user.
+ */
+export async function fetchTotpStatus(): Promise<{ enabled: boolean }> {
+  const res = await fetch("/api/auth/totp", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Starts TOTP enrollment (pending secret, otpauth URL, QR SVG).
+ *
+ * @param currentPassword - Required when the portal session is older than the reauth window.
+ * @returns Pending secret, otpauth URL, and QR SVG.
+ */
+export async function totpEnrollBegin(currentPassword?: string): Promise<{
+  secret: string;
+  otpauth_url: string;
+  qr_svg: string;
+}> {
+  const res = await fetch("/api/auth/totp/enroll/begin", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(
+      currentPassword ? { current_password: currentPassword } : {},
+    ),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Confirms the pending TOTP secret with an authenticator code.
+ *
+ * @param code - Six-digit code from the authenticator app.
+ * @returns Resolves when enrollment is confirmed.
+ */
+export async function totpEnrollFinish(code: string): Promise<void> {
+  const res = await fetch("/api/auth/totp/enroll/finish", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  await parseJson(res);
+}
+
+/**
+ * Disables TOTP for the current user.
+ *
+ * @param currentPassword - Required when the portal session is older than the reauth window.
+ * @returns Resolves when TOTP is disabled.
+ */
+export async function disableTotp(currentPassword?: string): Promise<void> {
+  const res = await fetch("/api/auth/totp", {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(
+      currentPassword ? { current_password: currentPassword } : {},
+    ),
+  });
+  await parseJson(res);
+}
+
+/**
+ * Host-wide password second-factor policy (`daemon.auth.require_second_factor`).
+ *
+ * @returns Whether password login requires a second factor.
+ */
+export async function fetchMfaPolicy(): Promise<{ require_second_factor: boolean }> {
+  const res = await fetch("/api/auth/mfa-policy", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Persists whether password login requires TOTP or a passkey.
+ *
+ * @param requireSecondFactor - When true, password-only sign-in is not enough once enrolled.
+ * @param currentPassword - Owner step-up; operators omit this.
+ * @returns Saved `{ require_second_factor }` flag.
+ */
+export async function putMfaPolicy(
+  requireSecondFactor: boolean,
+  currentPassword?: string,
+): Promise<{ require_second_factor: boolean }> {
+  const res = await fetch("/api/auth/mfa-policy", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      require_second_factor: requireSecondFactor,
+      current_password: currentPassword,
+    }),
+  });
+  return parseJson(res);
 }
 
 /**
@@ -1157,6 +1539,8 @@ export interface UserPreferences {
   discover_language: string | null;
   /** Store ids hidden in Discover. Empty = all sources including future. */
   discover_excluded_sources: string[];
+  /** Appearance: `system` follows the OS (fallback light); `light` / `dark` pin it. */
+  theme: ThemePreference;
 }
 
 /**
@@ -1359,6 +1743,7 @@ function parsePreferencesBody(body: {
   discover_sort_dir?: string;
   discover_language?: string | null;
   discover_excluded_sources?: string[];
+  theme?: string;
 }): UserPreferences {
   return {
     default_view: normalizeView(body.default_view),
@@ -1376,6 +1761,7 @@ function parsePreferencesBody(body: {
           (x): x is string => typeof x === "string",
         )
       : [],
+    theme: normalizeThemePreference(body.theme),
   };
 }
 
@@ -1408,6 +1794,7 @@ export async function patchPreferences(body: {
   /** Pass `null` to clear to browser default. */
   discover_language?: string | null;
   discover_excluded_sources?: string[];
+  theme?: ThemePreference;
 }): Promise<UserPreferences> {
   const res = await fetchWithTimeout(
     "/api/preferences",
@@ -1835,6 +2222,10 @@ export interface Recommendation {
   published_at?: string | null;
   genres?: string | null;
   language?: string | null;
+  /** People who have this title on an open wishlist. */
+  wishers?: QueueWisher[];
+  /** Distinct wisher count (may exceed `wishers.length`). */
+  wish_count?: number;
 }
 
 /**
@@ -1914,6 +2305,30 @@ export interface TitleRequest {
 }
 
 /**
+ * Person who has a title on an open wishlist (global queue avatars).
+ */
+export interface QueueWisher {
+  /** First-party user id when the portal identity is linked. */
+  user_id?: number | null;
+  /** Portal identity that created the wish. */
+  identity_id?: number | null;
+  /** Display name, identity label, or Operator. */
+  display_name?: string | null;
+  /** Local login name when set. */
+  login_name?: string | null;
+  /** True when the wish came from the operator token. */
+  operator?: boolean;
+  /** True when an uploaded avatar file exists. */
+  has_avatar?: boolean;
+  /** Explicit picture choice (`auto` / `monogram` / `gravatar` / `upload` / `sso:{id}`). */
+  avatar_source?: string | null;
+  /** SHA-256 hex of the contact email for Gravatar. */
+  gravatar_hash?: string | null;
+  /** HTTPS picture from the wishing identity, when any. */
+  picture_url?: string | null;
+}
+
+/**
  * Aggregated global request-queue entry (shared wishlist demand).
  */
 export interface GlobalQueueEntry {
@@ -1936,6 +2351,8 @@ export interface GlobalQueueEntry {
   store_editions?: StoreEdition[];
   purchase_hints?: PurchaseHint[];
   wish_count: number;
+  /** Distinct people who have this title on an open wishlist. */
+  wishers?: QueueWisher[];
   sample_uuids: string[];
   first_requested_at: string;
   last_requested_at: string;

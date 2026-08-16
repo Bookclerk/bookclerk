@@ -24,4 +24,14 @@ list = [
     "syncListening",
     "authenticateUser",
     "onEvent",
+    "oidcClients",
 ]
+
+[[oidc.clients]]
+client_id = "audiobookshelf"
+display_name = "Audiobookshelf"
+callback_path = "/auth/openid/callback"
+public_client = true
+default_scopes = ["openid", "profile"]
+issue_refresh_token = true
+origin_config_key = "integrations.audiobookshelf.base_url"

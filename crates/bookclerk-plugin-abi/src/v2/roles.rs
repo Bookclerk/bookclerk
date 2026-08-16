@@ -362,6 +362,14 @@ pub trait PluginRoot: 'static {
         Err(PluginError::unsupported("cliInvoke"))
     }
 
+    /// Plugin-provided OIDC authorization-server client templates.
+    ///
+    /// Empty when the guest is not a relying party. Hosts treat
+    /// [`PluginError::unsupported`] from older guests as an empty list.
+    async fn oidc_clients(&self) -> Result<Vec<super::types::OidcClientTemplate>> {
+        Ok(Vec::new())
+    }
+
     /// Releases guest resources.
     async fn shutdown(&self) -> Result<()> {
         Ok(())
