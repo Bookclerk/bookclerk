@@ -153,7 +153,7 @@ url = "2"
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
 totp-rs = { version = "5.7", default-features = false, features = ["otpauth", "gen_secret"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-jsonwebtoken = { version = "10.3", features = ["rust_crypto"] }
+jsonwebtoken = { version = "11.0", features = ["rust_crypto"] }
 openidconnect = { version = "4", default-features = false }
 # aws-sdk-s3's default `rustls` feature enables smithy's *legacy* rustls 0.21
 # path (vulnerable rustls-webpki 0.101). Prefer `default-https-client`, which
