@@ -33,11 +33,11 @@ pub fn ensure_workerd_for_profile(
 ///
 /// # Returns
 ///
-/// Absolute path to the ensured `workerd` binary.
+/// Absolute path to the Cargo workspace root (parent of `crates/`).
 ///
 /// # Errors
 ///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
+/// Returns an error when the crate is not nested under `crates/` as expected.
 pub fn workspace_root() -> anyhow::Result<std::path::PathBuf> {
     Ok(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

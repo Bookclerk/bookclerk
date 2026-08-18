@@ -95,7 +95,6 @@ KNOWN_TOP_LEVEL = frozenset(
         "rust-toolchain.toml",
         "rustfmt.toml",
         "workerd.pin.json",
-        ".envrc.example",
         ".gitattributes",
         ".gitignore",
         ".gitmodules",

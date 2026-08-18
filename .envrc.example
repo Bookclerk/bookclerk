@@ -1,4 +1,0 @@
-# direnv: workspace-local Cargo + Bookclerk data.
-# Copy to `.envrc` (gitignored) and run `direnv allow`. Do not commit `.envrc`.
-watch_file scripts/workspace-env.sh
-source ./scripts/workspace-env.sh

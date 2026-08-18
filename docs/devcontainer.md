@@ -73,20 +73,32 @@ Definition: [`.devcontainer/`](../.devcontainer/).
 
 ## Host Cursor without a container
 
-Do **not** commit a `.envrc`. Cargo still needs workspace-local `CARGO_HOME`,
-`target/` on `PATH` (so `bookclerk` / `bookclerkd` can be invoked without
-`cargo run` argv0 issues in Cursor), and the usual `TMPDIR` /
-`BOOKCLERK_FILES_DIR` layout.
+Local host terminals and local Cursor share default `~/.cargo` (do **not** export
+`CARGO_HOME` in `.vscode/settings.json`). Workspace `target/`, `.tmp/`, and
+`BookclerkFiles/` come from [`.cargo/config.toml`](../.cargo/config.toml)
+relative values, which Cargo discovers in every environment.
+
+Workspace `.cargo-home/` is **Dev Container / Cloud `CARGO_HOME`** so the
+registry survives image rebuilds when `$HOME` is inside the container (not the
+bind mount). Cloud Agents clone to `/workspace`; they do not honor a custom
+`workspaceFolder` under `$HOME`.
 
 | Mechanism | What it covers |
 | --- | --- |
-| [`.vscode/settings.json`](../.vscode/settings.json) | rust-analyzer + integrated terminal env (committed) |
-| [`scripts/workspace-env.sh`](../scripts/workspace-env.sh) | `source scripts/workspace-env.sh` in any shell |
-| [`.envrc.example`](../.envrc.example) | Copy to gitignored `.envrc`, then `direnv allow` |
+| [`.cargo/config.toml`](../.cargo/config.toml) | `target/`, `.tmp/`, `BookclerkFiles/` (host, IDE, container) |
+| Dev Container `remoteEnv` / [cloud-agent-install.sh](../.cursor/cloud-agent-install.sh) | `CARGO_HOME=<workspace>/.cargo-home` on the bind mount |
+| [`scripts/workspace-env.sh`](../scripts/workspace-env.sh) | Optional source / Cloud install helper (sets workspace `CARGO_HOME`) |
+| [`scripts/rustup-argv0-wrapper.sh`](../scripts/rustup-argv0-wrapper.sh) | Host `~/.local/bin` cargo/rustup shims: Cursor argv0 + `~/` expansion only |
+| [`.vscode/settings.json`](../.vscode/settings.json) | **bookclerk** terminal profile prepends `target/debug` to `PATH` (no `CARGO_HOME`) |
 
-`.cargo/config.toml` already sets relative `CARGO_TARGET_DIR`, `TMPDIR`, and
-`BOOKCLERK_FILES_DIR` for Cargo subprocesses. `CARGO_HOME` cannot live there —
-the shell / IDE / container env must export it.
+Cursor may interpolate `${workspaceFolder}` in `terminal.integrated.env` as
+`~/…`. Cargo and GNU `config.guess` do not expand tilde, which yields
+`$PWD/~/Projects/…/target` and `cannot create a temporary directory in ~/…/.tmp`.
+Do **not** set `CARGO_TARGET_DIR`, `TMPDIR`, or `CARGO_HOME` there.
+
+`.cargo/config.toml` cannot set `CARGO_HOME` for Cargo’s own registry — that
+variable is read before project config. Local IDE/host leave it unset;
+containers export an absolute workspace path via `remoteEnv`.
 
 ## What is installed
 

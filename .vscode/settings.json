@@ -1,31 +1,31 @@
 {
   "rust-analyzer.check.command": "clippy",
   "rust-analyzer.cargo.allFeatures": false,
-  "rust-analyzer.cargo.extraEnv": {
-    "CARGO_HOME": "${workspaceFolder}/.cargo-home",
-    "CARGO_TARGET_DIR": "${workspaceFolder}/target",
-    "TMPDIR": "${workspaceFolder}/.tmp",
-    "BOOKCLERK_FILES_DIR": "${workspaceFolder}/BookclerkFiles"
+  // Do not set CARGO_HOME / CARGO_TARGET_DIR / TMPDIR here. Cursor interpolates
+  // ${workspaceFolder} as ~/... which Cargo treats as relative. Local host and
+  // local Cursor share default ~/.cargo; target/.tmp/BookclerkFiles come from
+  // `.cargo/config.toml` relative values. Dev Container / Cloud set CARGO_HOME
+  // via remoteEnv / cloud-agent-install.sh (workspace .cargo-home on the mount).
+  "terminal.integrated.profiles.linux": {
+    "bookclerk": {
+      "path": "/bin/sh",
+      "icon": "terminal",
+      "args": [
+        "-c",
+        "PATH=\"$PWD/target/debug:$PWD/target/release:$PATH\"; export PATH; [ -n \"$SHELL\" ] || SHELL=zsh; exec \"$SHELL\" -i"
+      ]
+    }
   },
-  "terminal.integrated.env.linux": {
-    "CARGO_HOME": "${workspaceFolder}/.cargo-home",
-    "CARGO_TARGET_DIR": "${workspaceFolder}/target",
-    "TMPDIR": "${workspaceFolder}/.tmp",
-    "BOOKCLERK_FILES_DIR": "${workspaceFolder}/BookclerkFiles",
-    "PATH": "${workspaceFolder}/target/debug:${workspaceFolder}/target/release:${env:PATH}"
+  "terminal.integrated.profiles.osx": {
+    "bookclerk": {
+      "path": "/bin/sh",
+      "icon": "terminal",
+      "args": [
+        "-c",
+        "PATH=\"$PWD/target/debug:$PWD/target/release:$PATH\"; export PATH; [ -n \"$SHELL\" ] || SHELL=zsh; exec \"$SHELL\" -i"
+      ]
+    }
   },
-  "terminal.integrated.env.osx": {
-    "CARGO_HOME": "${workspaceFolder}/.cargo-home",
-    "CARGO_TARGET_DIR": "${workspaceFolder}/target",
-    "TMPDIR": "${workspaceFolder}/.tmp",
-    "BOOKCLERK_FILES_DIR": "${workspaceFolder}/BookclerkFiles",
-    "PATH": "${workspaceFolder}/target/debug:${workspaceFolder}/target/release:${env:PATH}"
-  },
-  "terminal.integrated.env.windows": {
-    "CARGO_HOME": "${workspaceFolder}/.cargo-home",
-    "CARGO_TARGET_DIR": "${workspaceFolder}/target",
-    "TMPDIR": "${workspaceFolder}/.tmp",
-    "BOOKCLERK_FILES_DIR": "${workspaceFolder}/BookclerkFiles",
-    "PATH": "${workspaceFolder}/target/debug;${workspaceFolder}/target/release;${env:PATH}"
-  }
+  "terminal.integrated.defaultProfile.linux": "bookclerk",
+  "terminal.integrated.defaultProfile.osx": "bookclerk"
 }
