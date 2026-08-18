@@ -12,7 +12,9 @@ crates, even when SeaORM's sqlx driver is unused.
 This vendored tree is identical to the pinned upstream revision except:
 
 1. `rusqlite` is lowered to `0.37` so the workspace shares one
-   `libsqlite3-sys` (`0.35`).
+   `libsqlite3-sys` (`0.35`) **if** the optional `cli` feature is enabled.
+   Bookclerk's Audible plugin does not enable `cli`, so audible-rs does
+   not link SQLite in the plugin binary.
 2. Auth-file salt/nonce generation uses `MaybeUninit` + `OsRng` instead of
    zero-initialized arrays (avoids CodeQL "hard-coded cryptographic value"
    false positives on the temporary `[0u8; N]` buffers).
@@ -27,6 +29,11 @@ This vendored tree is identical to the pinned upstream revision except:
    - `Authenticator::set_write_back_fn` registers an async callback awaited
      by `save` / `save_merged` (no nested `block_on`). `save_merged` passes
      `Some(MergeScope)` so DB callbacks can RMW-merge via `merge_auth_json`.
+4. Library-only default features: the `audible` CLI, local library DB,
+   config.toml, plugin broker, terminal progress, and unused `totp-rs`
+   (Amazon OTP is completed in the browser; this crate never generated
+   codes) compile only with `--features cli`. Bookclerk depends with
+   `default-features = false`.
 
 Re-vendor when bumping the `audible-rs` git rev in the workspace
 `Cargo.toml`, then re-apply these patches.

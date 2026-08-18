@@ -8,10 +8,12 @@
 //! land in later M3 commits.
 
 use std::path::{Path, PathBuf};
+#[cfg(feature = "cli")]
 use std::time::Duration;
 
 use base64::Engine as _;
 use futures::StreamExt as _;
+#[cfg(feature = "cli")]
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use reqwest::Method;
 use reqwest::header::{CONTENT_TYPE, RANGE};
@@ -97,12 +99,14 @@ pub enum DownloadOutcome {
 /// part file is renamed onto `dest`. Multi-GB transfers therefore
 /// survive an abort and resume on the next run.
 ///
-/// With `progress` (a `MultiProgress` to attach to), a single-line progress
-/// bar is drawn while transferring (resume-aware; a spinner when the total
-/// size is unknown). The caller decides visibility (TTY and not `--quiet`)
-/// and which transfers get a bar at all (only the heavy ones); the bar is
-/// only created once a transfer actually starts, so a skipped/complete file
-/// shows nothing.
+/// With `progress` (a [`DownloadProgress`] handle), a single-line progress
+/// bar is drawn while transferring. Bookclerk always passes `None`.
+#[cfg(feature = "cli")]
+pub type DownloadProgress<'a> = Option<&'a MultiProgress>;
+/// Without `cli`, progress is unused (`None` at every call site).
+#[cfg(not(feature = "cli"))]
+pub type DownloadProgress<'a> = Option<()>;
+
 #[allow(clippy::too_many_arguments)]
 pub async fn download_to_file(
     client: &Client,
@@ -110,7 +114,7 @@ pub async fn download_to_file(
     dest: &Path,
     expected_size: Option<u64>,
     force: bool,
-    progress: Option<&MultiProgress>,
+    progress: DownloadProgress<'_>,
     expected_content_type: &[&str],
     ext_overrides: &[(&str, &str)],
     version_tag: Option<&str>,
@@ -165,7 +169,7 @@ pub async fn download_cenc_to_file(
     dest: &Path,
     expected_size: Option<u64>,
     force: bool,
-    progress: Option<&MultiProgress>,
+    progress: DownloadProgress<'_>,
     expected_content_type: &[&str],
     version_tag: Option<&str>,
 ) -> Result<(DownloadOutcome, PathBuf), DownloadError> {
@@ -230,7 +234,7 @@ async fn stream_to_file<Fut>(
     dest: &Path,
     expected_size: Option<u64>,
     force: bool,
-    progress: Option<&MultiProgress>,
+    progress: DownloadProgress<'_>,
     expected_content_type: &[&str],
     ext_overrides: &[(&str, &str)],
     url: &str,
@@ -335,6 +339,7 @@ where
         response = build_request(0).await?.send().await?;
         status = response.status();
     }
+    #[cfg(feature = "cli")]
     let content_length = response.content_length();
 
     let mut append = offset > 0;
@@ -381,7 +386,9 @@ where
 
     // Full size: the caller's expectation, else the response length plus
     // what we already have (Content-Length is the remaining bytes on 206).
+    #[cfg(feature = "cli")]
     let total = expected_size.or_else(|| content_length.map(|len| offset + len));
+    #[cfg(feature = "cli")]
     let bar = progress.map(|multi| {
         let name = final_dest
             .file_name()
@@ -391,6 +398,8 @@ where
         bar.set_position(offset);
         bar
     });
+    #[cfg(not(feature = "cli"))]
+    let _ = progress;
 
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
@@ -414,6 +423,7 @@ where
         let chunk = chunk?;
         file.write_all(&chunk).await?;
         written += chunk.len() as u64;
+        #[cfg(feature = "cli")]
         if let Some(bar) = &bar {
             bar.inc(chunk.len() as u64);
         }
@@ -421,6 +431,7 @@ where
     file.flush().await?;
     file.sync_all().await?;
     drop(file);
+    #[cfg(feature = "cli")]
     if let Some(bar) = &bar {
         bar.finish_and_clear();
     }
@@ -547,15 +558,20 @@ async fn content_type_error(
 // Single-line bar templates, widest first. Narrow terminals (phones over
 // SSH) drop rate/ETA, then the byte counts, so `{wide_bar}` always keeps
 // room instead of collapsing to `[]`.
+#[cfg(feature = "cli")]
 const BAR_FULL: &str = "{spinner:.green} {msg} [{wide_bar:.cyan/blue}] \
                         {bytes}/{total_bytes} ({binary_bytes_per_sec}, eta {eta})";
+#[cfg(feature = "cli")]
 const BAR_MID: &str =
     "{spinner:.green} {msg} [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {percent:>3}%";
+#[cfg(feature = "cli")]
 const BAR_NARROW: &str = "{spinner:.green} {msg} [{wide_bar:.cyan/blue}] {percent:>3}%";
+#[cfg(feature = "cli")]
 const SPINNER_TEMPLATE: &str = "{spinner:.green} {msg} {bytes} ({binary_bytes_per_sec})";
 
 /// Picks the determinate template and the label budget for a terminal
 /// width: the wider the terminal, the more fields and label we show.
+#[cfg(feature = "cli")]
 fn bar_layout(cols: usize) -> (&'static str, usize) {
     if cols >= 96 {
         (BAR_FULL, 28)
@@ -570,6 +586,7 @@ fn bar_layout(cols: usize) -> (&'static str, usize) {
 /// terminal width: a determinate bar with bytes/rate/ETA when there is
 /// room, trimmed down on narrow terminals; a spinner when the total size
 /// is unknown. The label is truncated so the bar never collapses.
+#[cfg(feature = "cli")]
 fn progress_bar(total: Option<u64>, name: &str) -> ProgressBar {
     let cols = console::Term::stderr()
         .size_checked()
@@ -603,6 +620,7 @@ fn progress_bar(total: Option<u64>, name: &str) -> ProgressBar {
 /// Truncates a label to at most `max` characters, cutting in the middle
 /// with an ellipsis so both the title (start) and the file extension
 /// (end) stay visible.
+#[cfg(any(test, feature = "cli"))]
 fn truncate_label(label: &str, max: usize) -> String {
     let chars: Vec<char> = label.chars().collect();
     if chars.len() <= max {
@@ -622,6 +640,7 @@ fn truncate_label(label: &str, max: usize) -> String {
 const PART_SUFFIX: &str = ".part";
 /// Suffix of a partial's version marker (`<dest>.part.ver`, see
 /// [`version_marker_path`]).
+#[cfg(any(test, feature = "cli"))]
 const VERSION_MARKER_SUFFIX: &str = ".part.ver";
 
 fn part_path(dest: &Path) -> PathBuf {
@@ -634,6 +653,7 @@ fn part_path(dest: &Path) -> PathBuf {
 /// partial or its `.part.ver` version marker. The one home for the
 /// resume-suffix knowledge — `download orphans` consumes it, because resume
 /// data is reported but never deleted there.
+#[cfg(any(test, feature = "cli"))]
 pub(crate) fn is_resume_artifact(name: &str) -> bool {
     name.ends_with(PART_SUFFIX) || name.ends_with(VERSION_MARKER_SUFFIX)
 }
@@ -894,6 +914,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cli")]
     fn progress_templates_are_valid_at_every_width() {
         for template in [BAR_FULL, BAR_MID, BAR_NARROW, SPINNER_TEMPLATE] {
             ProgressStyle::with_template(template).expect("template parses");
@@ -904,6 +925,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cli")]
     fn narrower_terminals_drop_fields_and_shrink_the_label() {
         assert_eq!(bar_layout(120).0, BAR_FULL);
         assert_eq!(bar_layout(80).0, BAR_MID);

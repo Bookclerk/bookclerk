@@ -11,30 +11,52 @@ publish = false
 [[bin]]
 name = "audible"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [lib]
 name = "audible_rs"
 path = "src/lib.rs"
 
+[features]
+default = []
+# `audible` CLI, local SQLite library DB, config.toml, plugin broker, and
+# terminal progress. Bookclerk's source plugin leaves this off.
+cli = [
+    "dep:anyhow",
+    "dep:async-trait",
+    "dep:clap",
+    "dep:clap_complete",
+    "dep:comfy-table",
+    "dep:console",
+    "dep:dialoguer",
+    "dep:indicatif",
+    "dep:libc",
+    "dep:mimalloc",
+    "dep:qrcode",
+    "dep:rusqlite",
+    "dep:semver",
+    "dep:tempfile",
+    "dep:toml",
+    "dep:toml_edit",
+    "dep:tracing-subscriber",
+    "dep:unicode-normalization",
+    "tokio/process",
+    "tokio/signal",
+]
+
 [dependencies]
-# Async runtime & HTTP
-tokio = { version = "1.52", features = ["full"] }
+# Async runtime & HTTP — library path used by Bookclerk's Audible plugin.
+tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "net"] }
 futures = "0.3"
 reqwest = { version = "0.13", features = ["json", "form", "cookies", "stream", "gzip", "brotli", "deflate"] }
-# `account login server` reverse proxy (AUD-60). The hyper stack is already in
-# the tree via reqwest, so these are near-free; qrcode without `image` stays tiny.
+# Login-server reverse proxy (AUD-60). The hyper stack is already in
+# the tree via reqwest; Bookclerk's Accounts UI uses this path.
 hyper = { version = "1.10", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 regex = "1.12"
-qrcode = { version = "0.14", default-features = false }
 url = "2.5"
 roxmltree = "0.21"  # read-only DASH MPD parsing (Widevine, AUD-56)
-
-# CLI
-clap = { version = "4.6", features = ["derive"] }
-clap_complete = "4"
-async-trait = "0.1"
 
 # Crypto (digest-0.10 / cipher-0.4 lineup, compatible with rsa 0.9)
 rsa = { version = "0.9", features = ["sha2"] }
@@ -56,54 +78,46 @@ prost = "0.14"
 secrecy = { version = "0.10", features = ["serde"] }
 zeroize = "1.8"
 
-# Auth helpers
-totp-rs = "5.7"
+# Amazon login HTML (OTP is completed in the browser; this crate does not
+# generate TOTP codes).
 scraper = "0.27"
 
 # Config & serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "1.1"
-toml_edit = "0.25"
 
-# Filename slugging (NFKD transliteration for the ascii download mode)
-unicode-normalization = "0.1"
-
-# Database (the engine of the library commands; non-optional)
-rusqlite = { version = "0.37", features = ["bundled"] }
+# Cross-process auth-file write lock (file write-back and CLI config).
 fd-lock = "4.0"
 
-# Output & interactive prompts
-indicatif = "0.18"
-console = "0.16"
-comfy-table = "7.2"
-dialoguer = { version = "0.12", features = ["editor"] }
-
 # Errors & logging
-anyhow = "1.0"
 thiserror = "2.0"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Encoding & misc
 base64 = "0.22"
 hex = "0.4"
 rand = "0.10"
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
-# Session agent (M5): SIGTERM to the daemon PID, detached process group.
-libc = "0.2"
-# Unpredictable 0700 temp dirs for `plugin add <https://…>` (AUD-220/B4):
-# a fixed name in world-writable /tmp was a pre-own/TOCTOU target.
-tempfile = "3"
 
-# Global allocator (AUD-140): mimalloc neutralizes musl's slower default
-# malloc for the static Linux release binaries, and modestly speeds up the
-# glibc/macOS builds too. Set as the global allocator in `main.rs`.
-mimalloc = "0.1"
-
-# Release comparison for `self check` (AUD-179): pre-release identifiers must
-# order correctly (alpha.2 < alpha.10), which string comparison gets wrong.
-semver = "1.0"
+# --- CLI-only (optional; enabled by `cli`) ---
+anyhow = { version = "1.0", optional = true }
+async-trait = { version = "0.1", optional = true }
+clap = { version = "4.6", features = ["derive"], optional = true }
+clap_complete = { version = "4", optional = true }
+qrcode = { version = "0.14", default-features = false, optional = true }
+toml = { version = "1.1", optional = true }
+toml_edit = { version = "0.25", optional = true }
+unicode-normalization = { version = "0.1", optional = true }
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+indicatif = { version = "0.18", optional = true }
+console = { version = "0.16", optional = true }
+comfy-table = { version = "7.2", optional = true }
+dialoguer = { version = "0.12", features = ["editor"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+libc = { version = "0.2", optional = true }
+tempfile = { version = "3", optional = true }
+mimalloc = { version = "0.1", optional = true }
+semver = { version = "1.0", optional = true }
 
 # Build-time only (Widevine proto codegen, pure Rust — no protoc needed).
 # Not linked into the release binary.
@@ -113,6 +127,7 @@ protox = "0.9"
 
 [dev-dependencies]
 insta = "1.47"
+tempfile = "3"
 wiremock = "0.6"
 
 # Argon2id with production parameters (64 MiB) is unusably slow in

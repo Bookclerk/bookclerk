@@ -101,9 +101,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util
 async-trait = "0.1"
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["compat", "io"] }
-capnp = "0.25"
-capnp-rpc = "0.25"
-capnpc = "0.25"
+capnp = "0.27"
+capnp-rpc = "0.27"
+capnpc = "0.27"
 
 # Error / logging
 anyhow = "1"
@@ -127,7 +127,7 @@ tower-http = { version = "0.7", features = ["trace", "fs", "normalize-path"] }
 
 # DB / storage — rusqlite 0.37 shares libsqlite3-sys 0.35 with SeaORM's sqlx-sqlite
 # (rusqlite 0.40 needs ^0.38 and cannot coexist in one binary). Vendored audible-rs
-# under third_party/ matches this pin — see docs/database.md.
+# under third_party/ matches this pin on its optional `cli` feature.
 rusqlite = { version = "0.37", features = ["bundled", "column_decltype"] }
 rusqlite_migration = "2.3"
 sea-orm = { version = "2.0.0", default-features = false, features = [
@@ -151,7 +151,7 @@ base64 = "0.23"
 reqwest = { version = "0.13", default-features = true, features = ["json", "form"] }
 url = "2"
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
-totp-rs = { version = "5.7", default-features = false, features = ["otpauth", "gen_secret"] }
+totp-rs = { version = "6", default-features = false, features = ["std", "otpauth", "gen_secret"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 jsonwebtoken = { version = "11.0", features = ["rust_crypto"] }
 openidconnect = { version = "4", default-features = false }
@@ -184,9 +184,9 @@ hmac = "0.13"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 walkdir = "2"
 
-# audible-rs — path-patched fork (rusqlite 0.37). Upstream rev documented in
-# third_party/audible-rs/BOOKCLERK_PATCH.md.
-audible-rs = { path = "third_party/audible-rs" }
+# audible-rs — path-patched fork. Library-only by default (no CLI / rusqlite).
+# Upstream rev and Bookclerk patches: third_party/audible-rs/BOOKCLERK_PATCH.md.
+audible-rs = { path = "third_party/audible-rs", default-features = false }
 secrecy = { version = "0.10", features = ["serde"] }
 
 # Test doubles

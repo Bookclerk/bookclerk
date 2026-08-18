@@ -2,28 +2,37 @@
 //! [mkb79/Audible](https://github.com/mkb79/Audible) and
 //! [mkb79/audible-cli](https://github.com/mkb79/audible-cli).
 //!
-//! The public API surface is `api`, `auth` and `models`; the remaining
-//! modules back the `audible` binary. Planning, roadmap and decisions
-//! live in Linear (the single source of truth); the archived architecture
-//! spec (v4) is kept under `docs/archive/` for historical reference.
+//! The public library surface is `api`, `auth`, `models`, `downloader`,
+//! and `widevine`. Remaining modules back the `audible` binary and compile
+//! only with the `cli` feature.
 
 pub mod api;
 pub mod auth;
-pub mod models;
-pub mod naming;
-
-pub mod activation;
-pub mod catalog;
-pub mod collections;
-pub mod commands;
-pub mod config;
 pub mod crypto;
-pub mod db;
 pub mod downloader;
 pub(crate) mod fsutil;
 pub mod library_sync;
-pub mod output;
-pub mod plugins;
-pub mod session;
+pub mod models;
 pub(crate) mod timefmt;
 pub mod widevine;
+
+#[cfg(feature = "cli")]
+pub mod activation;
+#[cfg(feature = "cli")]
+pub mod catalog;
+#[cfg(feature = "cli")]
+pub mod collections;
+#[cfg(feature = "cli")]
+pub mod commands;
+#[cfg(feature = "cli")]
+pub mod config;
+#[cfg(feature = "cli")]
+pub mod db;
+#[cfg(feature = "cli")]
+pub mod naming;
+#[cfg(feature = "cli")]
+pub mod output;
+#[cfg(feature = "cli")]
+pub mod plugins;
+#[cfg(feature = "cli")]
+pub mod session;

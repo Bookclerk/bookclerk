@@ -81,6 +81,7 @@ fn sync_parent_dir(path: &Path) {
 /// its inode mode on open and is re-tightened afterwards (it may predate
 /// the rule). On Windows the mode is a no-op — secret files rest on
 /// user-profile isolation, not an ACL (AUD-198).
+#[cfg_attr(not(any(test, feature = "cli")), allow(dead_code))]
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     write_private_opts(path, bytes, true)
 }
@@ -88,10 +89,12 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// [`write_private`] that refuses to overwrite: the create fails when the
 /// file already exists (`create_new` — no TOCTOU window between an
 /// exists-check and the write).
+#[cfg_attr(not(any(test, feature = "cli")), allow(dead_code))]
 pub(crate) fn write_private_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     write_private_opts(path, bytes, false)
 }
 
+#[cfg_attr(not(any(test, feature = "cli")), allow(dead_code))]
 fn write_private_opts(path: &Path, bytes: &[u8], overwrite: bool) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true);
@@ -120,6 +123,7 @@ fn write_private_opts(path: &Path, bytes: &[u8], overwrite: bool) -> std::io::Re
 /// predating the rule pick it up on the next write. Only `dir` itself is
 /// tightened; created parents keep the umask. Mode is a no-op on
 /// non-Unix (AUD-198).
+#[cfg_attr(not(any(test, feature = "cli")), allow(dead_code))]
 pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     #[cfg(unix)]

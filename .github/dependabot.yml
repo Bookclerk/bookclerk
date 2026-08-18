@@ -9,6 +9,14 @@ updates:
     cooldown:
       default-days: 7
     groups:
+      # capnp / capnpc / capnp-rpc share a version; bumping one alone
+      # dual-compiles the runtime and breaks generated Client bounds.
+      capnp:
+        patterns:
+          - "capnp"
+          - "capnp-rpc"
+          - "capnpc"
+          - "capnp-futures"
       cargo-minor-patch:
         update-types:
           - minor

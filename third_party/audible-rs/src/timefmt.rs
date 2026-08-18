@@ -6,15 +6,18 @@
 
 /// The one format literal. Callers use the helpers; the const exists so
 /// there is exactly one string to change.
+#[cfg(any(test, feature = "cli"))]
 const ISO_UTC: &[time::format_description::BorrowedFormatItem<'static>] =
     time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
 /// Formats a timestamp as `YYYY-MM-DDTHH:MM:SSZ`.
+#[cfg(any(test, feature = "cli"))]
 pub(crate) fn format_iso(timestamp: time::OffsetDateTime) -> Option<String> {
     timestamp.format(ISO_UTC).ok()
 }
 
 /// Current UTC time as `YYYY-MM-DDTHH:MM:SSZ`.
+#[cfg(any(test, feature = "cli"))]
 pub(crate) fn now_iso() -> String {
     format_iso(time::OffsetDateTime::now_utc())
         .expect("formatting a UTC timestamp with a const format never fails")
@@ -22,6 +25,7 @@ pub(crate) fn now_iso() -> String {
 
 /// Parses `YYYY-MM-DDTHH:MM:SSZ` back (assumed UTC). `None` for anything
 /// that is not exactly the reference format.
+#[cfg(any(test, feature = "cli"))]
 pub(crate) fn parse_iso(text: &str) -> Option<time::OffsetDateTime> {
     time::PrimitiveDateTime::parse(text, ISO_UTC)
         .ok()
@@ -32,6 +36,7 @@ pub(crate) fn parse_iso(text: &str) -> Option<time::OffsetDateTime> {
 /// One home (audit 2026-07-18, C2): two `date_only` copies with different
 /// behavior (`&s[..10]` vs `split_once('T')`) drifted. Returns the input
 /// unchanged when it carries no `T` separator.
+#[cfg(any(test, feature = "cli"))]
 pub(crate) fn date_only(timestamp: &str) -> &str {
     timestamp
         .split_once('T')

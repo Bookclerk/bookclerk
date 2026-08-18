@@ -19,7 +19,7 @@ use qrcode::render::svg;
 use qrcode::QrCode;
 use serde::Deserialize;
 use serde_json::Value;
-use totp_rs::{Algorithm, Secret, TOTP};
+use totp_rs::{Algorithm, Builder, Secret, Totp};
 use uuid::Uuid;
 
 use crate::api::AppState;
@@ -101,20 +101,19 @@ fn totp_account_id(user_id: i64) -> String {
 /// # Errors
 ///
 /// Returns 500 when the secret cannot be decoded or the TOTP constructor fails.
-fn totp_from_secret(secret_b32: &str, account: &str) -> Result<TOTP, StatusCode> {
-    let secret = Secret::Encoded(secret_b32.trim().to_string())
-        .to_bytes()
+fn totp_from_secret(secret_b32: &str, account: &str) -> Result<Totp, StatusCode> {
+    let secret = Secret::try_from_base32(secret_b32.trim())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    TOTP::new(
-        Algorithm::SHA1,
-        6,
-        1,
-        30,
-        secret,
-        Some(String::from("Bookclerk")),
-        account.to_string(),
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    Builder::new()
+        .with_algorithm(Algorithm::SHA1)
+        .with_digits(6)
+        .with_skew(1)
+        .with_step_duration(30)
+        .with_secret(secret)
+        .with_issuer(Some("Bookclerk"))
+        .with_account_name(account)
+        .build()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// Account name shown in authenticator apps (login, email, or a stable fallback).
@@ -189,7 +188,7 @@ async fn store_totp_secret(
 ///
 /// # Arguments
 ///
-/// * `otpauth` - Authenticator-app URL from [`TOTP::get_url`].
+/// * `otpauth` - Authenticator-app URL from [`Totp::to_url`].
 ///
 /// # Errors
 ///
@@ -347,16 +346,13 @@ async fn enroll_begin(
     require_recent_portal_reauth(&state, &headers, user.id, body.current_password.as_deref())
         .await?;
     let library = state.library_snapshot().await;
-    let secret = Secret::generate_secret();
-    let encoded = match secret.to_encoded() {
-        Secret::Encoded(value) => value,
-        Secret::Raw(_) => {
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
+    let secret = Secret::generate();
+    let encoded = secret.to_base32();
     let account = totp_account_label(&user);
     let totp = totp_from_secret(&encoded, &account)?;
-    let otpauth_url = totp.get_url();
+    let otpauth_url = totp
+        .to_url()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     store_totp_secret(&library, user.id, TOTP_PENDING, &encoded).await?;
     let qr_svg = qr_svg(&otpauth_url)?;
     Ok(Json(serde_json::json!({
@@ -390,7 +386,7 @@ async fn enroll_finish(
     let account = totp_account_label(&user);
     let totp = totp_from_secret(&secret, &account)?;
     let code = body.code.trim();
-    if !totp.check_current(code).unwrap_or(false) {
+    if totp.check_current(code).is_none() {
         return Ok(totp_error(
             StatusCode::UNAUTHORIZED,
             "invalid_code",
@@ -470,7 +466,7 @@ async fn login_verify(
         return Ok(invalid_authenticator_code());
     };
     let totp = totp_from_secret(&secret, &totp_account_label(&user))?;
-    if !totp.check_current(body.code.trim()).unwrap_or(false) {
+    if totp.check_current(body.code.trim()).is_none() {
         let _ = auth.record_login_failure(&client_key).await;
         return Ok(invalid_authenticator_code());
     }
@@ -592,7 +588,7 @@ mod tests {
         totp_from_secret(secret_b32, account)
             .expect("totp")
             .generate_current()
-            .expect("code")
+            .to_string()
     }
 
     /// Password login after TOTP enroll returns an MFA challenge, then a session.
