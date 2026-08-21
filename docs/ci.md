@@ -63,6 +63,10 @@ plugins, SDKs).
 
 OSV scanning remains a separate workflow/gate.
 
+The scheduled **workerd pin bump** job (`.github/workflows/workerd-pin-bump.yml`)
+also compiles `bookclerk-workerd` / `bookclerk-plugin-abi`, so it installs
+`capnproto` before `cargo build` when a pin bump is eligible.
+
 ## Branch protection / merge queue
 
 Configure repository rulesets / branch protection so the **required** CI check

@@ -38,7 +38,8 @@ bumps:
    that is at least **7 days** old (same supply-chain cooldown as Dependabot
    `cooldown.default-days: 7` in `.github/dependabot.yml`), writes
    `workerd-pin.json`, then regenerates `pin.rs` / SDK stubs.
-2. Rebuilds `bookclerk-workerd`, runs `cargo ensure-workerd`, then
+2. Installs `capnproto` (needed to compile `schema/plugin_v2.capnp`), rebuilds
+   `bookclerk-workerd`, runs `cargo ensure-workerd`, then
    `scripts/test-workerd-echo.sh` against the Echo workerd example guests.
 3. Opens `deps/workerd-pin` and squash-merges after those checks pass.
 

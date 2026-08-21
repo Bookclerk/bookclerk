@@ -80,6 +80,14 @@ jobs:
           tag="$(python3 -c 'import json; print(json.load(open("crates/bookclerk-workerd/workerd-pin.json"))["release_tag"])')"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      # bookclerk-workerd depends on bookclerk-plugin-abi, whose build.rs
+      # invokes the capnp compiler (same as ci.yml check/release/postgres jobs).
+      - name: Install capnproto
+        if: steps.select.outputs.bump == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
+
       - name: Build launcher + ensure workerd
         if: steps.select.outputs.bump == 'true'
         run: |
