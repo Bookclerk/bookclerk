@@ -11,8 +11,8 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use bookclerk_plugin_abi::v2::{
-    connect_plugin, Destination, DestinationContext, PluginClient, WriteOptions,
-    PRODUCT_API_VERSION,
+    connect_plugin, Destination, DestinationContext, DomainEvent, EventResult, Integration,
+    IntegrationContext, PluginClient, WriteOptions, MAX_EVENT_PAYLOAD_BYTES, PRODUCT_API_VERSION,
 };
 use bookclerk_workerd::pin::binary_name;
 use tokio::io::AsyncReadExt;
@@ -30,6 +30,13 @@ fn find_workerd() -> Option<PathBuf> {
         .parent()
         .map(|dir| dir.join(binary_name()))
         .filter(|p| p.is_file())
+}
+
+fn find_echo_guest() -> Option<PathBuf> {
+    let launcher = PathBuf::from(env!("CARGO_BIN_EXE_bookclerk-workerd"));
+    let dir = launcher.parent()?;
+    let candidate = dir.join("bookclerk-plugin-echo-native-rust");
+    candidate.is_file().then_some(candidate)
 }
 
 fn find_local_guest() -> Option<PathBuf> {
@@ -207,6 +214,225 @@ mode = "deny"
             assert_eq!(desc.api_version, PRODUCT_API_VERSION);
             assert_eq!(desc.id, "local");
             destination_roundtrip(&client).await;
+            let _ = child.kill().await;
+        })
+        .await;
+}
+
+fn sample_event(event_type: &str) -> DomainEvent {
+    DomainEvent {
+        event_id: "e1".into(),
+        event_type: event_type.into(),
+        schema_version: 1,
+        occurred_at_unix_ms: 1,
+        deduplication_key: "k".into(),
+        delivery_attempt: 1,
+        payload: b"{}".to_vec(),
+        ..DomainEvent::default()
+    }
+}
+
+async fn event_result_vectors(client: &PluginClient) {
+    let integration = client
+        .integration(IntegrationContext::default())
+        .await
+        .expect("integration factory");
+    assert_eq!(
+        integration
+            .on_event(sample_event("book_acquired"))
+            .await
+            .expect("ack"),
+        EventResult::Ack
+    );
+    assert_eq!(
+        integration
+            .on_event(sample_event("test_retry"))
+            .await
+            .expect("retry"),
+        EventResult::Retry {
+            retry_at_unix_ms: 1,
+            reason: "echo retry".into(),
+        }
+    );
+    assert_eq!(
+        integration
+            .on_event(sample_event("test_reject"))
+            .await
+            .expect("reject"),
+        EventResult::Reject {
+            reason: "echo reject".into(),
+        }
+    );
+    assert_eq!(
+        integration
+            .on_event(sample_event("test_dead_letter"))
+            .await
+            .expect("deadLetter"),
+        EventResult::DeadLetter {
+            reason: "echo dead letter".into(),
+        }
+    );
+    assert_eq!(
+        integration
+            .on_event(sample_event("test_suspend"))
+            .await
+            .expect("suspend"),
+        EventResult::Suspended {
+            checkpoint_json: r#"{"n":1}"#.into(),
+            checkpoint_schema_version: 1,
+            wake_at_unix_ms: 1,
+            wake_on_event_type: String::new(),
+            wake_on_filter_json: String::new(),
+        }
+    );
+    let mut oversized = sample_event("book_acquired");
+    oversized.payload = vec![0; MAX_EVENT_PAYLOAD_BYTES as usize + 1];
+    let err = integration
+        .on_event(oversized)
+        .await
+        .expect_err("oversized payload");
+    assert_eq!(
+        err.code,
+        bookclerk_plugin_abi::PluginErrorCode::PayloadTooLarge
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn workerd_author_event_vectors() {
+    let Some(workerd) = find_workerd() else {
+        panic!(
+            "pinned workerd binary missing; run `cargo ensure-workerd`. Do not set BOOKCLERK_V2_SKIP_WORKERD."
+        );
+    };
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2-events");
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"))
+                .env("BOOKCLERK_PLUGIN_ROOT", &fixture)
+                .env("BOOKCLERK_WORKERD_BIN", &workerd)
+                .env("TMPDIR", tmp.path())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn bookclerk-workerd events fixture");
+            let stdin = child.stdin.take().expect("stdin");
+            let stdout = child.stdout.take().expect("stdout");
+            let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
+            tokio::task::spawn_local(rpc);
+            let desc = tokio::time::timeout(Duration::from_secs(90), client.describe())
+                .await
+                .expect("describe timed out")
+                .expect("describe");
+            assert_eq!(desc.api_version, PRODUCT_API_VERSION);
+            assert_eq!(desc.id, "v2_events");
+            event_result_vectors(&client).await;
+            let _ = child.kill().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn direct_capnp_echo_event_vectors() {
+    let Some(guest) = find_echo_guest() else {
+        panic!(
+            "bookclerk-plugin-echo-native-rust missing beside bookclerk-workerd; \
+             run `cargo build -p bookclerk-plugin-echo-native-rust -p bookclerk-workerd`"
+        );
+    };
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let mut child = Command::new(&guest)
+                .env("TMPDIR", tmp.path())
+                .env("HOME", tmp.path())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn echo native rust");
+            let stdin = child.stdin.take().expect("stdin");
+            let stdout = child.stdout.take().expect("stdout");
+            let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
+            tokio::task::spawn_local(rpc);
+            let desc = tokio::time::timeout(Duration::from_secs(30), client.describe())
+                .await
+                .expect("describe timed out")
+                .expect("describe");
+            assert_eq!(desc.api_version, PRODUCT_API_VERSION);
+            assert_eq!(desc.id, "echo_native_rust");
+            event_result_vectors(&client).await;
+            let _ = child.kill().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_behind_workerd_echo_event_vectors() {
+    let Some(workerd) = find_workerd() else {
+        panic!(
+            "pinned workerd binary missing; run `cargo ensure-workerd`. Do not set BOOKCLERK_V2_SKIP_WORKERD."
+        );
+    };
+    let Some(guest) = find_echo_guest() else {
+        panic!(
+            "bookclerk-plugin-echo-native-rust missing; run `cargo build -p bookclerk-plugin-echo-native-rust`"
+        );
+    };
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let root = tmp.path().join("plugin");
+    std::fs::create_dir_all(&root).expect("plugin root");
+    std::fs::write(
+        root.join("plugin.toml"),
+        r#"api_version = 2
+id = "echo_native_rust"
+kind = "integration"
+runtime = "native"
+command = "./bookclerk-plugin-echo-native-rust"
+
+[capabilities.network]
+mode = "deny"
+
+[capabilities.methods]
+list = ["describe", "integration", "health", "onEvent"]
+
+[capabilities.events]
+subscriptions = [
+  { type = "book_acquired", schema_versions = [1], supports_suspend = true },
+]
+"#,
+    )
+    .expect("plugin.toml");
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"))
+                .env("BOOKCLERK_PLUGIN_ROOT", &root)
+                .env("BOOKCLERK_WORKERD_BIN", &workerd)
+                .env("BOOKCLERK_NATIVE_BACKEND", &guest)
+                .env("TMPDIR", tmp.path())
+                .env("HOME", tmp.path())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn native-behind-workerd echo");
+            let stdin = child.stdin.take().expect("stdin");
+            let stdout = child.stdout.take().expect("stdout");
+            let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
+            tokio::task::spawn_local(rpc);
+            let desc = tokio::time::timeout(Duration::from_secs(90), client.describe())
+                .await
+                .expect("describe timed out — native-behind-workerd echo failed to start")
+                .expect("describe");
+            assert_eq!(desc.api_version, PRODUCT_API_VERSION);
+            event_result_vectors(&client).await;
             let _ = child.kill().await;
         })
         .await;

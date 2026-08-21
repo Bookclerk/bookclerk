@@ -567,6 +567,50 @@ class HttpNativeSource extends Source {
   }
 }
 
+class HttpNativeIntegration extends Integration {
+  constructor(fetcher, ctx) {
+    super();
+    this.fetcher = fetcher;
+    this.ctx = ctx ?? {};
+  }
+  #headers() {
+    return {
+      "content-type": "application/json",
+      "x-bookclerk-context": JSON.stringify(this.ctx),
+    };
+  }
+  async #json(path, body) {
+    const resp = await this.fetcher.fetch(`http://backend${path}`, {
+      method: "POST",
+      headers: this.#headers(),
+      body: JSON.stringify(body ?? { json: this.ctx.json }),
+    });
+    const value = await resp.json().catch(() => ({}));
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `native broker HTTP ${resp.status}`);
+    }
+    return value;
+  }
+  async health() {
+    return this.#json("/v2/integration/health", { json: this.ctx.json });
+  }
+  async diagnose() {
+    return this.#json("/v2/integration/diagnose", { json: this.ctx.json });
+  }
+  async onEvent(event) {
+    return this.#json("/v2/integration/onEvent", { json: this.ctx.json, event });
+  }
+  async start() {
+    await this.#json("/v2/integration/start", { json: this.ctx.json });
+  }
+  async stop() {
+    await this.#json("/v2/integration/stop", { json: this.ctx.json });
+  }
+}
+
 class HttpNativeRoot {
   constructor(fetcher) {
     this.fetcher = fetcher;
@@ -594,6 +638,9 @@ class HttpNativeRoot {
   }
   worker() {
     throw PluginError.fromWire("unsupported", "native worker via broker not bound");
+  }
+  integration(ctx) {
+    return new HttpNativeIntegration(this.fetcher, ctx);
   }
   async shutdown() {}
 }

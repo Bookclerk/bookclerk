@@ -4,12 +4,60 @@
 + `job_temp_paths`). HTTP and the interval scheduler are producers; leased
 workers claim jobs. There is no external broker.
 
-This is not a general pub/sub bus. Domain events such as `book.acquired` /
-plugin `onEvent` stay on a separate notification path (today:
-`notify_integrations`). They must not become job kinds. A transactional outbox
-for those events is a later change.
+This is not a general pub/sub bus. Domain events such as `book_acquired` /
+plugin `onEvent` stay **off** `JobKind`. They use a durable outbox
+(`domain_events` + `event_deliveries` + `event_subscriber_nodes`, schema V27) with
+the same fenced-lease pattern as jobs. Acquire success publishes
+`book_acquired` with producer `source` on the envelope. Each host heartbeats discovered (config-enabled, even if spawn
+failed) and loaded integrations into a **per-node** catalog keyed by
+`(node_id, plugin_id)` and does **not** delete other nodes’ rows. The process
+resolves `event_node_id` once at event-runtime start (best-effort file under
+the files dir) and reuses that in-memory id on every heartbeat. Dispatch uses
+the live union (any enabled node whose heartbeat is within 60s). Optional
+payload-object filters and `resource_class` (currently `network` only) are
+matched host-side. Each dispatcher tick dispatches at most 32 undispatched
+events, then always runs a wake slice (so a backlog cannot starve sleepers or
+the catalog heartbeat) and continues when either undispatched remain or
+`wake still_pending`. Late-join is a **missing `(event_id, plugin_id)` anti-join**
+paged 200, restricted to the retention window — an unchanged catalog with no
+missing pairs does a bounded empty `SELECT` and zero dispatch writes. D1
+dispatch receipts are per pair (`dispatch-{event_id}-{plugin_id}` /
+`reconcile-{event_id}-{plugin_id}`). Each VPS claims only plugin ids loaded on
+that process **and** only events its own node catalog matches (type, schema
+version, filter). `[events.concurrency]` is both the local worker count **and** the
+cluster-wide max `running` deliveries per `(plugin_id, resource_class)`
+(PostgreSQL serializes admission with a per-plugin advisory lock).
+`EventResult::suspended` may set `wakeOnEventType` / `wakeOnFilterJson`; the
+host derives wake grants from declared subscriptions (schema versions plus the
+intersection of `sub.filter` and the requested filter — requested keys only
+add constraints) and wakes matching parked rows in the same account when a
+later event is published. Publish commits `domain_events.wake_pending = 1` and
+returns; the dispatcher claims bounded wake slices with a unique UUID fence
+token (`wake_lease_*` + delivery cursor, at most 32 events and one 64-row
+page each, below D1’s 100 bound parameters; #178 will negotiate `maxBinds`)
+so producer latency does not track sleeper count. Cursor release, finish,
+and the sleeper UPDATE require that token in the same statement; a lost
+fence does not clobber another owner or a later wake registration.
+Accepting a wake clears the registration so a later matching event does not
+re-wake a retry. Duplicate retries leave the flag set until a claimed
+slice finishes. `wakeOnEventType` must be a declared subscription (empty stays
+timestamp-only); an empty requested filter keeps the subscription filter and
+cannot broaden it. Late-join skip cache is invalidated on dispatch error and
+reconciles at least every 60s as a backstop.
+`GET /api/status` includes event queue counts plus durable retry/suspend totals
+and average dispatch/handler latency. Retention is independent of jobs
+(`[events].retention_days` for acked/rejected + empty parent events after that
+cutoff, `dead_letter_retention_days` for dead letters). Prune runs on startup
+and a coarse hourly cadence, not every dispatcher tick. Operator APIs: `GET /api/events`,
+`GET /api/events/deliveries?state=dead_letter`,
+`POST /api/events/deliveries/{id}/retry`,
+`POST /api/events/deliveries/{id}/acknowledge`,
+`POST /api/events/deliveries/{id}/cancel`,
+`POST /api/events/deliveries/{id}/resume`. CLI:
+`bookclerk events list|dead-letters|retry|ack|cancel|resume`.
 
-See [architecture.md](architecture.md) and [operations.md](operations.md).
+See [architecture.md](architecture.md), [plugins.md](plugins.md), and
+[operations.md](operations.md).
 
 ## Command envelope
 
@@ -118,6 +166,12 @@ this queue.
   worker treats the result as unfenced and ignores it. Finalization calls
   `fail_job(..., "cancelled")` only when `cancel_requested` is set. A local
   cancel without that flag is treated as fence loss and ignored.
+- Event delivery workers use the same 60s lease and `lease/3` heartbeat
+  during `onEvent`. Fence loss cancels the guest RPC and ignores the
+  result. Claims are restricted to plugin ids loaded on this process;
+  releasing an unexecuted claim does not consume `attempt_count`.
+  Expired-lease reclaim restores `resume_pending` when a checkpoint exists
+  so a crash during resume does not burn an attempt.
 - Startup and each worker tick call `reclaim_expired_leases`.
 - Books left `queued` / `downloading` with **no** running acquire job are set
   to `error` (`orphaned_after_restart`). The next acquire job retries them.
@@ -160,4 +214,5 @@ and the shared `StorageIndex` stay single-writer. Codec work stays in the
 
 ## Configuration
 
-See [configuration.md](configuration.md) (`[jobs]` and `BOOKCLERK_JOBS_*`).
+See [configuration.md](configuration.md) (`[jobs]` / `BOOKCLERK_JOBS_*` and
+`[events]` / `BOOKCLERK_EVENTS_*`).

@@ -201,6 +201,45 @@ export interface StatusResponse {
   in_progress: number;
   listen: string;
   storage_backend: string;
+  events?: EventQueueStatus;
+}
+
+/**
+ * Durable domain-event delivery-queue counters from `/api/status`.
+ */
+export interface EventQueueStatus {
+  pending: number;
+  running: number;
+  suspended: number;
+  dead_letter: number;
+  acked: number;
+  oldest_pending_age_secs: number | null;
+  retries_total?: number;
+  suspensions_total?: number;
+  dead_letters_total?: number;
+  dispatch_latency_ms_avg?: number | null;
+  handler_latency_ms_avg?: number | null;
+}
+
+/**
+ * Operator delivery row from `/api/events/deliveries`.
+ */
+export interface EventDeliveryInfo {
+  id: string;
+  eventId: string;
+  pluginId: string;
+  state: string;
+  attemptCount: number;
+  leaseGeneration: number;
+  invocationSequence: number;
+  outcome: string | null;
+  errorMessage: string | null;
+  runAfter: string;
+  updatedAt: string;
+  cancelRequested: boolean;
+  resourceClass: string;
+  resumePending: boolean;
+  hasCheckpoint: boolean;
 }
 
 /**
@@ -2144,6 +2183,79 @@ export async function cancelJob(id: string): Promise<ActionResponse> {
     body: "{}",
   });
   return parseJson(res);
+}
+
+/**
+ * Lists recent event deliveries for the Library strip.
+ *
+ * @param state - Optional lifecycle filter (`dead_letter`, `running`, …).
+ * @returns Delivery rows from `/api/events/deliveries`.
+ */
+export async function fetchEventDeliveries(
+  state?: string,
+): Promise<EventDeliveryInfo[]> {
+  const sp = new URLSearchParams();
+  if (state) sp.set("state", state);
+  const res = await fetch(`/api/events/deliveries?${sp}`, {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+async function postEventDeliveryAction(
+  id: string,
+  action: "retry" | "acknowledge" | "cancel" | "resume",
+): Promise<ActionResponse> {
+  const res = await fetch(
+    `/api/events/deliveries/${encodeURIComponent(id)}/${action}`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    },
+  );
+  return parseJson(res);
+}
+
+/**
+ * Re-queues a dead-lettered delivery.
+ *
+ * @param id - Delivery id (`{eventId}:{pluginId}`).
+ * @returns Action ack from the daemon.
+ */
+export function retryEventDelivery(id: string): Promise<ActionResponse> {
+  return postEventDeliveryAction(id, "retry");
+}
+
+/**
+ * Acknowledges a dead-lettered delivery (no further retry).
+ *
+ * @param id - Delivery id (`{eventId}:{pluginId}`).
+ * @returns Action ack from the daemon.
+ */
+export function ackEventDelivery(id: string): Promise<ActionResponse> {
+  return postEventDeliveryAction(id, "acknowledge");
+}
+
+/**
+ * Cancels a pending delivery or flags a running one.
+ *
+ * @param id - Delivery id (`{eventId}:{pluginId}`).
+ * @returns Action ack from the daemon.
+ */
+export function cancelEventDelivery(id: string): Promise<ActionResponse> {
+  return postEventDeliveryAction(id, "cancel");
+}
+
+/**
+ * Wakes a suspended delivery for the next worker claim.
+ *
+ * @param id - Delivery id (`{eventId}:{pluginId}`).
+ * @returns Action ack from the daemon.
+ */
+export function resumeEventDelivery(id: string): Promise<ActionResponse> {
+  return postEventDeliveryAction(id, "resume");
 }
 
 /**

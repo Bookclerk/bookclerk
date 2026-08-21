@@ -1,8 +1,12 @@
 //! `bookclerkd` — long-running scan / acquire daemon with HTTP control plane.
 
+// Axum `Response` as handler `Err` exceeds Clippy's 128-byte `result_large_err` cap.
+#![allow(clippy::result_large_err)]
+
 mod api;
 mod auth;
 mod csrf;
+mod event_worker;
 mod http_error;
 mod job_handler;
 mod job_worker;
@@ -35,6 +39,7 @@ use crate::api::{
     revert_listen_after_bind_failure, router, start_integration_watchers, validate_daemon_listen,
     AppState,
 };
+use crate::event_worker::start_event_runtime;
 use crate::job_worker::start_job_runtime;
 use crate::registry::default_registry_with_plugins;
 use crate::scheduler::spawn_scheduler;
@@ -148,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
         last_bound_listen: RwLock::new(None),
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
+        event_node_id: std::sync::OnceLock::new(),
     });
 
     start_integration_watchers(&state).await;
@@ -155,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!(error = %err, "failed to sync plugin OIDC clients");
     }
     start_job_runtime(state.clone()).await;
+    start_event_runtime(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 

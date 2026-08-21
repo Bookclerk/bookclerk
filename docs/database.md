@@ -265,7 +265,8 @@ statements use `CREATE TABLE/INDEX IF NOT EXISTS`. Tables:
 `accounts`, `books`, `ignored_titles`, `saved_filters`, `portal_identities`,
 `claim_tickets`, `portal_sessions`, `account_links`, `works`, `work_editions`,
 `listening_progress`, `title_requests`, `title_request_sources`, `embeddings`,
-`user_preferences`, `encrypted_secrets`, `jobs`, `job_temp_paths`.
+`user_preferences`, `encrypted_secrets`, `jobs`, `job_temp_paths`,
+`domain_events`, `event_deliveries`, `event_subscriber_nodes`, `event_outbox_stats`.
 The `jobs` table is the durable daemon queue (see [jobs.md](jobs.md)); V12
 adds it for existing databases. V13 adds `jobs.lease_generation`, a partial
 unique index on active `dedup_key`s, `job_temp_paths.reserved_bytes`, and a
@@ -287,6 +288,51 @@ sealed in `encrypted_secrets` (`kind=totp`, `account_type=user`,
 V20 adds `user_preferences.theme` (`system`, `light`, or `dark`; default
 `system`). The SPA follows the OS when `system` is set, falling back to the
 designed light theme when the OS hint is missing or not dark.
+V21 adds `domain_events` (immutable outbox envelopes) and `event_deliveries`
+(one fenced row per subscriber). Domain events are **not** job kinds; see
+[jobs.md](jobs.md). Duplicate publishes coalesce on
+`(account_id, source, event_type, dedup_key)`.
+Deliveries are idempotent on `(event_id, plugin_id)`.
+V22 adds `domain_events.ordering_key` so the producer FIFO key is stored on the
+envelope and copied verbatim onto each delivery.
+V23 adds `event_subscribers` (replaced in V24) plus
+`event_deliveries.cancel_requested` and `event_deliveries.resource_class`.
+Dispatchers match a live catalog, not this process’s loaded registry; workers
+still claim only locally loaded plugin ids.
+V24 replaces last-writer-wins `event_subscribers` with per-node
+`event_subscriber_nodes` (`node_id`, `plugin_id`, heartbeat) and adds
+`event_outbox_stats` for durable retry/suspend/dead-letter totals and
+dispatch/handler latency. Live dispatch unions enabled rows whose heartbeat is
+within 60 seconds. Parent events with no remaining deliveries are retained until
+`[events].retention_days`.
+V25 adds `domain_events.source` (producer plugin id; empty when unknown) and
+`event_deliveries.wake_event_type` / `wake_filter_json` for host-side
+wake-on-matching-event. Late-join uses a missing `(event_id, plugin_id)`
+anti-join instead of walking every retained dispatched event.
+V26 adds `domain_events.wake_pending` so event-triggered wake is replayable
+after a Duplicate publish or a crash between dispatch and wake. Wake scans are
+account-scoped (parent `domain_events.account_id`) and paged.
+V27 rebuilds uniqueness to `(account_id, source, event_type, dedup_key)`, adds
+claimed wake slices (`wake_lease_owner`, `wake_lease_expires_at`,
+`wake_cursor_at`, `wake_cursor_id`) so each dispatcher tick owns at most a
+bounded page of sleepers, and stores host-derived `event_deliveries.wake_grants_json`
+(schema versions + intersected filter). Publish is commit + notify; the
+dispatcher drains `wake_pending`. File SQLite applies V27 under
+`PRAGMA foreign_keys=OFF` (drop parent while the cascading child exists).
+D1 enforces FKs, so V27 is **not** the SQLite DROP-parent rebuild: versions
+1–26 go through the guest migrator, then V27 is one D1 `{ "batch": [...] }`
+SQL transaction that rebuilds both tables, **drops `event_deliveries` then
+`domain_events`**, renames, recreates indexes, and inserts
+`schema_migrations` version 28 (the last sqlite/D1 step index; the extra V3
+portal migration means named V27 is not bookkeeping version 27). Wake
+registration (`wake_event_type` / `wake_filter_json` / `wake_grants_json`) is
+cleared when a matching event is accepted so retry is not re-woken. Wake
+pages are 64 rows so parent `IN (…)` and the fenced sleeper UPDATE stay under
+D1’s 100 bound-parameter limit (#178 will negotiate `maxBinds`). The sleeper
+UPDATE is one statement gated on `wake_pending = 1` and `wake_lease_owner`.
+Claim uses this node’s catalog (type + schema + filter); cluster dispatch still
+unions live nodes. D1/`dbAtomic` claim SQL is plugin-id-only; the host
+releases an incompatible row and node-locally claims a later match.
 
 ## Encrypted secrets
 

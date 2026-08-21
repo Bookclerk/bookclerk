@@ -36,13 +36,36 @@ pub async fn open(
 ) -> Result<DatabaseConnection> {
     let proxy = D1Proxy::new(api_base, account_id, database_id, token);
     set_shared_proxy(proxy.clone());
-    let db = Database::connect_proxy(DbBackend::Sqlite, Arc::new(Box::new(proxy)))
+    let db = Database::connect_proxy(DbBackend::Sqlite, Arc::new(Box::new(proxy.clone())))
         .await
         .map_err(LibraryError::Orm)?;
     db.ping().await.map_err(LibraryError::Orm)?;
     bookclerk_db_guest::apply_pending_migrations(&db).await?;
+    if !bookclerk_db_guest::schema_version_applied(
+        &db,
+        bookclerk_library::migrations::migration_v27_schema_version(),
+    )
+    .await?
+    {
+        apply_d1_v27_batch(&proxy).await?;
+    }
     tracing::debug!(plugin = "d1", "opened library database");
     Ok(db)
+}
+
+/// Apply D1 V27 as one `{ "batch": [...] }` SQL transaction (child drop first).
+async fn apply_d1_v27_batch(proxy: &D1Proxy) -> Result<()> {
+    let statements: Vec<(String, Vec<JsonValue>)> =
+        bookclerk_library::migrations::migration_v27_d1_batch()
+            .into_iter()
+            .map(|sql| (sql, Vec::new()))
+            .collect();
+    proxy
+        .run_batch(&statements)
+        .await
+        .map_err(DbErr::from)
+        .map_err(LibraryError::Orm)?;
+    Ok(())
 }
 
 /// Operator-facing reason recorded when SeaORM `begin` is rejected on D1 HTTP.

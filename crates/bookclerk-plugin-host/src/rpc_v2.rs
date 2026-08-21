@@ -122,6 +122,7 @@ enum Work {
         ctx_json: String,
         op: String,
         params: String,
+        cancel: Arc<AtomicBool>,
         reply: oneshot::Sender<Result<String>>,
     },
     CliDescribe {
@@ -628,10 +629,27 @@ impl V2PluginSession {
         op: impl Into<String>,
         params: impl Into<String>,
     ) -> Result<String> {
+        self.integration_json_cancelable(ctx_json, op, params, Arc::new(AtomicBool::new(false)))
+            .await
+    }
+
+    /// Integration JSON-RPC, aborted when `cancel` is set (delivery fence loss).
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the RPC fails or is cancelled.
+    pub async fn integration_json_cancelable(
+        &self,
+        ctx_json: impl Into<String>,
+        op: impl Into<String>,
+        params: impl Into<String>,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<String> {
         self.call(|reply| Work::Integration {
             ctx_json: ctx_json.into(),
             op: op.into(),
             params: params.into(),
+            cancel,
             reply,
         })
         .await
@@ -828,16 +846,9 @@ async fn dispatch_integration(
         }),
         "onEvent" => {
             let event: DomainEvent = serde_json::from_str(params).unwrap_or(DomainEvent {
-                event_id: String::new(),
-                event_type: String::new(),
-                schema_version: 1,
-                occurred_at_unix_ms: 0,
-                account_id: String::new(),
-                correlation_id: String::new(),
-                causation_id: String::new(),
-                deduplication_key: String::new(),
                 delivery_attempt: 1,
                 payload: params.as_bytes().to_vec(),
+                ..DomainEvent::default()
             });
             role.on_event(event).await.map(|r| match r {
                 EventResult::Ack => "{\"kind\":\"ack\"}".into(),
@@ -855,6 +866,18 @@ async fn dispatch_integration(
                 EventResult::DeadLetter { reason } => format!(
                     "{{\"kind\":\"deadLetter\",\"reason\":{}}}",
                     serde_json::to_string(&reason).unwrap_or_else(|_| "\"\"".into())
+                ),
+                EventResult::Suspended {
+                    checkpoint_json,
+                    checkpoint_schema_version,
+                    wake_at_unix_ms,
+                    wake_on_event_type,
+                    wake_on_filter_json,
+                } => format!(
+                    "{{\"kind\":\"suspended\",\"checkpointJson\":{},\"checkpointSchemaVersion\":{checkpoint_schema_version},\"wakeAtUnixMs\":{wake_at_unix_ms},\"wakeOnEventType\":{},\"wakeOnFilterJson\":{}}}",
+                    serde_json::to_string(&checkpoint_json).unwrap_or_else(|_| "\"\"".into()),
+                    serde_json::to_string(&wake_on_event_type).unwrap_or_else(|_| "\"\"".into()),
+                    serde_json::to_string(&wake_on_filter_json).unwrap_or_else(|_| "\"\"".into())
                 ),
             })
         }
@@ -1069,9 +1092,15 @@ fn vat_thread(
                             ctx_json,
                             op,
                             params,
+                            cancel,
                             reply,
                         } => {
-                            let out = dispatch_integration(&client, ctx_json, &op, &params).await;
+                            let out = tokio::select! {
+                                () = wait_flag(Arc::clone(&cancel)) => {
+                                    Err(PluginError::from_abi(Some("cancelled"), "fence lost"))
+                                }
+                                out = dispatch_integration(&client, ctx_json, &op, &params) => out,
+                            };
                             let _ = reply.send(out);
                         }
                         Work::CliDescribe { reply } => {

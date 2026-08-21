@@ -16,6 +16,7 @@ mod desktop;
 mod diagnostics;
 /// [`ConfigError`] and the crate [`Result`] alias.
 mod error;
+mod events;
 mod extras;
 mod isolation;
 mod jobs;
@@ -46,6 +47,7 @@ pub use diagnostics::{
     global as diagnostics_global, BufferedEvent, DiagnosticsHandle, UploadPayload,
 };
 pub use error::{ConfigError, Result};
+pub use events::EventsConfig;
 pub use extras::{
     apply_replacements, classic_key_aliases, default_replacement_characters,
     key_matches_reconcile_pattern, parse_replacement_characters, posix_replacement_characters,

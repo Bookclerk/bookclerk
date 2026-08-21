@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use bookclerk_plugin_abi::v2::{
-    connect_plugin, ByteRange, Destination, DestinationContext, ListOptions, PluginClient,
-    PluginDescribe, Source, SourceContext, WriteOptions, MAX_SCALAR_BYTES,
+    connect_plugin, ByteRange, Destination, DestinationContext, DomainEvent, Integration,
+    IntegrationContext, ListOptions, PluginClient, PluginDescribe, Source, SourceContext,
+    WriteOptions, MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -65,6 +66,23 @@ impl BrokerPolicy {
             .into_iter()
             .map(str::to_string)
             .collect(),
+        }
+    }
+
+    /// Integration-capable policy for native-behind-workerd event delivery.
+    #[must_use]
+    pub fn integration(plugin_id: impl Into<String>, grant_revision: impl Into<String>) -> Self {
+        Self {
+            plugin_id: plugin_id.into(),
+            role: "integration".into(),
+            grant_revision: grant_revision.into(),
+            invocation_fence: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            max_scalar_bytes: MAX_SCALAR_BYTES,
+            allowed_ops: ["health", "diagnose", "onEvent", "start", "stop", "describe"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
         }
     }
 
@@ -145,6 +163,12 @@ enum BrokerCmd {
         key: String,
         resp: oneshot::Sender<Result<OpenedObject, String>>,
     },
+    Integration {
+        op: String,
+        json: String,
+        event: Option<DomainEvent>,
+        resp: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
 }
 
 /// Starts the HTTP accept loop (Send) and the vat-thread dispatcher (`LocalSet`).
@@ -207,6 +231,9 @@ async fn dispatch_broker(
                     let _ = resp.send(Err("cancelled: grant revoked".into()));
                 }
                 BrokerCmd::Delete { resp, .. } | BrokerCmd::AbortStage { resp, .. } => {
+                    let _ = resp.send(Err("cancelled: grant revoked".into()));
+                }
+                BrokerCmd::Integration { resp, .. } => {
                     let _ = resp.send(Err("cancelled: grant revoked".into()));
                 }
             }
@@ -362,6 +389,49 @@ async fn dispatch_broker(
                     dest.abort_stage(&key, &token)
                         .await
                         .map_err(|e| e.to_string())
+                })
+                .await;
+                let _ = resp.send(out);
+            }
+            BrokerCmd::Integration {
+                op,
+                json,
+                event,
+                resp,
+            } => {
+                let cancelled = Arc::clone(&policy.cancelled);
+                let out = race_against_revoke(cancelled, async {
+                    let integration = client
+                        .integration(IntegrationContext { json })
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    match op.as_str() {
+                        "health" => {
+                            let health = integration.health().await.map_err(|e| e.to_string())?;
+                            serde_json::to_value(health).map_err(|e| e.to_string())
+                        }
+                        "diagnose" => {
+                            let json = integration.diagnose().await.map_err(|e| e.to_string())?;
+                            Ok(serde_json::json!({ "json": json }))
+                        }
+                        "onEvent" => {
+                            let event = event.ok_or_else(|| "missing event".to_string())?;
+                            let result = integration
+                                .on_event(event)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            serde_json::to_value(result).map_err(|e| e.to_string())
+                        }
+                        "start" => {
+                            integration.start().await.map_err(|e| e.to_string())?;
+                            Ok(serde_json::json!({ "ok": true }))
+                        }
+                        "stop" => {
+                            integration.stop().await.map_err(|e| e.to_string())?;
+                            Ok(serde_json::json!({ "ok": true }))
+                        }
+                        other => Err(format!("unsupported integration.{other}")),
+                    }
                 })
                 .await;
                 let _ = resp.send(out);
@@ -780,6 +850,36 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
         })
         .await?;
         stream_response(&mut writer, resp_rx).await
+    } else if method == "POST" && path_only.starts_with("/v2/integration/") {
+        let op = path_only.trim_start_matches("/v2/integration/");
+        policy
+            .check("integration", op)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let rest = read_content(&mut reader, &headers, prefix, policy.max_scalar_bytes).await?;
+        if rest.len() > policy.max_scalar_bytes as usize {
+            bail!("payload_too_large: integration body");
+        }
+        let value: serde_json::Value = serde_json::from_slice(&rest).unwrap_or_default();
+        let event = value
+            .get("event")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok());
+        let (resp_tx, resp_rx) = oneshot::channel();
+        cmds.send(BrokerCmd::Integration {
+            op: op.to_string(),
+            json: value
+                .get("json")
+                .and_then(|k| k.as_str())
+                .unwrap_or(&ctx_json)
+                .to_string(),
+            event,
+            resp: resp_tx,
+        })
+        .await?;
+        match resp_rx.await.context("integration dropped")? {
+            Ok(body) => write_json(&mut writer, &body).await,
+            Err(err) => write_broker_err(&mut writer, "internal", &err).await,
+        }
     } else {
         let resp =
             b"HTTP/1.1 404 Not Found\r\ncontent-length: 9\r\nconnection: close\r\n\r\nnot found";
@@ -1005,6 +1105,14 @@ mod tests {
         let policy = BrokerPolicy::destination("local", "grant-1");
         assert!(policy.check("database", "execute").is_err());
         assert!(policy.check("destination", "not-a-real-op").is_err());
+    }
+
+    #[test]
+    fn integration_policy_allows_on_event() {
+        let policy = BrokerPolicy::integration("echo", "grant-1");
+        assert!(policy.check("integration", "onEvent").is_ok());
+        assert!(policy.check("integration", "health").is_ok());
+        assert!(policy.check("destination", "put").is_err());
     }
 
     #[tokio::test]

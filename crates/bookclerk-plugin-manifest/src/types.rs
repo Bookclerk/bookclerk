@@ -163,7 +163,7 @@ pub struct MethodCapabilities {
 ///
 /// `network` is mandatory in TOML; `bindings` and `methods` default to empty
 /// / all-false when omitted.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilitiesManifest {
     /// Network mode and optional workerd domain allowlist.
@@ -174,7 +174,12 @@ pub struct CapabilitiesManifest {
     /// Declared RPC method names for discovery / consent.
     #[serde(default, skip_serializing_if = "MethodCapabilities::is_default")]
     pub methods: MethodCapabilities,
+    /// Durable domain-event subscriptions (`onEvent` deliveries).
+    #[serde(default, skip_serializing_if = "EventCapabilities::is_default")]
+    pub events: EventCapabilities,
 }
+
+impl Eq for CapabilitiesManifest {}
 
 impl BindingCapabilities {
     /// True when every binding flag is off (omit the `[capabilities.bindings]` table).
@@ -187,6 +192,57 @@ impl MethodCapabilities {
     /// True when no RPC method names are declared (omit `[capabilities.methods]`).
     fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+}
+
+/// One `[capabilities.events.subscriptions]` row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EventSubscription {
+    /// Versioned event type (`book_acquired`, …).
+    #[serde(rename = "type")]
+    pub event_type: String,
+    /// Schema versions this guest can consume (default `[1]`).
+    #[serde(default = "default_schema_versions")]
+    pub schema_versions: Vec<u32>,
+    /// Whether `EventResult::Suspended` is supported for this type.
+    #[serde(default)]
+    pub supports_suspend: bool,
+    /// Concurrency class copied onto deliveries (default `"network"`).
+    #[serde(default = "default_resource_class")]
+    pub resource_class: String,
+    /// Optional host-owned payload object filter (top-level key equality).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<serde_json::Value>,
+}
+
+impl Eq for EventSubscription {}
+
+/// Default `[1]` when a subscription omits `schema_versions`.
+fn default_schema_versions() -> Vec<u32> {
+    vec![1]
+}
+
+/// Default `"network"` when a subscription omits `resource_class`.
+fn default_resource_class() -> String {
+    "network".into()
+}
+
+/// `[capabilities.events]` — durable outbox subscriptions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct EventCapabilities {
+    /// Declared event subscriptions. Empty means the guest is not a subscriber.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subscriptions: Vec<EventSubscription>,
+}
+
+impl Eq for EventCapabilities {}
+
+impl EventCapabilities {
+    /// True when no subscriptions are declared (omit `[capabilities.events]`).
+    fn is_default(&self) -> bool {
+        self.subscriptions.is_empty()
     }
 }
 
@@ -339,7 +395,7 @@ fn default_module_type() -> String {
 /// - native requires `command`; workerd requires `[workerd]` with date + main
 /// - `domains` forbidden on native; required for workerd + outbound
 /// - optional `logo` must pass [`crate::validate_logo`]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PluginManifest {
     /// ABI / schema version. Must be `2` (object-capability Cap'n Proto).
@@ -384,6 +440,8 @@ pub struct PluginManifest {
     #[serde(default, skip_serializing_if = "OidcManifest::is_empty")]
     pub oidc: OidcManifest,
 }
+
+impl Eq for PluginManifest {}
 
 /// `[[oidc.clients]]` install-time OIDC AS templates.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -608,6 +666,48 @@ impl PluginManifest {
                 )));
             }
         }
+        if !self.capabilities.events.subscriptions.is_empty() {
+            let methods = &self.capabilities.methods.list;
+            if !methods.iter().any(|m| m == "onEvent") {
+                return Err(Error::message(
+                    "plugin.toml: capabilities.events.subscriptions requires \
+                     `onEvent` in capabilities.methods.list",
+                ));
+            }
+            for (i, sub) in self.capabilities.events.subscriptions.iter().enumerate() {
+                if sub.event_type.trim().is_empty() {
+                    return Err(Error::message(format!(
+                        "plugin.toml: capabilities.events.subscriptions[{i}].type is required"
+                    )));
+                }
+                if !sub.event_type.chars().enumerate().all(|(j, c)| {
+                    if j == 0 {
+                        c.is_ascii_lowercase()
+                    } else {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'
+                    }
+                }) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: capabilities.events.subscriptions[{i}].type `{}` must be \
+                         snake_case `[a-z][a-z0-9_]*`",
+                        sub.event_type
+                    )));
+                }
+                if sub.schema_versions.is_empty() {
+                    return Err(Error::message(format!(
+                        "plugin.toml: capabilities.events.subscriptions[{i}].schema_versions \
+                         must not be empty"
+                    )));
+                }
+                let class = sub.resource_class.trim();
+                if !class.is_empty() && class != "network" {
+                    return Err(Error::message(format!(
+                        "plugin.toml: capabilities.events.subscriptions[{i}].resource_class \
+                         `{class}` is not supported (only `network`)"
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -819,6 +919,134 @@ mode = "deny"
         )
         .expect_err("api_version 1 is removed");
         assert!(err.to_string().contains("must be 2"), "{err}");
+    }
+
+    #[test]
+    fn event_subscriptions_require_on_event_method() {
+        let err = PluginManifest::parse(
+            r#"
+api_version = 2
+id = "echo"
+kind = "integration"
+runtime = "native"
+command = "./echo"
+[capabilities.network]
+mode = "deny"
+[capabilities.events]
+subscriptions = [{ type = "book_acquired" }]
+"#,
+        )
+        .expect_err("subscriptions require onEvent");
+        assert!(err.to_string().contains("onEvent"), "{err}");
+    }
+
+    #[test]
+    fn event_subscriptions_parse_and_default_schema() {
+        let m = PluginManifest::parse(
+            r#"
+api_version = 2
+id = "echo"
+kind = "integration"
+runtime = "native"
+command = "./echo"
+[capabilities.network]
+mode = "deny"
+[capabilities.methods]
+list = ["onEvent"]
+[capabilities.events]
+subscriptions = [
+  { type = "book_acquired", supports_suspend = true },
+]
+"#,
+        )
+        .unwrap();
+        assert_eq!(m.capabilities.events.subscriptions.len(), 1);
+        assert_eq!(
+            m.capabilities.events.subscriptions[0].event_type,
+            "book_acquired"
+        );
+        assert_eq!(
+            m.capabilities.events.subscriptions[0].schema_versions,
+            vec![1]
+        );
+        assert!(m.capabilities.events.subscriptions[0].supports_suspend);
+        assert_eq!(
+            m.capabilities.events.subscriptions[0].resource_class,
+            "network"
+        );
+        assert!(m.capabilities.events.subscriptions[0].filter.is_none());
+    }
+
+    #[test]
+    fn event_subscriptions_parse_resource_class_and_filter() {
+        let m = PluginManifest::parse(
+            r#"
+api_version = 2
+id = "echo"
+kind = "integration"
+runtime = "native"
+command = "./echo"
+[capabilities.network]
+mode = "deny"
+[capabilities.methods]
+list = ["onEvent"]
+[capabilities.events]
+subscriptions = [
+  { type = "book_acquired", resource_class = "network", filter = { source = "audible" } },
+]
+"#,
+        )
+        .unwrap();
+        let sub = &m.capabilities.events.subscriptions[0];
+        assert_eq!(sub.resource_class, "network");
+        let filter = sub.filter.as_ref().and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            filter.get("source").and_then(|v| v.as_str()),
+            Some("audible")
+        );
+    }
+
+    #[test]
+    fn event_subscriptions_reject_unknown_resource_class() {
+        let err = PluginManifest::parse(
+            r#"
+api_version = 2
+id = "echo"
+kind = "integration"
+runtime = "native"
+command = "./echo"
+[capabilities.network]
+mode = "deny"
+[capabilities.methods]
+list = ["onEvent"]
+[capabilities.events]
+subscriptions = [
+  { type = "book_acquired", resource_class = "cpu" },
+]
+"#,
+        )
+        .expect_err("cpu resource_class is not supported");
+        assert!(err.to_string().contains("resource_class"), "{err}");
+
+        let typo = PluginManifest::parse(
+            r#"
+api_version = 2
+id = "echo"
+kind = "integration"
+runtime = "native"
+command = "./echo"
+[capabilities.network]
+mode = "deny"
+[capabilities.methods]
+list = ["onEvent"]
+[capabilities.events]
+subscriptions = [
+  { type = "book_acquired", resource_class = "netwrok" },
+]
+"#,
+        )
+        .expect_err("typo resource_class is not supported");
+        assert!(typo.to_string().contains("resource_class"), "{typo}");
     }
 
     #[test]

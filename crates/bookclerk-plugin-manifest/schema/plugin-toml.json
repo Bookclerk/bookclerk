@@ -118,7 +118,8 @@
       "properties": {
         "network": { "$ref": "#/$defs/NetworkCapabilities" },
         "bindings": { "$ref": "#/$defs/BindingCapabilities" },
-        "methods": { "$ref": "#/$defs/MethodCapabilities" }
+        "methods": { "$ref": "#/$defs/MethodCapabilities" },
+        "events": { "$ref": "#/$defs/EventCapabilities" }
       }
     },
     "NetworkCapabilities": {
@@ -153,6 +154,36 @@
           "type": "array",
           "items": { "type": "string" }
         }
+      }
+    },
+    "EventCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "subscriptions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/EventSubscription" }
+        }
+      }
+    },
+    "EventSubscription": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "schema_versions": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "minItems": 1
+        },
+        "supports_suspend": { "type": "boolean", "default": false },
+        "resource_class": { "type": "string", "enum": ["network"], "default": "network" },
+        "filter": { "type": "object" }
       }
     },
     "WorkerdRuntime": {

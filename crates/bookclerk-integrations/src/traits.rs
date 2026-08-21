@@ -6,12 +6,46 @@
 //! call adapter clients; they read the generic `listening_progress` table after
 //! hosts sync via [`Integration::sync_listening_progress`].
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use bookclerk_library::LibraryStore;
+use bookclerk_plugin_abi::v2::{DomainEvent, EventResult};
 
 use crate::brand::Brand;
 use crate::error::{IntegrationError, Result};
 use crate::types::{ExternalUser, IntegrationEvent, IntegrationHealth};
+
+/// Declared durable `onEvent` subscription (mirrors `plugin.toml`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventSubscription {
+    /// Event type (`book_acquired`).
+    pub event_type: String,
+    /// Schema versions this guest can consume.
+    pub schema_versions: Vec<u32>,
+    /// Whether `EventResult::Suspended` is advertised for this type.
+    pub supports_suspend: bool,
+    /// Concurrency class copied onto deliveries (default `"network"`).
+    pub resource_class: String,
+    /// Optional host-owned payload object filter (top-level key equality).
+    pub filter: Option<serde_json::Value>,
+}
+
+impl EventSubscription {
+    /// Type + schema subscription with the default `network` resource class.
+    #[must_use]
+    pub fn new(event_type: impl Into<String>, schema_versions: Vec<u32>) -> Self {
+        Self {
+            event_type: event_type.into(),
+            schema_versions,
+            supports_suspend: false,
+            resource_class: "network".into(),
+            filter: None,
+        }
+    }
+}
 
 /// Context passed when starting background watchers.
 #[derive(Clone, Default)]
@@ -44,6 +78,57 @@ pub trait Integration: Send + Sync {
 
     /// Handle a fan-out event (best-effort; errors are logged by the registry).
     async fn on_event(&self, event: &IntegrationEvent) -> Result<()>;
+
+    /// Deliver a versioned [`DomainEvent`] and return a durable [`EventResult`].
+    ///
+    /// Default maps [`Self::on_event`] success to `Ack` and errors to `Retry`.
+    async fn deliver_domain_event(&self, event: DomainEvent) -> Result<EventResult> {
+        match serde_json::from_slice::<serde_json::Value>(&event.payload) {
+            Ok(payload) => {
+                let mapped = integration_event_from_payload(&event.event_type, &payload);
+                match mapped {
+                    Some(host_event) => match self.on_event(&host_event).await {
+                        Ok(()) => Ok(EventResult::Ack),
+                        Err(err) => Ok(EventResult::Retry {
+                            retry_at_unix_ms: 0,
+                            reason: err.to_string(),
+                        }),
+                    },
+                    None => Ok(EventResult::Reject {
+                        reason: format!("unsupported event type `{}`", event.event_type),
+                    }),
+                }
+            }
+            Err(err) => Ok(EventResult::Reject {
+                reason: format!("invalid event payload: {err}"),
+            }),
+        }
+    }
+
+    /// Like [`Self::deliver_domain_event`], aborting when `cancel` is set (fence loss).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IntegrationError::Message`] `"fence lost"` when `cancel` is set,
+    /// or whatever [`Self::deliver_domain_event`] returns.
+    async fn deliver_domain_event_cancelable(
+        &self,
+        event: DomainEvent,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<EventResult> {
+        tokio::select! {
+            biased;
+            () = wait_cancel_flag(Arc::clone(&cancel)) => {
+                Err(IntegrationError::message("fence lost"))
+            }
+            result = self.deliver_domain_event(event) => result,
+        }
+    }
+
+    /// Durable outbox subscriptions. Empty means this integration is not a subscriber.
+    fn event_subscriptions(&self) -> Vec<EventSubscription> {
+        Vec::new()
+    }
 
     /// Probes connectivity and configuration for this integration.
     ///
@@ -159,4 +244,165 @@ pub struct ProvidedOidcClient {
     pub issue_refresh_token: bool,
     /// Dotted config key for the player origin.
     pub origin_config_key: String,
+}
+
+/// Map a versioned outbox payload onto the legacy [`IntegrationEvent`] enum.
+fn integration_event_from_payload(
+    event_type: &str,
+    payload: &serde_json::Value,
+) -> Option<IntegrationEvent> {
+    let inner = payload.get("payload").unwrap_or(payload);
+    match event_type {
+        "book_acquired" => {
+            let title_id = inner
+                .get("titleId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let storage_key = inner
+                .get("pathKeys")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let now = chrono::Utc::now();
+            Some(IntegrationEvent::BookAcquired {
+                book: Box::new(bookclerk_library::BookRecord {
+                    id: 0,
+                    uuid: title_id.clone(),
+                    source: inner
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    account_id: inner
+                        .get("accountId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    product_id: title_id,
+                    asin: inner
+                        .get("asin")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    isbn: inner
+                        .get("isbn")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    marketplace: String::new(),
+                    title: String::new(),
+                    authors: None,
+                    narrators: None,
+                    series: None,
+                    series_index: None,
+                    series_asin: None,
+                    acquire_status: bookclerk_library::AcquireStatus::Acquired,
+                    storage_key: Some(storage_key.clone()),
+                    error_message: None,
+                    purchased_at: None,
+                    tags: None,
+                    rating_overall: None,
+                    rating_performance: None,
+                    rating_story: None,
+                    is_finished: false,
+                    pdf_status: bookclerk_library::AcquireStatus::NotAcquired,
+                    pdf_storage_key: None,
+                    publisher: None,
+                    length_minutes: None,
+                    is_abridged: false,
+                    content_kind: "book".into(),
+                    categories: None,
+                    subtitle: None,
+                    published_at: None,
+                    description: None,
+                    language: None,
+                    cover_url: None,
+                    subjects: None,
+                    enrich_source: None,
+                    enrich_confidence: None,
+                    enrich_updated_at: None,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                storage_key,
+                absolute_path: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Poll until `flag` is set so `select!` can abort an in-flight delivery.
+async fn wait_cancel_flag(flag: Arc<AtomicBool>) {
+    while !flag.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::missing_docs_in_private_items)]
+    use super::*;
+    use crate::types::IntegrationHealth;
+    use std::time::Instant;
+
+    struct SlowAck;
+
+    #[async_trait]
+    impl Integration for SlowAck {
+        fn id(&self) -> &str {
+            "slow"
+        }
+
+        async fn start(&self, _ctx: IntegrationContext) -> Result<()> {
+            Ok(())
+        }
+
+        async fn on_event(&self, _event: &IntegrationEvent) -> Result<()> {
+            Ok(())
+        }
+
+        async fn health(&self) -> Result<IntegrationHealth> {
+            Ok(IntegrationHealth {
+                id: "slow".into(),
+                enabled: true,
+                ok: true,
+                detail: None,
+            })
+        }
+
+        async fn deliver_domain_event(&self, _event: DomainEvent) -> Result<EventResult> {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            Ok(EventResult::Ack)
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelable_delivery_aborts_when_fence_is_lost() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let integ = SlowAck;
+        let event = DomainEvent {
+            event_type: "book_acquired".into(),
+            delivery_attempt: 1,
+            ..DomainEvent::default()
+        };
+        let handle = tokio::spawn({
+            let cancel = Arc::clone(&cancel);
+            async move { integ.deliver_domain_event_cancelable(event, cancel).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.store(true, Ordering::SeqCst);
+        let started = Instant::now();
+        let err = handle.await.expect("join").expect_err("fence lost");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "must abort the 2s handler, took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            err.to_string().contains("fence lost"),
+            "unexpected error: {err}"
+        );
+    }
 }

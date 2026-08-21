@@ -191,11 +191,14 @@ pub async fn open(path: &Path) -> Result<DatabaseConnection> {
     // The jailed sqlite guest only has file-level Landlock grants for the DB and
     // sidecars (not the files-dir parent), so DELETE journal mode fails with
     // SQLITE_IOERR_DELETE when it tries to remove `*-journal`.
+    // V27 rebuilds `domain_events`; SQLite refuses DROP TABLE while FKs-on
+    // (`event_deliveries.event_id` references it).
     conn.execute_batch(
         "PRAGMA journal_mode = TRUNCATE;
-         PRAGMA foreign_keys = ON;",
+         PRAGMA foreign_keys = OFF;",
     )?;
     migrations::migrations().to_latest(&mut conn)?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     let db = Database::connect_proxy(
         DbBackend::Sqlite,
         Arc::new(Box::new(SqliteProxy::new(conn))),
@@ -215,8 +218,10 @@ pub async fn open(path: &Path) -> Result<DatabaseConnection> {
 /// Returns [`LibraryError`] when migrations or the SeaORM proxy fail.
 pub async fn open_memory() -> Result<DatabaseConnection> {
     let mut conn = rusqlite::Connection::open_in_memory()?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    // Same V27 `domain_events` rebuild as [`open`]: FKs-on would refuse DROP TABLE.
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
     migrations::migrations().to_latest(&mut conn)?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     let db = Database::connect_proxy(
         DbBackend::Sqlite,
         Arc::new(Box::new(SqliteProxy::new(conn))),

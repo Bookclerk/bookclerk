@@ -7,10 +7,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_integrations::{
-    Brand, ExternalUser, Integration, IntegrationContext, IntegrationEvent, IntegrationHealth,
-    IntegrationRegistry, ProvidedOidcClient,
+    Brand, EventSubscription, ExternalUser, Integration, IntegrationContext, IntegrationEvent,
+    IntegrationHealth, IntegrationRegistry, ProvidedOidcClient,
 };
-use bookclerk_plugin_sdk::v2::{DomainEvent, HealthOk, PRODUCT_API_VERSION};
+use bookclerk_plugin_sdk::v2::{DomainEvent, EventResult, HealthOk, PRODUCT_API_VERSION};
 use serde_json::Value;
 use tracing::warn;
 
@@ -33,6 +33,8 @@ pub struct ExternalIntegration {
     brand: Option<Brand>,
     /// When true, the host may call the guest credential-login RPC (username/password).
     allow_credential_login: bool,
+    /// Durable outbox subscriptions from `plugin.toml`.
+    event_subscriptions: Vec<EventSubscription>,
     /// Cancels the host-side `event_poll` loop from [`Self::start`].
     poll_cancel: Arc<AtomicBool>,
     /// Bumped on each [`Self::start`]/[`Self::stop`] so a superseded poll loop exits.
@@ -80,6 +82,24 @@ impl ExternalIntegration {
             .or_else(|| plugin.manifest.name.clone())
             .unwrap_or_else(|| plugin.manifest.id.clone());
         let brand = brand_from_dto(hs.brand.as_ref());
+        let event_subscriptions = plugin
+            .manifest
+            .capabilities
+            .events
+            .subscriptions
+            .iter()
+            .map(|s| EventSubscription {
+                event_type: s.event_type.clone(),
+                schema_versions: s.schema_versions.clone(),
+                supports_suspend: s.supports_suspend,
+                resource_class: if s.resource_class.trim().is_empty() {
+                    "network".into()
+                } else {
+                    s.resource_class.clone()
+                },
+                filter: s.filter.clone().filter(|v| !v.is_null()),
+            })
+            .collect();
         Ok(Self {
             session,
             ctx_json: source_config.to_string(),
@@ -87,6 +107,7 @@ impl ExternalIntegration {
             enabled: true,
             brand,
             allow_credential_login,
+            event_subscriptions,
             poll_cancel: Arc::new(AtomicBool::new(false)),
             poll_epoch: Arc::new(AtomicU64::new(0)),
         })
@@ -238,13 +259,45 @@ impl Integration for ExternalIntegration {
     }
 
     async fn on_event(&self, event: &IntegrationEvent) -> bookclerk_integrations::Result<()> {
-        if !self.session.has_capability("onEvent") {
-            return Ok(());
-        }
-        let domain = domain_event_from(event);
-        let params = serde_json::to_value(&domain).unwrap_or(Value::Object(Default::default()));
-        let _ = self.int_call("onEvent", params).await?;
+        let _ = self.deliver_domain_event(domain_event_from(event)).await?;
         Ok(())
+    }
+
+    async fn deliver_domain_event(
+        &self,
+        event: DomainEvent,
+    ) -> bookclerk_integrations::Result<EventResult> {
+        self.deliver_domain_event_cancelable(event, Arc::new(AtomicBool::new(false)))
+            .await
+    }
+
+    async fn deliver_domain_event_cancelable(
+        &self,
+        event: DomainEvent,
+        cancel: Arc<AtomicBool>,
+    ) -> bookclerk_integrations::Result<EventResult> {
+        if !self.session.has_capability("onEvent") {
+            return Ok(EventResult::Retry {
+                retry_at_unix_ms: 0,
+                reason: "onEvent capability not granted".into(),
+            });
+        }
+        let params = serde_json::to_value(&event).unwrap_or(Value::Object(Default::default()));
+        let raw = self
+            .session
+            .integration_json_cancelable(
+                self.ctx_json.clone(),
+                "onEvent",
+                serde_json::to_string(&params).unwrap_or_else(|_| "{}".into()),
+                cancel,
+            )
+            .await?;
+        EventResult::from_json_str(&raw)
+            .map_err(|err| bookclerk_integrations::IntegrationError::message(err.to_string()))
+    }
+
+    fn event_subscriptions(&self) -> Vec<EventSubscription> {
+        self.event_subscriptions.clone()
     }
 
     async fn health(&self) -> bookclerk_integrations::Result<IntegrationHealth> {
@@ -445,12 +498,10 @@ fn domain_event_from(event: &IntegrationEvent) -> DomainEvent {
         event_type: event_type.to_string(),
         schema_version: 1,
         occurred_at_unix_ms,
-        account_id: String::new(),
-        correlation_id: String::new(),
-        causation_id: String::new(),
         deduplication_key: event_type.to_string(),
         delivery_attempt: 1,
         payload: serde_json::to_vec(&payload_val).unwrap_or_default(),
+        ..DomainEvent::default()
     }
 }
 

@@ -20,6 +20,12 @@ retention_days = 7
 [jobs.concurrency]
 network = 1
 
+# Durable domain-event outbox (independent of [jobs] retention). See docs/jobs.md.
+[events]
+retention_days = 7
+dead_letter_retention_days = 30
+concurrency = 1
+
 # Library database plugin — exactly one backend (default: local SQLite).
 # See docs/database.md (SeaORM; Cloudflare D1 and PostgreSQL supported).
 [database]

@@ -21,10 +21,15 @@ use sha2::{Digest, Sha256};
 use crate::entities::db_atomic_receipts;
 use crate::error::{LibraryError, Result};
 use crate::models::{
-    EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobResourceClass, PortalIdentity,
+    AcquireStatus, EnqueueJobSpec, EnqueueOutcome, EventSubscriber, JobKind, JobPayload,
+    JobResourceClass, PortalIdentity, PublishDomainEventOutcome, PublishDomainEventSpec,
     UserRecord,
 };
 use crate::secrets::EncryptedSecretRecord;
+use crate::store::event_outbox::{
+    claim_next_event_delivery_on, dispatch_event_deliveries_on, publish_domain_event_on,
+    update_acquire_status_on,
+};
 use crate::store::job_queue::{claim_next_job_on, enqueue_job_on, reserve_job_temp_path_on};
 use crate::store::LibraryStore;
 use crate::{b64_string_to_bytes, bytes_to_b64_string, SessionClientInfo};
@@ -322,6 +327,10 @@ fn operation_kind(op: &DbAtomicParams) -> &'static str {
         DbAtomicParams::ReserveJobTemp { .. } => "reserveJobTemp",
         DbAtomicParams::ConfirmTotpEnrollment { .. } => "confirmTotpEnrollment",
         DbAtomicParams::DisableUserTotp { .. } => "disableUserTotp",
+        DbAtomicParams::PublishDomainEvent { .. } => "publishDomainEvent",
+        DbAtomicParams::SetAcquireStatus { .. } => "setAcquireStatus",
+        DbAtomicParams::DispatchEventDeliveries { .. } => "dispatchEventDeliveries",
+        DbAtomicParams::ClaimNextEventDelivery { .. } => "claimNextEventDelivery",
     }
 }
 
@@ -596,6 +605,135 @@ async fn run_operation(
         }
         DbAtomicParams::DisableUserTotp { user_id } => {
             LibraryStore::disable_user_totp_on(txn, *user_id).await?;
+            Ok((atomic_status::OK.to_string(), None))
+        }
+        DbAtomicParams::PublishDomainEvent {
+            id,
+            event_type,
+            schema_version,
+            account_id,
+            source,
+            correlation_id,
+            causation_id,
+            dedup_key,
+            payload,
+            ordering_key,
+        } => match publish_domain_event_on(
+            txn,
+            PublishDomainEventSpec {
+                id: id.clone(),
+                event_type: event_type.clone(),
+                schema_version: *schema_version,
+                account_id: account_id.clone(),
+                source: source.clone(),
+                correlation_id: correlation_id.clone(),
+                causation_id: causation_id.clone(),
+                dedup_key: dedup_key.clone(),
+                payload: payload.clone(),
+                ordering_key: ordering_key.clone(),
+            },
+        )
+        .await?
+        {
+            PublishDomainEventOutcome::Created { id } => Ok((
+                atomic_status::OK.to_string(),
+                Some(serde_json::json!({"id": id})),
+            )),
+            PublishDomainEventOutcome::Duplicate { existing_id } => Ok((
+                atomic_status::DUPLICATE.to_string(),
+                Some(serde_json::json!({"id": existing_id})),
+            )),
+        },
+        DbAtomicParams::DispatchEventDeliveries {
+            event_id,
+            subscribers_json,
+        } => {
+            let subscribers: Vec<EventSubscriber> = serde_json::from_str(subscribers_json)
+                .map_err(|err| LibraryError::Other(anyhow::anyhow!(err.to_string())))?;
+            let n = dispatch_event_deliveries_on(txn, event_id, &subscribers).await?;
+            Ok((
+                atomic_status::OK.to_string(),
+                Some(serde_json::json!({"created": n})),
+            ))
+        }
+        DbAtomicParams::ClaimNextEventDelivery {
+            owner,
+            lease_secs,
+            plugin_ids_json,
+            max_in_flight,
+        } => {
+            let plugin_ids: Vec<String> = if plugin_ids_json.trim().is_empty() {
+                Vec::new()
+            } else {
+                serde_json::from_str(plugin_ids_json).unwrap_or_default()
+            };
+            match claim_next_event_delivery_on(
+                txn,
+                owner,
+                u64::try_from(*lease_secs).unwrap_or(60),
+                &plugin_ids,
+                u32::try_from(*max_in_flight).unwrap_or(0),
+                "",
+            )
+            .await?
+            {
+                Some(row) => Ok((atomic_status::OK.to_string(), Some(to_json(&row)?))),
+                None => Ok((atomic_status::EMPTY.to_string(), None)),
+            }
+        }
+        DbAtomicParams::SetAcquireStatus {
+            book_uuid,
+            status,
+            storage_key,
+            error_message,
+            event_id,
+            event_type,
+            schema_version,
+            event_account_id,
+            source,
+            correlation_id,
+            causation_id,
+            dedup_key,
+            payload,
+            ordering_key,
+        } => {
+            let Some(model) = crate::entities::books::Entity::find()
+                .filter(crate::entities::books::Column::Uuid.eq(book_uuid))
+                .one(txn)
+                .await
+                .map_err(LibraryError::Orm)?
+            else {
+                return Ok((atomic_status::NOT_FOUND.to_string(), None));
+            };
+            let status = AcquireStatus::parse(status).ok_or_else(|| {
+                LibraryError::Other(anyhow::anyhow!("invalid acquire status `{status}`"))
+            })?;
+            update_acquire_status_on(
+                txn,
+                model,
+                status,
+                storage_key.as_deref(),
+                error_message.as_deref(),
+            )
+            .await?;
+            if !event_type.trim().is_empty() {
+                publish_domain_event_on(
+                    txn,
+                    PublishDomainEventSpec {
+                        id: event_id.clone(),
+                        event_type: event_type.clone(),
+                        schema_version: *schema_version,
+                        account_id: event_account_id.clone(),
+                        source: source.clone(),
+                        correlation_id: correlation_id.clone(),
+                        causation_id: causation_id.clone(),
+                        dedup_key: dedup_key.clone(),
+                        payload: payload.clone(),
+                        ordering_key: ordering_key.clone(),
+                    },
+                )
+                .await?;
+            }
             Ok((atomic_status::OK.to_string(), None))
         }
     }

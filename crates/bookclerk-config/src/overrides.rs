@@ -457,6 +457,21 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 config.jobs.concurrency.network = n.max(1);
             }
         }
+        "events.retention_days" => {
+            if let Ok(n) = v.parse::<u64>() {
+                config.events.retention_days = n.max(1);
+            }
+        }
+        "events.dead_letter_retention_days" => {
+            if let Ok(n) = v.parse::<u64>() {
+                config.events.dead_letter_retention_days = n.max(1);
+            }
+        }
+        "events.concurrency" => {
+            if let Ok(n) = v.parse::<u32>() {
+                config.events.concurrency = n.max(1);
+            }
+        }
         "discovery.embeddings_enabled" => {
             config.discovery.embeddings_enabled = parse_bool(v).unwrap_or(true);
         }

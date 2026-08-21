@@ -55,26 +55,22 @@ impl ExternalDatabase {
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
         let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
-        let extra_env;
-        let extra_refs: &[(&str, std::ffi::OsString)];
-        if plugin.manifest.id.eq_ignore_ascii_case("sqlite") {
+        let extra_env = if plugin.manifest.id.eq_ignore_ascii_case("sqlite") {
             let path = config.database.sqlite_path(&config.paths().files_dir);
-            extra_env = vec![(
+            vec![(
                 "BOOKCLERK_SQLITE_PATH",
                 std::ffi::OsString::from(path.as_os_str()),
-            )];
-            extra_refs = &extra_env;
+            )]
         } else {
-            extra_env = Vec::new();
-            extra_refs = &extra_env;
-        }
+            Vec::new()
+        };
         let session = Arc::new(
             V2PluginSession::spawn_for_account_with_env(
                 plugin,
                 config,
                 config_json,
                 OPERATOR_ACCOUNT,
-                extra_refs,
+                extra_env.as_slice(),
             )
             .await?,
         );
@@ -877,6 +873,174 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         if let Some(err) = atomic_app_err(
             &result.status,
             bookclerk_library::LibraryError::NotFound("user".into()),
+        ) {
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    async fn publish_domain_event(
+        &self,
+        spec: bookclerk_library::PublishDomainEventSpec,
+    ) -> bookclerk_library::Result<bookclerk_library::PublishDomainEventOutcome> {
+        let spec = bookclerk_library::prepare_publish_domain_event(spec)?;
+        let result = self
+            .call(DbAtomicParams::PublishDomainEvent {
+                id: spec.id,
+                event_type: spec.event_type,
+                schema_version: spec.schema_version,
+                account_id: spec.account_id,
+                source: spec.source,
+                correlation_id: spec.correlation_id,
+                causation_id: spec.causation_id,
+                dedup_key: spec.dedup_key,
+                payload: spec.payload,
+                ordering_key: spec.ordering_key,
+            })
+            .await?;
+        match result.status.as_str() {
+            s if s == atomic_status::OK => {
+                let id = result
+                    .payload
+                    .as_ref()
+                    .and_then(|v| v.get("id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+                            "publishDomainEvent ok without id"
+                        ))
+                    })?
+                    .to_string();
+                Ok(bookclerk_library::PublishDomainEventOutcome::Created { id })
+            }
+            s if s == atomic_status::DUPLICATE => {
+                let existing_id = result
+                    .payload
+                    .as_ref()
+                    .and_then(|v| v.get("id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+                            "publishDomainEvent duplicate without id"
+                        ))
+                    })?
+                    .to_string();
+                Ok(bookclerk_library::PublishDomainEventOutcome::Duplicate { existing_id })
+            }
+            other => Err(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+                "publishDomainEvent failed: {other}"
+            ))),
+        }
+    }
+
+    async fn dispatch_event_deliveries(
+        &self,
+        event_id: &str,
+        subscribers: &[bookclerk_library::EventSubscriber],
+        operation_id: &str,
+    ) -> bookclerk_library::Result<u32> {
+        let subscribers_json = serde_json::to_string(subscribers).map_err(|err| {
+            bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string()))
+        })?;
+        let result = self
+            .call_with_id(
+                operation_id.to_string(),
+                DbAtomicParams::DispatchEventDeliveries {
+                    event_id: event_id.to_string(),
+                    subscribers_json,
+                },
+            )
+            .await?;
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::NotFound(format!("event {event_id}")),
+        ) {
+            return Err(err);
+        }
+        Ok(result
+            .payload
+            .as_ref()
+            .and_then(|v| v.get("created"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32)
+    }
+
+    async fn claim_next_event_delivery(
+        &self,
+        owner: &str,
+        lease_secs: u64,
+        operation_id: &str,
+        plugin_ids: &[String],
+        max_in_flight: u32,
+    ) -> bookclerk_library::Result<Option<bookclerk_library::EventDeliveryRecord>> {
+        let result = self
+            .call_with_id(
+                operation_id.to_string(),
+                DbAtomicParams::ClaimNextEventDelivery {
+                    owner: owner.to_string(),
+                    lease_secs: i64::try_from(lease_secs).unwrap_or(60),
+                    plugin_ids_json: serde_json::to_string(plugin_ids)
+                        .unwrap_or_else(|_| "[]".into()),
+                    max_in_flight: i64::from(max_in_flight),
+                },
+            )
+            .await?;
+        if result.status == atomic_status::EMPTY {
+            return Ok(None);
+        }
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::NotFound("event delivery".into()),
+        ) {
+            return Err(err);
+        }
+        decode_payload(result.payload, "event delivery").map(Some)
+    }
+
+    async fn set_acquire_status(
+        &self,
+        book_uuid: &str,
+        status: bookclerk_library::AcquireStatus,
+        storage_key: Option<&str>,
+        error_message: Option<&str>,
+        event: Option<bookclerk_library::PublishDomainEventSpec>,
+    ) -> bookclerk_library::Result<()> {
+        let event = match event {
+            Some(spec) => bookclerk_library::prepare_publish_domain_event(spec)?,
+            None => bookclerk_library::PublishDomainEventSpec {
+                id: String::new(),
+                event_type: String::new(),
+                schema_version: 0,
+                account_id: String::new(),
+                source: String::new(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: String::new(),
+                payload: String::new(),
+                ordering_key: String::new(),
+            },
+        };
+        let result = self
+            .call(DbAtomicParams::SetAcquireStatus {
+                book_uuid: book_uuid.to_string(),
+                status: status.as_str().to_string(),
+                storage_key: storage_key.map(str::to_string),
+                error_message: error_message.map(str::to_string),
+                event_id: event.id,
+                event_type: event.event_type,
+                schema_version: event.schema_version,
+                event_account_id: event.account_id,
+                source: event.source,
+                correlation_id: event.correlation_id,
+                causation_id: event.causation_id,
+                dedup_key: event.dedup_key,
+                payload: event.payload,
+                ordering_key: event.ordering_key,
+            })
+            .await?;
+        if let Some(err) = atomic_app_err(
+            &result.status,
+            bookclerk_library::LibraryError::NotFound(format!("book {book_uuid}")),
         ) {
             return Err(err);
         }

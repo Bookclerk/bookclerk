@@ -2010,6 +2010,7 @@ mod http_tests {
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
+            event_node_id: std::sync::OnceLock::new(),
         });
         let app = crate::api::router(state.clone(), None);
         (state, app, library)

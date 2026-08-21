@@ -181,7 +181,7 @@ where
 }
 
 /// How the worker should treat one heartbeat RPC.
-enum HeartbeatTick {
+pub(crate) enum HeartbeatTick {
     /// Lease still owned; keep running.
     Renewed,
     /// Fence no longer matches; stop the handler and ignore its result.
@@ -191,7 +191,7 @@ enum HeartbeatTick {
 }
 
 /// Classifies a heartbeat result without treating transport errors as fence loss.
-fn classify_heartbeat(result: Result<bool, LibraryError>) -> HeartbeatTick {
+pub(crate) fn classify_heartbeat(result: Result<bool, LibraryError>) -> HeartbeatTick {
     match result {
         Ok(true) => HeartbeatTick::Renewed,
         Ok(false) => HeartbeatTick::FenceLost,
@@ -200,7 +200,7 @@ fn classify_heartbeat(result: Result<bool, LibraryError>) -> HeartbeatTick {
 }
 
 /// Whether the heartbeat loop should keep running after one tick.
-enum HeartbeatDecision {
+pub(crate) enum HeartbeatDecision {
     /// Keep heartbeating; `confirmed_until` is the last proven lease expiry.
     Continue {
         /// Monotonic instant when the last `Ok(true)` lease would expire.
@@ -211,7 +211,7 @@ enum HeartbeatDecision {
 }
 
 /// Applies one classified heartbeat against the last confirmed lease expiry.
-fn apply_heartbeat_tick(
+pub(crate) fn apply_heartbeat_tick(
     tick: &HeartbeatTick,
     now: Instant,
     confirmed_until: Instant,

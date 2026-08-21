@@ -3,6 +3,7 @@ pub mod copydb;
 pub mod daemon_cmd;
 pub mod diagnostics_cmd;
 pub mod discover;
+pub mod events;
 pub mod export;
 pub mod export_cmd;
 pub mod import_cmd;

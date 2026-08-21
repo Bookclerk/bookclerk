@@ -281,33 +281,7 @@ impl Integration for HttpIntegration {
             )
             .await
             .map_err(map_http)?;
-        Ok(
-            match v.get("kind").and_then(|x| x.as_str()).unwrap_or("ack") {
-                "retry" => EventResult::Retry {
-                    retry_at_unix_ms: v.get("retryAtUnixMs").and_then(|x| x.as_u64()).unwrap_or(0),
-                    reason: v
-                        .get("reason")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                },
-                "reject" => EventResult::Reject {
-                    reason: v
-                        .get("reason")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                },
-                "deadLetter" => EventResult::DeadLetter {
-                    reason: v
-                        .get("reason")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                },
-                _ => EventResult::Ack,
-            },
-        )
+        EventResult::from_json_value(&v)
     }
 
     async fn start(&self) -> AbiResult<()> {

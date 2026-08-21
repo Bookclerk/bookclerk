@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -1611,5 +1613,581 @@ impl BookRecord {
     #[must_use]
     pub fn audible_asin(&self) -> Option<&str> {
         self.asin.as_deref()
+    }
+}
+
+/// Producer-side domain event to persist in the outbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishDomainEventSpec {
+    /// Stable event id (UUID). Generated when empty.
+    #[serde(default)]
+    pub id: String,
+    /// Event type (`book_acquired`).
+    pub event_type: String,
+    /// Payload schema version.
+    pub schema_version: i64,
+    /// Tenant / account id.
+    #[serde(default)]
+    pub account_id: String,
+    /// Producer plugin id (`audible`, …); empty when unknown.
+    #[serde(default)]
+    pub source: String,
+    /// Trace correlation id.
+    #[serde(default)]
+    pub correlation_id: String,
+    /// Causing event or job id.
+    #[serde(default)]
+    pub causation_id: String,
+    /// Unique with `event_type` (duplicate publishes coalesce).
+    pub dedup_key: String,
+    /// Bounded JSON payload (never media bytes).
+    pub payload: String,
+    /// FIFO key copied onto each delivery (`book uuid` for `book_acquired`).
+    #[serde(default)]
+    pub ordering_key: String,
+}
+
+/// Result of [`crate::LibraryStore::publish_domain_event`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PublishDomainEventOutcome {
+    /// A new outbox row was inserted.
+    Created {
+        /// Event id.
+        id: String,
+    },
+    /// An equivalent `(event_type, dedup_key)` row already exists.
+    Duplicate {
+        /// Existing event id.
+        existing_id: String,
+    },
+}
+
+/// Default delivery resource class (`network`).
+pub const EVENT_RESOURCE_CLASS_NETWORK: &str = "network";
+/// Live catalog rows quieter than this many seconds are ignored at dispatch.
+pub const EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS: i64 = 60;
+
+/// Serde default for [`EventSubscriber::resource_class`].
+fn default_event_resource_class() -> String {
+    EVENT_RESOURCE_CLASS_NETWORK.into()
+}
+
+/// Subscriber snapshot used when creating deliveries for one event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EventSubscriber {
+    /// Plugin id that declared a matching subscription.
+    pub plugin_id: String,
+    /// Concurrency class copied onto the delivery row.
+    #[serde(default = "default_event_resource_class")]
+    pub resource_class: String,
+}
+
+impl EventSubscriber {
+    /// Catalog match for `plugin_id` with the default `network` resource class.
+    #[must_use]
+    pub fn plugin(plugin_id: impl Into<String>) -> Self {
+        Self {
+            plugin_id: plugin_id.into(),
+            resource_class: default_event_resource_class(),
+        }
+    }
+}
+
+impl Default for EventSubscriber {
+    fn default() -> Self {
+        Self::plugin(String::new())
+    }
+}
+
+/// One `[capabilities.events.subscriptions]` row persisted in `event_subscriber_nodes`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EventCatalogSubscription {
+    /// Versioned event type (`book_acquired`, …).
+    #[serde(rename = "type")]
+    pub event_type: String,
+    /// Schema versions this guest can consume (default `[1]`).
+    #[serde(default = "default_catalog_schema_versions")]
+    pub schema_versions: Vec<u32>,
+    /// Whether `EventResult::Suspended` is supported for this type.
+    #[serde(default)]
+    pub supports_suspend: bool,
+    /// Concurrency class (default `"network"`).
+    #[serde(default = "default_event_resource_class")]
+    pub resource_class: String,
+    /// Optional host-owned payload object filter (top-level key equality).
+    #[serde(default)]
+    pub filter: Option<serde_json::Value>,
+}
+
+/// Default `[1]` when a catalog subscription omits `schema_versions`.
+fn default_catalog_schema_versions() -> Vec<u32> {
+    vec![1]
+}
+
+impl EventCatalogSubscription {
+    /// Build a type+schema subscription with default resource class and no filter.
+    #[must_use]
+    pub fn new(event_type: impl Into<String>, schema_versions: Vec<u32>) -> Self {
+        Self {
+            event_type: event_type.into(),
+            schema_versions,
+            supports_suspend: false,
+            resource_class: default_event_resource_class(),
+            filter: None,
+        }
+    }
+}
+
+/// Live per-node catalog row (`event_subscriber_nodes`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EventSubscriberNodeRecord {
+    /// Daemon node id.
+    pub node_id: String,
+    /// Subscriber plugin id.
+    pub plugin_id: String,
+    /// Declared subscriptions on this node.
+    pub subscriptions: Vec<EventCatalogSubscription>,
+    /// Whether this node wants matching events for `plugin_id`.
+    pub enabled: bool,
+    /// Last heartbeat from this node.
+    pub heartbeat_at: DateTime<Utc>,
+}
+
+/// Cluster-authoritative catalog row after collapsing live nodes by `plugin_id`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EventSubscriberCatalogRecord {
+    /// Subscriber plugin id.
+    pub plugin_id: String,
+    /// Union of subscriptions from live enabled nodes.
+    pub subscriptions: Vec<EventCatalogSubscription>,
+    /// Whether any live node has this plugin enabled.
+    pub enabled: bool,
+    /// Latest heartbeat among contributing live rows.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Collapse live per-node rows into one catalog record per `plugin_id`.
+///
+/// `enabled` is true when any live row is enabled. Subscriptions are the union
+/// of enabled live rows (disabled nodes do not contribute filters).
+#[must_use]
+pub fn collapse_live_subscriber_nodes(
+    rows: &[EventSubscriberNodeRecord],
+) -> Vec<EventSubscriberCatalogRecord> {
+    let mut by_plugin: BTreeMap<String, EventSubscriberCatalogRecord> = BTreeMap::new();
+    for row in rows {
+        let entry = by_plugin.entry(row.plugin_id.clone()).or_insert_with(|| {
+            EventSubscriberCatalogRecord {
+                plugin_id: row.plugin_id.clone(),
+                subscriptions: Vec::new(),
+                enabled: false,
+                updated_at: row.heartbeat_at,
+            }
+        });
+        if row.heartbeat_at > entry.updated_at {
+            entry.updated_at = row.heartbeat_at;
+        }
+        if row.enabled {
+            entry.enabled = true;
+            entry
+                .subscriptions
+                .extend(row.subscriptions.iter().cloned());
+        }
+    }
+    by_plugin.into_values().collect()
+}
+
+/// Operator-visible delivery-queue counters for `GET /api/status`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventDeliveryMetrics {
+    /// `pending` rows with no checkpoint (not suspended).
+    pub pending: i64,
+    /// Currently claimed rows.
+    pub running: i64,
+    /// `pending` rows that hold a suspend checkpoint.
+    pub suspended: i64,
+    /// Dead-lettered rows.
+    pub dead_letter: i64,
+    /// Successfully acked rows.
+    pub acked: i64,
+    /// Age in seconds of the oldest `pending` row, when any exist.
+    pub oldest_pending_age_secs: Option<i64>,
+    /// Durable retry outcomes (including reclaim-as-retry).
+    pub retries_total: i64,
+    /// Durable suspend outcomes.
+    pub suspensions_total: i64,
+    /// Durable transitions into `dead_letter`.
+    pub dead_letters_total: i64,
+    /// Average first-dispatch latency in milliseconds, when sampled.
+    pub dispatch_latency_ms_avg: Option<i64>,
+    /// Average `onEvent` handler duration in milliseconds, when sampled.
+    pub handler_latency_ms_avg: Option<i64>,
+}
+
+/// True when `filter` is absent/empty or every filter key equals the payload object value.
+#[must_use]
+pub fn event_filter_matches(filter: Option<&serde_json::Value>, payload_json: &str) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    let serde_json::Value::Object(filter_obj) = filter else {
+        return false;
+    };
+    if filter_obj.is_empty() {
+        return true;
+    }
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(payload_json) else {
+        return false;
+    };
+    let serde_json::Value::Object(payload_obj) = payload else {
+        return false;
+    };
+    filter_obj
+        .iter()
+        .all(|(key, value)| payload_obj.get(key) == Some(value))
+}
+
+/// Host-derived wake grant: schema versions plus an intersected payload filter.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EventWakeGrant {
+    /// Schema versions this grant may observe.
+    #[serde(rename = "schemaVersions")]
+    pub schema_versions: Vec<u32>,
+    /// Intersected payload object filter; `None` / empty object matches any payload.
+    #[serde(default)]
+    pub filter: Option<serde_json::Value>,
+}
+
+/// Merge declared and requested payload filters; `None` on a same-key conflict.
+#[must_use]
+pub fn intersect_event_filters(
+    declared: Option<&serde_json::Value>,
+    requested: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    fn as_map(
+        v: Option<&serde_json::Value>,
+    ) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        match v {
+            None => None,
+            Some(serde_json::Value::Object(m)) if m.is_empty() => None,
+            Some(serde_json::Value::Object(m)) => Some(m),
+            Some(_) => None,
+        }
+    }
+    match (as_map(declared), as_map(requested)) {
+        (None, None) => Some(serde_json::Value::Object(serde_json::Map::new())),
+        (Some(m), None) | (None, Some(m)) => Some(serde_json::Value::Object(m.clone())),
+        (Some(left), Some(right)) => {
+            let mut out = left.clone();
+            for (key, value) in right {
+                if let Some(existing) = out.get(key) {
+                    if existing != value {
+                        return None;
+                    }
+                } else {
+                    out.insert(key.clone(), value.clone());
+                }
+            }
+            Some(serde_json::Value::Object(out))
+        }
+    }
+}
+
+/// Build wake grants from declared subscriptions for `wake_type`.
+///
+/// Empty `wake_type` yields no grants (timestamp-only). A type with no matching
+/// subscription returns `"wake event type not subscribed"`. When every matching
+/// subscription conflicts with the requested filter, returns
+/// `"wake filter not within subscription"`.
+///
+/// # Errors
+///
+/// Returns a static reason when the type is undeclared or the requested filter
+/// cannot intersect any declared filter.
+pub fn wake_grants_from_subscriptions(
+    subs: &[EventCatalogSubscription],
+    wake_type: &str,
+    requested_filter_json: &str,
+) -> std::result::Result<Vec<EventWakeGrant>, &'static str> {
+    let wake = wake_type.trim();
+    if wake.is_empty() {
+        return Ok(Vec::new());
+    }
+    let requested = if requested_filter_json.trim().is_empty() {
+        None
+    } else {
+        let parsed: serde_json::Value = serde_json::from_str(requested_filter_json)
+            .map_err(|_| "wake filter not within subscription")?;
+        if !parsed.is_object() {
+            return Err("wake filter not within subscription");
+        }
+        Some(parsed)
+    };
+    let eligible: Vec<&EventCatalogSubscription> =
+        subs.iter().filter(|s| s.event_type == wake).collect();
+    if eligible.is_empty() {
+        return Err("wake event type not subscribed");
+    }
+    let mut grants = Vec::new();
+    for sub in eligible {
+        let Some(filter) = intersect_event_filters(sub.filter.as_ref(), requested.as_ref()) else {
+            continue;
+        };
+        let filter = match &filter {
+            serde_json::Value::Object(m) if m.is_empty() => None,
+            other => Some(other.clone()),
+        };
+        grants.push(EventWakeGrant {
+            schema_versions: sub.schema_versions.clone(),
+            filter,
+        });
+    }
+    if grants.is_empty() {
+        return Err("wake filter not within subscription");
+    }
+    Ok(grants)
+}
+
+/// True when an event matches persisted wake grants, or legacy type+filter rows.
+#[must_use]
+pub fn event_matches_wake_grants(
+    grants_json: &str,
+    legacy_filter_json: &str,
+    schema_version: i64,
+    payload: &str,
+) -> bool {
+    let grants_json = grants_json.trim();
+    if grants_json.is_empty() || grants_json == "[]" {
+        let filter = if legacy_filter_json.trim().is_empty() {
+            None
+        } else {
+            serde_json::from_str(legacy_filter_json).ok()
+        };
+        return event_filter_matches(filter.as_ref(), payload);
+    }
+    let Ok(grants) = serde_json::from_str::<Vec<EventWakeGrant>>(grants_json) else {
+        return false;
+    };
+    grants.iter().any(|grant| {
+        grant
+            .schema_versions
+            .iter()
+            .any(|v| i64::from(*v) == schema_version)
+            && event_filter_matches(grant.filter.as_ref(), payload)
+    })
+}
+
+/// How far one claimed wake tick got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PendingWakeProgress {
+    /// Events this tick claimed and processed one delivery page for.
+    pub claimed: u32,
+    /// True when another tick should run (saved cursor or remaining flags).
+    pub still_pending: bool,
+}
+
+/// True when one catalog subscription matches `event` type, schema, class, and filter.
+#[must_use]
+pub fn subscription_matches_event(
+    sub: &EventCatalogSubscription,
+    event: &DomainEventRecord,
+) -> bool {
+    let class = if sub.resource_class.trim().is_empty() {
+        EVENT_RESOURCE_CLASS_NETWORK
+    } else {
+        sub.resource_class.trim()
+    };
+    class == EVENT_RESOURCE_CLASS_NETWORK
+        && sub.event_type == event.event_type
+        && sub
+            .schema_versions
+            .iter()
+            .any(|v| i64::from(*v) == event.schema_version)
+        && event_filter_matches(sub.filter.as_ref(), &event.payload)
+}
+
+/// Enabled catalog rows that match `event` type, schema version, and filter.
+#[must_use]
+pub fn catalog_subscribers_for_event(
+    catalog: &[EventSubscriberCatalogRecord],
+    event: &DomainEventRecord,
+) -> Vec<EventSubscriber> {
+    let mut out = Vec::new();
+    for row in catalog {
+        if !row.enabled {
+            continue;
+        }
+        if !row
+            .subscriptions
+            .iter()
+            .any(|s| subscription_matches_event(s, event))
+        {
+            continue;
+        }
+        out.push(EventSubscriber {
+            plugin_id: row.plugin_id.clone(),
+            resource_class: EVENT_RESOURCE_CLASS_NETWORK.into(),
+        });
+    }
+    out
+}
+
+/// Immutable outbox envelope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainEventRecord {
+    /// Event id.
+    pub id: String,
+    /// Event type.
+    pub event_type: String,
+    /// Payload schema version.
+    pub schema_version: i64,
+    /// Occurrence time.
+    pub occurred_at: DateTime<Utc>,
+    /// Tenant / account id.
+    pub account_id: String,
+    /// Producer plugin id (`audible`, …); empty when unknown.
+    #[serde(default)]
+    pub source: String,
+    /// Trace correlation id.
+    pub correlation_id: String,
+    /// Causing id.
+    pub causation_id: String,
+    /// Producer idempotency key.
+    pub dedup_key: String,
+    /// Bounded JSON payload.
+    pub payload: String,
+    /// Producer FIFO key copied onto each delivery.
+    pub ordering_key: String,
+    /// `pending` or `dispatched`.
+    pub dispatch_state: String,
+    /// Insert time.
+    pub created_at: DateTime<Utc>,
+    /// True until a wake pass for this event has completed.
+    #[serde(default)]
+    pub wake_pending: bool,
+}
+
+/// Per-subscriber delivery row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventDeliveryRecord {
+    /// Delivery id (`{event_id}:{plugin_id}`).
+    pub id: String,
+    /// Parent event id.
+    pub event_id: String,
+    /// Subscriber plugin id.
+    pub plugin_id: String,
+    /// Stable idempotency key.
+    pub idempotency_key: String,
+    /// Lifecycle state.
+    pub state: String,
+    /// Claim count (not incremented on resume).
+    pub attempt_count: i64,
+    /// Max claims before dead-letter.
+    pub max_attempts: i64,
+    /// Current lease owner.
+    pub lease_owner: Option<String>,
+    /// Lease expiry.
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    /// Fence generation.
+    pub lease_generation: i64,
+    /// Earliest claim time.
+    pub run_after: DateTime<Utc>,
+    /// Resume ordinal.
+    pub invocation_sequence: i64,
+    /// Next claim should resume rather than increment attempt.
+    pub resume_pending: bool,
+    /// Suspend checkpoint JSON.
+    pub checkpoint_json: Option<String>,
+    /// Checkpoint schema version.
+    pub checkpoint_schema_version: i64,
+    /// FIFO key.
+    pub ordering_key: String,
+    /// Terminal outcome.
+    pub outcome: Option<String>,
+    /// Operator-facing error.
+    pub error_message: Option<String>,
+    /// Insert time.
+    pub created_at: DateTime<Utc>,
+    /// Last-modified time.
+    pub updated_at: DateTime<Utc>,
+    /// Cooperative cancel flag for a running delivery.
+    #[serde(default)]
+    pub cancel_requested: bool,
+    /// Concurrency class (`network` today).
+    #[serde(default = "default_event_resource_class")]
+    pub resource_class: String,
+    /// Event type that can wake this suspended delivery; empty = timestamp-only.
+    #[serde(default)]
+    pub wake_event_type: String,
+    /// Host-owned payload object filter JSON for event-wake; empty = type only.
+    #[serde(default)]
+    pub wake_filter_json: String,
+    /// Host-derived wake grants JSON; empty falls back to type + `wake_filter_json`.
+    #[serde(default)]
+    pub wake_grants_json: String,
+}
+
+impl EventDeliveryRecord {
+    /// Fence for heartbeat / complete / fail / suspend.
+    #[must_use]
+    pub fn fence(&self) -> EventDeliveryFence {
+        EventDeliveryFence {
+            delivery_id: self.id.clone(),
+            owner: self.lease_owner.clone().unwrap_or_default(),
+            generation: self.lease_generation,
+        }
+    }
+}
+
+/// Claim fence for an event delivery (mirrors [`JobFence`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventDeliveryFence {
+    /// Delivery id that was claimed.
+    pub delivery_id: String,
+    /// Worker id stored in `lease_owner`.
+    pub owner: String,
+    /// `lease_generation` assigned by the successful claim.
+    pub generation: i64,
+}
+
+/// Default max delivery attempts before dead-letter.
+pub const EVENT_DELIVERY_MAX_ATTEMPTS: i64 = 8;
+
+#[cfg(test)]
+mod wake_grant_tests {
+    use super::*;
+
+    #[test]
+    fn event_matches_wake_grants_honors_schema_and_filter() {
+        let grants = serde_json::to_string(&[EventWakeGrant {
+            schema_versions: vec![1],
+            filter: Some(serde_json::json!({"source": "audible"})),
+        }])
+        .unwrap();
+        assert!(event_matches_wake_grants(
+            &grants,
+            "",
+            1,
+            r#"{"source":"audible"}"#
+        ));
+        assert!(!event_matches_wake_grants(
+            &grants,
+            "",
+            2,
+            r#"{"source":"audible"}"#
+        ));
+        assert!(!event_matches_wake_grants(
+            &grants,
+            "",
+            1,
+            r#"{"source":"libro"}"#
+        ));
+        assert!(event_matches_wake_grants(
+            "",
+            r#"{"source":"audible"}"#,
+            2,
+            r#"{"source":"audible"}"#
+        ));
     }
 }

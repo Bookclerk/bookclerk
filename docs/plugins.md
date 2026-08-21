@@ -658,6 +658,11 @@ config = true
 [capabilities.methods]
 list = ["handshake", "health", "diagnose", "onEvent", "cli"]
 
+[capabilities.events]
+subscriptions = [
+  { type = "book_acquired", schema_versions = [1], supports_suspend = false },
+]
+
 # Optional: CLI help without spawning (handshake / cliDescribe win at invoke)
 [cli]
 [[cli.commands]]
@@ -1002,11 +1007,76 @@ Advertise in `handshake.capabilities`: `start`, `onEvent`, `health`,
 | Method | Notes |
 | --- | --- |
 | `start` | Background watchers |
-| `onEvent` | `{ "type": "book_acquired"\|"external_user_observed", "payload": … }` |
+| `onEvent` | Versioned [`DomainEvent`](../packages/plugin-sdk/src/v2.ts) (`eventId`, `eventType`, `schemaVersion`, correlation/causation, `source`, `deduplicationKey`, `deliveryAttempt`, bounded payload). A `suspended` result (`abiMinor` 4) parks a checkpoint; the next `onEvent` copies `checkpointJson`, `checkpointSchemaVersion`, `invocationSequence`, and `resumePending` (`abiMinor` 5). `wakeOnEventType` / `wakeOnFilterJson` (`abiMinor` 6) ask the host to wake on a matching later event (empty = timestamp-only). Return `EventResult`: `ack`, `retry` (`retryAtUnixMs`; exhausted attempts dead-letter), `reject`, `deadLetter`, or `suspended` (`checkpointJson`, `checkpointSchemaVersion`, `wakeAtUnixMs`, optional wake-on-event fields). Host delivery is at-least-once; guests must be idempotent on `deduplicationKey`. |
 | `scanLibrary` | `{ "force": bool }` |
 | `syncListening` | Return listening progress snapshots; host upserts tagged with plugin id |
 | `authenticateUser` | `{ "username", "password" }` → external user |
 | `pollEvents` | Return observed external users — host polls after `start` and kicks off **core** workflows (e.g. claim tickets). The plugin stays oblivious to portal/tickets |
+
+Declare durable subscriptions in `plugin.toml` (omit the list to receive **no**
+outbox deliveries — fail closed):
+
+```toml
+[capabilities.events]
+subscriptions = [
+  { type = "book_acquired", schema_versions = [1], supports_suspend = false }
+]
+```
+
+Optional `resource_class` (default `"network"`, currently the only accepted
+value) is copied onto `event_deliveries`. A typo or `cpu` is rejected at
+manifest validate and skipped fail-closed at dispatch. Optional `filter` is a
+host-owned JSON object; the dispatcher matches **payload object key equality**
+only (no plugin-provided code / CEL). Echo and Audiobookshelf may omit both
+(defaults).
+
+Non-empty `subscriptions` requires `onEvent` in `capabilities.methods.list`.
+Each host heartbeats discovered config-enabled integration manifests (even when
+spawn failed) and currently loaded integrations into `event_subscriber_nodes`
+keyed by `(node_id, plugin_id)`. Nodes do not delete catalog rows they lack.
+A plugin is live when any heartbeating node (60s TTL) has it enabled; matching
+subscriptions are the union of those enabled rows. The dispatcher then
+`INSERT OR IGNORE`s deliveries for pending events (one D1 atomic op per
+`(event_id, plugin_id)` with receipt `dispatch-{event_id}-{plugin_id}`) **and**
+late-joins already-`dispatched` events via a missing-pair anti-join (receipt
+`reconcile-{event_id}-{plugin_id}`). An unchanged live catalog with no missing
+pairs does a bounded empty `SELECT` and zero dispatch writes. Heartbeat of this
+node’s catalog runs **before** that reconcile so a catch-up page cannot starve
+the 60s TTL. Each tick dispatches at most 32 pending outbox rows, then always
+runs a claimed wake slice (UUID fence token, not `event_node_id`) even when
+undispatched remain; accepting a wake clears `wake_event_type` /
+`wake_filter_json` / `wake_grants_json` so retry is not re-woken. A dispatch error clears the empty-reconcile skip cache; a bounded
+reconcile still runs at least every 60s as a backstop. The process-stable `event_node_id` is resolved once at runtime
+start. A `suspended` result is accepted only when a subscription matches
+that exact `(type, schema_version)` and sets `supports_suspend = true`;
+otherwise it is stored as a permanent reject. Non-empty `wakeOnEventType` must
+also match a declared subscription type. The host derives wake grants from
+those subscriptions (`schemaVersions` plus the intersection of `sub.filter` and
+`wakeOnFilterJson`); an empty requested filter keeps the subscription filter
+and cannot broaden it. Waiting on an event does not grant a new binding.
+Publish commits `wake_pending` and returns; the dispatcher claims bounded wake
+slices so producer latency does not track sleeper count. Acquire success writes
+`book_acquired` into `domain_events` in the same transaction as the library
+acquire-status change (book uuid, storage key, product ids — never media bytes)
+and sets envelope `source` to the book’s storefront plugin id.
+The producer `ordering_key` is stored on the envelope and copied verbatim onto
+each delivery. Each VPS claims only plugin ids loaded on that process **and**
+only events its node-local catalog matches (type, schema version, filter). SeaORM
+prefilters by this node’s catalog. D1/`dbAtomic` still selects by `plugin_id`
+only; the host releases an incompatible row (without consuming `attempt_count`)
+and continues with a node-local claim so a later compatible delivery is not
+starved. #178 will push eligibility into the generic atomic plan. Wake pages
+are 64 rows so `IN (…)` and the fenced sleeper UPDATE stay under D1’s 100
+bound-parameter limit; the UPDATE includes `EXISTS (wake_pending ∧ lease owner)`. `[events.concurrency]`
+(default 1) is the number of local delivery workers **and** the cluster-wide
+max `running` deliveries per `(plugin_id, resource_class)` (`network` today),
+enforced at claim time (PostgreSQL takes a per-plugin advisory lock so two
+VPSes cannot over-admit under `READ COMMITTED`). FIFO per ordering key stays; unrelated keys are only
+blocked by that cap. The delivery worker
+heartbeats the lease during `onEvent` (`lease/3`); fence loss or operator
+`cancel_requested` cancels the in-flight RPC (including workerd/native).
+Expired-lease reclaim restores `resume_pending` when `checkpoint_json` is set.
+See [jobs.md](jobs.md).
 
 ### Source capabilities
 
@@ -1028,9 +1098,10 @@ content keys on the wire — decrypt in the guest when needed.
 the full object to guest scratch then `put_file`. S3 guests feed the existing
 multipart sink as bytes arrive.
 
-v1 JSON output methods (`put`, `putFile`, …) remain only on the temporary
-adapter. Oversized scalar `put`/`get` fail closed. `putFile` is not a public
-`handleId` protocol; v2 destinations stream.
+Oversized scalar `put`/`get` fail closed. There is no public `handleId` /
+`readChunk` / `writeChunk` protocol: v2 destinations transfer media through
+`ByteSource` streams. Range, multipart, and checkpoint product work in
+issue #120 builds on this contract without another public ABI redesign.
 
 First-party S3 ships as `bookclerk-plugin-destination-s3` (`api_version = 2`).
 When the guest is discovered under `plugins/s3/` and `[output.s3].enabled = true`,

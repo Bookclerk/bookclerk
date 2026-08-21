@@ -1409,6 +1409,7 @@ mod tests {
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
+            event_node_id: std::sync::OnceLock::new(),
         });
         let user = library
             .create_user_with_login(UserRole::Member, Some("Abs User"), Some("absuser"), None)
@@ -1554,6 +1555,7 @@ mod tests {
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
+            event_node_id: std::sync::OnceLock::new(),
         });
         (state, library)
     }

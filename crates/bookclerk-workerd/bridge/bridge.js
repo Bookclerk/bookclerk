@@ -374,11 +374,10 @@ async function handleV2(request, env, url) {
       const op = roleMatch[2];
       const body = await request.json();
       const ctx = contextFrom(request, body);
-      const factory = role === "contentSource" ? plugin.contentSource : plugin.integration;
-      if (typeof factory !== "function") {
-        return errJson(null, "unsupported", role);
-      }
-      const cap = await factory.call(plugin, ctx);
+      const cap =
+        role === "contentSource"
+          ? await plugin.contentSource(ctx)
+          : await plugin.integration(ctx);
       try {
         if (typeof cap[op] !== "function") {
           return errJson(null, "unsupported", `${role}.${op}`);

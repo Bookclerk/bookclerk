@@ -377,7 +377,7 @@ fn encode_pcm_chunk(
         let frames = pcm.len() / 2;
         let mut left = Vec::with_capacity(frames);
         let mut right = Vec::with_capacity(frames);
-        for pair in pcm.chunks_exact(2) {
+        for pair in pcm.as_chunks::<2>().0 {
             left.push(pair[0]);
             right.push(pair[1]);
         }

@@ -388,6 +388,106 @@ pub enum DbAtomicParams {
         /// `users.id` to disable.
         user_id: i64,
     },
+    /// Persist a domain event in the outbox (dedup on eventType+dedupKey).
+    #[serde(rename_all = "camelCase")]
+    PublishDomainEvent {
+        /// Stable event id (UUID).
+        id: String,
+        /// Event type (`book_acquired`).
+        event_type: String,
+        /// Payload schema version.
+        schema_version: i64,
+        /// Tenant / account id.
+        #[serde(default)]
+        account_id: String,
+        /// Producer plugin id; empty when unknown.
+        #[serde(default)]
+        source: String,
+        /// Trace correlation id.
+        #[serde(default)]
+        correlation_id: String,
+        /// Causing event or job id.
+        #[serde(default)]
+        causation_id: String,
+        /// Unique with `eventType`.
+        dedup_key: String,
+        /// Bounded JSON payload.
+        payload: String,
+        /// FIFO key copied onto deliveries.
+        #[serde(default)]
+        ordering_key: String,
+    },
+    /// Update a book row and optionally publish `book_acquired` in the same batch.
+    #[serde(rename_all = "camelCase")]
+    SetAcquireStatus {
+        /// Book UUID to update.
+        book_uuid: String,
+        /// Acquire status string (`acquired`, `downloading`, …).
+        status: String,
+        /// Object-storage key for the primary audio artifact.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        storage_key: Option<String>,
+        /// Optional failure message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_message: Option<String>,
+        /// Event id when publishing; empty skips the outbox insert.
+        #[serde(default)]
+        event_id: String,
+        /// Event type when publishing (`book_acquired`).
+        #[serde(default)]
+        event_type: String,
+        /// Payload schema version.
+        #[serde(default)]
+        schema_version: i64,
+        /// Tenant / account id on the event.
+        #[serde(default)]
+        event_account_id: String,
+        /// Producer plugin id; empty when unknown.
+        #[serde(default)]
+        source: String,
+        /// Trace correlation id.
+        #[serde(default)]
+        correlation_id: String,
+        /// Causing event or job id.
+        #[serde(default)]
+        causation_id: String,
+        /// Unique with `eventType`.
+        #[serde(default)]
+        dedup_key: String,
+        /// Bounded JSON payload.
+        #[serde(default)]
+        payload: String,
+        /// FIFO key copied onto deliveries.
+        #[serde(default)]
+        ordering_key: String,
+    },
+    /// Create per-subscriber deliveries and mark the event dispatched.
+    #[serde(rename_all = "camelCase")]
+    DispatchEventDeliveries {
+        /// Parent event id.
+        event_id: String,
+        /// JSON array of `{ "pluginId": "…" }` subscriber snapshots.
+        subscribers_json: String,
+    },
+    /// Claim the next ready event delivery for `owner`.
+    #[serde(rename_all = "camelCase")]
+    ClaimNextEventDelivery {
+        /// Worker id stored as `lease_owner`.
+        owner: String,
+        /// Lease length in seconds.
+        lease_secs: i64,
+        /// JSON array of plugin ids this worker can execute (`[]` claims nothing).
+        #[serde(default)]
+        plugin_ids_json: String,
+        /// Cluster-wide max `running` deliveries per `(plugin_id, resource_class)`.
+        #[serde(default = "default_claim_max_in_flight")]
+        max_in_flight: i64,
+    },
+}
+
+/// Default cluster in-flight cap when an older guest omits the field.
+fn default_claim_max_in_flight() -> i64 {
+    1
 }
 
 /// Host-generated idempotency envelope for [`crate::methods::db_atomic`].

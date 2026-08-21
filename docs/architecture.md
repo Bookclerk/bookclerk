@@ -42,11 +42,17 @@ integrations.
    dispatched to a bounded pool of `bookclerk-media-worker` processes, each
    confined to the paths its job declared, so the C codecs never share an
    address space with the master key or `library.db`. See [media.md](media.md).
-4. **Integrations** — receive `book_acquired` (and related) events; may trigger
-   remote library scans or portal identity flows.
+4. **Integrations** — durable `book_acquired` outbox deliveries to the live
+   per-node subscriber catalog (`event_subscriber_nodes`); each VPS claims only locally loaded
+   plugin ids, with a cluster-wide per-plugin in-flight cap from
+   `[events.concurrency]` (PostgreSQL advisory lock at claim; Audiobookshelf scan notify, Echo examples). Duplicate
+   outbox keys are namespaced by `(account_id, source, event_type, dedup_key)`.
+   Publish is commit + notify; claimed wake slices drain parked deliveries.
+   One plugin failure
+   never blocks others. See [jobs.md](jobs.md) and [plugins.md](plugins.md).
 5. **Daemon** — admits scan / auto-acquire / listen-sync as durable `jobs`
-   rows (API and scheduler use the same queue) and exposes the control plane.
-   See [jobs.md](jobs.md).
+   rows (API and scheduler use the same queue) and runs the event dispatcher /
+   delivery worker beside the job workers. See [jobs.md](jobs.md).
 
 ## Plugin kinds
 

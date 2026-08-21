@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::Request;
@@ -96,6 +96,8 @@ pub struct AppState {
     pub tray: RwLock<Option<bookclerk_tray::SharedTrayConfig>>,
     /// Single-use tray Open Bookclerk ticket (hash + deadline). Replaced on prepare; restart clears it.
     pub tray_handoff: Mutex<Option<TrayHandoffTicket>>,
+    /// Process-stable catalog heartbeat key (resolved once at event runtime start).
+    pub event_node_id: OnceLock<String>,
 }
 
 /// In-process tray Open Bookclerk ticket: hash of a one-time code plus expiry.
@@ -311,6 +313,35 @@ struct StatusResponse {
     storage_backend: String,
     /// Whether the live auth middleware requires operator credentials.
     auth_enabled: bool,
+    /// Durable domain-event delivery-queue counters.
+    events: EventQueueStatus,
+}
+
+#[derive(Debug, Serialize)]
+/// Outbox delivery counts for `GET /api/status`.
+struct EventQueueStatus {
+    /// Pending deliveries without a suspend checkpoint.
+    pending: i64,
+    /// Currently claimed deliveries.
+    running: i64,
+    /// Pending deliveries parked with a checkpoint.
+    suspended: i64,
+    /// Dead-lettered deliveries.
+    dead_letter: i64,
+    /// Successfully acked deliveries.
+    acked: i64,
+    /// Age in seconds of the oldest pending delivery, when any exist.
+    oldest_pending_age_secs: Option<i64>,
+    /// Durable retry outcomes (including reclaim-as-retry).
+    retries_total: i64,
+    /// Durable suspend outcomes.
+    suspensions_total: i64,
+    /// Durable transitions into `dead_letter`.
+    dead_letters_total: i64,
+    /// Average first-dispatch latency in milliseconds, when sampled.
+    dispatch_latency_ms_avg: Option<i64>,
+    /// Average `onEvent` handler duration in milliseconds, when sampled.
+    handler_latency_ms_avg: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -662,6 +693,24 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route("/api/status", get(status))
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{id}/cancel", post(cancel_job))
+        .route("/api/events", get(list_events))
+        .route("/api/events/deliveries", get(list_event_deliveries))
+        .route(
+            "/api/events/deliveries/{id}/retry",
+            post(retry_event_delivery),
+        )
+        .route(
+            "/api/events/deliveries/{id}/acknowledge",
+            post(ack_event_delivery),
+        )
+        .route(
+            "/api/events/deliveries/{id}/cancel",
+            post(cancel_event_delivery),
+        )
+        .route(
+            "/api/events/deliveries/{id}/resume",
+            post(resume_event_delivery),
+        )
         .route("/api/library/scan", post(trigger_scan))
         .route("/api/library/acquire", post(trigger_acquire))
         .route("/api/discover/sync-listening", post(sync_listening))
@@ -1224,6 +1273,8 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
 
     // Start watchers for the new integration set (awaited — no untracked race).
     start_integration_watchers(state).await;
+    crate::event_worker::upsert_event_subscriber_catalog(state).await;
+    state.job_notify.notify_waiters();
 
     if let Err(err) = crate::oidc::sync_plugin_oidc_clients(state).await {
         tracing::warn!(error = %err, "failed to sync plugin OIDC clients after config reload");
@@ -1410,6 +1461,9 @@ fn allowed_setting_key(key: &str) -> bool {
             | "jobs.retention_days"
             | "jobs.temp_quota_bytes"
             | "jobs.concurrency.network"
+            | "events.retention_days"
+            | "events.dead_letter_retention_days"
+            | "events.concurrency"
             | "database.plugin"
             | "plugins.isolation"
             | "media.isolation"
@@ -1448,11 +1502,18 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
             .parse::<u64>()
             .map(|_| value.to_string())
             .map_err(|_| "library.scan_interval_minutes must be a non-negative integer".into()),
-        "jobs.max_pending" | "jobs.max_attempts" | "jobs.concurrency.network" => value
+        "jobs.max_pending"
+        | "jobs.max_attempts"
+        | "jobs.concurrency.network"
+        | "events.concurrency" => value
             .parse::<u32>()
             .map(|n| n.max(1).to_string())
             .map_err(|_| format!("{key} must be a positive integer")),
-        "jobs.lease_seconds" | "jobs.retention_days" | "jobs.temp_quota_bytes" => value
+        "jobs.lease_seconds"
+        | "jobs.retention_days"
+        | "jobs.temp_quota_bytes"
+        | "events.retention_days"
+        | "events.dead_letter_retention_days" => value
             .parse::<u64>()
             .map(|n| n.to_string())
             .map_err(|_| format!("{key} must be a non-negative integer")),
@@ -1574,6 +1635,18 @@ fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<Stri
     settings.insert(
         "jobs.concurrency.network".into(),
         config.jobs.concurrency.network.to_string(),
+    );
+    settings.insert(
+        "events.retention_days".into(),
+        config.events.retention_days.to_string(),
+    );
+    settings.insert(
+        "events.dead_letter_retention_days".into(),
+        config.events.dead_letter_retention_days.to_string(),
+    );
+    settings.insert(
+        "events.concurrency".into(),
+        config.events.concurrency.to_string(),
     );
     settings.insert(
         "plugins.isolation".into(),
@@ -3189,6 +3262,10 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         )
     };
     let auth_enabled = state.auth_snapshot().await.enabled;
+    let event_metrics = library
+        .event_delivery_metrics()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(StatusResponse {
         accounts,
         books,
@@ -3199,6 +3276,19 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         listen,
         storage_backend,
         auth_enabled,
+        events: EventQueueStatus {
+            pending: event_metrics.pending,
+            running: event_metrics.running,
+            suspended: event_metrics.suspended,
+            dead_letter: event_metrics.dead_letter,
+            acked: event_metrics.acked,
+            oldest_pending_age_secs: event_metrics.oldest_pending_age_secs,
+            retries_total: event_metrics.retries_total,
+            suspensions_total: event_metrics.suspensions_total,
+            dead_letters_total: event_metrics.dead_letters_total,
+            dispatch_latency_ms_avg: event_metrics.dispatch_latency_ms_avg,
+            handler_latency_ms_avg: event_metrics.handler_latency_ms_avg,
+        },
     }))
 }
 
@@ -3314,6 +3404,207 @@ async fn list_jobs(State(state): State<Arc<AppState>>) -> Result<Json<Vec<JobInf
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(jobs.into_iter().map(job_info_from_record).collect()))
+}
+
+/// Operator JSON for one `domain_events` row.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DomainEventInfo {
+    /// Event id.
+    id: String,
+    /// Event type (`book_acquired`).
+    event_type: String,
+    /// Payload schema version.
+    schema_version: i64,
+    /// `pending` or `dispatched`.
+    dispatch_state: String,
+    /// Tenant / account id.
+    account_id: String,
+    /// Producer idempotency key.
+    dedup_key: String,
+    /// RFC 3339 insert time.
+    created_at: String,
+}
+
+/// Operator JSON for one `event_deliveries` row.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EventDeliveryInfo {
+    /// Delivery id (`{event_id}:{plugin_id}`).
+    id: String,
+    /// Parent event id.
+    event_id: String,
+    /// Subscriber plugin id.
+    plugin_id: String,
+    /// Lifecycle state.
+    state: String,
+    /// Claim count (not incremented on resume).
+    attempt_count: i64,
+    /// Fence generation.
+    lease_generation: i64,
+    /// Resume ordinal.
+    invocation_sequence: i64,
+    /// Terminal outcome when set.
+    outcome: Option<String>,
+    /// Operator-facing error.
+    error_message: Option<String>,
+    /// RFC 3339 earliest claim time.
+    run_after: String,
+    /// RFC 3339 last update.
+    updated_at: String,
+    /// Cooperative cancel flag.
+    cancel_requested: bool,
+    /// Concurrency class (`network` today).
+    resource_class: String,
+    /// Next claim should resume rather than increment attempt.
+    resume_pending: bool,
+    /// True when a suspend checkpoint is stored.
+    has_checkpoint: bool,
+}
+
+/// Optional `state=` filter for `GET /api/events/deliveries`.
+#[derive(Debug, Deserialize)]
+struct EventDeliveryQuery {
+    /// Delivery state (`dead_letter`, `pending`, …).
+    state: Option<String>,
+}
+
+/// Returns recent domain-event outbox rows, newest first.
+async fn list_events(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<DomainEventInfo>>, StatusCode> {
+    let library = state.library_snapshot().await;
+    let rows = library
+        .list_domain_events(100)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|e| DomainEventInfo {
+                id: e.id,
+                event_type: e.event_type,
+                schema_version: e.schema_version,
+                dispatch_state: e.dispatch_state,
+                account_id: e.account_id,
+                dedup_key: e.dedup_key,
+                created_at: e.created_at.to_rfc3339(),
+            })
+            .collect(),
+    ))
+}
+
+/// Returns event deliveries, optionally filtered by `state`.
+async fn list_event_deliveries(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<EventDeliveryQuery>,
+) -> Result<Json<Vec<EventDeliveryInfo>>, StatusCode> {
+    let library = state.library_snapshot().await;
+    let rows = library
+        .list_event_deliveries(q.state.as_deref(), 200)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|d| EventDeliveryInfo {
+                id: d.id,
+                event_id: d.event_id,
+                plugin_id: d.plugin_id,
+                state: d.state,
+                attempt_count: d.attempt_count,
+                lease_generation: d.lease_generation,
+                invocation_sequence: d.invocation_sequence,
+                outcome: d.outcome,
+                error_message: d.error_message,
+                run_after: d.run_after.to_rfc3339(),
+                updated_at: d.updated_at.to_rfc3339(),
+                cancel_requested: d.cancel_requested,
+                resource_class: d.resource_class,
+                resume_pending: d.resume_pending,
+                has_checkpoint: d.checkpoint_json.is_some(),
+            })
+            .collect(),
+    ))
+}
+
+/// Re-queue a dead-lettered delivery.
+async fn retry_event_delivery(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<ActionResponse>, StatusCode> {
+    let library = state.library_snapshot().await;
+    match library.retry_dead_letter_delivery(&id).await {
+        Ok(true) => {
+            state.job_notify.notify_waiters();
+            Ok(Json(ActionResponse {
+                ok: true,
+                message: format!("delivery {id} re-queued"),
+                job_id: id,
+                error: None,
+            }))
+        }
+        Ok(false) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// Acknowledge a dead-lettered delivery (no further retry).
+async fn ack_event_delivery(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<ActionResponse>, StatusCode> {
+    let library = state.library_snapshot().await;
+    match library.acknowledge_dead_letter_delivery(&id).await {
+        Ok(true) => Ok(Json(ActionResponse {
+            ok: true,
+            message: format!("delivery {id} acknowledged"),
+            job_id: id,
+            error: None,
+        })),
+        Ok(false) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// Cancel a pending delivery or request cooperative stop of a running one.
+async fn cancel_event_delivery(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<ActionResponse>, StatusCode> {
+    let library = state.library_snapshot().await;
+    match library.request_event_delivery_cancel(&id).await {
+        Ok(Some(row)) => {
+            state.job_notify.notify_waiters();
+            Ok(Json(ActionResponse {
+                ok: true,
+                message: format!("delivery {id} {}", row.state),
+                job_id: id,
+                error: None,
+            }))
+        }
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// Resume a suspended delivery (wake now, next claim uses resume_pending).
+async fn resume_event_delivery(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<ActionResponse>, StatusCode> {
+    let library = state.library_snapshot().await;
+    match library.resume_event_delivery(&id).await {
+        Ok(true) => {
+            state.job_notify.notify_waiters();
+            Ok(Json(ActionResponse {
+                ok: true,
+                message: format!("delivery {id} resumed"),
+                job_id: id,
+                error: None,
+            }))
+        }
+        Ok(false) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 /// Cancel a pending job or request cooperative stop of a running job.
@@ -4719,6 +5010,9 @@ mod tests {
         assert!(allowed_setting_key("library.scan_interval_minutes"));
         assert!(allowed_setting_key("jobs.max_pending"));
         assert!(allowed_setting_key("jobs.concurrency.network"));
+        assert!(allowed_setting_key("events.retention_days"));
+        assert!(allowed_setting_key("events.dead_letter_retention_days"));
+        assert!(allowed_setting_key("events.concurrency"));
         assert!(allowed_setting_key("sources.audible.region"));
         assert!(allowed_setting_key("sources.libro.enabled_mode"));
         assert!(!allowed_setting_key("sources"));
@@ -4738,6 +5032,55 @@ mod tests {
         assert!(allowed_setting_key("plugins.jail.cpu_rate_percent"));
         assert!(allowed_setting_key("plugins.jail.extra_processes"));
         assert!(!allowed_setting_key("plugins.jail"));
+    }
+
+    #[test]
+    fn event_queue_status_json_uses_snake_case() {
+        let json = serde_json::to_value(super::EventQueueStatus {
+            pending: 1,
+            running: 2,
+            suspended: 3,
+            dead_letter: 4,
+            acked: 5,
+            oldest_pending_age_secs: Some(9),
+            retries_total: 6,
+            suspensions_total: 7,
+            dead_letters_total: 8,
+            dispatch_latency_ms_avg: Some(10),
+            handler_latency_ms_avg: Some(11),
+        })
+        .unwrap();
+        assert_eq!(json["pending"], 1);
+        assert_eq!(json["running"], 2);
+        assert_eq!(json["suspended"], 3);
+        assert_eq!(json["dead_letter"], 4);
+        assert_eq!(json["acked"], 5);
+        assert_eq!(json["oldest_pending_age_secs"], 9);
+        assert_eq!(json["retries_total"], 6);
+        assert_eq!(json["suspensions_total"], 7);
+        assert_eq!(json["dead_letters_total"], 8);
+        assert_eq!(json["dispatch_latency_ms_avg"], 10);
+        assert_eq!(json["handler_latency_ms_avg"], 11);
+    }
+
+    #[test]
+    fn settings_snapshot_includes_event_retention_keys() {
+        let cfg = Config::default();
+        let snapshot = current_settings_snapshot(&cfg);
+        assert_eq!(
+            snapshot.get("events.retention_days").map(String::as_str),
+            Some("7")
+        );
+        assert_eq!(
+            snapshot
+                .get("events.dead_letter_retention_days")
+                .map(String::as_str),
+            Some("30")
+        );
+        assert_eq!(
+            snapshot.get("events.concurrency").map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]
@@ -5375,6 +5718,7 @@ mode = "deny"
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
+            event_node_id: std::sync::OnceLock::new(),
         });
 
         let app = Router::new()
@@ -5473,6 +5817,7 @@ mode = "deny"
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
+            event_node_id: std::sync::OnceLock::new(),
         });
 
         let app = Router::new()

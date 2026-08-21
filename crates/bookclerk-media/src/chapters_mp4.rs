@@ -588,8 +588,8 @@ fn strip_existing_chapters(moov: &mut Vec<u8>) -> Result<()> {
                 .find(|a| atom_type(moov, *a) == *b"chap")
             {
                 let payload = &moov[chap.offset + chap.header..chap.offset + chap.size];
-                for chunk in payload.chunks_exact(4) {
-                    remove_ids.push(u32::from_be_bytes(chunk.try_into().unwrap()));
+                for chunk in payload.as_chunks::<4>().0 {
+                    remove_ids.push(u32::from_be_bytes(*chunk));
                 }
             }
         }

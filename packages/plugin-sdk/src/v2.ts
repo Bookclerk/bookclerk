@@ -40,6 +40,9 @@ export interface ScalarLimits {
 /** Maximum checkpoint payload size (bytes). */
 export const MAX_CHECKPOINT_BYTES = 65_536;
 
+/** Maximum domain-event scalar payload size (bytes). */
+export const MAX_EVENT_PAYLOAD_BYTES = 65_536;
+
 /** Guest identity returned by `BookclerkPlugin.describe`. */
 export interface PluginDescribe {
   apiVersion: typeof PRODUCT_API_VERSION | 2;
@@ -130,11 +133,19 @@ export interface DomainEvent {
   schemaVersion: number;
   occurredAtUnixMs: number;
   accountId?: string;
+  /** Producer plugin id; empty/omitted when unknown (`abiMinor` ≥ 6). */
+  source?: string;
   correlationId?: string;
   causationId?: string;
   deduplicationKey?: string;
   deliveryAttempt: number;
   payload?: Uint8Array;
+  /** Checkpoint JSON from a prior `suspended` result (`abiMinor` ≥ 5). */
+  checkpointJson?: string;
+  checkpointSchemaVersion?: number;
+  invocationSequence?: number;
+  /** True when this invocation continues a prior `suspended` result. */
+  resumePending?: boolean;
 }
 
 /** Result of {@link Integration.onEvent}. */
@@ -142,7 +153,17 @@ export type EventResult =
   | { kind: "ack" }
   | { kind: "retry"; retryAtUnixMs: number; reason?: string }
   | { kind: "reject"; reason?: string }
-  | { kind: "deadLetter"; reason?: string };
+  | { kind: "deadLetter"; reason?: string }
+  | {
+      kind: "suspended";
+      checkpointJson?: string;
+      checkpointSchemaVersion?: number;
+      wakeAtUnixMs: number;
+      /** Event type that can wake this sleep; empty = timestamp-only (`abiMinor` ≥ 6). */
+      wakeOnEventType?: string;
+      /** Host-owned payload object filter JSON; empty = type only (`abiMinor` ≥ 6). */
+      wakeOnFilterJson?: string;
+    };
 
 /** Author-visible granted bindings. Adapter-private tokens are not present. */
 export interface GrantedBindings {
@@ -626,7 +647,7 @@ export class Integration extends RpcTarget {
    * Handles one versioned {@link DomainEvent}.
    *
    * @param _event - Delivered event envelope.
-   * @returns Ack, retry, reject, or dead-letter.
+   * @returns Ack, retry, reject, dead-letter, or suspended.
    */
   onEvent(_event: DomainEvent): Promise<EventResult> {
     return Promise.reject(unsupported("onEvent"));
@@ -1247,6 +1268,59 @@ class HttpNativeSource extends Source {
   }
 }
 
+class HttpNativeIntegration extends Integration {
+  #fetcher: NonNullable<AdapterEnv["PLUGIN_BACKEND"]> & { fetch: typeof fetch };
+  #ctx: { json?: string };
+
+  constructor(
+    fetcher: NonNullable<AdapterEnv["PLUGIN_BACKEND"]> & { fetch: typeof fetch },
+    ctx: { json?: string },
+  ) {
+    super();
+    this.#fetcher = fetcher;
+    this.#ctx = ctx ?? {};
+  }
+
+  async #json<T>(path: string, body: unknown): Promise<T> {
+    const resp = await this.#fetcher.fetch(`http://backend${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-bookclerk-context": JSON.stringify(this.#ctx),
+      },
+      body: JSON.stringify(body),
+    });
+    return readNativeScalar<T>(resp);
+  }
+
+  health() {
+    return this.#json<{ ok: boolean; detail?: string }>("/v2/integration/health", {
+      json: this.#ctx.json,
+    });
+  }
+
+  diagnose() {
+    return this.#json<string | { lines: string[] }>("/v2/integration/diagnose", {
+      json: this.#ctx.json,
+    });
+  }
+
+  onEvent(event: DomainEvent) {
+    return this.#json<EventResult>("/v2/integration/onEvent", {
+      json: this.#ctx.json,
+      event,
+    });
+  }
+
+  async start() {
+    await this.#json<unknown>("/v2/integration/start", { json: this.#ctx.json });
+  }
+
+  async stop() {
+    await this.#json<unknown>("/v2/integration/stop", { json: this.#ctx.json });
+  }
+}
+
 class HttpNativeRoot {
   #fetcher: NonNullable<AdapterEnv["PLUGIN_BACKEND"]> & { fetch: typeof fetch };
 
@@ -1269,6 +1343,10 @@ class HttpNativeRoot {
 
   source(ctx: SourceContext) {
     return new HttpNativeSource(this.#fetcher, ctx);
+  }
+
+  integration(ctx: { json?: string }) {
+    return new HttpNativeIntegration(this.#fetcher, ctx);
   }
 }
 

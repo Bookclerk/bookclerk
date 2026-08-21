@@ -16,6 +16,7 @@ mod tickets;
 mod traits;
 mod types;
 
+pub use bookclerk_plugin_abi::v2::{DomainEvent, EventResult};
 pub use brand::Brand;
 pub use error::{IntegrationError, Result};
 pub use factory::{from_config, register_builtins};
@@ -31,7 +32,7 @@ pub use tickets::{
     redeem_ticket_to_session_with_client, session_for_identity, session_for_identity_with_client,
     ticket_portal_url, MintedClaimTicket,
 };
-pub use traits::{Integration, IntegrationContext, ProvidedOidcClient};
+pub use traits::{EventSubscription, Integration, IntegrationContext, ProvidedOidcClient};
 pub use types::{
     ExternalUser, IntegrationEvent, IntegrationHealth, ListeningProgressSnapshot,
     SyncListeningProviderResult, SyncListeningSummary,

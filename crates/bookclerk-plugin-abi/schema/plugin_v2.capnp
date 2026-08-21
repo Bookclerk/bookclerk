@@ -25,7 +25,7 @@
 
 const apiVersion :UInt32 = 2;
 const abiMajor :UInt32 = 2;
-const abiMinor :UInt32 = 3;
+const abiMinor :UInt32 = 6;
 const envelopeVersion :UInt32 = 1;
 const maxScalarBytes :UInt32 = 262144;
 const maxStreamWindowBytes :UInt32 = 1048576;
@@ -253,6 +253,13 @@ struct DomainEvent {
   deduplicationKey @7 :Text;
   deliveryAttempt @8 :UInt32;
   payload @9 :Data;
+  # Append-only (abiMinor 5). Resume a prior EventResult.suspended.
+  checkpointJson @10 :Text;
+  checkpointSchemaVersion @11 :UInt32;
+  invocationSequence @12 :UInt32;
+  resumePending @13 :Bool;
+  # Append-only (abiMinor 6). Producer plugin id; empty when unknown.
+  source @14 :Text;
 }
 
 struct EventAck {
@@ -272,12 +279,24 @@ struct EventDeadLetter {
   reason @0 :Text;
 }
 
+# Append-only (abiMinor 4). Mirrors job SuspendedOutcome; event handlers
+# persist a bounded checkpoint and release the process until wakeAtUnixMs.
+# abiMinor 6 adds optional wake-on-matching-event fields (empty = timestamp-only).
+struct EventSuspended {
+  checkpointJson @0 :Text;
+  checkpointSchemaVersion @1 :UInt32;
+  wakeAtUnixMs @2 :UInt64;
+  wakeOnEventType @3 :Text;
+  wakeOnFilterJson @4 :Text;
+}
+
 struct EventResult {
   union {
     ack @0 :EventAck;
     retry @1 :EventRetry;
     reject @2 :EventReject;
     deadLetter @3 :EventDeadLetter;
+    suspended @4 :EventSuspended;
   }
 }
 

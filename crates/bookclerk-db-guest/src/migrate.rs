@@ -39,9 +39,74 @@ pub async fn apply_pending_migrations(db: &DatabaseConnection) -> Result<()> {
     let steps: &[&str] = if backend == DbBackend::Postgres {
         migrations::migration_sql_postgres()
     } else {
-        migrations::migration_sql()
+        // D1: versions 1–26 only. V27 is one `run_batch` in the D1 guest `open()`.
+        migrations::migration_sql_d1()
     };
+    apply_migration_steps(db, backend, &applied, steps).await
+}
 
+/// Apply named greenfield steps that are not yet in `schema_migrations`.
+///
+/// # Arguments
+///
+/// * `db` - Open SeaORM connection.
+/// * `steps` - Ordered DDL scripts; index `n` is version `n+1`.
+///
+/// # Errors
+///
+/// Returns [`bookclerk_library::LibraryError`] when DDL or bookkeeping statements fail.
+pub async fn apply_pending_migrations_from(db: &DatabaseConnection, steps: &[&str]) -> Result<()> {
+    let backend = db.get_database_backend();
+    db.execute_raw(Statement::from_string(
+        backend,
+        "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)",
+    ))
+    .await
+    .map_err(LibraryError::Orm)?;
+
+    let applied: std::collections::HashSet<i64> = db
+        .query_all_raw(Statement::from_string(
+            backend,
+            "SELECT version FROM schema_migrations",
+        ))
+        .await
+        .map_err(LibraryError::Orm)?
+        .iter()
+        .filter_map(|row| row.try_get::<i64>("", "version").ok())
+        .collect();
+    apply_migration_steps(db, backend, &applied, steps).await
+}
+
+/// True when `schema_migrations` already contains `version`.
+///
+/// # Errors
+///
+/// Returns [`bookclerk_library::LibraryError`] when the read fails.
+pub async fn schema_version_applied(db: &DatabaseConnection, version: i64) -> Result<bool> {
+    let backend = db.get_database_backend();
+    let sql = if backend == DbBackend::Postgres {
+        "SELECT version FROM schema_migrations WHERE version = $1"
+    } else {
+        "SELECT version FROM schema_migrations WHERE version = ?"
+    };
+    let rows = db
+        .query_all_raw(Statement::from_sql_and_values(
+            backend,
+            sql,
+            [Value::from(version)],
+        ))
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(!rows.is_empty())
+}
+
+/// Apply each pending `steps[i]` as schema version `i + 1`.
+async fn apply_migration_steps(
+    db: &DatabaseConnection,
+    backend: DbBackend,
+    applied: &std::collections::HashSet<i64>,
+    steps: &[&str],
+) -> Result<()> {
     let insert = if backend == DbBackend::Postgres {
         "INSERT INTO schema_migrations (version) VALUES ($1)"
     } else {

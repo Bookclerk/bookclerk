@@ -93,11 +93,13 @@ impl IntegrationRegistry {
         }
     }
 
-    /// Fan-out an event; individual failures are logged, not fatal.
+    /// Best-effort in-process fan-out for tests. Product acquire publishes
+    /// through [`bookclerk_library::LibraryStore::set_acquire_status`] (same
+    /// transaction as the book row). [`crate::emit_book_acquired`] is catch-up.
     ///
     /// # Arguments
     ///
-    /// * `event` - Fan-out event delivered to every integration.
+    /// * `event` - Event delivered to every registered integration.
     pub async fn emit(&self, event: &IntegrationEvent) {
         for integration in &self.integrations {
             if let Err(err) = integration.on_event(event).await {

@@ -106,6 +106,12 @@ enum Commands {
         /// Nested `daemon` verb (health, jobs, operator token).
         command: commands::daemon_cmd::DaemonCommand,
     },
+    /// Durable domain-event outbox and deliveries.
+    Events {
+        #[command(subcommand)]
+        /// Nested `events` verb (list, dead-letters, retry, ack, cancel, resume).
+        command: commands::events::EventsCommand,
+    },
     /// Print a loopback operator sign-in URL (requires a running daemon).
     Login,
     /// Diagnostics ring buffer and opt-in upload.
@@ -326,6 +332,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         Commands::Export { command } => commands::export_cmd::run(command, &config, format).await,
         Commands::Import { command } => commands::import_cmd::run(command, &config, format).await,
         Commands::Daemon { command } => commands::daemon_cmd::run(command, &config, format).await,
+        Commands::Events { command } => commands::events::run(command, &config, format).await,
         Commands::Login => commands::daemon_cmd::run_login(&config, format).await,
         Commands::Diagnostics { command } => {
             commands::diagnostics_cmd::run(command, &config, format)

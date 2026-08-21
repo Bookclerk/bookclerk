@@ -18,8 +18,8 @@ pub use features::{
 };
 pub use jobs::{read_all, stream_copy_keys, StreamCopyHandler, StreamCopySpec};
 pub use limits::{
-    ScalarLimits, ABI_MAJOR, ABI_MINOR, MAX_LIST_PAGE, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
-    PRODUCT_API_VERSION,
+    ScalarLimits, ABI_MAJOR, ABI_MINOR, MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
+    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 pub use roles::{
     ByteRange, Cancellation, ContentSource, ContentSourceContext, Database, DatabaseContext,

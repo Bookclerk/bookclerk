@@ -128,8 +128,26 @@ impl Integration for EchoIntegration {
     }
 
     async fn on_event(&self, event: DomainEvent) -> Result<EventResult, PluginError> {
-        eprintln!("echo_native_rust event: {event:?}");
-        Ok(EventResult::Ack)
+        Ok(match event.event_type.as_str() {
+            "test_retry" => EventResult::Retry {
+                retry_at_unix_ms: 1,
+                reason: "echo retry".into(),
+            },
+            "test_reject" => EventResult::Reject {
+                reason: "echo reject".into(),
+            },
+            "test_dead_letter" => EventResult::DeadLetter {
+                reason: "echo dead letter".into(),
+            },
+            "test_suspend" => EventResult::Suspended {
+                checkpoint_json: r#"{"n":1}"#.into(),
+                checkpoint_schema_version: 1,
+                wake_at_unix_ms: 1,
+                wake_on_event_type: String::new(),
+                wake_on_filter_json: String::new(),
+            },
+            _ => EventResult::Ack,
+        })
     }
 
     async fn start(&self) -> Result<(), PluginError> {

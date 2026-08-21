@@ -40,17 +40,24 @@ pub use master_key::{
     AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV, MASTER_KEY_FILE_NAME,
 };
 pub use models::{
-    content_kind_from_classic, content_kind_to_classic, is_downloadable, is_episode,
-    is_podcast_parent, job_backoff_run_after, normalize_theme, portal_prefs_key, push_queue_wisher,
-    user_prefs_key, AccountLinkRecord, AccountRecord, AcquireStatus, BookRecord, ClaimTicketRecord,
-    EmbeddingRecord, EnqueueJobSpec, EnqueueOutcome, GlobalQueueEntry, JobFence, JobKind,
-    JobPayload, JobRecord, JobResourceClass, JobState, JobTempPath, JobTrigger,
-    ListeningProgressRecord, OidcClientRecord, OperatorSessionRecord, PortalIdentity,
-    PortalSessionRecord, QueueWisher, RequestStatus, SecurityAuditEvent, StoredPasskey,
-    TitleRequestRecord, TitleRequestSourceRecord, UserIntegrationHint, UserInviteRecord,
-    UserListeningHint, UserPreferences, UserPresenceExtras, UserRecord, UserRole, UserSsoPicture,
-    UserStatus, WishlistPurchaseHint, WishlistStoreEdition, WorkRecord, JOB_PAYLOAD_VERSION,
-    MAX_QUEUE_WISHERS, OPERATOR_PREFS_KEY,
+    catalog_subscribers_for_event, collapse_live_subscriber_nodes, content_kind_from_classic,
+    content_kind_to_classic, event_filter_matches, event_matches_wake_grants,
+    intersect_event_filters, is_downloadable, is_episode, is_podcast_parent, job_backoff_run_after,
+    normalize_theme, portal_prefs_key, push_queue_wisher, subscription_matches_event,
+    user_prefs_key, wake_grants_from_subscriptions, AccountLinkRecord, AccountRecord,
+    AcquireStatus, BookRecord, ClaimTicketRecord, DomainEventRecord, EmbeddingRecord,
+    EnqueueJobSpec, EnqueueOutcome, EventCatalogSubscription, EventDeliveryFence,
+    EventDeliveryMetrics, EventDeliveryRecord, EventSubscriber, EventSubscriberCatalogRecord,
+    EventSubscriberNodeRecord, EventWakeGrant, GlobalQueueEntry, JobFence, JobKind, JobPayload,
+    JobRecord, JobResourceClass, JobState, JobTempPath, JobTrigger, ListeningProgressRecord,
+    OidcClientRecord, OperatorSessionRecord, PendingWakeProgress, PortalIdentity,
+    PortalSessionRecord, PublishDomainEventOutcome, PublishDomainEventSpec, QueueWisher,
+    RequestStatus, SecurityAuditEvent, StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord,
+    UserIntegrationHint, UserInviteRecord, UserListeningHint, UserPreferences, UserPresenceExtras,
+    UserRecord, UserRole, UserSsoPicture, UserStatus, WishlistPurchaseHint, WishlistStoreEdition,
+    WorkRecord, EVENT_DELIVERY_MAX_ATTEMPTS, EVENT_RESOURCE_CLASS_NETWORK,
+    EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, JOB_PAYLOAD_VERSION, MAX_QUEUE_WISHERS,
+    OPERATOR_PREFS_KEY,
 };
 pub use operator_token::{
     env_operator_token, legacy_operator_token_file, load_operator_token,
@@ -74,9 +81,10 @@ pub use secrets::{
 };
 pub use session_client::{classify_session_client, SessionClientInfo};
 pub use store::{
-    fallback_work_key, prefer_enrichment_source, wishlist_identities_match,
-    CatalogEnrichmentFields, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,
-    NewTitleRequestSource, NewWork, SavedFilterRecord, UserBookFields, WishlistIdentity,
+    event_outbox::prepare_publish_domain_event, fallback_work_key, prefer_enrichment_source,
+    wishlist_identities_match, CatalogEnrichmentFields, LibraryStore, NewBook,
+    NewListeningProgress, NewTitleRequest, NewTitleRequestSource, NewWork, SavedFilterRecord,
+    UserBookFields, WishlistIdentity,
 };
 pub use text::{
     decode_html_entities, decode_html_entities_cow, decode_html_entities_in_place,

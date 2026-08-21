@@ -242,6 +242,16 @@ impl Integration for AbsIntegration {
         }
     }
 
+    fn event_subscriptions(&self) -> Vec<bookclerk_integrations::EventSubscription> {
+        vec![bookclerk_integrations::EventSubscription {
+            event_type: "book_acquired".into(),
+            schema_versions: vec![1],
+            supports_suspend: false,
+            resource_class: "network".into(),
+            filter: None,
+        }]
+    }
+
     async fn health(&self) -> Result<IntegrationHealth> {
         let Some(client) = self.client.as_ref() else {
             return Ok(IntegrationHealth {

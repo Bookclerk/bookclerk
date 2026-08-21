@@ -7,7 +7,9 @@
 pub mod migrate;
 pub mod session;
 
-pub use migrate::apply_pending_migrations;
+pub use migrate::{
+    apply_pending_migrations, apply_pending_migrations_from, schema_version_applied,
+};
 pub use session::{
     guest_atomic, guest_begin, guest_commit, guest_execute, guest_ping, guest_query,
     guest_query_page, guest_rollback, row_to_dto, set_connection,

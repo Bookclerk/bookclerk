@@ -736,6 +736,7 @@ mod tests {
                         ..BindingCapabilities::default()
                     },
                     methods: Default::default(),
+                    events: Default::default(),
                 },
                 cli: None,
                 oidc: Default::default(),

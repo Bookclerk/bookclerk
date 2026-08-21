@@ -389,14 +389,6 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 Some(StorageIndex::from_storage(storage.as_ref()).await?)
             };
 
-            let integrations = if dry_run {
-                let mut registry = bookclerk_integrations::IntegrationRegistry::new();
-                bookclerk_plugin_host::register_builtin_integrations(&cfg, &mut registry)?;
-                registry
-            } else {
-                bookclerk_plugin_host::load_integrations(&cfg).await?
-            };
-
             let mut ok = 0u32;
             let mut matched = 0u32;
             let mut failed = 0u32;
@@ -463,25 +455,11 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     match result {
                         Ok(result) if result.matched_existing => {
                             println!("matched {} -> {}", result.asin, result.storage_key);
-                            bookclerk_integrations::emit_book_acquired(
-                                &integrations,
-                                &store,
-                                &result.asin,
-                                &result.storage_key,
-                            )
-                            .await;
                             matched += 1;
                             break;
                         }
                         Ok(result) => {
                             println!("acquired {} -> {}", result.asin, result.storage_key);
-                            bookclerk_integrations::emit_book_acquired(
-                                &integrations,
-                                &store,
-                                &result.asin,
-                                &result.storage_key,
-                            )
-                            .await;
                             ok += 1;
                             break;
                         }

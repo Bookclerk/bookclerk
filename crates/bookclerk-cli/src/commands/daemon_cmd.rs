@@ -224,7 +224,7 @@ async fn run_token(
 }
 
 /// HTTP origin for bookclerkd, derived from `daemon.listen` (tray/CLI default).
-fn daemon_base_url(config: &Config) -> String {
+pub(crate) fn daemon_base_url(config: &Config) -> String {
     config.daemon.listen.tray_base_url()
 }
 
@@ -316,7 +316,7 @@ fn map_prepare_error(err: ureq::Error, url: &str) -> anyhow::Error {
 }
 
 /// Resolves the operator bearer when daemon auth is enabled; missing tokens fail closed.
-async fn operator_bearer(config: &Config) -> anyhow::Result<Option<String>> {
+pub(crate) async fn operator_bearer(config: &Config) -> anyhow::Result<Option<String>> {
     if !config.daemon.auth.enabled {
         return Ok(None);
     }
@@ -332,7 +332,7 @@ async fn operator_bearer(config: &Config) -> anyhow::Result<Option<String>> {
 }
 
 /// Runs a blocking GET on a worker thread and parses the JSON body.
-async fn get_json_async(url: &str, bearer: Option<&str>) -> anyhow::Result<Value> {
+pub(crate) async fn get_json_async(url: &str, bearer: Option<&str>) -> anyhow::Result<Value> {
     let url = url.to_string();
     let bearer = bearer.map(str::to_owned);
     tokio::task::spawn_blocking(move || get_json(&url, bearer.as_deref()))
@@ -341,7 +341,11 @@ async fn get_json_async(url: &str, bearer: Option<&str>) -> anyhow::Result<Value
 }
 
 /// Runs a blocking JSON POST on a worker thread and parses the JSON body.
-async fn post_json_async(url: &str, body: Value, bearer: Option<&str>) -> anyhow::Result<Value> {
+pub(crate) async fn post_json_async(
+    url: &str,
+    body: Value,
+    bearer: Option<&str>,
+) -> anyhow::Result<Value> {
     let url = url.to_string();
     let bearer = bearer.map(str::to_owned);
     tokio::task::spawn_blocking(move || post_json(&url, body, bearer.as_deref()))

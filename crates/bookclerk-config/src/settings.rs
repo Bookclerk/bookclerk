@@ -52,6 +52,9 @@ pub struct Config {
     /// Durable job queue (`[jobs]`).
     #[serde(default)]
     pub jobs: crate::JobsConfig,
+    /// Durable domain-event outbox (`[events]`).
+    #[serde(default)]
+    pub events: crate::EventsConfig,
     /// How external plugin guests are run (`[plugins]`).
     #[serde(default)]
     pub plugins: crate::PluginsConfig,
@@ -511,6 +514,7 @@ impl Config {
         }
         self.media.apply_env_overrides();
         self.jobs.apply_env_overrides();
+        self.events.apply_env_overrides();
         self.plugins.apply_env_overrides();
         if let Ok(v) = std::env::var("BOOKCLERK_DAEMON_LISTEN") {
             match crate::ListenAddrs::parse_list(&v) {

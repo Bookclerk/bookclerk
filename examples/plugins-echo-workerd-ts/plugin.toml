@@ -31,3 +31,8 @@ plugin_kv = true
 
 [capabilities.methods]
 list = ["describe", "integration", "health", "diagnose", "onEvent", "cli"]
+
+[capabilities.events]
+subscriptions = [
+  { type = "book_acquired", schema_versions = [1], supports_suspend = true },
+]

@@ -67,11 +67,27 @@ class EchoIntegration extends Integration {
         type: "plugin_log",
         payload: {
           level: "info",
-          message: `echo saw book_acquired titleId=${titleId}`,
+          message: `echo saw ${event.eventType} titleId=${titleId}`,
         },
       });
     }
-    return { kind: "ack" };
+    switch (event.eventType) {
+      case "test_retry":
+        return { kind: "retry", retryAtUnixMs: 1, reason: "echo retry" };
+      case "test_reject":
+        return { kind: "reject", reason: "echo reject" };
+      case "test_dead_letter":
+        return { kind: "deadLetter", reason: "echo dead letter" };
+      case "test_suspend":
+        return {
+          kind: "suspended",
+          checkpointJson: "{\"n\":1}",
+          checkpointSchemaVersion: 1,
+          wakeAtUnixMs: 1,
+        };
+      default:
+        return { kind: "ack" };
+    }
   }
 }
 

@@ -9,7 +9,7 @@
 #[must_use]
 pub fn tray_icon() -> ksni::Icon {
     let (width, height, mut data) = decode_png_rgba(include_bytes!("../tray-icon.png"));
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         // RGBA → ARGB (ksni / StatusNotifierItem)
         pixel.rotate_right(1);
     }
@@ -54,7 +54,7 @@ fn decode_png_rgba(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
         png::ColorType::Rgb => {
             let rgb = &buf[..info.buffer_size()];
             let mut out = Vec::with_capacity(width as usize * height as usize * 4);
-            for pixel in rgb.chunks_exact(3) {
+            for pixel in rgb.as_chunks::<3>().0 {
                 out.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
             }
             out

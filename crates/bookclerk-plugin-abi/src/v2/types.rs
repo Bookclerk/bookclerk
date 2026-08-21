@@ -68,7 +68,7 @@ pub struct ExtensibleConfig {
 }
 
 /// Domain event (not a job). Outbox-produced, at-least-once, idempotent consume.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DomainEvent {
     /// Unique event id.
@@ -82,6 +82,9 @@ pub struct DomainEvent {
     /// Tenant / account id.
     #[serde(default)]
     pub account_id: String,
+    /// Producer plugin id; empty when unknown (`abiMinor` ≥ 6).
+    #[serde(default)]
+    pub source: String,
     /// Trace correlation id.
     #[serde(default)]
     pub correlation_id: String,
@@ -96,6 +99,18 @@ pub struct DomainEvent {
     /// Bounded payload.
     #[serde(default)]
     pub payload: Vec<u8>,
+    /// Checkpoint JSON from a prior [`EventResult::Suspended`] (≤ [`MAX_CHECKPOINT_BYTES`]).
+    #[serde(default)]
+    pub checkpoint_json: String,
+    /// Schema version of [`Self::checkpoint_json`].
+    #[serde(default)]
+    pub checkpoint_schema_version: u32,
+    /// Resume ordinal copied from the delivery row.
+    #[serde(default)]
+    pub invocation_sequence: u32,
+    /// True when this invocation continues a prior `suspended` result.
+    #[serde(default)]
+    pub resume_pending: bool,
 }
 
 /// Result of [`crate::v2::Integration::on_event`].
@@ -105,6 +120,7 @@ pub enum EventResult {
     /// Event processed.
     Ack,
     /// Transient failure; retry after `retry_at_unix_ms`.
+    #[serde(rename_all = "camelCase")]
     Retry {
         /// UTC unix-ms hint.
         retry_at_unix_ms: u64,
@@ -124,6 +140,73 @@ pub enum EventResult {
         #[serde(default)]
         reason: String,
     },
+    /// Durable sleep: persist checkpoint, release the process, resume later.
+    #[serde(rename_all = "camelCase")]
+    Suspended {
+        /// Bounded checkpoint JSON (must be ≤ [`MAX_CHECKPOINT_BYTES`]).
+        #[serde(default)]
+        checkpoint_json: String,
+        /// Checkpoint schema version.
+        #[serde(default)]
+        checkpoint_schema_version: u32,
+        /// UTC unix-ms wake hint.
+        wake_at_unix_ms: u64,
+        /// Event type that can wake this sleep; empty = timestamp-only (`abiMinor` ≥ 6).
+        #[serde(default)]
+        wake_on_event_type: String,
+        /// Host-owned payload object filter JSON; empty = type only (`abiMinor` ≥ 6).
+        #[serde(default)]
+        wake_on_filter_json: String,
+    },
+}
+
+impl EventResult {
+    /// Decode JSON `{"kind":"ack"|…}`. Missing or unknown `kind` is an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::PluginErrorCode::InvalidParams`] when the payload is not
+    /// a tagged [`EventResult`], or [`crate::PluginErrorCode::PayloadTooLarge`]
+    /// when a `suspended` checkpoint exceeds [`MAX_CHECKPOINT_BYTES`].
+    pub fn from_json_value(value: &serde_json::Value) -> crate::Result<Self> {
+        let parsed: Self = serde_json::from_value(value.clone()).map_err(|err| {
+            crate::PluginError::invalid_params(format!("malformed EventResult: {err}"))
+        })?;
+        parsed.reject_oversized_checkpoint()
+    }
+
+    /// Decode a JSON object string as [`EventResult`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_json_value`].
+    pub fn from_json_str(raw: &str) -> crate::Result<Self> {
+        let value: serde_json::Value = serde_json::from_str(raw).map_err(|err| {
+            crate::PluginError::invalid_params(format!("malformed EventResult: {err}"))
+        })?;
+        Self::from_json_value(&value)
+    }
+
+    /// Reject a `suspended` result whose checkpoint exceeds [`MAX_CHECKPOINT_BYTES`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::PluginErrorCode::PayloadTooLarge`] when `checkpoint_json`
+    /// is longer than [`MAX_CHECKPOINT_BYTES`].
+    fn reject_oversized_checkpoint(self) -> crate::Result<Self> {
+        if let Self::Suspended {
+            checkpoint_json, ..
+        } = &self
+        {
+            if checkpoint_json.len() > MAX_CHECKPOINT_BYTES as usize {
+                return Err(crate::PluginError::payload_too_large(format!(
+                    "checkpoint of {} bytes exceeds {MAX_CHECKPOINT_BYTES}",
+                    checkpoint_json.len()
+                )));
+            }
+        }
+        Ok(self)
+    }
 }
 
 /// Health payload.
@@ -645,5 +728,47 @@ mod tests {
         );
         assert_eq!(invocation.attempt, 1);
         assert_eq!(invocation.invocation_sequence, 4);
+    }
+
+    #[test]
+    fn event_result_serde_includes_suspended() {
+        let suspended = EventResult::Suspended {
+            checkpoint_json: r#"{"n":1}"#.into(),
+            checkpoint_schema_version: 1,
+            wake_at_unix_ms: 42,
+            wake_on_event_type: String::new(),
+            wake_on_filter_json: String::new(),
+        };
+        let json = serde_json::to_value(&suspended).unwrap();
+        assert_eq!(json["kind"], "suspended");
+        assert_eq!(json["wakeAtUnixMs"], 42);
+        let back: EventResult = serde_json::from_value(json).unwrap();
+        assert_eq!(back, suspended);
+        let legacy = EventResult::from_json_str(
+            r#"{"kind":"suspended","checkpointJson":"{}","checkpointSchemaVersion":1,"wakeAtUnixMs":7}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            legacy,
+            EventResult::Suspended {
+                checkpoint_json: "{}".into(),
+                checkpoint_schema_version: 1,
+                wake_at_unix_ms: 7,
+                wake_on_event_type: String::new(),
+                wake_on_filter_json: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn event_result_from_json_rejects_missing_and_unknown_kind() {
+        assert!(EventResult::from_json_str("{}").is_err());
+        assert!(EventResult::from_json_str("").is_err());
+        assert!(EventResult::from_json_str("not-json").is_err());
+        assert!(EventResult::from_json_str(r#"{"kind":"nope"}"#).is_err());
+        assert_eq!(
+            EventResult::from_json_str(r#"{"kind":"ack"}"#).unwrap(),
+            EventResult::Ack
+        );
     }
 }

@@ -4018,13 +4018,31 @@ impl LibraryStore {
         error_message: Option<&str>,
     ) -> Result<()> {
         let model = self.resolve_book(title_id, account_id).await?;
-        let mut am: books::ActiveModel = model.into();
-        am.acquire_status = Set(status.as_str().to_string());
-        am.storage_key = Set(storage_key.map(str::to_string));
-        am.error_message = Set(error_message.map(str::to_string));
-        am.updated_at = Set(now_str());
-        am.update(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(())
+        if let Some(atomic) = &self.atomic {
+            let event = if status == AcquireStatus::Acquired {
+                Some(event_outbox::prepare_publish_domain_event(
+                    event_outbox::book_acquired_spec(&model, storage_key),
+                )?)
+            } else {
+                None
+            };
+            return atomic
+                .set_acquire_status(&model.uuid, status, storage_key, error_message, event)
+                .await;
+        }
+        let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
+        match event_outbox::set_acquire_status_on(&txn, model, status, storage_key, error_message)
+            .await
+        {
+            Ok(()) => {
+                txn.commit().await.map_err(LibraryError::Orm)?;
+                Ok(())
+            }
+            Err(err) => {
+                let _ = txn.rollback().await;
+                Err(err)
+            }
+        }
     }
 
     /// Bulk-update acquire status (classic `set-status --force`).
@@ -6696,6 +6714,7 @@ fn map_book(m: books::Model) -> Result<BookRecord> {
     })
 }
 
+pub(crate) mod event_outbox;
 pub(crate) mod job_queue;
 
 #[cfg(test)]

@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   fetchBooks,
+  fetchEventDeliveries,
   fetchJobs,
   fetchStatus,
   signOut,
@@ -20,6 +21,7 @@ import {
   triggerScan,
   type AuthRole,
   type BookRecord,
+  type EventDeliveryInfo,
   type JobInfo,
   type StatusResponse,
 } from "@/lib/api";
@@ -59,6 +61,7 @@ export function LibraryPage({
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [jobs, setJobs] = useState<JobInfo[]>([]);
+  const [deliveries, setDeliveries] = useState<EventDeliveryInfo[]>([]);
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [filterKind, setFilterKind] = useState<FilterKind>("all");
@@ -109,9 +112,14 @@ export function LibraryPage({
   const refreshMeta = useCallback(async () => {
     if (!canAcquire) return;
     try {
-      const [statusRes, jobsRes] = await Promise.all([fetchStatus(), fetchJobs()]);
+      const [statusRes, jobsRes, deliveriesRes] = await Promise.all([
+        fetchStatus(),
+        fetchJobs(),
+        fetchEventDeliveries(),
+      ]);
       setStatus(statusRes);
       setJobs(jobsRes);
+      setDeliveries(deliveriesRes);
     } catch {
       // operator-only endpoints; ignore for portal
     }
@@ -364,7 +372,12 @@ export function LibraryPage({
       ) : null}
 
       {canAcquire ? (
-        <JobsStrip status={status} jobs={jobs} onChanged={() => void refreshMeta()} />
+        <JobsStrip
+          status={status}
+          jobs={jobs}
+          deliveries={deliveries}
+          onChanged={() => void refreshMeta()}
+        />
       ) : null}
       <style>{`
         @keyframes rowIn {

@@ -199,6 +199,10 @@ fn operation_kind(op: &DbAtomicParams) -> &'static str {
         DbAtomicParams::ReserveJobTemp { .. } => "reserveJobTemp",
         DbAtomicParams::ConfirmTotpEnrollment { .. } => "confirmTotpEnrollment",
         DbAtomicParams::DisableUserTotp { .. } => "disableUserTotp",
+        DbAtomicParams::PublishDomainEvent { .. } => "publishDomainEvent",
+        DbAtomicParams::SetAcquireStatus { .. } => "setAcquireStatus",
+        DbAtomicParams::DispatchEventDeliveries { .. } => "dispatchEventDeliveries",
+        DbAtomicParams::ClaimNextEventDelivery { .. } => "claimNextEventDelivery",
     }
 }
 
@@ -209,9 +213,36 @@ fn receipt_expiry(now: &str) -> String {
         .unwrap_or_else(|_| now.to_string())
 }
 
+/// Reject oversized or blank `publishDomainEvent` fields before hashing.
+fn validate_publish_domain_event(op: &DbAtomicParams) -> std::result::Result<(), DbErr> {
+    let DbAtomicParams::PublishDomainEvent {
+        event_type,
+        dedup_key,
+        payload,
+        ..
+    } = op
+    else {
+        return Ok(());
+    };
+    const MAX_PAYLOAD: usize = 65_536;
+    if payload.len() > MAX_PAYLOAD {
+        return Err(DbErr::Custom(format!(
+            "domain event payload of {} bytes exceeds {MAX_PAYLOAD}",
+            payload.len()
+        )));
+    }
+    if event_type.trim().is_empty() || dedup_key.trim().is_empty() {
+        return Err(DbErr::Custom(
+            "domain event type and dedup_key are required".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Builds the D1 batch for `op`. `now` is the RFC 3339 timestamp shared by
 /// every statement in the batch (consume correlation, `updated_at`, sessions).
 fn plan_atomic(req: &DbAtomicRequest, now: &str) -> std::result::Result<AtomicPlan, DbErr> {
+    validate_publish_domain_event(&req.operation)?;
     let inner = plan_inner(&req.operation, now);
     let ctx = ReceiptCtx {
         operation_id: req.operation_id.clone(),
@@ -236,7 +267,11 @@ fn plan_atomic(req: &DbAtomicRequest, now: &str) -> std::result::Result<AtomicPl
         }
         DbAtomicParams::EnqueueJob { .. }
         | DbAtomicParams::ClaimNextJob { .. }
-        | DbAtomicParams::ReserveJobTemp { .. } => {
+        | DbAtomicParams::ReserveJobTemp { .. }
+        | DbAtomicParams::PublishDomainEvent { .. }
+        | DbAtomicParams::SetAcquireStatus { .. }
+        | DbAtomicParams::DispatchEventDeliveries { .. }
+        | DbAtomicParams::ClaimNextEventDelivery { .. } => {
             wrap_status_op(inner, &ctx, PayloadKind::JsonFromPlan)
         }
         DbAtomicParams::ConfirmTotpEnrollment { .. } | DbAtomicParams::DisableUserTotp { .. } => {
@@ -334,6 +369,88 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
             now,
         ),
         DbAtomicParams::DisableUserTotp { user_id } => plan_disable_user_totp(*user_id, now),
+        DbAtomicParams::PublishDomainEvent {
+            id,
+            event_type,
+            schema_version,
+            account_id,
+            source,
+            correlation_id,
+            causation_id,
+            dedup_key,
+            payload,
+            ordering_key,
+        } => {
+            let minted = if id.trim().is_empty() {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                id.trim().to_string()
+            };
+            plan_publish_domain_event(
+                &minted,
+                event_type,
+                *schema_version,
+                account_id,
+                source,
+                correlation_id,
+                causation_id,
+                dedup_key,
+                payload,
+                ordering_key,
+                now,
+            )
+        }
+        DbAtomicParams::SetAcquireStatus {
+            book_uuid,
+            status,
+            storage_key,
+            error_message,
+            event_id,
+            event_type,
+            schema_version,
+            event_account_id,
+            source,
+            correlation_id,
+            causation_id,
+            dedup_key,
+            payload,
+            ordering_key,
+        } => {
+            let minted = if event_id.trim().is_empty() && !event_type.trim().is_empty() {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                event_id.trim().to_string()
+            };
+            plan_set_acquire_status(
+                book_uuid,
+                status,
+                storage_key.as_deref(),
+                error_message.as_deref(),
+                &minted,
+                event_type,
+                *schema_version,
+                event_account_id,
+                source,
+                correlation_id,
+                causation_id,
+                dedup_key,
+                payload,
+                ordering_key,
+                now,
+            )
+        }
+        DbAtomicParams::DispatchEventDeliveries {
+            event_id,
+            subscribers_json,
+        } => plan_dispatch_event_deliveries(event_id, subscribers_json, now),
+        DbAtomicParams::ClaimNextEventDelivery {
+            owner,
+            lease_secs,
+            plugin_ids_json,
+            max_in_flight,
+        } => {
+            plan_claim_next_event_delivery(owner, *lease_secs, plugin_ids_json, *max_in_flight, now)
+        }
     }
 }
 
@@ -1548,6 +1665,365 @@ fn plan_reserve_job_temp(
     }
 }
 
+/// Insert a domain event unless `(account_id, source, event_type, dedup_key)` already exists.
+#[allow(clippy::too_many_arguments)]
+fn plan_publish_domain_event(
+    id: &str,
+    event_type: &str,
+    schema_version: i64,
+    account_id: &str,
+    source: &str,
+    correlation_id: &str,
+    causation_id: &str,
+    dedup_key: &str,
+    payload: &str,
+    ordering_key: &str,
+    now: &str,
+) -> AtomicPlan {
+    AtomicPlan {
+        statements: vec![
+            sql(
+                "INSERT INTO domain_events (\
+                    id, event_type, schema_version, occurred_at, account_id, source, \
+                    correlation_id, causation_id, dedup_key, payload, ordering_key, \
+                    dispatch_state, created_at, wake_pending\
+                 ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1 \
+                 WHERE NOT EXISTS (\
+                    SELECT 1 FROM domain_events \
+                    WHERE account_id = ? AND source = ? AND event_type = ? AND dedup_key = ?\
+                 )",
+                vec![
+                    j_str(id),
+                    j_str(event_type),
+                    j_i64(schema_version.max(1)),
+                    j_str(now),
+                    j_str(account_id),
+                    j_str(source),
+                    j_str(correlation_id),
+                    j_str(causation_id),
+                    j_str(dedup_key),
+                    j_str(payload),
+                    j_str(ordering_key),
+                    j_str(now),
+                    j_str(account_id),
+                    j_str(source),
+                    j_str(event_type),
+                    j_str(dedup_key),
+                ],
+            ),
+            sql(
+                "SELECT CASE \
+                    WHEN EXISTS (SELECT 1 FROM domain_events WHERE id = ?) THEN 'ok' \
+                    WHEN EXISTS (SELECT 1 FROM domain_events \
+                         WHERE account_id = ? AND source = ? AND event_type = ? AND dedup_key = ?) \
+                         THEN 'duplicate' \
+                    ELSE 'notFound' END AS status",
+                vec![
+                    j_str(id),
+                    j_str(account_id),
+                    j_str(source),
+                    j_str(event_type),
+                    j_str(dedup_key),
+                ],
+            ),
+            sql(
+                "SELECT json_object('id', id) AS payload FROM domain_events \
+                 WHERE account_id = ? AND source = ? AND event_type = ? AND dedup_key = ? LIMIT 1",
+                vec![
+                    j_str(account_id),
+                    j_str(source),
+                    j_str(event_type),
+                    j_str(dedup_key),
+                ],
+            ),
+        ],
+        outcome_index: 1,
+        payload_index: Some(2),
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
+    }
+}
+
+/// Update a book and optionally insert `book_acquired` in the same batch.
+#[allow(clippy::too_many_arguments)]
+fn plan_set_acquire_status(
+    book_uuid: &str,
+    status: &str,
+    storage_key: Option<&str>,
+    error_message: Option<&str>,
+    event_id: &str,
+    event_type: &str,
+    schema_version: i64,
+    event_account_id: &str,
+    source: &str,
+    correlation_id: &str,
+    causation_id: &str,
+    dedup_key: &str,
+    payload: &str,
+    ordering_key: &str,
+    now: &str,
+) -> AtomicPlan {
+    AtomicPlan {
+        statements: vec![
+            sql(
+                "UPDATE books SET acquire_status = ?, storage_key = ?, error_message = ?, updated_at = ? \
+                 WHERE uuid = ?",
+                vec![
+                    j_str(status),
+                    j_opt_str(storage_key),
+                    j_opt_str(error_message),
+                    j_str(now),
+                    j_str(book_uuid),
+                ],
+            ),
+            sql(
+                "INSERT INTO domain_events (\
+                    id, event_type, schema_version, occurred_at, account_id, source, \
+                    correlation_id, causation_id, dedup_key, payload, ordering_key, \
+                    dispatch_state, created_at, wake_pending\
+                 ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1 \
+                 WHERE ? != '' AND NOT EXISTS (\
+                    SELECT 1 FROM domain_events \
+                    WHERE account_id = ? AND source = ? AND event_type = ? AND dedup_key = ?\
+                 ) AND EXISTS (SELECT 1 FROM books WHERE uuid = ?)",
+                vec![
+                    j_str(event_id),
+                    j_str(event_type),
+                    j_i64(schema_version.max(1)),
+                    j_str(now),
+                    j_str(event_account_id),
+                    j_str(source),
+                    j_str(correlation_id),
+                    j_str(causation_id),
+                    j_str(dedup_key),
+                    j_str(payload),
+                    j_str(ordering_key),
+                    j_str(now),
+                    j_str(event_type),
+                    j_str(event_account_id),
+                    j_str(source),
+                    j_str(event_type),
+                    j_str(dedup_key),
+                    j_str(book_uuid),
+                ],
+            ),
+            sql(
+                "SELECT CASE WHEN EXISTS (SELECT 1 FROM books WHERE uuid = ?) \
+                    THEN 'ok' ELSE 'notFound' END AS status",
+                vec![j_str(book_uuid)],
+            ),
+        ],
+        outcome_index: 2,
+        payload_index: None,
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
+    }
+}
+
+/// Create deliveries from a JSON subscriber array and mark the event dispatched.
+fn plan_dispatch_event_deliveries(event_id: &str, subscribers_json: &str, now: &str) -> AtomicPlan {
+    AtomicPlan {
+        statements: vec![
+            sql(
+                "INSERT OR IGNORE INTO event_deliveries (\
+                    id, event_id, plugin_id, idempotency_key, state, attempt_count, max_attempts, \
+                    lease_owner, lease_expires_at, lease_generation, run_after, invocation_sequence, \
+                    resume_pending, checkpoint_json, checkpoint_schema_version, ordering_key, \
+                    outcome, error_message, created_at, updated_at, cancel_requested, resource_class, \
+                    wake_event_type, wake_filter_json, wake_grants_json\
+                 ) SELECT \
+                    ? || ':' || json_extract(j.value, '$.pluginId'), \
+                    ?, \
+                    json_extract(j.value, '$.pluginId'), \
+                    ? || ':' || json_extract(j.value, '$.pluginId'), \
+                    'pending', 0, 8, NULL, NULL, 0, ?, 0, 0, NULL, 0, \
+                    COALESCE((SELECT ordering_key FROM domain_events WHERE id = ?), ''), \
+                    NULL, NULL, ?, ?, 0, \
+                    COALESCE(\
+                        json_extract(j.value, '$.resourceClass'), \
+                        json_extract(j.value, '$.resource_class'), \
+                        'network'\
+                    ), \
+                    '', '', '' \
+                 FROM json_each(?) AS j \
+                 WHERE json_extract(j.value, '$.pluginId') IS NOT NULL \
+                   AND COALESCE(\
+                        json_extract(j.value, '$.resourceClass'), \
+                        json_extract(j.value, '$.resource_class'), \
+                        'network'\
+                   ) = 'network' \
+                   AND EXISTS (SELECT 1 FROM domain_events WHERE id = ?)",
+                vec![
+                    j_str(event_id),
+                    j_str(event_id),
+                    j_str(event_id),
+                    j_str(now),
+                    j_str(event_id),
+                    j_str(now),
+                    j_str(now),
+                    j_str(subscribers_json),
+                    j_str(event_id),
+                ],
+            ),
+            sql(
+                "INSERT OR IGNORE INTO event_outbox_stats (\
+                    id, retries_total, suspensions_total, dead_letters_total, \
+                    dispatch_latency_ms_sum, dispatch_count, handler_latency_ms_sum, handler_count\
+                 ) SELECT 1, 0, 0, 0, 0, 0, 0, 0 WHERE 1",
+                vec![],
+            ),
+            sql(
+                "UPDATE event_outbox_stats SET \
+                    dispatch_count = dispatch_count + 1, \
+                    dispatch_latency_ms_sum = dispatch_latency_ms_sum + MAX(0, \
+                        CAST((julianday(?) - julianday((SELECT created_at FROM domain_events WHERE id = ?))) * 86400000 AS INTEGER)\
+                    ) \
+                 WHERE id = 1 AND EXISTS (\
+                    SELECT 1 FROM domain_events WHERE id = ? AND dispatch_state = 'pending'\
+                 )",
+                vec![j_str(now), j_str(event_id), j_str(event_id)],
+            ),
+            sql(
+                "UPDATE domain_events SET dispatch_state = 'dispatched' \
+                 WHERE id = ? AND dispatch_state = 'pending'",
+                vec![j_str(event_id)],
+            ),
+            sql(
+                "SELECT CASE WHEN EXISTS (SELECT 1 FROM domain_events WHERE id = ?) \
+                    THEN 'ok' ELSE 'notFound' END AS status",
+                vec![j_str(event_id)],
+            ),
+            sql(
+                "SELECT json_object('created', \
+                    (SELECT COUNT(*) FROM event_deliveries WHERE event_id = ?)) AS payload",
+                vec![j_str(event_id)],
+            ),
+        ],
+        outcome_index: 4,
+        payload_index: Some(5),
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
+    }
+}
+
+/// Conditional claim of the next pending event delivery.
+fn plan_claim_next_event_delivery(
+    owner: &str,
+    lease_secs: i64,
+    plugin_ids_json: &str,
+    max_in_flight: i64,
+    now: &str,
+) -> AtomicPlan {
+    let expires = chrono::DateTime::parse_from_rfc3339(now)
+        .map(|dt| (dt + chrono::Duration::seconds(lease_secs.max(5))).to_rfc3339())
+        .unwrap_or_else(|_| now.to_string());
+    let ids_json = if plugin_ids_json.trim().is_empty() {
+        "[]"
+    } else {
+        plugin_ids_json
+    };
+    AtomicPlan {
+        statements: vec![
+            sql(
+                "UPDATE event_deliveries SET \
+                    state = 'rejected', \
+                    outcome = 'reject', \
+                    error_message = 'unknown event resource class `' || resource_class || '`', \
+                    updated_at = ? \
+                 WHERE id IN (\
+                    SELECT id FROM event_deliveries \
+                    WHERE state = 'pending' \
+                      AND COALESCE(resource_class, 'network') != 'network' \
+                      AND COALESCE(resource_class, '') != '' \
+                    LIMIT 32\
+                 )",
+                vec![j_str(now)],
+            ),
+            sql(
+                "UPDATE event_deliveries SET \
+                    state = 'running', \
+                    attempt_count = CASE WHEN resume_pending = 1 THEN MAX(attempt_count, 1) ELSE attempt_count + 1 END, \
+                    resume_pending = 0, \
+                    lease_owner = ?, \
+                    lease_expires_at = ?, \
+                    lease_generation = lease_generation + 1, \
+                    updated_at = ? \
+                 WHERE id = (\
+                    SELECT d.id FROM event_deliveries d \
+                    WHERE d.state = 'pending' AND d.run_after <= ? \
+                      AND d.plugin_id IN (SELECT value FROM json_each(?)) \
+                      AND COALESCE(d.resource_class, 'network') = 'network' \
+                      AND NOT EXISTS (\
+                        SELECT 1 FROM event_deliveries earlier \
+                        WHERE earlier.plugin_id = d.plugin_id \
+                          AND earlier.ordering_key = d.ordering_key \
+                          AND earlier.ordering_key != '' \
+                          AND earlier.created_at < d.created_at \
+                          AND earlier.state IN ('pending', 'running')\
+                      ) \
+                      AND ( \
+                        SELECT COUNT(*) FROM event_deliveries running \
+                        WHERE running.plugin_id = d.plugin_id \
+                          AND running.state = 'running' \
+                          AND COALESCE(running.resource_class, 'network') = COALESCE(d.resource_class, 'network') \
+                      ) < ? \
+                    ORDER BY d.created_at ASC LIMIT 1\
+                 ) AND state = 'pending'",
+                vec![
+                    j_str(owner),
+                    j_str(&expires),
+                    j_str(now),
+                    j_str(now),
+                    j_str(ids_json),
+                    j_i64(max_in_flight.max(0)),
+                ],
+            ),
+            sql(
+                "SELECT CASE WHEN EXISTS (\
+                    SELECT 1 FROM event_deliveries WHERE lease_owner = ? AND state = 'running' \
+                    AND updated_at = ?\
+                 ) THEN 'ok' ELSE 'empty' END AS status",
+                vec![j_str(owner), j_str(now)],
+            ),
+            sql(
+                "SELECT json_object(\
+                    'id', id, 'event_id', event_id, 'plugin_id', plugin_id, \
+                    'idempotency_key', idempotency_key, 'state', state, \
+                    'attempt_count', attempt_count, 'max_attempts', max_attempts, \
+                    'lease_owner', lease_owner, 'lease_expires_at', lease_expires_at, \
+                    'lease_generation', lease_generation, 'run_after', run_after, \
+                    'invocation_sequence', invocation_sequence, \
+                    'resume_pending', json(CASE WHEN resume_pending != 0 THEN 'true' ELSE 'false' END), \
+                    'checkpoint_json', checkpoint_json, \
+                    'checkpoint_schema_version', checkpoint_schema_version, \
+                    'ordering_key', ordering_key, 'outcome', outcome, \
+                    'error_message', error_message, 'created_at', created_at, 'updated_at', updated_at, \
+                    'cancel_requested', json(CASE WHEN cancel_requested != 0 THEN 'true' ELSE 'false' END), \
+                    'resource_class', COALESCE(resource_class, 'network'), \
+                    'wake_event_type', COALESCE(wake_event_type, ''), \
+                    'wake_filter_json', COALESCE(wake_filter_json, ''), \
+                    'wake_grants_json', COALESCE(wake_grants_json, '')\
+                 ) AS payload FROM event_deliveries \
+                 WHERE lease_owner = ? AND state = 'running' AND updated_at = ? \
+                 ORDER BY lease_generation DESC LIMIT 1",
+                vec![j_str(owner), j_str(now)],
+            ),
+        ],
+        outcome_index: 2,
+        payload_index: Some(3),
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
+    }
+}
+
 /// Best-effort account filter from a job payload JSON string.
 fn json_account_from_payload(payload_json: &str) -> String {
     serde_json::from_str::<serde_json::Value>(payload_json)
@@ -2747,5 +3223,459 @@ mod tests {
         assert_eq!(result.status, atomic_status::NOT_FOUND);
         assert_eq!(totp_names(&conn, other), vec!["primary".to_string()]);
         assert_eq!(totp_enabled(&conn, other), 1);
+    }
+
+    #[test]
+    fn publish_dispatch_claim_event_delivery_round_trip() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let now = "2024-06-01T00:00:00Z";
+        let publish = test_req(
+            DbAtomicParams::PublishDomainEvent {
+                id: "evt-1".into(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                account_id: "acct".into(),
+                source: "audible".into(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: "book_acquired:u1".into(),
+                payload: r#"{"titleId":"u1"}"#.into(),
+                ordering_key: "u1".into(),
+            },
+            "evt-pub",
+        );
+        let created = run_plan(&conn, &plan_atomic(&publish, now).unwrap());
+        assert_eq!(created.status, atomic_status::OK);
+        let ordering: String = conn
+            .query_row(
+                "SELECT ordering_key FROM domain_events WHERE id = 'evt-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ordering, "u1");
+        let source: String = conn
+            .query_row(
+                "SELECT source FROM domain_events WHERE id = 'evt-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "audible");
+        let wake_pending: i64 = conn
+            .query_row(
+                "SELECT wake_pending FROM domain_events WHERE id = 'evt-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(wake_pending, 1);
+        let dup = run_plan(&conn, &plan_atomic(&publish, now).unwrap());
+        assert_eq!(dup.status, atomic_status::OK);
+        assert!(dup.replayed);
+
+        let dispatch = test_req(
+            DbAtomicParams::DispatchEventDeliveries {
+                event_id: "evt-1".into(),
+                subscribers_json: r#"[{"pluginId":"echo"}]"#.into(),
+            },
+            "evt-disp",
+        );
+        let dispatched = run_plan(&conn, &plan_atomic(&dispatch, now).unwrap());
+        assert_eq!(dispatched.status, atomic_status::OK);
+
+        let claim = test_req(
+            DbAtomicParams::ClaimNextEventDelivery {
+                owner: "worker-1".into(),
+                lease_secs: 60,
+                plugin_ids_json: r#"["echo"]"#.into(),
+                max_in_flight: 1,
+            },
+            "evt-claim",
+        );
+        let claimed = run_plan(&conn, &plan_atomic(&claim, now).unwrap());
+        assert_eq!(claimed.status, atomic_status::OK);
+        let payload = claimed.payload.expect("claim payload");
+        assert_eq!(payload["plugin_id"], "echo");
+        assert_eq!(payload["state"], "running");
+
+        let empty = test_req(
+            DbAtomicParams::ClaimNextEventDelivery {
+                owner: "worker-empty".into(),
+                lease_secs: 60,
+                plugin_ids_json: "[]".into(),
+                max_in_flight: 1,
+            },
+            "evt-claim-empty",
+        );
+        let skipped = run_plan(&conn, &plan_atomic(&empty, now).unwrap());
+        assert_eq!(skipped.status, atomic_status::EMPTY);
+    }
+
+    #[test]
+    fn publish_domain_event_namespaces_dedup_by_account_and_source() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let now = "2024-06-01T00:00:00Z";
+        let a = test_req(
+            DbAtomicParams::PublishDomainEvent {
+                id: "evt-ns-a".into(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                account_id: "acct-a".into(),
+                source: String::new(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: "book_acquired:ns".into(),
+                payload: "{}".into(),
+                ordering_key: String::new(),
+            },
+            "evt-ns-a",
+        );
+        assert_eq!(
+            run_plan(&conn, &plan_atomic(&a, now).unwrap()).status,
+            atomic_status::OK
+        );
+        let b = test_req(
+            DbAtomicParams::PublishDomainEvent {
+                id: "evt-ns-b".into(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                account_id: "acct-b".into(),
+                source: String::new(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: "book_acquired:ns".into(),
+                payload: "{}".into(),
+                ordering_key: String::new(),
+            },
+            "evt-ns-b",
+        );
+        assert_eq!(
+            run_plan(&conn, &plan_atomic(&b, now).unwrap()).status,
+            atomic_status::OK
+        );
+        let c = test_req(
+            DbAtomicParams::PublishDomainEvent {
+                id: "evt-ns-src".into(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                account_id: "acct-a".into(),
+                source: "audible".into(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: "book_acquired:ns".into(),
+                payload: "{}".into(),
+                ordering_key: String::new(),
+            },
+            "evt-ns-src",
+        );
+        assert_eq!(
+            run_plan(&conn, &plan_atomic(&c, now).unwrap()).status,
+            atomic_status::OK
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM domain_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 3);
+        let dup = test_req(
+            DbAtomicParams::PublishDomainEvent {
+                id: "evt-ns-dup".into(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                account_id: "acct-a".into(),
+                source: String::new(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: "book_acquired:ns".into(),
+                payload: "{}".into(),
+                ordering_key: String::new(),
+            },
+            "evt-ns-dup",
+        );
+        assert_eq!(
+            run_plan(&conn, &plan_atomic(&dup, now).unwrap()).status,
+            atomic_status::DUPLICATE
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM domain_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn dispatch_late_join_second_plugin_does_not_idempotency_conflict() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let now = "2024-06-01T00:00:00Z";
+        let publish = test_req(
+            DbAtomicParams::PublishDomainEvent {
+                id: "evt-late".into(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                account_id: "acct".into(),
+                source: String::new(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: "book_acquired:late".into(),
+                payload: r#"{"titleId":"late"}"#.into(),
+                ordering_key: "late".into(),
+            },
+            "evt-late-pub",
+        );
+        assert_eq!(
+            run_plan(&conn, &plan_atomic(&publish, now).unwrap()).status,
+            atomic_status::OK
+        );
+
+        let first = test_req(
+            DbAtomicParams::DispatchEventDeliveries {
+                event_id: "evt-late".into(),
+                subscribers_json: r#"[{"pluginId":"echo"}]"#.into(),
+            },
+            "reconcile-evt-late-echo",
+        );
+        let a = run_plan(&conn, &plan_atomic(&first, now).unwrap());
+        assert_eq!(a.status, atomic_status::OK);
+        assert_ne!(a.status, atomic_status::IDEMPOTENCY_CONFLICT);
+
+        let second = test_req(
+            DbAtomicParams::DispatchEventDeliveries {
+                event_id: "evt-late".into(),
+                subscribers_json: r#"[{"pluginId":"echo"},{"pluginId":"audiobookshelf"}]"#.into(),
+            },
+            "reconcile-evt-late-audiobookshelf",
+        );
+        let ab = run_plan(&conn, &plan_atomic(&second, now).unwrap());
+        assert_eq!(ab.status, atomic_status::OK);
+        assert_ne!(ab.status, atomic_status::IDEMPOTENCY_CONFLICT);
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM event_deliveries WHERE event_id = 'evt-late'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 2);
+        let plugins: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT plugin_id FROM event_deliveries WHERE event_id = 'evt-late' ORDER BY plugin_id")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert_eq!(
+            plugins,
+            vec!["audiobookshelf".to_string(), "echo".to_string()]
+        );
+    }
+
+    #[test]
+    fn claim_respects_per_plugin_in_flight_cap() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let now = "2024-06-01T00:00:00Z";
+        for (id, key) in [("evt-cap-a", "ka"), ("evt-cap-b", "kb")] {
+            let publish = test_req(
+                DbAtomicParams::PublishDomainEvent {
+                    id: id.into(),
+                    event_type: "book_acquired".into(),
+                    schema_version: 1,
+                    account_id: "acct".into(),
+                    source: String::new(),
+                    correlation_id: String::new(),
+                    causation_id: String::new(),
+                    dedup_key: format!("book_acquired:{key}"),
+                    payload: "{}".into(),
+                    ordering_key: key.into(),
+                },
+                &format!("{id}-pub"),
+            );
+            assert_eq!(
+                run_plan(&conn, &plan_atomic(&publish, now).unwrap()).status,
+                atomic_status::OK
+            );
+            let dispatch = test_req(
+                DbAtomicParams::DispatchEventDeliveries {
+                    event_id: id.into(),
+                    subscribers_json: r#"[{"pluginId":"echo"}]"#.into(),
+                },
+                &format!("dispatch-{id}-echo"),
+            );
+            assert_eq!(
+                run_plan(&conn, &plan_atomic(&dispatch, now).unwrap()).status,
+                atomic_status::OK
+            );
+        }
+        let first = test_req(
+            DbAtomicParams::ClaimNextEventDelivery {
+                owner: "cap-w1".into(),
+                lease_secs: 60,
+                plugin_ids_json: r#"["echo"]"#.into(),
+                max_in_flight: 1,
+            },
+            "evt-cap-claim-1",
+        );
+        let claimed = run_plan(&conn, &plan_atomic(&first, now).unwrap());
+        assert_eq!(claimed.status, atomic_status::OK);
+        let second = test_req(
+            DbAtomicParams::ClaimNextEventDelivery {
+                owner: "cap-w2".into(),
+                lease_secs: 60,
+                plugin_ids_json: r#"["echo"]"#.into(),
+                max_in_flight: 1,
+            },
+            "evt-cap-claim-2",
+        );
+        let blocked = run_plan(&conn, &plan_atomic(&second, now).unwrap());
+        assert_eq!(blocked.status, atomic_status::EMPTY);
+    }
+
+    #[test]
+    fn set_acquire_status_publishes_outbox_in_same_batch() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let now = "2024-06-01T00:00:00Z";
+        conn.execute(
+            "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
+             VALUES ('user-1', 'us', 'audible', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO books (uuid, source, account_id, product_id, marketplace, title, created_at, updated_at) \
+             VALUES ('b1', 'audible', 'user-1', 'B00X', 'us', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let req = test_req(
+            DbAtomicParams::SetAcquireStatus {
+                book_uuid: "b1".into(),
+                status: "acquired".into(),
+                storage_key: Some("Author/T/book.m4b".into()),
+                error_message: None,
+                event_id: "evt-acq".into(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                event_account_id: "user-1".into(),
+                source: "audible".into(),
+                correlation_id: "b1".into(),
+                causation_id: String::new(),
+                dedup_key: "book_acquired:b1".into(),
+                payload: r#"{"titleId":"b1"}"#.into(),
+                ordering_key: "b1".into(),
+            },
+            "acq-1",
+        );
+        let result = run_plan(&conn, &plan_atomic(&req, now).unwrap());
+        assert_eq!(result.status, atomic_status::OK);
+        let status: String = conn
+            .query_row(
+                "SELECT acquire_status FROM books WHERE uuid = 'b1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "acquired");
+        let ordering: String = conn
+            .query_row(
+                "SELECT ordering_key FROM domain_events WHERE id = 'evt-acq'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ordering, "b1");
+
+        let missing = test_req(
+            DbAtomicParams::SetAcquireStatus {
+                book_uuid: "missing".into(),
+                status: "acquired".into(),
+                storage_key: None,
+                error_message: None,
+                event_id: "evt-missing".into(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                event_account_id: "user-1".into(),
+                source: "audible".into(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: "book_acquired:missing".into(),
+                payload: "{}".into(),
+                ordering_key: "missing".into(),
+            },
+            "acq-missing",
+        );
+        let not_found = run_plan(&conn, &plan_atomic(&missing, now).unwrap());
+        assert_eq!(not_found.status, atomic_status::NOT_FOUND);
+        let events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM domain_events WHERE id = 'evt-missing'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(events, 0);
+    }
+
+    #[test]
+    fn publish_domain_event_mints_empty_id_and_rejects_oversized_payload() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let now = "2024-06-01T00:00:00Z";
+        let publish = test_req(
+            DbAtomicParams::PublishDomainEvent {
+                id: String::new(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                account_id: "acct".into(),
+                source: String::new(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: "book_acquired:mint".into(),
+                payload: r#"{"titleId":"mint"}"#.into(),
+                ordering_key: "mint".into(),
+            },
+            "evt-mint",
+        );
+        let created = run_plan(&conn, &plan_atomic(&publish, now).unwrap());
+        assert_eq!(created.status, atomic_status::OK);
+        let id: String = conn
+            .query_row("SELECT id FROM domain_events", [], |r| r.get(0))
+            .unwrap();
+        assert!(!id.is_empty(), "empty event id must be minted");
+        let payload_id = created
+            .payload
+            .as_ref()
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert_eq!(payload_id, id);
+
+        let huge = test_req(
+            DbAtomicParams::PublishDomainEvent {
+                id: String::new(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                account_id: "acct".into(),
+                source: String::new(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: "book_acquired:huge".into(),
+                payload: "x".repeat(65_537),
+                ordering_key: "huge".into(),
+            },
+            "evt-huge",
+        );
+        let err = match plan_atomic(&huge, now) {
+            Ok(_) => panic!("oversized payload must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("exceeds"),
+            "unexpected error: {err}"
+        );
     }
 }

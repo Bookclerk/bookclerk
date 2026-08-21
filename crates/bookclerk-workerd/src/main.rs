@@ -460,6 +460,12 @@ async fn run_native_behind_workerd(
         .context("workerd bridge /health did not become ready")?;
 
     let plugin_id = manifest.id.clone();
+    let policy = match manifest.kind {
+        bookclerk_plugin_manifest::PluginKind::Integration => {
+            bookclerk_workerd::native_broker::BrokerPolicy::integration(plugin_id, "1")
+        }
+        _ => bookclerk_workerd::native_broker::BrokerPolicy::destination(plugin_id, "1"),
+    };
     let result = mediate_v2_native(
         generated.listen.port(),
         bridge_token.clone(),
@@ -470,7 +476,7 @@ async fn run_native_behind_workerd(
         guest_stdout,
         guest_stdin,
         broker_listener,
-        plugin_id,
+        policy,
     )
     .await;
 
@@ -493,7 +499,7 @@ async fn mediate_v2_native(
     guest_stdout: tokio::process::ChildStdout,
     guest_stdin: tokio::process::ChildStdin,
     broker_listener: tokio::net::TcpListener,
-    plugin_id: String,
+    policy: bookclerk_workerd::native_broker::BrokerPolicy,
 ) -> Result<()> {
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -501,7 +507,7 @@ async fn mediate_v2_native(
 
     use bookclerk_plugin_abi::v2::connect_plugin;
     use bookclerk_workerd::granted::{spawn_granted, GrantedTable};
-    use bookclerk_workerd::native_broker::{spawn_native_broker, BrokerPolicy};
+    use bookclerk_workerd::native_broker::spawn_native_broker;
     use bookclerk_workerd::v2_http::BridgeHttp;
     use bookclerk_workerd::v2_stdio::mediate_v2_stdio;
 
@@ -515,11 +521,7 @@ async fn mediate_v2_native(
         .run_until(async move {
             let (client, rpc) = connect_plugin(guest_stdout, guest_stdin, 64 * 1024);
             tokio::task::spawn_local(rpc);
-            spawn_native_broker(
-                broker_listener,
-                client,
-                BrokerPolicy::destination(plugin_id, "1"),
-            );
+            spawn_native_broker(broker_listener, client, policy);
             #[cfg(unix)]
             {
                 let std_listener = granted_unix.context("missing granted unix listener")?;
