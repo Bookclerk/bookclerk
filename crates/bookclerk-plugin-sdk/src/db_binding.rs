@@ -12,7 +12,7 @@ use bookclerk_plugin_abi::{
     DbTiming, DbValue, ExecuteReply, ExecuteRequest, PluginError, Result, StatementResult,
     TypedDbStatement,
 };
-use bookclerk_plugin_abi::{GuestDatabase, JobHandlerContext};
+use bookclerk_plugin_abi::{Bindings, GuestDatabase};
 
 static OP_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -104,27 +104,18 @@ impl DatabaseBinding {
         Self { session, options }
     }
 
-    /// Takes [`JobHandlerContext::database`] when the invocation includes one.
+    /// Takes the named plugin database binding `name` from the `open`
+    /// [`Bindings`].
     ///
-    /// Production jobs do **not** inject the host library here. Durable plugin
-    /// state uses [`Self::take_named_from_job_context`].
+    /// Named bindings come from `plugin.toml` `[[databases]]` after operator
+    /// approval: each is an isolated plugin-owned database (full DML plus
+    /// idempotent `CREATE`/`DROP` `TABLE`/`INDEX` with `IF [NOT] EXISTS`),
+    /// physically separate from the Bookclerk library and from every other
+    /// plugin. Production invocations never inject the host library.
     #[must_use]
-    pub fn take_from_job_context(ctx: &mut JobHandlerContext) -> Option<Self> {
-        ctx.database
-            .take()
-            .map(|db| Self::from_session(Arc::from(db)))
-    }
-
-    /// Takes the named plugin database binding `name` from a job context.
-    ///
-    /// Named bindings come from `plugin.toml` `capabilities.bindings.databases`
-    /// after operator approval: each is an isolated plugin-owned database
-    /// (full DML plus idempotent `CREATE`/`DROP` `TABLE`/`INDEX` with
-    /// `IF [NOT] EXISTS`), physically separate from the Bookclerk library and
-    /// from every other plugin.
-    #[must_use]
-    pub fn take_named_from_job_context(ctx: &mut JobHandlerContext, name: &str) -> Option<Self> {
-        ctx.take_named_database(name)
+    pub fn take_named_from_bindings(bindings: &mut Bindings, name: &str) -> Option<Self> {
+        bindings
+            .take_named_database(name)
             .map(|db| Self::from_session(Arc::from(db)))
     }
 

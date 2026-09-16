@@ -918,438 +918,86 @@
         }
       ]
     },
-    "BookclerkPlugin.cliDescribe$Params": {
-      "name": "BookclerkPlugin.cliDescribe$Params",
+    "Bindings": {
+      "name": "Bindings",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 0,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": []
-    },
-    "BookclerkPlugin.cliDescribe$Results": {
-      "name": "BookclerkPlugin.cliDescribe$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
+      "pointerCount": 7,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
         {
-          "name": "result",
+          "name": "config",
           "codeOrder": 0,
           "discriminantValue": null,
           "type": {
             "kind": "struct",
-            "name": "CliSchemaReply"
+            "name": "ExtensibleConfig"
           },
           "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.cliInvoke$Params": {
-      "name": "BookclerkPlugin.cliInvoke$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
+        },
         {
-          "name": "params",
-          "codeOrder": 0,
+          "name": "secrets",
+          "codeOrder": 1,
           "discriminantValue": null,
           "type": {
             "kind": "struct",
-            "name": "CliInvokeParams"
+            "name": "ExtensibleConfig"
           },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.cliInvoke$Results": {
-      "name": "BookclerkPlugin.cliInvoke$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
+          "offset": 1
+        },
         {
-          "name": "result",
-          "codeOrder": 0,
+          "name": "adapter",
+          "codeOrder": 2,
           "discriminantValue": null,
           "type": {
             "kind": "struct",
-            "name": "CliInvokeReply"
+            "name": "DatabaseAdapterConfig"
           },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.contentSource$Params": {
-      "name": "BookclerkPlugin.contentSource$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
+          "offset": 2
+        },
         {
-          "name": "context",
-          "codeOrder": 0,
+          "name": "events",
+          "codeOrder": 3,
           "discriminantValue": null,
           "type": {
-            "kind": "struct",
-            "name": "ContentSourceContext"
+            "kind": "interface",
+            "name": "EventPublisher"
           },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.contentSource$Results": {
-      "name": "BookclerkPlugin.contentSource$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
+          "offset": 3
+        },
         {
-          "name": "result",
-          "codeOrder": 0,
+          "name": "databases",
+          "codeOrder": 4,
           "discriminantValue": null,
           "type": {
-            "kind": "struct",
-            "name": "ContentSourceReply"
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "NamedDatabase"
+            }
           },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.database$Params": {
-      "name": "BookclerkPlugin.database$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
+          "offset": 4
+        },
         {
-          "name": "context",
-          "codeOrder": 0,
+          "name": "cancel",
+          "codeOrder": 5,
           "discriminantValue": null,
           "type": {
-            "kind": "struct",
-            "name": "DatabaseContext"
+            "kind": "interface",
+            "name": "Cancellation"
           },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.database$Results": {
-      "name": "BookclerkPlugin.database$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
+          "offset": 5
+        },
         {
-          "name": "result",
-          "codeOrder": 0,
+          "name": "storage",
+          "codeOrder": 6,
           "discriminantValue": null,
           "type": {
-            "kind": "struct",
-            "name": "DatabaseReply"
+            "kind": "interface",
+            "name": "Destination"
           },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.databaseMigrations$Params": {
-      "name": "BookclerkPlugin.databaseMigrations$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "binding",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.databaseMigrations$Results": {
-      "name": "BookclerkPlugin.databaseMigrations$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "PluginMigrationsReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.describe$Params": {
-      "name": "BookclerkPlugin.describe$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 0,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": []
-    },
-    "BookclerkPlugin.describe$Results": {
-      "name": "BookclerkPlugin.describe$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "DescribeReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.destination$Params": {
-      "name": "BookclerkPlugin.destination$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "context",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "DestinationContext"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.destination$Results": {
-      "name": "BookclerkPlugin.destination$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "DestinationReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.integration$Params": {
-      "name": "BookclerkPlugin.integration$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "context",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "IntegrationContext"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.integration$Results": {
-      "name": "BookclerkPlugin.integration$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "IntegrationReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.oidcClients$Params": {
-      "name": "BookclerkPlugin.oidcClients$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 0,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": []
-    },
-    "BookclerkPlugin.oidcClients$Results": {
-      "name": "BookclerkPlugin.oidcClients$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "OidcClientsReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.shutdown$Params": {
-      "name": "BookclerkPlugin.shutdown$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 0,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": []
-    },
-    "BookclerkPlugin.shutdown$Results": {
-      "name": "BookclerkPlugin.shutdown$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "EmptyReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.source$Params": {
-      "name": "BookclerkPlugin.source$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "context",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "SourceContext"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.source$Results": {
-      "name": "BookclerkPlugin.source$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "SourceReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.worker$Params": {
-      "name": "BookclerkPlugin.worker$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "context",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "WorkerContext"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "BookclerkPlugin.worker$Results": {
-      "name": "BookclerkPlugin.worker$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "WorkerReply"
-          },
-          "offset": 0
+          "offset": 6
         }
       ]
     },
@@ -2855,56 +2503,6 @@
         }
       ]
     },
-    "ContentSourceContext": {
-      "name": "ContentSourceContext",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "config",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "ExtensibleConfig"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "ContentSourceReply": {
-      "name": "ContentSourceReply",
-      "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 1,
-      "discriminantCount": 2,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "ok",
-          "codeOrder": 0,
-          "discriminantValue": 0,
-          "type": {
-            "kind": "interface",
-            "name": "ContentSource"
-          },
-          "offset": 0
-        },
-        {
-          "name": "err",
-          "codeOrder": 1,
-          "discriminantValue": 1,
-          "type": {
-            "kind": "struct",
-            "name": "PluginError"
-          },
-          "offset": 0
-        }
-      ]
-    },
     "CopyReply": {
       "name": "CopyReply",
       "file": "plugin.capnp",
@@ -3161,66 +2759,6 @@
           "discriminantValue": null,
           "type": {
             "kind": "bool"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "DatabaseContext": {
-      "name": "DatabaseContext",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 2,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "config",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "ExtensibleConfig"
-          },
-          "offset": 0
-        },
-        {
-          "name": "adapter",
-          "codeOrder": 1,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "DatabaseAdapterConfig"
-          },
-          "offset": 1
-        }
-      ]
-    },
-    "DatabaseReply": {
-      "name": "DatabaseReply",
-      "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 1,
-      "discriminantCount": 2,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "ok",
-          "codeOrder": 0,
-          "discriminantValue": 0,
-          "type": {
-            "kind": "interface",
-            "name": "Database"
-          },
-          "offset": 0
-        },
-        {
-          "name": "err",
-          "codeOrder": 1,
-          "discriminantValue": 1,
-          "type": {
-            "kind": "struct",
-            "name": "PluginError"
           },
           "offset": 0
         }
@@ -4128,56 +3666,6 @@
         }
       ]
     },
-    "DestinationContext": {
-      "name": "DestinationContext",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "config",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "ExtensibleConfig"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "DestinationReply": {
-      "name": "DestinationReply",
-      "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 1,
-      "discriminantCount": 2,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "ok",
-          "codeOrder": 0,
-          "discriminantValue": 0,
-          "type": {
-            "kind": "interface",
-            "name": "Destination"
-          },
-          "offset": 0
-        },
-        {
-          "name": "err",
-          "codeOrder": 1,
-          "discriminantValue": 1,
-          "type": {
-            "kind": "struct",
-            "name": "PluginError"
-          },
-          "offset": 0
-        }
-      ]
-    },
     "DiagnoseReply": {
       "name": "DiagnoseReply",
       "file": "plugin.capnp",
@@ -4404,6 +3892,126 @@
         }
       ]
     },
+    "Entrypoints": {
+      "name": "Entrypoints",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 8,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "eventConsumer",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "EventConsumer"
+          },
+          "offset": 0
+        },
+        {
+          "name": "jobRunner",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "JobRunner"
+          },
+          "offset": 1
+        },
+        {
+          "name": "storefront",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "ContentSource"
+          },
+          "offset": 2
+        },
+        {
+          "name": "storage",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Destination"
+          },
+          "offset": 3
+        },
+        {
+          "name": "databaseAdapter",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Database"
+          },
+          "offset": 4
+        },
+        {
+          "name": "remoteLibrary",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "RemoteLibrary"
+          },
+          "offset": 5
+        },
+        {
+          "name": "cli",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "PluginCli"
+          },
+          "offset": 6
+        },
+        {
+          "name": "oidc",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Oidc"
+          },
+          "offset": 7
+        }
+      ]
+    },
+    "EntrypointsReply": {
+      "name": "EntrypointsReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "Entrypoints"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "EventAck": {
       "name": "EventAck",
       "file": "plugin.capnp",
@@ -4418,6 +4026,142 @@
           "discriminantValue": null,
           "type": {
             "kind": "void"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "EventBatch": {
+      "name": "EventBatch",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "events",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "DomainEvent"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "EventBatchReply": {
+      "name": "EventBatchReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "EventResult"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "EventConsumer.event$Params": {
+      "name": "EventConsumer.event$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "batch",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EventBatch"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "EventConsumer.event$Results": {
+      "name": "EventConsumer.event$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EventBatchReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "EventConsumerSpec": {
+      "name": "EventConsumerSpec",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "eventType",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "schemaVersions",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "uint32"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "supportsSuspend",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
           },
           "offset": 0
         }
@@ -4490,6 +4234,46 @@
               "kind": "struct",
               "name": "ExternalUser"
             }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "EventPublisher.publish$Params": {
+      "name": "EventPublisher.publish$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "event",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "PluginEvent"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "EventPublisher.publish$Results": {
+      "name": "EventPublisher.publish$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "PublishReply"
           },
           "offset": 0
         }
@@ -4569,36 +4353,6 @@
           "type": {
             "kind": "struct",
             "name": "EventSuspended"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "EventResultReply": {
-      "name": "EventResultReply",
-      "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 1,
-      "discriminantCount": 2,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "ok",
-          "codeOrder": 0,
-          "discriminantValue": 0,
-          "type": {
-            "kind": "struct",
-            "name": "EventResult"
-          },
-          "offset": 0
-        },
-        {
-          "name": "err",
-          "codeOrder": 1,
-          "discriminantValue": 1,
-          "type": {
-            "kind": "struct",
-            "name": "PluginError"
           },
           "offset": 0
         }
@@ -5803,355 +5557,66 @@
         }
       ]
     },
-    "Integration.authenticateUser$Params": {
-      "name": "Integration.authenticateUser$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "params",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "AuthenticateUserParams"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "Integration.authenticateUser$Results": {
-      "name": "Integration.authenticateUser$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "ExternalUserReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "Integration.diagnose$Params": {
-      "name": "Integration.diagnose$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 0,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": []
-    },
-    "Integration.diagnose$Results": {
-      "name": "Integration.diagnose$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "DiagnoseReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "Integration.health$Params": {
-      "name": "Integration.health$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 0,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": []
-    },
-    "Integration.health$Results": {
-      "name": "Integration.health$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "HealthReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "Integration.onEvent$Params": {
-      "name": "Integration.onEvent$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "event",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "DomainEvent"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "Integration.onEvent$Results": {
-      "name": "Integration.onEvent$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "EventResultReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "Integration.pollEvents$Params": {
-      "name": "Integration.pollEvents$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 0,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": []
-    },
-    "Integration.pollEvents$Results": {
-      "name": "Integration.pollEvents$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "EventPollReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "Integration.scanLibrary$Params": {
-      "name": "Integration.scanLibrary$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "params",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "ScanLibraryParams"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "Integration.scanLibrary$Results": {
-      "name": "Integration.scanLibrary$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "EmptyReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "Integration.start$Params": {
-      "name": "Integration.start$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 0,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": []
-    },
-    "Integration.start$Results": {
-      "name": "Integration.start$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "EmptyReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "Integration.stop$Params": {
-      "name": "Integration.stop$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 0,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": []
-    },
-    "Integration.stop$Results": {
-      "name": "Integration.stop$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "EmptyReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "Integration.syncListening$Params": {
-      "name": "Integration.syncListening$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 0,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": []
-    },
-    "Integration.syncListening$Results": {
-      "name": "Integration.syncListening$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "SyncListeningReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "IntegrationContext": {
-      "name": "IntegrationContext",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "config",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "ExtensibleConfig"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "IntegrationReply": {
-      "name": "IntegrationReply",
+    "Invocation": {
+      "name": "Invocation",
       "file": "plugin.capnp",
       "dataWords": 1,
-      "pointerCount": 1,
-      "discriminantCount": 2,
+      "pointerCount": 4,
+      "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
         {
-          "name": "ok",
+          "name": "id",
           "codeOrder": 0,
-          "discriminantValue": 0,
+          "discriminantValue": null,
           "type": {
-            "kind": "interface",
-            "name": "Integration"
+            "kind": "text"
           },
           "offset": 0
         },
         {
-          "name": "err",
+          "name": "accountId",
           "codeOrder": 1,
-          "discriminantValue": 1,
+          "discriminantValue": null,
           "type": {
-            "kind": "struct",
-            "name": "PluginError"
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "deadlineUnixMs",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
           },
           "offset": 0
+        },
+        {
+          "name": "correlationId",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "causationId",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
         }
       ]
     },
-    "JobHandler.handle$Params": {
-      "name": "JobHandler.handle$Params",
+    "JobController": {
+      "name": "JobController",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 7,
+      "pointerCount": 5,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -6204,49 +5669,6 @@
             "name": "Cancellation"
           },
           "offset": 4
-        },
-        {
-          "name": "database",
-          "codeOrder": 5,
-          "discriminantValue": null,
-          "type": {
-            "kind": "interface",
-            "name": "GuestDatabase"
-          },
-          "offset": 5
-        },
-        {
-          "name": "databases",
-          "codeOrder": 6,
-          "discriminantValue": null,
-          "type": {
-            "kind": "list",
-            "element": {
-              "kind": "struct",
-              "name": "NamedDatabase"
-            }
-          },
-          "offset": 6
-        }
-      ]
-    },
-    "JobHandler.handle$Results": {
-      "name": "JobHandler.handle$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "HandleReply"
-          },
-          "offset": 0
         }
       ]
     },
@@ -6432,6 +5854,46 @@
           "type": {
             "kind": "struct",
             "name": "SuspendedOutcome"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "JobRunner.job$Params": {
+      "name": "JobRunner.job$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "controller",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "JobController"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "JobRunner.job$Results": {
+      "name": "JobRunner.job$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "HandleReply"
           },
           "offset": 0
         }
@@ -7087,6 +6549,75 @@
         }
       ]
     },
+    "Oidc.authenticateUser$Params": {
+      "name": "Oidc.authenticateUser$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "AuthenticateUserParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Oidc.authenticateUser$Results": {
+      "name": "Oidc.authenticateUser$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ExternalUserReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Oidc.clients$Params": {
+      "name": "Oidc.clients$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "Oidc.clients$Results": {
+      "name": "Oidc.clients$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "OidcClientsReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "OidcClientTemplate": {
       "name": "OidcClientTemplate",
       "file": "plugin.capnp",
@@ -7433,11 +6964,164 @@
         }
       ]
     },
+    "PluginCapabilities": {
+      "name": "PluginCapabilities",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 6,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "entrypoints",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "enum",
+              "name": "Entrypoint"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "consumes",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "EventConsumerSpec"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "produces",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 2
+        },
+        {
+          "name": "jobs",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 3
+        },
+        {
+          "name": "databases",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 4
+        },
+        {
+          "name": "bindings",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 5
+        }
+      ]
+    },
+    "PluginCli.describe$Params": {
+      "name": "PluginCli.describe$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "PluginCli.describe$Results": {
+      "name": "PluginCli.describe$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "CliSchemaReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "PluginCli.invoke$Params": {
+      "name": "PluginCli.invoke$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "CliInvokeParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "PluginCli.invoke$Results": {
+      "name": "PluginCli.invoke$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "CliInvokeReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "PluginDescribe": {
       "name": "PluginDescribe",
       "file": "plugin.capnp",
       "dataWords": 2,
-      "pointerCount": 12,
+      "pointerCount": 10,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -7460,7 +7144,7 @@
           "offset": 0
         },
         {
-          "name": "kind",
+          "name": "displayName",
           "codeOrder": 2,
           "discriminantValue": null,
           "type": {
@@ -7469,17 +7153,8 @@
           "offset": 1
         },
         {
-          "name": "displayName",
-          "codeOrder": 3,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 2
-        },
-        {
           "name": "rpcFeatures",
-          "codeOrder": 4,
+          "codeOrder": 3,
           "discriminantValue": null,
           "type": {
             "kind": "list",
@@ -7487,33 +7162,50 @@
               "kind": "text"
             }
           },
-          "offset": 3
+          "offset": 2
         },
         {
           "name": "scalarLimits",
-          "codeOrder": 5,
+          "codeOrder": 4,
           "discriminantValue": null,
           "type": {
             "kind": "struct",
             "name": "ScalarLimits"
           },
+          "offset": 3
+        },
+        {
+          "name": "capabilities",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "PluginCapabilities"
+          },
           "offset": 4
         },
         {
-          "name": "supportedRoles",
+          "name": "portalAuthMode",
           "codeOrder": 6,
           "discriminantValue": null,
           "type": {
-            "kind": "list",
-            "element": {
-              "kind": "text"
-            }
+            "kind": "enum",
+            "name": "PortalAuthMode"
+          },
+          "offset": 2
+        },
+        {
+          "name": "passwordEnvVar",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
           },
           "offset": 5
         },
         {
-          "name": "capabilities",
-          "codeOrder": 7,
+          "name": "aliases",
+          "codeOrder": 8,
           "discriminantValue": null,
           "type": {
             "kind": "list",
@@ -7524,39 +7216,8 @@
           "offset": 6
         },
         {
-          "name": "portalAuthMode",
-          "codeOrder": 8,
-          "discriminantValue": null,
-          "type": {
-            "kind": "enum",
-            "name": "PortalAuthMode"
-          },
-          "offset": 2
-        },
-        {
-          "name": "passwordEnvVar",
-          "codeOrder": 9,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 7
-        },
-        {
-          "name": "aliases",
-          "codeOrder": 10,
-          "discriminantValue": null,
-          "type": {
-            "kind": "list",
-            "element": {
-              "kind": "text"
-            }
-          },
-          "offset": 8
-        },
-        {
           "name": "sortKey",
-          "codeOrder": 11,
+          "codeOrder": 9,
           "discriminantValue": null,
           "type": {
             "kind": "uint32"
@@ -7565,17 +7226,17 @@
         },
         {
           "name": "brand",
-          "codeOrder": 12,
+          "codeOrder": 10,
           "discriminantValue": null,
           "type": {
             "kind": "struct",
             "name": "Brand"
           },
-          "offset": 9
+          "offset": 7
         },
         {
           "name": "configOptions",
-          "codeOrder": 13,
+          "codeOrder": 11,
           "discriminantValue": null,
           "type": {
             "kind": "list",
@@ -7584,17 +7245,17 @@
               "name": "ConfigOption"
             }
           },
-          "offset": 10
+          "offset": 8
         },
         {
           "name": "cli",
-          "codeOrder": 14,
+          "codeOrder": 12,
           "discriminantValue": null,
           "type": {
             "kind": "struct",
             "name": "CliSchema"
           },
-          "offset": 11
+          "offset": 9
         }
       ]
     },
@@ -7623,6 +7284,79 @@
             "kind": "text"
           },
           "offset": 1
+        }
+      ]
+    },
+    "PluginEvent": {
+      "name": "PluginEvent",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 5,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "eventType",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "schemaVersion",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        },
+        {
+          "name": "deduplicationKey",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "payload",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 2
+        },
+        {
+          "name": "occurredAtUnixMs",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        },
+        {
+          "name": "correlationId",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        },
+        {
+          "name": "causationId",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 4
         }
       ]
     },
@@ -7739,6 +7473,153 @@
         }
       ]
     },
+    "PluginWorker.databaseMigrations$Params": {
+      "name": "PluginWorker.databaseMigrations$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "binding",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "PluginWorker.databaseMigrations$Results": {
+      "name": "PluginWorker.databaseMigrations$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "PluginMigrationsReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "PluginWorker.describe$Params": {
+      "name": "PluginWorker.describe$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "PluginWorker.describe$Results": {
+      "name": "PluginWorker.describe$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "DescribeReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "PluginWorker.open$Params": {
+      "name": "PluginWorker.open$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "invocation",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "Invocation"
+          },
+          "offset": 0
+        },
+        {
+          "name": "bindings",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "Bindings"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "PluginWorker.open$Results": {
+      "name": "PluginWorker.open$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EntrypointsReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "PluginWorker.shutdown$Params": {
+      "name": "PluginWorker.shutdown$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "PluginWorker.shutdown$Results": {
+      "name": "PluginWorker.shutdown$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "ProgressSink.report$Params": {
       "name": "ProgressSink.report$Params",
       "file": "plugin.capnp",
@@ -7782,6 +7663,64 @@
           "type": {
             "kind": "struct",
             "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "PublishOk": {
+      "name": "PublishOk",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "eventId",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "duplicate",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "PublishReply": {
+      "name": "PublishReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "PublishOk"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
           },
           "offset": 0
         }
@@ -8187,6 +8126,220 @@
           "discriminantValue": null,
           "type": {
             "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "RemoteLibrary.diagnose$Params": {
+      "name": "RemoteLibrary.diagnose$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "RemoteLibrary.diagnose$Results": {
+      "name": "RemoteLibrary.diagnose$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "DiagnoseReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "RemoteLibrary.health$Params": {
+      "name": "RemoteLibrary.health$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "RemoteLibrary.health$Results": {
+      "name": "RemoteLibrary.health$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "HealthReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "RemoteLibrary.pollEvents$Params": {
+      "name": "RemoteLibrary.pollEvents$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "RemoteLibrary.pollEvents$Results": {
+      "name": "RemoteLibrary.pollEvents$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EventPollReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "RemoteLibrary.scanLibrary$Params": {
+      "name": "RemoteLibrary.scanLibrary$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ScanLibraryParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "RemoteLibrary.scanLibrary$Results": {
+      "name": "RemoteLibrary.scanLibrary$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "RemoteLibrary.start$Params": {
+      "name": "RemoteLibrary.start$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "RemoteLibrary.start$Results": {
+      "name": "RemoteLibrary.start$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "RemoteLibrary.stop$Params": {
+      "name": "RemoteLibrary.stop$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "RemoteLibrary.stop$Results": {
+      "name": "RemoteLibrary.stop$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "RemoteLibrary.syncListening$Params": {
+      "name": "RemoteLibrary.syncListening$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "RemoteLibrary.syncListening$Results": {
+      "name": "RemoteLibrary.syncListening$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "SyncListeningReply"
           },
           "offset": 0
         }
@@ -9024,56 +9177,6 @@
         }
       ]
     },
-    "SourceContext": {
-      "name": "SourceContext",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "config",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "ExtensibleConfig"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "SourceReply": {
-      "name": "SourceReply",
-      "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 1,
-      "discriminantCount": 2,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "ok",
-          "codeOrder": 0,
-          "discriminantValue": 0,
-          "type": {
-            "kind": "interface",
-            "name": "Source"
-          },
-          "offset": 0
-        },
-        {
-          "name": "err",
-          "codeOrder": 1,
-          "discriminantValue": 1,
-          "type": {
-            "kind": "struct",
-            "name": "PluginError"
-          },
-          "offset": 0
-        }
-      ]
-    },
     "SqlSpan": {
       "name": "SqlSpan",
       "file": "plugin.capnp",
@@ -9342,65 +9445,6 @@
         }
       ]
     },
-    "WorkerContext": {
-      "name": "WorkerContext",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 2,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "jobId",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 0
-        },
-        {
-          "name": "config",
-          "codeOrder": 1,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "ExtensibleConfig"
-          },
-          "offset": 1
-        }
-      ]
-    },
-    "WorkerReply": {
-      "name": "WorkerReply",
-      "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 1,
-      "discriminantCount": 2,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "ok",
-          "codeOrder": 0,
-          "discriminantValue": 0,
-          "type": {
-            "kind": "interface",
-            "name": "JobHandler"
-          },
-          "offset": 0
-        },
-        {
-          "name": "err",
-          "codeOrder": 1,
-          "discriminantValue": 1,
-          "type": {
-            "kind": "struct",
-            "name": "PluginError"
-          },
-          "offset": 0
-        }
-      ]
-    },
     "WriteOptions": {
       "name": "WriteOptions",
       "file": "plugin.capnp",
@@ -9527,6 +9571,18 @@
         "float64",
         "text",
         "bytes"
+      ]
+    },
+    "Entrypoint": {
+      "name": "Entrypoint",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "storefront",
+        "storage",
+        "databaseAdapter",
+        "remoteLibrary",
+        "cli",
+        "oidc"
       ]
     },
     "IntegerArithKind": {
@@ -9715,84 +9771,6 @@
         }
       ]
     },
-    "BookclerkPlugin": {
-      "name": "BookclerkPlugin",
-      "file": "plugin.capnp",
-      "methods": [
-        {
-          "name": "describe",
-          "ordinal": 0,
-          "params": "BookclerkPlugin.describe$Params",
-          "results": "BookclerkPlugin.describe$Results"
-        },
-        {
-          "name": "destination",
-          "ordinal": 1,
-          "params": "BookclerkPlugin.destination$Params",
-          "results": "BookclerkPlugin.destination$Results"
-        },
-        {
-          "name": "source",
-          "ordinal": 2,
-          "params": "BookclerkPlugin.source$Params",
-          "results": "BookclerkPlugin.source$Results"
-        },
-        {
-          "name": "worker",
-          "ordinal": 3,
-          "params": "BookclerkPlugin.worker$Params",
-          "results": "BookclerkPlugin.worker$Results"
-        },
-        {
-          "name": "shutdown",
-          "ordinal": 4,
-          "params": "BookclerkPlugin.shutdown$Params",
-          "results": "BookclerkPlugin.shutdown$Results"
-        },
-        {
-          "name": "contentSource",
-          "ordinal": 5,
-          "params": "BookclerkPlugin.contentSource$Params",
-          "results": "BookclerkPlugin.contentSource$Results"
-        },
-        {
-          "name": "integration",
-          "ordinal": 6,
-          "params": "BookclerkPlugin.integration$Params",
-          "results": "BookclerkPlugin.integration$Results"
-        },
-        {
-          "name": "database",
-          "ordinal": 7,
-          "params": "BookclerkPlugin.database$Params",
-          "results": "BookclerkPlugin.database$Results"
-        },
-        {
-          "name": "cliDescribe",
-          "ordinal": 8,
-          "params": "BookclerkPlugin.cliDescribe$Params",
-          "results": "BookclerkPlugin.cliDescribe$Results"
-        },
-        {
-          "name": "cliInvoke",
-          "ordinal": 9,
-          "params": "BookclerkPlugin.cliInvoke$Params",
-          "results": "BookclerkPlugin.cliInvoke$Results"
-        },
-        {
-          "name": "oidcClients",
-          "ordinal": 10,
-          "params": "BookclerkPlugin.oidcClients$Params",
-          "results": "BookclerkPlugin.oidcClients$Results"
-        },
-        {
-          "name": "databaseMigrations",
-          "ordinal": 11,
-          "params": "BookclerkPlugin.databaseMigrations$Params",
-          "results": "BookclerkPlugin.databaseMigrations$Results"
-        }
-      ]
-    },
     "ByteSource": {
       "name": "ByteSource",
       "file": "plugin.capnp",
@@ -9967,6 +9945,30 @@
         }
       ]
     },
+    "EventConsumer": {
+      "name": "EventConsumer",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "event",
+          "ordinal": 0,
+          "params": "EventConsumer.event$Params",
+          "results": "EventConsumer.event$Results"
+        }
+      ]
+    },
+    "EventPublisher": {
+      "name": "EventPublisher",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "publish",
+          "ordinal": 0,
+          "params": "EventPublisher.publish$Params",
+          "results": "EventPublisher.publish$Results"
+        }
+      ]
+    },
     "GuestDatabase": {
       "name": "GuestDatabase",
       "file": "plugin.capnp",
@@ -10003,75 +10005,81 @@
         }
       ]
     },
-    "Integration": {
-      "name": "Integration",
+    "JobRunner": {
+      "name": "JobRunner",
       "file": "plugin.capnp",
       "methods": [
         {
-          "name": "health",
+          "name": "job",
           "ordinal": 0,
-          "params": "Integration.health$Params",
-          "results": "Integration.health$Results"
-        },
-        {
-          "name": "onEvent",
-          "ordinal": 1,
-          "params": "Integration.onEvent$Params",
-          "results": "Integration.onEvent$Results"
-        },
-        {
-          "name": "start",
-          "ordinal": 2,
-          "params": "Integration.start$Params",
-          "results": "Integration.start$Results"
-        },
-        {
-          "name": "stop",
-          "ordinal": 3,
-          "params": "Integration.stop$Params",
-          "results": "Integration.stop$Results"
-        },
-        {
-          "name": "diagnose",
-          "ordinal": 4,
-          "params": "Integration.diagnose$Params",
-          "results": "Integration.diagnose$Results"
-        },
-        {
-          "name": "scanLibrary",
-          "ordinal": 5,
-          "params": "Integration.scanLibrary$Params",
-          "results": "Integration.scanLibrary$Results"
-        },
-        {
-          "name": "syncListening",
-          "ordinal": 6,
-          "params": "Integration.syncListening$Params",
-          "results": "Integration.syncListening$Results"
-        },
-        {
-          "name": "authenticateUser",
-          "ordinal": 7,
-          "params": "Integration.authenticateUser$Params",
-          "results": "Integration.authenticateUser$Results"
-        },
-        {
-          "name": "pollEvents",
-          "ordinal": 8,
-          "params": "Integration.pollEvents$Params",
-          "results": "Integration.pollEvents$Results"
+          "params": "JobRunner.job$Params",
+          "results": "JobRunner.job$Results"
         }
       ]
     },
-    "JobHandler": {
-      "name": "JobHandler",
+    "Oidc": {
+      "name": "Oidc",
       "file": "plugin.capnp",
       "methods": [
         {
-          "name": "handle",
+          "name": "clients",
           "ordinal": 0,
-          "params": "JobHandler.handle$Params",
-          "results": "JobHandler.handle$Results"
+          "params": "Oidc.clients$Params",
+          "results": "Oidc.clients$Results"
+        },
+        {
+          "name": "authenticateUser",
+          "ordinal": 1,
+          "params": "Oidc.authenticateUser$Params",
+          "results": "Oidc.authenticateUser$Results"
+        }
+      ]
+    },
+    "PluginCli": {
+      "name": "PluginCli",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "describe",
+          "ordinal": 0,
+          "params": "PluginCli.describe$Params",
+          "results": "PluginCli.describe$Results"
+        },
+        {
+          "name": "invoke",
+          "ordinal": 1,
+          "params": "PluginCli.invoke$Params",
+          "results": "PluginCli.invoke$Results"
+        }
+      ]
+    },
+    "PluginWorker": {
+      "name": "PluginWorker",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "describe",
+          "ordinal": 0,
+          "params": "PluginWorker.describe$Params",
+          "results": "PluginWorker.describe$Results"
+        },
+        {
+          "name": "open",
+          "ordinal": 1,
+          "params": "PluginWorker.open$Params",
+          "results": "PluginWorker.open$Results"
+        },
+        {
+          "name": "shutdown",
+          "ordinal": 2,
+          "params": "PluginWorker.shutdown$Params",
+          "results": "PluginWorker.shutdown$Results"
+        },
+        {
+          "name": "databaseMigrations",
+          "ordinal": 3,
+          "params": "PluginWorker.databaseMigrations$Params",
+          "results": "PluginWorker.databaseMigrations$Results"
         }
       ]
     },
@@ -10084,6 +10092,54 @@
           "ordinal": 0,
           "params": "ProgressSink.report$Params",
           "results": "ProgressSink.report$Results"
+        }
+      ]
+    },
+    "RemoteLibrary": {
+      "name": "RemoteLibrary",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "health",
+          "ordinal": 0,
+          "params": "RemoteLibrary.health$Params",
+          "results": "RemoteLibrary.health$Results"
+        },
+        {
+          "name": "start",
+          "ordinal": 1,
+          "params": "RemoteLibrary.start$Params",
+          "results": "RemoteLibrary.start$Results"
+        },
+        {
+          "name": "stop",
+          "ordinal": 2,
+          "params": "RemoteLibrary.stop$Params",
+          "results": "RemoteLibrary.stop$Results"
+        },
+        {
+          "name": "diagnose",
+          "ordinal": 3,
+          "params": "RemoteLibrary.diagnose$Params",
+          "results": "RemoteLibrary.diagnose$Results"
+        },
+        {
+          "name": "scanLibrary",
+          "ordinal": 4,
+          "params": "RemoteLibrary.scanLibrary$Params",
+          "results": "RemoteLibrary.scanLibrary$Results"
+        },
+        {
+          "name": "syncListening",
+          "ordinal": 5,
+          "params": "RemoteLibrary.syncListening$Params",
+          "results": "RemoteLibrary.syncListening$Results"
+        },
+        {
+          "name": "pollEvents",
+          "ordinal": 6,
+          "params": "RemoteLibrary.pollEvents$Params",
+          "results": "RemoteLibrary.pollEvents$Results"
         }
       ]
     },
@@ -10104,7 +10160,7 @@
     "apiVersion": {
       "name": "apiVersion",
       "file": "plugin.capnp",
-      "value": 2
+      "value": 3
     },
     "featureScalarLimits": {
       "name": "featureScalarLimits",

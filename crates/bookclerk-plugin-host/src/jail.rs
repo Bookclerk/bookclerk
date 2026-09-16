@@ -226,7 +226,7 @@ impl GuestJail {
         ensure_plugin_state_within_budget_limit(id, &data, &scratch, disk_budget)?;
         // Fail closed while planning: a missing/unwritable local output root
         // must not become a late, opaque guest IO failure after jail start.
-        if plugin.manifest.kind == crate::PluginKind::Output
+        if plugin.manifest.has_entrypoint(crate::Entrypoint::Storage)
             && plugin.manifest.id == "local"
             && config.output.local.enabled
         {
@@ -378,8 +378,8 @@ fn build_spec_with_grant(
 ) -> Spec {
     let mut writes = vec![data.to_path_buf(), scratch.to_path_buf()];
     // Local output writes under `[output.local].root`; grant only that tree.
-    // Require kind == Output so a non-output plugin cannot claim id "local".
-    if plugin.manifest.kind == crate::PluginKind::Output
+    // Require the `storage` entrypoint so a non-output plugin cannot claim id "local".
+    if plugin.manifest.has_entrypoint(crate::Entrypoint::Storage)
         && plugin.manifest.id == "local"
         && config.output.local.enabled
     {
@@ -554,7 +554,9 @@ fn guest_spec_resource_limits(
 
 /// True when this guest is the `sqlite` database plugin and may be granted `library.db` sidecars.
 fn is_sqlite_database_plugin(plugin: &DiscoveredPlugin) -> bool {
-    plugin.manifest.kind == crate::PluginKind::Database
+    plugin
+        .manifest
+        .has_entrypoint(crate::Entrypoint::DatabaseAdapter)
         && plugin.manifest.id.eq_ignore_ascii_case("sqlite")
 }
 
@@ -712,56 +714,47 @@ mod tests {
     }
 
     fn plugin_at(root: &Path, id: &str, network: JailNetworkNeed) -> DiscoveredPlugin {
-        use crate::manifest::{
-            BindingCapabilities, CapabilitiesManifest, NetworkCapabilities, NetworkMode,
-            PluginRuntimeKind,
-        };
+        plugin_with_entrypoint(root, id, network, "storefront")
+    }
+
+    fn plugin_with_entrypoint(
+        root: &Path,
+        id: &str,
+        network: JailNetworkNeed,
+        entrypoint: &str,
+    ) -> DiscoveredPlugin {
         let command = root.join("guest");
         std::fs::write(&command, b"#!/bin/sh\n").expect("write guest");
-        let (mode, oauth) = match network {
-            JailNetworkNeed::None => (NetworkMode::Deny, false),
-            JailNetworkNeed::Outbound => (NetworkMode::Outbound, false),
-            JailNetworkNeed::Listen => (NetworkMode::Outbound, true),
+        let (network_toml, oauth_toml) = match network {
+            JailNetworkNeed::None => ("mode = \"deny\"", ""),
+            JailNetworkNeed::Outbound => ("mode = \"outbound\"", ""),
+            JailNetworkNeed::Listen => ("mode = \"outbound\"", "[oauth]\n"),
         };
-        let domains = if mode == NetworkMode::Outbound {
-            vec!["example.com".into()]
-        } else {
-            vec![]
-        };
+        let manifest = crate::PluginManifest::parse(&format!(
+            r#"
+api_version = 3
+id = "{id}"
+version = "0.0.0"
+runtime = "native"
+command = "./guest"
+entrypoints = ["{entrypoint}"]
+
+[capabilities.network]
+{network_toml}
+
+{oauth_toml}
+"#
+        ))
+        .expect("test manifest");
         DiscoveredPlugin {
-            manifest: crate::PluginManifest {
-                api_version: 2,
-                id: id.to_string(),
-                name: None,
-                kind: crate::PluginKind::Source,
-                version: Some("0.0.0".into()),
-                logo: None,
-                runtime: PluginRuntimeKind::Native,
-                command: Some(PathBuf::from("./guest")),
-                args: vec![],
-                workerd: None,
-                modules: vec![],
-                capabilities: CapabilitiesManifest {
-                    network: NetworkCapabilities { mode, domains },
-                    bindings: BindingCapabilities {
-                        oauth,
-                        ..BindingCapabilities::default()
-                    },
-                    methods: Default::default(),
-                    events: Default::default(),
-                },
-                cli: None,
-                oidc: Default::default(),
-            },
+            manifest,
             root: root.to_path_buf(),
             command,
         }
     }
 
     fn sqlite_plugin_at(root: &Path) -> DiscoveredPlugin {
-        let mut plugin = plugin_at(root, "sqlite", JailNetworkNeed::None);
-        plugin.manifest.kind = crate::PluginKind::Database;
-        plugin
+        plugin_with_entrypoint(root, "sqlite", JailNetworkNeed::None, "databaseAdapter")
     }
 
     #[test]
@@ -959,7 +952,8 @@ mod tests {
         // still honours the grant via WORKERD_GRANT_NETWORK_MODE.
         let deny = PluginGrant {
             plugin_id: "echo".into(),
-            kind: "integration".into(),
+            entrypoints: Default::default(),
+            producers: Default::default(),
             network_mode: "deny".into(),
             domains: Default::default(),
             bindings: Default::default(),
@@ -997,7 +991,8 @@ mod tests {
             None,
             Some(&PluginGrant {
                 plugin_id: "oauth".into(),
-                kind: "source".into(),
+                entrypoints: Default::default(),
+                producers: Default::default(),
                 network_mode: "deny".into(),
                 domains: Default::default(),
                 bindings: Default::default(),
@@ -1072,7 +1067,8 @@ mod tests {
             None,
             Some(&PluginGrant {
                 plugin_id: "native".into(),
-                kind: "integration".into(),
+                entrypoints: Default::default(),
+                producers: Default::default(),
                 network_mode: "deny".into(),
                 domains: Default::default(),
                 bindings: Default::default(),
@@ -1156,7 +1152,8 @@ mod tests {
             None,
             Some(&PluginGrant {
                 plugin_id: "native".into(),
-                kind: "integration".into(),
+                entrypoints: Default::default(),
+                producers: Default::default(),
                 network_mode: "deny".into(),
                 domains: Default::default(),
                 bindings: Default::default(),

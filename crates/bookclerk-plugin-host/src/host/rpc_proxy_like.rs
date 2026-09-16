@@ -15,7 +15,7 @@ use tempfile::TempDir;
 use super::database::{capture_outbound_adapter_sql, ExternalDatabase};
 use crate::consent::{consent_request, PluginGrantStore};
 use crate::discover::DiscoveredPlugin;
-use crate::{PluginKind, PluginManifest};
+use crate::{Entrypoint, PluginManifest};
 
 const LIKE_SQL: &str = "SELECT 1 AS n WHERE 'rowcap-keep' LIKE ?";
 
@@ -203,7 +203,7 @@ fn assert_canonical_like_boundary(sqls: &[String]) {
 
 async fn assert_like_through_production_proxy(config: &Config, plugin: &DiscoveredPlugin) {
     approve_guest(config, &plugin.manifest);
-    assert_eq!(plugin.manifest.kind, PluginKind::Database);
+    assert!(plugin.manifest.has_entrypoint(Entrypoint::DatabaseAdapter));
     let ext = ExternalDatabase::spawn(plugin, config)
         .await
         .unwrap_or_else(|err| panic!("spawn {}: {err}", plugin.manifest.id));

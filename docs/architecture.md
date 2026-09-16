@@ -66,7 +66,7 @@ Bookclerk uses four first-class plugin roles (in-process and/or external):
 | **Integration** | `Integration` | `audiobookshelf`, SPA portal claim helpers |
 
 Third-party plugins are separate executables discovered via `plugin.toml` and
-spoken to over the product ABI (`api_version = 2` object-capability Workers
+spoken to over the product ABI (`api_version = 3` object-capability Workers
 RPC) on stdio (native Cap'n Proto) or via `bookclerk-workerd` (script isolates
 keep `RpcTarget` stubs). Each guest is started by
 `bookclerk-jail`, which confines it to its own install directory (read-only),

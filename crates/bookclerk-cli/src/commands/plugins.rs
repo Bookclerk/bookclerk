@@ -10,9 +10,8 @@ use bookclerk_plugin_catalog::{
 };
 use bookclerk_plugin_host::{
     consent_request, consent_summary, host_target_triple, require_grant, search_crates_io,
-    CliInvokeParams, CliInvokeResult, CliSchema, ContentSourceContext, DiscoveredPlugin,
-    IntegrationContext, PluginGrantStore, PluginKind, PluginSession, CRATE_NAME_PREFIX,
-    HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
+    CliInvokeParams, CliInvokeResult, CliSchema, DiscoveredPlugin, Entrypoint, PluginFamily,
+    PluginGrantStore, PluginSession, CRATE_NAME_PREFIX, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
 use clap::{Subcommand, ValueEnum};
 use serde::Serialize;
@@ -211,8 +210,10 @@ pub enum RegistryKindArg {
 struct PluginListItem {
     /// Runtime plugin id from `plugin.toml`.
     id: String,
-    /// Manifest kind (`source`, `integration`, `output`, `database`).
-    kind: String,
+    /// Primary handler family (`source`, `integration`, `output`, `database`).
+    family: String,
+    /// Exported entrypoints declared in `plugin.toml` (`storefront`, `cli`, …).
+    entrypoints: Vec<String>,
     /// Whether this plugin is enabled in `config.toml`.
     enabled: bool,
     /// Guest executable path used for describe and CLI invoke.
@@ -237,7 +238,13 @@ pub async fn run(
                 .iter()
                 .map(|p| PluginListItem {
                     id: p.manifest.id.clone(),
-                    kind: p.manifest.kind.as_str().to_string(),
+                    family: p.manifest.primary_family().as_str().to_string(),
+                    entrypoints: p
+                        .manifest
+                        .entrypoints
+                        .iter()
+                        .map(|e| e.wire_name().to_string())
+                        .collect(),
                     enabled: is_enabled(config, p),
                     command: p.command.display().to_string(),
                     name: p.manifest.name.clone(),
@@ -262,8 +269,13 @@ pub async fn run(
                     }
                     for p in &items {
                         println!(
-                            "{} kind={} enabled={} cli={} command={}",
-                            p.id, p.kind, p.enabled, p.has_cli, p.command
+                            "{} family={} entrypoints={} enabled={} cli={} command={}",
+                            p.id,
+                            p.family,
+                            p.entrypoints.join(","),
+                            p.enabled,
+                            p.has_cli,
+                            p.command
                         );
                     }
                 },
@@ -322,7 +334,11 @@ pub async fn run(
             let receipt = InstallReceipt::load(&plugin.root).ok();
             let payload = json!({
                 "id": plugin.manifest.id,
-                "kind": plugin.manifest.kind.as_str(),
+                "family": plugin.manifest.primary_family().as_str(),
+                "families": plugin.manifest.families(),
+                "entrypoints": plugin.manifest.entrypoints,
+                "consumes": plugin.manifest.events.consumers.iter().map(|c| c.event_type.as_str()).collect::<Vec<_>>(),
+                "produces": plugin.manifest.producer_types(),
                 "name": plugin.manifest.name,
                 "enabled": enabled,
                 "command": plugin.command.display().to_string(),
@@ -334,7 +350,17 @@ pub async fn run(
             });
             emit(format, &payload, || {
                 println!("id={}", plugin.manifest.id);
-                println!("kind={}", plugin.manifest.kind.as_str());
+                println!("family={}", plugin.manifest.primary_family().as_str());
+                println!(
+                    "entrypoints={}",
+                    plugin
+                        .manifest
+                        .entrypoints
+                        .iter()
+                        .map(|e| e.wire_name())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
                 println!("name={}", plugin.manifest.name.as_deref().unwrap_or("-"));
                 println!("enabled={enabled}");
                 println!("command={}", plugin.command.display());
@@ -475,10 +501,10 @@ fn run_search(
                         return;
                     }
                     for h in &legacy {
-                        let kind = h.parsed.as_ref().map(|p| p.kind.as_str()).unwrap_or("?");
+                        let family = h.parsed.as_ref().map(|p| p.family.as_str()).unwrap_or("?");
                         let id = h.parsed.as_ref().map(|p| p.id.as_str()).unwrap_or("?");
                         println!(
-                            "cargo:{}@{}  kind={kind} id={id} downloads={}",
+                            "cargo:{}@{}  family={family} id={id} downloads={}",
                             h.crate_name, h.version, h.downloads
                         );
                         if let Some(desc) = &h.description {
@@ -965,9 +991,11 @@ fn resolve_coordinate(raw: &str) -> anyhow::Result<PackageCoordinate> {
 
 /// Account id for a CLI spawn: sources/integrations cannot use the operator isolate.
 fn cli_account(plugin: &DiscoveredPlugin) -> &'static str {
-    match plugin.manifest.kind {
-        PluginKind::Source | PluginKind::Integration => HOST_SHARED_ACCOUNT,
-        _ => OPERATOR_ACCOUNT,
+    let families = plugin.manifest.families();
+    if families.contains(&PluginFamily::Source) || families.contains(&PluginFamily::Integration) {
+        HOST_SHARED_ACCOUNT
+    } else {
+        OPERATOR_ACCOUNT
     }
 }
 
@@ -991,36 +1019,37 @@ async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<Str
     let plugin = find_plugin(config, id)?;
     let session = spawn_cli_session(config, &plugin).await?;
     let api = session.describe_snapshot().api_version;
-    let caps = session.describe_snapshot().supported_roles.len();
-    if session.has_capability("health") {
-        match plugin.manifest.kind {
-            PluginKind::Source => {
-                let _ = session
-                    .content_source(ContentSourceContext::default(), |src| async move {
-                        src.health().await
-                    })
-                    .await?;
-            }
-            PluginKind::Integration => {
-                let _ = session
-                    .integration(IntegrationContext::default(), |int| async move {
-                        int.health().await
-                    })
-                    .await?;
-            }
-            PluginKind::Database => {
-                probe_database(&session, config, &plugin).await?;
-            }
-            PluginKind::Output => {
-                anyhow::bail!(
-                    "plugin `{}` advertises health but output guests have no health RPC",
-                    plugin.manifest.id
-                );
-            }
-        }
-        Ok(format!("health=ok api={api} roles={caps}"))
+    let entrypoints = session
+        .describe_snapshot()
+        .capabilities
+        .entrypoints
+        .iter()
+        .map(|e| e.wire_name())
+        .collect::<Vec<_>>()
+        .join(",");
+    // `health` is a lifecycle method on every family that exposes one; a
+    // storage-only plugin has no health RPC, so report describe() only.
+    let mut probed = false;
+    if session.has_entrypoint(Entrypoint::Storefront) {
+        let _ = session
+            .storefront(|src| async move { src.health().await })
+            .await?;
+        probed = true;
+    }
+    if session.has_entrypoint(Entrypoint::RemoteLibrary) {
+        let _ = session
+            .remote_library(|lib| async move { lib.health().await })
+            .await?;
+        probed = true;
+    }
+    if session.has_entrypoint(Entrypoint::DatabaseAdapter) {
+        probe_database(&session, config, &plugin).await?;
+        probed = true;
+    }
+    if probed {
+        Ok(format!("health=ok api={api} entrypoints={entrypoints}"))
     } else {
-        Ok(format!("api={api} roles={caps}"))
+        Ok(format!("api={api} entrypoints={entrypoints}"))
     }
 }
 
@@ -1179,7 +1208,7 @@ async fn resolve_schema(
     session: &PluginSession,
     plugin: &DiscoveredPlugin,
 ) -> anyhow::Result<CliSchema> {
-    if session.has_capability("cli") {
+    if session.has_entrypoint(Entrypoint::Cli) {
         return Ok(session.cli_describe().await?);
     }
     let described = session.describe_snapshot().cli.clone();
@@ -1195,7 +1224,7 @@ async fn probe_database(
     config: &Config,
     plugin: &DiscoveredPlugin,
 ) -> anyhow::Result<()> {
-    let ctx = bookclerk_plugin_host::database_connect_context(config, plugin, session)?;
+    let ctx = bookclerk_plugin_host::database_connect_bindings(config, plugin, session)?;
     session.db_open(ctx).await?;
     let _ = session.db_capabilities().await?;
     Ok(())
@@ -1207,34 +1236,25 @@ async fn diagnose_plugin(
     plugin: &DiscoveredPlugin,
 ) -> anyhow::Result<Vec<String>> {
     let session = spawn_cli_session(config, plugin).await?;
-    if !session.has_capability("diagnose") {
+    let lines: anyhow::Result<Vec<String>> = if session.has_entrypoint(Entrypoint::Storefront) {
+        session
+            .storefront(|src| async move { src.diagnose().await })
+            .await
+            .map_err(anyhow::Error::from)
+    } else if session.has_entrypoint(Entrypoint::RemoteLibrary) {
+        session
+            .remote_library(|lib| async move { lib.diagnose().await })
+            .await
+            .map_err(anyhow::Error::from)
+    } else if session.has_entrypoint(Entrypoint::DatabaseAdapter) {
+        probe_database(&session, config, plugin)
+            .await
+            .map(|()| vec!["ping=ok".to_string()])
+    } else {
         return Ok(vec![format!(
-            "plugin `{}` has no diagnose capability",
+            "plugin `{}` exports no entrypoint with a diagnose RPC",
             plugin.manifest.id
         )]);
-    }
-    let lines: anyhow::Result<Vec<String>> = match plugin.manifest.kind {
-        PluginKind::Source => session
-            .content_source(ContentSourceContext::default(), |src| async move {
-                src.diagnose().await
-            })
-            .await
-            .map_err(anyhow::Error::from),
-        PluginKind::Integration => session
-            .integration(IntegrationContext::default(), |int| async move {
-                int.diagnose().await
-            })
-            .await
-            .map_err(anyhow::Error::from),
-        PluginKind::Database => probe_database(&session, config, plugin)
-            .await
-            .map(|()| vec!["ping=ok".to_string()]),
-        PluginKind::Output => {
-            return Ok(vec![format!(
-                "plugin `{}` advertises diagnose but output guests have no diagnose RPC",
-                plugin.manifest.id
-            )]);
-        }
     };
     match lines {
         Ok(lines) => Ok(lines),
@@ -1312,36 +1332,50 @@ fn set_plugin_enabled(
         })?;
     }
     let mut cfg = config.clone();
-    match plugin.manifest.kind {
-        PluginKind::Source => cfg.sources.set_enabled(&plugin.manifest.id, enabled),
-        PluginKind::Integration => cfg.integrations.set_enabled(&plugin.manifest.id, enabled),
-        PluginKind::Output if plugin.manifest.id == "s3" => {
-            cfg.output.s3.enabled = enabled;
-        }
-        PluginKind::Output if plugin.manifest.id == "local" => {
-            cfg.output.local.enabled = enabled;
-        }
-        PluginKind::Output => {
-            anyhow::bail!(
-                "output plugin `{}` enable/disable is not mapped to config.toml yet",
-                plugin.manifest.id
-            );
-        }
-        PluginKind::Database => {
-            if enabled {
-                cfg.database.plugin = plugin.manifest.id.clone();
-            } else if matches_plugin_id(&plugin.manifest.id, &config.database.plugin) {
+    // A multi-family plugin flips every family prefix it belongs to.
+    let families: Vec<_> = plugin.manifest.families().into_iter().collect();
+    let multi_family = families.len() > 1;
+    for family in families {
+        match family {
+            PluginFamily::Source => cfg.sources.set_enabled(&plugin.manifest.id, enabled),
+            PluginFamily::Integration => cfg.integrations.set_enabled(&plugin.manifest.id, enabled),
+            PluginFamily::Output if plugin.manifest.id == "s3" => {
+                cfg.output.s3.enabled = enabled;
+            }
+            PluginFamily::Output if plugin.manifest.id == "local" => {
+                cfg.output.local.enabled = enabled;
+            }
+            PluginFamily::Output => {
+                // Third-party destinations have no config.toml enable knob yet.
+                // Skip so multi-family guests (e.g. storage + events) can still
+                // toggle their other families.
+                if multi_family {
+                    continue;
+                }
                 anyhow::bail!(
-                    "cannot disable the active database plugin `{}`; \
-                     enable another backend first with `bookclerk plugins enable <id>`",
+                    "output plugin `{}` enable/disable is not mapped to config.toml yet",
                     plugin.manifest.id
                 );
-            } else {
-                anyhow::bail!(
-                    "database plugin `{}` is not active ([database].plugin = `{}`)",
-                    plugin.manifest.id,
-                    config.database.plugin
-                );
+            }
+            PluginFamily::Database => {
+                if enabled {
+                    cfg.database.plugin = plugin.manifest.id.clone();
+                } else if matches_plugin_id(&plugin.manifest.id, &config.database.plugin) {
+                    anyhow::bail!(
+                        "cannot disable the active database plugin `{}`; \
+                         enable another backend first with `bookclerk plugins enable <id>`",
+                        plugin.manifest.id
+                    );
+                } else if multi_family {
+                    // Not the active backend; other families still need flipping.
+                    continue;
+                } else {
+                    anyhow::bail!(
+                        "database plugin `{}` is not active ([database].plugin = `{}`)",
+                        plugin.manifest.id,
+                        config.database.plugin
+                    );
+                }
             }
         }
     }
@@ -1378,17 +1412,21 @@ fn find_plugin(config: &Config, id: &str) -> anyhow::Result<DiscoveredPlugin> {
 
 /// Whether `config.toml` currently enables this discovered plugin.
 fn is_enabled(config: &Config, plugin: &DiscoveredPlugin) -> bool {
-    match plugin.manifest.kind {
-        PluginKind::Source => config.sources.is_enabled(&plugin.manifest.id),
-        PluginKind::Integration => config.integrations.is_enabled(&plugin.manifest.id),
-        PluginKind::Output if plugin.manifest.id == "s3" => config.output.s3.enabled,
-        PluginKind::Output if plugin.manifest.id == "local" => config.output.local.enabled,
-        PluginKind::Output => false,
-        PluginKind::Database => config
-            .database
-            .plugin
-            .eq_ignore_ascii_case(&plugin.manifest.id),
-    }
+    plugin
+        .manifest
+        .families()
+        .into_iter()
+        .any(|family| match family {
+            PluginFamily::Source => config.sources.is_enabled(&plugin.manifest.id),
+            PluginFamily::Integration => config.integrations.is_enabled(&plugin.manifest.id),
+            PluginFamily::Output if plugin.manifest.id == "s3" => config.output.s3.enabled,
+            PluginFamily::Output if plugin.manifest.id == "local" => config.output.local.enabled,
+            PluginFamily::Output => false,
+            PluginFamily::Database => config
+                .database
+                .plugin
+                .eq_ignore_ascii_case(&plugin.manifest.id),
+        })
 }
 
 /// Converts a plugin settings TOML table to JSON, substituting `{}` if serialization fails.

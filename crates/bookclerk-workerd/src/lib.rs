@@ -15,9 +15,9 @@ pub mod ensure;
 pub mod grant;
 pub mod granted;
 pub mod native_broker;
-pub mod notify;
 pub mod pin;
 
+pub use bridge_http::generate_bridge_token;
 pub use config::{
     adapter_binding_plan, generated_backend_proxy_plan, materialize_native_backend, BindingSpec,
     BindingTarget, EntrypointSource, GeneratedConfig, ListenSpec,

@@ -10,5 +10,5 @@
     "rootDir": "src",
     "types": []
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "bookclerk-configuration.d.ts"]
 }

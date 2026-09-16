@@ -20,7 +20,9 @@ mod package;
 #[cfg(feature = "tools")]
 mod smoke;
 
-pub use check::{check_plugin, sync_embed};
+pub use check::{
+    check_main_module_source, check_plugin, entrypoint_export_class, sync_embed, MainModuleLanguage,
+};
 #[cfg(feature = "tools")]
 pub use cli::run as run_tools_cli;
 pub use package::package_plugin;

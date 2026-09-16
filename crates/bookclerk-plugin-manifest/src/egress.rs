@@ -628,10 +628,10 @@ mod tests {
     #[test]
     fn workerd_manifest_injects_clamped_subrequests() {
         let toml = r#"
-api_version = 2
+api_version = 3
 id = "limits_demo"
-kind = "integration"
 runtime = "workerd"
+entrypoints = ["remoteLibrary"]
 [workerd]
 compatibility_date = "2026-08-01"
 main_module = "plugin.js"
@@ -646,10 +646,10 @@ domains = ["api.example.com"]
         let policy = EgressPolicy::from_manifest(&manifest);
         assert_eq!(policy.subrequests, Some(50));
         let over = r#"
-api_version = 2
+api_version = 3
 id = "limits_over"
-kind = "integration"
 runtime = "workerd"
+entrypoints = ["remoteLibrary"]
 [workerd]
 compatibility_date = "2026-08-01"
 main_module = "plugin.js"
@@ -669,10 +669,10 @@ mode = "deny"
     #[test]
     fn python_outbound_includes_pyodide_hosts() {
         let toml = r#"
-api_version = 2
+api_version = 3
 id = "py_demo"
-kind = "integration"
 runtime = "workerd"
+entrypoints = ["remoteLibrary"]
 [workerd]
 compatibility_date = "2026-08-01"
 compatibility_flags = ["python_workers"]
@@ -703,10 +703,10 @@ domains = ["api.example.com"]
     #[test]
     fn js_outbound_omits_pyodide_hosts() {
         let toml = r#"
-api_version = 2
+api_version = 3
 id = "js_demo"
-kind = "integration"
 runtime = "workerd"
+entrypoints = ["remoteLibrary"]
 [workerd]
 compatibility_date = "2026-08-01"
 main_module = "plugin.js"

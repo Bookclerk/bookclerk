@@ -1,8 +1,11 @@
-//! Host-granted Source/Destination HTTP reverse channel for workerd JobHandler.
+//! Host-granted HTTP reverse channel for workerd isolates: `JobRunner.job`
+//! streams (`Source` / `Destination` / `ProgressSink`), named database
+//! sessions (`/db/execute`), and the `EVENTS` outbox publisher
+//! (`/events/publish`).
 //!
 //! HTTP accept/read/write runs on the multi-thread runtime (`tokio::spawn`) so
-//! it is not starved by the Cap'n Proto vat `LocalSet`. Stub calls (`Source`,
-//! `Destination`, `ProgressSink`) stay on the vat thread via a command channel.
+//! it is not starved by the Cap'n Proto vat `LocalSet`. Stub calls stay on the
+//! vat thread via a command channel.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
@@ -19,13 +22,18 @@ use bookclerk_plugin_abi::{
     guest_statement_kind, validate_guest_execute_request, GuestSqlPolicy, PluginError,
 };
 use bookclerk_plugin_abi::{
-    encoded_execute_result_reply_bytes, Destination, GuestDatabase, ObjectMetadata, ProgressSink,
-    Source, WriteOptions,
+    encoded_execute_result_reply_bytes, Destination, EventPublisher, GuestDatabase, ObjectMetadata,
+    PluginEvent, ProgressSink, PublishOk, Source, WriteOptions, MAX_EVENT_PAYLOAD_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
-/// One JobHandler invocation's granted stubs (vat-thread only).
+/// Largest `/events/publish` request body: a base64 payload at
+/// [`MAX_EVENT_PAYLOAD_BYTES`] plus the envelope fields.
+pub const MAX_EVENT_PUBLISH_BODY_BYTES: u32 = MAX_EVENT_PAYLOAD_BYTES * 2 + 8 * 1024;
+
+/// One grant token's host stubs (vat-thread only): a `JobRunner.job`
+/// invocation, a named database binding, or an `EVENTS` publisher.
 pub struct GrantedSlot {
     /// Host-granted input source.
     pub input: Option<Box<dyn Source>>,
@@ -50,6 +58,29 @@ pub struct GrantedSlot {
     /// Negotiated `maxRequestBytes`. Zero is fail-closed (empty body
     /// only), never unlimited; grants with a database must store `1..=MAX_SCALAR_BYTES`.
     pub max_request_bytes: u32,
+    /// Host outbox publisher, when this grant carries the `EVENTS` binding.
+    pub events: Option<Rc<dyn EventPublisher>>,
+}
+
+impl GrantedSlot {
+    /// A grant that only publishes events (no streams, no database).
+    #[must_use]
+    pub fn events_only(events: Rc<dyn EventPublisher>, expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: None,
+            progress: None,
+            expires,
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: 0,
+            events: Some(events),
+        }
+    }
 }
 
 /// Invocation-id → granted stubs.
@@ -82,6 +113,11 @@ enum GrantedCmd {
     AtomicBudget {
         invocation: String,
         resp: oneshot::Sender<Result<u32, String>>,
+    },
+    Publish {
+        invocation: String,
+        event: PluginEvent,
+        resp: oneshot::Sender<Result<PublishOk, PluginError>>,
     },
 }
 
@@ -154,9 +190,46 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                 GrantedCmd::AtomicBudget { invocation, resp } => {
                     let _ = resp.send(dispatch_atomic_budget(&table, invocation));
                 }
+                GrantedCmd::Publish {
+                    invocation,
+                    event,
+                    resp,
+                } => {
+                    let _ = resp.send(dispatch_publish(&table, invocation, event).await);
+                }
             }
         });
     }
+}
+
+/// `EVENTS.publish` through the grant: the slot must carry a publisher and
+/// the payload must fit `maxEventPayloadBytes`; the host publisher applies the
+/// producer allowlist and forces `source` / `accountId`.
+async fn dispatch_publish(
+    table: &GrantedTable,
+    invocation: String,
+    event: PluginEvent,
+) -> Result<PublishOk, PluginError> {
+    let events = {
+        let mut table = table.borrow_mut();
+        let slot = table
+            .get_mut(&invocation)
+            .ok_or_else(|| PluginError::forbidden("unknown or revoked grant"))?;
+        if slot.expires <= std::time::Instant::now() {
+            table.remove(&invocation);
+            return Err(PluginError::forbidden("grant expired"));
+        }
+        slot.events
+            .clone()
+            .ok_or_else(|| PluginError::forbidden("events not granted"))?
+    };
+    if event.payload.len() > MAX_EVENT_PAYLOAD_BYTES as usize {
+        return Err(PluginError::payload_too_large(format!(
+            "event payload of {} bytes exceeds {MAX_EVENT_PAYLOAD_BYTES}",
+            event.payload.len()
+        )));
+    }
+    events.publish(event).await
 }
 
 fn take_slot_source(table: &GrantedTable, invocation: &str) -> Result<Box<dyn Source>, String> {
@@ -663,7 +736,91 @@ where
         return Ok(());
     }
 
+    if method == "POST" && path_only == "/events/publish" {
+        if declared_content_length_over_cap(&headers, MAX_EVENT_PUBLISH_BODY_BYTES) {
+            write_status(&mut writer, 413, "payload too large").await?;
+            return Ok(());
+        }
+        let rest =
+            match read_content(&mut reader, &headers, prefix, MAX_EVENT_PUBLISH_BODY_BYTES).await {
+                Ok(body) => body,
+                Err(err) if err.to_string().contains("payload_too_large") => {
+                    write_status(&mut writer, 413, "payload too large").await?;
+                    return Ok(());
+                }
+                Err(err) => return Err(err),
+            };
+        let event: PluginEvent = match serde_json::from_slice(&rest) {
+            Ok(event) => event,
+            Err(err) => {
+                write_plugin_error(
+                    &mut writer,
+                    &PluginError::invalid_params(format!("malformed event: {err}")),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+        let (resp_tx, resp_rx) = oneshot::channel();
+        cmds.send(GrantedCmd::Publish {
+            invocation,
+            event,
+            resp: resp_tx,
+        })
+        .await
+        .context("granted dispatch closed")?;
+        match resp_rx.await.context("granted publish dropped")? {
+            Ok(ok) => {
+                let payload = serde_json::to_vec(&ok)?;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    payload.len()
+                );
+                writer.write_all(resp.as_bytes()).await?;
+                writer.write_all(&payload).await?;
+                writer.flush().await?;
+            }
+            Err(err) => write_plugin_error(&mut writer, &err).await?,
+        }
+        return Ok(());
+    }
+
     write_status(&mut writer, 404, "not found").await?;
+    Ok(())
+}
+
+/// HTTP status for a wire error code on the granted channel.
+fn plugin_error_status(err: &PluginError) -> u16 {
+    use bookclerk_plugin_abi::PluginErrorCode as C;
+    match err.code {
+        C::InvalidParams | C::InvalidCursor => 400,
+        C::Unauthorized => 401,
+        C::Forbidden => 403,
+        C::NotFound => 404,
+        C::Conflict => 409,
+        C::PayloadTooLarge => 413,
+        C::Unsupported => 501,
+        C::Unavailable | C::DeadlineExceeded | C::Cancelled => 503,
+        C::Internal | C::Unknown => 500,
+    }
+}
+
+/// `{ "error": { "code", "message" } }` with the matching HTTP status.
+async fn write_plugin_error<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    err: &PluginError,
+) -> Result<()> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "error": { "code": err.wire_str(), "message": err.message },
+    }))?;
+    let resp = format!(
+        "HTTP/1.1 {} Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        plugin_error_status(err),
+        payload.len()
+    );
+    stream.write_all(resp.as_bytes()).await?;
+    stream.write_all(&payload).await?;
+    stream.flush().await?;
     Ok(())
 }
 
@@ -972,6 +1129,7 @@ mod tests {
                 allow_database: false,
                 sql_policy: GuestSqlPolicy::deny_all(),
                 max_request_bytes: 0,
+                events: None,
             },
         );
         let err = match take_slot_source(&table, "g1") {
@@ -1016,6 +1174,7 @@ mod tests {
                 allow_database: false,
                 sql_policy: GuestSqlPolicy::deny_all(),
                 max_request_bytes: 0,
+                events: None,
             },
         );
         table.borrow_mut().remove("g-live");
@@ -1047,6 +1206,7 @@ mod tests {
                 allow_database: false,
                 sql_policy: GuestSqlPolicy::deny_all(),
                 max_request_bytes: 0,
+                events: None,
             },
         );
         let req = ExecuteRequest {
@@ -1089,6 +1249,101 @@ mod tests {
             &[("Content-Length".into(), "17".into())],
             16
         ));
+    }
+
+    struct CountingPublisher {
+        published: std::cell::Cell<u32>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl EventPublisher for CountingPublisher {
+        async fn publish(&self, event: PluginEvent) -> bookclerk_plugin_abi::Result<PublishOk> {
+            self.published.set(self.published.get() + 1);
+            Ok(PublishOk {
+                event_id: format!("evt-{}", event.event_type),
+                duplicate: false,
+            })
+        }
+    }
+
+    fn pinged(payload_len: usize) -> PluginEvent {
+        PluginEvent {
+            event_type: "pinged".into(),
+            payload: vec![b'{'; payload_len],
+            ..PluginEvent::default()
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn publish_requires_a_live_events_grant_and_bounded_payload() {
+        use bookclerk_plugin_abi::PluginErrorCode;
+        let publisher = Rc::new(CountingPublisher {
+            published: std::cell::Cell::new(0),
+        });
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert(
+            "g-events".into(),
+            GrantedSlot::events_only(publisher.clone(), Instant::now() + Duration::from_secs(60)),
+        );
+        table.borrow_mut().insert(
+            "g-expired".into(),
+            GrantedSlot::events_only(publisher.clone(), Instant::now()),
+        );
+        table.borrow_mut().insert(
+            "g-db".into(),
+            GrantedSlot {
+                input: None,
+                output: None,
+                progress: None,
+                expires: Instant::now() + Duration::from_secs(60),
+                allow_open: false,
+                allow_put: false,
+                allow_progress: false,
+                database: None,
+                allow_database: true,
+                sql_policy: GuestSqlPolicy::deny_all(),
+                max_request_bytes: 0,
+                events: None,
+            },
+        );
+
+        let ok = dispatch_publish(&table, "g-events".into(), pinged(2))
+            .await
+            .expect("granted publish");
+        assert_eq!(ok.event_id, "evt-pinged");
+        assert_eq!(publisher.published.get(), 1);
+
+        let oversized = dispatch_publish(
+            &table,
+            "g-events".into(),
+            pinged(MAX_EVENT_PAYLOAD_BYTES as usize + 1),
+        )
+        .await
+        .expect_err("oversized payload");
+        assert_eq!(oversized.code, PluginErrorCode::PayloadTooLarge);
+
+        let no_events = dispatch_publish(&table, "g-db".into(), pinged(2))
+            .await
+            .expect_err("database-only grant");
+        assert_eq!(no_events.code, PluginErrorCode::Forbidden);
+
+        let unknown = dispatch_publish(&table, "nope".into(), pinged(2))
+            .await
+            .expect_err("unknown grant");
+        assert_eq!(unknown.code, PluginErrorCode::Forbidden);
+
+        let expired = dispatch_publish(&table, "g-expired".into(), pinged(2))
+            .await
+            .expect_err("expired grant");
+        assert_eq!(expired.code, PluginErrorCode::Forbidden);
+        assert!(
+            !table.borrow().contains_key("g-expired"),
+            "expired grants are revoked on use"
+        );
+        assert_eq!(publisher.published.get(), 1, "only the granted publish ran");
+
+        assert_eq!(plugin_error_status(&oversized), 413);
+        assert_eq!(plugin_error_status(&no_events), 403);
     }
 
     struct FlagSession {
@@ -1154,6 +1409,7 @@ mod tests {
                 allow_database: true,
                 sql_policy: policy,
                 max_request_bytes: 0,
+                events: None,
             },
         );
         (table, session)

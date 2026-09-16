@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use bookclerk_config::{resolve_d1_api_token, resolve_postgres_url, Config, DatabasePluginKind};
 use bookclerk_db_exec::db_value_from_sea;
 use bookclerk_plugin_abi::{
-    catalog_page_statement, database_context_from_params, reserved_catalog_relation_missing,
+    binding_values_from_params, catalog_page_statement, reserved_catalog_relation_missing,
     sql_catalog_page_rows, AdapterExecuteRequest, DbBootstrap, DbCapabilities, DbConnectParams,
     DbValue, IsolationReq, SqlType, SqlTypeEnv, SQL_CATALOG_TABLE, SQL_SCHEMA_TABLE,
 };
@@ -188,7 +188,7 @@ impl ExternalDatabase {
         &self,
         config: &Config,
     ) -> Result<(DatabaseConnection, DbCapabilities), DbErr> {
-        let ctx = connect_context(
+        let ctx = connect_bindings(
             config,
             &self.plugin_id,
             &self.plugin_data_dir,
@@ -327,7 +327,10 @@ pub async fn load_external_database(config: &Config) -> PluginResult<DatabaseReg
     let mut registry = DatabaseRegistry::default();
     let active = config.database.plugin.trim().to_ascii_lowercase();
     for plugin in crate::discover_plugins(config)? {
-        if plugin.manifest.kind != crate::PluginKind::Database {
+        if !plugin
+            .manifest
+            .has_entrypoint(crate::Entrypoint::DatabaseAdapter)
+        {
             continue;
         }
         if plugin.manifest.id.to_ascii_lowercase() != active {
@@ -1082,7 +1085,7 @@ impl ExternalDatabase {
                     record.backend_kind
                 )));
             }
-            let ctx = self.binding_connect_context(
+            let ctx = self.binding_open_values(
                 config,
                 kind,
                 owner_plugin_id,
@@ -1149,14 +1152,8 @@ impl ExternalDatabase {
         provision: bool,
     ) -> PluginResult<(DatabaseConnection, DbCapabilities)> {
         let kind = DatabasePluginKind::parse(&self.plugin_id);
-        let ctx = self.binding_connect_context(
-            config,
-            kind,
-            owner_plugin_id,
-            binding,
-            unit_ref,
-            provision,
-        )?;
+        let ctx =
+            self.binding_open_values(config, kind, owner_plugin_id, binding, unit_ref, provision)?;
         let key = format!("{owner_plugin_id}/{binding}");
         let binding_caps = self.session.db_open_binding(&key, ctx).await?;
         if !binding_caps.meets_host_minimums() {
@@ -1310,8 +1307,8 @@ impl ExternalDatabase {
         plugin_binding_unit_ref(config, kind, owner_plugin_id, binding)
     }
 
-    /// Per-binding `database.openSession` factory context.
-    fn binding_connect_context(
+    /// Per-binding `PluginWorker.open` values (host-private connect params).
+    fn binding_open_values(
         &self,
         config: &Config,
         kind: Option<DatabasePluginKind>,
@@ -1319,7 +1316,7 @@ impl ExternalDatabase {
         binding: &str,
         unit_ref: &str,
         provision: bool,
-    ) -> PluginResult<bookclerk_plugin_sdk::DatabaseContext> {
+    ) -> PluginResult<bookclerk_plugin_sdk::BindingValues> {
         let data_dir = self.plugin_data_dir.display().to_string();
         let params = match kind {
             Some(DatabasePluginKind::Sqlite) => DbConnectParams::Sqlite {
@@ -1356,12 +1353,12 @@ impl ExternalDatabase {
                     instance_id: Some(binding_instance_id(owner_plugin_id, binding)),
                     open_existing: !provision,
                 };
-                return Ok(bookclerk_plugin_abi::database_context_from_adapter_config(
+                return Ok(bookclerk_plugin_abi::binding_values_from_adapter_config(
                     &adapter_config,
                 ));
             }
         };
-        database_context_from_params(&params).map_err(|err| PluginError::message(err.to_string()))
+        binding_values_from_params(&params).map_err(|err| PluginError::message(err.to_string()))
     }
 
     /// Physically deletes a provisioned binding unit. The registry row is the
@@ -2550,22 +2547,23 @@ struct AtomicWebauthnChallenge {
     state_json: String,
 }
 
-/// Builds a [`bookclerk_plugin_sdk::DatabaseContext`] for `database.openSession`.
+/// Builds the [`bookclerk_plugin_sdk::BindingValues`] for the adapter's
+/// `PluginWorker.open` (then `databaseAdapter.openSession`).
 ///
 /// Used by the CLI diagnose probe and mirrors [`ExternalDatabase::connect`].
 ///
 /// # Errors
 ///
 /// Returns an error when plugin data paths, secrets, or context encoding fail.
-pub fn database_connect_context(
+pub fn database_connect_bindings(
     config: &Config,
     plugin: &DiscoveredPlugin,
     session: &PluginSession,
-) -> PluginResult<bookclerk_plugin_sdk::DatabaseContext> {
+) -> PluginResult<bookclerk_plugin_sdk::BindingValues> {
     let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
     let table = crate::settings_table(config, plugin);
     let settings_json = toml_to_json(&toml::Value::Table(table));
-    connect_context(
+    connect_bindings(
         config,
         &plugin.manifest.id,
         &plugin_data_dir,
@@ -2575,20 +2573,21 @@ pub fn database_connect_context(
     .map_err(|err| PluginError::message(err.to_string()))
 }
 
-/// Builds the `database.openSession` factory context from host config.
+/// Builds the database adapter's `PluginWorker.open` binding values from host
+/// config.
 ///
 /// First-party ids (`sqlite`, `d1`, `postgres`) receive host-private connect
 /// params with host-injected paths / secrets. Any other id is a third-party
 /// adapter and receives the public [`bookclerk_plugin_abi::DatabaseAdapterConfig`]
 /// payload carrying its granted `[database.<id>]` settings, so custom adapters
 /// bootstrap without a host registry change.
-fn connect_context(
+fn connect_bindings(
     config: &Config,
     plugin_id: &str,
     plugin_data_dir: &Path,
     session: &PluginSession,
     settings_json: &Value,
-) -> Result<bookclerk_plugin_sdk::DatabaseContext, DbErr> {
+) -> Result<bookclerk_plugin_sdk::BindingValues, DbErr> {
     let data_dir = plugin_data_dir.display().to_string();
     let params = match DatabasePluginKind::parse(plugin_id) {
         Some(DatabasePluginKind::Sqlite) => sqlite_connect_params(config, plugin_data_dir),
@@ -2619,16 +2618,16 @@ fn connect_context(
                 provision: true,
             }
         }
-        None => return adapter_config_context(&data_dir, settings_json),
+        None => return adapter_config_bindings(&data_dir, settings_json),
     };
-    database_context_from_params(&params).map_err(|err| DbErr::Custom(err.to_string()))
+    binding_values_from_params(&params).map_err(|err| DbErr::Custom(err.to_string()))
 }
 
-/// Public third-party adapter factory context (granted settings + data dir).
-fn adapter_config_context(
+/// Public third-party adapter binding values (granted settings + data dir).
+fn adapter_config_bindings(
     data_dir: &str,
     settings_json: &Value,
-) -> Result<bookclerk_plugin_sdk::DatabaseContext, DbErr> {
+) -> Result<bookclerk_plugin_sdk::BindingValues, DbErr> {
     let adapter_config = bookclerk_plugin_abi::DatabaseAdapterConfig {
         plugin_data_dir: data_dir.to_string(),
         settings: adapter_settings(settings_json).map_err(|err| DbErr::Custom(err.to_string()))?,
@@ -2636,7 +2635,7 @@ fn adapter_config_context(
         instance_id: None,
         open_existing: false,
     };
-    Ok(bookclerk_plugin_abi::database_context_from_adapter_config(
+    Ok(bookclerk_plugin_abi::binding_values_from_adapter_config(
         &adapter_config,
     ))
 }
@@ -2785,14 +2784,14 @@ mod tests {
         assert!(DatabasePluginKind::parse("sql-conformance").is_none());
         // Granted `[database.sql-conformance]` settings the operator wrote.
         let settings = serde_json::json!({ "url": "custom://host/db", "pool_size": 4 });
-        let ctx = adapter_config_context("/tmp/plugins/sql-conformance/data", &settings)
+        let ctx = adapter_config_bindings("/tmp/plugins/sql-conformance/data", &settings)
             .expect("adapter context");
         // No host-private connect params travel to third-party adapters …
-        bookclerk_plugin_abi::db::connect_params_from_context(&ctx)
+        bookclerk_plugin_abi::db::connect_params_from_bindings(&ctx)
             .expect_err("public adapter config must not decode as host connect params");
         // … the public payload carries the granted settings, readable without
         // the abi `host` feature.
-        let cfg = bookclerk_plugin_abi::database_adapter_config_from_context(&ctx)
+        let cfg = bookclerk_plugin_abi::database_adapter_config_from_bindings(&ctx)
             .expect("public decode");
         assert_eq!(cfg.plugin_data_dir, "/tmp/plugins/sql-conformance/data");
         let settings = cfg.settings.json_value().expect("json settings");
@@ -2802,9 +2801,9 @@ mod tests {
 
     #[test]
     fn unknown_plugin_id_without_settings_gets_empty_config_object() {
-        let ctx = adapter_config_context("/tmp/plugins/custom/data", &Value::Null)
+        let ctx = adapter_config_bindings("/tmp/plugins/custom/data", &Value::Null)
             .expect("adapter context");
-        let cfg = bookclerk_plugin_abi::database_adapter_config_from_context(&ctx)
+        let cfg = bookclerk_plugin_abi::database_adapter_config_from_bindings(&ctx)
             .expect("public decode");
         let settings = cfg.settings.json_value().expect("json settings");
         assert!(settings.is_object(), "{settings:?}");

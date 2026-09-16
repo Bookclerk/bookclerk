@@ -10,6 +10,15 @@ use tokio::net::TcpStream;
 
 use bookclerk_plugin_abi::{ObjectMetadata, PutResult, MAX_SCALAR_BYTES};
 
+/// Generate a 32-byte hex bearer token for one isolate (`BRIDGE_TOKEN`).
+#[must_use]
+pub fn generate_bridge_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
 /// Loopback HTTP client for the isolate bridge.
 #[derive(Clone)]
 pub struct BridgeHttp {

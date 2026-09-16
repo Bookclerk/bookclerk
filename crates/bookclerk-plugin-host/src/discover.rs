@@ -63,7 +63,7 @@ pub fn plugin_search_dirs(config: &Config) -> Vec<PathBuf> {
 pub fn discover_plugins(config: &Config) -> Result<Vec<DiscoveredPlugin>> {
     let mut out = Vec::new();
     // id (lowercased) → (kind, first manifest path)
-    let mut seen: std::collections::HashMap<String, (crate::PluginKind, PathBuf)> =
+    let mut seen: std::collections::HashMap<String, (crate::PluginFamily, PathBuf)> =
         std::collections::HashMap::new();
     for dir in plugin_search_dirs(config) {
         if !dir.is_dir() {
@@ -84,7 +84,7 @@ fn conflict_key(id: &str) -> String {
 fn discover_in_dir(
     dir: &Path,
     out: &mut Vec<DiscoveredPlugin>,
-    seen: &mut std::collections::HashMap<String, (crate::PluginKind, PathBuf)>,
+    seen: &mut std::collections::HashMap<String, (crate::PluginFamily, PathBuf)>,
 ) -> Result<()> {
     let root_manifest = dir.join("plugin.toml");
     if root_manifest.is_file() {
@@ -116,7 +116,7 @@ fn push_manifest(
     manifest_path: &Path,
     root: &Path,
     out: &mut Vec<DiscoveredPlugin>,
-    seen: &mut std::collections::HashMap<String, (crate::PluginKind, PathBuf)>,
+    seen: &mut std::collections::HashMap<String, (crate::PluginFamily, PathBuf)>,
 ) -> Result<()> {
     let text = std::fs::read_to_string(manifest_path)?;
     let manifest = PluginManifest::parse(&text)?;
@@ -143,11 +143,14 @@ fn push_manifest(
             manifest.id,
             first_kind.as_str(),
             first_path.display(),
-            manifest.kind.as_str(),
+            manifest.primary_family().as_str(),
             manifest_path.display()
         )));
     }
-    seen.insert(key, (manifest.kind, manifest_path.to_path_buf()));
+    seen.insert(
+        key,
+        (manifest.primary_family(), manifest_path.to_path_buf()),
+    );
     let command = resolve_spawn_command(root, &manifest)?;
     if !command.is_file() {
         return Err(PluginError::message(format!(
@@ -224,16 +227,33 @@ fn resolve_command(root: &Path, command: &Path) -> Result<PathBuf> {
     Ok(root.join(command))
 }
 
-/// Opaque knobs from main `config.toml` for this plugin id (by kind).
+/// Opaque knobs from main `config.toml` for this plugin id (by primary family).
 #[must_use]
 pub fn settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::Table {
-    match plugin.manifest.kind {
-        crate::PluginKind::Source => config
+    settings_table_for(config, plugin, plugin.manifest.primary_family())
+}
+
+/// Resolves the `config.toml` table for `plugin` under one specific handler
+/// `family`.
+///
+/// A plugin exporting several entrypoints (for example `storefront` + an
+/// event consumer) owns one settings table per family (`[sources.<id>]` and
+/// `[integrations.<id>]`); callers rendering per-family settings groups pick
+/// the family explicitly instead of relying on [`PluginManifest::primary_family`].
+///
+/// [`PluginManifest::primary_family`]: crate::PluginManifest::primary_family
+pub fn settings_table_for(
+    config: &Config,
+    plugin: &DiscoveredPlugin,
+    family: crate::PluginFamily,
+) -> toml::Table {
+    match family {
+        crate::PluginFamily::Source => config
             .sources
             .table(&plugin.manifest.id)
             .cloned()
             .unwrap_or_default(),
-        crate::PluginKind::Integration => {
+        crate::PluginFamily::Integration => {
             let mut table = config
                 .integrations
                 .plugin_table(&plugin.manifest.id)
@@ -242,14 +262,14 @@ pub fn settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::Table
             inject_abs_api_key_from_env(&plugin.manifest.id, &mut table);
             table
         }
-        crate::PluginKind::Output if plugin.manifest.id == "s3" => {
+        crate::PluginFamily::Output if plugin.manifest.id == "s3" => {
             output_s3_settings_table(&config.output.s3)
         }
-        crate::PluginKind::Output if plugin.manifest.id == "local" => {
+        crate::PluginFamily::Output if plugin.manifest.id == "local" => {
             output_local_settings_table(&config.output.local)
         }
-        crate::PluginKind::Database => database_settings_table(config, plugin),
-        crate::PluginKind::Output => toml::Table::new(),
+        crate::PluginFamily::Database => database_settings_table(config, plugin),
+        crate::PluginFamily::Output => toml::Table::new(),
     }
 }
 
@@ -337,11 +357,11 @@ mod tests {
         fs::write(
             nested.join("plugin.toml"),
             r#"
-api_version = 2
+api_version = 3
 id = "echo"
-kind = "integration"
 runtime = "native"
 command = "./echo-bin"
+entrypoints = ["cli"]
 
 [capabilities.network]
 mode = "deny"
@@ -372,7 +392,7 @@ mode = "deny"
         );
     }
 
-    fn write_plugin(dir: &Path, id: &str, kind: &str) {
+    fn write_plugin(dir: &Path, id: &str, entrypoint: &str) {
         fs::create_dir_all(dir).unwrap();
         let bin = dir.join("bin");
         fs::write(&bin, b"#!/bin/sh\n").unwrap();
@@ -383,11 +403,11 @@ mode = "deny"
             dir.join("plugin.toml"),
             format!(
                 r#"
-api_version = 2
+api_version = 3
 id = "{id}"
-kind = "{kind}"
 runtime = "native"
 command = "./bin"
+entrypoints = ["{entrypoint}"]
 
 [capabilities.network]
 mode = "deny"
@@ -401,8 +421,8 @@ mode = "deny"
     fn duplicate_kind_and_id_is_hard_error() {
         let tmp = tempfile::tempdir().unwrap();
         let plugins = tmp.path().join("plugins");
-        write_plugin(&plugins.join("echo-a"), "echo", "integration");
-        write_plugin(&plugins.join("echo-b"), "echo", "integration");
+        write_plugin(&plugins.join("echo-a"), "echo", "cli");
+        write_plugin(&plugins.join("echo-b"), "echo", "cli");
 
         let cfg = Config {
             paths: Some(bookclerk_config::Paths::from_files_dir(
@@ -420,8 +440,8 @@ mode = "deny"
     fn same_id_different_kind_is_hard_error() {
         let tmp = tempfile::tempdir().unwrap();
         let plugins = tmp.path().join("plugins");
-        write_plugin(&plugins.join("echo-src"), "echo", "source");
-        write_plugin(&plugins.join("echo-int"), "echo", "integration");
+        write_plugin(&plugins.join("echo-src"), "echo", "storefront");
+        write_plugin(&plugins.join("echo-int"), "echo", "cli");
 
         let cfg = Config {
             paths: Some(bookclerk_config::Paths::from_files_dir(
@@ -440,7 +460,7 @@ mode = "deny"
     fn reserved_bookclerk_plugin_id_is_hard_error() {
         let tmp = tempfile::tempdir().unwrap();
         let plugins = tmp.path().join("plugins");
-        write_plugin(&plugins.join("host"), "bookclerk", "integration");
+        write_plugin(&plugins.join("host"), "bookclerk", "cli");
         let cfg = Config {
             paths: Some(bookclerk_config::Paths::from_files_dir(
                 tmp.path().to_path_buf(),
@@ -457,21 +477,22 @@ mode = "deny"
         let tmp = tempfile::tempdir().unwrap();
         let plugins = tmp.path().join("plugins");
         let nested = plugins.join("echo_sql");
-        write_plugin(&nested, "echo_sql", "integration");
+        write_plugin(&nested, "echo_sql", "cli");
         fs::write(
             nested.join("plugin.toml"),
             r#"
-api_version = 2
+api_version = 3
 id = "echo_sql"
-kind = "integration"
 runtime = "native"
 command = "./bin"
 migration_plan = "migrations.toml"
+entrypoints = ["cli"]
 
 [capabilities.network]
 mode = "deny"
-[capabilities.bindings]
-databases = ["DB"]
+
+[[databases]]
+binding = "DB"
 "#,
         )
         .unwrap();

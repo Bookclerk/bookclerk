@@ -1,22 +1,18 @@
 /**
- * Contract fixture: Destination streams + JobHandler copy.
+ * Contract fixture: `Storage` entrypoint streams + `job(controller)` copy.
  *
- * Role objects extend RpcTarget so they can cross the adapter isolate.
- * Object bytes live on module-scoped `sharedMem` so they survive dest drop.
+ * `Storage` is the named entrypoint the host calls (`plugin.toml`
+ * `entrypoints = ["storage"]`); object bytes live on module-scoped
+ * `sharedStore` so they survive per-invocation instances.
  *
  * Large objects are generated/consumed lazily. `count:` puts discard bytes;
  * `pattern:<n>` gets emit a repeating counter stream of `n` bytes.
  */
 
 import {
-  BookclerkPlugin,
-  Destination,
-  Source,
-  JobHandler,
+  BookclerkEntrypoint,
+  StorageEntrypoint,
   PluginError,
-  PRODUCT_API_VERSION,
-  FEATURE_SCALAR_LIMITS,
-  FEATURE_STREAMS,
 } from "@bookclerk/plugin-sdk/workerd";
 
 function patternStream(size) {
@@ -49,7 +45,7 @@ function bytesStream(buf) {
 
 const sharedStore = new Map();
 
-class MemDest extends Destination {
+export class Storage extends StorageEntrypoint {
   async head(key) {
     if (key.startsWith("internal-msg:")) {
       throw PluginError.fromWire("internal", "object not_found in cache");
@@ -169,59 +165,26 @@ class MemDest extends Destination {
   async abortStage(_key, _commitToken) {}
 }
 
-class MemSource extends Source {
-  open(key) {
-    return new MemDest().get(key);
+export default class StreamPlugin extends BookclerkEntrypoint {
+  async describe() {
+    return {
+      displayName: `Stream contract fixture env=${Object.keys(this.env || {}).sort().join(",")}`,
+    };
   }
-}
 
-class CopyHandler extends JobHandler {
-  async handle(invocation, context) {
-    const spec = JSON.parse(invocation.payloadJson || invocation.json || "{}");
-    await context.progress.report(0, "opening");
-    const opened = await context.input.open(spec.from);
-    await context.progress.report(10, "copying");
-    const put = await context.output.put(spec.to, opened.body, {
+  async job(job) {
+    const spec = job.json();
+    await job.progress(0, "opening");
+    const opened = await job.input.open(spec.from);
+    await job.progress(10, "copying");
+    const put = await job.output.put(spec.to, opened.body, {
       contentType: opened.meta?.contentType,
       contentLength: opened.meta?.size || undefined,
     });
-    await context.progress.report(100, "done");
+    await job.progress(100, "done");
     return {
-      kind: "completed",
       message: `copied ${spec.from} -> ${spec.to}`,
       bytesCopied: put.bytesWritten,
     };
   }
 }
-
-class StreamPlugin extends BookclerkPlugin {
-  async describe() {
-    return {
-      apiVersion: PRODUCT_API_VERSION,
-      id: "stream_fixture",
-      kind: "output",
-      displayName: `Stream contract fixture env=${Object.keys(this.env || {}).sort().join(",")}`,
-      rpcFeatures: [FEATURE_SCALAR_LIMITS, FEATURE_STREAMS],
-      scalarLimits: {
-        maxScalarBytes: 262144,
-        maxStreamWindowBytes: 1048576,
-        maxListPage: 256,
-      },
-      supportedRoles: ["destination", "source", "worker"],
-    };
-  }
-
-  destination() {
-    return new MemDest();
-  }
-
-  source() {
-    return new MemSource();
-  }
-
-  worker() {
-    return new CopyHandler();
-  }
-}
-
-export default StreamPlugin;

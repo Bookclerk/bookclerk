@@ -1,13 +1,34 @@
 use bookclerk_config::Config;
 use bookclerk_library::LibraryStore;
+use bookclerk_plugin_host::SessionServices;
 use bookclerk_source::SourceRegistry;
 
 /// Content sources via the plugin host (in-process builtins + externals).
 ///
 /// Host binaries do not name store crates — [`bookclerk_plugin_host::load_sources`]
 /// registers first-party adapters in-process and loads discovered guests.
-pub async fn default_registry_with_plugins(config: &Config) -> anyhow::Result<SourceRegistry> {
-    Ok(bookclerk_plugin_host::load_sources(config).await?)
+/// `outbox` backs the guests' `EVENTS` binding.
+pub async fn default_registry_with_plugins(
+    config: &Config,
+    outbox: &LibraryStore,
+) -> anyhow::Result<SourceRegistry> {
+    Ok(
+        bookclerk_plugin_host::load_sources(config, &SessionServices::from_outbox(Some(outbox)))
+            .await?,
+    )
+}
+
+/// Integrations via the plugin host (in-process builtins + externals);
+/// `outbox` backs the guests' `EVENTS` binding.
+pub async fn integrations_with_plugins(
+    config: &Config,
+    outbox: &LibraryStore,
+) -> anyhow::Result<bookclerk_integrations::IntegrationRegistry> {
+    Ok(bookclerk_plugin_host::load_integrations(
+        config,
+        &SessionServices::from_outbox(Some(outbox)),
+    )
+    .await?)
 }
 
 /// Open the library database (in-process or external database plugin).

@@ -1,4 +1,5 @@
-//! Author-facing async traits for plugin ABI role classes.
+//! Author-facing async traits for the plugin ABI: the `PluginWorker` root,
+//! its exported entrypoints, and the host-served bindings.
 
 use std::pin::Pin;
 
@@ -7,14 +8,13 @@ use tokio::io::AsyncRead;
 use crate::generated::{
     AuthenticateUserParams, CatalogDetailParams, CatalogHit, CliInvokeParams, CliInvokeResult,
     CliSchema, DatabaseAdapterConfig, ExpandCandidatesParams, ExternalUser, FetchTitleParams,
-    ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
-    LoginStartResult, PlainFetch, PurchaseHint, PurchaseHintParams, ScanLibraryParams, ScanParams,
-    ScanSummary, SearchCatalogParams, SourceAccount,
+    Invocation, ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
+    LoginStartResult, PlainFetch, PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams,
+    ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams, SourceAccount,
 };
 use crate::rpc_types::{
-    CopyResult, DestinationContext, DomainEvent, EventResult, ExtensibleConfig, JobInvocation,
-    JobOutcome, ListOptions, ListPage, ObjectMetadata, PluginDescribe, PutResult, SourceContext,
-    WorkerContext, WriteOptions,
+    CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
+    ListPage, ObjectMetadata, PluginDescribe, PutResult, WriteOptions,
 };
 use crate::{PluginError, Result};
 
@@ -105,43 +105,50 @@ pub trait Cancellation {
     async fn poll(&self) -> Result<bool>;
 }
 
-/// Granted stubs for one [`JobHandler::handle`] invocation.
-pub struct JobHandlerContext {
+/// Everything one [`JobRunner::job`] invocation may touch.
+///
+/// Named database bindings are not per job: they arrive on
+/// [`Bindings::databases`] at [`PluginWorker::open`].
+pub struct JobController {
+    /// Durable command envelope.
+    pub invocation: JobInvocation,
     /// Input source capability.
     pub input: Box<dyn Source>,
     /// Output destination capability.
     pub output: Box<dyn Destination>,
     /// Progress sink (durable job row).
     pub progress: Box<dyn ProgressSink>,
-    /// Always `None`. Jobs never receive the host library as guest SQL;
-    /// durable plugin state uses [`Self::databases`].
-    pub database: Option<Box<dyn GuestDatabase>>,
-    /// Named plugin-owned database bindings: isolated
-    /// databases from `plugin.toml` `capabilities.bindings.databases`,
-    /// separate from the Bookclerk library and from every other plugin.
-    pub databases: Vec<(String, Box<dyn GuestDatabase>)>,
     /// Cancellation capability (host fence / lease).
     pub cancel: Box<dyn Cancellation>,
 }
 
-impl JobHandlerContext {
-    /// Takes the named plugin database binding `name`, if granted.
-    #[must_use]
-    pub fn take_named_database(&mut self, name: &str) -> Option<Box<dyn GuestDatabase>> {
-        let idx = self.databases.iter().position(|(n, _)| n == name)?;
-        Some(self.databases.swap_remove(idx).1)
-    }
+/// `[triggers] jobs` handler ([`Entrypoints::job_runner`]).
+#[async_trait::async_trait(?Send)]
+pub trait JobRunner {
+    /// Runs `controller.invocation` using the granted capabilities until
+    /// completion, suspension, or cancellation.
+    async fn job(&self, controller: JobController) -> Result<JobOutcome>;
 }
 
-/// Plugin worker that handles one durable job invocation.
+/// `[[events.consumers]]` handler ([`Entrypoints::event_consumer`]).
+///
+/// Delivery is at-least-once; consume idempotently on
+/// [`DomainEvent::deduplication_key`].
 #[async_trait::async_trait(?Send)]
-pub trait JobHandler {
-    /// Runs `invocation` using granted capabilities until completion or cancel.
-    async fn handle(
-        &self,
-        invocation: JobInvocation,
-        context: JobHandlerContext,
-    ) -> Result<JobOutcome>;
+pub trait EventConsumer {
+    /// Handles one ordered batch and returns exactly one [`EventResult`] per
+    /// input event, in order. A short reply is a host-side error: the
+    /// missing tail is redelivered.
+    async fn event(&self, batch: Vec<DomainEvent>) -> Result<Vec<EventResult>>;
+}
+
+/// `EVENTS` binding: host-served outbox publisher ([`Bindings::events`]).
+#[async_trait::async_trait(?Send)]
+pub trait EventPublisher {
+    /// Appends `event` to the host outbox. The host stamps `source` (this
+    /// plugin id) and the invocation account; `event_type` must be listed in
+    /// `[[events.producers]]`.
+    async fn publish(&self, event: PluginEvent) -> Result<PublishOk>;
 }
 
 /// Storefront content source (not byte [`Source`]).
@@ -221,9 +228,11 @@ pub trait ContentSource {
     }
 }
 
-/// Integration role (`onEvent` is not a generic job container).
+/// `remoteLibrary` entrypoint: long-running remote-library lifecycle.
+///
+/// Event delivery is [`EventConsumer`]; credential verification is [`Oidc`].
 #[async_trait::async_trait(?Send)]
-pub trait Integration {
+pub trait RemoteLibrary {
     /// Liveness.
     async fn health(&self) -> Result<crate::rpc_types::HealthOk> {
         Ok(crate::rpc_types::HealthOk {
@@ -232,17 +241,12 @@ pub trait Integration {
         })
     }
 
-    /// Consume one domain event. Delivery is at-least-once; consume idempotently.
-    async fn on_event(&self, _event: DomainEvent) -> Result<EventResult> {
-        Err(PluginError::unsupported("onEvent"))
-    }
-
-    /// Start long-running integration work.
+    /// Start long-running work after the host has granted bindings.
     async fn start(&self) -> Result<()> {
         Ok(())
     }
 
-    /// Stop long-running integration work.
+    /// Stop long-running work.
     async fn stop(&self) -> Result<()> {
         Ok(())
     }
@@ -262,14 +266,39 @@ pub trait Integration {
         Err(PluginError::unsupported("syncListening"))
     }
 
+    /// Drain external users observed since the last poll.
+    async fn poll_events(&self) -> Result<Vec<ExternalUser>> {
+        Err(PluginError::unsupported("pollEvents"))
+    }
+}
+
+/// `oidc` entrypoint: relying-party client templates and credential
+/// verification on behalf of the host authorization server.
+#[async_trait::async_trait(?Send)]
+pub trait Oidc {
+    /// Plugin-provided OIDC authorization-server client templates. Empty when
+    /// the guest only verifies credentials.
+    async fn clients(&self) -> Result<Vec<crate::rpc_types::OidcClientTemplate>> {
+        Ok(Vec::new())
+    }
+
     /// Verify remote credentials on behalf of the host.
     async fn authenticate_user(&self, _params: AuthenticateUserParams) -> Result<ExternalUser> {
         Err(PluginError::unsupported("authenticateUser"))
     }
+}
 
-    /// Drain external users observed since the last poll.
-    async fn poll_events(&self) -> Result<Vec<ExternalUser>> {
-        Err(PluginError::unsupported("pollEvents"))
+/// `cli` entrypoint: guest commands under `bookclerk plugins <id> <command>`.
+#[async_trait::async_trait(?Send)]
+pub trait PluginCli {
+    /// Declared CLI surface. Empty when the guest exposes no commands.
+    async fn describe(&self) -> Result<CliSchema> {
+        Ok(CliSchema::default())
+    }
+
+    /// Runs one plugin CLI command.
+    async fn invoke(&self, _params: CliInvokeParams) -> Result<CliInvokeResult> {
+        Err(PluginError::unsupported("invoke"))
     }
 }
 
@@ -368,107 +397,141 @@ pub trait GuestDatabase {
     }
 }
 
-/// Granted storefront configuration (`BookclerkPlugin.contentSource`).
+/// Plain-data portion of [`Bindings`]: every granted value that is not a
+/// capability. Hosts build this off the vat thread and attach capabilities
+/// when they call `open`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ContentSourceContext {
-    /// Granted plugin settings (operator `[sources.<id>]` table as
-    /// `application/json`).
+pub struct BindingValues {
+    /// `CONFIG`: granted plugin settings as `application/json`.
     #[serde(default)]
     pub config: ExtensibleConfig,
-}
-
-/// Granted integration configuration (`BookclerkPlugin.integration`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IntegrationContext {
-    /// Granted plugin settings (operator `[integrations.<id>]` table as
-    /// `application/json`).
+    /// `SECRETS`: granted secret values as `application/json`; empty payload
+    /// when the manifest declares no `[secrets]`.
     #[serde(default)]
-    pub config: ExtensibleConfig,
-}
-
-/// Granted database-adapter configuration (`BookclerkPlugin.database`).
-///
-/// First-party host-managed adapters receive host-private connect params in
-/// [`Self::config`]; third-party adapters receive the typed [`Self::adapter`]
-/// bootstrap (and an empty `config`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DatabaseContext {
-    /// Host-private connect params for first-party adapters.
-    #[serde(default)]
-    pub config: ExtensibleConfig,
-    /// Author-facing bootstrap for third-party adapters; `plugin_data_dir` is
-    /// empty when `config` carries host-private params instead.
+    pub secrets: ExtensibleConfig,
+    /// Database-adapter bootstrap for the `databaseAdapter` entrypoint.
+    /// First-party host-managed adapters receive host-private connect params
+    /// in [`Self::config`]; third-party adapters receive this typed bootstrap
+    /// (and an empty `config`). `plugin_data_dir` is empty when `config`
+    /// carries host-private params instead.
     #[serde(default)]
     pub adapter: DatabaseAdapterConfig,
 }
 
-/// Root `BookclerkPlugin` capability (`describe` / role factories / shutdown).
+impl BindingValues {
+    /// Bindings carrying only `CONFIG`.
+    #[must_use]
+    pub fn config(config: ExtensibleConfig) -> Self {
+        Self {
+            config,
+            ..Self::default()
+        }
+    }
+}
+
+/// Host-granted bindings for one [`PluginWorker::open`] (`env` in the
+/// Workers idiom). Capability fields are `None` when the manifest does not
+/// declare (or the operator did not grant) the binding.
+pub struct Bindings {
+    /// `CONFIG`: granted plugin settings as `application/json`.
+    pub config: ExtensibleConfig,
+    /// `SECRETS`: granted secret values; empty payload when none.
+    pub secrets: ExtensibleConfig,
+    /// Database-adapter bootstrap (see [`BindingValues::adapter`]).
+    pub adapter: DatabaseAdapterConfig,
+    /// `EVENTS`: outbox publisher; `None` unless `[[events.producers]]` is
+    /// granted.
+    pub events: Option<Box<dyn EventPublisher>>,
+    /// Named plugin-owned `[[databases]]` bindings: isolated databases
+    /// separate from the Bookclerk library and from every other plugin.
+    pub databases: Vec<(String, Box<dyn GuestDatabase>)>,
+    /// Host cancellation for the whole invocation (fence / lease loss).
+    pub cancel: Box<dyn Cancellation>,
+    /// `WORK_FS`: host-granted object storage for durable plugin files;
+    /// `None` unless `[work_fs]` is granted. Job input/output travel on
+    /// [`JobController`], never here.
+    pub storage: Option<Box<dyn Destination>>,
+}
+
+impl Bindings {
+    /// Bindings with only plain values (no capabilities); tests and
+    /// in-process hosts.
+    #[must_use]
+    pub fn from_values(values: BindingValues) -> Self {
+        Self {
+            config: values.config,
+            secrets: values.secrets,
+            adapter: values.adapter,
+            events: None,
+            databases: Vec::new(),
+            cancel: Box::new(NeverCancel),
+            storage: None,
+        }
+    }
+
+    /// Plain-data view (`config` / `secrets` / `adapter`).
+    #[must_use]
+    pub fn values(&self) -> BindingValues {
+        BindingValues {
+            config: self.config.clone(),
+            secrets: self.secrets.clone(),
+            adapter: self.adapter.clone(),
+        }
+    }
+
+    /// Takes the named plugin database binding `name`, if granted.
+    #[must_use]
+    pub fn take_named_database(&mut self, name: &str) -> Option<Box<dyn GuestDatabase>> {
+        let idx = self.databases.iter().position(|(n, _)| n == name)?;
+        Some(self.databases.swap_remove(idx).1)
+    }
+}
+
+/// Exported entrypoints returned by [`PluginWorker::open`]: one capability
+/// per `plugin.toml` `entrypoints` entry / trigger, `None` when not exported.
 ///
-/// Absent factories return typed [`PluginError::unsupported`]. `describe()`
-/// advertises `supported_roles`; the signed manifest is the host allowlist.
+/// The host refuses an entrypoint the manifest or operator grant did not
+/// allow, so a guest cannot widen its surface here.
+#[derive(Default)]
+pub struct Entrypoints {
+    /// `[[events.consumers]]` trigger.
+    pub event_consumer: Option<Box<dyn EventConsumer>>,
+    /// `[triggers] jobs` trigger.
+    pub job_runner: Option<Box<dyn JobRunner>>,
+    /// `storefront` entrypoint.
+    pub storefront: Option<Box<dyn ContentSource>>,
+    /// `storage` entrypoint.
+    pub storage: Option<Box<dyn Destination>>,
+    /// `databaseAdapter` entrypoint.
+    pub database_adapter: Option<Box<dyn Database>>,
+    /// `remoteLibrary` entrypoint.
+    pub remote_library: Option<Box<dyn RemoteLibrary>>,
+    /// `cli` entrypoint.
+    pub cli: Option<Box<dyn PluginCli>>,
+    /// `oidc` entrypoint.
+    pub oidc: Option<Box<dyn Oidc>>,
+}
+
+/// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).
+///
+/// `describe()` advertises typed capabilities; the signed manifest plus the
+/// operator grant is the host allowlist. `open()` returns the exported
+/// [`Entrypoints`] for one invocation.
 #[async_trait::async_trait(?Send)]
-pub trait PluginRoot: 'static {
+pub trait PluginWorker: 'static {
     /// Advertises identity, features, and scalar limits.
     async fn describe(&self) -> Result<PluginDescribe>;
 
-    /// Returns a destination capability for this invocation.
-    async fn destination(&self, _context: DestinationContext) -> Result<Box<dyn Destination>> {
-        Err(PluginError::unsupported("destination"))
-    }
-
-    /// Returns a source capability for this invocation.
-    async fn source(&self, _context: SourceContext) -> Result<Box<dyn Source>> {
-        Err(PluginError::unsupported("source"))
-    }
-
-    /// Returns a job handler for this invocation.
-    async fn worker(&self, _context: WorkerContext) -> Result<Box<dyn JobHandler>> {
-        Err(PluginError::unsupported("worker"))
-    }
-
-    /// Returns a storefront content-source capability.
-    async fn content_source(
-        &self,
-        _context: ContentSourceContext,
-    ) -> Result<Box<dyn ContentSource>> {
-        Err(PluginError::unsupported("contentSource"))
-    }
-
-    /// Returns an integration capability.
-    async fn integration(&self, _context: IntegrationContext) -> Result<Box<dyn Integration>> {
-        Err(PluginError::unsupported("integration"))
-    }
-
-    /// Returns a database factory.
-    async fn database(&self, _context: DatabaseContext) -> Result<Box<dyn Database>> {
-        Err(PluginError::unsupported("database"))
-    }
-
-    /// Declared CLI surface. Empty when the guest exposes no commands.
-    async fn cli_describe(&self) -> Result<CliSchema> {
-        Ok(CliSchema::default())
-    }
-
-    /// Runs one plugin CLI command.
-    async fn cli_invoke(&self, _params: CliInvokeParams) -> Result<CliInvokeResult> {
-        Err(PluginError::unsupported("cliInvoke"))
-    }
-
-    /// Plugin-provided OIDC authorization-server client templates.
-    ///
-    /// Empty when the guest is not a relying party. Hosts treat
-    /// [`PluginError::unsupported`] from older guests as an empty list.
-    async fn oidc_clients(&self) -> Result<Vec<crate::rpc_types::OidcClientTemplate>> {
-        Ok(Vec::new())
-    }
+    /// Opens the exported entrypoints for `invocation` with the granted
+    /// `bindings`.
+    async fn open(&self, invocation: Invocation, bindings: Bindings) -> Result<Entrypoints>;
 
     /// Complete ordered plugin-owned migration sequence for one named binding.
     ///
-    /// Called at binding initialization before ordinary execute. Empty means
-    /// the binding has no plugin-owned migrations. `id` values are opaque
+    /// Called while the host provisions `[[databases]]`, before the binding
+    /// session is handed out on [`Bindings::databases`]. Empty means the
+    /// binding has no plugin-owned migrations. `id` values are opaque
     /// plugin-chosen identities; registration order is the forward sequence.
     async fn database_migrations(&self, _binding: &str) -> Result<Vec<crate::PluginMigration>> {
         Ok(Vec::new())

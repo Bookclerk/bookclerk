@@ -1,4 +1,5 @@
-//! Cap'n Proto two-party RPC adapters for plugin ABI role classes.
+//! Cap'n Proto two-party RPC adapters for the `PluginWorker` root, its
+//! exported entrypoints, and the host-served bindings.
 //!
 //! Public types remain [`crate::Destination`] / [`crate::ByteRange`] streams.
 //! Capability table indexes stay inside capnp-rpc. Method results are typed
@@ -23,20 +24,22 @@ use crate::generated::{
     read_cli_invoke_reply, read_cli_schema, read_cli_schema_reply, read_config_option,
     read_database_adapter_config, read_diagnose_reply, read_event_poll_reply,
     read_expand_candidates_params, read_external_user_reply, read_fetch_title_params,
-    read_fetch_title_reply, read_list_deals_params, read_login_complete_params, read_login_params,
-    read_login_reply, read_login_start_reply, read_purchase_hint_params, read_purchase_hint_reply,
+    read_fetch_title_reply, read_invocation, read_list_deals_params, read_login_complete_params,
+    read_login_params, read_login_reply, read_login_start_reply, read_plugin_event,
+    read_publish_reply, read_purchase_hint_params, read_purchase_hint_reply,
     read_scan_library_params, read_scan_params, read_scan_reply, read_search_catalog_params,
     read_source_accounts_reply, read_sync_listening_reply, write_authenticate_user_params,
     write_brand, write_catalog_detail_params, write_catalog_detail_reply, write_catalog_hits_reply,
     write_cli_invoke_params, write_cli_invoke_reply, write_cli_schema, write_cli_schema_reply,
     write_config_option, write_database_adapter_config, write_diagnose_reply,
     write_event_poll_reply, write_expand_candidates_params, write_external_user_reply,
-    write_fetch_title_params, write_fetch_title_reply, write_list_deals_params,
+    write_fetch_title_params, write_fetch_title_reply, write_invocation, write_list_deals_params,
     write_login_complete_params, write_login_params, write_login_reply, write_login_start_reply,
-    write_purchase_hint_params, write_purchase_hint_reply, write_scan_library_params,
-    write_scan_params, write_scan_reply, write_search_catalog_params, write_source_accounts_reply,
-    write_sync_listening_reply, CatalogDetail, CatalogHits, DiagnoseResult, EventPollResult,
-    PurchaseHintResult, SourceAccounts, SyncListeningResult,
+    write_plugin_event, write_publish_reply, write_purchase_hint_params, write_purchase_hint_reply,
+    write_scan_library_params, write_scan_params, write_scan_reply, write_search_catalog_params,
+    write_source_accounts_reply, write_sync_listening_reply, CatalogDetail, CatalogHits,
+    DiagnoseResult, EventPollResult, Invocation, PluginEvent, PublishOk, PurchaseHintResult,
+    SourceAccounts, SyncListeningResult,
 };
 #[cfg(feature = "host")]
 use crate::host_roles::HostAdapterDatabaseSession;
@@ -46,30 +49,31 @@ use crate::limits::{
     MAX_STREAM_WINDOW_BYTES,
 };
 use crate::plugin_capnp::{
-    adapter_database_session as adapter_database_session_capnp, adapter_session_reply,
-    bookclerk_plugin, byte_source, cancellation, content_source as content_source_capnp,
-    content_source_reply, copy_reply, database as database_capnp, database_reply, describe_reply,
-    destination as dest_iface, destination_reply, domain_event, empty_reply,
-    event_result as event_result_capnp, event_result_reply, get_reply,
-    guest_database as guest_database_capnp, handle_reply, head_reply, health_reply,
-    integration as integration_capnp, integration_reply, job_handler, job_invocation, job_outcome,
-    list_reply, object_metadata, oidc_client_template, oidc_clients_reply, open_reply,
+    adapter_database_session as adapter_database_session_capnp, adapter_session_reply, bindings,
+    byte_source, cancellation, content_source as content_source_capnp, copy_reply,
+    database as database_capnp, describe_reply, destination as dest_iface, domain_event,
+    empty_reply, entrypoints, entrypoints_reply, event_batch_reply,
+    event_consumer as event_consumer_capnp, event_publisher as event_publisher_capnp,
+    event_result as event_result_capnp, get_reply, guest_database as guest_database_capnp,
+    handle_reply, head_reply, health_reply, job_invocation, job_outcome,
+    job_runner as job_runner_capnp, list_reply, object_metadata, oidc as oidc_capnp,
+    oidc_client_template, oidc_clients_reply, open_reply, plugin_cli as plugin_cli_capnp,
     plugin_describe, plugin_error, plugin_migration, plugin_migration_op, plugin_migrations_ok,
-    plugin_migrations_reply, progress_sink, pull_reply, put_reply, source as source_capnp,
-    source_reply, worker_reply, write_options,
+    plugin_migrations_reply, plugin_worker, progress_sink, pull_reply, put_reply,
+    remote_library as remote_library_capnp, source as source_capnp, write_options,
 };
 #[cfg(feature = "host")]
 use crate::plugin_host_capnp::host_adapter_database_session as host_adapter_database_session_capnp;
 use crate::roles::{
-    AdapterDatabaseSession, ByteRange, Cancellation, ContentSource, ContentSourceContext, Database,
-    DatabaseContext, Destination, GuestDatabase, Integration, IntegrationContext, JobHandler,
-    JobHandlerContext, NeverCancel, PluginRoot, ProgressSink, ReadResult, Source,
+    AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
+    Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
+    JobController, JobRunner, NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, ReadResult,
+    RemoteLibrary, Source,
 };
 use crate::rpc_types::{
-    CopyResult, DestinationContext, DomainEvent, EventResult, HealthOk, JobCheckpoint,
-    JobInvocation, JobOutcome, ListOptions, ListPage, ObjectInfo, ObjectMetadata,
-    OidcClientTemplate, PluginDescribe, PutResult, SourceContext, WorkerContext, WriteOptions,
-    MAX_CHECKPOINT_BYTES,
+    CopyResult, DomainEvent, EventResult, HealthOk, JobCheckpoint, JobInvocation, JobOutcome,
+    ListOptions, ListPage, ObjectInfo, ObjectMetadata, OidcClientTemplate, PluginDescribe,
+    PutResult, WriteOptions, MAX_CHECKPOINT_BYTES,
 };
 use crate::{
     capnp_u32_len, require_plugin_migration_registration, AuthenticateUserParams,
@@ -244,7 +248,6 @@ fn read_metadata(r: object_metadata::Reader<'_>) -> Result<ObjectMetadata> {
 fn fill_describe(mut b: plugin_describe::Builder<'_>, d: &PluginDescribe) -> capnp::Result<()> {
     b.set_api_version(d.api_version);
     b.set_id(&d.id);
-    b.set_kind(&d.kind);
     if let Some(name) = &d.display_name {
         b.set_display_name(name);
     }
@@ -258,16 +261,7 @@ fn fill_describe(mut b: plugin_describe::Builder<'_>, d: &PluginDescribe) -> cap
     lim.set_max_scalar_bytes(d.scalar_limits.max_scalar_bytes);
     lim.set_max_stream_window_bytes(d.scalar_limits.max_stream_window_bytes);
     lim.set_max_list_page(d.scalar_limits.max_list_page);
-    fill_text_list(
-        b.reborrow()
-            .init_supported_roles(u32_len(d.supported_roles.len())?),
-        &d.supported_roles,
-    );
-    fill_text_list(
-        b.reborrow()
-            .init_capabilities(u32_len(d.capabilities.len())?),
-        &d.capabilities,
-    );
+    crate::generated::write_plugin_capabilities(b.reborrow().init_capabilities(), &d.capabilities)?;
     b.set_portal_auth_mode(d.portal_auth_mode.into());
     if let Some(env) = &d.password_env_var {
         b.set_password_env_var(env);
@@ -355,7 +349,6 @@ fn read_describe(m: plugin_describe::Reader<'_>) -> Result<PluginDescribe> {
     Ok(PluginDescribe {
         api_version: m.get_api_version(),
         id: text_of(m.get_id().map_err(from_capnp)?),
-        kind: text_of(m.get_kind().map_err(from_capnp)?),
         display_name: {
             let n = text_of(m.get_display_name().map_err(from_capnp)?);
             if n.is_empty() {
@@ -370,8 +363,10 @@ fn read_describe(m: plugin_describe::Reader<'_>) -> Result<PluginDescribe> {
             max_stream_window_bytes: lim.get_max_stream_window_bytes(),
             max_list_page: lim.get_max_list_page(),
         },
-        supported_roles: read_text_list(m.get_supported_roles().map_err(from_capnp)?)?,
-        capabilities: read_text_list(m.get_capabilities().map_err(from_capnp)?)?,
+        capabilities: crate::generated::read_plugin_capabilities(
+            m.get_capabilities().map_err(from_capnp)?,
+        )
+        .map_err(from_capnp)?,
         portal_auth_mode: m.get_portal_auth_mode().map(Into::into).unwrap_or_default(),
         password_env_var: {
             let v = text_of(m.get_password_env_var().map_err(from_capnp)?);
@@ -492,7 +487,7 @@ fn read_job_outcome(r: job_outcome::Reader<'_>) -> Result<JobOutcome> {
 ///
 /// Returns a Cap'n Proto encoding error when a text or nested field cannot be
 /// set.
-fn fill_invocation(
+fn fill_job_invocation(
     mut b: job_invocation::Builder<'_>,
     invocation: &JobInvocation,
 ) -> capnp::Result<()> {
@@ -523,7 +518,7 @@ fn fill_invocation(
 /// # Errors
 ///
 /// Returns [`PluginError`] when a required field cannot be read.
-fn read_invocation(r: job_invocation::Reader<'_>) -> Result<JobInvocation> {
+fn read_job_invocation(r: job_invocation::Reader<'_>) -> Result<JobInvocation> {
     let checkpoint_json = text_of(r.get_checkpoint_json().map_err(from_capnp)?);
     if checkpoint_json.len() > MAX_CHECKPOINT_BYTES as usize {
         return Err(PluginError::payload_too_large(format!(
@@ -1404,16 +1399,16 @@ impl Cancellation for CancellationClient {
     }
 }
 
-/// Cap'n Proto server wrapping [`PluginRoot`].
+/// Cap'n Proto server wrapping [`PluginWorker`].
 pub struct PluginServer {
-    inner: Arc<dyn PluginRoot>,
+    inner: Arc<dyn PluginWorker>,
     window: u32,
 }
 
 impl PluginServer {
     /// Serves `inner`.
     #[must_use]
-    pub fn new(inner: Arc<dyn PluginRoot>, window: u32) -> Self {
+    pub fn new(inner: Arc<dyn PluginWorker>, window: u32) -> Self {
         Self {
             inner,
             window: window.clamp(1, MAX_STREAM_WINDOW_BYTES),
@@ -1421,11 +1416,11 @@ impl PluginServer {
     }
 }
 
-impl bookclerk_plugin::Server for PluginServer {
+impl plugin_worker::Server for PluginServer {
     async fn describe(
         self: Rc<Self>,
-        _params: bookclerk_plugin::DescribeParams,
-        mut results: bookclerk_plugin::DescribeResults,
+        _params: plugin_worker::DescribeParams,
+        mut results: plugin_worker::DescribeResults,
     ) -> capnp::Result<()> {
         let result = results.get().init_result();
         match self.inner.describe().await {
@@ -1435,65 +1430,17 @@ impl bookclerk_plugin::Server for PluginServer {
         Ok(())
     }
 
-    async fn destination(
+    async fn open(
         self: Rc<Self>,
-        params: bookclerk_plugin::DestinationParams,
-        mut results: bookclerk_plugin::DestinationResults,
+        params: plugin_worker::OpenParams,
+        mut results: plugin_worker::OpenResults,
     ) -> capnp::Result<()> {
-        let c = params.get()?.get_context()?;
-        let ctx = DestinationContext {
-            config: read_extensible_config(c.get_config()?),
-        };
-        let mut result = results.get().init_result();
-        match self.inner.destination(ctx).await {
-            Ok(dest) => {
-                let client: dest_iface::Client =
-                    capnp_rpc::new_client(DestinationServer::new(Arc::from(dest), self.window));
-                result.set_ok(client);
-            }
-            Err(err) => write_error(result.init_err(), &err),
-        }
-        Ok(())
-    }
-
-    async fn source(
-        self: Rc<Self>,
-        params: bookclerk_plugin::SourceParams,
-        mut results: bookclerk_plugin::SourceResults,
-    ) -> capnp::Result<()> {
-        let c = params.get()?.get_context()?;
-        let ctx = SourceContext {
-            config: read_extensible_config(c.get_config()?),
-        };
-        let mut result = results.get().init_result();
-        match self.inner.source(ctx).await {
-            Ok(src) => {
-                let client: source_capnp::Client =
-                    capnp_rpc::new_client(SourceServer::new(Arc::from(src), self.window));
-                result.set_ok(client);
-            }
-            Err(err) => write_error(result.init_err(), &err),
-        }
-        Ok(())
-    }
-
-    async fn worker(
-        self: Rc<Self>,
-        params: bookclerk_plugin::WorkerParams,
-        mut results: bookclerk_plugin::WorkerResults,
-    ) -> capnp::Result<()> {
-        let c = params.get()?.get_context()?;
-        let ctx = WorkerContext {
-            job_id: c.get_job_id().ok().map(text_of).unwrap_or_default(),
-            config: read_extensible_config(c.get_config()?),
-        };
-        let mut result = results.get().init_result();
-        match self.inner.worker(ctx).await {
-            Ok(handler) => {
-                let client: job_handler::Client =
-                    capnp_rpc::new_client(JobHandlerServer::new(Arc::from(handler), self.window));
-                result.set_ok(client);
-            }
+        let p = params.get()?;
+        let invocation = read_invocation(p.get_invocation()?)?;
+        let bindings = read_bindings(p.get_bindings()?, self.window)?;
+        let result = results.get().init_result();
+        match self.inner.open(invocation, bindings).await {
+            Ok(eps) => fill_entrypoints(result.init_ok(), eps, self.window),
             Err(err) => write_error(result.init_err(), &err),
         }
         Ok(())
@@ -1501,8 +1448,8 @@ impl bookclerk_plugin::Server for PluginServer {
 
     async fn shutdown(
         self: Rc<Self>,
-        _params: bookclerk_plugin::ShutdownParams,
-        mut results: bookclerk_plugin::ShutdownResults,
+        _params: plugin_worker::ShutdownParams,
+        mut results: plugin_worker::ShutdownResults,
     ) -> capnp::Result<()> {
         let mut result = results.get().init_result();
         match self.inner.shutdown().await {
@@ -1512,110 +1459,10 @@ impl bookclerk_plugin::Server for PluginServer {
         Ok(())
     }
 
-    async fn content_source(
-        self: Rc<Self>,
-        params: bookclerk_plugin::ContentSourceParams,
-        mut results: bookclerk_plugin::ContentSourceResults,
-    ) -> capnp::Result<()> {
-        let c = params.get()?.get_context()?;
-        let ctx = ContentSourceContext {
-            config: read_extensible_config(c.get_config()?),
-        };
-        let mut result = results.get().init_result();
-        match self.inner.content_source(ctx).await {
-            Ok(role) => {
-                let client: content_source_capnp::Client =
-                    capnp_rpc::new_client(ContentSourceServer {
-                        inner: Arc::from(role),
-                    });
-                result.set_ok(client);
-            }
-            Err(err) => write_error(result.init_err(), &err),
-        }
-        Ok(())
-    }
-
-    async fn integration(
-        self: Rc<Self>,
-        params: bookclerk_plugin::IntegrationParams,
-        mut results: bookclerk_plugin::IntegrationResults,
-    ) -> capnp::Result<()> {
-        let c = params.get()?.get_context()?;
-        let ctx = IntegrationContext {
-            config: read_extensible_config(c.get_config()?),
-        };
-        let mut result = results.get().init_result();
-        match self.inner.integration(ctx).await {
-            Ok(role) => {
-                let client: integration_capnp::Client = capnp_rpc::new_client(IntegrationServer {
-                    inner: Arc::from(role),
-                });
-                result.set_ok(client);
-            }
-            Err(err) => write_error(result.init_err(), &err),
-        }
-        Ok(())
-    }
-
-    async fn database(
-        self: Rc<Self>,
-        params: bookclerk_plugin::DatabaseParams,
-        mut results: bookclerk_plugin::DatabaseResults,
-    ) -> capnp::Result<()> {
-        let c = params.get()?.get_context()?;
-        let ctx = DatabaseContext {
-            config: read_extensible_config(c.get_config()?),
-            adapter: read_database_adapter_config(c.get_adapter()?)?,
-        };
-        let mut result = results.get().init_result();
-        match self.inner.database(ctx).await {
-            Ok(role) => {
-                let client: database_capnp::Client = capnp_rpc::new_client(DatabaseServer {
-                    inner: Arc::from(role),
-                });
-                result.set_ok(client);
-            }
-            Err(err) => write_error(result.init_err(), &err),
-        }
-        Ok(())
-    }
-
-    async fn cli_describe(
-        self: Rc<Self>,
-        _params: bookclerk_plugin::CliDescribeParams,
-        mut results: bookclerk_plugin::CliDescribeResults,
-    ) -> capnp::Result<()> {
-        let outcome = self.inner.cli_describe().await;
-        write_cli_schema_reply(results.get().init_result(), &outcome)
-    }
-
-    async fn cli_invoke(
-        self: Rc<Self>,
-        params: bookclerk_plugin::CliInvokeParams,
-        mut results: bookclerk_plugin::CliInvokeResults,
-    ) -> capnp::Result<()> {
-        let params = read_cli_invoke_params(params.get()?.get_params()?)?;
-        let outcome = self.inner.cli_invoke(params).await;
-        write_cli_invoke_reply(results.get().init_result(), &outcome)
-    }
-
-    async fn oidc_clients(
-        self: Rc<Self>,
-        _params: bookclerk_plugin::OidcClientsParams,
-        mut results: bookclerk_plugin::OidcClientsResults,
-    ) -> capnp::Result<()> {
-        let result = results.get().init_result();
-        match self.inner.oidc_clients().await {
-            Ok(clients) => fill_oidc_clients(result.init_ok(), &clients)?,
-            Err(err) => write_error(result.init_err(), &err),
-        }
-        Ok(())
-    }
-
     async fn database_migrations(
         self: Rc<Self>,
-        params: bookclerk_plugin::DatabaseMigrationsParams,
-        mut results: bookclerk_plugin::DatabaseMigrationsResults,
+        params: plugin_worker::DatabaseMigrationsParams,
+        mut results: plugin_worker::DatabaseMigrationsResults,
     ) -> capnp::Result<()> {
         let binding = params
             .get()?
@@ -1636,6 +1483,101 @@ impl bookclerk_plugin::Server for PluginServer {
             Err(err) => write_error(result.init_err(), &err),
         }
         Ok(())
+    }
+}
+
+/// Decode host-granted [`Bindings`] on the guest side of `open`.
+///
+/// Null capability pointers become `None` / [`NeverCancel`].
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested struct or list cannot be read.
+fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings> {
+    let config = read_extensible_config(b.get_config()?);
+    let secrets = read_extensible_config(b.get_secrets()?);
+    let adapter = read_database_adapter_config(b.get_adapter()?)?;
+    let events: Option<Box<dyn EventPublisher>> = if b.has_events() {
+        Some(Box::new(EventPublisherClient {
+            client: b.get_events()?,
+        }))
+    } else {
+        None
+    };
+    let mut databases: Vec<(String, Box<dyn GuestDatabase>)> = Vec::new();
+    if b.has_databases() {
+        for entry in b.get_databases()?.iter() {
+            let name = entry.get_name()?.to_str()?.to_string();
+            let client = entry.get_database()?;
+            databases.push((name, Box::new(GuestDatabaseClient { client })));
+        }
+    }
+    let cancel: Box<dyn Cancellation> = if b.has_cancel() {
+        Box::new(CancellationClient {
+            client: b.get_cancel()?,
+        })
+    } else {
+        Box::new(NeverCancel)
+    };
+    let storage: Option<Box<dyn Destination>> = if b.has_storage() {
+        Some(Box::new(DestinationClient::new(b.get_storage()?, window)))
+    } else {
+        None
+    };
+    Ok(Bindings {
+        config,
+        secrets,
+        adapter,
+        events,
+        databases,
+        cancel,
+        storage,
+    })
+}
+
+/// Serve every exported entrypoint of `eps` as a capability on `b`.
+fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u32) {
+    if let Some(x) = eps.event_consumer {
+        b.set_event_consumer(capnp_rpc::new_client(EventConsumerServer {
+            inner: Arc::from(x),
+        }));
+    }
+    if let Some(x) = eps.job_runner {
+        b.set_job_runner(capnp_rpc::new_client(JobRunnerServer::new(
+            Arc::from(x),
+            window,
+        )));
+    }
+    if let Some(x) = eps.storefront {
+        b.set_storefront(capnp_rpc::new_client(ContentSourceServer {
+            inner: Arc::from(x),
+        }));
+    }
+    if let Some(x) = eps.storage {
+        b.set_storage(capnp_rpc::new_client(DestinationServer::new(
+            Arc::from(x),
+            window,
+        )));
+    }
+    if let Some(x) = eps.database_adapter {
+        b.set_database_adapter(capnp_rpc::new_client(DatabaseServer {
+            inner: Arc::from(x),
+        }));
+    }
+    if let Some(x) = eps.remote_library {
+        b.set_remote_library(capnp_rpc::new_client(RemoteLibraryServer {
+            inner: Arc::from(x),
+        }));
+    }
+    if let Some(x) = eps.cli {
+        b.set_cli(capnp_rpc::new_client(PluginCliServer {
+            inner: Arc::from(x),
+        }));
+    }
+    if let Some(x) = eps.oidc {
+        b.set_oidc(capnp_rpc::new_client(OidcServer {
+            inner: Arc::from(x),
+        }));
     }
 }
 
@@ -1949,6 +1891,25 @@ fn read_domain_event(r: domain_event::Reader<'_>) -> Result<DomainEvent> {
     })
 }
 
+/// Encode a [`DomainEvent`] onto a Cap'n Proto builder.
+fn write_domain_event(mut e: domain_event::Builder<'_>, event: &DomainEvent) {
+    e.set_event_id(&event.event_id);
+    e.set_event_type(&event.event_type);
+    e.set_schema_version(event.schema_version);
+    e.set_occurred_at_unix_ms(event.occurred_at_unix_ms);
+    e.set_account_id(&event.account_id);
+    e.set_correlation_id(&event.correlation_id);
+    e.set_causation_id(&event.causation_id);
+    e.set_deduplication_key(&event.deduplication_key);
+    e.set_delivery_attempt(event.delivery_attempt);
+    e.set_payload(&event.payload);
+    e.set_checkpoint_json(&event.checkpoint_json);
+    e.set_checkpoint_schema_version(event.checkpoint_schema_version);
+    e.set_invocation_sequence(event.invocation_sequence);
+    e.set_resume_pending(event.resume_pending);
+    e.set_source(&event.source);
+}
+
 struct ContentSourceServer {
     inner: Arc<dyn ContentSource>,
 }
@@ -2116,58 +2077,24 @@ impl content_source_capnp::Server for ContentSourceServer {
     }
 }
 
-struct IntegrationServer {
-    inner: Arc<dyn Integration>,
+struct RemoteLibraryServer {
+    inner: Arc<dyn RemoteLibrary>,
 }
 
-impl integration_capnp::Server for IntegrationServer {
+impl remote_library_capnp::Server for RemoteLibraryServer {
     async fn health(
         self: Rc<Self>,
-        _params: integration_capnp::HealthParams,
-        mut results: integration_capnp::HealthResults,
+        _params: remote_library_capnp::HealthParams,
+        mut results: remote_library_capnp::HealthResults,
     ) -> capnp::Result<()> {
         write_health_reply(results.get().init_result(), self.inner.health().await);
         Ok(())
     }
 
-    async fn on_event(
-        self: Rc<Self>,
-        params: integration_capnp::OnEventParams,
-        mut results: integration_capnp::OnEventResults,
-    ) -> capnp::Result<()> {
-        let event = match params.get()?.get_event() {
-            Ok(r) => match read_domain_event(r) {
-                Ok(event) => event,
-                Err(err) => {
-                    write_error(results.get().init_result().init_err(), &err);
-                    return Ok(());
-                }
-            },
-            Err(err) => return Err(capnp::Error::failed(err.to_string())),
-        };
-        let outcome = match self.inner.on_event(event).await {
-            Ok(EventResult::Suspended {
-                checkpoint_json, ..
-            }) if checkpoint_json.len() > MAX_CHECKPOINT_BYTES as usize => {
-                Err(PluginError::payload_too_large(format!(
-                    "checkpoint of {} bytes exceeds {MAX_CHECKPOINT_BYTES}",
-                    checkpoint_json.len()
-                )))
-            }
-            other => other,
-        };
-        let result = results.get().init_result();
-        match outcome {
-            Ok(ev) => write_event_result(result.init_ok(), &ev),
-            Err(err) => write_error(result.init_err(), &err),
-        }
-        Ok(())
-    }
-
     async fn start(
         self: Rc<Self>,
-        _params: integration_capnp::StartParams,
-        mut results: integration_capnp::StartResults,
+        _params: remote_library_capnp::StartParams,
+        mut results: remote_library_capnp::StartResults,
     ) -> capnp::Result<()> {
         let mut result = results.get().init_result();
         match self.inner.start().await {
@@ -2179,8 +2106,8 @@ impl integration_capnp::Server for IntegrationServer {
 
     async fn stop(
         self: Rc<Self>,
-        _params: integration_capnp::StopParams,
-        mut results: integration_capnp::StopResults,
+        _params: remote_library_capnp::StopParams,
+        mut results: remote_library_capnp::StopResults,
     ) -> capnp::Result<()> {
         let mut result = results.get().init_result();
         match self.inner.stop().await {
@@ -2192,8 +2119,8 @@ impl integration_capnp::Server for IntegrationServer {
 
     async fn diagnose(
         self: Rc<Self>,
-        _params: integration_capnp::DiagnoseParams,
-        mut results: integration_capnp::DiagnoseResults,
+        _params: remote_library_capnp::DiagnoseParams,
+        mut results: remote_library_capnp::DiagnoseResults,
     ) -> capnp::Result<()> {
         let outcome = self
             .inner
@@ -2205,8 +2132,8 @@ impl integration_capnp::Server for IntegrationServer {
 
     async fn scan_library(
         self: Rc<Self>,
-        params: integration_capnp::ScanLibraryParams,
-        mut results: integration_capnp::ScanLibraryResults,
+        params: remote_library_capnp::ScanLibraryParams,
+        mut results: remote_library_capnp::ScanLibraryResults,
     ) -> capnp::Result<()> {
         let params = read_scan_library_params(params.get()?.get_params()?)?;
         let mut result = results.get().init_result();
@@ -2219,8 +2146,8 @@ impl integration_capnp::Server for IntegrationServer {
 
     async fn sync_listening(
         self: Rc<Self>,
-        _params: integration_capnp::SyncListeningParams,
-        mut results: integration_capnp::SyncListeningResults,
+        _params: remote_library_capnp::SyncListeningParams,
+        mut results: remote_library_capnp::SyncListeningResults,
     ) -> capnp::Result<()> {
         let outcome = self
             .inner
@@ -2230,20 +2157,10 @@ impl integration_capnp::Server for IntegrationServer {
         write_sync_listening_reply(results.get().init_result(), &outcome)
     }
 
-    async fn authenticate_user(
-        self: Rc<Self>,
-        params: integration_capnp::AuthenticateUserParams,
-        mut results: integration_capnp::AuthenticateUserResults,
-    ) -> capnp::Result<()> {
-        let params = read_authenticate_user_params(params.get()?.get_params()?)?;
-        let outcome = self.inner.authenticate_user(params).await;
-        write_external_user_reply(results.get().init_result(), &outcome)
-    }
-
     async fn poll_events(
         self: Rc<Self>,
-        _params: integration_capnp::PollEventsParams,
-        mut results: integration_capnp::PollEventsResults,
+        _params: remote_library_capnp::PollEventsParams,
+        mut results: remote_library_capnp::PollEventsResults,
     ) -> capnp::Result<()> {
         let outcome = self
             .inner
@@ -2251,6 +2168,151 @@ impl integration_capnp::Server for IntegrationServer {
             .await
             .map(|users| EventPollResult { users });
         write_event_poll_reply(results.get().init_result(), &outcome)
+    }
+}
+
+struct OidcServer {
+    inner: Arc<dyn Oidc>,
+}
+
+impl oidc_capnp::Server for OidcServer {
+    async fn clients(
+        self: Rc<Self>,
+        _params: oidc_capnp::ClientsParams,
+        mut results: oidc_capnp::ClientsResults,
+    ) -> capnp::Result<()> {
+        let result = results.get().init_result();
+        match self.inner.clients().await {
+            Ok(clients) => fill_oidc_clients(result.init_ok(), &clients)?,
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
+    async fn authenticate_user(
+        self: Rc<Self>,
+        params: oidc_capnp::AuthenticateUserParams,
+        mut results: oidc_capnp::AuthenticateUserResults,
+    ) -> capnp::Result<()> {
+        let params = read_authenticate_user_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.authenticate_user(params).await;
+        write_external_user_reply(results.get().init_result(), &outcome)
+    }
+}
+
+struct PluginCliServer {
+    inner: Arc<dyn PluginCli>,
+}
+
+impl plugin_cli_capnp::Server for PluginCliServer {
+    async fn describe(
+        self: Rc<Self>,
+        _params: plugin_cli_capnp::DescribeParams,
+        mut results: plugin_cli_capnp::DescribeResults,
+    ) -> capnp::Result<()> {
+        let outcome = self.inner.describe().await;
+        write_cli_schema_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn invoke(
+        self: Rc<Self>,
+        params: plugin_cli_capnp::InvokeParams,
+        mut results: plugin_cli_capnp::InvokeResults,
+    ) -> capnp::Result<()> {
+        let params = read_cli_invoke_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.invoke(params).await;
+        write_cli_invoke_reply(results.get().init_result(), &outcome)
+    }
+}
+
+struct EventConsumerServer {
+    inner: Arc<dyn EventConsumer>,
+}
+
+impl event_consumer_capnp::Server for EventConsumerServer {
+    async fn event(
+        self: Rc<Self>,
+        params: event_consumer_capnp::EventParams,
+        mut results: event_consumer_capnp::EventResults,
+    ) -> capnp::Result<()> {
+        let list = params.get()?.get_batch()?.get_events()?;
+        let mut batch = Vec::with_capacity(list.len() as usize);
+        if list.len() > MAX_LIST_PAGE {
+            write_error(
+                results.get().init_result().init_err(),
+                &PluginError::payload_too_large(format!(
+                    "event batch of {} exceeds {MAX_LIST_PAGE}",
+                    list.len()
+                )),
+            );
+            return Ok(());
+        }
+        for r in list.iter() {
+            match read_domain_event(r) {
+                Ok(event) => batch.push(event),
+                Err(err) => {
+                    write_error(results.get().init_result().init_err(), &err);
+                    return Ok(());
+                }
+            }
+        }
+        let expected = batch.len();
+        let outcome = match self.inner.event(batch).await {
+            Ok(results) if results.len() != expected => Err(PluginError::internal(format!(
+                "event batch returned {} results for {expected} events",
+                results.len()
+            ))),
+            Ok(results) => match results.iter().find_map(|r| match r {
+                EventResult::Suspended {
+                    checkpoint_json, ..
+                } if checkpoint_json.len() > MAX_CHECKPOINT_BYTES as usize => {
+                    Some(checkpoint_json.len())
+                }
+                _ => None,
+            }) {
+                Some(len) => Err(PluginError::payload_too_large(format!(
+                    "checkpoint of {len} bytes exceeds {MAX_CHECKPOINT_BYTES}"
+                ))),
+                None => Ok(results),
+            },
+            Err(err) => Err(err),
+        };
+        let result = results.get().init_result();
+        match outcome {
+            Ok(items) => {
+                let mut list = result.init_ok(u32_len(items.len())?);
+                for (i, item) in items.iter().enumerate() {
+                    write_event_result(list.reborrow().get(u32_len(i)?), item);
+                }
+            }
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+}
+
+/// Host-side server for an [`EventPublisher`] handed to a guest on
+/// `Bindings.events`.
+struct EventPublisherServer {
+    inner: Arc<dyn EventPublisher>,
+}
+
+impl event_publisher_capnp::Server for EventPublisherServer {
+    async fn publish(
+        self: Rc<Self>,
+        params: event_publisher_capnp::PublishParams,
+        mut results: event_publisher_capnp::PublishResults,
+    ) -> capnp::Result<()> {
+        let event = read_plugin_event(params.get()?.get_event()?)?;
+        let outcome = if event.payload.len() > MAX_EVENT_PAYLOAD_BYTES as usize {
+            Err(PluginError::payload_too_large(format!(
+                "event payload of {} bytes exceeds {MAX_EVENT_PAYLOAD_BYTES}",
+                event.payload.len()
+            )))
+        } else {
+            self.inner.publish(event).await
+        };
+        write_publish_reply(results.get().init_result(), &outcome)
     }
 }
 
@@ -2534,77 +2596,55 @@ impl guest_database_capnp::Server for GuestDatabaseServer {
     }
 }
 
-struct JobHandlerServer {
-    inner: Arc<dyn JobHandler>,
+struct JobRunnerServer {
+    inner: Arc<dyn JobRunner>,
     window: u32,
 }
 
-impl JobHandlerServer {
-    fn new(inner: Arc<dyn JobHandler>, window: u32) -> Self {
+impl JobRunnerServer {
+    fn new(inner: Arc<dyn JobRunner>, window: u32) -> Self {
         Self { inner, window }
     }
 }
 
-impl job_handler::Server for JobHandlerServer {
-    async fn handle(
+impl job_runner_capnp::Server for JobRunnerServer {
+    async fn job(
         self: Rc<Self>,
-        params: job_handler::HandleParams,
-        mut results: job_handler::HandleResults,
+        params: job_runner_capnp::JobParams,
+        mut results: job_runner_capnp::JobResults,
     ) -> capnp::Result<()> {
-        let p = params.get()?;
-        let invocation = p
+        let c = params.get()?.get_controller()?;
+        let invocation = c
             .get_invocation()
             .map_err(|err| capnp::Error::failed(err.to_string()))
             .and_then(|r| {
-                read_invocation(r).map_err(|err| capnp::Error::failed(err.to_string()))
+                read_job_invocation(r).map_err(|err| capnp::Error::failed(err.to_string()))
             })?;
-        let input = p
+        let input = c
             .get_input()
             .ok()
             .ok_or_else(|| capnp::Error::failed("missing input source".into()))?;
-        let output = p
+        let output = c
             .get_output()
             .ok()
             .ok_or_else(|| capnp::Error::failed("missing output destination".into()))?;
-        let progress: Arc<dyn ProgressSink> = match p.get_progress().ok() {
+        let progress: Arc<dyn ProgressSink> = match c.get_progress().ok() {
             Some(client) => Arc::new(ProgressClient { client }),
             None => Arc::new(NullProgress),
         };
-        let cancel: Box<dyn Cancellation> = match p.get_cancel().ok() {
+        let cancel: Box<dyn Cancellation> = match c.get_cancel().ok() {
             Some(client) => Box::new(CancellationClient { client }),
             None => Box::new(NeverCancel),
         };
-        let database: Option<Box<dyn GuestDatabase>> = match p.get_database().ok() {
-            Some(client) => Some(Box::new(GuestDatabaseClient { client })),
-            None => None,
-        };
-        let mut databases: Vec<(String, Box<dyn GuestDatabase>)> = Vec::new();
-        if p.has_databases() {
-            let list = p
-                .get_databases()
-                .map_err(|err| capnp::Error::failed(err.to_string()))?;
-            for entry in list.iter() {
-                let name = entry
-                    .get_name()
-                    .and_then(|t| t.to_str().map_err(capnp::Error::from))
-                    .map_err(|err| capnp::Error::failed(err.to_string()))?
-                    .to_string();
-                let client = entry
-                    .get_database()
-                    .map_err(|err| capnp::Error::failed(err.to_string()))?;
-                databases.push((name, Box::new(GuestDatabaseClient { client })));
-            }
-        }
-        let ctx = JobHandlerContext {
+        let controller = JobController {
+            invocation,
             input: Box::new(SourceClient::new(input, self.window)),
             output: Box::new(DestinationClient::new(output, self.window)),
             progress: Box::new(ProgressArc(progress)),
-            database,
-            databases,
             cancel,
         };
         let result = results.get().init_result();
-        match self.inner.handle(invocation, ctx).await {
+        match self.inner.job(controller).await {
             Ok(outcome) => fill_job_outcome(result.init_ok(), &outcome)?,
             Err(err) => write_error(result.init_err(), &err),
         }
@@ -2653,10 +2693,67 @@ impl ProgressSink for ProgressArc {
     }
 }
 
+/// Host-side [`Bindings`]: plain values plus host-served capabilities the
+/// guest receives on `open`.
+pub struct HostBindings {
+    /// `CONFIG` / `SECRETS` / adapter bootstrap.
+    pub values: BindingValues,
+    /// `EVENTS` publisher; `None` unless `[[events.producers]]` is granted.
+    pub events: Option<Arc<dyn EventPublisher>>,
+    /// Named plugin-owned `[[databases]]` sessions.
+    pub databases: Vec<(String, Arc<dyn GuestDatabase>)>,
+    /// Invocation-wide cancellation (fence / lease loss).
+    pub cancel: Arc<dyn Cancellation>,
+    /// `WORK_FS` object storage; `None` unless `[work_fs]` is granted.
+    pub storage: Option<Arc<dyn Destination>>,
+}
+
+impl HostBindings {
+    /// Bindings with only plain values and no cancellation source.
+    #[must_use]
+    pub fn from_values(values: BindingValues) -> Self {
+        Self {
+            values,
+            events: None,
+            databases: Vec::new(),
+            cancel: Arc::new(NeverCancel),
+            storage: None,
+        }
+    }
+}
+
+impl Default for HostBindings {
+    fn default() -> Self {
+        Self::from_values(BindingValues::default())
+    }
+}
+
+/// Typed clients for the entrypoints a guest exported from `open`. `None`
+/// means the guest did not export that entrypoint.
+#[derive(Default)]
+pub struct OpenedEntrypoints {
+    /// `[[events.consumers]]` trigger.
+    pub event_consumer: Option<EventConsumerClient>,
+    /// `[triggers] jobs` trigger.
+    pub job_runner: Option<JobRunnerClient>,
+    /// `storefront` entrypoint.
+    pub storefront: Option<ContentSourceClient>,
+    /// `storage` entrypoint.
+    pub storage: Option<DestinationClient>,
+    /// `databaseAdapter` entrypoint.
+    pub database_adapter: Option<DatabaseClient>,
+    /// `remoteLibrary` entrypoint.
+    pub remote_library: Option<RemoteLibraryClient>,
+    /// `cli` entrypoint.
+    pub cli: Option<PluginCliClient>,
+    /// `oidc` entrypoint.
+    pub oidc: Option<OidcClient>,
+}
+
 /// Host bootstrap client for a plugin vat.
 #[derive(Clone)]
 pub struct PluginClient {
-    client: bookclerk_plugin::Client,
+    client: plugin_worker::Client,
     /// Negotiated stream window.
     pub window: u32,
     /// Negotiated scalar / list limits.
@@ -2666,7 +2763,7 @@ pub struct PluginClient {
 impl PluginClient {
     /// Wraps a bootstrap client.
     #[must_use]
-    pub fn new(client: bookclerk_plugin::Client, window: u32) -> Self {
+    pub fn new(client: plugin_worker::Client, window: u32) -> Self {
         let window = window.clamp(1, MAX_STREAM_WINDOW_BYTES);
         Self {
             client,
@@ -2716,301 +2813,131 @@ impl PluginClient {
         read_describe(m)
     }
 
-    /// Returns a destination capability.
+    /// Opens the exported entrypoints for `invocation` with host-granted
+    /// `bindings`.
     ///
     /// # Errors
     ///
-    /// Returns a plugin error when the factory call fails.
-    pub async fn destination(&self, ctx: DestinationContext) -> Result<DestinationClient> {
-        let mut req = self.client.destination_request();
-        {
-            let c = req.get().get_context().map_err(from_capnp)?;
-            write_extensible_config(c.init_config(), &ctx.config);
-        }
-        let reply = req.send().promise.await.map_err(from_capnp)?;
-        let result = reply
-            .get()
-            .map_err(from_capnp)?
-            .get_result()
-            .map_err(from_capnp)?;
-        match result.which().map_err(from_capnp)? {
-            destination_reply::Ok(dest) => Ok(DestinationClient::new(
-                dest.map_err(from_capnp)?,
-                self.window,
-            )
-            .with_max_list_page(self.limits.max_list_page)),
-            destination_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
-        }
-    }
-
-    /// Returns a source capability.
-    ///
-    /// # Errors
-    ///
-    /// Returns a plugin error when the factory call fails.
-    pub async fn source(&self, ctx: SourceContext) -> Result<SourceClient> {
-        let mut req = self.client.source_request();
-        {
-            let c = req.get().get_context().map_err(from_capnp)?;
-            write_extensible_config(c.init_config(), &ctx.config);
-        }
-        let reply = req.send().promise.await.map_err(from_capnp)?;
-        let result = reply
-            .get()
-            .map_err(from_capnp)?
-            .get_result()
-            .map_err(from_capnp)?;
-        match result.which().map_err(from_capnp)? {
-            source_reply::Ok(src) => Ok(SourceClient::new(src.map_err(from_capnp)?, self.window)),
-            source_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
-        }
-    }
-
-    /// Returns a job handler capability.
-    ///
-    /// # Errors
-    ///
-    /// Returns a plugin error when the factory call fails.
-    pub async fn worker(&self, ctx: WorkerContext) -> Result<job_handler::Client> {
-        let mut req = self.client.worker_request();
-        {
-            let mut c = req.get().get_context().map_err(from_capnp)?;
-            c.set_job_id(&ctx.job_id);
-            write_extensible_config(c.init_config(), &ctx.config);
-        }
-        let reply = req.send().promise.await.map_err(from_capnp)?;
-        let result = reply
-            .get()
-            .map_err(from_capnp)?
-            .get_result()
-            .map_err(from_capnp)?;
-        match result.which().map_err(from_capnp)? {
-            worker_reply::Ok(handler) => handler.map_err(from_capnp),
-            worker_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
-        }
-    }
-
-    /// Invokes `JobHandler.handle` with host-granted source/destination stubs.
-    ///
-    /// # Errors
-    ///
-    /// Returns a plugin error when the handler fails.
-    pub async fn handle_job(
+    /// Returns a plugin error when the RPC fails or the guest refuses the open.
+    pub async fn open(
         &self,
-        handler: job_handler::Client,
-        invocation: JobInvocation,
-        input: Arc<dyn Source>,
-        output: Arc<dyn Destination>,
-        progress: Arc<dyn ProgressSink>,
-    ) -> Result<JobOutcome> {
-        self.handle_job_with_cancel(
-            handler,
-            invocation,
-            input,
-            output,
-            progress,
-            Arc::new(NeverCancel),
-            None,
-            Vec::new(),
-        )
-        .await
-    }
-
-    /// [`Self::handle_job`] with an explicit cancellation capability.
-    ///
-    /// # Errors
-    ///
-    /// Returns a plugin error when the handler fails.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn handle_job_with_cancel(
-        &self,
-        handler: job_handler::Client,
-        invocation: JobInvocation,
-        input: Arc<dyn Source>,
-        output: Arc<dyn Destination>,
-        progress: Arc<dyn ProgressSink>,
-        cancel: Arc<dyn Cancellation>,
-        database: Option<Arc<dyn GuestDatabase>>,
-        databases: Vec<(String, Arc<dyn GuestDatabase>)>,
-    ) -> Result<JobOutcome> {
-        let mut req = handler.handle_request();
-        fill_invocation(req.get().get_invocation().map_err(from_capnp)?, &invocation)
-            .map_err(from_capnp)?;
-        req.get()
-            .set_input(capnp_rpc::new_client(SourceServer::new(input, self.window)));
-        req.get()
-            .set_output(capnp_rpc::new_client(DestinationServer::new(
-                output,
-                self.window,
-            )));
-        req.get()
-            .set_progress(capnp_rpc::new_client(ProgressServer { inner: progress }));
-        req.get()
-            .set_cancel(capnp_rpc::new_client(CancellationServer { inner: cancel }));
-        if let Some(db) = database {
-            req.get()
-                .set_database(capnp_rpc::new_client(GuestDatabaseServer { inner: db }));
-        }
-        if !databases.is_empty() {
-            let count = u32::try_from(databases.len())
-                .map_err(|_| PluginError::invalid_params("too many database bindings"))?;
-            let mut list = req.get().init_databases(count);
-            for (i, (name, db)) in databases.into_iter().enumerate() {
-                let mut entry = list.reborrow().get(u32::try_from(i).unwrap_or(u32::MAX));
-                entry.set_name(&name);
-                entry.set_database(capnp_rpc::new_client(GuestDatabaseServer { inner: db }));
-            }
-        }
-        let reply = req.send().promise.await.map_err(from_capnp)?;
-        let result = reply
-            .get()
-            .map_err(from_capnp)?
-            .get_result()
-            .map_err(from_capnp)?;
-        match result.which().map_err(from_capnp)? {
-            handle_reply::Ok(o) => read_job_outcome(o.map_err(from_capnp)?),
-            handle_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
-        }
-    }
-
-    /// Returns a storefront content-source capability.
-    ///
-    /// # Errors
-    ///
-    /// Returns a plugin error when the factory call fails.
-    pub async fn content_source(&self, ctx: ContentSourceContext) -> Result<ContentSourceClient> {
-        let mut req = self.client.content_source_request();
+        invocation: &Invocation,
+        bindings: HostBindings,
+    ) -> Result<OpenedEntrypoints> {
+        let mut req = self.client.open_request();
         {
-            let c = req.get().get_context().map_err(from_capnp)?;
-            write_extensible_config(c.init_config(), &ctx.config);
-        }
-        let reply = req.send().promise.await.map_err(from_capnp)?;
-        let result = reply
-            .get()
-            .map_err(from_capnp)?
-            .get_result()
-            .map_err(from_capnp)?;
-        match result.which().map_err(from_capnp)? {
-            content_source_reply::Ok(src) => Ok(ContentSourceClient {
-                client: src.map_err(from_capnp)?,
-            }),
-            content_source_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
-        }
-    }
-
-    /// Returns an integration capability.
-    ///
-    /// # Errors
-    ///
-    /// Returns a plugin error when the factory call fails.
-    pub async fn integration(&self, ctx: IntegrationContext) -> Result<IntegrationClient> {
-        let mut req = self.client.integration_request();
-        {
-            let c = req.get().get_context().map_err(from_capnp)?;
-            write_extensible_config(c.init_config(), &ctx.config);
-        }
-        let reply = req.send().promise.await.map_err(from_capnp)?;
-        let result = reply
-            .get()
-            .map_err(from_capnp)?
-            .get_result()
-            .map_err(from_capnp)?;
-        match result.which().map_err(from_capnp)? {
-            integration_reply::Ok(src) => Ok(IntegrationClient {
-                client: src.map_err(from_capnp)?,
-            }),
-            integration_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
-        }
-    }
-
-    /// Returns a database factory.
-    ///
-    /// # Errors
-    ///
-    /// Returns a plugin error when the factory call fails.
-    pub async fn database(&self, ctx: DatabaseContext) -> Result<DatabaseClient> {
-        let mut req = self.client.database_request();
-        {
-            let mut c = req.get().get_context().map_err(from_capnp)?;
-            // Host-private connect params (postgres URL, D1 token, sqlite path)
-            // travel in `config`; third-party adapters get typed `adapter`.
-            write_extensible_config(c.reborrow().init_config(), &ctx.config);
-            write_database_adapter_config(c.reborrow().init_adapter(), &ctx.adapter)
+            let mut p = req.get();
+            write_invocation(p.reborrow().init_invocation(), invocation).map_err(from_capnp)?;
+            let mut b = p.init_bindings();
+            write_extensible_config(b.reborrow().init_config(), &bindings.values.config);
+            write_extensible_config(b.reborrow().init_secrets(), &bindings.values.secrets);
+            write_database_adapter_config(b.reborrow().init_adapter(), &bindings.values.adapter)
                 .map_err(from_capnp)?;
-        }
-        let reply = req.send().promise.await.map_err(from_capnp)?;
-        let result = reply
-            .get()
-            .map_err(from_capnp)?
-            .get_result()
-            .map_err(from_capnp)?;
-        match result.which().map_err(from_capnp)? {
-            database_reply::Ok(src) => Ok(DatabaseClient {
-                client: src.map_err(from_capnp)?,
-            }),
-            database_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
-        }
-    }
-
-    /// Returns the guest's declared CLI surface.
-    ///
-    /// # Errors
-    ///
-    /// Returns a plugin error when the RPC fails.
-    pub async fn cli_describe(&self) -> Result<CliSchema> {
-        let req = self.client.cli_describe_request();
-        let reply = req.send().promise.await.map_err(from_capnp)?;
-        let result = reply
-            .get()
-            .map_err(from_capnp)?
-            .get_result()
-            .map_err(from_capnp)?;
-        read_cli_schema_reply(result).map_err(from_capnp)?
-    }
-
-    /// Runs one guest CLI command.
-    ///
-    /// # Errors
-    ///
-    /// Returns a plugin error when the RPC fails.
-    pub async fn cli_invoke(&self, params: CliInvokeParams) -> Result<CliInvokeResult> {
-        let mut req = self.client.cli_invoke_request();
-        write_cli_invoke_params(req.get().init_params(), &params).map_err(from_capnp)?;
-        let reply = req.send().promise.await.map_err(from_capnp)?;
-        let result = reply
-            .get()
-            .map_err(from_capnp)?
-            .get_result()
-            .map_err(from_capnp)?;
-        read_cli_invoke_reply(result).map_err(from_capnp)?
-    }
-
-    /// Lists plugin-provided OIDC authorization-server client templates.
-    ///
-    /// # Errors
-    ///
-    /// Returns a plugin error when the RPC fails. Older guests that lack
-    /// `oidcClients` surface `unsupported` / transport errors.
-    pub async fn oidc_clients(&self) -> Result<Vec<OidcClientTemplate>> {
-        let req = self.client.oidc_clients_request();
-        let reply = req.send().promise.await.map_err(from_capnp)?;
-        let result = reply
-            .get()
-            .map_err(from_capnp)?
-            .get_result()
-            .map_err(from_capnp)?;
-        match result.which().map_err(from_capnp)? {
-            oidc_clients_reply::Ok(ok) => {
-                let ok = ok.map_err(from_capnp)?;
-                let list = ok.get_clients().map_err(from_capnp)?;
-                let mut out = Vec::new();
-                for item in list.iter() {
-                    out.push(read_oidc_client_template(item)?);
-                }
-                Ok(out)
+            if let Some(events) = bindings.events {
+                b.set_events(capnp_rpc::new_client(EventPublisherServer {
+                    inner: events,
+                }));
             }
-            oidc_clients_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
+            if !bindings.databases.is_empty() {
+                let count = u32::try_from(bindings.databases.len())
+                    .map_err(|_| PluginError::invalid_params("too many database bindings"))?;
+                let mut list = b.reborrow().init_databases(count);
+                for (i, (name, db)) in bindings.databases.into_iter().enumerate() {
+                    let mut entry = list.reborrow().get(u32::try_from(i).unwrap_or(u32::MAX));
+                    entry.set_name(&name);
+                    entry.set_database(capnp_rpc::new_client(GuestDatabaseServer { inner: db }));
+                }
+            }
+            b.set_cancel(capnp_rpc::new_client(CancellationServer {
+                inner: bindings.cancel,
+            }));
+            if let Some(storage) = bindings.storage {
+                b.set_storage(capnp_rpc::new_client(DestinationServer::new(
+                    storage,
+                    self.window,
+                )));
+            }
         }
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        match result.which().map_err(from_capnp)? {
+            entrypoints_reply::Ok(eps) => self
+                .read_entrypoints(eps.map_err(from_capnp)?)
+                .map_err(from_capnp),
+            entrypoints_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
+        }
+    }
+
+    /// Wrap every non-null entrypoint capability in its typed client.
+    ///
+    /// # Errors
+    ///
+    /// Returns the Cap'n Proto error when a capability pointer is malformed.
+    fn read_entrypoints(&self, eps: entrypoints::Reader<'_>) -> capnp::Result<OpenedEntrypoints> {
+        Ok(OpenedEntrypoints {
+            event_consumer: if eps.has_event_consumer() {
+                Some(EventConsumerClient {
+                    client: eps.get_event_consumer()?,
+                })
+            } else {
+                None
+            },
+            job_runner: if eps.has_job_runner() {
+                Some(JobRunnerClient {
+                    client: eps.get_job_runner()?,
+                    window: self.window,
+                })
+            } else {
+                None
+            },
+            storefront: if eps.has_storefront() {
+                Some(ContentSourceClient {
+                    client: eps.get_storefront()?,
+                })
+            } else {
+                None
+            },
+            storage: if eps.has_storage() {
+                Some(
+                    DestinationClient::new(eps.get_storage()?, self.window)
+                        .with_max_list_page(self.limits.max_list_page),
+                )
+            } else {
+                None
+            },
+            database_adapter: if eps.has_database_adapter() {
+                Some(DatabaseClient {
+                    client: eps.get_database_adapter()?,
+                })
+            } else {
+                None
+            },
+            remote_library: if eps.has_remote_library() {
+                Some(RemoteLibraryClient {
+                    client: eps.get_remote_library()?,
+                })
+            } else {
+                None
+            },
+            cli: if eps.has_cli() {
+                Some(PluginCliClient {
+                    client: eps.get_cli()?,
+                })
+            } else {
+                None
+            },
+            oidc: if eps.has_oidc() {
+                Some(OidcClient {
+                    client: eps.get_oidc()?,
+                })
+            } else {
+                None
+            },
+        })
     }
 
     /// Complete ordered plugin-owned migration sequence for one named binding.
@@ -3064,6 +2991,7 @@ macro_rules! reply_result {
 }
 
 /// Cap'n Proto client for [`ContentSource`].
+#[derive(Clone)]
 pub struct ContentSourceClient {
     client: content_source_capnp::Client,
 }
@@ -3161,60 +3089,18 @@ impl ContentSource for ContentSourceClient {
     }
 }
 
-/// Cap'n Proto client for [`Integration`].
-pub struct IntegrationClient {
-    client: integration_capnp::Client,
+/// Cap'n Proto client for [`RemoteLibrary`].
+#[derive(Clone)]
+pub struct RemoteLibraryClient {
+    client: remote_library_capnp::Client,
 }
 
 #[async_trait::async_trait(?Send)]
-impl Integration for IntegrationClient {
+impl RemoteLibrary for RemoteLibraryClient {
     async fn health(&self) -> Result<HealthOk> {
         let req = self.client.health_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_health_reply(reply_result!(reply))
-    }
-    async fn on_event(&self, event: DomainEvent) -> Result<EventResult> {
-        if event.payload.len() > MAX_EVENT_PAYLOAD_BYTES as usize {
-            return Err(PluginError::payload_too_large(format!(
-                "domain event payload of {} bytes exceeds {MAX_EVENT_PAYLOAD_BYTES}",
-                event.payload.len()
-            )));
-        }
-        if event.checkpoint_json.len() > MAX_CHECKPOINT_BYTES as usize {
-            return Err(PluginError::payload_too_large(format!(
-                "checkpoint of {} bytes exceeds {MAX_CHECKPOINT_BYTES}",
-                event.checkpoint_json.len()
-            )));
-        }
-        let mut req = self.client.on_event_request();
-        {
-            let mut e = req.get().get_event().map_err(from_capnp)?;
-            e.set_event_id(&event.event_id);
-            e.set_event_type(&event.event_type);
-            e.set_schema_version(event.schema_version);
-            e.set_occurred_at_unix_ms(event.occurred_at_unix_ms);
-            e.set_account_id(&event.account_id);
-            e.set_correlation_id(&event.correlation_id);
-            e.set_causation_id(&event.causation_id);
-            e.set_deduplication_key(&event.deduplication_key);
-            e.set_delivery_attempt(event.delivery_attempt);
-            e.set_payload(&event.payload);
-            e.set_checkpoint_json(&event.checkpoint_json);
-            e.set_checkpoint_schema_version(event.checkpoint_schema_version);
-            e.set_invocation_sequence(event.invocation_sequence);
-            e.set_resume_pending(event.resume_pending);
-            e.set_source(&event.source);
-        }
-        let reply = req.send().promise.await.map_err(from_capnp)?;
-        let result = reply
-            .get()
-            .map_err(from_capnp)?
-            .get_result()
-            .map_err(from_capnp)?;
-        match result.which().map_err(from_capnp)? {
-            event_result_reply::Ok(ok) => read_event_result(ok.map_err(from_capnp)?),
-            event_result_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
-        }
     }
     async fn start(&self) -> Result<()> {
         let req = self.client.start_request();
@@ -3246,18 +3132,193 @@ impl Integration for IntegrationClient {
             .map_err(from_capnp)?
             .map(|ok| ok.items)
     }
-    async fn authenticate_user(&self, params: AuthenticateUserParams) -> Result<ExternalUser> {
-        let mut req = self.client.authenticate_user_request();
-        write_authenticate_user_params(req.get().init_params(), &params).map_err(from_capnp)?;
-        let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_external_user_reply(reply_result!(reply)).map_err(from_capnp)?
-    }
     async fn poll_events(&self) -> Result<Vec<ExternalUser>> {
         let req = self.client.poll_events_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_event_poll_reply(reply_result!(reply))
             .map_err(from_capnp)?
             .map(|ok| ok.users)
+    }
+}
+
+/// Cap'n Proto client for [`Oidc`].
+#[derive(Clone)]
+pub struct OidcClient {
+    client: oidc_capnp::Client,
+}
+
+#[async_trait::async_trait(?Send)]
+impl Oidc for OidcClient {
+    async fn clients(&self) -> Result<Vec<OidcClientTemplate>> {
+        let req = self.client.clients_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply_result!(reply);
+        match result.which().map_err(from_capnp)? {
+            oidc_clients_reply::Ok(ok) => {
+                let ok = ok.map_err(from_capnp)?;
+                let list = ok.get_clients().map_err(from_capnp)?;
+                let mut out = Vec::new();
+                for item in list.iter() {
+                    out.push(read_oidc_client_template(item)?);
+                }
+                Ok(out)
+            }
+            oidc_clients_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
+        }
+    }
+    async fn authenticate_user(&self, params: AuthenticateUserParams) -> Result<ExternalUser> {
+        let mut req = self.client.authenticate_user_request();
+        write_authenticate_user_params(req.get().init_params(), &params).map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_external_user_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+}
+
+/// Cap'n Proto client for [`PluginCli`].
+#[derive(Clone)]
+pub struct PluginCliClient {
+    client: plugin_cli_capnp::Client,
+}
+
+#[async_trait::async_trait(?Send)]
+impl PluginCli for PluginCliClient {
+    async fn describe(&self) -> Result<CliSchema> {
+        let req = self.client.describe_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_cli_schema_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+    async fn invoke(&self, params: CliInvokeParams) -> Result<CliInvokeResult> {
+        let mut req = self.client.invoke_request();
+        write_cli_invoke_params(req.get().init_params(), &params).map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_cli_invoke_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+}
+
+/// Cap'n Proto client for [`EventConsumer`] (host → guest delivery).
+#[derive(Clone)]
+pub struct EventConsumerClient {
+    client: event_consumer_capnp::Client,
+}
+
+#[async_trait::async_trait(?Send)]
+impl EventConsumer for EventConsumerClient {
+    async fn event(&self, batch: Vec<DomainEvent>) -> Result<Vec<EventResult>> {
+        if batch.len() > MAX_LIST_PAGE as usize {
+            return Err(PluginError::payload_too_large(format!(
+                "event batch of {} exceeds {MAX_LIST_PAGE}",
+                batch.len()
+            )));
+        }
+        for event in &batch {
+            if event.payload.len() > MAX_EVENT_PAYLOAD_BYTES as usize {
+                return Err(PluginError::payload_too_large(format!(
+                    "domain event payload of {} bytes exceeds {MAX_EVENT_PAYLOAD_BYTES}",
+                    event.payload.len()
+                )));
+            }
+            if event.checkpoint_json.len() > MAX_CHECKPOINT_BYTES as usize {
+                return Err(PluginError::payload_too_large(format!(
+                    "checkpoint of {} bytes exceeds {MAX_CHECKPOINT_BYTES}",
+                    event.checkpoint_json.len()
+                )));
+            }
+        }
+        let mut req = self.client.event_request();
+        {
+            let mut list = req
+                .get()
+                .init_batch()
+                .init_events(u32_len(batch.len()).map_err(from_capnp)?);
+            for (i, event) in batch.iter().enumerate() {
+                write_domain_event(list.reborrow().get(u32_len(i).map_err(from_capnp)?), event);
+            }
+        }
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply_result!(reply);
+        match result.which().map_err(from_capnp)? {
+            event_batch_reply::Ok(list) => {
+                let list = list.map_err(from_capnp)?;
+                if list.len() as usize != batch.len() {
+                    return Err(PluginError::internal(format!(
+                        "event batch reply has {} results for {} events",
+                        list.len(),
+                        batch.len()
+                    )));
+                }
+                let mut out = Vec::with_capacity(batch.len());
+                for r in list.iter() {
+                    out.push(read_event_result(r)?);
+                }
+                Ok(out)
+            }
+            event_batch_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
+        }
+    }
+}
+
+/// Cap'n Proto client for [`JobRunner`] (host → guest job dispatch).
+#[derive(Clone)]
+pub struct JobRunnerClient {
+    client: job_runner_capnp::Client,
+    window: u32,
+}
+
+impl JobRunnerClient {
+    /// Runs one job with host-served input / output / progress / cancel
+    /// capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the runner fails.
+    pub async fn job(
+        &self,
+        invocation: &JobInvocation,
+        input: Arc<dyn Source>,
+        output: Arc<dyn Destination>,
+        progress: Arc<dyn ProgressSink>,
+        cancel: Arc<dyn Cancellation>,
+    ) -> Result<JobOutcome> {
+        let mut req = self.client.job_request();
+        {
+            let mut c = req.get().init_controller();
+            fill_job_invocation(c.reborrow().init_invocation(), invocation).map_err(from_capnp)?;
+            c.set_input(capnp_rpc::new_client(SourceServer::new(input, self.window)));
+            c.set_output(capnp_rpc::new_client(DestinationServer::new(
+                output,
+                self.window,
+            )));
+            c.set_progress(capnp_rpc::new_client(ProgressServer { inner: progress }));
+            c.set_cancel(capnp_rpc::new_client(CancellationServer { inner: cancel }));
+        }
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply_result!(reply);
+        match result.which().map_err(from_capnp)? {
+            handle_reply::Ok(o) => read_job_outcome(o.map_err(from_capnp)?),
+            handle_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
+        }
+    }
+}
+
+/// Guest-side client for the host `EVENTS` binding ([`EventPublisher`]).
+#[derive(Clone)]
+pub struct EventPublisherClient {
+    client: event_publisher_capnp::Client,
+}
+
+#[async_trait::async_trait(?Send)]
+impl EventPublisher for EventPublisherClient {
+    async fn publish(&self, event: PluginEvent) -> Result<PublishOk> {
+        if event.payload.len() > MAX_EVENT_PAYLOAD_BYTES as usize {
+            return Err(PluginError::payload_too_large(format!(
+                "event payload of {} bytes exceeds {MAX_EVENT_PAYLOAD_BYTES}",
+                event.payload.len()
+            )));
+        }
+        let mut req = self.client.publish_request();
+        write_plugin_event(req.get().init_event(), &event).map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_publish_reply(reply_result!(reply)).map_err(from_capnp)?
     }
 }
 
@@ -3315,6 +3376,7 @@ fn read_event_result(r: event_result_capnp::Reader<'_>) -> Result<EventResult> {
 }
 
 /// Cap'n Proto client for [`Database`].
+#[derive(Clone)]
 pub struct DatabaseClient {
     client: database_capnp::Client,
 }
@@ -3560,7 +3622,7 @@ impl GuestDatabase for GuestDatabaseClient {
 ///
 /// Returns a plugin error when the vat fails.
 pub async fn serve_plugin<R, W>(
-    plugin: Arc<dyn PluginRoot>,
+    plugin: Arc<dyn PluginWorker>,
     reader: R,
     writer: W,
     window: u32,
@@ -3570,7 +3632,7 @@ where
     W: tokio::io::AsyncWrite + Unpin + 'static,
 {
     let window = window.clamp(1, MAX_STREAM_WINDOW_BYTES);
-    let client: bookclerk_plugin::Client = capnp_rpc::new_client(PluginServer::new(plugin, window));
+    let client: plugin_worker::Client = capnp_rpc::new_client(PluginServer::new(plugin, window));
     let network = twoparty::VatNetwork::new(
         reader.compat(),
         writer.compat_write(),
@@ -3588,7 +3650,7 @@ where
 /// # Errors
 ///
 /// Returns a plugin error when the vat fails.
-pub async fn serve_plugin_stdio(plugin: Arc<dyn PluginRoot>, window: u32) -> Result<()> {
+pub async fn serve_plugin_stdio(plugin: Arc<dyn PluginWorker>, window: u32) -> Result<()> {
     serve_plugin(plugin, tokio::io::stdin(), tokio::io::stdout(), window).await
 }
 
@@ -3612,7 +3674,7 @@ where
         Default::default(),
     );
     let mut rpc_system = RpcSystem::new(Box::new(network), None);
-    let client: bookclerk_plugin::Client = rpc_system.bootstrap(rpc_twoparty_capnp::Side::Server);
+    let client: plugin_worker::Client = rpc_system.bootstrap(rpc_twoparty_capnp::Side::Server);
     (
         PluginClient::new(client, window.clamp(1, MAX_STREAM_WINDOW_BYTES)),
         rpc_system,
@@ -3624,13 +3686,13 @@ where
 mod tests {
     use super::*;
     use crate::{
-        ByteRange, Cancellation, CopyResult, Database, DatabaseContext, Destination,
-        DestinationContext, DomainEvent, EventResult, ExtensibleConfig, GuestDatabase, HealthOk,
-        Integration, IntegrationContext, JobHandler, JobHandlerContext, JobInvocation, JobOutcome,
-        ListOptions, ListPage, ObjectInfo, ObjectMetadata, PluginDescribe, PluginRoot,
-        ProgressSink, PutResult, ReadResult, ScalarLimits, Source, SourceContext, WorkerContext,
-        WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STREAMS, MAX_CHECKPOINT_BYTES,
-        MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
+        BindingValues, Bindings, ByteRange, Cancellation, CopyResult, Destination, DomainEvent,
+        Entrypoint, Entrypoints, EventConsumer, EventConsumerSpec, EventResult, ExtensibleConfig,
+        GuestDatabase, HealthOk, Invocation, JobController, JobInvocation, JobOutcome, JobRunner,
+        ListOptions, ListPage, ObjectInfo, ObjectMetadata, Oidc, PluginCapabilities,
+        PluginDescribe, PluginWorker, ProgressSink, PutResult, ReadResult, RemoteLibrary,
+        ScalarLimits, Source, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STREAMS,
+        MAX_CHECKPOINT_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
         MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES,
         PRODUCT_API_VERSION,
     };
@@ -3766,12 +3828,15 @@ mod tests {
     }
 
     #[async_trait::async_trait(?Send)]
-    impl PluginRoot for TestPlugin {
+    impl PluginWorker for TestPlugin {
         async fn describe(&self) -> Result<PluginDescribe> {
             Ok(PluginDescribe {
                 api_version: PRODUCT_API_VERSION,
                 id: "native_test".into(),
-                kind: "output".into(),
+                capabilities: PluginCapabilities {
+                    entrypoints: vec![Entrypoint::Storage, Entrypoint::Oidc],
+                    ..PluginCapabilities::default()
+                },
                 display_name: None,
                 rpc_features: vec![FEATURE_SCALAR_LIMITS.into(), FEATURE_STREAMS.into()],
                 scalar_limits: ScalarLimits::default().into(),
@@ -3779,28 +3844,12 @@ mod tests {
             })
         }
 
-        async fn destination(&self, _context: DestinationContext) -> Result<Box<dyn Destination>> {
-            Ok(Box::new(DestClone(Arc::clone(&self.dest))))
-        }
-
-        async fn source(&self, _context: SourceContext) -> Result<Box<dyn Source>> {
-            Err(PluginError::unsupported("source"))
-        }
-
-        async fn worker(&self, _context: WorkerContext) -> Result<Box<dyn JobHandler>> {
-            Err(PluginError::unsupported("worker"))
-        }
-
-        async fn oidc_clients(&self) -> Result<Vec<OidcClientTemplate>> {
-            Ok(vec![OidcClientTemplate {
-                client_id: "abs".into(),
-                display_name: "Audiobookshelf".into(),
-                callback_path: "/auth/openid/callback".into(),
-                public_client: true,
-                default_scopes: vec!["openid".into(), "profile".into()],
-                issue_refresh_token: true,
-                origin_config_key: "integrations.audiobookshelf.base_url".into(),
-            }])
+        async fn open(&self, _invocation: Invocation, _bindings: Bindings) -> Result<Entrypoints> {
+            Ok(Entrypoints {
+                storage: Some(Box::new(DestClone(Arc::clone(&self.dest)))),
+                oidc: Some(Box::new(TestOidc)),
+                ..Entrypoints::default()
+            })
         }
 
         async fn database_migrations(&self, binding: &str) -> Result<Vec<PluginMigration>> {
@@ -3820,27 +3869,46 @@ mod tests {
         }
     }
 
+    struct TestOidc;
+
+    #[async_trait::async_trait(?Send)]
+    impl Oidc for TestOidc {
+        async fn clients(&self) -> Result<Vec<OidcClientTemplate>> {
+            Ok(vec![OidcClientTemplate {
+                client_id: "abs".into(),
+                display_name: "Audiobookshelf".into(),
+                callback_path: "/auth/openid/callback".into(),
+                public_client: true,
+                default_scopes: vec!["openid".into(), "profile".into()],
+                issue_refresh_token: true,
+                origin_config_key: "integrations.audiobookshelf.base_url".into(),
+            }])
+        }
+    }
+
     struct CaptureDbPlugin {
-        seen: Mutex<Option<DatabaseContext>>,
+        seen: Mutex<Option<BindingValues>>,
     }
 
     #[async_trait::async_trait(?Send)]
-    impl PluginRoot for CaptureDbPlugin {
+    impl PluginWorker for CaptureDbPlugin {
         async fn describe(&self) -> Result<PluginDescribe> {
             Ok(PluginDescribe {
                 api_version: PRODUCT_API_VERSION,
                 id: "db_ctx".into(),
-                kind: "database".into(),
+                capabilities: PluginCapabilities {
+                    entrypoints: vec![Entrypoint::DatabaseAdapter],
+                    ..PluginCapabilities::default()
+                },
                 display_name: None,
                 rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
                 scalar_limits: ScalarLimits::default().into(),
-                supported_roles: vec!["database".into()],
                 ..PluginDescribe::default()
             })
         }
 
-        async fn database(&self, context: DatabaseContext) -> Result<Box<dyn Database>> {
-            *self.seen.lock().expect("seen") = Some(context);
+        async fn open(&self, _invocation: Invocation, bindings: Bindings) -> Result<Entrypoints> {
+            *self.seen.lock().expect("seen") = Some(bindings.values());
             Err(PluginError::unsupported("database"))
         }
     }
@@ -3908,27 +3976,18 @@ mod tests {
         }
     }
 
-    struct DbProbeHandler;
+    /// Job runner that receives the `DB` binding taken from `open` bindings.
+    struct DbProbeHandler {
+        db: Mutex<Option<Box<dyn GuestDatabase>>>,
+    }
 
     #[async_trait::async_trait(?Send)]
-    impl JobHandler for DbProbeHandler {
-        async fn handle(
-            &self,
-            _invocation: JobInvocation,
-            mut context: JobHandlerContext,
-        ) -> Result<JobOutcome> {
-            if context.database.take().is_some() {
-                return Err(PluginError::internal(
-                    "host library database must not be injected",
-                ));
-            }
-            let Some(named) = context.take_named_database("DB") else {
+    impl JobRunner for DbProbeHandler {
+        async fn job(&self, _controller: JobController) -> Result<JobOutcome> {
+            let Some(named) = self.db.lock().expect("db").take() else {
                 return Err(PluginError::internal("named database binding missing"));
             };
             named.close().await?;
-            if context.take_named_database("OTHER").is_some() {
-                return Err(PluginError::internal("unexpected extra binding"));
-            }
             Ok(JobOutcome::Completed {
                 message: "named-database-injected".into(),
                 bytes_copied: 0,
@@ -3941,12 +4000,15 @@ mod tests {
     }
 
     #[async_trait::async_trait(?Send)]
-    impl PluginRoot for DbProbePlugin {
+    impl PluginWorker for DbProbePlugin {
         async fn describe(&self) -> Result<PluginDescribe> {
             Ok(PluginDescribe {
                 api_version: PRODUCT_API_VERSION,
                 id: "db_probe".into(),
-                kind: "output".into(),
+                capabilities: PluginCapabilities {
+                    entrypoints: vec![Entrypoint::Storage],
+                    ..PluginCapabilities::default()
+                },
                 display_name: None,
                 rpc_features: vec![FEATURE_SCALAR_LIMITS.into(), FEATURE_STREAMS.into()],
                 scalar_limits: ScalarLimits::default().into(),
@@ -3954,37 +4016,49 @@ mod tests {
             })
         }
 
-        async fn destination(&self, _context: DestinationContext) -> Result<Box<dyn Destination>> {
-            Ok(Box::new(DestClone(Arc::clone(&self.dest))))
-        }
-
-        async fn source(&self, _context: SourceContext) -> Result<Box<dyn Source>> {
-            Ok(Box::new(DestClone(Arc::clone(&self.dest))))
-        }
-
-        async fn worker(&self, _context: WorkerContext) -> Result<Box<dyn JobHandler>> {
-            Ok(Box::new(DbProbeHandler))
+        async fn open(
+            &self,
+            invocation: Invocation,
+            mut bindings: Bindings,
+        ) -> Result<Entrypoints> {
+            if invocation.id != "probe" {
+                return Err(PluginError::internal("invocation id not forwarded"));
+            }
+            let Some(named) = bindings.take_named_database("DB") else {
+                return Err(PluginError::internal("named database binding missing"));
+            };
+            if bindings.take_named_database("OTHER").is_some() {
+                return Err(PluginError::internal("unexpected extra binding"));
+            }
+            if bindings.events.is_some() {
+                return Err(PluginError::internal(
+                    "EVENTS must be null when not granted",
+                ));
+            }
+            Ok(Entrypoints {
+                storage: Some(Box::new(DestClone(Arc::clone(&self.dest)))),
+                job_runner: Some(Box::new(DbProbeHandler {
+                    db: Mutex::new(Some(named)),
+                })),
+                ..Entrypoints::default()
+            })
         }
     }
 
     struct SlowHandler;
 
     #[async_trait::async_trait(?Send)]
-    impl JobHandler for SlowHandler {
-        async fn handle(
-            &self,
-            _invocation: JobInvocation,
-            context: JobHandlerContext,
-        ) -> Result<JobOutcome> {
+    impl JobRunner for SlowHandler {
+        async fn job(&self, controller: JobController) -> Result<JobOutcome> {
             for _ in 0..200 {
-                if context.cancel.poll().await? {
+                if controller.cancel.poll().await? {
                     return Ok(JobOutcome::Cancelled {
                         message: "fence lost".into(),
                     });
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            context
+            controller
                 .output
                 .put(
                     "from-a",
@@ -4004,12 +4078,15 @@ mod tests {
     }
 
     #[async_trait::async_trait(?Send)]
-    impl PluginRoot for LeasePlugin {
+    impl PluginWorker for LeasePlugin {
         async fn describe(&self) -> Result<PluginDescribe> {
             Ok(PluginDescribe {
                 api_version: PRODUCT_API_VERSION,
                 id: "native_test".into(),
-                kind: "output".into(),
+                capabilities: PluginCapabilities {
+                    entrypoints: vec![Entrypoint::Storage],
+                    ..PluginCapabilities::default()
+                },
                 display_name: None,
                 rpc_features: vec![FEATURE_SCALAR_LIMITS.into(), FEATURE_STREAMS.into()],
                 scalar_limits: ScalarLimits::default().into(),
@@ -4017,80 +4094,108 @@ mod tests {
             })
         }
 
-        async fn destination(&self, _context: DestinationContext) -> Result<Box<dyn Destination>> {
-            Ok(Box::new(DestClone(Arc::clone(&self.dest))))
-        }
-
-        async fn source(&self, _context: SourceContext) -> Result<Box<dyn Source>> {
-            Ok(Box::new(DestClone(Arc::clone(&self.dest))))
-        }
-
-        async fn worker(&self, _context: WorkerContext) -> Result<Box<dyn JobHandler>> {
-            Ok(Box::new(SlowHandler))
+        async fn open(&self, _invocation: Invocation, _bindings: Bindings) -> Result<Entrypoints> {
+            Ok(Entrypoints {
+                storage: Some(Box::new(DestClone(Arc::clone(&self.dest)))),
+                job_runner: Some(Box::new(SlowHandler)),
+                ..Entrypoints::default()
+            })
         }
     }
 
     struct EventPlugin;
 
     #[async_trait::async_trait(?Send)]
-    impl PluginRoot for EventPlugin {
+    impl PluginWorker for EventPlugin {
         async fn describe(&self) -> Result<PluginDescribe> {
             Ok(PluginDescribe {
                 api_version: PRODUCT_API_VERSION,
                 id: "event_test".into(),
-                kind: "integration".into(),
+                capabilities: PluginCapabilities {
+                    consumes: vec![EventConsumerSpec {
+                        event_type: "book_acquired".into(),
+                        schema_versions: vec![1],
+                        supports_suspend: false,
+                    }],
+                    ..PluginCapabilities::default()
+                },
                 rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
                 scalar_limits: ScalarLimits::default().into(),
-                supported_roles: vec!["integration".into()],
                 ..PluginDescribe::default()
             })
         }
 
-        async fn integration(&self, _context: IntegrationContext) -> Result<Box<dyn Integration>> {
-            Ok(Box::new(EventIntegration))
+        async fn open(&self, _invocation: Invocation, _bindings: Bindings) -> Result<Entrypoints> {
+            Ok(Entrypoints {
+                event_consumer: Some(Box::new(EventIntegration)),
+                remote_library: Some(Box::new(EventIntegration)),
+                ..Entrypoints::default()
+            })
         }
     }
 
     struct EventIntegration;
 
     #[async_trait::async_trait(?Send)]
-    impl Integration for EventIntegration {
+    impl RemoteLibrary for EventIntegration {
         async fn health(&self) -> Result<HealthOk> {
             Ok(HealthOk {
                 ok: true,
                 detail: "event test".into(),
             })
         }
+    }
 
-        async fn on_event(&self, event: DomainEvent) -> Result<EventResult> {
-            Ok(match event.event_type.as_str() {
-                "test_retry" => EventResult::Retry {
-                    retry_at_unix_ms: 9,
-                    reason: "retry".into(),
-                },
-                "test_reject" => EventResult::Reject {
-                    reason: "reject".into(),
-                },
-                "test_dead_letter" => EventResult::DeadLetter {
-                    reason: "dead".into(),
-                },
-                "test_suspend" => EventResult::Suspended {
-                    checkpoint_json: r#"{"n":1}"#.into(),
-                    checkpoint_schema_version: 1,
-                    wake_at_unix_ms: 3,
-                    wake_on_event_type: String::new(),
-                    wake_on_filter_json: String::new(),
-                },
-                "test_suspend_huge" => EventResult::Suspended {
-                    checkpoint_json: "x".repeat(MAX_CHECKPOINT_BYTES as usize + 1),
-                    checkpoint_schema_version: 1,
-                    wake_at_unix_ms: 3,
-                    wake_on_event_type: String::new(),
-                    wake_on_filter_json: String::new(),
-                },
-                _ => EventResult::Ack,
-            })
+    #[async_trait::async_trait(?Send)]
+    impl EventConsumer for EventIntegration {
+        async fn event(&self, batch: Vec<DomainEvent>) -> Result<Vec<EventResult>> {
+            Ok(batch.into_iter().map(event_result_for).collect())
         }
+    }
+
+    fn event_result_for(event: DomainEvent) -> EventResult {
+        match event.event_type.as_str() {
+            "test_retry" => EventResult::Retry {
+                retry_at_unix_ms: 9,
+                reason: "retry".into(),
+            },
+            "test_reject" => EventResult::Reject {
+                reason: "reject".into(),
+            },
+            "test_dead_letter" => EventResult::DeadLetter {
+                reason: "dead".into(),
+            },
+            "test_suspend" => EventResult::Suspended {
+                checkpoint_json: r#"{"n":1}"#.into(),
+                checkpoint_schema_version: 1,
+                wake_at_unix_ms: 3,
+                wake_on_event_type: String::new(),
+                wake_on_filter_json: String::new(),
+            },
+            "test_suspend_huge" => EventResult::Suspended {
+                checkpoint_json: "x".repeat(MAX_CHECKPOINT_BYTES as usize + 1),
+                checkpoint_schema_version: 1,
+                wake_at_unix_ms: 3,
+                wake_on_event_type: String::new(),
+                wake_on_filter_json: String::new(),
+            },
+            _ => EventResult::Ack,
+        }
+    }
+
+    /// Opens the guest with default bindings, panicking when `open` fails.
+    async fn open_default(client: &PluginClient) -> OpenedEntrypoints {
+        client
+            .open(&Invocation::default(), HostBindings::default())
+            .await
+            .expect("open")
+    }
+
+    /// Delivers a single-event batch and returns its one result.
+    async fn deliver(consumer: &EventConsumerClient, event: DomainEvent) -> Result<EventResult> {
+        let mut results = consumer.event(vec![event]).await?;
+        assert_eq!(results.len(), 1);
+        Ok(results.pop().expect("one result"))
     }
 
     fn sample_event(event_type: &str) -> DomainEvent {
@@ -4120,20 +4225,33 @@ mod tests {
                 });
                 let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
                 tokio::task::spawn_local(rpc);
-                let integration = client
-                    .integration(IntegrationContext::default())
-                    .await
-                    .expect("integration");
+                let opened = open_default(&client).await;
+                let remote = opened.remote_library.expect("remoteLibrary");
+                assert!(remote.health().await.expect("health").ok);
+                let consumer = opened.event_consumer.expect("eventConsumer");
                 assert_eq!(
-                    integration
-                        .on_event(sample_event("book_acquired"))
+                    deliver(&consumer, sample_event("book_acquired"))
                         .await
                         .unwrap(),
                     EventResult::Ack
                 );
                 assert_eq!(
-                    integration
-                        .on_event(sample_event("test_retry"))
+                    consumer
+                        .event(vec![
+                            sample_event("book_acquired"),
+                            sample_event("test_reject"),
+                        ])
+                        .await
+                        .unwrap(),
+                    vec![
+                        EventResult::Ack,
+                        EventResult::Reject {
+                            reason: "reject".into(),
+                        },
+                    ]
+                );
+                assert_eq!(
+                    deliver(&consumer, sample_event("test_retry"))
                         .await
                         .unwrap(),
                     EventResult::Retry {
@@ -4142,8 +4260,7 @@ mod tests {
                     }
                 );
                 assert_eq!(
-                    integration
-                        .on_event(sample_event("test_reject"))
+                    deliver(&consumer, sample_event("test_reject"))
                         .await
                         .unwrap(),
                     EventResult::Reject {
@@ -4151,8 +4268,7 @@ mod tests {
                     }
                 );
                 assert_eq!(
-                    integration
-                        .on_event(sample_event("test_dead_letter"))
+                    deliver(&consumer, sample_event("test_dead_letter"))
                         .await
                         .unwrap(),
                     EventResult::DeadLetter {
@@ -4160,8 +4276,7 @@ mod tests {
                     }
                 );
                 assert_eq!(
-                    integration
-                        .on_event(sample_event("test_suspend"))
+                    deliver(&consumer, sample_event("test_suspend"))
                         .await
                         .unwrap(),
                     EventResult::Suspended {
@@ -4174,12 +4289,16 @@ mod tests {
                 );
                 let mut oversized = sample_event("book_acquired");
                 oversized.payload = vec![0; MAX_EVENT_PAYLOAD_BYTES as usize + 1];
-                let err = integration.on_event(oversized).await.unwrap_err();
+                let err = deliver(&consumer, oversized).await.unwrap_err();
                 assert_eq!(err.code, crate::PluginErrorCode::PayloadTooLarge);
-                let err = integration
-                    .on_event(sample_event("test_suspend_huge"))
+                let err = deliver(&consumer, sample_event("test_suspend_huge"))
                     .await
                     .unwrap_err();
+                assert_eq!(err.code, crate::PluginErrorCode::PayloadTooLarge);
+                let too_many = (0..=MAX_LIST_PAGE)
+                    .map(|_| sample_event("book_acquired"))
+                    .collect::<Vec<_>>();
+                let err = consumer.event(too_many).await.unwrap_err();
                 assert_eq!(err.code, crate::PluginErrorCode::PayloadTooLarge);
             })
             .await;
@@ -4204,7 +4323,11 @@ mod tests {
                 });
                 let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
                 tokio::task::spawn_local(rpc);
-                let clients = client.oidc_clients().await.expect("oidcClients");
+                let opened = open_default(&client).await;
+                assert!(opened.storage.is_some(), "storage exported");
+                assert!(opened.storefront.is_none(), "storefront not exported");
+                assert!(opened.job_runner.is_none(), "jobRunner not exported");
+                let clients = opened.oidc.expect("oidc").clients().await.expect("clients");
                 assert_eq!(clients.len(), 1);
                 assert_eq!(clients[0].client_id, "abs");
                 assert_eq!(clients[0].callback_path, "/auth/openid/callback");
@@ -4540,7 +4663,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn database_factory_forwards_extensible_config() {
+    async fn open_forwards_binding_values() {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
@@ -4556,12 +4679,17 @@ mod tests {
                 });
                 let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
                 tokio::task::spawn_local(rpc);
-                let sent = DatabaseContext {
+                let sent = BindingValues {
                     config: ExtensibleConfig {
                         schema_version: 1,
                         media_type: "application/vnd.bookclerk.db-connect+json".into(),
                         payload: br#"{"backend":"postgres","url":"postgres://example/db"}"#
                             .to_vec(),
+                    },
+                    secrets: ExtensibleConfig {
+                        schema_version: 1,
+                        media_type: "application/json".into(),
+                        payload: br#"{"token":"s"}"#.to_vec(),
                     },
                     adapter: crate::DatabaseAdapterConfig {
                         plugin_data_dir: "/tmp/plugins/probe/data".into(),
@@ -4569,9 +4697,15 @@ mod tests {
                         ..crate::DatabaseAdapterConfig::default()
                     },
                 };
-                let err = match client.database(sent.clone()).await {
+                let err = match client
+                    .open(
+                        &Invocation::default(),
+                        HostBindings::from_values(sent.clone()),
+                    )
+                    .await
+                {
                     Err(err) => err,
-                    Ok(_) => panic!("probe guest must return unsupported, not a session"),
+                    Ok(_) => panic!("probe guest must return unsupported, not entrypoints"),
                 };
                 assert_eq!(err.code, PluginErrorCode::Unsupported);
                 let got = seen
@@ -4579,17 +4713,110 @@ mod tests {
                     .lock()
                     .expect("seen")
                     .clone()
-                    .expect("guest received DatabaseContext");
-                assert_eq!(got.config.schema_version, sent.config.schema_version);
-                assert_eq!(got.config.media_type, sent.config.media_type);
-                assert_eq!(got.config.payload, sent.config.payload);
-                assert_eq!(got.adapter, sent.adapter);
+                    .expect("guest received bindings");
+                assert_eq!(got, sent);
+            })
+            .await;
+    }
+
+    /// Guest that re-exports its granted `WORK_FS` storage binding as its own
+    /// `storage` entrypoint, so host calls round-trip through the guest vat.
+    struct StorageEchoPlugin;
+
+    #[async_trait::async_trait(?Send)]
+    impl PluginWorker for StorageEchoPlugin {
+        async fn describe(&self) -> Result<PluginDescribe> {
+            Ok(PluginDescribe {
+                api_version: PRODUCT_API_VERSION,
+                id: "storage_echo".into(),
+                capabilities: PluginCapabilities {
+                    entrypoints: vec![Entrypoint::Storage],
+                    ..PluginCapabilities::default()
+                },
+                rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
+                scalar_limits: ScalarLimits::default().into(),
+                ..PluginDescribe::default()
+            })
+        }
+
+        async fn open(&self, _invocation: Invocation, bindings: Bindings) -> Result<Entrypoints> {
+            let storage = bindings
+                .storage
+                .ok_or_else(|| PluginError::invalid_params("WORK_FS binding missing"))?;
+            Ok(Entrypoints {
+                storage: Some(storage),
+                ..Entrypoints::default()
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_forwards_storage_binding() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (client_end, server_end) = duplex(64 * 1024);
+                let (server_r, server_w) = tokio::io::split(server_end);
+                let (client_r, client_w) = tokio::io::split(client_end);
+                tokio::task::spawn_local(async move {
+                    let _ =
+                        serve_plugin(Arc::new(StorageEchoPlugin), server_r, server_w, 64 * 1024)
+                            .await;
+                });
+                let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
+                tokio::task::spawn_local(rpc);
+
+                let missing = client
+                    .open(&Invocation::default(), HostBindings::default())
+                    .await
+                    .err()
+                    .expect("no storage binding -> guest refuses open");
+                assert_eq!(missing.code, PluginErrorCode::InvalidParams);
+
+                let store = Arc::new(MemDest {
+                    store: Mutex::new(HashMap::new()),
+                });
+                let opened = client
+                    .open(
+                        &Invocation::default(),
+                        HostBindings {
+                            storage: Some(Arc::clone(&store) as Arc<dyn Destination>),
+                            ..HostBindings::default()
+                        },
+                    )
+                    .await
+                    .expect("open with WORK_FS");
+                let storage = opened.storage.expect("guest exports storage");
+                storage
+                    .put(
+                        "work/notes.txt",
+                        Box::pin(std::io::Cursor::new(b"granted".to_vec())),
+                        WriteOptions::default(),
+                    )
+                    .await
+                    .expect("put through guest");
+                assert_eq!(
+                    store
+                        .store
+                        .lock()
+                        .expect("lock")
+                        .get("work/notes.txt")
+                        .map(Vec::as_slice),
+                    Some(&b"granted"[..]),
+                    "bytes land in the host-granted store"
+                );
+                let head = storage
+                    .head("work/notes.txt")
+                    .await
+                    .expect("head through guest")
+                    .expect("present");
+                assert_eq!(head.size, 7);
             })
             .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn handle_job_injects_database_session() {
+    async fn open_injects_named_database_binding() {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
@@ -4607,30 +4834,37 @@ mod tests {
                 });
                 let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
                 tokio::task::spawn_local(rpc);
-                let handler = client
-                    .worker(WorkerContext {
-                        job_id: "probe".into(),
-                        ..Default::default()
-                    })
+                let opened = client
+                    .open(
+                        &Invocation {
+                            id: "probe".into(),
+                            ..Invocation::default()
+                        },
+                        HostBindings {
+                            values: BindingValues::default(),
+                            events: None,
+                            databases: vec![(
+                                "DB".to_string(),
+                                Arc::new(GuestDbProbe) as Arc<dyn GuestDatabase>,
+                            )],
+                            cancel: Arc::new(TestCancel(Arc::new(AtomicBool::new(false)))),
+                            storage: None,
+                        },
+                    )
                     .await
-                    .expect("worker");
+                    .expect("open");
+                let runner = opened.job_runner.expect("jobRunner");
                 let granted = Arc::new(DestClone(Arc::clone(&store)));
-                let outcome = client
-                    .handle_job_with_cancel(
-                        handler,
-                        JobInvocation::stream_copy("probe", "{}"),
+                let outcome = runner
+                    .job(
+                        &JobInvocation::stream_copy("probe", "{}"),
                         granted.clone() as Arc<dyn Source>,
                         granted as Arc<dyn Destination>,
                         Arc::new(NoopProgress),
                         Arc::new(TestCancel(Arc::new(AtomicBool::new(false)))),
-                        None,
-                        vec![(
-                            "DB".to_string(),
-                            Arc::new(GuestDbProbe) as Arc<dyn GuestDatabase>,
-                        )],
                     )
                     .await
-                    .expect("handle");
+                    .expect("job");
                 match outcome {
                     JobOutcome::Completed { message, .. } => {
                         assert_eq!(message, "named-database-injected");
@@ -4660,10 +4894,7 @@ mod tests {
                 });
                 let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
                 tokio::task::spawn_local(rpc);
-                let dest = client
-                    .destination(DestinationContext::default())
-                    .await
-                    .expect("dest");
+                let dest = open_default(&client).await.storage.expect("storage");
                 let err = dest.head("internal-msg").await.expect_err("must fail");
                 assert_eq!(err.code, PluginErrorCode::Internal);
                 assert!(err.message.contains("not_found"));
@@ -4693,10 +4924,7 @@ mod tests {
                 });
                 let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
                 tokio::task::spawn_local(rpc);
-                let dest = client
-                    .destination(DestinationContext::default())
-                    .await
-                    .expect("dest");
+                let dest = open_default(&client).await.storage.expect("storage");
                 let err = dest
                     .list(ListOptions::default())
                     .await
@@ -4725,10 +4953,7 @@ mod tests {
                 });
                 let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
                 tokio::task::spawn_local(rpc);
-                let dest = client
-                    .destination(DestinationContext::default())
-                    .await
-                    .expect("dest");
+                let dest = open_default(&client).await.storage.expect("storage");
                 dest.put(
                     "keep",
                     Box::pin(std::io::Cursor::new(b"original".to_vec())),
@@ -4779,13 +5004,7 @@ mod tests {
                 });
                 let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
                 tokio::task::spawn_local(rpc);
-                let handler = client
-                    .worker(WorkerContext {
-                        job_id: "lease".into(),
-                        ..Default::default()
-                    })
-                    .await
-                    .expect("worker");
+                let runner = open_default(&client).await.job_runner.expect("jobRunner");
                 let granted = Arc::new(DestClone(Arc::clone(&store)));
                 let flag = Arc::new(AtomicBool::new(false));
                 let cancel_flag = Arc::clone(&flag);
@@ -4795,15 +5014,12 @@ mod tests {
                 });
                 let outcome = tokio::time::timeout(
                     Duration::from_secs(10),
-                    client.handle_job_with_cancel(
-                        handler,
-                        JobInvocation::stream_copy("lease", "{}"),
+                    runner.job(
+                        &JobInvocation::stream_copy("lease", "{}"),
                         granted.clone() as Arc<dyn Source>,
                         granted as Arc<dyn Destination>,
                         Arc::new(NoopProgress),
                         Arc::new(TestCancel(flag)),
-                        None,
-                        Vec::new(),
                     ),
                 )
                 .await

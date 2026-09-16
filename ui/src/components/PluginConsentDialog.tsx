@@ -362,7 +362,7 @@ export function PluginConsentDialog({
             <div className="min-w-0">
               <p className="truncate text-base font-semibold text-ink">{brandName}</p>
               <p className="truncate text-xs text-ink/50">
-                {[request.kind || "plugin", isWorkerd ? "workerd" : "native"]
+                {[request.entrypoints?.length ? request.entrypoints.join(" · ") : "plugin", isWorkerd ? "workerd" : "native"]
                   .filter(Boolean)
                   .join(" · ")}
               </p>

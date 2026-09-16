@@ -3,11 +3,12 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use async_trait::async_trait;
+use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    serve, Brand, CatalogHit, ContentSource as ContentSourceRole, ContentSourceContext,
-    ExpandCandidatesParams, FetchTitleParams, HealthOk, ListDealsParams, LoginParams, LoginResult,
-    PlainFetch, PluginDescribe, PluginError, PluginRoot, PortalAuthMode, PurchaseHint,
-    PurchaseHintParams, ScalarLimits, ScanParams, ScanSummary, SearchCatalogParams,
+    serve, Bindings, Brand, CatalogHit, ContentSource as ContentSourceRole, Entrypoints,
+    ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams, LoginParams,
+    LoginResult, PlainFetch, PluginDescribe, PluginError, PluginWorker, PortalAuthMode,
+    PurchaseHint, PurchaseHintParams, ScalarLimits, ScanParams, ScanSummary, SearchCatalogParams,
     FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_source::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
@@ -18,27 +19,15 @@ use serde_json::Value;
 struct GraphicAudioRoot;
 
 #[async_trait(?Send)]
-impl PluginRoot for GraphicAudioRoot {
+impl PluginWorker for GraphicAudioRoot {
     async fn describe(&self) -> Result<PluginDescribe, PluginError> {
         Ok(PluginDescribe {
             api_version: PRODUCT_API_VERSION,
             id: "graphicaudio".into(),
-            kind: "source".into(),
             display_name: Some("GraphicAudio".into()),
             rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
             scalar_limits: ScalarLimits::default().into(),
-            supported_roles: vec!["contentSource".into()],
-            capabilities: vec![
-                "health".into(),
-                "diagnose".into(),
-                "login".into(),
-                "scan".into(),
-                "fetchTitle".into(),
-                "searchCatalog".into(),
-                "expandCandidates".into(),
-                "purchaseHint".into(),
-                "listDeals".into(),
-            ],
+            capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
             portal_auth_mode: PortalAuthMode::Password,
             password_env_var: Some(bookclerk_plugin_source_graphicaudio::GA_PASSWORD_ENV.into()),
             aliases: vec!["ga".into(), "graphic-audio".into()],
@@ -57,11 +46,15 @@ impl PluginRoot for GraphicAudioRoot {
         })
     }
 
-    async fn content_source(
+    async fn open(
         &self,
-        _context: ContentSourceContext,
-    ) -> Result<Box<dyn ContentSourceRole>, PluginError> {
-        Ok(Box::new(GraphicAudioContentSource))
+        _invocation: Invocation,
+        _bindings: Bindings,
+    ) -> Result<Entrypoints, PluginError> {
+        Ok(Entrypoints {
+            storefront: Some(Box::new(GraphicAudioContentSource)),
+            ..Entrypoints::default()
+        })
     }
 }
 

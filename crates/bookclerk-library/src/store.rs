@@ -182,7 +182,7 @@ impl LibraryStore {
 
     /// Runs guest-authored SQL after grammar, table-scope, and cap checks.
     ///
-    /// Hosts inject this into `JobHandler.handle` as the granted
+    /// Hosts inject this into `JobRunner.job` as the granted
     /// [`bookclerk_plugin_abi::GuestDatabase::execute`] path.
     /// Job sessions pass a host-issued [`GuestSqlPolicy`](bookclerk_plugin_abi::GuestSqlPolicy)
     /// (`books` by default).

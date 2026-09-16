@@ -1,4 +1,4 @@
-# Bookclerk plugin ABI — object-capability Workers RPC (`api_version = 2`).
+# Bookclerk plugin ABI — object-capability Workers RPC (`api_version = 3`).
 #
 # This file is the first supported plugin contract. Discarded development
 # compatibility fields were removed and ordinals compacted. From this contract
@@ -13,12 +13,18 @@
 # - Every variable-length field is bounded by the constants below.
 # - Identifiers are non-empty `[a-z][a-z0-9_]{0,63}`. Timestamps are UTC
 #   unix milliseconds (UInt64); zero means omitted.
-# - Absent factories/methods return typed `unsupported`.
-# - `describe()` advertises `supportedRoles`. The signed manifest is the host
-#   allowlist of what may be invoked (kind alone is not sufficient).
+# - Absent entrypoints are null capabilities in `Entrypoints`; absent methods
+#   return typed `unsupported`.
+# - `describe()` advertises typed `PluginCapabilities` (exported entrypoints,
+#   triggers, bindings). The signed manifest plus the operator grant is the
+#   host allowlist; a guest that widens beyond either is refused.
+# - The guest root is `PluginWorker`: `describe()`, then
+#   `open(invocation, bindings)` returns the exported `Entrypoints` for one
+#   invocation. Bindings (`env` in the Workers idiom) carry config, secrets,
+#   the `EVENTS` publisher, and named `[[databases]]` sessions.
 #
 # Authors never see transport-private capability table indexes. Public types
-# are the interfaces below plus TypeScript `BookclerkPlugin`. ByteSource is
+# are the interfaces below plus TypeScript `BookclerkEntrypoint`. ByteSource is
 # the Cap'n Proto realization of a transferred byte ReadableStream.
 #
 # Method results are typed success/error unions. SDKs map `err` onto a thrown
@@ -26,7 +32,7 @@
 @0x816df58cae22db0c;
 
 # Product ABI version (`plugin.toml` `api_version` / `describe().apiVersion`).
-const apiVersion :UInt32 = 2;
+const apiVersion :UInt32 = 3;
 # Maximum decoded size of an ordinary RPC scalar value (not a stream window).
 const maxScalarBytes :UInt32 = 262144;
 # Maximum bytes returned by one `ByteSource.pull` (flow-control window).
@@ -178,36 +184,31 @@ struct PluginDescribe {
   apiVersion @0 :UInt32;
   # Stable plugin id (`[a-z][a-z0-9_]{0,63}`).
   id @1 :Text;
-  # Manifest kind (`source`, `integration`, `output`, `database`).
-  kind @2 :Text;
   # Human-readable name for UI lists.
-  displayName @3 :Text;
+  displayName @2 :Text;
   # Negotiable feature names the guest supports (see `feature*` constants).
-  rpcFeatures @4 :List(Text);
+  rpcFeatures @3 :List(Text);
   # Guest caps when `rpc.scalarLimits` is advertised.
-  scalarLimits @5 :ScalarLimits;
-  # Advertised factories (`destination`, `source`, `worker`, `contentSource`,
-  # `integration`, `database`). Host still intersects with the manifest allowlist.
-  supportedRoles @6 :List(Text);
-  # Capability method names the guest implements (e.g. `health`, `login`,
-  # `fetchTitle`). The host intersects these with the consent grant.
-  capabilities @7 :List(Text);
+  scalarLimits @4 :ScalarLimits;
+  # Exported entrypoints, triggers, and bindings the guest implements. The
+  # host rejects anything wider than the manifest and the operator grant.
+  capabilities @5 :PluginCapabilities;
   # Portal Accounts connect mode for storefronts.
-  portalAuthMode @8 :PortalAuthMode;
+  portalAuthMode @6 :PortalAuthMode;
   # Env var name operators may set for password helpers; never required for
   # Accounts UI connect. Empty when the guest accepts none.
-  passwordEnvVar @9 :Text $optional;
+  passwordEnvVar @7 :Text $optional;
   # Alternate ids accepted for config / CLI targeting.
-  aliases @10 :List(Text);
-  # UI sort weight among peers of the same kind; lower sorts first.
-  sortKey @11 :UInt32;
+  aliases @8 :List(Text);
+  # UI sort weight among peers of the same family; lower sorts first.
+  sortKey @9 :UInt32;
   # Portal brand colors and icon URL; `brand.id` is empty when the guest has
   # no brand and the host renders a neutral fallback.
-  brand @12 :Brand;
+  brand @10 :Brand;
   # Discoverable config option groups for source UIs.
-  configOptions @13 :List(ConfigOption);
-  # Embedded CLI schema (same shape as `cliDescribe`); empty when unused.
-  cli @14 :CliSchema;
+  configOptions @11 :List(ConfigOption);
+  # Embedded CLI schema (same shape as `PluginCli.describe`); empty when unused.
+  cli @12 :CliSchema;
 }
 
 # Marks a scalar field whose zero value (empty `Text` / `Data`, numeric `0`)
@@ -235,13 +236,13 @@ struct OidcClientTemplate {
   originConfigKey @6 :Text;
 }
 
-# Success payload of `BookclerkPlugin.oidcClients`.
+# Success payload of `Oidc.clients`.
 struct OidcClientsOk {
   # Client templates; empty when the plugin is not a relying party.
   clients @0 :List(OidcClientTemplate);
 }
 
-# Result union of `BookclerkPlugin.oidcClients`.
+# Result union of `Oidc.clients`.
 struct OidcClientsReply {
   union {
     # Success: OIDC client templates.
@@ -261,52 +262,65 @@ struct ExtensibleConfig {
   payload @2 :Data;
 }
 
-# Granted configuration for `BookclerkPlugin.destination`. OS paths, FDs,
-# and sockets are transport-private.
-struct DestinationContext {
-  # Granted plugin settings (operator `[output.<id>]` table as
-  # `application/json`).
+# Host-granted bindings for one `PluginWorker.open` (`env` in the Workers
+# idiom). OS paths, FDs, and sockets are transport-private. Capability fields
+# are null when the manifest does not declare (or the operator did not grant)
+# the binding.
+struct Bindings {
+  # `CONFIG`: granted plugin settings (operator `[vars]` plus the family
+  # settings table) as `application/json`; at most `maxConfigPayloadBytes`.
   config @0 :ExtensibleConfig;
+  # `SECRETS`: granted secret values as `application/json`; empty payload
+  # when the manifest declares no `[secrets]`.
+  secrets @1 :ExtensibleConfig;
+  # Database-adapter bootstrap for the `databaseAdapter` entrypoint. First-party
+  # host-managed adapters receive host-private connect params in `config`;
+  # third-party adapters receive this typed bootstrap (and an empty `config`).
+  adapter @2 :DatabaseAdapterConfig;
+  # `EVENTS`: outbox publisher; null unless `[[events.producers]]` is granted.
+  events @3 :EventPublisher;
+  # Named plugin-owned `[[databases]]` bindings: each entry is an isolated
+  # database provisioned by the active adapter, separate from the Bookclerk
+  # library and from every other plugin. Empty when the manifest declares none.
+  databases @4 :List(NamedDatabase);
+  # Host cancellation for the whole invocation (fence / lease loss).
+  cancel @5 :Cancellation;
+  # `WORK_FS`: host-granted object storage for durable plugin files (work
+  # filesystem); null unless `[work_fs]` is granted. Job input/output travel on
+  # `JobRunner.job(controller)`, never here.
+  storage @6 :Destination;
 }
 
-# Granted configuration for `BookclerkPlugin.source`.
-struct SourceContext {
-  # Granted plugin settings as `application/json`.
-  config @0 :ExtensibleConfig;
+# Exported entrypoints returned by `PluginWorker.open`. One capability per
+# `plugin.toml` `entrypoints` entry / trigger; null when not exported. The host
+# refuses an entrypoint the manifest or operator grant did not allow.
+struct Entrypoints {
+  # `[[events.consumers]]` trigger: `event(batch)` handler.
+  eventConsumer @0 :EventConsumer;
+  # `[triggers] jobs` trigger: `job(controller)` handler.
+  jobRunner @1 :JobRunner;
+  # `storefront` entrypoint.
+  storefront @2 :ContentSource;
+  # `storage` entrypoint.
+  storage @3 :Destination;
+  # `databaseAdapter` entrypoint.
+  databaseAdapter @4 :Database;
+  # `remoteLibrary` entrypoint.
+  remoteLibrary @5 :RemoteLibrary;
+  # `cli` entrypoint.
+  cli @6 :PluginCli;
+  # `oidc` entrypoint.
+  oidc @7 :Oidc;
 }
 
-# Granted configuration for `BookclerkPlugin.worker`.
-struct WorkerContext {
-  # Host job id this handler serves.
-  jobId @0 :Text;
-  # Granted plugin settings as `application/json`.
-  config @1 :ExtensibleConfig;
-}
-
-# Granted configuration for `BookclerkPlugin.contentSource`.
-struct ContentSourceContext {
-  # Granted plugin settings (operator `[sources.<id>]` table as
-  # `application/json`).
-  config @0 :ExtensibleConfig;
-}
-
-# Granted configuration for `BookclerkPlugin.integration`.
-struct IntegrationContext {
-  # Granted plugin settings (operator `[integrations.<id>]` table as
-  # `application/json`).
-  config @0 :ExtensibleConfig;
-}
-
-# Granted configuration for `BookclerkPlugin.database`. First-party
-# host-managed adapters receive host-private connect params in `config`;
-# third-party adapters receive the typed `adapter` bootstrap instead.
-struct DatabaseContext {
-  # Host-private connect params for first-party adapters; empty payload for
-  # third-party adapters.
-  config @0 :ExtensibleConfig;
-  # Author-facing bootstrap for third-party adapters; `pluginDataDir` is
-  # empty when `config` carries host-private params instead.
-  adapter @1 :DatabaseAdapterConfig;
+# Result union of `PluginWorker.open`.
+struct EntrypointsReply {
+  union {
+    # Success: exported entrypoint capabilities.
+    ok @0 :Entrypoints;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
 }
 
 # Durable command envelope (not a domain event). Command payload schema
@@ -382,7 +396,7 @@ struct SuspendedOutcome {
   wakeAtUnixMs @2 :UInt64;
 }
 
-# Terminal or suspended result of `JobHandler.handle`.
+# Terminal or suspended result of `JobRunner.job`.
 struct JobOutcome {
   union {
     # Finished successfully.
@@ -474,7 +488,7 @@ struct EventSuspended {
   wakeOnFilterJson @4 :Text;
 }
 
-# Outcome of `Integration.onEvent`.
+# Per-event outcome inside an `EventConsumer.event` batch reply.
 struct EventResult {
   union {
     # Handled.
@@ -488,6 +502,40 @@ struct EventResult {
     # Released with a checkpoint.
     suspended @4 :EventSuspended;
   }
+}
+
+# One `EventConsumer.event` delivery: at most `maxListPage` events, each
+# bounded by `maxEventPayloadBytes` / `maxCheckpointBytes`.
+struct EventBatch {
+  # Events in delivery order; the reply carries one `EventResult` per entry.
+  events @0 :List(DomainEvent);
+}
+
+# Result union of `EventConsumer.event`. `ok` has exactly one entry per
+# `EventBatch.events` entry, in order; a short list is a host-side error and
+# the missing tail is retried.
+struct EventBatchReply {
+  union {
+    # Success: per-event outcomes.
+    ok @0 :List(EventResult);
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Everything one `JobRunner.job` invocation may touch. Capabilities are
+# host-served; the guest never sees OS paths or sockets.
+struct JobController {
+  # Durable command envelope.
+  invocation @0 :JobInvocation;
+  # Job input objects.
+  input @1 :Source;
+  # Job output object store.
+  output @2 :Destination;
+  # Progress reporter (host coalesces frequent updates).
+  progress @3 :ProgressSink;
+  # Host cancellation probe for this job (fence / lease).
+  cancel @4 :Cancellation;
 }
 
 # Success payload of `Destination.head`.
@@ -602,7 +650,7 @@ struct OpenReply {
   }
 }
 
-# Result union of `BookclerkPlugin.describe`.
+# Result union of `PluginWorker.describe`.
 struct DescribeReply {
   union {
     # Success: plugin identity.
@@ -612,81 +660,11 @@ struct DescribeReply {
   }
 }
 
-# Result union of `BookclerkPlugin.destination`.
-struct DestinationReply {
-  union {
-    # Success: opened `Destination` capability.
-    ok @0 :Destination;
-    # Typed failure; `code` is a `PluginErrorCode` wire string.
-    err @1 :PluginError;
-  }
-}
-
-# Result union of `BookclerkPlugin.source`.
-struct SourceReply {
-  union {
-    # Success: opened `Source` capability.
-    ok @0 :Source;
-    # Typed failure; `code` is a `PluginErrorCode` wire string.
-    err @1 :PluginError;
-  }
-}
-
-# Result union of `BookclerkPlugin.worker`.
-struct WorkerReply {
-  union {
-    # Success: opened `JobHandler` capability.
-    ok @0 :JobHandler;
-    # Typed failure; `code` is a `PluginErrorCode` wire string.
-    err @1 :PluginError;
-  }
-}
-
-# Result union of `JobHandler.handle`.
+# Result union of `JobRunner.job`.
 struct HandleReply {
   union {
     # Success: job outcome.
     ok @0 :JobOutcome;
-    # Typed failure; `code` is a `PluginErrorCode` wire string.
-    err @1 :PluginError;
-  }
-}
-
-# Result union of `BookclerkPlugin.contentSource`.
-struct ContentSourceReply {
-  union {
-    # Success: opened `ContentSource` capability.
-    ok @0 :ContentSource;
-    # Typed failure; `code` is a `PluginErrorCode` wire string.
-    err @1 :PluginError;
-  }
-}
-
-# Result union of `BookclerkPlugin.integration`.
-struct IntegrationReply {
-  union {
-    # Success: opened `Integration` capability.
-    ok @0 :Integration;
-    # Typed failure; `code` is a `PluginErrorCode` wire string.
-    err @1 :PluginError;
-  }
-}
-
-# Result union of `BookclerkPlugin.database`.
-struct DatabaseReply {
-  union {
-    # Success: opened `Database` capability.
-    ok @0 :Database;
-    # Typed failure; `code` is a `PluginErrorCode` wire string.
-    err @1 :PluginError;
-  }
-}
-
-# Result union of `Integration.onEvent`.
-struct EventResultReply {
-  union {
-    # Success: event handling outcome.
-    ok @0 :EventResult;
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }
@@ -809,28 +787,36 @@ interface Cancellation {
   poll @0 () -> (cancelled :Bool);
 }
 
-# Job handler returned by `BookclerkPlugin.worker`; runs one durable command.
-interface JobHandler {
-  # Run one command invocation to a terminal or suspended outcome.
-  handle @0 (
-      invocation :JobInvocation,  # Durable command envelope.
-      input :Source,  # Job input objects.
-      output :Destination,  # Job output object store.
-      progress :ProgressSink,  # Progress reporter.
-      cancel :Cancellation,  # Host cancellation probe.
-      # Append-only. Host-mediated typed SQL session.
-      database :GuestDatabase,
-      # Append-only. Named plugin-owned database bindings
-      # (Workers-style): each entry is an isolated database provisioned by
-      # the active adapter, separate from the Bookclerk library and from
-      # every other plugin. Empty when the manifest declares none.
-      databases :List(NamedDatabase))
-      -> (result :HandleReply);
+# `[triggers] jobs` handler (`Entrypoints.jobRunner`); runs one durable command.
+interface JobRunner {
+  # Run one command invocation to a terminal or suspended outcome. Named
+  # database bindings come from `Bindings.databases` at `open`, not per job.
+  job @0 (
+      controller :JobController  # Envelope plus host-served capabilities.
+  ) -> (result :HandleReply);
 }
 
-# One named plugin-owned database binding delivered on `JobHandler.handle`.
+# `[[events.consumers]]` handler (`Entrypoints.eventConsumer`). Delivery is
+# at-least-once; consumers must be idempotent on `deduplicationKey`.
+interface EventConsumer {
+  # Deliver one ordered batch of domain events.
+  event @0 (
+      batch :EventBatch  # Events in delivery order.
+  ) -> (result :EventBatchReply);
+}
+
+# `EVENTS` binding: host-served outbox publisher granted through
+# `Bindings.events`. Event types must be listed in `[[events.producers]]`.
+interface EventPublisher {
+  # Append one event to the outbox (idempotent on `deduplicationKey`).
+  publish @0 (
+      event :PluginEvent  # Event to publish.
+  ) -> (result :PublishReply);
+}
+
+# One named plugin-owned database binding delivered on `Bindings.databases`.
 struct NamedDatabase {
-  # Binding name from `plugin.toml` `capabilities.bindings.databases`.
+  # Binding name from `plugin.toml` `[[databases]]`.
   name @0 :Text;
   # Isolated typed SQL session for this binding (plugin-owned schema).
   database @1 :GuestDatabase;
@@ -887,32 +873,47 @@ interface ContentSource {
   ) -> (result :CatalogDetailReply);
 }
 
-# Long-running integration (remote library, listening sync, IdP bridge).
-interface Integration {
+# `remoteLibrary` entrypoint: long-running remote-library lifecycle (start /
+# stop, library rescan, listening sync, external-user polling). Event delivery
+# is `EventConsumer`; credential verification is `Oidc`.
+interface RemoteLibrary {
   # Liveness / readiness probe.
   health @0 () -> (result :HealthReply);
-  # Deliver one domain event (at-least-once; must be idempotent).
-  onEvent @1 (
-      event :DomainEvent  # Event envelope.
-  ) -> (result :EventResultReply);
   # Start background work after the host has granted bindings.
-  start @2 () -> (result :EmptyReply);
+  start @1 () -> (result :EmptyReply);
   # Stop background work; the host may drop the capability afterwards.
-  stop @3 () -> (result :EmptyReply);
+  stop @2 () -> (result :EmptyReply);
   # Human-readable diagnostic lines.
-  diagnose @4 () -> (result :DiagnoseReply);
+  diagnose @3 () -> (result :DiagnoseReply);
   # Re-sync the remote library.
-  scanLibrary @5 (
+  scanLibrary @4 (
       params :ScanLibraryParams  # Full-rescan flag.
   ) -> (result :EmptyReply);
   # Push / pull listening progress.
-  syncListening @6 () -> (result :SyncListeningReply);
+  syncListening @5 () -> (result :SyncListeningReply);
+  # Drain external users the remote side observed since the last poll.
+  pollEvents @6 () -> (result :EventPollReply);
+}
+
+# `cli` entrypoint: guest commands under `bookclerk plugins <id> <command>`.
+interface PluginCli {
+  # Declared CLI surface.
+  describe @0 () -> (result :CliSchemaReply);
+  # Run one plugin CLI command.
+  invoke @1 (
+      params :CliInvokeParams  # Command name and argument values.
+  ) -> (result :CliInvokeReply);
+}
+
+# `oidc` entrypoint: relying-party client templates and credential
+# verification on behalf of the host authorization server.
+interface Oidc {
+  # Plugin-provided OIDC AS client templates. Empty list when unused.
+  clients @0 () -> (result :OidcClientsReply);
   # Verify remote credentials on behalf of the host.
-  authenticateUser @7 (
+  authenticateUser @1 (
       params :AuthenticateUserParams  # Username and password.
   ) -> (result :ExternalUserReply);
-  # Drain events the remote side produced since the last poll.
-  pollEvents @8 () -> (result :EventPollReply);
 }
 
 # Marks an enum whose wire strings (where an enum travels as `Text`, e.g.
@@ -954,7 +955,7 @@ enum PluginErrorCode $jsonEnum {
 # Typed method payloads
 #
 # Real Cap'n Proto wire structs for `describe()` identity extras, every
-# `ContentSource` / `Integration` method, and the plugin CLI. Rust DTOs and
+# `ContentSource` / `RemoteLibrary` / `Oidc` method, and the plugin CLI. Rust DTOs and
 # codecs for this section are generated into `src/generated.rs`; the
 # TypeScript and Python SDK types and codecs come from the same emitter.
 # Scalars marked `$optional` use the zero value as "absent". Credentials are
@@ -963,6 +964,54 @@ enum PluginErrorCode $jsonEnum {
 #############################################################################
 
 # --- rust-generated: begin ---
+
+# Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
+# analogue). Each value is a capability the host calls over RPC; triggers on
+# the default entrypoint (`event`, `job`) are declared separately.
+enum Entrypoint {
+  # Storefront: login, scan, fetch, catalog search (`ContentSource`).
+  storefront @0;
+  # Object storage destination (`Destination`).
+  storage @1;
+  # Library database adapter (`Database`).
+  databaseAdapter @2;
+  # Remote-library lifecycle: start/stop, scanLibrary, syncListening,
+  # pollEvents (`RemoteLibrary`).
+  remoteLibrary @3;
+  # Guest CLI (`PluginCli.describe` / `PluginCli.invoke`).
+  cli @4;
+  # OIDC bridge: relying-party client templates and `authenticateUser`.
+  oidc @5;
+}
+
+# One declared event consumer: a `[[events.consumers]]` row the default
+# entrypoint's `event(batch)` handler accepts.
+struct EventConsumerSpec {
+  # Versioned event type (snake_case, e.g. `book_acquired`).
+  eventType @0 :Text;
+  # Schema versions the guest can consume; never empty.
+  schemaVersions @1 :List(UInt32);
+  # Whether `EventResult.suspended` is supported for this type.
+  supportsSuspend @2 :Bool;
+}
+
+# Typed capability declaration returned by `describe()`. The host compares
+# it with `plugin.toml` and the operator grant; widening is rejected at spawn.
+struct PluginCapabilities {
+  # Named entrypoints the guest exports.
+  entrypoints @0 :List(Entrypoint);
+  # Event types the default entrypoint consumes (`event(batch)` trigger).
+  consumes @1 :List(EventConsumerSpec);
+  # Event types the guest may publish through its `EVENTS` binding.
+  produces @2 :List(Text);
+  # Command types the default entrypoint runs (`job(controller)` trigger).
+  jobs @3 :List(Text);
+  # Plugin-owned database binding names (`[[databases]]`).
+  databases @4 :List(Text);
+  # Other named bindings the guest expects on `env` (`CONFIG`, `SECRETS`,
+  # `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, ...).
+  bindings @5 :List(Text);
+}
 
 # Portal Accounts connect mode for storefronts.
 enum PortalAuthMode {
@@ -1009,7 +1058,7 @@ struct ConfigOptionValue {
   label @1 :Text;
 }
 
-# Declared plugin CLI surface (`cliDescribe` / `describe().cli`).
+# Declared plugin CLI surface (`PluginCli.describe` / `describe().cli`).
 struct CliSchema {
   # Commands exposed as `bookclerk plugins <id> <command> ...`.
   commands @0 :List(CliCommandSpec);
@@ -1057,7 +1106,7 @@ struct CliArgSpec {
   positional @7 :Bool;
 }
 
-# One named argument value passed to `cliInvoke`.
+# One named argument value passed to `PluginCli.invoke`.
 struct CliArg {
   # Arg name matching a `CliArgSpec.name`.
   name @0 :Text;
@@ -1065,7 +1114,7 @@ struct CliArg {
   value @1 :Text;
 }
 
-# Params of `BookclerkPlugin.cliInvoke`.
+# Params of `PluginCli.invoke`.
 struct CliInvokeParams {
   # Command name matching a `CliCommandSpec.name`.
   command @0 :Text;
@@ -1073,7 +1122,7 @@ struct CliInvokeParams {
   args @1 :List(CliArg);
 }
 
-# Result of `BookclerkPlugin.cliInvoke`.
+# Result of `PluginCli.invoke`.
 struct CliInvokeResult {
   # Process-style exit code (0 = success).
   exitCode @0 :Int32;
@@ -1085,7 +1134,7 @@ struct CliInvokeResult {
   payload @3 :ExtensibleConfig;
 }
 
-# Result union of `BookclerkPlugin.cliDescribe`.
+# Result union of `PluginCli.describe`.
 struct CliSchemaReply {
   union {
     # Success: declared CLI surface.
@@ -1095,7 +1144,7 @@ struct CliSchemaReply {
   }
 }
 
-# Result union of `BookclerkPlugin.cliInvoke`.
+# Result union of `PluginCli.invoke`.
 struct CliInvokeReply {
   union {
     # Success: command output.
@@ -1684,14 +1733,14 @@ struct PurchaseHintReply {
   }
 }
 
-# Params of `Integration.scanLibrary` (remote library sync).
+# Params of `RemoteLibrary.scanLibrary` (remote library sync).
 struct ScanLibraryParams {
   # When true, force a full rescan even if the guest would otherwise
   # incremental-sync.
   force @0 :Bool;
 }
 
-# Params of `Integration.authenticateUser`.
+# Params of `Oidc.authenticateUser`.
 struct AuthenticateUserParams {
   # Integration username / login id.
   username @0 :Text;
@@ -1713,7 +1762,7 @@ struct ExternalUser {
   accessToken @3 :Text $optional;
 }
 
-# Result union of `Integration.authenticateUser`.
+# Result union of `Oidc.authenticateUser`.
 struct ExternalUserReply {
   union {
     # Success: verified external user.
@@ -1723,14 +1772,14 @@ struct ExternalUserReply {
   }
 }
 
-# Success payload of `Integration.pollEvents`: signals for the host to kick
+# Success payload of `RemoteLibrary.pollEvents`: signals for the host to kick
 # off workflows.
 struct EventPollResult {
   # Newly observed external users since the last poll.
   users @0 :List(ExternalUser);
 }
 
-# Result union of `Integration.pollEvents`.
+# Result union of `RemoteLibrary.pollEvents`.
 struct EventPollReply {
   union {
     # Success: observed users.
@@ -1769,13 +1818,13 @@ struct ListeningProgress {
   lastListenedAtUnixMs @11 :UInt64 $optional;
 }
 
-# Success payload of `Integration.syncListening`.
+# Success payload of `RemoteLibrary.syncListening`.
 struct SyncListeningResult {
   # Progress snapshots to upsert.
   items @0 :List(ListeningProgress);
 }
 
-# Result union of `Integration.syncListening`.
+# Result union of `RemoteLibrary.syncListening`.
 struct SyncListeningReply {
   union {
     # Success: progress snapshots.
@@ -1783,6 +1832,63 @@ struct SyncListeningReply {
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }
+}
+
+# Guest-published domain event (`EventPublisher.publish`). The host stamps
+# `eventId`, `source` (the plugin id), and `accountId` from the invocation;
+# guests cannot forge either.
+struct PluginEvent {
+  # Snake_case event type; must be listed in `[[events.producers]]`.
+  eventType @0 :Text;
+  # Schema version of `payload`, owned by the event type.
+  schemaVersion @1 :UInt32;
+  # Producer idempotency key, unique per (account, source, eventType) in the
+  # outbox; a repeat returns `PublishOk.duplicate = true` with the earlier id.
+  # Empty publishes unconditionally.
+  deduplicationKey @2 :Text;
+  # Encoded event payload; at most `maxEventPayloadBytes`.
+  payload @3 :Data;
+  # When the producer observed the fact; zero means "now" on the host clock.
+  occurredAtUnixMs @4 :UInt64;
+  # Trace correlation id; empty inherits `Invocation.correlationId`.
+  correlationId @5 :Text;
+  # Id of the event or command that caused this one; empty inherits
+  # `Invocation.causationId`.
+  causationId @6 :Text;
+}
+
+# Success payload of `EventPublisher.publish`.
+struct PublishOk {
+  # Outbox event id (new or the earlier row when `duplicate`).
+  eventId @0 :Text;
+  # True when `deduplicationKey` matched an existing outbox row.
+  duplicate @1 :Bool;
+}
+
+# Result union of `EventPublisher.publish`.
+struct PublishReply {
+  union {
+    # Success: outbox row identity.
+    ok @0 :PublishOk;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Identity of one `PluginWorker.open` invocation. The host issues ids; guests
+# echo `correlationId` / `causationId` onto published events.
+struct Invocation {
+  # Unique host-issued invocation id.
+  id @0 :Text;
+  # Account scope; empty for operator / host-wide invocations.
+  accountId @1 :Text;
+  # UTC Unix milliseconds; zero when the invocation has no deadline. The host
+  # fence is authoritative.
+  deadlineUnixMs @2 :UInt64;
+  # Trace correlation id; empty when none.
+  correlationId @3 :Text;
+  # Id of the event or command that caused this invocation; empty when none.
+  causationId @4 :Text;
 }
 
 # --- rust-generated: end ---
@@ -2251,7 +2357,7 @@ struct DbCapabilitiesReply {
   }
 }
 
-# Database adapter returned by `BookclerkPlugin.database`.
+# `databaseAdapter` entrypoint (`Entrypoints.databaseAdapter`).
 interface Database {
   # Open one adapter session (capability negotiation + typed execute).
   openSession @0 () -> (result :AdapterSessionReply);
@@ -2352,7 +2458,7 @@ struct PluginMigration {
   operations @1 :List(PluginMigrationOp);
 }
 
-# Success payload of `BookclerkPlugin.databaseMigrations`.
+# Success payload of `PluginWorker.databaseMigrations`.
 struct PluginMigrationsOk {
   # At most `maxListPage` entries; aggregate id+SQL bytes at most
   # `maxPluginMigrationRegistrationBytes`; total operations at most
@@ -2360,7 +2466,7 @@ struct PluginMigrationsOk {
   migrations @0 :List(PluginMigration);
 }
 
-# Result union of `BookclerkPlugin.databaseMigrations`.
+# Result union of `PluginWorker.databaseMigrations`.
 struct PluginMigrationsReply {
   union {
     # Success: ordered migration sequence.
@@ -2370,51 +2476,27 @@ struct PluginMigrationsReply {
   }
 }
 
-# Plugin bootstrap capability: the guest's root object.
-interface BookclerkPlugin {
-  # Identity, ABI version, negotiated features, and advertised roles.
+# Plugin bootstrap capability: the guest's root object (Workers `default`
+# export analogue). `describe()` first; `open()` once per invocation.
+interface PluginWorker {
+  # Identity, ABI version, negotiated features, and typed capabilities.
   describe @0 () -> (result :DescribeReply);
-  # Open the object-store destination role.
-  destination @1 (
-      context :DestinationContext  # Granted destination configuration.
-  ) -> (result :DestinationReply);
-  # Open the byte-source role.
-  source @2 (
-      context :SourceContext  # Granted source configuration.
-  ) -> (result :SourceReply);
-  # Open a job handler for one durable command.
-  worker @3 (
-      context :WorkerContext  # Job id and granted configuration.
-  ) -> (result :WorkerReply);
+  # Open the exported entrypoints for one invocation with host-granted
+  # bindings. Entrypoints the manifest does not export are null.
+  open @1 (
+      invocation :Invocation,  # Host-issued invocation identity.
+      bindings :Bindings  # Granted `env` bindings.
+  ) -> (result :EntrypointsReply);
   # Flush and release resources before the process exits.
-  shutdown @4 () -> (result :EmptyReply);
-  # Open the storefront content-source role.
-  contentSource @5 (
-      context :ContentSourceContext  # Granted storefront configuration.
-  ) -> (result :ContentSourceReply);
-  # Open the integration role.
-  integration @6 (
-      context :IntegrationContext  # Granted integration configuration.
-  ) -> (result :IntegrationReply);
-  # Open the database adapter role.
-  database @7 (
-      context :DatabaseContext  # Granted adapter configuration.
-  ) -> (result :DatabaseReply);
-  # Declared CLI surface.
-  cliDescribe @8 () -> (result :CliSchemaReply);
-  # Run one plugin CLI command.
-  cliInvoke @9 (
-      params :CliInvokeParams  # Command name and argument values.
-  ) -> (result :CliInvokeReply);
-  # Plugin-provided OIDC AS client templates. Empty list when unused.
-  oidcClients @10 () -> (result :OidcClientsReply);
+  shutdown @2 () -> (result :EmptyReply);
   # Complete ordered plugin-owned migration sequence for one named binding.
-  # Host calls this at binding initialization, before ordinary execute.
-  # Empty list means the binding has no plugin-owned migrations.
+  # The host calls this before `open` while provisioning `[[databases]]`
+  # (a binding must be migrated before any `Bindings.databases` session is
+  # handed out). Empty list means the binding has no plugin-owned migrations.
   # Bounded by `maxListPage` / `maxPluginMigrationOps` /
   # `maxPluginMigrationTotalOps` / `maxScalarBytes` /
   # `maxPluginMigrationRegistrationBytes`.
-  databaseMigrations @11 (
+  databaseMigrations @3 (
       binding :Text  # Binding name from `plugin.toml`.
   ) -> (result :PluginMigrationsReply);
 }

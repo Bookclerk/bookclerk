@@ -1,24 +1,40 @@
 /**
- * Workerd / Workers RPC guest entry — re-exports {@link BookclerkPlugin}.
+ * Workerd / Workers RPC guest entry — re-exports {@link BookclerkEntrypoint}
+ * and the named `*Entrypoint` bases.
  *
  * Import from `@bookclerk/plugin-sdk/workerd` inside Cloudflare workerd
  * isolates. The host (`bookclerk-workerd`) injects this module at serve time.
  *
  * @example
  * ```ts
- * import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd";
- * import type { PluginDescribe } from "@bookclerk/plugin-sdk/workerd";
+ * import {
+ *   BookclerkEntrypoint,
+ *   CliEntrypoint,
+ *   cliArgs,
+ *   jsonPayload,
+ *   type CliInvokeParams,
+ *   type EventBatch,
+ *   type JobController,
+ * } from "@bookclerk/plugin-sdk/workerd";
+ * import type { Env } from "./bookclerk-configuration.js";
  *
- * export default class MyPlugin extends BookclerkPlugin {
- *   async describe(): Promise<PluginDescribe> {
- *     return {
- *       apiVersion: 2,
- *       id: "my_plugin",
- *       kind: "source",
- *       rpcFeatures: [],
- *       scalarLimits: { maxScalarBytes: 262144, maxStreamWindowBytes: 1048576, maxListPage: 256 },
- *       capabilities: ["health", "login", "scan", "fetchTitle"],
- *     };
+ * export class Cli extends CliEntrypoint<Env> {
+ *   async describe() {
+ *     return { commands: [{ name: "ping", about: "Probe", args: [] }] };
+ *   }
+ *   async invoke(params: CliInvokeParams) {
+ *     const { message = "hi" } = cliArgs(params);
+ *     return { exitCode: 0, stdout: `pong ${message}\n`, stderr: "", payload: jsonPayload({ message }) };
+ *   }
+ * }
+ *
+ * export default class MyPlugin extends BookclerkEntrypoint<Env> {
+ *   async event(batch: EventBatch) {
+ *     for (const msg of batch.messages) msg.ack();
+ *   }
+ *   async job(job: JobController) {
+ *     await job.progress(100, "done");
+ *     return { message: "ok" };
  *   }
  * }
  * ```
@@ -27,55 +43,89 @@
 import "./cloudflare-workers.d.ts";
 
 export {
-  BookclerkPlugin,
-  ContentSource,
+  AdapterDatabaseSession,
+  BookclerkEntrypoint,
+  CliEntrypoint,
+  DatabaseAdapterEntrypoint,
   Destination,
-  Integration,
-  JobHandler,
+  EventBatch,
+  EventMessage,
+  JobController,
+  NamedEntrypoint,
+  OidcEntrypoint,
   PluginError,
   ProgressSink,
+  RemoteLibraryEntrypoint,
   Source,
-  AdapterDatabaseSession,
-  GuestDatabase,
+  StorageEntrypoint,
+  StorefrontEntrypoint,
   wrapPluginFromBinding,
   wrapPluginFromNative,
+  cliArgs,
+  decodeExtensibleConfig,
+  jsonPayload,
+  schemaMigrationOp,
+  dataMigrationOp,
+  requirePluginMigrationRegistration,
   PRODUCT_API_VERSION,
   MAX_SCALAR_BYTES,
   MAX_STREAM_WINDOW_BYTES,
   MAX_LIST_PAGE,
+  MAX_CHECKPOINT_BYTES,
   MAX_PLUGIN_MIGRATION_OPS,
   MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
   MAX_PLUGIN_MIGRATION_TOTAL_OPS,
   FEATURE_SCALAR_LIMITS,
   FEATURE_STREAMS,
   FEATURE_STORAGE_COPY,
-  requirePluginMigrationRegistration,
 } from "./plugin.js";
 export type {
   AdapterEnv,
-  BookclerkContext,
-  BookclerkPluginEnv,
-  DestinationContext,
+  Checkpoint,
+  CopyResult,
+  DeliveredCheckpoint,
   DomainEvent,
-  EventResult,
-  JobContext,
+  EntrypointName,
+  EventOutcome,
+  EventSuspendOptions,
+  GrantedContext,
+  Instant,
+  Invocation,
+  JobCheckpoint,
+  JobCompletion,
   JobInvocation,
-  JobOutcome,
+  JobOutcomeRecord,
+  JobRetryOptions,
+  JobRunnerContext,
+  JobSuspendOptions,
+  ListOptions,
+  ListPage,
+  ObjectInfo,
+  ObjectMetadata,
   OidcClientTemplate,
+  PluginCapabilities,
   PluginDescribe,
-  WorkerContext,
+  PluginMigration,
+  PluginMigrationOp,
+  PutResult,
+  ReadOptions,
+  ReadResult,
+  RetryOptions,
+  WriteOptions,
 } from "./plugin.js";
-export type { BookclerkEnv } from "./env.js";
+export type {
+  BookclerkEnv,
+  EventPublisherBinding,
+  JsonObject,
+  PublishEvent,
+  StorageBinding,
+} from "./env.js";
 export type {
   CliSchema,
   CliInvokeParams,
   CliInvokeResult,
-  ContentSourceContext,
-  DatabaseContext,
   ExtensibleConfig,
   HealthOk,
-  IntegrationContext,
-  SourceContext,
 } from "./generated.js";
 export {
   canonicalExecuteRequestHash,

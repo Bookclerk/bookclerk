@@ -1,8 +1,8 @@
 """Out-of-tree workerd plugin smoke: ensure → materialize → describe + health.
 
 Spawns the pinned Cloudflare ``workerd`` with a materialized Cap'n Proto config
-and POSTs ``describe`` (plus the role ``health`` route for content-source /
-integration kinds) to the HTTP bridge. Does not require the Rust
+and POSTs ``describe`` (plus the entrypoint ``health`` route for storefront /
+remoteLibrary guests) to the HTTP bridge. Does not require the Rust
 ``bookclerk-workerd`` binary.
 """
 
@@ -116,7 +116,6 @@ def run_smoke(plugin_dir: Path) -> str:
         root,
         manifest,
         listen_port=port,
-        notify_addr=None,
         bridge_token=bridge_token,
     )
     base = f"http://{listen_addr}"
@@ -134,12 +133,15 @@ def run_smoke(plugin_dir: Path) -> str:
     try:
         _wait_for_health(base, bridge_token)
         describe = _post_json(f"{base}/describe", {}, bridge_token)
-        # Role `health` exists for content-source / integration kinds only.
-        kind = manifest.get("kind")
-        health_path = {
-            "source": "/contentSource/health",
-            "integration": "/integration/health",
-        }.get(kind)
+        # `health` is a method of the storefront and remoteLibrary entrypoints;
+        # the default entrypoint (event/job triggers) has no health probe.
+        entrypoints = [str(e) for e in (manifest.get("entrypoints") or [])]
+        if "storefront" in entrypoints:
+            health_path: str | None = "/contentSource/health"
+        elif "remoteLibrary" in entrypoints:
+            health_path = "/integration/health"
+        else:
+            health_path = None
         health = (
             _post_json(f"{base}{health_path}", {}, bridge_token) if health_path else None
         )

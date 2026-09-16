@@ -8,30 +8,66 @@
 use std::path::PathBuf;
 
 use bookclerk_plugin_abi::CliSchema;
+pub use bookclerk_plugin_abi::{Entrypoint, EventConsumerSpec, PluginCapabilities};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
-/// Which Bookclerk surface a plugin implements.
+/// Every entrypoint in declaration order (mirrors the Cap'n Proto enum).
+pub const ALL_ENTRYPOINTS: [Entrypoint; 6] = [
+    Entrypoint::Storefront,
+    Entrypoint::Storage,
+    Entrypoint::DatabaseAdapter,
+    Entrypoint::RemoteLibrary,
+    Entrypoint::Cli,
+    Entrypoint::Oidc,
+];
+
+/// Handler family an [`Entrypoint`] belongs to.
 ///
-/// Wire values are lowercase (`source`, `integration`, `output`, `database`).
-/// Ids are globally unique across kinds — two plugins cannot share an `id`
-/// even if their kinds differ.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// # Returns
+///
+/// The [`PluginFamily`] whose `config.toml` prefix and API group hold plugins
+/// exporting this entrypoint.
+#[must_use]
+pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
+    match entrypoint {
+        Entrypoint::Storefront => PluginFamily::Source,
+        Entrypoint::Storage => PluginFamily::Output,
+        Entrypoint::DatabaseAdapter => PluginFamily::Database,
+        Entrypoint::RemoteLibrary | Entrypoint::Cli | Entrypoint::Oidc => PluginFamily::Integration,
+    }
+}
+
+/// Handler family — how the daemon, CLI, and UI group plugins and which
+/// `config.toml` prefix holds their settings.
+///
+/// Derived from the exported [`Entrypoint`]s and declared triggers (see
+/// [`PluginManifest::families`]); never written to `plugin.toml`. Wire values
+/// are lowercase (`source`, `integration`, `output`, `database`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PluginKind {
-    /// Storefront / library source (scan, acquire, catalog).
+pub enum PluginFamily {
+    /// Storefront / library source (`Storefront` entrypoint).
     Source,
-    /// Side integration (e.g. Audiobookshelf sync, Connect).
+    /// Event consumer, job runner, remote library, CLI, or OIDC bridge.
     Integration,
-    /// Destination / output backend (local filesystem, S3, …).
+    /// Destination / output backend (`Storage` entrypoint).
     Output,
-    /// Library database backend (sqlite, postgres, D1, …).
+    /// Library database backend (`DatabaseAdapter` entrypoint).
     Database,
 }
 
-impl PluginKind {
-    /// Returns the lowercase wire name used in TOML and API paths.
+impl PluginFamily {
+    /// Every family in settings-prefix priority order.
+    pub const ALL: [Self; 4] = [
+        Self::Database,
+        Self::Source,
+        Self::Output,
+        Self::Integration,
+    ];
+
+    /// Returns the lowercase wire name used in API paths and config prefixes.
     ///
     /// # Returns
     ///
@@ -44,6 +80,16 @@ impl PluginKind {
             Self::Output => "output",
             Self::Database => "database",
         }
+    }
+
+    /// Parses a wire name produced by [`Self::as_str`].
+    ///
+    /// # Returns
+    ///
+    /// `Some(family)` for a known name; `None` otherwise.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|f| f.as_str() == name)
     }
 }
 
@@ -114,11 +160,6 @@ impl Default for NetworkCapabilities {
     }
 }
 
-/// Serde skip predicate: omit a binding flag from TOML when it is `false`.
-fn is_false(v: &bool) -> bool {
-    !*v
-}
-
 /// Maximum named database bindings one plugin may declare.
 pub const MAX_DATABASE_BINDINGS: usize = 8;
 
@@ -137,94 +178,123 @@ pub fn is_valid_database_binding_name(name: &str) -> bool {
         && name.starts_with(|c: char| c.is_ascii_uppercase())
 }
 
-/// `[capabilities.bindings]` — host stubs the guest expects at spawn.
+/// Host bindings a plugin declared, resolved from the v3 manifest tables.
 ///
-/// Each flag is omitted from TOML when `false`. Enabling a binding does not
-/// grant consent by itself; the operator must still approve network /
-/// privileged delivery as documented in `docs/plugins.md`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
+/// Derived view produced by [`PluginManifest::bindings`]; `[vars]`,
+/// `[secrets]`, `[[kv_namespaces]]`, `[work_fs]`, `[oauth]`, and
+/// `[[databases]]` each map onto one flag or list here so host code can gate
+/// jail layout, consent, and env injection uniformly.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BindingCapabilities {
-    /// Guest may read plugin config delivered by the host.
-    #[serde(skip_serializing_if = "is_false")]
+    /// Guest may read plugin config delivered by the host (`[vars]`).
     pub config: bool,
-    /// Guest may read sealed secrets / credentials via host bindings.
-    #[serde(skip_serializing_if = "is_false")]
+    /// Guest may read sealed secrets / credentials via host bindings (`[secrets]`).
     pub secrets: bool,
-    /// Guest may use per-plugin key/value storage.
-    #[serde(skip_serializing_if = "is_false")]
+    /// Guest may use per-plugin key/value storage (`[[kv_namespaces]]`).
     pub plugin_kv: bool,
-    /// Guest may use host-mediated work filesystem (jail `tmp` / streams).
-    #[serde(skip_serializing_if = "is_false")]
+    /// Guest may use host-mediated work filesystem (`[work_fs]`).
     pub work_fs: bool,
-    /// Guest needs an OAuth-style callback tunnel (host owns the listener).
+    /// Guest needs an OAuth-style callback tunnel (`[oauth]`).
     ///
     /// With native outbound, this upgrades jail network need to
     /// [`JailNetworkNeed::Listen`].
-    #[serde(skip_serializing_if = "is_false")]
     pub oauth: bool,
-    /// Named plugin-owned database bindings (Workers-style, e.g. `["DB"]`).
-    ///
-    /// Each name binds an isolated database provisioned by the active
-    /// database adapter — separate from the Bookclerk library and from every
-    /// other plugin. Names must be `A-Z` / `0-9` / `_`, start with a letter,
-    /// and be unique; the operator consents to each binding before enable.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Named plugin-owned database bindings (`[[databases]] binding = "DB"`).
     pub databases: Vec<String>,
 }
 
-/// `[capabilities.methods]` — declared RPC surface for discovery / consent.
+/// One `[[databases]]` row — an isolated plugin-owned database binding.
 ///
-/// Lists method names the guest intends to implement; used for operator UI
-/// and tooling, not as a hard ABI gate at describe().
+/// Each name binds a database provisioned by the active database adapter —
+/// separate from the Bookclerk library and from every other plugin. Names
+/// must be `[A-Z][A-Z0-9_]*`, unique, and at most
+/// [`MAX_DATABASE_BINDING_NAME_LEN`] chars; the operator consents to each
+/// binding before enable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DatabaseBindingManifest {
+    /// Binding name exposed on `env` (Workers-style, e.g. `"DB"`).
+    pub binding: String,
+}
+
+/// A named host binding (`[secrets]`, `[work_fs]`, `[oauth]`, `[[kv_namespaces]]`).
+///
+/// The `binding` key names the property on `env`; it defaults per table
+/// (`SECRETS`, `WORK_FS`, `OAUTH`, `KV`) when omitted.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-pub struct MethodCapabilities {
-    /// Workers RPC method names this guest advertises (camelCase wire names).
+pub struct NamedBinding {
+    /// Binding name exposed on `env`; empty means the table default.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub binding: String,
+}
+
+impl NamedBinding {
+    /// Resolves the binding name, falling back to `default`.
+    ///
+    /// # Returns
+    ///
+    /// The author's `binding` when non-empty, else `default`.
+    #[must_use]
+    pub fn name_or<'a>(&'a self, default: &'a str) -> &'a str {
+        if self.binding.is_empty() {
+            default
+        } else {
+            &self.binding
+        }
+    }
+}
+
+/// Default `binding` for `[secrets]`.
+pub const DEFAULT_SECRETS_BINDING: &str = "SECRETS";
+/// Default `binding` for `[work_fs]`.
+pub const DEFAULT_WORK_FS_BINDING: &str = "WORK_FS";
+/// Default `binding` for `[oauth]`.
+pub const DEFAULT_OAUTH_BINDING: &str = "OAUTH";
+/// Default `binding` for `[[kv_namespaces]]`.
+pub const DEFAULT_KV_BINDING: &str = "KV";
+/// Default `binding` for `[[events.producers]]`.
+pub const DEFAULT_EVENTS_BINDING: &str = "EVENTS";
+/// Binding name the host uses for operator config (`[vars]`).
+pub const CONFIG_BINDING: &str = "CONFIG";
+
+/// `[triggers]` — handlers on the default entrypoint the host invokes.
+///
+/// Mirrors `wrangler.jsonc` `triggers`; Bookclerk's triggers are durable
+/// commands (`job(controller)`) rather than crons. Event triggers live under
+/// `[[events.consumers]]`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TriggersManifest {
+    /// Command types the default entrypoint's `job(controller)` handles
+    /// (snake_case, e.g. `stream_copy`). Empty means no job trigger.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub list: Vec<String>,
+    pub jobs: Vec<String>,
+}
+
+impl TriggersManifest {
+    /// True when no trigger is declared (omit `[triggers]`).
+    fn is_default(&self) -> bool {
+        self.jobs.is_empty()
+    }
 }
 
 /// Full `[capabilities]` table required on every manifest.
 ///
-/// `network` is mandatory in TOML; `bindings` and `methods` default to empty
-/// / all-false when omitted.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Only `network` remains here in v3 (consent has no Wrangler analogue);
+/// bindings and triggers moved to top-level Wrangler-shaped tables.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilitiesManifest {
     /// Network mode and optional workerd domain allowlist.
     pub network: NetworkCapabilities,
-    /// Host binding stubs the guest expects.
-    #[serde(default, skip_serializing_if = "BindingCapabilities::is_default")]
-    pub bindings: BindingCapabilities,
-    /// Declared RPC method names for discovery / consent.
-    #[serde(default, skip_serializing_if = "MethodCapabilities::is_default")]
-    pub methods: MethodCapabilities,
-    /// Durable domain-event subscriptions (`onEvent` deliveries).
-    #[serde(default, skip_serializing_if = "EventCapabilities::is_default")]
-    pub events: EventCapabilities,
 }
 
-impl Eq for CapabilitiesManifest {}
-
-impl BindingCapabilities {
-    /// True when every binding flag is off (omit the `[capabilities.bindings]` table).
-    fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
-}
-
-impl MethodCapabilities {
-    /// True when no RPC method names are declared (omit `[capabilities.methods]`).
-    fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
-}
-
-/// One `[capabilities.events.subscriptions]` row.
+/// One `[[events.consumers]]` row — a durable domain-event trigger for the
+/// default entrypoint's `event(batch)` handler.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EventSubscription {
+pub struct EventConsumer {
     /// Versioned event type (`book_acquired`, …).
     #[serde(rename = "type")]
     pub event_type: String,
@@ -240,36 +310,70 @@ pub struct EventSubscription {
     /// Optional host-owned payload object filter (top-level key equality).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<serde_json::Value>,
+    /// Redelivery attempts before dead-lettering; `None` uses the host default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
 }
 
-impl Eq for EventSubscription {}
+impl Eq for EventConsumer {}
 
-/// Default `[1]` when a subscription omits `schema_versions`.
+/// One `[[events.producers]]` row — an event type the plugin may publish
+/// through its `EVENTS` binding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EventProducer {
+    /// Event type the plugin publishes (snake_case).
+    #[serde(rename = "type")]
+    pub event_type: String,
+    /// Publisher binding name on `env` (default `EVENTS`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub binding: String,
+}
+
+impl EventProducer {
+    /// Resolves the publisher binding name (default [`DEFAULT_EVENTS_BINDING`]).
+    #[must_use]
+    pub fn binding_name(&self) -> &str {
+        if self.binding.is_empty() {
+            DEFAULT_EVENTS_BINDING
+        } else {
+            &self.binding
+        }
+    }
+}
+
+/// Default `[1]` when a consumer omits `schema_versions`.
 fn default_schema_versions() -> Vec<u32> {
     vec![1]
 }
 
-/// Default `"network"` when a subscription omits `resource_class`.
+/// Default `"network"` when a consumer omits `resource_class`.
 fn default_resource_class() -> String {
     "network".into()
 }
 
-/// `[capabilities.events]` — durable outbox subscriptions.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+/// `[events]` — consumers (triggers) and producers (publish grants).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-pub struct EventCapabilities {
-    /// Declared event subscriptions. Empty means the guest is not a subscriber.
+pub struct EventsManifest {
+    /// Event types delivered to the default entrypoint's `event(batch)`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subscriptions: Vec<EventSubscription>,
+    pub consumers: Vec<EventConsumer>,
+    /// Event types the plugin may publish.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub producers: Vec<EventProducer>,
 }
 
-impl Eq for EventCapabilities {}
-
-impl EventCapabilities {
-    /// True when no subscriptions are declared (omit `[capabilities.events]`).
+impl EventsManifest {
+    /// True when neither consumers nor producers are declared (omit `[events]`).
     fn is_default(&self) -> bool {
-        self.subscriptions.is_empty()
+        self.consumers.is_empty() && self.producers.is_empty()
     }
+}
+
+/// Serde skip predicate for the optional `[vars]` table.
+fn vars_is_none(v: &Option<std::collections::BTreeMap<String, toml::Value>>) -> bool {
+    v.is_none()
 }
 
 /// `[workerd]` — WorkerCode-equivalent isolate configuration.
@@ -409,15 +513,21 @@ fn default_module_type() -> String {
     "js".into()
 }
 
-/// On-disk plugin descriptor (`plugin.toml`).
+/// On-disk plugin descriptor (`plugin.toml`, `api_version = 3`).
 ///
-/// Root table for install / discovery. Parse with [`Self::parse`] (deserialize
-/// + [`Self::validate`]). Unknown keys are rejected.
+/// Root table for install / discovery, shaped after `wrangler.jsonc`: the
+/// plugin exports named [`Entrypoint`]s, declares triggers for its default
+/// entrypoint (`[triggers]`, `[[events.consumers]]`), and lists the host
+/// bindings it expects on `env` (`[vars]`, `[secrets]`, `[[kv_namespaces]]`,
+/// `[work_fs]`, `[oauth]`, `[[databases]]`, `[[events.producers]]`). Parse
+/// with [`Self::parse`] (deserialize + [`Self::validate`]). Unknown keys are
+/// rejected.
 ///
 /// # Validation highlights
 ///
 /// - `api_version` must equal [`bookclerk_plugin_abi::PRODUCT_API_VERSION`]
 /// - `id` must pass [`crate::validate_plugin_id`]
+/// - at least one entrypoint or trigger must be declared
 /// - native requires `command`; workerd requires `[workerd]` with date + main
 /// - `domains` forbidden on native; required for workerd + outbound
 /// - optional `logo` must pass [`crate::validate_logo`]
@@ -431,8 +541,6 @@ pub struct PluginManifest {
     /// Optional human-readable display name for Settings / Accounts UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Which Bookclerk surface this plugin implements.
-    pub kind: PluginKind,
     /// Optional semver (or free-form) package version string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
@@ -440,7 +548,8 @@ pub struct PluginManifest {
     /// plugin root. Validated by [`crate::validate_logo`] when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logo: Option<String>,
-    /// Guest runtime (`native` default, or `workerd`).
+    /// Guest runtime (`native` default, or `workerd`). Selects the backend
+    /// behind `bookclerk-workerd`; it does not change the ABI.
     #[serde(default)]
     pub runtime: PluginRuntimeKind,
     /// Native executable path relative to the install root (required when
@@ -450,16 +559,44 @@ pub struct PluginManifest {
     /// Extra argv passed after `command` for native guests.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+    /// Named entrypoints this plugin exports (`["storefront", "cli"]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entrypoints: Vec<Entrypoint>,
     /// Workerd isolate config (required when `runtime = "workerd"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workerd: Option<WorkerdRuntimeManifest>,
     /// Optional module list for workerd packages (`[[modules]]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modules: Vec<ModuleSpec>,
-    /// Declared network, bindings, and methods capabilities.
+    /// Default-entrypoint triggers other than events (`[triggers]`).
+    #[serde(default, skip_serializing_if = "TriggersManifest::is_default")]
+    pub triggers: TriggersManifest,
+    /// Event consumers (triggers) and producers (publish grants).
+    #[serde(default, skip_serializing_if = "EventsManifest::is_default")]
+    pub events: EventsManifest,
+    /// Isolated plugin-owned database bindings (`[[databases]]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub databases: Vec<DatabaseBindingManifest>,
+    /// Operator config binding (`[vars]`). Keys are defaults the host may
+    /// override from `config.toml`; an empty table still declares the binding.
+    #[serde(default, skip_serializing_if = "vars_is_none")]
+    pub vars: Option<std::collections::BTreeMap<String, toml::Value>>,
+    /// Sealed secrets binding (`[secrets]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<NamedBinding>,
+    /// Per-plugin key/value storage bindings (`[[kv_namespaces]]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kv_namespaces: Vec<NamedBinding>,
+    /// Host-mediated work filesystem binding (`[work_fs]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_fs: Option<NamedBinding>,
+    /// OAuth callback tunnel binding (`[oauth]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<NamedBinding>,
+    /// Declared network capability (consent has no Wrangler analogue).
     pub capabilities: CapabilitiesManifest,
     /// Optional CLI schema advertised to `bookclerk plugins <id>` (from
-    /// `bookclerk-plugin-abi::CliSchema`).
+    /// `bookclerk-plugin-abi::CliSchema`). Requires the `Cli` entrypoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli: Option<CliSchema>,
     /// Optional Bookclerk-as-IdP client templates (`[[oidc.clients]]`).
@@ -516,6 +653,178 @@ fn default_true() -> bool {
 }
 
 impl PluginManifest {
+    /// Resolves the declared host bindings into one flat view.
+    ///
+    /// # Returns
+    ///
+    /// [`BindingCapabilities`] with one flag per named-binding table and the
+    /// `[[databases]]` binding names in declaration order.
+    #[must_use]
+    pub fn bindings(&self) -> BindingCapabilities {
+        BindingCapabilities {
+            config: self.vars.is_some(),
+            secrets: self.secrets.is_some(),
+            plugin_kv: !self.kv_namespaces.is_empty(),
+            work_fs: self.work_fs.is_some(),
+            oauth: self.oauth.is_some(),
+            databases: self.databases.iter().map(|d| d.binding.clone()).collect(),
+        }
+    }
+
+    /// True when the plugin exports `entrypoint`.
+    #[must_use]
+    pub fn has_entrypoint(&self, entrypoint: Entrypoint) -> bool {
+        self.entrypoints.contains(&entrypoint)
+    }
+
+    /// True when the default entrypoint has an `event(batch)` trigger.
+    #[must_use]
+    pub fn consumes_events(&self) -> bool {
+        !self.events.consumers.is_empty()
+    }
+
+    /// True when the default entrypoint has a `job(controller)` trigger.
+    #[must_use]
+    pub fn runs_jobs(&self) -> bool {
+        !self.triggers.jobs.is_empty()
+    }
+
+    /// True when the plugin declares any publishable event type.
+    #[must_use]
+    pub fn produces_events(&self) -> bool {
+        !self.events.producers.is_empty()
+    }
+
+    /// Handler families this plugin belongs to, in
+    /// [`PluginFamily::ALL`] priority order.
+    ///
+    /// A plugin joins the `Source` / `Output` / `Database` families through
+    /// the matching named entrypoint and the `Integration` family through
+    /// event consumers, job triggers, `RemoteLibrary`, `Cli`, or `Oidc`.
+    ///
+    /// # Returns
+    ///
+    /// Deduplicated families; never empty for a validated manifest.
+    #[must_use]
+    pub fn families(&self) -> Vec<PluginFamily> {
+        let mut out = Vec::new();
+        for family in PluginFamily::ALL {
+            let member = match family {
+                PluginFamily::Source => self.has_entrypoint(Entrypoint::Storefront),
+                PluginFamily::Output => self.has_entrypoint(Entrypoint::Storage),
+                PluginFamily::Database => self.has_entrypoint(Entrypoint::DatabaseAdapter),
+                PluginFamily::Integration => {
+                    self.consumes_events()
+                        || self.runs_jobs()
+                        || self.has_entrypoint(Entrypoint::RemoteLibrary)
+                        || self.has_entrypoint(Entrypoint::Oidc)
+                        || (self.has_entrypoint(Entrypoint::Cli)
+                            && !self.has_entrypoint(Entrypoint::Storefront)
+                            && !self.has_entrypoint(Entrypoint::Storage)
+                            && !self.has_entrypoint(Entrypoint::DatabaseAdapter))
+                }
+            };
+            if member {
+                out.push(family);
+            }
+        }
+        out
+    }
+
+    /// Primary handler family: the first of [`Self::families`].
+    ///
+    /// Picks the `config.toml` settings prefix (`database.*` > `sources.*` >
+    /// `output.*` > `integrations.*`) and the API grouping.
+    ///
+    /// # Returns
+    ///
+    /// The highest-priority family; `Integration` for a manifest with no
+    /// entrypoint (only reachable before validation).
+    #[must_use]
+    pub fn primary_family(&self) -> PluginFamily {
+        self.families()
+            .into_iter()
+            .next()
+            .unwrap_or(PluginFamily::Integration)
+    }
+
+    /// Event types this plugin may publish (from `[[events.producers]]`).
+    #[must_use]
+    pub fn producer_types(&self) -> Vec<String> {
+        self.events
+            .producers
+            .iter()
+            .map(|p| p.event_type.clone())
+            .collect()
+    }
+
+    /// Typed capability declaration this manifest implies.
+    ///
+    /// Guests return exactly this value from `describe()` so the host's
+    /// widening check (manifest vs describe vs grant) is a plain equality
+    /// comparison. Native Rust guests typically call it on the manifest
+    /// embedded with `include_str!("../plugin.toml")`.
+    ///
+    /// # Returns
+    ///
+    /// Entrypoints, event consumers/producers, job types, database binding
+    /// names, and named binding names (`CONFIG`, `SECRETS`, `WORK_FS`,
+    /// `OAUTH`, KV and event bindings) in manifest order.
+    #[must_use]
+    pub fn capabilities(&self) -> PluginCapabilities {
+        PluginCapabilities {
+            entrypoints: self.entrypoints.clone(),
+            consumes: self
+                .events
+                .consumers
+                .iter()
+                .map(|c| EventConsumerSpec {
+                    event_type: c.event_type.clone(),
+                    schema_versions: c.schema_versions.clone(),
+                    supports_suspend: c.supports_suspend,
+                })
+                .collect(),
+            produces: self.producer_types(),
+            jobs: self.triggers.jobs.clone(),
+            databases: self.databases.iter().map(|d| d.binding.clone()).collect(),
+            bindings: self.binding_names(),
+        }
+    }
+
+    /// Names of the non-database bindings this manifest exposes on `env`.
+    ///
+    /// # Returns
+    ///
+    /// `CONFIG` (when `[vars]` is present), the resolved `[secrets]`,
+    /// `[work_fs]`, `[oauth]` names, every `[[kv_namespaces]]` binding, and
+    /// every distinct `[[events.producers]]` binding, in that order.
+    #[must_use]
+    pub fn binding_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        if self.vars.is_some() {
+            names.push(CONFIG_BINDING.to_string());
+        }
+        if let Some(b) = &self.secrets {
+            names.push(b.name_or(DEFAULT_SECRETS_BINDING).to_string());
+        }
+        if let Some(b) = &self.work_fs {
+            names.push(b.name_or(DEFAULT_WORK_FS_BINDING).to_string());
+        }
+        if let Some(b) = &self.oauth {
+            names.push(b.name_or(DEFAULT_OAUTH_BINDING).to_string());
+        }
+        for kv in &self.kv_namespaces {
+            names.push(kv.name_or(DEFAULT_KV_BINDING).to_string());
+        }
+        for producer in &self.events.producers {
+            let name = producer.binding_name().to_string();
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
+    }
+
     /// Returns domains for workerd network consent UI.
     ///
     /// IDNA-normalizes author domains and includes Pyodide CDN hosts when this
@@ -577,11 +886,11 @@ impl PluginManifest {
     /// use bookclerk_plugin_manifest::PluginManifest;
     ///
     /// let m = PluginManifest::parse(r#"
-    /// api_version = 2
+    /// api_version = 3
     /// id = "echo"
-    /// kind = "integration"
     /// runtime = "native"
     /// command = "./echo"
+    /// entrypoints = ["cli"]
     ///
     /// [capabilities.network]
     /// mode = "deny"
@@ -695,68 +1004,138 @@ impl PluginManifest {
                 )));
             }
         }
+        if self.entrypoints.is_empty() && !self.consumes_events() && !self.runs_jobs() {
+            return Err(Error::message(
+                "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, \
+                 or `[triggers].jobs`",
+            ));
+        }
         {
-            let databases = &self.capabilities.bindings.databases;
-            if databases.len() > MAX_DATABASE_BINDINGS {
-                return Err(Error::message(format!(
-                    "plugin.toml: capabilities.bindings.databases lists {} bindings; max is \
-                     {MAX_DATABASE_BINDINGS}",
-                    databases.len()
-                )));
-            }
             let mut seen = std::collections::HashSet::new();
-            for name in databases {
-                if !is_valid_database_binding_name(name) {
+            for entrypoint in &self.entrypoints {
+                if !seen.insert(*entrypoint) {
                     return Err(Error::message(format!(
-                        "plugin.toml: capabilities.bindings.databases entry `{name}` must be \
-                         `[A-Z][A-Z0-9_]*` and at most {MAX_DATABASE_BINDING_NAME_LEN} chars"
-                    )));
-                }
-                if !seen.insert(name.as_str()) {
-                    return Err(Error::message(format!(
-                        "plugin.toml: capabilities.bindings.databases entry `{name}` is duplicated"
+                        "plugin.toml: entrypoints entry `{}` is duplicated",
+                        entrypoint.wire_name()
                     )));
                 }
             }
         }
-        if !self.capabilities.events.subscriptions.is_empty() {
-            let methods = &self.capabilities.methods.list;
-            if !methods.iter().any(|m| m == "onEvent") {
-                return Err(Error::message(
-                    "plugin.toml: capabilities.events.subscriptions requires \
-                     `onEvent` in capabilities.methods.list",
-                ));
+        if self.cli.is_some() && !self.has_entrypoint(Entrypoint::Cli) {
+            return Err(Error::message(
+                "plugin.toml: `[cli]` requires `\"cli\"` in `entrypoints`",
+            ));
+        }
+        if !self.oidc.is_empty() && !self.has_entrypoint(Entrypoint::Oidc) {
+            return Err(Error::message(
+                "plugin.toml: `[[oidc.clients]]` requires `\"oidc\"` in `entrypoints`",
+            ));
+        }
+        {
+            if self.databases.len() > MAX_DATABASE_BINDINGS {
+                return Err(Error::message(format!(
+                    "plugin.toml: [[databases]] lists {} bindings; max is {MAX_DATABASE_BINDINGS}",
+                    self.databases.len()
+                )));
             }
-            for (i, sub) in self.capabilities.events.subscriptions.iter().enumerate() {
-                if sub.event_type.trim().is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            for db in &self.databases {
+                let name = db.binding.as_str();
+                if !is_valid_database_binding_name(name) {
                     return Err(Error::message(format!(
-                        "plugin.toml: capabilities.events.subscriptions[{i}].type is required"
+                        "plugin.toml: [[databases]] binding `{name}` must be \
+                         `[A-Z][A-Z0-9_]*` and at most {MAX_DATABASE_BINDING_NAME_LEN} chars"
                     )));
                 }
-                if !sub.event_type.chars().enumerate().all(|(j, c)| {
-                    if j == 0 {
-                        c.is_ascii_lowercase()
-                    } else {
-                        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'
-                    }
-                }) {
+                if !seen.insert(name) {
                     return Err(Error::message(format!(
-                        "plugin.toml: capabilities.events.subscriptions[{i}].type `{}` must be \
+                        "plugin.toml: [[databases]] binding `{name}` is duplicated"
+                    )));
+                }
+            }
+            let mut named: Vec<(&str, &str)> = Vec::new();
+            if let Some(b) = &self.secrets {
+                named.push(("secrets", b.name_or(DEFAULT_SECRETS_BINDING)));
+            }
+            if let Some(b) = &self.work_fs {
+                named.push(("work_fs", b.name_or(DEFAULT_WORK_FS_BINDING)));
+            }
+            if let Some(b) = &self.oauth {
+                named.push(("oauth", b.name_or(DEFAULT_OAUTH_BINDING)));
+            }
+            for b in &self.kv_namespaces {
+                named.push(("kv_namespaces", b.name_or(DEFAULT_KV_BINDING)));
+            }
+            for p in &self.events.producers {
+                named.push(("events.producers", p.binding_name()));
+            }
+            for (table, name) in &named {
+                if !is_valid_database_binding_name(name) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: [{table}] binding `{name}` must be `[A-Z][A-Z0-9_]*`"
+                    )));
+                }
+                if *name == CONFIG_BINDING || seen.contains(name) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: [{table}] binding `{name}` collides with another binding"
+                    )));
+                }
+            }
+            for (table, name) in &named {
+                if *table != "events.producers" && !seen.insert(name) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: [{table}] binding `{name}` collides with another binding"
+                    )));
+                }
+            }
+        }
+        for (i, job) in self.triggers.jobs.iter().enumerate() {
+            if !is_snake_case_type(job) {
+                return Err(Error::message(format!(
+                    "plugin.toml: triggers.jobs[{i}] `{job}` must be snake_case `[a-z][a-z0-9_]*`"
+                )));
+            }
+        }
+        for (i, sub) in self.events.consumers.iter().enumerate() {
+            if sub.event_type.trim().is_empty() {
+                return Err(Error::message(format!(
+                    "plugin.toml: events.consumers[{i}].type is required"
+                )));
+            }
+            if !is_snake_case_type(&sub.event_type) {
+                return Err(Error::message(format!(
+                    "plugin.toml: events.consumers[{i}].type `{}` must be \
+                     snake_case `[a-z][a-z0-9_]*`",
+                    sub.event_type
+                )));
+            }
+            if sub.schema_versions.is_empty() {
+                return Err(Error::message(format!(
+                    "plugin.toml: events.consumers[{i}].schema_versions must not be empty"
+                )));
+            }
+            let class = sub.resource_class.trim();
+            if !class.is_empty() && class != "network" {
+                return Err(Error::message(format!(
+                    "plugin.toml: events.consumers[{i}].resource_class \
+                     `{class}` is not supported (only `network`)"
+                )));
+            }
+        }
+        {
+            let mut seen = std::collections::HashSet::new();
+            for (i, producer) in self.events.producers.iter().enumerate() {
+                if !is_snake_case_type(&producer.event_type) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: events.producers[{i}].type `{}` must be \
                          snake_case `[a-z][a-z0-9_]*`",
-                        sub.event_type
+                        producer.event_type
                     )));
                 }
-                if sub.schema_versions.is_empty() {
+                if !seen.insert(producer.event_type.as_str()) {
                     return Err(Error::message(format!(
-                        "plugin.toml: capabilities.events.subscriptions[{i}].schema_versions \
-                         must not be empty"
-                    )));
-                }
-                let class = sub.resource_class.trim();
-                if !class.is_empty() && class != "network" {
-                    return Err(Error::message(format!(
-                        "plugin.toml: capabilities.events.subscriptions[{i}].resource_class \
-                         `{class}` is not supported (only `network`)"
+                        "plugin.toml: events.producers[{i}].type `{}` is duplicated",
+                        producer.event_type
                     )));
                 }
             }
@@ -798,10 +1177,22 @@ impl PluginManifest {
         }
         match self.capabilities.network.mode {
             NetworkMode::Deny => JailNetworkNeed::None,
-            NetworkMode::Outbound if self.capabilities.bindings.oauth => JailNetworkNeed::Listen,
+            NetworkMode::Outbound if self.oauth.is_some() => JailNetworkNeed::Listen,
             NetworkMode::Outbound => JailNetworkNeed::Outbound,
         }
     }
+}
+
+/// True for `[a-z][a-z0-9_]*` event / command type names.
+fn is_snake_case_type(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().enumerate().all(|(j, c)| {
+            if j == 0 {
+                c.is_ascii_lowercase()
+            } else {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'
+            }
+        })
 }
 
 /// OS jail network capability derived from manifest network + oauth binding.
@@ -824,6 +1215,22 @@ pub enum JailNetworkNeed {
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    /// Minimal v3 native manifest body; callers append tables.
+    fn native(extra: &str) -> String {
+        format!(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+entrypoints = ["remoteLibrary"]
+[capabilities.network]
+mode = "deny"
+{extra}
+"#
+        )
+    }
 
     #[test]
     fn workerd_limits_unset_and_zero_use_defaults() {
@@ -873,11 +1280,11 @@ mod tests {
     fn parse_workerd_echo() {
         let m = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "echo"
-kind = "integration"
 version = "1.0.0"
 runtime = "workerd"
+entrypoints = ["cli"]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -886,31 +1293,171 @@ main_module = "index.js"
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
+[vars]
 "#,
         )
         .unwrap();
         assert_eq!(m.runtime, PluginRuntimeKind::Workerd);
         assert_eq!(m.capabilities.network.mode, NetworkMode::Deny);
+        assert!(m.bindings().config);
+        assert_eq!(m.families(), vec![PluginFamily::Integration]);
+    }
+
+    #[test]
+    fn families_follow_entrypoints_and_triggers() {
+        let m = PluginManifest::parse(&native("")).unwrap();
+        assert_eq!(m.primary_family(), PluginFamily::Integration);
+
+        let storefront = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "shop"
+runtime = "native"
+command = "./shop"
+entrypoints = ["storefront", "cli"]
+[capabilities.network]
+mode = "outbound"
+"#,
+        )
+        .unwrap();
+        assert_eq!(storefront.families(), vec![PluginFamily::Source]);
+        assert_eq!(storefront.primary_family(), PluginFamily::Source);
+
+        let consumer = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "abs"
+runtime = "native"
+command = "./abs"
+entrypoints = ["storage"]
+[capabilities.network]
+mode = "deny"
+[[events.consumers]]
+type = "book_acquired"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            consumer.families(),
+            vec![PluginFamily::Output, PluginFamily::Integration]
+        );
+        assert_eq!(consumer.primary_family(), PluginFamily::Output);
+
+        let db = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "sqlite"
+runtime = "native"
+command = "./sqlite"
+entrypoints = ["databaseAdapter", "storefront"]
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .unwrap();
+        assert_eq!(db.primary_family(), PluginFamily::Database);
+    }
+
+    #[test]
+    fn manifest_without_entrypoints_or_triggers_is_rejected() {
+        let err = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .expect_err("no entrypoint");
+        assert!(err.to_string().contains("entrypoints"), "{err}");
+
+        let jobs_only = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+[triggers]
+jobs = ["stream_copy"]
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .unwrap();
+        assert!(jobs_only.runs_jobs());
+        assert_eq!(jobs_only.families(), vec![PluginFamily::Integration]);
+    }
+
+    #[test]
+    fn duplicate_entrypoints_and_unknown_names_are_rejected() {
+        let dup = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+entrypoints = ["cli", "cli"]
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .expect_err("duplicate entrypoint");
+        assert!(dup.to_string().contains("duplicated"), "{dup}");
+        let unknown = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+entrypoints = ["integration"]
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .expect_err("lowercase kind names are not entrypoints");
+        assert!(unknown.to_string().contains("integration"), "{unknown}");
+    }
+
+    #[test]
+    fn cli_and_oidc_tables_require_their_entrypoints() {
+        let err = PluginManifest::parse(&native(
+            r#"
+[cli]
+commands = []
+"#,
+        ))
+        .expect_err("cli without Cli entrypoint");
+        assert!(err.to_string().contains("cli"), "{err}");
+
+        let err = PluginManifest::parse(&native(
+            r#"
+[[oidc.clients]]
+client_id = "echo-player"
+callback_path = "/auth/openid/callback"
+origin_config_key = "integrations.echo.base_url"
+"#,
+        ))
+        .expect_err("oidc without Oidc entrypoint");
+        assert!(err.to_string().contains("oidc"), "{err}");
     }
 
     #[test]
     fn parse_oidc_clients() {
         let m = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "echo"
-kind = "integration"
 version = "1.0.0"
 runtime = "native"
 command = "./echo"
+entrypoints = ["oidc"]
 
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
+[vars]
 
 [[oidc.clients]]
 client_id = "echo-player"
@@ -930,18 +1477,14 @@ origin_config_key = "integrations.echo.base_url"
     fn oidc_callback_path_must_be_absolute() {
         let err = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "echo"
-kind = "integration"
-version = "1.0.0"
 runtime = "native"
 command = "./echo"
+entrypoints = ["oidc"]
 
 [capabilities.network]
 mode = "deny"
-
-[capabilities.bindings]
-config = true
 
 [[oidc.clients]]
 client_id = "echo-player"
@@ -958,100 +1501,91 @@ origin_config_key = "integrations.echo.base_url"
     }
 
     #[test]
-    fn api_version_1_is_rejected() {
-        let err = PluginManifest::parse(
-            r#"
-api_version = 1
-id = "echo"
-kind = "integration"
-runtime = "native"
-command = "./echo"
-[capabilities.network]
-mode = "deny"
-"#,
-        )
-        .expect_err("api_version 1 is removed");
-        assert!(err.to_string().contains("must be 2"), "{err}");
-    }
-
-    #[test]
-    fn event_subscriptions_require_on_event_method() {
+    fn api_version_2_is_rejected() {
         let err = PluginManifest::parse(
             r#"
 api_version = 2
 id = "echo"
-kind = "integration"
 runtime = "native"
 command = "./echo"
+entrypoints = ["cli"]
+
 [capabilities.network]
 mode = "deny"
-[capabilities.events]
-subscriptions = [{ type = "book_acquired" }]
 "#,
         )
-        .expect_err("subscriptions require onEvent");
-        assert!(err.to_string().contains("onEvent"), "{err}");
+        .expect_err("api_version 2 is removed");
+        assert!(err.to_string().contains("must be 3"), "{err}");
     }
 
     #[test]
-    fn event_subscriptions_parse_and_default_schema() {
-        let m = PluginManifest::parse(
+    fn legacy_kind_and_methods_keys_are_rejected() {
+        let err = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "echo"
 kind = "integration"
 runtime = "native"
 command = "./echo"
 [capabilities.network]
 mode = "deny"
-[capabilities.methods]
-list = ["onEvent"]
-[capabilities.events]
-subscriptions = [
-  { type = "book_acquired", supports_suspend = true },
-]
 "#,
         )
-        .unwrap();
-        assert_eq!(m.capabilities.events.subscriptions.len(), 1);
-        assert_eq!(
-            m.capabilities.events.subscriptions[0].event_type,
-            "book_acquired"
-        );
-        assert_eq!(
-            m.capabilities.events.subscriptions[0].schema_versions,
-            vec![1]
-        );
-        assert!(m.capabilities.events.subscriptions[0].supports_suspend);
-        assert_eq!(
-            m.capabilities.events.subscriptions[0].resource_class,
-            "network"
-        );
-        assert!(m.capabilities.events.subscriptions[0].filter.is_none());
+        .expect_err("kind removed");
+        assert!(err.to_string().contains("kind"), "{err}");
+        let err = PluginManifest::parse(&native(
+            r#"
+[capabilities.methods]
+list = ["health"]
+"#,
+        ))
+        .expect_err("methods removed");
+        assert!(err.to_string().contains("methods"), "{err}");
+        let err = PluginManifest::parse(&native(
+            r#"
+[capabilities.bindings]
+config = true
+"#,
+        ))
+        .expect_err("bindings removed");
+        assert!(err.to_string().contains("bindings"), "{err}");
     }
 
     #[test]
-    fn event_subscriptions_parse_resource_class_and_filter() {
-        let m = PluginManifest::parse(
+    fn event_consumers_parse_and_default_schema() {
+        let m = PluginManifest::parse(&native(
             r#"
-api_version = 2
-id = "echo"
-kind = "integration"
-runtime = "native"
-command = "./echo"
-[capabilities.network]
-mode = "deny"
-[capabilities.methods]
-list = ["onEvent"]
-[capabilities.events]
-subscriptions = [
-  { type = "book_acquired", resource_class = "network", filter = { source = "audible" } },
-]
+[[events.consumers]]
+type = "book_acquired"
+supports_suspend = true
 "#,
-        )
+        ))
         .unwrap();
-        let sub = &m.capabilities.events.subscriptions[0];
+        assert_eq!(m.events.consumers.len(), 1);
+        assert_eq!(m.events.consumers[0].event_type, "book_acquired");
+        assert_eq!(m.events.consumers[0].schema_versions, vec![1]);
+        assert!(m.events.consumers[0].supports_suspend);
+        assert_eq!(m.events.consumers[0].resource_class, "network");
+        assert!(m.events.consumers[0].filter.is_none());
+        assert!(m.events.consumers[0].max_retries.is_none());
+        assert!(m.consumes_events());
+    }
+
+    #[test]
+    fn event_consumers_parse_resource_class_and_filter() {
+        let m = PluginManifest::parse(&native(
+            r#"
+[[events.consumers]]
+type = "book_acquired"
+resource_class = "network"
+filter = { source = "audible" }
+max_retries = 3
+"#,
+        ))
+        .unwrap();
+        let sub = &m.events.consumers[0];
         assert_eq!(sub.resource_class, "network");
+        assert_eq!(sub.max_retries, Some(3));
         let filter = sub.filter.as_ref().and_then(|v| v.as_object()).unwrap();
         assert_eq!(
             filter.get("source").and_then(|v| v.as_str()),
@@ -1060,56 +1594,65 @@ subscriptions = [
     }
 
     #[test]
-    fn event_subscriptions_reject_unknown_resource_class() {
-        let err = PluginManifest::parse(
-            r#"
-api_version = 2
-id = "echo"
-kind = "integration"
-runtime = "native"
-command = "./echo"
-[capabilities.network]
-mode = "deny"
-[capabilities.methods]
-list = ["onEvent"]
-[capabilities.events]
-subscriptions = [
-  { type = "book_acquired", resource_class = "cpu" },
-]
-"#,
-        )
-        .expect_err("cpu resource_class is not supported");
-        assert!(err.to_string().contains("resource_class"), "{err}");
+    fn event_consumers_reject_unknown_resource_class() {
+        for class in ["cpu", "netwrok"] {
+            let err = PluginManifest::parse(&native(&format!(
+                r#"
+[[events.consumers]]
+type = "book_acquired"
+resource_class = "{class}"
+"#
+            )))
+            .expect_err("unsupported resource_class");
+            assert!(err.to_string().contains("resource_class"), "{err}");
+        }
+    }
 
-        let typo = PluginManifest::parse(
+    #[test]
+    fn event_producers_default_binding_and_reject_duplicates() {
+        let m = PluginManifest::parse(&native(
             r#"
-api_version = 2
-id = "echo"
-kind = "integration"
-runtime = "native"
-command = "./echo"
-[capabilities.network]
-mode = "deny"
-[capabilities.methods]
-list = ["onEvent"]
-[capabilities.events]
-subscriptions = [
-  { type = "book_acquired", resource_class = "netwrok" },
-]
+[[events.producers]]
+type = "echo_seen"
+[[events.producers]]
+type = "echo_done"
+binding = "OUT"
 "#,
-        )
-        .expect_err("typo resource_class is not supported");
-        assert!(typo.to_string().contains("resource_class"), "{typo}");
+        ))
+        .unwrap();
+        assert_eq!(m.events.producers[0].binding_name(), DEFAULT_EVENTS_BINDING);
+        assert_eq!(m.events.producers[1].binding_name(), "OUT");
+        assert_eq!(m.producer_types(), vec!["echo_seen", "echo_done"]);
+        assert!(m.produces_events());
+
+        let dup = PluginManifest::parse(&native(
+            r#"
+[[events.producers]]
+type = "echo_seen"
+[[events.producers]]
+type = "echo_seen"
+"#,
+        ))
+        .expect_err("duplicate producer");
+        assert!(dup.to_string().contains("duplicated"), "{dup}");
+        let camel = PluginManifest::parse(&native(
+            r#"
+[[events.producers]]
+type = "EchoSeen"
+"#,
+        ))
+        .expect_err("camelCase producer type");
+        assert!(camel.to_string().contains("snake_case"), "{camel}");
     }
 
     #[test]
     fn workerd_outbound_requires_domains() {
         let err = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "xx"
-kind = "source"
 runtime = "workerd"
+entrypoints = ["storefront"]
 [workerd]
 compatibility_date = "2026-08-01"
 main_module = "index.js"
@@ -1123,48 +1666,87 @@ mode = "outbound"
 
     #[test]
     fn database_bindings_validate_names_and_uniqueness() {
-        let manifest = |list: &str| {
-            PluginManifest::parse(&format!(
-                r#"
-api_version = 2
-id = "demo"
-kind = "integration"
-runtime = "native"
-command = "./demo"
-[capabilities.network]
-mode = "deny"
-[capabilities.bindings]
-databases = {list}
-"#
-            ))
+        let manifest = |rows: &[&str]| {
+            let tables: String = rows
+                .iter()
+                .map(|name| format!("[[databases]]\nbinding = \"{name}\"\n"))
+                .collect();
+            PluginManifest::parse(&native(&tables))
         };
-        let ok = manifest(r#"["DB", "CACHE_2"]"#).expect("valid binding names");
-        assert_eq!(ok.capabilities.bindings.databases, vec!["DB", "CACHE_2"]);
-        let bad = manifest(r#"["db"]"#).expect_err("lowercase rejected");
+        let ok = manifest(&["DB", "CACHE_2"]).expect("valid binding names");
+        assert_eq!(ok.bindings().databases, vec!["DB", "CACHE_2"]);
+        let bad = manifest(&["db"]).expect_err("lowercase rejected");
         assert!(bad.to_string().contains("A-Z"), "{bad}");
-        let dup = manifest(r#"["DB", "DB"]"#).expect_err("duplicates rejected");
+        let dup = manifest(&["DB", "DB"]).expect_err("duplicates rejected");
         assert!(dup.to_string().contains("duplicated"), "{dup}");
-        let digit = manifest(r#"["1DB"]"#).expect_err("leading digit rejected");
+        let digit = manifest(&["1DB"]).expect_err("leading digit rejected");
         assert!(digit.to_string().contains("A-Z"), "{digit}");
-        let many = manifest(r#"["A1","A2","A3","A4","A5","A6","A7","A8","A9"]"#)
+        let many = manifest(&["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9"])
             .expect_err("over max bindings");
         assert!(many.to_string().contains("max is"), "{many}");
+    }
+
+    #[test]
+    fn named_bindings_default_and_collide() {
+        let m = PluginManifest::parse(&native(
+            r#"
+[secrets]
+[work_fs]
+[oauth]
+binding = "LOGIN"
+[[kv_namespaces]]
+binding = "KV"
+[[databases]]
+binding = "DB"
+"#,
+        ))
+        .unwrap();
+        let b = m.bindings();
+        assert!(b.secrets && b.work_fs && b.oauth && b.plugin_kv && !b.config);
+        assert_eq!(b.databases, vec!["DB"]);
+        assert_eq!(
+            m.oauth.as_ref().unwrap().name_or(DEFAULT_OAUTH_BINDING),
+            "LOGIN"
+        );
+        assert_eq!(
+            m.secrets.as_ref().unwrap().name_or(DEFAULT_SECRETS_BINDING),
+            "SECRETS"
+        );
+
+        let collide = PluginManifest::parse(&native(
+            r#"
+[secrets]
+binding = "DB"
+[[databases]]
+binding = "DB"
+"#,
+        ))
+        .expect_err("secrets collides with database binding");
+        assert!(collide.to_string().contains("collides"), "{collide}");
+        let reserved = PluginManifest::parse(&native(
+            r#"
+[secrets]
+binding = "CONFIG"
+"#,
+        ))
+        .expect_err("CONFIG is reserved for [vars]");
+        assert!(reserved.to_string().contains("collides"), "{reserved}");
     }
 
     #[test]
     fn leftover_migration_plan_field_is_rejected() {
         let err = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "demo"
-kind = "integration"
 runtime = "native"
 command = "./demo"
+entrypoints = ["cli"]
 migration_plan = "migrations.toml"
 [capabilities.network]
 mode = "deny"
-[capabilities.bindings]
-databases = ["DB"]
+[[databases]]
+binding = "DB"
 "#,
         )
         .expect_err("static migration_plan is not a plugin.toml field");
@@ -1179,17 +1761,16 @@ databases = ["DB"]
     fn native_outbound_forbids_domains() {
         let err = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "audible"
-kind = "source"
 runtime = "native"
 command = "./bookclerk-plugin-source-audible"
+entrypoints = ["storefront"]
 [capabilities.network]
 mode = "outbound"
 domains = ["api.audible.com", "www.amazon.com"]
-[capabilities.bindings]
-oauth = true
-secrets = true
+[oauth]
+[secrets]
 "#,
         )
         .expect_err("domains forbidden on native");
@@ -1200,16 +1781,15 @@ secrets = true
     fn native_outbound_without_domains_ok() {
         let m = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "audible"
-kind = "source"
 runtime = "native"
 command = "./bookclerk-plugin-source-audible"
+entrypoints = ["storefront"]
 [capabilities.network]
 mode = "outbound"
-[capabilities.bindings]
-oauth = true
-secrets = true
+[oauth]
+[secrets]
 "#,
         )
         .unwrap();
@@ -1227,24 +1807,24 @@ secrets = true
         let m = PluginManifest::parse(raw).expect("echo native rust plugin.toml");
         assert_eq!(m.id, "echo_native_rust");
         assert!(m.cli.is_some());
+        assert!(m.has_entrypoint(Entrypoint::Cli));
     }
 
     #[test]
     fn workerd_outbound_with_domains_ok() {
         let m = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "echo"
-kind = "integration"
 runtime = "workerd"
+entrypoints = ["remoteLibrary"]
 [workerd]
 compatibility_date = "2026-08-01"
 main_module = "index.js"
 [capabilities.network]
 mode = "outbound"
 domains = ["api.example.com"]
-[capabilities.bindings]
-config = true
+[vars]
 "#,
         )
         .unwrap();
@@ -1256,11 +1836,11 @@ config = true
     fn logo_https_ok() {
         let m = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "audible"
-kind = "source"
 runtime = "native"
 command = "./bin"
+entrypoints = ["storefront"]
 logo = "https://www.google.com/s2/favicons?domain=audible.com&sz=128"
 [capabilities.network]
 mode = "outbound"
@@ -1277,11 +1857,11 @@ mode = "outbound"
     fn logo_relative_path_ok() {
         let m = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "echo"
-kind = "integration"
 runtime = "native"
 command = "./bin"
+entrypoints = ["cli"]
 logo = "assets/logo.png"
 [capabilities.network]
 mode = "deny"
@@ -1298,11 +1878,11 @@ mode = "deny"
     fn logo_javascript_rejected() {
         let err = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "echo"
-kind = "integration"
 runtime = "native"
 command = "./bin"
+entrypoints = ["cli"]
 logo = "javascript:alert(1)"
 [capabilities.network]
 mode = "deny"
@@ -1317,11 +1897,11 @@ mode = "deny"
         for padded in [" echo", "echo "] {
             let toml = format!(
                 r#"
-api_version = 2
+api_version = 3
 id = "{padded}"
-kind = "integration"
 runtime = "native"
 command = "./bin"
+entrypoints = ["cli"]
 [capabilities.network]
 mode = "deny"
 "#
@@ -1335,38 +1915,13 @@ mode = "deny"
     }
 
     #[test]
-    fn workerd_limits_effective_defaults_and_caps() {
-        assert_eq!(
-            WorkerdLimits::default().effective(),
-            EffectiveWorkerdLimits {
-                cpu_ms: WorkerdLimits::DEFAULT_CPU_MS,
-                subrequests: WorkerdLimits::DEFAULT_SUBREQUESTS,
-            }
-        );
-        assert_eq!(
-            WorkerdLimits {
-                cpu_ms: Some(0),
-                subrequests: Some(0),
-            }
-            .effective(),
-            EffectiveWorkerdLimits {
-                cpu_ms: WorkerdLimits::DEFAULT_CPU_MS,
-                subrequests: WorkerdLimits::DEFAULT_SUBREQUESTS,
-            }
-        );
-        let capped = WorkerdLimits {
-            cpu_ms: Some(500_000),
-            subrequests: Some(9_999),
+    fn entrypoint_names_roundtrip() {
+        for e in ALL_ENTRYPOINTS {
+            assert_eq!(Entrypoint::from_wire_name(e.wire_name()), Some(e));
         }
-        .effective();
-        assert_eq!(capped.cpu_ms, WorkerdLimits::MAX_CPU_MS);
-        assert_eq!(capped.subrequests, WorkerdLimits::MAX_SUBREQUESTS);
-        let mid = WorkerdLimits {
-            cpu_ms: Some(12_000),
-            subrequests: Some(10),
+        assert_eq!(Entrypoint::from_wire_name("Storefront"), None);
+        for f in PluginFamily::ALL {
+            assert_eq!(PluginFamily::parse(f.as_str()), Some(f));
         }
-        .effective();
-        assert_eq!(mid.cpu_ms, 12_000);
-        assert_eq!(mid.subrequests, 10);
     }
 }

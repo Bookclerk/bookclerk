@@ -1,13 +1,13 @@
 //! [`StorageBackend`] adapter over an external output plugin process.
 //!
-//! Destinations speak Cap'n Proto `api_version = 2` only. The host never grants
+//! Destinations speak Cap'n Proto `api_version = 3` only. The host never grants
 //! the guest filesystem access to acquire scratch or the output library.
 //! Credentials are injected as spawn env when the `secrets` binding is granted.
 
 use std::sync::Arc;
 
 use bookclerk_config::{normalize_storage_prefix, Config};
-use bookclerk_plugin_sdk::{DestinationContext, PRODUCT_API_VERSION};
+use bookclerk_plugin_sdk::{BindingValues, PRODUCT_API_VERSION};
 use bookclerk_storage::{load_s3_credentials, S3Credentials, StorageBackend, StorageError};
 use sea_orm::DatabaseConnection;
 use serde_json::Value;
@@ -57,7 +57,7 @@ impl DestinationRegistry {
         self.local = Some(dest);
     }
 
-    /// Records a plugin session used for `JobHandler` invocations.
+    /// Records a plugin session used for `JobRunner.job` invocations.
     pub(crate) fn set_plugin_session(&mut self, session: Arc<PluginSession>) {
         self.plugin_sessions
             .insert(session.instance_key().to_string(), session);
@@ -69,14 +69,14 @@ impl DestinationRegistry {
 /// # Errors
 ///
 /// Returns an error when discovery fails. Individual guests that are not
-/// `api_version = 2` or fail to start are skipped with a warning.
+/// `api_version = 3` or fail to start are skipped with a warning.
 pub async fn load_external_destinations(
     config: &Config,
     db: Option<&DatabaseConnection>,
 ) -> PluginResult<DestinationRegistry> {
     let mut registry = DestinationRegistry::default();
     for plugin in crate::discover_plugins(config)? {
-        if plugin.manifest.kind != crate::PluginKind::Output {
+        if !plugin.manifest.has_entrypoint(crate::Entrypoint::Storage) {
             continue;
         }
         if plugin.manifest.api_version != PRODUCT_API_VERSION {
@@ -170,10 +170,10 @@ async fn spawn_s3_guest(
         .await?,
     );
     session
-        .ensure_destination(DestinationContext {
-            config: bookclerk_plugin_sdk::ExtensibleConfig::json_from(&ctx)
+        .open(BindingValues::config(
+            bookclerk_plugin_sdk::ExtensibleConfig::json_from(&ctx)
                 .map_err(|err| crate::PluginError::message(err.to_string()))?,
-        })
+        ))
         .await?;
     Ok((PluginStorage::new(Arc::clone(&session)), session))
 }

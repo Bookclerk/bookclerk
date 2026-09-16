@@ -1,32 +1,6 @@
-//! Integration events and shared types.
+//! Shared integration types.
 
-use std::path::PathBuf;
-
-use bookclerk_library::BookRecord;
 use serde::{Deserialize, Serialize};
-
-/// Events fan-out to registered [`crate::traits::Integration`]s.
-#[derive(Debug, Clone)]
-pub enum IntegrationEvent {
-    /// A title was successfully acquired (or matched existing storage).
-    BookAcquired {
-        /// Library book row that was acquired.
-        book: Box<BookRecord>,
-        /// Destination storage key written by acquire (relative or object key).
-        storage_key: String,
-        /// Local absolute path when the destination is on-disk; `None` for remote-only.
-        absolute_path: Option<PathBuf>,
-    },
-    /// An external identity was observed (e.g. ABS user created).
-    ExternalUserObserved {
-        /// Integration / storefront id that owns this external identity.
-        provider: String,
-        /// Remote system's user id (never a Bookclerk user id).
-        external_user_id: String,
-        /// Optional human-facing name from the remote system.
-        display_name: Option<String>,
-    },
-}
 
 /// Health snapshot for one integration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -222,7 +222,14 @@ def check_method_names() -> list[str]:
     methods_text = METHODS_RS.read_text(encoding="utf-8")
     rust_names = set(re.findall(r'pub const NAME: &str = "([^"]+)";', methods_text))
     errors: list[str] = []
-    for interface in ("ContentSource", "Integration"):
+    for interface in (
+        "ContentSource",
+        "RemoteLibrary",
+        "Oidc",
+        "PluginCli",
+        "EventConsumer",
+        "EventPublisher",
+    ):
         match = re.search(rf"interface {interface} \{{(.*?)\n\}}", capnp_text, re.DOTALL)
         if not match:
             errors.append(f"interface {interface} not found in plugin.capnp")

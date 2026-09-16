@@ -1,19 +1,13 @@
-import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd";
+import { BookclerkEntrypoint, CliEntrypoint } from "@bookclerk/plugin-sdk/workerd";
 
-export default class ToolsFixture extends BookclerkPlugin {
+export class Cli extends CliEntrypoint {
   async describe() {
-    return {
-      apiVersion: 2,
-      id: "echo-workerd-tools",
-      kind: "integration",
-      rpcFeatures: [],
-      scalarLimits: {
-        maxScalarBytes: 262144,
-        maxStreamWindowBytes: 1048576,
-        maxListPage: 256,
-      },
-      supportedRoles: ["integration"],
-      metadataJson: '{"capabilities": ["health"]}',
-    };
+    return { commands: [] };
+  }
+}
+
+export default class ToolsFixture extends BookclerkEntrypoint {
+  async describe() {
+    return { displayName: "Echo workerd tools fixture" };
   }
 }

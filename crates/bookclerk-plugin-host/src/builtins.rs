@@ -8,6 +8,8 @@ use bookclerk_config::Config;
 use bookclerk_integrations::IntegrationRegistry;
 use bookclerk_source::SourceRegistry;
 
+use crate::rpc_session::SessionServices;
+
 /// Register first-party content sources in-process when their Cargo features
 /// are enabled and the source is enabled in config.
 pub fn register_builtin_sources(config: &Config, registry: &mut SourceRegistry) {
@@ -46,24 +48,38 @@ pub fn register_builtin_integrations(
 
 /// Built-in sources plus discovered external source plugins.
 ///
+/// `services` carries the host facilities external guests may receive as
+/// bindings (the `EVENTS` outbox); pass [`SessionServices::default`] when the
+/// caller has no library store.
+///
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub async fn load_sources(config: &Config) -> crate::Result<SourceRegistry> {
+pub async fn load_sources(
+    config: &Config,
+    services: &SessionServices,
+) -> crate::Result<SourceRegistry> {
     let mut registry = SourceRegistry::new();
     register_builtin_sources(config, &mut registry);
-    crate::load_external_sources(config, &mut registry).await?;
+    crate::load_external_sources(config, &mut registry, services).await?;
     Ok(registry)
 }
 
 /// Built-in integrations plus discovered external integration plugins.
 ///
+/// `services` carries the host facilities external guests may receive as
+/// bindings (the `EVENTS` outbox); pass [`SessionServices::default`] when the
+/// caller has no library store.
+///
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub async fn load_integrations(config: &Config) -> crate::Result<IntegrationRegistry> {
+pub async fn load_integrations(
+    config: &Config,
+    services: &SessionServices,
+) -> crate::Result<IntegrationRegistry> {
     let mut registry = IntegrationRegistry::new();
     register_builtin_integrations(config, &mut registry)?;
-    crate::load_external_integrations(config, &mut registry).await?;
+    crate::load_external_integrations(config, &mut registry, services).await?;
     Ok(registry)
 }

@@ -1,9 +1,9 @@
-api_version = 2
+api_version = 3
 id = "echo_workerd_rust"
 name = "Echo Integration (workerd Rust/Wasm)"
-kind = "integration"
 version = "1.0.0"
 runtime = "workerd"
+entrypoints = ["cli"]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -35,14 +35,12 @@ type = "wasm"
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
-plugin_kv = true
+[vars]
 
-[capabilities.methods]
-list = ["describe", "integration", "health", "diagnose", "onEvent", "cli"]
+[[kv_namespaces]]
+binding = "KV"
 
-[capabilities.events]
-subscriptions = [
-  { type = "book_acquired", schema_versions = [1], supports_suspend = false },
-]
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = false

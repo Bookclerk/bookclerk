@@ -273,6 +273,7 @@ jobs:
           npm run test:tools
           npm run test:db-value
           npm run test:plugin-migrations
+          npm run test:entrypoints
 
       - name: Python plugin SDK tools conformance
         if: needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.python_sdk == 'true'

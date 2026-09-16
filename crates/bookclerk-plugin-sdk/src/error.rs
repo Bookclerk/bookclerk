@@ -13,7 +13,7 @@ pub type Result<T> = std::result::Result<T, SdkError>;
 /// Errors from the guest stdio loop and SDK helpers (not plugin business logic).
 ///
 /// Prefer mapping operator-visible failures into
-/// [`bookclerk_plugin_abi::PluginError`] inside [`crate::PluginRoot`]
+/// [`bookclerk_plugin_abi::PluginError`] inside [`crate::PluginWorker`]
 /// methods. Use [`SdkError`] for framing, JSON, and filesystem problems in the
 /// SDK itself.
 #[derive(Debug, Error)]

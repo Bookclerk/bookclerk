@@ -1,4 +1,4 @@
-//! Workerd guest bridge — same [`crate::PluginRoot`] contract as native.
+//! Workerd guest bridge — same [`crate::PluginWorker`] contract as native.
 //!
 //! Audience: authors of `runtime = "workerd"` plugins (JS modules and optional
 //! Rust→Wasm). Dual-stack with native guests:
@@ -7,11 +7,12 @@
 //! - **Workerd:** JS modules import the package; Rust implements ABI dispatch:
 //!
 //! ```js
-//! import { BookclerkPlugin, Integration } from "@bookclerk/plugin-sdk/workerd";
-//! import { initSync, dispatch } from "./pkg/….js";
+//! import { BookclerkEntrypoint, CliEntrypoint } from "@bookclerk/plugin-sdk/workerd";
+//! import { initSync, cliInvoke } from "./pkg/….js";
 //! import wasmModule from "./pkg/…_bg.wasm";
 //! initSync({ module: wasmModule });
-//! export default class EchoPlugin extends BookclerkPlugin { /* … */ }
+//! export class Cli extends CliEntrypoint { /* forwards to wasm */ }
+//! export default class EchoPlugin extends BookclerkEntrypoint { /* event(batch) */ }
 //! ```
 //!
 //! `bookclerk-workerd` injects `@bookclerk/plugin-sdk/workerd` (and the package
@@ -28,7 +29,7 @@
 //! src/lib.rs                  ABI-typed `dispatch_json`
 //! ```
 
-pub use crate::PluginRoot;
+pub use crate::PluginWorker;
 
 /// Suggested main module filename for JS+Wasm workerd guests.
 ///
@@ -49,8 +50,8 @@ pub const EMBED_BOOKCLERK_PLUGIN_JS: &str = "bookclerk_plugin.js";
 
 /// Source text of the embeddable workerd runtime helper.
 ///
-/// Contains the `BookclerkPlugin` base class and role `RpcTarget` classes
-/// mirrored by the npm package. Written to
+/// Contains the `BookclerkEntrypoint` base class, the named `*Entrypoint`
+/// bases, and the `RpcTarget` stream classes mirrored by the npm package. Written to
 /// `modules/@bookclerk/plugin-sdk/workerd.js` by [`crate::tools::sync_embed`]
 /// when authors need an offline vendor (feature `tools`).
 pub const EMBED_BOOKCLERK_PLUGIN_JS_SRC: &str = include_str!("../embed/bookclerk_plugin.js");

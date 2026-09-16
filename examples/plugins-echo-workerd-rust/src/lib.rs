@@ -1,8 +1,8 @@
 //! Echo workerd guest logic compiled to Wasm.
 //!
 //! JS `modules/index.js` loads this module and forwards Workers RPC methods.
-//! Identity is advertised by JS `describe()` (`api_version = 2`). Wasm still
-//! implements health / diagnose / onEvent / CLI.
+//! Identity comes from `plugin.toml` (`api_version = 3`) via the launcher's
+//! manifest projection; Wasm still implements health / diagnose / onEvent / CLI.
 
 use bookclerk_plugin_abi::{
     CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
@@ -35,7 +35,7 @@ fn cli_schema() -> CliSchema {
 
 /// Dispatches one Workers RPC method and returns the JSON result payload.
 ///
-/// Called from the JS `BookclerkPlugin` glue (and unit tests). Unknown methods
+/// Called from the JS `BookclerkEntrypoint` / `Cli` glue (and unit tests). Unknown methods
 /// return `Err`; successful handlers serialize ABI DTOs as JSON text.
 ///
 /// # Arguments

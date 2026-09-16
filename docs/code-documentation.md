@@ -70,7 +70,7 @@ Minimum expectations:
 - **Modules / crates:** State audience (guest author vs host), feature flags,
   and links to product docs or examples.
 - **Examples:** Prefer a short `# Examples` / `@example` on entry-point APIs
-  (`BookclerkPlugin`, `parse`, `serve`, CLI helpers). CI compiles every
+  (`PluginWorker`, `parse`, `serve`, CLI helpers). CI compiles every
   rustdoc example (`cargo test --doc`); crates without runnable examples
   report `running 0 tests` and that is not a coverage skip.
 
@@ -99,7 +99,7 @@ Map Google API sections onto rustdoc Markdown:
 /// # Examples
 ///
 /// ```
-/// # use bookclerk_plugin_sdk::BookclerkPlugin;
+/// # use bookclerk_plugin_sdk::PluginWorker;
 /// // ...
 /// ```
 ```

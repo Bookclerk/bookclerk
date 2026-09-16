@@ -6,10 +6,11 @@ use std::path::PathBuf;
 use std::pin::Pin;
 
 use async_trait::async_trait;
+use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    ByteRange, CopyResult, Destination, DestinationContext, JobHandler, ListOptions, ListPage,
-    ObjectInfo, ObjectMetadata, PluginDescribe, PluginRoot, PutResult, ReadResult, ScalarLimits,
-    Source, SourceContext, StreamCopyHandler, WorkerContext, WriteOptions, FEATURE_SCALAR_LIMITS,
+    Bindings, ByteRange, CopyResult, Destination, Entrypoints, ExtensibleConfig, Invocation,
+    ListOptions, ListPage, ObjectInfo, ObjectMetadata, PluginDescribe, PluginWorker, PutResult,
+    ReadResult, ScalarLimits, StreamCopyHandler, WriteOptions, FEATURE_SCALAR_LIMITS,
     FEATURE_STORAGE_COPY, FEATURE_STREAMS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_sdk::{OutputLocalContextDto, PluginError};
@@ -38,22 +39,22 @@ pub struct LocalDestination {
 }
 
 impl LocalDestination {
-    /// Builds a destination from the [`DestinationContext`] config payload
+    /// Builds a destination from the `open` [`Bindings::config`] payload
     /// (an [`OutputLocalContextDto`] as `application/json`; empty means defaults).
     ///
     /// # Errors
     ///
     /// Returns [`PluginError::invalid_params`] when the payload is not a local
     /// output context, or an internal error when the root cannot be opened.
-    pub fn from_context(ctx: &DestinationContext) -> Result<Self> {
-        let parsed: OutputLocalContextDto = if ctx.config.is_empty() {
+    pub fn from_config(config: &ExtensibleConfig) -> Result<Self> {
+        let parsed: OutputLocalContextDto = if config.is_empty() {
             OutputLocalContextDto {
                 plugin_data_dir: String::new(),
                 root: String::new(),
                 prefix: String::new(),
             }
         } else {
-            ctx.config.json_into().map_err(|err| {
+            config.json_into().map_err(|err| {
                 PluginError::invalid_params(format!("local destination context: {err}"))
             })?
         };
@@ -226,23 +227,15 @@ impl Destination for LocalDestination {
     }
 }
 
-#[async_trait(?Send)]
-impl Source for LocalDestination {
-    async fn open(&self, key: &str) -> Result<ReadResult> {
-        Destination::get(self, key, None).await
-    }
-}
-
 /// Root capability for the platform local destination guest.
 pub struct LocalRoot;
 
 #[async_trait(?Send)]
-impl PluginRoot for LocalRoot {
+impl PluginWorker for LocalRoot {
     async fn describe(&self) -> Result<PluginDescribe> {
         Ok(PluginDescribe {
             api_version: PRODUCT_API_VERSION,
             id: ID.into(),
-            kind: "output".into(),
             display_name: Some("Local filesystem".into()),
             rpc_features: vec![
                 FEATURE_SCALAR_LIMITS.into(),
@@ -250,23 +243,16 @@ impl PluginRoot for LocalRoot {
                 FEATURE_STORAGE_COPY.into(),
             ],
             scalar_limits: ScalarLimits::default().into(),
-            supported_roles: vec!["destination".into(), "source".into(), "worker".into()],
+            capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
             ..PluginDescribe::default()
         })
     }
 
-    async fn destination(&self, context: DestinationContext) -> Result<Box<dyn Destination>> {
-        Ok(Box::new(LocalDestination::from_context(&context)?))
-    }
-
-    async fn source(&self, context: SourceContext) -> Result<Box<dyn Source>> {
-        let dest_ctx = DestinationContext {
-            config: context.config,
-        };
-        Ok(Box::new(LocalDestination::from_context(&dest_ctx)?))
-    }
-
-    async fn worker(&self, _context: WorkerContext) -> Result<Box<dyn JobHandler>> {
-        Ok(Box::new(StreamCopyHandler))
+    async fn open(&self, _invocation: Invocation, bindings: Bindings) -> Result<Entrypoints> {
+        Ok(Entrypoints {
+            storage: Some(Box::new(LocalDestination::from_config(&bindings.config)?)),
+            job_runner: Some(Box::new(StreamCopyHandler)),
+            ..Entrypoints::default()
+        })
     }
 }

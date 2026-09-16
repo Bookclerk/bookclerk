@@ -35,11 +35,11 @@
 //! use bookclerk_plugin_manifest::parse;
 //!
 //! let manifest = parse(r#"
-//! api_version = 2
+//! api_version = 3
 //! id = "echo"
-//! kind = "integration"
 //! runtime = "native"
 //! command = "./echo"
+//! entrypoints = ["cli"]
 //!
 //! [capabilities.network]
 //! mode = "deny"
@@ -99,16 +99,16 @@ pub const PLUGIN_TOML_SCHEMA_JSON: &str = include_str!("../schema/plugin-toml.js
 /// use bookclerk_plugin_manifest::parse;
 ///
 /// let m = parse(r#"
-/// api_version = 2
+/// api_version = 3
 /// id = "sqlite"
-/// kind = "database"
 /// runtime = "native"
 /// command = "./bookclerk-plugin-database-sqlite"
+/// entrypoints = ["databaseAdapter"]
 ///
 /// [capabilities.network]
 /// mode = "deny"
 /// "#).unwrap();
-/// assert_eq!(m.kind.as_str(), "database");
+/// assert_eq!(m.primary_family().as_str(), "database");
 /// ```
 pub fn parse(text: &str) -> Result<PluginManifest> {
     PluginManifest::parse(text)

@@ -1,9 +1,9 @@
-//! JobHandler helpers: stream-copy vertical slice (no media in scalars).
+//! JobRunner helpers: stream-copy vertical slice (no media in scalars).
 
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 
-use crate::roles::{Cancellation, Destination, JobHandler, JobHandlerContext, Source};
+use crate::roles::{Cancellation, Destination, JobController, JobRunner, Source};
 use crate::rpc_types::{JobInvocation, JobOutcome, WriteOptions};
 use crate::{PluginError, Result};
 
@@ -112,17 +112,20 @@ pub async fn stream_copy_keys(
     })
 }
 
-/// Default [`JobHandler`] for the stream-copy vertical slice.
+/// Default [`JobRunner`] for the stream-copy vertical slice.
 pub struct StreamCopyHandler;
 
 #[async_trait::async_trait(?Send)]
-impl JobHandler for StreamCopyHandler {
-    async fn handle(
-        &self,
-        invocation: JobInvocation,
-        context: JobHandlerContext,
-    ) -> Result<JobOutcome> {
-        if context.cancel.poll().await? {
+impl JobRunner for StreamCopyHandler {
+    async fn job(&self, controller: JobController) -> Result<JobOutcome> {
+        let JobController {
+            invocation,
+            input,
+            output,
+            progress,
+            cancel,
+        } = controller;
+        if cancel.poll().await? {
             return Ok(JobOutcome::Cancelled {
                 message: "cancelled before stream_copy".into(),
             });
@@ -136,12 +139,12 @@ impl JobHandler for StreamCopyHandler {
         let spec: StreamCopySpec = serde_json::from_str(&invocation.payload_json)
             .map_err(|err| PluginError::invalid_params(format!("stream_copy spec: {err}")))?;
         stream_copy_keys(
-            context.input.as_ref(),
-            context.output.as_ref(),
+            input.as_ref(),
+            output.as_ref(),
             &spec,
             &invocation,
-            context.progress.as_ref(),
-            context.cancel.as_ref(),
+            progress.as_ref(),
+            cancel.as_ref(),
         )
         .await
     }

@@ -2,10 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::generated::{Brand, CliSchema, ConfigOption, PortalAuthMode};
+use crate::generated::{
+    Brand, CliSchema, ConfigOption, Entrypoint, PluginCapabilities, PortalAuthMode,
+};
 use crate::limits::{ScalarLimits, PRODUCT_API_VERSION};
 
-/// Guest identity returned by `BookclerkPlugin.describe`.
+/// Guest identity returned by `PluginWorker.describe` (the adapter merges the manifest projection over the author `describe()`).
 ///
 /// Every field is a typed Cap'n Proto field of `PluginDescribe`; there is no
 /// side-channel JSON. Storefront UI extras (`brand`, `config_options`,
@@ -17,8 +19,6 @@ pub struct PluginDescribe {
     pub api_version: u32,
     /// Plugin id matching `plugin.toml`.
     pub id: String,
-    /// `source` / `integration` / `output` / `database`.
-    pub kind: String,
     /// Optional UI name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
@@ -27,13 +27,11 @@ pub struct PluginDescribe {
     pub rpc_features: Vec<String>,
     /// Effective numeric limits.
     pub scalar_limits: ScalarLimitsDto,
-    /// Advertised factories. Host intersects with the signed manifest allowlist.
+    /// Typed capability declaration (entrypoints, event consumers/producers,
+    /// jobs, database and named bindings). The host compares it with the
+    /// signed `plugin.toml` and the operator grant; widening is rejected.
     #[serde(default)]
-    pub supported_roles: Vec<String>,
-    /// Capability method names the guest implements (`health`, `login`, ...).
-    /// The host intersects these with the consent grant.
-    #[serde(default)]
-    pub capabilities: Vec<String>,
+    pub capabilities: PluginCapabilities,
     /// Portal Accounts connect mode for storefronts.
     #[serde(default)]
     pub portal_auth_mode: PortalAuthMode,
@@ -64,12 +62,10 @@ impl Default for PluginDescribe {
         Self {
             api_version: PRODUCT_API_VERSION,
             id: String::new(),
-            kind: String::new(),
             display_name: None,
             rpc_features: Vec::new(),
             scalar_limits: ScalarLimits::default().into(),
-            supported_roles: Vec::new(),
-            capabilities: Vec::new(),
+            capabilities: PluginCapabilities::default(),
             portal_auth_mode: PortalAuthMode::Unspecified,
             password_env_var: None,
             aliases: Vec::new(),
@@ -82,12 +78,25 @@ impl Default for PluginDescribe {
 }
 
 impl PluginDescribe {
-    /// True when the guest advertised capability method `name` (or a factory
-    /// role of that name).
+    /// True when the guest exports the named [`Entrypoint`].
     #[must_use]
-    pub fn has_capability(&self, name: &str) -> bool {
-        self.capabilities.iter().any(|c| c == name)
-            || self.supported_roles.iter().any(|c| c == name)
+    pub fn has_entrypoint(&self, entrypoint: Entrypoint) -> bool {
+        self.capabilities.entrypoints.contains(&entrypoint)
+    }
+
+    /// True when the guest's default entrypoint consumes `event_type`.
+    #[must_use]
+    pub fn consumes_event(&self, event_type: &str) -> bool {
+        self.capabilities
+            .consumes
+            .iter()
+            .any(|c| c.event_type == event_type)
+    }
+
+    /// True when the guest's default entrypoint runs jobs of `job_type`.
+    #[must_use]
+    pub fn runs_job(&self, job_type: &str) -> bool {
+        self.capabilities.jobs.iter().any(|j| j == job_type)
     }
 }
 
@@ -234,7 +243,7 @@ pub struct DomainEvent {
     pub resume_pending: bool,
 }
 
-/// Result of [`crate::Integration::on_event`].
+/// Per-event result of [`crate::EventConsumer::event`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum EventResult {
@@ -385,39 +394,6 @@ impl From<ScalarLimitsDto> for ScalarLimits {
     }
 }
 
-/// Granted destination configuration (`BookclerkPlugin.destination`).
-///
-/// Only plugin settings travel here (the operator `[output.<id>]` table as
-/// `application/json`); host-private jail layout stays off this struct.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DestinationContext {
-    /// Granted plugin settings.
-    #[serde(default)]
-    pub config: ExtensibleConfig,
-}
-
-/// Granted source configuration (`BookclerkPlugin.source`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SourceContext {
-    /// Granted plugin settings.
-    #[serde(default)]
-    pub config: ExtensibleConfig,
-}
-
-/// Granted job-handler configuration (`BookclerkPlugin.worker`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkerContext {
-    /// Durable job id.
-    #[serde(default)]
-    pub job_id: String,
-    /// Granted plugin settings.
-    #[serde(default)]
-    pub config: ExtensibleConfig,
-}
-
 /// Maximum checkpoint payload size (bytes).
 pub const MAX_CHECKPOINT_BYTES: u32 = crate::plugin_capnp::MAX_CHECKPOINT_BYTES;
 
@@ -548,7 +524,7 @@ impl JobInvocation {
     }
 }
 
-/// Outcome of [`crate::JobHandler::handle`].
+/// Outcome of [`crate::JobRunner::job`].
 ///
 /// Suspension is durable only after Bookclerk atomically commits the fenced
 /// outcome. Open streams and process memory do not survive.

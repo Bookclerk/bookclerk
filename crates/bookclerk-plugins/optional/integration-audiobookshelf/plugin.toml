@@ -1,36 +1,23 @@
-api_version = 2
+api_version = 3
 id = "audiobookshelf"
 name = "Audiobookshelf"
-kind = "integration"
 version = "0.1.0"
 logo = "https://www.google.com/s2/favicons?domain=audiobookshelf.org&sz=128"
 runtime = "native"
 command = "./bookclerk-plugin-integration-audiobookshelf"
+entrypoints = ["remoteLibrary", "oidc"]
 
 [capabilities.network]
 mode = "outbound"
 # Self-hosted ABS: list your server hostname(s) here. www.audiobookshelf.org
 # alone is insufficient for talking to your library instance.
-[capabilities.bindings]
-config = true
 
-[capabilities.methods]
-list = [
-    "pollEvents",
-    "start",
-    "health",
-    "diagnose",
-    "scanLibrary",
-    "syncListening",
-    "authenticateUser",
-    "onEvent",
-    "oidcClients",
-]
+[vars]
 
-[capabilities.events]
-subscriptions = [
-  { type = "book_acquired", schema_versions = [1], supports_suspend = false },
-]
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = false
 
 [[oidc.clients]]
 client_id = "audiobookshelf"

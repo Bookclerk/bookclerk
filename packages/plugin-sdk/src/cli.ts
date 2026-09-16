@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `bookclerk-plugin` — check / fmt / package / smoke CLI for the TypeScript SDK.
+ * `bookclerk-plugin` — check / fmt / types / package / smoke CLI for the TypeScript SDK.
  *
  * Invoked as `npx bookclerk-plugin <command>` or via the package `bin` entry.
  * Commands mirror the Rust / Python author tools so plugin trees stay
@@ -10,6 +10,7 @@
  * ```
  * bookclerk-plugin check [dir]
  * bookclerk-plugin fmt [--check] [plugin.toml]
+ * bookclerk-plugin types [dir] [--out <file>]
  * bookclerk-plugin sync-embed [dir]
  * bookclerk-plugin package --out <dir> [plugin-dir]
  * bookclerk-plugin smoke [dir]
@@ -22,6 +23,7 @@ import { parse as parseToml } from "smol-toml";
 import { checkPlugin, syncEmbed } from "./tools/check.js";
 import { formatManifest } from "./tools/format.js";
 import { packagePlugin } from "./tools/package.js";
+import { generateTypes } from "./tools/types.js";
 import { validateManifest, type Manifest } from "./tools/validate.js";
 import { runSmoke } from "./sparse-workerd/smoke.js";
 
@@ -31,6 +33,7 @@ function usage(): void {
 Usage:
   bookclerk-plugin check [dir]
   bookclerk-plugin fmt [--check] [plugin.toml]
+  bookclerk-plugin types [dir] [--out <file>]
   bookclerk-plugin sync-embed [dir]
   bookclerk-plugin package --out <dir> [plugin-dir]
   bookclerk-plugin smoke [dir]
@@ -89,6 +92,21 @@ async function main(argv: string[]): Promise<number> {
         }
         fs.writeFileSync(file, formatted);
         console.log(`wrote ${file}`);
+        return 0;
+      }
+      case "types": {
+        let out: string | undefined;
+        let dir = ".";
+        for (let i = 1; i < args.length; i++) {
+          if (args[i] === "--out") {
+            out = args[++i];
+          } else if (!args[i]!.startsWith("-")) {
+            dir = args[i]!;
+          } else {
+            throw new Error(`unknown types flag: ${args[i]}`);
+          }
+        }
+        console.log(generateTypes(path.resolve(dir), out ? path.resolve(out) : undefined));
         return 0;
       }
       case "sync-embed": {

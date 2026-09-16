@@ -4,7 +4,10 @@ import pytest
 
 from bookclerk_plugin_sdk.tools import (
     check_plugin,
+    env_properties_for,
     fmt_plugin_toml,
+    format_manifest,
+    generate_types,
     package_plugin,
     sync_embed,
     validate_plugin_id,
@@ -100,3 +103,53 @@ def test_sync_embed_optional_vendor(tmp_path: Path):
     assert "synced" in sync_embed(staging)
     assert (modules / "bookclerk_plugin_sdk" / "workerd.py").is_file()
     assert "ok" in check_plugin(staging)
+
+
+def test_format_manifest_emits_sealed_and_loopback_tables():
+    text = format_manifest(
+        {
+            "api_version": 3,
+            "id": "echo",
+            "runtime": "native",
+            "command": "./echo",
+            "entrypoints": ["cli"],
+            "secrets": {"binding": "SECRETS"},
+            "oauth": {"binding": "OAUTH"},
+            "capabilities": {"network": {"mode": "deny"}},
+        }
+    )
+    assert "\n[secrets]\n" in text
+    assert "\n[oauth]\n" in text
+    assert 'binding = "SECRETS"' in text
+    assert 'binding = "OAUTH"' in text
+
+
+def test_env_properties_include_sealed_and_loopback_bindings(tmp_path: Path):
+    names = [
+        name
+        for name, _, _ in env_properties_for({"id": "echo", "secrets": {}, "oauth": {}})
+    ]
+    assert "SECRETS" in names
+    assert "OAUTH" in names
+    (tmp_path / "plugin.toml").write_text(
+        format_manifest(
+            {
+                "api_version": 3,
+                "id": "echo",
+                "runtime": "native",
+                "command": "./echo",
+                "entrypoints": ["cli"],
+                "secrets": {"binding": "SECRETS"},
+                "oauth": {"binding": "OAUTH"},
+                "capabilities": {"network": {"mode": "deny"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    msg = generate_types(tmp_path)
+    stub = (tmp_path / "bookclerk_configuration.py").read_text(encoding="utf-8")
+    assert "wrote" in msg
+    assert "SECRETS: dict[str, str]" in stub
+    assert "OAUTH: Any" in stub
+    assert "[secrets]" in stub
+    assert "[oauth]" in stub

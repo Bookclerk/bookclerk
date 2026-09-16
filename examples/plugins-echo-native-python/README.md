@@ -1,7 +1,7 @@
 # Echo Integration (id `echo_native_python`)
 
 This example now validates **workerd** hosting (`runtime = "workerd"`,
-`api_version = 2`), not a Python Cap'n Proto stack. The guest class lives in
+`api_version = 3`), not a Python Cap'n Proto stack. The guest class lives in
 [`modules/plugin.py`](modules/plugin.py) and matches
 [`plugins-echo-workerd-python`](../plugins-echo-workerd-python/).
 

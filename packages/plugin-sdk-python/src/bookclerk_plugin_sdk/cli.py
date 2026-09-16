@@ -1,7 +1,7 @@
 """CLI entry: ``bookclerk-plugin`` / ``python -m bookclerk_plugin_sdk``.
 
-Dispatches authoring helpers (``check``, ``fmt``, ``sync-embed``, ``package``,
-``smoke``) that mirror the Rust/TypeScript plugin toolchains.
+Dispatches authoring helpers (``check``, ``fmt``, ``types``, ``sync-embed``,
+``package``, ``smoke``) that mirror the Rust/TypeScript plugin toolchains.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from .sparse_workerd import run_smoke
-from .tools import check_plugin, fmt_plugin_toml, package_plugin, sync_embed
+from .tools import check_plugin, fmt_plugin_toml, generate_types, package_plugin, sync_embed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
             "Usage:\n"
             "  bookclerk-plugin check [dir]\n"
             "  bookclerk-plugin fmt [--check] [plugin.toml]\n"
+            "  bookclerk-plugin types [dir] [--out <file>]\n"
             "  bookclerk-plugin sync-embed [dir]\n"
             "  bookclerk-plugin package --out <dir> [plugin-dir]\n"
             "  bookclerk-plugin smoke [dir]\n",
@@ -57,6 +58,21 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     raise SystemExit(f"unknown fmt flag: {a}")
             print(fmt_plugin_toml(path, check_only=check_only))
+            return 0
+        if cmd == "types":
+            out = None
+            directory = Path(".")
+            i = 1
+            while i < len(args):
+                if args[i] == "--out":
+                    i += 1
+                    out = Path(args[i])
+                elif not args[i].startswith("-"):
+                    directory = Path(args[i])
+                else:
+                    raise SystemExit(f"unknown types flag: {args[i]}")
+                i += 1
+            print(generate_types(directory.resolve(), out.resolve() if out else None))
             return 0
         if cmd == "sync-embed":
             directory = Path(args[1] if len(args) > 1 else ".")

@@ -1,16 +1,26 @@
-"""Echo workerd guest (id `echo_native_python`, api_version = 2).
+"""Echo workerd guest (id `echo_native_python`, api_version = 3).
 
-This example now validates workerd hosting, not a Python Cap'n Proto stack.
-Pattern matches `plugins-echo-workerd-python`.
+This example validates workerd hosting, not a Python Cap'n Proto stack.
+
+    from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint, CliEntrypoint, js
+
+``bookclerk-workerd`` injects the SDK under that module path. The module-level
+``Default`` class is the default entrypoint (``event(batch)`` trigger for the
+``book_acquired`` consumer) and ``Cli`` is the ``cli`` entrypoint declared in
+``plugin.toml``. This module is workerd-only.
 """
 
 from __future__ import annotations
 
-from bookclerk_plugin_sdk.workerd import BookclerkPlugin, Integration, js
+from bookclerk_plugin_sdk.workerd import (
+    BookclerkEntrypoint,
+    CliEntrypoint,
+    EventBatch,
+    cli_args,
+    json_payload,
+)
 
-API_VERSION = 2
 PLUGIN_ID = "echo_native_python"
-KIND = "integration"
 
 CLI = {
     "commands": [
@@ -22,6 +32,8 @@ CLI = {
                     "name": "message",
                     "long": "message",
                     "kind": "string",
+                    "required": False,
+                    "positional": False,
                     "default": "hi",
                 }
             ],
@@ -30,88 +42,43 @@ CLI = {
 }
 
 
-def _get(obj, key, default=None):
-    if obj is None:
-        return default
-    try:
-        if hasattr(obj, "get"):
-            val = obj.get(key)
-            return default if val is None else val
-    except Exception:  # noqa: BLE001
-        pass
-    return getattr(obj, key, default)
-
-
-class EchoIntegration(Integration):
-    """Integration RpcTarget: health / diagnose / onEvent."""
-
-    def __init__(self, env=None):
-        self.env = env
-
-    async def health(self, _params=None):
-        return js(
-            {
-                "ok": True,
-                "id": PLUGIN_ID,
-                "enabled": True,
-                "detail": "echo_native_python ready",
-            }
-        )
-
-    async def diagnose(self, _params=None):
-        return js({"lines": ["echo_native_python diagnose: ok"]})
-
-    async def onEvent(self, _event=None):
-        return js({"kind": "ack"})
-
-
-class Default(BookclerkPlugin):
-    """Bookclerk plugin entrypoint (workerd `entrypoint = \"default\"`)."""
+class Cli(CliEntrypoint):
+    """``cli`` entrypoint: ``bookclerk plugins echo_native_python ping --message hi``."""
 
     async def describe(self):
-        return js(
-            {
-                "apiVersion": API_VERSION,
-                "id": PLUGIN_ID,
-                "kind": KIND,
-                "displayName": "Echo Integration (native Python)",
-                "rpcFeatures": ["rpc.scalarLimits"],
-                "scalarLimits": {
-                    "maxScalarBytes": 262144,
-                    "maxStreamWindowBytes": 1048576,
-                    "maxListPage": 256,
-                },
-                "supportedRoles": ["integration"],
-            }
-        )
+        """Return the CLI schema."""
+        return CLI
 
-    def integration(self, _ctx=None):
-        return EchoIntegration(getattr(self, "env", None))
-
-    async def cliDescribe(self, _params=None):
-        return js(CLI)
-
-    async def cliInvoke(self, params=None):
-        if isinstance(params, str):
-            import json
-
-            params = json.loads(params or "{}")
-        command = _get(params, "command")
+    async def invoke(self, params):
+        """Handle the ``ping`` command (``CliInvokeParams`` → ``CliInvokeResult``)."""
+        command = params.get("command") if isinstance(params, dict) else None
         if command != "ping":
-            return js(
-                {
-                    "exitCode": 2,
-                    "stderr": f"unknown command {command or ''}",
-                }
-            )
-        args = _get(params, "args") or {}
-        message = _get(args, "message")
-        if not isinstance(message, str):
-            message = "hi"
-        return js(
-            {
-                "exitCode": 0,
-                "stdout": f"pong: {message}\n",
-                "json": {"pong": message},
+            return {
+                "exitCode": 2,
+                "stdout": "",
+                "stderr": f"unknown command {command or ''}",
+                "payload": json_payload(None),
             }
-        )
+        message = cli_args(params).get("message", "hi")
+        return {
+            "exitCode": 0,
+            "stdout": f"pong: {message}\n",
+            "stderr": "",
+            "payload": json_payload({"pong": message}),
+        }
+
+
+class Default(BookclerkEntrypoint):
+    """Default entrypoint: event trigger for ``[[events.consumers]]``."""
+
+    async def describe(self):
+        """Presentation fields beyond ``plugin.toml``."""
+        return {"displayName": "Echo Integration (native Python)"}
+
+    async def event(self, batch: EventBatch) -> None:
+        """Log ``book_acquired`` deliveries and ack every message."""
+        for msg in batch.messages:
+            if msg.type == "book_acquired":
+                title_id = msg.json().get("titleId", "")
+                print(f"{PLUGIN_ID} saw book_acquired titleId={title_id}")
+            msg.ack()

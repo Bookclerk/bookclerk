@@ -1,19 +1,20 @@
 /**
- * Echo workerd guest module (api_version = 2).
+ * Echo workerd guest module (api_version = 3).
  *
- * Extends package `BookclerkPlugin` from `@bookclerk/plugin-sdk/workerd`
- * (injected by bookclerk-workerd). Keep in sync with `src/index.ts`.
+ * Default export extends `BookclerkEntrypoint` from
+ * `@bookclerk/plugin-sdk/workerd` (injected by bookclerk-workerd) and handles
+ * the `book_acquired` event trigger declared in `plugin.toml`. The `cli`
+ * entrypoint is the exported `Cli` class. Keep in sync with `src/index.ts`.
  */
 
 import {
-  BookclerkPlugin,
-  Integration,
-  PRODUCT_API_VERSION,
-  FEATURE_SCALAR_LIMITS,
+  BookclerkEntrypoint,
+  CliEntrypoint,
+  cliArgs,
+  jsonPayload,
 } from "@bookclerk/plugin-sdk/workerd";
 
 const PLUGIN_ID = "echo_workerd_ts";
-const KIND = "integration";
 
 const CLI = {
   commands: [
@@ -25,6 +26,8 @@ const CLI = {
           name: "message",
           long: "message",
           kind: "string",
+          required: false,
+          positional: false,
           default: "hi",
         },
       ],
@@ -32,110 +35,67 @@ const CLI = {
   ],
 };
 
-class EchoIntegration extends Integration {
-  /**
-   * @param {Record<string, unknown> | undefined} env
-   */
-  constructor(env) {
-    super();
-    this.env = env;
-  }
-
-  async health() {
-    return {
-      ok: true,
-      id: PLUGIN_ID,
-      enabled: true,
-      detail: "echo workerd plugin ready",
-    };
-  }
-
-  async diagnose() {
-    return { lines: ["echo: ok"] };
-  }
-
-  /**
-   * @param {{ type?: string, eventType?: string, payload?: { titleId?: string } | Uint8Array }} event
-   */
-  async onEvent(event) {
-    const type = event?.type || event?.eventType || "";
-    let titleId = "";
-    const payload = event?.payload;
-    if (payload && typeof payload === "object" && "titleId" in payload) {
-      titleId = payload.titleId ?? "";
-    }
-    if (type === "book_acquired" && this.env?.HOST?.notify) {
-      await this.env.HOST.notify({
-        type: "plugin_log",
-        payload: {
-          level: "info",
-          message: `echo saw book_acquired titleId=${titleId}`,
-        },
-      });
-    }
-    switch (type) {
-      case "test_retry":
-        return { kind: "retry", retryAtUnixMs: 1, reason: "echo retry" };
-      case "test_reject":
-        return { kind: "reject", reason: "echo reject" };
-      case "test_dead_letter":
-        return { kind: "deadLetter", reason: "echo dead letter" };
-      case "test_suspend":
-        return {
-          kind: "suspended",
-          checkpointJson: "{\"n\":1}",
-          checkpointSchemaVersion: 1,
-          wakeAtUnixMs: 1,
-        };
-      default:
-        return { kind: "ack" };
-    }
-  }
-}
-
-export default class EchoPlugin extends BookclerkPlugin {
+/** `cli` entrypoint: `bookclerk plugins echo_workerd_ts ping --message hi`. */
+export class Cli extends CliEntrypoint {
   async describe() {
-    return {
-      apiVersion: PRODUCT_API_VERSION ?? 2,
-      id: PLUGIN_ID,
-      kind: KIND,
-      displayName: "Echo Integration (workerd TypeScript)",
-      rpcFeatures: [FEATURE_SCALAR_LIMITS ?? "rpc.scalarLimits"],
-      scalarLimits: {
-        maxScalarBytes: 262144,
-        maxStreamWindowBytes: 1048576,
-        maxListPage: 256,
-      },
-      supportedRoles: ["integration"],
-    };
-  }
-
-  integration() {
-    return new EchoIntegration(this.env);
-  }
-
-  async cliDescribe() {
     return CLI;
   }
 
   /**
-   * @param {string | { command: string, args?: Record<string, unknown> }} params
+   * @param {{ command: string, args: Array<{ name: string, value: string }> }} params
    */
-  async cliInvoke(params) {
-    const parsed =
-      typeof params === "string" ? JSON.parse(params || "{}") : params || {};
-    if (parsed?.command !== "ping") {
+  async invoke(params) {
+    if (params?.command !== "ping") {
       return {
         exitCode: 2,
-        stderr: `unknown command ${parsed?.command ?? ""}`,
+        stdout: "",
+        stderr: `unknown command ${params?.command ?? ""}`,
+        payload: jsonPayload(null),
       };
     }
-    const message =
-      typeof parsed.args?.message === "string" ? parsed.args.message : "hi";
+    const { message = "hi" } = cliArgs(params);
     return {
       exitCode: 0,
       stdout: `pong: ${message}\n`,
-      json: { pong: message },
+      stderr: "",
+      payload: jsonPayload({ pong: message }),
     };
+  }
+}
+
+/** Default entrypoint: event trigger for `[[events.consumers]]`. */
+export default class EchoPlugin extends BookclerkEntrypoint {
+  async describe() {
+    return { displayName: "Echo Integration (workerd TypeScript)" };
+  }
+
+  /**
+   * @param {import("@bookclerk/plugin-sdk/workerd").EventBatch} batch
+   */
+  async event(batch) {
+    for (const msg of batch.messages) {
+      switch (msg.type) {
+        case "book_acquired": {
+          const titleId = msg.json()?.titleId ?? "";
+          console.log(`${PLUGIN_ID} saw book_acquired titleId=${titleId}`);
+          msg.ack();
+          break;
+        }
+        case "test_retry":
+          msg.retry({ delaySeconds: 1, reason: "echo retry" });
+          break;
+        case "test_reject":
+          msg.reject("echo reject");
+          break;
+        case "test_dead_letter":
+          msg.deadLetter("echo dead letter");
+          break;
+        case "test_suspend":
+          msg.suspend({ checkpoint: { n: 1 }, wakeAt: 1 });
+          break;
+        default:
+          msg.ack();
+      }
+    }
   }
 }

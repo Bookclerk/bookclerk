@@ -8,8 +8,9 @@
 //! Under Linux Landlock `OutboundListen`, only `bind(port=0)` is allowed — the
 //! launcher binds the bridge RPC socket itself and passes it to workerd via
 //! `--socket-fd` (same inherited-FD pattern as the plugin fetch-directory
-//! channel). `HOST.notify` uses a unix socket under `$TMPDIR` on Unix, or an
-//! already-bound loopback TCP listener on Windows (AppContainer-friendly).
+//! channel). The adapter-private `GRANTED` capability channel uses a unix
+//! socket under `$TMPDIR` on Unix, or an already-bound loopback TCP listener
+//! on Windows (AppContainer-friendly).
 //!
 //! Author `modules/` stay in the read-only install root (Cap'n Proto
 //! `/modules/…` embeds + `--import-path`). `$TMPDIR` only holds generated
@@ -21,7 +22,6 @@ mod manifest_env;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -29,15 +29,11 @@ use bookclerk_plugin_manifest::PluginManifest;
 use bookclerk_workerd::config::{self, ListenSpec};
 use bookclerk_workerd::egress::EgressProxy;
 use bookclerk_workerd::ensure::ensure_workerd;
+use bookclerk_workerd::generate_bridge_token;
 use bookclerk_workerd::grant::OperatorGrantEnv;
-use bookclerk_workerd::notify::{
-    self, event_type_for_log, generate_bridge_token, parse_notify_http, push_notify_event,
-    NOTIFY_ACCEPT_LIMIT, NOTIFY_MAX_BODY,
-};
 use bookclerk_workerd::pin::{binary_name, BUNDLED_WORKERD_COMPAT_DATE, WORKERD_RELEASE_TAG};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
-use tokio::sync::Semaphore;
 
 /// Deletes a per-session workerd state directory when the isolate function returns.
 struct RemoveDirOnDrop(PathBuf);
@@ -173,60 +169,34 @@ async fn run_isolate(
 ) -> Result<()> {
     let state_dir = config::workerd_state_dir(root)?;
     let _state_cleanup = RemoveDirOnDrop(state_dir.clone());
-    let notify_events: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
     let bridge_token = generate_bridge_token();
-    let notify_sem = Arc::new(Semaphore::new(NOTIFY_ACCEPT_LIMIT));
 
     #[cfg(unix)]
-    let (listen, rpc_listener, notify_addr, notify_task) = {
+    let (listen, rpc_listener) = {
         // Landlock OutboundListen allows bind(0) but not rebinding a concrete
         // ephemeral port — bind here and hand the FD to workerd via --socket-fd.
         let rpc_listener = std::net::TcpListener::bind("127.0.0.1:0")
             .context("bind bridge RPC ephemeral loopback")?;
         let rpc_port = rpc_listener.local_addr()?.port();
         clear_cloexec(&rpc_listener).context("clear CLOEXEC on bridge RPC socket")?;
-        let notify_sock = state_dir.join("notify.sock");
-        let _ = std::fs::remove_file(&notify_sock);
-        let notify_addr = format!("unix:{}", notify_sock.display());
-        let notify_task = spawn_notify_unix(
-            notify_sock,
-            Arc::clone(&notify_events),
-            bridge_token.clone(),
-            Arc::clone(&notify_sem),
-        );
         (
             ListenSpec::InheritedTcp { port: rpc_port },
             Some(rpc_listener),
-            Some(notify_addr),
-            Some(notify_task),
         )
     };
 
     #[cfg(not(unix))]
-    let (listen, rpc_listener, notify_addr, notify_task) = {
+    let (listen, rpc_listener) = {
         // Windows has no `--socket-fd`. Reserve an ephemeral port, release it,
         // and let workerd bind via `--socket-addr` (AppContainer grants
-        // privateNetworkClientServer for in-jail loopback). Notify keeps the
-        // already-bound listener (same from_std pattern as OAuth IPC).
+        // privateNetworkClientServer for in-jail loopback).
         let rpc_listener = std::net::TcpListener::bind("127.0.0.1:0")
             .context("bind bridge RPC ephemeral loopback")?;
         let rpc_port = rpc_listener.local_addr()?.port();
         drop(rpc_listener);
-        let notify_listener = std::net::TcpListener::bind("127.0.0.1:0")
-            .context("bind HOST.notify ephemeral loopback")?;
-        let notify_port = notify_listener.local_addr()?.port();
-        let notify_addr = format!("127.0.0.1:{notify_port}");
-        let notify_task = spawn_notify_tcp(
-            notify_listener,
-            Arc::clone(&notify_events),
-            bridge_token.clone(),
-            Arc::clone(&notify_sem),
-        );
         (
             ListenSpec::TcpLoopback(rpc_port),
             None::<std::net::TcpListener>,
-            Some(notify_addr),
-            Some(notify_task),
         )
     };
 
@@ -252,7 +222,6 @@ async fn run_isolate(
         egress,
         limits,
         listen,
-        notify_addr.as_deref(),
         Some(granted_addr.as_str()),
         &bridge_token,
         Some(state_dir.as_path()),
@@ -296,21 +265,11 @@ async fn run_isolate(
         granted_unix,
         #[cfg(not(unix))]
         granted_tcp,
+        manifest.capabilities(),
     )
     .await;
     let _ = child.kill().await;
     let _ = child.wait().await;
-    if let Some(task) = notify_task {
-        task.abort();
-    }
-    let buffered = notify_events.lock().map(|g| g.len()).unwrap_or(0);
-    if buffered > 0 {
-        info!(
-            plugin = %manifest.id,
-            events = buffered,
-            "HOST.notify reverse-channel events buffered this session"
-        );
-    }
     result
 }
 
@@ -354,54 +313,29 @@ async fn run_native_behind_workerd(
 
     let state_dir = config::workerd_state_dir(root)?;
     let _state_cleanup = RemoveDirOnDrop(state_dir.clone());
-    let notify_events: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
     let bridge_token = generate_bridge_token();
-    let notify_sem = Arc::new(Semaphore::new(NOTIFY_ACCEPT_LIMIT));
 
     #[cfg(unix)]
-    let (listen, rpc_listener, notify_addr, notify_task) = {
+    let (listen, rpc_listener) = {
         let rpc_listener = std::net::TcpListener::bind("127.0.0.1:0")
             .context("bind bridge RPC ephemeral loopback")?;
         let rpc_port = rpc_listener.local_addr()?.port();
         clear_cloexec(&rpc_listener).context("clear CLOEXEC on bridge RPC socket")?;
-        let notify_sock = state_dir.join("notify.sock");
-        let _ = std::fs::remove_file(&notify_sock);
-        let notify_addr = format!("unix:{}", notify_sock.display());
-        let notify_task = spawn_notify_unix(
-            notify_sock,
-            Arc::clone(&notify_events),
-            bridge_token.clone(),
-            Arc::clone(&notify_sem),
-        );
         (
             config::ListenSpec::InheritedTcp { port: rpc_port },
             Some(rpc_listener),
-            Some(notify_addr),
-            Some(notify_task),
         )
     };
 
     #[cfg(not(unix))]
-    let (listen, rpc_listener, notify_addr, notify_task) = {
+    let (listen, rpc_listener) = {
         let rpc_listener = std::net::TcpListener::bind("127.0.0.1:0")
             .context("bind bridge RPC ephemeral loopback")?;
         let rpc_port = rpc_listener.local_addr()?.port();
         drop(rpc_listener);
-        let notify_listener = std::net::TcpListener::bind("127.0.0.1:0")
-            .context("bind HOST.notify ephemeral loopback")?;
-        let notify_port = notify_listener.local_addr()?.port();
-        let notify_addr = format!("127.0.0.1:{notify_port}");
-        let notify_task = spawn_notify_tcp(
-            notify_listener,
-            Arc::clone(&notify_events),
-            bridge_token.clone(),
-            Arc::clone(&notify_sem),
-        );
         (
             config::ListenSpec::TcpLoopback(rpc_port),
             None::<std::net::TcpListener>,
-            Some(notify_addr),
-            Some(notify_task),
         )
     };
 
@@ -426,7 +360,6 @@ async fn run_native_behind_workerd(
         &egress,
         limits,
         listen,
-        notify_addr.as_deref(),
         Some(granted_addr.as_str()),
         &backend_addr,
         &bridge_token,
@@ -460,11 +393,10 @@ async fn run_native_behind_workerd(
         .context("workerd bridge /health did not become ready")?;
 
     let plugin_id = manifest.id.clone();
-    let policy = match manifest.kind {
-        bookclerk_plugin_manifest::PluginKind::Integration => {
-            bookclerk_workerd::native_broker::BrokerPolicy::integration(plugin_id, "1")
-        }
-        _ => bookclerk_workerd::native_broker::BrokerPolicy::destination(plugin_id, "1"),
+    let policy = if manifest.has_entrypoint(bookclerk_plugin_manifest::Entrypoint::Storage) {
+        bookclerk_workerd::native_broker::BrokerPolicy::destination(plugin_id, "1")
+    } else {
+        bookclerk_workerd::native_broker::BrokerPolicy::integration(plugin_id, "1")
     };
     let result = mediate_native(
         generated.listen.port(),
@@ -477,6 +409,7 @@ async fn run_native_behind_workerd(
         guest_stdin,
         broker_listener,
         policy,
+        manifest.capabilities(),
     )
     .await;
 
@@ -484,13 +417,11 @@ async fn run_native_behind_workerd(
     let _ = child.wait().await;
     let _ = guest.kill().await;
     let _ = guest.wait().await;
-    if let Some(task) = notify_task {
-        task.abort();
-    }
     result
 }
 
 /// Cap'n Proto stdio plus a native broker feeding `PLUGIN_BACKEND`.
+#[allow(clippy::too_many_arguments)]
 async fn mediate_native(
     port: u16,
     token: String,
@@ -500,6 +431,7 @@ async fn mediate_native(
     guest_stdin: tokio::process::ChildStdin,
     broker_listener: tokio::net::TcpListener,
     policy: bookclerk_workerd::native_broker::BrokerPolicy,
+    capabilities: bookclerk_plugin_abi::PluginCapabilities,
 ) -> Result<()> {
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -536,7 +468,7 @@ async fn mediate_native(
                 let listener = tokio::net::TcpListener::from_std(std_listener)?;
                 spawn_granted(listener, token, Rc::clone(&table));
             }
-            mediate_bridge_stdio(http, table).await
+            mediate_bridge_stdio(http, table, capabilities).await
         })
         .await
 }
@@ -547,6 +479,7 @@ async fn mediate_bridge(
     token: String,
     #[cfg(unix)] granted_unix: Option<std::os::unix::net::UnixListener>,
     #[cfg(not(unix))] granted_tcp: Option<std::net::TcpListener>,
+    capabilities: bookclerk_plugin_abi::PluginCapabilities,
 ) -> Result<()> {
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -578,7 +511,7 @@ async fn mediate_bridge(
                 let listener = tokio::net::TcpListener::from_std(std_listener)?;
                 spawn_granted(listener, token, Rc::clone(&table));
             }
-            mediate_bridge_stdio(http, table).await
+            mediate_bridge_stdio(http, table, capabilities).await
         })
         .await
 }
@@ -599,200 +532,6 @@ fn clear_cloexec(listener: &std::net::TcpListener) -> Result<()> {
         );
     }
     Ok(())
-}
-
-#[cfg(unix)]
-/// Accepts `HOST.notify` connections on a unix socket under the guest `$TMPDIR`.
-fn spawn_notify_unix(
-    path: PathBuf,
-    events: Arc<Mutex<Vec<serde_json::Value>>>,
-    token: String,
-    sem: Arc<Semaphore>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let listener = match tokio::net::UnixListener::bind(&path) {
-            Ok(l) => l,
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    path = %path.display(),
-                    "HOST.notify unix listener failed to bind"
-                );
-                return;
-            }
-        };
-        info!(path = %path.display(), "HOST.notify reverse channel listening");
-        loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
-                continue;
-            };
-            let Ok(permit) = sem.clone().acquire_owned().await else {
-                continue;
-            };
-            let events = Arc::clone(&events);
-            let token = token.clone();
-            tokio::spawn(async move {
-                let _permit = permit;
-                if let Err(err) = handle_notify_connection(&mut stream, &events, &token).await {
-                    warn!(error = %err, "HOST.notify request failed");
-                }
-            });
-        }
-    })
-}
-
-#[cfg(not(unix))]
-fn spawn_notify_tcp(
-    std_listener: std::net::TcpListener,
-    events: Arc<Mutex<Vec<serde_json::Value>>>,
-    token: String,
-    sem: Arc<Semaphore>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        // Keep the already-bound port-0 socket (do not rebind a concrete port).
-        if let Err(err) = std_listener.set_nonblocking(true) {
-            warn!(error = %err, "HOST.notify set_nonblocking failed");
-            return;
-        }
-        let listener = match tokio::net::TcpListener::from_std(std_listener) {
-            Ok(l) => l,
-            Err(err) => {
-                warn!(error = %err, "HOST.notify from_std failed");
-                return;
-            }
-        };
-        info!("HOST.notify reverse channel listening");
-        loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
-                continue;
-            };
-            let Ok(permit) = sem.clone().acquire_owned().await else {
-                continue;
-            };
-            let events = Arc::clone(&events);
-            let token = token.clone();
-            tokio::spawn(async move {
-                let _permit = permit;
-                if let Err(err) = handle_notify_connection(&mut stream, &events, &token).await {
-                    warn!(error = %err, "HOST.notify request failed");
-                }
-            });
-        }
-    })
-}
-
-/// Parses one notify HTTP request, buffers the event, and writes a short HTTP reply.
-async fn handle_notify_connection<S>(
-    stream: &mut S,
-    events: &Mutex<Vec<serde_json::Value>>,
-    token: &str,
-) -> Result<()>
-where
-    S: AsyncReadExt + AsyncWriteExt + Unpin,
-{
-    let raw = read_notify_http(stream).await?;
-    if raw.is_empty() {
-        return Ok(());
-    }
-    let (status, reason, body) = match parse_notify_http(&raw, token) {
-        Ok((event, size)) => {
-            info!(
-                event_type = ?event_type_for_log(&event),
-                size,
-                "HOST.notify"
-            );
-            match push_notify_event(events, event) {
-                Ok(true) => {
-                    warn!(
-                        cap = notify::NOTIFY_EVENT_CAP,
-                        "HOST.notify event buffer full; dropped oldest"
-                    );
-                }
-                Ok(false) => {}
-                Err(err) => warn!(error = %err, "HOST.notify buffer push failed"),
-            }
-            (200u16, "OK", "ok")
-        }
-        Err(err) => {
-            let msg = err.to_string();
-            if msg.contains("unauthorized") {
-                warn!("HOST.notify unauthorized");
-                (401, "Unauthorized", "unauthorized")
-            } else {
-                warn!(error = %err, "HOST.notify bad request");
-                (400, "Bad Request", "bad request")
-            }
-        }
-    };
-    let resp = format!(
-        "HTTP/1.1 {status} {reason}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(resp.as_bytes()).await?;
-    Ok(())
-}
-
-/// Read one HTTP request for notify, capped so headers + body stay within
-/// `NOTIFY_MAX_BODY` plus a modest header allowance.
-async fn read_notify_http<S>(stream: &mut S) -> Result<String>
-where
-    S: AsyncReadExt + Unpin,
-{
-    const HEADER_ALLOWANCE: usize = 8192;
-    let max_total = NOTIFY_MAX_BODY + HEADER_ALLOWANCE;
-    let mut buf = Vec::with_capacity(4096);
-    let mut tmp = [0u8; 4096];
-    loop {
-        let n = stream.read(&mut tmp).await?;
-        if n == 0 {
-            break;
-        }
-        buf.extend_from_slice(&tmp[..n]);
-        if buf.len() > max_total {
-            bail!("notify request too large");
-        }
-        if find_header_end(&buf).is_some() {
-            // Prefer to have the full body when Content-Length is already present.
-            if let Some(need) = content_length_needed(&buf) {
-                let header_end = find_header_end(&buf).unwrap();
-                let have = buf.len().saturating_sub(header_end);
-                if have >= need.min(NOTIFY_MAX_BODY + 1) {
-                    break;
-                }
-                // Still need more body bytes — keep reading unless oversized.
-                if need > NOTIFY_MAX_BODY {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-    }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
-}
-
-/// Byte offset after the HTTP header terminator (`\r\n\r\n` or `\n\n`).
-fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|i| i + 4)
-        .or_else(|| buf.windows(2).position(|w| w == b"\n\n").map(|i| i + 2))
-}
-
-/// Parsed `Content-Length` from notify headers, when present.
-fn content_length_needed(buf: &[u8]) -> Option<usize> {
-    let end = find_header_end(buf)?;
-    let headers = std::str::from_utf8(&buf[..end]).ok()?;
-    for line in headers.lines().skip(1) {
-        let line = line.trim_end_matches('\r');
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        if name.eq_ignore_ascii_case("content-length") {
-            return value.trim().parse().ok();
-        }
-    }
-    None
 }
 
 /// Forwards workerd stdout/stderr lines through tracing (JSON when the parent is bookclerkd).

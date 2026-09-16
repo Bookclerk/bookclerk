@@ -11,14 +11,12 @@
  * (camelCase). See `docs/plugins.md` for the full manifest contract.
  */
 export type Manifest = {
-  /** ABI version declared in `plugin.toml`; must be `2`. */
+  /** ABI version declared in `plugin.toml`; must be `3`. */
   api_version: number;
   /** Globally unique plugin id matching `[a-z0-9_]{2,32}` (no leading/trailing `_`). */
   id: string;
   /** Optional operator-facing display name when it differs from `id`. */
   name?: string;
-  /** Plugin surface kind: `source` | `integration` | `output` | `database`. */
-  kind: string;
   /** Semver-ish package version embedded in release archive filenames. */
   version?: string;
   /** Remote `http(s)` URL or relative image path under the plugin root for the brand logo. */
@@ -29,6 +27,12 @@ export type Manifest = {
   command?: string;
   /** Extra argv appended after `command` when spawning the native guest. */
   args?: string[];
+  /**
+   * Named entrypoints the guest exports (`storefront`, `storage`,
+   * `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`). Triggers for the
+   * default entrypoint live under `[triggers]` / `[[events.consumers]]`.
+   */
+  entrypoints?: string[];
   /** Workerd isolate settings (required when `runtime = "workerd"`). */
   workerd?: {
     /** Cloudflare Workers compatibility date (`YYYY-MM-DD`) for the isolate. */
@@ -46,18 +50,63 @@ export type Manifest = {
   };
   /** Extra module descriptors for legacy / advanced layouts outside `modules_dir`. */
   modules?: Array<{ name: string; path: string; type?: string }>;
-  /** Network, bindings, and method capabilities the operator must consent to. */
+  /** `[triggers]` — command types the default entrypoint's `job(controller)` runs. */
+  triggers?: { jobs?: string[] };
+  /** `[events]` — consumer triggers and producer publish grants. */
+  events?: {
+    /** `[[events.consumers]]` rows delivered to `event(batch)`. */
+    consumers?: EventConsumerToml[];
+    /** `[[events.producers]]` rows the guest may publish through `EVENTS`. */
+    producers?: Array<{ type: string; binding?: string }>;
+  };
+  /** `[[databases]]` — plugin-owned database bindings on `env`. */
+  databases?: Array<{ binding: string }>;
+  /** `[vars]` — plain config values exposed as the `CONFIG` binding. */
+  vars?: Record<string, unknown>;
+  /** `[secrets]` — sealed operator secrets binding (default name `SECRETS`). */
+  secrets?: { binding?: string };
+  /** `[[kv_namespaces]]` — plugin KV bindings (default name `KV`). */
+  kv_namespaces?: Array<{ binding?: string }>;
+  /** `[work_fs]` — scratch filesystem binding (default name `WORK_FS`). */
+  work_fs?: { binding?: string };
+  /** `[oauth]` — loopback OAuth callback binding (default name `OAUTH`). */
+  oauth?: { binding?: string };
+  /** Network policy the operator must consent to. */
   capabilities: {
     /** Egress policy (`deny` / `outbound`, plus hostname domains for workerd). */
     network: { mode: string; domains?: string[] };
-    /** Consented host bindings (`config`, `secrets`, `plugin_kv`, `work_fs`, `oauth`). */
-    bindings?: Record<string, boolean>;
-    /** Declared Workers RPC method list the guest implements. */
-    methods?: { list?: string[] };
   };
   /** Optional CLI schema block (`[[cli.commands]]`) mirrored into describe metadata. */
   cli?: unknown;
+  /** Optional `[[oidc.clients]]` relying-party templates. */
+  oidc?: { clients?: Array<Record<string, unknown>> };
 };
+
+/** One `[[events.consumers]]` row. */
+export type EventConsumerToml = {
+  /** Versioned event type (`book_acquired`, …). */
+  type: string;
+  /** Schema versions the guest can consume (default `[1]`). */
+  schema_versions?: number[];
+  /** Whether the guest supports `suspended` results for this type. */
+  supports_suspend?: boolean;
+  /** Concurrency class copied onto deliveries (default `network`). */
+  resource_class?: string;
+  /** Optional host-owned payload filter (top-level key equality). */
+  filter?: Record<string, unknown>;
+  /** Redelivery attempts before dead-lettering. */
+  max_retries?: number;
+};
+
+/** Entrypoint wire names accepted in `entrypoints`. */
+export const ENTRYPOINT_NAMES = [
+  "storefront",
+  "storage",
+  "databaseAdapter",
+  "remoteLibrary",
+  "cli",
+  "oidc",
+] as const;
 
 const LOGO_EXTENSIONS = [
   ".png",
@@ -206,8 +255,8 @@ function validateEmbeddedPath(trimmed: string): { kind: "embedded"; value: strin
 /**
  * Validates a parsed {@link Manifest} against semantic manifest rules.
  *
- * Checks id grammar, `api_version`, kind, runtime-specific required fields,
- * and workerd network domain requirements.
+ * Checks id grammar, `api_version`, entrypoints / triggers, runtime-specific
+ * required fields, and workerd network domain requirements.
  *
  * @param m - Manifest object (typically from `smol-toml`).
  * @throws {Error} When any semantic rule fails (message prefixed with `plugin.toml:`).
@@ -222,16 +271,13 @@ export function validateManifest(m: Manifest): void {
   } catch (err) {
     throw new Error(`plugin.toml: ${(err as Error).message}`);
   }
-  if (m.api_version !== 2) {
-    throw new Error("plugin.toml: `api_version` must be 2");
+  if (m.api_version !== 3) {
+    throw new Error("plugin.toml: `api_version` must be 3");
   }
   if (m.logo != null) {
     validateLogo(String(m.logo));
   }
-  const kind = m.kind;
-  if (!["source", "integration", "output", "database"].includes(kind)) {
-    throw new Error(`plugin.toml: invalid kind ${kind}`);
-  }
+  validateSurface(m);
   const runtime = m.runtime ?? "native";
   if (runtime === "native") {
     if (!m.command || !String(m.command).trim()) {
@@ -270,5 +316,64 @@ export function validateManifest(m: Manifest): void {
     }
   } else {
     throw new Error(`plugin.toml: unknown runtime ${runtime}`);
+  }
+}
+
+/**
+ * Validates the exported surface: entrypoint names, duplicates, and the
+ * "declare at least one entrypoint or trigger" rule.
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When the surface is empty, unknown, or inconsistent.
+ */
+function validateSurface(m: Manifest): void {
+  const entrypoints = m.entrypoints ?? [];
+  const seen = new Set<string>();
+  for (const entrypoint of entrypoints) {
+    if (!(ENTRYPOINT_NAMES as readonly string[]).includes(entrypoint)) {
+      throw new Error(
+        `plugin.toml: unknown entrypoint \`${entrypoint}\` (expected one of ${ENTRYPOINT_NAMES.join(", ")})`,
+      );
+    }
+    if (seen.has(entrypoint)) {
+      throw new Error(`plugin.toml: entrypoints entry \`${entrypoint}\` is duplicated`);
+    }
+    seen.add(entrypoint);
+  }
+  const consumers = m.events?.consumers ?? [];
+  const jobs = m.triggers?.jobs ?? [];
+  if (entrypoints.length === 0 && consumers.length === 0 && jobs.length === 0) {
+    throw new Error(
+      "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, or `[triggers].jobs`",
+    );
+  }
+  for (const consumer of consumers) {
+    if (!consumer.type || !String(consumer.type).trim()) {
+      throw new Error("plugin.toml: [[events.consumers]] `type` is required");
+    }
+  }
+  for (const producer of m.events?.producers ?? []) {
+    if (!producer.type || !String(producer.type).trim()) {
+      throw new Error("plugin.toml: [[events.producers]] `type` is required");
+    }
+  }
+  if (m.cli != null && !seen.has("cli")) {
+    throw new Error('plugin.toml: `[cli]` requires `"cli"` in `entrypoints`');
+  }
+  if ((m.oidc?.clients?.length ?? 0) > 0 && !seen.has("oidc")) {
+    throw new Error('plugin.toml: `[[oidc.clients]]` requires `"oidc"` in `entrypoints`');
+  }
+  const bindings = new Set<string>();
+  for (const db of m.databases ?? []) {
+    const name = db.binding;
+    if (!/^[A-Z][A-Z0-9_]*$/.test(name) || name.length > 32) {
+      throw new Error(
+        `plugin.toml: [[databases]] binding \`${name}\` must be \`[A-Z][A-Z0-9_]*\` and at most 32 chars`,
+      );
+    }
+    if (bindings.has(name)) {
+      throw new Error(`plugin.toml: [[databases]] binding \`${name}\` is duplicated`);
+    }
+    bindings.add(name);
   }
 }

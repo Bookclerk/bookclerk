@@ -15,6 +15,7 @@ use crate::manifest::{parse_sha256_hex, BookclerkPackageManifest};
 use crate::receipt::InstallReceipt;
 use crate::target::{host_bookclerk_target, select_target, ArchiveFormat};
 use crate::trust::TrustPolicy;
+use bookclerk_plugin_manifest::{NetworkMode, PluginFamily, PluginManifest};
 
 /// Download / install limits.
 pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
@@ -469,52 +470,61 @@ fn validate_plugin_id(id: &str) -> Result<()> {
         .map_err(|e| CatalogError::message(e.to_string()))
 }
 
-/// Checks extracted `plugin.toml` id/kind/network/command against the package identity.
+/// Checks the extracted `plugin.toml` against the package identity.
+///
+/// The manifest must parse as a v3 [`PluginManifest`], carry the package id,
+/// derive the package [`PluginKind`] from its exported entrypoints / triggers,
+/// request the same network mode as the package `sandbox`, and name the
+/// packaged executable as its `command`.
 fn validate_plugin_toml(
     text: &str,
     runtime: &RuntimeIdentity,
     expected_network: &str,
     expected_exe: &str,
 ) -> Result<()> {
-    let value: toml::Value = toml::from_str(text)?;
-    let id = value
-        .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| CatalogError::message("plugin.toml missing id"))?;
-    let kind = value
-        .get("kind")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| CatalogError::message("plugin.toml missing kind"))?;
-    if id != runtime.id {
+    let manifest: PluginManifest = toml::from_str(text)?;
+    if manifest.id != runtime.id {
         return Err(CatalogError::message(format!(
-            "plugin.toml id `{id}` does not match package id `{}`",
-            runtime.id
+            "plugin.toml id `{}` does not match package id `{}`",
+            manifest.id, runtime.id
         )));
     }
-    if kind != runtime.kind.as_str() {
+    let families = manifest.families();
+    let package_family = PluginFamily::parse(runtime.kind.as_str());
+    if !package_family.is_some_and(|family| families.contains(&family)) {
         return Err(CatalogError::message(format!(
-            "plugin.toml kind `{kind}` does not match package kind `{}`",
+            "plugin.toml entrypoints derive families [{}], which do not include package kind `{}`",
+            families
+                .iter()
+                .map(|f| f.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
             runtime.kind
         )));
     }
-    let network = value
-        .get("sandbox")
-        .and_then(|s| s.get("network"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("outbound");
-    let expected = if expected_network.is_empty() {
-        "outbound"
-    } else {
-        expected_network
+    let network = match manifest.capabilities.network.mode {
+        NetworkMode::Deny => "none",
+        NetworkMode::Outbound => "outbound",
+    };
+    let mode_label = match manifest.capabilities.network.mode {
+        NetworkMode::Deny => "deny",
+        NetworkMode::Outbound => "outbound",
+    };
+    let expected = match expected_network {
+        "" | "outbound" => "outbound",
+        "none" | "deny" => "none",
+        other => other,
     };
     if network != expected {
         return Err(CatalogError::message(format!(
-            "plugin.toml sandbox.network `{network}` does not match package sandbox `{expected}`"
+            "plugin.toml capabilities.network.mode `{mode_label}` does not match package sandbox \
+             `{expected}`"
         )));
     }
-    let command = value
-        .get("command")
-        .and_then(|v| v.as_str())
+    let command = manifest
+        .command
+        .as_deref()
+        .and_then(Path::to_str)
         .ok_or_else(|| CatalogError::message("plugin.toml missing command"))?;
     if !command_matches_executable(command, expected_exe) {
         return Err(CatalogError::message(format!(
@@ -691,7 +701,8 @@ mod tests {
             let enc = GzEncoder::new(file, Compression::default());
             let mut tar = Builder::new(enc);
             let toml =
-                b"api_version = 2\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./echo\"\n";
+                b"api_version = 3\nid = \"echo\"\ncommand = \"./echo\"\nentrypoints = [\"cli\"]\n\
+                         [capabilities.network]\nmode = \"outbound\"\n";
             let mut h = tar::Header::new_gnu();
             h.set_size(toml.len() as u64);
             h.set_mode(0o644);
@@ -814,7 +825,8 @@ mod tests {
         existing.store(&dest).unwrap();
         fs::write(
             dest.join("plugin.toml"),
-            "api_version = 2\nid = \"echo\"\nkind = \"source\"\ncommand = \"./echo\"\n",
+            "api_version = 3\nid = \"echo\"\ncommand = \"./echo\"\nentrypoints = [\"storefront\"]\n\
+             [capabilities.network]\nmode = \"deny\"\n",
         )
         .unwrap();
 
@@ -866,15 +878,38 @@ mod tests {
         assert!(err.contains("source"), "{err}");
     }
 
+    /// Minimal v3 `plugin.toml` for an integration guest.
+    fn echo_toml(command: &str, network_mode: &str, entrypoints: &str) -> String {
+        format!(
+            "api_version = 3\nid = \"echo\"\ncommand = \"{command}\"\n\
+             entrypoints = [{entrypoints}]\n[capabilities.network]\nmode = \"{network_mode}\"\n"
+        )
+    }
+
     #[test]
-    fn toml_binds_sandbox_and_command() {
+    fn toml_binds_family_network_and_command() {
         let runtime = RuntimeIdentity::new(PluginKind::Integration, "echo");
-        let ok = "api_version = 2\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./echo\"\n[sandbox]\nnetwork = \"none\"\n";
-        validate_plugin_toml(ok, &runtime, "none", "echo").unwrap();
-        let bad_net = "api_version = 2\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./echo\"\n[sandbox]\nnetwork = \"listen\"\n";
-        assert!(validate_plugin_toml(bad_net, &runtime, "none", "echo").is_err());
-        let bad_cmd =
-            "api_version = 2\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./other\"\n";
-        assert!(validate_plugin_toml(bad_cmd, &runtime, "outbound", "echo").is_err());
+        validate_plugin_toml(
+            &echo_toml("./echo", "deny", "\"cli\""),
+            &runtime,
+            "none",
+            "echo",
+        )
+        .unwrap();
+        let bad_net = echo_toml("./echo", "outbound", "\"cli\"");
+        assert!(validate_plugin_toml(&bad_net, &runtime, "none", "echo").is_err());
+        let bad_cmd = echo_toml("./other", "outbound", "\"cli\"");
+        assert!(validate_plugin_toml(&bad_cmd, &runtime, "outbound", "echo").is_err());
+        // A storefront-only manifest is not an integration package.
+        let bad_family = echo_toml("./echo", "deny", "\"storefront\"");
+        let err = validate_plugin_toml(&bad_family, &runtime, "none", "echo")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("package kind `integration`"), "{err}");
+        // Legacy `kind` keys are rejected by the strict v3 parser.
+        let legacy =
+            "api_version = 3\nid = \"echo\"\nkind = \"integration\"\ncommand = \"./echo\"\n\
+                      entrypoints = [\"cli\"]\n[capabilities.network]\nmode = \"deny\"\n";
+        assert!(validate_plugin_toml(legacy, &runtime, "none", "echo").is_err());
     }
 }

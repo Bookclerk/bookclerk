@@ -243,7 +243,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             if let Some(one) = account {
                 scan_accounts.push(one);
             }
-            let registry = default_registry_with_plugins(config).await?;
+            let registry = default_registry_with_plugins(config, &store).await?;
             let opts = ScanOptions {
                 accounts: scan_accounts.clone(),
                 page_size: 50,
@@ -333,7 +333,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             )
             .await?;
             let storage = destinations.listing_backend()?;
-            let registry = default_registry_with_plugins(&cfg).await?;
+            let registry = default_registry_with_plugins(&cfg, &store).await?;
 
             // Match existing media first (same as bookclerkd) so we do not
             // re-download titles already on disk.
@@ -543,7 +543,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             json,
             full,
         } => {
-            let registry = default_registry_with_plugins(config).await?;
+            let registry = default_registry_with_plugins(config, &store).await?;
             let source = registry.require("audible")?;
             let (account_key, license_asin) =
                 resolve_license_target(&store, &asin, account.as_deref()).await?;
@@ -804,7 +804,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             let account_id = if let Some(acct) = store.find_account(&account).await? {
                 acct.account_id
             } else {
-                let registry = default_registry_with_plugins(config).await?;
+                let registry = default_registry_with_plugins(config, &store).await?;
                 let mut found = None;
                 for src in registry.all() {
                     if let Ok(accounts) = src.list_accounts(&store.scope(src.id())).await {
@@ -828,7 +828,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             if store.get_account(&account_id).await?.is_some() {
                 store.set_scan_enabled(&account_id, scan).await?;
             } else {
-                let registry = default_registry_with_plugins(config).await?;
+                let registry = default_registry_with_plugins(config, &store).await?;
                 let mut info = None;
                 for src in registry.all() {
                     if let Ok(accounts) = src.list_accounts(&store.scope(src.id())).await {
@@ -861,7 +861,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             Ok(())
         }
         LibraryCommand::Status { source } => {
-            let registry = default_registry_with_plugins(config).await?;
+            let registry = default_registry_with_plugins(config, &store).await?;
             let sources: Vec<_> = match source.as_deref() {
                 Some(needle) => {
                     let id = resolve_source_id(&registry, needle)?;
@@ -890,7 +890,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 .find_account(&account)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("account `{account}` not found in library DB"))?;
-            let registry = default_registry_with_plugins(config).await?;
+            let registry = default_registry_with_plugins(config, &store).await?;
             let scope = store.scope(acct.source.as_str());
             if let Ok(content) = registry.require(acct.source.as_str()) {
                 if let Err(e) = content.revoke_credentials(&scope, &acct.account_id).await {
@@ -921,8 +921,8 @@ async fn list_all_accounts(
     source_filter: Option<&str>,
     bare: bool,
 ) -> anyhow::Result<()> {
-    let registry = default_registry_with_plugins(config).await?;
     let store = crate::registry::open_library(config).await?;
+    let registry = default_registry_with_plugins(config, &store).await?;
     let db_accounts = store.list_accounts().await?;
 
     let filter_id = match source_filter {

@@ -1,8 +1,8 @@
-api_version = 2
+api_version = 3
 id = "echo_workerd_tools"
-kind = "integration"
 version = "0.1.0"
 runtime = "workerd"
+entrypoints = ["cli"]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -13,5 +13,4 @@ entrypoint = "default"
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
+[vars]

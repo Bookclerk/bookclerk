@@ -3,7 +3,7 @@
 Guest-only Bookclerk plugin SDK for Rust authors of native and workerd plugins.
 
 Depend on this crate from a standalone plugin workspace — not
-`bookclerk-plugin-host`. Implement [`PluginRoot`] and call [`serve`] (native Cap'n Proto) or use the workerd /
+`bookclerk-plugin-host`. Implement [`PluginWorker`] and call [`serve`] (native Cap'n Proto) or use the workerd /
 npm bridge described in `src/workerd.rs`.
 
 ## Features

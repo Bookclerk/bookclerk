@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use bookclerk_plugin_abi::{Entrypoint, PluginDescribe};
 use bookclerk_plugin_manifest::{
     manifest_needs_python, with_python_runtime_hosts, EffectiveWorkerdLimits, NetworkMode,
     PluginManifest,
@@ -17,7 +18,6 @@ const BRIDGE_JS: &str = include_str!("../bridge/bridge.js");
 /// Isolate-side egress proxy that enforces the operator domain grant.
 const EGRESS_JS: &str = include_str!("../bridge/egress.js");
 /// Stub `host` module injected so guest JS can call host RPCs inside the isolate.
-const HOST_STUB_JS: &str = include_str!("../bridge/host_stub.js");
 /// Injected as `@bookclerk/plugin-sdk` + `@bookclerk/plugin-sdk/workerd`.
 const SDK_WORKERD_JS: &str = include_str!("../../../packages/plugin-sdk/embed/bookclerk_plugin.js");
 /// Injected as `bookclerk_plugin_sdk/workerd.py`.
@@ -43,12 +43,12 @@ export default wrapPluginFromNative();
 /// Sparse `bookclerk_plugin_sdk/__init__.py` pointing authors at the workerd guest SDK.
 const SDK_PY_INIT: &str = concat!(
     "\"\"\"Bookclerk plugin SDK (workerd isolate).\n\n",
-    "Use: from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js\n\n",
-    "Native guests use Rust serve() / PluginRoot instead.\n",
+    "Use: from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint, js\n\n",
+    "Native guests use Rust serve() / PluginWorker instead.\n",
     "\"\"\"\n"
 );
 
-/// Package import names authors use for the workerd BookclerkPlugin.
+/// Package import names authors use for the workerd `BookclerkEntrypoint` SDK.
 pub const SDK_JS_MODULE_NAMES: &[&str] =
     &["@bookclerk/plugin-sdk/workerd", "@bookclerk/plugin-sdk"];
 /// Python package path for `from bookclerk_plugin_sdk.workerd import …`.
@@ -208,8 +208,8 @@ fn write_owner_only_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> 
 /// root is read-only under Landlock, so materializing `.bookclerk/` there fails.
 /// Each call allocates a unique leaf (`w` + root prefix + nonce) with exclusive
 /// `create_dir`, so concurrent sessions of the same plugin cannot clobber
-/// `workerd-config.capnp`. Unix sockets (`granted.sock` / `notify.sock`) still
-/// fit in `sockaddr_un`.
+/// `workerd-config.capnp`. The `granted.sock` unix socket still fits in
+/// `sockaddr_un`.
 ///
 /// Callers that bind sockets first (the launcher) must pass the returned path
 /// into [`materialize`] / [`materialize_native_backend`] so config and sockets
@@ -303,7 +303,7 @@ impl ListenSpec {
         }
     }
 
-    /// TCP port the isolate or notify listener binds.
+    /// TCP port the bridge socket binds.
     #[must_use]
     pub fn port(&self) -> u16 {
         match self {
@@ -386,6 +386,84 @@ pub fn adapter_binding_plan(granted: bool) -> Vec<BindingSpec> {
     out
 }
 
+/// Adapter binding name and author-exported class name for one named
+/// entrypoint (`storefront` → `PLUGIN_STOREFRONT` / `Storefront`).
+///
+/// # Arguments
+///
+/// * `entrypoint` - Named entrypoint from the manifest.
+///
+/// # Returns
+///
+/// `(binding, class)` pair the generated config binds on the adapter isolate.
+#[must_use]
+pub fn entrypoint_binding(entrypoint: Entrypoint) -> (String, String) {
+    let wire = entrypoint.wire_name();
+    let mut binding = String::from("PLUGIN_");
+    let mut class = String::new();
+    for (i, ch) in wire.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            binding.push('_');
+        }
+        binding.push(ch.to_ascii_uppercase());
+        if i == 0 {
+            class.push(ch.to_ascii_uppercase());
+        } else {
+            class.push(ch);
+        }
+    }
+    (binding, class)
+}
+
+/// `PLUGIN_<ENTRYPOINT>` service bindings the adapter isolate receives for
+/// every named entrypoint in `manifest.entrypoints`, in manifest order.
+///
+/// # Arguments
+///
+/// * `manifest` - Parsed plugin manifest.
+///
+/// # Returns
+///
+/// `(binding, class)` pairs; empty when the plugin exports no named entrypoint.
+#[must_use]
+pub fn adapter_entrypoint_bindings(manifest: &PluginManifest) -> Vec<(String, String)> {
+    let mut seen = std::collections::HashSet::new();
+    manifest
+        .entrypoints
+        .iter()
+        .copied()
+        .filter(|e| seen.insert(*e))
+        .map(entrypoint_binding)
+        .collect()
+}
+
+/// Manifest-derived `PluginDescribe` bound on the adapter as `PLUGIN_DESCRIBE`.
+///
+/// The adapter answers `describe` from this projection and lets the author's
+/// optional `describe()` refine presentation fields only.
+///
+/// # Arguments
+///
+/// * `manifest` - Parsed plugin manifest.
+///
+/// # Errors
+///
+/// Returns an error when the describe struct cannot be serialized as JSON.
+pub fn manifest_describe_json(manifest: &PluginManifest) -> Result<String> {
+    let describe = PluginDescribe {
+        id: manifest.id.clone(),
+        display_name: manifest.name.clone(),
+        rpc_features: vec![
+            bookclerk_plugin_abi::FEATURE_SCALAR_LIMITS.to_string(),
+            bookclerk_plugin_abi::FEATURE_STREAMS.to_string(),
+        ],
+        capabilities: manifest.capabilities(),
+        cli: manifest.cli.clone().unwrap_or_default(),
+        ..PluginDescribe::default()
+    };
+    serde_json::to_string(&describe).context("serialize PLUGIN_DESCRIBE")
+}
+
 /// Entrypoint + bindings for a generated native-behind-workerd proxy.
 ///
 /// Does not require an author `[workerd]` module tree. A later host executor
@@ -432,7 +510,6 @@ pub fn materialize_native_backend(
     egress: &EgressProxy,
     limits: EffectiveWorkerdLimits,
     listen: ListenSpec,
-    notify_addr: Option<&str>,
     granted_addr: Option<&str>,
     backend_addr: &str,
     bridge_token: &str,
@@ -444,7 +521,6 @@ pub fn materialize_native_backend(
         .with_context(|| format!("create {}", bookclerk_dir.display()))?;
     fs::write(bookclerk_dir.join("bridge.js"), BRIDGE_JS)?;
     fs::write(bookclerk_dir.join("egress.js"), EGRESS_JS)?;
-    fs::write(bookclerk_dir.join("host_stub.js"), HOST_STUB_JS)?;
     fs::write(bookclerk_dir.join("adapter.js"), NATIVE_ADAPTER_JS)?;
     fs::write(bookclerk_dir.join("sdk-workerd.js"), SDK_WORKERD_JS)?;
 
@@ -471,18 +547,6 @@ pub fn materialize_native_backend(
         escape_capnp(backend_addr)
     ));
     extra_services.push('\n');
-
-    let host_bindings = match notify_addr {
-        Some(addr) => {
-            extra_services.push_str(&format!(
-                r#"    (name = "hostNotify", external = (address = "{}", http = ())),"#,
-                escape_capnp(addr)
-            ));
-            extra_services.push('\n');
-            format!("{bridge_token_binding},\n    (name = \"NOTIFY\", service = \"hostNotify\")")
-        }
-        None => bridge_token_binding.clone(),
-    };
 
     let mut adapter_bindings = format!(
         r#"{bridge_token_binding},
@@ -524,7 +588,6 @@ const bookclerkPlugin :Workerd.Config = (
   services = [
     (name = "internet", network = (allow = ["public"])),
     (name = "blocked", network = (allow = [])),
-    (name = "host", worker = .hostWorker),
     (name = "egress", worker = .egressWorker),
     (name = "adapter", worker = .adapterWorker),
     (name = "bridge", worker = .bridgeWorker),
@@ -533,17 +596,6 @@ const bookclerkPlugin :Workerd.Config = (
   sockets = [
     {socket_line}
   ]
-);
-
-const hostWorker :Workerd.Worker = (
-  modules = [
-    (name = "host_stub.js", esModule = embed ".bookclerk/host_stub.js")
-  ],
-  compatibilityDate = "{compat_date}",
-  bindings = [
-    {host_bindings}
-  ],
-  globalOutbound = "blocked",
 );
 
 const egressWorker :Workerd.Worker = (
@@ -584,7 +636,6 @@ const bridgeWorker :Workerd.Worker = (
         adapter_modules = adapter_modules,
         policy_escaped = policy_escaped,
         extra_services = extra_services,
-        host_bindings = host_bindings,
         adapter_bindings = adapter_bindings,
         bridge_bindings = bridge_bindings,
     );
@@ -604,7 +655,7 @@ const bridgeWorker :Workerd.Worker = (
 pub struct GeneratedConfig {
     /// Path to the generated workerd config file.
     pub config_path: PathBuf,
-    /// Listen address for the notify / bridge socket.
+    /// Listen address for the bridge socket.
     pub listen: ListenSpec,
     /// Writable state directory for the isolate (outside the install root).
     pub state_dir: PathBuf,
@@ -618,7 +669,7 @@ pub struct GeneratedConfig {
 /// **TMPDIR contents (guest-writable scratch)** — only generated launcher state:
 /// - `.bookclerk/` — first-party bridge / egress / host stub / injected SDK
 /// - `workerd-config.capnp`
-/// - unix notify socket (created by the launcher, not this function)
+/// - `granted.sock` (created by the launcher, not this function)
 ///
 /// **Author `modules/` stay in the read-only install root.** Cap'n Proto paths
 /// that look absolute (`/…`) are resolved via `--import-path` (same rules as
@@ -633,11 +684,11 @@ pub struct GeneratedConfig {
 /// `[workerd]` modules. Direct native Cap'n Proto remains a host-selected
 /// fallback, not plugin-selectable policy bypass.
 ///
-/// `notify_addr` is an optional workerd `external` address (`host:port` or
-/// `unix:/path`) for `HOST.notify` → launcher reverse channel.
+/// `granted_addr` is an optional workerd `external` address (`host:port` or
+/// `unix:/path`) for the adapter-private `GRANTED` capability channel.
 ///
-/// `bridge_token` is a per-isolate bearer shared by the launcher, bridge `/rpc`
-/// + `/health`, and `HOST.notify` reverse channel (`BRIDGE_TOKEN` binding).
+/// `bridge_token` is a per-isolate bearer shared by the launcher and the bridge
+/// `/rpc` + `/health` routes (`BRIDGE_TOKEN` binding).
 ///
 /// # Arguments
 ///
@@ -645,8 +696,8 @@ pub struct GeneratedConfig {
 /// * `manifest` - Parsed plugin manifest.
 /// * `egress` - `egress` input for this call.
 /// * `listen` - Daemon listen address (`host:port` or URL).
-/// * `notify_addr` - String `notify_addr` for this call.
-/// * `bridge_token` - Bearer token for isolate → host notify.
+/// * `granted_addr` - Optional `GRANTED` external service address.
+/// * `bridge_token` - Per-isolate bridge bearer token.
 /// * `state_dir` - Existing session directory from [`workerd_state_dir`], or
 ///   `None` to allocate a unique directory.
 ///
@@ -664,7 +715,6 @@ pub fn materialize(
     egress: &EgressProxy,
     limits: EffectiveWorkerdLimits,
     listen: ListenSpec,
-    notify_addr: Option<&str>,
     granted_addr: Option<&str>,
     bridge_token: &str,
     state_dir: Option<&Path>,
@@ -680,7 +730,6 @@ pub fn materialize(
         .with_context(|| format!("create {}", bookclerk_dir.display()))?;
     fs::write(bookclerk_dir.join("bridge.js"), BRIDGE_JS)?;
     fs::write(bookclerk_dir.join("egress.js"), EGRESS_JS)?;
-    fs::write(bookclerk_dir.join("host_stub.js"), HOST_STUB_JS)?;
     fs::write(bookclerk_dir.join("adapter.js"), ADAPTER_JS)?;
 
     let modules_dir = root.join(&workerd.modules_dir);
@@ -824,11 +873,27 @@ pub fn materialize(
         r#"(name = "PLUGIN", service = "plugin")"#.to_string()
     } else {
         format!(
-            r#"(name = "PLUGIN", service = "plugin", entrypoint = "{}")"#,
+            r#"(name = "PLUGIN", service = (name = "plugin", entrypoint = "{}"))"#,
             escape_capnp(entrypoint)
         )
     };
     let adapter_service_binding = r#"(name = "PLUGIN", service = "adapter")"#;
+    // One `PLUGIN_<ENTRYPOINT>` service binding per named entrypoint the
+    // manifest exports, targeting the author's exported class of the same
+    // name (`Storefront`, `Storage`, …), plus the manifest `PluginDescribe`
+    // projection so authors need not implement `describe()`.
+    let mut named_entrypoint_bindings = String::new();
+    for (binding, class) in adapter_entrypoint_bindings(manifest) {
+        named_entrypoint_bindings.push_str(&format!(
+            ",\n    (name = \"{}\", service = (name = \"plugin\", entrypoint = \"{}\"))",
+            escape_capnp(&binding),
+            escape_capnp(&class)
+        ));
+    }
+    named_entrypoint_bindings.push_str(&format!(
+        ",\n    (name = \"PLUGIN_DESCRIBE\", json = \"{}\")",
+        escape_capnp(&manifest_describe_json(manifest)?)
+    ));
 
     let socket_line = listen.workerd_socket_line();
     // Never force unrestricted `internet` for Python under Deny. Outbound +
@@ -841,22 +906,11 @@ pub fn materialize(
     );
 
     let mut extra_services = String::new();
-    let host_bindings = match notify_addr {
-        Some(addr) => {
-            extra_services.push_str(&format!(
-                r#"    (name = "hostNotify", external = (address = "{}", http = ())),"#,
-                escape_capnp(addr)
-            ));
-            extra_services.push('\n');
-            format!("{bridge_token_binding},\n    (name = \"NOTIFY\", service = \"hostNotify\")")
-        }
-        None => bridge_token_binding.clone(),
-    };
     // Bridge talks to the adapter isolate. GRANTED / BRIDGE_TOKEN are adapter-private
     // (not author `pluginWorker` bindings). wrapPlugin stripping keys is hygiene.
     let bridge_bindings = format!("{adapter_service_binding},\n    {bridge_token_binding}");
-    let mut adapter_bindings = format!("{plugin_service_binding},\n    {bridge_token_binding}");
-    let plugin_bindings = String::from(r#"(name = "HOST", service = "host")"#);
+    let mut adapter_bindings =
+        format!("{plugin_service_binding}{named_entrypoint_bindings},\n    {bridge_token_binding}");
     if let Some(addr) = granted_addr {
         extra_services.push_str(&format!(
             r#"    (name = "granted", external = (address = "{}", http = ())),"#,
@@ -890,7 +944,6 @@ const bookclerkPlugin :Workerd.Config = (
   services = [
     (name = "internet", network = (allow = ["public"])),
     (name = "blocked", network = (allow = [])),
-    (name = "host", worker = .hostWorker),
     (name = "egress", worker = .egressWorker),
     (name = "plugin", worker = .pluginWorker),
     (name = "adapter", worker = .adapterWorker),
@@ -900,18 +953,6 @@ const bookclerkPlugin :Workerd.Config = (
   sockets = [
     {socket_line}
   ]
-);
-
-const hostWorker :Workerd.Worker = (
-  modules = [
-    (name = "host_stub.js", esModule = embed ".bookclerk/host_stub.js")
-  ],
-  compatibilityDate = "{compat_date}",
-  {bridge_flags}
-  bindings = [
-    {host_bindings}
-  ],
-  globalOutbound = "blocked",
 );
 
 const egressWorker :Workerd.Worker = (
@@ -932,9 +973,7 @@ const pluginWorker :Workerd.Worker = (
   ],
   compatibilityDate = "{compat_date}",
   {plugin_flags}
-  bindings = [
-    {plugin_bindings}
-  ],
+  bindings = [],
   globalOutbound = "{plugin_outbound}",
 );
 
@@ -970,10 +1009,8 @@ const bridgeWorker :Workerd.Worker = (
         adapter_modules = adapter_modules,
         policy_escaped = policy_escaped,
         extra_services = extra_services,
-        host_bindings = host_bindings,
         adapter_bindings = adapter_bindings,
         bridge_bindings = bridge_bindings,
-        plugin_bindings = plugin_bindings,
         plugin_outbound = plugin_outbound,
     );
 
@@ -1137,60 +1174,41 @@ mod tests {
 
     #[test]
     fn python_sdk_injects_db_value_module() {
-        use bookclerk_plugin_manifest::{
-            CapabilitiesManifest, NetworkCapabilities, NetworkMode, PluginKind, PluginManifest,
-            PluginRuntimeKind, WorkerdLimits, WorkerdRuntimeManifest,
-        };
+        use bookclerk_plugin_manifest::{PluginManifest, WorkerdLimits};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let modules = dir.path().join("modules");
         std::fs::create_dir_all(&modules).expect("modules dir");
         std::fs::write(
             modules.join("plugin.py"),
-            "from bookclerk_plugin_sdk.workerd import BookclerkPlugin\n",
+            "from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint\n",
         )
         .expect("plugin.py");
-        let manifest = PluginManifest {
-            api_version: 2,
-            id: "echo_py".into(),
-            name: None,
-            kind: PluginKind::Integration,
-            version: None,
-            logo: None,
-            runtime: PluginRuntimeKind::Workerd,
-            command: None,
-            args: vec![],
-            workerd: Some(WorkerdRuntimeManifest {
-                compatibility_date: "2026-08-01".into(),
-                compatibility_flags: vec![
-                    "python_workers".into(),
-                    "disable_python_external_sdk".into(),
-                ],
-                main_module: "plugin.py".into(),
-                modules_dir: "modules".into(),
-                entrypoint: "default".into(),
-                limits: WorkerdLimits::default(),
-            }),
-            modules: vec![],
-            capabilities: CapabilitiesManifest {
-                network: NetworkCapabilities {
-                    mode: NetworkMode::Deny,
-                    domains: vec![],
-                },
-                bindings: Default::default(),
-                methods: Default::default(),
-                events: Default::default(),
-            },
-            cli: None,
-            oidc: Default::default(),
-        };
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "echo_py"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = ["python_workers", "disable_python_external_sdk"]
+main_module = "plugin.py"
+modules_dir = "modules"
+entrypoint = "default"
+
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .expect("manifest");
         let generated = materialize(
             dir.path(),
             &manifest,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
             ListenSpec::InheritedTcp { port: 9 },
-            None,
             None,
             "test-bridge-token",
             None,
@@ -1292,50 +1310,40 @@ mod tests {
     }
 
     fn materialize_capnp(flags: &[&str], mode: NetworkMode) -> String {
-        use bookclerk_plugin_manifest::{
-            CapabilitiesManifest, NetworkCapabilities, PluginKind, PluginManifest,
-            PluginRuntimeKind, WorkerdLimits, WorkerdRuntimeManifest,
-        };
+        use bookclerk_plugin_manifest::{PluginManifest, WorkerdLimits};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let modules = dir.path().join("modules");
         std::fs::create_dir_all(&modules).expect("modules dir");
         std::fs::write(modules.join("index.js"), "export default {};").expect("index.js");
-        let manifest = PluginManifest {
-            api_version: 2,
-            id: "echo".into(),
-            name: None,
-            kind: PluginKind::Integration,
-            version: None,
-            logo: None,
-            runtime: PluginRuntimeKind::Workerd,
-            command: None,
-            args: vec![],
-            workerd: Some(WorkerdRuntimeManifest {
-                compatibility_date: "2026-08-01".into(),
-                compatibility_flags: flags.iter().map(|s| (*s).to_string()).collect(),
-                main_module: "index.js".into(),
-                modules_dir: "modules".into(),
-                entrypoint: "default".into(),
-                limits: WorkerdLimits::default(),
-            }),
-            modules: vec![],
-            capabilities: CapabilitiesManifest {
-                network: NetworkCapabilities {
-                    mode,
-                    domains: if mode == NetworkMode::Outbound {
-                        vec!["example.com".into()]
-                    } else {
-                        vec![]
-                    },
-                },
-                bindings: Default::default(),
-                methods: Default::default(),
-                events: Default::default(),
-            },
-            cli: None,
-            oidc: Default::default(),
+        let flags_toml = flags
+            .iter()
+            .map(|f| format!("{f:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let network_toml = match mode {
+            NetworkMode::Deny => "mode = \"deny\"".to_string(),
+            NetworkMode::Outbound => "mode = \"outbound\"\ndomains = [\"example.com\"]".to_string(),
         };
+        let manifest = PluginManifest::parse(&format!(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = [{flags_toml}]
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[capabilities.network]
+{network_toml}
+"#
+        ))
+        .expect("manifest");
         let generated = materialize(
             dir.path(),
             &manifest,
@@ -1347,7 +1355,6 @@ mod tests {
             }),
             WorkerdLimits::default().effective(),
             ListenSpec::InheritedTcp { port: 9 },
-            None,
             None,
             "test-bridge-token",
             None,
@@ -1372,9 +1379,8 @@ mod tests {
             assert_eq!(socket_names(&capnp), vec!["rpc".to_string()], "{flags:?}");
             assert_eq!(plugin_worker_outbound(&capnp), "blocked", "{flags:?}");
             assert!(
-                capnp.contains("const hostWorker")
-                    && capnp.contains("globalOutbound = \"blocked\""),
-                "host worker must stay blocked: {flags:?}"
+                !capnp.contains("hostWorker") && !capnp.contains("host_stub"),
+                "no HOST reverse channel may be materialized: {flags:?}"
             );
             assert!(
                 capnp.contains("const bridgeWorker") && capnp.contains(r#"(name = "rpc""#),
@@ -1394,53 +1400,36 @@ mod tests {
 
     #[test]
     fn granted_addr_binds_adapter_not_author_plugin() {
-        use bookclerk_plugin_manifest::{
-            CapabilitiesManifest, NetworkCapabilities, NetworkMode, PluginKind, PluginManifest,
-            PluginRuntimeKind, WorkerdLimits, WorkerdRuntimeManifest,
-        };
+        use bookclerk_plugin_manifest::{PluginManifest, WorkerdLimits};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let modules = dir.path().join("modules");
         std::fs::create_dir_all(&modules).expect("modules dir");
         std::fs::write(modules.join("index.js"), "export default {};").expect("index.js");
-        let manifest = PluginManifest {
-            api_version: 2,
-            id: "stream_fixture".into(),
-            name: None,
-            kind: PluginKind::Output,
-            version: None,
-            logo: None,
-            runtime: PluginRuntimeKind::Workerd,
-            command: None,
-            args: vec![],
-            workerd: Some(WorkerdRuntimeManifest {
-                compatibility_date: "2026-08-01".into(),
-                compatibility_flags: vec![],
-                main_module: "index.js".into(),
-                modules_dir: "modules".into(),
-                entrypoint: "default".into(),
-                limits: WorkerdLimits::default(),
-            }),
-            modules: vec![],
-            capabilities: CapabilitiesManifest {
-                network: NetworkCapabilities {
-                    mode: NetworkMode::Deny,
-                    domains: vec![],
-                },
-                bindings: Default::default(),
-                methods: Default::default(),
-                events: Default::default(),
-            },
-            cli: None,
-            oidc: Default::default(),
-        };
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "stream_fixture"
+runtime = "workerd"
+entrypoints = ["storage"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .expect("manifest");
         let generated = materialize(
             dir.path(),
             &manifest,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             WorkerdLimits::default().effective(),
             ListenSpec::InheritedTcp { port: 9 },
-            None,
             Some("unix:/tmp/granted.sock"),
             "test-bridge-token",
             None,
@@ -1530,7 +1519,6 @@ mod tests {
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
             ListenSpec::InheritedTcp { port: 9 },
-            None,
             Some("unix:/tmp/granted.sock"),
             "127.0.0.1:9",
             "token",
@@ -1579,7 +1567,6 @@ mod tests {
                         &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
                         bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
                         ListenSpec::InheritedTcp { port: 9 },
-                        None,
                         Some("unix:/tmp/granted.sock"),
                         "127.0.0.1:9",
                         "token",
@@ -1635,7 +1622,6 @@ mod tests {
                             ),
                             bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
                             ListenSpec::InheritedTcp { port: 9 },
-                            None,
                             Some("unix:/tmp/granted.sock"),
                             "127.0.0.1:9",
                             "token",
@@ -1670,7 +1656,6 @@ mod tests {
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
             ListenSpec::InheritedTcp { port: 9 },
-            None,
             Some("unix:/tmp/granted.sock"),
             "127.0.0.1:9",
             "token",
@@ -1716,7 +1701,6 @@ mod tests {
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
             ListenSpec::InheritedTcp { port: 9 },
-            None,
             Some("unix:/tmp/granted.sock"),
             "127.0.0.1:9",
             "token",

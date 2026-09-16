@@ -4,13 +4,18 @@ Full **workerd** Echo guest: Rust business logic compiled to Wasm
 ([`src/lib.rs`](src/lib.rs)), plus JS that imports the package:
 
 ```js
-import { BookclerkPlugin, Integration } from "@bookclerk/plugin-sdk/workerd";
+import { BookclerkEntrypoint, CliEntrypoint, cliArgs, jsonPayload } from "@bookclerk/plugin-sdk/workerd";
+
+export class Cli extends CliEntrypoint { /* forwards describe/invoke to wasm cliDescribe/cliInvoke */ }
+export default class EchoPlugin extends BookclerkEntrypoint { /* event(batch) → wasm onEvent */ }
 ```
 
-(`bookclerk-workerd` injects that module — not a relative embed path.)
+(`bookclerk-workerd` injects that module — not a relative embed path.) The
+`cli` entrypoint declared in `plugin.toml` is the exported `Cli` class; the
+`[[events.consumers]]` trigger is `event(batch)` on the default export.
 
 Native counterpart: [`plugins-echo-native-rust`](../plugins-echo-native-rust/)
-(`PluginRoot` / `serve`). Health detail:
+(`PluginWorker` / `serve`). Health detail:
 `echo workerd rust wasm plugin ready`.
 
 ## Layout

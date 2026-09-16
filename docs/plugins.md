@@ -8,7 +8,7 @@ Bookclerk is built around pluggable **sources**, **destinations**, and
 jail, consent, and Workers RPC — distinct from the runtime install tree
 `$BOOKCLERK_FILES_DIR/plugins/`.
 
-The product ABI is **object-capability Workers RPC** at `api_version = 2`
+The product ABI is **object-capability Workers RPC** at `api_version = 3`
 (role classes, transferred `ReadableStream` / Cap'n Proto byte sources, no
 public `handleId` / `writeChunk` / base64 media). Native guests serve the
 Bookclerk Cap'n Proto schema on stdio; workerd guests keep isolate `RpcTarget`
@@ -24,25 +24,31 @@ Authoritative artifacts: Cap'n Proto
 `unsupported`) and TypeScript
 [`packages/plugin-sdk/src/plugin.ts`](../packages/plugin-sdk/src/plugin.ts).
 
-Authors implement the branded guest base **`BookclerkPlugin`** (`describe` /
-`destination` / `source` / `worker` / `contentSource` / `integration` /
-`database` / `oidcClients`). Native guests implement Rust `PluginRoot` and call `serve` (alias
-`serve`). The trusted adapter constructs a frozen `BookclerkContext`
-(`bindings`, optional `native`, `invocation`). Authors never see
-`PLUGIN_BACKEND`, HTTP endpoints, PIDs, credentials, or Cap'n Proto.
-`PLUGIN_BACKEND` may exist as private workerd config only. Byte `Source` is
-the job input opener; storefronts use a separately named `contentSource()`
-factory. JSON is allowed only for plugin-specific extensible config
-(`schemaVersion` + `mediaType`/`schemaId` + bounded payload).
+Authors write a Workers-shaped module. The default export extends
+**`BookclerkEntrypoint`** and implements the triggers `plugin.toml` declares —
+`event(batch)` for `[[events.consumers]]`, `job(job)` for `[triggers] jobs`,
+`databaseMigrations(binding)` for `[[databases]]` — plus an optional
+`describe()` refinement. Every named entrypoint in `entrypoints = [...]` is an
+exported class with the matching name extending its base (`Storefront`,
+`Storage`, `RemoteLibrary`, `DatabaseAdapter`, `Cli`, `Oidc`). Native guests
+implement Rust `PluginWorker` (`describe` / `open(invocation, bindings) ->
+Entrypoints`) and call `serve`. The trusted adapter isolate installs the
+granted bindings on `env` per invocation (`CONFIG`, `SECRETS`, `EVENTS`,
+`WORK_FS`, named databases) and never exposes `PLUGIN_BACKEND`, HTTP
+endpoints, PIDs, credentials, or Cap'n Proto to authors. `PLUGIN_BACKEND`
+may exist as private workerd config only. Byte `Source` is the job input
+opener; storefronts are the separately named `storefront` entrypoint. JSON is
+allowed only for plugin-specific extensible config (`schemaVersion` +
+`mediaType`/`schemaId` + bounded payload).
 
 On native guests, `serve` is the stdin/stdout Cap'n Proto runner for
-`api_version = 2`.
+`api_version = 3`.
 
 | Language | Package | Notes |
 | --- | --- | --- |
-| TypeScript | [`@bookclerk/plugin-sdk`](../packages/plugin-sdk/) | `/workerd` exports `BookclerkPlugin`; authors export the raw class |
-| Python | [`bookclerk-plugin-sdk`](../packages/plugin-sdk-python/) | `from bookclerk_plugin_sdk.workerd import BookclerkPlugin` |
-| Rust | [`bookclerk-plugin-sdk`](../crates/bookclerk-plugin-sdk/) | `PluginRoot` + `serve`; workerd guests pair `BookclerkPlugin` JS glue with Wasm dispatch |
+| TypeScript | [`@bookclerk/plugin-sdk`](../packages/plugin-sdk/) | `/workerd` exports `BookclerkEntrypoint` + `*Entrypoint` bases; `bookclerk-plugin types` generates `Env` from `plugin.toml` |
+| Python | [`bookclerk-plugin-sdk`](../packages/plugin-sdk-python/) | `from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint, CliEntrypoint, …`; module-level `Default` + named classes |
+| Rust | [`bookclerk-plugin-sdk`](../crates/bookclerk-plugin-sdk/) | `PluginWorker` + `serve`; workerd guests pair `BookclerkEntrypoint` JS glue with Wasm dispatch |
 
 Runtimes in `plugin.toml`:
 
@@ -70,7 +76,7 @@ standalone author repos: [plugin-registry.md](plugin-registry.md).
 | **Plugin package** | Rust crate under `crates/bookclerk-plugins/`, or a workerd archive (`plugin.toml` + `modules/`) |
 | **In-process fallback** | When a platform guest is missing or fails to start, hosts fall back to logic in `bookclerk-library` / `bookclerk-storage` |
 | **`bundled-plugins`** | Optional host feature linking storefronts in-process (dev only; omit for release packaging) |
-| **`BookclerkPlugin`** | Product `api_version = 2` guest base (`describe` / `destination` / `source` / `worker` / `contentSource` / `integration` / `database` / `oidcClients`); TS extends `WorkerEntrypoint`, Rust implements `PluginRoot` + `serve` |
+| **`BookclerkEntrypoint`** | Workerd default-export base (`event(batch)` / `job(job)` / `databaseMigrations(binding)` / optional `describe()` / `shutdown()`); named entrypoints are exported `*Entrypoint` subclasses. TS extends `WorkerEntrypoint`. Rust guests implement `PluginWorker` (`describe` / `open(invocation, bindings) -> Entrypoints`) + `serve` |
 
 ## Local development (external guests)
 
@@ -113,7 +119,7 @@ so values like `a/b` and `a_b` cannot collide after sanitization.
 
 | Path | Runtime |
 | --- | --- |
-| [`examples/plugins-echo-native-rust`](../examples/plugins-echo-native-rust/) | native Rust (`api_version = 2`) |
+| [`examples/plugins-echo-native-rust`](../examples/plugins-echo-native-rust/) | native Rust (`api_version = 3`) |
 | [`examples/plugins-echo-native-node`](../examples/plugins-echo-native-node/) | workerd JS (id `echo_native_node`) |
 | [`examples/plugins-echo-native-python`](../examples/plugins-echo-native-python/) | workerd Python (id `echo_native_python`) |
 | [`examples/plugins-echo-workerd-ts`](../examples/plugins-echo-workerd-ts/) | workerd TypeScript |
@@ -390,8 +396,9 @@ allowlist cannot be widened from a manifest**. A manifest ships with the plugin
 it describes, so anything it can ask for is something a hostile plugin can ask
 for too — consent and review are the operator controls.
 
-Optional `[capabilities.methods]` lists RPC method names for discovery/consent
-UI (e.g. `health`, `onEvent`, `cli`).
+Consent is keyed by `entrypoints`, the granted bindings (`[vars]`, `[secrets]`,
+`[work_fs]`, `[oauth]`, `[[kv_namespaces]]`, `[[databases]]`), and every
+`[[events.producers]]` type; there is no separate method list.
 
 ### Isolation modes
 
@@ -640,28 +647,27 @@ the staging tree does not take the plugin's state with it.
 Native Echo:
 
 ```toml
-api_version = 2
+api_version = 3
 id = "echo"
 name = "Echo Integration"
-kind = "integration"          # source | integration | output | database
 version = "0.1.0"
 # logo = "https://example.com/icon.png"   # or "assets/logo.png" (host-served)
 runtime = "native"
 command = "./bookclerk-plugin-echo-native-rust"
+entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc
 
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
+[vars]                          # `env.CONFIG` (operator knobs merge over these)
 
-[capabilities.methods]
-list = ["health", "diagnose", "onEvent", "cli"]
+[[databases]]                   # plugin-owned isolated database → `env.DB`
+binding = "DB"
 
-[capabilities.events]
-subscriptions = [
-  { type = "book_acquired", schema_versions = [1], supports_suspend = false },
-]
+[[events.consumers]]            # `event(batch)` trigger on the default export
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = false
 
 # Optional: CLI help without spawning (describe / cliDescribe win at invoke)
 [cli]
@@ -690,12 +696,12 @@ Workerd Echo (TypeScript / Python / Rust-Wasm under
 [`examples/plugins-echo-workerd-*`](../examples/); TOML shape matches TS):
 
 ```toml
-api_version = 2
+api_version = 3
 id = "echo"
 name = "Echo Integration"
-kind = "integration"
 version = "1.0.0"
 runtime = "workerd"
+entrypoints = ["cli"]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -710,12 +716,23 @@ subrequests = 50
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
-plugin_kv = true
+[vars]
+
+[[kv_namespaces]]
+binding = "KV"
+
+[[databases]]
+binding = "DB"
+
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = true
 ```
 
-There is **no** `protocol` key. `api_version` must be `2`. Optional top-level
+There is **no** `protocol` or `kind` key. `api_version` must be `3`; the
+handler family shown in the UI is derived from `entrypoints`, `[[events.consumers]]`,
+and `[triggers]`. Optional top-level
 `logo` sets the Settings favicon: an `https://` / `http://` URL (browser loads
 it directly) or a relative image path under the plugin install root (host serves
 `GET /api/plugins/{kind}/{id}/logo`). Embedded `.svg` logos are kept, but the
@@ -839,43 +856,55 @@ enabled = true
 # … opaque knobs …
 ```
 
-## ABI (api_version = 2, object-capability Workers RPC)
+## ABI (api_version = 3, object-capability Workers RPC)
 
 Public types are **classes and streams**, not transport verbs. Chunking,
 `handleId`, `readChunk`, `writeChunk`, `finalize`, and `abort` are not ABI
 methods (abort is stream cancel / `RpcTarget` disposal).
 
 ```ts
-class BookclerkPlugin extends WorkerEntrypoint<BookclerkPluginEnv> {
-  describe(): Promise<PluginDescribe>;
-  destination(context: DestinationContext): Destination;
-  source(context: SourceContext): Source;
-  worker(context: WorkerContext): JobHandler;
-  contentSource(context: SourceContext): ContentSource;
-  integration(context: SourceContext): Integration;
-  database(context: SourceContext): Database;
+// Default export: triggers declared in plugin.toml.
+class BookclerkEntrypoint<Env> extends WorkerEntrypoint<Env> {
+  describe?(): Promise<PluginDescribe>;                 // optional refinement
+  event?(batch: EventBatch): Promise<void>;             // [[events.consumers]]
+  job?(job: JobController): Promise<JobCompletion | void>; // [triggers] jobs
+  databaseMigrations?(binding: string): Promise<PluginMigration[]>; // [[databases]]
+  shutdown?(): Promise<void>;
 }
 
-export default class MyPlugin extends BookclerkPlugin { /* … */ }
+// Named entrypoints: one exported class per `entrypoints = [...]` item.
+export class Storefront extends StorefrontEntrypoint<Env> { /* login, scan, fetchTitle, … */ }
+export class Storage extends StorageEntrypoint<Env> { /* head, list, get, put, copy */ }
+export class RemoteLibrary extends RemoteLibraryEntrypoint<Env> { /* health, diagnose, start, stop */ }
+export class DatabaseAdapter extends DatabaseAdapterEntrypoint<Env> { /* openSession */ }
+export class Cli extends CliEntrypoint<Env> { /* describe, invoke */ }
+export class Oidc extends OidcEntrypoint<Env> { /* clients, authenticateUser */ }
 
-interface Destination {
-  head(key: string): Promise<ObjectMetadata | null>;
-  list(options: ListOptions): Promise<ListPage>;
-  get(key: string, options?: ReadOptions): Promise<ReadResult>; // body is a ReadableStream
-  put(key: string, body: ReadableStream<Uint8Array>, options?: WriteOptions): Promise<PutResult>;
-  copy?(from: string, to: string): Promise<CopyResult>;
-}
-
-interface JobHandler {
-  handle(invocation: JobInvocation, context: JobContext): Promise<JobOutcome>;
-}
+export default class MyPlugin extends BookclerkEntrypoint<Env> { /* … */ }
 ```
 
-Authors may `extend WorkerEntrypoint<BookclerkPluginEnv>`. Adapter-private
+On the wire this is `PluginWorker { describe; open(invocation, bindings) ->
+Entrypoints; shutdown; databaseMigrations }`; the trusted adapter isolate
+resolves each `Entrypoints` capability to the matching exported class through
+its `PLUGIN_<ENTRYPOINT>` service binding and merges `Bindings` (`config`,
+`secrets`, `events`, `databases`, `storage`) onto the author's `env` before
+every call. Authors never subclass bare `WorkerEntrypoint`; adapter-private
 `GRANTED` / `BRIDGE_TOKEN` / `PLUGIN_BACKEND` live only on the wrapper
-(`AdapterEnv`). `JobContext.signal` is a **locally created** `AbortSignal`
-projected from the transport cancellation capability — AbortSignal does not
-serialize as a Workers RPC value.
+(`AdapterEnv`).
+
+`event(batch)` mirrors Workers `queue(batch)`: each `EventMessage` records one
+outcome — `ack()`, `retry({ retryAt | delaySeconds, reason })`, `reject(reason)`,
+`deadLetter(reason)`, or `suspend({ checkpoint, wakeAt, wakeOnEventType,
+wakeOnFilter })` — and the first call wins. Untouched messages ack when the
+handler returns and retry when it throws.
+
+`job(job)` mirrors Workers `scheduled(controller)`: returning completes the job
+(optionally with `{ message, bytesCopied }`), throwing rejects it
+(`unavailable` / `deadline_exceeded` → retryable, `cancelled` → cancelled), and
+`job.suspend({ checkpoint, wakeAt })` / `job.retryLater({ retryAt, reason })`
+record the other terminal outcomes. `job.signal` is a **locally created**
+`AbortSignal` projected from the transport cancellation capability —
+AbortSignal does not serialize as a Workers RPC value.
 
 `JobInvocation` is a versioned durable **command envelope** (envelope schema
 version and payload schema version are separate). Idempotency keys are scoped
@@ -885,7 +914,7 @@ hint; the host fence/lease is authoritative and must not be outlived.
 Suspension is durable only after Bookclerk atomically commits the fenced
 outcome.
 
-`JobContext` grants `input` / `output` / `progress` stubs for one durable
+`JobController` grants `input` / `output` / `progress()` for one durable
 invocation. Media flows through those streams. Progress, checkpoints,
 completion, retry class, and cancellation stay job state — not chunk messages.
 
@@ -920,27 +949,55 @@ FD passing / `localPath` remain native-only optimizations behind the stream
 adapter, never author-facing. Describe rejects unsupported versions.
 
 First-party destinations (`local`, `s3`) and remaining product guests speak the object-capability ABI.
-Echo examples are `api_version = 2` Integration.
+Echo examples are `api_version = 3` Integration.
 
-## Reverse channel (`HOST.notify`)
+## Publishing events (`env.EVENTS`)
 
-Workerd guests may call `env.HOST.notify(event)` with a `PluginToHost`-style
-payload. `bookclerk-workerd` wires the isolate `HOST` binding to a loopback
-HTTP callback: events are POSTed to the launcher, buffered in memory for the
-session, and logged (event `type` + size only — not the full JSON body).
+Plugins that declare `[[events.producers]]` publish domain events through the
+`EVENTS` binding — a `Bindings.events` capability the host passes to
+`PluginWorker.open(invocation, bindings)`. There is no other guest → host
+notification path: the former `HOST.notify` reverse channel and its
+`host_stub.js` / `NOTIFY` bindings are gone.
 
-Bridge loopback role routes (`/describe`, `/health`, …) and the notify reverse channel share a
-**per-isolate bearer token** (`BRIDGE_TOKEN` Cap’n Proto binding on both the
-bridge and host workers). The launcher generates the token, injects it into the
-workerd config, and sends `Authorization: Bearer …` on every bridge request;
-`host_stub.js` does the same for notify. Requests without a matching bearer are
-rejected (`401`). Notify parsing also requires a valid `Content-Length` (hard
-max 64 KiB), limits concurrent accepts, and caps the in-memory event buffer
-(drop-oldest when full).
+```ts
+const ok = await env.EVENTS.publish({
+  eventType: "book_acquired",           // must be a granted [[events.producers]] type
+  schemaVersion: 1,                     // defaults to 1
+  deduplicationKey: `acquire:${asin}`,  // optional; see below
+  payload: { asin, title },             // JSON, ≤ 64 KiB UTF-8 (MAX_EVENT_PAYLOAD_BYTES)
+});
+// ok: { eventId: string, duplicate: boolean }
+```
 
-Native stdio guests already have a reverse path on the RPC framing; this workerd
-path is the minimal equivalent until the host fans events into
-integrations/jobs.
+The host `EventPublisher` writes straight into the library outbox
+(`domain_events`) with these rules:
+
+- **Forced provenance.** `source` is always the plugin id and `account_id` is
+  the opening invocation's account; a guest cannot spoof another producer.
+  `correlationId` / `causationId` default to the invocation's values when the
+  guest leaves them empty.
+- **Producer grant.** The binding exists only when the manifest declares
+  `[[events.producers]]` *and* the operator grant covers those types (the
+  consent request lists them). Publishing a type outside that intersection
+  fails with `forbidden`; an empty intersection means no `EVENTS` on `env`.
+- **Payload cap.** `payload` is UTF-8 JSON of at most 64 KiB
+  (`payload_too_large` otherwise). Non-JSON bytes are `invalid_params`; an
+  empty payload is stored as `{}`.
+- **Deduplication.** `(account_id, source, event_type, deduplication_key)` is
+  a permanent unique index on the outbox. A repeat publish returns the existing
+  `eventId` with `duplicate = true` instead of inserting a second row. An empty
+  `deduplicationKey` gets a fresh UUID, so it always publishes.
+- **Availability.** Outbox write failures surface as `unavailable`
+  (retryable); the event is never half-written.
+
+**Transports.** Native guests receive `Bindings.events` as a Cap'n Proto
+capability. Under workerd the trusted adapter isolate mints a per-`open`,
+events-only grant token on the launcher's `GRANTED` channel and hands the author
+a `GrantedEvents` `RpcTarget`; `publish()` POSTs the event to
+`/events/publish`, where the launcher re-checks the grant (unknown, expired, or
+database-only grants are `forbidden`) and enforces the payload cap before
+forwarding to the host publisher. Author isolates never see `GRANTED` or the
+grant token.
 
 ### Common
 
@@ -1014,14 +1071,17 @@ Advertise in `describe()` metadata `capabilities`: `start`, `onEvent`,
 | `authenticateUser` | `{ "username", "password" }` → external user |
 | `pollEvents` | Return observed external users — host polls after `start` and kicks off **core** workflows (e.g. claim tickets). The plugin stays oblivious to portal/tickets |
 
-Declare durable subscriptions in `plugin.toml` (omit the list to receive **no**
+Declare durable consumers in `plugin.toml` (omit them to receive **no**
 outbox deliveries — fail closed):
 
 ```toml
-[capabilities.events]
-subscriptions = [
-  { type = "book_acquired", schema_versions = [1], supports_suspend = false }
-]
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = false
+# resource_class = "network"   # default; the only accepted value today
+# filter = { accountId = "acct" }
+# max_retries = 5
 ```
 
 Optional `resource_class` (default `"network"`, currently the only accepted
@@ -1031,7 +1091,7 @@ host-owned JSON object; the dispatcher matches **payload object key equality**
 only (no plugin-provided code / CEL). Echo and Audiobookshelf may omit both
 (defaults).
 
-Non-empty `subscriptions` requires `onEvent` in `capabilities.methods.list`.
+Any `[[events.consumers]]` row requires an `event(batch)` handler on the default export.
 Each host heartbeats discovered config-enabled integration manifests (even when
 spawn failed) and currently loaded integrations into `event_subscriber_nodes`
 keyed by `(node_id, plugin_id)`. Nodes do not delete catalog rows they lack.
@@ -1102,7 +1162,7 @@ Oversized scalar `put`/`get` fail closed. There is no public `handleId` /
 `ByteSource` streams. Range, multipart, and checkpoint product work in
 issue #120 builds on this contract without another public ABI redesign.
 
-First-party S3 ships as `bookclerk-plugin-destination-s3` (`api_version = 2`).
+First-party S3 ships as `bookclerk-plugin-destination-s3` (`api_version = 3`).
 When the guest is discovered under `plugins/s3/` and `[output.s3].enabled = true`,
 the host loads it at startup via external destination loading instead of the
 in-process S3 backend.
@@ -1131,7 +1191,7 @@ closed). Non-SQL engines are unsupported.
 | `Database.openSession` | Opens the adapter session. The guest connects its engine from `DatabaseContext.config` (first-party guests receive host-injected connect params; SQLite: path grant; D1/Postgres: host-injected credentials). |
 | `AdapterDatabaseSession.capabilities` | Typed control-plane call after `openSession`. Advertises SQL contract version, execution semantics, `schemaMigrations`, backup flags, and all limits. Host policy requires `schemaMigrations`. Diagnostic engine identity is not a capability. The host must not invent these from the plugin id. |
 | `AdapterDatabaseSession.bootstrap` | Diagnostic engine name only (`engine`). Not part of `DbCapabilities`, never used to admit a guest or generate SQL. Any string is valid. |
-| `AdapterDatabaseSession.execute` | The one typed atomic operation (`AdapterExecuteRequest` → `ExecuteReply`). The request is already-desugared canonical Bookclerk SQL (`?` placeholders) plus 1:1 hash-bound proofs. Adapters lower at execute. Guests do not interpret Bookclerk operation names. `JobHandler.handle` does **not** receive the host library as `context.database`. Plugins that need durable SQL declare named bindings (`capabilities.bindings.databases`) and receive physically separate units on `context.databases`. |
+| `AdapterDatabaseSession.execute` | The one typed atomic operation (`AdapterExecuteRequest` → `ExecuteReply`). The request is already-desugared canonical Bookclerk SQL (`?` placeholders) plus 1:1 hash-bound proofs. Adapters lower at execute. Guests do not interpret Bookclerk operation names. `job(job)` does **not** receive the host library on `env`. Plugins that need durable SQL declare `[[databases]]` bindings and receive physically separate units on `env.<BINDING>`. |
 | `AdapterDatabaseSession.close` | Release the session and its engine connection. |
 
 Host-private (never visible to plugin authors; first-party guests built with
@@ -1159,7 +1219,7 @@ databases = ["DB", "CACHE"]   # [A-Z][A-Z0-9_]*, unique, max 8
 
 Named bindings are **plugin-private state**, not a place to put host tables.
 The durable job queue, library catalog, and secrets stay on the host library
-database; `JobHandler.handle` does not get `context.database` pointed at
+database; `job(job)` never gets an `env` binding pointed at
 `library.db`. Bindings are provisioned by the active adapter — physically
 separate from the Bookclerk library and from every other plugin
 (near-equivalent to a Cloudflare Workers D1 binding):
@@ -1237,9 +1297,9 @@ The binding's own `bookclerk_receipts` and `bookclerk_plugin_migrations` tables 
 host-owned so retry tokens replay inside the binding and plugins cannot
 edit the journal.
 
-Delivery: `JobHandler.handle` receives the bindings as the append-only
-`databases :List(NamedDatabase)` argument. Rust guests call
-`DatabaseBinding::take_named_from_job_context(&mut ctx, "DB")`; workerd guests
+Delivery: `PluginWorker.open` receives the bindings as the append-only
+`Bindings.databases :List(NamedDatabase)` field. Rust guests call
+`DatabaseBinding::take_named_from_bindings(&mut bindings, "DB")`; workerd guests
 get one grant token per binding on the invocation envelope — the TS SDK
 exposes `context.databases.get("DB")` and the Python SDK
 `context.databases["DB"]`, each a full `prepare`/`bind`/`run`/`all`/`first`/

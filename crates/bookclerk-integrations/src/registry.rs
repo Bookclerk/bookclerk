@@ -6,12 +6,12 @@ use tracing::{error, info, warn};
 
 use crate::error::Result;
 use crate::traits::{Integration, IntegrationContext};
-use crate::types::{IntegrationEvent, IntegrationHealth};
+use crate::types::IntegrationHealth;
 
 /// Fan-out registry for configured integrations.
 #[derive(Clone, Default)]
 pub struct IntegrationRegistry {
-    /// Registered adapters in registration order; events fan out to each.
+    /// Registered adapters in registration order.
     integrations: Vec<Arc<dyn Integration>>,
 }
 
@@ -89,21 +89,6 @@ impl IntegrationRegistry {
         for integration in &self.integrations {
             if let Err(err) = integration.stop().await {
                 error!(id = integration.id(), %err, "integration stop failed");
-            }
-        }
-    }
-
-    /// Best-effort in-process fan-out for tests. Product acquire publishes
-    /// through [`bookclerk_library::LibraryStore::set_acquire_status`] (same
-    /// transaction as the book row). [`crate::emit_book_acquired`] is catch-up.
-    ///
-    /// # Arguments
-    ///
-    /// * `event` - Event delivered to every registered integration.
-    pub async fn emit(&self, event: &IntegrationEvent) {
-        for integration in &self.integrations {
-            if let Err(err) = integration.on_event(event).await {
-                warn!(id = integration.id(), %err, "integration event handler failed");
             }
         }
     }

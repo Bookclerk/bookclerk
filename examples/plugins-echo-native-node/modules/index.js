@@ -1,19 +1,19 @@
 /**
- * Echo workerd guest (id `echo_native_node`, api_version = 2).
+ * Echo workerd guest (id `echo_native_node`, api_version = 3).
  *
- * This example now validates workerd hosting, not a Node Cap'n Proto stack.
- * Pattern matches `plugins-echo-workerd-ts`.
+ * This example validates workerd hosting, not a Node Cap'n Proto stack.
+ * Pattern matches `plugins-echo-workerd-ts`: the default export extends
+ * `BookclerkEntrypoint` (event trigger) and `Cli` is the `cli` entrypoint.
  */
 
 import {
-  BookclerkPlugin,
-  Integration,
-  PRODUCT_API_VERSION,
-  FEATURE_SCALAR_LIMITS,
+  BookclerkEntrypoint,
+  CliEntrypoint,
+  cliArgs,
+  jsonPayload,
 } from "@bookclerk/plugin-sdk/workerd";
 
 const PLUGIN_ID = "echo_native_node";
-const KIND = "integration";
 
 const CLI = {
   commands: [
@@ -25,6 +25,8 @@ const CLI = {
           name: "message",
           long: "message",
           kind: "string",
+          required: false,
+          positional: false,
           default: "hi",
         },
       ],
@@ -32,76 +34,49 @@ const CLI = {
   ],
 };
 
-class EchoIntegration extends Integration {
-  /**
-   * @param {Record<string, unknown> | undefined} env
-   */
-  constructor(env) {
-    super();
-    this.env = env;
-  }
-
-  async health() {
-    return {
-      ok: true,
-      id: PLUGIN_ID,
-      enabled: true,
-      detail: "echo_native_node ready",
-    };
-  }
-
-  async diagnose() {
-    return { lines: ["echo_native_node diagnose: ok"] };
-  }
-
-  async onEvent(_event) {
-    return { kind: "ack" };
-  }
-}
-
-export default class EchoPlugin extends BookclerkPlugin {
+/** `cli` entrypoint: `bookclerk plugins echo_native_node ping --message hi`. */
+export class Cli extends CliEntrypoint {
   async describe() {
-    return {
-      apiVersion: PRODUCT_API_VERSION ?? 2,
-      id: PLUGIN_ID,
-      kind: KIND,
-      displayName: "Echo Integration (native Node)",
-      rpcFeatures: [FEATURE_SCALAR_LIMITS ?? "rpc.scalarLimits"],
-      scalarLimits: {
-        maxScalarBytes: 262144,
-        maxStreamWindowBytes: 1048576,
-        maxListPage: 256,
-      },
-      supportedRoles: ["integration"],
-    };
-  }
-
-  integration() {
-    return new EchoIntegration(this.env);
-  }
-
-  async cliDescribe() {
     return CLI;
   }
 
   /**
-   * @param {string | { command: string, args?: Record<string, unknown> }} params
+   * @param {{ command: string, args: Array<{ name: string, value: string }> }} params
    */
-  async cliInvoke(params) {
-    const parsed =
-      typeof params === "string" ? JSON.parse(params || "{}") : params || {};
-    if (parsed?.command !== "ping") {
+  async invoke(params) {
+    if (params?.command !== "ping") {
       return {
         exitCode: 2,
-        stderr: `unknown command ${parsed?.command ?? ""}`,
+        stdout: "",
+        stderr: `unknown command ${params?.command ?? ""}`,
+        payload: jsonPayload(null),
       };
     }
-    const message =
-      typeof parsed.args?.message === "string" ? parsed.args.message : "hi";
+    const { message = "hi" } = cliArgs(params);
     return {
       exitCode: 0,
       stdout: `pong: ${message}\n`,
-      json: { pong: message },
+      stderr: "",
+      payload: jsonPayload({ pong: message }),
     };
+  }
+}
+
+/** Default entrypoint: event trigger for `[[events.consumers]]`. */
+export default class EchoPlugin extends BookclerkEntrypoint {
+  async describe() {
+    return { displayName: "Echo Integration (native Node)" };
+  }
+
+  /**
+   * @param {import("@bookclerk/plugin-sdk/workerd").EventBatch} batch
+   */
+  async event(batch) {
+    for (const msg of batch.messages) {
+      if (msg.type === "book_acquired") {
+        console.log(`${PLUGIN_ID} saw book_acquired`);
+      }
+      msg.ack();
+    }
   }
 }

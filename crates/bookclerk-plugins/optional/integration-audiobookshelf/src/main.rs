@@ -10,17 +10,20 @@ use bookclerk_plugin_integration_audiobookshelf::guest::{
     guest_scan_library, guest_start, guest_sync_listening, AbsGuestState,
 };
 use bookclerk_plugin_integration_audiobookshelf::BRAND;
+use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    serve, AuthenticateUserParams, Brand, DomainEvent, EventResult, ExternalUser, HealthOk,
-    Integration, IntegrationContext, ListeningProgress, PluginDescribe, PluginError, PluginRoot,
-    ScalarLimits, ScanLibraryParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    serve, AuthenticateUserParams, Bindings, Brand, DomainEvent, Entrypoints, EventConsumer,
+    EventResult, ExternalUser, HealthOk, Invocation, ListeningProgress, Oidc, OidcClientTemplate,
+    PluginDescribe, PluginError, PluginWorker, RemoteLibrary, ScalarLimits, ScanLibraryParams,
+    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-/// Audiobookshelf integration guest; state is created from [`IntegrationContext`].
+/// Audiobookshelf integration guest; state is created from the `open`
+/// [`Bindings`] (`CONFIG`).
 struct AbsRoot {
-    /// Shared guest state after the first `integration()` factory call.
+    /// Shared guest state after the first `open()` call.
     state: Mutex<Option<Arc<Mutex<AbsGuestState>>>>,
 }
 
@@ -31,13 +34,13 @@ impl AbsRoot {
         }
     }
 
-    async fn state_from_context(
+    async fn state_from_bindings(
         &self,
-        context: &IntegrationContext,
+        bindings: &Bindings,
     ) -> Result<Arc<Mutex<AbsGuestState>>, PluginError> {
         let mut slot = self.state.lock().await;
         if slot.is_none() {
-            let config = context
+            let config = bindings
                 .config
                 .json_value()
                 .unwrap_or_else(|_| Value::Object(Default::default()));
@@ -50,26 +53,15 @@ impl AbsRoot {
 }
 
 #[async_trait(?Send)]
-impl PluginRoot for AbsRoot {
+impl PluginWorker for AbsRoot {
     async fn describe(&self) -> Result<PluginDescribe, PluginError> {
         Ok(PluginDescribe {
             api_version: PRODUCT_API_VERSION,
             id: "audiobookshelf".into(),
-            kind: "integration".into(),
             display_name: Some("Audiobookshelf".into()),
             rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
             scalar_limits: ScalarLimits::default().into(),
-            supported_roles: vec!["integration".into()],
-            capabilities: vec![
-                "pollEvents".into(),
-                "start".into(),
-                "health".into(),
-                "diagnose".into(),
-                "scanLibrary".into(),
-                "syncListening".into(),
-                "authenticateUser".into(),
-                "onEvent".into(),
-            ],
+            capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
             aliases: vec!["abs".into()],
             brand: Some(Brand {
                 id: BRAND.id.into(),
@@ -83,19 +75,22 @@ impl PluginRoot for AbsRoot {
         })
     }
 
-    async fn oidc_clients(
+    async fn open(
         &self,
-    ) -> Result<Vec<bookclerk_plugin_sdk::OidcClientTemplate>, PluginError> {
-        Ok(bookclerk_plugin_integration_audiobookshelf::oidc_client_templates())
-    }
-
-    async fn integration(
-        &self,
-        context: IntegrationContext,
-    ) -> Result<Box<dyn Integration>, PluginError> {
-        Ok(Box::new(AbsIntegration {
-            state: self.state_from_context(&context).await?,
-        }))
+        _invocation: Invocation,
+        bindings: Bindings,
+    ) -> Result<Entrypoints, PluginError> {
+        let state = self.state_from_bindings(&bindings).await?;
+        Ok(Entrypoints {
+            event_consumer: Some(Box::new(AbsIntegration {
+                state: Arc::clone(&state),
+            })),
+            remote_library: Some(Box::new(AbsIntegration {
+                state: Arc::clone(&state),
+            })),
+            oidc: Some(Box::new(AbsIntegration { state })),
+            ..Entrypoints::default()
+        })
     }
 }
 
@@ -104,19 +99,39 @@ struct AbsIntegration {
 }
 
 #[async_trait(?Send)]
-impl Integration for AbsIntegration {
-    async fn health(&self) -> Result<HealthOk, PluginError> {
-        guest_health(&self.state)
-            .await
-            .map_err(|e| PluginError::internal(e.to_string()))
+impl Oidc for AbsIntegration {
+    async fn clients(&self) -> Result<Vec<OidcClientTemplate>, PluginError> {
+        Ok(bookclerk_plugin_integration_audiobookshelf::oidc_client_templates())
     }
 
-    async fn diagnose(&self) -> Result<Vec<String>, PluginError> {
-        guest_diagnose(&self.state)
+    async fn authenticate_user(
+        &self,
+        params: AuthenticateUserParams,
+    ) -> Result<ExternalUser, PluginError> {
+        let user = guest_authenticate_user(&self.state, &params.username, &params.password)
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))
+            .map_err(|e| PluginError::internal(e.to_string()))?;
+        Ok(ExternalUser {
+            provider: user.provider,
+            external_user_id: user.external_user_id,
+            display_name: user.display_name,
+            access_token: user.access_token,
+        })
     }
+}
 
+#[async_trait(?Send)]
+impl EventConsumer for AbsIntegration {
+    async fn event(&self, batch: Vec<DomainEvent>) -> Result<Vec<EventResult>, PluginError> {
+        let mut results = Vec::with_capacity(batch.len());
+        for event in batch {
+            results.push(self.on_event(event).await?);
+        }
+        Ok(results)
+    }
+}
+
+impl AbsIntegration {
     async fn on_event(&self, event: DomainEvent) -> Result<EventResult, PluginError> {
         let params = if event.payload.is_empty() {
             serde_json::json!({ "type": event.event_type })
@@ -128,6 +143,21 @@ impl Integration for AbsIntegration {
             .await
             .map_err(|e| PluginError::internal(e.to_string()))?;
         Ok(EventResult::Ack)
+    }
+}
+
+#[async_trait(?Send)]
+impl RemoteLibrary for AbsIntegration {
+    async fn health(&self) -> Result<HealthOk, PluginError> {
+        guest_health(&self.state)
+            .await
+            .map_err(|e| PluginError::internal(e.to_string()))
+    }
+
+    async fn diagnose(&self) -> Result<Vec<String>, PluginError> {
+        guest_diagnose(&self.state)
+            .await
+            .map_err(|e| PluginError::internal(e.to_string()))
     }
 
     async fn start(&self) -> Result<(), PluginError> {
@@ -146,21 +176,6 @@ impl Integration for AbsIntegration {
         guest_sync_listening(&self.state)
             .await
             .map_err(|e| PluginError::internal(e.to_string()))
-    }
-
-    async fn authenticate_user(
-        &self,
-        params: AuthenticateUserParams,
-    ) -> Result<ExternalUser, PluginError> {
-        let user = guest_authenticate_user(&self.state, &params.username, &params.password)
-            .await
-            .map_err(|e| PluginError::internal(e.to_string()))?;
-        Ok(ExternalUser {
-            provider: user.provider,
-            external_user_id: user.external_user_id,
-            display_name: user.display_name,
-            access_token: user.access_token,
-        })
     }
 
     async fn poll_events(&self) -> Result<Vec<ExternalUser>, PluginError> {

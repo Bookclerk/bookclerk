@@ -963,6 +963,15 @@ def _ts_write_expr(ctx: _Ctx, ty: dict[str, Any], off: int, value: str, indent: 
             return [f"{indent}s.setDataList({off}, {value});"]
         if ek == "bool":
             return [f"{indent}s.setBoolList({off}, {value});"]
+        if ek == "uint16":
+            return [f"{indent}s.setUint16List({off}, {value});"]
+        if ek == "uint32":
+            return [f"{indent}s.setUint32List({off}, {value});"]
+        if ek == "enum":
+            table = ctx.enum_table(el["name"])
+            return [
+                f'{indent}s.setUint16List({off}, {value}.map((v) => ord(A.{table}, v, "{el["name"]}")));'
+            ]
         if ek == "struct":
             dw, pc = ctx.struct_dims(el["name"])
             codec = ctx.codec_name_ts(el["name"])
@@ -1007,6 +1016,13 @@ def _ts_read_expr(ctx: _Ctx, ty: dict[str, Any], off: int) -> str:
             return f"s.getDataList({off})"
         if ek == "bool":
             return f"s.getBoolList({off})"
+        if ek == "uint16":
+            return f"s.getUint16List({off})"
+        if ek == "uint32":
+            return f"s.getUint32List({off})"
+        if ek == "enum":
+            table = ctx.enum_table(el["name"])
+            return f's.getUint16List({off}).map((v) => fromOrd(A.{table}, v, "{el["name"]}"))'
         if ek == "struct":
             dw, pc = ctx.struct_dims(el["name"])
             return f"s.getStructList({off}, {dw}, {pc}).map((item) => {ctx.codec_name_ts(el['name'])}.read(item, caps))"
@@ -1322,6 +1338,15 @@ def _py_write_expr(ctx: _Ctx, ty: dict[str, Any], off: int, value: str, indent: 
             return [f"{indent}s.set_data_list({off}, {value})"]
         if ek == "bool":
             return [f"{indent}s.set_bool_list({off}, {value})"]
+        if ek == "uint16":
+            return [f"{indent}s.set_u16_list({off}, {value})"]
+        if ek == "uint32":
+            return [f"{indent}s.set_u32_list({off}, {value})"]
+        if ek == "enum":
+            table = ctx.enum_table(el["name"])
+            return [
+                f'{indent}s.set_u16_list({off}, [_ord(A.{table}, v, "{el["name"]}") for v in {value}])'
+            ]
         if ek == "struct":
             dw, pc = ctx.struct_dims(el["name"])
             codec = ctx.codec_name_py(el["name"])
@@ -1360,6 +1385,13 @@ def _py_read_expr(ctx: _Ctx, ty: dict[str, Any], off: int) -> str:
             return f"s.get_data_list({off})"
         if ek == "bool":
             return f"s.get_bool_list({off})"
+        if ek == "uint16":
+            return f"s.get_u16_list({off})"
+        if ek == "uint32":
+            return f"s.get_u32_list({off})"
+        if ek == "enum":
+            table = ctx.enum_table(el["name"])
+            return f'[_from_ord(A.{table}, v, "{el["name"]}") for v in s.get_u16_list({off})]'
         if ek == "struct":
             dw, pc = ctx.struct_dims(el["name"])
             return f"[{ctx.codec_name_py(el['name'])}.read(item, caps) for item in s.get_struct_list({off}, {dw}, {pc})]"
@@ -1674,6 +1706,10 @@ def _rs_write_field(ctx: _RsCtx, ty: cs.TypeRef, acc: str, value: str, indent: s
         ]
         if ek in ("Text", "Data"):
             lines.append(f"{indent}        items.set(list_len(i)?, item);")
+        elif ek in _RS_SCALAR and ek not in ("Bool", "Text", "Data"):
+            lines.append(f"{indent}        items.set(list_len(i)?, *item);")
+        elif ek == "enum":
+            lines.append(f"{indent}        items.set(list_len(i)?, (*item).into());")
         elif ek == "struct":
             lines.append(
                 f"{indent}        {_rs_write_call(ctx, el, 'items.reborrow().get(list_len(i)?)', 'item')}"
@@ -1731,6 +1767,10 @@ def _rs_read_expr(ctx: _RsCtx, f: cs.Field) -> str:
             return f"r.get_{acc}()?.iter().map(|d| d.map(<[u8]>::to_vec)).collect::<capnp::Result<Vec<_>>>()?"
         if ek == "struct":
             return f"r.get_{acc}()?.iter().map({_rs_read_map(ctx, el)}).collect::<capnp::Result<Vec<_>>>()?"
+        if ek in _RS_SCALAR and ek not in ("Bool", "Text", "Data"):
+            return f"r.get_{acc}()?.iter().collect::<Vec<_>>()"
+        if ek == "enum":
+            return f"r.get_{acc}()?.iter().map(|item| item.map(Into::into)).collect::<Result<Vec<_>, _>>()?"
         raise SystemExit(f"rust emitter: unsupported list element {el.render()}")
     kind = ctx.res.kind_of(ty)
     if kind == "Text":

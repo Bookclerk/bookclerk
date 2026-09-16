@@ -16,7 +16,7 @@ use bookclerk_plugin_manifest::{parse, PluginRuntimeKind};
 use bookclerk_workerd::config::{self, ListenSpec};
 use bookclerk_workerd::egress::EgressProxy;
 use bookclerk_workerd::ensure_workerd;
-use bookclerk_workerd::notify::generate_bridge_token;
+use bookclerk_workerd::generate_bridge_token;
 use serde_json::{json, Value};
 
 /// Smokes a `runtime = "workerd"` plugin: ensure pin → materialize → describe + health.
@@ -73,7 +73,6 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
         limits,
         listen,
         None,
-        None,
         &bridge_token,
         None,
     )
@@ -95,20 +94,22 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
     let result = (|| {
         wait_for_health(&base, &bridge_token).map_err(|e| format!("health: {e}"))?;
         let describe = post_json(&format!("{base}/describe"), &json!({}), &bridge_token)?;
-        // Role `health` is exposed for content-source and integration kinds;
-        // output/database guests are covered by `describe` alone here.
-        let health = match manifest.kind {
-            bookclerk_plugin_manifest::PluginKind::Source => Some(post_json(
+        // `health` is exposed by the storefront entrypoint and by event
+        // consumers; storage/database-only guests are covered by `describe`.
+        let health = if manifest.has_entrypoint(bookclerk_plugin_manifest::Entrypoint::Storefront) {
+            Some(post_json(
                 &format!("{base}/contentSource/health"),
                 &json!({}),
                 &bridge_token,
-            )?),
-            bookclerk_plugin_manifest::PluginKind::Integration => Some(post_json(
+            )?)
+        } else if manifest.has_entrypoint(bookclerk_plugin_manifest::Entrypoint::RemoteLibrary) {
+            Some(post_json(
                 &format!("{base}/integration/health"),
                 &json!({}),
                 &bridge_token,
-            )?),
-            _ => None,
+            )?)
+        } else {
+            None
         };
         let detail = json!({
             "plugin": manifest.id,

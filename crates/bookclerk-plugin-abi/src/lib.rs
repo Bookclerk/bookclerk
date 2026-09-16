@@ -1,18 +1,22 @@
-//! Authoritative Bookclerk plugin ABI (`api_version` 2).
+//! Authoritative Bookclerk plugin ABI (`api_version` 3).
 //!
-//! Version 2 is the product object-capability ABI (Cap'n Proto RPC, role
-//! classes, transferred byte streams). JSON DTOs in this crate describe the
-//! payloads carried inside `Text` fields of that ABI (`describe().metadataJson`,
-//! role `paramsJson`, `cliInvoke` params/results) — never a transport of their
-//! own.
+//! Version 3 is the capability-driven object-capability ABI (Cap'n Proto RPC,
+//! transferred byte streams). The guest root is [`PluginWorker`]:
+//! `describe()` advertises typed [`PluginCapabilities`], then
+//! `open(invocation, bindings)` returns the exported [`Entrypoints`]
+//! (`storefront`, `storage`, `databaseAdapter`, `remoteLibrary`, `cli`,
+//! `oidc`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
+//! [`Bindings`] carry `CONFIG` / `SECRETS`, the `EVENTS` publisher, and named
+//! `[[databases]]` sessions — the Workers `env` idiom.
 //!
 //! # Audience
 //!
-//! - **Guest authors** — implement the Cap'n Proto roles against these DTOs
-//!   (via `bookclerk-plugin-sdk`, `@bookclerk/plugin-sdk`, or a language binding
-//!   generated from the same schema).
-//! - **Host / SDK maintainers** — drive role capabilities, seal credentials,
-//!   and upsert library rows without depending on store-specific crates.
+//! - **Guest authors** — implement [`PluginWorker`] and the entrypoint traits
+//!   against these DTOs (via `bookclerk-plugin-sdk`, `@bookclerk/plugin-sdk`,
+//!   or a language binding generated from the same schema).
+//! - **Host / SDK maintainers** — drive entrypoint capabilities, seal
+//!   credentials, and upsert library rows without depending on store-specific
+//!   crates.
 //!
 //! Product narrative (jail, consent, install layout) lives in
 //! [`docs/plugins.md`](https://github.com/bookclerk/bookclerk/blob/main/docs/plugins.md).
@@ -23,8 +27,8 @@
 //! The Cap'n Proto schema at
 //! [`schema/plugin.capnp`](https://github.com/bookclerk/bookclerk/blob/main/crates/bookclerk-plugin-abi/schema/plugin.capnp)
 //! is the single source of truth: RPC interfaces, product constants, database
-//! enums, and the "JSON payload contracts" section that types the JSON carried
-//! in `Text` fields. Types here are the Rust projection; the TypeScript and
+//! enums, and the "Typed method payloads" section. Types here are the Rust
+//! projection; the TypeScript and
 //! Python SDK projections are generated from the same schema by
 //! `scripts/gen-plugin-abi.py`, which also drift-checks this crate. Wire DTO
 //! fields serialize as **camelCase**.
@@ -34,15 +38,15 @@
 //!
 //! # Versioning
 //!
-//! [`PRODUCT_API_VERSION`] is `2` (object-capability Cap'n Proto / Workers
-//! RPC). Product spawn requires `plugin.toml` `api_version = 2`. There is no
+//! [`PRODUCT_API_VERSION`] is `3` (capability-driven Cap'n Proto / Workers
+//! RPC). Product spawn requires `plugin.toml` `api_version = 3`. There is no
 //! `protocol` key.
 //!
 //! # Modules
 //!
 //! | Module | Contents |
 //! | --- | --- |
-//! | [`methods`] | Capability / consent method name constants (`login`, `onEvent`, …) |
+//! | [`methods`] | Capability / consent method name constants (`login`, `event`, …) |
 //! | Crate-root DTOs | [`PluginDescribe`], health, CLI, destination objects |
 //! | [`kind`] | Kind-specific DTOs (source / integration / output) |
 //! | [`db`] | Host-private database connect params (feature `host`) |
@@ -119,9 +123,9 @@ pub mod plugin_host_capnp {
 }
 
 pub use backup_ops::{AdapterBackupOps, SharedAdapterBackupOps};
+pub use db::{binding_values_from_adapter_config, database_adapter_config_from_bindings};
 #[cfg(feature = "host")]
-pub use db::{connect_params_from_context, database_context_from_params, DbConnectParams};
-pub use db::{database_adapter_config_from_context, database_context_from_adapter_config};
+pub use db::{binding_values_from_params, connect_params_from_bindings, DbConnectParams};
 #[cfg(feature = "host")]
 pub use db_execute::lowered_statement_preflight_len_proven;
 pub use db_execute::{
@@ -217,23 +221,25 @@ pub use limits::{
     MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 pub use roles::{
-    AdapterDatabaseSession, ByteRange, Cancellation, ContentSource, ContentSourceContext, Database,
-    DatabaseContext, Destination, GuestDatabase, Integration, IntegrationContext, JobHandler,
-    JobHandlerContext, NeverCancel, PluginRoot, ProgressSink, ReadResult, Source,
+    AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
+    Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
+    JobController, JobRunner, NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, ReadResult,
+    RemoteLibrary, Source,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
 pub use rpc::{
     byte_source_from_async_read, connect_plugin, pull_byte_source_to_writer, serve_plugin,
     serve_plugin_stdio, ContentSourceClient, DatabaseClient, DestinationClient, DestinationServer,
-    IntegrationClient, PluginClient, PluginServer, SourceClient, SourceServer,
+    EventConsumerClient, EventPublisherClient, HostBindings, JobRunnerClient, OidcClient,
+    OpenedEntrypoints, PluginCliClient, PluginClient, PluginServer, RemoteLibraryClient,
+    SourceClient, SourceServer,
 };
 pub use rpc_types::{
-    CopyResult, DestinationContext, DomainEvent, EventResult, ExtensibleConfig, HealthOk,
-    JobCheckpoint, JobInvocation, JobInvocationLease, JobOutcome, ListOptions, ListPage,
-    ObjectInfo, ObjectMetadata, OidcClientTemplate, PluginDescribe, PutResult, QueryPage,
-    ScalarLimitsDto, SourceContext, WorkerContext, WriteOptions, JSON_MEDIA_TYPE,
-    MAX_CHECKPOINT_BYTES,
+    CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,
+    JobInvocationLease, JobOutcome, ListOptions, ListPage, ObjectInfo, ObjectMetadata,
+    OidcClientTemplate, PluginDescribe, PutResult, QueryPage, ScalarLimitsDto, WriteOptions,
+    JSON_MEDIA_TYPE, MAX_CHECKPOINT_BYTES,
 };
 
 /// Embedded JSON Schema for install `plugin.toml` files (shared with language
@@ -250,17 +256,27 @@ mod tests {
         let describe = PluginDescribe {
             api_version: PRODUCT_API_VERSION,
             id: "echo".into(),
-            kind: "integration".into(),
-            capabilities: vec!["health".into()],
+            capabilities: PluginCapabilities {
+                entrypoints: vec![Entrypoint::Cli],
+                consumes: vec![EventConsumerSpec {
+                    event_type: "book_acquired".into(),
+                    schema_versions: vec![1],
+                    supports_suspend: true,
+                }],
+                ..PluginCapabilities::default()
+            },
             ..PluginDescribe::default()
         };
         let v = serde_json::to_value(&describe).unwrap();
         assert!(v.get("apiVersion").is_some());
         assert!(v.get("api_version").is_none());
         assert!(v.get("metadataJson").is_none());
+        assert_eq!(v["capabilities"]["entrypoints"][0], "cli");
         let back: PluginDescribe = serde_json::from_value(v).unwrap();
         assert_eq!(back.id, "echo");
-        assert!(back.has_capability("health"));
+        assert!(back.has_entrypoint(Entrypoint::Cli));
+        assert!(back.consumes_event("book_acquired"));
+        assert!(!back.runs_job("book_acquired"));
     }
 
     #[test]

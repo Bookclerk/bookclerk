@@ -182,10 +182,10 @@ mod tests {
             .join(",\n");
         parse(&format!(
             r#"
-api_version = 2
+api_version = 3
 id = "echo"
-kind = "integration"
 runtime = "workerd"
+entrypoints = ["cli"]
 
 [workerd]
 compatibility_date = "2024-09-23"

@@ -1,5 +1,5 @@
 //! Output-plugin configuration DTOs carried as `application/json` inside
-//! [`crate::ExtensibleConfig`] (`DestinationContext.config`).
+//! [`crate::ExtensibleConfig`] (`Bindings.config` for the `storage` entrypoint).
 //!
 //! Field names serialize as **camelCase** on the wire. Every method payload
 //! is a typed Cap'n Proto struct generated into [`crate::generated`]; only the
@@ -34,7 +34,7 @@ impl std::fmt::Debug for S3CredentialsDto {
     }
 }
 
-/// S3 destination knobs the host grants through `DestinationContext.config`.
+/// S3 destination knobs the host grants through `Bindings.config`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputS3ContextDto {
@@ -63,7 +63,7 @@ pub struct OutputS3ContextDto {
 }
 
 /// Local filesystem destination knobs the host grants through
-/// `DestinationContext.config`.
+/// `Bindings.config`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputLocalContextDto {

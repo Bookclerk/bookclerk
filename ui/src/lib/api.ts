@@ -1614,7 +1614,8 @@ export interface PluginSettingOption {
  */
 export interface PluginSettingsGroup {
   id: string;
-  kind: string;
+  /** Handler family (`source`, `integration`, `output`, `database`). */
+  family: string;
   /** Google favicon (or portal brand) URL for Settings list rows. */
   logo?: string;
   settings: PluginSettingOption[];
@@ -1638,7 +1639,10 @@ export interface SettingsResponse {
  */
 export interface PluginGrant {
   pluginId: string;
-  kind: string;
+  /** Exported entrypoints the operator approved (`storefront`, `cli`, …). */
+  entrypoints: string[];
+  /** Event types the operator approved the plugin to publish. */
+  producers: string[];
   networkMode: string;
   domains: string[];
   bindings: string[];

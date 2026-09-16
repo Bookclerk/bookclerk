@@ -1,30 +1,19 @@
-api_version = 2
+api_version = 3
 id = "audible"
 name = "Audible"
-kind = "source"
 version = "0.1.0"
 logo = "https://www.google.com/s2/favicons?domain=audible.com&sz=128"
 runtime = "native"
 command = "./bookclerk-plugin-source-audible"
+entrypoints = ["storefront"]
 
 [capabilities.network]
 mode = "outbound"
-[capabilities.bindings]
-config = true
-secrets = true
-work_fs = true
-oauth = true
 
-[capabilities.methods]
-list = [
-    "health",
-    "diagnose",
-    "loginStart",
-    "loginComplete",
-    "scan",
-    "fetchTitle",
-    "searchCatalog",
-    "expandCandidates",
-    "purchaseHint",
-    "listDeals",
-]
+[vars]
+
+[secrets]
+
+[work_fs]
+
+[oauth]

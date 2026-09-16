@@ -1,4 +1,4 @@
-//! Shared jailed-child spawn for Cap'n Proto `api_version = 2` stdio guests.
+//! Shared jailed-child spawn for Cap'n Proto `api_version = 3` stdio guests.
 
 #![allow(clippy::missing_docs_in_private_items)]
 

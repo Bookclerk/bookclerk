@@ -8,10 +8,10 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::PluginKind;
+use crate::manifest::PluginFamily;
 use crate::{PluginError, Result};
 
-/// Required crates.io name prefix: `bookclerk-plugin-{kind}-{id}`.
+/// Required crates.io name prefix: `bookclerk-plugin-{family}-{id}`.
 pub const CRATE_NAME_PREFIX: &str = "bookclerk-plugin-";
 
 /// Keyword every published plugin crate should include.
@@ -20,34 +20,34 @@ pub const REGISTRY_KEYWORD: &str = "bookclerk-plugin";
 /// Shared crates.io keyword (`bookclerk`) expected on published plugin crates.
 pub const PRODUCT_KEYWORD: &str = "bookclerk";
 
-/// Kind-specific crates.io keyword (`bookclerk-source`, …).
+/// Family-specific crates.io keyword (`bookclerk-source`, …).
 #[must_use]
-pub fn kind_keyword(kind: PluginKind) -> &'static str {
-    match kind {
-        PluginKind::Source => "bookclerk-source",
-        PluginKind::Integration => "bookclerk-integration",
-        PluginKind::Output => "bookclerk-output",
-        PluginKind::Database => "bookclerk-database",
+pub fn family_keyword(family: PluginFamily) -> &'static str {
+    match family {
+        PluginFamily::Source => "bookclerk-source",
+        PluginFamily::Integration => "bookclerk-integration",
+        PluginFamily::Output => "bookclerk-output",
+        PluginFamily::Database => "bookclerk-database",
     }
 }
 
 /// Parsed crates.io crate name for a Bookclerk plugin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginCrateName {
-    /// Plugin kind encoded in the crates.io name.
-    pub kind: PluginKind,
+    /// Plugin family encoded in the crates.io name.
+    pub family: PluginFamily,
     /// Plugin id (`[a-z0-9_]{2,32}`), globally unique across kinds.
     pub id: String,
 }
 
 impl PluginCrateName {
-    /// Format as `bookclerk-plugin-{kind}-{id}`.
+    /// Format as `bookclerk-plugin-{family}-{id}`.
     #[must_use]
     pub fn crate_name(&self) -> String {
-        format!("{CRATE_NAME_PREFIX}{}-{}", self.kind.as_str(), self.id)
+        format!("{CRATE_NAME_PREFIX}{}-{}", self.family.as_str(), self.id)
     }
 
-    /// Parse `bookclerk-plugin-{kind}-{id}`.
+    /// Parse `bookclerk-plugin-{family}-{id}`.
     ///
     /// # Errors
     ///
@@ -60,18 +60,18 @@ impl PluginCrateName {
         })?;
         let (kind_str, id) = rest.split_once('-').ok_or_else(|| {
             PluginError::message(format!(
-                "crate name `{name}` must be `{CRATE_NAME_PREFIX}{{kind}}-{{id}}`"
+                "crate name `{name}` must be `{CRATE_NAME_PREFIX}{{family}}-{{id}}`"
             ))
         })?;
-        let kind = parse_kind(kind_str).ok_or_else(|| {
+        let family = parse_family(kind_str).ok_or_else(|| {
             PluginError::message(format!(
-                "crate name `{name}`: unknown kind `{kind_str}` \
+                "crate name `{name}`: unknown family `{kind_str}` \
                  (expected source|integration|output|database)"
             ))
         })?;
         validate_plugin_id(id)?;
         Ok(Self {
-            kind,
+            family,
             id: id.to_string(),
         })
     }
@@ -96,15 +96,9 @@ pub fn validate_plugin_id(id: &str) -> Result<()> {
         .map_err(|e| PluginError::message(e.to_string()))
 }
 
-/// Maps a crates.io / manifest kind string onto [`PluginKind`]; unknown values yield `None`.
-fn parse_kind(s: &str) -> Option<PluginKind> {
-    match s {
-        "source" => Some(PluginKind::Source),
-        "integration" => Some(PluginKind::Integration),
-        "output" => Some(PluginKind::Output),
-        "database" => Some(PluginKind::Database),
-        _ => None,
-    }
+/// Maps a crates.io family segment onto [`PluginFamily`]; unknown values yield `None`.
+fn parse_family(s: &str) -> Option<PluginFamily> {
+    PluginFamily::parse(s)
 }
 
 /// `[package.metadata.bookclerk]` published on crates.io.
@@ -112,8 +106,8 @@ fn parse_kind(s: &str) -> Option<PluginKind> {
 pub struct BookclerkPackageMetadata {
     /// Plugin ABI / package metadata API version (must be >= 1).
     pub api_version: u32,
-    /// Plugin kind encoded in the crates.io name.
-    pub kind: PluginKind,
+    /// Plugin family encoded in the crates.io name.
+    pub family: PluginFamily,
     /// Plugin id (`[a-z0-9_]{2,32}`), globally unique across kinds.
     pub id: String,
     /// Optional human-readable name for catalog UI.
@@ -147,11 +141,11 @@ impl BookclerkPackageMetadata {
     /// Returns an error when the operation fails.
     pub fn validate_against_crate_name(&self, crate_name: &str) -> Result<()> {
         let parsed = PluginCrateName::parse(crate_name)?;
-        if parsed.kind != self.kind {
+        if parsed.family != self.family {
             return Err(PluginError::message(format!(
-                "metadata kind `{}` does not match crate name kind `{}`",
-                self.kind.as_str(),
-                parsed.kind.as_str()
+                "metadata family `{}` does not match crate name family `{}`",
+                self.family.as_str(),
+                parsed.family.as_str()
             )));
         }
         if parsed.id != self.id {
@@ -218,7 +212,7 @@ impl BookclerkPackageMetadata {
 /// One catalog hit from crates.io (or a curated index).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginCatalogEntry {
-    /// crates.io package name (`bookclerk-plugin-{kind}-{id}`).
+    /// crates.io package name (`bookclerk-plugin-{family}-{id}`).
     pub crate_name: String,
     /// Published crate / release version string.
     pub version: String,
@@ -268,12 +262,12 @@ mod tests {
     #[test]
     fn parses_taxonomy_names() {
         let n = PluginCrateName::parse("bookclerk-plugin-source-spotify").unwrap();
-        assert_eq!(n.kind, PluginKind::Source);
+        assert_eq!(n.family, PluginFamily::Source);
         assert_eq!(n.id, "spotify");
         assert_eq!(n.crate_name(), "bookclerk-plugin-source-spotify");
 
         let n = PluginCrateName::parse("bookclerk-plugin-integration-my_store").unwrap();
-        assert_eq!(n.kind, PluginKind::Integration);
+        assert_eq!(n.family, PluginFamily::Integration);
         assert_eq!(n.id, "my_store");
     }
 
@@ -290,7 +284,7 @@ mod tests {
     fn metadata_must_match_crate_name() {
         let meta = BookclerkPackageMetadata {
             api_version: 1,
-            kind: PluginKind::Source,
+            family: PluginFamily::Source,
             id: "example".into(),
             display_name: Some("Example".into()),
             artifact_base_url: Some("https://cdn.example.com/plugins/{crate}/{version}".into()),
@@ -322,7 +316,7 @@ mod tests {
     fn full_artifact_url_template_overrides_base() {
         let meta = BookclerkPackageMetadata {
             api_version: 1,
-            kind: PluginKind::Integration,
+            family: PluginFamily::Integration,
             id: "echo".into(),
             display_name: None,
             artifact_base_url: Some("https://ignored.example/".into()),
@@ -346,6 +340,6 @@ mod tests {
 
     #[test]
     fn kind_keywords() {
-        assert_eq!(kind_keyword(PluginKind::Output), "bookclerk-output");
+        assert_eq!(family_keyword(PluginFamily::Output), "bookclerk-output");
     }
 }

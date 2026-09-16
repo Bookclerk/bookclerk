@@ -80,7 +80,7 @@ pub enum WishlistCommand {
 /// Dispatches a discover verb against the library store and source registry.
 pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -> Result<()> {
     let library = crate::registry::open_library(cfg).await?;
-    let registry = crate::registry::default_registry_with_plugins(cfg).await?;
+    let registry = crate::registry::default_registry_with_plugins(cfg, &library).await?;
 
     match command {
         DiscoverCommand::RebuildWorks => {
@@ -279,6 +279,6 @@ async fn sync_listening(
     cfg: &Config,
     library: &LibraryStore,
 ) -> Result<bookclerk_integrations::SyncListeningSummary> {
-    let registry = bookclerk_plugin_host::load_integrations(cfg).await?;
+    let registry = crate::registry::integrations_with_plugins(cfg, library).await?;
     Ok(registry.sync_listening_progress_all(library).await)
 }

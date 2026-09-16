@@ -1,23 +1,15 @@
-api_version = 2
+api_version = 3
 id = "echo_tools"
 name = "Echo Tools"
-kind = "integration"
 version = "0.1.0"
 runtime = "native"
 command = "./echo-tools"
+entrypoints = ["cli"]
+
+[vars]
 
 [capabilities.network]
 mode = "deny"
-
-[capabilities.bindings]
-config = true
-
-[capabilities.methods]
-list = [
-    "describe",
-    "health",
-    "cli",
-]
 
 [[cli.commands]]
 name = "ping"

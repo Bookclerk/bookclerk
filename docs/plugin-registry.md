@@ -9,7 +9,7 @@ Third-party plugins install as archives under `$BOOKCLERK_FILES_DIR/plugins/<id>
 | **`workerd` / script** | `plugin.toml` + `modules/` — **no** per-OS binary required; host runs `bookclerk-workerd` under jail |
 | **`native`** | `plugin.toml` + per-OS/arch executable (`command`) |
 
-Authors implement branded **`BookclerkPlugin`** (product `api_version = 2`) via language SDKs
+Authors extend **`BookclerkEntrypoint`** and export named `*Entrypoint` classes (product `api_version = 3`) via language SDKs
 ([`@bookclerk/plugin-sdk`](../packages/plugin-sdk/),
 [`packages/plugin-sdk-python`](../packages/plugin-sdk-python/),
 [`bookclerk-plugin-sdk`](../crates/bookclerk-plugin-sdk/)). Each SDK ships the
@@ -43,7 +43,7 @@ Publisher / packaging examples (reference only — never in `package-plugins`):
 - [`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/) — workerd / `@bookclerk/plugin-sdk`
 - [`examples/plugins-echo-workerd-python/`](../examples/plugins-echo-workerd-python/) — workerd Python Workers
 - [`examples/plugins-echo-workerd-rust/`](../examples/plugins-echo-workerd-rust/) — workerd Rust/Wasm
-- [`examples/plugins-echo-native-rust/`](../examples/plugins-echo-native-rust/) — native Rust `PluginRoot` (`api_version = 2`)
+- [`examples/plugins-echo-native-rust/`](../examples/plugins-echo-native-rust/) — native Rust `PluginWorker` (`api_version = 3`)
 - [`examples/plugins-echo-native-node/`](../examples/plugins-echo-native-node/) — workerd JS (id `echo_native_node`)
 - [`examples/plugins-echo-native-python/`](../examples/plugins-echo-native-python/) — workerd Python (id `echo_native_python`)
 - [`examples/plugin-publisher/`](../examples/plugin-publisher/) — reusable GHA workflow docs
@@ -332,22 +332,32 @@ even when not featured.
 ## Standalone plugin development (no Bookclerk mirror)
 
 Third-party authors keep **their own repo**. They do **not** fork or vendor the
-Bookclerk monorepo. The contract is the Workers RPC ABI (`api_version = 2`
-object-capability classes and streams, `BookclerkPlugin`) + install layout; the host discovers whatever lands under
+Bookclerk monorepo. The contract is the Workers RPC ABI (`api_version = 3`
+object-capability classes and streams, `BookclerkEntrypoint` + named
+entrypoint classes) + install layout; the host discovers whatever lands under
 `plugins/`. See [plugins.md](plugins.md) and
 [adr/plugin-workers-rpc-workerd.md](adr/plugin-workers-rpc-workerd.md).
 
 ### TypeScript / workerd (`@bookclerk/plugin-sdk`)
 
-Preferred portable path: extend `BookclerkPlugin` for destinations, jobs,
-storefronts, and integrations. Ship `plugin.toml` + `modules/`. Start from
-[`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/).
+Preferred portable path: extend `BookclerkEntrypoint` for event and job
+triggers and export one `*Entrypoint` subclass per named entrypoint
+(`Storefront`, `Storage`, `RemoteLibrary`, `DatabaseAdapter`, `Cli`, `Oidc`).
+Ship `plugin.toml` + `modules/`. Start from
+[`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/);
+`npx bookclerk-plugin types .` generates the `Env` binding type from
+`plugin.toml`.
 
 ```ts
-import { BookclerkPlugin } from "@bookclerk/plugin-sdk";
+import { BookclerkEntrypoint, StorefrontEntrypoint } from "@bookclerk/plugin-sdk/workerd";
+import type { Env } from "./bookclerk-configuration.js";
 
-export default class MyPlugin extends BookclerkPlugin {
-  async describe() { /* … */ }
+export class Storefront extends StorefrontEntrypoint<Env> {
+  async scan(params) { /* … */ }
+}
+
+export default class MyPlugin extends BookclerkEntrypoint<Env> {
+  async event(batch) { for (const msg of batch.messages) msg.ack(); }
 }
 ```
 
@@ -388,7 +398,7 @@ Author loop (native):
 
 1. New git repo with one binary crate named per the taxonomy
 2. Depend on `bookclerk-plugin-sdk` (path or git)
-3. Implement `PluginRoot` and `serve`
+3. Implement `PluginWorker` and `serve`
 4. CI builds release archives per target; upload wherever `artifact_*` points
 5. Later: `cargo publish` the plugin crate (and eventually the SDK) for
    `bookclerk plugins search`
@@ -429,7 +439,7 @@ that only carries `[package.metadata.bookclerk]` and documentation.
 - [ ] `keywords` include `bookclerk` and `bookclerk-plugin`
 - [ ] `[package.metadata.bookclerk]` `kind` / `id` / `api_version` match the name and `plugin.toml`
 - [ ] Release assets: native per target, or one portable workerd archive, with checksums
-- [ ] `plugin.toml`: `api_version = 2`, `runtime`, and either `command` (native) or `[workerd]` + `modules/`
+- [ ] `plugin.toml`: `api_version = 3`, `runtime`, and either `command` (native) or `[workerd]` + `modules/`
 - [ ] `[capabilities.network]` / `[capabilities.bindings]` declared honestly; state kept in
       `plugin_data_dir` / `TMPDIR`, never beside the binary
 - [ ] Document required config keys and any password env vars

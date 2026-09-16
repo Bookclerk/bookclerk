@@ -1,21 +1,26 @@
 /**
- * Workerd JS entry — Rust/Wasm Echo via `dispatch` (api_version = 2).
+ * Workerd JS entry — Rust/Wasm Echo via `dispatch` (api_version = 3).
  *
- * `describe` + `integration` live in JS so the guest matches the BookclerkPlugin contract
- * without a Wasm rebuild. Health / diagnose / CLI still forward to Wasm.
+ * The default `BookclerkEntrypoint` and the exported `Cli` entrypoint live in
+ * JS so the guest matches the author model without a Wasm rebuild; CLI calls
+ * forward to Wasm (`cliDescribe` / `cliInvoke`) and events are echoed to it
+ * best-effort.
  */
 
 import {
-  BookclerkPlugin,
-  Integration,
-  PRODUCT_API_VERSION,
-  FEATURE_SCALAR_LIMITS,
+  BookclerkEntrypoint,
+  CliEntrypoint,
+  cliArgs,
+  jsonPayload,
 } from "@bookclerk/plugin-sdk/workerd";
 import { initSync, dispatch } from "./pkg/bookclerk_plugin_echo_workerd_rust.js";
 import wasmModule from "./pkg/bookclerk_plugin_echo_workerd_rust_bg.wasm";
 
 initSync({ module: wasmModule });
 
+const PLUGIN_ID = "echo_workerd_rust";
+
+/** Call one Wasm method with JSON params; returns the parsed JSON result. */
 function call(method, params) {
   const paramsJson =
     params === undefined || params === null ? "{}" : JSON.stringify(params);
@@ -23,105 +28,103 @@ function call(method, params) {
   return out === "null" ? null : JSON.parse(out);
 }
 
-class EchoIntegration extends Integration {
-  /**
-   * @param {Record<string, unknown> | undefined} env
-   */
-  constructor(env) {
-    super();
-    this.env = env;
-  }
-
-  async health() {
-    try {
-      return call("health", {});
-    } catch {
-      return {
-        ok: true,
-        id: "echo_workerd_rust",
-        enabled: true,
-        detail: "echo workerd rust wasm plugin ready",
-      };
-    }
-  }
-
-  async diagnose() {
-    try {
-      return call("diagnose", {});
-    } catch {
-      return { lines: ["echo_workerd_rust: ok"] };
-    }
-  }
-
-  async onEvent(event) {
-    try {
-      call("onEvent", event);
-    } catch {
-      // wasm dispatch may not handle onEvent; ack anyway
-    }
-    if (event?.type === "book_acquired" && this.env?.HOST?.notify) {
-      const titleId = event.payload?.titleId ?? "";
-      await this.env.HOST.notify({
-        type: "plugin_log",
-        payload: {
-          level: "info",
-          message: `echo saw book_acquired titleId=${titleId}`,
-        },
-      });
-    }
-    return { kind: "ack" };
-  }
+/** Rust serde emits `ExtensibleConfig.payload` as base64 text; RPC wants bytes. */
+function bytesFromWasmPayload(payload) {
+  if (payload instanceof Uint8Array) return payload;
+  if (typeof payload !== "string" || payload === "") return new Uint8Array();
+  const bin = atob(payload);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
-export default class EchoPlugin extends BookclerkPlugin {
+const FALLBACK_CLI = {
+  commands: [
+    {
+      name: "ping",
+      about: "Probe echo plugin",
+      args: [
+        {
+          name: "message",
+          long: "message",
+          kind: "string",
+          required: false,
+          positional: false,
+          default: "hi",
+        },
+      ],
+    },
+  ],
+};
+
+/** `cli` entrypoint forwarding to the Wasm `cliDescribe` / `cliInvoke`. */
+export class Cli extends CliEntrypoint {
   async describe() {
-    return {
-      apiVersion: PRODUCT_API_VERSION ?? 2,
-      id: "echo_workerd_rust",
-      kind: "integration",
-      displayName: "Echo Integration (workerd Rust/Wasm)",
-      rpcFeatures: [FEATURE_SCALAR_LIMITS ?? "rpc.scalarLimits"],
-      scalarLimits: {
-        maxScalarBytes: 262144,
-        maxStreamWindowBytes: 1048576,
-        maxListPage: 256,
-      },
-      supportedRoles: ["integration"],
-    };
-  }
-
-  integration() {
-    return new EchoIntegration(this.env);
-  }
-
-  async cliDescribe() {
     try {
       return call("cliDescribe", {});
     } catch {
-      return {
-        commands: [
-          {
-            name: "ping",
-            about: "Probe echo plugin",
-            args: [{ name: "message", long: "message", kind: "string", default: "hi" }],
-          },
-        ],
-      };
+      return FALLBACK_CLI;
     }
   }
 
-  async cliInvoke(params) {
-    const parsed =
-      typeof params === "string" ? JSON.parse(params || "{}") : params || {};
+  /**
+   * @param {{ command: string, args: Array<{ name: string, value: string }> }} params
+   */
+  async invoke(params) {
     try {
-      return call("cliInvoke", parsed);
+      const result = call("cliInvoke", params);
+      const payload = result?.payload ?? {};
+      return {
+        exitCode: result?.exitCode ?? 0,
+        stdout: result?.stdout ?? "",
+        stderr: result?.stderr ?? "",
+        payload: {
+          schemaVersion: payload.schemaVersion ?? 1,
+          mediaType: payload.mediaType ?? "",
+          payload: bytesFromWasmPayload(payload.payload),
+        },
+      };
     } catch {
-      const message =
-        typeof parsed.args?.message === "string" ? parsed.args.message : "hi";
-      if (parsed.command !== "ping") {
-        return { exitCode: 2, stderr: `unknown command ${parsed.command ?? ""}` };
+      if (params?.command !== "ping") {
+        return {
+          exitCode: 2,
+          stdout: "",
+          stderr: `unknown command ${params?.command ?? ""}`,
+          payload: jsonPayload(null),
+        };
       }
-      return { exitCode: 0, stdout: `pong: ${message}\n`, json: { pong: message } };
+      const { message = "hi" } = cliArgs(params);
+      return {
+        exitCode: 0,
+        stdout: `pong: ${message}\n`,
+        stderr: "",
+        payload: jsonPayload({ pong: message }),
+      };
+    }
+  }
+}
+
+/** Default entrypoint: event trigger for `[[events.consumers]]`. */
+export default class EchoPlugin extends BookclerkEntrypoint {
+  async describe() {
+    return { displayName: "Echo Integration (workerd Rust/Wasm)" };
+  }
+
+  /**
+   * @param {import("@bookclerk/plugin-sdk/workerd").EventBatch} batch
+   */
+  async event(batch) {
+    for (const msg of batch.messages) {
+      try {
+        call("onEvent", { eventType: msg.type, schemaVersion: msg.schemaVersion });
+      } catch {
+        // wasm dispatch may not handle onEvent; ack anyway
+      }
+      if (msg.type === "book_acquired") {
+        const titleId = msg.json()?.titleId ?? "";
+        console.log(`${PLUGIN_ID} saw book_acquired titleId=${titleId}`);
+      }
+      msg.ack();
     }
   }
 }

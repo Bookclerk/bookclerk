@@ -117,16 +117,18 @@ async fn main() -> anyhow::Result<()> {
     let database_registry = bookclerk_plugin_host::load_external_database(&config).await?;
     let library_store =
         bookclerk_plugin_host::open_library_store(&config, &database_registry).await?;
-    let integrations = bookclerk_plugin_host::load_integrations(&config).await?;
+    let session_services =
+        bookclerk_plugin_host::SessionServices::with_event_outbox(library_store.clone());
+    let integrations = bookclerk_plugin_host::load_integrations(&config, &session_services).await?;
     let destinations =
         bookclerk_plugin_host::load_external_destinations(&config, Some(library_store.db()))
             .await?;
-    let library = Arc::new(RwLock::new(library_store));
-    let database_registry = Arc::new(RwLock::new(database_registry));
     let sources = {
         let cfg = config.clone();
-        default_registry_with_plugins(&cfg).await?
+        default_registry_with_plugins(&cfg, &library_store).await?
     };
+    let library = Arc::new(RwLock::new(library_store));
+    let database_registry = Arc::new(RwLock::new(database_registry));
     validate_daemon_listen(&config)?;
     let operator_auth = {
         let lib = library.read().await.clone();

@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-plugin-sdk"
-description = "Guest Bookclerk plugin SDK (Workers RPC ABI + BookclerkPlugin + stdio server + author tools)"
+description = "Guest Bookclerk plugin SDK (Workers RPC ABI + BookclerkEntrypoint + stdio server + author tools)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

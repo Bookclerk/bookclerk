@@ -1,7 +1,9 @@
 //! Bookclerk Cap'n Proto stdio adapter over the workerd HTTP bridge.
 //!
 //! Isolates keep `RpcTarget` stubs; this process maps them onto the host-facing
-//! [`PluginRoot`] / [`Destination`] traits with streamed HTTP bodies.
+//! [`PluginWorker`] entrypoint traits with streamed HTTP bodies. The exported
+//! [`Entrypoints`] follow the signed `plugin.toml` capabilities (the host
+//! allowlist), never a guest-declared widening.
 
 #![allow(clippy::missing_docs_in_private_items)]
 #![allow(clippy::arc_with_non_send_sync)]
@@ -16,16 +18,16 @@ use bookclerk_plugin_abi::{
     PluginError, Result as AbiResult,
 };
 use bookclerk_plugin_abi::{
-    serve_plugin_stdio, AuthenticateUserParams, ByteRange, CatalogDetailParams, CatalogHit,
-    CliInvokeParams, CliInvokeResult, CliSchema, ContentSource, ContentSourceContext, CopyResult,
-    Destination, DestinationContext, DomainEvent, EventPollResult, EventResult,
-    ExpandCandidatesParams, ExternalUser, FetchTitleParams, GuestDatabase, HealthOk, Integration,
-    IntegrationContext, JobHandler, JobHandlerContext, JobInvocation, JobOutcome, ListDealsParams,
-    ListOptions, ListPage, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
-    LoginStartResult, ObjectInfo, ObjectMetadata, OidcClientTemplate, PlainFetch, PluginDescribe,
-    PluginMigration, PluginRoot, PurchaseHint, PurchaseHintParams, PutResult, ReadResult,
-    ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams, Source, SourceAccount,
-    SourceContext, WorkerContext, WriteOptions, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
+    serve_plugin_stdio, AuthenticateUserParams, Bindings, ByteRange, CatalogDetailParams,
+    CatalogHit, CliInvokeParams, CliInvokeResult, CliSchema, ContentSource, CopyResult,
+    Destination, DomainEvent, Entrypoint, Entrypoints, EventConsumer, EventPollResult, EventResult,
+    ExpandCandidatesParams, ExtensibleConfig, ExternalUser, FetchTitleParams, GuestDatabase,
+    HealthOk, Invocation, JobController, JobOutcome, JobRunner, ListDealsParams, ListOptions,
+    ListPage, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult, LoginStartResult,
+    ObjectInfo, ObjectMetadata, Oidc, OidcClientTemplate, PlainFetch, PluginCapabilities,
+    PluginCli, PluginDescribe, PluginMigration, PluginWorker, PurchaseHint, PurchaseHintParams,
+    PutResult, ReadResult, RemoteLibrary, ScanLibraryParams, ScanParams, ScanSummary,
+    SearchCatalogParams, SourceAccount, WriteOptions, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
     MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
@@ -38,12 +40,22 @@ use crate::granted::{GrantedSlot, GrantedTable};
 /// Serves Bookclerk capnp on stdio while talking HTTP/JSRPC to the isolate.
 ///
 /// Must run inside a `LocalSet` (same thread as the granted HTTP server).
+/// `capabilities` come from the signed manifest and decide which
+/// [`Entrypoints`] `open` exports.
 ///
 /// # Errors
 ///
 /// Returns a plugin error when the vat fails.
-pub async fn mediate_bridge_stdio(http: BridgeHttp, table: GrantedTable) -> anyhow::Result<()> {
-    let plugin = WorkerdRoot { http, table };
+pub async fn mediate_bridge_stdio(
+    http: BridgeHttp,
+    table: GrantedTable,
+    capabilities: PluginCapabilities,
+) -> anyhow::Result<()> {
+    let plugin = WorkerdRoot {
+        http,
+        table,
+        capabilities,
+    };
     serve_plugin_stdio(Arc::new(plugin), MAX_STREAM_WINDOW_BYTES)
         .await
         .map_err(|err| anyhow::anyhow!("{err}"))
@@ -52,6 +64,70 @@ pub async fn mediate_bridge_stdio(http: BridgeHttp, table: GrantedTable) -> anyh
 struct WorkerdRoot {
     http: BridgeHttp,
     table: GrantedTable,
+    capabilities: PluginCapabilities,
+}
+
+impl WorkerdRoot {
+    fn exports(&self, entrypoint: Entrypoint) -> bool {
+        self.capabilities.entrypoints.contains(&entrypoint)
+    }
+
+    /// Storage guests run the host `stream_copy` job even without an explicit
+    /// `[triggers] jobs` list.
+    fn runs_jobs(&self) -> bool {
+        !self.capabilities.jobs.is_empty() || self.exports(Entrypoint::Storage)
+    }
+}
+
+/// Bridge projection of one `PluginWorker.open`: the `Invocation` envelope
+/// plus the granted `CONFIG` / `SECRETS` bindings, carried as the `context`
+/// field / `x-bookclerk-context` header the isolate-side SDK installs on the
+/// author's `env`. `eventsToken` is the granted-channel bearer the adapter
+/// isolate turns into the author's `EVENTS` binding; the author never sees it.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeContext {
+    invocation: Invocation,
+    config: ExtensibleConfig,
+    secrets: ExtensibleConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    events_token: Option<String>,
+    /// Keeps the events grant alive while any exported entrypoint holds it.
+    #[serde(skip)]
+    #[allow(dead_code)]
+    events_grant: Option<Rc<RevokeGrant>>,
+}
+
+/// Job-runner bridge context: the durable job id plus the open context.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerBridgeContext {
+    job_id: String,
+    invocation: Invocation,
+    config: ExtensibleConfig,
+    secrets: ExtensibleConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    events_token: Option<String>,
+    /// Keeps the events grant alive while the job runner holds it.
+    #[serde(skip)]
+    #[allow(dead_code)]
+    events_grant: Option<Rc<RevokeGrant>>,
+}
+
+/// Grant expiry for an `open`: the invocation deadline when it has one,
+/// otherwise effectively the process lifetime (primary opens live as long as
+/// the session).
+fn grant_expiry(deadline_unix_ms: u64) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    if deadline_unix_ms == 0 {
+        return now + std::time::Duration::from_secs(10 * 365 * 24 * 3600);
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    now + std::time::Duration::from_millis(deadline_unix_ms.saturating_sub(now_ms))
+        + std::time::Duration::from_secs(60)
 }
 
 fn map_http(err: anyhow::Error) -> PluginError {
@@ -117,7 +193,7 @@ impl From<DiagnoseReply> for Vec<String> {
 struct Ack {}
 
 #[async_trait(?Send)]
-impl PluginRoot for WorkerdRoot {
+impl PluginWorker for WorkerdRoot {
     async fn describe(&self) -> AbiResult<PluginDescribe> {
         let describe: PluginDescribe =
             call(&self.http, "/describe", &serde_json::json!({})).await?;
@@ -130,66 +206,88 @@ impl PluginRoot for WorkerdRoot {
         Ok(describe)
     }
 
-    async fn destination(&self, context: DestinationContext) -> AbiResult<Box<dyn Destination>> {
-        Ok(Box::new(HttpDestination {
+    async fn open(&self, invocation: Invocation, bindings: Bindings) -> AbiResult<Entrypoints> {
+        // The host's `EVENTS` publisher becomes an events-only grant token the
+        // adapter isolate exchanges on `/events/publish`; it is revoked when
+        // the last exported entrypoint of this `open` drops.
+        let (events_token, events_grant) = match bindings.events {
+            Some(publisher) => {
+                let token = format!("{:032x}", rand::random::<u128>());
+                self.table.borrow_mut().insert(
+                    token.clone(),
+                    GrantedSlot::events_only(
+                        Rc::from(publisher),
+                        grant_expiry(invocation.deadline_unix_ms),
+                    ),
+                );
+                (
+                    Some(token.clone()),
+                    Some(Rc::new(RevokeGrant {
+                        table: Rc::clone(&self.table),
+                        grant: token,
+                    })),
+                )
+            }
+            None => (None, None),
+        };
+        let ctx = BridgeContext {
+            invocation: invocation.clone(),
+            config: bindings.config.clone(),
+            secrets: bindings.secrets.clone(),
+            events_token: events_token.clone(),
+            events_grant: events_grant.clone(),
+        };
+        let integration = || HttpIntegration {
             http: self.http.clone(),
-            ctx: context,
-        }))
-    }
-
-    async fn source(&self, context: SourceContext) -> AbiResult<Box<dyn Source>> {
-        Ok(Box::new(HttpSource {
-            http: self.http.clone(),
-            ctx: context,
-        }))
-    }
-
-    async fn worker(&self, context: WorkerContext) -> AbiResult<Box<dyn JobHandler>> {
-        Ok(Box::new(HttpJobHandler {
-            http: self.http.clone(),
-            ctx: context,
-            table: Rc::clone(&self.table),
-        }))
-    }
-
-    async fn content_source(
-        &self,
-        context: ContentSourceContext,
-    ) -> AbiResult<Box<dyn ContentSource>> {
-        Ok(Box::new(HttpContentSource {
-            http: self.http.clone(),
-            ctx: context,
-        }))
-    }
-
-    async fn integration(&self, context: IntegrationContext) -> AbiResult<Box<dyn Integration>> {
-        Ok(Box::new(HttpIntegration {
-            http: self.http.clone(),
-            ctx: context,
-        }))
-    }
-
-    async fn cli_describe(&self) -> AbiResult<CliSchema> {
-        call(&self.http, "/cliDescribe", &serde_json::json!({})).await
-    }
-
-    async fn cli_invoke(&self, params: CliInvokeParams) -> AbiResult<CliInvokeResult> {
-        call(
-            &self.http,
-            "/cliInvoke",
-            &serde_json::json!({ "params": to_bridge_json(&params)? }),
-        )
-        .await
-    }
-
-    async fn oidc_clients(&self) -> AbiResult<Vec<OidcClientTemplate>> {
-        #[derive(serde::Deserialize)]
-        struct Reply {
-            #[serde(default)]
-            clients: Vec<OidcClientTemplate>,
+            ctx: ctx.clone(),
+        };
+        let mut exported = Entrypoints::default();
+        if self.exports(Entrypoint::Storefront) {
+            exported.storefront = Some(Box::new(HttpContentSource {
+                http: self.http.clone(),
+                ctx: ctx.clone(),
+            }));
         }
-        let reply: Reply = call(&self.http, "/oidcClients", &serde_json::json!({})).await?;
-        Ok(reply.clients)
+        if self.exports(Entrypoint::Storage) {
+            exported.storage = Some(Box::new(HttpDestination {
+                http: self.http.clone(),
+                ctx: ctx.clone(),
+            }));
+        }
+        if self.exports(Entrypoint::RemoteLibrary) {
+            exported.remote_library = Some(Box::new(integration()));
+        }
+        if !self.capabilities.consumes.is_empty() {
+            exported.event_consumer = Some(Box::new(integration()));
+        }
+        if self.exports(Entrypoint::Oidc) {
+            exported.oidc = Some(Box::new(integration()));
+        }
+        if self.exports(Entrypoint::Cli) {
+            exported.cli = Some(Box::new(HttpCli {
+                http: self.http.clone(),
+            }));
+        }
+        if self.runs_jobs() {
+            exported.job_runner = Some(Box::new(HttpJobRunner {
+                http: self.http.clone(),
+                ctx: WorkerBridgeContext {
+                    job_id: invocation.id.clone(),
+                    invocation,
+                    config: bindings.config,
+                    secrets: bindings.secrets,
+                    events_token,
+                    events_grant,
+                },
+                databases: bindings
+                    .databases
+                    .into_iter()
+                    .map(|(name, database)| (name, Rc::from(database)))
+                    .collect(),
+                table: Rc::clone(&self.table),
+            }));
+        }
+        Ok(exported)
     }
 
     async fn database_migrations(&self, binding: &str) -> AbiResult<Vec<PluginMigration>> {
@@ -213,14 +311,36 @@ impl PluginRoot for WorkerdRoot {
     }
 }
 
-struct HttpDestination {
+struct HttpCli {
     http: BridgeHttp,
-    ctx: DestinationContext,
 }
 
+#[async_trait(?Send)]
+impl PluginCli for HttpCli {
+    async fn describe(&self) -> AbiResult<CliSchema> {
+        call(&self.http, "/cliDescribe", &serde_json::json!({})).await
+    }
+
+    async fn invoke(&self, params: CliInvokeParams) -> AbiResult<CliInvokeResult> {
+        call(
+            &self.http,
+            "/cliInvoke",
+            &serde_json::json!({ "params": to_bridge_json(&params)? }),
+        )
+        .await
+    }
+}
+
+struct HttpDestination {
+    http: BridgeHttp,
+    ctx: BridgeContext,
+}
+
+/// `remoteLibrary` / event-consumer / `oidc` entrypoints share the
+/// `/integration/{op}` bridge routes.
 struct HttpIntegration {
     http: BridgeHttp,
-    ctx: IntegrationContext,
+    ctx: BridgeContext,
 }
 
 impl HttpIntegration {
@@ -244,7 +364,7 @@ impl HttpIntegration {
 const NO_PARAMS: Option<&()> = None;
 
 #[async_trait(?Send)]
-impl Integration for HttpIntegration {
+impl RemoteLibrary for HttpIntegration {
     async fn health(&self) -> AbiResult<HealthOk> {
         self.op("health", NO_PARAMS).await
     }
@@ -252,21 +372,6 @@ impl Integration for HttpIntegration {
     async fn diagnose(&self) -> AbiResult<Vec<String>> {
         let reply: DiagnoseReply = self.op("diagnose", NO_PARAMS).await?;
         Ok(reply.into())
-    }
-
-    async fn on_event(&self, event: DomainEvent) -> AbiResult<EventResult> {
-        let v = self
-            .http
-            .json_post(
-                "/integration/onEvent",
-                &serde_json::json!({
-                    "context": to_bridge_json(&self.ctx)?,
-                    "event": to_bridge_json(&event)?,
-                }),
-            )
-            .await
-            .map_err(map_http)?;
-        EventResult::from_json_value(&v)
     }
 
     async fn start(&self) -> AbiResult<()> {
@@ -288,19 +393,54 @@ impl Integration for HttpIntegration {
         self.op("syncListening", NO_PARAMS).await
     }
 
-    async fn authenticate_user(&self, params: AuthenticateUserParams) -> AbiResult<ExternalUser> {
-        self.op("authenticateUser", Some(&params)).await
-    }
-
     async fn poll_events(&self) -> AbiResult<Vec<ExternalUser>> {
         let reply: EventPollResult = self.op("pollEvents", NO_PARAMS).await?;
         Ok(reply.users)
     }
 }
 
+#[async_trait(?Send)]
+impl EventConsumer for HttpIntegration {
+    async fn event(&self, batch: Vec<DomainEvent>) -> AbiResult<Vec<EventResult>> {
+        let mut results = Vec::with_capacity(batch.len());
+        for event in batch {
+            let v = self
+                .http
+                .json_post(
+                    "/integration/onEvent",
+                    &serde_json::json!({
+                        "context": to_bridge_json(&self.ctx)?,
+                        "event": to_bridge_json(&event)?,
+                    }),
+                )
+                .await
+                .map_err(map_http)?;
+            results.push(EventResult::from_json_value(&v)?);
+        }
+        Ok(results)
+    }
+}
+
+#[async_trait(?Send)]
+impl Oidc for HttpIntegration {
+    async fn clients(&self) -> AbiResult<Vec<OidcClientTemplate>> {
+        #[derive(serde::Deserialize)]
+        struct Reply {
+            #[serde(default)]
+            clients: Vec<OidcClientTemplate>,
+        }
+        let reply: Reply = call(&self.http, "/oidcClients", &serde_json::json!({})).await?;
+        Ok(reply.clients)
+    }
+
+    async fn authenticate_user(&self, params: AuthenticateUserParams) -> AbiResult<ExternalUser> {
+        self.op("authenticateUser", Some(&params)).await
+    }
+}
+
 struct HttpContentSource {
     http: BridgeHttp,
-    ctx: ContentSourceContext,
+    ctx: BridgeContext,
 }
 
 impl HttpContentSource {
@@ -559,55 +699,44 @@ impl Destination for HttpDestination {
     }
 }
 
-struct HttpSource {
+struct HttpJobRunner {
     http: BridgeHttp,
-    ctx: SourceContext,
-}
-
-#[async_trait(?Send)]
-impl Source for HttpSource {
-    async fn open(&self, key: &str) -> AbiResult<ReadResult> {
-        let path = format!("/source/open?key={}", percent_encode(key));
-        let ctx = context_header(&self.ctx)?;
-        let (meta, body) = self
-            .http
-            .get_stream_headers(&path, &[("x-bookclerk-context", ctx.as_str())])
-            .await
-            .map_err(map_http)?;
-        Ok(ReadResult { meta, body })
-    }
-}
-
-struct HttpJobHandler {
-    http: BridgeHttp,
-    ctx: WorkerContext,
+    ctx: WorkerBridgeContext,
+    /// Named `[[databases]]` bindings granted at `open`; each job run mints a
+    /// database-only grant token per binding.
+    databases: Vec<(String, Rc<dyn GuestDatabase>)>,
     table: GrantedTable,
 }
 
 #[async_trait(?Send)]
-impl JobHandler for HttpJobHandler {
-    async fn handle(
-        &self,
-        invocation: JobInvocation,
-        context: JobHandlerContext,
-    ) -> AbiResult<JobOutcome> {
-        let (allow_database, max_request_bytes) =
-            granted_database_budget(context.database.as_deref());
+impl JobRunner for HttpJobRunner {
+    async fn job(&self, controller: JobController) -> AbiResult<JobOutcome> {
+        let JobController {
+            invocation,
+            input,
+            output,
+            progress,
+            cancel: _,
+        } = controller;
+        // Jobs never receive the host library as guest SQL; durable plugin
+        // state uses the named bindings below.
+        let (allow_database, max_request_bytes) = granted_database_budget(None);
         let grant = format!("{:032x}", rand::random::<u128>());
         self.table.borrow_mut().insert(
             grant.clone(),
             GrantedSlot {
-                input: Some(context.input),
-                output: Some(context.output),
-                progress: Some(context.progress),
+                input: Some(input),
+                output: Some(output),
+                progress: Some(progress),
                 expires: std::time::Instant::now() + std::time::Duration::from_secs(3600),
                 allow_open: true,
                 allow_put: true,
                 allow_progress: true,
-                database: context.database.map(Rc::from),
+                database: None,
                 allow_database,
                 sql_policy: GuestSqlPolicy::host_authoritative(),
                 max_request_bytes,
+                events: None,
             },
         );
         let _revoke = RevokeGrant {
@@ -618,8 +747,8 @@ impl JobHandler for HttpJobHandler {
         // the isolate reaches each isolated database over the same
         // `/db/execute` broker path with its binding token.
         let mut binding_tokens = serde_json::Map::new();
-        let mut binding_revokes = Vec::with_capacity(context.databases.len());
-        for (name, database) in context.databases {
+        let mut binding_revokes = Vec::with_capacity(self.databases.len());
+        for (name, database) in &self.databases {
             let token = format!("{:032x}", rand::random::<u128>());
             self.table.borrow_mut().insert(
                 token.clone(),
@@ -631,19 +760,20 @@ impl JobHandler for HttpJobHandler {
                     allow_open: false,
                     allow_put: false,
                     allow_progress: false,
-                    database: Some(Rc::from(database)),
+                    database: Some(Rc::clone(database)),
                     allow_database: true,
                     // The host-side binding session enforces binding_owned
                     // scope; the broker defers to it.
                     sql_policy: GuestSqlPolicy::host_authoritative(),
                     max_request_bytes: MAX_SCALAR_BYTES,
+                    events: None,
                 },
             );
             binding_revokes.push(RevokeGrant {
                 table: Rc::clone(&self.table),
                 grant: token.clone(),
             });
-            binding_tokens.insert(name, serde_json::Value::String(token));
+            binding_tokens.insert(name.clone(), serde_json::Value::String(token));
         }
         let result = self
             .http

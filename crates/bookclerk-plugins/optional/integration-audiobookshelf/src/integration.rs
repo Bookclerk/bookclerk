@@ -8,9 +8,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bookclerk_config::AudiobookshelfConfig;
 use bookclerk_integrations::{
-    Brand, ExternalUser, Integration, IntegrationContext, IntegrationError, IntegrationEvent,
-    IntegrationHealth, ProvidedOidcClient, Result,
+    Brand, ExternalUser, Integration, IntegrationContext, IntegrationError, IntegrationHealth,
+    ProvidedOidcClient, Result,
 };
+use bookclerk_plugin_sdk::{DomainEvent, EventResult};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -229,16 +230,27 @@ impl Integration for AbsIntegration {
         Ok(())
     }
 
-    async fn on_event(&self, event: &IntegrationEvent) -> Result<()> {
-        self.require_client()?;
-        match event {
-            IntegrationEvent::BookAcquired { .. } => {
-                if self.config.notify_scan_on_acquire {
-                    self.trigger_scan().await?;
-                }
-                Ok(())
-            }
-            IntegrationEvent::ExternalUserObserved { .. } => Ok(()),
+    async fn deliver_domain_event(&self, event: DomainEvent) -> Result<EventResult> {
+        if event.event_type != "book_acquired" {
+            return Ok(EventResult::Reject {
+                reason: format!("unsupported event type `{}`", event.event_type),
+            });
+        }
+        if let Err(err) = self.require_client() {
+            return Ok(EventResult::Retry {
+                retry_at_unix_ms: 0,
+                reason: err.to_string(),
+            });
+        }
+        if !self.config.notify_scan_on_acquire {
+            return Ok(EventResult::Ack);
+        }
+        match self.trigger_scan().await {
+            Ok(()) => Ok(EventResult::Ack),
+            Err(err) => Ok(EventResult::Retry {
+                retry_at_unix_ms: 0,
+                reason: err.to_string(),
+            }),
         }
     }
 

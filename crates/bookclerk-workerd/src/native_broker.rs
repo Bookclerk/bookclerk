@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use bookclerk_plugin_abi::{
-    connect_plugin, ByteRange, Destination, DestinationContext, DomainEvent, ExtensibleConfig,
-    Integration, IntegrationContext, ListOptions, PluginClient, PluginDescribe, Source,
-    SourceContext, WriteOptions, MAX_SCALAR_BYTES,
+    connect_plugin, BindingValues, ByteRange, Destination, DestinationClient, DomainEvent,
+    EventConsumer, ExtensibleConfig, HostBindings, Invocation, ListOptions, OpenedEntrypoints,
+    PluginClient, PluginDescribe, RemoteLibrary, WriteOptions, MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -247,10 +247,7 @@ async fn dispatch_broker(
             BrokerCmd::Head { config, key, resp } => {
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
-                    let dest = client
-                        .destination(DestinationContext { config })
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let dest = open_storage(&client, config).await?;
                     dest.head(&key).await.map_err(|e| e.to_string())
                 })
                 .await;
@@ -263,10 +260,7 @@ async fn dispatch_broker(
             } => {
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
-                    let dest = client
-                        .destination(DestinationContext { config })
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let dest = open_storage(&client, config).await?;
                     dest.list(options).await.map_err(|e| e.to_string())
                 })
                 .await;
@@ -296,10 +290,7 @@ async fn dispatch_broker(
             } => {
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = async {
-                    let dest = client
-                        .destination(DestinationContext { config })
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let dest = open_storage(&client, config).await?;
                     let (mut body_tx, body) = tokio::io::duplex(64 * 1024);
                     let pump_cancel = Arc::clone(&cancelled);
                     tokio::task::spawn_local(async move {
@@ -333,10 +324,7 @@ async fn dispatch_broker(
             } => {
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
-                    let dest = client
-                        .destination(DestinationContext { config })
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let dest = open_storage(&client, config).await?;
                     dest.copy(&from, &to)
                         .await
                         .map(|r| r.bytes_copied)
@@ -348,10 +336,7 @@ async fn dispatch_broker(
             BrokerCmd::Delete { config, key, resp } => {
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
-                    let dest = client
-                        .destination(DestinationContext { config })
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let dest = open_storage(&client, config).await?;
                     dest.delete(&key).await.map_err(|e| e.to_string())
                 })
                 .await;
@@ -365,10 +350,7 @@ async fn dispatch_broker(
             } => {
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
-                    let dest = client
-                        .destination(DestinationContext { config })
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let dest = open_storage(&client, config).await?;
                     dest.commit(&key, &token).await.map_err(|e| e.to_string())
                 })
                 .await;
@@ -382,10 +364,7 @@ async fn dispatch_broker(
             } => {
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
-                    let dest = client
-                        .destination(DestinationContext { config })
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let dest = open_storage(&client, config).await?;
                     dest.abort_stage(&key, &token)
                         .await
                         .map_err(|e| e.to_string())
@@ -401,10 +380,24 @@ async fn dispatch_broker(
             } => {
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
-                    let integration = client
-                        .integration(IntegrationContext { config })
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let opened = open_entrypoints(&client, config).await?;
+                    if op == "onEvent" {
+                        let consumer = opened
+                            .event_consumer
+                            .ok_or_else(|| "plugin exported no event consumer".to_string())?;
+                        let event = event.ok_or_else(|| "missing event".to_string())?;
+                        let mut results = consumer
+                            .event(vec![event])
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let result = results
+                            .pop()
+                            .ok_or_else(|| "event consumer returned no result".to_string())?;
+                        return serde_json::to_value(result).map_err(|e| e.to_string());
+                    }
+                    let integration = opened.remote_library.ok_or_else(|| {
+                        "plugin exported no `remoteLibrary` entrypoint".to_string()
+                    })?;
                     match op.as_str() {
                         "health" => {
                             let health = integration.health().await.map_err(|e| e.to_string())?;
@@ -413,14 +406,6 @@ async fn dispatch_broker(
                         "diagnose" => {
                             let lines = integration.diagnose().await.map_err(|e| e.to_string())?;
                             Ok(serde_json::json!({ "lines": lines }))
-                        }
-                        "onEvent" => {
-                            let event = event.ok_or_else(|| "missing event".to_string())?;
-                            let result = integration
-                                .on_event(event)
-                                .await
-                                .map_err(|e| e.to_string())?;
-                            serde_json::to_value(result).map_err(|e| e.to_string())
                         }
                         "start" => {
                             integration.start().await.map_err(|e| e.to_string())?;
@@ -440,6 +425,32 @@ async fn dispatch_broker(
     }
 }
 
+/// Opens the native guest's entrypoints for one broker request with the
+/// isolate-supplied `CONFIG` value.
+async fn open_entrypoints(
+    client: &PluginClient,
+    config: ExtensibleConfig,
+) -> Result<OpenedEntrypoints, String> {
+    client
+        .open(
+            &Invocation::default(),
+            HostBindings::from_values(BindingValues::config(config)),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Storage entrypoint of the native guest; errors when it exports none.
+async fn open_storage(
+    client: &PluginClient,
+    config: ExtensibleConfig,
+) -> Result<DestinationClient, String> {
+    open_entrypoints(client, config)
+        .await?
+        .storage
+        .ok_or_else(|| "plugin exported no `storage` entrypoint".to_string())
+}
+
 async fn stream_get(
     client: &PluginClient,
     config: ExtensibleConfig,
@@ -448,27 +459,15 @@ async fn stream_get(
     as_source: bool,
     cancelled: Arc<AtomicBool>,
 ) -> Result<OpenedObject, String> {
-    let (meta, body) = if as_source {
-        race_against_revoke(Arc::clone(&cancelled), async {
-            let src = client
-                .source(SourceContext { config })
-                .await
-                .map_err(|e| e.to_string())?;
-            let opened = src.open(&key).await.map_err(|e| e.to_string())?;
-            Ok((opened.meta, opened.body))
-        })
-        .await?
-    } else {
-        race_against_revoke(Arc::clone(&cancelled), async {
-            let dest = client
-                .destination(DestinationContext { config })
-                .await
-                .map_err(|e| e.to_string())?;
-            let got = dest.get(&key, range).await.map_err(|e| e.to_string())?;
-            Ok((got.meta, got.body))
-        })
-        .await?
-    };
+    // `/source/open` is the storage entrypoint's whole-object read: v3 has
+    // no separate source role.
+    let range = if as_source { None } else { range };
+    let (meta, body) = race_against_revoke(Arc::clone(&cancelled), async {
+        let dest = open_storage(client, config).await?;
+        let got = dest.get(&key, range).await.map_err(|e| e.to_string())?;
+        Ok((got.meta, got.body))
+    })
+    .await?;
     let (tx, rx) = mpsc::channel(4);
     tokio::task::spawn_local(pump_get_body(body, tx, cancelled));
     Ok((meta, rx))

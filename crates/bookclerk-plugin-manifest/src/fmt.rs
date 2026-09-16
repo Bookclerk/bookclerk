@@ -31,11 +31,11 @@ use crate::types::PluginManifest;
 /// use bookclerk_plugin_manifest::{format_manifest, parse};
 ///
 /// let m = parse(r#"
-/// api_version = 2
+/// api_version = 3
 /// id = "echo"
-/// kind = "integration"
 /// runtime = "native"
 /// command = "./echo"
+/// entrypoints = ["cli"]
 ///
 /// [capabilities.network]
 /// mode = "deny"
@@ -61,11 +61,11 @@ mod tests {
     #[test]
     fn fmt_roundtrip_parse() {
         let raw = r#"
-api_version = 2
+api_version = 3
 id = "echo"
-kind = "integration"
 runtime = "native"
 command = "./echo"
+entrypoints = ["cli"]
 
 [capabilities.network]
 mode = "deny"

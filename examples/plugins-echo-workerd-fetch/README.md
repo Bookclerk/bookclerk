@@ -2,7 +2,8 @@
 
 Reference workerd guest that requests **outbound** network with allowlist
 `*.example.com`, embeds `assets/logo.svg`, and probes
-`https://www.example.com/` from `diagnose` / `cliInvoke fetch-example`.
+`https://www.example.com/` from the `cli` entrypoint (`fetch-example`
+command on the exported `Cli` class).
 
 Id: `echo_workerd_fetch`. Isolation: `bookclerk-jail` + `bookclerk-workerd` +
 pinned Cloudflare `workerd`.
@@ -14,7 +15,9 @@ domain grant works. A thrown/`TypeError` (or egress deny) fails the probe.
 
 ```bash
 cd packages/plugin-sdk && npm ci && npm run build
-cd ../../examples/plugins-echo-workerd-fetch && npm ci && npm run typecheck
+cd ../../examples/plugins-echo-workerd-fetch && npm ci
+npx bookclerk-plugin types .    # regenerate bookclerk-configuration.d.ts after editing plugin.toml
+npm run typecheck
 ```
 
 Stage with other examples:

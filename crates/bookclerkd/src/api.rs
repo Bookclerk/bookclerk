@@ -390,8 +390,8 @@ struct PluginSettingOption {
 struct PluginSettingsGroup {
     /// Plugin id (`audible`, `sqlite`, and similar).
     id: String,
-    /// Plugin kind wire label (`source`, `integration`, `output`, `database`).
-    kind: String,
+    /// Handler family wire label (`source`, `integration`, `output`, `database`).
+    family: String,
     /// Google favicon (or portal brand) URL for Settings list rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     logo: Option<String>,
@@ -470,8 +470,10 @@ struct PluginConsentLimits {
 struct PluginGrantView {
     /// Plugin id this grant applies to.
     plugin_id: String,
-    /// Plugin kind string copied from the stored grant.
-    kind: String,
+    /// Exported entrypoints the operator approved (`storefront`, `cli`, …).
+    entrypoints: Vec<String>,
+    /// Event types the operator approved the plugin to publish.
+    producers: Vec<String>,
     /// Approved egress mode (`deny`, `allowlist`, and similar).
     network_mode: String,
     /// Hostnames the operator approved for egress.
@@ -507,7 +509,8 @@ impl PluginGrantView {
     fn from_grant(grant: &PluginGrant) -> Self {
         Self {
             plugin_id: grant.plugin_id.clone(),
-            kind: grant.kind.clone(),
+            entrypoints: grant.entrypoints.iter().cloned().collect(),
+            producers: grant.producers.iter().cloned().collect(),
             network_mode: grant.network_mode.clone(),
             domains: grant.domains.iter().cloned().collect(),
             bindings: grant.bindings.iter().cloned().collect(),
@@ -1227,8 +1230,13 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         bookclerk_plugin_host::load_external_destinations(&new_cfg, Some(lib_db)).await?
     };
 
-    let candidate_sources = crate::registry::default_registry_with_plugins(&new_cfg).await?;
-    let candidate_integrations = bookclerk_plugin_host::load_integrations(&new_cfg).await?;
+    let candidate_sources =
+        crate::registry::default_registry_with_plugins(&new_cfg, &library_for_auth).await?;
+    let candidate_integrations = bookclerk_plugin_host::load_integrations(
+        &new_cfg,
+        &bookclerk_plugin_host::SessionServices::with_event_outbox(library_for_auth.clone()),
+    )
+    .await?;
 
     let token_changed = candidate_auth.enabled != old_auth_enabled
         || (candidate_auth.enabled && candidate_auth.token != old_token);
@@ -1720,38 +1728,33 @@ fn setting_label(key: &str) -> String {
         .join(" ")
 }
 
-/// True when `id` is the active plugin for `kind` in the current config.
-fn plugin_enabled(config: &Config, kind: bookclerk_plugin_host::PluginKind, id: &str) -> bool {
-    match kind {
-        bookclerk_plugin_host::PluginKind::Source => config.sources.is_enabled(id),
-        bookclerk_plugin_host::PluginKind::Integration => config.integrations.is_enabled(id),
-        bookclerk_plugin_host::PluginKind::Output if id == "s3" => config.output.s3.enabled,
-        bookclerk_plugin_host::PluginKind::Output if id == "local" => config.output.local.enabled,
-        bookclerk_plugin_host::PluginKind::Output => false,
-        bookclerk_plugin_host::PluginKind::Database => {
+/// True when `id` is the active plugin for `family` in the current config.
+fn plugin_enabled(config: &Config, family: bookclerk_plugin_host::PluginFamily, id: &str) -> bool {
+    match family {
+        bookclerk_plugin_host::PluginFamily::Source => config.sources.is_enabled(id),
+        bookclerk_plugin_host::PluginFamily::Integration => config.integrations.is_enabled(id),
+        bookclerk_plugin_host::PluginFamily::Output if id == "s3" => config.output.s3.enabled,
+        bookclerk_plugin_host::PluginFamily::Output if id == "local" => config.output.local.enabled,
+        bookclerk_plugin_host::PluginFamily::Output => false,
+        bookclerk_plugin_host::PluginFamily::Database => {
             config.database.plugin.eq_ignore_ascii_case(id)
         }
     }
 }
 
 /// Dotted `config.toml` prefix for a plugin (`sources.id`, `database.id`, …).
-fn plugin_prefix(kind: bookclerk_plugin_host::PluginKind, id: &str) -> String {
-    match kind {
-        bookclerk_plugin_host::PluginKind::Source => format!("sources.{id}"),
-        bookclerk_plugin_host::PluginKind::Integration => format!("integrations.{id}"),
-        bookclerk_plugin_host::PluginKind::Output => format!("output.{id}"),
-        bookclerk_plugin_host::PluginKind::Database => format!("database.{id}"),
+fn plugin_prefix(family: bookclerk_plugin_host::PluginFamily, id: &str) -> String {
+    match family {
+        bookclerk_plugin_host::PluginFamily::Source => format!("sources.{id}"),
+        bookclerk_plugin_host::PluginFamily::Integration => format!("integrations.{id}"),
+        bookclerk_plugin_host::PluginFamily::Output => format!("output.{id}"),
+        bookclerk_plugin_host::PluginFamily::Database => format!("database.{id}"),
     }
 }
 
-/// Wire label for a plugin kind (`source`, `integration`, `output`, `database`).
-fn plugin_kind_label(kind: bookclerk_plugin_host::PluginKind) -> &'static str {
-    match kind {
-        bookclerk_plugin_host::PluginKind::Source => "source",
-        bookclerk_plugin_host::PluginKind::Integration => "integration",
-        bookclerk_plugin_host::PluginKind::Output => "output",
-        bookclerk_plugin_host::PluginKind::Database => "database",
-    }
+/// Wire label for a handler family (`source`, `integration`, `output`, `database`).
+fn plugin_family_label(family: bookclerk_plugin_host::PluginFamily) -> &'static str {
+    family.as_str()
 }
 
 /// Resolve Settings `logo` from `plugin.toml` (`https://…` or host-served embed path).
@@ -1764,7 +1767,7 @@ fn settings_logo_from_manifest(plugin: &bookclerk_plugin_host::DiscoveredPlugin)
         bookclerk_plugin_host::LogoKind::RemoteUrl(url) => Some(url),
         bookclerk_plugin_host::LogoKind::EmbeddedPath(_) => {
             Some(bookclerk_plugin_host::embedded_logo_api_path(
-                plugin.manifest.kind.as_str(),
+                plugin.manifest.primary_family().as_str(),
                 &plugin.manifest.id,
             ))
         }
@@ -1846,12 +1849,12 @@ fn plugin_choices_with_default(
 /// Hard-coded Settings options for first-party plugins (bitrate, container, S3, D1, …).
 fn built_in_plugin_settings(
     config: &Config,
-    kind: bookclerk_plugin_host::PluginKind,
+    family: bookclerk_plugin_host::PluginFamily,
     id: &str,
 ) -> Vec<PluginSettingOption> {
-    let prefix = plugin_prefix(kind, id);
-    match (kind, id) {
-        (bookclerk_plugin_host::PluginKind::Source, "audible") => {
+    let prefix = plugin_prefix(family, id);
+    match (family, id) {
+        (bookclerk_plugin_host::PluginFamily::Source, "audible") => {
             vec![plugin_setting_option_with_choices(
                 format!("{prefix}.bitrate"),
                 "Bitrate",
@@ -1863,7 +1866,7 @@ fn built_in_plugin_settings(
                 plugin_choices_with_default("Default", [("high", "High"), ("normal", "Normal")]),
             )]
         }
-        (bookclerk_plugin_host::PluginKind::Source, "libro") => {
+        (bookclerk_plugin_host::PluginFamily::Source, "libro") => {
             vec![plugin_setting_option_with_choices(
                 format!("{prefix}.container"),
                 "Container",
@@ -1878,7 +1881,7 @@ fn built_in_plugin_settings(
                 ),
             )]
         }
-        (bookclerk_plugin_host::PluginKind::Source, "graphicaudio") => vec![
+        (bookclerk_plugin_host::PluginFamily::Source, "graphicaudio") => vec![
             plugin_setting_option_with_choices(
                 format!("{prefix}.access"),
                 "Access",
@@ -1925,7 +1928,7 @@ fn built_in_plugin_settings(
                 ),
             ),
         ],
-        (bookclerk_plugin_host::PluginKind::Integration, "audiobookshelf") => {
+        (bookclerk_plugin_host::PluginFamily::Integration, "audiobookshelf") => {
             let cfg = config.integrations.audiobookshelf();
             vec![
                 plugin_setting_option(
@@ -1966,7 +1969,7 @@ fn built_in_plugin_settings(
                 ),
             ]
         }
-        (bookclerk_plugin_host::PluginKind::Output, "local") => {
+        (bookclerk_plugin_host::PluginFamily::Output, "local") => {
             let cfg = &config.output.local;
             vec![
                 plugin_setting_option(
@@ -2017,7 +2020,7 @@ fn built_in_plugin_settings(
                 ),
             ]
         }
-        (bookclerk_plugin_host::PluginKind::Output, "s3") => {
+        (bookclerk_plugin_host::PluginFamily::Output, "s3") => {
             let cfg = &config.output.s3;
             vec![
                 plugin_setting_option(
@@ -2086,7 +2089,7 @@ fn built_in_plugin_settings(
                 ),
             ]
         }
-        (bookclerk_plugin_host::PluginKind::Database, "sqlite") => {
+        (bookclerk_plugin_host::PluginFamily::Database, "sqlite") => {
             let cfg = &config.database.sqlite;
             vec![plugin_setting_option(
                 format!("{prefix}.path"),
@@ -2098,7 +2101,7 @@ fn built_in_plugin_settings(
                 "string",
             )]
         }
-        (bookclerk_plugin_host::PluginKind::Database, "d1") => {
+        (bookclerk_plugin_host::PluginFamily::Database, "d1") => {
             let cfg = &config.database.d1;
             vec![
                 plugin_setting_option(
@@ -2121,7 +2124,7 @@ fn built_in_plugin_settings(
                 ),
             ]
         }
-        (bookclerk_plugin_host::PluginKind::Database, "postgres") => {
+        (bookclerk_plugin_host::PluginFamily::Database, "postgres") => {
             let cfg = &config.database.postgres;
             vec![
                 plugin_setting_option(
@@ -2152,7 +2155,7 @@ fn build_source_settings_group(
     table: toml::Table,
 ) -> PluginSettingsGroup {
     let id = source.id();
-    let prefix = plugin_prefix(bookclerk_plugin_host::PluginKind::Source, id);
+    let prefix = plugin_prefix(bookclerk_plugin_host::PluginFamily::Source, id);
     let mut options = Vec::new();
     let mut seen_keys = std::collections::BTreeSet::new();
 
@@ -2161,7 +2164,7 @@ fn build_source_settings_group(
     options.push(plugin_setting_option(
         enabled_key,
         "Enabled",
-        plugin_enabled(config, bookclerk_plugin_host::PluginKind::Source, id).to_string(),
+        plugin_enabled(config, bookclerk_plugin_host::PluginFamily::Source, id).to_string(),
         "boolean",
     ));
 
@@ -2214,7 +2217,7 @@ fn build_source_settings_group(
 
     PluginSettingsGroup {
         id: id.to_string(),
-        kind: plugin_kind_label(bookclerk_plugin_host::PluginKind::Source).to_string(),
+        family: plugin_family_label(bookclerk_plugin_host::PluginFamily::Source).to_string(),
         logo: non_empty_logo(source.portal_brand().icon_url),
         settings: options,
     }
@@ -2229,7 +2232,7 @@ fn build_integration_settings_group(
     let id = integration.id();
     let mut group = build_plugin_settings_group(
         config,
-        bookclerk_plugin_host::PluginKind::Integration,
+        bookclerk_plugin_host::PluginFamily::Integration,
         id,
         table,
     );
@@ -2242,38 +2245,24 @@ fn build_integration_settings_group(
 /// Assembles a generic Settings group (enabled + built-ins + leftover TOML keys).
 fn build_plugin_settings_group(
     config: &Config,
-    kind: bookclerk_plugin_host::PluginKind,
+    family: bookclerk_plugin_host::PluginFamily,
     id: &str,
     table: toml::Table,
 ) -> PluginSettingsGroup {
-    let prefix = plugin_prefix(kind, id);
+    let prefix = plugin_prefix(family, id);
     let mut options = Vec::new();
     let mut seen_keys = std::collections::BTreeSet::new();
 
-    match kind {
-        bookclerk_plugin_host::PluginKind::Database => {
-            let key = format!("database.{id}.enabled");
-            seen_keys.insert(key.clone());
-            options.push(plugin_setting_option(
-                key,
-                "Enabled",
-                plugin_enabled(config, kind, id).to_string(),
-                "boolean",
-            ));
-        }
-        _ => {
-            let key = format!("{prefix}.enabled");
-            seen_keys.insert(key.clone());
-            options.push(plugin_setting_option(
-                key,
-                "Enabled",
-                plugin_enabled(config, kind, id).to_string(),
-                "boolean",
-            ));
-        }
-    }
+    let enabled_key = format!("{prefix}.enabled");
+    seen_keys.insert(enabled_key.clone());
+    options.push(plugin_setting_option(
+        enabled_key,
+        "Enabled",
+        plugin_enabled(config, family, id).to_string(),
+        "boolean",
+    ));
 
-    for option in built_in_plugin_settings(config, kind, id) {
+    for option in built_in_plugin_settings(config, family, id) {
         seen_keys.insert(option.key.clone());
         options.push(option);
     }
@@ -2307,7 +2296,7 @@ fn build_plugin_settings_group(
 
     PluginSettingsGroup {
         id: id.to_string(),
-        kind: plugin_kind_label(kind).to_string(),
+        family: plugin_family_label(family).to_string(),
         logo: None,
         settings: options,
     }
@@ -2324,46 +2313,35 @@ fn plugin_settings_snapshot(
         std::collections::BTreeMap::new();
 
     for plugin in discovered_plugins {
-        let table = bookclerk_plugin_host::settings_table(config, plugin);
-        let mut group = match plugin.manifest.kind {
-            bookclerk_plugin_host::PluginKind::Source => {
-                if let Some(source) = sources.get(&plugin.manifest.id) {
-                    build_source_settings_group(config, source.as_ref(), table)
-                } else {
-                    build_plugin_settings_group(
-                        config,
-                        plugin.manifest.kind,
-                        &plugin.manifest.id,
-                        table,
-                    )
+        // A plugin exporting several entrypoints appears once per handler
+        // family so each family's `config.toml` prefix is editable.
+        for family in plugin.manifest.families() {
+            let table = bookclerk_plugin_host::settings_table_for(config, plugin, family);
+            let mut group = match family {
+                bookclerk_plugin_host::PluginFamily::Source => {
+                    if let Some(source) = sources.get(&plugin.manifest.id) {
+                        build_source_settings_group(config, source.as_ref(), table)
+                    } else {
+                        build_plugin_settings_group(config, family, &plugin.manifest.id, table)
+                    }
+                }
+                bookclerk_plugin_host::PluginFamily::Integration => {
+                    if let Some(integration) = integrations.get(&plugin.manifest.id) {
+                        build_integration_settings_group(config, integration.as_ref(), table)
+                    } else {
+                        build_plugin_settings_group(config, family, &plugin.manifest.id, table)
+                    }
+                }
+                _ => build_plugin_settings_group(config, family, &plugin.manifest.id, table),
+            };
+            // Prefer live BrandDto / portal brand (already on group); else plugin.toml logo.
+            if group.logo.is_none() {
+                if let Some(logo) = settings_logo_from_manifest(plugin) {
+                    group.logo = Some(logo);
                 }
             }
-            bookclerk_plugin_host::PluginKind::Integration => {
-                if let Some(integration) = integrations.get(&plugin.manifest.id) {
-                    build_integration_settings_group(config, integration.as_ref(), table)
-                } else {
-                    build_plugin_settings_group(
-                        config,
-                        plugin.manifest.kind,
-                        &plugin.manifest.id,
-                        table,
-                    )
-                }
-            }
-            _ => build_plugin_settings_group(
-                config,
-                plugin.manifest.kind,
-                &plugin.manifest.id,
-                table,
-            ),
-        };
-        // Prefer live BrandDto / portal brand (already on group); else plugin.toml logo.
-        if group.logo.is_none() {
-            if let Some(logo) = settings_logo_from_manifest(plugin) {
-                group.logo = Some(logo);
-            }
+            groups_by_key.insert((group.family.clone(), group.id.clone()), group);
         }
-        groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
     }
 
     // Loaded in-process guests that were not also discovered from disk.
@@ -2373,7 +2351,7 @@ fn plugin_settings_snapshot(
         if !groups_by_key.contains_key(&key) {
             let table = config.sources.table(&id).cloned().unwrap_or_default();
             let group = build_source_settings_group(config, source.as_ref(), table);
-            groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
+            groups_by_key.insert((group.family.clone(), group.id.clone()), group);
         }
     }
     for integration in integrations.all() {
@@ -2386,7 +2364,7 @@ fn plugin_settings_snapshot(
                 .cloned()
                 .unwrap_or_default();
             let group = build_integration_settings_group(config, integration.as_ref(), table);
-            groups_by_key.insert((group.kind.clone(), group.id.clone()), group);
+            groups_by_key.insert((group.family.clone(), group.id.clone()), group);
         }
     }
 
@@ -2591,16 +2569,22 @@ fn plugin_logo_response(bytes: Vec<u8>, content_type: &'static str) -> Response 
     (StatusCode::OK, headers, bytes).into_response()
 }
 
-/// Discover `kind`/`id` and read an embedded logo (sync; route + integration tests).
+/// Discover `family`/`id` and read an embedded logo (sync; route + integration tests).
 fn plugin_logo_bytes_for(
     config: &Config,
-    kind: &str,
+    family: &str,
     id: &str,
 ) -> Result<(Vec<u8>, &'static str), StatusCode> {
     let plugin = bookclerk_plugin_host::discover_plugins(config)
         .map_err(|_| StatusCode::NOT_FOUND)?
         .into_iter()
-        .find(|p| plugin_kind_label(p.manifest.kind) == kind && p.manifest.id == id)
+        .find(|p| {
+            p.manifest.id == id
+                && p.manifest
+                    .families()
+                    .iter()
+                    .any(|f| plugin_family_label(*f) == family)
+        })
         .ok_or(StatusCode::NOT_FOUND)?;
     read_embedded_plugin_logo(&plugin)
 }
@@ -2672,31 +2656,27 @@ async fn plugin_consent_brand(
         accent: None,
         logo: settings_logo_from_manifest(plugin),
     };
-    match plugin.manifest.kind {
-        bookclerk_plugin_host::PluginKind::Source => {
-            let source = state.sources.read().await.get(&plugin.manifest.id);
-            if let Some(source) = source {
-                let source_brand = source.portal_brand();
-                brand.name = source_brand.name.to_string();
-                brand.bg = Some(source_brand.bg.to_string());
-                brand.fg = Some(source_brand.fg.to_string());
-                brand.accent = Some(source_brand.accent.to_string());
-                brand.logo = non_empty_logo(source_brand.logo_href()).or(brand.logo);
-            }
+    let families = plugin.manifest.families();
+    if families.contains(&bookclerk_plugin_host::PluginFamily::Source) {
+        let source = state.sources.read().await.get(&plugin.manifest.id);
+        if let Some(source) = source {
+            let source_brand = source.portal_brand();
+            brand.name = source_brand.name.to_string();
+            brand.bg = Some(source_brand.bg.to_string());
+            brand.fg = Some(source_brand.fg.to_string());
+            brand.accent = Some(source_brand.accent.to_string());
+            brand.logo = non_empty_logo(source_brand.logo_href()).or(brand.logo);
         }
-        bookclerk_plugin_host::PluginKind::Integration => {
-            let integration = state.integrations.read().await.get(&plugin.manifest.id);
-            if let Some(integration_brand) =
-                integration.and_then(|integration| integration.portal_brand())
-            {
-                brand.name = integration_brand.name.to_string();
-                brand.bg = Some(integration_brand.bg.to_string());
-                brand.fg = Some(integration_brand.fg.to_string());
-                brand.accent = Some(integration_brand.accent.to_string());
-                brand.logo = non_empty_logo(integration_brand.logo_href()).or(brand.logo);
-            }
-        }
-        bookclerk_plugin_host::PluginKind::Output | bookclerk_plugin_host::PluginKind::Database => {
+    } else if families.contains(&bookclerk_plugin_host::PluginFamily::Integration) {
+        let integration = state.integrations.read().await.get(&plugin.manifest.id);
+        if let Some(integration_brand) =
+            integration.and_then(|integration| integration.portal_brand())
+        {
+            brand.name = integration_brand.name.to_string();
+            brand.bg = Some(integration_brand.bg.to_string());
+            brand.fg = Some(integration_brand.fg.to_string());
+            brand.accent = Some(integration_brand.accent.to_string());
+            brand.logo = non_empty_logo(integration_brand.logo_href()).or(brand.logo);
         }
     }
     if brand.name == plugin.manifest.id
@@ -5120,7 +5100,8 @@ mod tests {
 
         let baseline = PluginGrant {
             plugin_id: "demo".into(),
-            kind: "source".into(),
+            entrypoints: BTreeSet::from(["storefront".into()]),
+            producers: BTreeSet::new(),
             network_mode: "outbound".into(),
             domains: BTreeSet::from(["a.example".into(), "b.example".into()]),
             bindings: BTreeSet::from(["config".into(), "secrets".into()]),
@@ -5236,7 +5217,7 @@ mod tests {
 
         let audible = build_plugin_settings_group(
             &cfg,
-            bookclerk_plugin_host::PluginKind::Source,
+            bookclerk_plugin_host::PluginFamily::Source,
             "audible",
             toml::Table::new(),
         );
@@ -5249,7 +5230,7 @@ mod tests {
 
         let abs = build_plugin_settings_group(
             &cfg,
-            bookclerk_plugin_host::PluginKind::Integration,
+            bookclerk_plugin_host::PluginFamily::Integration,
             "audiobookshelf",
             toml::Table::new(),
         );
@@ -5268,7 +5249,7 @@ mod tests {
 
         let s3 = build_plugin_settings_group(
             &cfg,
-            bookclerk_plugin_host::PluginKind::Output,
+            bookclerk_plugin_host::PluginFamily::Output,
             "s3",
             toml::Table::new(),
         );
@@ -5283,7 +5264,7 @@ mod tests {
 
         let d1 = build_plugin_settings_group(
             &cfg,
-            bookclerk_plugin_host::PluginKind::Database,
+            bookclerk_plugin_host::PluginFamily::Database,
             "d1",
             toml::Table::new(),
         );
@@ -5302,7 +5283,7 @@ mod tests {
 
         let postgres = build_plugin_settings_group(
             &cfg,
-            bookclerk_plugin_host::PluginKind::Database,
+            bookclerk_plugin_host::PluginFamily::Database,
             "postgres",
             toml::Table::new(),
         );
@@ -5418,13 +5399,14 @@ mod tests {
             root.join("plugin.toml"),
             format!(
                 r#"
-api_version = 2
+api_version = 3
 id = "logo_echo"
-kind = "integration"
 version = "0.1.0"
 {logo_line}
 runtime = "native"
 command = "./guest"
+entrypoints = ["cli"]
+
 [capabilities.network]
 mode = "deny"
 "#

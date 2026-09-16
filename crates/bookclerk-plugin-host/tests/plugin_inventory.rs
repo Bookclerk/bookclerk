@@ -1,4 +1,4 @@
-//! Inventory gate: product plugins and Echo examples are `api_version = 2`.
+//! Inventory gate: product plugins and Echo examples are `api_version = 3`.
 
 use std::fs;
 use std::path::Path;
@@ -24,7 +24,7 @@ fn walk_plugin_tomls(root: &Path, out: &mut Vec<(String, String)>) {
 }
 
 #[test]
-fn product_and_echo_manifests_are_api_version_2() {
+fn product_and_echo_manifests_are_api_version_3() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut files = Vec::new();
     walk_plugin_tomls(&workspace.join("crates/bookclerk-plugins"), &mut files);
@@ -36,6 +36,6 @@ fn product_and_echo_manifests_are_api_version_2() {
     for (path, text) in &files {
         let manifest =
             PluginManifest::parse(text).unwrap_or_else(|err| panic!("{path}: parse failed: {err}"));
-        assert_eq!(manifest.api_version, 2, "{path} must be api_version = 2");
+        assert_eq!(manifest.api_version, 3, "{path} must be api_version = 3");
     }
 }

@@ -217,6 +217,32 @@ export class CapnpMessage {
     }
   }
 
+  /**
+   * Writes a `List(UInt16)` / `List(UInt32)` (element size codes 3 / 4).
+   *
+   * @param ptrWord - Word holding the list pointer.
+   * @param values - Unsigned integers in range for `byteWidth`.
+   * @param byteWidth - `2` for UInt16 (enums), `4` for UInt32.
+   */
+  setUintList(ptrWord: number, values: readonly number[], byteWidth: 2 | 4): void {
+    const count = values.length;
+    const sizeCode = byteWidth === 2 ? 3 : 4;
+    if (count === 0) {
+      this.writeListPointer(ptrWord, ptrWord + 1, sizeCode, 0);
+      return;
+    }
+    const target = this.alloc(Math.ceil((count * byteWidth) / WORD));
+    const view = new DataView(this.buf.buffer, this.buf.byteOffset + target * WORD);
+    for (let i = 0; i < count; i++) {
+      if (byteWidth === 2) {
+        view.setUint16(i * 2, values[i]!, true);
+      } else {
+        view.setUint32(i * 4, values[i]!, true);
+      }
+    }
+    this.writeListPointer(ptrWord, target, sizeCode, count);
+  }
+
   setBoolList(ptrWord: number, values: readonly boolean[]): void {
     const count = values.length;
     if (count === 0) {
@@ -359,6 +385,14 @@ export class CapnpStruct {
 
   setBoolList(pointerIndex: number, values: readonly boolean[]): void {
     this.msg.setBoolList(this.pointerWord(pointerIndex), values);
+  }
+
+  setUint16List(pointerIndex: number, values: readonly number[]): void {
+    this.msg.setUintList(this.pointerWord(pointerIndex), values, 2);
+  }
+
+  setUint32List(pointerIndex: number, values: readonly number[]): void {
+    this.msg.setUintList(this.pointerWord(pointerIndex), values, 4);
   }
 
   initStructList(
@@ -563,6 +597,31 @@ export class CapnpReader {
     return this.pointerList(ptrWord).map((w) => this.readByteList(w));
   }
 
+  /**
+   * Reads a `List(UInt16)` / `List(UInt32)`.
+   *
+   * @param ptrWord - Word holding the list pointer.
+   * @param byteWidth - `2` for UInt16 (enums), `4` for UInt32.
+   * @returns Decoded unsigned integers.
+   */
+  readUintList(ptrWord: number, byteWidth: 2 | 4): number[] {
+    const lp = this.listPointer(ptrWord, byteWidth === 2 ? 3 : 4);
+    if (lp === null || lp.length === 0) {
+      return [];
+    }
+    this.checkRange(lp.target, Math.ceil((lp.length * byteWidth) / WORD));
+    const base = this.segOff + lp.target * WORD;
+    const out: number[] = [];
+    for (let i = 0; i < lp.length; i++) {
+      out.push(
+        byteWidth === 2
+          ? this.view.getUint16(base + i * 2, true)
+          : this.view.getUint32(base + i * 4, true),
+      );
+    }
+    return out;
+  }
+
   readBoolList(ptrWord: number): boolean[] {
     const lp = this.listPointer(ptrWord, 1);
     if (lp === null || lp.length === 0) {
@@ -704,6 +763,16 @@ export class StructReader {
   getBoolList(pointerIndex: number): boolean[] {
     const ptr = this.pointerWord(pointerIndex);
     return ptr === null ? [] : this.reader.readBoolList(ptr);
+  }
+
+  getUint16List(pointerIndex: number): number[] {
+    const ptr = this.pointerWord(pointerIndex);
+    return ptr === null ? [] : this.reader.readUintList(ptr, 2);
+  }
+
+  getUint32List(pointerIndex: number): number[] {
+    const ptr = this.pointerWord(pointerIndex);
+    return ptr === null ? [] : this.reader.readUintList(ptr, 4);
   }
 
   getStructList(

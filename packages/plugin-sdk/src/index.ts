@@ -1,17 +1,14 @@
 /**
- * `@bookclerk/plugin-sdk` — ABI types + dual-runtime entrypoints.
+ * `@bookclerk/plugin-sdk` — ABI types + workerd author runtime + tools.
  *
- * Package root re-exports the workerd {@link BookclerkPlugin} base and the
- * camelCase ABI types from `generated.ts`. Prefer the dedicated subpath
- * imports when writing guests:
+ * Package root re-exports the workerd {@link BookclerkEntrypoint} base, the
+ * named `*Entrypoint` bases, and the camelCase ABI types from `generated.ts`.
+ * Prefer the dedicated subpath imports when writing guests:
  *
- * - Workerd: `import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd"`
- * - Native:  `import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd"` (JS/TS)
- *   or Rust `serve` / `PluginRoot`
- * - Tools: `npx bookclerk-plugin check|fmt|package`
+ * - Workerd: `import { BookclerkEntrypoint } from "@bookclerk/plugin-sdk/workerd"`
+ * - Native:  Rust `serve` / `PluginWorker`
+ * - Tools: `npx bookclerk-plugin check|fmt|types|package`
  * - Sparse workerd: `import { runSmoke } from "@bookclerk/plugin-sdk/sparse-workerd"`
- *
- * `BookclerkPlugin` is the guest contract. Authors export the raw class.
  *
  * See `docs/plugins.md` and `docs/code-documentation.md`.
  */
@@ -19,19 +16,36 @@
 import "./cloudflare-workers.d.ts";
 
 export {
-  BookclerkPlugin,
-  ContentSource,
+  AdapterDatabaseSession,
+  BookclerkEntrypoint,
+  CliEntrypoint,
+  DatabaseAdapterEntrypoint,
   Destination,
-  Integration,
-  JobHandler,
+  ENTRYPOINT_BINDINGS,
+  ENTRYPOINT_CLASSES,
+  EventBatch,
+  EventMessage,
+  JobController,
+  NamedEntrypoint,
+  OidcEntrypoint,
   PluginError,
   ProgressSink,
+  RemoteLibraryEntrypoint,
   Source,
+  StorageEntrypoint,
+  StorefrontEntrypoint,
+  cliArgs,
+  decodeExtensibleConfig,
+  jsonPayload,
+  eventBatchResults,
+  invocationOf,
+  jobOutcomeFor,
   wrapPluginFromBinding,
   wrapPluginFromNative,
   schemaMigrationOp,
   dataMigrationOp,
   requirePluginMigrationRegistration,
+  toBridgeJson,
   PRODUCT_API_VERSION,
   MAX_SCALAR_BYTES,
   MAX_STREAM_WINDOW_BYTES,
@@ -76,27 +90,36 @@ export type {
 } from "./db-execute.js";
 export type {
   AdapterEnv,
-  BookclerkContext,
-  BookclerkPluginEnv,
+  AuthorStub,
+  CancelWatchLike,
+  Checkpoint,
   CopyResult,
-  DestinationContext,
-  JobContext,
-  JobInvocation,
-  JobOutcome,
+  DeliveredCheckpoint,
+  EntrypointName,
+  EventOutcome,
+  EventSuspendOptions,
+  GrantedContext,
+  GrantedFetcher,
+  GrantedJobCapabilities,
+  Instant,
+  JobCheckpoint,
+  JobCompletion,
+  JobOutcomeRecord,
+  JobRetryOptions,
+  JobRunnerContext,
+  JobSuspendOptions,
   ListOptions,
   ListPage,
+  NamedStub,
   ObjectInfo,
   ObjectMetadata,
-  OidcClientTemplate,
   PluginDescribe,
-  PluginMigration,
-  PluginMigrationOp,
   PutResult,
   ReadOptions,
   ReadResult,
+  RetryOptions,
   ScalarLimits,
-  SourceContext,
-  WorkerContext,
+  WireEventBatch,
   WriteOptions,
 } from "./plugin.js";
 
@@ -105,4 +128,10 @@ export type {
 // Star-exported so new ABI types appear automatically.
 export * from "./generated.js";
 export { MAX_CHECKPOINT_BYTES } from "./abi.js";
-export type { BookclerkEnv, HostBinding } from "./env.js";
+export type {
+  BookclerkEnv,
+  EventPublisherBinding,
+  JsonObject,
+  PublishEvent,
+  StorageBinding,
+} from "./env.js";

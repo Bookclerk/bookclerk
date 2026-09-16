@@ -110,8 +110,9 @@ pub fn package_plugin(plugin_dir: &Path, out_dir: &Path) -> Result<PathBuf> {
             let modules_src = plugin_dir.join(&w.modules_dir);
             let modules_dst = staging.join(&w.modules_dir);
             copy_dir_recursive(&modules_src, &modules_dst)?;
-            // BookclerkPlugin is imported from `@bookclerk/plugin-sdk/workerd`;
-            // `bookclerk-workerd` injects that module at runtime.
+            // `BookclerkEntrypoint` and the named `*Entrypoint` bases are imported
+            // from `@bookclerk/plugin-sdk/workerd`; `bookclerk-workerd` injects that
+            // module at runtime.
             format!("bookclerk-plugin-{id}-{version}-workerd")
         }
     };

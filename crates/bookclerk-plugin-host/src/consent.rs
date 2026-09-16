@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
+use bookclerk_plugin_abi::{PluginCapabilities, PortalAuthMode};
+
 use crate::manifest::{PluginManifest, PluginRuntimeKind, WorkerdLimits};
 use crate::{PluginError, Result};
 
@@ -146,10 +148,15 @@ pub fn granted_database_bindings(grant: &PluginGrant) -> Vec<String> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginGrant {
-    /// Plugin id from `plugin.toml` (globally unique across kinds).
+    /// Plugin id from `plugin.toml` (globally unique across families).
     pub plugin_id: String,
-    /// Plugin kind string (`source`, `integration`, `output`, `database`).
-    pub kind: String,
+    /// Approved named entrypoints (wire names: `storefront`, `storage`,
+    /// `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`).
+    #[serde(default)]
+    pub entrypoints: BTreeSet<String>,
+    /// Approved event types the plugin may publish through its events binding.
+    #[serde(default)]
+    pub producers: BTreeSet<String>,
     /// Approved network mode: `deny` or `outbound`.
     pub network_mode: String,
     /// Approved initial outbound domain patterns (**workerd** allowlist only).
@@ -278,7 +285,7 @@ impl PluginGrantStore {
 #[must_use]
 pub fn consent_request(manifest: &PluginManifest) -> PluginGrant {
     let mut bindings = BTreeSet::new();
-    let b = &manifest.capabilities.bindings;
+    let b = manifest.bindings();
     if b.config {
         bindings.insert("config".into());
     }
@@ -327,7 +334,12 @@ pub fn consent_request(manifest: &PluginManifest) -> PluginGrant {
     };
     PluginGrant {
         plugin_id: manifest.id.clone(),
-        kind: manifest.kind.as_str().to_string(),
+        entrypoints: manifest
+            .entrypoints
+            .iter()
+            .map(|e| e.wire_name().to_string())
+            .collect(),
+        producers: manifest.producer_types().into_iter().collect(),
         network_mode: match manifest.capabilities.network.mode {
             crate::manifest::NetworkMode::Deny => "deny".into(),
             crate::manifest::NetworkMode::Outbound => "outbound".into(),
@@ -359,9 +371,33 @@ pub fn consent_request(manifest: &PluginManifest) -> PluginGrant {
 #[must_use]
 pub fn consent_summary(grant: &PluginGrant) -> Vec<String> {
     let mut lines = vec![
-        format!("Plugin: {} ({})", grant.plugin_id, grant.kind),
+        format!(
+            "Plugin: {} (entrypoints: {})",
+            grant.plugin_id,
+            if grant.entrypoints.is_empty() {
+                "none".to_string()
+            } else {
+                grant
+                    .entrypoints
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ),
         format!("Network: {}", grant.network_mode),
     ];
+    if !grant.producers.is_empty() {
+        lines.push(format!(
+            "Publishes events: {}",
+            grant
+                .producers
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     if grant.network_mode == "outbound" && grant.domains.is_empty() {
         lines.push(
             "Native / coarse outbound: OS jail allow-or-deny only (no hostname filter). \
@@ -505,7 +541,8 @@ pub fn grant_within_ceiling(existing: &PluginGrant, requested: &PluginGrant) -> 
 #[must_use]
 pub fn grant_covers(existing: &PluginGrant, requested: &PluginGrant) -> bool {
     existing.plugin_id == requested.plugin_id
-        && (existing.kind.is_empty() || existing.kind.eq_ignore_ascii_case(&requested.kind))
+        && requested.entrypoints.is_subset(&existing.entrypoints)
+        && requested.producers.is_subset(&existing.producers)
 }
 
 /// Spawn/delivery grant: stored approval is authoritative, host-normalized.
@@ -522,11 +559,8 @@ pub fn effective_grant(existing: &PluginGrant, requested: &PluginGrant) -> Plugi
     };
     PluginGrant {
         plugin_id: existing.plugin_id.clone(),
-        kind: if existing.kind.is_empty() {
-            requested.kind.clone()
-        } else {
-            existing.kind.clone()
-        },
+        entrypoints: existing.entrypoints.clone(),
+        producers: existing.producers.clone(),
         network_mode,
         domains: existing.domains.clone(),
         bindings: existing.bindings.clone(),
@@ -583,10 +617,18 @@ pub fn validate_approved_grant(
             approved.plugin_id, baseline.plugin_id
         )));
     }
-    if !approved.kind.is_empty() && !approved.kind.eq_ignore_ascii_case(&baseline.kind) {
+    if let Some(extra) = approved
+        .entrypoints
+        .difference(&baseline.entrypoints)
+        .next()
+    {
         return Err(PluginError::message(format!(
-            "grant kind `{}` does not match `{}`",
-            approved.kind, baseline.kind
+            "grant entrypoint `{extra}` is not declared by plugin.toml"
+        )));
+    }
+    if let Some(extra) = approved.producers.difference(&baseline.producers).next() {
+        return Err(PluginError::message(format!(
+            "grant event producer `{extra}` is not declared by plugin.toml"
         )));
     }
     let network_mode = if approved.network_mode.is_empty() {
@@ -670,7 +712,8 @@ pub fn validate_approved_grant(
         .map(|v| effective_extra_processes(Some(v)));
     Ok(PluginGrant {
         plugin_id: baseline.plugin_id.clone(),
-        kind: baseline.kind.clone(),
+        entrypoints: baseline.entrypoints.clone(),
+        producers: baseline.producers.clone(),
         network_mode: network_mode.to_ascii_lowercase(),
         domains,
         bindings,
@@ -918,61 +961,114 @@ fn is_safe_platform_request(grant: &PluginGrant) -> bool {
             .all(|b| b == "config" || b == "work_fs")
 }
 
-/// Reject `describe()` capability claims that exceed the manifest (and covering grant).
+/// Reject `describe()` capability claims that exceed the manifest and the
+/// covering grant.
+///
+/// The guest's typed [`PluginCapabilities`] must not widen what the signed
+/// `plugin.toml` declares: no extra entrypoints, event consumers, producers,
+/// job types, database bindings, or named bindings. Every advertised
+/// entrypoint and producer must also be present in the operator grant, and
+/// OAuth storefronts need the `oauth` binding.
+///
+/// # Arguments
+///
+/// * `manifest` - Installed manifest for the plugin.
+/// * `grant` - Effective covering grant.
+/// * `described` - Capability block the guest returned from `describe()`.
+/// * `portal_auth_mode` - Storefront connect mode from `describe()`.
 ///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
+/// Returns an error naming the first widening capability or missing grant.
 pub fn validate_described_capabilities(
     manifest: &PluginManifest,
     grant: &PluginGrant,
-    capabilities: &[String],
-    portal_auth_mode: Option<&str>,
+    described: &PluginCapabilities,
+    portal_auth_mode: PortalAuthMode,
 ) -> Result<()> {
-    let oauth_mode = portal_auth_mode.is_some_and(|m| m.eq_ignore_ascii_case("oauth"));
-    let oauth_methods = capabilities.iter().any(|cap| {
-        cap.eq_ignore_ascii_case("loginStart") || cap.eq_ignore_ascii_case("loginComplete")
-    });
-    if oauth_mode || oauth_methods {
-        if !manifest.capabilities.bindings.oauth {
+    let declared = manifest.capabilities();
+    let id = &manifest.id;
+
+    for entrypoint in &described.entrypoints {
+        if !declared.entrypoints.contains(entrypoint) {
             return Err(PluginError::message(format!(
-                "plugin `{}` describe() advertises OAuth without bindings.oauth in plugin.toml",
-                manifest.id
+                "plugin `{id}` describe() exports entrypoint `{}` not declared in plugin.toml",
+                entrypoint.wire_name()
+            )));
+        }
+        if !grant.entrypoints.contains(entrypoint.wire_name()) {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` grant lacks entrypoint `{}`; re-approve with \
+                 `bookclerk plugins approve {id}`",
+                entrypoint.wire_name()
+            )));
+        }
+    }
+    for consumer in &described.consumes {
+        let Some(manifest_consumer) = declared
+            .consumes
+            .iter()
+            .find(|c| c.event_type == consumer.event_type)
+        else {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() consumes event `{}` not declared in plugin.toml",
+                consumer.event_type
+            )));
+        };
+        if consumer
+            .schema_versions
+            .iter()
+            .any(|v| !manifest_consumer.schema_versions.contains(v))
+            || (consumer.supports_suspend && !manifest_consumer.supports_suspend)
+        {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() widens event consumer `{}` beyond plugin.toml",
+                consumer.event_type
+            )));
+        }
+    }
+    for producer in &described.produces {
+        if !declared.produces.contains(producer) {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() produces event `{producer}` not declared in plugin.toml"
+            )));
+        }
+        if !grant.producers.contains(producer) {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` grant lacks event producer `{producer}`; re-approve with \
+                 `bookclerk plugins approve {id}`"
+            )));
+        }
+    }
+    for job in &described.jobs {
+        if !declared.jobs.contains(job) {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() runs job `{job}` not declared in plugin.toml"
+            )));
+        }
+    }
+    for database in &described.databases {
+        if !declared.databases.contains(database) {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() binds database `{database}` not declared in plugin.toml"
+            )));
+        }
+        require_binding(grant, &format!("{DATABASE_BINDING_PREFIX}{database}"))?;
+    }
+    for binding in &described.bindings {
+        if !declared.bindings.contains(binding) {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() expects binding `{binding}` not declared in plugin.toml"
+            )));
+        }
+    }
+    if portal_auth_mode == PortalAuthMode::Oauth {
+        if !manifest.bindings().oauth {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() advertises OAuth without `[oauth]` in plugin.toml"
             )));
         }
         require_binding(grant, "oauth")?;
-    }
-
-    // Lifecycle / entrypoint methods are always implied; kind-specific surfaces
-    // in `capabilities.methods` are what consent is meant to bound.
-    const CORE_CAPS: &[&str] = &[
-        "describe",
-        "shutdown",
-        "health",
-        "diagnose",
-        "start",
-        "onEvent",
-        "pollEvents",
-        "cli",
-        "cliDescribe",
-        "cliInvoke",
-        "oidcClients",
-    ];
-    let declared = &manifest.capabilities.methods.list;
-    if declared.is_empty() {
-        return Ok(());
-    }
-    for cap in capabilities {
-        if CORE_CAPS.iter().any(|name| name.eq_ignore_ascii_case(cap)) {
-            continue;
-        }
-        if !declared.iter().any(|name| name.eq_ignore_ascii_case(cap)) {
-            return Err(PluginError::message(format!(
-                "plugin `{}` describe() advertises capability `{cap}` not listed in \
-                 capabilities.methods",
-                manifest.id
-            )));
-        }
     }
     Ok(())
 }
@@ -985,7 +1081,8 @@ mod tests {
     fn sample_grant(domains: &[&str], bindings: &[&str], flags: &[&str]) -> PluginGrant {
         PluginGrant {
             plugin_id: "demo".into(),
-            kind: "source".into(),
+            entrypoints: ["storefront".to_string()].into_iter().collect(),
+            producers: BTreeSet::new(),
             network_mode: "outbound".into(),
             domains: domains.iter().map(|s| (*s).to_string()).collect(),
             bindings: bindings.iter().map(|s| (*s).to_string()).collect(),
@@ -1095,15 +1192,20 @@ mod tests {
     fn consent_request_carries_named_database_bindings() {
         let manifest = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "demo"
-kind = "integration"
 runtime = "native"
 command = "./demo"
+entrypoints = ["cli"]
+
 [capabilities.network]
 mode = "deny"
-[capabilities.bindings]
-databases = ["DB", "CACHE"]
+
+[[databases]]
+binding = "DB"
+
+[[databases]]
+binding = "CACHE"
 "#,
         )
         .expect("manifest");
@@ -1148,17 +1250,16 @@ databases = ["DB", "CACHE"]
         let dir = tempfile::tempdir().unwrap();
         let manifest = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "demo"
-kind = "source"
 runtime = "native"
 command = "./demo"
+entrypoints = ["storefront"]
 
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
+[vars]
 "#,
         )
         .unwrap();
@@ -1179,18 +1280,18 @@ config = true
 
         let manifest = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "demo"
-kind = "source"
 runtime = "native"
 command = "./demo"
+entrypoints = ["storefront"]
 
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
-secrets = true
+[vars]
+
+[secrets]
 "#,
         )
         .unwrap();
@@ -1210,10 +1311,10 @@ secrets = true
 
         let manifest = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "demo"
-kind = "source"
 runtime = "workerd"
+entrypoints = ["storefront"]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -1223,8 +1324,7 @@ main_module = "index.js"
 mode = "outbound"
 domains = ["api.example.com"]
 
-[capabilities.bindings]
-config = true
+[vars]
 "#,
         )
         .unwrap();
@@ -1238,18 +1338,18 @@ config = true
         let dir = tempfile::tempdir().unwrap();
         let manifest = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "sqlite"
-kind = "database"
 runtime = "native"
 command = "./sqlite"
+entrypoints = ["databaseAdapter"]
 
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
-work_fs = true
+[vars]
+
+[work_fs]
 "#,
         )
         .unwrap();
@@ -1269,7 +1369,7 @@ work_fs = true
         let mut store = PluginGrantStore::default();
         let mut existing = sample_grant(&[], &["config", "work_fs"], &[]);
         existing.plugin_id = "sqlite".into();
-        existing.kind = "database".into();
+        existing.entrypoints = ["databaseAdapter".to_string()].into_iter().collect();
         existing.network_mode = "deny".into();
         existing.approved_at = "2026-02-02T00:00:00Z".into();
         store.upsert(existing);
@@ -1277,17 +1377,16 @@ work_fs = true
 
         let manifest = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "sqlite"
-kind = "database"
 runtime = "native"
 command = "./sqlite"
+entrypoints = ["databaseAdapter"]
 
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
+[vars]
 "#,
         )
         .unwrap();
@@ -1305,25 +1404,25 @@ config = true
         let mut store = PluginGrantStore::default();
         let mut existing = sample_grant(&[], &["config"], &[]);
         existing.plugin_id = "sqlite".into();
-        existing.kind = "database".into();
+        existing.entrypoints = ["databaseAdapter".to_string()].into_iter().collect();
         existing.network_mode = "deny".into();
         store.upsert(existing);
         store.save(dir.path()).unwrap();
 
         let manifest = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "sqlite"
-kind = "database"
 runtime = "native"
 command = "./sqlite"
+entrypoints = ["databaseAdapter"]
 
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
-secrets = true
+[vars]
+
+[secrets]
 "#,
         )
         .unwrap();
@@ -1343,7 +1442,7 @@ secrets = true
         let requested = sample_grant(&["a.example"], &["config"], &[]);
         let effective = effective_grant(&existing, &requested);
         assert_eq!(effective.plugin_id, existing.plugin_id);
-        assert_eq!(effective.kind, existing.kind);
+        assert_eq!(effective.entrypoints, existing.entrypoints);
         assert_eq!(effective.approved_at, existing.approved_at);
         assert_eq!(effective.network_mode, existing.network_mode);
         assert_eq!(effective.domains, existing.domains);
@@ -1363,17 +1462,16 @@ secrets = true
 
         let narrowed = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "demo"
-kind = "source"
 runtime = "native"
 command = "./demo"
+entrypoints = ["storefront"]
 
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
+[vars]
 "#,
         )
         .unwrap();
@@ -1382,18 +1480,19 @@ config = true
 
         let widened = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "demo"
-kind = "source"
 runtime = "native"
 command = "./demo"
+entrypoints = ["storefront"]
 
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
-plugin_kv = true
+[vars]
+
+[[kv_namespaces]]
+binding = "KV"
 "#,
         )
         .unwrap();
@@ -1427,7 +1526,7 @@ plugin_kv = true
 
         let normalized = validate_approved_grant(&approved, &ceiling).unwrap();
         assert_eq!(normalized.plugin_id, ceiling.plugin_id);
-        assert_eq!(normalized.kind, ceiling.kind);
+        assert_eq!(normalized.entrypoints, ceiling.entrypoints);
         assert_eq!(normalized.cpu_ms, Some(15_000));
         assert_eq!(normalized.subrequests, Some(25));
         assert!(grant_has_binding(&normalized, "config"));
@@ -1450,21 +1549,27 @@ plugin_kv = true
         assert_eq!(grant.disk_mib, Some(PLUGIN_STATE_BUDGET_MIB_MAX));
     }
 
+    fn caps(entrypoints: &[bookclerk_plugin_abi::Entrypoint]) -> PluginCapabilities {
+        PluginCapabilities {
+            entrypoints: entrypoints.to_vec(),
+            ..PluginCapabilities::default()
+        }
+    }
+
     #[test]
     fn validate_describe_rejects_oauth_without_binding() {
         let manifest = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "demo"
-kind = "source"
 runtime = "native"
 command = "./demo"
+entrypoints = ["storefront"]
 
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
+[vars]
 "#,
         )
         .unwrap();
@@ -1472,8 +1577,8 @@ config = true
         let err = validate_described_capabilities(
             &manifest,
             &grant,
-            &["loginStart".into()],
-            Some("oauth"),
+            &caps(&[bookclerk_plugin_abi::Entrypoint::Storefront]),
+            PortalAuthMode::Oauth,
         )
         .unwrap_err()
         .to_string();
@@ -1481,20 +1586,21 @@ config = true
     }
 
     #[test]
-    fn validate_describe_rejects_undeclared_methods() {
+    fn validate_describe_rejects_undeclared_entrypoints_and_events() {
         let manifest = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "demo"
-kind = "integration"
 runtime = "native"
 command = "./demo"
+entrypoints = ["cli"]
 
 [capabilities.network]
 mode = "deny"
 
-[capabilities.methods]
-list = ["health"]
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
 "#,
         )
         .unwrap();
@@ -1502,55 +1608,111 @@ list = ["health"]
         let err = validate_described_capabilities(
             &manifest,
             &grant,
-            &["health".into(), "scanLibrary".into()],
-            None,
+            &caps(&[
+                bookclerk_plugin_abi::Entrypoint::Cli,
+                bookclerk_plugin_abi::Entrypoint::RemoteLibrary,
+            ]),
+            PortalAuthMode::Unspecified,
         )
         .unwrap_err()
         .to_string();
-        assert!(err.contains("scanLibrary"), "{err}");
+        assert!(err.contains("remoteLibrary"), "{err}");
+
+        let widened_consumer = PluginCapabilities {
+            consumes: vec![bookclerk_plugin_abi::EventConsumerSpec {
+                event_type: "book_acquired".into(),
+                schema_versions: vec![1, 2],
+                supports_suspend: false,
+            }],
+            ..caps(&[bookclerk_plugin_abi::Entrypoint::Cli])
+        };
+        let err = validate_described_capabilities(
+            &manifest,
+            &grant,
+            &widened_consumer,
+            PortalAuthMode::Unspecified,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("widens event consumer"), "{err}");
+
+        let undeclared_producer = PluginCapabilities {
+            produces: vec!["book_acquired".into()],
+            ..caps(&[bookclerk_plugin_abi::Entrypoint::Cli])
+        };
+        let err = validate_described_capabilities(
+            &manifest,
+            &grant,
+            &undeclared_producer,
+            PortalAuthMode::Unspecified,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("produces event"), "{err}");
     }
 
     #[test]
-    fn validate_describe_allows_core_entrypoint_methods() {
+    fn validate_describe_accepts_manifest_capabilities() {
         let manifest = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "demo"
-kind = "integration"
 runtime = "native"
 command = "./demo"
+entrypoints = ["cli", "remoteLibrary"]
 
 [capabilities.network]
 mode = "deny"
 
-[capabilities.methods]
-list = ["health", "diagnose", "onEvent", "cli"]
+[vars]
+
+[[databases]]
+binding = "DB"
+
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = true
+
+[[events.producers]]
+type = "demo_pinged"
 "#,
         )
         .unwrap();
         let grant = consent_request(&manifest);
+        assert!(grant.producers.contains("demo_pinged"));
+        assert!(grant.entrypoints.contains("remoteLibrary"));
         validate_described_capabilities(
             &manifest,
             &grant,
-            &[
-                "describe".into(),
-                "health".into(),
-                "start".into(),
-                "cli".into(),
-            ],
-            None,
+            &manifest.capabilities(),
+            PortalAuthMode::Unspecified,
         )
         .unwrap();
+
+        // A grant that lost the producer no longer covers the manifest request.
+        let mut narrowed = grant.clone();
+        narrowed.producers.clear();
+        assert!(!grant_covers(&narrowed, &grant));
+        let err = validate_described_capabilities(
+            &manifest,
+            &narrowed,
+            &manifest.capabilities(),
+            PortalAuthMode::Unspecified,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("grant lacks event producer"), "{err}");
     }
 
     #[test]
     fn python_outbound_consent_includes_pyodide_hosts() {
         let manifest = PluginManifest::parse(
             r#"
-api_version = 2
+api_version = 3
 id = "echo_workerd_python"
-kind = "integration"
 runtime = "workerd"
+entrypoints = ["cli"]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -1566,8 +1728,7 @@ type = "python"
 mode = "outbound"
 domains = ["api.example.com"]
 
-[capabilities.bindings]
-config = true
+[vars]
 "#,
         )
         .unwrap();
@@ -1600,7 +1761,7 @@ config = true
         // Narrow stored grant for the same plugin id remains usable.
         let mut narrow = sample_grant(&["api.example.com"], &["config"], &["python_workers"]);
         narrow.plugin_id = grant.plugin_id.clone();
-        narrow.kind = grant.kind.clone();
+        narrow.entrypoints = grant.entrypoints.clone();
         assert!(grant_covers(&narrow, &grant));
         assert!(grant_within_ceiling(&narrow, &grant));
     }

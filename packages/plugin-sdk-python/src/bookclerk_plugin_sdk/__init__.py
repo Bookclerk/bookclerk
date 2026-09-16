@@ -1,13 +1,16 @@
 """Bookclerk Python plugin guest SDK.
 
 Provides the workerd guest surface via :mod:`bookclerk_plugin_sdk.workerd`.
-Authors subclass :class:`bookclerk_plugin_sdk.workerd.BookclerkPlugin` and
-export the raw class. Native guests use the Rust SDK (`serve` / `PluginRoot`).
-See ``docs/plugins.md``.
+Authors define a module-level ``Default`` class extending
+:class:`bookclerk_plugin_sdk.workerd.BookclerkEntrypoint` (``event(batch)`` /
+``job(job)`` triggers) plus one class per ``plugin.toml`` entrypoint
+(``class Cli(CliEntrypoint)``, ``class Storage(StorageEntrypoint)``, …).
+Native guests use the Rust SDK (`serve` / `PluginWorker`). See ``docs/plugins.md``.
 
 Typical import:
 
-- Workerd: ``from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js``
+- Workerd: ``from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint, CliEntrypoint, js``
+- Tools: ``python -m bookclerk_plugin_sdk check|fmt|types|package|smoke``
 
 Every ABI struct, union, enum, and interface in :mod:`bookclerk_plugin_sdk.abi`
 and the product constants in :mod:`bookclerk_plugin_sdk._abi` are generated
@@ -21,11 +24,11 @@ from .abi import (
     CliInvokeParams,
     CliInvokeResult,
     CliSchema,
-    ContentSourceContext,
     DiagnoseResult,
+    Entrypoint,
     FetchTitleParams,
     HealthOk,
-    IntegrationContext,
+    Invocation,
     LoginParams,
     PluginDescribe,
     PluginErrorCode,
@@ -57,15 +60,15 @@ __all__ = [
     "CliInvokeParams",
     "CliInvokeResult",
     "CliSchema",
-    "ContentSourceContext",
     "D1ExecResult",
+    "Entrypoint",
     "D1Meta",
     "D1Result",
     "DatabaseBinding",
     "DiagnoseResult",
     "FetchTitleParams",
     "HealthOk",
-    "IntegrationContext",
+    "Invocation",
     "LoginParams",
     "PluginDescribe",
     "PluginErrorCode",

@@ -6,7 +6,7 @@
  */
 
 /** Product ABI version (`plugin.toml` `api_version` / `describe().apiVersion`). */
-export const PRODUCT_API_VERSION = 2 as const;
+export const PRODUCT_API_VERSION = 3 as const;
 
 /** Maximum decoded size of an ordinary RPC scalar value (not a stream window). */
 export const MAX_SCALAR_BYTES = 262144 as const;
@@ -60,6 +60,18 @@ export const PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden"
 
 /** Union of `PLUGIN_ERROR_CODES` wire names. */
 export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];
+
+/**
+ * Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
+ * analogue). Each value is a capability the host calls over RPC; triggers on
+ * the default entrypoint (`event`, `job`) are declared separately.
+ *
+ * Ordinal-ordered `Entrypoint` wire names (index = Cap'n Proto ordinal).
+ */
+export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc"] as const;
+
+/** Union of `ENTRYPOINTS` wire names. */
+export type Entrypoint = (typeof ENTRYPOINTS)[number];
 
 /**
  * Portal Accounts connect mode for storefronts.

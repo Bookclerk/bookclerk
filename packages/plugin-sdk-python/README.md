@@ -1,18 +1,19 @@
 # bookclerk-plugin-sdk (Python)
 
-Python guest SDK for Bookclerk workerd plugins (`api_version = 2`).
+Python guest SDK for Bookclerk workerd plugins (`api_version = 3`).
 
 | Import | Runtime |
 | --- | --- |
-| `from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js` | Workerd / Python Workers |
+| `from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint, CliEntrypoint, js` | Workerd / Python Workers |
 
 `bookclerk-workerd` injects `bookclerk_plugin_sdk.workerd` into the isolate —
 authors do not vendor a relative filepath. Native guests use the Rust SDK
-(`PluginRoot` / `serve`).
+(`PluginWorker` / `serve`).
 
 ```bash
 pip install -e packages/plugin-sdk-python
 python -m bookclerk_plugin_sdk check .
+python -m bookclerk_plugin_sdk types .            # writes bookclerk_configuration.py
 python -m bookclerk_plugin_sdk package --out dist .
 python -m bookclerk_plugin_sdk smoke .   # workerd: download pin, describe + health
 ```
@@ -23,28 +24,68 @@ the pinned Cloudflare `workerd` into `~/.cache/bookclerk/workerd` (override with
 
 ## Workerd
 
-```python
-from bookclerk_plugin_sdk.workerd import BookclerkPlugin, Integration, js
+A plugin is a Python Worker. The module-level ``Default`` class extends
+``BookclerkEntrypoint`` and implements the triggers ``plugin.toml`` declares
+(``event(batch)`` for ``[[events.consumers]]``, ``job(job)`` for
+``[triggers] jobs``, ``database_migrations(binding)`` for ``[[databases]]``).
+Every named entrypoint in ``entrypoints = [...]`` is a module-level class with
+the matching name extending its base: ``Storefront(StorefrontEntrypoint)``,
+``Storage(StorageEntrypoint)``, ``RemoteLibrary(RemoteLibraryEntrypoint)``,
+``DatabaseAdapter(DatabaseAdapterEntrypoint)``, ``Cli(CliEntrypoint)``,
+``Oidc(OidcEntrypoint)``.
 
-class Default(BookclerkPlugin):
+```python
+from bookclerk_plugin_sdk.workerd import (
+    BookclerkEntrypoint,
+    CliEntrypoint,
+    EventBatch,
+    cli_args,
+    json_payload,
+)
+
+
+class Cli(CliEntrypoint):
     async def describe(self):
-        return js({
-            "apiVersion": 2,
-            "id": "my_plugin",
-            "kind": "integration",
-            "rpcFeatures": [],
-            "scalarLimits": {
-                "maxScalarBytes": 262144,
-                "maxStreamWindowBytes": 1048576,
-                "maxListPage": 256,
-            },
-        })
+        return {"commands": [{"name": "ping", "about": "Probe", "args": []}]}
+
+    async def invoke(self, params):
+        message = cli_args(params).get("message", "hi")
+        return {
+            "exitCode": 0,
+            "stdout": f"pong: {message}\n",
+            "stderr": "",
+            "payload": json_payload({"pong": message}),
+        }
+
+
+class Default(BookclerkEntrypoint):
+    async def event(self, batch: EventBatch):
+        for msg in batch.messages:
+            if msg.type != "book_acquired":
+                msg.reject(f"unexpected {msg.type}")
+                continue
+            print(f"saw {msg.json().get('titleId', '')} via {self.env.CONFIG}")
+            msg.ack()
 ```
+
+Identity (``apiVersion``, ``id``, capabilities) comes from ``plugin.toml``; an
+optional ``describe()`` on ``Default`` only refines ``displayName`` and similar
+fields. Each ``EventMessage`` records one outcome — ``ack()``,
+``retry(retry_at=..., delay_seconds=..., reason=...)``, ``reject(reason)``,
+``dead_letter(reason)``, or ``suspend(checkpoint=..., wake_at=...)`` — and the
+first call wins; untouched messages ack on return and retry on raise. A
+``job(job)`` handler returns to complete, raises to reject, or calls
+``job.suspend(...)`` / ``job.retry_later(...)``.
+
+Granted bindings arrive on ``self.env`` per invocation: ``CONFIG``,
+``SECRETS``, ``EVENTS``, ``WORK_FS``, and one entry per ``[[databases]]``
+binding. ``python -m bookclerk_plugin_sdk types .`` writes a typed ``Env``
+protocol (``bookclerk_configuration.py``) from ``plugin.toml``.
 
 Declare Python Workers flags in `plugin.toml`:
 
 ```toml
-api_version = 2
+api_version = 3
 runtime = "workerd"
 [workerd]
 compatibility_flags = ["python_workers", "disable_python_external_sdk"]

@@ -5,12 +5,15 @@
 //! must implement the same capability names and `describe()` shape.
 #![allow(clippy::missing_panics_doc)]
 
-use bookclerk_plugin_abi::{methods, PluginDescribe, METHOD_NAMES, PRODUCT_API_VERSION};
+use bookclerk_plugin_abi::{
+    methods, Entrypoint, EventConsumerSpec, PluginCapabilities, PluginDescribe, METHOD_NAMES,
+    PRODUCT_API_VERSION,
+};
 use bookclerk_plugin_sdk::PROTOCOL_NAME;
 
 #[test]
-fn abi_version_is_two() {
-    assert_eq!(PRODUCT_API_VERSION, 2);
+fn abi_version_is_three() {
+    assert_eq!(PRODUCT_API_VERSION, 3);
 }
 
 #[test]
@@ -24,8 +27,9 @@ fn core_methods_present() {
         methods::shutdown::NAME,
         methods::health::NAME,
         methods::diagnose::NAME,
-        methods::on_event::NAME,
-        methods::cli_invoke::NAME,
+        methods::event::NAME,
+        methods::publish::NAME,
+        methods::invoke::NAME,
     ] {
         assert!(
             METHOD_NAMES.contains(&name),
@@ -39,23 +43,32 @@ fn echo_describe_shape_roundtrips() {
     let describe = PluginDescribe {
         api_version: PRODUCT_API_VERSION,
         id: "echo".into(),
-        kind: "integration".into(),
         display_name: Some("Echo Integration".into()),
-        capabilities: vec![
-            "health".into(),
-            "diagnose".into(),
-            "onEvent".into(),
-            "cli".into(),
-        ],
+        capabilities: PluginCapabilities {
+            entrypoints: vec![Entrypoint::Cli],
+            consumes: vec![EventConsumerSpec {
+                event_type: "book_acquired".into(),
+                schema_versions: vec![1],
+                supports_suspend: false,
+            }],
+            bindings: vec!["CONFIG".into(), "EVENTS".into()],
+            ..PluginCapabilities::default()
+        },
         ..PluginDescribe::default()
     };
     let v = serde_json::to_value(&describe).unwrap();
-    assert_eq!(v["apiVersion"], 2);
+    assert_eq!(v["apiVersion"], 3);
     assert_eq!(v["id"], "echo");
+    assert!(v.get("kind").is_none());
     assert!(v.get("metadataJson").is_none());
+    assert_eq!(v["capabilities"]["entrypoints"][0], "cli");
+    assert_eq!(
+        v["capabilities"]["consumes"][0]["eventType"],
+        "book_acquired"
+    );
     let back: PluginDescribe = serde_json::from_value(v).unwrap();
     assert_eq!(back.capabilities, describe.capabilities);
-    assert!(back.has_capability("onEvent"));
+    assert!(back.capabilities.entrypoints.contains(&Entrypoint::Cli));
 }
 
 /// Typed method payloads project to camelCase JSON on the transport-private

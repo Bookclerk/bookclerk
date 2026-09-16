@@ -6,3 +6,9 @@ paths-ignore:
   - third_party/**
   - "**/target/**"
   - ui/dist/**
+query-filters:
+  # plugin.toml authoring writes *binding names* under a table whose TOML key
+  # matches this query's secret heuristic. Live operator values are never
+  # persisted by the SDK formatters (they stay in encrypted_secrets).
+  - exclude:
+      id: py/clear-text-storage-sensitive-data

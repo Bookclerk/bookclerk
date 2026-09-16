@@ -1,20 +1,26 @@
+/**
+ * Echo Fetch workerd guest (typed source; `modules/index.js` is the shipped
+ * module). Requests outbound `*.example.com` and probes
+ * `https://www.example.com/` from the `fetch-example` CLI command.
+ */
+
 import {
-  BookclerkPlugin,
-  Integration,
-  PRODUCT_API_VERSION,
-  FEATURE_SCALAR_LIMITS,
-  MAX_LIST_PAGE,
-  MAX_SCALAR_BYTES,
-  MAX_STREAM_WINDOW_BYTES,
-  type DomainEvent,
-  type EventResult,
+  BookclerkEntrypoint,
+  CliEntrypoint,
+  cliArgs,
+  jsonPayload,
+  type CliInvokeParams,
+  type CliInvokeResult,
+  type CliSchema,
+  type EventBatch,
   type PluginDescribe,
 } from "@bookclerk/plugin-sdk/workerd";
+import type { Env } from "../bookclerk-configuration.js";
 
 const PLUGIN_ID = "echo_workerd_fetch";
 const EXAMPLE_URL = "https://www.example.com/";
 
-const CLI = {
+const CLI: CliSchema = {
   commands: [
     {
       name: "ping",
@@ -24,6 +30,8 @@ const CLI = {
           name: "message",
           long: "message",
           kind: "string",
+          required: false,
+          positional: false,
           default: "hi",
         },
       ],
@@ -61,100 +69,53 @@ async function probeExampleFetch(): Promise<{ allowed: boolean; detail: string }
   }
 }
 
-class EchoFetchIntegration extends Integration {
-  constructor(private readonly pluginEnv: BookclerkPlugin["env"]) {
-    super();
+/** `cli` entrypoint: `ping` and `fetch-example`. */
+export class Cli extends CliEntrypoint<Env> {
+  override async describe(): Promise<CliSchema> {
+    return CLI;
   }
 
-  override async health() {
-    return {
-      ok: true,
-      detail: "echo workerd fetch plugin ready",
-    };
-  }
-
-  override async diagnose() {
-    const probe = await probeExampleFetch();
-    return {
-      lines: [
-        "echo_workerd_fetch: ok",
-        probe.detail,
-        probe.allowed
-          ? "allowlist probe: passed (response received)"
-          : "allowlist probe: failed (no response — treat as deny/block)",
-      ],
-    };
-  }
-
-  override async onEvent(event: DomainEvent): Promise<EventResult> {
-    const host = (this.pluginEnv as { HOST?: { notify?: (e: unknown) => Promise<void> } })
-      ?.HOST;
-    if (host?.notify) {
-      await host.notify({
-        type: "plugin_log",
-        payload: {
-          level: "info",
-          message: `echo_workerd_fetch saw event ${event.eventType}`,
-        },
-      });
-    }
-    return { kind: "ack" };
-  }
-}
-
-/**
- * Echo Fetch — workerd guest that requests outbound `*.example.com` and probes
- * `https://www.example.com/` from diagnose / CLI.
- */
-export default class EchoFetchPlugin extends BookclerkPlugin {
-  async describe(): Promise<PluginDescribe> {
-    return {
-      apiVersion: PRODUCT_API_VERSION,
-      id: PLUGIN_ID,
-      kind: "integration",
-      displayName: "Echo Fetch (workerd)",
-      rpcFeatures: [FEATURE_SCALAR_LIMITS],
-      scalarLimits: {
-        maxScalarBytes: MAX_SCALAR_BYTES,
-        maxStreamWindowBytes: MAX_STREAM_WINDOW_BYTES,
-        maxListPage: MAX_LIST_PAGE,
-      },
-      supportedRoles: ["integration"],
-    };
-  }
-
-  integration() {
-    return new EchoFetchIntegration(this.env);
-  }
-
-  override async cliDescribe(): Promise<string> {
-    return JSON.stringify(CLI);
-  }
-
-  override async cliInvoke(paramsJson: string): Promise<string> {
-    const params = JSON.parse(paramsJson || "{}") as {
-      command?: string;
-      args?: { message?: string };
-    };
+  override async invoke(params: CliInvokeParams): Promise<CliInvokeResult> {
     if (params.command === "ping") {
-      const message = params.args?.message ?? "hi";
-      return JSON.stringify({
+      const { message = "hi" } = cliArgs(params);
+      return {
         exitCode: 0,
         stdout: `pong: ${message}\n`,
-        json: { pong: message },
-      });
+        stderr: "",
+        payload: jsonPayload({ pong: message }),
+      };
     }
     if (params.command === "fetch-example") {
       const probe = await probeExampleFetch();
-      return JSON.stringify({
+      return {
         exitCode: probe.allowed ? 0 : 1,
         stdout: `${probe.detail}\n`,
-        json: { allowed: probe.allowed, detail: probe.detail, url: EXAMPLE_URL },
-      });
+        stderr: "",
+        payload: jsonPayload({ allowed: probe.allowed, detail: probe.detail, url: EXAMPLE_URL }),
+      };
     }
-    return JSON.stringify({
+    return {
       exitCode: 2,
-      stderr: `unknown command ${params.command ?? ""}`,
-    });
+      stdout: "",
+      stderr: `unknown command ${params.command}`,
+      payload: jsonPayload(null),
+    };
+  }
+}
+
+/** Default entrypoint: event trigger for `[[events.consumers]]`. */
+export default class EchoFetchPlugin extends BookclerkEntrypoint<Env> {
+  override async describe(): Promise<PluginDescribe> {
+    return { displayName: "Echo Fetch (workerd)" };
+  }
+
+  override async event(batch: EventBatch): Promise<void> {
+    for (const msg of batch.messages) {
+      if (msg.type === "book_acquired") {
+        const titleId = msg.json<{ titleId?: string }>().titleId ?? "";
+        console.log(`${PLUGIN_ID} saw book_acquired titleId=${titleId}`);
+      }
+      msg.ack();
+    }
   }
 }

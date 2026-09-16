@@ -1,4 +1,4 @@
-//! In-process adapters that speak Cap'n Proto `api_version = 2` to external plugin processes.
+//! In-process adapters that speak Cap'n Proto `api_version = 3` to external plugin processes.
 
 mod database;
 mod destination;
@@ -9,7 +9,7 @@ mod plugin_migration_apply;
 mod source;
 
 pub use database::{
-    backup_adapter_id, database_connect_context, load_external_database, migrate_database_plugin,
+    backup_adapter_id, database_connect_bindings, load_external_database, migrate_database_plugin,
     migrate_library_schema, open_library_store, open_library_store_for_plugin, DatabaseRegistry,
     ExternalDatabase,
 };

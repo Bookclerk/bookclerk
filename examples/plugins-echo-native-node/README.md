@@ -1,7 +1,7 @@
 # Echo Integration (id `echo_native_node`)
 
 This example now validates **workerd** hosting (`runtime = "workerd"`,
-`api_version = 2`), not a Node Cap'n Proto stack. The guest class lives in
+`api_version = 3`), not a Node Cap'n Proto stack. The guest class lives in
 [`modules/index.js`](modules/index.js) and matches
 [`plugins-echo-workerd-ts`](../plugins-echo-workerd-ts/).
 

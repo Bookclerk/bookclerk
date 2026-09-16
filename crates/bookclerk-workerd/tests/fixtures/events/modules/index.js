@@ -1,59 +1,64 @@
 /**
- * Event contract fixture: Integration.onEvent result variants.
+ * Event contract fixture: `event(batch)` outcome variants recorded on the
+ * delivered `EventMessage` (ack / retry / reject / deadLetter / suspend).
  */
 
-import {
-  BookclerkPlugin,
-  Integration,
-  PRODUCT_API_VERSION,
-  FEATURE_SCALAR_LIMITS,
-} from "@bookclerk/plugin-sdk/workerd";
+import { BookclerkEntrypoint } from "@bookclerk/plugin-sdk/workerd";
 
-class EventIntegration extends Integration {
-  async health() {
-    return { ok: true, detail: "events_fixture ready" };
-  }
-
-  async onEvent(event) {
-    const type = event?.eventType || event?.event_type || event?.type || "";
-    switch (type) {
-      case "test_retry":
-        return { kind: "retry", retryAtUnixMs: 1, reason: "echo retry" };
-      case "test_reject":
-        return { kind: "reject", reason: "echo reject" };
-      case "test_dead_letter":
-        return { kind: "deadLetter", reason: "echo dead letter" };
-      case "test_suspend":
-        return {
-          kind: "suspended",
-          checkpointJson: "{\"n\":1}",
-          checkpointSchemaVersion: 1,
-          wakeAtUnixMs: 1,
-        };
-      default:
-        return { kind: "ack" };
-    }
-  }
-}
-
-export default class EventPlugin extends BookclerkPlugin {
+export default class EventPlugin extends BookclerkEntrypoint {
   async describe() {
-    return {
-      apiVersion: PRODUCT_API_VERSION,
-      id: "events_fixture",
-      kind: "integration",
-      displayName: "Event contract fixture",
-      rpcFeatures: [FEATURE_SCALAR_LIMITS],
-      scalarLimits: {
-        maxScalarBytes: 262144,
-        maxStreamWindowBytes: 1048576,
-        maxListPage: 256,
-      },
-      supportedRoles: ["integration"],
-    };
+    return { displayName: "Event contract fixture" };
   }
 
-  integration() {
-    return new EventIntegration();
+  async event(batch) {
+    for (const msg of batch.messages) {
+      switch (msg.type) {
+        case "test_retry":
+          msg.retry({ retryAt: 1, reason: "echo retry" });
+          break;
+        case "test_reject":
+          msg.reject("echo reject");
+          break;
+        case "test_dead_letter":
+          msg.deadLetter("echo dead letter");
+          break;
+        case "test_suspend":
+          msg.suspend({ checkpoint: { n: 1 }, checkpointSchemaVersion: 1, wakeAt: 1 });
+          break;
+        case "test_publish": {
+          // Publish through the granted `EVENTS` binding and report the
+          // host's `PublishOk` (or the failure) as the reject reason so the
+          // contract test can assert it end to end.
+          const events = this.env.EVENTS;
+          if (!events) {
+            msg.reject("no EVENTS binding");
+            break;
+          }
+          try {
+            const ok = await events.publish({
+              eventType: "fixture_pinged",
+              deduplicationKey: `pinged:${msg.id}`,
+              correlationId: msg.correlationId,
+              payload: { from: msg.id, n: msg.json().n ?? 0 },
+            });
+            msg.reject(JSON.stringify(ok));
+          } catch (err) {
+            msg.reject(`publish failed: ${err.code ?? "unknown"}: ${err.message}`);
+          }
+          break;
+        }
+        case "test_publish_forbidden": {
+          try {
+            await this.env.EVENTS.publish({ eventType: "not_granted", payload: {} });
+            msg.reject("unexpected success");
+          } catch (err) {
+            msg.reject(`publish failed: ${err.code ?? "unknown"}`);
+          }
+          break;
+        }
+        default:
+          msg.ack();
+      }
+    }
   }
 }

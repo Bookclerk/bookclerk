@@ -1,19 +1,27 @@
+/**
+ * Echo workerd guest (typed source; `modules/index.js` is the shipped module).
+ *
+ * Default export extends `BookclerkEntrypoint` and handles the `book_acquired`
+ * event trigger; the `cli` entrypoint is the exported `Cli` class. Run
+ * `npx bookclerk-plugin types .` to regenerate `bookclerk-configuration.d.ts`.
+ */
+
 import {
-  BookclerkPlugin,
-  Integration,
-  PRODUCT_API_VERSION,
-  FEATURE_SCALAR_LIMITS,
-  MAX_LIST_PAGE,
-  MAX_SCALAR_BYTES,
-  MAX_STREAM_WINDOW_BYTES,
-  type DomainEvent,
-  type EventResult,
+  BookclerkEntrypoint,
+  CliEntrypoint,
+  cliArgs,
+  jsonPayload,
+  type CliInvokeParams,
+  type CliInvokeResult,
+  type CliSchema,
+  type EventBatch,
   type PluginDescribe,
 } from "@bookclerk/plugin-sdk/workerd";
+import type { Env } from "../bookclerk-configuration.js";
 
 const PLUGIN_ID = "echo_workerd_ts";
 
-const CLI = {
+const CLI: CliSchema = {
   commands: [
     {
       name: "ping",
@@ -23,6 +31,8 @@ const CLI = {
           name: "message",
           long: "message",
           kind: "string",
+          required: false,
+          positional: false,
           default: "hi",
         },
       ],
@@ -30,114 +40,61 @@ const CLI = {
   ],
 };
 
-class EchoIntegration extends Integration {
-  constructor(private readonly pluginEnv: BookclerkPlugin["env"]) {
-    super();
+/** `cli` entrypoint: `bookclerk plugins echo_workerd_ts ping --message hi`. */
+export class Cli extends CliEntrypoint<Env> {
+  override async describe(): Promise<CliSchema> {
+    return CLI;
   }
 
-  override async health() {
+  override async invoke(params: CliInvokeParams): Promise<CliInvokeResult> {
+    if (params.command !== "ping") {
+      return {
+        exitCode: 2,
+        stdout: "",
+        stderr: `unknown command ${params.command}`,
+        payload: jsonPayload(null),
+      };
+    }
+    const { message = "hi" } = cliArgs(params);
     return {
-      ok: true,
-      detail: "echo workerd plugin ready",
+      exitCode: 0,
+      stdout: `pong: ${message}\n`,
+      stderr: "",
+      payload: jsonPayload({ pong: message }),
     };
-  }
-
-  override async diagnose() {
-    return { lines: ["echo: ok"] };
-  }
-
-  override async onEvent(event: DomainEvent): Promise<EventResult> {
-    const payload = event.payload;
-    let titleId = "";
-    if (payload && payload.byteLength > 0) {
-      try {
-        const parsed = JSON.parse(new TextDecoder().decode(payload)) as {
-          titleId?: string;
-          payload?: { titleId?: string };
-        };
-        titleId = parsed.titleId ?? parsed.payload?.titleId ?? "";
-      } catch {
-        titleId = "";
-      }
-    }
-    const host = (this.pluginEnv as { HOST?: { notify?: (event: unknown) => Promise<void> } })
-      ?.HOST;
-    if (host?.notify) {
-      await host.notify({
-        type: "plugin_log",
-        payload: {
-          level: "info",
-          message: `echo saw ${event.eventType} titleId=${titleId}`,
-        },
-      });
-    }
-    switch (event.eventType) {
-      case "test_retry":
-        return { kind: "retry", retryAtUnixMs: 1, reason: "echo retry" };
-      case "test_reject":
-        return { kind: "reject", reason: "echo reject" };
-      case "test_dead_letter":
-        return { kind: "deadLetter", reason: "echo dead letter" };
-      case "test_suspend":
-        return {
-          kind: "suspended",
-          checkpointJson: "{\"n\":1}",
-          checkpointSchemaVersion: 1,
-          wakeAtUnixMs: 1,
-        };
-      default:
-        return { kind: "ack" };
-    }
   }
 }
 
-/**
- * Echo — branded BookclerkPlugin (`describe` + `integration` RpcTarget).
- *
- * Authoring source for the workerd guest. Ship `modules/index.js` (built or
- * hand-maintained MVP sibling) beside `plugin.toml`.
- */
-export default class EchoPlugin extends BookclerkPlugin {
-  async describe(): Promise<PluginDescribe> {
-    return {
-      apiVersion: PRODUCT_API_VERSION,
-      id: PLUGIN_ID,
-      kind: "integration",
-      displayName: "Echo Integration (workerd TypeScript)",
-      rpcFeatures: [FEATURE_SCALAR_LIMITS],
-      scalarLimits: {
-        maxScalarBytes: MAX_SCALAR_BYTES,
-        maxStreamWindowBytes: MAX_STREAM_WINDOW_BYTES,
-        maxListPage: MAX_LIST_PAGE,
-      },
-      supportedRoles: ["integration"],
-    };
+/** Default entrypoint: event trigger for `[[events.consumers]]`. */
+export default class EchoPlugin extends BookclerkEntrypoint<Env> {
+  override async describe(): Promise<PluginDescribe> {
+    return { displayName: "Echo Integration (workerd TypeScript)" };
   }
 
-  integration() {
-    return new EchoIntegration(this.env);
-  }
-
-  override async cliDescribe(): Promise<string> {
-    return JSON.stringify(CLI);
-  }
-
-  override async cliInvoke(paramsJson: string): Promise<string> {
-    const params = JSON.parse(paramsJson || "{}") as {
-      command?: string;
-      args?: { message?: string };
-    };
-    if (params.command !== "ping") {
-      return JSON.stringify({
-        exitCode: 2,
-        stderr: `unknown command ${params.command ?? ""}`,
-      });
+  override async event(batch: EventBatch): Promise<void> {
+    for (const msg of batch.messages) {
+      switch (msg.type) {
+        case "book_acquired": {
+          const titleId = msg.json<{ titleId?: string }>().titleId ?? "";
+          console.log(`${PLUGIN_ID} saw book_acquired titleId=${titleId}`);
+          msg.ack();
+          break;
+        }
+        case "test_retry":
+          msg.retry({ delaySeconds: 1, reason: "echo retry" });
+          break;
+        case "test_reject":
+          msg.reject("echo reject");
+          break;
+        case "test_dead_letter":
+          msg.deadLetter("echo dead letter");
+          break;
+        case "test_suspend":
+          msg.suspend({ checkpoint: { n: 1 }, wakeAt: 1 });
+          break;
+        default:
+          msg.ack();
+      }
     }
-    const message = params.args?.message ?? "hi";
-    return JSON.stringify({
-      exitCode: 0,
-      stdout: `pong: ${message}\n`,
-      json: { pong: message },
-    });
   }
 }

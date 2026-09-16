@@ -36,17 +36,17 @@ import {
 import { googleFaviconUrl, storeFaviconUrl } from "@/lib/catalogTitle";
 import { cn, pageWidthClass } from "@/lib/utils";
 
-const KIND_LABELS: Record<string, string> = {
+const FAMILY_LABELS: Record<string, string> = {
   source: "Sources",
-  destination: "Destinations",
+  output: "Destinations",
   database: "Database",
   integration: "Integrations",
   other: "Other",
 };
 
-function kindLabel(kind: string): string {
-  const key = kind.trim().toLowerCase();
-  if (KIND_LABELS[key]) return KIND_LABELS[key];
+function familyLabel(family: string): string {
+  const key = family.trim().toLowerCase();
+  if (FAMILY_LABELS[key]) return FAMILY_LABELS[key];
   if (!key) return "Other";
   return key.charAt(0).toUpperCase() + key.slice(1);
 }
@@ -170,7 +170,7 @@ function coresSettingValue(cores: number | null | undefined): string {
 }
 
 function pluginRowKey(plugin: PluginSettingsGroup): string {
-  return `${plugin.kind}:${plugin.id}`;
+  return `${plugin.family}:${plugin.id}`;
 }
 
 /** Prefer the standard `*.enabled` knob; fall back to an "Enabled" label. */
@@ -182,11 +182,11 @@ function findEnabledOption(plugin: PluginSettingsGroup): PluginSettingOption | n
 
 function runtimeLoadedKey(plugin: PluginSettingsGroup): string {
   const plural =
-    plugin.kind === "source"
+    plugin.family === "source"
       ? "sources"
-      : plugin.kind === "integration"
+      : plugin.family === "integration"
         ? "integrations"
-        : `${plugin.kind}s`;
+        : `${plugin.family}s`;
   return `runtime.${plural}.${plugin.id}.loaded`;
 }
 
@@ -202,7 +202,7 @@ function pluginLogoCandidates(plugin: PluginSettingsGroup): string[] {
     if (t && !out.includes(t)) out.push(t);
   };
   push(plugin.logo);
-  if (plugin.kind === "source" || plugin.kind === "integration") {
+  if (plugin.family === "source" || plugin.family === "integration") {
     push(storeFaviconUrl(plugin.id));
   }
   const domain = PLUGIN_FAVICON_FALLBACK_DOMAINS[pluginRowKey(plugin)];
@@ -228,7 +228,7 @@ function PluginLogo({ plugin }: { plugin: PluginSettingsGroup }) {
   const [index, setIndex] = useState(0);
   useEffect(() => {
     setIndex(0);
-  }, [plugin.kind, plugin.id, plugin.logo]);
+  }, [plugin.family, plugin.id, plugin.logo]);
   const src = candidates[index];
   if (!src) {
     return (
@@ -357,7 +357,7 @@ export function SettingsPage({
   const [pluginValues, setPluginValues] = useState<Record<string, string>>({});
   const [pluginErrors, setPluginErrors] = useState<Record<string, string>>({});
   const [consentCoverage, setConsentCoverage] = useState<Record<string, PluginConsentResponse>>({});
-  /** Plugins start collapsed; keys are `${kind}:${id}`. */
+  /** Plugins start collapsed; keys are `${family}:${id}`. */
   const [expandedPlugins, setExpandedPlugins] = useState<Set<string>>(() => new Set());
   const [consentPrompt, setConsentPrompt] = useState<PluginConsentResponse | null>(null);
   const [pendingEnableOption, setPendingEnableOption] = useState<PluginSettingOption | null>(null);
@@ -539,16 +539,16 @@ export function SettingsPage({
   const operatorHasValidationErrors =
     Object.keys(pluginErrors).length > 0 || daemonListenError !== null || confinementHasErrors;
 
-  const pluginsByKind = useMemo(() => {
+  const pluginsByFamily = useMemo(() => {
     const buckets = new Map<string, PluginSettingsGroup[]>();
     if (!settings) {
       return buckets;
     }
     for (const plugin of settings.plugins) {
-      const kind = plugin.kind || "other";
-      const current = buckets.get(kind) ?? [];
+      const family = plugin.family || "other";
+      const current = buckets.get(family) ?? [];
       current.push(plugin);
-      buckets.set(kind, current);
+      buckets.set(family, current);
     }
     return buckets;
   }, [settings]);
@@ -772,7 +772,8 @@ export function SettingsPage({
         runtime: "native",
         request: {
           pluginId,
-          kind: "",
+          entrypoints: [],
+          producers: [],
           networkMode: "deny",
           domains: [],
           bindings: [],
@@ -942,7 +943,7 @@ export function SettingsPage({
   }
 
   function renderPluginOption(plugin: PluginSettingsGroup, option: PluginSettingOption) {
-    const fieldId = `${plugin.kind}-${plugin.id}-${option.key}`;
+    const fieldId = `${plugin.family}-${plugin.id}-${option.key}`;
     const value = pluginValues[option.key] ?? option.value;
     const error = pluginErrors[option.key];
 
@@ -1492,12 +1493,12 @@ export function SettingsPage({
                   </p>
                 </div>
 
-                {pluginsByKind.size === 0 ? (
+                {pluginsByFamily.size === 0 ? (
                   <p className="text-sm text-ink/50">No plugins discovered.</p>
                 ) : (
-                  Array.from(pluginsByKind.entries()).map(([kind, plugins]) => (
-                    <div key={kind} className="space-y-2">
-                      <h3 className="text-sm font-semibold text-ink/70">{kindLabel(kind)}</h3>
+                  Array.from(pluginsByFamily.entries()).map(([family, plugins]) => (
+                    <div key={family} className="space-y-2">
+                      <h3 className="text-sm font-semibold text-ink/70">{familyLabel(family)}</h3>
                       <ul className="divide-y divide-ink/10 bg-card">
                         {plugins.map((plugin) => {
                           const rowKey = pluginRowKey(plugin);
@@ -1546,7 +1547,7 @@ export function SettingsPage({
                                   <PluginLogo plugin={plugin} />
                                   <span className="truncate font-medium text-ink">{plugin.id}</span>
                                   <span className="hidden text-xs text-ink/45 sm:inline">
-                                    {plugin.kind}
+                                    {plugin.family}
                                   </span>
                                 </button>
 
@@ -1611,7 +1612,7 @@ export function SettingsPage({
                                         {consent.covered ? "Granted" : "Needs approval"}
                                       </Badge>
                                     ) : null}
-                                    <span className="text-xs text-ink/45">{plugin.kind}</span>
+                                    <span className="text-xs text-ink/45">{plugin.family}</span>
                                   </div>
                                 )}
                               </div>
@@ -1634,7 +1635,7 @@ export function SettingsPage({
                                         if (option.value_type === "boolean") {
                                           return (
                                             <div
-                                              key={`${plugin.kind}-${plugin.id}-${option.key}`}
+                                              key={`${plugin.family}-${plugin.id}-${option.key}`}
                                               className="border-t border-ink/10 sm:col-span-2"
                                             >
                                               {control}

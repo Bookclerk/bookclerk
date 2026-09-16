@@ -1191,7 +1191,7 @@ pub enum JobKind {
     ListenSync,
     /// Remote integration library scan (Audiobookshelf, …).
     IntegrationScan,
-    /// ABI `JobHandler` stream-copy vertical slice (`plugin_copy`).
+    /// ABI `JobRunner` stream-copy vertical slice (`plugin_copy`).
     PluginCopy,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,

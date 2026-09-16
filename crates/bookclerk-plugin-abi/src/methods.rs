@@ -1,7 +1,8 @@
 //! Role capability method names (camelCase on the wire).
 //!
 //! Each submodule exposes a single [`NAME`](health::NAME) constant equal to
-//! the corresponding `ContentSource` / `Integration` / `Plugin` method in
+//! the corresponding `ContentSource` / `RemoteLibrary` / `Oidc` / `Cli` /
+//! `EventConsumer` / `EventPublisher` / `PluginWorker` method in
 //! `schema/plugin.capnp`. Prefer these constants over string literals when
 //! dispatching or documenting capabilities.
 //!
@@ -18,13 +19,15 @@ pub const METHOD_NAMES: &[&str] = &[
     diagnose::NAME,
     start::NAME,
     stop::NAME,
-    on_event::NAME,
+    event::NAME,
+    publish::NAME,
     poll_events::NAME,
     scan_library::NAME,
     sync_listening::NAME,
     authenticate_user::NAME,
-    cli_describe::NAME,
-    cli_invoke::NAME,
+    clients::NAME,
+    describe::NAME,
+    invoke::NAME,
     login::NAME,
     login_start::NAME,
     login_complete::NAME,
@@ -66,22 +69,30 @@ pub mod diagnose {
     pub const NAME: &str = "diagnose";
 }
 
-/// Start background watchers (integration capability `start`).
+/// Start background watchers (Cap'n Proto `RemoteLibrary.start`).
 pub mod start {
     /// Wire method name `"start"`.
     pub const NAME: &str = "start";
 }
 
-/// Stop background watchers started by [`start`] (Cap'n Proto `Integration.stop`).
+/// Stop background watchers started by [`start`] (Cap'n Proto `RemoteLibrary.stop`).
 pub mod stop {
     /// Wire method name `"stop"`.
     pub const NAME: &str = "stop";
 }
 
-/// Deliver a host→plugin domain event (Cap'n Proto `Integration.onEvent`).
-pub mod on_event {
-    /// Wire method name `"onEvent"`.
-    pub const NAME: &str = "onEvent";
+/// Deliver one ordered batch of domain events (Cap'n Proto `EventConsumer.event`).
+pub mod event {
+    /// Wire method name `"event"`.
+    pub const NAME: &str = "event";
+}
+
+/// Append one guest event to the host outbox (Cap'n Proto `EventPublisher.publish`).
+///
+/// Params: [`crate::PluginEvent`]. Result: [`crate::PublishOk`].
+pub mod publish {
+    /// Wire method name `"publish"`.
+    pub const NAME: &str = "publish";
 }
 
 /// Poll for plugin-observed external users after [`start`].
@@ -108,7 +119,8 @@ pub mod sync_listening {
     pub const NAME: &str = "syncListening";
 }
 
-/// Validate a username/password against an integration and return an external user.
+/// Validate a username/password against a remote IdP (Cap'n Proto
+/// `Oidc.authenticateUser`) and return an external user.
 ///
 /// Params: [`crate::AuthenticateUserParams`].
 pub mod authenticate_user {
@@ -116,18 +128,25 @@ pub mod authenticate_user {
     pub const NAME: &str = "authenticateUser";
 }
 
-/// Return the guest's declared CLI schema ([`crate::CliSchema`]).
-pub mod cli_describe {
-    /// Wire method name `"cliDescribe"`.
-    pub const NAME: &str = "cliDescribe";
+/// Plugin-provided OIDC client templates (Cap'n Proto `Oidc.clients`).
+pub mod clients {
+    /// Wire method name `"clients"`.
+    pub const NAME: &str = "clients";
 }
 
-/// Invoke a declared plugin CLI command.
+/// Return the guest's declared CLI schema ([`crate::CliSchema`]; Cap'n Proto
+/// `PluginCli.describe`). Also the root `PluginWorker.describe` identity call.
+pub mod describe {
+    /// Wire method name `"describe"`.
+    pub const NAME: &str = "describe";
+}
+
+/// Invoke a declared plugin CLI command (Cap'n Proto `PluginCli.invoke`).
 ///
 /// Params: [`crate::CliInvokeParams`]. Result: [`crate::CliInvokeResult`].
-pub mod cli_invoke {
-    /// Wire method name `"cliInvoke"`.
-    pub const NAME: &str = "cliInvoke";
+pub mod invoke {
+    /// Wire method name `"invoke"`.
+    pub const NAME: &str = "invoke";
 }
 
 /// Password-style source login; host seals returned credentials.
@@ -275,16 +294,18 @@ pub mod names {
     pub use super::authenticate_user::NAME as AUTHENTICATE_USER;
     /// Alias of [`super::catalog_detail::NAME`] (`"catalogDetail"`).
     pub use super::catalog_detail::NAME as CATALOG_DETAIL;
-    /// Alias of [`super::cli_describe::NAME`] (`"cliDescribe"`).
-    pub use super::cli_describe::NAME as CLI_DESCRIBE;
-    /// Alias of [`super::cli_invoke::NAME`] (`"cliInvoke"`).
-    pub use super::cli_invoke::NAME as CLI_INVOKE;
+    /// Alias of [`super::clients::NAME`] (`"clients"`).
+    pub use super::clients::NAME as CLIENTS;
     /// Alias of [`super::copy::NAME`] (`"copy"`).
     pub use super::copy::NAME as COPY;
     /// Alias of [`super::delete::NAME`] (`"delete"`).
     pub use super::delete::NAME as DELETE;
+    /// Alias of [`super::describe::NAME`] (`"describe"`).
+    pub use super::describe::NAME as DESCRIBE;
     /// Alias of [`super::diagnose::NAME`] (`"diagnose"`).
     pub use super::diagnose::NAME as DIAGNOSE;
+    /// Alias of [`super::event::NAME`] (`"event"`).
+    pub use super::event::NAME as EVENT;
     /// Alias of [`super::exists::NAME`] (`"exists"`).
     pub use super::exists::NAME as EXISTS;
     /// Alias of [`super::expand_candidates::NAME`] (`"expandCandidates"`).
@@ -295,6 +316,8 @@ pub mod names {
     pub use super::get::NAME as GET;
     /// Alias of [`super::health::NAME`] (`"health"`).
     pub use super::health::NAME as HEALTH;
+    /// Alias of [`super::invoke::NAME`] (`"invoke"`).
+    pub use super::invoke::NAME as INVOKE;
     /// Alias of [`super::list::NAME`] (`"list"`).
     pub use super::list::NAME as LIST;
     /// Alias of [`super::list_accounts::NAME`] (`"listAccounts"`).
@@ -307,10 +330,10 @@ pub mod names {
     pub use super::login_complete::NAME as LOGIN_COMPLETE;
     /// Alias of [`super::login_start::NAME`] (`"loginStart"`).
     pub use super::login_start::NAME as LOGIN_START;
-    /// Alias of [`super::on_event::NAME`] (`"onEvent"`).
-    pub use super::on_event::NAME as ON_EVENT;
     /// Alias of [`super::poll_events::NAME`] (`"pollEvents"`).
     pub use super::poll_events::NAME as EVENT_POLL;
+    /// Alias of [`super::publish::NAME`] (`"publish"`).
+    pub use super::publish::NAME as PUBLISH;
     /// Alias of [`super::purchase_hint::NAME`] (`"purchaseHint"`).
     pub use super::purchase_hint::NAME as PURCHASE_HINT;
     /// Alias of [`super::put::NAME`] (`"put"`).

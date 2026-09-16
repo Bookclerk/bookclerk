@@ -1,10 +1,12 @@
 /**
  * Bookclerk bridge worker — HTTP ↔ Workers RPC service binding.
  *
- * Role routes (`/describe`, `/destination/*`, …): one invocation envelope per
- * HTTP request. The bridge creates the role capability, invokes the method,
- * and disposes the stub before completing. No dest-id table is retained
- * across requests.
+ * Role routes (`/describe`, `/destination/*`, `/contentSource/<op>`,
+ * `/integration/<op>`, `/worker/handle`, …): one invocation envelope per HTTP
+ * request. `env.PLUGIN` is the trusted adapter isolate, which maps each route
+ * onto the author's v3 entrypoints (`invokeEntrypoint`, `invokeEvent`,
+ * `invokeHandle`, …). No role stubs or dest-id tables are retained across
+ * requests.
  *
  * Envelopes are the camelCase JSON projection of the typed Cap'n Proto ABI
  * structs (`PluginDescribe`, `CliSchema`, `LoginParams`, …) with `Data`
@@ -160,67 +162,26 @@ function metaHeaders(meta) {
   return headers;
 }
 
-async function disposeRpc(stub) {
-  if (stub == null || typeof stub !== "object") return;
-  try {
-    if (typeof stub[Symbol.asyncDispose] === "function") {
-      await stub[Symbol.asyncDispose]();
-      return;
-    }
-    if (typeof stub[Symbol.dispose] === "function") {
-      stub[Symbol.dispose]();
-    }
-  } catch {
-    // disposal is best-effort
+/**
+ * Adapter method lookup. `env.PLUGIN` is a service-binding stub, so the
+ * method is invoked through the stub rather than bound (`bind` is itself
+ * an RPC call on a stub).
+ */
+function adapterMethod(plugin, name) {
+  if (typeof plugin[name] !== "function") {
+    throw Object.assign(new Error(`adapter missing ${name}`), { code: "internal" });
   }
+  return (...args) => plugin[name](...args);
 }
 
-async function invokeDest(plugin, op, ctx, args, body) {
-  if (typeof plugin.invokeDestination === "function") {
-    return plugin.invokeDestination(op, ctx, args, body);
-  }
-  const dest = await plugin.destination(ctx);
-  try {
-    switch (op) {
-      case "head":
-        return dest.head(args.key || "");
-      case "list":
-        return dest.list(args.options ?? {});
-      case "get":
-        return dest.get(args.key || "", args.options);
-      case "put":
-        return dest.put(args.key || "", body, args.options);
-      case "copy":
-        if (typeof dest.copy !== "function") {
-          throw Object.assign(new Error("copy not implemented"), { code: "unsupported" });
-        }
-        return dest.copy(args.from, args.to);
-      case "delete":
-        await dest.delete(args.key || "");
-        return { ok: true };
-      case "commit":
-        return dest.commit(args.key || "", args.commitToken || "");
-      case "abortStage":
-        await dest.abortStage(args.key || "", args.commitToken || "");
-        return { ok: true };
-      default:
-        throw Object.assign(new Error(`destination.${op}`), { code: "unsupported" });
-    }
-  } finally {
-    await disposeRpc(dest);
-  }
+/** `storage` entrypoint call through the adapter (`invokeDestination`). */
+function invokeDest(plugin, op, ctx, args, body) {
+  return adapterMethod(plugin, "invokeDestination")(op, ctx, args, body);
 }
 
-async function invokeSourceOpen(plugin, ctx, key) {
-  if (typeof plugin.invokeSourceOpen === "function") {
-    return plugin.invokeSourceOpen(ctx, key);
-  }
-  const src = await plugin.source(ctx);
-  try {
-    return await src.open(key);
-  } finally {
-    await disposeRpc(src);
-  }
+/** `storage.get` through the adapter for the legacy `/source/open` route. */
+function invokeSourceOpen(plugin, ctx, key) {
+  return adapterMethod(plugin, "invokeSourceOpen")(ctx, key);
 }
 
 /** Cap'n `Data` field names; bridge JSON carries them as base64 text. */
@@ -459,19 +420,14 @@ async function handleRoleInvoke(request, env, url) {
       const grantToken = body.grantToken;
       const invocation = body.invocation ?? {};
       const databases = body.databases ?? {};
-      if (typeof plugin.invokeHandle === "function") {
-        return bridgeJson(
-          await plugin.invokeHandle(ctx, fromBridgeJson(invocation), grantToken, databases),
-        );
-      }
-      const handler = await plugin.worker(ctx);
-      try {
-        throw Object.assign(new Error("granted reverse channel required"), {
-          code: "internal",
-        });
-      } finally {
-        await disposeRpc(handler);
-      }
+      return bridgeJson(
+        await adapterMethod(plugin, "invokeHandle")(
+          ctx,
+          fromBridgeJson(invocation),
+          grantToken,
+          databases,
+        ),
+      );
     } catch (err) {
       const { code, message } = catchErr(err);
       return errJson(null, code, message);
@@ -533,6 +489,9 @@ async function handleRoleInvoke(request, env, url) {
     }
   }
 
+  // `/contentSource/<op>` → `storefront` entrypoint; `/integration/<op>` →
+  // `onEvent` on the default entrypoint's `event(batch)` trigger,
+  // `authenticateUser` on `oidc`, everything else on `remoteLibrary`.
   const roleMatch = url.pathname.match(/^\/(contentSource|integration)\/([^/]+)$/);
   if (roleMatch && request.method === "POST") {
     try {
@@ -540,34 +499,33 @@ async function handleRoleInvoke(request, env, url) {
       const op = roleMatch[2];
       const body = await request.json();
       const ctx = contextFrom(request, body);
-      const cap =
-        role === "contentSource"
-          ? await plugin.contentSource(ctx)
-          : await plugin.integration(ctx);
-      try {
-        if (typeof cap[op] !== "function") {
-          return errJson(null, "unsupported", `${role}.${op}`);
+      if (role === "integration" && op === "onEvent") {
+        if (typeof plugin.invokeEvent !== "function") {
+          return errJson(null, "unsupported", "integration.onEvent");
         }
-        // `{ context, params }` for typed method params; `{ context, event }`
-        // for `onEvent`. Methods without params receive no arguments.
-        const args =
-          body.params != null
-            ? [fromBridgeJson(body.params)]
-            : body.event != null
-              ? [fromBridgeJson(body.event)]
-              : [];
-        const result = await cap[op](...args);
-        if (op === "diagnose") {
-          const lines = Array.isArray(result) ? result : Array.isArray(result?.lines) ? result.lines : [];
-          return Response.json({ lines: lines.map((l) => String(l)) });
-        }
-        if (op === "pollEvents" && Array.isArray(result)) {
-          return bridgeJson({ users: result });
-        }
-        return bridgeJson(result ?? { ok: true });
-      } finally {
-        await disposeRpc(cap);
+        return bridgeJson(await plugin.invokeEvent(ctx, fromBridgeJson(body.event ?? {})));
       }
+      if (typeof plugin.invokeEntrypoint !== "function") {
+        return errJson(null, "unsupported", `${role}.${op}`);
+      }
+      const entrypoint =
+        role === "contentSource"
+          ? "storefront"
+          : op === "authenticateUser"
+            ? "oidc"
+            : "remoteLibrary";
+      // `{ context, params }` for typed method params. Methods without params
+      // receive no arguments.
+      const args = body.params != null ? [fromBridgeJson(body.params)] : [];
+      const result = await plugin.invokeEntrypoint(entrypoint, ctx, op, args);
+      if (op === "diagnose") {
+        const lines = Array.isArray(result) ? result : Array.isArray(result?.lines) ? result.lines : [];
+        return Response.json({ lines: lines.map((l) => String(l)) });
+      }
+      if (op === "pollEvents" && Array.isArray(result)) {
+        return bridgeJson({ users: result });
+      }
+      return bridgeJson(result ?? { ok: true });
     } catch (err) {
       const { code, message } = catchErr(err);
       return errJson(null, code, message);

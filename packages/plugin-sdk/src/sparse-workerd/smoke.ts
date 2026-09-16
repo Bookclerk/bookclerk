@@ -2,8 +2,8 @@
  * Out-of-tree workerd plugin smoke: ensure → materialize → describe + health.
  *
  * Spawns the pinned `workerd` binary against a materialised Cap'n Proto config
- * and exercises the bridge `/health`, `describe()`, and (for content-source /
- * integration kinds) the role `health` route.
+ * and exercises the bridge `/health`, `describe()`, and (for `storefront` /
+ * `remoteLibrary` entrypoints) the entrypoint `health` route.
  */
 
 import fs from "node:fs";
@@ -140,7 +140,6 @@ export async function runSmoke(pluginDir: string): Promise<string> {
   const bridgeToken = randomBytes(32).toString("hex");
   const generated = materializeConfig(root, manifest, {
     listenPort: port,
-    notifyAddr: null,
     bridgeToken,
   });
   const base = `http://${generated.listenAddr}`;
@@ -165,13 +164,14 @@ export async function runSmoke(pluginDir: string): Promise<string> {
   try {
     await waitForHealth(base, bridgeToken);
     const describe = await postJson(`${base}/describe`, {}, bridgeToken);
-    // Role `health` exists for content-source / integration kinds only.
-    const healthPath =
-      manifest.kind === "source"
-        ? "/contentSource/health"
-        : manifest.kind === "integration"
-          ? "/integration/health"
-          : null;
+    // `health` is a method of the storefront and remoteLibrary entrypoints;
+    // the default entrypoint (event/job triggers) has no health probe.
+    const entrypoints = manifest.entrypoints ?? [];
+    const healthPath = entrypoints.includes("storefront")
+      ? "/contentSource/health"
+      : entrypoints.includes("remoteLibrary")
+        ? "/integration/health"
+        : null;
     const health = healthPath
       ? await postJson(`${base}${healthPath}`, {}, bridgeToken)
       : null;

@@ -1,7 +1,7 @@
-api_version = 2
+api_version = 3
 id = "bad"
-kind = "source"
 runtime = "workerd"
+entrypoints = ["storefront"]
 
 [workerd]
 compatibility_date = "2026-08-01"

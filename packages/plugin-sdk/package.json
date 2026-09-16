@@ -42,7 +42,8 @@
     "prepare": "npm run build",
     "test:tools": "node scripts/test-tools.mjs",
     "test:db-value": "node scripts/test-db-value.mjs",
-    "test:plugin-migrations": "node scripts/test-plugin-migrations.mjs"
+    "test:plugin-migrations": "node scripts/test-plugin-migrations.mjs",
+    "test:entrypoints": "node scripts/test-entrypoints.mjs"
   },
   "engines": {
     "node": ">=20"

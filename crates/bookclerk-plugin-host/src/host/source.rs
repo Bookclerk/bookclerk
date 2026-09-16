@@ -18,7 +18,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_library::SourceScope;
-use bookclerk_plugin_sdk::{ContentSourceContext, ExtensibleConfig, PRODUCT_API_VERSION};
+use bookclerk_plugin_sdk::{BindingValues, ExtensibleConfig, PRODUCT_API_VERSION};
 use bookclerk_source::abi::{
     self as source_abi, account_credentials, credentials_from_bytes, credentials_to_bytes,
     expand_candidates_params, scan_book_to_new, scan_summary_from_abi, DEFAULT_EXTERNAL_SORT_KEY,
@@ -37,15 +37,14 @@ use crate::protocol::{
     CatalogDetailParams, FetchTitleParams, ListDealsParams, LoginCompleteParams, LoginParams,
     LoginResult, ScanParams, SearchCatalogParams,
 };
-use crate::rpc_session::{PluginSession, HOST_SHARED_ACCOUNT};
+use crate::rpc_session::{PluginSession, SessionServices, HOST_SHARED_ACCOUNT};
 use crate::Result;
 
 /// External content source backed by a discovered plugin binary.
 pub struct ExternalSource {
-    /// Cap'n Proto session (never given `library.db`).
+    /// Cap'n Proto session (never given `library.db`); opened once with the
+    /// granted plugin config table as the `CONFIG` binding.
     session: Arc<PluginSession>,
-    /// Granted factory context (plugin config table as JSON config).
-    ctx: ContentSourceContext,
     /// Operator-facing storefront name from `describe()` or the manifest.
     display_name: String,
     /// UI brand colors and icon from `describe()`, or a slate fallback.
@@ -71,6 +70,20 @@ impl ExternalSource {
     ///
     /// Returns an error when the operation fails.
     pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> Result<Self> {
+        Self::spawn_with(plugin, config, SessionServices::default()).await
+    }
+
+    /// [`Self::spawn`] with the host services the guest may receive as
+    /// bindings (`EVENTS` outbox, …).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
+    pub async fn spawn_with(
+        plugin: &DiscoveredPlugin,
+        config: &Config,
+        services: SessionServices,
+    ) -> Result<Self> {
         if plugin.manifest.api_version != PRODUCT_API_VERSION {
             return Err(crate::PluginError::message(format!(
                 "plugin `{}` api_version {} is not supported",
@@ -80,11 +93,13 @@ impl ExternalSource {
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
         let session = Arc::new(
-            PluginSession::spawn_for_account(
+            PluginSession::spawn_with(
                 plugin,
                 config,
                 config_json.clone(),
                 HOST_SHARED_ACCOUNT,
+                &[],
+                services,
             )
             .await?,
         );
@@ -112,12 +127,13 @@ impl ExternalSource {
             describe.sort_key
         };
         let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
-        let ctx = ContentSourceContext {
-            config: ExtensibleConfig::json(&source_config),
-        };
+        session
+            .open(BindingValues::config(ExtensibleConfig::json(
+                &source_config,
+            )))
+            .await?;
         Ok(Self {
             session,
-            ctx,
             display_name,
             brand,
             auth_mode,
@@ -142,16 +158,15 @@ impl ExternalSource {
             + 'static,
     {
         self.session
-            .content_source(self.ctx.clone(), call)
+            .storefront(call)
             .await
             .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
     }
 
-    /// True when the guest advertised OAuth plus `loginStart`/`loginComplete`.
+    /// True when the guest advertised OAuth connect (`loginStart` /
+    /// `loginComplete`); the `oauth` binding was verified at spawn.
     fn supports_oauth_rpc(&self) -> bool {
         self.auth_mode == PortalAuthMode::Oauth
-            && self.session.has_capability("loginStart")
-            && self.session.has_capability("loginComplete")
     }
 
     /// Password login RPC; requires the `secrets` binding when a password is sent.
@@ -229,9 +244,16 @@ impl ExternalSource {
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub async fn load_external_sources(config: &Config, registry: &mut SourceRegistry) -> Result<()> {
+pub async fn load_external_sources(
+    config: &Config,
+    registry: &mut SourceRegistry,
+    services: &SessionServices,
+) -> Result<()> {
     for plugin in crate::discover_plugins(config)? {
-        if plugin.manifest.kind != crate::PluginKind::Source {
+        if !plugin
+            .manifest
+            .has_entrypoint(crate::Entrypoint::Storefront)
+        {
             continue;
         }
         if !config.sources.is_enabled(&plugin.manifest.id) {
@@ -245,7 +267,7 @@ pub async fn load_external_sources(config: &Config, registry: &mut SourceRegistr
             );
             continue;
         }
-        match ExternalSource::spawn(&plugin, config).await {
+        match ExternalSource::spawn_with(&plugin, config, services.clone()).await {
             Ok(s) => {
                 tracing::info!(id = %plugin.manifest.id, "loaded external source plugin");
                 registry.register(Arc::new(s));
@@ -405,9 +427,6 @@ impl ContentSource for ExternalSource {
         &self,
         opts: &CatalogSearchOpts,
     ) -> bookclerk_source::Result<Vec<CatalogHit>> {
-        if !self.session.has_capability("searchCatalog") {
-            return Ok(Vec::new());
-        }
         let params = SearchCatalogParams::from(opts);
         match self
             .cs_call(move |src| async move { src.search_catalog(params).await })
@@ -429,9 +448,6 @@ impl ContentSource for ExternalSource {
         &self,
         product_id: &str,
     ) -> bookclerk_source::Result<Option<CatalogHit>> {
-        if !self.session.has_capability("catalogDetail") {
-            return Ok(None);
-        }
         let params = CatalogDetailParams {
             product_id: product_id.to_string(),
             isbn: None,
@@ -457,9 +473,6 @@ impl ContentSource for ExternalSource {
         seed: &ExpandSeed,
         limit: usize,
     ) -> bookclerk_source::Result<Vec<CatalogHit>> {
-        if !self.session.has_capability("expandCandidates") {
-            return Ok(Vec::new());
-        }
         let params = expand_candidates_params(seed, limit);
         match self
             .cs_call(move |src| async move { src.expand_candidates(params).await })
@@ -481,9 +494,6 @@ impl ContentSource for ExternalSource {
         &self,
         opts: &PurchaseHintOpts,
     ) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
-        if !self.session.has_capability("purchaseHint") {
-            return Ok(None);
-        }
         let params = bookclerk_plugin_sdk::PurchaseHintParams::from(opts);
         match self
             .cs_call(move |src| async move { src.purchase_hint(params).await })
@@ -502,9 +512,6 @@ impl ContentSource for ExternalSource {
     }
 
     async fn list_deals(&self, limit: usize) -> bookclerk_source::Result<Vec<CatalogHit>> {
-        if !self.session.has_capability("listDeals") {
-            return Ok(Vec::new());
-        }
         let params = ListDealsParams {
             limit: Some(u32::try_from(limit).unwrap_or(DEFAULT_LIST_DEALS_LIMIT)),
         };

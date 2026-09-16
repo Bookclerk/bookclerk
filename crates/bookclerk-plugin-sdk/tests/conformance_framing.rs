@@ -14,8 +14,8 @@ fn max_rpc_line_bytes_is_16_mib() {
 }
 
 #[test]
-fn product_api_version_is_2() {
-    assert_eq!(PRODUCT_API_VERSION, 2);
+fn product_api_version_is_3() {
+    assert_eq!(PRODUCT_API_VERSION, 3);
 }
 
 #[test]
@@ -25,8 +25,9 @@ fn shutdown_method_name_is_stable() {
 
 #[test]
 fn camel_case_method_names() {
-    assert_eq!(methods::ON_EVENT, "onEvent");
+    assert_eq!(methods::EVENT, "event");
+    assert_eq!(methods::PUBLISH, "publish");
     assert_eq!(methods::FETCH_TITLE, "fetchTitle");
-    assert_eq!(methods::CLI_INVOKE, "cliInvoke");
+    assert_eq!(methods::INVOKE, "invoke");
     assert_eq!(methods::LOGIN_START, "loginStart");
 }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from bookclerk_plugin_sdk.workerd import granted_job_context
+from bookclerk_plugin_sdk.workerd import granted_databases
 
 
 class _MockFetcher:
@@ -44,9 +44,9 @@ class _MockFetcher:
 class WorkerdGrantedDbTests(unittest.IsolatedAsyncioTestCase):
     async def test_context_database_prepare_first_hits_granted_route(self) -> None:
         fetcher = _MockFetcher()
-        ctx = granted_job_context(fetcher, "grant-token")
-        self.assertIsNotNone(ctx.database)
-        row = await ctx.database.prepare("SELECT 1").first()
+        databases = granted_databases(fetcher, {"DB": "grant-token"})
+        self.assertEqual(sorted(databases), ["DB"])
+        row = await databases["DB"].prepare("SELECT 1").first()
         self.assertEqual(len(fetcher.calls), 1)
         url, kwargs = fetcher.calls[0]
         self.assertEqual(url, "http://granted/db/execute")

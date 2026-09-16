@@ -10,8 +10,11 @@ Derived:
   - packages/plugin-sdk/workerd-pin.json
   - packages/plugin-sdk-python/workerd-pin.json
   - packages/plugin-sdk-python/src/bookclerk_plugin_sdk/workerd-pin.json
-  - packages/plugin-sdk/bridge/{bridge,egress,host_stub}.js
+  - packages/plugin-sdk/bridge/{bridge,egress}.js
   - packages/plugin-sdk-python/src/bookclerk_plugin_sdk/bridge/{…}.js
+  - packages/plugin-sdk-python/src/bookclerk_plugin_sdk/bridge/bookclerk_plugin.js
+    (copy of packages/plugin-sdk/embed/bookclerk_plugin.js for the adapter isolate
+    the Python sparse launcher materializes)
 
 Exit codes:
   0 — ok (wrote, or --check clean)
@@ -36,10 +39,17 @@ STUB_COPIES = (
 )
 
 BRIDGE_SRC = ROOT / "crates/bookclerk-workerd/bridge"
-BRIDGE_FILES = ("bridge.js", "egress.js", "host_stub.js")
+BRIDGE_FILES = ("bridge.js", "egress.js")
 BRIDGE_DESTS = (
     ROOT / "packages/plugin-sdk/bridge",
     ROOT / "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/bridge",
+)
+# (source, destination) byte-identical copies outside the bridge trees.
+EXTRA_COPIES = (
+    (
+        ROOT / "packages/plugin-sdk/embed/bookclerk_plugin.js",
+        ROOT / "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/bridge/bookclerk_plugin.js",
+    ),
 )
 
 # Stable platform key order for generated Rust match arms.
@@ -281,6 +291,13 @@ def write_bridge_copies() -> list[Path]:
             if not dest.exists() or dest.read_bytes() != body:
                 dest.write_bytes(body)
                 written.append(dest)
+    for src, dest in EXTRA_COPIES:
+        if not src.is_file():
+            raise SystemExit(f"missing copy source {src}")
+        body = src.read_bytes()
+        if not dest.exists() or dest.read_bytes() != body:
+            dest.write_bytes(body)
+            written.append(dest)
     return written
 
 
@@ -308,6 +325,17 @@ def check_bridge_copies() -> list[str]:
                     f"{rel} disagrees with crates/bookclerk-workerd/bridge/{name} "
                     "(run: python3 scripts/sync-workerd-pin.py --write)"
                 )
+    for src, dest in EXTRA_COPIES:
+        rel = dest.relative_to(ROOT)
+        if not src.is_file():
+            errors.append(f"missing copy source {src.relative_to(ROOT)}")
+        elif not dest.is_file():
+            errors.append(f"missing copy {rel}")
+        elif dest.read_bytes() != src.read_bytes():
+            errors.append(
+                f"{rel} disagrees with {src.relative_to(ROOT)} "
+                "(run: python3 scripts/sync-workerd-pin.py --write)"
+            )
     return errors
 
 

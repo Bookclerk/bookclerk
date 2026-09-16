@@ -9,15 +9,30 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_plugin_abi::{
-    connect_plugin, ByteRange, Destination, DestinationContext, JobInvocation, JobOutcome,
-    ListOptions, ProgressSink, Source, StreamCopySpec, WorkerContext, WriteOptions,
-    PRODUCT_API_VERSION,
+    connect_plugin, ByteRange, Destination, DestinationClient, HostBindings, Invocation,
+    JobInvocation, JobOutcome, ListOptions, NeverCancel, PluginClient, ProgressSink, Source,
+    StreamCopySpec, WriteOptions, PRODUCT_API_VERSION,
 };
 use bookclerk_workerd::pin::binary_name;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 const PAYLOAD: u64 = 2 * 1024 * 1024;
+
+/// Opens the fixture's `storage` entrypoint for one operator-wide invocation.
+async fn open_storage(client: &PluginClient, id: &str) -> DestinationClient {
+    let opened = client
+        .open(
+            &Invocation {
+                id: id.into(),
+                ..Default::default()
+            },
+            HostBindings::default(),
+        )
+        .await
+        .expect("open");
+    opened.storage.expect("fixture exports `storage`")
+}
 
 fn skip_workerd_allowed() -> bool {
     std::env::var("BOOKCLERK_SKIP_WORKERD").ok().as_deref() == Some("1")
@@ -268,10 +283,7 @@ async fn workerd_stream_and_job_handler_contract() {
                 "invocation-scoped adapter must not retain dest-id maps: {display}"
             );
 
-            let dest = client
-                .destination(DestinationContext::default())
-                .await
-                .expect("destination");
+            let dest = open_storage(&client, "first").await;
             tokio::time::timeout(
                 Duration::from_secs(30),
                 dest.put(
@@ -300,21 +312,12 @@ async fn workerd_stream_and_job_handler_contract() {
             );
             drop(dest);
             tokio::time::sleep(Duration::from_millis(150)).await;
-            let dest = client
-                .destination(DestinationContext::default())
-                .await
-                .expect("destination after drop");
+            let dest = open_storage(&client, "second").await;
             let got_again = dest.get("hello", None).await.expect("get after dest drop");
             let mut buf2 = Vec::new();
             let mut body2 = got_again.body;
             body2.read_to_end(&mut buf2).await.unwrap();
             assert_eq!(buf2, b"abc", "module state survives dest drop");
-            let src = client
-                .source(bookclerk_plugin_abi::SourceContext::default())
-                .await
-                .expect("source");
-            drop(src);
-            tokio::time::sleep(Duration::from_millis(150)).await;
 
             let before = tree_rss_kib(launcher_pid);
             let put = tokio::time::timeout(
@@ -366,12 +369,17 @@ async fn workerd_stream_and_job_handler_contract() {
             );
 
             let handler = client
-                .worker(WorkerContext {
-                    job_id: "contract".into(),
-                    ..Default::default()
-                })
+                .open(
+                    &Invocation {
+                        id: "contract".into(),
+                        ..Default::default()
+                    },
+                    HostBindings::default(),
+                )
                 .await
-                .expect("worker");
+                .expect("open for job")
+                .job_runner
+                .expect("storage fixture exports a job runner");
             let granted = Arc::new(CountingDest {
                 written: std::sync::Mutex::new(0),
             });
@@ -385,12 +393,12 @@ async fn workerd_stream_and_job_handler_contract() {
             );
             let outcome: JobOutcome = tokio::time::timeout(
                 Duration::from_secs(60),
-                client.handle_job(
-                    handler.clone(),
-                    invocation.clone(),
+                handler.job(
+                    &invocation,
                     granted.clone() as Arc<dyn Source>,
                     granted.clone() as Arc<dyn Destination>,
                     Arc::new(NoopProgress),
+                    Arc::new(NeverCancel),
                 ),
             )
             .await
@@ -406,12 +414,12 @@ async fn workerd_stream_and_job_handler_contract() {
 
             let second = tokio::time::timeout(
                 Duration::from_secs(15),
-                client.handle_job(
-                    handler,
-                    invocation,
+                handler.job(
+                    &invocation,
                     granted.clone() as Arc<dyn Source>,
                     granted.clone() as Arc<dyn Destination>,
                     Arc::new(NoopProgress),
+                    Arc::new(NeverCancel),
                 ),
             )
             .await
@@ -545,20 +553,14 @@ async fn workerd_separate_instances_do_not_share_objects() {
             );
             tokio::task::spawn_local(rpc_a);
             tokio::task::spawn_local(rpc_b);
-            let dest_a = tokio::time::timeout(
-                Duration::from_secs(90),
-                client_a.destination(DestinationContext::default()),
-            )
-            .await
-            .expect("a dest timeout")
-            .expect("a dest");
-            let dest_b = tokio::time::timeout(
-                Duration::from_secs(90),
-                client_b.destination(DestinationContext::default()),
-            )
-            .await
-            .expect("b dest timeout")
-            .expect("b dest");
+            let dest_a =
+                tokio::time::timeout(Duration::from_secs(90), open_storage(&client_a, "a"))
+                    .await
+                    .expect("a dest timeout");
+            let dest_b =
+                tokio::time::timeout(Duration::from_secs(90), open_storage(&client_b, "b"))
+                    .await
+                    .expect("b dest timeout");
             dest_a
                 .put(
                     "secret-a",

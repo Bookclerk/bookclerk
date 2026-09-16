@@ -12,7 +12,7 @@ keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-database"]
 autotests = false
 
 [package.metadata.bookclerk]
-api_version = 2
+api_version = 3
 kind = "database"
 id = "sqlite"
 display_name = "SQLite"

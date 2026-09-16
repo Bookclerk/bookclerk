@@ -1,7 +1,7 @@
 # Echo Integration (native Rust)
 
-Reference **native** Bookclerk guest implementing [`PluginRoot`](../../crates/bookclerk-plugin-sdk)
-(`api_version = 2`).
+Reference **native** Bookclerk guest implementing [`PluginWorker`](../../crates/bookclerk-plugin-sdk)
+(`api_version = 3`).
 `cliDescribe` / `cliInvoke` (`ping --message`) stay on the guest.
 
 See [docs/adr/plugin-workers-rpc-workerd.md](../../docs/adr/plugin-workers-rpc-workerd.md)

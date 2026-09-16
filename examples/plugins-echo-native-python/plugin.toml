@@ -1,9 +1,9 @@
-api_version = 2
+api_version = 3
 id = "echo_native_python"
 name = "Echo Integration (native Python)"
-kind = "integration"
 version = "0.1.0"
 runtime = "workerd"
+entrypoints = ["cli"]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -27,21 +27,19 @@ type = "python"
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
+[vars]
 
-[capabilities.methods]
-list = ["describe", "integration", "health", "diagnose", "onEvent", "cli"]
-
-[capabilities.events]
-subscriptions = [
-  { type = "book_acquired", schema_versions = [1], supports_suspend = false },
-]
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = false
 
 [cli]
+
 [[cli.commands]]
 name = "ping"
 about = "Probe echo plugin"
+
 [[cli.commands.args]]
 name = "message"
 long = "message"

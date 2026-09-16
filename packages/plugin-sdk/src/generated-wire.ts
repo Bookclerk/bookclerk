@@ -310,27 +310,57 @@ export interface CancellationPollResults {
 }
 
 /**
- * Params envelope of `JobHandler.handle`.
+ * Params envelope of `JobRunner.job`.
  *
  * @internal
  */
-export interface JobHandlerHandleParams {
-  invocation: T.JobInvocation;
-  input: T.Source;
-  output: T.Destination;
-  progress: T.ProgressSink;
-  cancel: T.Cancellation;
-  database: T.GuestDatabase;
-  databases: T.NamedDatabase[];
+export interface JobRunnerJobParams {
+  controller: T.JobController;
 }
 
 /**
- * Results envelope of `JobHandler.handle`.
+ * Results envelope of `JobRunner.job`.
  *
  * @internal
  */
-export interface JobHandlerHandleResults {
+export interface JobRunnerJobResults {
   result: T.HandleReply;
+}
+
+/**
+ * Params envelope of `EventConsumer.event`.
+ *
+ * @internal
+ */
+export interface EventConsumerEventParams {
+  batch: T.EventBatch;
+}
+
+/**
+ * Results envelope of `EventConsumer.event`.
+ *
+ * @internal
+ */
+export interface EventConsumerEventResults {
+  result: T.EventBatchReply;
+}
+
+/**
+ * Params envelope of `EventPublisher.publish`.
+ *
+ * @internal
+ */
+export interface EventPublisherPublishParams {
+  event: T.PluginEvent;
+}
+
+/**
+ * Results envelope of `EventPublisher.publish`.
+ *
+ * @internal
+ */
+export interface EventPublisherPublishResults {
+  result: T.PublishReply;
 }
 
 /**
@@ -565,159 +595,193 @@ export interface ContentSourceCatalogDetailResults {
 }
 
 /**
- * Params envelope of `Integration.health`.
+ * Params envelope of `RemoteLibrary.health`.
  *
  * @internal
  */
-export interface IntegrationHealthParams {
+export interface RemoteLibraryHealthParams {
 }
 
 /**
- * Results envelope of `Integration.health`.
+ * Results envelope of `RemoteLibrary.health`.
  *
  * @internal
  */
-export interface IntegrationHealthResults {
+export interface RemoteLibraryHealthResults {
   result: T.HealthReply;
 }
 
 /**
- * Params envelope of `Integration.onEvent`.
+ * Params envelope of `RemoteLibrary.start`.
  *
  * @internal
  */
-export interface IntegrationOnEventParams {
-  event: T.DomainEvent;
+export interface RemoteLibraryStartParams {
 }
 
 /**
- * Results envelope of `Integration.onEvent`.
+ * Results envelope of `RemoteLibrary.start`.
  *
  * @internal
  */
-export interface IntegrationOnEventResults {
-  result: T.EventResultReply;
-}
-
-/**
- * Params envelope of `Integration.start`.
- *
- * @internal
- */
-export interface IntegrationStartParams {
-}
-
-/**
- * Results envelope of `Integration.start`.
- *
- * @internal
- */
-export interface IntegrationStartResults {
+export interface RemoteLibraryStartResults {
   result: T.EmptyReply;
 }
 
 /**
- * Params envelope of `Integration.stop`.
+ * Params envelope of `RemoteLibrary.stop`.
  *
  * @internal
  */
-export interface IntegrationStopParams {
+export interface RemoteLibraryStopParams {
 }
 
 /**
- * Results envelope of `Integration.stop`.
+ * Results envelope of `RemoteLibrary.stop`.
  *
  * @internal
  */
-export interface IntegrationStopResults {
+export interface RemoteLibraryStopResults {
   result: T.EmptyReply;
 }
 
 /**
- * Params envelope of `Integration.diagnose`.
+ * Params envelope of `RemoteLibrary.diagnose`.
  *
  * @internal
  */
-export interface IntegrationDiagnoseParams {
+export interface RemoteLibraryDiagnoseParams {
 }
 
 /**
- * Results envelope of `Integration.diagnose`.
+ * Results envelope of `RemoteLibrary.diagnose`.
  *
  * @internal
  */
-export interface IntegrationDiagnoseResults {
+export interface RemoteLibraryDiagnoseResults {
   result: T.DiagnoseReply;
 }
 
 /**
- * Params envelope of `Integration.scanLibrary`.
+ * Params envelope of `RemoteLibrary.scanLibrary`.
  *
  * @internal
  */
-export interface IntegrationScanLibraryParams {
+export interface RemoteLibraryScanLibraryParams {
   params: T.ScanLibraryParams;
 }
 
 /**
- * Results envelope of `Integration.scanLibrary`.
+ * Results envelope of `RemoteLibrary.scanLibrary`.
  *
  * @internal
  */
-export interface IntegrationScanLibraryResults {
+export interface RemoteLibraryScanLibraryResults {
   result: T.EmptyReply;
 }
 
 /**
- * Params envelope of `Integration.syncListening`.
+ * Params envelope of `RemoteLibrary.syncListening`.
  *
  * @internal
  */
-export interface IntegrationSyncListeningParams {
+export interface RemoteLibrarySyncListeningParams {
 }
 
 /**
- * Results envelope of `Integration.syncListening`.
+ * Results envelope of `RemoteLibrary.syncListening`.
  *
  * @internal
  */
-export interface IntegrationSyncListeningResults {
+export interface RemoteLibrarySyncListeningResults {
   result: T.SyncListeningReply;
 }
 
 /**
- * Params envelope of `Integration.authenticateUser`.
+ * Params envelope of `RemoteLibrary.pollEvents`.
  *
  * @internal
  */
-export interface IntegrationAuthenticateUserParams {
+export interface RemoteLibraryPollEventsParams {
+}
+
+/**
+ * Results envelope of `RemoteLibrary.pollEvents`.
+ *
+ * @internal
+ */
+export interface RemoteLibraryPollEventsResults {
+  result: T.EventPollReply;
+}
+
+/**
+ * Params envelope of `PluginCli.describe`.
+ *
+ * @internal
+ */
+export interface PluginCliDescribeParams {
+}
+
+/**
+ * Results envelope of `PluginCli.describe`.
+ *
+ * @internal
+ */
+export interface PluginCliDescribeResults {
+  result: T.CliSchemaReply;
+}
+
+/**
+ * Params envelope of `PluginCli.invoke`.
+ *
+ * @internal
+ */
+export interface PluginCliInvokeParams {
+  params: T.CliInvokeParams;
+}
+
+/**
+ * Results envelope of `PluginCli.invoke`.
+ *
+ * @internal
+ */
+export interface PluginCliInvokeResults {
+  result: T.CliInvokeReply;
+}
+
+/**
+ * Params envelope of `Oidc.clients`.
+ *
+ * @internal
+ */
+export interface OidcClientsParams {
+}
+
+/**
+ * Results envelope of `Oidc.clients`.
+ *
+ * @internal
+ */
+export interface OidcClientsResults {
+  result: T.OidcClientsReply;
+}
+
+/**
+ * Params envelope of `Oidc.authenticateUser`.
+ *
+ * @internal
+ */
+export interface OidcAuthenticateUserParams {
   params: T.AuthenticateUserParams;
 }
 
 /**
- * Results envelope of `Integration.authenticateUser`.
+ * Results envelope of `Oidc.authenticateUser`.
  *
  * @internal
  */
-export interface IntegrationAuthenticateUserResults {
+export interface OidcAuthenticateUserResults {
   result: T.ExternalUserReply;
-}
-
-/**
- * Params envelope of `Integration.pollEvents`.
- *
- * @internal
- */
-export interface IntegrationPollEventsParams {
-}
-
-/**
- * Results envelope of `Integration.pollEvents`.
- *
- * @internal
- */
-export interface IntegrationPollEventsResults {
-  result: T.EventPollReply;
 }
 
 /**
@@ -946,214 +1010,73 @@ export interface GuestDatabaseCloseResults {
 }
 
 /**
- * Params envelope of `BookclerkPlugin.describe`.
+ * Params envelope of `PluginWorker.describe`.
  *
  * @internal
  */
-export interface BookclerkPluginDescribeParams {
+export interface PluginWorkerDescribeParams {
 }
 
 /**
- * Results envelope of `BookclerkPlugin.describe`.
+ * Results envelope of `PluginWorker.describe`.
  *
  * @internal
  */
-export interface BookclerkPluginDescribeResults {
+export interface PluginWorkerDescribeResults {
   result: T.DescribeReply;
 }
 
 /**
- * Params envelope of `BookclerkPlugin.destination`.
+ * Params envelope of `PluginWorker.open`.
  *
  * @internal
  */
-export interface BookclerkPluginDestinationParams {
-  context: T.DestinationContext;
+export interface PluginWorkerOpenParams {
+  invocation: T.Invocation;
+  bindings: T.Bindings;
 }
 
 /**
- * Results envelope of `BookclerkPlugin.destination`.
+ * Results envelope of `PluginWorker.open`.
  *
  * @internal
  */
-export interface BookclerkPluginDestinationResults {
-  result: T.DestinationReply;
+export interface PluginWorkerOpenResults {
+  result: T.EntrypointsReply;
 }
 
 /**
- * Params envelope of `BookclerkPlugin.source`.
+ * Params envelope of `PluginWorker.shutdown`.
  *
  * @internal
  */
-export interface BookclerkPluginSourceParams {
-  context: T.SourceContext;
+export interface PluginWorkerShutdownParams {
 }
 
 /**
- * Results envelope of `BookclerkPlugin.source`.
+ * Results envelope of `PluginWorker.shutdown`.
  *
  * @internal
  */
-export interface BookclerkPluginSourceResults {
-  result: T.SourceReply;
-}
-
-/**
- * Params envelope of `BookclerkPlugin.worker`.
- *
- * @internal
- */
-export interface BookclerkPluginWorkerParams {
-  context: T.WorkerContext;
-}
-
-/**
- * Results envelope of `BookclerkPlugin.worker`.
- *
- * @internal
- */
-export interface BookclerkPluginWorkerResults {
-  result: T.WorkerReply;
-}
-
-/**
- * Params envelope of `BookclerkPlugin.shutdown`.
- *
- * @internal
- */
-export interface BookclerkPluginShutdownParams {
-}
-
-/**
- * Results envelope of `BookclerkPlugin.shutdown`.
- *
- * @internal
- */
-export interface BookclerkPluginShutdownResults {
+export interface PluginWorkerShutdownResults {
   result: T.EmptyReply;
 }
 
 /**
- * Params envelope of `BookclerkPlugin.contentSource`.
+ * Params envelope of `PluginWorker.databaseMigrations`.
  *
  * @internal
  */
-export interface BookclerkPluginContentSourceParams {
-  context: T.ContentSourceContext;
-}
-
-/**
- * Results envelope of `BookclerkPlugin.contentSource`.
- *
- * @internal
- */
-export interface BookclerkPluginContentSourceResults {
-  result: T.ContentSourceReply;
-}
-
-/**
- * Params envelope of `BookclerkPlugin.integration`.
- *
- * @internal
- */
-export interface BookclerkPluginIntegrationParams {
-  context: T.IntegrationContext;
-}
-
-/**
- * Results envelope of `BookclerkPlugin.integration`.
- *
- * @internal
- */
-export interface BookclerkPluginIntegrationResults {
-  result: T.IntegrationReply;
-}
-
-/**
- * Params envelope of `BookclerkPlugin.database`.
- *
- * @internal
- */
-export interface BookclerkPluginDatabaseParams {
-  context: T.DatabaseContext;
-}
-
-/**
- * Results envelope of `BookclerkPlugin.database`.
- *
- * @internal
- */
-export interface BookclerkPluginDatabaseResults {
-  result: T.DatabaseReply;
-}
-
-/**
- * Params envelope of `BookclerkPlugin.cliDescribe`.
- *
- * @internal
- */
-export interface BookclerkPluginCliDescribeParams {
-}
-
-/**
- * Results envelope of `BookclerkPlugin.cliDescribe`.
- *
- * @internal
- */
-export interface BookclerkPluginCliDescribeResults {
-  result: T.CliSchemaReply;
-}
-
-/**
- * Params envelope of `BookclerkPlugin.cliInvoke`.
- *
- * @internal
- */
-export interface BookclerkPluginCliInvokeParams {
-  params: T.CliInvokeParams;
-}
-
-/**
- * Results envelope of `BookclerkPlugin.cliInvoke`.
- *
- * @internal
- */
-export interface BookclerkPluginCliInvokeResults {
-  result: T.CliInvokeReply;
-}
-
-/**
- * Params envelope of `BookclerkPlugin.oidcClients`.
- *
- * @internal
- */
-export interface BookclerkPluginOidcClientsParams {
-}
-
-/**
- * Results envelope of `BookclerkPlugin.oidcClients`.
- *
- * @internal
- */
-export interface BookclerkPluginOidcClientsResults {
-  result: T.OidcClientsReply;
-}
-
-/**
- * Params envelope of `BookclerkPlugin.databaseMigrations`.
- *
- * @internal
- */
-export interface BookclerkPluginDatabaseMigrationsParams {
+export interface PluginWorkerDatabaseMigrationsParams {
   binding: string;
 }
 
 /**
- * Results envelope of `BookclerkPlugin.databaseMigrations`.
+ * Results envelope of `PluginWorker.databaseMigrations`.
  *
  * @internal
  */
-export interface BookclerkPluginDatabaseMigrationsResults {
+export interface PluginWorkerDatabaseMigrationsResults {
   result: T.PluginMigrationsReply;
 }
 
@@ -1417,55 +1340,51 @@ export const CopyResultCodec: StructCodec<T.CopyResult> = {
 };
 
 /**
- * Wire codec for `PluginDescribe` (2 data words, 12 pointers).
+ * Wire codec for `PluginDescribe` (2 data words, 10 pointers).
  *
  * @internal
  */
 export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
   dataWords: 2,
-  pointerCount: 12,
+  pointerCount: 10,
   write(s, v, caps) {
     s.setUint32(0, v.apiVersion);
     s.setText(0, v.id);
-    s.setText(1, v.kind);
-    s.setText(2, v.displayName);
-    s.setTextList(3, v.rpcFeatures);
-    ScalarLimitsCodec.write(s.initStruct(4, 2, 0), v.scalarLimits, caps);
-    s.setTextList(5, v.supportedRoles);
-    s.setTextList(6, v.capabilities);
+    s.setText(1, v.displayName);
+    s.setTextList(2, v.rpcFeatures);
+    ScalarLimitsCodec.write(s.initStruct(3, 2, 0), v.scalarLimits, caps);
+    PluginCapabilitiesCodec.write(s.initStruct(4, 0, 6), v.capabilities, caps);
     s.setUint16(2, ord(A.PORTAL_AUTH_MODES, v.portalAuthMode, "PortalAuthMode"));
     if (v.passwordEnvVar !== undefined) {
-      s.setText(7, v.passwordEnvVar);
+      s.setText(5, v.passwordEnvVar);
     }
-    s.setTextList(8, v.aliases);
+    s.setTextList(6, v.aliases);
     s.setUint32(2, v.sortKey);
-    BrandCodec.write(s.initStruct(9, 0, 6), v.brand, caps);
+    BrandCodec.write(s.initStruct(7, 0, 6), v.brand, caps);
     {
-      const items = s.initStructList(10, v.configOptions.length, 0, 3);
+      const items = s.initStructList(8, v.configOptions.length, 0, 3);
       for (let i = 0; i < items.length; i++) {
         ConfigOptionCodec.write(items[i]!, v.configOptions[i]!, caps);
       }
     }
-    CliSchemaCodec.write(s.initStruct(11, 0, 1), v.cli, caps);
+    CliSchemaCodec.write(s.initStruct(9, 0, 1), v.cli, caps);
   },
   read(s, caps) {
     const out: T.PluginDescribe = {
       apiVersion: s.getUint32(0),
       id: s.getText(0),
-      kind: s.getText(1),
-      displayName: s.getText(2),
-      rpcFeatures: s.getTextList(3),
-      scalarLimits: ScalarLimitsCodec.read(s.getStruct(4, 2, 0), caps),
-      supportedRoles: s.getTextList(5),
-      capabilities: s.getTextList(6),
+      displayName: s.getText(1),
+      rpcFeatures: s.getTextList(2),
+      scalarLimits: ScalarLimitsCodec.read(s.getStruct(3, 2, 0), caps),
+      capabilities: PluginCapabilitiesCodec.read(s.getStruct(4, 0, 6), caps),
       portalAuthMode: fromOrd(A.PORTAL_AUTH_MODES, s.getUint16(2), "PortalAuthMode"),
-      aliases: s.getTextList(8),
+      aliases: s.getTextList(6),
       sortKey: s.getUint32(2),
-      brand: BrandCodec.read(s.getStruct(9, 0, 6), caps),
-      configOptions: s.getStructList(10, 0, 3).map((item) => ConfigOptionCodec.read(item, caps)),
-      cli: CliSchemaCodec.read(s.getStruct(11, 0, 1), caps),
+      brand: BrandCodec.read(s.getStruct(7, 0, 6), caps),
+      configOptions: s.getStructList(8, 0, 3).map((item) => ConfigOptionCodec.read(item, caps)),
+      cli: CliSchemaCodec.read(s.getStruct(9, 0, 1), caps),
     };
-    const passwordEnvVarValue = s.getText(7);
+    const passwordEnvVarValue = s.getText(5);
     if (!(passwordEnvVarValue === "")) {
       out.passwordEnvVar = passwordEnvVarValue;
     }
@@ -1588,114 +1507,104 @@ export const ExtensibleConfigCodec: StructCodec<T.ExtensibleConfig> = {
 };
 
 /**
- * Wire codec for `DestinationContext` (0 data words, 1 pointers).
+ * Wire codec for `Bindings` (0 data words, 7 pointers).
  *
  * @internal
  */
-export const DestinationContextCodec: StructCodec<T.DestinationContext> = {
+export const BindingsCodec: StructCodec<T.Bindings> = {
   dataWords: 0,
+  pointerCount: 7,
+  write(s, v, caps) {
+    ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
+    ExtensibleConfigCodec.write(s.initStruct(1, 1, 2), v.secrets, caps);
+    DatabaseAdapterConfigCodec.write(s.initStruct(2, 1, 4), v.adapter, caps);
+    s.setCap(3, caps.exportCap(v.events));
+    {
+      const items = s.initStructList(4, v.databases.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        NamedDatabaseCodec.write(items[i]!, v.databases[i]!, caps);
+      }
+    }
+    s.setCap(5, caps.exportCap(v.cancel));
+    s.setCap(6, caps.exportCap(v.storage));
+  },
+  read(s, caps) {
+    return {
+      config: ExtensibleConfigCodec.read(s.getStruct(0, 1, 2), caps),
+      secrets: ExtensibleConfigCodec.read(s.getStruct(1, 1, 2), caps),
+      adapter: DatabaseAdapterConfigCodec.read(s.getStruct(2, 1, 4), caps),
+      events: caps.importCap(s.getCapIndex(3)) as T.EventPublisher,
+      databases: s.getStructList(4, 0, 2).map((item) => NamedDatabaseCodec.read(item, caps)),
+      cancel: caps.importCap(s.getCapIndex(5)) as T.Cancellation,
+      storage: caps.importCap(s.getCapIndex(6)) as T.Destination,
+    };
+  },
+};
+
+/**
+ * Wire codec for `Entrypoints` (0 data words, 8 pointers).
+ *
+ * @internal
+ */
+export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
+  dataWords: 0,
+  pointerCount: 8,
+  write(s, v, caps) {
+    s.setCap(0, caps.exportCap(v.eventConsumer));
+    s.setCap(1, caps.exportCap(v.jobRunner));
+    s.setCap(2, caps.exportCap(v.storefront));
+    s.setCap(3, caps.exportCap(v.storage));
+    s.setCap(4, caps.exportCap(v.databaseAdapter));
+    s.setCap(5, caps.exportCap(v.remoteLibrary));
+    s.setCap(6, caps.exportCap(v.cli));
+    s.setCap(7, caps.exportCap(v.oidc));
+  },
+  read(s, caps) {
+    return {
+      eventConsumer: caps.importCap(s.getCapIndex(0)) as T.EventConsumer,
+      jobRunner: caps.importCap(s.getCapIndex(1)) as T.JobRunner,
+      storefront: caps.importCap(s.getCapIndex(2)) as T.ContentSource,
+      storage: caps.importCap(s.getCapIndex(3)) as T.Destination,
+      databaseAdapter: caps.importCap(s.getCapIndex(4)) as T.Database,
+      remoteLibrary: caps.importCap(s.getCapIndex(5)) as T.RemoteLibrary,
+      cli: caps.importCap(s.getCapIndex(6)) as T.PluginCli,
+      oidc: caps.importCap(s.getCapIndex(7)) as T.Oidc,
+    };
+  },
+};
+
+/**
+ * Wire codec for `EntrypointsReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
+  dataWords: 1,
   pointerCount: 1,
   write(s, v, caps) {
-    ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        EntrypointsCodec.write(s.initStruct(0, 0, 8), v.value, caps);
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        break;
+      default:
+        throw unknownUnion("EntrypointsReply", (v as { kind: string }).kind);
+    }
   },
   read(s, caps) {
-    return {
-      config: ExtensibleConfigCodec.read(s.getStruct(0, 1, 2), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for `SourceContext` (0 data words, 1 pointers).
- *
- * @internal
- */
-export const SourceContextCodec: StructCodec<T.SourceContext> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
-  },
-  read(s, caps) {
-    return {
-      config: ExtensibleConfigCodec.read(s.getStruct(0, 1, 2), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for `WorkerContext` (0 data words, 2 pointers).
- *
- * @internal
- */
-export const WorkerContextCodec: StructCodec<T.WorkerContext> = {
-  dataWords: 0,
-  pointerCount: 2,
-  write(s, v, caps) {
-    s.setText(0, v.jobId);
-    ExtensibleConfigCodec.write(s.initStruct(1, 1, 2), v.config, caps);
-  },
-  read(s, caps) {
-    return {
-      jobId: s.getText(0),
-      config: ExtensibleConfigCodec.read(s.getStruct(1, 1, 2), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for `ContentSourceContext` (0 data words, 1 pointers).
- *
- * @internal
- */
-export const ContentSourceContextCodec: StructCodec<T.ContentSourceContext> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
-  },
-  read(s, caps) {
-    return {
-      config: ExtensibleConfigCodec.read(s.getStruct(0, 1, 2), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for `IntegrationContext` (0 data words, 1 pointers).
- *
- * @internal
- */
-export const IntegrationContextCodec: StructCodec<T.IntegrationContext> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
-  },
-  read(s, caps) {
-    return {
-      config: ExtensibleConfigCodec.read(s.getStruct(0, 1, 2), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for `DatabaseContext` (0 data words, 2 pointers).
- *
- * @internal
- */
-export const DatabaseContextCodec: StructCodec<T.DatabaseContext> = {
-  dataWords: 0,
-  pointerCount: 2,
-  write(s, v, caps) {
-    ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
-    DatabaseAdapterConfigCodec.write(s.initStruct(1, 1, 4), v.adapter, caps);
-  },
-  read(s, caps) {
-    return {
-      config: ExtensibleConfigCodec.read(s.getStruct(0, 1, 2), caps),
-      adapter: DatabaseAdapterConfigCodec.read(s.getStruct(1, 1, 4), caps),
-    };
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 8), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("EntrypointsReply", disc);
+    }
   },
 };
 
@@ -2117,6 +2026,95 @@ export const EventResultCodec: StructCodec<T.EventResult> = {
 };
 
 /**
+ * Wire codec for `EventBatch` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const EventBatchCodec: StructCodec<T.EventBatch> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const items = s.initStructList(0, v.events.length, 4, 9);
+      for (let i = 0; i < items.length; i++) {
+        DomainEventCodec.write(items[i]!, v.events[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      events: s.getStructList(0, 4, 9).map((item) => DomainEventCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `EventBatchReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const EventBatchReplyCodec: StructCodec<T.EventBatchReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        {
+          const items = s.initStructList(0, v.value.length, 1, 1);
+          for (let i = 0; i < items.length; i++) {
+            EventResultCodec.write(items[i]!, v.value[i]!, caps);
+          }
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        break;
+      default:
+        throw unknownUnion("EventBatchReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: s.getStructList(0, 1, 1).map((item) => EventResultCodec.read(item, caps)) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("EventBatchReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `JobController` (0 data words, 5 pointers).
+ *
+ * @internal
+ */
+export const JobControllerCodec: StructCodec<T.JobController> = {
+  dataWords: 0,
+  pointerCount: 5,
+  write(s, v, caps) {
+    JobInvocationCodec.write(s.initStruct(0, 3, 8), v.invocation, caps);
+    s.setCap(1, caps.exportCap(v.input));
+    s.setCap(2, caps.exportCap(v.output));
+    s.setCap(3, caps.exportCap(v.progress));
+    s.setCap(4, caps.exportCap(v.cancel));
+  },
+  read(s, caps) {
+    return {
+      invocation: JobInvocationCodec.read(s.getStruct(0, 3, 8), caps),
+      input: caps.importCap(s.getCapIndex(1)) as T.Source,
+      output: caps.importCap(s.getCapIndex(2)) as T.Destination,
+      progress: caps.importCap(s.getCapIndex(3)) as T.ProgressSink,
+      cancel: caps.importCap(s.getCapIndex(4)) as T.Cancellation,
+    };
+  },
+};
+
+/**
  * Wire codec for `HeadOk` (1 data words, 1 pointers).
  *
  * @internal
@@ -2489,7 +2487,7 @@ export const DescribeReplyCodec: StructCodec<T.DescribeReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        PluginDescribeCodec.write(s.initStruct(0, 2, 12), v.value, caps);
+        PluginDescribeCodec.write(s.initStruct(0, 2, 10), v.value, caps);
         break;
       case "err":
         s.setUint16(0, 1);
@@ -2503,116 +2501,11 @@ export const DescribeReplyCodec: StructCodec<T.DescribeReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: PluginDescribeCodec.read(s.getStruct(0, 2, 12), caps) };
+        return { kind: "ok", value: PluginDescribeCodec.read(s.getStruct(0, 2, 10), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
       default:
         throw unknownUnion("DescribeReply", disc);
-    }
-  },
-};
-
-/**
- * Wire codec for `DestinationReply` (1 data words, 1 pointers).
- *
- * @internal
- */
-export const DestinationReplyCodec: StructCodec<T.DestinationReply> = {
-  dataWords: 1,
-  pointerCount: 1,
-  write(s, v, caps) {
-    switch (v.kind) {
-      case "ok":
-        s.setUint16(0, 0);
-        s.setCap(0, caps.exportCap(v.value));
-        break;
-      case "err":
-        s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
-        break;
-      default:
-        throw unknownUnion("DestinationReply", (v as { kind: string }).kind);
-    }
-  },
-  read(s, caps) {
-    const disc = s.getUint16(0);
-    switch (disc) {
-      case 0:
-        return { kind: "ok", value: caps.importCap(s.getCapIndex(0)) as T.Destination };
-      case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
-      default:
-        throw unknownUnion("DestinationReply", disc);
-    }
-  },
-};
-
-/**
- * Wire codec for `SourceReply` (1 data words, 1 pointers).
- *
- * @internal
- */
-export const SourceReplyCodec: StructCodec<T.SourceReply> = {
-  dataWords: 1,
-  pointerCount: 1,
-  write(s, v, caps) {
-    switch (v.kind) {
-      case "ok":
-        s.setUint16(0, 0);
-        s.setCap(0, caps.exportCap(v.value));
-        break;
-      case "err":
-        s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
-        break;
-      default:
-        throw unknownUnion("SourceReply", (v as { kind: string }).kind);
-    }
-  },
-  read(s, caps) {
-    const disc = s.getUint16(0);
-    switch (disc) {
-      case 0:
-        return { kind: "ok", value: caps.importCap(s.getCapIndex(0)) as T.Source };
-      case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
-      default:
-        throw unknownUnion("SourceReply", disc);
-    }
-  },
-};
-
-/**
- * Wire codec for `WorkerReply` (1 data words, 1 pointers).
- *
- * @internal
- */
-export const WorkerReplyCodec: StructCodec<T.WorkerReply> = {
-  dataWords: 1,
-  pointerCount: 1,
-  write(s, v, caps) {
-    switch (v.kind) {
-      case "ok":
-        s.setUint16(0, 0);
-        s.setCap(0, caps.exportCap(v.value));
-        break;
-      case "err":
-        s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
-        break;
-      default:
-        throw unknownUnion("WorkerReply", (v as { kind: string }).kind);
-    }
-  },
-  read(s, caps) {
-    const disc = s.getUint16(0);
-    switch (disc) {
-      case 0:
-        return { kind: "ok", value: caps.importCap(s.getCapIndex(0)) as T.JobHandler };
-      case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
-      default:
-        throw unknownUnion("WorkerReply", disc);
     }
   },
 };
@@ -2648,146 +2541,6 @@ export const HandleReplyCodec: StructCodec<T.HandleReply> = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
       default:
         throw unknownUnion("HandleReply", disc);
-    }
-  },
-};
-
-/**
- * Wire codec for `ContentSourceReply` (1 data words, 1 pointers).
- *
- * @internal
- */
-export const ContentSourceReplyCodec: StructCodec<T.ContentSourceReply> = {
-  dataWords: 1,
-  pointerCount: 1,
-  write(s, v, caps) {
-    switch (v.kind) {
-      case "ok":
-        s.setUint16(0, 0);
-        s.setCap(0, caps.exportCap(v.value));
-        break;
-      case "err":
-        s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
-        break;
-      default:
-        throw unknownUnion("ContentSourceReply", (v as { kind: string }).kind);
-    }
-  },
-  read(s, caps) {
-    const disc = s.getUint16(0);
-    switch (disc) {
-      case 0:
-        return { kind: "ok", value: caps.importCap(s.getCapIndex(0)) as T.ContentSource };
-      case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
-      default:
-        throw unknownUnion("ContentSourceReply", disc);
-    }
-  },
-};
-
-/**
- * Wire codec for `IntegrationReply` (1 data words, 1 pointers).
- *
- * @internal
- */
-export const IntegrationReplyCodec: StructCodec<T.IntegrationReply> = {
-  dataWords: 1,
-  pointerCount: 1,
-  write(s, v, caps) {
-    switch (v.kind) {
-      case "ok":
-        s.setUint16(0, 0);
-        s.setCap(0, caps.exportCap(v.value));
-        break;
-      case "err":
-        s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
-        break;
-      default:
-        throw unknownUnion("IntegrationReply", (v as { kind: string }).kind);
-    }
-  },
-  read(s, caps) {
-    const disc = s.getUint16(0);
-    switch (disc) {
-      case 0:
-        return { kind: "ok", value: caps.importCap(s.getCapIndex(0)) as T.Integration };
-      case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
-      default:
-        throw unknownUnion("IntegrationReply", disc);
-    }
-  },
-};
-
-/**
- * Wire codec for `DatabaseReply` (1 data words, 1 pointers).
- *
- * @internal
- */
-export const DatabaseReplyCodec: StructCodec<T.DatabaseReply> = {
-  dataWords: 1,
-  pointerCount: 1,
-  write(s, v, caps) {
-    switch (v.kind) {
-      case "ok":
-        s.setUint16(0, 0);
-        s.setCap(0, caps.exportCap(v.value));
-        break;
-      case "err":
-        s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
-        break;
-      default:
-        throw unknownUnion("DatabaseReply", (v as { kind: string }).kind);
-    }
-  },
-  read(s, caps) {
-    const disc = s.getUint16(0);
-    switch (disc) {
-      case 0:
-        return { kind: "ok", value: caps.importCap(s.getCapIndex(0)) as T.Database };
-      case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
-      default:
-        throw unknownUnion("DatabaseReply", disc);
-    }
-  },
-};
-
-/**
- * Wire codec for `EventResultReply` (1 data words, 1 pointers).
- *
- * @internal
- */
-export const EventResultReplyCodec: StructCodec<T.EventResultReply> = {
-  dataWords: 1,
-  pointerCount: 1,
-  write(s, v, caps) {
-    switch (v.kind) {
-      case "ok":
-        s.setUint16(0, 0);
-        EventResultCodec.write(s.initStruct(0, 1, 1), v.value, caps);
-        break;
-      case "err":
-        s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
-        break;
-      default:
-        throw unknownUnion("EventResultReply", (v as { kind: string }).kind);
-    }
-  },
-  read(s, caps) {
-    const disc = s.getUint16(0);
-    switch (disc) {
-      case 0:
-        return { kind: "ok", value: EventResultCodec.read(s.getStruct(0, 1, 1), caps) };
-      case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
-      default:
-        throw unknownUnion("EventResultReply", disc);
     }
   },
 };
@@ -2935,6 +2688,63 @@ export const NamedDatabaseCodec: StructCodec<T.NamedDatabase> = {
     return {
       name: s.getText(0),
       database: caps.importCap(s.getCapIndex(1)) as T.GuestDatabase,
+    };
+  },
+};
+
+/**
+ * Wire codec for `EventConsumerSpec` (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const EventConsumerSpecCodec: StructCodec<T.EventConsumerSpec> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.eventType);
+    s.setUint32List(1, v.schemaVersions);
+    s.setBool(0, v.supportsSuspend);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      eventType: s.getText(0),
+      schemaVersions: s.getUint32List(1),
+      supportsSuspend: s.getBool(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `PluginCapabilities` (0 data words, 6 pointers).
+ *
+ * @internal
+ */
+export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
+  dataWords: 0,
+  pointerCount: 6,
+  write(s, v, caps) {
+    s.setUint16List(0, v.entrypoints.map((v) => ord(A.ENTRYPOINTS, v, "Entrypoint")));
+    {
+      const items = s.initStructList(1, v.consumes.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        EventConsumerSpecCodec.write(items[i]!, v.consumes[i]!, caps);
+      }
+    }
+    s.setTextList(2, v.produces);
+    s.setTextList(3, v.jobs);
+    s.setTextList(4, v.databases);
+    s.setTextList(5, v.bindings);
+  },
+  read(s, caps) {
+    return {
+      entrypoints: s.getUint16List(0).map((v) => fromOrd(A.ENTRYPOINTS, v, "Entrypoint")),
+      consumes: s.getStructList(1, 1, 2).map((item) => EventConsumerSpecCodec.read(item, caps)),
+      produces: s.getTextList(2),
+      jobs: s.getTextList(3),
+      databases: s.getTextList(4),
+      bindings: s.getTextList(5),
     };
   },
 };
@@ -5100,6 +4910,123 @@ export const SyncListeningReplyCodec: StructCodec<T.SyncListeningReply> = {
 };
 
 /**
+ * Wire codec for `PluginEvent` (2 data words, 5 pointers).
+ *
+ * @internal
+ */
+export const PluginEventCodec: StructCodec<T.PluginEvent> = {
+  dataWords: 2,
+  pointerCount: 5,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.eventType);
+    s.setUint32(0, v.schemaVersion);
+    s.setText(1, v.deduplicationKey);
+    s.setData(2, v.payload);
+    s.setUint64(1, BigInt(v.occurredAtUnixMs));
+    s.setText(3, v.correlationId);
+    s.setText(4, v.causationId);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      eventType: s.getText(0),
+      schemaVersion: s.getUint32(0),
+      deduplicationKey: s.getText(1),
+      payload: s.getData(2),
+      occurredAtUnixMs: Number(s.getUint64(1)),
+      correlationId: s.getText(3),
+      causationId: s.getText(4),
+    };
+  },
+};
+
+/**
+ * Wire codec for `PublishOk` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const PublishOkCodec: StructCodec<T.PublishOk> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.eventId);
+    s.setBool(0, v.duplicate);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      eventId: s.getText(0),
+      duplicate: s.getBool(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `PublishReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const PublishReplyCodec: StructCodec<T.PublishReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        PublishOkCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        break;
+      default:
+        throw unknownUnion("PublishReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: PublishOkCodec.read(s.getStruct(0, 1, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("PublishReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `Invocation` (1 data words, 4 pointers).
+ *
+ * @internal
+ */
+export const InvocationCodec: StructCodec<T.Invocation> = {
+  dataWords: 1,
+  pointerCount: 4,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.id);
+    s.setText(1, v.accountId);
+    s.setUint64(0, BigInt(v.deadlineUnixMs));
+    s.setText(2, v.correlationId);
+    s.setText(3, v.causationId);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      id: s.getText(0),
+      accountId: s.getText(1),
+      deadlineUnixMs: Number(s.getUint64(0)),
+      correlationId: s.getText(2),
+      causationId: s.getText(3),
+    };
+  },
+};
+
+/**
  * Wire codec for `DbValue` (2 data words, 1 pointers).
  *
  * @internal
@@ -6738,46 +6665,29 @@ export const CancellationPollResultsCodec: StructCodec<CancellationPollResults> 
 };
 
 /**
- * Wire codec for the `JobHandler.handle` params envelope (0 data words, 7 pointers).
+ * Wire codec for the `JobRunner.job` params envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const JobHandlerHandleParamsCodec: StructCodec<JobHandlerHandleParams> = {
+export const JobRunnerJobParamsCodec: StructCodec<JobRunnerJobParams> = {
   dataWords: 0,
-  pointerCount: 7,
+  pointerCount: 1,
   write(s, v, caps) {
-    JobInvocationCodec.write(s.initStruct(0, 3, 8), v.invocation, caps);
-    s.setCap(1, caps.exportCap(v.input));
-    s.setCap(2, caps.exportCap(v.output));
-    s.setCap(3, caps.exportCap(v.progress));
-    s.setCap(4, caps.exportCap(v.cancel));
-    s.setCap(5, caps.exportCap(v.database));
-    {
-      const items = s.initStructList(6, v.databases.length, 0, 2);
-      for (let i = 0; i < items.length; i++) {
-        NamedDatabaseCodec.write(items[i]!, v.databases[i]!, caps);
-      }
-    }
+    JobControllerCodec.write(s.initStruct(0, 0, 5), v.controller, caps);
   },
   read(s, caps) {
     return {
-      invocation: JobInvocationCodec.read(s.getStruct(0, 3, 8), caps),
-      input: caps.importCap(s.getCapIndex(1)) as T.Source,
-      output: caps.importCap(s.getCapIndex(2)) as T.Destination,
-      progress: caps.importCap(s.getCapIndex(3)) as T.ProgressSink,
-      cancel: caps.importCap(s.getCapIndex(4)) as T.Cancellation,
-      database: caps.importCap(s.getCapIndex(5)) as T.GuestDatabase,
-      databases: s.getStructList(6, 0, 2).map((item) => NamedDatabaseCodec.read(item, caps)),
+      controller: JobControllerCodec.read(s.getStruct(0, 0, 5), caps),
     };
   },
 };
 
 /**
- * Wire codec for the `JobHandler.handle` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `JobRunner.job` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const JobHandlerHandleResultsCodec: StructCodec<JobHandlerHandleResults> = {
+export const JobRunnerJobResultsCodec: StructCodec<JobRunnerJobResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -6786,6 +6696,78 @@ export const JobHandlerHandleResultsCodec: StructCodec<JobHandlerHandleResults> 
   read(s, caps) {
     return {
       result: HandleReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `EventConsumer.event` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const EventConsumerEventParamsCodec: StructCodec<EventConsumerEventParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    EventBatchCodec.write(s.initStruct(0, 0, 1), v.batch, caps);
+  },
+  read(s, caps) {
+    return {
+      batch: EventBatchCodec.read(s.getStruct(0, 0, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `EventConsumer.event` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const EventConsumerEventResultsCodec: StructCodec<EventConsumerEventResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    EventBatchReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+  },
+  read(s, caps) {
+    return {
+      result: EventBatchReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `EventPublisher.publish` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const EventPublisherPublishParamsCodec: StructCodec<EventPublisherPublishParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    PluginEventCodec.write(s.initStruct(0, 2, 5), v.event, caps);
+  },
+  read(s, caps) {
+    return {
+      event: PluginEventCodec.read(s.getStruct(0, 2, 5), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `EventPublisher.publish` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const EventPublisherPublishResultsCodec: StructCodec<EventPublisherPublishResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    PublishReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+  },
+  read(s, caps) {
+    return {
+      result: PublishReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };
@@ -7265,11 +7247,11 @@ export const ContentSourceCatalogDetailResultsCodec: StructCodec<ContentSourceCa
 };
 
 /**
- * Wire codec for the `Integration.health` params envelope (0 data words, 0 pointers).
+ * Wire codec for the `RemoteLibrary.health` params envelope (0 data words, 0 pointers).
  *
  * @internal
  */
-export const IntegrationHealthParamsCodec: StructCodec<IntegrationHealthParams> = {
+export const RemoteLibraryHealthParamsCodec: StructCodec<RemoteLibraryHealthParams> = {
   dataWords: 0,
   pointerCount: 0,
   write(s, v, caps) {
@@ -7285,11 +7267,11 @@ export const IntegrationHealthParamsCodec: StructCodec<IntegrationHealthParams> 
 };
 
 /**
- * Wire codec for the `Integration.health` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `RemoteLibrary.health` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const IntegrationHealthResultsCodec: StructCodec<IntegrationHealthResults> = {
+export const RemoteLibraryHealthResultsCodec: StructCodec<RemoteLibraryHealthResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -7303,47 +7285,11 @@ export const IntegrationHealthResultsCodec: StructCodec<IntegrationHealthResults
 };
 
 /**
- * Wire codec for the `Integration.onEvent` params envelope (0 data words, 1 pointers).
+ * Wire codec for the `RemoteLibrary.start` params envelope (0 data words, 0 pointers).
  *
  * @internal
  */
-export const IntegrationOnEventParamsCodec: StructCodec<IntegrationOnEventParams> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    DomainEventCodec.write(s.initStruct(0, 4, 9), v.event, caps);
-  },
-  read(s, caps) {
-    return {
-      event: DomainEventCodec.read(s.getStruct(0, 4, 9), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `Integration.onEvent` results envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const IntegrationOnEventResultsCodec: StructCodec<IntegrationOnEventResults> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    EventResultReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
-  },
-  read(s, caps) {
-    return {
-      result: EventResultReplyCodec.read(s.getStruct(0, 1, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `Integration.start` params envelope (0 data words, 0 pointers).
- *
- * @internal
- */
-export const IntegrationStartParamsCodec: StructCodec<IntegrationStartParams> = {
+export const RemoteLibraryStartParamsCodec: StructCodec<RemoteLibraryStartParams> = {
   dataWords: 0,
   pointerCount: 0,
   write(s, v, caps) {
@@ -7359,11 +7305,11 @@ export const IntegrationStartParamsCodec: StructCodec<IntegrationStartParams> = 
 };
 
 /**
- * Wire codec for the `Integration.start` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `RemoteLibrary.start` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const IntegrationStartResultsCodec: StructCodec<IntegrationStartResults> = {
+export const RemoteLibraryStartResultsCodec: StructCodec<RemoteLibraryStartResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -7377,11 +7323,11 @@ export const IntegrationStartResultsCodec: StructCodec<IntegrationStartResults> 
 };
 
 /**
- * Wire codec for the `Integration.stop` params envelope (0 data words, 0 pointers).
+ * Wire codec for the `RemoteLibrary.stop` params envelope (0 data words, 0 pointers).
  *
  * @internal
  */
-export const IntegrationStopParamsCodec: StructCodec<IntegrationStopParams> = {
+export const RemoteLibraryStopParamsCodec: StructCodec<RemoteLibraryStopParams> = {
   dataWords: 0,
   pointerCount: 0,
   write(s, v, caps) {
@@ -7397,11 +7343,11 @@ export const IntegrationStopParamsCodec: StructCodec<IntegrationStopParams> = {
 };
 
 /**
- * Wire codec for the `Integration.stop` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `RemoteLibrary.stop` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const IntegrationStopResultsCodec: StructCodec<IntegrationStopResults> = {
+export const RemoteLibraryStopResultsCodec: StructCodec<RemoteLibraryStopResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -7415,11 +7361,11 @@ export const IntegrationStopResultsCodec: StructCodec<IntegrationStopResults> = 
 };
 
 /**
- * Wire codec for the `Integration.diagnose` params envelope (0 data words, 0 pointers).
+ * Wire codec for the `RemoteLibrary.diagnose` params envelope (0 data words, 0 pointers).
  *
  * @internal
  */
-export const IntegrationDiagnoseParamsCodec: StructCodec<IntegrationDiagnoseParams> = {
+export const RemoteLibraryDiagnoseParamsCodec: StructCodec<RemoteLibraryDiagnoseParams> = {
   dataWords: 0,
   pointerCount: 0,
   write(s, v, caps) {
@@ -7435,11 +7381,11 @@ export const IntegrationDiagnoseParamsCodec: StructCodec<IntegrationDiagnosePara
 };
 
 /**
- * Wire codec for the `Integration.diagnose` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `RemoteLibrary.diagnose` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const IntegrationDiagnoseResultsCodec: StructCodec<IntegrationDiagnoseResults> = {
+export const RemoteLibraryDiagnoseResultsCodec: StructCodec<RemoteLibraryDiagnoseResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -7453,11 +7399,11 @@ export const IntegrationDiagnoseResultsCodec: StructCodec<IntegrationDiagnoseRes
 };
 
 /**
- * Wire codec for the `Integration.scanLibrary` params envelope (0 data words, 1 pointers).
+ * Wire codec for the `RemoteLibrary.scanLibrary` params envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const IntegrationScanLibraryParamsCodec: StructCodec<IntegrationScanLibraryParams> = {
+export const RemoteLibraryScanLibraryParamsCodec: StructCodec<RemoteLibraryScanLibraryParams> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -7471,11 +7417,11 @@ export const IntegrationScanLibraryParamsCodec: StructCodec<IntegrationScanLibra
 };
 
 /**
- * Wire codec for the `Integration.scanLibrary` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `RemoteLibrary.scanLibrary` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const IntegrationScanLibraryResultsCodec: StructCodec<IntegrationScanLibraryResults> = {
+export const RemoteLibraryScanLibraryResultsCodec: StructCodec<RemoteLibraryScanLibraryResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -7489,11 +7435,11 @@ export const IntegrationScanLibraryResultsCodec: StructCodec<IntegrationScanLibr
 };
 
 /**
- * Wire codec for the `Integration.syncListening` params envelope (0 data words, 0 pointers).
+ * Wire codec for the `RemoteLibrary.syncListening` params envelope (0 data words, 0 pointers).
  *
  * @internal
  */
-export const IntegrationSyncListeningParamsCodec: StructCodec<IntegrationSyncListeningParams> = {
+export const RemoteLibrarySyncListeningParamsCodec: StructCodec<RemoteLibrarySyncListeningParams> = {
   dataWords: 0,
   pointerCount: 0,
   write(s, v, caps) {
@@ -7509,11 +7455,11 @@ export const IntegrationSyncListeningParamsCodec: StructCodec<IntegrationSyncLis
 };
 
 /**
- * Wire codec for the `Integration.syncListening` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `RemoteLibrary.syncListening` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const IntegrationSyncListeningResultsCodec: StructCodec<IntegrationSyncListeningResults> = {
+export const RemoteLibrarySyncListeningResultsCodec: StructCodec<RemoteLibrarySyncListeningResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -7527,47 +7473,11 @@ export const IntegrationSyncListeningResultsCodec: StructCodec<IntegrationSyncLi
 };
 
 /**
- * Wire codec for the `Integration.authenticateUser` params envelope (0 data words, 1 pointers).
+ * Wire codec for the `RemoteLibrary.pollEvents` params envelope (0 data words, 0 pointers).
  *
  * @internal
  */
-export const IntegrationAuthenticateUserParamsCodec: StructCodec<IntegrationAuthenticateUserParams> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    AuthenticateUserParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
-  },
-  read(s, caps) {
-    return {
-      params: AuthenticateUserParamsCodec.read(s.getStruct(0, 0, 2), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `Integration.authenticateUser` results envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const IntegrationAuthenticateUserResultsCodec: StructCodec<IntegrationAuthenticateUserResults> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    ExternalUserReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
-  },
-  read(s, caps) {
-    return {
-      result: ExternalUserReplyCodec.read(s.getStruct(0, 1, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `Integration.pollEvents` params envelope (0 data words, 0 pointers).
- *
- * @internal
- */
-export const IntegrationPollEventsParamsCodec: StructCodec<IntegrationPollEventsParams> = {
+export const RemoteLibraryPollEventsParamsCodec: StructCodec<RemoteLibraryPollEventsParams> = {
   dataWords: 0,
   pointerCount: 0,
   write(s, v, caps) {
@@ -7583,11 +7493,11 @@ export const IntegrationPollEventsParamsCodec: StructCodec<IntegrationPollEvents
 };
 
 /**
- * Wire codec for the `Integration.pollEvents` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `RemoteLibrary.pollEvents` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const IntegrationPollEventsResultsCodec: StructCodec<IntegrationPollEventsResults> = {
+export const RemoteLibraryPollEventsResultsCodec: StructCodec<RemoteLibraryPollEventsResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -7596,6 +7506,154 @@ export const IntegrationPollEventsResultsCodec: StructCodec<IntegrationPollEvent
   read(s, caps) {
     return {
       result: EventPollReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `PluginCli.describe` params envelope (0 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const PluginCliDescribeParamsCodec: StructCodec<PluginCliDescribeParams> = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  },
+};
+
+/**
+ * Wire codec for the `PluginCli.describe` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const PluginCliDescribeResultsCodec: StructCodec<PluginCliDescribeResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    CliSchemaReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+  },
+  read(s, caps) {
+    return {
+      result: CliSchemaReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `PluginCli.invoke` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const PluginCliInvokeParamsCodec: StructCodec<PluginCliInvokeParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    CliInvokeParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+  },
+  read(s, caps) {
+    return {
+      params: CliInvokeParamsCodec.read(s.getStruct(0, 0, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `PluginCli.invoke` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const PluginCliInvokeResultsCodec: StructCodec<PluginCliInvokeResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    CliInvokeReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+  },
+  read(s, caps) {
+    return {
+      result: CliInvokeReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Oidc.clients` params envelope (0 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const OidcClientsParamsCodec: StructCodec<OidcClientsParams> = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  },
+};
+
+/**
+ * Wire codec for the `Oidc.clients` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const OidcClientsResultsCodec: StructCodec<OidcClientsResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    OidcClientsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+  },
+  read(s, caps) {
+    return {
+      result: OidcClientsReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Oidc.authenticateUser` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const OidcAuthenticateUserParamsCodec: StructCodec<OidcAuthenticateUserParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    AuthenticateUserParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+  },
+  read(s, caps) {
+    return {
+      params: AuthenticateUserParamsCodec.read(s.getStruct(0, 0, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Oidc.authenticateUser` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const OidcAuthenticateUserResultsCodec: StructCodec<OidcAuthenticateUserResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    ExternalUserReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+  },
+  read(s, caps) {
+    return {
+      result: ExternalUserReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };
@@ -8094,11 +8152,11 @@ export const GuestDatabaseCloseResultsCodec: StructCodec<GuestDatabaseCloseResul
 };
 
 /**
- * Wire codec for the `BookclerkPlugin.describe` params envelope (0 data words, 0 pointers).
+ * Wire codec for the `PluginWorker.describe` params envelope (0 data words, 0 pointers).
  *
  * @internal
  */
-export const BookclerkPluginDescribeParamsCodec: StructCodec<BookclerkPluginDescribeParams> = {
+export const PluginWorkerDescribeParamsCodec: StructCodec<PluginWorkerDescribeParams> = {
   dataWords: 0,
   pointerCount: 0,
   write(s, v, caps) {
@@ -8114,11 +8172,11 @@ export const BookclerkPluginDescribeParamsCodec: StructCodec<BookclerkPluginDesc
 };
 
 /**
- * Wire codec for the `BookclerkPlugin.describe` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `PluginWorker.describe` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const BookclerkPluginDescribeResultsCodec: StructCodec<BookclerkPluginDescribeResults> = {
+export const PluginWorkerDescribeResultsCodec: StructCodec<PluginWorkerDescribeResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -8132,119 +8190,49 @@ export const BookclerkPluginDescribeResultsCodec: StructCodec<BookclerkPluginDes
 };
 
 /**
- * Wire codec for the `BookclerkPlugin.destination` params envelope (0 data words, 1 pointers).
+ * Wire codec for the `PluginWorker.open` params envelope (0 data words, 2 pointers).
  *
  * @internal
  */
-export const BookclerkPluginDestinationParamsCodec: StructCodec<BookclerkPluginDestinationParams> = {
+export const PluginWorkerOpenParamsCodec: StructCodec<PluginWorkerOpenParams> = {
   dataWords: 0,
-  pointerCount: 1,
+  pointerCount: 2,
   write(s, v, caps) {
-    DestinationContextCodec.write(s.initStruct(0, 0, 1), v.context, caps);
+    InvocationCodec.write(s.initStruct(0, 1, 4), v.invocation, caps);
+    BindingsCodec.write(s.initStruct(1, 0, 7), v.bindings, caps);
   },
   read(s, caps) {
     return {
-      context: DestinationContextCodec.read(s.getStruct(0, 0, 1), caps),
+      invocation: InvocationCodec.read(s.getStruct(0, 1, 4), caps),
+      bindings: BindingsCodec.read(s.getStruct(1, 0, 7), caps),
     };
   },
 };
 
 /**
- * Wire codec for the `BookclerkPlugin.destination` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `PluginWorker.open` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const BookclerkPluginDestinationResultsCodec: StructCodec<BookclerkPluginDestinationResults> = {
+export const PluginWorkerOpenResultsCodec: StructCodec<PluginWorkerOpenResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    DestinationReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    EntrypointsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
   },
   read(s, caps) {
     return {
-      result: DestinationReplyCodec.read(s.getStruct(0, 1, 1), caps),
+      result: EntrypointsReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };
 
 /**
- * Wire codec for the `BookclerkPlugin.source` params envelope (0 data words, 1 pointers).
+ * Wire codec for the `PluginWorker.shutdown` params envelope (0 data words, 0 pointers).
  *
  * @internal
  */
-export const BookclerkPluginSourceParamsCodec: StructCodec<BookclerkPluginSourceParams> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    SourceContextCodec.write(s.initStruct(0, 0, 1), v.context, caps);
-  },
-  read(s, caps) {
-    return {
-      context: SourceContextCodec.read(s.getStruct(0, 0, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.source` results envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginSourceResultsCodec: StructCodec<BookclerkPluginSourceResults> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    SourceReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
-  },
-  read(s, caps) {
-    return {
-      result: SourceReplyCodec.read(s.getStruct(0, 1, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.worker` params envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginWorkerParamsCodec: StructCodec<BookclerkPluginWorkerParams> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    WorkerContextCodec.write(s.initStruct(0, 0, 2), v.context, caps);
-  },
-  read(s, caps) {
-    return {
-      context: WorkerContextCodec.read(s.getStruct(0, 0, 2), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.worker` results envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginWorkerResultsCodec: StructCodec<BookclerkPluginWorkerResults> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    WorkerReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
-  },
-  read(s, caps) {
-    return {
-      result: WorkerReplyCodec.read(s.getStruct(0, 1, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.shutdown` params envelope (0 data words, 0 pointers).
- *
- * @internal
- */
-export const BookclerkPluginShutdownParamsCodec: StructCodec<BookclerkPluginShutdownParams> = {
+export const PluginWorkerShutdownParamsCodec: StructCodec<PluginWorkerShutdownParams> = {
   dataWords: 0,
   pointerCount: 0,
   write(s, v, caps) {
@@ -8260,11 +8248,11 @@ export const BookclerkPluginShutdownParamsCodec: StructCodec<BookclerkPluginShut
 };
 
 /**
- * Wire codec for the `BookclerkPlugin.shutdown` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `PluginWorker.shutdown` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const BookclerkPluginShutdownResultsCodec: StructCodec<BookclerkPluginShutdownResults> = {
+export const PluginWorkerShutdownResultsCodec: StructCodec<PluginWorkerShutdownResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -8278,231 +8266,11 @@ export const BookclerkPluginShutdownResultsCodec: StructCodec<BookclerkPluginShu
 };
 
 /**
- * Wire codec for the `BookclerkPlugin.contentSource` params envelope (0 data words, 1 pointers).
+ * Wire codec for the `PluginWorker.databaseMigrations` params envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const BookclerkPluginContentSourceParamsCodec: StructCodec<BookclerkPluginContentSourceParams> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    ContentSourceContextCodec.write(s.initStruct(0, 0, 1), v.context, caps);
-  },
-  read(s, caps) {
-    return {
-      context: ContentSourceContextCodec.read(s.getStruct(0, 0, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.contentSource` results envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginContentSourceResultsCodec: StructCodec<BookclerkPluginContentSourceResults> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    ContentSourceReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
-  },
-  read(s, caps) {
-    return {
-      result: ContentSourceReplyCodec.read(s.getStruct(0, 1, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.integration` params envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginIntegrationParamsCodec: StructCodec<BookclerkPluginIntegrationParams> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    IntegrationContextCodec.write(s.initStruct(0, 0, 1), v.context, caps);
-  },
-  read(s, caps) {
-    return {
-      context: IntegrationContextCodec.read(s.getStruct(0, 0, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.integration` results envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginIntegrationResultsCodec: StructCodec<BookclerkPluginIntegrationResults> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    IntegrationReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
-  },
-  read(s, caps) {
-    return {
-      result: IntegrationReplyCodec.read(s.getStruct(0, 1, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.database` params envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginDatabaseParamsCodec: StructCodec<BookclerkPluginDatabaseParams> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    DatabaseContextCodec.write(s.initStruct(0, 0, 2), v.context, caps);
-  },
-  read(s, caps) {
-    return {
-      context: DatabaseContextCodec.read(s.getStruct(0, 0, 2), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.database` results envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginDatabaseResultsCodec: StructCodec<BookclerkPluginDatabaseResults> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    DatabaseReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
-  },
-  read(s, caps) {
-    return {
-      result: DatabaseReplyCodec.read(s.getStruct(0, 1, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.cliDescribe` params envelope (0 data words, 0 pointers).
- *
- * @internal
- */
-export const BookclerkPluginCliDescribeParamsCodec: StructCodec<BookclerkPluginCliDescribeParams> = {
-  dataWords: 0,
-  pointerCount: 0,
-  write(s, v, caps) {
-    void s;
-    void v;
-    void caps;
-  },
-  read(s, caps) {
-    void caps;
-    void s;
-    return {};
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.cliDescribe` results envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginCliDescribeResultsCodec: StructCodec<BookclerkPluginCliDescribeResults> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    CliSchemaReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
-  },
-  read(s, caps) {
-    return {
-      result: CliSchemaReplyCodec.read(s.getStruct(0, 1, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.cliInvoke` params envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginCliInvokeParamsCodec: StructCodec<BookclerkPluginCliInvokeParams> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    CliInvokeParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
-  },
-  read(s, caps) {
-    return {
-      params: CliInvokeParamsCodec.read(s.getStruct(0, 0, 2), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.cliInvoke` results envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginCliInvokeResultsCodec: StructCodec<BookclerkPluginCliInvokeResults> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    CliInvokeReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
-  },
-  read(s, caps) {
-    return {
-      result: CliInvokeReplyCodec.read(s.getStruct(0, 1, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.oidcClients` params envelope (0 data words, 0 pointers).
- *
- * @internal
- */
-export const BookclerkPluginOidcClientsParamsCodec: StructCodec<BookclerkPluginOidcClientsParams> = {
-  dataWords: 0,
-  pointerCount: 0,
-  write(s, v, caps) {
-    void s;
-    void v;
-    void caps;
-  },
-  read(s, caps) {
-    void caps;
-    void s;
-    return {};
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.oidcClients` results envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginOidcClientsResultsCodec: StructCodec<BookclerkPluginOidcClientsResults> = {
-  dataWords: 0,
-  pointerCount: 1,
-  write(s, v, caps) {
-    OidcClientsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
-  },
-  read(s, caps) {
-    return {
-      result: OidcClientsReplyCodec.read(s.getStruct(0, 1, 1), caps),
-    };
-  },
-};
-
-/**
- * Wire codec for the `BookclerkPlugin.databaseMigrations` params envelope (0 data words, 1 pointers).
- *
- * @internal
- */
-export const BookclerkPluginDatabaseMigrationsParamsCodec: StructCodec<BookclerkPluginDatabaseMigrationsParams> = {
+export const PluginWorkerDatabaseMigrationsParamsCodec: StructCodec<PluginWorkerDatabaseMigrationsParams> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -8518,11 +8286,11 @@ export const BookclerkPluginDatabaseMigrationsParamsCodec: StructCodec<Bookclerk
 };
 
 /**
- * Wire codec for the `BookclerkPlugin.databaseMigrations` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `PluginWorker.databaseMigrations` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const BookclerkPluginDatabaseMigrationsResultsCodec: StructCodec<BookclerkPluginDatabaseMigrationsResults> = {
+export const PluginWorkerDatabaseMigrationsResultsCodec: StructCodec<PluginWorkerDatabaseMigrationsResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {

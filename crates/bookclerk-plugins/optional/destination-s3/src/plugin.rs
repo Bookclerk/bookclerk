@@ -6,10 +6,11 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use bookclerk_config::OutputS3Config;
+use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    ByteRange, CopyResult, Destination, DestinationContext, JobHandler, ListOptions, ListPage,
-    ObjectInfo, ObjectMetadata, PluginDescribe, PluginRoot, PutResult, ReadResult, ScalarLimits,
-    Source, SourceContext, StreamCopyHandler, WorkerContext, WriteOptions, FEATURE_SCALAR_LIMITS,
+    Bindings, ByteRange, CopyResult, Destination, Entrypoints, ExtensibleConfig, Invocation,
+    ListOptions, ListPage, ObjectInfo, ObjectMetadata, PluginDescribe, PluginWorker, PutResult,
+    ReadResult, ScalarLimits, StreamCopyHandler, WriteOptions, FEATURE_SCALAR_LIMITS,
     FEATURE_STORAGE_COPY, FEATURE_STREAMS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_sdk::{OutputS3ContextDto, PluginError, S3CredentialsDto};
@@ -38,16 +39,15 @@ pub struct S3Destination {
 }
 
 impl S3Destination {
-    /// Builds a destination from the [`DestinationContext`] config payload
+    /// Builds a destination from the `open` [`Bindings::config`] payload
     /// (an [`OutputS3ContextDto`] as `application/json`).
     ///
     /// # Errors
     ///
     /// Returns invalid_params when the payload is not an S3 context, or internal
     /// when the client cannot be constructed.
-    pub async fn from_context(ctx: &DestinationContext) -> Result<Self> {
-        let parsed: OutputS3ContextDto = ctx
-            .config
+    pub async fn from_config(config: &ExtensibleConfig) -> Result<Self> {
+        let parsed: OutputS3ContextDto = config
             .json_into()
             .map_err(|err| PluginError::invalid_params(format!("s3 destination context: {err}")))?;
         let backend = backend_from_ctx(&parsed).await?;
@@ -236,23 +236,15 @@ impl Destination for S3Destination {
     }
 }
 
-#[async_trait(?Send)]
-impl Source for S3Destination {
-    async fn open(&self, key: &str) -> Result<ReadResult> {
-        Destination::get(self, key, None).await
-    }
-}
-
 /// Root capability for the optional S3 destination guest.
 pub struct S3Root;
 
 #[async_trait(?Send)]
-impl PluginRoot for S3Root {
+impl PluginWorker for S3Root {
     async fn describe(&self) -> Result<PluginDescribe> {
         Ok(PluginDescribe {
             api_version: PRODUCT_API_VERSION,
             id: ID.into(),
-            kind: "output".into(),
             display_name: Some("S3 / MinIO".into()),
             rpc_features: vec![
                 FEATURE_SCALAR_LIMITS.into(),
@@ -260,23 +252,18 @@ impl PluginRoot for S3Root {
                 FEATURE_STORAGE_COPY.into(),
             ],
             scalar_limits: ScalarLimits::default().into(),
-            supported_roles: vec!["destination".into(), "source".into(), "worker".into()],
+            capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
             ..PluginDescribe::default()
         })
     }
 
-    async fn destination(&self, context: DestinationContext) -> Result<Box<dyn Destination>> {
-        Ok(Box::new(S3Destination::from_context(&context).await?))
-    }
-
-    async fn source(&self, context: SourceContext) -> Result<Box<dyn Source>> {
-        let dest_ctx = DestinationContext {
-            config: context.config,
-        };
-        Ok(Box::new(S3Destination::from_context(&dest_ctx).await?))
-    }
-
-    async fn worker(&self, _context: WorkerContext) -> Result<Box<dyn JobHandler>> {
-        Ok(Box::new(StreamCopyHandler))
+    async fn open(&self, _invocation: Invocation, bindings: Bindings) -> Result<Entrypoints> {
+        Ok(Entrypoints {
+            storage: Some(Box::new(
+                S3Destination::from_config(&bindings.config).await?,
+            )),
+            job_runner: Some(Box::new(StreamCopyHandler)),
+            ..Entrypoints::default()
+        })
     }
 }

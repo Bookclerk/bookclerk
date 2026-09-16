@@ -400,7 +400,7 @@ pub async fn run_scan(
     if job_cancelled(ctx, &library).await {
         anyhow::bail!("cancelled");
     }
-    let registry = default_registry_with_plugins(&cfg).await?;
+    let registry = default_registry_with_plugins(&cfg, &library).await?;
     let summary = registry
         .scan_all(
             &library,
@@ -459,7 +459,7 @@ pub async fn run_acquire(
     .await?;
     let storage = destinations.listing_backend()?;
     let options = DownloadOptions::from(&cfg);
-    let registry = default_registry_with_plugins(&cfg).await?;
+    let registry = default_registry_with_plugins(&cfg, &library).await?;
 
     let _ = match_storage_to_library(
         &library,

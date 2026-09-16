@@ -144,6 +144,22 @@ class _CapnpMessage:
         for word, value in zip(self.set_pointer_list(ptr_word, len(values)), values, strict=True):
             self.set_data(word, value)
 
+    def set_uint_list(self, ptr_word: int, values: list[int], byte_width: int) -> None:
+        """Write a ``List(UInt16)`` (``byte_width=2``) or ``List(UInt32)`` (``4``)."""
+        count = len(values)
+        size_code = 3 if byte_width == 2 else 4
+        if count == 0:
+            self.write_list_pointer(ptr_word, ptr_word + 1, size_code, 0)
+            return
+        n_words = (count * byte_width + WORD - 1) // WORD
+        target = self.alloc(n_words)
+        base = target * WORD
+        for i, value in enumerate(values):
+            self._buf[base + i * byte_width : base + (i + 1) * byte_width] = int(value).to_bytes(
+                byte_width, "little", signed=False
+            )
+        self.write_list_pointer(ptr_word, target, size_code, count)
+
     def set_bool_list(self, ptr_word: int, values: list[bool]) -> None:
         count = len(values)
         if count == 0:
@@ -247,6 +263,12 @@ class _CapnpStruct:
 
     def set_bool_list(self, pointer_index: int, values: list[bool]) -> None:
         self.msg.set_bool_list(self.pointer_word(pointer_index), values)
+
+    def set_u16_list(self, pointer_index: int, values: list[int]) -> None:
+        self.msg.set_uint_list(self.pointer_word(pointer_index), values, 2)
+
+    def set_u32_list(self, pointer_index: int, values: list[int]) -> None:
+        self.msg.set_uint_list(self.pointer_word(pointer_index), values, 4)
 
     def init_struct_list(
         self, pointer_index: int, count: int, data_words: int, pointer_words: int
@@ -408,6 +430,23 @@ class _CapnpReader:
     def read_data_list(self, ptr_word: int) -> list[bytes]:
         return [self.read_byte_list(w) for w in self._pointer_list(ptr_word)]
 
+    def read_uint_list(self, ptr_word: int, byte_width: int) -> list[int]:
+        """Read a ``List(UInt16)`` (``byte_width=2``) or ``List(UInt32)`` (``4``)."""
+        lp = self._list_pointer(ptr_word, 3 if byte_width == 2 else 4)
+        if lp is None or lp.length == 0:
+            return []
+        n_words = (lp.length * byte_width + WORD - 1) // WORD
+        self._check_range(lp.target, n_words)
+        base = self._seg + lp.target * WORD
+        return [
+            int.from_bytes(
+                self._data[base + i * byte_width : base + (i + 1) * byte_width],
+                "little",
+                signed=False,
+            )
+            for i in range(lp.length)
+        ]
+
     def read_bool_list(self, ptr_word: int) -> list[bool]:
         lp = self._list_pointer(ptr_word, 1)
         if lp is None or lp.length == 0:
@@ -513,6 +552,14 @@ class _StructReader:
     def get_bool_list(self, pointer_index: int) -> list[bool]:
         ptr = self.pointer_word(pointer_index)
         return [] if ptr is None else self.reader.read_bool_list(ptr)
+
+    def get_u16_list(self, pointer_index: int) -> list[int]:
+        ptr = self.pointer_word(pointer_index)
+        return [] if ptr is None else self.reader.read_uint_list(ptr, 2)
+
+    def get_u32_list(self, pointer_index: int) -> list[int]:
+        ptr = self.pointer_word(pointer_index)
+        return [] if ptr is None else self.reader.read_uint_list(ptr, 4)
 
     def get_struct_list(
         self, pointer_index: int, data_words: int, pointer_words: int

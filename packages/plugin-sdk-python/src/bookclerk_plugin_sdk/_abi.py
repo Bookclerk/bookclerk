@@ -6,7 +6,7 @@ declared in ``crates/bookclerk-plugin-abi/schema/plugin.capnp``.
 
 from __future__ import annotations
 
-PRODUCT_API_VERSION: int = 2
+PRODUCT_API_VERSION: int = 3
 """Product ABI version (`plugin.toml` `api_version` / `describe().apiVersion`)."""
 
 MAX_SCALAR_BYTES: int = 262144
@@ -54,6 +54,14 @@ as-is; SDKs surface them as a local `unknown` while keeping the raw wire
 code.
 
 Wire strings of ``PluginErrorCode`` in ordinal order (snake_case ``Text`` codes).
+"""
+
+ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc")
+"""Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
+analogue). Each value is a capability the host calls over RPC; triggers on
+the default entrypoint (`event`, `job`) are declared separately.
+
+Ordinal-ordered ``Entrypoint`` wire names (index = Cap'n Proto ordinal).
 """
 
 PORTAL_AUTH_MODES: tuple[str, ...] = ("unspecified", "password", "oauth")
@@ -139,6 +147,7 @@ __all__ = [
     "FEATURE_STREAMS",
     "FEATURE_STORAGE_COPY",
     "PLUGIN_ERROR_CODES",
+    "ENTRYPOINTS",
     "PORTAL_AUTH_MODES",
     "CLI_ARG_KINDS",
     "CATALOG_SORTS",

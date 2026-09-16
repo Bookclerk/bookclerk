@@ -198,7 +198,7 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
     match discovered {
         Ok(Ok(plugins)) => {
             for plugin in plugins {
-                if plugin.manifest.kind.as_str() != "integration" {
+                if !plugin.manifest.consumes_events() {
                     continue;
                 }
                 let enabled = cfg.integrations.is_enabled(&plugin.manifest.id);
@@ -266,15 +266,14 @@ fn resolve_event_node_id(files_dir: &Path) -> String {
     id
 }
 
-/// Map `plugin.toml` subscriptions onto the durable catalog JSON shape.
+/// Map `[[events.consumers]]` rows onto the durable catalog JSON shape.
 fn catalog_from_manifest(
     plugin: &bookclerk_plugin_host::DiscoveredPlugin,
 ) -> Vec<EventCatalogSubscription> {
     plugin
         .manifest
-        .capabilities
         .events
-        .subscriptions
+        .consumers
         .iter()
         .map(|s| EventCatalogSubscription {
             event_type: s.event_type.clone(),

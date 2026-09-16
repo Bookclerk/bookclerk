@@ -1,9 +1,9 @@
-api_version = 2
+api_version = 3
 id = "stream_fixture"
 name = "Stream contract fixture"
-kind = "output"
 version = "1.0.0"
 runtime = "workerd"
+entrypoints = ["storage"]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -24,5 +24,4 @@ type = "js"
 [capabilities.network]
 mode = "deny"
 
-[capabilities.bindings]
-config = true
+[vars]

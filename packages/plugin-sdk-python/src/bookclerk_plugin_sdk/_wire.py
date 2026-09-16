@@ -255,49 +255,45 @@ _copy_result_codec = _Codec(1, 0, _write_copy_result, _read_copy_result)
 def _write_plugin_describe(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u32(0, v["apiVersion"])
     s.set_text(0, v["id"])
-    s.set_text(1, v["kind"])
-    s.set_text(2, v["displayName"])
-    s.set_text_list(3, v["rpcFeatures"])
-    _scalar_limits_codec.write(s.init_struct(4, 2, 0), v["scalarLimits"], caps)
-    s.set_text_list(5, v["supportedRoles"])
-    s.set_text_list(6, v["capabilities"])
+    s.set_text(1, v["displayName"])
+    s.set_text_list(2, v["rpcFeatures"])
+    _scalar_limits_codec.write(s.init_struct(3, 2, 0), v["scalarLimits"], caps)
+    _plugin_capabilities_codec.write(s.init_struct(4, 0, 6), v["capabilities"], caps)
     s.set_u16(2, _ord(A.PORTAL_AUTH_MODES, v["portalAuthMode"], "PortalAuthMode"))
     if v.get("passwordEnvVar") is not None:
-        s.set_text(7, v["passwordEnvVar"])
-    s.set_text_list(8, v["aliases"])
+        s.set_text(5, v["passwordEnvVar"])
+    s.set_text_list(6, v["aliases"])
     s.set_u32(2, v["sortKey"])
-    _brand_codec.write(s.init_struct(9, 0, 6), v["brand"], caps)
-    items = s.init_struct_list(10, len(v["configOptions"]), 0, 3)
+    _brand_codec.write(s.init_struct(7, 0, 6), v["brand"], caps)
+    items = s.init_struct_list(8, len(v["configOptions"]), 0, 3)
     for item, elem in zip(items, v["configOptions"], strict=True):
         _config_option_codec.write(item, elem, caps)
-    _cli_schema_codec.write(s.init_struct(11, 0, 1), v["cli"], caps)
+    _cli_schema_codec.write(s.init_struct(9, 0, 1), v["cli"], caps)
 
 
 def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
         "apiVersion": s.get_u32(0),
         "id": s.get_text(0),
-        "kind": s.get_text(1),
-        "displayName": s.get_text(2),
-        "rpcFeatures": s.get_text_list(3),
-        "scalarLimits": _scalar_limits_codec.read(s.get_struct(4, 2, 0), caps),
-        "supportedRoles": s.get_text_list(5),
-        "capabilities": s.get_text_list(6),
+        "displayName": s.get_text(1),
+        "rpcFeatures": s.get_text_list(2),
+        "scalarLimits": _scalar_limits_codec.read(s.get_struct(3, 2, 0), caps),
+        "capabilities": _plugin_capabilities_codec.read(s.get_struct(4, 0, 6), caps),
         "portalAuthMode": _from_ord(A.PORTAL_AUTH_MODES, s.get_u16(2), "PortalAuthMode"),
-        "aliases": s.get_text_list(8),
+        "aliases": s.get_text_list(6),
         "sortKey": s.get_u32(2),
-        "brand": _brand_codec.read(s.get_struct(9, 0, 6), caps),
-        "configOptions": [_config_option_codec.read(item, caps) for item in s.get_struct_list(10, 0, 3)],
-        "cli": _cli_schema_codec.read(s.get_struct(11, 0, 1), caps),
+        "brand": _brand_codec.read(s.get_struct(7, 0, 6), caps),
+        "configOptions": [_config_option_codec.read(item, caps) for item in s.get_struct_list(8, 0, 3)],
+        "cli": _cli_schema_codec.read(s.get_struct(9, 0, 1), caps),
     }
-    password_env_var = s.get_text(7)
+    password_env_var = s.get_text(5)
     if not (password_env_var == ""):
         out["passwordEnvVar"] = password_env_var
     return out
 
 
-_plugin_describe_codec = _Codec(2, 12, _write_plugin_describe, _read_plugin_describe)
-"""Wire codec for ``PluginDescribe`` (2 data words, 12 pointers)."""
+_plugin_describe_codec = _Codec(2, 10, _write_plugin_describe, _read_plugin_describe)
+"""Wire codec for ``PluginDescribe`` (2 data words, 10 pointers)."""
 
 
 def _write_oidc_client_template(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -385,92 +381,85 @@ _extensible_config_codec = _Codec(1, 2, _write_extensible_config, _read_extensib
 """Wire codec for ``ExtensibleConfig`` (1 data words, 2 pointers)."""
 
 
-def _write_destination_context(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_bindings(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _extensible_config_codec.write(s.init_struct(0, 1, 2), v["config"], caps)
+    _extensible_config_codec.write(s.init_struct(1, 1, 2), v["secrets"], caps)
+    _database_adapter_config_codec.write(s.init_struct(2, 1, 4), v["adapter"], caps)
+    s.set_cap(3, caps.export_cap(v["events"]))
+    items = s.init_struct_list(4, len(v["databases"]), 0, 2)
+    for item, elem in zip(items, v["databases"], strict=True):
+        _named_database_codec.write(item, elem, caps)
+    s.set_cap(5, caps.export_cap(v["cancel"]))
+    s.set_cap(6, caps.export_cap(v["storage"]))
 
 
-def _read_destination_context(s: _StructReader, caps: _CapTable) -> Any:
+def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "config": _extensible_config_codec.read(s.get_struct(0, 1, 2), caps),
+        "secrets": _extensible_config_codec.read(s.get_struct(1, 1, 2), caps),
+        "adapter": _database_adapter_config_codec.read(s.get_struct(2, 1, 4), caps),
+        "events": caps.import_cap(s.get_cap_index(3)),
+        "databases": [_named_database_codec.read(item, caps) for item in s.get_struct_list(4, 0, 2)],
+        "cancel": caps.import_cap(s.get_cap_index(5)),
+        "storage": caps.import_cap(s.get_cap_index(6)),
     }
 
 
-_destination_context_codec = _Codec(0, 1, _write_destination_context, _read_destination_context)
-"""Wire codec for ``DestinationContext`` (0 data words, 1 pointers)."""
+_bindings_codec = _Codec(0, 7, _write_bindings, _read_bindings)
+"""Wire codec for ``Bindings`` (0 data words, 7 pointers)."""
 
 
-def _write_source_context(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _extensible_config_codec.write(s.init_struct(0, 1, 2), v["config"], caps)
+def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_cap(0, caps.export_cap(v["eventConsumer"]))
+    s.set_cap(1, caps.export_cap(v["jobRunner"]))
+    s.set_cap(2, caps.export_cap(v["storefront"]))
+    s.set_cap(3, caps.export_cap(v["storage"]))
+    s.set_cap(4, caps.export_cap(v["databaseAdapter"]))
+    s.set_cap(5, caps.export_cap(v["remoteLibrary"]))
+    s.set_cap(6, caps.export_cap(v["cli"]))
+    s.set_cap(7, caps.export_cap(v["oidc"]))
 
 
-def _read_source_context(s: _StructReader, caps: _CapTable) -> Any:
+def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "config": _extensible_config_codec.read(s.get_struct(0, 1, 2), caps),
+        "eventConsumer": caps.import_cap(s.get_cap_index(0)),
+        "jobRunner": caps.import_cap(s.get_cap_index(1)),
+        "storefront": caps.import_cap(s.get_cap_index(2)),
+        "storage": caps.import_cap(s.get_cap_index(3)),
+        "databaseAdapter": caps.import_cap(s.get_cap_index(4)),
+        "remoteLibrary": caps.import_cap(s.get_cap_index(5)),
+        "cli": caps.import_cap(s.get_cap_index(6)),
+        "oidc": caps.import_cap(s.get_cap_index(7)),
     }
 
 
-_source_context_codec = _Codec(0, 1, _write_source_context, _read_source_context)
-"""Wire codec for ``SourceContext`` (0 data words, 1 pointers)."""
+_entrypoints_codec = _Codec(0, 8, _write_entrypoints, _read_entrypoints)
+"""Wire codec for ``Entrypoints`` (0 data words, 8 pointers)."""
 
 
-def _write_worker_context(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    s.set_text(0, v["jobId"])
-    _extensible_config_codec.write(s.init_struct(1, 1, 2), v["config"], caps)
+def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _entrypoints_codec.write(s.init_struct(0, 0, 8), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown EntrypointsReply union member: {kind}")
 
 
-def _read_worker_context(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "jobId": s.get_text(0),
-        "config": _extensible_config_codec.read(s.get_struct(1, 1, 2), caps),
-    }
+def _read_entrypoints_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 8), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown EntrypointsReply union member: {disc}")
 
 
-_worker_context_codec = _Codec(0, 2, _write_worker_context, _read_worker_context)
-"""Wire codec for ``WorkerContext`` (0 data words, 2 pointers)."""
-
-
-def _write_content_source_context(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _extensible_config_codec.write(s.init_struct(0, 1, 2), v["config"], caps)
-
-
-def _read_content_source_context(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "config": _extensible_config_codec.read(s.get_struct(0, 1, 2), caps),
-    }
-
-
-_content_source_context_codec = _Codec(0, 1, _write_content_source_context, _read_content_source_context)
-"""Wire codec for ``ContentSourceContext`` (0 data words, 1 pointers)."""
-
-
-def _write_integration_context(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _extensible_config_codec.write(s.init_struct(0, 1, 2), v["config"], caps)
-
-
-def _read_integration_context(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "config": _extensible_config_codec.read(s.get_struct(0, 1, 2), caps),
-    }
-
-
-_integration_context_codec = _Codec(0, 1, _write_integration_context, _read_integration_context)
-"""Wire codec for ``IntegrationContext`` (0 data words, 1 pointers)."""
-
-
-def _write_database_context(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _extensible_config_codec.write(s.init_struct(0, 1, 2), v["config"], caps)
-    _database_adapter_config_codec.write(s.init_struct(1, 1, 4), v["adapter"], caps)
-
-
-def _read_database_context(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "config": _extensible_config_codec.read(s.get_struct(0, 1, 2), caps),
-        "adapter": _database_adapter_config_codec.read(s.get_struct(1, 1, 4), caps),
-    }
-
-
-_database_context_codec = _Codec(0, 2, _write_database_context, _read_database_context)
-"""Wire codec for ``DatabaseContext`` (0 data words, 2 pointers)."""
+_entrypoints_reply_codec = _Codec(1, 1, _write_entrypoints_reply, _read_entrypoints_reply)
+"""Wire codec for ``EntrypointsReply`` (1 data words, 1 pointers)."""
 
 
 def _write_job_invocation(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -791,6 +780,71 @@ _event_result_codec = _Codec(1, 1, _write_event_result, _read_event_result)
 """Wire codec for ``EventResult`` (1 data words, 1 pointers)."""
 
 
+def _write_event_batch(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["events"]), 4, 9)
+    for item, elem in zip(items, v["events"], strict=True):
+        _domain_event_codec.write(item, elem, caps)
+
+
+def _read_event_batch(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "events": [_domain_event_codec.read(item, caps) for item in s.get_struct_list(0, 4, 9)],
+    }
+
+
+_event_batch_codec = _Codec(0, 1, _write_event_batch, _read_event_batch)
+"""Wire codec for ``EventBatch`` (0 data words, 1 pointers)."""
+
+
+def _write_event_batch_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        items = s.init_struct_list(0, len(v["value"]), 1, 1)
+        for item, elem in zip(items, v["value"], strict=True):
+            _event_result_codec.write(item, elem, caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown EventBatchReply union member: {kind}")
+
+
+def _read_event_batch_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": [_event_result_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)]}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown EventBatchReply union member: {disc}")
+
+
+_event_batch_reply_codec = _Codec(1, 1, _write_event_batch_reply, _read_event_batch_reply)
+"""Wire codec for ``EventBatchReply`` (1 data words, 1 pointers)."""
+
+
+def _write_job_controller(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _job_invocation_codec.write(s.init_struct(0, 3, 8), v["invocation"], caps)
+    s.set_cap(1, caps.export_cap(v["input"]))
+    s.set_cap(2, caps.export_cap(v["output"]))
+    s.set_cap(3, caps.export_cap(v["progress"]))
+    s.set_cap(4, caps.export_cap(v["cancel"]))
+
+
+def _read_job_controller(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "invocation": _job_invocation_codec.read(s.get_struct(0, 3, 8), caps),
+        "input": caps.import_cap(s.get_cap_index(1)),
+        "output": caps.import_cap(s.get_cap_index(2)),
+        "progress": caps.import_cap(s.get_cap_index(3)),
+        "cancel": caps.import_cap(s.get_cap_index(4)),
+    }
+
+
+_job_controller_codec = _Codec(0, 5, _write_job_controller, _read_job_controller)
+"""Wire codec for ``JobController`` (0 data words, 5 pointers)."""
+
+
 def _write_head_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_bool(0, v["found"])
     _object_metadata_codec.write(s.init_struct(0, 1, 4), v["meta"], caps)
@@ -1058,7 +1112,7 @@ def _write_describe_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _plugin_describe_codec.write(s.init_struct(0, 2, 12), v["value"], caps)
+        _plugin_describe_codec.write(s.init_struct(0, 2, 10), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
@@ -1069,7 +1123,7 @@ def _write_describe_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_describe_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _plugin_describe_codec.read(s.get_struct(0, 2, 12), caps)}
+        return {"kind": "ok", "value": _plugin_describe_codec.read(s.get_struct(0, 2, 10), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
     raise ValueError(f"unknown DescribeReply union member: {disc}")
@@ -1077,81 +1131,6 @@ def _read_describe_reply(s: _StructReader, caps: _CapTable) -> Any:
 
 _describe_reply_codec = _Codec(1, 1, _write_describe_reply, _read_describe_reply)
 """Wire codec for ``DescribeReply`` (1 data words, 1 pointers)."""
-
-
-def _write_destination_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    kind = v["kind"]
-    if kind == "ok":
-        s.set_u16(0, 0)
-        s.set_cap(0, caps.export_cap(v["value"]))
-    elif kind == "err":
-        s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
-    else:
-        raise ValueError(f"unknown DestinationReply union member: {kind}")
-
-
-def _read_destination_reply(s: _StructReader, caps: _CapTable) -> Any:
-    disc = s.get_u16(0)
-    if disc == 0:
-        return {"kind": "ok", "value": caps.import_cap(s.get_cap_index(0))}
-    elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
-    raise ValueError(f"unknown DestinationReply union member: {disc}")
-
-
-_destination_reply_codec = _Codec(1, 1, _write_destination_reply, _read_destination_reply)
-"""Wire codec for ``DestinationReply`` (1 data words, 1 pointers)."""
-
-
-def _write_source_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    kind = v["kind"]
-    if kind == "ok":
-        s.set_u16(0, 0)
-        s.set_cap(0, caps.export_cap(v["value"]))
-    elif kind == "err":
-        s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
-    else:
-        raise ValueError(f"unknown SourceReply union member: {kind}")
-
-
-def _read_source_reply(s: _StructReader, caps: _CapTable) -> Any:
-    disc = s.get_u16(0)
-    if disc == 0:
-        return {"kind": "ok", "value": caps.import_cap(s.get_cap_index(0))}
-    elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
-    raise ValueError(f"unknown SourceReply union member: {disc}")
-
-
-_source_reply_codec = _Codec(1, 1, _write_source_reply, _read_source_reply)
-"""Wire codec for ``SourceReply`` (1 data words, 1 pointers)."""
-
-
-def _write_worker_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    kind = v["kind"]
-    if kind == "ok":
-        s.set_u16(0, 0)
-        s.set_cap(0, caps.export_cap(v["value"]))
-    elif kind == "err":
-        s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
-    else:
-        raise ValueError(f"unknown WorkerReply union member: {kind}")
-
-
-def _read_worker_reply(s: _StructReader, caps: _CapTable) -> Any:
-    disc = s.get_u16(0)
-    if disc == 0:
-        return {"kind": "ok", "value": caps.import_cap(s.get_cap_index(0))}
-    elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
-    raise ValueError(f"unknown WorkerReply union member: {disc}")
-
-
-_worker_reply_codec = _Codec(1, 1, _write_worker_reply, _read_worker_reply)
-"""Wire codec for ``WorkerReply`` (1 data words, 1 pointers)."""
 
 
 def _write_handle_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -1177,106 +1156,6 @@ def _read_handle_reply(s: _StructReader, caps: _CapTable) -> Any:
 
 _handle_reply_codec = _Codec(1, 1, _write_handle_reply, _read_handle_reply)
 """Wire codec for ``HandleReply`` (1 data words, 1 pointers)."""
-
-
-def _write_content_source_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    kind = v["kind"]
-    if kind == "ok":
-        s.set_u16(0, 0)
-        s.set_cap(0, caps.export_cap(v["value"]))
-    elif kind == "err":
-        s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
-    else:
-        raise ValueError(f"unknown ContentSourceReply union member: {kind}")
-
-
-def _read_content_source_reply(s: _StructReader, caps: _CapTable) -> Any:
-    disc = s.get_u16(0)
-    if disc == 0:
-        return {"kind": "ok", "value": caps.import_cap(s.get_cap_index(0))}
-    elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
-    raise ValueError(f"unknown ContentSourceReply union member: {disc}")
-
-
-_content_source_reply_codec = _Codec(1, 1, _write_content_source_reply, _read_content_source_reply)
-"""Wire codec for ``ContentSourceReply`` (1 data words, 1 pointers)."""
-
-
-def _write_integration_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    kind = v["kind"]
-    if kind == "ok":
-        s.set_u16(0, 0)
-        s.set_cap(0, caps.export_cap(v["value"]))
-    elif kind == "err":
-        s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
-    else:
-        raise ValueError(f"unknown IntegrationReply union member: {kind}")
-
-
-def _read_integration_reply(s: _StructReader, caps: _CapTable) -> Any:
-    disc = s.get_u16(0)
-    if disc == 0:
-        return {"kind": "ok", "value": caps.import_cap(s.get_cap_index(0))}
-    elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
-    raise ValueError(f"unknown IntegrationReply union member: {disc}")
-
-
-_integration_reply_codec = _Codec(1, 1, _write_integration_reply, _read_integration_reply)
-"""Wire codec for ``IntegrationReply`` (1 data words, 1 pointers)."""
-
-
-def _write_database_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    kind = v["kind"]
-    if kind == "ok":
-        s.set_u16(0, 0)
-        s.set_cap(0, caps.export_cap(v["value"]))
-    elif kind == "err":
-        s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
-    else:
-        raise ValueError(f"unknown DatabaseReply union member: {kind}")
-
-
-def _read_database_reply(s: _StructReader, caps: _CapTable) -> Any:
-    disc = s.get_u16(0)
-    if disc == 0:
-        return {"kind": "ok", "value": caps.import_cap(s.get_cap_index(0))}
-    elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
-    raise ValueError(f"unknown DatabaseReply union member: {disc}")
-
-
-_database_reply_codec = _Codec(1, 1, _write_database_reply, _read_database_reply)
-"""Wire codec for ``DatabaseReply`` (1 data words, 1 pointers)."""
-
-
-def _write_event_result_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    kind = v["kind"]
-    if kind == "ok":
-        s.set_u16(0, 0)
-        _event_result_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
-    elif kind == "err":
-        s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
-    else:
-        raise ValueError(f"unknown EventResultReply union member: {kind}")
-
-
-def _read_event_result_reply(s: _StructReader, caps: _CapTable) -> Any:
-    disc = s.get_u16(0)
-    if disc == 0:
-        return {"kind": "ok", "value": _event_result_codec.read(s.get_struct(0, 1, 1), caps)}
-    elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
-    raise ValueError(f"unknown EventResultReply union member: {disc}")
-
-
-_event_result_reply_codec = _Codec(1, 1, _write_event_result_reply, _read_event_result_reply)
-"""Wire codec for ``EventResultReply`` (1 data words, 1 pointers)."""
 
 
 def _write_health_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -1384,6 +1263,50 @@ def _read_named_database(s: _StructReader, caps: _CapTable) -> Any:
 
 _named_database_codec = _Codec(0, 2, _write_named_database, _read_named_database)
 """Wire codec for ``NamedDatabase`` (0 data words, 2 pointers)."""
+
+
+def _write_event_consumer_spec(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["eventType"])
+    s.set_u32_list(1, v["schemaVersions"])
+    s.set_bool(0, v["supportsSuspend"])
+
+
+def _read_event_consumer_spec(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "eventType": s.get_text(0),
+        "schemaVersions": s.get_u32_list(1),
+        "supportsSuspend": s.get_bool(0),
+    }
+
+
+_event_consumer_spec_codec = _Codec(1, 2, _write_event_consumer_spec, _read_event_consumer_spec)
+"""Wire codec for ``EventConsumerSpec`` (1 data words, 2 pointers)."""
+
+
+def _write_plugin_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u16_list(0, [_ord(A.ENTRYPOINTS, v, "Entrypoint") for v in v["entrypoints"]])
+    items = s.init_struct_list(1, len(v["consumes"]), 1, 2)
+    for item, elem in zip(items, v["consumes"], strict=True):
+        _event_consumer_spec_codec.write(item, elem, caps)
+    s.set_text_list(2, v["produces"])
+    s.set_text_list(3, v["jobs"])
+    s.set_text_list(4, v["databases"])
+    s.set_text_list(5, v["bindings"])
+
+
+def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "entrypoints": [_from_ord(A.ENTRYPOINTS, v, "Entrypoint") for v in s.get_u16_list(0)],
+        "consumes": [_event_consumer_spec_codec.read(item, caps) for item in s.get_struct_list(1, 1, 2)],
+        "produces": s.get_text_list(2),
+        "jobs": s.get_text_list(3),
+        "databases": s.get_text_list(4),
+        "bindings": s.get_text_list(5),
+    }
+
+
+_plugin_capabilities_codec = _Codec(0, 6, _write_plugin_capabilities, _read_plugin_capabilities)
+"""Wire codec for ``PluginCapabilities`` (0 data words, 6 pointers)."""
 
 
 def _write_brand(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -2972,6 +2895,95 @@ _sync_listening_reply_codec = _Codec(1, 1, _write_sync_listening_reply, _read_sy
 """Wire codec for ``SyncListeningReply`` (1 data words, 1 pointers)."""
 
 
+def _write_plugin_event(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["eventType"])
+    s.set_u32(0, v["schemaVersion"])
+    s.set_text(1, v["deduplicationKey"])
+    s.set_data(2, v["payload"])
+    s.set_u64(1, v["occurredAtUnixMs"])
+    s.set_text(3, v["correlationId"])
+    s.set_text(4, v["causationId"])
+
+
+def _read_plugin_event(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "eventType": s.get_text(0),
+        "schemaVersion": s.get_u32(0),
+        "deduplicationKey": s.get_text(1),
+        "payload": s.get_data(2),
+        "occurredAtUnixMs": s.get_u64(1),
+        "correlationId": s.get_text(3),
+        "causationId": s.get_text(4),
+    }
+
+
+_plugin_event_codec = _Codec(2, 5, _write_plugin_event, _read_plugin_event)
+"""Wire codec for ``PluginEvent`` (2 data words, 5 pointers)."""
+
+
+def _write_publish_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["eventId"])
+    s.set_bool(0, v["duplicate"])
+
+
+def _read_publish_ok(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "eventId": s.get_text(0),
+        "duplicate": s.get_bool(0),
+    }
+
+
+_publish_ok_codec = _Codec(1, 1, _write_publish_ok, _read_publish_ok)
+"""Wire codec for ``PublishOk`` (1 data words, 1 pointers)."""
+
+
+def _write_publish_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _publish_ok_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown PublishReply union member: {kind}")
+
+
+def _read_publish_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _publish_ok_codec.read(s.get_struct(0, 1, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown PublishReply union member: {disc}")
+
+
+_publish_reply_codec = _Codec(1, 1, _write_publish_reply, _read_publish_reply)
+"""Wire codec for ``PublishReply`` (1 data words, 1 pointers)."""
+
+
+def _write_invocation(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["id"])
+    s.set_text(1, v["accountId"])
+    s.set_u64(0, v["deadlineUnixMs"])
+    s.set_text(2, v["correlationId"])
+    s.set_text(3, v["causationId"])
+
+
+def _read_invocation(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "id": s.get_text(0),
+        "accountId": s.get_text(1),
+        "deadlineUnixMs": s.get_u64(0),
+        "correlationId": s.get_text(2),
+        "causationId": s.get_text(3),
+    }
+
+
+_invocation_codec = _Codec(1, 4, _write_invocation, _read_invocation)
+"""Wire codec for ``Invocation`` (1 data words, 4 pointers)."""
+
+
 def _write_db_value(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "null":
@@ -4186,46 +4198,88 @@ _cancellation_poll_results_codec = _Codec(1, 0, _write_cancellation_poll_results
 """Wire codec for ``CancellationPollResults`` (1 data words, 0 pointers)."""
 
 
-def _write_job_handler_handle_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _job_invocation_codec.write(s.init_struct(0, 3, 8), v["invocation"], caps)
-    s.set_cap(1, caps.export_cap(v["input"]))
-    s.set_cap(2, caps.export_cap(v["output"]))
-    s.set_cap(3, caps.export_cap(v["progress"]))
-    s.set_cap(4, caps.export_cap(v["cancel"]))
-    s.set_cap(5, caps.export_cap(v["database"]))
-    items = s.init_struct_list(6, len(v["databases"]), 0, 2)
-    for item, elem in zip(items, v["databases"], strict=True):
-        _named_database_codec.write(item, elem, caps)
+def _write_job_runner_job_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _job_controller_codec.write(s.init_struct(0, 0, 5), v["controller"], caps)
 
 
-def _read_job_handler_handle_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_job_runner_job_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "invocation": _job_invocation_codec.read(s.get_struct(0, 3, 8), caps),
-        "input": caps.import_cap(s.get_cap_index(1)),
-        "output": caps.import_cap(s.get_cap_index(2)),
-        "progress": caps.import_cap(s.get_cap_index(3)),
-        "cancel": caps.import_cap(s.get_cap_index(4)),
-        "database": caps.import_cap(s.get_cap_index(5)),
-        "databases": [_named_database_codec.read(item, caps) for item in s.get_struct_list(6, 0, 2)],
+        "controller": _job_controller_codec.read(s.get_struct(0, 0, 5), caps),
     }
 
 
-_job_handler_handle_params_codec = _Codec(0, 7, _write_job_handler_handle_params, _read_job_handler_handle_params)
-"""Wire codec for ``JobHandlerHandleParams`` (0 data words, 7 pointers)."""
+_job_runner_job_params_codec = _Codec(0, 1, _write_job_runner_job_params, _read_job_runner_job_params)
+"""Wire codec for ``JobRunnerJobParams`` (0 data words, 1 pointers)."""
 
 
-def _write_job_handler_handle_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_job_runner_job_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _handle_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_job_handler_handle_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_job_runner_job_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "result": _handle_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_job_handler_handle_results_codec = _Codec(0, 1, _write_job_handler_handle_results, _read_job_handler_handle_results)
-"""Wire codec for ``JobHandlerHandleResults`` (0 data words, 1 pointers)."""
+_job_runner_job_results_codec = _Codec(0, 1, _write_job_runner_job_results, _read_job_runner_job_results)
+"""Wire codec for ``JobRunnerJobResults`` (0 data words, 1 pointers)."""
+
+
+def _write_event_consumer_event_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _event_batch_codec.write(s.init_struct(0, 0, 1), v["batch"], caps)
+
+
+def _read_event_consumer_event_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "batch": _event_batch_codec.read(s.get_struct(0, 0, 1), caps),
+    }
+
+
+_event_consumer_event_params_codec = _Codec(0, 1, _write_event_consumer_event_params, _read_event_consumer_event_params)
+"""Wire codec for ``EventConsumerEventParams`` (0 data words, 1 pointers)."""
+
+
+def _write_event_consumer_event_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _event_batch_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_event_consumer_event_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _event_batch_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_event_consumer_event_results_codec = _Codec(0, 1, _write_event_consumer_event_results, _read_event_consumer_event_results)
+"""Wire codec for ``EventConsumerEventResults`` (0 data words, 1 pointers)."""
+
+
+def _write_event_publisher_publish_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _plugin_event_codec.write(s.init_struct(0, 2, 5), v["event"], caps)
+
+
+def _read_event_publisher_publish_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "event": _plugin_event_codec.read(s.get_struct(0, 2, 5), caps),
+    }
+
+
+_event_publisher_publish_params_codec = _Codec(0, 1, _write_event_publisher_publish_params, _read_event_publisher_publish_params)
+"""Wire codec for ``EventPublisherPublishParams`` (0 data words, 1 pointers)."""
+
+
+def _write_event_publisher_publish_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _publish_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_event_publisher_publish_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _publish_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_event_publisher_publish_results_codec = _Codec(0, 1, _write_event_publisher_publish_results, _read_event_publisher_publish_results)
+"""Wire codec for ``EventPublisherPublishResults`` (0 data words, 1 pointers)."""
 
 
 def _write_content_source_login_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -4586,244 +4640,296 @@ _content_source_catalog_detail_results_codec = _Codec(0, 1, _write_content_sourc
 """Wire codec for ``ContentSourceCatalogDetailResults`` (0 data words, 1 pointers)."""
 
 
-def _write_integration_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     pass
 
 
-def _read_integration_health_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_health_params(s: _StructReader, caps: _CapTable) -> Any:
     return {}
 
 
-_integration_health_params_codec = _Codec(0, 0, _write_integration_health_params, _read_integration_health_params)
-"""Wire codec for ``IntegrationHealthParams`` (0 data words, 0 pointers)."""
+_remote_library_health_params_codec = _Codec(0, 0, _write_remote_library_health_params, _read_remote_library_health_params)
+"""Wire codec for ``RemoteLibraryHealthParams`` (0 data words, 0 pointers)."""
 
 
-def _write_integration_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_integration_health_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_health_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "result": _health_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_integration_health_results_codec = _Codec(0, 1, _write_integration_health_results, _read_integration_health_results)
-"""Wire codec for ``IntegrationHealthResults`` (0 data words, 1 pointers)."""
+_remote_library_health_results_codec = _Codec(0, 1, _write_remote_library_health_results, _read_remote_library_health_results)
+"""Wire codec for ``RemoteLibraryHealthResults`` (0 data words, 1 pointers)."""
 
 
-def _write_integration_on_event_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _domain_event_codec.write(s.init_struct(0, 4, 9), v["event"], caps)
-
-
-def _read_integration_on_event_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "event": _domain_event_codec.read(s.get_struct(0, 4, 9), caps),
-    }
-
-
-_integration_on_event_params_codec = _Codec(0, 1, _write_integration_on_event_params, _read_integration_on_event_params)
-"""Wire codec for ``IntegrationOnEventParams`` (0 data words, 1 pointers)."""
-
-
-def _write_integration_on_event_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _event_result_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
-
-
-def _read_integration_on_event_results(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "result": _event_result_reply_codec.read(s.get_struct(0, 1, 1), caps),
-    }
-
-
-_integration_on_event_results_codec = _Codec(0, 1, _write_integration_on_event_results, _read_integration_on_event_results)
-"""Wire codec for ``IntegrationOnEventResults`` (0 data words, 1 pointers)."""
-
-
-def _write_integration_start_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_start_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     pass
 
 
-def _read_integration_start_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_start_params(s: _StructReader, caps: _CapTable) -> Any:
     return {}
 
 
-_integration_start_params_codec = _Codec(0, 0, _write_integration_start_params, _read_integration_start_params)
-"""Wire codec for ``IntegrationStartParams`` (0 data words, 0 pointers)."""
+_remote_library_start_params_codec = _Codec(0, 0, _write_remote_library_start_params, _read_remote_library_start_params)
+"""Wire codec for ``RemoteLibraryStartParams`` (0 data words, 0 pointers)."""
 
 
-def _write_integration_start_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_start_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_integration_start_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_start_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_integration_start_results_codec = _Codec(0, 1, _write_integration_start_results, _read_integration_start_results)
-"""Wire codec for ``IntegrationStartResults`` (0 data words, 1 pointers)."""
+_remote_library_start_results_codec = _Codec(0, 1, _write_remote_library_start_results, _read_remote_library_start_results)
+"""Wire codec for ``RemoteLibraryStartResults`` (0 data words, 1 pointers)."""
 
 
-def _write_integration_stop_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_stop_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     pass
 
 
-def _read_integration_stop_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_stop_params(s: _StructReader, caps: _CapTable) -> Any:
     return {}
 
 
-_integration_stop_params_codec = _Codec(0, 0, _write_integration_stop_params, _read_integration_stop_params)
-"""Wire codec for ``IntegrationStopParams`` (0 data words, 0 pointers)."""
+_remote_library_stop_params_codec = _Codec(0, 0, _write_remote_library_stop_params, _read_remote_library_stop_params)
+"""Wire codec for ``RemoteLibraryStopParams`` (0 data words, 0 pointers)."""
 
 
-def _write_integration_stop_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_stop_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_integration_stop_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_stop_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_integration_stop_results_codec = _Codec(0, 1, _write_integration_stop_results, _read_integration_stop_results)
-"""Wire codec for ``IntegrationStopResults`` (0 data words, 1 pointers)."""
+_remote_library_stop_results_codec = _Codec(0, 1, _write_remote_library_stop_results, _read_remote_library_stop_results)
+"""Wire codec for ``RemoteLibraryStopResults`` (0 data words, 1 pointers)."""
 
 
-def _write_integration_diagnose_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_diagnose_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     pass
 
 
-def _read_integration_diagnose_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_diagnose_params(s: _StructReader, caps: _CapTable) -> Any:
     return {}
 
 
-_integration_diagnose_params_codec = _Codec(0, 0, _write_integration_diagnose_params, _read_integration_diagnose_params)
-"""Wire codec for ``IntegrationDiagnoseParams`` (0 data words, 0 pointers)."""
+_remote_library_diagnose_params_codec = _Codec(0, 0, _write_remote_library_diagnose_params, _read_remote_library_diagnose_params)
+"""Wire codec for ``RemoteLibraryDiagnoseParams`` (0 data words, 0 pointers)."""
 
 
-def _write_integration_diagnose_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_diagnose_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _diagnose_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_integration_diagnose_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_diagnose_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "result": _diagnose_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_integration_diagnose_results_codec = _Codec(0, 1, _write_integration_diagnose_results, _read_integration_diagnose_results)
-"""Wire codec for ``IntegrationDiagnoseResults`` (0 data words, 1 pointers)."""
+_remote_library_diagnose_results_codec = _Codec(0, 1, _write_remote_library_diagnose_results, _read_remote_library_diagnose_results)
+"""Wire codec for ``RemoteLibraryDiagnoseResults`` (0 data words, 1 pointers)."""
 
 
-def _write_integration_scan_library_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_scan_library_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _scan_library_params_codec.write(s.init_struct(0, 1, 0), v["params"], caps)
 
 
-def _read_integration_scan_library_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_scan_library_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "params": _scan_library_params_codec.read(s.get_struct(0, 1, 0), caps),
     }
 
 
-_integration_scan_library_params_codec = _Codec(0, 1, _write_integration_scan_library_params, _read_integration_scan_library_params)
-"""Wire codec for ``IntegrationScanLibraryParams`` (0 data words, 1 pointers)."""
+_remote_library_scan_library_params_codec = _Codec(0, 1, _write_remote_library_scan_library_params, _read_remote_library_scan_library_params)
+"""Wire codec for ``RemoteLibraryScanLibraryParams`` (0 data words, 1 pointers)."""
 
 
-def _write_integration_scan_library_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_scan_library_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_integration_scan_library_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_scan_library_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_integration_scan_library_results_codec = _Codec(0, 1, _write_integration_scan_library_results, _read_integration_scan_library_results)
-"""Wire codec for ``IntegrationScanLibraryResults`` (0 data words, 1 pointers)."""
+_remote_library_scan_library_results_codec = _Codec(0, 1, _write_remote_library_scan_library_results, _read_remote_library_scan_library_results)
+"""Wire codec for ``RemoteLibraryScanLibraryResults`` (0 data words, 1 pointers)."""
 
 
-def _write_integration_sync_listening_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_sync_listening_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     pass
 
 
-def _read_integration_sync_listening_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_sync_listening_params(s: _StructReader, caps: _CapTable) -> Any:
     return {}
 
 
-_integration_sync_listening_params_codec = _Codec(0, 0, _write_integration_sync_listening_params, _read_integration_sync_listening_params)
-"""Wire codec for ``IntegrationSyncListeningParams`` (0 data words, 0 pointers)."""
+_remote_library_sync_listening_params_codec = _Codec(0, 0, _write_remote_library_sync_listening_params, _read_remote_library_sync_listening_params)
+"""Wire codec for ``RemoteLibrarySyncListeningParams`` (0 data words, 0 pointers)."""
 
 
-def _write_integration_sync_listening_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_sync_listening_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _sync_listening_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_integration_sync_listening_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_sync_listening_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "result": _sync_listening_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_integration_sync_listening_results_codec = _Codec(0, 1, _write_integration_sync_listening_results, _read_integration_sync_listening_results)
-"""Wire codec for ``IntegrationSyncListeningResults`` (0 data words, 1 pointers)."""
+_remote_library_sync_listening_results_codec = _Codec(0, 1, _write_remote_library_sync_listening_results, _read_remote_library_sync_listening_results)
+"""Wire codec for ``RemoteLibrarySyncListeningResults`` (0 data words, 1 pointers)."""
 
 
-def _write_integration_authenticate_user_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _authenticate_user_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
-
-
-def _read_integration_authenticate_user_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "params": _authenticate_user_params_codec.read(s.get_struct(0, 0, 2), caps),
-    }
-
-
-_integration_authenticate_user_params_codec = _Codec(0, 1, _write_integration_authenticate_user_params, _read_integration_authenticate_user_params)
-"""Wire codec for ``IntegrationAuthenticateUserParams`` (0 data words, 1 pointers)."""
-
-
-def _write_integration_authenticate_user_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _external_user_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
-
-
-def _read_integration_authenticate_user_results(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "result": _external_user_reply_codec.read(s.get_struct(0, 1, 1), caps),
-    }
-
-
-_integration_authenticate_user_results_codec = _Codec(0, 1, _write_integration_authenticate_user_results, _read_integration_authenticate_user_results)
-"""Wire codec for ``IntegrationAuthenticateUserResults`` (0 data words, 1 pointers)."""
-
-
-def _write_integration_poll_events_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_poll_events_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     pass
 
 
-def _read_integration_poll_events_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_poll_events_params(s: _StructReader, caps: _CapTable) -> Any:
     return {}
 
 
-_integration_poll_events_params_codec = _Codec(0, 0, _write_integration_poll_events_params, _read_integration_poll_events_params)
-"""Wire codec for ``IntegrationPollEventsParams`` (0 data words, 0 pointers)."""
+_remote_library_poll_events_params_codec = _Codec(0, 0, _write_remote_library_poll_events_params, _read_remote_library_poll_events_params)
+"""Wire codec for ``RemoteLibraryPollEventsParams`` (0 data words, 0 pointers)."""
 
 
-def _write_integration_poll_events_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_remote_library_poll_events_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _event_poll_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_integration_poll_events_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_remote_library_poll_events_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "result": _event_poll_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_integration_poll_events_results_codec = _Codec(0, 1, _write_integration_poll_events_results, _read_integration_poll_events_results)
-"""Wire codec for ``IntegrationPollEventsResults`` (0 data words, 1 pointers)."""
+_remote_library_poll_events_results_codec = _Codec(0, 1, _write_remote_library_poll_events_results, _read_remote_library_poll_events_results)
+"""Wire codec for ``RemoteLibraryPollEventsResults`` (0 data words, 1 pointers)."""
+
+
+def _write_plugin_cli_describe_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    pass
+
+
+def _read_plugin_cli_describe_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {}
+
+
+_plugin_cli_describe_params_codec = _Codec(0, 0, _write_plugin_cli_describe_params, _read_plugin_cli_describe_params)
+"""Wire codec for ``PluginCliDescribeParams`` (0 data words, 0 pointers)."""
+
+
+def _write_plugin_cli_describe_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _cli_schema_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_plugin_cli_describe_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _cli_schema_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_plugin_cli_describe_results_codec = _Codec(0, 1, _write_plugin_cli_describe_results, _read_plugin_cli_describe_results)
+"""Wire codec for ``PluginCliDescribeResults`` (0 data words, 1 pointers)."""
+
+
+def _write_plugin_cli_invoke_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _cli_invoke_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
+
+
+def _read_plugin_cli_invoke_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _cli_invoke_params_codec.read(s.get_struct(0, 0, 2), caps),
+    }
+
+
+_plugin_cli_invoke_params_codec = _Codec(0, 1, _write_plugin_cli_invoke_params, _read_plugin_cli_invoke_params)
+"""Wire codec for ``PluginCliInvokeParams`` (0 data words, 1 pointers)."""
+
+
+def _write_plugin_cli_invoke_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _cli_invoke_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_plugin_cli_invoke_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _cli_invoke_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_plugin_cli_invoke_results_codec = _Codec(0, 1, _write_plugin_cli_invoke_results, _read_plugin_cli_invoke_results)
+"""Wire codec for ``PluginCliInvokeResults`` (0 data words, 1 pointers)."""
+
+
+def _write_oidc_clients_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    pass
+
+
+def _read_oidc_clients_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {}
+
+
+_oidc_clients_params_codec = _Codec(0, 0, _write_oidc_clients_params, _read_oidc_clients_params)
+"""Wire codec for ``OidcClientsParams`` (0 data words, 0 pointers)."""
+
+
+def _write_oidc_clients_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _oidc_clients_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_oidc_clients_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _oidc_clients_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_oidc_clients_results_codec = _Codec(0, 1, _write_oidc_clients_results, _read_oidc_clients_results)
+"""Wire codec for ``OidcClientsResults`` (0 data words, 1 pointers)."""
+
+
+def _write_oidc_authenticate_user_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _authenticate_user_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
+
+
+def _read_oidc_authenticate_user_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _authenticate_user_params_codec.read(s.get_struct(0, 0, 2), caps),
+    }
+
+
+_oidc_authenticate_user_params_codec = _Codec(0, 1, _write_oidc_authenticate_user_params, _read_oidc_authenticate_user_params)
+"""Wire codec for ``OidcAuthenticateUserParams`` (0 data words, 1 pointers)."""
+
+
+def _write_oidc_authenticate_user_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _external_user_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_oidc_authenticate_user_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _external_user_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_oidc_authenticate_user_results_codec = _Codec(0, 1, _write_oidc_authenticate_user_results, _read_oidc_authenticate_user_results)
+"""Wire codec for ``OidcAuthenticateUserResults`` (0 data words, 1 pointers)."""
 
 
 def _write_database_open_session_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -5174,329 +5280,111 @@ _guest_database_close_results_codec = _Codec(0, 1, _write_guest_database_close_r
 """Wire codec for ``GuestDatabaseCloseResults`` (0 data words, 1 pointers)."""
 
 
-def _write_bookclerk_plugin_describe_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_plugin_worker_describe_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     pass
 
 
-def _read_bookclerk_plugin_describe_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_plugin_worker_describe_params(s: _StructReader, caps: _CapTable) -> Any:
     return {}
 
 
-_bookclerk_plugin_describe_params_codec = _Codec(0, 0, _write_bookclerk_plugin_describe_params, _read_bookclerk_plugin_describe_params)
-"""Wire codec for ``BookclerkPluginDescribeParams`` (0 data words, 0 pointers)."""
+_plugin_worker_describe_params_codec = _Codec(0, 0, _write_plugin_worker_describe_params, _read_plugin_worker_describe_params)
+"""Wire codec for ``PluginWorkerDescribeParams`` (0 data words, 0 pointers)."""
 
 
-def _write_bookclerk_plugin_describe_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_plugin_worker_describe_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _describe_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_bookclerk_plugin_describe_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_plugin_worker_describe_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "result": _describe_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_bookclerk_plugin_describe_results_codec = _Codec(0, 1, _write_bookclerk_plugin_describe_results, _read_bookclerk_plugin_describe_results)
-"""Wire codec for ``BookclerkPluginDescribeResults`` (0 data words, 1 pointers)."""
+_plugin_worker_describe_results_codec = _Codec(0, 1, _write_plugin_worker_describe_results, _read_plugin_worker_describe_results)
+"""Wire codec for ``PluginWorkerDescribeResults`` (0 data words, 1 pointers)."""
 
 
-def _write_bookclerk_plugin_destination_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _destination_context_codec.write(s.init_struct(0, 0, 1), v["context"], caps)
+def _write_plugin_worker_open_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _invocation_codec.write(s.init_struct(0, 1, 4), v["invocation"], caps)
+    _bindings_codec.write(s.init_struct(1, 0, 7), v["bindings"], caps)
 
 
-def _read_bookclerk_plugin_destination_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_plugin_worker_open_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "context": _destination_context_codec.read(s.get_struct(0, 0, 1), caps),
+        "invocation": _invocation_codec.read(s.get_struct(0, 1, 4), caps),
+        "bindings": _bindings_codec.read(s.get_struct(1, 0, 7), caps),
     }
 
 
-_bookclerk_plugin_destination_params_codec = _Codec(0, 1, _write_bookclerk_plugin_destination_params, _read_bookclerk_plugin_destination_params)
-"""Wire codec for ``BookclerkPluginDestinationParams`` (0 data words, 1 pointers)."""
+_plugin_worker_open_params_codec = _Codec(0, 2, _write_plugin_worker_open_params, _read_plugin_worker_open_params)
+"""Wire codec for ``PluginWorkerOpenParams`` (0 data words, 2 pointers)."""
 
 
-def _write_bookclerk_plugin_destination_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _destination_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+def _write_plugin_worker_open_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _entrypoints_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_bookclerk_plugin_destination_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_plugin_worker_open_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "result": _destination_reply_codec.read(s.get_struct(0, 1, 1), caps),
+        "result": _entrypoints_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_bookclerk_plugin_destination_results_codec = _Codec(0, 1, _write_bookclerk_plugin_destination_results, _read_bookclerk_plugin_destination_results)
-"""Wire codec for ``BookclerkPluginDestinationResults`` (0 data words, 1 pointers)."""
+_plugin_worker_open_results_codec = _Codec(0, 1, _write_plugin_worker_open_results, _read_plugin_worker_open_results)
+"""Wire codec for ``PluginWorkerOpenResults`` (0 data words, 1 pointers)."""
 
 
-def _write_bookclerk_plugin_source_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _source_context_codec.write(s.init_struct(0, 0, 1), v["context"], caps)
-
-
-def _read_bookclerk_plugin_source_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "context": _source_context_codec.read(s.get_struct(0, 0, 1), caps),
-    }
-
-
-_bookclerk_plugin_source_params_codec = _Codec(0, 1, _write_bookclerk_plugin_source_params, _read_bookclerk_plugin_source_params)
-"""Wire codec for ``BookclerkPluginSourceParams`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_source_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _source_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
-
-
-def _read_bookclerk_plugin_source_results(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "result": _source_reply_codec.read(s.get_struct(0, 1, 1), caps),
-    }
-
-
-_bookclerk_plugin_source_results_codec = _Codec(0, 1, _write_bookclerk_plugin_source_results, _read_bookclerk_plugin_source_results)
-"""Wire codec for ``BookclerkPluginSourceResults`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_worker_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _worker_context_codec.write(s.init_struct(0, 0, 2), v["context"], caps)
-
-
-def _read_bookclerk_plugin_worker_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "context": _worker_context_codec.read(s.get_struct(0, 0, 2), caps),
-    }
-
-
-_bookclerk_plugin_worker_params_codec = _Codec(0, 1, _write_bookclerk_plugin_worker_params, _read_bookclerk_plugin_worker_params)
-"""Wire codec for ``BookclerkPluginWorkerParams`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_worker_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _worker_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
-
-
-def _read_bookclerk_plugin_worker_results(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "result": _worker_reply_codec.read(s.get_struct(0, 1, 1), caps),
-    }
-
-
-_bookclerk_plugin_worker_results_codec = _Codec(0, 1, _write_bookclerk_plugin_worker_results, _read_bookclerk_plugin_worker_results)
-"""Wire codec for ``BookclerkPluginWorkerResults`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_shutdown_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_plugin_worker_shutdown_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     pass
 
 
-def _read_bookclerk_plugin_shutdown_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_plugin_worker_shutdown_params(s: _StructReader, caps: _CapTable) -> Any:
     return {}
 
 
-_bookclerk_plugin_shutdown_params_codec = _Codec(0, 0, _write_bookclerk_plugin_shutdown_params, _read_bookclerk_plugin_shutdown_params)
-"""Wire codec for ``BookclerkPluginShutdownParams`` (0 data words, 0 pointers)."""
+_plugin_worker_shutdown_params_codec = _Codec(0, 0, _write_plugin_worker_shutdown_params, _read_plugin_worker_shutdown_params)
+"""Wire codec for ``PluginWorkerShutdownParams`` (0 data words, 0 pointers)."""
 
 
-def _write_bookclerk_plugin_shutdown_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_plugin_worker_shutdown_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_bookclerk_plugin_shutdown_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_plugin_worker_shutdown_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_bookclerk_plugin_shutdown_results_codec = _Codec(0, 1, _write_bookclerk_plugin_shutdown_results, _read_bookclerk_plugin_shutdown_results)
-"""Wire codec for ``BookclerkPluginShutdownResults`` (0 data words, 1 pointers)."""
+_plugin_worker_shutdown_results_codec = _Codec(0, 1, _write_plugin_worker_shutdown_results, _read_plugin_worker_shutdown_results)
+"""Wire codec for ``PluginWorkerShutdownResults`` (0 data words, 1 pointers)."""
 
 
-def _write_bookclerk_plugin_content_source_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _content_source_context_codec.write(s.init_struct(0, 0, 1), v["context"], caps)
-
-
-def _read_bookclerk_plugin_content_source_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "context": _content_source_context_codec.read(s.get_struct(0, 0, 1), caps),
-    }
-
-
-_bookclerk_plugin_content_source_params_codec = _Codec(0, 1, _write_bookclerk_plugin_content_source_params, _read_bookclerk_plugin_content_source_params)
-"""Wire codec for ``BookclerkPluginContentSourceParams`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_content_source_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _content_source_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
-
-
-def _read_bookclerk_plugin_content_source_results(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "result": _content_source_reply_codec.read(s.get_struct(0, 1, 1), caps),
-    }
-
-
-_bookclerk_plugin_content_source_results_codec = _Codec(0, 1, _write_bookclerk_plugin_content_source_results, _read_bookclerk_plugin_content_source_results)
-"""Wire codec for ``BookclerkPluginContentSourceResults`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_integration_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _integration_context_codec.write(s.init_struct(0, 0, 1), v["context"], caps)
-
-
-def _read_bookclerk_plugin_integration_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "context": _integration_context_codec.read(s.get_struct(0, 0, 1), caps),
-    }
-
-
-_bookclerk_plugin_integration_params_codec = _Codec(0, 1, _write_bookclerk_plugin_integration_params, _read_bookclerk_plugin_integration_params)
-"""Wire codec for ``BookclerkPluginIntegrationParams`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_integration_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _integration_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
-
-
-def _read_bookclerk_plugin_integration_results(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "result": _integration_reply_codec.read(s.get_struct(0, 1, 1), caps),
-    }
-
-
-_bookclerk_plugin_integration_results_codec = _Codec(0, 1, _write_bookclerk_plugin_integration_results, _read_bookclerk_plugin_integration_results)
-"""Wire codec for ``BookclerkPluginIntegrationResults`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_database_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _database_context_codec.write(s.init_struct(0, 0, 2), v["context"], caps)
-
-
-def _read_bookclerk_plugin_database_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "context": _database_context_codec.read(s.get_struct(0, 0, 2), caps),
-    }
-
-
-_bookclerk_plugin_database_params_codec = _Codec(0, 1, _write_bookclerk_plugin_database_params, _read_bookclerk_plugin_database_params)
-"""Wire codec for ``BookclerkPluginDatabaseParams`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_database_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _database_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
-
-
-def _read_bookclerk_plugin_database_results(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "result": _database_reply_codec.read(s.get_struct(0, 1, 1), caps),
-    }
-
-
-_bookclerk_plugin_database_results_codec = _Codec(0, 1, _write_bookclerk_plugin_database_results, _read_bookclerk_plugin_database_results)
-"""Wire codec for ``BookclerkPluginDatabaseResults`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_cli_describe_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    pass
-
-
-def _read_bookclerk_plugin_cli_describe_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {}
-
-
-_bookclerk_plugin_cli_describe_params_codec = _Codec(0, 0, _write_bookclerk_plugin_cli_describe_params, _read_bookclerk_plugin_cli_describe_params)
-"""Wire codec for ``BookclerkPluginCliDescribeParams`` (0 data words, 0 pointers)."""
-
-
-def _write_bookclerk_plugin_cli_describe_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _cli_schema_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
-
-
-def _read_bookclerk_plugin_cli_describe_results(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "result": _cli_schema_reply_codec.read(s.get_struct(0, 1, 1), caps),
-    }
-
-
-_bookclerk_plugin_cli_describe_results_codec = _Codec(0, 1, _write_bookclerk_plugin_cli_describe_results, _read_bookclerk_plugin_cli_describe_results)
-"""Wire codec for ``BookclerkPluginCliDescribeResults`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_cli_invoke_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _cli_invoke_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
-
-
-def _read_bookclerk_plugin_cli_invoke_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "params": _cli_invoke_params_codec.read(s.get_struct(0, 0, 2), caps),
-    }
-
-
-_bookclerk_plugin_cli_invoke_params_codec = _Codec(0, 1, _write_bookclerk_plugin_cli_invoke_params, _read_bookclerk_plugin_cli_invoke_params)
-"""Wire codec for ``BookclerkPluginCliInvokeParams`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_cli_invoke_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _cli_invoke_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
-
-
-def _read_bookclerk_plugin_cli_invoke_results(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "result": _cli_invoke_reply_codec.read(s.get_struct(0, 1, 1), caps),
-    }
-
-
-_bookclerk_plugin_cli_invoke_results_codec = _Codec(0, 1, _write_bookclerk_plugin_cli_invoke_results, _read_bookclerk_plugin_cli_invoke_results)
-"""Wire codec for ``BookclerkPluginCliInvokeResults`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_oidc_clients_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    pass
-
-
-def _read_bookclerk_plugin_oidc_clients_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {}
-
-
-_bookclerk_plugin_oidc_clients_params_codec = _Codec(0, 0, _write_bookclerk_plugin_oidc_clients_params, _read_bookclerk_plugin_oidc_clients_params)
-"""Wire codec for ``BookclerkPluginOidcClientsParams`` (0 data words, 0 pointers)."""
-
-
-def _write_bookclerk_plugin_oidc_clients_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _oidc_clients_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
-
-
-def _read_bookclerk_plugin_oidc_clients_results(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "result": _oidc_clients_reply_codec.read(s.get_struct(0, 1, 1), caps),
-    }
-
-
-_bookclerk_plugin_oidc_clients_results_codec = _Codec(0, 1, _write_bookclerk_plugin_oidc_clients_results, _read_bookclerk_plugin_oidc_clients_results)
-"""Wire codec for ``BookclerkPluginOidcClientsResults`` (0 data words, 1 pointers)."""
-
-
-def _write_bookclerk_plugin_database_migrations_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_plugin_worker_database_migrations_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["binding"])
 
 
-def _read_bookclerk_plugin_database_migrations_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_plugin_worker_database_migrations_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "binding": s.get_text(0),
     }
 
 
-_bookclerk_plugin_database_migrations_params_codec = _Codec(0, 1, _write_bookclerk_plugin_database_migrations_params, _read_bookclerk_plugin_database_migrations_params)
-"""Wire codec for ``BookclerkPluginDatabaseMigrationsParams`` (0 data words, 1 pointers)."""
+_plugin_worker_database_migrations_params_codec = _Codec(0, 1, _write_plugin_worker_database_migrations_params, _read_plugin_worker_database_migrations_params)
+"""Wire codec for ``PluginWorkerDatabaseMigrationsParams`` (0 data words, 1 pointers)."""
 
 
-def _write_bookclerk_plugin_database_migrations_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_plugin_worker_database_migrations_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _plugin_migrations_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_bookclerk_plugin_database_migrations_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_plugin_worker_database_migrations_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "result": _plugin_migrations_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_bookclerk_plugin_database_migrations_results_codec = _Codec(0, 1, _write_bookclerk_plugin_database_migrations_results, _read_bookclerk_plugin_database_migrations_results)
-"""Wire codec for ``BookclerkPluginDatabaseMigrationsResults`` (0 data words, 1 pointers)."""
+_plugin_worker_database_migrations_results_codec = _Codec(0, 1, _write_plugin_worker_database_migrations_results, _read_plugin_worker_database_migrations_results)
+"""Wire codec for ``PluginWorkerDatabaseMigrationsResults`` (0 data words, 1 pointers)."""

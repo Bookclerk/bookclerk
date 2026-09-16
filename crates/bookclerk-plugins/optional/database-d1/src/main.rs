@@ -4,17 +4,18 @@
 
 use async_trait::async_trait;
 use bookclerk_db_guest::set_connection;
-use bookclerk_plugin_abi::db::{connect_params_from_context, DbConnectParams};
+use bookclerk_plugin_abi::db::{connect_params_from_bindings, DbConnectParams};
 use bookclerk_plugin_abi::IsolationReq;
 use bookclerk_plugin_abi::{AdapterExecuteRequest, AdapterTransaction, HostAdapterDatabaseSession};
+use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{serve, DbBootstrap, DbCapabilities, ExecuteReply, PluginError};
 use bookclerk_plugin_sdk::{
-    AdapterDatabaseSession, Database, DatabaseContext, PluginDescribe, PluginRoot, ScalarLimits,
-    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    AdapterDatabaseSession, BindingValues, Bindings, Database, Entrypoints, Invocation,
+    PluginDescribe, PluginWorker, ScalarLimits, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 
-async fn connect_from_context(ctx: &DatabaseContext) -> Result<(), PluginError> {
-    let params = connect_params_from_context(ctx)?;
+async fn connect_from_bindings(values: &BindingValues) -> Result<(), PluginError> {
+    let params = connect_params_from_bindings(values)?;
     let DbConnectParams::D1 {
         account_id,
         database_id,
@@ -24,7 +25,7 @@ async fn connect_from_context(ctx: &DatabaseContext) -> Result<(), PluginError> 
     } = params
     else {
         return Err(PluginError::invalid_params(
-            "d1 guest received non-d1 database context",
+            "d1 guest received non-d1 database bindings",
         ));
     };
     let db = bookclerk_plugin_database_d1::open(api_base, account_id, database_id, api_token)
@@ -34,11 +35,11 @@ async fn connect_from_context(ctx: &DatabaseContext) -> Result<(), PluginError> 
     Ok(())
 }
 
-/// Builds a dedicated per-binding proxy when the context targets a named
+/// Builds a dedicated per-binding proxy when the bindings target a named
 /// plugin database binding, resolving (and provisioning) the D1 database by
 /// name.
-async fn binding_from_context(
-    ctx: &DatabaseContext,
+async fn binding_from_values(
+    values: &BindingValues,
 ) -> Result<Option<bookclerk_plugin_database_d1::D1Proxy>, PluginError> {
     let Ok(DbConnectParams::D1 {
         account_id,
@@ -48,7 +49,7 @@ async fn binding_from_context(
         database_name,
         provision,
         ..
-    }) = connect_params_from_context(ctx)
+    }) = connect_params_from_bindings(values)
     else {
         return Ok(None);
     };
@@ -78,30 +79,38 @@ async fn binding_from_context(
 struct D1Root;
 
 #[async_trait(?Send)]
-impl PluginRoot for D1Root {
+impl PluginWorker for D1Root {
     async fn describe(&self) -> Result<PluginDescribe, PluginError> {
         Ok(PluginDescribe {
             api_version: PRODUCT_API_VERSION,
             id: "d1".into(),
-            kind: "database".into(),
             display_name: Some("Cloudflare D1".into()),
             rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
             scalar_limits: ScalarLimits::default().into(),
-            supported_roles: vec!["database".into()],
-            capabilities: vec!["health".into(), "diagnose".into()],
+            capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
             sort_key: 5,
             ..PluginDescribe::default()
         })
     }
 
-    async fn database(&self, context: DatabaseContext) -> Result<Box<dyn Database>, PluginError> {
-        if let Some(proxy) = binding_from_context(&context).await? {
-            return Ok(Box::new(D1Database {
+    async fn open(
+        &self,
+        _invocation: Invocation,
+        bindings: Bindings,
+    ) -> Result<Entrypoints, PluginError> {
+        let values = bindings.values();
+        let database: Box<dyn Database> = if let Some(proxy) = binding_from_values(&values).await? {
+            Box::new(D1Database {
                 dedicated: Some(proxy),
-            }));
-        }
-        connect_from_context(&context).await?;
-        Ok(Box::new(D1Database { dedicated: None }))
+            })
+        } else {
+            connect_from_bindings(&values).await?;
+            Box::new(D1Database { dedicated: None })
+        };
+        Ok(Entrypoints {
+            database_adapter: Some(database),
+            ..Entrypoints::default()
+        })
     }
 }
 

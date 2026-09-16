@@ -1,18 +1,20 @@
-//! Database factory context payloads (host connect params + public adapter config).
+//! Database-adapter binding payloads (host connect params + public adapter config).
 //!
 //! Guests such as `sqlite` / `d1` / `postgres` implement the SeaORM proxy
 //! boundary. The host never links SQL engines; it opens the library through
-//! `DatabaseContext` + typed adapter sessions after Cap'n Proto spawn.
+//! `PluginWorker.open` bindings + typed adapter sessions after Cap'n Proto
+//! spawn.
 //!
-//! A [`crate::DatabaseContext`] carries one of two bootstraps:
+//! The [`crate::BindingValues`] handed to a `databaseAdapter` entrypoint carry
+//! one of two bootstraps:
 //!
 //! - `DbConnectParams` (feature `host`) — host-private serde type for
 //!   first-party connect-param building; not public JSON RPC. Wire fields use
 //!   camelCase; its `backend` tag is lowercase (`sqlite`, `d1`, `postgres`).
 //! - [`crate::DatabaseAdapterConfig`] (public) — generic bootstrap for
 //!   third-party adapters: the operator's granted `[database.<id>]` table plus
-//!   the scoped data dir. Travels typed in [`crate::DatabaseContext::adapter`];
-//!   read it with [`database_adapter_config_from_context`].
+//!   the scoped data dir. Travels typed in [`crate::BindingValues::adapter`];
+//!   read it with [`database_adapter_config_from_bindings`].
 //!
 //! Semantic capability limits live in [`crate::DbCapabilities`]
 //! (`crate::db_execute`); bootstrap metadata lives in [`crate::DbBootstrap`].
@@ -22,8 +24,8 @@ use serde::{Deserialize, Serialize};
 
 /// Host-private tagged connect params for first-party database guests.
 ///
-/// Travels only inside [`crate::DatabaseContext::config`] built by the
-/// host ([`database_context_from_params`]); not part of the public plugin
+/// Travels only inside [`crate::BindingValues::config`] built by the
+/// host ([`binding_values_from_params`]); not part of the public plugin
 /// author ABI. Discriminant is wire field `backend` with lowercase tags.
 /// SQLite guests open `library.db` at [`Self::Sqlite::sqlite_path`] (also
 /// injected as `BOOKCLERK_SQLITE_PATH`); D1 / Postgres receive host-injected
@@ -107,84 +109,84 @@ fn skip_if_true(value: &bool) -> bool {
     *value
 }
 
-/// Media type for [`crate::DatabaseContext::config`] connect payloads.
+/// Media type for [`crate::BindingValues::config`] connect payloads.
 #[cfg(feature = "host")]
 pub const DATABASE_CONTEXT_MEDIA_TYPE: &str = "application/vnd.bookclerk.db-connect+json";
 
-/// Builds a [`crate::DatabaseContext`] carrying the public author-facing
+/// Builds [`crate::BindingValues`] carrying the public author-facing
 /// [`crate::DatabaseAdapterConfig`] (granted settings + data dir) in the typed
 /// `adapter` field; `config` stays empty so host-private connect params never
 /// reach third-party adapters.
 #[must_use]
-pub fn database_context_from_adapter_config(
+pub fn binding_values_from_adapter_config(
     config: &crate::DatabaseAdapterConfig,
-) -> crate::DatabaseContext {
-    crate::DatabaseContext {
+) -> crate::BindingValues {
+    crate::BindingValues {
         config: crate::ExtensibleConfig::default(),
+        secrets: crate::ExtensibleConfig::default(),
         adapter: config.clone(),
     }
 }
 
-/// Decodes the public [`crate::DatabaseAdapterConfig`] from a database
-/// factory context (third-party adapter bootstrap).
+/// Decodes the public [`crate::DatabaseAdapterConfig`] from the bindings of
+/// a `databaseAdapter` open (third-party adapter bootstrap).
 ///
 /// # Errors
 ///
-/// Returns when the context carries host-private connect params instead of
+/// Returns when the bindings carry host-private connect params instead of
 /// an adapter bootstrap (empty `adapter.pluginDataDir`).
-pub fn database_adapter_config_from_context(
-    ctx: &crate::DatabaseContext,
+pub fn database_adapter_config_from_bindings(
+    ctx: &crate::BindingValues,
 ) -> crate::Result<crate::DatabaseAdapterConfig> {
     if ctx.adapter.plugin_data_dir.is_empty() {
         return Err(crate::PluginError::invalid_params(
-            "database context does not carry an adapter bootstrap (pluginDataDir is empty)",
+            "database bindings do not carry an adapter bootstrap (pluginDataDir is empty)",
         ));
     }
     Ok(ctx.adapter.clone())
 }
 
-/// Builds a [`crate::DatabaseContext`] from host-internal connect params.
+/// Builds [`crate::BindingValues`] from host-internal connect params.
 ///
 /// # Errors
 ///
 /// Returns when JSON serialization fails.
 #[cfg(feature = "host")]
-pub fn database_context_from_params(
-    params: &DbConnectParams,
-) -> crate::Result<crate::DatabaseContext> {
+pub fn binding_values_from_params(params: &DbConnectParams) -> crate::Result<crate::BindingValues> {
     let payload = serde_json::to_vec(params).map_err(|err| {
-        crate::PluginError::internal(format!("database context encode failed: {err}"))
+        crate::PluginError::internal(format!("database bindings encode failed: {err}"))
     })?;
-    Ok(crate::DatabaseContext {
+    Ok(crate::BindingValues {
         config: crate::ExtensibleConfig {
             schema_version: 0,
             media_type: DATABASE_CONTEXT_MEDIA_TYPE.into(),
             payload,
         },
+        secrets: crate::ExtensibleConfig::default(),
         adapter: crate::DatabaseAdapterConfig::default(),
     })
 }
 
-/// Decodes host-internal connect params from a database factory context.
+/// Decodes host-internal connect params from `databaseAdapter` bindings.
 ///
 /// # Errors
 ///
-/// Returns when the context omits connect params or JSON is invalid.
+/// Returns when the bindings omit connect params or JSON is invalid.
 #[cfg(feature = "host")]
-pub fn connect_params_from_context(ctx: &crate::DatabaseContext) -> crate::Result<DbConnectParams> {
+pub fn connect_params_from_bindings(ctx: &crate::BindingValues) -> crate::Result<DbConnectParams> {
     if ctx.config.payload.is_empty() {
         return Err(crate::PluginError::invalid_params(
-            "database context is missing connect params",
+            "database bindings are missing connect params",
         ));
     }
     if ctx.config.media_type != DATABASE_CONTEXT_MEDIA_TYPE {
         return Err(crate::PluginError::invalid_params(format!(
-            "database context media type `{}` is not `{DATABASE_CONTEXT_MEDIA_TYPE}`",
+            "database bindings media type `{}` is not `{DATABASE_CONTEXT_MEDIA_TYPE}`",
             ctx.config.media_type
         )));
     }
     serde_json::from_slice(&ctx.config.payload).map_err(|err| {
-        crate::PluginError::invalid_params(format!("database context decode failed: {err}"))
+        crate::PluginError::invalid_params(format!("database bindings decode failed: {err}"))
     })
 }
 
@@ -219,10 +221,10 @@ mod host_tests {
             database: None,
             provision: true,
         };
-        let ctx = database_context_from_params(&params).unwrap();
+        let ctx = binding_values_from_params(&params).unwrap();
         assert_eq!(ctx.config.media_type, DATABASE_CONTEXT_MEDIA_TYPE);
         assert_eq!(ctx.config.schema_version, 0);
-        assert_eq!(connect_params_from_context(&ctx).unwrap(), params);
+        assert_eq!(connect_params_from_bindings(&ctx).unwrap(), params);
     }
 
     #[test]
@@ -275,8 +277,8 @@ mod host_tests {
             instance_id: None,
             open_existing: false,
         };
-        let ctx = database_context_from_adapter_config(&cfg);
-        connect_params_from_context(&ctx)
+        let ctx = binding_values_from_adapter_config(&cfg);
+        connect_params_from_bindings(&ctx)
             .expect_err("public adapter config must not parse as host connect params");
     }
 }
@@ -296,16 +298,16 @@ mod tests {
             instance_id: None,
             open_existing: false,
         };
-        let ctx = database_context_from_adapter_config(&cfg);
+        let ctx = binding_values_from_adapter_config(&cfg);
         assert!(ctx.config.is_empty(), "no host-private connect params");
-        let back = database_adapter_config_from_context(&ctx).unwrap();
+        let back = database_adapter_config_from_bindings(&ctx).unwrap();
         assert_eq!(back, cfg);
         assert_eq!(
             back.settings.json_value().unwrap()["url"],
             "custom://host/db"
         );
-        let bare = crate::DatabaseContext::default();
-        database_adapter_config_from_context(&bare)
+        let bare = crate::BindingValues::default();
+        database_adapter_config_from_bindings(&bare)
             .expect_err("empty adapter bootstrap must not decode");
     }
 }

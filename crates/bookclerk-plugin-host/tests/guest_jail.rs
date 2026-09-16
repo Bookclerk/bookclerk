@@ -142,7 +142,7 @@ impl Fixture {
         write_script(&install.join("guest.sh"), &probe_script(&probes(&paths)));
         std::fs::write(
             install.join("plugin.toml"),
-            "api_version = 2\nid = \"probe\"\nkind = \"integration\"\n\
+            "api_version = 3\nid = \"probe\"\nentrypoints = [\"remoteLibrary\"]\n\
              runtime = \"native\"\ncommand = \"./guest.sh\"\n\n\
              [capabilities.network]\nmode = \"deny\"\n",
         )
@@ -360,10 +360,10 @@ async fn spawn_keeps_stored_grant_when_manifest_widens() {
         .join("probe");
     std::fs::write(
         install.join("plugin.toml"),
-        "api_version = 2\nid = \"probe\"\nkind = \"integration\"\n\
+        "api_version = 3\nid = \"probe\"\nentrypoints = [\"remoteLibrary\"]\n\
          runtime = \"native\"\ncommand = \"./guest.sh\"\n\n\
          [capabilities.network]\nmode = \"deny\"\n\n\
-         [capabilities.bindings]\nconfig = true\nsecrets = true\n",
+         [vars]\n\n[secrets]\n",
     )
     .expect("widen plugin.toml");
 
