@@ -19,8 +19,10 @@ contract must be **identical** across runtimes.
    streams, and **invocation-scoped** stub lifetime (create, invoke, dispose in
    one request). RPC carries bounded values and **stream/stub capabilities**.
    Cap'n Proto field/union ordinals are append-only; unknown members fail
-   closed or return typed `unsupported`. `describe()` advertises `abiMajor` /
-   `abiMinor` and `supportedRoles`; the signed manifest is the host allowlist.
+   closed or return typed `unsupported`. `describe()` advertises `apiVersion`
+   and `supportedRoles`; the signed manifest is the host allowlist. Manifest
+   `api_version` and `describe().apiVersion` must match
+   `PRODUCT_API_VERSION`. Optional facilities use named `rpcFeatures`.
 2. **Workerd is the control-plane front door; native jail is a backend.**
    - **Control plane:** invocation, policy, binding, lifecycle, and outcome
      always pass through the workerd entrypoint (or a generated backend-proxy
@@ -39,15 +41,15 @@ contract must be **identical** across runtimes.
      sandbox; it launches workerd and the trusted native broker. The broker
      launches or connects to the verified native guest. Plugin-controlled
      input cannot choose the executable or weaken the sandbox.
-   - **Native:** guests serve [`plugin_v2.capnp`](../../crates/bookclerk-plugin-abi/schema/plugin_v2.capnp)
+   - **Native:** guests serve [`plugin.capnp`](../../crates/bookclerk-plugin-abi/schema/plugin.capnp)
      via `capnp-rpc` (`serve`). They do **not** speak newline JSON as the
      product ABI. Native DRM plugins do not implement Cloudflare’s private
      `worker-interface.capnp`; the host maps both adapters onto the same Rust
      traits.
 3. **v1 newline JSON is removed.** Guests speak Cap'n Proto `api_version = 2`
    (or workerd Workers RPC mapped onto the same contract). Scalar JSON remains
-   only as a versioned escape hatch for plugin-specific config, not as a spawn
-   handshake.
+   only as a versioned escape hatch for plugin-specific config, not as a
+   transport envelope.
 4. **Greenfield (no `protocol` key).** No dual-stack product ABI with legacy
    JSON-RPC stdio framing.
 5. **Isolation:** instances are keyed by `(plugin_id, account_id)`. Different
@@ -102,8 +104,8 @@ contract must be **identical** across runtimes.
 - Catalog script archives ship `plugin.toml` + `modules/` only.
 - Native publishers still build per-arch when they need native capabilities.
 - CI must fail on ABI schema drift vs generated SDK outputs.
-- CI requires the pinned `workerd` binary for the v2 contract suite; the job
-  fails if the workerd adapter cannot start (`BOOKCLERK_V2_SKIP_WORKERD=1` is
+- CI requires the pinned `workerd` binary for the workerd contract suite; the job
+  fails if the workerd adapter cannot start (`BOOKCLERK_SKIP_WORKERD=1` is
   local native-only).
 
 ### Distribution tiers

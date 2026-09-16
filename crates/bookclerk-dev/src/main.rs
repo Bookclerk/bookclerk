@@ -116,7 +116,7 @@ enum Commands {
         /// Extra argv forwarded to the host binary after install/stage.
         args: Vec<String>,
     },
-    /// Stage optional + examples, then run the staged handshake integration test.
+    /// Stage optional + examples, then run the staged conformance integration test.
     TestStaged {
         #[arg(long)]
         /// Skip Cargo build and only install/stage already-built artifacts.
@@ -455,7 +455,7 @@ fn dev_host(
     }
 }
 
-/// Stages optional+example guests and runs the host handshake integration test.
+/// Stages optional+example guests and runs the host staged-guest conformance test.
 fn test_staged(root: &Path, release: bool, skip_build: bool) -> Result<()> {
     let files_dir = default_files_dir();
     let artifacts = default_artifacts(root);

@@ -95,6 +95,9 @@ jobs:
       - name: Run planner unit tests
         run: python3 scripts/tests/test_ci_plan.py -q
 
+      - name: Database plugin isolation
+        run: python3 scripts/tests/test_db_plugin_isolation.py -q
+
       - name: Private-docs lint regression
         run: python3 scripts/tests/test_private_docs_lint.py
 
@@ -254,6 +257,10 @@ jobs:
           npm run test:safe-html
           npm run build
 
+      - name: Author surface check
+        if: needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.run_rust == 'true'
+        run: ./scripts/check-author-surface.sh
+
       - name: Plugin SDK ABI schema drift check
         if: needs.plan.outputs.run_sdk == 'true'
         run: |
@@ -261,10 +268,10 @@ jobs:
           python3 scripts/sync-workerd-pin.py --check
           cd packages/plugin-sdk
           npm ci
-          npm run check-schema
           npm run build
           npm run lint
           npm run test:tools
+          npm run test:db-value
 
       - name: Python plugin SDK tools conformance
         if: needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.python_sdk == 'true'
@@ -438,8 +445,8 @@ jobs:
           BOOKCLERK_WORKERD_BIN: ${{ github.workspace }}/target/debug/workerd
         run: |
           set -euo pipefail
-          if [ -n "${BOOKCLERK_V2_SKIP_WORKERD:-}" ]; then
-            echo "CI must run the workerd v2 contract (do not set BOOKCLERK_V2_SKIP_WORKERD)" >&2
+          if [ -n "${BOOKCLERK_SKIP_WORKERD:-}" ]; then
+            echo "CI must run the workerd contract (do not set BOOKCLERK_SKIP_WORKERD)" >&2
             exit 1
           fi
           export PATH="${{ github.workspace }}/target/debug:$PATH"
@@ -448,11 +455,17 @@ jobs:
             # doctests (already run in "Explicit doctests"). `--tests` alone
             # would drop `src/` unit tests.
             cargo test --workspace --lib --bins --tests
+            cargo test -p bookclerk-plugin-database-sqlite --features host-helpers --lib --bins --tests
           else
             PKGS="${{ needs.plan.outputs.rust_packages }}"
             ARGS=()
             for p in $PKGS; do ARGS+=(-p "$p"); done
             cargo test "${ARGS[@]}" --lib --bins --tests
+            case " $PKGS " in
+              *" bookclerk-plugin-database-sqlite "*)
+                cargo test -p bookclerk-plugin-database-sqlite --features host-helpers --lib --bins --tests
+                ;;
+            esac
           fi
 
   release:
@@ -621,11 +634,23 @@ jobs:
           BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
         run: cargo test -p bookclerk-library --lib postgres_totp -- --nocapture
 
+      - name: Postgres shared SQL-plan vectors
+        env:
+          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
+        run: cargo test -p bookclerk-library --lib postgres_shared_vectors -- --ignored --nocapture
+
       - name: Postgres guest page tests
         env:
           BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
           BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
         run: cargo test -p bookclerk-db-guest --lib postgres_ -- --ignored --nocapture
+
+      - name: Postgres plugin binding-schema isolation tests
+        env:
+          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
+        run: cargo test -p bookclerk-plugin-database-postgres --lib postgres_ -- --ignored --nocapture
 
   ci-gate:
     name: CI Gate

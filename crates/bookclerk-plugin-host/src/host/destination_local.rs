@@ -8,12 +8,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bookclerk_config::{normalize_storage_prefix, Config};
-use bookclerk_plugin_sdk::v2::{DestinationContext, PRODUCT_API_VERSION};
+use bookclerk_plugin_sdk::{DestinationContext, PRODUCT_API_VERSION};
 use serde_json::Value;
 
 use crate::discover::DiscoveredPlugin;
 use crate::protocol::OutputLocalContextDto;
-use crate::rpc_v2::{V2PluginSession, V2Storage};
+use crate::rpc_session::{PluginSession, PluginStorage};
 use crate::Result as PluginResult;
 
 /// Manifest id of the platform local-filesystem destination guest.
@@ -50,7 +50,7 @@ pub(crate) async fn try_load_local(
         );
         return;
     }
-    match spawn_v2_local(plugin, config).await {
+    match spawn_local_guest(plugin, config).await {
         Ok((storage, session)) => {
             tracing::info!(
                 id = %plugin.manifest.id,
@@ -58,23 +58,23 @@ pub(crate) async fn try_load_local(
                 "loaded external local output plugin (api_version 2)"
             );
             registry.set_local(Arc::new(storage));
-            registry.set_v2_session(session);
+            registry.set_plugin_session(session);
         }
         Err(err) => {
             tracing::warn!(
                 id = %plugin.manifest.id,
                 %err,
-                "failed to start v2 local output plugin; falling back to in-process backend"
+                "failed to start local output plugin guest; falling back to in-process backend"
             );
         }
     }
 }
 
-/// Spawns the local destination as an ABI v2 Cap'n Proto guest.
-async fn spawn_v2_local(
+/// Spawns the local destination as an external Cap'n Proto guest.
+async fn spawn_local_guest(
     plugin: &DiscoveredPlugin,
     config: &Config,
-) -> PluginResult<(V2Storage, Arc<V2PluginSession>)> {
+) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
     let table = crate::settings_table(config, plugin);
     let config_json = toml_to_json(&toml::Value::Table(table));
     let root = resolved_local_output_root(config);
@@ -93,7 +93,7 @@ async fn spawn_v2_local(
                 "BOOKCLERK_NATIVE_BACKEND",
                 std::ffi::OsString::from(plugin.command.as_os_str()),
             ));
-            V2PluginSession::spawn_for_account_with_env(
+            PluginSession::spawn_for_account_with_env(
                 &wrapped,
                 config,
                 config_json.clone(),
@@ -103,7 +103,7 @@ async fn spawn_v2_local(
             .await
         }
         Err(_) => {
-            V2PluginSession::spawn_for_account_with_env(
+            PluginSession::spawn_for_account_with_env(
                 plugin,
                 config,
                 config_json,
@@ -124,10 +124,10 @@ async fn spawn_v2_local(
             json: serde_json::to_string(&ctx)?,
         })
         .await?;
-    Ok((V2Storage::new(Arc::clone(&session)), session))
+    Ok((PluginStorage::new(Arc::clone(&session)), session))
 }
 
-/// Converts a plugin settings TOML table to JSON for guest handshake; `Null` on failure.
+/// Converts a plugin settings TOML table to JSON for the guest spawn config; `Null` on failure.
 fn toml_to_json(value: &toml::Value) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
@@ -137,7 +137,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn v2_local_destination_json_omits_filesystem_paths() {
+    fn local_destination_json_omits_filesystem_paths() {
         let ctx = OutputLocalContextDto {
             plugin_data_dir: String::new(),
             root: String::new(),

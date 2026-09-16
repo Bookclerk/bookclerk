@@ -18,10 +18,10 @@ this file as ``modules/plugin.py``:
 
 from __future__ import annotations
 
-from bookclerk_plugin_sdk.workerd import BookclerkPlugin, js
+from bookclerk_plugin_sdk.workerd import BookclerkPlugin, Integration, js
 
 API_VERSION = 2
-"""Handshake ``apiVersion`` returned by this template guest."""
+"""Product ``apiVersion`` returned by this template guest's ``describe()``."""
 
 PLUGIN_ID = "my_python_plugin"
 """Example plugin id; replace before shipping."""
@@ -30,27 +30,8 @@ KIND = "integration"
 """Example plugin kind (``source`` / ``integration`` / ``output`` / ``database``)."""
 
 
-class Default(BookclerkPlugin):
-    """Template workerd entrypoint exported as the default Workers binding."""
-
-    async def handshake(self, _params=None):
-        """Return a minimal successful handshake payload.
-
-        Args:
-            _params: Host handshake parameters (unused in the template).
-
-        Returns:
-            JS object with ``apiVersion``, ``id``, ``kind``, and capabilities.
-        """
-        return js(
-            {
-                "apiVersion": API_VERSION,
-                "id": PLUGIN_ID,
-                "kind": KIND,
-                "displayName": "My Python Plugin",
-                "capabilities": ["health", "diagnose", "cli"],
-            }
-        )
+class TemplateIntegration(Integration):
+    """Template integration role: health / diagnose."""
 
     async def health(self, _params=None):
         """Report template guest liveness.
@@ -73,6 +54,38 @@ class Default(BookclerkPlugin):
             JS object with a ``lines`` list.
         """
         return js({"lines": [f"{PLUGIN_ID}: ok"]})
+
+
+class Default(BookclerkPlugin):
+    """Template workerd entrypoint exported as the default Workers binding."""
+
+    async def describe(self):
+        """Return the guest identity advertised on the host describe RPC.
+
+        Returns:
+            JS object with ``apiVersion``, ``id``, ``kind``, and roles.
+        """
+        return js(
+            {
+                "apiVersion": API_VERSION,
+                "id": PLUGIN_ID,
+                "kind": KIND,
+                "displayName": "My Python Plugin",
+                "supportedRoles": ["integration"],
+                "metadataJson": '{"capabilities": ["health", "diagnose", "cli"]}',
+            }
+        )
+
+    def integration(self, _ctx=None):
+        """Create the integration role target.
+
+        Args:
+            _ctx: Opaque integration context from the host (unused here).
+
+        Returns:
+            The template integration ``RpcTarget``.
+        """
+        return TemplateIntegration()
 
     async def cliInvoke(self, params=None):
         """Handle the sample ``ping`` CLI command.

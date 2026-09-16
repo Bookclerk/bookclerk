@@ -77,11 +77,7 @@ export function checkPlugin(pluginDir: string): string {
             `"@bookclerk/plugin-sdk/workerd" (or "@bookclerk/plugin-sdk")`,
         );
       }
-      if (
-        src.includes("WorkerEntrypoint") &&
-        !src.includes("BookclerkPlugin") &&
-        !src.includes("wasmBookclerkPlugin")
-      ) {
+      if (src.includes("WorkerEntrypoint") && !src.includes("BookclerkPlugin")) {
         throw new Error(
           `${path.basename(main)}: subclass BookclerkPlugin from ` +
             `"@bookclerk/plugin-sdk/workerd", not bare WorkerEntrypoint`,

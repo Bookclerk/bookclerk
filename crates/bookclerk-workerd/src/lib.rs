@@ -7,6 +7,8 @@
 //!
 //! See `docs/plugins.md` for jail / workerd isolation requirements.
 
+pub mod bridge_http;
+pub mod bridge_stdio;
 pub mod config;
 pub mod egress;
 pub mod ensure;
@@ -15,8 +17,6 @@ pub mod granted;
 pub mod native_broker;
 pub mod notify;
 pub mod pin;
-pub mod v2_http;
-pub mod v2_stdio;
 
 pub use config::{
     adapter_binding_plan, generated_backend_proxy_plan, materialize_native_backend, BindingSpec,

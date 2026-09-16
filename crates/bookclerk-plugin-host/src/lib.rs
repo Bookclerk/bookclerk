@@ -44,46 +44,47 @@ mod jail;
 mod manifest;
 mod registry;
 mod rpc;
-mod rpc_v2;
+mod rpc_session;
 mod spawn_stdio;
 
 pub use bookclerk_plugin_sdk::protocol;
 pub use bookclerk_plugin_sdk::{
     methods, BookAcquiredDto, CatalogHitDto, CliArgKind, CliArgSpec, CliCommandSpec,
-    CliInvokeParams, CliInvokeResult, CliSchema, CredentialsUpdateParams, EventPollResultDto,
-    ExpandCandidatesParams, ExternalUserDto, FetchTitleParams, HandshakeResult, HealthDto,
-    ListeningProgressDto, LoginCompleteParams, LoginParams, LoginResultDto, LoginStartResultDto,
-    PlainPartDto, PurchaseHintDto, PurchaseHintParams, ScanBookDto, ScanParams, ScanSummaryDto,
+    CliInvokeParams, CliInvokeResult, CliSchema, EventPollResultDto, ExpandCandidatesParams,
+    ExternalUserDto, FetchTitleParams, HealthDto, ListeningProgressDto, LoginCompleteParams,
+    LoginParams, LoginResultDto, LoginStartResultDto, PlainPartDto, PluginMetadata,
+    PurchaseHintDto, PurchaseHintParams, ScanBookDto, ScanParams, ScanSummaryDto,
     SearchCatalogParams, SourceAccountDto, SourceFetchDto, SyncListeningResultDto,
-    HOST_MANIFEST_API_VERSION_MAX, PLUGIN_API_VERSION, PROTOCOL_NAME,
+    PRODUCT_API_VERSION, PROTOCOL_NAME,
 };
 
-pub use bookclerk_plugin_sdk::v2::{JobCheckpoint, JobInvocationLease, JobOutcome};
+pub use bookclerk_plugin_sdk::{JobCheckpoint, JobInvocationLease, JobOutcome};
 pub use builtins::{
     load_integrations, load_sources, register_builtin_integrations, register_builtin_sources,
 };
 pub use consent::{
-    active_processes_for, consent_request, consent_summary, cores_to_percent, effective_cpu_cores,
-    effective_cpu_rate_percent, effective_disk_budget_bytes, effective_disk_mib,
-    effective_extra_processes, effective_grant, effective_memory_mib, format_cpu_cores,
-    grant_covers, grant_has_binding, grant_within_ceiling, handshake_config_for_grant,
-    host_cpu_cores_max, host_cpu_rate_max, host_logical_cpus, inject_workerd_grant_env,
-    is_platform_plugin_id, jail_process_overhead, network_compatible, percent_to_cores,
-    require_binding, require_grant, spawn_grant, validate_approved_grant,
-    validate_handshake_capabilities, PluginGrant, PluginGrantStore, GRANTS_FILE,
-    KNOWN_HOST_BINDINGS, PLUGIN_JAIL_ACTIVE_PROCESSES_MAX, PLUGIN_JAIL_CPU_CORES_DEFAULT,
-    PLUGIN_JAIL_CPU_RATE_DEFAULT, PLUGIN_JAIL_CPU_RATE_MAX, PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT,
-    PLUGIN_JAIL_EXTRA_PROCESSES_MAX, PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX,
-    PLUGIN_STATE_BUDGET_MIB_DEFAULT, PLUGIN_STATE_BUDGET_MIB_MAX, WORKERD_GRANT_CPU_MS_ENV,
-    WORKERD_GRANT_DOMAINS_ENV, WORKERD_GRANT_NETWORK_MODE_ENV, WORKERD_GRANT_SUBREQUESTS_ENV,
+    active_processes_for, consent_request, consent_summary, cores_to_percent,
+    database_binding_name, effective_cpu_cores, effective_cpu_rate_percent,
+    effective_disk_budget_bytes, effective_disk_mib, effective_extra_processes, effective_grant,
+    effective_memory_mib, format_cpu_cores, grant_covers, grant_has_binding, grant_within_ceiling,
+    granted_database_bindings, host_cpu_cores_max, host_cpu_rate_max, host_logical_cpus,
+    inject_workerd_grant_env, is_platform_plugin_id, jail_process_overhead, network_compatible,
+    percent_to_cores, require_binding, require_grant, spawn_config_for_grant, spawn_grant,
+    validate_approved_grant, validate_described_capabilities, PluginGrant, PluginGrantStore,
+    GRANTS_FILE, KNOWN_HOST_BINDINGS, PLUGIN_JAIL_ACTIVE_PROCESSES_MAX,
+    PLUGIN_JAIL_CPU_CORES_DEFAULT, PLUGIN_JAIL_CPU_RATE_DEFAULT, PLUGIN_JAIL_CPU_RATE_MAX,
+    PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT, PLUGIN_JAIL_EXTRA_PROCESSES_MAX,
+    PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX, PLUGIN_STATE_BUDGET_MIB_DEFAULT,
+    PLUGIN_STATE_BUDGET_MIB_MAX, WORKERD_GRANT_CPU_MS_ENV, WORKERD_GRANT_DOMAINS_ENV,
+    WORKERD_GRANT_NETWORK_MODE_ENV, WORKERD_GRANT_SUBREQUESTS_ENV,
 };
 pub use crates_io::search_crates_io;
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{discover_plugins, plugin_search_dirs, settings_table, DiscoveredPlugin};
 pub use error::{PluginError, Result};
 pub use host::{
-    load_external_database, load_external_destinations, load_external_integrations,
-    load_external_sources, migrate_database_plugin, open_library_store,
+    database_connect_context, load_external_database, load_external_destinations,
+    load_external_integrations, load_external_sources, migrate_database_plugin, open_library_store,
     open_library_store_for_plugin, DatabaseRegistry, DestinationRegistry, ExternalDatabase,
     ExternalIntegration, ExternalSource,
 };
@@ -98,9 +99,9 @@ pub use registry::{
     host_target_triple, kind_keyword, validate_plugin_id, BookclerkPackageMetadata,
     PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, PRODUCT_KEYWORD, REGISTRY_KEYWORD,
 };
-pub use rpc_v2::{
-    plugin_instance_key, ExecutorIdentity, V2PluginSession, V2Storage, HOST_SHARED_ACCOUNT,
-    OPERATOR_ACCOUNT,
+pub use rpc_session::{
+    plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,
+    HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
 
 /// Register discovered external plugins into the in-process registries.

@@ -1,7 +1,7 @@
 /**
  * Minimal `HOST` binding so plugins can call `env.HOST.notify(...)`.
  *
- * Reverse channel: POSTs PluginToHost-style JSON to the launcher via the
+ * Reverse channel: POSTs the JSON event envelope to the launcher via the
  * `NOTIFY` external service binding (loopback HTTP). Authenticated with the
  * per-isolate `BRIDGE_TOKEN`. The launcher buffers events in memory and logs
  * them; full host fan-out lands later.

@@ -1,10 +1,7 @@
 //! Framing / protocol constant conformance for the guest SDK.
 #![allow(clippy::missing_panics_doc)]
 
-use bookclerk_plugin_sdk::{
-    methods, v2::PRODUCT_API_VERSION, HOST_MANIFEST_API_VERSION_MAX, MAX_RPC_LINE_BYTES,
-    PROTOCOL_NAME,
-};
+use bookclerk_plugin_sdk::{methods, MAX_RPC_LINE_BYTES, PRODUCT_API_VERSION, PROTOCOL_NAME};
 
 #[test]
 fn protocol_name_is_workers_rpc() {
@@ -19,7 +16,6 @@ fn max_rpc_line_bytes_is_16_mib() {
 #[test]
 fn product_api_version_is_2() {
     assert_eq!(PRODUCT_API_VERSION, 2);
-    assert_eq!(HOST_MANIFEST_API_VERSION_MAX, 2);
 }
 
 #[test]

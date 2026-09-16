@@ -11,7 +11,7 @@ fn artifacts_root() -> Option<PathBuf> {
 }
 
 #[tokio::test]
-async fn staged_audible_guest_handshakes_when_artifacts_present() {
+async fn staged_audible_guest_describes_when_artifacts_present() {
     let Some(root) = artifacts_root() else {
         eprintln!("skip: set BOOKCLERK_PLUGIN_ARTIFACTS (cargo test-staged)");
         return;
@@ -21,7 +21,7 @@ async fn staged_audible_guest_handshakes_when_artifacts_present() {
         eprintln!("skip: audible not staged under {}", plugin_dir.display());
         return;
     }
-    // Discovery + handshake is covered by staged_plugins.rs; this test asserts
+    // Discovery + describe is covered by staged_plugins.rs; this test asserts
     // the install-shaped layout (plugin.toml beside binary) used by receipts.
     assert!(plugin_dir.join("plugin.toml").is_file());
     let has_bin = plugin_dir

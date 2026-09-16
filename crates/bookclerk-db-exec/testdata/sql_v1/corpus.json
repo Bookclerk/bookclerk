@@ -1,0 +1,95 @@
+{
+  "contractVersion": 1,
+  "description": "Normative Bookclerk SQL v1 corpus. See docs/sql-contract/v1.md.",
+  "lowering": [
+    {
+      "id": "placeholders-basic",
+      "canonical": "SELECT a FROM t WHERE id = ? AND name = ?",
+      "postgres": "SELECT a FROM t WHERE id = $1 AND name = $2"
+    },
+    {
+      "id": "placeholders-preserve-literals",
+      "canonical": "SELECT '?' AS literal, /* ? */ ? FROM t WHERE x = '?' -- ?\nAND y = ?",
+      "postgresContains": ["'?'", "/* ? */", "-- ?", "$1", "$2"],
+      "postgresNotContains": ["$3"]
+    },
+    {
+      "id": "json-extract",
+      "canonical": "SELECT json_extract(payload, '$.v') FROM t WHERE id = ?",
+      "postgres": "SELECT (CASE WHEN (payload) IS JSON THEN ((payload)::jsonb #>> '{v}') END) FROM t WHERE id = $1"
+    },
+    {
+      "id": "json-valid-invalid",
+      "canonical": "WHERE json_valid(payload) = 0 OR json_extract(payload, '$.v') IS NULL",
+      "postgresContains": ["(payload IS NOT JSON)", "IS JSON THEN"],
+      "postgresNotContains": ["json_valid", "FALSE"]
+    },
+    {
+      "id": "json-valid-valid",
+      "canonical": "AND json_valid(payload) = 1 AND json_extract(payload, '$.v') = '1'",
+      "postgresContains": ["(payload IS JSON)"],
+      "postgresNotContains": ["json_valid", "TRUE"]
+    },
+    {
+      "id": "insert-or-ignore-returning",
+      "canonical": "INSERT OR IGNORE INTO t (id) SELECT ? RETURNING id",
+      "postgres": "INSERT INTO t (id) SELECT * FROM (SELECT $1) AS _bc_src WHERE true  ON CONFLICT DO NOTHING RETURNING id"
+    },
+    {
+      "id": "insert-or-ignore-returning-lowercase",
+      "canonical": "insert or ignore into t (id) select ? returning id",
+      "postgres": "INSERT INTO t (id) SELECT * FROM (select $1) AS _bc_src WHERE true  ON CONFLICT DO NOTHING RETURNING id"
+    },
+    {
+      "id": "json-object",
+      "canonical": "SELECT json_object('k', ?) AS o",
+      "postgres": "SELECT json_build_object('k', $1) AS o"
+    },
+    {
+      "id": "ifnull-greatest",
+      "canonical": "SELECT IFNULL(x, 0), MAX(attempt_count, 1)",
+      "postgres": "SELECT COALESCE(x, 0), CASE WHEN (attempt_count) IS NULL OR (1) IS NULL THEN NULL ELSE GREATEST(attempt_count, 1) END"
+    },
+    {
+      "id": "ifnull-lowercase",
+      "canonical": "SELECT ifnull(NULL, 5)",
+      "postgres": "SELECT COALESCE(NULL, 5)"
+    },
+    {
+      "id": "min-max-scalar",
+      "canonical": "SELECT max(1, 2), min(a, b, c)",
+      "postgres": "SELECT CASE WHEN (1) IS NULL OR (2) IS NULL THEN NULL ELSE GREATEST(1, 2) END, CASE WHEN (a) IS NULL OR (b) IS NULL OR (c) IS NULL THEN NULL ELSE LEAST(a, b, c) END"
+    },
+    {
+      "id": "json-valid-any-expr",
+      "canonical": "WHERE json_valid(doc) = 1 OR json_valid(body) = 0",
+      "postgresContains": ["(doc IS JSON)", "(body IS NOT JSON)"],
+      "postgresNotContains": ["json_valid"]
+    },
+    {
+      "id": "order-by-nulls-default",
+      "canonical": "SELECT a FROM t ORDER BY a, b DESC",
+      "postgres": "SELECT a FROM t ORDER BY a NULLS FIRST, b DESC NULLS LAST"
+    },
+    {
+      "id": "round-sum-avg-wire-types",
+      "canonical": "SELECT round(r, 2), sum(n), avg(n) FROM typed",
+      "postgresContains": [
+        "CAST(round(CAST((r) AS NUMERIC), 2) AS DOUBLE PRECISION)",
+        "CAST(sum(n) AS BIGINT)",
+        "CAST(avg(n) AS DOUBLE PRECISION)"
+      ]
+    },
+    {
+      "id": "div-mod-null-on-zero",
+      "canonical": "SELECT 1 / 0, 4 % 0, a / b",
+      "postgresContains": ["NULLIF(0, 0)", "NULLIF(b, 0)"]
+    }
+  ],
+  "sqliteIdentity": [
+    {
+      "id": "sqlite-leaves-question-marks",
+      "canonical": "a = ? AND b = ?"
+    }
+  ]
+}

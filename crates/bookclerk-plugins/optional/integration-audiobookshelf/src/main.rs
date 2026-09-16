@@ -10,12 +10,12 @@ use bookclerk_plugin_integration_audiobookshelf::guest::{
     guest_scan_library, guest_start, guest_sync_listening, AbsGuestState,
 };
 use bookclerk_plugin_integration_audiobookshelf::BRAND;
-use bookclerk_plugin_sdk::v2::{
+use bookclerk_plugin_sdk::{
     decode_json, encode_json, DomainEvent, EventResult, HealthOk, Integration, IntegrationContext,
     PluginDescribe, PluginRoot, ScalarLimits, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_sdk::{
-    serve, AuthenticateUserParams, BrandDto, HandshakeResult, PluginError, ScanLibraryParams,
+    serve, AuthenticateUserParams, BrandDto, PluginError, PluginMetadata, ScanLibraryParams,
 };
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -54,7 +54,7 @@ impl AbsRoot {
 }
 
 fn describe_metadata() -> Result<String, PluginError> {
-    encode_json(HandshakeResult {
+    encode_json(PluginMetadata {
         api_version: PRODUCT_API_VERSION,
         id: "audiobookshelf".into(),
         kind: "integration".into(),
@@ -78,7 +78,7 @@ fn describe_metadata() -> Result<String, PluginError> {
             accent: BRAND.accent.into(),
             icon_url: BRAND.icon_url.into(),
         }),
-        ..HandshakeResult::default()
+        ..PluginMetadata::default()
     })
 }
 
@@ -94,13 +94,12 @@ impl PluginRoot for AbsRoot {
             scalar_limits: ScalarLimits::default().into(),
             supported_roles: vec!["integration".into()],
             metadata_json: describe_metadata()?,
-            ..PluginDescribe::default()
         })
     }
 
     async fn oidc_clients(
         &self,
-    ) -> Result<Vec<bookclerk_plugin_sdk::v2::OidcClientTemplate>, PluginError> {
+    ) -> Result<Vec<bookclerk_plugin_sdk::OidcClientTemplate>, PluginError> {
         Ok(bookclerk_plugin_integration_audiobookshelf::oidc_client_templates())
     }
 

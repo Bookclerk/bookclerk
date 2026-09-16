@@ -1,5 +1,0 @@
-{
-  "backend": "sqlite",
-  "pluginDataDir": "/var/bookclerk/plugins/sqlite/data",
-  "sqlitePath": "/var/bookclerk/library.db"
-}

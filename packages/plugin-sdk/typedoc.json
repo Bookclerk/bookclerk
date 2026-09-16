@@ -3,7 +3,6 @@
   "entryPoints": [
     "src/index.ts",
     "src/workerd.ts",
-    "src/native.ts",
     "src/sparse-workerd/index.ts",
     "src/cli.ts"
   ],

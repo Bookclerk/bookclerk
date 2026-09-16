@@ -119,6 +119,24 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
+/// Maximum named database bindings one plugin may declare.
+pub const MAX_DATABASE_BINDINGS: usize = 8;
+
+/// Maximum length of one database binding name.
+pub const MAX_DATABASE_BINDING_NAME_LEN: usize = 32;
+
+/// True when `name` is a valid Workers-style binding name (`[A-Z][A-Z0-9_]*`).
+#[must_use]
+pub fn is_valid_database_binding_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_DATABASE_BINDING_NAME_LEN
+        && name
+            .chars()
+            .enumerate()
+            .all(|(i, c)| c == '_' || c.is_ascii_uppercase() || (i > 0 && c.is_ascii_digit()))
+        && name.starts_with(|c: char| c.is_ascii_uppercase())
+}
+
 /// `[capabilities.bindings]` — host stubs the guest expects at spawn.
 ///
 /// Each flag is omitted from TOML when `false`. Enabling a binding does not
@@ -145,12 +163,20 @@ pub struct BindingCapabilities {
     /// [`JailNetworkNeed::Listen`].
     #[serde(skip_serializing_if = "is_false")]
     pub oauth: bool,
+    /// Named plugin-owned database bindings (Workers-style, e.g. `["DB"]`).
+    ///
+    /// Each name binds an isolated database provisioned by the active
+    /// database adapter — separate from the Bookclerk library and from every
+    /// other plugin. Names must be `A-Z` / `0-9` / `_`, start with a letter,
+    /// and be unique; the operator consents to each binding before enable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub databases: Vec<String>,
 }
 
 /// `[capabilities.methods]` — declared RPC surface for discovery / consent.
 ///
 /// Lists method names the guest intends to implement; used for operator UI
-/// and tooling, not as a hard ABI gate at handshake.
+/// and tooling, not as a hard ABI gate at describe().
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct MethodCapabilities {
@@ -390,7 +416,7 @@ fn default_module_type() -> String {
 ///
 /// # Validation highlights
 ///
-/// - `api_version` must be `2` (object-capability ABI)
+/// - `api_version` must equal [`bookclerk_plugin_abi::PRODUCT_API_VERSION`]
 /// - `id` must pass [`crate::validate_plugin_id`]
 /// - native requires `command`; workerd requires `[workerd]` with date + main
 /// - `domains` forbidden on native; required for workerd + outbound
@@ -398,7 +424,7 @@ fn default_module_type() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PluginManifest {
-    /// ABI / schema version. Must be `2` (object-capability Cap'n Proto).
+    /// ABI / schema version. Must equal [`bookclerk_plugin_abi::PRODUCT_API_VERSION`].
     pub api_version: u32,
     /// Globally unique plugin id (`[a-z0-9_]{2,32}` grammar).
     pub id: String,
@@ -588,8 +614,11 @@ impl PluginManifest {
         // Validate the raw id (non-lossy): do not trim before grammar checks.
         crate::validate_plugin_id(&self.id)
             .map_err(|e| Error::message(format!("plugin.toml: {e}")))?;
-        if self.api_version != 2 {
-            return Err(Error::message("plugin.toml: `api_version` must be 2"));
+        if self.api_version != bookclerk_plugin_abi::PRODUCT_API_VERSION {
+            return Err(Error::message(format!(
+                "plugin.toml: `api_version` must be {}",
+                bookclerk_plugin_abi::PRODUCT_API_VERSION
+            )));
         }
         if let Some(logo) = self.logo.as_deref() {
             let _ = crate::validate_logo(logo)?;
@@ -664,6 +693,30 @@ impl PluginManifest {
                     "plugin.toml: capabilities.network.domains entry `{domain}` is not a valid \
                      hostname (IDNA ToASCII failed or percent-encoded host)"
                 )));
+            }
+        }
+        {
+            let databases = &self.capabilities.bindings.databases;
+            if databases.len() > MAX_DATABASE_BINDINGS {
+                return Err(Error::message(format!(
+                    "plugin.toml: capabilities.bindings.databases lists {} bindings; max is \
+                     {MAX_DATABASE_BINDINGS}",
+                    databases.len()
+                )));
+            }
+            let mut seen = std::collections::HashSet::new();
+            for name in databases {
+                if !is_valid_database_binding_name(name) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: capabilities.bindings.databases entry `{name}` must be \
+                         `[A-Z][A-Z0-9_]*` and at most {MAX_DATABASE_BINDING_NAME_LEN} chars"
+                    )));
+                }
+                if !seen.insert(name.as_str()) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: capabilities.bindings.databases entry `{name}` is duplicated"
+                    )));
+                }
             }
         }
         if !self.capabilities.events.subscriptions.is_empty() {
@@ -1066,6 +1119,36 @@ mode = "outbound"
         )
         .expect_err("domains required for workerd outbound");
         assert!(err.to_string().contains("domains"), "{err}");
+    }
+
+    #[test]
+    fn database_bindings_validate_names_and_uniqueness() {
+        let manifest = |list: &str| {
+            PluginManifest::parse(&format!(
+                r#"
+api_version = 2
+id = "demo"
+kind = "integration"
+runtime = "native"
+command = "./demo"
+[capabilities.network]
+mode = "deny"
+[capabilities.bindings]
+databases = {list}
+"#
+            ))
+        };
+        let ok = manifest(r#"["DB", "CACHE_2"]"#).expect("valid binding names");
+        assert_eq!(ok.capabilities.bindings.databases, vec!["DB", "CACHE_2"]);
+        let bad = manifest(r#"["db"]"#).expect_err("lowercase rejected");
+        assert!(bad.to_string().contains("A-Z"), "{bad}");
+        let dup = manifest(r#"["DB", "DB"]"#).expect_err("duplicates rejected");
+        assert!(dup.to_string().contains("duplicated"), "{dup}");
+        let digit = manifest(r#"["1DB"]"#).expect_err("leading digit rejected");
+        assert!(digit.to_string().contains("A-Z"), "{digit}");
+        let many = manifest(r#"["A1","A2","A3","A4","A5","A6","A7","A8","A9"]"#)
+            .expect_err("over max bindings");
+        assert!(many.to_string().contains("max is"), "{many}");
     }
 
     #[test]

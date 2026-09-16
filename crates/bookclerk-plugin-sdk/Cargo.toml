@@ -12,8 +12,13 @@ publish = false
 
 [features]
 default = []
-# SeaORM proxy helpers for database guests / host adapters.
-db = ["dep:sea-orm", "dep:base64"]
+# SeaORM proxy helpers + shared database guest session / migration helpers.
+db = [
+    "dep:sea-orm",
+    "dep:base64",
+    "dep:futures",
+    "dep:uuid",
+]
 # Author CLI (`bookclerk-plugin`) including workerd `smoke`. Guest plugins
 # should leave this off so they do not pull `bookclerk-workerd` / download deps.
 tools = ["dep:bookclerk-workerd"]
@@ -41,12 +46,16 @@ toml.workspace = true
 tracing.workspace = true
 ureq.workspace = true
 base64 = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 sea-orm = { workspace = true, default-features = false, features = ["proxy"], optional = true }
+uuid = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
+bookclerk-library.workspace = true
+bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
 
 [[test]]

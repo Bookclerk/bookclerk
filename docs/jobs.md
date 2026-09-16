@@ -1,8 +1,15 @@
 # Durable job queue
 
-`bookclerkd` admits background work as **durable rows** in `library.db` (`jobs`
-+ `job_temp_paths`). HTTP and the interval scheduler are producers; leased
-workers claim jobs. There is no external broker.
+`bookclerkd` admits background work as **durable rows** in the host library
+database (`jobs` + `job_temp_paths` on the same schema as `books` and
+`accounts`). HTTP and the interval scheduler are producers; leased workers
+claim jobs. There is no external broker and **no dedicated jobs database**.
+
+The queue is host-owned. Guests never receive SQL against `jobs` (or any other
+library table). A plugin that needs its own durable store declares a named
+database binding; that unit is physically separate and holds only plugin-owned
+DDL. Job lifecycle (admit, claim, heartbeat, complete) stays host SeaORM /
+typed host plans on the library.
 
 This is not a general pub/sub bus. Domain events such as `book_acquired` /
 plugin `onEvent` stay **off** `JobKind`. They use a durable outbox
@@ -26,15 +33,15 @@ dispatch receipts are per pair (`dispatch-{event_id}-{plugin_id}` /
 that process **and** only events its own node catalog matches (type, schema
 version, filter). `[events.concurrency]` is both the local worker count **and** the
 cluster-wide max `running` deliveries per `(plugin_id, resource_class)`
-(PostgreSQL serializes admission with a per-plugin advisory lock).
+(serialized with a portable `db_serialization_slots` row).
 `EventResult::suspended` may set `wakeOnEventType` / `wakeOnFilterJson`; the
 host derives wake grants from declared subscriptions (schema versions plus the
 intersection of `sub.filter` and the requested filter — requested keys only
 add constraints) and wakes matching parked rows in the same account when a
 later event is published. Publish commits `domain_events.wake_pending = 1` and
 returns; the dispatcher claims bounded wake slices with a unique UUID fence
-token (`wake_lease_*` + delivery cursor, at most 32 events and one 64-row
-page each, below D1’s 100 bound parameters; #178 will negotiate `maxBinds`)
+token (`wake_lease_*` + delivery cursor, at most 32 events and one page
+each sized from negotiated `maxBinds`)
 so producer latency does not track sleeper count. Cursor release, finish,
 and the sleeper UPDATE require that token in the same statement; a lost
 fence does not clobber another owner or a later wake registration.
@@ -78,8 +85,8 @@ pending → running → succeeded
                  ↘ cancelled
 ```
 
-- **Admission** is one atomic backend operation (`dbAtomic` in production,
-  a local `BEGIN` in tests). A partial unique index on `dedup_key` for
+- **Admission** is one atomic backend operation (a guest atomic batch in
+  production, a local `BEGIN` in tests). A partial unique index on `dedup_key` for
   `pending`/`running` rows enforces active-key uniqueness.
 - A **worker** claims with a conditional `pending` → `running` update and a
   unique per-attempt `lease_generation`. Lost RPCs retry the same
@@ -116,7 +123,7 @@ pending → running → succeeded
 | `acquire` | `acquire:title={id\|all}:account={id\|all}` | `network` | `run_acquire` |
 | `listen_sync` | `listen_sync` | `network` | `run_listen_sync` |
 | `integration_scan` | `integration_scan:id={id}:force={0\|1}` | `network` | `run_integration_scan` |
-| `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI v2 `JobHandler` stream-copy (`run_plugin_copy`) |
+| `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI `JobHandler` stream-copy (`run_plugin_copy`) |
 
 Reserved classes (no worker in this release): `media`, `transcription`,
 `indexing`.
@@ -138,14 +145,13 @@ A database plugin swap takes the write permit so it cannot observe an idle
 worker that is about to claim. Admission waits up to 15s for a read permit
 and returns `503` if a swap holds the lock too long.
 
-PostgreSQL admission and scratch-quota updates take
-`pg_advisory_xact_lock(88118)` (SQLite/D1 lock the `job_queue_control`
-singleton) so `COUNT` then `INSERT` cannot exceed `max_pending` under
-`READ COMMITTED`. The required `postgres job queue` CI job runs those
+Admission, claim, and scratch-quota updates take a write lock on a
+`db_serialization_slots` row (`job-queue`) so `COUNT` then `INSERT` cannot
+exceed `max_pending` under `READ COMMITTED` on every required backend. The required `postgres job queue` CI job runs those
 concurrency tests against a disposable multi-connection database
 (`BOOKCLERK_TEST_POSTGRES_URL` + `BOOKCLERK_REQUIRE_POSTGRES_TESTS=1`).
 They are `#[ignore]` in the default workspace suite so a missing Postgres
-cannot false-pass. TOTP enroll/disable `dbAtomic` conformance
+cannot false-pass. TOTP enroll/disable atomic conformance
 (`postgres_totp_*`) is not ignored: the same job provisions Postgres and
 runs those tests automatically (`BOOKCLERK_REQUIRE_POSTGRES_TESTS=1`).
 

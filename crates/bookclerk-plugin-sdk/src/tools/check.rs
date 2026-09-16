@@ -85,20 +85,16 @@ pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
             let main_lower = w.main_module.to_ascii_lowercase();
             if main_lower.ends_with(".js") || main_lower.ends_with(".mjs") {
                 let src = std::fs::read_to_string(&main).unwrap_or_default();
-                let uses_package = src.contains("@bookclerk/plugin-sdk")
-                    || src.contains("BookclerkPlugin")
-                    || src.contains("wasmBookclerkPlugin");
+                let uses_package =
+                    src.contains("@bookclerk/plugin-sdk") || src.contains("BookclerkPlugin");
                 if !uses_package {
                     return Err(SdkError::message(format!(
-                        "{}: import BookclerkPlugin / wasmBookclerkPlugin from \
+                        "{}: import BookclerkPlugin from \
                          \"@bookclerk/plugin-sdk/workerd\"",
                         w.main_module
                     )));
                 }
-                if src.contains("WorkerEntrypoint")
-                    && !src.contains("BookclerkPlugin")
-                    && !src.contains("wasmBookclerkPlugin")
-                {
+                if src.contains("WorkerEntrypoint") && !src.contains("BookclerkPlugin") {
                     return Err(SdkError::message(format!(
                         "{}: subclass BookclerkPlugin from \"@bookclerk/plugin-sdk/workerd\", \
                          not bare WorkerEntrypoint",

@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-database"]
+autotests = false
 
 [package.metadata.bookclerk]
 api_version = 2
@@ -20,11 +21,40 @@ display_name = "SQLite"
 name = "bookclerk-plugin-database-sqlite"
 path = "src/main.rs"
 
+[features]
+# Production guests ship with no default features so `cargo build -p` /
+# `cargo build-app` does not compile `bookclerk-library` into the sqlite binary.
+default = []
+# Test / CLI helpers that apply host schema (`open_memory`, `open_store`).
+host-helpers = ["dep:bookclerk-library"]
+
+[[test]]
+name = "claim_redeem_txn"
+required-features = ["host-helpers"]
+
+[[test]]
+name = "guest_txn"
+required-features = ["host-helpers"]
+
+[[test]]
+name = "rpc_row_roundtrip"
+required-features = ["host-helpers"]
+
+[[test]]
+name = "totp_txn"
+required-features = ["host-helpers"]
+
+[[test]]
+name = "typed_conformance"
+required-features = ["host-helpers"]
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+bookclerk-db-exec.workspace = true
+bookclerk-library = { workspace = true, optional = true }
 bookclerk-db-guest.workspace = true
-bookclerk-library.workspace = true
+bookclerk-plugin-abi = { workspace = true, features = ["host"] }
 bookclerk-plugin-sdk = { workspace = true, features = ["db"] }
 rusqlite.workspace = true
 rusqlite_migration.workspace = true
@@ -36,6 +66,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 bookclerk-db-guest.workspace = true
+bookclerk-plugin-abi = { workspace = true, features = ["host"] }
+bookclerk-library.workspace = true
 chrono.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

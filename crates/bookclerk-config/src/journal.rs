@@ -106,6 +106,10 @@ impl OsLogLayer {
 }
 
 /// Opens the platform facility, or returns `Unsupported` on other OSes.
+///
+/// # Errors
+///
+/// Returns an I/O error when the platform log facility cannot be opened.
 fn open_inner(identifier: &str) -> io::Result<OsLogInner> {
     #[cfg(target_os = "linux")]
     {

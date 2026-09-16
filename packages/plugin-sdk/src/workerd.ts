@@ -7,7 +7,7 @@
  * @example
  * ```ts
  * import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd";
- * import type { HandshakeParams, HandshakeResult } from "@bookclerk/plugin-sdk/workerd";
+ * import type { PluginDescribe } from "@bookclerk/plugin-sdk/workerd";
  *
  * export default class MyPlugin extends BookclerkPlugin {
  *   async describe(): Promise<PluginDescribe> {
@@ -28,8 +28,10 @@ export {
   PluginError,
   ProgressSink,
   Source,
-  wrapV2PluginFromBinding,
-  wrapV2PluginFromNative,
+  AdapterDatabaseSession,
+  GuestDatabase,
+  wrapPluginFromBinding,
+  wrapPluginFromNative,
   PRODUCT_API_VERSION,
   MAX_SCALAR_BYTES,
   MAX_STREAM_WINDOW_BYTES,
@@ -37,8 +39,7 @@ export {
   FEATURE_SCALAR_LIMITS,
   FEATURE_STREAMS,
   FEATURE_STORAGE_COPY,
-  ENVELOPE_VERSION,
-} from "./v2.js";
+} from "./plugin.js";
 export type {
   AdapterEnv,
   BookclerkContext,
@@ -52,15 +53,44 @@ export type {
   OidcClientTemplate,
   PluginDescribe,
   WorkerContext,
-} from "./v2.js";
+} from "./plugin.js";
+export type { BookclerkEnv } from "./env.js";
 export type {
-  BookclerkEnv,
-  HandshakeParams,
-  HandshakeResult,
+  PluginMetadata,
   HealthResult,
   DiagnoseResult,
   CliSchema,
   CliInvokeParams,
   CliInvokeResult,
-  HostToPluginEvent,
 } from "./generated.js";
+export {
+  canonicalExecuteRequestHash,
+  createDatabaseBinding,
+  decodeExecuteResultReply,
+  decodeExecuteRequest,
+  encodeExecuteResultReply,
+  encodeExecuteRequest,
+  executeReplyToD1Results,
+  statementResultToD1Result,
+} from "./db-execute.js";
+export { decodeDbValue, encodeDbValue, parseDbValue } from "./db-value.js";
+export type { DbType, DbValue } from "./db-value.js";
+export type {
+  AtomicTransport,
+  DatabaseBinding,
+  DatabaseBindingOptions,
+  D1ExecResult,
+  D1Meta,
+  D1Result,
+  DbColumn,
+  DbResultSelection,
+  DbRow,
+  DbStatementKind,
+  DbTiming,
+  ExecuteReply,
+  ExecuteRequest,
+  PreparedStatement,
+  RetryToken,
+  StatementResult,
+  TypedDbStatement,
+} from "./db-execute.js";

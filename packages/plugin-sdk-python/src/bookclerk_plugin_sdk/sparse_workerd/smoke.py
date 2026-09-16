@@ -1,8 +1,9 @@
-"""Out-of-tree workerd plugin smoke: ensure → materialize → handshake + health.
+"""Out-of-tree workerd plugin smoke: ensure → materialize → describe + health.
 
 Spawns the pinned Cloudflare ``workerd`` with a materialized Cap'n Proto config
-and POSTs ``handshake`` / ``health`` to the bridge ``/rpc`` endpoint. Does not
-require the Rust ``bookclerk-workerd`` binary.
+and POSTs ``describe`` (plus the role ``health`` route for content-source /
+integration kinds) to the HTTP bridge. Does not require the Rust
+``bookclerk-workerd`` binary.
 """
 
 from __future__ import annotations
@@ -50,10 +51,10 @@ def _wait_for_health(base: str, token: str, timeout_s: float = 15.0) -> None:
         time.sleep(0.05)
 
 
-def _post_rpc(rpc_url: str, body: dict[str, Any], token: str) -> Any:
+def _post_json(url: str, body: dict[str, Any], token: str) -> Any:
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
-        rpc_url,
+        url,
         data=data,
         headers={
             "content-type": "application/json",
@@ -71,13 +72,13 @@ def _post_rpc(rpc_url: str, body: dict[str, Any], token: str) -> Any:
         if status != 400:
             raise RuntimeError(f"bridge HTTP {status}: {text}") from err
     value = json.loads(text)
-    if value.get("error"):
+    if isinstance(value, dict) and value.get("error"):
         err = value["error"]
         raise RuntimeError(
-            f"RPC {body['method']} failed: {err.get('code', 'internal')}: "
+            f"POST {url} failed: {err.get('code', 'internal')}: "
             f"{err.get('message', 'bridge error')}"
         )
-    return value.get("result")
+    return value
 
 
 def run_smoke(plugin_dir: Path) -> str:
@@ -87,13 +88,13 @@ def run_smoke(plugin_dir: Path) -> str:
         plugin_dir: Path to a ``runtime = "workerd"`` plugin root.
 
     Returns:
-        Multi-line status including plugin id and JSON handshake/health detail.
+        Multi-line status including plugin id and JSON describe/health detail.
 
     Raises:
         FileNotFoundError: If ``plugin.toml`` is missing.
         ValueError: If the manifest is invalid or not a workerd plugin.
         TimeoutError: If the bridge health endpoint never becomes ready.
-        RuntimeError: If handshake/health RPC fails.
+        RuntimeError: If the describe/health bridge call fails.
 
     Examples:
         >>> # print(run_smoke(Path("./my-workerd-plugin")))
@@ -132,21 +133,20 @@ def run_smoke(plugin_dir: Path) -> str:
     )
     try:
         _wait_for_health(base, bridge_token)
-        rpc_url = f"{base}/rpc"
-        handshake = _post_rpc(
-            rpc_url,
-            {"id": 1, "method": "handshake", "params": {"apiVersion": 1, "config": {}}},
-            bridge_token,
-        )
-        health = _post_rpc(
-            rpc_url,
-            {"id": 2, "method": "health", "params": {}},
-            bridge_token,
+        describe = _post_json(f"{base}/describe", {}, bridge_token)
+        # Role `health` exists for content-source / integration kinds only.
+        kind = manifest.get("kind")
+        health_path = {
+            "source": "/contentSource/health",
+            "integration": "/integration/health",
+        }.get(kind)
+        health = (
+            _post_json(f"{base}{health_path}", {}, bridge_token) if health_path else None
         )
         detail = {
             "plugin": manifest["id"],
             "listen": listen_addr,
-            "handshake": handshake,
+            "describe": describe,
             "health": health,
         }
         return f"smoke ok {manifest['id']}\n{json.dumps(detail, indent=2)}"

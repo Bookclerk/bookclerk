@@ -1,16 +1,20 @@
-//! Shared helpers for first-party database plugin guests.
+//! First-party database guest internals (SeaORM session workers).
 //!
-//! Engine-specific connect/proxy code lives in each guest crate; this crate
-//! owns the per-process SeaORM session (ping/query/execute/begin) and greenfield
-//! migration helpers used by D1 / Postgres.
+//! Third-party database plugin authors should depend on
+//! [`bookclerk_plugin_sdk::database_adapter`] only. Platform SQLite / Postgres /
+//! D1 guests use this crate for host-mediated session and transaction workers.
 
-pub mod migrate;
-pub mod session;
+mod host_session;
+mod session;
+mod sql;
 
-pub use migrate::{
-    apply_pending_migrations, apply_pending_migrations_from, schema_version_applied,
+pub use host_session::{
+    host_session, host_session_on, BoundGuestHostAdapterSession, GuestHostAdapterSession,
 };
 pub use session::{
-    guest_atomic, guest_begin, guest_commit, guest_execute, guest_ping, guest_query,
-    guest_query_page, guest_rollback, row_to_dto, set_connection,
+    bootstrap_for, capabilities_for, guest_begin, guest_bootstrap, guest_capabilities,
+    guest_commit, guest_execute, guest_execute_atomic, guest_execute_atomic_on,
+    guest_execute_atomic_on_txn, guest_execute_request, guest_execute_request_on, guest_ping,
+    guest_query, guest_query_page, guest_rollback, row_to_dto, set_connection,
 };
+pub use sql::{guest_sql, GuestStatement};

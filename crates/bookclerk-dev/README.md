@@ -28,7 +28,7 @@ Every guest is an **external** (jailed) subprocess. Runtimes are **`native`** or
 | `cargo dev --optional` | Also build/stage optional storefronts |
 | `cargo dev --examples` | Also stage reference Echo |
 | `cargo dev-cli` | Same platform build, then CLI binary |
-| `cargo test-staged` | Full platform + optional + examples + handshake |
+| `cargo test-staged` | Full platform + optional + examples + conformance |
 | **`cargo reset --yes`** | Wipe `$BOOKCLERK_FILES_DIR` (DB, config, keys, plugins) |
 | `cargo reset --yes --artifacts` | Also clear `target/plugin-artifacts` |
 

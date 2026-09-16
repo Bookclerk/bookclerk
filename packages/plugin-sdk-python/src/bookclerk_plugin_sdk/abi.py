@@ -1,69 +1,24 @@
-"""ABI constants and wire DTOs — aligned with ``crates/bookclerk-plugin-abi/schema/abi.json``.
+"""GENERATED FILE - do not edit. Run `python3 scripts/gen-plugin-abi.py --write` after changing crates/bookclerk-plugin-abi/schema/plugin.capnp.
 
-Machine-facing method names and the negotiated ``api_version`` are shared by
-native stdio guests and workerd Python Workers. Field names on TypedDicts use
-**camelCase** to match the Workers RPC wire format (same as the TypeScript
-``generated.ts`` projection). Regenerated projections in other languages
-consume the same schema; do not rename entries here without updating the ABI
-crate.
-
-See ``docs/plugins.md`` for the guest contract narrative.
+Python projection of the JSON payload contracts declared in
+``crates/bookclerk-plugin-abi/schema/plugin.capnp`` (the payloads carried
+inside ``Text`` fields of the Cap'n Proto ABI: ``describe().metadataJson``,
+role ``paramsJson``, and ``cliInvoke`` params/results). TypedDict keys are
+the literal JSON keys (camelCase).
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
 
-API_VERSION: int = 1
-"""Negotiated Bookclerk plugin ABI version (must match ``plugin.toml`` ``api_version``)."""
+JsonValue = Any
+"""Arbitrary JSON value carried inside a payload field."""
 
-METHOD_NAMES: tuple[str, ...] = (
-    "handshake",
-    "shutdown",
-    "health",
-    "diagnose",
-    "start",
-    "onEvent",
-    "pollEvents",
-    "scanLibrary",
-    "syncListening",
-    "authenticateUser",
-    "cliDescribe",
-    "cliInvoke",
-    "login",
-    "loginStart",
-    "loginComplete",
-    "credentialsUpdate",
-    "scan",
-    "fetchTitle",
-    "searchCatalog",
-    "expandCandidates",
-    "purchaseHint",
-    "listDeals",
-    "listAccounts",
-    "catalogDetail",
-    "put",
-    "putFile",
-    "get",
-    "exists",
-    "list",
-    "probe",
-    "copy",
-    "delete",
-    "touchFile",
-    "dbConnect",
-    "dbPing",
-    "dbQuery",
-    "dbExecute",
-    "dbBegin",
-    "dbCommit",
-    "dbRollback",
-    "dbAtomic",
-)
-"""Canonical Workers RPC method names exposed on the guest surface (camelCase wire)."""
+JsonObject = dict[str, Any]
+"""Loose JSON object used for config blobs and structured payloads."""
 
-PluginKind = Literal["source", "integration", "output", "database"]
-"""Plugin surface kind advertised in handshake and ``plugin.toml``."""
+PLUGIN_ERROR_CODES: tuple[str, ...] = ("invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict")
+"""Stable `PluginError.code` strings. Unknown future codes are forwarded as-is; SDKs surface them as a local `unknown` while keeping the raw wire code."""
 
 PluginErrorCode = Literal[
     "invalid_params",
@@ -73,52 +28,62 @@ PluginErrorCode = Literal[
     "unavailable",
     "unsupported",
     "internal",
+    "payload_too_large",
+    "deadline_exceeded",
+    "invalid_cursor",
+    "cancelled",
+    "conflict",
 ]
-"""Stable error codes carried on :class:`PluginError` ``code``."""
-
-PluginLogLevel = Literal["debug", "info", "warn", "error"]
-"""Severity for plugin_log events pushed to the host."""
-
-CliArgKind = Literal["string", "bool", "int", "path"]
-"""CLI argument value kind for plugin-declared commands."""
+"""Union of known `PluginErrorCode` wire strings."""
 
 
-class PluginError(TypedDict):
-    """RPC or plugin failure payload returned on the wire.
+class PluginMetadata(TypedDict):
+    """Identity extras carried as JSON in `describe().metadataJson`: portal auth, brand colors, config option discovery, and an embedded CLI schema.
 
     Attributes:
-        code: Stable machine-readable failure code.
-        message: Human-readable error message (secrets must already be redacted).
-        details: Optional structured details for operators or host UIs.
-    """
-
-    code: PluginErrorCode
-    message: str
-    details: NotRequired[dict[str, Any]]
-
-
-class HandshakeParams(TypedDict):
-    """Parameters for the required ``handshake`` RPC method.
-
-    Attributes:
-        apiVersion: Host-offered ABI version (must be :data:`API_VERSION`).
-        config: Install / operator config object passed into the guest.
+        apiVersion: ABI version the guest speaks; must equal `apiVersion`.
+        id: Stable plugin id matching `plugin.toml` / install directory
+            name.
+        kind: Plugin kind: "source", "integration", "output", or "database".
+        displayName: Human-readable name for UI lists; omitted when absent.
+        capabilities: Declared capability method names the guest implements
+            (e.g. "health", "login", "fetchTitle").
+        portalAuthMode: Portal Accounts connect mode: "oauth" or "password".
+        passwordEnvVar: Optional env var name operators may set for password
+            helpers; never required for Accounts UI connect.
+        aliases: Alternate ids accepted for config / CLI targeting; omitted
+            when empty.
+        sortKey: Optional UI sort weight among peers of the same kind.
+        brand: Portal brand colors and icon URL for Accounts / library
+            chrome.
+        configOptions: Discoverable config option groups for source UIs.
+        cli: Optional embedded CLI schema (same shape as `cliDescribe`).
     """
 
     apiVersion: int
-    config: dict[str, Any]
+    id: str
+    kind: str
+    displayName: NotRequired[str]
+    capabilities: NotRequired[list[str]]
+    portalAuthMode: NotRequired[str]
+    passwordEnvVar: NotRequired[str]
+    aliases: NotRequired[list[str]]
+    sortKey: NotRequired[int]
+    brand: NotRequired[Brand]
+    configOptions: NotRequired[list[ConfigOption]]
+    cli: NotRequired[CliSchema]
 
 
-class BrandDto(TypedDict):
-    """Brand colors and icon for UI chrome (wire camelCase).
+class Brand(TypedDict):
+    """Portal brand crossing the RPC boundary. Distinct from `plugin.toml` `logo`: `iconUrl` is the live URL or data URI the SPA renders.
 
     Attributes:
-        id: Stable brand identifier (often matches plugin id).
-        name: Display name shown beside the brand mark in Accounts / Settings.
-        bg: Brand panel background as a CSS color string.
-        fg: Brand panel foreground / text as a CSS color string.
-        accent: Highlight / CTA accent as a CSS color string.
-        iconUrl: Absolute ``https://`` URL or relative path for the brand icon.
+        id: Brand id (often matches the plugin id).
+        name: Display name shown next to the brand swatch.
+        bg: Background CSS color (hex or named).
+        fg: Foreground CSS color for text on `bg`.
+        accent: Accent CSS color for highlights / CTAs.
+        iconUrl: Icon URL or data URI for the portal.
     """
 
     id: str
@@ -129,460 +94,439 @@ class BrandDto(TypedDict):
     iconUrl: str
 
 
-class ConfigOptionValueDto(TypedDict):
-    """One selectable value under a :class:`ConfigOptionDto`.
+class ConfigOption(TypedDict):
+    """One discoverable config option group advertised for sources.
 
     Attributes:
-        id: Machine id written into config when the operator selects this value.
-        label: Operator-facing label shown in the option picker.
-    """
-
-    id: str
-    label: str
-
-
-class ConfigOptionDto(TypedDict):
-    """Config option descriptor discovered during handshake for sources.
-
-    Attributes:
-        key: Config key written under the plugin's config table when chosen.
-        label: Operator-facing label for the option group in Settings.
-        values: Allowed values the operator may pick for this option.
+        key: Config key under the plugin's `config.toml` table.
+        label: Operator-facing label for the option group.
+        values: Allowed selectable values for this key.
     """
 
     key: str
     label: str
-    values: list[ConfigOptionValueDto]
+    values: list[ConfigOptionValue]
 
 
-class CliArgSpec(TypedDict, total=False):
-    """One CLI argument declared by a plugin command (wire camelCase).
-
-    Attributes:
-        name: Internal argument name (also the default long flag).
-        long: Long flag spelling without the leading ``--``.
-        short: Single-character short flag without the leading ``-``.
-        kind: Value kind; defaults to ``string`` when omitted.
-        required: When true, the host must supply this argument.
-        default: Default value encoded as a string when the flag is omitted.
-        about: Short help text rendered next to the flag.
-        positional: When true, the argument is positional rather than a flag.
-    """
-
-    name: str
-    long: str
-    short: str
-    kind: CliArgKind
-    required: bool
-    default: str
-    about: str
-    positional: bool
-
-
-class CliCommandSpec(TypedDict, total=False):
-    """One plugin CLI command declared in handshake / ``cliDescribe``.
+class ConfigOptionValue(TypedDict):
+    """One selectable value under a `ConfigOption`.
 
     Attributes:
-        name: Command name passed as ``cliInvoke.command``.
-        about: Short help text for ``bookclerk plugin <id> --help``.
-        args: Arguments accepted by this command.
+        id: Value written to config when selected.
+        label: Operator-facing label for this value.
     """
 
-    name: str
-    about: str
-    args: list[CliArgSpec]
-
-
-class CliSchema(TypedDict, total=False):
-    """Declared CLI surface returned from handshake or ``cliDescribe``.
-
-    Attributes:
-        commands: Commands the guest exposes to ``bookclerk plugin``.
-    """
-
-    commands: list[CliCommandSpec]
-
-
-class HandshakeResult(TypedDict, total=False):
-    """Result of a successful ``handshake`` negotiation (wire camelCase).
-
-    Attributes:
-        apiVersion: Negotiated ABI version (must match :data:`API_VERSION`).
-        id: Globally unique plugin id (``[a-z0-9_]{2,32}`` grammar).
-        kind: Plugin kind (``source``, ``integration``, ``output``, or ``database``).
-        displayName: Optional operator-facing display name.
-        capabilities: Capability method names this guest implements.
-        brand: Optional UI brand block.
-        configOptions: Optional config options for Accounts / Settings.
-        cli: Optional CLI schema (may also come from ``cliDescribe``).
-        portalAuthMode: Portal login mode (``oauth`` or ``password``).
-        passwordEnvVar: Env var name for password-mode portal auth.
-        aliases: Alternate ids accepted by the host for this install.
-        sortKey: Sort key for stable ordering in UI lists (lower first).
-    """
-
-    apiVersion: int
     id: str
-    kind: str
-    displayName: str
-    capabilities: list[str]
-    brand: BrandDto
-    configOptions: list[ConfigOptionDto]
-    cli: CliSchema
-    portalAuthMode: Literal["oauth", "password"]
-    passwordEnvVar: str
-    aliases: list[str]
-    sortKey: int
+    label: str
 
 
-class CliInvokeParams(TypedDict, total=False):
-    """Parameters for the ``cliInvoke`` RPC method.
+class CliSchema(TypedDict):
+    """Declared plugin CLI surface (`cliDescribe` / metadata `cli` / `plugin.toml`).
 
     Attributes:
-        command: Command name matching a :class:`CliCommandSpec` ``name``.
-        args: Named argument map (flag names → values).
+        commands: Commands exposed as `bookclerk plugins <id> <command>
+            ...`.
+    """
+
+    commands: NotRequired[list[CliCommandSpec]]
+
+
+class CliCommandSpec(TypedDict):
+    """One plugin CLI command under `CliSchema`.
+
+    Attributes:
+        name: Command verb after the plugin id (for example "ping").
+        about: Short help text for `--help`; omitted when absent.
+        args: Argument / flag specs for this command (default empty).
+    """
+
+    name: str
+    about: NotRequired[str]
+    args: NotRequired[list[CliArgSpec]]
+
+
+CLI_ARG_KINDS: tuple[str, ...] = ("string", "bool", "int", "path")
+"""Value kind for a `CliArgSpec` (wire lowercase: "string" / "bool" / ...)."""
+
+CliArgKind = Literal["string", "bool", "int", "path"]
+"""Union of known `CliArgKind` wire strings."""
+
+
+class CliArgSpec(TypedDict):
+    """One CLI argument or flag under a `CliCommandSpec`.
+
+    Attributes:
+        name: Internal arg name used as the key in `CliInvokeParams.args`.
+        long: Long flag without leading dashes (e.g. "message" ->
+            `--message`).
+        short: Optional short flag character (e.g. "m" -> `-m`).
+        kind: Parsed value kind (default "string").
+        required: When true, the host rejects invoke if the arg is missing.
+        default: Default string form when the operator omits the arg.
+        about: Help text for this arg; omitted when absent.
+        positional: When true, the arg is positional rather than a flagged
+            option.
+    """
+
+    name: str
+    long: NotRequired[str]
+    short: NotRequired[str]
+    kind: NotRequired[CliArgKind]
+    required: NotRequired[bool]
+    default: NotRequired[str]
+    about: NotRequired[str]
+    positional: NotRequired[bool]
+
+
+class CliInvokeParams(TypedDict):
+    """Params JSON for `cliInvoke`.
+
+    Attributes:
+        command: Command name matching a `CliCommandSpec.name`.
+        args: Named argument values (keys match `CliArgSpec.name`; default
+            `{}`).
     """
 
     command: str
-    args: dict[str, Any]
+    args: NotRequired[JsonValue]
 
 
-class CliInvokeResult(TypedDict, total=False):
-    """Result of a ``cliInvoke`` call.
+class CliInvokeResult(TypedDict):
+    """Result JSON for `cliInvoke`.
 
     Attributes:
-        exitCode: Process-style exit code (``0`` = success).
-        stdout: Captured stdout text shown to the operator.
-        stderr: Captured stderr text shown on failure or diagnostics.
-        json: Optional structured JSON payload alongside text output.
+        exitCode: Process-style exit code (0 = success).
+        stdout: Captured standard output text.
+        stderr: Captured standard error text.
+        json: Optional structured payload for machine consumers; omitted
+            when absent.
     """
 
-    exitCode: int
-    stdout: str
-    stderr: str
-    json: Any
+    exitCode: NotRequired[int]
+    stdout: NotRequired[str]
+    stderr: NotRequired[str]
+    json: NotRequired[JsonValue]
 
 
-class HealthResult(TypedDict, total=False):
-    """Result of the ``health`` RPC method.
-
-    Attributes:
-        ok: Whether the guest considers itself healthy for host scheduling.
-        id: Optional plugin id echo for multi-guest probes.
-        enabled: Optional enablement flag mirroring operator config.
-        detail: Optional human-readable health detail for Status / doctor UIs.
-    """
-
-    ok: bool
-    id: str
-    enabled: bool
-    detail: str
-
-
-class DiagnoseResult(TypedDict):
-    """Result of the ``diagnose`` RPC method (``plugins doctor``).
+class DatabaseAdapterConfig(TypedDict):
+    """Author-facing database adapter configuration carried in `DatabaseContext.config` (mediaType `application/vnd.bookclerk.db-adapter-config+json`). This is the generic bootstrap mechanism for third-party adapters: the operator's granted `[database.<id>]` table plus the scoped writable data dir. First-party host-managed adapters receive host-private connect params instead.
 
     Attributes:
-        lines: Operator-facing diagnostic lines (empty when nothing to report).
-    """
-
-    lines: list[str]
-
-
-class LoginParams(TypedDict, total=False):
-    """Parameters for one-shot ``login`` and interactive ``loginStart``.
-
-    Wire field names are camelCase (``pluginDataDir``, ``callbackBind``, …).
-
-    Attributes:
-        pluginDataDir: Scoped writable directory for this plugin.
-        marketplace: Marketplace / locale code (for example ``us``, ``uk``).
-        label: Operator-facing account label in the Accounts UI.
-        email: Account email for password-mode storefronts.
-        password: Account password (never log or persist plainly).
-        force: When true, overwrite an existing sealed credential blob.
-        callbackBind: Optional guest OAuth callback bind address (``host:port``).
-        callbackIpc: Host-owned callback IPC endpoint (socket path or pipe name).
-        callbackPublicBase: Public base URL for the host TCP listener.
-        external: When true, use paste-redirect OAuth instead of a local callback.
-        responseUrl: Pre-supplied OAuth redirect URL from the operator.
-        showQr: Prefer QR output when the guest can render an authorize URL.
-        timeoutSecs: Seconds to wait for OAuth callback capture.
-        extra: Store-specific knobs; guests may ignore unknown keys.
+        pluginDataDir: Scoped writable directory for this plugin
+            (`.../plugins/<id>/data`).
+        config: Granted plugin settings (operator `[database.<id>]` table)
+            as a JSON object; `{}` when the operator configured nothing.
+        binding: Named plugin database binding this open serves; omitted for
+            the primary library open. Adapters advertising
+            `DbCapabilities.pluginDatabases` must serve each binding from
+            its own isolated database.
+        instanceId: Host-issued opaque instance id for this (owner plugin,
+            binding) pair. Collision-resistant and stable across re-opens.
+            Omitted for the primary library open. Third-party adapters must
+            key isolated databases on this value rather than `binding` alone
+            (two plugins may both declare `DB`).
     """
 
     pluginDataDir: str
-    marketplace: str
-    label: str
-    email: str
-    password: str
-    force: bool
-    callbackBind: str
-    callbackIpc: str
-    callbackPublicBase: str
-    external: bool
-    responseUrl: str
-    showQr: bool
-    timeoutSecs: int
-    extra: dict[str, Any]
+    config: NotRequired[JsonValue]
+    binding: NotRequired[str]
+    instanceId: NotRequired[str]
+
+
+class HealthResult(TypedDict):
+    """JSON health payload for guests that report identity alongside liveness. Role-level `health` RPCs return the typed `HealthOk` instead.
+
+    Attributes:
+        ok: When true, the guest considers itself healthy enough for
+            traffic.
+        id: Plugin id echo; omitted when the guest does not duplicate
+            identity.
+        enabled: Whether the guest believes it is enabled in config; omitted
+            when unknown.
+        detail: Short human detail for CLI / UI status lines; omitted when
+            absent.
+    """
+
+    ok: NotRequired[bool]
+    id: NotRequired[str]
+    enabled: NotRequired[bool]
+    detail: NotRequired[str]
+
+
+class DiagnoseResult(TypedDict):
+    """JSON result of `diagnose`. Each line is printed by `bookclerk plugins diagnose` / the control plane.
+
+    Attributes:
+        lines: Human-readable probe lines (default empty).
+    """
+
+    lines: NotRequired[list[str]]
+
+
+class LoginParams(TypedDict):
+    """Params JSON for `ContentSource.login`. Password sources fill email/password; OAuth sources use callback / external fields. There is no files-dir root or library DB path -- only `pluginDataDir`.
+
+    Attributes:
+        pluginDataDir: Scoped writable directory for this plugin only
+            (`.../plugins/<id>/data`).
+        marketplace: Marketplace / locale for the storefront (default empty
+            -> guest default).
+        label: Optional operator label stored on the account row.
+        email: Account email / username for password logins; omitted for
+            pure OAuth.
+        password: Account password for password logins; never logged;
+            omitted for OAuth.
+        force: When true, overwrite an existing sealed credential for this
+            account.
+        callbackBind: Optional bind address for OAuth callback servers
+            (`host:port`). Ignored when `callbackIpc` is set (host owns the
+            TCP listener).
+        callbackIpc: Host-owned callback IPC endpoint the guest must connect
+            to. When set (with `callbackPublicBase`), the guest must not
+            bind a TCP listener.
+        callbackPublicBase: Public base URL for the host TCP listener, e.g.
+            `http://127.0.0.1:12345`.
+        external: When true, use external / paste-redirect OAuth instead of
+            a local callback server.
+        responseUrl: Pre-supplied OAuth redirect URL (paste flow); omitted
+            otherwise.
+        showQr: Prefer QR output when the guest supports it.
+        timeoutSecs: Seconds to wait for OAuth callback capture; guest
+            default when omitted.
+        extra: Store-specific knobs as a JSON object; guests may ignore
+            unknowns.
+    """
+
+    pluginDataDir: str
+    marketplace: NotRequired[str]
+    label: NotRequired[str]
+    email: NotRequired[str]
+    password: NotRequired[str]
+    force: NotRequired[bool]
+    callbackBind: NotRequired[str]
+    callbackIpc: NotRequired[str]
+    callbackPublicBase: NotRequired[str]
+    external: NotRequired[bool]
+    responseUrl: NotRequired[str]
+    showQr: NotRequired[bool]
+    timeoutSecs: NotRequired[int]
+    extra: NotRequired[JsonValue]
+
+
+LoginStartParams = LoginParams
+"""Params JSON for `ContentSource.loginStart` -- same shape as `LoginParams`."""
 
 
 class LoginCompleteParams(TypedDict):
-    """Parameters for interactive ``loginComplete``.
+    """Params JSON for `ContentSource.loginComplete`.
 
     Attributes:
-        sessionId: Opaque session id returned by ``loginStart``.
+        sessionId: Session id previously returned by `loginStart`.
     """
 
     sessionId: str
 
 
-class CredentialsUpdateParams(TypedDict):
-    """Parameters for ``credentialsUpdate`` — guest-requested credential write-back.
+class ScanParams(TypedDict):
+    """Params JSON for `ContentSource.scan`. Host injects sealed credentials so the plugin does not need a private credential store under `pluginDataDir`.
 
     Attributes:
-        accountId: Account id whose sealed credential blob should be replaced.
-        credentials: Replacement opaque credential JSON for the host to re-seal.
-    """
-
-    accountId: str
-    credentials: dict[str, Any]
-
-
-class ScanParams(TypedDict, total=False):
-    """Parameters for source ``scan`` (wire camelCase).
-
-    Attributes:
-        pluginDataDir: Scoped writable directory for this plugin.
-        accounts: Account ids to include; empty means all known accounts.
-        pageSize: Page size for storefront pagination.
-        importEpisodes: When true, import podcast / series episodes.
-        importPlusTitles: When true, import Plus / catalog-included titles.
-        credentials: Host-loaded credential blobs keyed by ``accountId``.
+        pluginDataDir: Scoped plugin data directory.
+        accounts: Account ids to scan; empty means all scan-enabled
+            accounts.
+        pageSize: Storefront page size (default 50).
+        importEpisodes: When true, import podcast/episode-style rows
+            (default true).
+        importPlusTitles: When true, import Plus/catalog entitlement titles
+            (default true).
+        credentials: Host-loaded credential blobs keyed by account id (JSON
+            object).
     """
 
     pluginDataDir: str
-    accounts: list[str]
-    pageSize: int
-    importEpisodes: bool
-    importPlusTitles: bool
-    credentials: dict[str, dict[str, Any]]
+    accounts: NotRequired[list[str]]
+    pageSize: NotRequired[int]
+    importEpisodes: NotRequired[bool]
+    importPlusTitles: NotRequired[bool]
+    credentials: NotRequired[JsonValue]
 
 
-class FetchTitleParams(TypedDict, total=False):
-    """Parameters for source ``fetchTitle`` (wire camelCase).
+class FetchTitleParams(TypedDict):
+    """Params JSON for `ContentSource.fetchTitle`. Plugin writes media under `cacheDir` and returns plain (DRM-free) paths. Host injects credentials; guests must not open `library.db` or `master.key`.
 
     Attributes:
-        pluginDataDir: Scoped writable directory for this plugin.
-        accountId: Account that owns the title.
-        titleId: Library / storefront title identifier (ASIN, ISBN, UUID, …).
-        cacheDir: Absolute path to the guest download cache for this fetch.
-        credentials: Host-loaded credential blob for this account.
-        sourceConfig: Opaque plugin table from ``[sources.<id>]``.
-        download: Host acquire/download options matching ``DownloadOptions``.
+        pluginDataDir: Scoped plugin data directory.
+        accountId: Account whose credentials apply.
+        titleId: Library / storefront title id to download.
+        cacheDir: Absolute path the guest should write media into (jail-
+            granted TMPDIR).
+        credentials: Host-loaded credential blob for this account; omitted
+            when unavailable.
+        sourceConfig: Opaque plugin table from `[sources.<id>]`.
+        download: Host acquire/download options (JSON object matching host
+            DownloadOptions).
     """
 
     pluginDataDir: str
     accountId: str
     titleId: str
     cacheDir: str
-    credentials: dict[str, Any]
-    sourceConfig: dict[str, Any]
-    download: dict[str, Any]
+    credentials: NotRequired[JsonValue]
+    sourceConfig: NotRequired[JsonValue]
+    download: NotRequired[JsonValue]
 
 
-class SearchCatalogParams(TypedDict, total=False):
-    """Parameters for ``searchCatalog`` (wire camelCase).
+class SearchCatalogParams(TypedDict):
+    """Params JSON for `ContentSource.searchCatalog`.
 
     Attributes:
-        query: Free-text catalog query.
-        region: Marketplace / region code when multi-market.
-        limit: Maximum number of hits to return.
-        page: 1-based page index for paginated catalogs.
-        sort: Store-specific sort key (for example ``relevance``).
-        field: Optional field to search within.
-        language: Preferred content language filter.
+        query: Free-text search query.
+        region: Storefront region / marketplace code (default empty -> guest
+            default).
+        limit: Maximum hits to return (default 20).
+        page: 1-based page for storefronts that page (default 1).
+        sort: Sort key: "relevance" / "popularity" / "rating" / "title" /
+            "author".
+        field: Optional facet ("author" / "narrator" / "series" / "genre").
+        language: Preferred content language (soft-prioritize; e.g. "en").
     """
 
     query: str
-    region: str
-    limit: int
-    page: int
-    sort: str
-    field: str
-    language: str
+    region: NotRequired[str]
+    limit: NotRequired[int]
+    page: NotRequired[int]
+    sort: NotRequired[str]
+    field: NotRequired[str]
+    language: NotRequired[str]
 
 
-class PutParams(TypedDict, total=False):
-    """Parameters for destination ``put`` (inline Base64 body; wire camelCase).
-
-    Attributes:
-        pluginDataDir: Scoped writable directory for this plugin.
-        bucket: Destination bucket name (S3-compatible stores).
-        prefix: Key prefix applied before object keys.
-        region: AWS / S3-compatible region identifier.
-        endpoint: Optional custom endpoint (MinIO, R2, …).
-        forcePathStyle: When true, use path-style URLs.
-        credentials: Host-injected credential blob.
-        key: Destination object key (relative to ``prefix``).
-        dataBase64: Base64-encoded object body.
-        meta: Optional object metadata to store with the bytes.
-    """
-
-    pluginDataDir: str
-    bucket: str
-    prefix: str
-    region: str
-    endpoint: str
-    forcePathStyle: bool
-    credentials: dict[str, Any]
-    key: str
-    dataBase64: str
-    meta: dict[str, Any]
-
-
-class KeyParams(TypedDict, total=False):
-    """Parameters for key-scoped destination methods (``get`` / ``exists`` / ``delete``).
+class ExpandCandidatesParams(TypedDict):
+    """Params JSON for `ContentSource.expandCandidates`. Seed fields identify a known title; the guest returns related catalog hits.
 
     Attributes:
-        pluginDataDir: Scoped writable directory for this plugin.
-        bucket: Destination bucket name (S3-compatible stores).
-        prefix: Key prefix applied before object keys.
-        region: AWS / S3-compatible region identifier.
-        endpoint: Optional custom endpoint (MinIO, R2, …).
-        forcePathStyle: When true, use path-style URLs.
-        credentials: Host-injected credential blob.
-        key: Destination object key (relative to ``prefix``).
+        source: Source plugin id hint when expanding across storefronts.
+        productId: Seed storefront product id.
+        title: Seed title text.
+        authors: Seed authors string.
+        narrators: Seed narrators string.
+        series: Seed series name.
+        seriesAsin: Seed series ASIN when known.
+        asin: Seed Amazon ASIN.
+        isbn: Seed ISBN.
+        region: Storefront region / marketplace code.
+        limit: Maximum candidates to return (default 20).
     """
 
-    pluginDataDir: str
-    bucket: str
-    prefix: str
-    region: str
-    endpoint: str
-    forcePathStyle: bool
-    credentials: dict[str, Any]
-    key: str
+    source: NotRequired[str]
+    productId: NotRequired[str]
+    title: NotRequired[str]
+    authors: NotRequired[str]
+    narrators: NotRequired[str]
+    series: NotRequired[str]
+    seriesAsin: NotRequired[str]
+    asin: NotRequired[str]
+    isbn: NotRequired[str]
+    region: NotRequired[str]
+    limit: NotRequired[int]
 
 
-class StatementDto(TypedDict, total=False):
-    """SQL statement DTO for ``dbQuery`` / ``dbExecute`` (wire camelCase).
+class PurchaseHintParams(TypedDict):
+    """Params JSON for `ContentSource.purchaseHint`. At least one identity field (`productId` / `asin` / `isbn` / title+authors) should be set; guests may return `invalid_params` when none are usable.
 
     Attributes:
-        sql: SQL text with placeholders as understood by the guest dialect.
-        values: Ordered bind values for the statement (default empty).
+        productId: Storefront product id when known.
+        title: Title text for fuzzy lookup.
+        authors: Authors string for fuzzy lookup.
+        asin: Amazon ASIN when known.
+        isbn: ISBN when known.
+        region: Storefront region / marketplace code.
+        withPrice: When true, guests should include live price fields when
+            available.
     """
 
-    sql: str
-    values: list[Any]
-    txnId: str
+    productId: NotRequired[str]
+    title: NotRequired[str]
+    authors: NotRequired[str]
+    asin: NotRequired[str]
+    isbn: NotRequired[str]
+    region: NotRequired[str]
+    withPrice: NotRequired[bool]
 
 
-class DbBeginParams(TypedDict, total=False):
-    """Params for ``dbBegin`` (wire camelCase).
+class ListDealsParams(TypedDict):
+    """Params JSON for `ContentSource.listDeals`.
 
     Attributes:
-        parentTxnId: Existing transaction to nest a savepoint under.
+        limit: Optional maximum number of deals to return; guest default
+            when omitted.
     """
 
-    parentTxnId: str
+    limit: NotRequired[int]
 
 
-class DbBeginResult(TypedDict):
-    """Result of a successful ``dbBegin``.
+class CatalogDetailParams(TypedDict):
+    """Params JSON for `ContentSource.catalogDetail`.
 
     Attributes:
-        txnId: Opaque id for subsequent statements and commit/rollback.
+        productId: Store product id (Libro ISBN or ISBN-slug).
+        isbn: Optional ISBN when it differs from `productId`.
     """
 
-    txnId: str
+    productId: str
+    isbn: NotRequired[str]
 
 
-class DbTxnParams(TypedDict):
-    """Params for ``dbCommit`` / ``dbRollback``.
+class ScanLibraryParams(TypedDict):
+    """Params JSON for `Integration.scanLibrary` (remote library sync).
 
     Attributes:
-        txnId: Transaction id returned by ``dbBegin``.
+        force: When true, force a full rescan even if the guest would
+            otherwise incremental-sync.
     """
 
-    txnId: str
+    force: NotRequired[bool]
 
 
-class DbAtomicRequest(TypedDict, total=False):
-    """Envelope for ``dbAtomic`` (wire camelCase).
+class AuthenticateUserParams(TypedDict):
+    """Params JSON for `Integration.authenticateUser`.
 
     Attributes:
-        operationId: Idempotency key reused after an ambiguous outcome.
-        operation: Named operation params (``deleteUser``, ``takeOidcRpState``, ``confirmTotpEnrollment``, …).
+        username: Integration username / login id.
+        password: Integration password; never logged by the host.
     """
 
-    operationId: str
-    operation: DbAtomicParams
-
-
-class DbAtomicParams(TypedDict, total=False):
-    """Params for ``dbAtomic`` (wire camelCase tagged ``op``).
-
-    Attributes:
-        op: Named operation (``deleteUser``, ``redeemClaimTicket``, ``takeOidcRpState``, ``confirmTotpEnrollment``, ``disableUserTotp``, …).
-    """
-
-    op: str
-
-
-class DbAtomicResult(TypedDict, total=False):
-    """Result of ``dbAtomic``.
-
-    Attributes:
-        status: Application outcome (``ok``, ``lastOwner``, ``empty``, …).
-        payload: Library record JSON when ``status`` is ``ok``.
-        operationId: Echo of the request idempotency key.
-        replayed: True when the result came from a durable receipt.
-        receiptCreatedAt: RFC 3339 timestamp when the receipt was first written.
-        timing: Handler/engine timing; not part of the idempotency hash.
-    """
-
-    status: str
-    payload: Any
-    operationId: str
-    replayed: bool
-    receiptCreatedAt: str
-    timing: Any
-
+    username: str
+    password: str
 
 __all__ = [
-    "API_VERSION",
-    "METHOD_NAMES",
-    "BrandDto",
+    "AuthenticateUserParams",
+    "Brand",
+    "CLI_ARG_KINDS",
+    "CatalogDetailParams",
     "CliArgKind",
     "CliArgSpec",
     "CliCommandSpec",
     "CliInvokeParams",
     "CliInvokeResult",
     "CliSchema",
-    "ConfigOptionDto",
-    "ConfigOptionValueDto",
-    "CredentialsUpdateParams",
-    "DbBeginParams",
-    "DbBeginResult",
-    "DbAtomicParams",
-    "DbAtomicRequest",
-    "DbAtomicResult",
-    "DbTxnParams",
+    "ConfigOption",
+    "ConfigOptionValue",
+    "DatabaseAdapterConfig",
     "DiagnoseResult",
+    "ExpandCandidatesParams",
     "FetchTitleParams",
-    "HandshakeParams",
-    "HandshakeResult",
     "HealthResult",
-    "KeyParams",
+    "JsonObject",
+    "JsonValue",
+    "ListDealsParams",
     "LoginCompleteParams",
     "LoginParams",
-    "PluginError",
+    "LoginStartParams",
+    "PLUGIN_ERROR_CODES",
     "PluginErrorCode",
-    "PluginKind",
-    "PluginLogLevel",
-    "PutParams",
+    "PluginMetadata",
+    "PurchaseHintParams",
+    "ScanLibraryParams",
     "ScanParams",
     "SearchCatalogParams",
-    "StatementDto",
 ]

@@ -31,7 +31,7 @@ use crate::error::AudibleError;
 use crate::qr::QrRenderMode;
 use crate::sync::scan_library;
 
-/// Handshake / config id for this store (`audible` in `[sources.audible]`).
+/// Describe / config id for this store (`audible` in `[sources.audible]`).
 pub const ID: &str = "audible";
 
 /// Audible storefront adapter implementing [`ContentSource`].

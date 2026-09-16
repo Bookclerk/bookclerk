@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bookclerk_library::LibraryStore;
-use bookclerk_plugin_abi::v2::{DomainEvent, EventResult};
+use bookclerk_plugin_abi::{DomainEvent, EventResult};
 
 use crate::brand::Brand;
 use crate::error::{IntegrationError, Result};

@@ -1,4 +1,4 @@
-"""Echo workerd guest — BookclerkPlugin v2 (`describe` + `integration`).
+"""Echo workerd guest — BookclerkPlugin (`describe` + `integration`).
 
     from bookclerk_plugin_sdk.workerd import BookclerkPlugin, Integration, js
 

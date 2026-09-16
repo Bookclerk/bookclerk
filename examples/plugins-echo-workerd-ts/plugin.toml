@@ -28,6 +28,8 @@ mode = "deny"
 [capabilities.bindings]
 config = true
 plugin_kv = true
+# Isolated plugin-owned databases (Workers-style named bindings).
+databases = ["DB"]
 
 [capabilities.methods]
 list = ["describe", "integration", "health", "diagnose", "onEvent", "cli"]

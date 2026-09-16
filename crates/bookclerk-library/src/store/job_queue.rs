@@ -4,8 +4,8 @@ use chrono::{Duration, Utc};
 use sea_orm::{
     ActiveModelTrait,
     ActiveValue::{NotSet, Set},
-    ColumnTrait, Condition, ConnectionTrait, DatabaseBackend, EntityTrait, PaginatorTrait,
-    QueryFilter, QueryOrder, QuerySelect, Statement, TransactionTrait,
+    ColumnTrait, Condition, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, TransactionTrait,
 };
 use uuid::Uuid;
 
@@ -52,7 +52,7 @@ impl LibraryStore {
 
     /// Claim the next ready job with a conditional `pending` → `running` mutation.
     ///
-    /// `operation_id` is the dbAtomic / local-txn idempotency key: retrying a
+    /// `operation_id` is the atomic / local-txn idempotency key: retrying a
     /// lost response with the same id must not claim a different row.
     ///
     /// # Errors
@@ -200,7 +200,7 @@ impl LibraryStore {
     pub async fn suspend_job(
         &self,
         fence: &JobFence,
-        checkpoint: &bookclerk_plugin_abi::v2::JobCheckpoint,
+        checkpoint: &bookclerk_plugin_abi::JobCheckpoint,
         wake_at: chrono::DateTime<Utc>,
     ) -> Result<bool> {
         let Some(model) = jobs::Entity::find_by_id(&fence.job_id)
@@ -218,11 +218,11 @@ impl LibraryStore {
         }
         let mut payload: JobPayload = serde_json::from_str(&model.payload)
             .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
-        if checkpoint.json.len() > bookclerk_plugin_abi::v2::MAX_CHECKPOINT_BYTES as usize {
+        if checkpoint.json.len() > bookclerk_plugin_abi::MAX_CHECKPOINT_BYTES as usize {
             return Err(LibraryError::Other(anyhow::anyhow!(
                 "checkpoint of {} bytes exceeds {}",
                 checkpoint.json.len(),
-                bookclerk_plugin_abi::v2::MAX_CHECKPOINT_BYTES
+                bookclerk_plugin_abi::MAX_CHECKPOINT_BYTES
             )));
         }
         payload.checkpoint = Some(checkpoint.clone());
@@ -954,18 +954,10 @@ impl LibraryStore {
 ///
 /// Returns [`LibraryError::Orm`] when the lock statement fails.
 pub(crate) async fn lock_job_queue<C: ConnectionTrait>(db: &C) -> Result<()> {
-    let backend = db.get_database_backend();
-    let sql = match backend {
-        DatabaseBackend::Postgres => "SELECT pg_advisory_xact_lock(88118)",
-        _ => "UPDATE job_queue_control SET id = 1 WHERE id = 1",
-    };
-    db.execute_raw(Statement::from_string(backend, sql))
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(())
+    crate::sql_plan::lock_serialization_slot(db, crate::sql_plan::JOB_QUEUE_SLOT).await
 }
 
-/// Transactional admission used by the local path and `dbAtomic`.
+/// Transactional admission used by the local path and guest atomic execute.
 pub(crate) async fn enqueue_job_on<C: ConnectionTrait>(
     db: &C,
     spec: EnqueueJobSpec,

@@ -289,7 +289,7 @@ async fn run_isolate(
         .await
         .context("workerd bridge /health did not become ready")?;
 
-    let result = mediate_v2(
+    let result = mediate_bridge(
         generated.listen.port(),
         bridge_token.clone(),
         #[cfg(unix)]
@@ -466,7 +466,7 @@ async fn run_native_behind_workerd(
         }
         _ => bookclerk_workerd::native_broker::BrokerPolicy::destination(plugin_id, "1"),
     };
-    let result = mediate_v2_native(
+    let result = mediate_native(
         generated.listen.port(),
         bridge_token.clone(),
         #[cfg(unix)]
@@ -491,7 +491,7 @@ async fn run_native_behind_workerd(
 }
 
 /// Cap'n Proto stdio plus a native broker feeding `PLUGIN_BACKEND`.
-async fn mediate_v2_native(
+async fn mediate_native(
     port: u16,
     token: String,
     #[cfg(unix)] granted_unix: Option<std::os::unix::net::UnixListener>,
@@ -505,11 +505,11 @@ async fn mediate_v2_native(
     use std::collections::HashMap;
     use std::rc::Rc;
 
-    use bookclerk_plugin_abi::v2::connect_plugin;
+    use bookclerk_plugin_abi::connect_plugin;
+    use bookclerk_workerd::bridge_http::BridgeHttp;
+    use bookclerk_workerd::bridge_stdio::mediate_bridge_stdio;
     use bookclerk_workerd::granted::{spawn_granted, GrantedTable};
     use bookclerk_workerd::native_broker::spawn_native_broker;
-    use bookclerk_workerd::v2_http::BridgeHttp;
-    use bookclerk_workerd::v2_stdio::mediate_v2_stdio;
 
     let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
     let http = BridgeHttp {
@@ -536,13 +536,13 @@ async fn mediate_v2_native(
                 let listener = tokio::net::TcpListener::from_std(std_listener)?;
                 spawn_granted(listener, token, Rc::clone(&table));
             }
-            mediate_v2_stdio(http, table).await
+            mediate_bridge_stdio(http, table).await
         })
         .await
 }
 
 /// Serves Bookclerk capnp on stdio and granted HTTP on the reverse channel.
-async fn mediate_v2(
+async fn mediate_bridge(
     port: u16,
     token: String,
     #[cfg(unix)] granted_unix: Option<std::os::unix::net::UnixListener>,
@@ -552,9 +552,9 @@ async fn mediate_v2(
     use std::collections::HashMap;
     use std::rc::Rc;
 
+    use bookclerk_workerd::bridge_http::BridgeHttp;
+    use bookclerk_workerd::bridge_stdio::mediate_bridge_stdio;
     use bookclerk_workerd::granted::{spawn_granted, GrantedTable};
-    use bookclerk_workerd::v2_http::BridgeHttp;
-    use bookclerk_workerd::v2_stdio::mediate_v2_stdio;
 
     let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
     let http = BridgeHttp {
@@ -578,7 +578,7 @@ async fn mediate_v2(
                 let listener = tokio::net::TcpListener::from_std(std_listener)?;
                 spawn_granted(listener, token, Rc::clone(&table));
             }
-            mediate_v2_stdio(http, table).await
+            mediate_bridge_stdio(http, table).await
         })
         .await
 }

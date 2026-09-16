@@ -1,17 +1,19 @@
-//! Integration tests: rpc row roundtrip (bookclerk-plugins).
+//! Integration tests: typed proxy row roundtrip (bookclerk-plugins).
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bookclerk_library::entities::title_requests;
-use bookclerk_plugin_sdk::{proxy_rows_from_dto, QueryResultDto};
+use bookclerk_plugin_sdk::{
+    db_value_from_sea, proxy_rows_from_typed, DbColumn, DbRow, DbType, DbValue, StatementResult,
+};
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, Database, DbBackend, DbErr, EntityTrait, ProxyDatabaseTrait,
-    ProxyExecResult, ProxyRow, QueryFilter, QueryTrait, Statement,
+    from_query_result_to_proxy_row, ColumnTrait, ConnectionTrait, Database, DbBackend, DbErr,
+    EntityTrait, ProxyDatabaseTrait, ProxyExecResult, ProxyRow, QueryFilter, QueryTrait, Statement,
 };
 
 #[tokio::test]
-async fn title_request_select_survives_guest_dto_roundtrip() {
+async fn title_request_select_survives_typed_roundtrip() {
     let db = bookclerk_plugin_database_sqlite::open_memory()
         .await
         .unwrap();
@@ -38,18 +40,26 @@ async fn title_request_select_survives_guest_dto_roundtrip() {
     let rows = db.query_all_raw(stmt).await.unwrap();
     assert_eq!(rows.len(), 1);
 
-    let mut dto_rows = Vec::new();
-    for row in &rows {
-        // Same helper the guest uses on the wire.
-        dto_rows.push(bookclerk_db_guest::row_to_dto(row));
-    }
-    let dto = QueryResultDto { rows: dto_rows };
-    assert_eq!(
-        dto.rows[0].values.get("uuid").and_then(|v| v.as_str()),
-        Some(created.uuid.as_str())
-    );
-
-    let proxy_rows = proxy_rows_from_dto(dto.rows);
+    let proxy = from_query_result_to_proxy_row(&rows[0]);
+    let col_names: Vec<String> = rows[0]
+        .column_names()
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    let columns: Vec<DbColumn> = col_names
+        .iter()
+        .map(|name| DbColumn {
+            name: name.clone(),
+            db_type: DbType::Unspecified,
+        })
+        .collect();
+    let values: Vec<DbValue> = col_names
+        .iter()
+        .map(|name| db_value_from_sea(proxy.values.get(name).unwrap()).unwrap())
+        .collect();
+    let stmt_result =
+        StatementResult::from_rows(columns, vec![DbRow { values }]).expect("positional rows");
+    let proxy_rows = proxy_rows_from_typed(&stmt_result).expect("typed decode");
 
     #[derive(Debug)]
     struct OnceProxy(Vec<ProxyRow>);
@@ -77,7 +87,7 @@ async fn title_request_select_survives_guest_dto_roundtrip() {
         .filter(title_requests::Column::Asin.eq("B00X"))
         .all(&proxied)
         .await
-        .expect("decode after dto roundtrip");
+        .expect("decode after typed roundtrip");
     assert_eq!(decoded.len(), 1);
     assert_eq!(decoded[0].uuid, created.uuid);
     assert_eq!(

@@ -1,22 +1,23 @@
-//! Workers RPC method names (camelCase on the wire).
+//! Role capability method names (camelCase on the wire).
 //!
-//! Each submodule exposes a single [`NAME`](handshake::NAME) constant equal to
-//! the method string in `schema/abi.json` `properties.methods`. Prefer these
-//! constants over string literals when dispatching or documenting RPC.
+//! Each submodule exposes a single [`NAME`](health::NAME) constant equal to
+//! the corresponding `ContentSource` / `Integration` / `Plugin` method in
+//! `schema/plugin.capnp`. Prefer these constants over string literals when
+//! dispatching or documenting capabilities.
 //!
 //! [`METHOD_NAMES`] enumerates every known method for discovery / schema
-//! drift tests. Flat historical aliases live under [`names`].
+//! drift tests. Flat `UPPER_SNAKE` aliases live under [`names`].
 
-/// All known Workers RPC method names for discovery, docs, and schema checks.
+/// All known capability method names for discovery, docs, and schema checks.
 ///
-/// Order is stable for readability; tests sort before comparing to
-/// `abi.json`.
+/// Order is stable for readability; `scripts/gen-plugin-abi.py --check`
+/// verifies this list against `schema/plugin.capnp`.
 pub const METHOD_NAMES: &[&str] = &[
-    handshake::NAME,
     shutdown::NAME,
     health::NAME,
     diagnose::NAME,
     start::NAME,
+    stop::NAME,
     on_event::NAME,
     poll_events::NAME,
     scan_library::NAME,
@@ -27,7 +28,6 @@ pub const METHOD_NAMES: &[&str] = &[
     login::NAME,
     login_start::NAME,
     login_complete::NAME,
-    credentials_update::NAME,
     scan::NAME,
     fetch_title::NAME,
     search_catalog::NAME,
@@ -37,31 +37,12 @@ pub const METHOD_NAMES: &[&str] = &[
     list_accounts::NAME,
     catalog_detail::NAME,
     put::NAME,
-    put_file::NAME,
     get::NAME,
     exists::NAME,
     list::NAME,
-    probe::NAME,
     copy::NAME,
     delete::NAME,
-    touch_file::NAME,
-    db_connect::NAME,
-    db_ping::NAME,
-    db_query::NAME,
-    db_execute::NAME,
-    db_begin::NAME,
-    db_commit::NAME,
-    db_rollback::NAME,
-    db_atomic::NAME,
 ];
-
-/// Negotiate ABI version, plugin id/kind, capabilities, and optional brand/CLI.
-///
-/// Params: [`crate::types::HandshakeParams`]. Result: [`crate::types::HandshakeResult`].
-pub mod handshake {
-    /// Wire method name `"handshake"`.
-    pub const NAME: &str = "handshake";
-}
 
 /// Graceful guest teardown before the host closes the transport.
 pub mod shutdown {
@@ -91,9 +72,13 @@ pub mod start {
     pub const NAME: &str = "start";
 }
 
-/// Deliver a host→plugin event envelope.
-///
-/// Params: [`crate::events::HostToPluginEvent`].
+/// Stop background watchers started by [`start`] (Cap'n Proto `Integration.stop`).
+pub mod stop {
+    /// Wire method name `"stop"`.
+    pub const NAME: &str = "stop";
+}
+
+/// Deliver a host→plugin domain event (Cap'n Proto `Integration.onEvent`).
 pub mod on_event {
     /// Wire method name `"onEvent"`.
     pub const NAME: &str = "onEvent";
@@ -169,14 +154,6 @@ pub mod login_complete {
     pub const NAME: &str = "loginComplete";
 }
 
-/// Guest-requested credential write-back after a silent refresh.
-///
-/// Params: [`crate::kind::CredentialsUpdateParams`].
-pub mod credentials_update {
-    /// Wire method name `"credentialsUpdate"`.
-    pub const NAME: &str = "credentialsUpdate";
-}
-
 /// Scan a source storefront library; host upserts returned [`crate::kind::ScanBookDto`] rows.
 ///
 /// Params: [`crate::kind::ScanParams`]. Result: [`crate::kind::ScanSummaryDto`].
@@ -249,14 +226,6 @@ pub mod put {
     pub const NAME: &str = "put";
 }
 
-/// Put a large file into an output destination (`localPath` or streamed `put`).
-///
-/// Params: [`crate::kind::OutputPutFileParams`].
-pub mod put_file {
-    /// Wire method name `"putFile"`.
-    pub const NAME: &str = "putFile";
-}
-
 /// Read a small object from an output destination.
 ///
 /// Params: [`crate::kind::OutputGetParams`]. Result: [`crate::kind::GetResultDto`].
@@ -281,14 +250,6 @@ pub mod list {
     pub const NAME: &str = "list";
 }
 
-/// Probe object metadata for a key in an output destination.
-///
-/// Params: [`crate::kind::OutputKeyParams`]. Result: [`crate::kind::ObjectProbeDto`].
-pub mod probe {
-    /// Wire method name `"probe"`.
-    pub const NAME: &str = "probe";
-}
-
 /// Copy an object within an output destination.
 ///
 /// Params: [`crate::kind::OutputCopyParams`].
@@ -303,79 +264,6 @@ pub mod copy {
 pub mod delete {
     /// Wire method name `"delete"`.
     pub const NAME: &str = "delete";
-}
-
-/// Update filesystem timestamps on an output object when the backend supports it.
-///
-/// Params: [`crate::kind::OutputTouchFileParams`].
-pub mod touch_file {
-    /// Wire method name `"touchFile"`.
-    pub const NAME: &str = "touchFile";
-}
-
-/// Open a database backend and return the SeaORM dialect.
-///
-/// Params: [`crate::db::DbConnectParams`]. Result: [`crate::db::DbConnectResult`].
-pub mod db_connect {
-    /// Wire method name `"dbConnect"`.
-    pub const NAME: &str = "dbConnect";
-}
-
-/// Verify the connected database backend is reachable.
-pub mod db_ping {
-    /// Wire method name `"dbPing"`.
-    pub const NAME: &str = "dbPing";
-}
-
-/// Run a read SQL statement through the database guest proxy.
-///
-/// Params: [`crate::db::StatementDto`]. Result: [`crate::db::QueryResultDto`].
-pub mod db_query {
-    /// Wire method name `"dbQuery"`.
-    pub const NAME: &str = "dbQuery";
-}
-
-/// Run a write SQL statement through the database guest proxy.
-///
-/// Params: [`crate::db::StatementDto`]. Result: [`crate::db::ExecResultDto`].
-pub mod db_execute {
-    /// Wire method name `"dbExecute"`.
-    pub const NAME: &str = "dbExecute";
-}
-
-/// Begin a database transaction (or nested savepoint) on the guest.
-///
-/// Params: [`crate::db::DbBeginParams`]. Result: [`crate::db::DbBeginResult`].
-pub mod db_begin {
-    /// Wire method name `"dbBegin"`.
-    pub const NAME: &str = "dbBegin";
-}
-
-/// Commit a guest transaction previously returned by [`db_begin`].
-///
-/// Params: [`crate::db::DbTxnParams`].
-pub mod db_commit {
-    /// Wire method name `"dbCommit"`.
-    pub const NAME: &str = "dbCommit";
-}
-
-/// Roll back a guest transaction previously returned by [`db_begin`].
-///
-/// Params: [`crate::db::DbTxnParams`].
-pub mod db_rollback {
-    /// Wire method name `"dbRollback"`.
-    pub const NAME: &str = "dbRollback";
-}
-
-/// Run a named atomic library operation as one guest SQL transaction.
-///
-/// Params: [`crate::db::DbAtomicRequest`]. Result: [`crate::db::DbAtomicResult`].
-/// Every bundled database guest implements this (D1 as one HTTP `batch()`,
-/// SQLite / Postgres as one native transaction) and records an `operationId`
-/// receipt so a lost response can be retried.
-pub mod db_atomic {
-    /// Wire method name `"dbAtomic"`.
-    pub const NAME: &str = "dbAtomic";
 }
 
 /// Flat `UPPER_SNAKE` aliases matching historical `protocol::methods` usage.
@@ -393,24 +281,6 @@ pub mod names {
     pub use super::cli_invoke::NAME as CLI_INVOKE;
     /// Alias of [`super::copy::NAME`] (`"copy"`).
     pub use super::copy::NAME as COPY;
-    /// Alias of [`super::credentials_update::NAME`] (`"credentialsUpdate"`).
-    pub use super::credentials_update::NAME as CREDENTIALS_UPDATE;
-    /// Alias of [`super::db_atomic::NAME`] (`"dbAtomic"`).
-    pub use super::db_atomic::NAME as DB_ATOMIC;
-    /// Alias of [`super::db_begin::NAME`] (`"dbBegin"`).
-    pub use super::db_begin::NAME as DB_BEGIN;
-    /// Alias of [`super::db_commit::NAME`] (`"dbCommit"`).
-    pub use super::db_commit::NAME as DB_COMMIT;
-    /// Alias of [`super::db_connect::NAME`] (`"dbConnect"`).
-    pub use super::db_connect::NAME as DB_CONNECT;
-    /// Alias of [`super::db_execute::NAME`] (`"dbExecute"`).
-    pub use super::db_execute::NAME as DB_EXECUTE;
-    /// Alias of [`super::db_ping::NAME`] (`"dbPing"`).
-    pub use super::db_ping::NAME as DB_PING;
-    /// Alias of [`super::db_query::NAME`] (`"dbQuery"`).
-    pub use super::db_query::NAME as DB_QUERY;
-    /// Alias of [`super::db_rollback::NAME`] (`"dbRollback"`).
-    pub use super::db_rollback::NAME as DB_ROLLBACK;
     /// Alias of [`super::delete::NAME`] (`"delete"`).
     pub use super::delete::NAME as DELETE;
     /// Alias of [`super::diagnose::NAME`] (`"diagnose"`).
@@ -423,8 +293,6 @@ pub mod names {
     pub use super::fetch_title::NAME as FETCH_TITLE;
     /// Alias of [`super::get::NAME`] (`"get"`).
     pub use super::get::NAME as GET;
-    /// Alias of [`super::handshake::NAME`] (`"handshake"`).
-    pub use super::handshake::NAME as HANDSHAKE;
     /// Alias of [`super::health::NAME`] (`"health"`).
     pub use super::health::NAME as HEALTH;
     /// Alias of [`super::list::NAME`] (`"list"`).
@@ -443,14 +311,10 @@ pub mod names {
     pub use super::on_event::NAME as ON_EVENT;
     /// Alias of [`super::poll_events::NAME`] (`"pollEvents"`).
     pub use super::poll_events::NAME as EVENT_POLL;
-    /// Alias of [`super::probe::NAME`] (`"probe"`).
-    pub use super::probe::NAME as PROBE;
     /// Alias of [`super::purchase_hint::NAME`] (`"purchaseHint"`).
     pub use super::purchase_hint::NAME as PURCHASE_HINT;
     /// Alias of [`super::put::NAME`] (`"put"`).
     pub use super::put::NAME as PUT;
-    /// Alias of [`super::put_file::NAME`] (`"putFile"`).
-    pub use super::put_file::NAME as PUT_FILE;
     /// Alias of [`super::scan::NAME`] (`"scan"`).
     pub use super::scan::NAME as SCAN;
     /// Alias of [`super::scan_library::NAME`] (`"scanLibrary"`).
@@ -461,8 +325,8 @@ pub mod names {
     pub use super::shutdown::NAME as SHUTDOWN;
     /// Alias of [`super::start::NAME`] (`"start"`).
     pub use super::start::NAME as START;
+    /// Alias of [`super::stop::NAME`] (`"stop"`).
+    pub use super::stop::NAME as STOP;
     /// Alias of [`super::sync_listening::NAME`] (`"syncListening"`).
     pub use super::sync_listening::NAME as SYNC_LISTENING;
-    /// Alias of [`super::touch_file::NAME`] (`"touchFile"`).
-    pub use super::touch_file::NAME as TOUCH_FILE;
 }

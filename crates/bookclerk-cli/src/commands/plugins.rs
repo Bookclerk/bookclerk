@@ -11,7 +11,7 @@ use bookclerk_plugin_catalog::{
 use bookclerk_plugin_host::{
     consent_request, consent_summary, host_target_triple, require_grant, search_crates_io,
     CliInvokeParams, CliInvokeResult, CliSchema, DiscoveredPlugin, PluginGrantStore, PluginKind,
-    V2PluginSession, CRATE_NAME_PREFIX, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
+    PluginSession, CRATE_NAME_PREFIX, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
 use clap::{Subcommand, ValueEnum};
 use serde::Serialize;
@@ -99,7 +99,7 @@ pub enum PluginsCommand {
         /// Plugin id (default: all discovered that are enabled).
         id: Option<String>,
     },
-    /// Check install integrity, target, jail, and handshake health.
+    /// Check install integrity, target, jail, and describe/health status.
     Doctor {
         /// Plugin id (default: all discovered).
         id: Option<String>,
@@ -130,6 +130,37 @@ pub enum PluginsCommand {
         #[command(subcommand)]
         /// Nested registry list/add/remove action.
         command: RegistryCommand,
+    },
+    /// Manage isolated plugin database bindings (`capabilities.bindings.databases`).
+    Db {
+        #[command(subcommand)]
+        /// Nested db list/drop action.
+        command: PluginDbCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+/// Nested `plugins db` actions over the `plugin_databases` registry.
+pub enum PluginDbCommand {
+    /// List provisioned plugin database bindings.
+    List {
+        /// Limit to one plugin id.
+        plugin: Option<String>,
+    },
+    /// Drop provisioned binding units and their registry rows.
+    ///
+    /// Physically deletes the SQLite file (and journal sidecars), drops the
+    /// PostgreSQL database, or deletes the Cloudflare D1 database, then
+    /// removes the registry row. Physical delete must succeed first; unknown
+    /// adapters fail closed and keep the row.
+    Drop {
+        /// Plugin id.
+        plugin: String,
+        /// Binding name (default: every binding of the plugin).
+        binding: Option<String>,
+        /// Drop without interactive confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -183,7 +214,7 @@ struct PluginListItem {
     kind: String,
     /// Whether this plugin is enabled in `config.toml`.
     enabled: bool,
-    /// Guest executable path used for handshake and CLI invoke.
+    /// Guest executable path used for describe and CLI invoke.
     command: String,
     /// Optional human-readable name from the manifest.
     name: Option<String>,
@@ -314,7 +345,7 @@ pub async fn run(
                 }
                 if schema.commands.is_empty() {
                     println!(
-                        "cli commands: (none in plugin.toml; may still advertise via handshake)"
+                        "cli commands: (none in plugin.toml; may still advertise via describe)"
                     );
                 } else {
                     println!("cli commands:");
@@ -369,6 +400,7 @@ pub async fn run(
         PluginsCommand::Disable { id } => set_plugin_enabled(config, &id, false, format),
         PluginsCommand::Approve { id, yes } => run_approve(config, &id, yes, format),
         PluginsCommand::Registry { command } => run_registry(config, command, format),
+        PluginsCommand::Db { command } => run_plugin_db(config, command, format).await,
     }
 }
 
@@ -681,7 +713,7 @@ fn run_remove(
     })
 }
 
-/// Reports receipt integrity, executable digest, and handshake health for one or all plugins.
+/// Reports receipt integrity, executable digest, and describe/health status for one or all plugins.
 async fn run_doctor(
     config: &Config,
     id: Option<String>,
@@ -740,6 +772,101 @@ async fn run_doctor(
             }
         }
     })
+}
+
+#[derive(Debug, Serialize)]
+/// One `plugins db list` row from the `plugin_databases` registry.
+struct PluginDbListItem {
+    /// Owning plugin id.
+    plugin_id: String,
+    /// Binding name from `plugin.toml` `capabilities.bindings.databases`.
+    binding: String,
+    /// Adapter family that provisioned the unit (`sqlite`, `postgres`, `d1`).
+    backend_kind: String,
+    /// Backend-native unit: file path, Postgres database name, or D1 database name.
+    unit_ref: String,
+    /// RFC 3339 provisioning time.
+    created_at: String,
+}
+
+/// Lists or drops isolated plugin database bindings via the registry.
+async fn run_plugin_db(
+    config: &Config,
+    command: PluginDbCommand,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let store = crate::registry::open_library(config).await?;
+    match command {
+        PluginDbCommand::List { plugin } => {
+            let rows = store.list_plugin_databases(plugin.as_deref()).await?;
+            let items: Vec<PluginDbListItem> = rows
+                .into_iter()
+                .map(|r| PluginDbListItem {
+                    plugin_id: r.plugin_id,
+                    binding: r.binding,
+                    backend_kind: r.backend_kind,
+                    unit_ref: r.unit_ref,
+                    created_at: r.created_at,
+                })
+                .collect();
+            emit(format, &items, || {
+                if items.is_empty() {
+                    println!("no plugin database bindings provisioned");
+                    return;
+                }
+                for item in &items {
+                    println!(
+                        "{}/{}: backend={} unit={} created={}",
+                        item.plugin_id,
+                        item.binding,
+                        item.backend_kind,
+                        item.unit_ref,
+                        item.created_at
+                    );
+                }
+            })
+        }
+        PluginDbCommand::Drop {
+            plugin,
+            binding,
+            yes,
+        } => {
+            let rows = store.list_plugin_databases(Some(&plugin)).await?;
+            let rows: Vec<_> = rows
+                .into_iter()
+                .filter(|r| binding.as_deref().is_none_or(|b| r.binding == b))
+                .collect();
+            if rows.is_empty() {
+                anyhow::bail!(
+                    "no provisioned plugin database bindings match `{plugin}`{}",
+                    binding.map(|b| format!("/{b}")).unwrap_or_default()
+                );
+            }
+            if !yes {
+                anyhow::bail!(
+                    "refusing to drop {} binding unit(s) without --yes",
+                    rows.len()
+                );
+            }
+            for row in &rows {
+                bookclerk_plugin_host::ExternalDatabase::drop_provisioned_unit(
+                    config,
+                    &row.backend_kind,
+                    &row.unit_ref,
+                )
+                .await
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+                store
+                    .remove_plugin_databases(&row.plugin_id, Some(&row.binding))
+                    .await?;
+                println!(
+                    "deleted {}/{} ({} {})",
+                    row.plugin_id, row.binding, row.backend_kind, row.unit_ref
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Lists, appends, or removes `[[plugins.registries]]` entries and writes `config.toml`.
@@ -843,13 +970,13 @@ fn cli_account(plugin: &DiscoveredPlugin) -> &'static str {
     }
 }
 
-/// Spawns a v2 guest for CLI health / invoke / diagnose.
+/// Spawns a plugin guest for CLI health / invoke / diagnose.
 async fn spawn_cli_session(
     config: &Config,
     plugin: &DiscoveredPlugin,
-) -> anyhow::Result<V2PluginSession> {
+) -> anyhow::Result<PluginSession> {
     let settings = bookclerk_plugin_host::settings_table(config, plugin);
-    Ok(V2PluginSession::spawn_for_account(
+    Ok(PluginSession::spawn_for_account(
         plugin,
         config,
         toml_table_to_json(&settings),
@@ -858,7 +985,7 @@ async fn spawn_cli_session(
     .await?)
 }
 
-/// Spawns the guest, handshakes, and calls `health` when advertised.
+/// Spawns the guest, calls `describe()`, and calls `health` when advertised.
 async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<String> {
     let plugin = find_plugin(config, id)?;
     let session = spawn_cli_session(config, &plugin).await?;
@@ -882,9 +1009,9 @@ async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<Str
                 );
             }
         }
-        Ok(format!("health=ok handshake_api={api} caps={caps}"))
+        Ok(format!("health=ok api={api} roles={caps}"))
     } else {
-        Ok(format!("handshake_api={api} caps={caps}"))
+        Ok(format!("api={api} roles={caps}"))
     }
 }
 
@@ -1036,16 +1163,16 @@ pub fn augment_plugins_command(mut plugins_cmd: clap::Command, config: &Config) 
     plugins_cmd
 }
 
-/// Prefers live `cli.describe`, then handshake CLI, then the on-disk manifest schema.
+/// Prefers live `cli.describe`, then the describe-metadata CLI schema, then the on-disk manifest schema.
 async fn resolve_schema(
-    session: &V2PluginSession,
+    session: &PluginSession,
     plugin: &DiscoveredPlugin,
 ) -> anyhow::Result<CliSchema> {
     if session.has_capability("cli") {
         let raw = session.cli_describe().await?;
         return Ok(serde_json::from_str(&raw)?);
     }
-    if let Some(cli) = session.handshake_metadata().cli {
+    if let Some(cli) = session.plugin_metadata().cli {
         return Ok(cli);
     }
     Ok(plugin.manifest.cli.clone().unwrap_or_default())
@@ -1053,15 +1180,13 @@ async fn resolve_schema(
 
 /// Opens the database guest and issues `SELECT 1` as the health/diagnose probe.
 async fn probe_database(
-    session: &V2PluginSession,
+    session: &PluginSession,
     config: &Config,
     plugin: &DiscoveredPlugin,
 ) -> anyhow::Result<()> {
-    let settings = bookclerk_plugin_host::settings_table(config, plugin);
-    session
-        .db_open(toml_table_to_json(&settings).to_string())
-        .await?;
-    let _ = session.db_query("SELECT 1 AS ok", "[]").await?;
+    let ctx = bookclerk_plugin_host::database_connect_context(config, plugin, session)?;
+    session.db_open(ctx).await?;
+    let _ = session.db_capabilities().await?;
     Ok(())
 }
 

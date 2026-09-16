@@ -16,7 +16,7 @@ mod tickets;
 mod traits;
 mod types;
 
-pub use bookclerk_plugin_abi::v2::{DomainEvent, EventResult};
+pub use bookclerk_plugin_abi::{DomainEvent, EventResult};
 pub use brand::Brand;
 pub use error::{IntegrationError, Result};
 pub use factory::{from_config, register_builtins};

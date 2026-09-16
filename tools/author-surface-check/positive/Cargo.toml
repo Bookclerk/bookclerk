@@ -1,0 +1,15 @@
+[package]
+name = "author-surface-positive"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone package (NOT a workspace member): workspace feature unification
+# must not leak the abi `host` feature into this dependency graph.
+[workspace]
+
+[dependencies]
+bookclerk-plugin-sdk = { path = "../../../crates/bookclerk-plugin-sdk", features = ["db"] }
+
+[lints.rust]
+missing_docs = "deny"

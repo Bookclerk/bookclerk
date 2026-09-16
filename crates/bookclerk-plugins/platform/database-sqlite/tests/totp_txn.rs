@@ -1,7 +1,7 @@
 //! TOTP enroll/disable must fail closed when the sqlite proxy cannot commit.
 //!
 //! `LibraryStore::confirm_totp_enrollment` / `disable_user_totp` run through
-//! native `dbAtomic` (`execute_db_atomic`) when no guest backend is attached.
+//! native atomic path (`execute_db_atomic`) when no guest backend is attached.
 
 use bookclerk_library::{
     build_sealed_record, list_secrets, secret_account_type, secret_kind, upsert_secret,

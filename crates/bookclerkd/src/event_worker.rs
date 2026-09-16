@@ -330,32 +330,16 @@ pub(crate) async fn dispatch_pending(
             break;
         };
         let subs = catalog_subscribers_for_event(&catalog, &event);
-        if subs.is_empty() {
-            let op = format!("dispatch-{}", event.id);
-            let n = library
-                .dispatch_event_deliveries(&event.id, &[], &op)
-                .await?;
-            info!(
-                event_id = %event.id,
-                event_type = %event.event_type,
-                deliveries = n,
-                "dispatched domain event"
-            );
-        } else {
-            let mut n = 0u32;
-            for sub in &subs {
-                let op = format!("dispatch-{}-{}", event.id, sub.plugin_id);
-                n += library
-                    .dispatch_event_deliveries(&event.id, std::slice::from_ref(sub), &op)
-                    .await?;
-            }
-            info!(
-                event_id = %event.id,
-                event_type = %event.event_type,
-                deliveries = n,
-                "dispatched domain event"
-            );
-        }
+        let op = format!("dispatch-{}", event.id);
+        let n = library
+            .dispatch_event_deliveries(&event.id, &subs, &op)
+            .await?;
+        info!(
+            event_id = %event.id,
+            event_type = %event.event_type,
+            deliveries = n,
+            "dispatched domain event"
+        );
         dispatched = dispatched.saturating_add(1);
         if dispatched >= WAKE_PENDING_PAGE {
             dispatch_more = true;
@@ -827,8 +811,8 @@ fn domain_event_for_delivery(
 mod tests {
     use super::*;
     use bookclerk_library::{
-        DomainEventRecord, EventDeliveryRecord, EventSubscriber, PublishDomainEventOutcome,
-        PublishDomainEventSpec,
+        DomainEventRecord, EventCatalogSubscription, EventDeliveryRecord, EventSubscriber,
+        InProcessSqliteAtomic, PublishDomainEventOutcome, PublishDomainEventSpec,
     };
     use chrono::TimeZone;
 
@@ -1084,5 +1068,80 @@ mod tests {
             .unwrap();
         assert!(woken.resume_pending);
         assert!(woken.run_after <= Utc::now() + chrono::Duration::seconds(2));
+    }
+
+    #[tokio::test]
+    async fn dispatch_pending_fault_after_first_page_keeps_parent_pending() {
+        let db = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap();
+        let store = LibraryStore::from_connection(db.clone());
+        store
+            .upsert_event_subscriber(
+                "node-a",
+                "echo",
+                &[EventCatalogSubscription::new("book_acquired", vec![1])],
+                true,
+            )
+            .await
+            .unwrap();
+        store
+            .upsert_event_subscriber(
+                "node-a",
+                "audiobookshelf",
+                &[EventCatalogSubscription::new("book_acquired", vec![1])],
+                true,
+            )
+            .await
+            .unwrap();
+        let created = store
+            .publish_domain_event(publish_spec("book_acquired:pending-fault"))
+            .await
+            .unwrap();
+        let PublishDomainEventOutcome::Created { id } = created else {
+            panic!("{created:?}");
+        };
+        let store = store.with_atomic_txn(std::sync::Arc::new(InProcessSqliteAtomic { db }));
+        bookclerk_library::set_dispatch_chunk_for_test(Some(1));
+        bookclerk_library::inject_dispatch_page_failures(1);
+        let err = dispatch_pending(&store, 7, "", false, 0, "test-node")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("injected dispatch page failure"),
+            "{err}"
+        );
+        let event = store.get_domain_event(&id).await.unwrap().unwrap();
+        assert_eq!(event.dispatch_state, "pending");
+        let echo = store
+            .get_event_delivery(&format!("{id}:echo"))
+            .await
+            .unwrap();
+        let abs = store
+            .get_event_delivery(&format!("{id}:audiobookshelf"))
+            .await
+            .unwrap();
+        assert_eq!(
+            echo.is_some() as u8 + abs.is_some() as u8,
+            1,
+            "exactly one of two subscribers must be inserted before the fault"
+        );
+        bookclerk_library::inject_dispatch_page_failures(0);
+        dispatch_pending(&store, 7, "", false, 0, "test-node")
+            .await
+            .unwrap();
+        bookclerk_library::set_dispatch_chunk_for_test(None);
+        let event = store.get_domain_event(&id).await.unwrap().unwrap();
+        assert_eq!(event.dispatch_state, "dispatched");
+        assert!(store
+            .get_event_delivery(&format!("{id}:echo"))
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .get_event_delivery(&format!("{id}:audiobookshelf"))
+            .await
+            .unwrap()
+            .is_some());
     }
 }

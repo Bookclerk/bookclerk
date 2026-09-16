@@ -10,15 +10,13 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
-use crate::consent::{
-    handshake_config_for_grant, inject_workerd_grant_env, spawn_grant, PluginGrant,
-};
+use crate::consent::{inject_workerd_grant_env, spawn_config_for_grant, spawn_grant, PluginGrant};
 use crate::discover::DiscoveredPlugin;
 use crate::jail::{GuestJail, Start};
 use crate::manifest::PluginRuntimeKind;
 use crate::{PluginError, Result};
 
-/// Jailed plugin child with stdio pipes (no handshake yet).
+/// Jailed plugin child with stdio pipes (describe not yet called).
 pub(crate) struct SpawnedStdio {
     /// Plugin id from the manifest.
     pub id: String,
@@ -30,8 +28,8 @@ pub(crate) struct SpawnedStdio {
     pub stdout: ChildStdout,
     /// Covering operator grant.
     pub grant: PluginGrant,
-    /// Handshake/config JSON (v1) or destination context extras.
-    pub handshake_config: Value,
+    /// Spawn config JSON or destination context extras.
+    pub spawn_config: Value,
     /// Guest HOME / data directory.
     pub data: PathBuf,
     /// Guest TMPDIR / scratch directory.
@@ -44,7 +42,7 @@ pub(crate) struct SpawnedStdio {
     pub appcontainer: Option<bookclerk_sandbox::spawn::AppContainerSession>,
 }
 
-/// Spawns the jailed guest with piped stdio. Caller performs v2 Cap'n Proto connect.
+/// Spawns the jailed guest with piped stdio. Caller performs Cap'n Proto connect.
 ///
 /// # Errors
 ///
@@ -58,7 +56,7 @@ pub(crate) async fn spawn_stdio_guest(
 ) -> Result<SpawnedStdio> {
     let id = plugin.manifest.id.clone();
     let grant = spawn_grant(&config.paths().files_dir, &plugin.manifest)?;
-    let handshake_config = handshake_config_for_grant(&grant, config_table);
+    let spawn_config = spawn_config_for_grant(&grant, config_table);
     let jail = GuestJail::plan(config, plugin)?;
 
     let mut cmd = match &jail.start {
@@ -140,7 +138,7 @@ pub(crate) async fn spawn_stdio_guest(
         stdin,
         stdout,
         grant,
-        handshake_config,
+        spawn_config,
         data: jail.data,
         scratch: jail.scratch,
         #[cfg(windows)]

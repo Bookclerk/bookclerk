@@ -1,6 +1,6 @@
 //! Guest-process helpers for the external Audiobookshelf integration plugin.
 //!
-//! Opaque config JSON (from `[integrations.audiobookshelf]` / handshake) drives
+//! Opaque config JSON (from `[integrations.audiobookshelf]` / spawn config) drives
 //! the HTTP client. User-watch queues newly observed users for
 //! [`guest_event_poll`] — the host owns claim-ticket / portal workflows.
 
@@ -25,7 +25,7 @@ const PROVIDER: &str = "audiobookshelf";
 
 /// Shared guest state for the ABS external plugin process.
 pub struct AbsGuestState {
-    /// Parsed `[integrations.audiobookshelf]` / handshake JSON.
+    /// Parsed `[integrations.audiobookshelf]` / spawn config JSON.
     config: AudiobookshelfConfig,
     /// HTTP client when `api_key` is present and the base URL parsed.
     client: Option<AbsApiClient>,
@@ -40,7 +40,7 @@ pub struct AbsGuestState {
 }
 
 impl AbsGuestState {
-    /// Build guest state from opaque handshake / settings JSON.
+    /// Build guest state from opaque spawn-config / settings JSON.
     #[must_use]
     pub fn from_config_json(config: &Value) -> Self {
         let parsed: AudiobookshelfConfig =

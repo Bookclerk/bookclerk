@@ -38,7 +38,7 @@ bumps:
    that is at least **7 days** old (same supply-chain cooldown as Dependabot
    `cooldown.default-days: 7` in `.github/dependabot.yml`), writes
    `workerd-pin.json`, then regenerates `pin.rs` / SDK stubs.
-2. Installs `capnproto` (needed to compile `schema/plugin_v2.capnp`), rebuilds
+2. Installs `capnproto` (needed to compile `schema/plugin.capnp`), rebuilds
    `bookclerk-workerd`, runs `cargo ensure-workerd`, then
    `scripts/test-workerd-echo.sh` against the Echo workerd example guests.
 3. Opens `deps/workerd-pin` and squash-merges after those checks pass.
@@ -64,8 +64,8 @@ to ship). Commands and flags match across ecosystems; each SDK is
 
 `smoke` downloads the pinned Cloudflare `workerd` binary (no Rust
 `bookclerk-workerd` launcher required for TS/Python), materializes Cap’n Proto +
-bridge (including a per-isolate `BRIDGE_TOKEN`), and POSTs `handshake` /
-`health` over `/rpc` with `Authorization: Bearer …`. Rust `smoke` uses the
+bridge (including a per-isolate `BRIDGE_TOKEN`), and POSTs `describe` (plus the
+role `health` route) with `Authorization: Bearer …`. Rust `smoke` uses the
 `bookclerk-workerd` library crate behind the SDK’s optional **`tools`** feature
 (`cargo plugin` enables it; guest plugins leave it off so they do not pull
 workerd download deps). Pin + bridge copies are kept in sync by
@@ -78,7 +78,7 @@ also requires / writes `compatibility_flags` =
 `["python_workers", "disable_python_external_sdk"]` for `.py` mains.
 Optional `sync-embed` vendors SDK sources for offline trees.
 
-Shared contracts: [`abi.json`](../crates/bookclerk-plugin-abi/schema/abi.json),
+Shared contracts: [`plugin.capnp`](../crates/bookclerk-plugin-abi/schema/plugin.capnp),
 [`plugin-toml.json`](../crates/bookclerk-plugin-abi/schema/plugin-toml.json),
 and fixtures under
 [`crates/bookclerk-plugin-abi/fixtures/tools/`](../crates/bookclerk-plugin-abi/fixtures/tools/).

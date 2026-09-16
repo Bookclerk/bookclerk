@@ -45,7 +45,7 @@ integrations.
 4. **Integrations** — durable `book_acquired` outbox deliveries to the live
    per-node subscriber catalog (`event_subscriber_nodes`); each VPS claims only locally loaded
    plugin ids, with a cluster-wide per-plugin in-flight cap from
-   `[events.concurrency]` (PostgreSQL advisory lock at claim; Audiobookshelf scan notify, Echo examples). Duplicate
+   `[events.concurrency]` (portable `db_serialization_slots` lock at claim; Audiobookshelf scan notify, Echo examples). Duplicate
    outbox keys are namespaced by `(account_id, source, event_type, dedup_key)`.
    Publish is commit + notify; claimed wake slices drain parked deliveries.
    One plugin failure
@@ -74,8 +74,9 @@ keep `RpcTarget` stubs). Each guest is started by
 and — for the sqlite guest — file-level grants for `library.db` and its journal
 sidecars (never the files-dir parent / `master.key`). See [plugins.md](plugins.md).
 Database backends are selected via `[database].plugin` (see [database.md](database.md));
-external `kind = "database"` guests are loaded when staged under `plugins/`, with
-in-process fallback when a platform guest is missing.
+external `kind = "database"` guests are **required** (no in-process fallback).
+Guests are thin SQL adapters: the host owns schema, queries, and atomic plans
+([ADR: SQL database contract](adr/sql-database-contract.md)).
 
 ## Workspace crates (by concern)
 

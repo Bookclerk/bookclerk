@@ -90,7 +90,7 @@ Map Google API sections onto rustdoc Markdown:
 ///
 /// # Returns
 ///
-/// Handshake result including negotiated `api_version`.
+/// Describe metadata including negotiated `api_version`.
 ///
 /// # Errors
 ///
@@ -158,18 +158,18 @@ JSDoc conventions:
 
 ```ts
 /**
- * Runs the guest handshake against the host bridge.
+ * Fetches the guest's describe metadata over the host bridge.
  *
- * @param params - Negotiated install identity and capabilities.
- * @returns Result including `apiVersion` and plugin kind.
+ * @param params - Bridge connection options.
+ * @returns Metadata including `apiVersion` and plugin kind.
  * @throws {PluginError} When the host rejects the ABI version.
  *
  * @example
  * ```ts
- * const result = await plugin.handshake({ apiVersion: 1 });
+ * const meta = await plugin.describe();
  * ```
  */
-export async function handshake(params: HandshakeParams): Promise<HandshakeResult> {
+export async function describe(params: DescribeOptions): Promise<PluginMetadata> {
 ```
 
 Export surfaces for TypeDoc: `packages/plugin-sdk` (npm package) and `ui/src`
@@ -181,14 +181,11 @@ Use [Google Python style](https://google.github.io/styleguide/pyguide.html#38-co
 docstrings:
 
 ```python
-def handshake(self, params: HandshakeParams) -> HandshakeResult:
-    """Run the guest handshake against the host bridge.
-
-    Args:
-        params: Negotiated install identity and capabilities.
+def describe(self) -> PluginMetadata:
+    """Fetch the guest's describe metadata over the host bridge.
 
     Returns:
-        Result including ``api_version`` and plugin kind.
+        Metadata including ``api_version`` and plugin kind.
 
     Raises:
         PluginError: If the host rejects the ABI version.

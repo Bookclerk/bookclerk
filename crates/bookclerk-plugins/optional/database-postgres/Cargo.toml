@@ -23,7 +23,7 @@ path = "src/main.rs"
 [dependencies]
 async-trait.workspace = true
 bookclerk-db-guest.workspace = true
-bookclerk-library.workspace = true
+bookclerk-plugin-abi = { workspace = true, features = ["host"] }
 bookclerk-plugin-sdk = { workspace = true, features = ["db"] }
 sea-orm.workspace = true
 serde.workspace = true

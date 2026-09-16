@@ -25,13 +25,13 @@ use bookclerk_config::Config;
 use bookclerk_integrations::{IntegrationRegistry, Result};
 use tracing::info;
 
-/// Integration id used in handshake and `[integrations.audiobookshelf]`.
+/// Integration id used in describe() and `[integrations.audiobookshelf]`.
 pub const ID: &str = "audiobookshelf";
 
 /// Bookclerk-as-IdP client templates declared by this plugin (`oidcClients`).
 #[must_use]
-pub fn oidc_client_templates() -> Vec<bookclerk_plugin_sdk::v2::OidcClientTemplate> {
-    vec![bookclerk_plugin_sdk::v2::OidcClientTemplate {
+pub fn oidc_client_templates() -> Vec<bookclerk_plugin_sdk::OidcClientTemplate> {
+    vec![bookclerk_plugin_sdk::OidcClientTemplate {
         client_id: ID.into(),
         display_name: "Audiobookshelf".into(),
         callback_path: "/auth/openid/callback".into(),

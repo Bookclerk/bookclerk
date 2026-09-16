@@ -76,7 +76,7 @@ impl PluginError {
         }
     }
 
-    /// True when a `dbAtomic` caller should retry the same operation id.
+    /// True when an atomic-execute caller should retry the same operation id.
     ///
     /// Relies on the structured [`Self::Unavailable`] variant (guest ABI
     /// `unavailable`, RPC timeout, or a closed guest) rather than matching

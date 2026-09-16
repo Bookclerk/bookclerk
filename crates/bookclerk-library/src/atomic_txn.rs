@@ -1,11 +1,11 @@
 //! Atomic library operations for named security commands.
 //!
-//! Database guests implement [`crate::LibraryStore`] interactive transactions as
-//! a single `dbAtomic` RPC. D1 compiles the command to one HTTP `batch()`;
-//! SQLite and PostgreSQL run it in a native local transaction. Both write a
-//! durable receipt keyed by `operationId` so a committed result can be replayed
-//! after a lost response. Generic `dbBegin` / `dbCommit` remain for unrelated
-//! work.
+//! Hosts compile domain ops into a generic SQL plan and send it as one
+//! `bookclerk.atomic` query. Database guests run that batch as one SQL
+//! transaction (D1 HTTP `batch()`, SQLite/Postgres `BEGIN`) and must not
+//! parse Bookclerk operation names. Receipts live in host-authored SQL
+//! against `db_atomic_receipts`. Host-private interactive transactions
+//! remain for unrelated work.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -20,7 +20,7 @@ use crate::secrets::EncryptedSecretRecord;
 use crate::SessionClientInfo;
 
 /// Backend that runs [`crate::LibraryStore`] named security operations as a
-/// single guest `dbAtomic` command.
+/// single guest atomic batch.
 ///
 /// Implementations must preserve the same fail-closed semantics as the SeaORM
 /// path: last-owner refusals mutate nothing; a failed claim redeem must not
@@ -73,7 +73,7 @@ pub trait AtomicTxnBackend: Send + Sync {
         kind: &str,
     ) -> Result<Option<(Option<i64>, String)>>;
 
-    /// Admit a durable job in one `dbAtomic` transaction.
+    /// Admit a durable job in one atomic transaction.
     async fn enqueue_job(&self, spec: EnqueueJobSpec) -> Result<EnqueueOutcome>;
 
     /// Claim the next ready job; `operation_id` makes a lost response replay-safe.
@@ -120,21 +120,45 @@ pub trait AtomicTxnBackend: Send + Sync {
         event: Option<PublishDomainEventSpec>,
     ) -> Result<()>;
 
-    /// Create deliveries for `subscribers` and mark the event dispatched.
+    /// Create deliveries for `subscribers`. `mark_dispatched` finishes the parent event.
     async fn dispatch_event_deliveries(
         &self,
         event_id: &str,
         subscribers: &[EventSubscriber],
         operation_id: &str,
+        mark_dispatched: bool,
     ) -> Result<u32>;
 
-    /// Claim the next ready event delivery; `operation_id` makes a lost response replay-safe.
-    async fn claim_next_event_delivery(
+    /// CAS-claim one pending delivery after the host has filtered eligibility.
+    #[allow(clippy::too_many_arguments)]
+    async fn claim_event_delivery(
         &self,
+        delivery_id: &str,
         owner: &str,
         lease_secs: u64,
         operation_id: &str,
-        plugin_ids: &[String],
+        plugin_id: &str,
+        resource_class: &str,
         max_in_flight: u32,
     ) -> Result<Option<EventDeliveryRecord>>;
+}
+
+/// Runs a host-authorized typed [`bookclerk_plugin_abi::ExecuteRequest`] as one guest `executeAtomic`.
+///
+/// First-party hosts attach this alongside [`AtomicTxnBackend`] so granted job
+/// sessions do not round-trip through the SeaORM proxy (`BEGIN` + nested
+/// `query`/`execute`). In-process tests leave it unset and run the same
+/// request on the local connection.
+#[async_trait]
+pub trait TypedAtomicExec: Send + Sync {
+    /// Executes `req` as one typed atomic batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin ABI error when validation, transport, or the engine
+    /// rejects the batch.
+    async fn execute_typed(
+        &self,
+        envelope: bookclerk_db_exec::HostExecuteEnvelope,
+    ) -> std::result::Result<bookclerk_plugin_abi::ExecuteReply, bookclerk_plugin_abi::PluginError>;
 }

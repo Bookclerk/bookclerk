@@ -76,6 +76,9 @@ function isLegacySdkEmbed(name: string): boolean {
     n === "@bookclerk/plugin-sdk/workerd" ||
     n === "@bookclerk/plugin-sdk/workerd.js" ||
     n === "bookclerk_plugin_sdk/workerd.py" ||
+    n === "bookclerk_plugin_sdk/db_value.py" ||
+    n === "bookclerk_plugin_sdk/_abi.py" ||
+    n === "bookclerk_plugin_sdk/guest_sql.py" ||
     n === "bookclerk_plugin_sdk/__init__.py"
   );
 }
@@ -260,6 +263,26 @@ export function materializeConfig(
     }
     fs.copyFileSync(pySrc, path.join(bookclerkDir, "sdk-workerd.py"));
     fs.writeFileSync(path.join(bookclerkDir, "sdk-init.py"), SDK_PY_INIT);
+    // Modules imported by workerd.py / db_value.py inside the isolate.
+    const pySdkDir = path.dirname(pySrc);
+    const pySiblings: Array<[string, string, string]> = [
+      ["bookclerk_plugin_sdk/_abi.py", "_abi.py", "sdk-product-abi.py"],
+      ["bookclerk_plugin_sdk/guest_sql.py", "guest_sql.py", "sdk-guest-sql.py"],
+      ["bookclerk_plugin_sdk/db_value.py", "db_value.py", "sdk-db-value.py"],
+    ];
+    for (const [modName, srcName, embedFile] of pySiblings) {
+      const src = path.join(pySdkDir, srcName);
+      if (!fs.existsSync(src)) {
+        throw new Error(`Python workerd SDK module ${srcName} not found beside ${pySrc}`);
+      }
+      fs.copyFileSync(src, path.join(bookclerkDir, embedFile));
+      if (!seenNames.has(modName)) {
+        moduleEmbeds.push(
+          `(name = "${escapeCapnp(modName)}", pythonModule = embed ".bookclerk/${embedFile}")`,
+        );
+        seenNames.add(modName);
+      }
+    }
     if (!seenNames.has(SDK_PY_INIT_MODULE)) {
       moduleEmbeds.push(
         `(name = "${escapeCapnp(SDK_PY_INIT_MODULE)}", pythonModule = embed ".bookclerk/sdk-init.py")`,

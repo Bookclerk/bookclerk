@@ -1,4 +1,4 @@
-//! SeaORM entity for durable `dbAtomic` result receipts.
+//! SeaORM entity for durable atomic result receipts.
 
 use sea_orm::entity::prelude::*;
 

@@ -1,12 +1,19 @@
 import { BookclerkPlugin } from "@bookclerk/plugin-sdk/workerd";
 
 export default class ToolsFixture extends BookclerkPlugin {
-  async handshake() {
+  async describe() {
     return {
-      apiVersion: 1,
+      apiVersion: 2,
       id: "echo-workerd-tools",
       kind: "integration",
-      capabilities: ["health"],
+      rpcFeatures: [],
+      scalarLimits: {
+        maxScalarBytes: 262144,
+        maxStreamWindowBytes: 1048576,
+        maxListPage: 256,
+      },
+      supportedRoles: ["integration"],
+      metadataJson: '{"capabilities": ["health"]}',
     };
   }
 }

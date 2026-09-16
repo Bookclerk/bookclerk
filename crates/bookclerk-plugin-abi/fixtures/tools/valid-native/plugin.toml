@@ -14,7 +14,7 @@ config = true
 
 [capabilities.methods]
 list = [
-    "handshake",
+    "describe",
     "health",
     "cli",
 ]

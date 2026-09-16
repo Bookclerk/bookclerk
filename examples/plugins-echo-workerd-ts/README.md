@@ -39,7 +39,7 @@ workerd guest (same JS class ABI).
 See [docs/adr/plugin-workers-rpc-workerd.md](../../docs/adr/plugin-workers-rpc-workerd.md).
 
 ```bash
-cd packages/plugin-sdk && npm ci && npm run build && npm run check-schema
+cd packages/plugin-sdk && npm ci && npm run build
 cd ../../examples/plugins-echo-workerd-ts && npm ci && npm run typecheck
 ```
 

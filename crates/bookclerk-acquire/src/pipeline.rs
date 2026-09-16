@@ -2943,11 +2943,9 @@ mod tests {
         let book_uuid;
         let job_id;
         {
-            let store = LibraryStore::from_connection(
-                bookclerk_plugin_database_sqlite::open(&db_path)
-                    .await
-                    .unwrap(),
-            );
+            let store = bookclerk_plugin_database_sqlite::open_store(&db_path)
+                .await
+                .unwrap();
             store
                 .upsert_account("user-1", "us", None, true, "audible")
                 .await
@@ -3020,11 +3018,9 @@ mod tests {
                 .unwrap());
         }
 
-        let store = LibraryStore::from_connection(
-            bookclerk_plugin_database_sqlite::open(&db_path)
-                .await
-                .unwrap(),
-        );
+        let store = bookclerk_plugin_database_sqlite::open_store(&db_path)
+            .await
+            .unwrap();
         assert_eq!(store.reclaim_expired_leases().await.unwrap(), 1);
         let retry = store
             .claim_next_job(

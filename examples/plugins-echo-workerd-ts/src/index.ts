@@ -92,7 +92,7 @@ class EchoIntegration extends Integration {
 }
 
 /**
- * Echo — branded BookclerkPlugin v2 (`describe` + `integration` RpcTarget).
+ * Echo — branded BookclerkPlugin (`describe` + `integration` RpcTarget).
  *
  * Authoring source for the workerd guest. Ship `modules/index.js` (built or
  * hand-maintained MVP sibling) beside `plugin.toml`.

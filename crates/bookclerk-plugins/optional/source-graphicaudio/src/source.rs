@@ -25,7 +25,7 @@ use crate::magento::{MagentoClient, DEFAULT_STORE_URL};
 use crate::options::{GraphicAudioAccess, GraphicAudioBitrate, GraphicAudioContainer};
 use crate::sync::{scan_library, ScanOptions as GaScanOptions};
 
-/// Handshake / config id for this store (`graphicaudio` in `[sources.graphicaudio]`).
+/// Describe / config id for this store (`graphicaudio` in `[sources.graphicaudio]`).
 pub const ID: &str = "graphicaudio";
 
 /// Alternate config / CLI ids accepted for this storefront (`ga`, `graphic-audio`).

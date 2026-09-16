@@ -44,9 +44,21 @@ use crate::wishlist_merge::apply_merged_sources;
 pub struct LibraryStore {
     /// Shared SeaORM connection opened by the database plugin (SQLite / D1 / Postgres).
     db: DatabaseConnection,
-    /// When set, named security methods run as one guest `dbAtomic` command
+    /// When set, named security methods run as one guest atomic batch
     /// instead of a local SeaORM transaction.
     atomic: Option<Arc<dyn AtomicTxnBackend>>,
+    /// When set, granted guest SQL runs as one guest `executeAtomic`.
+    typed_exec: Option<Arc<dyn crate::TypedAtomicExec>>,
+    /// Negotiated guest `maxBinds` (defaults to D1's cap for in-process tests).
+    max_binds: u32,
+    /// Negotiated guest `maxStatements`.
+    max_statements: u32,
+    /// Negotiated guest `maxResultRows`.
+    max_result_rows: u32,
+    /// Negotiated guest `maxPayloadBytes`.
+    max_payload_bytes: u32,
+    /// Full negotiated capability advertisement (limits, schema flags, timing).
+    caps: Arc<bookclerk_plugin_abi::DbCapabilities>,
 }
 
 impl std::fmt::Debug for LibraryStore {
@@ -63,10 +75,19 @@ impl LibraryStore {
     /// open engine-specific connections.
     #[must_use]
     pub fn from_connection(db: DatabaseConnection) -> Self {
-        Self { db, atomic: None }
+        Self {
+            db,
+            atomic: None,
+            typed_exec: None,
+            max_binds: bookclerk_plugin_abi::D1_MAX_BINDS,
+            max_statements: bookclerk_plugin_abi::FIRST_PARTY_MAX_STATEMENTS,
+            max_result_rows: 256,
+            max_payload_bytes: 256 * 1024,
+            caps: Arc::new(bookclerk_plugin_abi::DbCapabilities::advertised_d1()),
+        }
     }
 
-    /// Attach a guest `dbAtomic` backend for named security operations.
+    /// Attach a guest atomic backend for named security operations.
     ///
     /// Hosts attach this for every database plugin. Tests that open a local
     /// connection leave it unset and run the same commands through
@@ -75,6 +96,148 @@ impl LibraryStore {
     pub fn with_atomic_txn(mut self, backend: Arc<dyn AtomicTxnBackend>) -> Self {
         self.atomic = Some(backend);
         self
+    }
+
+    /// Attach a guest `executeAtomic` backend for granted job SQL.
+    ///
+    /// Hosts attach this for every database plugin so job sessions do not use
+    /// the SeaORM proxy. Tests that open a local connection leave it unset.
+    #[must_use]
+    pub fn with_typed_exec(mut self, backend: Arc<dyn crate::TypedAtomicExec>) -> Self {
+        self.typed_exec = Some(backend);
+        self
+    }
+
+    /// Records the guest's negotiated bind cap for wake `IN (…)` chunking.
+    #[must_use]
+    pub fn with_max_binds(mut self, max_binds: u32) -> Self {
+        self.max_binds = max_binds.max(bookclerk_plugin_abi::HOST_MIN_BINDS);
+        let mut caps = (*self.caps).clone();
+        caps.max_binds = self.max_binds;
+        self.caps = Arc::new(caps);
+        self
+    }
+
+    /// Records negotiated statement / result / payload caps from connect.
+    #[must_use]
+    pub fn with_plan_limits(
+        mut self,
+        max_statements: u32,
+        max_result_rows: u32,
+        max_payload_bytes: u32,
+    ) -> Self {
+        self.max_statements = max_statements.max(bookclerk_plugin_abi::HOST_MIN_STATEMENTS);
+        self.max_result_rows = max_result_rows.max(1);
+        self.max_payload_bytes = max_payload_bytes.max(1024);
+        let mut caps = (*self.caps).clone();
+        caps.max_statements = self.max_statements;
+        caps.max_result_rows = self.max_result_rows;
+        caps.max_payload_bytes = self.max_payload_bytes;
+        self.caps = Arc::new(caps);
+        self
+    }
+
+    /// Records the full negotiated [`bookclerk_plugin_abi::DbCapabilities`].
+    #[must_use]
+    pub fn with_db_capabilities(mut self, caps: bookclerk_plugin_abi::DbCapabilities) -> Self {
+        self.max_binds = caps.max_binds.max(bookclerk_plugin_abi::HOST_MIN_BINDS);
+        self.max_statements = caps
+            .max_statements
+            .max(bookclerk_plugin_abi::HOST_MIN_STATEMENTS);
+        self.max_result_rows = caps.max_result_rows.max(1);
+        self.max_payload_bytes = caps.max_payload_bytes.max(1024);
+        self.caps = Arc::new(caps);
+        self
+    }
+
+    /// Negotiated capability advertisement used for plan validation.
+    #[must_use]
+    pub fn db_capabilities(&self) -> &bookclerk_plugin_abi::DbCapabilities {
+        self.caps.as_ref()
+    }
+
+    /// Runs guest-authored SQL after grammar, table-scope, and cap checks.
+    ///
+    /// Hosts inject this into `JobHandler.handle` as the granted
+    /// [`bookclerk_plugin_abi::GuestDatabase::execute`] path.
+    /// Job sessions pass a host-issued [`GuestSqlPolicy`](bookclerk_plugin_abi::GuestSqlPolicy)
+    /// (`books` by default).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bookclerk_plugin_abi::PluginError::invalid_params`] when the
+    /// SQL is outside the guest grammar or allowlist, and an engine/transport
+    /// error when the batch fails.
+    pub async fn execute_guest_atomic(
+        &self,
+        mut req: bookclerk_plugin_abi::ExecuteRequest,
+        policy: &bookclerk_plugin_abi::GuestSqlPolicy,
+    ) -> std::result::Result<bookclerk_plugin_abi::ExecuteReply, bookclerk_plugin_abi::PluginError>
+    {
+        crate::authorize_guest_typed_request(&mut req, self.db_capabilities(), policy)
+            .map_err(|err| bookclerk_plugin_abi::PluginError::invalid_params(err.to_string()))?;
+        let guest_req = req.clone();
+        // Library connection: wrap with the same snapshot execute uses
+        // (physical tables + durable catalog + host schema + policy types).
+        let mut type_env = bookclerk_db_exec::load_physical_sql_type_env(&self.db)
+            .await
+            .map_err(plugin_err_from_db)?;
+        type_env.merge(
+            &bookclerk_db_exec::load_sql_type_env(&self.db)
+                .await
+                .map_err(plugin_err_from_db)?,
+        );
+        type_env.merge(&crate::migrations::host_sql_type_env());
+        type_env.merge(policy.sql_types());
+        let envelope = crate::sql_plan::wrap_guest_typed_request(req, &type_env)?;
+        self.db_capabilities()
+            .admit_proven_execute(&envelope.request, &envelope.proofs)
+            .map_err(|err| bookclerk_plugin_abi::PluginError::invalid_params(err.to_string()))?;
+        let reply = if let Some(exec) = &self.typed_exec {
+            let reply = exec.execute_typed(envelope.clone()).await?;
+            crate::validate_execute_reply(&envelope.request, &reply, self.db_capabilities())
+                .map_err(|err| bookclerk_plugin_abi::PluginError::unavailable(err.to_string()))?;
+            reply
+        } else {
+            let timing = match self.db.get_database_backend() {
+                sea_orm::DatabaseBackend::Postgres => "postgres_txn",
+                _ => "sqlite_txn",
+            };
+            let deadline = (envelope.request.deadline_unix_ms > 0)
+                .then_some(envelope.request.deadline_unix_ms);
+            let reply = bookclerk_db_exec::execute_typed_envelope(
+                &self.db,
+                &envelope,
+                timing,
+                bookclerk_db_exec::ExecCaps::from_capabilities(self.db_capabilities()),
+                bookclerk_db_exec::AtomicSession::from_deadline(deadline).with_type_env(type_env),
+            )
+            .await
+            .map_err(plugin_err_from_db)?;
+            crate::validate_execute_reply(&envelope.request, &reply, self.db_capabilities())
+                .map_err(|err| bookclerk_plugin_abi::PluginError::unavailable(err.to_string()))?;
+            reply
+        };
+        crate::sql_plan::unwrap_guest_typed_reply(reply, &guest_req, self.db_capabilities())
+    }
+
+    /// Subscribers packed into one dispatch plan (receipt overhead is ~12 statements).
+    #[must_use]
+    pub fn dispatch_chunk_size(&self) -> usize {
+        if let Some(n) = crate::store::event_outbox::dispatch_chunk_override() {
+            return n.max(1);
+        }
+        const OVERHEAD: u32 = 12;
+        const BINDS_PER_INSERT: u32 = 9;
+        let by_stmts = self.max_statements.saturating_sub(OVERHEAD).max(1);
+        let by_binds = self.max_binds.saturating_sub(16) / BINDS_PER_INSERT;
+        usize::try_from(by_stmts.min(by_binds.max(1))).unwrap_or(1)
+    }
+
+    /// Wake delivery page size derived from negotiated `maxBinds`.
+    #[must_use]
+    pub fn wake_page(&self) -> u64 {
+        crate::sql_plan::wake_page_for_max_binds(self.max_binds)
     }
 
     /// Borrow the underlying SeaORM connection (e.g. for [`crate::secrets`]).
@@ -91,6 +254,9 @@ impl LibraryStore {
 
     /// Write-lock active owner rows so last-owner checks cannot race a concurrent
     /// demote/disable/delete (SQLite reserved lock / Postgres row locks).
+    ///
+    /// Used by the SeaORM `*_on` txn helpers kept for in-process tests.
+    #[allow(dead_code)]
     async fn lock_active_owners<C: ConnectionTrait>(conn: &C) -> Result<()> {
         use sea_orm::sea_query::Expr;
         users::Entity::update_many()
@@ -107,6 +273,7 @@ impl LibraryStore {
     }
 
     /// Counts active `owner` users on `conn` (used by last-owner guards).
+    #[allow(dead_code)]
     async fn count_active_owners_on<C: ConnectionTrait>(conn: &C) -> Result<u64> {
         users::Entity::find()
             .filter(users::Column::Role.eq(UserRole::Owner.as_str()))
@@ -861,6 +1028,7 @@ impl LibraryStore {
     }
 
     /// Deletes a user and related portal rows inside an open transaction; refuses the last owner.
+    #[allow(dead_code)]
     pub(crate) async fn delete_user_on<C: ConnectionTrait>(txn: &C, id: i64) -> Result<()> {
         Self::lock_active_owners(txn).await?;
         let model = users::Entity::find_by_id(id)
@@ -998,6 +1166,7 @@ impl LibraryStore {
     }
 
     /// Sets user status inside an open transaction; disabling the last owner fails.
+    #[allow(dead_code)]
     pub(crate) async fn set_user_status_on<C: ConnectionTrait>(
         txn: &C,
         id: i64,
@@ -1069,6 +1238,7 @@ impl LibraryStore {
     }
 
     /// Sets or clears the Argon2id password hash inside an open transaction and bumps `security_version`.
+    #[allow(dead_code)]
     pub(crate) async fn set_user_password_hash_on<C: ConnectionTrait>(
         txn: &C,
         id: i64,
@@ -1341,6 +1511,7 @@ impl LibraryStore {
     }
 
     /// Sets user role inside an open transaction; demoting the last active owner fails.
+    #[allow(dead_code)]
     pub(crate) async fn set_user_role_on<C: ConnectionTrait>(
         txn: &C,
         id: i64,
@@ -1758,7 +1929,7 @@ impl LibraryStore {
     /// * `client` - Optional client metadata stored on the session row.
     /// * `new_password_hash` - Argon2id hash to set when the local user has none.
     /// * `password_fingerprint` - Stable HMAC of the plaintext password for
-    ///   `dbAtomic` idempotency; ignored by the mutation SQL.
+    ///   atomic-execute idempotency; ignored by the mutation SQL.
     ///
     /// # Returns
     ///
@@ -1802,6 +1973,7 @@ impl LibraryStore {
     }
 
     /// Consumes an unredeemed, unexpired claim ticket and mints a portal session in one transaction.
+    #[allow(dead_code)]
     pub(crate) async fn redeem_claim_ticket_to_session_on<C: ConnectionTrait>(
         txn: &C,
         token_hash: &str,
@@ -2529,6 +2701,7 @@ impl LibraryStore {
     }
 
     /// Deletes and returns one-shot OIDC RP state by hash; `None` if missing or already taken.
+    #[allow(dead_code)]
     pub(crate) async fn take_oidc_rp_state_on<C: ConnectionTrait>(
         txn: &C,
         state_hash: &str,
@@ -2711,6 +2884,7 @@ impl LibraryStore {
     }
 
     /// Sets `users.totp_enabled` inside an open transaction.
+    #[allow(dead_code)]
     pub(crate) async fn set_user_totp_enabled_on<C: ConnectionTrait>(
         txn: &C,
         user_id: i64,
@@ -2749,6 +2923,7 @@ impl LibraryStore {
     }
 
     /// Promote a sealed TOTP secret to `primary` and set `totp_enabled` inside an open transaction.
+    #[allow(dead_code)]
     pub(crate) async fn confirm_totp_enrollment_on<C: ConnectionTrait>(
         txn: &C,
         user_id: i64,
@@ -2781,6 +2956,7 @@ impl LibraryStore {
     }
 
     /// Delete TOTP secrets and clear `totp_enabled` inside an open transaction.
+    #[allow(dead_code)]
     pub(crate) async fn disable_user_totp_on<C: ConnectionTrait>(
         txn: &C,
         user_id: i64,
@@ -2856,6 +3032,7 @@ impl LibraryStore {
     }
 
     /// Deletes and returns a one-shot WebAuthn challenge; `None` if missing or already taken.
+    #[allow(dead_code)]
     pub(crate) async fn take_webauthn_challenge_on<C: ConnectionTrait>(
         txn: &C,
         challenge_id: &str,
@@ -6714,7 +6891,26 @@ fn map_book(m: books::Model) -> Result<BookRecord> {
     })
 }
 
+/// Maps a SeaORM engine failure onto a structured guest [`bookclerk_plugin_abi::PluginError`].
+fn plugin_err_from_db(err: sea_orm::DbErr) -> bookclerk_plugin_abi::PluginError {
+    let msg = err.to_string();
+    if msg.contains("cancelled:") {
+        bookclerk_plugin_abi::PluginError::cancelled(msg)
+    } else if msg.contains("deadline_exceeded") {
+        bookclerk_plugin_abi::PluginError::deadline_exceeded(msg)
+    } else if msg.contains("different requestHash")
+        || msg.contains("different request")
+        || msg.contains("requestHash does not match")
+    {
+        bookclerk_plugin_abi::PluginError::conflict(msg)
+    } else {
+        bookclerk_plugin_abi::PluginError::internal(msg)
+    }
+}
+
 pub(crate) mod event_outbox;
+pub(crate) mod plugin_databases;
+pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub(crate) mod job_queue;
 
 #[cfg(test)]

@@ -1,37 +1,26 @@
 //! Shared ABI DTOs used across plugin kinds (camelCase on the wire).
 //!
-//! Handshake, health/diagnose, plugin CLI, and stdio Workers RPC framing live
-//! here. Kind-specific source / integration / output payloads are in
-//! [`crate::kind`]; database connect/query types are in [`crate::db`].
+//! Identity metadata, health/diagnose, and plugin CLI payloads live here.
+//! Kind-specific source / integration / output payloads are in
+//! [`crate::kind`].
+//!
+//! Every type mirrors a struct in the "JSON payload contracts" section of
+//! `schema/plugin.capnp` — the single source of truth for these shapes.
+//! `scripts/gen-plugin-abi.py --check` fails when field names drift.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Params for [`crate::methods::handshake`].
+/// Identity extras carried as JSON in `describe().metadataJson`.
 ///
-/// Wire: `{ "apiVersion": 1, "config": {…} }`. `config` is the plugin's table
-/// from main `config.toml` (`[sources.<id>]` / `[integrations.<id>]` / …) as
-/// JSON; empty object when the table is missing.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct HandshakeParams {
-    /// Negotiated ABI version; must equal [`crate::API_VERSION`] (wire
-    /// `apiVersion`).
-    pub api_version: u32,
-    /// Opaque plugin config table from the host (default `{}`).
-    #[serde(default)]
-    pub config: Value,
-}
-
-/// Successful result of [`crate::methods::handshake`].
-///
-/// Required wire fields: `apiVersion`, `id`, `kind`, `capabilities`. Optional
-/// fields advertise portal auth, brand colors, config option discovery, and an
-/// embedded CLI schema.
+/// Required wire fields: `apiVersion`, `id`, `kind`. Optional fields advertise
+/// capability method names, portal auth, brand colors, config option
+/// discovery, and an embedded CLI schema.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct HandshakeResult {
-    /// ABI version the guest speaks (wire `apiVersion`); must be `1`.
+pub struct PluginMetadata {
+    /// ABI version the guest speaks (wire `apiVersion`); must equal
+    /// [`crate::PRODUCT_API_VERSION`].
     pub api_version: u32,
     /// Stable plugin id matching `plugin.toml` / install directory name.
     pub id: String,
@@ -73,7 +62,7 @@ pub struct HandshakeResult {
 /// Portal brand crossing the RPC boundary (owned strings).
 ///
 /// Distinct from `plugin.toml` `logo`: [`Self::icon_url`] is the live URL or
-/// data URI the SPA renders after handshake.
+/// data URI the SPA renders after describe.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BrandDto {
@@ -91,7 +80,7 @@ pub struct BrandDto {
     pub icon_url: String,
 }
 
-/// One discoverable config option group advertised at handshake for sources.
+/// One discoverable config option group advertised in `metadataJson` for sources.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigOptionDto {
@@ -113,7 +102,7 @@ pub struct ConfigOptionValueDto {
     pub label: String,
 }
 
-/// Declared plugin CLI surface (`cliDescribe` / handshake `cli` / `plugin.toml`).
+/// Declared plugin CLI surface (`cliDescribe` / metadata `cli` / `plugin.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CliSchema {
@@ -193,6 +182,38 @@ pub struct CliInvokeParams {
     pub args: Map<String, Value>,
 }
 
+/// Author-facing database adapter configuration carried in
+/// [`crate::DatabaseContext::config`].
+///
+/// Generic bootstrap mechanism for third-party adapters: the operator's
+/// granted `[database.<id>]` table plus the scoped writable data dir.
+/// First-party host-managed adapters receive host-private connect params
+/// instead. Decode with [`crate::db::database_adapter_config_from_context`].
+///
+/// Wire: `{ "pluginDataDir": "…", "config": { … }, "binding"?: "…", "instanceId"?: "…" }`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseAdapterConfig {
+    /// Scoped writable directory for this plugin (`…/plugins/<id>/data`).
+    pub plugin_data_dir: String,
+    /// Granted plugin settings (operator `[database.<id>]` table) as a JSON
+    /// object; `{}` when the operator configured nothing.
+    #[serde(default)]
+    pub config: Value,
+    /// Named plugin database binding this open serves; `None` for the primary
+    /// library open. Adapters advertising `DbCapabilities::plugin_databases`
+    /// must serve each binding from its own isolated database.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<String>,
+    /// Host-issued opaque instance id for this `(owner plugin, binding)` pair.
+    /// Collision-resistant and stable across re-opens. Omitted for the primary
+    /// library open. Third-party adapters must key isolated databases on this
+    /// value rather than [`Self::binding`] alone (two plugins may both declare
+    /// `DB`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+}
+
 /// Result of [`crate::methods::cli_invoke`].
 ///
 /// Wire: `{ "exitCode": 0, "stdout": "…", "stderr": "…", "json"?: … }`.
@@ -223,7 +244,7 @@ pub struct HealthResult {
     /// When true, the guest considers itself healthy enough for traffic.
     #[serde(default)]
     pub ok: bool,
-    /// Plugin id echo; omitted when the guest does not duplicate handshake id.
+    /// Plugin id echo; omitted when the guest does not duplicate its identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// Whether the guest believes it is enabled in config; omitted when unknown.
@@ -261,36 +282,4 @@ pub struct DiagnoseResult {
     /// Human-readable probe lines (default empty).
     #[serde(default)]
     pub lines: Vec<String>,
-}
-
-/// Stdio Workers RPC request frame (no `jsonrpc` field).
-///
-/// One newline-delimited JSON object on stdin. `method` is a camelCase name
-/// from [`crate::methods`]. `params` holds the method-specific DTO or is
-/// omitted/`null` for no-arg methods.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RpcRequest {
-    /// Correlation id echoed on [`RpcResponse`] (number or string).
-    pub id: Value,
-    /// Wire method name (for example `"handshake"`, `"fetchTitle"`).
-    pub method: String,
-    /// Method params JSON; default / omitted when the method takes none.
-    #[serde(default)]
-    pub params: Option<Value>,
-}
-
-/// Stdio Workers RPC response frame.
-///
-/// Exactly one of [`Self::result`] or [`Self::error`] should be set for a
-/// completed call. `id` matches the request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RpcResponse {
-    /// Correlation id matching [`RpcRequest::id`].
-    pub id: Value,
-    /// Successful JSON result payload; omitted on failure.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
-    /// Structured failure; omitted on success.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<crate::PluginError>,
 }

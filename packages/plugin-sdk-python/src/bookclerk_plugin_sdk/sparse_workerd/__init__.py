@@ -1,7 +1,7 @@
 """Sparse out-of-tree workerd launcher (no Rust ``bookclerk-workerd`` binary).
 
 Downloads the pinned Cloudflare ``workerd``, materializes Cap'n Proto + bridge
-assets, and runs handshake/health smoke tests. Public helpers are re-exported
+assets, and runs describe/health smoke tests. Public helpers are re-exported
 from :mod:`.config`, :mod:`.ensure`, and :mod:`.smoke`.
 """
 

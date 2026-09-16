@@ -2,9 +2,9 @@
 //!
 //! Audience: source plugin authors implementing `fetch_title`. Prefer
 //! [`FetchWorkDir::open`] so a guest writes into the `cache_dir` the host put
-//! on the RPC (v2: a subdirectory of the guest's jail `TMPDIR`).
+//! on the RPC (a subdirectory of the guest's jail `TMPDIR`).
 //!
-//! [`crate::PLUGIN_FD_CHANNEL_ENV`] is **not** set by current v2 hosts. If it is
+//! [`crate::PLUGIN_FD_CHANNEL_ENV`] is **not** set by current hosts. If it is
 //! set, these helpers still block on `recvmsg` for a future native SCM_RIGHTS
 //! shortcut — do not set the env unless the host is actually sending an FD.
 //!
@@ -37,9 +37,9 @@ pub struct FetchWorkDir {
 impl FetchWorkDir {
     /// Resolves the directory a `fetchTitle` call should write downloaded audio into.
     ///
-    /// Uses the `cache_dir` field on `params` (v2 hosts pass a jail-granted
+    /// Uses the `cache_dir` field on `params` (hosts pass a jail-granted
     /// directory under the guest `TMPDIR`). When [`PLUGIN_FD_CHANNEL_ENV`] is
-    /// set, receives one SCM_RIGHTS directory FD instead — v2 hosts do not set
+    /// set, receives one SCM_RIGHTS directory FD instead — hosts do not set
     /// this env; do not arm it without a matching host send.
     ///
     /// # Arguments
@@ -105,7 +105,7 @@ impl UploadFile {
     /// Resolves the local file path for a `putFile` upload.
     ///
     /// Uses `local_path` from the RPC params. When [`PLUGIN_FD_CHANNEL_ENV`] is
-    /// set, receives one SCM_RIGHTS file FD instead — v2 hosts do not set this
+    /// set, receives one SCM_RIGHTS file FD instead — hosts do not set this
     /// env (destinations stream bytes). Do not arm it without a matching send.
     ///
     /// # Arguments

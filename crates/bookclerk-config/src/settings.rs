@@ -3,7 +3,7 @@
 //! # Audience
 //!
 //! Host binaries and crates that load [`Config`]. Guest plugins receive opaque
-//! tables at handshake and do not parse this module.
+//! tables in their spawn config and do not parse this module.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

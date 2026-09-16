@@ -108,7 +108,7 @@ cargo build-app --platform --optional --examples
 cargo ensure-workerd          # pinned Cloudflare workerd beside helpers
 cargo install-platform --skip-build
 cargo stage-plugins --optional --examples --skip-build
-cargo test-staged             # handshake against installed + staged guests
+cargo test-staged             # describe/health conformance against installed + staged guests
 ```
 
 Optional in-process stores: `cargo build -p bookclerkd --features bundled-plugins`.

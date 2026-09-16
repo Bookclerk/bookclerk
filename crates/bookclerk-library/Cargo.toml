@@ -16,7 +16,8 @@ chacha20poly1305.workspace = true
 chrono.workspace = true
 email_address.workspace = true
 bookclerk-config.workspace = true
-bookclerk-plugin-abi.workspace = true
+bookclerk-db-exec.workspace = true
+bookclerk-plugin-abi = { workspace = true, features = ["host"] }
 html-escape.workspace = true
 rand.workspace = true
 zeroize.workspace = true
@@ -35,7 +36,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-bookclerk-plugin-database-sqlite.workspace = true
+bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 

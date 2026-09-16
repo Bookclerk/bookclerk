@@ -3,73 +3,38 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use async_trait::async_trait;
-use bookclerk_db_guest::{guest_execute, guest_query_page, set_connection};
-use bookclerk_plugin_sdk::v2::{
-    Database, DatabaseContext, DatabaseSession, ExecResult, PluginDescribe, PluginRoot, QueryPage,
-    ScalarLimits, Statement, Transaction, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+use bookclerk_db_guest::set_connection;
+use bookclerk_plugin_abi::db::{connect_params_from_context, DbConnectParams};
+use bookclerk_plugin_abi::{AdapterTransaction, HostAdapterDatabaseSession};
+use bookclerk_plugin_abi::{GuestReceiptPersist, HostExecuteEnvelope};
+use bookclerk_plugin_sdk::{
+    serve, DbBootstrap, DbCapabilities, ExecuteReply, ExecuteRequest, PluginError, PluginMetadata,
 };
 use bookclerk_plugin_sdk::{
-    serve, DbAtomicRequest, DbConnectParams, HandshakeResult, PluginError, StatementDto,
+    AdapterDatabaseSession, Database, DatabaseContext, PluginDescribe, PluginRoot, ScalarLimits,
+    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 
 fn describe_metadata() -> Result<String, PluginError> {
-    bookclerk_plugin_sdk::encode_json(HandshakeResult {
+    bookclerk_plugin_sdk::encode_json(PluginMetadata {
         api_version: PRODUCT_API_VERSION,
         id: "d1".into(),
         kind: "database".into(),
         display_name: Some("Cloudflare D1".into()),
-        capabilities: vec![
-            "health".into(),
-            "diagnose".into(),
-            "dbConnect".into(),
-            "dbPing".into(),
-            "dbQuery".into(),
-            "dbExecute".into(),
-            "dbAtomic".into(),
-        ],
+        capabilities: vec!["health".into(), "diagnose".into()],
         sort_key: Some(5),
-        ..HandshakeResult::default()
+        ..PluginMetadata::default()
     })
 }
 
-fn map_guest(err: String) -> PluginError {
-    if err.contains("invalid query cursor") {
-        PluginError::invalid_cursor(err)
-    } else {
-        PluginError::internal(err)
-    }
-}
-
-fn to_dto(statement: &Statement, txn_id: Option<String>) -> StatementDto {
-    StatementDto {
-        sql: statement.sql.clone(),
-        values: serde_json::from_str(&statement.values_json).unwrap_or_default(),
-        txn_id,
-    }
-}
-
-fn exec_from_dto(dto: bookclerk_plugin_sdk::ExecResultDto) -> ExecResult {
-    ExecResult {
-        last_insert_id: i64::try_from(dto.last_insert_id).unwrap_or(i64::MAX),
-        rows_affected: dto.rows_affected,
-    }
-}
-
 async fn connect_from_context(ctx: &DatabaseContext) -> Result<(), PluginError> {
-    let params: DbConnectParams = if ctx.json.trim().is_empty() {
-        return Err(PluginError::invalid_params(
-            "d1 database context is missing connect params",
-        ));
-    } else {
-        serde_json::from_str(&ctx.json)
-            .map_err(|err| PluginError::invalid_params(err.to_string()))?
-    };
+    let params = connect_params_from_context(ctx)?;
     let DbConnectParams::D1 {
-        plugin_data_dir: _,
         account_id,
         database_id,
         api_base,
         api_token,
+        ..
     } = params
     else {
         return Err(PluginError::invalid_params(
@@ -83,7 +48,41 @@ async fn connect_from_context(ctx: &DatabaseContext) -> Result<(), PluginError> 
     Ok(())
 }
 
-/// Cloudflare D1 database guest; `describe` advertises query/execute/atomic RPCs.
+/// Builds a dedicated per-binding proxy when the context targets a named
+/// plugin database binding, resolving (and provisioning) the D1 database by
+/// name.
+async fn binding_from_context(
+    ctx: &DatabaseContext,
+) -> Result<Option<bookclerk_plugin_database_d1::D1Proxy>, PluginError> {
+    let Ok(DbConnectParams::D1 {
+        account_id,
+        api_base,
+        api_token,
+        binding: Some(binding),
+        database_name,
+        ..
+    }) = connect_params_from_context(ctx)
+    else {
+        return Ok(None);
+    };
+    let name = database_name.ok_or_else(|| {
+        PluginError::invalid_params(format!(
+            "database binding `{binding}` open is missing its databaseName"
+        ))
+    })?;
+    let database_id =
+        bookclerk_plugin_database_d1::ensure_database(&api_base, &account_id, &api_token, &name)
+            .await
+            .map_err(|e| PluginError::internal(format!("database binding `{binding}`: {e}")))?;
+    Ok(Some(bookclerk_plugin_database_d1::D1Proxy::new(
+        api_base,
+        account_id,
+        database_id,
+        api_token,
+    )))
+}
+
+/// Cloudflare D1 database guest.
 struct D1Root;
 
 #[async_trait(?Send)]
@@ -98,72 +97,119 @@ impl PluginRoot for D1Root {
             scalar_limits: ScalarLimits::default().into(),
             supported_roles: vec!["database".into()],
             metadata_json: describe_metadata()?,
-            ..PluginDescribe::default()
         })
     }
 
     async fn database(&self, context: DatabaseContext) -> Result<Box<dyn Database>, PluginError> {
+        if let Some(proxy) = binding_from_context(&context).await? {
+            return Ok(Box::new(D1Database {
+                dedicated: Some(proxy),
+            }));
+        }
         connect_from_context(&context).await?;
-        Ok(Box::new(D1Database))
+        Ok(Box::new(D1Database { dedicated: None }))
     }
 }
 
-struct D1Database;
+/// D1 database factory: shared library proxy, or a dedicated per-binding
+/// proxy (its own Cloudflare D1 database) for named plugin bindings.
+struct D1Database {
+    dedicated: Option<bookclerk_plugin_database_d1::D1Proxy>,
+}
 
 #[async_trait(?Send)]
 impl Database for D1Database {
-    async fn open_session(&self) -> Result<Box<dyn DatabaseSession>, PluginError> {
-        Ok(Box::new(D1Session))
+    async fn open_session(&self) -> Result<Box<dyn AdapterDatabaseSession>, PluginError> {
+        Ok(Box::new(D1Session {
+            dedicated: self.dedicated.clone(),
+        }))
+    }
+
+    fn host_session(&self) -> Option<Box<dyn HostAdapterDatabaseSession>> {
+        if let Some(proxy) = &self.dedicated {
+            return Some(Box::new(D1DedicatedHostSession {
+                proxy: proxy.clone(),
+            }));
+        }
+        Some(Box::new(D1HostSession))
     }
 }
 
-struct D1Session;
+struct D1DedicatedHostSession {
+    proxy: bookclerk_plugin_database_d1::D1Proxy,
+}
 
 #[async_trait(?Send)]
-impl DatabaseSession for D1Session {
-    async fn execute(&self, statement: Statement) -> Result<ExecResult, PluginError> {
-        if statement.sql == "bookclerk.atomic" {
-            return Err(PluginError::unsupported(
-                "bookclerk.atomic is a query, not execute",
-            ));
-        }
-        let dto = guest_execute(to_dto(&statement, None))
-            .await
-            .map_err(map_guest)?;
-        Ok(exec_from_dto(dto))
-    }
-
-    async fn query(
-        &self,
-        statement: Statement,
-        cursor: &str,
-        limit: u32,
-    ) -> Result<QueryPage, PluginError> {
-        if statement.sql == "bookclerk.atomic" {
-            let req: DbAtomicRequest = serde_json::from_str(&statement.values_json)
-                .map_err(|e| PluginError::invalid_params(e.to_string()))?;
-            let proxy = bookclerk_plugin_database_d1::shared_proxy()
-                .ok_or_else(|| PluginError::internal("d1 guest is not connected"))?;
-            let result = proxy
-                .run_atomic(req)
-                .await
-                .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)?;
-            return Ok(QueryPage {
-                rows_json: bookclerk_plugin_sdk::encode_json(result)?,
-                next_cursor: None,
-            });
-        }
-        let page = guest_query_page(to_dto(&statement, None), cursor, limit)
-            .await
-            .map_err(map_guest)?;
-        Ok(page)
-    }
-
-    async fn begin(&self) -> Result<Box<dyn Transaction>, PluginError> {
+impl HostAdapterDatabaseSession for D1DedicatedHostSession {
+    async fn begin(&self) -> Result<Box<dyn AdapterTransaction>, PluginError> {
         Err(PluginError::unsupported(
-            "D1 does not support interactive transactions; each HTTP request commits immediately. \
-             Atomic library operations use bookclerk.atomic (one HTTP batch / one SQL transaction)",
+            "D1 does not support interactive transactions",
         ))
+    }
+
+    async fn execute_envelope(
+        &self,
+        envelope: HostExecuteEnvelope,
+    ) -> Result<ExecuteReply, PluginError> {
+        self.proxy
+            .run_typed_atomic(&envelope.request, envelope.guest_receipt, &envelope.proofs)
+            .await
+            .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)
+    }
+}
+
+struct D1HostSession;
+
+#[async_trait(?Send)]
+impl HostAdapterDatabaseSession for D1HostSession {
+    async fn begin(&self) -> Result<Box<dyn AdapterTransaction>, PluginError> {
+        Err(PluginError::unsupported(
+            "D1 does not support interactive transactions",
+        ))
+    }
+
+    async fn execute_envelope(
+        &self,
+        envelope: HostExecuteEnvelope,
+    ) -> Result<ExecuteReply, PluginError> {
+        let proxy = bookclerk_plugin_database_d1::shared_proxy()
+            .ok_or_else(|| PluginError::internal("d1 guest is not connected"))?;
+        proxy
+            .run_typed_atomic(&envelope.request, envelope.guest_receipt, &envelope.proofs)
+            .await
+            .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)
+    }
+}
+
+struct D1Session {
+    dedicated: Option<bookclerk_plugin_database_d1::D1Proxy>,
+}
+
+impl D1Session {
+    fn proxy(&self) -> Result<bookclerk_plugin_database_d1::D1Proxy, PluginError> {
+        if let Some(proxy) = &self.dedicated {
+            return Ok(proxy.clone());
+        }
+        bookclerk_plugin_database_d1::shared_proxy()
+            .ok_or_else(|| PluginError::internal("d1 guest is not connected"))
+    }
+}
+
+#[async_trait(?Send)]
+impl AdapterDatabaseSession for D1Session {
+    async fn capabilities(&self) -> Result<DbCapabilities, PluginError> {
+        Ok(DbCapabilities::advertised_d1())
+    }
+
+    async fn bootstrap(&self) -> Result<DbBootstrap, PluginError> {
+        Ok(DbBootstrap::sqlite())
+    }
+
+    async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply, PluginError> {
+        self.proxy()?
+            .run_typed_atomic(&request, GuestReceiptPersist::default(), &[])
+            .await
+            .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)
     }
 }
 

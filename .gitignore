@@ -10,6 +10,9 @@
 !/.tmp/.gitkeep
 **/*.rs.bk
 Cargo.lock.bak
+# Standalone author-surface fixture packages (scripts/check-author-surface.sh)
+# resolve their own lockfiles; only the workspace Cargo.lock is committed.
+tools/author-surface-check/*/Cargo.lock
 
 # Frontend
 ui/node_modules/

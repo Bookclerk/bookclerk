@@ -32,4 +32,4 @@ tempfile.workspace = true
 workspace = true
 
 [dev-dependencies]
-bookclerk-plugin-database-sqlite.workspace = true
+bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }

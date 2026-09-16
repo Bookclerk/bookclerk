@@ -11,6 +11,9 @@ mode = "deny"
 
 [capabilities.bindings]
 config = true
+# Isolated plugin-owned databases (Workers-style named bindings): each name
+# is its own database, separate from the library and every other plugin.
+databases = ["DB"]
 
 [capabilities.methods]
 list = ["describe", "integration", "health", "diagnose", "onEvent", "cli"]

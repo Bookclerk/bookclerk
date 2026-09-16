@@ -1191,7 +1191,7 @@ pub enum JobKind {
     ListenSync,
     /// Remote integration library scan (Audiobookshelf, …).
     IntegrationScan,
-    /// ABI v2 `JobHandler` stream-copy vertical slice (`plugin_copy`).
+    /// ABI `JobHandler` stream-copy vertical slice (`plugin_copy`).
     PluginCopy,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,
@@ -1419,9 +1419,9 @@ pub struct JobPayload {
     /// Destination object key for [`JobKind::PluginCopy`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dest_key: Option<String>,
-    /// Bounded checkpoint restored after [`bookclerk_plugin_abi::v2::JobOutcome::Suspended`].
+    /// Bounded checkpoint restored after [`bookclerk_plugin_abi::JobOutcome::Suspended`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint: Option<bookclerk_plugin_abi::v2::JobCheckpoint>,
+    pub checkpoint: Option<bookclerk_plugin_abi::JobCheckpoint>,
     /// Resume ordinal; distinct from failure [`Self`] attempt_count on the job row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation_sequence: Option<u32>,

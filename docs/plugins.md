@@ -19,15 +19,15 @@ binding identifiers — never an in-memory `RpcTarget`, adapter map id, PID,
 or open connection. Decision record:
 [`docs/adr/plugin-workers-rpc-workerd.md`](adr/plugin-workers-rpc-workerd.md).
 Authoritative artifacts: Cap'n Proto
-[`schema/plugin_v2.capnp`](../crates/bookclerk-plugin-abi/schema/plugin_v2.capnp)
+[`schema/plugin.capnp`](../crates/bookclerk-plugin-abi/schema/plugin.capnp)
 (append-only ordinals; unknown union members fail closed or return typed
 `unsupported`) and TypeScript
-[`packages/plugin-sdk/src/v2.ts`](../packages/plugin-sdk/src/v2.ts).
+[`packages/plugin-sdk/src/plugin.ts`](../packages/plugin-sdk/src/plugin.ts).
 
 Authors implement the branded guest base **`BookclerkPlugin`** (`describe` /
 `destination` / `source` / `worker` / `contentSource` / `integration` /
 `database` / `oidcClients`). Native guests implement Rust `PluginRoot` and call `serve` (alias
-`serve_v2`). The trusted adapter constructs a frozen `BookclerkContext`
+`serve`). The trusted adapter constructs a frozen `BookclerkContext`
 (`bindings`, optional `native`, `invocation`). Authors never see
 `PLUGIN_BACKEND`, HTTP endpoints, PIDs, credentials, or Cap'n Proto.
 `PLUGIN_BACKEND` may exist as private workerd config only. Byte `Source` is
@@ -35,14 +35,14 @@ the job input opener; storefronts use a separately named `contentSource()`
 factory. JSON is allowed only for plugin-specific extensible config
 (`schemaVersion` + `mediaType`/`schemaId` + bounded payload).
 
-On native guests, `serve` / `serve_v2` is the stdin/stdout Cap'n Proto runner for
+On native guests, `serve` is the stdin/stdout Cap'n Proto runner for
 `api_version = 2`.
 
 | Language | Package | Notes |
 | --- | --- | --- |
 | TypeScript | [`@bookclerk/plugin-sdk`](../packages/plugin-sdk/) | `/workerd` exports `BookclerkPlugin`; authors export the raw class |
 | Python | [`bookclerk-plugin-sdk`](../packages/plugin-sdk-python/) | `from bookclerk_plugin_sdk.workerd import BookclerkPlugin` |
-| Rust | [`bookclerk-plugin-sdk`](../crates/bookclerk-plugin-sdk/) | `PluginRoot` + `serve`; workerd embed + `wasmBookclerkPlugin` |
+| Rust | [`bookclerk-plugin-sdk`](../crates/bookclerk-plugin-sdk/) | `PluginRoot` + `serve`; workerd guests pair `BookclerkPlugin` JS glue with Wasm dispatch |
 
 Runtimes in `plugin.toml`:
 
@@ -94,7 +94,7 @@ cargo build-app --optional --examples   # optional + Cargo examples
 cargo install-platform                  # sqlite + local → FILES_DIR/plugins
 cargo stage-plugins --optional          # optional → target/plugin-artifacts
 cargo stage-plugins --examples --skip-build
-cargo test-staged                       # handshake smoke
+cargo test-staged                       # describe/health conformance smoke
 ```
 
 Add `--release` to any alias for release builds. Override staging dir with
@@ -143,7 +143,7 @@ is narrow on top of that:
 
 | Host guarantees | Detail |
 | --- | --- |
-| No library DB path (sources / integrations / outputs) | `library.db` is never passed on the wire to those kinds — and not reachable if it were. **Database** sqlite guests open the file at a jail-granted path (`BOOKCLERK_SQLITE_PATH` / `sqlitePath` on `dbConnect`) |
+| No library DB path (sources / integrations / outputs) | `library.db` is never passed on the wire to those kinds — and not reachable if it were. **Database** sqlite guests open the file at a jail-granted path (`BOOKCLERK_SQLITE_PATH` / `sqlitePath` at session open) |
 | No files-dir root | Plugins get `plugin_data_dir` (`…/plugins/<id>/data`) and a per-fetch work directory (descriptor) — not `master.key` or the download cache root |
 | Env scrub | Child spawn uses `env_clear` + a small allowlist (`PATH`, locale, …). `BOOKCLERK_*`, `AWS_*`, tokens, and DB URLs are not inherited; `HOME` and `TMPDIR` are replaced with the guest's own directories |
 | Host-mediated secrets | `login` returns `{ account, credentials }`; host seals into `encrypted_secrets` with `provider = plugin id`. `scan` and `fetchTitle` receive those blobs from the host |
@@ -250,12 +250,12 @@ scratch.
 The host therefore never grants the cache root. `fetchTitle` receives a
 `cache_dir` under the guest's already-granted `TMPDIR` (`plugins/<id>/tmp/fetch`).
 Returned media paths are under that directory; the unconfined host reads them
-afterward. Destinations ingest **byte streams** over the v2 ABI rather than a
+afterward. Destinations ingest **byte streams** over the plugin ABI rather than a
 host file descriptor. SQLite gets spawn-time file grants for `library.db` and
 its journal sidecars (never the files-dir parent).
 
 v1 passed a per-call directory over a Unix socket with `SCM_RIGHTS` on fd 3.
-v2 does not arm that channel: workerd cannot `recvmsg`, and a live
+The product ABI does not arm that channel: workerd cannot `recvmsg`, and a live
 `BOOKCLERK_PLUGIN_FD_CHANNEL` with no matching send deadlocks the guest. A
 native SCM_RIGHTS shortcut remains a possible host-selected optimization behind
 streams, not the public contract.
@@ -391,7 +391,7 @@ it describes, so anything it can ask for is something a hostile plugin can ask
 for too — consent and review are the operator controls.
 
 Optional `[capabilities.methods]` lists RPC method names for discovery/consent
-UI (e.g. `handshake`, `health`, `onEvent`, `cli`).
+UI (e.g. `health`, `onEvent`, `cli`).
 
 ### Isolation modes
 
@@ -466,7 +466,7 @@ unique profile per job.
 Fetch scratch and plugin state are the spawn-time `data` / `tmp` grants (already
 ACLed for the Package SID). SQLite adds file-level ACLs for `library.db` and
 journal sidecars at confine time. Destinations stream bytes and do not receive
-host cache paths. v2 does not apply a per-RPC extra path ACL for fetch/upload.
+host cache paths. The host does not apply a per-RPC extra path ACL for fetch/upload.
 
 #### Interactive listeners (OAuth and similar)
 
@@ -579,7 +579,7 @@ missing path, and the launcher refuses rather than silently narrowing the jail.
 guest that needs host data should be asking for it over RPC; the filesystem
 allowlist is not negotiable from a manifest.
 
-**Everything fails right after `handshake`** — check the guest's stderr, which is
+**Everything fails right after spawn** — check the guest's stderr, which is
 inherited by the host and lands in the daemon log directly under the
 `bookclerk-jail:` line reporting what was applied.
 
@@ -597,7 +597,7 @@ covers the current manifest).
 
 The plugin (or its installer) drops a directory under a search root. Bookclerk
 scans for `plugin.toml`, spawns the native `command` or `bookclerk-workerd`, and
-passes the matching main-config table on `handshake`. Users never put `command`
+passes the matching main-config table in the spawn config. Users never put `command`
 in `config.toml`.
 
 ## Layout
@@ -656,14 +656,14 @@ mode = "deny"
 config = true
 
 [capabilities.methods]
-list = ["handshake", "health", "diagnose", "onEvent", "cli"]
+list = ["health", "diagnose", "onEvent", "cli"]
 
 [capabilities.events]
 subscriptions = [
   { type = "book_acquired", schema_versions = [1], supports_suspend = false },
 ]
 
-# Optional: CLI help without spawning (handshake / cliDescribe win at invoke)
+# Optional: CLI help without spawning (describe / cliDescribe win at invoke)
 [cli]
 [[cli.commands]]
 name = "ping"
@@ -727,7 +727,7 @@ the raw SVG. `img-src` allows sanitized embedded rasters; scripts stay blocked. 
 `jpeg` / …) are unchanged. Do **not** invent `capabilities.network.domains`
 on native plugins just for icons — domains remain **workerd-only** allowlists.
 
-This is separate from handshake **`BrandDto.icon_url`**: that field is the live
+This is separate from describe-metadata **`BrandDto.icon_url`**: that field is the live
 portal/Accounts brand returned by the guest after spawn (includes optional brand
 colors `bg` / `fg` / `accent` plus `icon_url`). Optional `plugin.toml` `logo` is
 install metadata so Settings can show an icon **without** spawning. When a
@@ -756,7 +756,7 @@ a first-party plugin of the same kind is also rejected.
 
 Third-party (and newly installed) plugins require an explicit permission grant
 before **enable** and again before **every external spawn**. Privileged delivery
-also checks individual bindings: handshake `config`, host-injected secrets,
+also checks individual bindings: spawn `config`, host-injected secrets,
 `work_fs` (jail `tmp` / streams), and OAuth callback proxy setup.
 
 **Operator Settings** shows a branded consent dialog when enabling a plugin that
@@ -832,7 +832,7 @@ disabled**; sources follow the usual `[sources.<id>]` rules (missing → enabled
 ```toml
 [integrations.echo]
 enabled = true
-# greeting = "hi"   # opaque knobs → handshake config
+# greeting = "hi"   # opaque knobs → spawn config
 
 [sources.my_store]
 enabled = true
@@ -903,7 +903,7 @@ unsorted directory without an index.
 
 Scalar RPC values are capped at **256 KiB** (`payload_too_large` if exceeded).
 List pages are clamped. Integrity metadata (etag / sha256) rides on
-`PutResult` / `ReadResult`. Optional facilities *within* v2 are feature flags
+`PutResult` / `ReadResult`. Optional facilities *within* the ABI are feature flags
 (`rpc.streams`, `rpc.scalarLimits`, `storage.copy`), not a substitute for
 `apiVersion`. Spawn **negotiates** `apiVersion == 2`, matching signed
 `id`/`kind`, required `rpc.streams` + `rpc.scalarLimits`, and rejects
@@ -914,12 +914,12 @@ zero/unsafe limits.
 | Runtime | Wire |
 | --- | --- |
 | **workerd** | Isolate keeps `RpcTarget` stubs; `bookclerk-workerd` serves Bookclerk Cap'n Proto on stdio and talks HTTP/JSRPC to the isolate with streamed bodies (`capnpConnectHost = "plugin"` on the rpc socket) |
-| **native** | Guest SDK `serve_v2` serves `schema/plugin_v2.capnp` (`capnp-rpc`) with windowed byte streams |
+| **native** | Guest SDK `serve` serves `schema/plugin.capnp` (`capnp-rpc`) with windowed byte streams |
 
 FD passing / `localPath` remain native-only optimizations behind the stream
-adapter, never author-facing. Handshake rejects unsupported versions.
+adapter, never author-facing. Describe rejects unsupported versions.
 
-First-party destinations (`local`, `s3`) and remaining product guests speak v2.
+First-party destinations (`local`, `s3`) and remaining product guests speak the object-capability ABI.
 Echo examples are `api_version = 2` Integration.
 
 ## Reverse channel (`HOST.notify`)
@@ -929,7 +929,7 @@ payload. `bookclerk-workerd` wires the isolate `HOST` binding to a loopback
 HTTP callback: events are POSTed to the launcher, buffered in memory for the
 session, and logged (event `type` + size only — not the full JSON body).
 
-Bridge loopback RPC (`/rpc`, `/health`) and the notify reverse channel share a
+Bridge loopback role routes (`/describe`, `/health`, …) and the notify reverse channel share a
 **per-isolate bearer token** (`BRIDGE_TOKEN` Cap’n Proto binding on both the
 bridge and host workers). The launcher generates the token, injects it into the
 workerd config, and sends `Authorization: Bearer …` on every bridge request;
@@ -946,7 +946,7 @@ integrations/jobs.
 
 | Method | Purpose |
 | --- | --- |
-| `handshake` | Negotiate version, id, kind, capabilities, brand |
+| `describe` | Identity, version, capabilities, brand (`metadataJson`) |
 | `shutdown` | Graceful teardown |
 | `health` | Connectivity / config check |
 | `diagnose` | Human-readable CLI probe lines |
@@ -954,15 +954,15 @@ integrations/jobs.
 | `cliInvoke` | Run a declared command (`CliInvokeParams` → `CliInvokeResult`) |
 | `oidcClients` | Bookclerk-as-IdP relying-party templates (`OidcClientTemplate[]`; empty when unused) |
 
-Handshake params include `{ "apiVersion": 2, "config": {…} }` — the plugin’s
-`[sources.<id>]` / `[integrations.<id>]` table from **main** `config.toml` as JSON
-(empty object if the table is missing).
+Role contexts carry the plugin’s `[sources.<id>]` / `[integrations.<id>]` table
+from **main** `config.toml` as opaque JSON (empty object if the table is
+missing).
 
-Optional handshake field `cli` may embed the same schema as `cliDescribe`. Prefer
-advertising capability `cli` and implementing both methods. You may also mirror
-the schema in `plugin.toml` under `[cli]` so `bookclerk plugins <id> --help`
-works without spawning the plugin; at invoke time handshake / `cliDescribe`
-remain authoritative.
+The optional `metadataJson` field `cli` may embed the same schema as
+`cliDescribe`. Prefer advertising capability `cli` and implementing both
+methods. You may also mirror the schema in `plugin.toml` under `[cli]` so
+`bookclerk plugins <id> --help` works without spawning the plugin; at invoke
+time `describe` / `cliDescribe` remain authoritative.
 
 ### Plugin CLI
 
@@ -974,7 +974,7 @@ Host commands that apply to every plugin stay on Bookclerk verbs
 bookclerk plugins <plugin-id> <command> [args…]
 ```
 
-Example schema (JSON / handshake `cli` / `cliDescribe`):
+Example schema (JSON / `metadataJson` `cli` / `cliDescribe`):
 
 ```json
 {
@@ -1001,13 +1001,14 @@ Result: `{ "exitCode": 0, "stdout": "…", "stderr": "…", "json": … }`.
 
 ### Integration capabilities
 
-Advertise in `handshake.capabilities`: `start`, `onEvent`, `health`,
-`diagnose`, `scanLibrary`, `syncListening`, `authenticateUser`, `cli`.
+Advertise in `describe()` metadata `capabilities`: `start`, `onEvent`,
+`health`, `diagnose`, `scanLibrary`, `syncListening`, `authenticateUser`,
+`cli`.
 
 | Method | Notes |
 | --- | --- |
 | `start` | Background watchers |
-| `onEvent` | Versioned [`DomainEvent`](../packages/plugin-sdk/src/v2.ts) (`eventId`, `eventType`, `schemaVersion`, correlation/causation, `source`, `deduplicationKey`, `deliveryAttempt`, bounded payload). A `suspended` result (`abiMinor` 4) parks a checkpoint; the next `onEvent` copies `checkpointJson`, `checkpointSchemaVersion`, `invocationSequence`, and `resumePending` (`abiMinor` 5). `wakeOnEventType` / `wakeOnFilterJson` (`abiMinor` 6) ask the host to wake on a matching later event (empty = timestamp-only). Return `EventResult`: `ack`, `retry` (`retryAtUnixMs`; exhausted attempts dead-letter), `reject`, `deadLetter`, or `suspended` (`checkpointJson`, `checkpointSchemaVersion`, `wakeAtUnixMs`, optional wake-on-event fields). Host delivery is at-least-once; guests must be idempotent on `deduplicationKey`. |
+| `onEvent` | Versioned [`DomainEvent`](../packages/plugin-sdk/src/plugin.ts) (`eventId`, `eventType`, `schemaVersion`, correlation/causation, `source`, `deduplicationKey`, `deliveryAttempt`, bounded payload). A `suspended` result parks a checkpoint; the next `onEvent` copies `checkpointJson`, `checkpointSchemaVersion`, `invocationSequence`, and `resumePending`. `wakeOnEventType` / `wakeOnFilterJson` ask the host to wake on a matching later event (empty = timestamp-only). Return `EventResult`: `ack`, `retry` (`retryAtUnixMs`; exhausted attempts dead-letter), `reject`, `deadLetter`, or `suspended` (`checkpointJson`, `checkpointSchemaVersion`, `wakeAtUnixMs`, optional wake-on-event fields). Host delivery is at-least-once; guests must be idempotent on `deduplicationKey`. |
 | `scanLibrary` | `{ "force": bool }` |
 | `syncListening` | Return listening progress snapshots; host upserts tagged with plugin id |
 | `authenticateUser` | `{ "username", "password" }` → external user |
@@ -1061,17 +1062,15 @@ acquire-status change (book uuid, storage key, product ids — never media bytes
 and sets envelope `source` to the book’s storefront plugin id.
 The producer `ordering_key` is stored on the envelope and copied verbatim onto
 each delivery. Each VPS claims only plugin ids loaded on that process **and**
-only events its node-local catalog matches (type, schema version, filter). SeaORM
-prefilters by this node’s catalog. D1/`dbAtomic` still selects by `plugin_id`
-only; the host releases an incompatible row (without consuming `attempt_count`)
-and continues with a node-local claim so a later compatible delivery is not
-starved. #178 will push eligibility into the generic atomic plan. Wake pages
-are 64 rows so `IN (…)` and the fenced sleeper UPDATE stay under D1’s 100
-bound-parameter limit; the UPDATE includes `EXISTS (wake_pending ∧ lease owner)`. `[events.concurrency]`
+only events its node-local catalog matches (type, schema version, filter). The
+host evaluates catalog JSON filters, then compare-and-sets a concrete delivery
+id inside a generic atomic plan. Wake page size follows negotiated `maxBinds`
+(D1 is 100) so `IN (…)` and the fenced sleeper UPDATE stay under the bind cap;
+the UPDATE includes `EXISTS (wake_pending ∧ lease owner)`. `[events.concurrency]`
 (default 1) is the number of local delivery workers **and** the cluster-wide
 max `running` deliveries per `(plugin_id, resource_class)` (`network` today),
-enforced at claim time (PostgreSQL takes a per-plugin advisory lock so two
-VPSes cannot over-admit under `READ COMMITTED`). FIFO per ordering key stays; unrelated keys are only
+enforced at claim time with a portable `db_serialization_slots` row so two
+VPSes cannot over-admit under `READ COMMITTED`. FIFO per ordering key stays; unrelated keys are only
 blocked by that cap. The delivery worker
 heartbeats the lease during `onEvent` (`lease/3`); fence loss or operator
 `cancel_requested` cancels the in-flight RPC (including workerd/native).
@@ -1092,14 +1091,14 @@ content keys on the wire — decrypt in the guest when needed.
 
 ### Output plugins
 
-`kind = "output"` guests on **v2** implement [`Destination`](../packages/plugin-sdk/src/v2.ts):
+`kind = "output"` guests implement [`Destination`](../packages/plugin-sdk/src/plugin.ts):
 `head` / `list` (paginated) / streamed `get` / streamed `put` / optional
 `copy`. The host never reassembles a large object into `Bytes` and never writes
 the full object to guest scratch then `put_file`. S3 guests feed the existing
 multipart sink as bytes arrive.
 
 Oversized scalar `put`/`get` fail closed. There is no public `handleId` /
-`readChunk` / `writeChunk` protocol: v2 destinations transfer media through
+`readChunk` / `writeChunk` protocol: destinations transfer media through
 `ByteSource` streams. Range, multipart, and checkpoint product work in
 issue #120 builds on this contract without another public ABI redesign.
 
@@ -1110,23 +1109,116 @@ in-process S3 backend.
 
 ### Database plugins
 
-`kind = "database"` guests implement the SeaORM proxy boundary over Workers RPC.
-Engine connect/migrate/proxy code lives in the guest
+`kind = "database"` guests are **thin SQL adapters**. They implement the SeaORM
+proxy boundary over Workers RPC plus a generic atomic-plan executor. Engine
+connect/migrate/proxy code lives in the guest
 (`bookclerk-plugin-database-sqlite` (and optional d1/postgres guests) modules); the host does not link SQL engines.
-The host opens the library through the external database loader (guest required —
-no in-process fallback). SQLite opens `library.db` at the jail-granted path
-(`BOOKCLERK_SQLITE_PATH` / `sqlitePath`) at `dbConnect`.
+The host owns schema, domain SQL, and Bookclerk invariants
+([ADR: SQL database contract](adr/sql-database-contract.md)). Guests must not
+import Bookclerk entities or embed application table names. The host opens the
+library through the external database loader (guest required — no in-process
+fallback). SQLite opens `library.db` at the jail-granted path
+(`BOOKCLERK_SQLITE_PATH` / `sqlitePath`) when the session opens.
+
+A backend that cannot advertise `atomicBatch`, parameterized statements, and
+bind/statement limits at or above the host minimum is **not loaded** (fail
+closed). Non-SQL engines are unsupported.
 
 | Method | Notes |
 | --- | --- |
-| `dbConnect` | Open backend via tagged connect params (`backend`: `sqlite` / `d1` / `postgres`); returns dialect (SQLite: path grant; D1/Postgres: host-injected credentials) |
-| `dbPing` | Verify connectivity |
-| `dbQuery` / `dbExecute` | Forward SeaORM statement payloads (optional `txnId` from `dbBegin`) |
-| `dbBegin` | Start a native engine transaction (or nested savepoint via `parentTxnId`); returns `txnId`. The host records a sticky per-task fault when this RPC fails so later statements cannot fall back to autocommit. D1 rejects interactive transactions and sets `interactiveTxn: false` on `dbConnect`. |
-| `dbCommit` / `dbRollback` | Finish that transaction. A failed `dbCommit` is surfaced to `LibraryStore` (SeaORM's proxy hook is infallible); the guest is rolled back. |
-| `dbAtomic` | Named library operation (claim redeem, last-owner guards, password hash, TOTP enroll/disable, consume-once OIDC/WebAuthn) as one SQL transaction, with an `operationId` receipt for lost-response replay. D1 uses `{ "batch": [...] }` on the REST Query API. SQLite and Postgres run the same command in a native local transaction. |
+| `Database.openSession` | Opens the adapter session. The guest connects its engine from `DatabaseContext.config` (first-party guests receive host-injected connect params; SQLite: path grant; D1/Postgres: host-injected credentials). |
+| `AdapterDatabaseSession.capabilities` | Typed control-plane call after `openSession`. Advertises SQL contract version, execution semantics, schema flags (`pragmaUserVersion` / `schemaMigrations` / `atomicSchemaBatch`), and all limits. The host must not invent these from the plugin id. |
+| `AdapterDatabaseSession.bootstrap` | Bootstrap-only SeaORM proxy metadata (`sqlFamily`, `dialect`); not part of `DbCapabilities` and never read by domain planning. |
+| `AdapterDatabaseSession.execute` | The one typed atomic operation (`ExecuteRequest` → `ExecuteReply`). Every request is a non-empty ordered statement list with Cap'n `DbValue` parameters, run as **one** SQL transaction. D1 uses `{ "batch": [...] }` on the REST Query API. SQLite and Postgres run the same plan in a native local transaction. Host compilers emit canonical `?` SQL; adapters lower at execute. Guests do not interpret Bookclerk operation names. `JobHandler.handle` does **not** receive the host library as `context.database`. Plugins that need durable SQL declare named bindings (`capabilities.bindings.databases`) and receive physically separate units on `context.databases`. |
+| `AdapterDatabaseSession.close` | Release the session and its engine connection. |
+
+Host-private (never visible to plugin authors; first-party guests built with
+the abi `host` feature only): `HostAdapterDatabaseSession.begin` opens a native
+interactive SeaORM transaction and returns an `AdapterTransaction`
+(`execute` / `commit` / `rollback`); the host records a sticky per-task fault
+when `begin` fails so later statements cannot fall back to autocommit, and a
+failed `commit` is surfaced to `LibraryStore` (SeaORM's proxy hook is
+infallible). `HostAdapterDatabaseSession.executeEnvelope` carries the durable
+receipt-persist envelope. D1 keeps `begin` unsupported and routes
+`executeEnvelope` through its native batch proxy.
 
 Built-in ids: `sqlite`, `d1`, `postgres` (match `[database].plugin`).
+
+### Isolated plugin database bindings
+
+Plugins may declare Workers-style **named database bindings** in the manifest:
+
+```toml
+[capabilities.bindings]
+databases = ["DB", "CACHE"]   # [A-Z][A-Z0-9_]*, unique, max 8
+```
+
+Named bindings are **plugin-private state**, not a place to put host tables.
+The durable job queue, library catalog, and secrets stay on the host library
+database; `JobHandler.handle` does not get `context.database` pointed at
+`library.db`. Bindings are provisioned by the active adapter — physically
+separate from the Bookclerk library and from every other plugin
+(near-equivalent to a Cloudflare Workers D1 binding):
+
+- **SQLite** — one file per binding under
+  `$BOOKCLERK_FILES_DIR/plugin-databases/<plugin>/<BINDING>.db` (the sqlite
+  adapter jail grants that directory).
+- **PostgreSQL** — one database per binding (`pb_` + 32 hex of the
+  `(plugin, binding)` digest; 35 ≤ 63), created on first use (`CREATEDB`
+  required). This is a separate database, not a schema on the library DB,
+  so plugin SQL cannot see host tables.
+- **Cloudflare D1** — one D1 database per binding
+  (`bookclerk-pb-` + the same 32 hex), resolved or created by name through
+  the REST API. Provisioning fails closed with an operator-facing error when
+  the API token cannot create databases.
+- **Third-party adapters** — advertise `DbCapabilities.pluginDatabases` and
+  receive the binding name on the public `DatabaseAdapterConfig`; adapters
+  that do not advertise support fail the job rather than sharing a database.
+
+Consent: each binding appears as a `database:<NAME>` grant entry and requires
+operator approval before enable, like other capabilities. Provisioned units
+are recorded in the host `plugin_databases` registry (an existing row wins so
+re-opens never re-target a binding); inspect and remove them with
+`bookclerk plugins db list` / `bookclerk plugins db drop <plugin> [binding]`
+(the drop command deletes the physical SQLite file, PostgreSQL database, or
+Cloudflare D1 database, then removes the registry row; it fails closed if
+physical delete cannot be proven).
+
+Inside a binding the plugin **owns its schema**: full DML plus bounded
+idempotent DDL (`CREATE TABLE/INDEX IF NOT EXISTS`, `DROP TABLE/INDEX IF
+EXISTS`). `ALTER` and `CREATE TABLE AS` are refused (not retry-safe, and
+`AS SELECT` can copy another catalog). `REFERENCES` targets are authorized
+with the same reserved-name rules as `CREATE`/`DROP` (no
+`db_atomic_receipts` / `schema_migrations` / `plugin_databases`, no
+schema-qualified names). The guest grammar still applies —
+single statement, no `ATTACH`/`PRAGMA`/session verbs, no schema-qualified
+names — and functions are Bookclerk SQL v1 portable helpers (not a wider
+SQLite dialect; `hex` is denied; column types are `INTEGER` / `REAL` /
+`TEXT` / `BLOB` / `BOOLEAN`; `INSERT OR IGNORE` is unique/PK-conflict only and
+is lowered to `ON CONFLICT DO NOTHING` on every backend, including SQLite and
+D1 (`SELECT`/`WITH` sources are wrapped as `SELECT * FROM (<source>) AS
+_bc_src WHERE true`); helper arity and wire types are enforced so callers need
+not `CAST` for `round` / `sum` / `avg` / `count`. Canonical `LIKE` is
+case-sensitive (SQLite/D1 `GLOB` lowering; Postgres `COLLATE "C"`). Schema
+metadata is durable in adapter-private `bookclerk_sql_catalog` (Postgres
+identity in `bookclerk_identity`); both are guest-denied. Opening a binding
+reloads types from that catalog. See
+[`docs/sql-contract/v1.md`](sql-contract/v1.md)).
+A mixed `CREATE` + `INSERT` batch is one atomic receipt: first execution
+applies both statements on SQLite, PostgreSQL, and D1 (D1 claims the receipt
+before ungated DDL, then ungates DML for the claim owner). Same-token replay
+must not double-insert. The
+binding's own `db_atomic_receipts` bookkeeping table stays
+host-owned so retry tokens replay inside the binding, never against the
+library.
+
+Delivery: `JobHandler.handle` receives the bindings as the append-only
+`databases :List(NamedDatabase)` argument. Rust guests call
+`DatabaseBinding::take_named_from_job_context(&mut ctx, "DB")`; workerd guests
+get one grant token per binding on the invocation envelope — the TS SDK
+exposes `context.databases.get("DB")` and the Python SDK
+`context.databases["DB"]`, each a full `prepare`/`bind`/`run`/`all`/`first`/
+`raw`/`batch` `DatabaseBinding`.
 
 ## Examples
 

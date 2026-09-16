@@ -10,8 +10,7 @@ mod tests {
     use serde_json::Value;
 
     use crate::{
-        DbConnectParams, ExecResultDto, FetchTitleParams, LoginParams, LoginResultDto, PutParams,
-        ScanParams, ScanSummaryDto,
+        FetchTitleParams, LoginParams, LoginResultDto, PutParams, ScanParams, ScanSummaryDto,
     };
 
     fn load(name: &str) -> Value {
@@ -151,27 +150,6 @@ mod tests {
     }
 
     #[test]
-    fn db_connect_sqlite_roundtrip() {
-        roundtrip_fixture::<DbConnectParams>("dbConnect.sqlite.json");
-        let v = load("dbConnect.sqlite.json");
-        assert_eq!(v["backend"], "sqlite");
-        assert!(v.get("pluginDataDir").is_some());
-        assert!(v.get("sqlitePath").is_some());
-        assert!(v.get("plugin_data_dir").is_none());
-        assert!(v.get("sqlite_path").is_none());
-    }
-
-    #[test]
-    fn db_execute_result_roundtrip() {
-        roundtrip_fixture::<ExecResultDto>("dbExecute.result.json");
-        let v = load("dbExecute.result.json");
-        assert!(v.get("lastInsertId").is_some());
-        assert!(v.get("rowsAffected").is_some());
-        assert!(v.get("last_insert_id").is_none());
-        assert!(v.get("rows_affected").is_none());
-    }
-
-    #[test]
     fn fixtures_directory_lists_required_goldens() {
         let dir = format!("{}/fixtures/wire", env!("CARGO_MANIFEST_DIR"));
         let names: BTreeSet<String> = std::fs::read_dir(&dir)
@@ -187,8 +165,6 @@ mod tests {
             "scan.result.json",
             "fetchTitle.request.json",
             "put.s3.request.json",
-            "dbConnect.sqlite.json",
-            "dbExecute.result.json",
         ] {
             assert!(
                 names.contains(required),

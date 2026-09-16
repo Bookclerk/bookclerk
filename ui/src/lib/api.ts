@@ -1713,7 +1713,7 @@ export interface PluginConsentResponse {
  * Call from Settings when an operator reviews domains/bindings that still need
  * approval; `covered` is false until approvePluginConsent succeeds.
  *
- * @param id - Plugin id from handshake / Settings list.
+ * @param id - Plugin id from describe() / Settings list.
  * @returns Current consent request payload and whether it already covers the ask.
  */
 export async function fetchPluginConsent(id: string): Promise<PluginConsentResponse> {

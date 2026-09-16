@@ -7,7 +7,7 @@
 //!
 //! External (subprocess) plugins are *discovered* via `plugin.toml` under
 //! plugin search dirs; these tables hold enablement and opaque knobs passed
-//! at handshake. See `docs/plugins.md`.
+//! in the spawn config. See `docs/plugins.md`.
 //!
 //! ```toml
 //! [sources.audible]

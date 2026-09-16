@@ -1,11 +1,11 @@
 //! Plugin error model shared by host and guests.
 //!
-//! Failures on Workers RPC methods serialize as [`PluginError`] inside
-//! [`crate::types::RpcResponse::error`] (stdio) or the equivalent workerd
-//! reject payload. Codes are stable `snake_case` strings matching
-//! `schema/abi.json` `$defs.PluginError.code`. Unknown future codes are
-//! preserved as [`PluginErrorCode::Unknown`] plus the raw wire string — they
-//! are never collapsed to [`PluginErrorCode::Internal`].
+//! Capability failures serialize as [`PluginError`] in the Cap'n Proto
+//! `PluginError` struct (or the equivalent workerd reject payload). Codes are
+//! stable `snake_case` strings matching the `PluginErrorCode` enum in
+//! `schema/plugin.capnp`. Unknown future codes are preserved as
+//! [`PluginErrorCode::Unknown`] plus the raw wire string — they are never
+//! collapsed to [`PluginErrorCode::Internal`].
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
@@ -32,7 +32,7 @@ pub enum PluginErrorCode {
     Unsupported,
     /// Unexpected guest or host failure; see [`PluginError::message`].
     Internal,
-    /// A scalar RPC value exceeded [`crate::v2::MAX_SCALAR_BYTES`].
+    /// A scalar RPC value exceeded [`crate::MAX_SCALAR_BYTES`].
     PayloadTooLarge,
     /// The invocation deadline elapsed before the call completed.
     DeadlineExceeded,
@@ -82,7 +82,9 @@ impl PluginErrorCode {
             "deadline_exceeded" | "deadlineExceeded" => Self::DeadlineExceeded,
             "invalid_cursor" | "invalidCursor" => Self::InvalidCursor,
             "cancelled" | "canceled" => Self::Cancelled,
-            "conflict" => Self::Conflict,
+            "conflict" | "unique" | "constraint" | "unique_constraint" => Self::Conflict,
+            "timeout" | "timed_out" => Self::DeadlineExceeded,
+            "retryable" => Self::Unavailable,
             _ => Self::Unknown,
         }
     }

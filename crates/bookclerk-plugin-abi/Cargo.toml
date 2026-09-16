@@ -16,14 +16,17 @@ capnp-rpc.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 futures.workspace = true
 hex.workspace = true
+base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sea-query = { version = "1.0.1", optional = true, default-features = false, features = ["backend-sqlite"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "io-std", "macros", "rt", "sync", "time"] }
 tokio-util.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 tokio = { workspace = true, features = ["io-util", "io-std", "macros", "rt", "sync", "time", "rt-multi-thread"] }
 
 [build-dependencies]
@@ -32,6 +35,11 @@ capnpc.workspace = true
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+# Host-only wire surfaces (receipt envelopes, interactive txn Cap'n roles).
+host = ["dep:sea-query"]
 
 [lints]
 workspace = true

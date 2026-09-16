@@ -1,9 +1,10 @@
 //! Out-of-tree workerd smoke via the `bookclerk-workerd` library (feature `tools`).
 //!
-//! Audience: authors verifying a `runtime = "workerd"` plugin can handshake
-//! without installing the full Bookclerk host. Downloads/ensures the pinned
-//! `workerd` binary (see `BOOKCLERK_WORKERD_CACHE`), materializes a config, and
-//! posts `handshake` + `health` over the HTTP bridge.
+//! Audience: authors verifying a `runtime = "workerd"` plugin answers
+//! `describe()` without installing the full Bookclerk host. Downloads/ensures
+//! the pinned `workerd` binary (see `BOOKCLERK_WORKERD_CACHE`), materializes a
+//! config, and posts `describe` (plus role `health` when the kind exposes one)
+//! over the HTTP bridge.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -18,7 +19,7 @@ use bookclerk_workerd::ensure_workerd;
 use bookclerk_workerd::notify::generate_bridge_token;
 use serde_json::{json, Value};
 
-/// Smokes a `runtime = "workerd"` plugin: ensure pin → materialize → handshake + health.
+/// Smokes a `runtime = "workerd"` plugin: ensure pin → materialize → describe + health.
 ///
 /// Spawns unconfined `workerd serve` on a free loopback port (jailed guests use
 /// a listen FD via the launcher instead). Kills the child before returning.
@@ -31,7 +32,7 @@ use serde_json::{json, Value};
 ///
 /// # Returns
 ///
-/// Multi-line success text including pretty-printed handshake/health JSON.
+/// Multi-line success text including pretty-printed describe/health JSON.
 ///
 /// # Errors
 ///
@@ -93,29 +94,26 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
 
     let result = (|| {
         wait_for_health(&base, &bridge_token).map_err(|e| format!("health: {e}"))?;
-        let rpc_url = format!("{base}/rpc");
-        let handshake = post_rpc(
-            &rpc_url,
-            &json!({
-                "id": 1,
-                "method": "handshake",
-                "params": { "apiVersion": 1, "config": {} }
-            }),
-            &bridge_token,
-        )?;
-        let health = post_rpc(
-            &rpc_url,
-            &json!({
-                "id": 2,
-                "method": "health",
-                "params": {}
-            }),
-            &bridge_token,
-        )?;
+        let describe = post_json(&format!("{base}/describe"), &json!({}), &bridge_token)?;
+        // Role `health` is exposed for content-source and integration kinds;
+        // output/database guests are covered by `describe` alone here.
+        let health = match manifest.kind {
+            bookclerk_plugin_manifest::PluginKind::Source => Some(post_json(
+                &format!("{base}/contentSource/health"),
+                &json!({}),
+                &bridge_token,
+            )?),
+            bookclerk_plugin_manifest::PluginKind::Integration => Some(post_json(
+                &format!("{base}/integration/health"),
+                &json!({}),
+                &bridge_token,
+            )?),
+            _ => None,
+        };
         let detail = json!({
             "plugin": manifest.id,
             "listen": base,
-            "handshake": handshake,
+            "describe": describe,
             "health": health,
         });
         Ok(format!(
@@ -162,7 +160,7 @@ fn wait_for_health(base: &str, token: &str) -> Result<(), String> {
     }
 }
 
-fn post_rpc(url: &str, body: &Value, token: &str) -> Result<Value, String> {
+fn post_json(url: &str, body: &Value, token: &str) -> Result<Value, String> {
     let mut response = ureq::post(url)
         .header("content-type", "application/json")
         .header("Authorization", &format!("Bearer {token}"))
@@ -187,10 +185,9 @@ fn post_rpc(url: &str, body: &Value, token: &str) -> Result<Value, String> {
             .get("message")
             .and_then(|m| m.as_str())
             .unwrap_or("bridge error");
-        let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("?");
-        return Err(format!("RPC {method} failed: {code}: {message}"));
+        return Err(format!("POST {url} failed: {code}: {message}"));
     }
-    Ok(value.get("result").cloned().unwrap_or(Value::Null))
+    Ok(value)
 }
 
 fn kill_child(child: &mut Child) {

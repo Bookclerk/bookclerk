@@ -19,13 +19,13 @@ use crate::{Enforcement, NetPolicy, Policy};
 
 /// Reserved descriptor number for a native SCM_RIGHTS side channel (fd 3).
 ///
-/// v2 plugin hosts do **not** leave this open or set [`PLUGIN_FD_CHANNEL_ENV`].
+/// Plugin hosts do **not** leave this open or set [`PLUGIN_FD_CHANNEL_ENV`].
 /// Kept so a future host-selected native shortcut can reuse the same number.
 pub const PLUGIN_FD_CHANNEL: i32 = 3;
 
 /// Environment variable naming [`PLUGIN_FD_CHANNEL`].
 ///
-/// v2 hosts do not set this; guests must not wait on `recvmsg` just because
+/// Hosts do not set this; guests must not wait on `recvmsg` just because
 /// they see fd 3 inherited from a parent.
 pub const PLUGIN_FD_CHANNEL_ENV: &str = "BOOKCLERK_PLUGIN_FD_CHANNEL";
 

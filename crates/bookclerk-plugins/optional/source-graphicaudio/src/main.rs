@@ -3,13 +3,13 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use async_trait::async_trait;
-use bookclerk_plugin_sdk::v2::{
+use bookclerk_plugin_sdk::{
     decode_json, encode_json, ContentSource as ContentSourceRole, ContentSourceContext, HealthOk,
     PluginDescribe, PluginRoot, ScalarLimits, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_sdk::{
-    serve, BrandDto, CatalogHitDto, ExpandCandidatesParams, FetchTitleParams, HandshakeResult,
-    ListDealsParams, LoginParams, PluginError, PurchaseHintParams, ScanParams, SearchCatalogParams,
+    serve, BrandDto, CatalogHitDto, ExpandCandidatesParams, FetchTitleParams, ListDealsParams,
+    LoginParams, PluginError, PluginMetadata, PurchaseHintParams, ScanParams, SearchCatalogParams,
 };
 use bookclerk_source::{
     CatalogSearchOpts, CatalogSearchSort, ContentSource, ExpandSeed, PurchaseHintOpts,
@@ -17,7 +17,7 @@ use bookclerk_source::{
 use serde_json::Value;
 
 fn describe_metadata() -> Result<String, PluginError> {
-    encode_json(HandshakeResult {
+    encode_json(PluginMetadata {
         api_version: PRODUCT_API_VERSION,
         id: "graphicaudio".into(),
         kind: "source".into(),
@@ -45,7 +45,7 @@ fn describe_metadata() -> Result<String, PluginError> {
             accent: "#DC2626".into(),
             icon_url: "https://www.google.com/s2/favicons?domain=graphicaudio.com&sz=128".into(),
         }),
-        ..HandshakeResult::default()
+        ..PluginMetadata::default()
     })
 }
 
@@ -83,7 +83,6 @@ impl PluginRoot for GraphicAudioRoot {
             scalar_limits: ScalarLimits::default().into(),
             supported_roles: vec!["contentSource".into()],
             metadata_json: describe_metadata()?,
-            ..PluginDescribe::default()
         })
     }
 

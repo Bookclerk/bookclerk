@@ -20,7 +20,7 @@ use crate::download::fetch_title_materials_with;
 use crate::error::{LibroError, Result};
 use crate::sync::{scan_library, ScanOptions as LibroScanOptions};
 
-/// Handshake / config id for this store (`libro` in `[sources.libro]`).
+/// Describe / config id for this store (`libro` in `[sources.libro]`).
 pub const ID: &str = "libro";
 
 /// Env var read for non-interactive password login when Accounts UI is unavailable.

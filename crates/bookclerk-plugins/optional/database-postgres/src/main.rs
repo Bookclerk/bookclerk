@@ -4,77 +4,34 @@
 
 use async_trait::async_trait;
 use bookclerk_db_guest::{
-    guest_atomic, guest_begin, guest_commit, guest_execute, guest_query_page, guest_rollback,
-    set_connection,
+    bootstrap_for, capabilities_for, guest_bootstrap, guest_capabilities, guest_execute_request,
+    guest_execute_request_on, host_session, host_session_on, set_connection,
 };
-use bookclerk_plugin_sdk::v2::{
-    Database, DatabaseContext, DatabaseSession, ExecResult, PluginDescribe, PluginRoot, QueryPage,
-    ScalarLimits, Statement, Transaction, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+use bookclerk_plugin_abi::db::{connect_params_from_context, DbConnectParams};
+use bookclerk_plugin_abi::HostAdapterDatabaseSession;
+use bookclerk_plugin_sdk::{
+    serve, DbBootstrap, DbCapabilities, ExecuteReply, ExecuteRequest, PluginError, PluginMetadata,
 };
 use bookclerk_plugin_sdk::{
-    serve, DbAtomicRequest, DbConnectParams, HandshakeResult, PluginError, StatementDto,
+    AdapterDatabaseSession, Database, DatabaseContext, PluginDescribe, PluginRoot, ScalarLimits,
+    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 
 fn describe_metadata() -> Result<String, PluginError> {
-    bookclerk_plugin_sdk::encode_json(HandshakeResult {
+    bookclerk_plugin_sdk::encode_json(PluginMetadata {
         api_version: PRODUCT_API_VERSION,
         id: "postgres".into(),
         kind: "database".into(),
         display_name: Some("PostgreSQL".into()),
-        capabilities: vec![
-            "health".into(),
-            "diagnose".into(),
-            "dbConnect".into(),
-            "dbPing".into(),
-            "dbQuery".into(),
-            "dbExecute".into(),
-            "dbBegin".into(),
-            "dbCommit".into(),
-            "dbRollback".into(),
-            "dbAtomic".into(),
-        ],
+        capabilities: vec!["health".into(), "diagnose".into()],
         sort_key: Some(5),
-        ..HandshakeResult::default()
+        ..PluginMetadata::default()
     })
 }
 
-fn map_guest(err: String) -> PluginError {
-    if err.contains("invalid query cursor") {
-        PluginError::invalid_cursor(err)
-    } else {
-        PluginError::internal(err)
-    }
-}
-
-fn to_dto(statement: &Statement, txn_id: Option<String>) -> StatementDto {
-    StatementDto {
-        sql: statement.sql.clone(),
-        values: serde_json::from_str(&statement.values_json).unwrap_or_default(),
-        txn_id,
-    }
-}
-
-fn exec_from_dto(dto: bookclerk_plugin_sdk::ExecResultDto) -> ExecResult {
-    ExecResult {
-        last_insert_id: i64::try_from(dto.last_insert_id).unwrap_or(i64::MAX),
-        rows_affected: dto.rows_affected,
-    }
-}
-
 async fn connect_from_context(ctx: &DatabaseContext) -> Result<(), PluginError> {
-    let params: DbConnectParams = if ctx.json.trim().is_empty() {
-        return Err(PluginError::invalid_params(
-            "postgres database context is missing connect params",
-        ));
-    } else {
-        serde_json::from_str(&ctx.json)
-            .map_err(|err| PluginError::invalid_params(err.to_string()))?
-    };
-    let DbConnectParams::Postgres {
-        plugin_data_dir: _,
-        url,
-    } = params
-    else {
+    let params = connect_params_from_context(ctx)?;
+    let DbConnectParams::Postgres { url, .. } = params else {
         return Err(PluginError::invalid_params(
             "postgres guest received non-postgres database context",
         ));
@@ -86,7 +43,32 @@ async fn connect_from_context(ctx: &DatabaseContext) -> Result<(), PluginError> 
     Ok(())
 }
 
-/// Database guest that opens a Postgres URL and serves SeaORM RPC through `bookclerk-db-guest`.
+/// Opens a dedicated per-binding connection when the context targets a named
+/// plugin database binding.
+async fn binding_from_context(
+    ctx: &DatabaseContext,
+) -> Result<Option<sea_orm::DatabaseConnection>, PluginError> {
+    let Ok(DbConnectParams::Postgres {
+        url,
+        binding: Some(binding),
+        database,
+        ..
+    }) = connect_params_from_context(ctx)
+    else {
+        return Ok(None);
+    };
+    let database = database.ok_or_else(|| {
+        PluginError::invalid_params(format!(
+            "database binding `{binding}` open is missing its database name"
+        ))
+    })?;
+    let db = bookclerk_plugin_database_postgres::open_binding(&url, &database)
+        .await
+        .map_err(|e| PluginError::internal(format!("database binding `{binding}`: {e}")))?;
+    Ok(Some(db))
+}
+
+/// Database guest that opens a Postgres URL and serves typed adapter RPC.
 struct PostgresRoot;
 
 #[async_trait(?Send)]
@@ -101,99 +83,67 @@ impl PluginRoot for PostgresRoot {
             scalar_limits: ScalarLimits::default().into(),
             supported_roles: vec!["database".into()],
             metadata_json: describe_metadata()?,
-            ..PluginDescribe::default()
         })
     }
 
     async fn database(&self, context: DatabaseContext) -> Result<Box<dyn Database>, PluginError> {
+        if let Some(conn) = binding_from_context(&context).await? {
+            return Ok(Box::new(PostgresDatabase {
+                dedicated: Some(conn),
+            }));
+        }
         connect_from_context(&context).await?;
-        Ok(Box::new(PostgresDatabase))
+        Ok(Box::new(PostgresDatabase { dedicated: None }))
     }
 }
 
-struct PostgresDatabase;
+/// Postgres database factory: shared library pool, or a dedicated database
+/// connection for named plugin database bindings.
+struct PostgresDatabase {
+    dedicated: Option<sea_orm::DatabaseConnection>,
+}
 
 #[async_trait(?Send)]
 impl Database for PostgresDatabase {
-    async fn open_session(&self) -> Result<Box<dyn DatabaseSession>, PluginError> {
-        Ok(Box::new(PostgresSession))
+    async fn open_session(&self) -> Result<Box<dyn AdapterDatabaseSession>, PluginError> {
+        Ok(Box::new(PostgresSession {
+            dedicated: self.dedicated.clone(),
+        }))
+    }
+
+    fn host_session(&self) -> Option<Box<dyn HostAdapterDatabaseSession>> {
+        if let Some(conn) = &self.dedicated {
+            return Some(Box::new(host_session_on(conn.clone())));
+        }
+        Some(Box::new(host_session()))
     }
 }
 
-struct PostgresSession;
-
-#[async_trait(?Send)]
-impl DatabaseSession for PostgresSession {
-    async fn execute(&self, statement: Statement) -> Result<ExecResult, PluginError> {
-        if statement.sql == "bookclerk.atomic" {
-            return Err(PluginError::unsupported(
-                "bookclerk.atomic is a query, not execute",
-            ));
-        }
-        let dto = guest_execute(to_dto(&statement, None))
-            .await
-            .map_err(map_guest)?;
-        Ok(exec_from_dto(dto))
-    }
-
-    async fn query(
-        &self,
-        statement: Statement,
-        cursor: &str,
-        limit: u32,
-    ) -> Result<QueryPage, PluginError> {
-        if statement.sql == "bookclerk.atomic" {
-            let req: DbAtomicRequest = serde_json::from_str(&statement.values_json)
-                .map_err(|e| PluginError::invalid_params(e.to_string()))?;
-            let result = guest_atomic(req).await.map_err(map_guest)?;
-            return Ok(QueryPage {
-                rows_json: bookclerk_plugin_sdk::encode_json(result)?,
-                next_cursor: None,
-            });
-        }
-        let page = guest_query_page(to_dto(&statement, None), cursor, limit)
-            .await
-            .map_err(map_guest)?;
-        Ok(page)
-    }
-
-    async fn begin(&self) -> Result<Box<dyn Transaction>, PluginError> {
-        let txn_id = guest_begin(None).await.map_err(map_guest)?;
-        Ok(Box::new(PostgresTxn { txn_id }))
-    }
-}
-
-struct PostgresTxn {
-    txn_id: String,
+struct PostgresSession {
+    dedicated: Option<sea_orm::DatabaseConnection>,
 }
 
 #[async_trait(?Send)]
-impl Transaction for PostgresTxn {
-    async fn execute(&self, statement: Statement) -> Result<ExecResult, PluginError> {
-        let dto = guest_execute(to_dto(&statement, Some(self.txn_id.clone())))
-            .await
-            .map_err(map_guest)?;
-        Ok(exec_from_dto(dto))
+impl AdapterDatabaseSession for PostgresSession {
+    async fn capabilities(&self) -> Result<DbCapabilities, PluginError> {
+        match &self.dedicated {
+            Some(conn) => Ok(capabilities_for(conn)),
+            None => guest_capabilities().await,
+        }
     }
 
-    async fn query(
-        &self,
-        statement: Statement,
-        cursor: &str,
-        limit: u32,
-    ) -> Result<QueryPage, PluginError> {
-        let page = guest_query_page(to_dto(&statement, Some(self.txn_id.clone())), cursor, limit)
-            .await
-            .map_err(map_guest)?;
-        Ok(page)
+    async fn bootstrap(&self) -> Result<DbBootstrap, PluginError> {
+        match &self.dedicated {
+            Some(conn) => Ok(bootstrap_for(conn)),
+            None => guest_bootstrap().await,
+        }
     }
 
-    async fn commit(&self) -> Result<(), PluginError> {
-        guest_commit(self.txn_id.clone()).await.map_err(map_guest)
-    }
-
-    async fn rollback(&self) -> Result<(), PluginError> {
-        guest_rollback(self.txn_id.clone()).await.map_err(map_guest)
+    async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply, PluginError> {
+        match &self.dedicated {
+            Some(conn) => guest_execute_request_on(conn, request).await,
+            None => guest_execute_request(request).await,
+        }
     }
 }
 

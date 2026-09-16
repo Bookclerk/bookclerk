@@ -23,8 +23,9 @@ path = "src/main.rs"
 [dependencies]
 async-trait.workspace = true
 base64.workspace = true
+bookclerk-db-exec.workspace = true
 bookclerk-db-guest.workspace = true
-bookclerk-library.workspace = true
+bookclerk-plugin-abi = { workspace = true, features = ["host"] }
 bookclerk-plugin-sdk = { workspace = true, features = ["db"] }
 chrono.workspace = true
 hex.workspace = true
@@ -37,6 +38,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+bookclerk-library.workspace = true
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 wiremock.workspace = true

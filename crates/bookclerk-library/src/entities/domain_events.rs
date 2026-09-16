@@ -43,6 +43,8 @@ pub struct Model {
     pub wake_cursor_at: String,
     /// Delivery id cursor paired with [`Self::wake_cursor_at`].
     pub wake_cursor_id: String,
+    /// Frozen JSON array of plugin ids for paged dispatch receipts.
+    pub dispatch_snapshot_json: String,
 }
 
 /// Declared SeaORM relations (deliveries are queried by `event_id`).

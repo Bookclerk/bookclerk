@@ -55,7 +55,7 @@ export type Manifest = {
     /** Declared Workers RPC method list the guest implements. */
     methods?: { list?: string[] };
   };
-  /** Optional CLI schema block (`[[cli.commands]]`) mirrored into handshake. */
+  /** Optional CLI schema block (`[[cli.commands]]`) mirrored into describe metadata. */
   cli?: unknown;
 };
 

@@ -199,7 +199,7 @@ pub async fn enqueue_integration_scan(
     .await
 }
 
-/// Admit an ABI v2 `JobHandler` stream-copy invocation.
+/// Admit an ABI `JobHandler` stream-copy invocation.
 #[allow(dead_code)] // API/CLI enqueue lands with the #118 broker follow-up.
 pub async fn enqueue_plugin_copy(
     state: Arc<AppState>,
@@ -235,7 +235,46 @@ pub async fn enqueue_plugin_copy(
 /// the row to `pending`.
 pub const JOB_SUSPENDED_DETAIL_PREFIX: &str = "suspended until ";
 
-/// Runs `plugin.worker().handle(stream_copy)` on a loaded v2 destination guest.
+/// Opens the consented named database bindings for one plugin invocation.
+///
+/// These are plugin-owned units, not the host job queue. `jobs` stays on the
+/// library; guests never receive SQL against it. Reads the stored operator
+/// grant (`database:<NAME>` entries) and asks the active database adapter to
+/// open (provisioning on first use) one isolated session per binding. Fails
+/// closed: a granted binding that cannot be provisioned fails the job rather
+/// than running without isolation.
+async fn open_granted_binding_databases(
+    state: &AppState,
+    plugin_id: &str,
+    library: &bookclerk_library::LibraryStore,
+) -> anyhow::Result<Vec<(String, bookclerk_plugin_host::GuestDatabaseFactory)>> {
+    let config = state.config.read().await.clone();
+    let files_dir = config.paths().files_dir.clone();
+    let names = {
+        let store = bookclerk_plugin_host::PluginGrantStore::load(&files_dir)
+            .map_err(|err| anyhow::anyhow!("plugin grant store could not be loaded: {err}"))?;
+        store
+            .get(plugin_id)
+            .map(bookclerk_plugin_host::granted_database_bindings)
+            .unwrap_or_default()
+    };
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let registry = state.database_registry.read().await;
+    let Some(active) = registry.active() else {
+        anyhow::bail!(
+            "plugin `{plugin_id}` has granted database bindings {names:?} but no active \
+             database plugin is loaded"
+        );
+    };
+    active
+        .open_binding_databases(&config, library, plugin_id, &names)
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))
+}
+
+/// Runs `plugin.worker().handle(stream_copy)` on a loaded destination guest.
 pub async fn run_plugin_copy(
     state: &AppState,
     plugin_id: Option<&str>,
@@ -255,9 +294,9 @@ pub async fn run_plugin_copy(
     }
     let destinations = state.destinations.read().await;
     let session = destinations
-        .v2_session(plugin_id, bookclerk_plugin_host::OPERATOR_ACCOUNT)
+        .plugin_session(plugin_id, bookclerk_plugin_host::OPERATOR_ACCOUNT)
         .ok_or_else(|| {
-            anyhow::anyhow!("no abi v2 session for plugin `{plugin_id}` (guest not loaded)")
+            anyhow::anyhow!("no plugin session for plugin `{plugin_id}` (guest not loaded)")
         })?;
     let lease = match ctx {
         Some(ctx) => bookclerk_plugin_host::JobInvocationLease {
@@ -285,6 +324,7 @@ pub async fn run_plugin_copy(
     let cancel = ctx
         .map(|c| std::sync::Arc::clone(&c.cancel))
         .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let databases = open_granted_binding_databases(state, plugin_id, &library).await?;
     let outcome = tokio::select! {
         () = async {
             loop {
@@ -296,12 +336,13 @@ pub async fn run_plugin_copy(
         } => {
             anyhow::bail!("cancelled");
         }
-        outcome = session.stream_copy_with_cancel(
+        outcome = session.stream_copy_with_databases(
             lease,
             from,
             to,
             cancel,
             ctx.map(|c| (library.clone(), c.fence.clone())),
+            databases,
         ) => outcome?,
     };
     match outcome {
@@ -822,5 +863,15 @@ mod tests {
         )
         .await;
         assert!(!acquire_job_includes_book(&book, true, true));
+    }
+
+    #[test]
+    fn grant_store_read_error_fails_the_job_instead_of_dropping_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("plugin-grants.json"), "{not-json").unwrap();
+        let err = bookclerk_plugin_host::PluginGrantStore::load(dir.path())
+            .map_err(|err| anyhow::anyhow!("plugin grant store could not be loaded: {err}"))
+            .expect_err("corrupt grant file must fail closed");
+        assert!(err.to_string().contains("plugin grant store"), "{err}");
     }
 }

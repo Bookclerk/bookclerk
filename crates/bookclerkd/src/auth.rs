@@ -3619,7 +3619,7 @@ pub(crate) mod tests {
     ///
     /// Production hosts call [`bookclerk_library::configure_master_key_with`] at
     /// startup. Claim redeem HMACs the portal session from that key so HTTP
-    /// retries reuse the same `dbAtomic` operation id.
+    /// retries reuse the same atomic operation id.
     ///
     /// Holds the process DEK stable while a test derives claim fingerprints.
     ///

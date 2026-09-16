@@ -143,7 +143,13 @@
         "secrets": { "type": "boolean" },
         "plugin_kv": { "type": "boolean" },
         "work_fs": { "type": "boolean" },
-        "oauth": { "type": "boolean" }
+        "oauth": { "type": "boolean" },
+        "databases": {
+          "type": "array",
+          "description": "Named plugin-owned database bindings (Workers-style). Each name binds an isolated database provisioned by the active adapter.",
+          "maxItems": 8,
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$", "maxLength": 32 }
+        }
       }
     },
     "MethodCapabilities": {

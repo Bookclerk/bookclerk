@@ -4,7 +4,7 @@ Full **workerd** Echo guest: Rust business logic compiled to Wasm
 ([`src/lib.rs`](src/lib.rs)), plus JS that imports the package:
 
 ```js
-import { wasmBookclerkPlugin } from "@bookclerk/plugin-sdk/workerd";
+import { BookclerkPlugin, Integration } from "@bookclerk/plugin-sdk/workerd";
 ```
 
 (`bookclerk-workerd` injects that module — not a relative embed path.)

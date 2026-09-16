@@ -1,7 +1,8 @@
 # ABI wire golden fixtures
 
-JSON samples for host↔guest Workers RPC payloads. Keys are **camelCase** to
-match `schema/abi.json` `$defs` and the TS / Python SDKs.
+JSON samples for the JSON payloads carried inside `Text` fields of the
+Cap'n Proto ABI. Keys are **camelCase** to match the "JSON payload contracts"
+section of `schema/plugin.capnp` and the TS / Python SDKs.
 
 Consumed by:
 

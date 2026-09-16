@@ -343,6 +343,10 @@ fn mask_domain_labels(labels: &[&str]) -> String {
 }
 
 /// Replaces inline `local@domain` addresses with [`mask_email`] forms.
+///
+/// # Panics
+///
+/// If the compiled email regex is invalid (static pattern).
 fn redact_emails_in_text(input: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
@@ -373,6 +377,10 @@ pub fn truncate_upload_message(message: &str) -> String {
 }
 
 /// Replaces `/home/`, `/Users/`, and `\\Users\\` usernames with [`REDACTED`].
+///
+/// # Panics
+///
+/// If the compiled home-path regex is invalid (static pattern).
 fn redact_home_paths(input: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
@@ -385,6 +393,10 @@ fn redact_home_paths(input: &str) -> String {
 }
 
 /// Masks account file stems in `Accounts/*.auth` and `Accounts/*.wvd` paths.
+///
+/// # Panics
+///
+/// If the compiled auth-path regex is invalid (static pattern).
 fn redact_auth_paths(input: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
@@ -397,6 +409,10 @@ fn redact_auth_paths(input: &str) -> String {
 }
 
 /// Compiled regexes for token/key shapes that may not be registered yet.
+///
+/// # Panics
+///
+/// If any compiled redaction regex is invalid (static pattern).
 fn secret_patterns() -> &'static [Regex] {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
@@ -507,6 +523,10 @@ impl<W: std::io::Write> RedactingWriter<W> {
     }
 
     /// Writes a complete chunk after [`redact_str`]; non-UTF-8 becomes [`REDACTED`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the inner writer fails.
     fn write_redacted_chunk(&mut self, chunk: &[u8]) -> std::io::Result<()> {
         match std::str::from_utf8(chunk) {
             Ok(s) => self.inner.write_all(redact_str(s).as_bytes()),
@@ -515,6 +535,10 @@ impl<W: std::io::Write> RedactingWriter<W> {
     }
 
     /// Redacts and writes the incomplete-line buffer (flush, drop, or size cap).
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when redacted output cannot be written.
     fn flush_pending(&mut self) -> std::io::Result<()> {
         if self.pending.is_empty() {
             return Ok(());
@@ -524,6 +548,10 @@ impl<W: std::io::Write> RedactingWriter<W> {
     }
 
     /// Redacts every newline-terminated line; flushes if the buffer exceeds the cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when a complete line cannot be written.
     fn drain_complete_lines(&mut self) -> std::io::Result<()> {
         while let Some(nl) = self.pending.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = self.pending.drain(..=nl).collect();

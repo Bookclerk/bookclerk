@@ -27,7 +27,8 @@
 //! grow a new host-cache directory per `fetchTitle`. Granting the whole cache
 //! would let one plugin read or overwrite every other fetch's scratch. Plugin
 //! `tmp` is already in the spawn allowlist and is this guest's principal only.
-//! v1 passed a per-call directory over `SCM_RIGHTS` on fd 3; v2 does not arm
+//! v1 JSON adapters passed a per-call directory over `SCM_RIGHTS` on fd 3; the
+//! product ABI does not arm
 //! that channel (workerd cannot `recvmsg`; destinations stream).
 //!
 //! # Why a launcher
@@ -291,7 +292,7 @@ impl GuestJail {
                                 }
                             }
                         }
-                        // v2 does not pass per-RPC descriptors; fetch scratch is
+                        // The product ABI does not pass per-RPC descriptors; fetch scratch is
                         // plugin `tmp` and sqlite paths are spawn-time grants.
                         let preserve_fds: Vec<i32> = Vec::new();
 
@@ -388,6 +389,9 @@ fn build_spec_with_grant(
     // File-level grants only — never the files-dir parent (see module docs).
     if is_sqlite_database_plugin(plugin) {
         writes.extend(sqlite_library_paths(config));
+        // Isolated per-binding database files for named plugin database
+        // bindings live under one host-managed tree the adapter owns.
+        writes.push(plugin_databases_dir(config));
     }
     let mut resources = guest_spec_resource_limits(plugin, grant);
     // Global jail knobs only override resource ceilings. Guest filesystems remain
@@ -590,6 +594,11 @@ fn sqlite_library_paths(config: &Config) -> Vec<PathBuf> {
     vec![db, wal, shm, journal]
 }
 
+/// Root of the isolated per-binding database files granted to the sqlite adapter.
+fn plugin_databases_dir(config: &Config) -> PathBuf {
+    config.paths().files_dir.join("plugin-databases")
+}
+
 /// Touch the SQLite DB and sidecars so the confinement backend can attach
 /// per-file rules (Landlock opens each path with `O_PATH`; AppContainer ACLs
 /// are set on existing paths).
@@ -604,6 +613,9 @@ fn ensure_sqlite_library_files(config: &Config) -> std::io::Result<()> {
             .append(true)
             .open(path)?;
     }
+    // Directory-level grant for named plugin database bindings (a directory
+    // rule covers files created later inside it).
+    std::fs::create_dir_all(plugin_databases_dir(config))?;
     Ok(())
 }
 

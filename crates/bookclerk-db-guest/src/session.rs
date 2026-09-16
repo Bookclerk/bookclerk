@@ -3,22 +3,28 @@
 //! Each RPC arrives on a new Tokio task. SQLite's in-process proxy leases an
 //! open `BEGIN` to the task that called `begin`, so routing statements through
 //! a dedicated worker task keeps that lease valid until commit/rollback.
-//! The same worker serializes Postgres connection use. D1 guests reject
-//! `dbBegin` and implement `dbAtomic` (one HTTP batch). SQLite and Postgres
-//! also implement `dbAtomic` as one native transaction plus a durable receipt.
+//! The same worker serializes Postgres connection use. D1 guests use typed
+//! `execute` batches; SQLite and Postgres run named security ops via host IR
+//! envelopes and durable receipts.
+
+#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc, dead_code)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, OnceLock};
 
-use bookclerk_plugin_sdk::v2::{QueryPage, MAX_LIST_PAGE, MAX_SCALAR_BYTES};
-use bookclerk_plugin_sdk::{
-    proxy_rows_to_dto, statement_from_dto, DbAtomicRequest, DbAtomicResult, ExecResultDto,
-    ProxyRowDto, QueryResultDto, StatementDto,
+use crate::sql::{
+    guest_statement_to_seaorm, row_to_guest_row, GuestExecResult, GuestQueryResult, GuestRow,
+    GuestStatement,
 };
+use bookclerk_db_exec::{DbAtomicRequest, DbPlanExecResult};
+use bookclerk_plugin_abi::HostExecuteEnvelope;
+use bookclerk_plugin_abi::{DbCapabilities, ExecuteReply, ExecuteRequest};
+use bookclerk_plugin_sdk::database_adapter::plugin_error_from_db_err;
+use bookclerk_plugin_sdk::{QueryPage, MAX_LIST_PAGE, MAX_SCALAR_BYTES};
 use futures::TryStreamExt;
 use sea_orm::{
-    from_query_result_to_proxy_row, ConnectionTrait, DatabaseConnection, DatabaseTransaction,
-    DbBackend, StreamTrait, TransactionSession, TransactionTrait,
+    ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbBackend, StreamTrait,
+    TransactionSession, TransactionTrait,
 };
 use tokio::sync::{mpsc, oneshot, Mutex, OwnedMutexGuard};
 
@@ -40,16 +46,16 @@ enum TxnOp {
         /// Opaque txn id the host attached to this statement or finish call.
         txn_id: String,
         /// RPC statement DTO (SQL + params) from the host bridge.
-        dto: StatementDto,
+        dto: GuestStatement,
         /// Oneshot used to return query rows to the RPC task.
-        reply: oneshot::Sender<Result<QueryResultDto>>,
+        reply: oneshot::Sender<Result<GuestQueryResult>>,
     },
     /// Paged read: adapter fetches at most `limit + 1` rows.
     QueryPage {
         /// Opaque txn id the host attached to this statement or finish call.
         txn_id: String,
         /// RPC statement DTO (SQL + params) from the host bridge.
-        dto: StatementDto,
+        dto: GuestStatement,
         /// Numeric offset cursor (`""` for the first page).
         cursor: String,
         /// Page size; `0` means [`MAX_LIST_PAGE`].
@@ -62,9 +68,9 @@ enum TxnOp {
         /// Opaque txn id the host attached to this statement or finish call.
         txn_id: String,
         /// RPC statement DTO (SQL + params) from the host bridge.
-        dto: StatementDto,
+        dto: GuestStatement,
         /// Oneshot used to return last-insert id / rows-affected to the RPC task.
-        reply: oneshot::Sender<Result<ExecResultDto>>,
+        reply: oneshot::Sender<Result<GuestExecResult>>,
     },
     /// Opens a nested savepoint on the parent worker and returns a new txn id.
     BeginNested {
@@ -86,6 +92,16 @@ enum TxnOp {
         txn_id: String,
         /// Oneshot used to return commit/rollback success or an engine error.
         reply: oneshot::Sender<Result<()>>,
+    },
+    /// Runs a typed atomic batch on the named txn without BEGIN/COMMIT.
+    ExecuteAtomic {
+        /// Opaque txn id the host attached to this batch.
+        txn_id: String,
+        /// Typed envelope (request + optional guest-receipt persist).
+        envelope: HostExecuteEnvelope,
+        /// Oneshot used to return the typed reply.
+        reply:
+            oneshot::Sender<std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError>>,
     },
 }
 
@@ -146,7 +162,7 @@ pub async fn guest_ping() -> Result<()> {
 /// Returns an error string when not connected, the parent is unknown, or the
 /// engine rejects `BEGIN`.
 pub async fn guest_begin(parent_txn_id: Option<String>) -> Result<String> {
-    if bookclerk_library::consume_begin_injection() {
+    if bookclerk_db_exec::consume_begin_injection() {
         return Err("database begin failed: injected begin failure".into());
     }
     if let Some(parent_txn_id) = parent_txn_id {
@@ -212,22 +228,281 @@ pub async fn guest_rollback(txn_id: String) -> Result<()> {
     finish_txn(txn_id, false).await
 }
 
-/// Runs a named library operation as one native SQL transaction with a receipt.
+/// Runs a host-authored generic SQL plan as one native transaction.
+///
+/// Guests must not compile Bookclerk operation names. The host sends
+/// [`DbAtomicRequest::plan`]; missing plans fail closed. Results are generic
+/// statement rows; the host interprets receipts and application status.
 ///
 /// # Arguments
 ///
-/// * `req` - Idempotency envelope (`operationId` + named command).
+/// * `req` - Idempotency envelope (`operationId` + generic plan).
 ///
 /// # Errors
 ///
-/// Returns an error string when not connected or the engine rejects the work.
-pub async fn guest_atomic(req: DbAtomicRequest) -> Result<DbAtomicResult> {
+/// Returns an error string when not connected, the plan is missing, or the
+/// engine rejects the work.
+pub async fn guest_atomic(
+    req: DbAtomicRequest,
+) -> std::result::Result<DbPlanExecResult, bookclerk_plugin_abi::PluginError> {
     let gate = txn_gate();
     let _gate = gate.lock().await;
-    let conn = connection().await?;
-    bookclerk_library::execute_db_atomic(&conn, req)
+    let conn = connection()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(bookclerk_plugin_abi::PluginError::internal)?;
+    let plan = req.plan.ok_or_else(|| {
+        bookclerk_plugin_abi::PluginError::invalid_params(
+            "atomic execute requires a host-authored executePlan",
+        )
+    })?;
+    let caps = match conn.get_database_backend() {
+        DbBackend::Postgres => DbCapabilities::advertised_postgres(),
+        _ => DbCapabilities::advertised_sqlite(),
+    };
+    let timing_source = match conn.get_database_backend() {
+        DbBackend::Postgres => "postgres_txn",
+        _ => "sqlite_txn",
+    };
+    bookclerk_db_exec::execute_statements_on_session(
+        &conn,
+        &plan,
+        &req.operation_id,
+        timing_source,
+        bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
+        bookclerk_db_exec::AtomicSession::from_deadline(req.deadline_unix_ms),
+    )
+    .await
+    .map_err(|e| plugin_error_from_db_err(&e))
+}
+
+/// Typed `DatabaseSession.capabilities` for the connected engine.
+///
+/// # Errors
+///
+/// Returns when no connection has been opened.
+pub async fn guest_capabilities(
+) -> std::result::Result<DbCapabilities, bookclerk_plugin_abi::PluginError> {
+    let conn = connection()
+        .await
+        .map_err(bookclerk_plugin_abi::PluginError::internal)?;
+    Ok(match conn.get_database_backend() {
+        DbBackend::Postgres => DbCapabilities::advertised_postgres(),
+        _ => DbCapabilities::advertised_sqlite(),
+    })
+}
+
+/// Bootstrap-only SeaORM proxy metadata for the connected engine.
+///
+/// # Errors
+///
+/// Returns when no connection has been opened.
+pub async fn guest_bootstrap(
+) -> std::result::Result<bookclerk_plugin_abi::DbBootstrap, bookclerk_plugin_abi::PluginError> {
+    let conn = connection()
+        .await
+        .map_err(bookclerk_plugin_abi::PluginError::internal)?;
+    Ok(match conn.get_database_backend() {
+        DbBackend::Postgres => bookclerk_plugin_abi::DbBootstrap::postgres(),
+        _ => bookclerk_plugin_abi::DbBootstrap::sqlite(),
+    })
+}
+
+/// Library-connection typed session: non-empty `type_env` so catalog snapshot
+/// merges live physical tables (host schema) instead of catalog-only bindings.
+fn library_typed_session(deadline: Option<u64>) -> bookclerk_db_exec::AtomicSession {
+    bookclerk_db_exec::AtomicSession::from_deadline(deadline)
+        .with_type_env(bookclerk_plugin_abi::sql_host_bookkeeping_type_env())
+}
+
+/// Typed `DatabaseSession.executeAtomic` on the shared library connection.
+///
+/// Runs [`ExecuteRequest`] directly (no JSON `DbAtomicRequest` conversion).
+/// The guest encodes [`ExecuteReply`] before COMMIT; post-commit failures are
+/// classified as `unavailable`.
+///
+/// # Errors
+///
+/// Returns when no connection is open or the engine rejects the work.
+pub async fn guest_execute_atomic(
+    envelope: HostExecuteEnvelope,
+) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
+    let gate = txn_gate();
+    let _gate = gate.lock().await;
+    let conn = connection()
+        .await
+        .map_err(bookclerk_plugin_abi::PluginError::internal)?;
+    let deadline =
+        (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
+    guest_execute_typed(&conn, envelope, library_typed_session(deadline)).await
+}
+
+/// Typed `executeAtomic` on an explicit connection (per-binding sessions).
+///
+/// Unlike [`guest_execute_atomic`], no process-wide writer gate applies:
+/// plugin database bindings are independent databases, so their transactions
+/// never interleave with the shared library connection.
+///
+/// # Errors
+///
+/// Returns when the engine rejects the work.
+pub async fn guest_execute_atomic_on(
+    conn: &DatabaseConnection,
+    envelope: HostExecuteEnvelope,
+) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
+    let deadline =
+        (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
+    guest_execute_typed(
+        conn,
+        envelope,
+        bookclerk_db_exec::AtomicSession::from_deadline(deadline),
+    )
+    .await
+}
+
+/// Pre-admission typed execute: may typecheck. Public `DatabaseSession.execute`.
+///
+/// # Errors
+///
+/// Returns when no connection is open or the engine rejects the work.
+pub async fn guest_execute_request(
+    request: bookclerk_plugin_abi::ExecuteRequest,
+) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
+    let gate = txn_gate();
+    let _gate = gate.lock().await;
+    let conn = connection()
+        .await
+        .map_err(bookclerk_plugin_abi::PluginError::internal)?;
+    let deadline = (request.deadline_unix_ms > 0).then_some(request.deadline_unix_ms);
+    guest_execute_typed_on_session(&conn, request, library_typed_session(deadline)).await
+}
+
+/// Pre-admission typed execute on an explicit connection.
+///
+/// # Errors
+///
+/// Returns when the engine rejects the work.
+pub async fn guest_execute_request_on(
+    conn: &DatabaseConnection,
+    request: bookclerk_plugin_abi::ExecuteRequest,
+) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
+    let deadline = (request.deadline_unix_ms > 0).then_some(request.deadline_unix_ms);
+    guest_execute_typed_on_session(
+        conn,
+        request,
+        bookclerk_db_exec::AtomicSession::from_deadline(deadline),
+    )
+    .await
+}
+
+/// Pre-admission typed execute: may typecheck against the session type env.
+async fn guest_execute_typed_on_session(
+    conn: &DatabaseConnection,
+    request: bookclerk_plugin_abi::ExecuteRequest,
+    session: bookclerk_db_exec::AtomicSession,
+) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
+    let caps = capabilities_for(conn);
+    let timing_source = match conn.get_database_backend() {
+        DbBackend::Postgres => "postgres_txn",
+        _ => "sqlite_txn",
+    };
+    bookclerk_db_exec::execute_typed_on_session(
+        conn,
+        &request,
+        bookclerk_plugin_abi::GuestReceiptPersist::default(),
+        timing_source,
+        bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
+        session,
+    )
+    .await
+    .map_err(|e| plugin_error_from_db_err(&e))
+}
+
+/// Runs a typed envelope with the given session (library vs binding type env).
+async fn guest_execute_typed(
+    conn: &DatabaseConnection,
+    envelope: HostExecuteEnvelope,
+    session: bookclerk_db_exec::AtomicSession,
+) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
+    let caps = capabilities_for(conn);
+    let timing_source = match conn.get_database_backend() {
+        DbBackend::Postgres => "postgres_txn",
+        _ => "sqlite_txn",
+    };
+    bookclerk_db_exec::execute_typed_envelope(
+        conn,
+        &envelope,
+        timing_source,
+        bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
+        session,
+    )
+    .await
+    .map_err(|e| plugin_error_from_db_err(&e))
+}
+
+/// Advertised capabilities for an explicit connection's engine family.
+#[must_use]
+pub fn capabilities_for(conn: &DatabaseConnection) -> DbCapabilities {
+    match conn.get_database_backend() {
+        DbBackend::Postgres => DbCapabilities::advertised_postgres(),
+        _ => DbCapabilities::advertised_sqlite(),
+    }
+}
+
+/// Bootstrap metadata for an explicit connection's engine family.
+#[must_use]
+pub fn bootstrap_for(conn: &DatabaseConnection) -> bookclerk_plugin_abi::DbBootstrap {
+    match conn.get_database_backend() {
+        DbBackend::Postgres => bookclerk_plugin_abi::DbBootstrap::postgres(),
+        _ => bookclerk_plugin_abi::DbBootstrap::sqlite(),
+    }
+}
+
+/// Typed `Transaction.executeAtomic` on an already-open guest transaction.
+///
+/// Does not BEGIN or COMMIT. The host still owns commit/rollback.
+///
+/// # Errors
+///
+/// Returns when the txn id is unknown or the engine rejects the work.
+pub async fn guest_execute_atomic_on_txn(
+    txn_id: String,
+    request: ExecuteRequest,
+) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
+    guest_execute_atomic_on_txn_envelope(
+        txn_id,
+        HostExecuteEnvelope::new(
+            request,
+            bookclerk_plugin_abi::GuestReceiptPersist::default(),
+        ),
+    )
+    .await
+}
+
+/// Typed `Transaction.executeAtomic` with a host-only guest-receipt persist hint.
+///
+/// # Errors
+///
+/// Returns when the txn id is unknown or the engine rejects the work.
+pub async fn guest_execute_atomic_on_txn_envelope(
+    txn_id: String,
+    envelope: HostExecuteEnvelope,
+) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
+    let tx = route(&txn_id)
+        .await
+        .map_err(bookclerk_plugin_abi::PluginError::internal)?;
+    let (reply, rx) = oneshot::channel();
+    tx.send(TxnOp::ExecuteAtomic {
+        txn_id,
+        envelope,
+        reply,
+    })
+    .await
+    .map_err(|_| {
+        bookclerk_plugin_abi::PluginError::internal("transaction worker closed".to_string())
+    })?;
+    rx.await.map_err(|_| {
+        bookclerk_plugin_abi::PluginError::internal("transaction worker closed".to_string())
+    })?
 }
 
 /// Runs a read-only SQL query through the guest database bridge.
@@ -238,12 +513,12 @@ pub async fn guest_atomic(req: DbAtomicRequest) -> Result<DbAtomicResult> {
 ///
 /// # Returns
 ///
-/// Query rows projected into [`QueryResultDto`].
+/// Query rows projected into `GuestQueryResult`.
 ///
 /// # Errors
 ///
 /// Returns an error string when not connected or the engine rejects the statement.
-pub async fn guest_query(dto: StatementDto) -> Result<QueryResultDto> {
+pub async fn guest_query(dto: GuestStatement) -> Result<GuestQueryResult> {
     if let Some(txn_id) = dto.txn_id.clone() {
         let tx = route(&txn_id).await?;
         let (reply, rx) = oneshot::channel();
@@ -284,7 +559,7 @@ pub async fn guest_query(dto: StatementDto) -> Result<QueryResultDto> {
 /// Returns an error string when not connected, the cursor is invalid, the
 /// engine rejects the statement, a row exceeds the scalar budget, or the
 /// driver returns more than `limit + 1` rows.
-pub async fn guest_query_page(dto: StatementDto, cursor: &str, limit: u32) -> Result<QueryPage> {
+pub async fn guest_query_page(dto: GuestStatement, cursor: &str, limit: u32) -> Result<QueryPage> {
     if let Some(txn_id) = dto.txn_id.clone() {
         let tx = route(&txn_id).await?;
         let (reply, rx) = oneshot::channel();
@@ -322,12 +597,12 @@ pub async fn guest_query_page(dto: StatementDto, cursor: &str, limit: u32) -> Re
 ///
 /// # Returns
 ///
-/// Last-insert id and rows-affected in an [`ExecResultDto`].
+/// Last-insert id and rows-affected in a `GuestExecResult`.
 ///
 /// # Errors
 ///
 /// Returns an error string when not connected or the engine rejects the statement.
-pub async fn guest_execute(dto: StatementDto) -> Result<ExecResultDto> {
+pub async fn guest_execute(dto: GuestStatement) -> Result<GuestExecResult> {
     if let Some(txn_id) = dto.txn_id.clone() {
         let tx = route(&txn_id).await?;
         let (reply, rx) = oneshot::channel();
@@ -347,7 +622,7 @@ pub async fn guest_execute(dto: StatementDto) -> Result<ExecResultDto> {
 /// Sends commit or rollback to the worker and drops the route on success.
 async fn finish_txn(txn_id: String, commit: bool) -> Result<()> {
     let tx = route(&txn_id).await?;
-    if commit && bookclerk_library::consume_commit_injection() {
+    if commit && bookclerk_db_exec::consume_commit_injection() {
         let (reply, rx) = oneshot::channel();
         tx.send(TxnOp::Rollback {
             txn_id: txn_id.clone(),
@@ -398,7 +673,7 @@ async fn connection() -> Result<DatabaseConnection> {
         .await
         .conn
         .clone()
-        .ok_or_else(|| "database not connected — call db.connect first".into())
+        .ok_or_else(|| "database not connected — open a session first".into())
 }
 
 /// Owns one SeaORM transaction and serializes nested ops until the root ends.
@@ -415,9 +690,9 @@ async fn txn_worker(
             return;
         }
     };
-    if bookclerk_library::is_txn_broken() {
+    if bookclerk_db_exec::is_txn_broken() {
         let fault =
-            bookclerk_library::take_txn_fault().unwrap_or_else(|| "database begin failed".into());
+            bookclerk_db_exec::take_txn_fault().unwrap_or_else(|| "database begin failed".into());
         let _ = txn.rollback().await;
         let _ = ready.send(Err(fault));
         return;
@@ -482,6 +757,38 @@ async fn txn_worker(
                     return;
                 }
             }
+            TxnOp::ExecuteAtomic {
+                txn_id,
+                envelope,
+                reply,
+            } => {
+                let result = match stack_txn(&stack, &txn_id) {
+                    Ok(txn) => {
+                        let caps = match ConnectionTrait::get_database_backend(txn) {
+                            DbBackend::Postgres => DbCapabilities::advertised_postgres(),
+                            _ => DbCapabilities::advertised_sqlite(),
+                        };
+                        let timing_source = match ConnectionTrait::get_database_backend(txn) {
+                            DbBackend::Postgres => "postgres_txn",
+                            _ => "sqlite_txn",
+                        };
+                        let deadline = (envelope.request.deadline_unix_ms > 0)
+                            .then_some(envelope.request.deadline_unix_ms);
+                        bookclerk_db_exec::execute_typed_on_txn_envelope(
+                            txn,
+                            &envelope,
+                            timing_source,
+                            bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
+                            library_typed_session(deadline),
+                            Some(&conn),
+                        )
+                        .await
+                        .map_err(|e| plugin_error_from_db_err(&e))
+                    }
+                    Err(err) => Err(bookclerk_plugin_abi::PluginError::internal(err)),
+                };
+                let _ = reply.send(result);
+            }
         }
     }
     let _ = rollback_stack(&mut stack).await;
@@ -519,9 +826,9 @@ async fn begin_nested(
             return Err(err.to_string());
         }
     };
-    if bookclerk_library::is_txn_broken() {
+    if bookclerk_db_exec::is_txn_broken() {
         let fault =
-            bookclerk_library::take_txn_fault().unwrap_or_else(|| "database begin failed".into());
+            bookclerk_db_exec::take_txn_fault().unwrap_or_else(|| "database begin failed".into());
         let _ = nested.rollback().await;
         stack.push((pid, parent));
         return Err(fault);
@@ -547,8 +854,16 @@ async fn pop_finish(
     }
     let (_, txn) = stack.pop().expect("checked last");
     if commit {
-        txn.commit().await.map_err(|e| e.to_string())?;
-        if let Some(fault) = bookclerk_library::take_txn_fault() {
+        if bookclerk_db_exec::is_txn_broken() {
+            let fault = bookclerk_db_exec::take_txn_fault()
+                .unwrap_or_else(|| "database transaction is broken".into());
+            let _ = txn.rollback().await;
+            return Err(fault);
+        }
+        txn.commit()
+            .await
+            .map_err(|e| format!("database commit failed: {e}"))?;
+        if let Some(fault) = bookclerk_db_exec::take_txn_fault() {
             return Err(fault);
         }
         Ok(())
@@ -565,16 +880,21 @@ async fn rollback_stack(stack: &mut Vec<(String, DatabaseTransaction)>) -> Resul
     Ok(())
 }
 
-/// Executes a read-only statement and projects rows into [`QueryResultDto`].
-async fn query_on<C: ConnectionTrait>(conn: &C, dto: StatementDto) -> Result<QueryResultDto> {
+/// Rebuilds a SeaORM statement after adapter-side canonical SQL lowering.
+fn statement_lowered(stmt: GuestStatement, backend: DbBackend) -> sea_orm::Statement {
+    guest_statement_to_seaorm(stmt, backend)
+}
+
+/// Executes a read-only statement and projects rows into [`GuestQueryResult`].
+async fn query_on<C: ConnectionTrait>(conn: &C, dto: GuestStatement) -> Result<GuestQueryResult> {
     let backend = conn.get_database_backend();
-    let stmt = statement_from_dto(dto, backend);
+    let stmt = statement_lowered(dto, backend);
     let rows = conn.query_all_raw(stmt).await.map_err(|e| e.to_string())?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        out.push(row_to_dto(&row));
+        out.push(row_to_guest_row(&row));
     }
-    Ok(QueryResultDto { rows: out })
+    Ok(GuestQueryResult { rows: out })
 }
 
 /// Page size for a guest query; `limit == 0` means [`MAX_LIST_PAGE`].
@@ -760,11 +1080,7 @@ fn parse_query_cursor(cursor: &str) -> Result<usize> {
 }
 
 /// Accumulates one JSON-encoded row into a page, stopping at [`MAX_SCALAR_BYTES`].
-fn push_bounded_row(
-    rows: &mut Vec<ProxyRowDto>,
-    encoded: &mut usize,
-    row: ProxyRowDto,
-) -> Result<()> {
+fn push_bounded_row(rows: &mut Vec<GuestRow>, encoded: &mut usize, row: GuestRow) -> Result<()> {
     let piece = serde_json::to_string(&row).map_err(|e| e.to_string())?;
     let extra = piece.len() + usize::from(!rows.is_empty());
     if encoded.saturating_add(extra).saturating_add(1) > MAX_SCALAR_BYTES as usize {
@@ -841,10 +1157,10 @@ fn postgres_probe_max_bytes(row: &sea_orm::QueryResult) -> Result<u64> {
 /// the protocol/decode cap.
 async fn postgres_query_page_once<C>(
     conn: &C,
-    dto: StatementDto,
+    dto: GuestStatement,
     fetch: usize,
     isolation: PostgresPageIsolation,
-) -> Result<Vec<ProxyRowDto>>
+) -> Result<Vec<GuestRow>>
 where
     C: ConnectionTrait + StreamTrait + TransactionTrait,
     <C as TransactionTrait>::Transaction: ConnectionTrait + StreamTrait + TransactionSession,
@@ -871,9 +1187,9 @@ where
 /// CREATE TEMP → size probe → ordered stream → DROP on one connection.
 async fn postgres_run_temp_page<C>(
     conn: &C,
-    dto: StatementDto,
+    dto: GuestStatement,
     fetch: usize,
-) -> Result<Vec<ProxyRowDto>>
+) -> Result<Vec<GuestRow>>
 where
     C: ConnectionTrait + StreamTrait,
 {
@@ -881,18 +1197,18 @@ where
     let txn_id = dto.txn_id.clone();
     let mut create = dto;
     create.sql = postgres_create_temp_page_sql(&names.table, &names.ord_col, &create.sql);
-    conn.execute_raw(statement_from_dto(create, DbBackend::Postgres))
+    conn.execute_raw(statement_lowered(create, DbBackend::Postgres))
         .await
         .map_err(|e| e.to_string())?;
 
     let fetched = async {
-        let probe = StatementDto {
+        let probe = GuestStatement {
             sql: postgres_temp_size_sql(&names.table),
             values: Vec::new(),
             txn_id: txn_id.clone(),
         };
         if let Some(row) = conn
-            .query_one_raw(statement_from_dto(probe, DbBackend::Postgres))
+            .query_one_raw(statement_lowered(probe, DbBackend::Postgres))
             .await
             .map_err(|e| e.to_string())?
         {
@@ -903,13 +1219,13 @@ where
                 ));
             }
         }
-        let select = StatementDto {
+        let select = GuestStatement {
             sql: postgres_temp_select_sql(&names.table, &names.ord_col),
             values: Vec::new(),
             txn_id: txn_id.clone(),
         };
         let mut rows =
-            stream_rows_bounded(conn, statement_from_dto(select, DbBackend::Postgres), fetch)
+            stream_rows_bounded(conn, statement_lowered(select, DbBackend::Postgres), fetch)
                 .await?;
         for row in &mut rows {
             row.values.remove(&names.ord_col);
@@ -918,13 +1234,13 @@ where
     }
     .await;
 
-    let drop = StatementDto {
+    let drop = GuestStatement {
         sql: postgres_drop_temp_sql(&names.table),
         values: Vec::new(),
         txn_id,
     };
     let _ = conn
-        .execute_raw(statement_from_dto(drop, DbBackend::Postgres))
+        .execute_raw(statement_lowered(drop, DbBackend::Postgres))
         .await;
     fetched
 }
@@ -934,7 +1250,7 @@ async fn stream_rows_bounded<C: ConnectionTrait + StreamTrait>(
     conn: &C,
     stmt: sea_orm::Statement,
     fetch: usize,
-) -> Result<Vec<ProxyRowDto>> {
+) -> Result<Vec<GuestRow>> {
     let stream = conn.stream_raw(stmt).await.map_err(|e| e.to_string())?;
     futures::pin_mut!(stream);
     let mut rows = Vec::new();
@@ -943,7 +1259,7 @@ async fn stream_rows_bounded<C: ConnectionTrait + StreamTrait>(
         if rows.len() >= fetch {
             return Err(format!("database adapter fetched more than {fetch} rows"));
         }
-        push_bounded_row(&mut rows, &mut encoded, row_to_dto(&row))?;
+        push_bounded_row(&mut rows, &mut encoded, row_to_guest_row(&row))?;
     }
     Ok(rows)
 }
@@ -956,7 +1272,7 @@ async fn fetch_page_all_raw<C: ConnectionTrait>(
     conn: &C,
     stmt: sea_orm::Statement,
     fetch: usize,
-) -> Result<Vec<ProxyRowDto>> {
+) -> Result<Vec<GuestRow>> {
     let fetched = conn.query_all_raw(stmt).await.map_err(|e| e.to_string())?;
     if fetched.len() > fetch {
         return Err(format!(
@@ -967,7 +1283,7 @@ async fn fetch_page_all_raw<C: ConnectionTrait>(
     let mut rows = Vec::new();
     let mut encoded = 1usize;
     for row in fetched {
-        push_bounded_row(&mut rows, &mut encoded, row_to_dto(&row))?;
+        push_bounded_row(&mut rows, &mut encoded, row_to_guest_row(&row))?;
     }
     Ok(rows)
 }
@@ -975,7 +1291,7 @@ async fn fetch_page_all_raw<C: ConnectionTrait>(
 /// Fetches one bounded page, failing if the adapter materializes more than `limit + 1` rows.
 async fn query_page_on<C>(
     conn: &C,
-    dto: StatementDto,
+    dto: GuestStatement,
     cursor: &str,
     limit: u32,
     postgres_isolation: PostgresPageIsolation,
@@ -995,7 +1311,7 @@ where
             postgres_query_page_once(conn, paged, fetch, postgres_isolation).await?
         }
         _ => {
-            let stmt = statement_from_dto(paged, backend);
+            let stmt = statement_lowered(paged, backend);
             fetch_page_all_raw(conn, stmt, fetch).await?
         }
     };
@@ -1035,43 +1351,27 @@ where
 }
 
 /// Executes a mutating statement and returns last-insert id plus rows-affected.
-async fn execute_on<C: ConnectionTrait>(conn: &C, dto: StatementDto) -> Result<ExecResultDto> {
+async fn execute_on<C: ConnectionTrait>(conn: &C, dto: GuestStatement) -> Result<GuestExecResult> {
     let backend = conn.get_database_backend();
-    let stmt = statement_from_dto(dto, backend);
+    let stmt = statement_lowered(dto, backend);
     let result = conn.execute_raw(stmt).await.map_err(|e| e.to_string())?;
-    Ok(ExecResultDto {
+    Ok(GuestExecResult {
         last_insert_id: result.last_insert_id(),
         rows_affected: result.rows_affected(),
     })
 }
 
-/// Convert a SeaORM query row into the RPC DTO (also used by integration tests).
-///
-/// # Arguments
-///
-/// * `row` - SeaORM query row to project into an RPC DTO.
-///
-/// # Returns
-///
-/// `ProxyRowDto` result.
-///
-/// # Panics
-///
-/// Panics when an internal invariant does not hold.
+/// Projects one SeaORM query row into a `GuestRow` (integration tests).
 #[must_use]
-pub fn row_to_dto(row: &sea_orm::QueryResult) -> ProxyRowDto {
-    let proxy = from_query_result_to_proxy_row(row);
-    proxy_rows_to_dto(vec![proxy])
-        .into_iter()
-        .next()
-        .expect("proxy_rows_to_dto preserves one row")
+pub fn row_to_dto(row: &sea_orm::QueryResult) -> GuestRow {
+    row_to_guest_row(row)
 }
 
 #[cfg(test)]
 #[allow(clippy::missing_panics_doc)]
 mod tests {
+    use super::GuestStatement;
     use super::*;
-    use bookclerk_plugin_sdk::StatementDto;
     use sea_orm::{DbBackend, Statement};
     use std::sync::LazyLock;
     use tokio::sync::Mutex;
@@ -1079,12 +1379,35 @@ mod tests {
     /// Serializes tests that mutate the process-wide SeaORM session.
     static SESSION_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-    fn stmt(sql: &str) -> StatementDto {
-        StatementDto {
+    fn stmt(sql: &str) -> GuestStatement {
+        GuestStatement {
             sql: sql.into(),
             values: Vec::new(),
             txn_id: None,
         }
+    }
+
+    /// Binding CREATE must go through typed execute so catalog companions land.
+    /// Untyped `guest_execute` creates a physical table the guest typechecker
+    /// will not adopt (`unknown table`).
+    async fn typed_create_table(sql: &str) {
+        use bookclerk_plugin_abi::{
+            DbPlanStatementKind, DbResultSelection, ExecuteRequest, TypedDbStatement,
+        };
+        guest_execute_request(ExecuteRequest {
+            operation_id: "create".into(),
+            request_hash: String::new(),
+            statements: vec![TypedDbStatement {
+                sql: sql.into(),
+                parameters: vec![],
+                kind: DbPlanStatementKind::Execute,
+                max_rows: 0,
+                result_selection: DbResultSelection::Discard,
+            }],
+            deadline_unix_ms: 0,
+        })
+        .await
+        .unwrap_or_else(|err| panic!("typed CREATE TABLE failed: {err}\n{sql}"));
     }
 
     #[test]
@@ -1345,6 +1668,163 @@ mod tests {
         assert_eq!(rows[0]["values"]["x"], "DELETE");
     }
 
+    #[tokio::test]
+    async fn guest_atomic_unique_is_conflict_and_commit_is_unavailable() {
+        use bookclerk_db_exec::{
+            DbAtomicPlan, DbAtomicRequest, DbPlanStatement, DbPlanStatementKind,
+        };
+        use bookclerk_plugin_abi::PluginErrorCode;
+        let _lock = SESSION_LOCK.lock().await;
+        set_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+        .await;
+        let dup = DbAtomicRequest {
+            operation_id: "dup-op".into(),
+            request_hash: None,
+            plan: Some(DbAtomicPlan {
+                statements: vec![
+                    DbPlanStatement {
+                        sql: "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup-g', 0)"
+                            .into(),
+                        binds: vec![],
+                        kind: DbPlanStatementKind::Execute,
+                        max_rows: 0,
+                    },
+                    DbPlanStatement {
+                        sql: "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup-g', 1)"
+                            .into(),
+                        binds: vec![],
+                        kind: DbPlanStatementKind::Execute,
+                        max_rows: 0,
+                    },
+                ],
+                outcome_index: 0,
+                payload_index: None,
+                prior_receipt_index: None,
+                receipt_select_index: None,
+            }),
+            deadline_unix_ms: None,
+        };
+        let unique_err = guest_atomic(dup).await.unwrap_err();
+        assert_eq!(unique_err.code, PluginErrorCode::Conflict, "{unique_err}");
+        assert!(
+            unique_err
+                .details
+                .as_ref()
+                .and_then(|d| d.get("engineCode"))
+                .and_then(|v| v.as_str())
+                .is_some_and(|c| c.starts_with("SQLITE_CONSTRAINT")),
+            "sqlite unique must preserve SQLITE_* engineCode: {unique_err:?}"
+        );
+
+        bookclerk_db_exec::inject_commit_failures(1);
+        let commit = DbAtomicRequest {
+            operation_id: "commit-op".into(),
+            request_hash: None,
+            plan: Some(DbAtomicPlan {
+                statements: vec![DbPlanStatement {
+                    sql: "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('c-g', 0)"
+                        .into(),
+                    binds: vec![],
+                    kind: DbPlanStatementKind::Execute,
+                    max_rows: 0,
+                }],
+                outcome_index: 0,
+                payload_index: None,
+                prior_receipt_index: None,
+                receipt_select_index: None,
+            }),
+            deadline_unix_ms: None,
+        };
+        let commit_err = guest_atomic(commit).await.unwrap_err();
+        assert_eq!(
+            commit_err.code,
+            PluginErrorCode::Unavailable,
+            "{commit_err}"
+        );
+
+        let syntax = DbAtomicRequest {
+            operation_id: "syn-op".into(),
+            request_hash: None,
+            plan: Some(DbAtomicPlan {
+                statements: vec![DbPlanStatement {
+                    sql: "FROMM nowhere".into(),
+                    binds: vec![],
+                    kind: DbPlanStatementKind::Execute,
+                    max_rows: 0,
+                }],
+                outcome_index: 0,
+                payload_index: None,
+                prior_receipt_index: None,
+                receipt_select_index: None,
+            }),
+            deadline_unix_ms: None,
+        };
+        let syn_err = guest_atomic(syntax).await.unwrap_err();
+        assert!(
+            matches!(
+                syn_err.code,
+                PluginErrorCode::InvalidParams | PluginErrorCode::Internal
+            ),
+            "{syn_err}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL"]
+    async fn postgres_guest_atomic_unique_preserves_sqlstate_23505() {
+        use bookclerk_db_exec::{
+            DbAtomicPlan, DbAtomicRequest, DbPlanStatement, DbPlanStatementKind,
+        };
+        use bookclerk_plugin_abi::PluginErrorCode;
+        let _lock = SESSION_LOCK.lock().await;
+        let db = postgres_test_pool().await;
+        bookclerk_library::apply_host_schema(&db, bookclerk_library::HostSchemaKind::RowMarker)
+            .await
+            .expect("host postgres schema");
+        set_connection(db).await;
+        let dup = DbAtomicRequest {
+            operation_id: "pg-dup".into(),
+            request_hash: None,
+            plan: Some(DbAtomicPlan {
+                statements: vec![
+                    DbPlanStatement {
+                        sql: "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('pg-dup', 0)"
+                            .into(),
+                        binds: vec![],
+                        kind: DbPlanStatementKind::Execute,
+                        max_rows: 0,
+                    },
+                    DbPlanStatement {
+                        sql: "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('pg-dup', 1)"
+                            .into(),
+                        binds: vec![],
+                        kind: DbPlanStatementKind::Execute,
+                        max_rows: 0,
+                    },
+                ],
+                outcome_index: 0,
+                payload_index: None,
+                prior_receipt_index: None,
+                receipt_select_index: None,
+            }),
+            deadline_unix_ms: None,
+        };
+        let err = guest_atomic(dup).await.unwrap_err();
+        assert_eq!(err.code, PluginErrorCode::Conflict, "{err}");
+        assert_eq!(
+            err.details
+                .as_ref()
+                .and_then(|d| d.get("engineCode"))
+                .and_then(|v| v.as_str()),
+            Some("23505"),
+            "postgres unique must keep SQLSTATE 23505: {err:?}"
+        );
+    }
+
     fn postgres_test_url() -> String {
         let url = std::env::var("BOOKCLERK_TEST_POSTGRES_URL").unwrap_or_else(|_| {
             panic!(
@@ -1546,5 +2026,291 @@ mod tests {
                 "caller ordinal must be preserved and adapter ordinal stripped: {row}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn execute_atomic_on_open_txn_does_not_begin_again() {
+        use bookclerk_plugin_abi::{
+            DbPlanStatementKind, DbResultSelection, DbValue, ExecuteRequest, TypedDbStatement,
+        };
+        let _lock = SESSION_LOCK.lock().await;
+        set_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+        .await;
+        typed_create_table(
+            "CREATE TABLE IF NOT EXISTS nested_typed (id INTEGER PRIMARY KEY, v TEXT)",
+        )
+        .await;
+        let txn_id = guest_begin(None).await.unwrap();
+        let reply = guest_execute_atomic_on_txn(
+            txn_id.clone(),
+            ExecuteRequest {
+                operation_id: "nested".into(),
+                request_hash: String::new(),
+                statements: vec![TypedDbStatement {
+                    sql: "INSERT INTO nested_typed (id, v) VALUES (?, ?)".into(),
+                    parameters: vec![DbValue::Int64(1), DbValue::Text("a".into())],
+                    kind: DbPlanStatementKind::Execute,
+                    max_rows: 0,
+                    result_selection: DbResultSelection::AffectedRows,
+                }],
+                deadline_unix_ms: 0,
+            },
+        )
+        .await
+        .expect("typed on open txn");
+        assert_eq!(reply.statements[0].rows_affected, 1);
+        guest_commit(txn_id).await.unwrap();
+        let rows = guest_query(stmt("SELECT v FROM nested_typed WHERE id = 1"))
+            .await
+            .unwrap();
+        assert_eq!(rows.rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn nested_execute_envelope_persists_guest_receipt() {
+        use bookclerk_plugin_abi::{
+            sql_type_env_from_canonical_ddl, DbCapabilities, DbPlanStatementKind,
+            DbResultSelection, DbValue, ExecuteRequest, GuestSqlPolicy, TypedDbStatement,
+        };
+        let _lock = SESSION_LOCK.lock().await;
+        set_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+        .await;
+        typed_create_table(
+            "CREATE TABLE IF NOT EXISTS nested_receipt (id INTEGER PRIMARY KEY, v TEXT)",
+        )
+        .await;
+        let txn_id = guest_begin(None).await.unwrap();
+        let caps = DbCapabilities::advertised_sqlite();
+        let env = sql_type_env_from_canonical_ddl(
+            "CREATE TABLE nested_receipt (id INTEGER PRIMARY KEY, v TEXT)",
+        );
+        let policy = GuestSqlPolicy::allow_tables(["nested_receipt"]).with_sql_types(env);
+        let reply = bookclerk_library::execute_guest_atomic_with(
+            ExecuteRequest {
+                operation_id: "nested-receipt-op".into(),
+                request_hash: String::new(),
+                statements: vec![TypedDbStatement {
+                    sql: "INSERT INTO nested_receipt (id, v) VALUES (?, ?)".into(),
+                    parameters: vec![DbValue::Int64(1), DbValue::Text("a".into())],
+                    kind: DbPlanStatementKind::Execute,
+                    max_rows: 0,
+                    result_selection: DbResultSelection::AffectedRows,
+                }],
+                deadline_unix_ms: 0,
+            },
+            &caps,
+            &policy,
+            |envelope| {
+                let txn_id = txn_id.clone();
+                async move { guest_execute_atomic_on_txn_envelope(txn_id, envelope).await }
+            },
+        )
+        .await
+        .expect("nested wrap envelope");
+        assert_eq!(reply.statements.len(), 1);
+        assert_eq!(reply.statements[0].rows_affected, 1);
+        guest_commit(txn_id).await.unwrap();
+        let rows = guest_query(stmt(
+            "SELECT payload, status FROM db_atomic_receipts WHERE operation_id = 'nested-receipt-op'",
+        ))
+        .await
+        .unwrap();
+        assert_eq!(rows.rows.len(), 1);
+        assert_eq!(
+            rows.rows[0].values.get("status").and_then(|v| v.as_str()),
+            Some("ok")
+        );
+        let payload = rows.rows[0]
+            .values
+            .get("payload")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            !payload.is_empty(),
+            "nested executeEnvelope must persist replay payload before outer commit, got {payload:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_atomic_on_open_txn_savepoint_rolls_back_partial_batch() {
+        use bookclerk_plugin_abi::{
+            DbPlanStatementKind, DbResultSelection, DbValue, ExecuteRequest, TypedDbStatement,
+        };
+        let _lock = SESSION_LOCK.lock().await;
+        set_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+        .await;
+        typed_create_table(
+            "CREATE TABLE IF NOT EXISTS nested_savepoint (id INTEGER PRIMARY KEY, v TEXT)",
+        )
+        .await;
+        let txn_id = guest_begin(None).await.unwrap();
+        let err = guest_execute_atomic_on_txn(
+            txn_id.clone(),
+            ExecuteRequest {
+                operation_id: "nested-partial".into(),
+                request_hash: String::new(),
+                statements: vec![
+                    TypedDbStatement {
+                        sql: "INSERT INTO nested_savepoint (id, v) VALUES (?, ?)".into(),
+                        parameters: vec![DbValue::Int64(1), DbValue::Text("keep".into())],
+                        kind: DbPlanStatementKind::Execute,
+                        max_rows: 0,
+                        result_selection: DbResultSelection::AffectedRows,
+                    },
+                    TypedDbStatement {
+                        sql: "INSERT INTO nested_savepoint (id, v) VALUES (?, ?)".into(),
+                        parameters: vec![DbValue::Int64(1), DbValue::Text("dup".into())],
+                        kind: DbPlanStatementKind::Execute,
+                        max_rows: 0,
+                        result_selection: DbResultSelection::AffectedRows,
+                    },
+                ],
+                deadline_unix_ms: 0,
+            },
+        )
+        .await
+        .expect_err("second insert conflicts");
+        assert!(
+            err.to_string().to_lowercase().contains("unique")
+                || err.to_string().to_lowercase().contains("constraint")
+                || err.to_string().contains("conflict"),
+            "{err}"
+        );
+        guest_commit(txn_id).await.unwrap();
+        let rows = guest_query(stmt("SELECT v FROM nested_savepoint"))
+            .await
+            .unwrap();
+        assert!(
+            rows.rows.is_empty(),
+            "partial nested batch must not survive outer commit: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_atomic_on_open_txn_savepoint_release_failure_poisons_outer_commit() {
+        use bookclerk_plugin_abi::{
+            DbPlanStatementKind, DbResultSelection, DbValue, ExecuteRequest, TypedDbStatement,
+        };
+        let _lock = SESSION_LOCK.lock().await;
+        set_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+        .await;
+        typed_create_table(
+            "CREATE TABLE IF NOT EXISTS nested_release (id INTEGER PRIMARY KEY, v TEXT)",
+        )
+        .await;
+        let txn_id = guest_begin(None).await.unwrap();
+        bookclerk_db_exec::inject_savepoint_release_failures(1);
+        let err = guest_execute_atomic_on_txn(
+            txn_id.clone(),
+            ExecuteRequest {
+                operation_id: "nested-release".into(),
+                request_hash: String::new(),
+                statements: vec![TypedDbStatement {
+                    sql: "INSERT INTO nested_release (id, v) VALUES (?, ?)".into(),
+                    parameters: vec![DbValue::Int64(1), DbValue::Text("x".into())],
+                    kind: DbPlanStatementKind::Execute,
+                    max_rows: 0,
+                    result_selection: DbResultSelection::AffectedRows,
+                }],
+                deadline_unix_ms: 0,
+            },
+        )
+        .await
+        .expect_err("injected RELEASE must fail");
+        assert!(
+            err.to_string().to_lowercase().contains("release")
+                || err.to_string().to_lowercase().contains("savepoint")
+                || err.to_string().to_lowercase().contains("broken"),
+            "{err}"
+        );
+        guest_commit(txn_id)
+            .await
+            .expect_err("poisoned txn must not commit");
+        let rows = guest_query(stmt("SELECT v FROM nested_release"))
+            .await
+            .unwrap();
+        assert!(
+            rows.rows.is_empty(),
+            "nested work must not persist after RELEASE poison: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_atomic_on_open_txn_savepoint_rollback_failure_poisons_outer_commit() {
+        use bookclerk_plugin_abi::{
+            DbPlanStatementKind, DbResultSelection, DbValue, ExecuteRequest, TypedDbStatement,
+        };
+        let _lock = SESSION_LOCK.lock().await;
+        set_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+        .await;
+        typed_create_table(
+            "CREATE TABLE IF NOT EXISTS nested_rollback (id INTEGER PRIMARY KEY, v TEXT)",
+        )
+        .await;
+        let txn_id = guest_begin(None).await.unwrap();
+        bookclerk_db_exec::inject_savepoint_rollback_failures(1);
+        let err = guest_execute_atomic_on_txn(
+            txn_id.clone(),
+            ExecuteRequest {
+                operation_id: "nested-rollback".into(),
+                request_hash: String::new(),
+                statements: vec![
+                    TypedDbStatement {
+                        sql: "INSERT INTO nested_rollback (id, v) VALUES (?, ?)".into(),
+                        parameters: vec![DbValue::Int64(1), DbValue::Text("keep".into())],
+                        kind: DbPlanStatementKind::Execute,
+                        max_rows: 0,
+                        result_selection: DbResultSelection::AffectedRows,
+                    },
+                    TypedDbStatement {
+                        sql: "INSERT INTO nested_rollback (id, v) VALUES (?, ?)".into(),
+                        parameters: vec![DbValue::Int64(1), DbValue::Text("dup".into())],
+                        kind: DbPlanStatementKind::Execute,
+                        max_rows: 0,
+                        result_selection: DbResultSelection::AffectedRows,
+                    },
+                ],
+                deadline_unix_ms: 0,
+            },
+        )
+        .await
+        .expect_err("injected ROLLBACK must fail after inner unique error");
+        assert!(
+            err.to_string().to_lowercase().contains("rollback")
+                || err.to_string().to_lowercase().contains("savepoint")
+                || err.to_string().to_lowercase().contains("broken")
+                || err.to_string().to_lowercase().contains("unique"),
+            "{err}"
+        );
+        guest_commit(txn_id)
+            .await
+            .expect_err("poisoned txn must not commit");
+        let rows = guest_query(stmt("SELECT v FROM nested_rollback"))
+            .await
+            .unwrap();
+        assert!(
+            rows.rows.is_empty(),
+            "partial nested work must not persist after ROLLBACK poison: {rows:?}"
+        );
     }
 }

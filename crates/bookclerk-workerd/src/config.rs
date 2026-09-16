@@ -23,13 +23,22 @@ const SDK_WORKERD_JS: &str = include_str!("../../../packages/plugin-sdk/embed/bo
 /// Injected as `bookclerk_plugin_sdk/workerd.py`.
 const SDK_WORKERD_PY: &str =
     include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/workerd.py");
+/// Injected as `bookclerk_plugin_sdk/db_value.py` (imported by `workerd.py`).
+const SDK_DB_VALUE_PY: &str =
+    include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/db_value.py");
+/// Injected as `bookclerk_plugin_sdk/_abi.py` (generated product constants).
+const SDK_PRODUCT_ABI_PY: &str =
+    include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_abi.py");
+/// Injected as `bookclerk_plugin_sdk/guest_sql.py` (imported by `db_value.py`).
+const SDK_GUEST_SQL_PY: &str =
+    include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/guest_sql.py");
 /// First-party adapter isolate: owns GRANTED / BRIDGE_TOKEN (author `PLUGIN`).
-const ADAPTER_JS: &str = r#"import { wrapV2PluginFromBinding } from "@bookclerk/plugin-sdk/workerd";
-export default wrapV2PluginFromBinding();
+const ADAPTER_JS: &str = r#"import { wrapPluginFromBinding } from "@bookclerk/plugin-sdk/workerd";
+export default wrapPluginFromBinding();
 "#;
 /// Generated native-behind-workerd adapter: `PLUGIN_BACKEND` only (no author isolate).
-const NATIVE_ADAPTER_JS: &str = r#"import { wrapV2PluginFromNative } from "@bookclerk/plugin-sdk/workerd";
-export default wrapV2PluginFromNative();
+const NATIVE_ADAPTER_JS: &str = r#"import { wrapPluginFromNative } from "@bookclerk/plugin-sdk/workerd";
+export default wrapPluginFromNative();
 "#;
 /// Sparse `bookclerk_plugin_sdk/__init__.py` pointing authors at the workerd guest SDK.
 const SDK_PY_INIT: &str = concat!(
@@ -44,6 +53,12 @@ pub const SDK_JS_MODULE_NAMES: &[&str] =
     &["@bookclerk/plugin-sdk/workerd", "@bookclerk/plugin-sdk"];
 /// Python package path for `from bookclerk_plugin_sdk.workerd import …`.
 pub const SDK_PY_WORKERD_MODULE: &str = "bookclerk_plugin_sdk/workerd.py";
+/// Python module path for typed SQL value / execute codec helpers.
+pub const SDK_PY_DB_VALUE_MODULE: &str = "bookclerk_plugin_sdk/db_value.py";
+/// Python module path for the generated product ABI constants.
+pub const SDK_PY_PRODUCT_ABI_MODULE: &str = "bookclerk_plugin_sdk/_abi.py";
+/// Python module path for guest-side SQL statement classification helpers.
+pub const SDK_PY_GUEST_SQL_MODULE: &str = "bookclerk_plugin_sdk/guest_sql.py";
 /// Python module path that initializes the sparse workerd guest SDK.
 pub const SDK_PY_INIT_MODULE: &str = "bookclerk_plugin_sdk/__init__.py";
 
@@ -733,20 +748,25 @@ pub fn materialize(
     }
     if needs_python {
         fs::write(bookclerk_dir.join("sdk-workerd.py"), SDK_WORKERD_PY)?;
+        fs::write(bookclerk_dir.join("sdk-db-value.py"), SDK_DB_VALUE_PY)?;
+        fs::write(bookclerk_dir.join("sdk-product-abi.py"), SDK_PRODUCT_ABI_PY)?;
+        fs::write(bookclerk_dir.join("sdk-guest-sql.py"), SDK_GUEST_SQL_PY)?;
         fs::write(bookclerk_dir.join("sdk-init.py"), SDK_PY_INIT)?;
-        if !seen_names.contains(SDK_PY_INIT_MODULE) {
+        for (module_name, embed_file) in [
+            (SDK_PY_INIT_MODULE, "sdk-init.py"),
+            (SDK_PY_PRODUCT_ABI_MODULE, "sdk-product-abi.py"),
+            (SDK_PY_GUEST_SQL_MODULE, "sdk-guest-sql.py"),
+            (SDK_PY_DB_VALUE_MODULE, "sdk-db-value.py"),
+            (SDK_PY_WORKERD_MODULE, "sdk-workerd.py"),
+        ] {
+            if seen_names.contains(module_name) {
+                continue;
+            }
             module_embeds.push(format!(
-                r#"(name = "{}", pythonModule = embed ".bookclerk/sdk-init.py")"#,
-                escape_capnp(SDK_PY_INIT_MODULE)
+                r#"(name = "{}", pythonModule = embed ".bookclerk/{embed_file}")"#,
+                escape_capnp(module_name)
             ));
-            seen_names.insert(SDK_PY_INIT_MODULE.to_string());
-        }
-        if !seen_names.contains(SDK_PY_WORKERD_MODULE) {
-            module_embeds.push(format!(
-                r#"(name = "{}", pythonModule = embed ".bookclerk/sdk-workerd.py")"#,
-                escape_capnp(SDK_PY_WORKERD_MODULE)
-            ));
-            seen_names.insert(SDK_PY_WORKERD_MODULE.to_string());
+            seen_names.insert(module_name.to_string());
         }
     }
 
@@ -833,7 +853,7 @@ pub fn materialize(
         None => bridge_token_binding.clone(),
     };
     // Bridge talks to the adapter isolate. GRANTED / BRIDGE_TOKEN are adapter-private
-    // (not author `pluginWorker` bindings). wrapV2Plugin stripping keys is hygiene.
+    // (not author `pluginWorker` bindings). wrapPlugin stripping keys is hygiene.
     let bridge_bindings = format!("{adapter_service_binding},\n    {bridge_token_binding}");
     let mut adapter_bindings = format!("{plugin_service_binding},\n    {bridge_token_binding}");
     let plugin_bindings = String::from(r#"(name = "HOST", service = "host")"#);
@@ -1035,6 +1055,9 @@ fn is_legacy_sdk_embed(name: &str) -> bool {
             | "@bookclerk/plugin-sdk/workerd"
             | "@bookclerk/plugin-sdk/workerd.js"
             | "bookclerk_plugin_sdk/workerd.py"
+            | "bookclerk_plugin_sdk/db_value.py"
+            | "bookclerk_plugin_sdk/_abi.py"
+            | "bookclerk_plugin_sdk/guest_sql.py"
             | "bookclerk_plugin_sdk/__init__.py"
     )
 }
@@ -1110,6 +1133,74 @@ mod tests {
                 "disable_python_external_sdk".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn python_sdk_injects_db_value_module() {
+        use bookclerk_plugin_manifest::{
+            CapabilitiesManifest, NetworkCapabilities, NetworkMode, PluginKind, PluginManifest,
+            PluginRuntimeKind, WorkerdLimits, WorkerdRuntimeManifest,
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let modules = dir.path().join("modules");
+        std::fs::create_dir_all(&modules).expect("modules dir");
+        std::fs::write(
+            modules.join("plugin.py"),
+            "from bookclerk_plugin_sdk.workerd import BookclerkPlugin\n",
+        )
+        .expect("plugin.py");
+        let manifest = PluginManifest {
+            api_version: 2,
+            id: "echo_py".into(),
+            name: None,
+            kind: PluginKind::Integration,
+            version: None,
+            logo: None,
+            runtime: PluginRuntimeKind::Workerd,
+            command: None,
+            args: vec![],
+            workerd: Some(WorkerdRuntimeManifest {
+                compatibility_date: "2026-08-01".into(),
+                compatibility_flags: vec![
+                    "python_workers".into(),
+                    "disable_python_external_sdk".into(),
+                ],
+                main_module: "plugin.py".into(),
+                modules_dir: "modules".into(),
+                entrypoint: "default".into(),
+                limits: WorkerdLimits::default(),
+            }),
+            modules: vec![],
+            capabilities: CapabilitiesManifest {
+                network: NetworkCapabilities {
+                    mode: NetworkMode::Deny,
+                    domains: vec![],
+                },
+                bindings: Default::default(),
+                methods: Default::default(),
+                events: Default::default(),
+            },
+            cli: None,
+            oidc: Default::default(),
+        };
+        let generated = materialize(
+            dir.path(),
+            &manifest,
+            &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
+            WorkerdLimits::default().effective(),
+            ListenSpec::InheritedTcp { port: 9 },
+            None,
+            None,
+            "test-bridge-token",
+            None,
+        )
+        .expect("materialize");
+        let capnp = std::fs::read_to_string(&generated.config_path).expect("read capnp");
+        assert!(capnp.contains(SDK_PY_DB_VALUE_MODULE));
+        assert!(capnp.contains("sdk-db-value.py"));
+        let state_dir = &generated.state_dir;
+        assert!(state_dir.join(".bookclerk/sdk-db-value.py").is_file());
     }
 
     #[test]
@@ -1314,7 +1405,7 @@ mod tests {
         std::fs::write(modules.join("index.js"), "export default {};").expect("index.js");
         let manifest = PluginManifest {
             api_version: 2,
-            id: "v2_stream".into(),
+            id: "stream_fixture".into(),
             name: None,
             kind: PluginKind::Output,
             version: None,
@@ -1417,8 +1508,8 @@ mod tests {
                 module_source,
                 entrypoint,
             } => {
-                assert!(module_source.contains("wrapV2PluginFromNative"));
-                assert!(!module_source.contains("wrapV2PluginFromBinding"));
+                assert!(module_source.contains("wrapPluginFromNative"));
+                assert!(!module_source.contains("wrapPluginFromBinding"));
                 assert_eq!(entrypoint, "default");
             }
             EntrypointSource::AuthorModules { .. } => panic!("expected generated proxy"),

@@ -18,7 +18,7 @@ use crate::download::fetch_title_materials;
 use crate::error::{ChirpError, Result};
 use crate::sync::{scan_library, ScanOptions as ChirpScanOptions};
 
-/// Handshake / config id for this store (`chirp` in `[sources.chirp]`).
+/// Describe / config id for this store (`chirp` in `[sources.chirp]`).
 pub const ID: &str = "chirp";
 
 /// Env var read for non-interactive password login when Accounts UI is unavailable.

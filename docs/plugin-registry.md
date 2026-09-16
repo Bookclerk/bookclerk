@@ -347,7 +347,7 @@ storefronts, and integrations. Ship `plugin.toml` + `modules/`. Start from
 import { BookclerkPlugin } from "@bookclerk/plugin-sdk";
 
 export default class MyPlugin extends BookclerkPlugin {
-  async handshake(params) { /* … */ }
+  async describe() { /* … */ }
 }
 ```
 
@@ -438,7 +438,7 @@ that only carries `[package.metadata.bookclerk]` and documentation.
 
 - Runtime discovery & ABI: [plugins.md](plugins.md)
 - ADR: [plugin-workers-rpc-workerd.md](adr/plugin-workers-rpc-workerd.md)
-- ABI schema: [`crates/bookclerk-plugin-abi/schema/abi.json`](../crates/bookclerk-plugin-abi/schema/abi.json)
+- ABI schema: [`crates/bookclerk-plugin-abi/schema/plugin.capnp`](../crates/bookclerk-plugin-abi/schema/plugin.capnp)
 - Catalog crate: [`bookclerk-plugin-catalog`](../crates/bookclerk-plugin-catalog/)
 - Workerd Echo: [`examples/plugins-echo-workerd-ts/`](../examples/plugins-echo-workerd-ts/),
   [`plugins-echo-workerd-python/`](../examples/plugins-echo-workerd-python/),

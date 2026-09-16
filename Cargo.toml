@@ -4,6 +4,7 @@ members = [
     "crates/bookclerk-acquire",
     "crates/bookclerk-cli",
     "crates/bookclerk-config",
+    "crates/bookclerk-db-exec",
     "crates/bookclerk-db-guest",
     "crates/bookclerk-dev",
     "crates/bookclerk-discover",
@@ -24,6 +25,7 @@ members = [
     "crates/bookclerk-sandbox",
     "crates/bookclerk-search",
     "crates/bookclerk-source",
+    "crates/bookclerk-sql-frontend-spike",
     "crates/bookclerk-storage",
     "crates/bookclerk-tray",
     "crates/bookclerk-workerd",
@@ -59,6 +61,7 @@ description = "Multi-storefront audiobook library manager with pluggable integra
 [workspace.dependencies]
 # Internal crates
 bookclerk-config = { path = "crates/bookclerk-config" }
+bookclerk-db-exec = { path = "crates/bookclerk-db-exec" }
 bookclerk-db-guest = { path = "crates/bookclerk-db-guest" }
 # First-party plugins under bookclerk-plugins/{platform,optional}/.
 bookclerk-plugin-source-audible = { path = "crates/bookclerk-plugins/optional/source-audible" }
@@ -128,7 +131,7 @@ tower-http = { version = "0.7", features = ["trace", "fs", "normalize-path"] }
 # DB / storage — rusqlite 0.37 shares libsqlite3-sys 0.35 with SeaORM's sqlx-sqlite
 # (rusqlite 0.40 needs ^0.38 and cannot coexist in one binary). Vendored audible-rs
 # under third_party/ matches this pin on its optional `cli` feature.
-rusqlite = { version = "0.37", features = ["bundled", "column_decltype"] }
+rusqlite = { version = "0.37", features = ["bundled", "column_decltype", "hooks"] }
 rusqlite_migration = "2.3"
 sea-orm = { version = "2.0.0", default-features = false, features = [
     "macros",
@@ -191,6 +194,7 @@ secrecy = { version = "0.10", features = ["serde"] }
 
 # Test doubles
 wiremock = "0.6"
+proptest = "1"
 
 # HTML / media helpers
 scraper = "0.27"

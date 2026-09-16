@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use bookclerk_plugin_abi::v2::{
+use bookclerk_plugin_abi::{
     connect_plugin, ByteRange, Destination, DestinationContext, DomainEvent, Integration,
     IntegrationContext, ListOptions, PluginClient, PluginDescribe, Source, SourceContext,
     WriteOptions, MAX_SCALAR_BYTES,
@@ -106,7 +106,7 @@ impl BrokerPolicy {
 }
 
 type ByteStream = mpsc::Receiver<Result<Vec<u8>, String>>;
-type OpenedObject = (bookclerk_plugin_abi::v2::ObjectMetadata, ByteStream);
+type OpenedObject = (bookclerk_plugin_abi::ObjectMetadata, ByteStream);
 
 enum BrokerCmd {
     Describe {
@@ -115,12 +115,12 @@ enum BrokerCmd {
     Head {
         json: String,
         key: String,
-        resp: oneshot::Sender<Result<Option<bookclerk_plugin_abi::v2::ObjectMetadata>, String>>,
+        resp: oneshot::Sender<Result<Option<bookclerk_plugin_abi::ObjectMetadata>, String>>,
     },
     List {
         json: String,
         options: ListOptions,
-        resp: oneshot::Sender<Result<bookclerk_plugin_abi::v2::ListPage, String>>,
+        resp: oneshot::Sender<Result<bookclerk_plugin_abi::ListPage, String>>,
     },
     Get {
         json: String,
@@ -133,7 +133,7 @@ enum BrokerCmd {
         key: String,
         options: WriteOptions,
         body_rx: mpsc::Receiver<Vec<u8>>,
-        resp: oneshot::Sender<Result<bookclerk_plugin_abi::v2::PutResult, String>>,
+        resp: oneshot::Sender<Result<bookclerk_plugin_abi::PutResult, String>>,
     },
     Copy {
         json: String,
@@ -150,7 +150,7 @@ enum BrokerCmd {
         json: String,
         key: String,
         token: String,
-        resp: oneshot::Sender<Result<bookclerk_plugin_abi::v2::PutResult, String>>,
+        resp: oneshot::Sender<Result<bookclerk_plugin_abi::PutResult, String>>,
     },
     AbortStage {
         json: String,
@@ -577,7 +577,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
             .unwrap_or(ctx_header)
     };
 
-    if method == "POST" && path_only == "/v2/describe" {
+    if method == "POST" && path_only == "/describe" {
         if let Err(err) = policy.check("describe", "describe") {
             return write_broker_err(&mut writer, "forbidden", &err.to_string()).await;
         }
@@ -587,7 +587,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
             Ok(desc) => write_json(&mut writer, &serde_json::to_value(&desc)?).await,
             Err(err) => write_broker_err(&mut writer, "internal", &err).await,
         }
-    } else if method == "POST" && path_only == "/v2/destination/head" {
+    } else if method == "POST" && path_only == "/destination/head" {
         policy
             .check("destination", "head")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -620,7 +620,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
             }
             Err(err) => write_broker_err(&mut writer, "internal", &err).await,
         }
-    } else if method == "POST" && path_only == "/v2/destination/list" {
+    } else if method == "POST" && path_only == "/destination/list" {
         policy
             .check("destination", "list")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -643,7 +643,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
             Ok(page) => write_json(&mut writer, &serde_json::to_value(&page)?).await,
             Err(err) => write_broker_err(&mut writer, "internal", &err).await,
         }
-    } else if method == "GET" && path_only == "/v2/destination/get" {
+    } else if method == "GET" && path_only == "/destination/get" {
         policy
             .check("destination", "get")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -671,7 +671,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
         })
         .await?;
         stream_response(&mut writer, resp_rx).await
-    } else if method == "PUT" && path_only == "/v2/destination/put" {
+    } else if method == "PUT" && path_only == "/destination/put" {
         policy
             .check("destination", "put")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -718,7 +718,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
             Ok(put) => write_json(&mut writer, &serde_json::to_value(&put)?).await,
             Err(err) => write_broker_err(&mut writer, "internal", &err).await,
         }
-    } else if method == "POST" && path_only == "/v2/destination/copy" {
+    } else if method == "POST" && path_only == "/destination/copy" {
         policy
             .check("destination", "copy")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -748,7 +748,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
             Ok(n) => write_json(&mut writer, &serde_json::json!({ "bytesCopied": n })).await,
             Err(err) => write_broker_err(&mut writer, "internal", &err).await,
         }
-    } else if method == "POST" && path_only == "/v2/destination/delete" {
+    } else if method == "POST" && path_only == "/destination/delete" {
         policy
             .check("destination", "delete")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -773,7 +773,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
             Ok(()) => write_json(&mut writer, &serde_json::json!({ "ok": true })).await,
             Err(err) => write_broker_err(&mut writer, "internal", &err).await,
         }
-    } else if method == "POST" && path_only == "/v2/destination/commit" {
+    } else if method == "POST" && path_only == "/destination/commit" {
         policy
             .check("destination", "commit")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -803,7 +803,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
             Ok(put) => write_json(&mut writer, &serde_json::to_value(&put)?).await,
             Err(err) => write_broker_err(&mut writer, "internal", &err).await,
         }
-    } else if method == "POST" && path_only == "/v2/destination/abortStage" {
+    } else if method == "POST" && path_only == "/destination/abortStage" {
         policy
             .check("destination", "abortStage")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -833,7 +833,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
             Ok(()) => write_json(&mut writer, &serde_json::json!({ "ok": true })).await,
             Err(err) => write_broker_err(&mut writer, "internal", &err).await,
         }
-    } else if method == "GET" && path_only == "/v2/source/open" {
+    } else if method == "GET" && path_only == "/source/open" {
         policy
             .check("destination", "open")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -850,8 +850,8 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
         })
         .await?;
         stream_response(&mut writer, resp_rx).await
-    } else if method == "POST" && path_only.starts_with("/v2/integration/") {
-        let op = path_only.trim_start_matches("/v2/integration/");
+    } else if method == "POST" && path_only.starts_with("/integration/") {
+        let op = path_only.trim_start_matches("/integration/");
         policy
             .check("integration", op)
             .map_err(|e| anyhow::anyhow!("{e}"))?;

@@ -123,6 +123,25 @@ pub fn effective_cpu_cores(value: Option<f64>) -> f64 {
 /// Host binding names operators may grant (widen or narrow).
 pub const KNOWN_HOST_BINDINGS: &[&str] = &["config", "secrets", "plugin_kv", "work_fs", "oauth"];
 
+/// Grant-entry prefix for named plugin database bindings (`database:<NAME>`).
+pub const DATABASE_BINDING_PREFIX: &str = "database:";
+
+/// The binding name when a grant entry is a named database binding.
+#[must_use]
+pub fn database_binding_name(binding: &str) -> Option<&str> {
+    binding.strip_prefix(DATABASE_BINDING_PREFIX)
+}
+
+/// Consented database binding names on a grant, in manifest-set order.
+#[must_use]
+pub fn granted_database_bindings(grant: &PluginGrant) -> Vec<String> {
+    grant
+        .bindings
+        .iter()
+        .filter_map(|b| database_binding_name(b).map(str::to_string))
+        .collect()
+}
+
 /// One approved grant snapshot for a plugin id.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -275,6 +294,9 @@ pub fn consent_request(manifest: &PluginManifest) -> PluginGrant {
     if b.oauth {
         bindings.insert("oauth".into());
     }
+    for name in &b.databases {
+        bindings.insert(format!("{DATABASE_BINDING_PREFIX}{name}"));
+    }
     let flags = manifest
         .workerd
         .as_ref()
@@ -375,6 +397,13 @@ pub fn consent_summary(grant: &PluginGrant) -> Vec<String> {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(", ")
+        ));
+    }
+    let databases = granted_database_bindings(grant);
+    if !databases.is_empty() {
+        lines.push(format!(
+            "Plugin databases (isolated, plugin-owned): {}",
+            databases.join(", ")
         ));
     }
     if !grant.compatibility_flags.is_empty() {
@@ -572,6 +601,14 @@ pub fn validate_approved_grant(
         )));
     }
     for binding in &approved.bindings {
+        if let Some(name) = database_binding_name(binding) {
+            if !bookclerk_plugin_manifest::is_valid_database_binding_name(name) {
+                return Err(PluginError::message(format!(
+                    "invalid database binding name `{name}` (expected [A-Z][A-Z0-9_]*)"
+                )));
+            }
+            continue;
+        }
         if !KNOWN_HOST_BINDINGS
             .iter()
             .any(|known| binding.eq_ignore_ascii_case(known))
@@ -594,6 +631,10 @@ pub fn validate_approved_grant(
         .bindings
         .iter()
         .map(|b| {
+            if database_binding_name(b).is_some() {
+                // Preserve the case-sensitive binding name after the prefix.
+                return b.clone();
+            }
             KNOWN_HOST_BINDINGS
                 .iter()
                 .find(|known| b.eq_ignore_ascii_case(known))
@@ -775,9 +816,9 @@ pub fn require_binding(grant: &PluginGrant, name: &str) -> Result<()> {
     }
 }
 
-/// Handshake `config` payload: non-empty settings only when the grant includes `config`.
+/// Spawn `config` payload: non-empty settings only when the grant includes `config`.
 #[must_use]
-pub fn handshake_config_for_grant(
+pub fn spawn_config_for_grant(
     grant: &PluginGrant,
     config_table: serde_json::Value,
 ) -> serde_json::Value {
@@ -877,12 +918,12 @@ fn is_safe_platform_request(grant: &PluginGrant) -> bool {
             .all(|b| b == "config" || b == "work_fs")
 }
 
-/// Reject handshake claims that exceed the manifest (and covering grant).
+/// Reject `describe()` capability claims that exceed the manifest (and covering grant).
 ///
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub fn validate_handshake_capabilities(
+pub fn validate_described_capabilities(
     manifest: &PluginManifest,
     grant: &PluginGrant,
     capabilities: &[String],
@@ -895,7 +936,7 @@ pub fn validate_handshake_capabilities(
     if oauth_mode || oauth_methods {
         if !manifest.capabilities.bindings.oauth {
             return Err(PluginError::message(format!(
-                "plugin `{}` handshake advertises OAuth without bindings.oauth in plugin.toml",
+                "plugin `{}` describe() advertises OAuth without bindings.oauth in plugin.toml",
                 manifest.id
             )));
         }
@@ -905,7 +946,7 @@ pub fn validate_handshake_capabilities(
     // Lifecycle / entrypoint methods are always implied; kind-specific surfaces
     // in `capabilities.methods` are what consent is meant to bound.
     const CORE_CAPS: &[&str] = &[
-        "handshake",
+        "describe",
         "shutdown",
         "health",
         "diagnose",
@@ -927,7 +968,7 @@ pub fn validate_handshake_capabilities(
         }
         if !declared.iter().any(|name| name.eq_ignore_ascii_case(cap)) {
             return Err(PluginError::message(format!(
-                "plugin `{}` handshake advertises capability `{cap}` not listed in \
+                "plugin `{}` describe() advertises capability `{cap}` not listed in \
                  capabilities.methods",
                 manifest.id
             )));
@@ -1051,16 +1092,54 @@ mod tests {
     }
 
     #[test]
-    fn handshake_config_omitted_without_config_binding() {
+    fn consent_request_carries_named_database_bindings() {
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 2
+id = "demo"
+kind = "integration"
+runtime = "native"
+command = "./demo"
+[capabilities.network]
+mode = "deny"
+[capabilities.bindings]
+databases = ["DB", "CACHE"]
+"#,
+        )
+        .expect("manifest");
+        let grant = consent_request(&manifest);
+        assert!(grant.bindings.contains("database:DB"));
+        assert!(grant.bindings.contains("database:CACHE"));
+        assert_eq!(granted_database_bindings(&grant), vec!["CACHE", "DB"]);
+        let summary = consent_summary(&grant).join("\n");
+        assert!(summary.contains("Plugin databases"), "{summary}");
+    }
+
+    #[test]
+    fn approved_database_bindings_validate_names_and_keep_case() {
+        let baseline = sample_grant(&[], &[], &[]);
+        let approved = sample_grant(&[], &["database:DB_2", "config"], &[]);
+        let grant = validate_approved_grant(&approved, &baseline).expect("valid binding grant");
+        assert!(grant.bindings.contains("database:DB_2"));
+        assert_eq!(granted_database_bindings(&grant), vec!["DB_2"]);
+
+        let bad = sample_grant(&[], &["database:not-upper"], &[]);
+        let err = validate_approved_grant(&bad, &baseline)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("invalid database binding name"), "{err}");
+    }
+
+    #[test]
+    fn spawn_config_omitted_without_config_binding() {
         let grant = sample_grant(&[], &["secrets"], &[]);
-        let delivered = handshake_config_for_grant(
+        let delivered = spawn_config_for_grant(
             &grant,
             serde_json::json!({ "greeting": "hi", "enabled": true }),
         );
         assert_eq!(delivered, serde_json::json!({}));
         let with_config = sample_grant(&[], &["config"], &[]);
-        let kept =
-            handshake_config_for_grant(&with_config, serde_json::json!({ "greeting": "hi" }));
+        let kept = spawn_config_for_grant(&with_config, serde_json::json!({ "greeting": "hi" }));
         assert_eq!(kept["greeting"], "hi");
     }
 
@@ -1372,7 +1451,7 @@ plugin_kv = true
     }
 
     #[test]
-    fn validate_handshake_rejects_oauth_without_binding() {
+    fn validate_describe_rejects_oauth_without_binding() {
         let manifest = PluginManifest::parse(
             r#"
 api_version = 2
@@ -1390,7 +1469,7 @@ config = true
         )
         .unwrap();
         let grant = consent_request(&manifest);
-        let err = validate_handshake_capabilities(
+        let err = validate_described_capabilities(
             &manifest,
             &grant,
             &["loginStart".into()],
@@ -1402,7 +1481,7 @@ config = true
     }
 
     #[test]
-    fn validate_handshake_rejects_undeclared_methods() {
+    fn validate_describe_rejects_undeclared_methods() {
         let manifest = PluginManifest::parse(
             r#"
 api_version = 2
@@ -1415,15 +1494,15 @@ command = "./demo"
 mode = "deny"
 
 [capabilities.methods]
-list = ["handshake", "health"]
+list = ["health"]
 "#,
         )
         .unwrap();
         let grant = consent_request(&manifest);
-        let err = validate_handshake_capabilities(
+        let err = validate_described_capabilities(
             &manifest,
             &grant,
-            &["handshake".into(), "scanLibrary".into()],
+            &["health".into(), "scanLibrary".into()],
             None,
         )
         .unwrap_err()
@@ -1432,7 +1511,7 @@ list = ["handshake", "health"]
     }
 
     #[test]
-    fn validate_handshake_allows_core_entrypoint_methods() {
+    fn validate_describe_allows_core_entrypoint_methods() {
         let manifest = PluginManifest::parse(
             r#"
 api_version = 2
@@ -1445,16 +1524,16 @@ command = "./demo"
 mode = "deny"
 
 [capabilities.methods]
-list = ["handshake", "health", "diagnose", "onEvent", "cli"]
+list = ["health", "diagnose", "onEvent", "cli"]
 "#,
         )
         .unwrap();
         let grant = consent_request(&manifest);
-        validate_handshake_capabilities(
+        validate_described_capabilities(
             &manifest,
             &grant,
             &[
-                "handshake".into(),
+                "describe".into(),
                 "health".into(),
                 "start".into(),
                 "cli".into(),

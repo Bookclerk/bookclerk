@@ -399,6 +399,10 @@ fn sanitize_event_for_upload(mut event: BufferedEvent) -> BufferedEvent {
 }
 
 /// POSTs the JSON payload; fail-closed if a registered secret is still visible after redaction.
+///
+/// # Errors
+///
+/// Returns an error when serialization, redaction checks, or the HTTP request fails.
 fn post_http_payload(
     config: &DiagnosticsConfig,
     payload: &UploadPayload,

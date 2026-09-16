@@ -47,7 +47,7 @@ pub enum LibraryError {
     /// Backend temporarily unreachable or an atomic RPC response was lost.
     ///
     /// Callers that still hold the original consume-once / session token should
-    /// retry the same `dbAtomic` operation id rather than minting a new one.
+    /// retry the same atomic operation id rather than minting a new one.
     #[error("unavailable: {0}")]
     Unavailable(String),
 
@@ -58,4 +58,20 @@ pub enum LibraryError {
     /// Catch-all for otherwise unclassified failures.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+impl LibraryError {
+    /// Maps a SeaORM / adapter [`sea_orm::DbErr`] onto a typed library error.
+    ///
+    /// Busy, deadlock, and lost-commit tokens become [`Self::Unavailable`].
+    /// Unique/constraint tokens become [`Self::Conflict`]. Everything else
+    /// stays [`Self::Orm`].
+    #[must_use]
+    pub fn from_db_err(err: sea_orm::DbErr) -> Self {
+        match bookclerk_db_exec::classify_db_err(&err) {
+            bookclerk_db_exec::DbErrorClass::Unavailable => Self::Unavailable(err.to_string()),
+            bookclerk_db_exec::DbErrorClass::Conflict => Self::Conflict(err.to_string()),
+            bookclerk_db_exec::DbErrorClass::Other => Self::Orm(err),
+        }
+    }
 }

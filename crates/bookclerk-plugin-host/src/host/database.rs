@@ -1,20 +1,30 @@
 //! [`ProxyDatabaseTrait`] adapter over an external database plugin process.
 //!
-//! The host mediates credentials and forwards SeaORM proxy calls over JSON-RPC.
-//! Engine connect / migrate / proxy quirks live entirely in the database guest.
-//! There is no in-process fallback.
+//! The host mediates credentials, applies schema after connect, and forwards
+//! SeaORM proxy calls over JSON-RPC. Engine connect/proxy quirks live in the
+//! database guest. There is no in-process fallback.
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bookclerk_config::{resolve_d1_api_token, resolve_postgres_url, Config, DatabasePluginKind};
-use bookclerk_plugin_sdk::v2::PRODUCT_API_VERSION;
+use bookclerk_db_exec::db_value_from_sea;
+use bookclerk_plugin_abi::HostExecuteEnvelope;
+use bookclerk_plugin_abi::{
+    catalog_page_statement, database_context_from_params, reserved_catalog_relation_missing,
+    sql_catalog_page_rows, DbBootstrap, DbCapabilities, DbConnectParams, DbValue, SqlType,
+    SqlTypeEnv, SQL_CATALOG_TABLE, SQL_SCHEMA_TABLE,
+};
+use bookclerk_plugin_sdk::GuestDatabase;
+use bookclerk_plugin_sdk::PRODUCT_API_VERSION;
 use bookclerk_plugin_sdk::{
-    atomic_status, exec_result_from_dto, proxy_rows_from_dto, statement_to_dto, DbAtomicParams,
-    DbAtomicRequest, DbAtomicResult, DbConnectParams, DbConnectResult, ExecResultDto, ProxyRowDto,
+    proxy_rows_from_typed, DbPlanStatementKind, DbResultSelection, ExecuteReply, ExecuteRequest,
+    PluginError as AbiPluginError, TypedDbStatement,
 };
 use sea_orm::{
     Database, DatabaseConnection, DbBackend, DbErr, ProxyDatabaseTrait, ProxyExecResult, ProxyRow,
@@ -25,22 +35,27 @@ use tokio::task::{try_id, Id as TaskId};
 
 use crate::discover::DiscoveredPlugin;
 use crate::jail::plugin_data_dir;
-use crate::rpc_v2::{V2PluginSession, OPERATOR_ACCOUNT};
+use crate::rpc_session::{PluginSession, OPERATOR_ACCOUNT};
 use crate::{PluginError, Result as PluginResult};
+use bookclerk_library::{atomic_status, DbAtomicParams};
 
 /// External database backend spawned for `[database].plugin`.
 #[derive(Clone)]
 pub struct ExternalDatabase {
-    /// Cap'n Proto v2 session (vat holds the database session).
-    session: Arc<V2PluginSession>,
-    /// Manifest id (`sqlite`, `d1`, `postgres`) used to build connect params.
+    /// Cap'n Proto session (vat holds the database session).
+    session: Arc<PluginSession>,
+    /// Manifest id (first-party `sqlite` / `d1` / `postgres`, or a
+    /// third-party adapter id) used to build the factory context.
     plugin_id: String,
-    /// Guest HOME / data directory passed on `db.connect`.
+    /// Guest HOME / data directory passed in the factory context.
     plugin_data_dir: std::path::PathBuf,
+    /// Granted `[database.<id>]` settings delivered to third-party adapters
+    /// via the public `DatabaseAdapterConfig` payload.
+    settings_json: Value,
 }
 
 impl ExternalDatabase {
-    /// Spawn and handshake a database plugin (connection happens later).
+    /// Spawn and describe a database plugin (connection happens later).
     ///
     /// # Errors
     ///
@@ -48,27 +63,29 @@ impl ExternalDatabase {
     pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> PluginResult<Self> {
         if plugin.manifest.api_version != PRODUCT_API_VERSION {
             return Err(PluginError::message(format!(
-                "plugin `{}` api_version {} is not v2",
+                "plugin `{}` api_version {} is not supported",
                 plugin.manifest.id, plugin.manifest.api_version
             )));
         }
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
         let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
-        let extra_env = if plugin.manifest.id.eq_ignore_ascii_case("sqlite") {
-            let path = config.database.sqlite_path(&config.paths().files_dir);
-            vec![(
-                "BOOKCLERK_SQLITE_PATH",
-                std::ffi::OsString::from(path.as_os_str()),
-            )]
-        } else {
-            Vec::new()
+        let extra_env = match DatabasePluginKind::parse(&plugin.manifest.id) {
+            Some(DatabasePluginKind::D1) | Some(DatabasePluginKind::Postgres) => Vec::new(),
+            Some(DatabasePluginKind::Sqlite) => {
+                let path = config.database.sqlite_path(&config.paths().files_dir);
+                vec![(
+                    "BOOKCLERK_SQLITE_PATH",
+                    std::ffi::OsString::from(path.as_os_str()),
+                )]
+            }
+            None => Vec::new(),
         };
         let session = Arc::new(
-            V2PluginSession::spawn_for_account_with_env(
+            PluginSession::spawn_for_account_with_env(
                 plugin,
                 config,
-                config_json,
+                config_json.clone(),
                 OPERATOR_ACCOUNT,
                 extra_env.as_slice(),
             )
@@ -78,6 +95,7 @@ impl ExternalDatabase {
             session,
             plugin_id: plugin.manifest.id.clone(),
             plugin_data_dir,
+            settings_json: config_json,
         })
     }
 
@@ -89,41 +107,72 @@ impl ExternalDatabase {
     pub async fn connect(
         &self,
         config: &Config,
-    ) -> Result<(DatabaseConnection, DbConnectResult), DbErr> {
-        let params = connect_params(
+    ) -> Result<(DatabaseConnection, DbCapabilities), DbErr> {
+        let ctx = connect_context(
             config,
             &self.plugin_id,
             &self.plugin_data_dir,
             &self.session,
+            &self.settings_json,
         )?;
-        let ctx = serde_json::to_string(&params).map_err(|err| DbErr::Custom(err.to_string()))?;
         self.session.db_open(ctx).await.map_err(map_rpc_err)?;
 
-        let _ = self
-            .session
-            .db_query("SELECT 1", "[]")
-            .await
-            .map_err(map_rpc_err)?;
-
-        let connect_result = match DatabasePluginKind::parse(&self.plugin_id) {
-            Some(DatabasePluginKind::Postgres) => DbConnectResult::postgres(),
-            Some(DatabasePluginKind::D1) => DbConnectResult::d1(),
-            _ => DbConnectResult::sqlite(),
+        let caps = self.session.db_capabilities().await.map_err(map_rpc_err)?;
+        if !caps.meets_host_minimums() {
+            return Err(DbErr::Custom(caps.capability_failure_reason()));
+        }
+        let _kind = bookclerk_library::HostSchemaKind::from_db_capabilities(&caps)
+            .map_err(|err| DbErr::Custom(err.to_string()))?;
+        // Fail closed: transport/internal/deadline failures must not be
+        // silently replaced with plugin-id-derived metadata. Only a typed
+        // `unsupported` (adapter without a bootstrap surface) may fall back
+        // to the first-party id inference below.
+        let mut bootstrap = match self.session.db_bootstrap().await {
+            Ok(bootstrap) => bootstrap,
+            Err(crate::PluginError::Abi { code, .. }) if code == "unsupported" => {
+                DbBootstrap::default()
+            }
+            Err(err) => return Err(map_rpc_err(err)),
         };
-        let backend = dialect_to_backend(&connect_result.dialect)?;
+        apply_bootstrap_metadata(&mut bootstrap, &self.plugin_id);
+        if let Some(reason) = bootstrap.backend_failure_reason() {
+            return Err(DbErr::Custom(reason));
+        }
+        let backend = seaorm_backend_from_bootstrap(&bootstrap)?;
         let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(RpcDatabaseProxy {
             session: self.session.clone(),
             txn_depth: Arc::new(Mutex::new(HashMap::new())),
+            caps: caps.clone(),
         }));
         let db = Database::connect_proxy(backend, proxy).await?;
-        Ok((db, connect_result))
+        self.apply_host_schema(&db, &caps).await?;
+        Ok((db, caps))
+    }
+
+    /// Reads the guest schema version and applies remaining host-authored DDL.
+    async fn apply_host_schema(
+        &self,
+        db: &DatabaseConnection,
+        caps: &DbCapabilities,
+    ) -> Result<(), DbErr> {
+        let kind = bookclerk_library::HostSchemaKind::from_db_capabilities(caps)
+            .map_err(|err| DbErr::Custom(err.to_string()))?;
+        let session = self.session.clone();
+        let caps = caps.clone();
+        bookclerk_library::apply_host_schema_with_batch(db, kind, move |stmts| {
+            let session = session.clone();
+            let caps = caps.clone();
+            async move { exec_host_ddl_batch(&session, &caps, stmts).await }
+        })
+        .await
+        .map_err(|err| DbErr::Custom(err.to_string()))
     }
 }
 
 /// Long-lived external database plugin for the active `[database].plugin`.
 #[derive(Default, Clone)]
 pub struct DatabaseRegistry {
-    /// Spawned guest matching `[database].plugin`, if handshake succeeded.
+    /// Spawned guest matching `[database].plugin`, if describe succeeded.
     active: Option<Arc<ExternalDatabase>>,
 }
 
@@ -212,17 +261,605 @@ pub async fn open_library_store(
             "no active database plugin — stage and enable [database].plugin"
         ))
     })?;
-    let (db, _caps) = ext
+    let (db, caps) = ext
         .connect(config)
         .await
         .map_err(bookclerk_library::LibraryError::Orm)?;
-    let store = bookclerk_library::LibraryStore::from_connection(db).with_atomic_txn(Arc::new(
-        RpcAtomicBackend {
-            session: ext.session.clone(),
-        },
-    ));
+    let backend = Arc::new(RpcAtomicBackend {
+        session: ext.session.clone(),
+        caps: caps.clone(),
+    });
+    let store = bookclerk_library::LibraryStore::from_connection(db)
+        .with_db_capabilities(caps)
+        .with_atomic_txn(backend.clone())
+        .with_typed_exec(backend);
     store.ensure_users_bridged().await?;
     Ok(store)
+}
+
+/// Test helper: a `GuestDatabase` over a library store with an explicit policy.
+///
+/// Production jobs do not inject the host library; plugins use named bindings.
+#[cfg(test)]
+#[must_use]
+fn granted_job_database(store: bookclerk_library::LibraryStore) -> Arc<dyn GuestDatabase> {
+    granted_job_database_with_policy(
+        store,
+        bookclerk_library::GuestSqlPolicy::allow_tables(["books"]),
+    )
+}
+
+/// Like [`granted_job_database`], with an explicit table/column/function policy.
+#[cfg(test)]
+#[must_use]
+fn granted_job_database_with_policy(
+    store: bookclerk_library::LibraryStore,
+    policy: bookclerk_library::GuestSqlPolicy,
+) -> Arc<dyn GuestDatabase> {
+    Arc::new(GuestJobDatabase { store, policy })
+}
+
+/// Test-only host-library [`GuestDatabase`] (never injected into production jobs).
+#[cfg(test)]
+struct GuestJobDatabase {
+    /// Library used for authorized typed `execute`.
+    store: bookclerk_library::LibraryStore,
+    /// Host-issued table/column/function allowlist for this job.
+    policy: bookclerk_library::GuestSqlPolicy,
+}
+
+#[cfg(test)]
+#[async_trait(?Send)]
+impl GuestDatabase for GuestJobDatabase {
+    async fn execute(
+        &self,
+        request: ExecuteRequest,
+    ) -> std::result::Result<ExecuteReply, AbiPluginError> {
+        self.store.execute_guest_atomic(request, &self.policy).await
+    }
+}
+
+/// Caps a guest `deadlineUnixMs` by the host job lease.
+///
+/// Guest `0` means unlimited and inherits the host deadline. Host `0` means
+/// the guest value is unchanged. Otherwise the earlier of the two wins.
+#[must_use]
+fn capped_binding_deadline(guest_unix_ms: u64, host_unix_ms: u64) -> u64 {
+    if guest_unix_ms == 0 {
+        host_unix_ms
+    } else if host_unix_ms == 0 {
+        guest_unix_ms
+    } else {
+        guest_unix_ms.min(host_unix_ms)
+    }
+}
+
+/// One provisioned named plugin database binding served by the active adapter.
+///
+/// The adapter holds an isolated session (own file / database / D1 database);
+/// guest SQL is authorized with [`bookclerk_library::GuestSqlPolicy::binding_owned`]
+/// and receipt-wrapped against the binding's own `db_atomic_receipts` table.
+/// Execute uses the host-private envelope path so receipts finalize, and
+/// forwards the job cancel flag plus a capped host lease deadline.
+struct BindingGuestDatabase {
+    /// Adapter vat session shared with the library connection.
+    session: Arc<PluginSession>,
+    /// Vat-unique binding session key (`<plugin>/<BINDING>`).
+    key: String,
+    /// Negotiated adapter capabilities.
+    caps: DbCapabilities,
+    /// Job fence / cancel flag shared with the destination vat.
+    cancel: Arc<AtomicBool>,
+    /// Host lease deadline (`deadlineUnixMs`); `0` means unlimited.
+    host_deadline_unix_ms: u64,
+}
+
+#[async_trait(?Send)]
+impl GuestDatabase for BindingGuestDatabase {
+    async fn execute(
+        &self,
+        mut request: ExecuteRequest,
+    ) -> std::result::Result<ExecuteReply, AbiPluginError> {
+        if self.cancel.load(Ordering::SeqCst) {
+            return Err(AbiPluginError::cancelled("fence lost"));
+        }
+        request.deadline_unix_ms =
+            capped_binding_deadline(request.deadline_unix_ms, self.host_deadline_unix_ms);
+        let env = load_binding_sql_type_env(
+            &self.session,
+            &self.key,
+            &self.cancel,
+            request.deadline_unix_ms,
+            self.caps.max_result_rows,
+        )
+        .await?;
+        let policy = bookclerk_library::GuestSqlPolicy::binding_owned().with_sql_types(env);
+        let cancel = Arc::clone(&self.cancel);
+        bookclerk_library::execute_guest_atomic_with(request, &self.caps, &policy, |envelope| {
+            let session = Arc::clone(&self.session);
+            let key = self.key.clone();
+            async move {
+                session
+                    .db_execute_binding_envelope_request(&key, envelope, cancel)
+                    .await
+                    .map_err(host_err_to_abi)
+            }
+        })
+        .await
+    }
+}
+
+/// Collision-resistant instance id for one `(owner_plugin_id, binding)` pair.
+///
+/// Length-prefixed SHA-256 so `("ab_c", "D")` and `("ab", "C_D")` cannot
+/// collide. Hosts pass this opaque value to third-party adapters and derive
+/// backend-native unit names from a length-bounded prefix of the same digest.
+fn binding_instance_id(owner_plugin_id: &str, binding: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(
+        u64::try_from(owner_plugin_id.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    hasher.update(owner_plugin_id.as_bytes());
+    hasher.update(
+        u64::try_from(binding.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    hasher.update(binding.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Postgres `CREATE DATABASE` identifier (`pb_` + 32 hex = 35 ≤ 63).
+fn postgres_binding_database_name(owner_plugin_id: &str, binding: &str) -> String {
+    format!(
+        "pb_{}",
+        &binding_instance_id(owner_plugin_id, binding)[..32]
+    )
+}
+
+/// Cloudflare D1 database name (`bookclerk-pb-` + 32 hex).
+fn d1_binding_database_name(owner_plugin_id: &str, binding: &str) -> String {
+    format!(
+        "bookclerk-pb-{}",
+        &binding_instance_id(owner_plugin_id, binding)[..32]
+    )
+}
+
+/// Reads the durable binding catalog through the host (guest-denied) path.
+async fn load_binding_sql_type_env(
+    session: &PluginSession,
+    key: &str,
+    cancel: &Arc<AtomicBool>,
+    deadline_unix_ms: u64,
+    max_result_rows: u32,
+) -> std::result::Result<SqlTypeEnv, AbiPluginError> {
+    let page = sql_catalog_page_rows(max_result_rows);
+    let mut env = SqlTypeEnv::new();
+    let mut cursor_table = String::new();
+    let mut cursor_ord: i64 = -1;
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(AbiPluginError::cancelled("fence lost"));
+        }
+        let req = ExecuteRequest {
+            operation_id: format!("binding-catalog-{key}"),
+            request_hash: String::new(),
+            deadline_unix_ms,
+            statements: vec![TypedDbStatement {
+                sql: format!(
+                    "SELECT table_name, column_name, sql_type, ordinal, is_identity, default_sql \
+                     FROM {SQL_CATALOG_TABLE} \
+                     WHERE table_name > ? OR (table_name = ? AND ordinal > ?) \
+                     ORDER BY table_name, ordinal LIMIT {page}"
+                ),
+                parameters: vec![
+                    DbValue::Text(cursor_table.clone()),
+                    DbValue::Text(cursor_table.clone()),
+                    DbValue::Int64(cursor_ord),
+                ],
+                kind: DbPlanStatementKind::Select,
+                max_rows: page,
+                result_selection: DbResultSelection::Rows,
+            }],
+        };
+        let reply = match session
+            .db_execute_binding_request(key, req, Arc::clone(cancel))
+            .await
+        {
+            Ok(reply) => reply,
+            Err(err) => {
+                if reserved_catalog_relation_missing(&err.to_string(), SQL_CATALOG_TABLE) {
+                    return Ok(SqlTypeEnv::new());
+                }
+                return Err(host_err_to_abi(err));
+            }
+        };
+        let stmt = catalog_page_statement(&reply)?;
+        if stmt.rows.is_empty() {
+            break;
+        }
+        let n = stmt.rows.len();
+        for row in &stmt.rows {
+            let table = catalog_cell_text(row.values.first());
+            let column = catalog_cell_text(row.values.get(1));
+            let ty = catalog_cell_text(row.values.get(2));
+            if table.is_empty() || column.is_empty() {
+                return Err(AbiPluginError::internal(
+                    "bookclerk_sql_catalog row is missing table_name or column_name",
+                ));
+            }
+            let Some(sql_ty) = SqlType::from_column_ident(ty.to_ascii_lowercase().as_str()) else {
+                return Err(AbiPluginError::internal(format!(
+                    "bookclerk_sql_catalog has unknown sql_type {ty}"
+                )));
+            };
+            let ordinal = catalog_cell_i64(row.values.get(3)).ok_or_else(|| {
+                AbiPluginError::internal("bookclerk_sql_catalog row is missing ordinal")
+            })?;
+            env.insert_column(&table, &column, sql_ty);
+            cursor_table = table;
+            cursor_ord = ordinal;
+        }
+        if n < usize::try_from(page).unwrap_or(usize::MAX) {
+            break;
+        }
+    }
+    load_binding_sql_schema_env(session, key, cancel, deadline_unix_ms, page, &mut env).await?;
+    Ok(env)
+}
+
+/// Pages `bookclerk_sql_schema` into `env` (fail closed on malformed rows).
+async fn load_binding_sql_schema_env(
+    session: &PluginSession,
+    key: &str,
+    cancel: &Arc<AtomicBool>,
+    deadline_unix_ms: u64,
+    page: u32,
+    env: &mut SqlTypeEnv,
+) -> std::result::Result<(), AbiPluginError> {
+    let mut cursor = String::new();
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(AbiPluginError::cancelled("fence lost"));
+        }
+        let req = ExecuteRequest {
+            operation_id: format!("binding-schema-{key}"),
+            request_hash: String::new(),
+            deadline_unix_ms,
+            statements: vec![TypedDbStatement {
+                sql: format!(
+                    "SELECT table_name, fingerprint, identity_column \
+                     FROM {SQL_SCHEMA_TABLE} \
+                     WHERE table_name > ? \
+                     ORDER BY table_name LIMIT {page}"
+                ),
+                parameters: vec![DbValue::Text(cursor.clone())],
+                kind: DbPlanStatementKind::Select,
+                max_rows: page,
+                result_selection: DbResultSelection::Rows,
+            }],
+        };
+        let reply = match session
+            .db_execute_binding_request(key, req, Arc::clone(cancel))
+            .await
+        {
+            Ok(reply) => reply,
+            Err(err) => {
+                if reserved_catalog_relation_missing(&err.to_string(), SQL_SCHEMA_TABLE) {
+                    return Ok(());
+                }
+                return Err(host_err_to_abi(err));
+            }
+        };
+        let stmt = catalog_page_statement(&reply)?;
+        if stmt.rows.is_empty() {
+            break;
+        }
+        let n = stmt.rows.len();
+        for row in &stmt.rows {
+            let table = catalog_cell_text(row.values.first());
+            let fingerprint = catalog_cell_text(row.values.get(1));
+            let identity = catalog_cell_text(row.values.get(2));
+            if table.is_empty() || fingerprint.is_empty() {
+                return Err(AbiPluginError::internal(
+                    "bookclerk_sql_schema row is missing table_name or fingerprint",
+                ));
+            }
+            let cols = env.table_columns(&table).unwrap_or(&[]).to_vec();
+            env.insert_table_schema(
+                table.clone(),
+                cols,
+                if identity.is_empty() {
+                    None
+                } else {
+                    Some(identity)
+                },
+                fingerprint,
+            );
+            cursor = table;
+        }
+        if n < usize::try_from(page).unwrap_or(usize::MAX) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// TEXT cell from a catalog row, or empty when the value is missing/non-text.
+fn catalog_cell_text(v: Option<&DbValue>) -> String {
+    match v {
+        Some(DbValue::Text(s)) => s.clone(),
+        _ => String::new(),
+    }
+}
+
+/// INTEGER cell from a catalog row.
+fn catalog_cell_i64(v: Option<&DbValue>) -> Option<i64> {
+    match v {
+        Some(DbValue::Int64(n)) => Some(*n),
+        _ => None,
+    }
+}
+
+/// Host-authored bootstrap request creating binding-local receipt tables.
+fn binding_bootstrap_request(owner: &str, binding: &str) -> ExecuteRequest {
+    let statements = bookclerk_db_exec::split_schema_statements(
+        bookclerk_library::migrations::binding_bootstrap_sql(),
+    )
+    .into_iter()
+    .map(|sql| TypedDbStatement {
+        sql,
+        parameters: Vec::new(),
+        kind: DbPlanStatementKind::Execute,
+        max_rows: 0,
+        result_selection: DbResultSelection::Discard,
+    })
+    .collect();
+    ExecuteRequest {
+        operation_id: format!("binding-bootstrap-{owner}-{binding}"),
+        request_hash: String::new(),
+        deadline_unix_ms: 0,
+        statements,
+    }
+}
+
+impl ExternalDatabase {
+    /// Opens (provisioning on first use) isolated sessions for the named
+    /// plugin database bindings of `owner_plugin_id`.
+    ///
+    /// Backend-native units: SQLite gets a file per binding under
+    /// `<files_dir>/plugin-databases/<plugin>/<BINDING>.db`, PostgreSQL a
+    /// dedicated database (`pb_` + 32 hex of the `(plugin, binding)` digest),
+    /// and D1 its own database (`bookclerk-pb-` + the same 32 hex). Third-party
+    /// adapters advertising `pluginDatabases` receive `binding` plus a
+    /// collision-resistant `instanceId` on the public
+    /// [`bookclerk_plugin_abi::DatabaseAdapterConfig`]. Each provisioned unit
+    /// is recorded in the `plugin_databases` registry (an existing row wins so
+    /// a re-open never re-targets a binding).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when the adapter does not advertise
+    /// `DbCapabilities::plugin_databases`, when provisioning fails, or when
+    /// the registry cannot be recorded.
+    pub async fn open_binding_databases(
+        &self,
+        config: &Config,
+        store: &bookclerk_library::LibraryStore,
+        owner_plugin_id: &str,
+        bindings: &[String],
+    ) -> PluginResult<Vec<(String, crate::rpc_session::GuestDatabaseFactory)>> {
+        if bindings.is_empty() {
+            return Ok(Vec::new());
+        }
+        let caps = self.session.db_capabilities().await?;
+        if !caps.plugin_databases {
+            return Err(PluginError::message(format!(
+                "database plugin `{}` does not support isolated plugin database bindings \
+                 (plugin `{owner_plugin_id}` requests {bindings:?})",
+                self.plugin_id
+            )));
+        }
+        let kind = DatabasePluginKind::parse(&self.plugin_id);
+        let backend_kind = match kind {
+            Some(DatabasePluginKind::Sqlite) => "sqlite",
+            Some(DatabasePluginKind::Postgres) => "postgres",
+            Some(DatabasePluginKind::D1) => "d1",
+            None => self.plugin_id.as_str(),
+        };
+        let mut out = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let default_unit = self.default_binding_unit(config, kind, owner_plugin_id, binding);
+            let record = store
+                .record_plugin_database(owner_plugin_id, binding, backend_kind, &default_unit)
+                .await
+                .map_err(|err| PluginError::message(err.to_string()))?;
+            if record.backend_kind != backend_kind {
+                return Err(PluginError::message(format!(
+                    "plugin database binding `{owner_plugin_id}/{binding}` was provisioned on \
+                     `{}` but the active adapter is `{backend_kind}`; migrate or drop it with \
+                     `bookclerk plugins db drop {owner_plugin_id} {binding}`",
+                    record.backend_kind
+                )));
+            }
+            let ctx = self.binding_connect_context(
+                config,
+                kind,
+                owner_plugin_id,
+                binding,
+                &record.unit_ref,
+            )?;
+            let key = format!("{owner_plugin_id}/{binding}");
+            let binding_caps = self.session.db_open_binding(&key, ctx).await?;
+            if !binding_caps.meets_host_minimums() {
+                return Err(PluginError::message(format!(
+                    "database binding `{owner_plugin_id}/{binding}` failed host capability \
+                     minima: {}",
+                    binding_caps.capability_failure_reason()
+                )));
+            }
+            self.session
+                .db_execute_binding_request(
+                    &key,
+                    binding_bootstrap_request(owner_plugin_id, binding),
+                    Arc::new(AtomicBool::new(false)),
+                )
+                .await?;
+            let session = Arc::clone(&self.session);
+            let factory_key = key.clone();
+            let factory: crate::rpc_session::GuestDatabaseFactory =
+                Arc::new(move |cancel, host_deadline_unix_ms| {
+                    Arc::new(BindingGuestDatabase {
+                        session: Arc::clone(&session),
+                        key: factory_key.clone(),
+                        caps: binding_caps.clone(),
+                        cancel,
+                        host_deadline_unix_ms,
+                    })
+                });
+            out.push((binding.clone(), factory));
+        }
+        Ok(out)
+    }
+
+    /// Backend-native default unit for one `(plugin, binding)` pair.
+    fn default_binding_unit(
+        &self,
+        config: &Config,
+        kind: Option<DatabasePluginKind>,
+        owner_plugin_id: &str,
+        binding: &str,
+    ) -> String {
+        match kind {
+            Some(DatabasePluginKind::Sqlite) => config
+                .paths()
+                .files_dir
+                .join("plugin-databases")
+                .join(owner_plugin_id)
+                .join(format!("{binding}.db"))
+                .display()
+                .to_string(),
+            Some(DatabasePluginKind::Postgres) => {
+                postgres_binding_database_name(owner_plugin_id, binding)
+            }
+            Some(DatabasePluginKind::D1) => d1_binding_database_name(owner_plugin_id, binding),
+            // Third-party adapters receive the instance id; record it as the unit.
+            None => binding_instance_id(owner_plugin_id, binding),
+        }
+    }
+
+    /// Per-binding `database.openSession` factory context.
+    fn binding_connect_context(
+        &self,
+        config: &Config,
+        kind: Option<DatabasePluginKind>,
+        owner_plugin_id: &str,
+        binding: &str,
+        unit_ref: &str,
+    ) -> PluginResult<bookclerk_plugin_sdk::DatabaseContext> {
+        let data_dir = self.plugin_data_dir.display().to_string();
+        let params = match kind {
+            Some(DatabasePluginKind::Sqlite) => DbConnectParams::Sqlite {
+                plugin_data_dir: data_dir,
+                sqlite_path: Some(unit_ref.to_string()),
+                binding: Some(binding.to_string()),
+            },
+            Some(DatabasePluginKind::Postgres) => DbConnectParams::Postgres {
+                plugin_data_dir: data_dir,
+                url: resolve_postgres_url(config)
+                    .map_err(|err| PluginError::message(err.to_string()))?,
+                binding: Some(binding.to_string()),
+                database: Some(unit_ref.to_string()),
+            },
+            Some(DatabasePluginKind::D1) => DbConnectParams::D1 {
+                plugin_data_dir: data_dir,
+                account_id: config.database.d1.account_id.clone(),
+                database_id: String::new(),
+                api_base: config.database.d1.api_base.clone(),
+                api_token: resolve_d1_api_token()
+                    .map_err(|err| PluginError::message(err.to_string()))?,
+                binding: Some(binding.to_string()),
+                database_name: Some(unit_ref.to_string()),
+            },
+            None => {
+                let adapter_config = bookclerk_plugin_abi::DatabaseAdapterConfig {
+                    plugin_data_dir: data_dir,
+                    config: if self.settings_json.is_null() {
+                        Value::Object(serde_json::Map::new())
+                    } else {
+                        self.settings_json.clone()
+                    },
+                    binding: Some(binding.to_string()),
+                    instance_id: Some(binding_instance_id(owner_plugin_id, binding)),
+                };
+                return bookclerk_plugin_abi::database_context_from_adapter_config(&adapter_config)
+                    .map_err(|err| PluginError::message(err.to_string()));
+            }
+        };
+        database_context_from_params(&params).map_err(|err| PluginError::message(err.to_string()))
+    }
+
+    /// Physically deletes a provisioned binding unit. The registry row is the
+    /// caller's to remove **after** this returns success.
+    ///
+    /// SQLite deletes the file and journal sidecars. PostgreSQL issues
+    /// `DROP DATABASE`. D1 deletes the Cloudflare database by name. Unknown
+    /// adapters fail closed so a registry row cannot outlive a unit the host
+    /// cannot prove is gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns when credentials are missing, the backend refuses the delete,
+    /// or the adapter family is unknown.
+    pub async fn drop_provisioned_unit(
+        config: &Config,
+        backend_kind: &str,
+        unit_ref: &str,
+    ) -> PluginResult<()> {
+        match backend_kind {
+            "sqlite" => {
+                for suffix in ["", "-wal", "-shm", "-journal"] {
+                    let path = format!("{unit_ref}{suffix}");
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => {}
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(err) => {
+                            return Err(PluginError::message(format!(
+                                "could not delete {path}: {err}"
+                            )));
+                        }
+                    }
+                }
+                Ok(())
+            }
+            "postgres" => {
+                let url = resolve_postgres_url(config)
+                    .map_err(|err| PluginError::message(err.to_string()))?;
+                bookclerk_plugin_database_postgres::drop_binding(&url, unit_ref)
+                    .await
+                    .map_err(|err| PluginError::message(err.to_string()))
+            }
+            "d1" => {
+                let token =
+                    resolve_d1_api_token().map_err(|err| PluginError::message(err.to_string()))?;
+                bookclerk_plugin_database_d1::delete_database(
+                    &config.database.d1.api_base,
+                    &config.database.d1.account_id,
+                    &token,
+                    unit_ref,
+                )
+                .await
+                .map_err(|err| PluginError::message(err.to_string()))
+            }
+            other => Err(PluginError::message(format!(
+                "cannot drop adapter `{other}` unit `{unit_ref}`: the host cannot prove deletion; \
+                 remove it with the adapter, then retry"
+            ))),
+        }
+    }
 }
 
 /// Open the library for a specific `[database].plugin` id (ignoring the active config value).
@@ -283,10 +920,12 @@ fn task_key() -> TaskKey {
 #[derive(Clone)]
 /// SeaORM [`ProxyDatabaseTrait`] that forwards query/exec/txn RPCs to the guest.
 struct RpcDatabaseProxy {
-    /// Cap'n Proto v2 session shared with [`ExternalDatabase`].
-    session: Arc<V2PluginSession>,
+    /// Cap'n Proto session shared with [`ExternalDatabase`].
+    session: Arc<PluginSession>,
     /// Per-task nested begin depth (vat holds a single transaction).
     txn_depth: Arc<Mutex<HashMap<TaskKey, usize>>>,
+    /// Negotiated guest capabilities (statement/bind/request byte limits).
+    caps: DbCapabilities,
 }
 
 impl std::fmt::Debug for RpcDatabaseProxy {
@@ -332,11 +971,73 @@ impl RpcDatabaseProxy {
         Some(next)
     }
 
-    /// Serializes a SeaORM statement into SQL + JSON bind values.
-    fn statement_parts(statement: &Statement) -> (String, String) {
-        let dto = statement_to_dto(statement);
-        let values_json = serde_json::to_string(&dto.values).unwrap_or_else(|_| "[]".into());
-        (dto.sql, values_json)
+    /// Serializes a SeaORM statement into a typed `ExecuteRequest` statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns when a SeaORM bind is outside the universal `DbValue` domain.
+    fn statement_to_typed(
+        statement: &Statement,
+        kind: DbPlanStatementKind,
+        selection: DbResultSelection,
+    ) -> Result<TypedDbStatement, DbErr> {
+        let parameters = match &statement.values {
+            Some(values) => values
+                .0
+                .iter()
+                .map(db_value_from_sea)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(DbErr::Custom)?,
+            None => Vec::new(),
+        };
+        Ok(TypedDbStatement {
+            sql: statement.sql.clone(),
+            parameters,
+            kind,
+            max_rows: 0,
+            result_selection: selection,
+        })
+    }
+
+    /// One-statement `ExecuteRequest` used by the proxy query/execute/ping path.
+    fn typed_request(stmt: TypedDbStatement, operation_id: String) -> ExecuteRequest {
+        ExecuteRequest {
+            operation_id,
+            request_hash: String::new(),
+            statements: vec![stmt],
+            deadline_unix_ms: 0,
+        }
+    }
+
+    /// Validates `req` against negotiated caps, stamps the host request hash,
+    /// then sends `executeAtomic`.
+    ///
+    /// Guest-supplied statement kinds are replaced with host-authored kinds
+    /// derived from the SQL. After validation the host stamps the canonical
+    /// Cap'n request hash. A non-empty guest hash must match that digest
+    /// (explicit retry token).
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin ABI `invalid_params` error when the request exceeds
+    /// negotiated caps or the retry hash does not match, and a plugin error
+    /// when `executeAtomic` fails.
+    async fn execute_typed_validated(
+        &self,
+        mut req: ExecuteRequest,
+    ) -> Result<bookclerk_plugin_sdk::ExecuteReply, crate::PluginError> {
+        bookclerk_library::authorize_typed_request(&mut req, &self.caps)
+            .map_err(|err| crate::PluginError::from_abi(Some("invalid_params"), err.to_string()))?;
+        let validate_req = req.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let reply = if self.depth() > 0 {
+            self.session.db_txn_execute_request(req, cancel).await
+        } else {
+            self.session.db_execute_request(req, cancel).await
+        }?;
+        bookclerk_library::validate_execute_reply(&validate_req, &reply, &self.caps)
+            .map_err(map_reply_validation_err)?;
+        Ok(reply)
     }
 }
 
@@ -346,52 +1047,59 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
         if bookclerk_library::is_txn_broken() {
             return Err(bookclerk_library::txn_broken_err());
         }
-        let (sql, values_json) = Self::statement_parts(&statement);
-        let mut rows = Vec::new();
-        let mut cursor = String::new();
-        // 4096 pages × MAX_LIST_PAGE (256) is a hard stop against a malicious next_cursor loop.
-        for _ in 0..4096 {
-            let page = self
-                .session
-                .db_query_page(sql.clone(), values_json.clone(), cursor.clone(), 0)
-                .await
-                .map_err(map_rpc_err)?;
-            let page_rows: Vec<ProxyRowDto> = if page.rows_json.trim().is_empty() {
-                Vec::new()
-            } else {
-                serde_json::from_str(&page.rows_json)
-                    .map_err(|err| DbErr::Custom(format!("database plugin query rows: {err}")))?
-            };
-            rows.extend(page_rows);
-            match page.next_cursor {
-                Some(next) if !next.is_empty() && next != cursor => cursor = next,
-                _ => return Ok(proxy_rows_from_dto(rows)),
-            }
-        }
-        Err(DbErr::Custom(
-            "database plugin query exceeded 4096 pages".into(),
-        ))
+        let typed = Self::statement_to_typed(
+            &statement,
+            bookclerk_library::proxy_read_kind(&statement.sql),
+            DbResultSelection::Rows,
+        )?;
+        let req = Self::typed_request(typed, format!("proxy-query-{}", uuid::Uuid::new_v4()));
+        let reply = self
+            .execute_typed_validated(req)
+            .await
+            .map_err(map_rpc_err)?;
+        let stmt =
+            reply.statements.into_iter().next().ok_or_else(|| {
+                DbErr::Custom("execute query returned no statement result".into())
+            })?;
+        proxy_rows_from_typed(&stmt).map_err(DbErr::Custom)
     }
 
     async fn execute(&self, statement: Statement) -> std::result::Result<ProxyExecResult, DbErr> {
         if bookclerk_library::is_txn_broken() {
             return Err(bookclerk_library::txn_broken_err());
         }
-        let (sql, values_json) = Self::statement_parts(&statement);
-        let result = self
-            .session
-            .db_execute(sql, values_json)
+        let typed = Self::statement_to_typed(
+            &statement,
+            bookclerk_library::proxy_write_kind(&statement.sql),
+            DbResultSelection::AffectedRows,
+        )?;
+        let req = Self::typed_request(typed, format!("proxy-exec-{}", uuid::Uuid::new_v4()));
+        let reply = self
+            .execute_typed_validated(req)
             .await
             .map_err(map_rpc_err)?;
-        Ok(exec_result_from_dto(ExecResultDto {
-            last_insert_id: u64::try_from(result.last_insert_id).unwrap_or(0),
-            rows_affected: result.rows_affected,
-        }))
+        let rows_affected = reply
+            .statements
+            .first()
+            .map(|s| s.rows_affected)
+            .unwrap_or(0);
+        Ok(ProxyExecResult {
+            last_insert_id: 0,
+            rows_affected,
+        })
     }
 
     async fn ping(&self) -> std::result::Result<(), DbErr> {
-        self.session
-            .db_query("SELECT 1", "[]")
+        let typed = TypedDbStatement {
+            sql: "SELECT 1".into(),
+            parameters: Vec::new(),
+            kind: DbPlanStatementKind::Select,
+            max_rows: 1,
+            result_selection: DbResultSelection::Rows,
+        };
+        let req =
+            RpcDatabaseProxy::typed_request(typed, format!("proxy-ping-{}", uuid::Uuid::new_v4()));
+        self.execute_typed_validated(req)
             .await
             .map_err(map_rpc_err)?;
         Ok(())
@@ -409,7 +1117,7 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
         if let Err(err) = self.session.db_begin().await {
             self.pop_depth();
             bookclerk_library::note_begin_failed(&err);
-            tracing::error!(error = %err, "database plugin dbBegin failed");
+            tracing::error!(error = %err, "database plugin begin failed");
         }
     }
 
@@ -419,7 +1127,7 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
                 if let Err(err) = self.session.db_rollback().await {
                     tracing::error!(
                         error = %err,
-                        "database plugin dbRollback after injected commit failure"
+                        "database plugin rollback after injected commit failure"
                     );
                 }
             }
@@ -438,9 +1146,9 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
         }
         if let Err(err) = self.session.db_commit().await {
             bookclerk_library::note_commit_failed(&err);
-            tracing::error!(error = %err, "database plugin dbCommit failed");
+            tracing::error!(error = %err, "database plugin commit failed");
             if let Err(rb) = self.session.db_rollback().await {
-                tracing::error!(error = %rb, "database plugin dbRollback after commit failure");
+                tracing::error!(error = %rb, "database plugin rollback after commit failure");
             }
         }
     }
@@ -453,7 +1161,7 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
             return;
         }
         if let Err(err) = self.session.db_rollback().await {
-            tracing::error!(error = %err, "database plugin dbRollback failed");
+            tracing::error!(error = %err, "database plugin rollback failed");
         }
     }
 
@@ -466,26 +1174,31 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
         }
         let session = self.session.clone();
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            tracing::error!("database plugin dbRollback skipped: no tokio runtime");
+            tracing::error!("database plugin rollback skipped: no tokio runtime");
             return;
         };
         if let Err(err) = tokio::task::block_in_place(|| {
             handle.block_on(async move { session.db_rollback().await.map(|_| ()) })
         }) {
-            tracing::error!(error = %err, "database plugin dbRollback failed");
+            tracing::error!(error = %err, "database plugin rollback failed");
         }
     }
 }
 
-/// Host [`AtomicTxnBackend`] that runs named security ops as one guest `dbAtomic`.
+/// Host [`AtomicTxnBackend`] that runs named security ops as one guest atomic batch.
 struct RpcAtomicBackend {
-    /// Cap'n Proto v2 session used for a single `bookclerk.atomic` query per operation.
-    session: Arc<V2PluginSession>,
+    /// Cap'n Proto session used for a single `bookclerk.atomic` query per operation.
+    session: Arc<PluginSession>,
+    /// Full negotiated capabilities used to reject oversized plans before RPC.
+    caps: DbCapabilities,
 }
 
 impl RpcAtomicBackend {
     /// Sends one `bookclerk.atomic` query; ambiguous transport maps to [`LibraryError::Unavailable`].
-    async fn call(&self, params: DbAtomicParams) -> bookclerk_library::Result<DbAtomicResult> {
+    async fn call(
+        &self,
+        params: bookclerk_library::DbAtomicParams,
+    ) -> bookclerk_library::Result<bookclerk_library::DbAtomicResult> {
         let operation_id = bookclerk_library::db_atomic_operation_id(&params);
         self.call_with_id(operation_id, params).await
     }
@@ -494,22 +1207,58 @@ impl RpcAtomicBackend {
     async fn call_with_id(
         &self,
         operation_id: String,
-        params: DbAtomicParams,
-    ) -> bookclerk_library::Result<DbAtomicResult> {
-        let request = DbAtomicRequest {
-            operation_id,
-            operation: params,
-        };
-        let payload = serde_json::to_string(&request).map_err(|err| {
-            bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string()))
-        })?;
-        match self.session.db_query("bookclerk.atomic", payload).await {
-            Ok(page) => serde_json::from_str(&page.rows_json).map_err(|err| {
-                bookclerk_library::LibraryError::Other(anyhow::anyhow!(
-                    "database atomic result: {err}"
+        params: bookclerk_library::DbAtomicParams,
+    ) -> bookclerk_library::Result<bookclerk_library::DbAtomicResult> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let compiled = bookclerk_library::compile_named_request(&operation_id, &params, &now)
+            .map_err(bookclerk_library::LibraryError::Orm)?;
+        self.send_compiled(compiled, operation_id).await
+    }
+
+    /// Sends an already-compiled generic plan and interprets the guest statement results.
+    ///
+    /// # Errors
+    ///
+    /// Returns when validation, `executeAtomic`, or result interpretation fails.
+    async fn send_compiled(
+        &self,
+        compiled: bookclerk_library::CompiledAtomic,
+        operation_id: String,
+    ) -> bookclerk_library::Result<bookclerk_library::DbAtomicResult> {
+        bookclerk_library::validate_plan(&compiled.plan, &self.caps)?;
+        let deadline_unix_ms = unix_now_ms().saturating_add(120_000);
+        let mut typed = compiled.clone().into_typed_request(operation_id.clone());
+        typed.deadline_unix_ms = deadline_unix_ms;
+        bookclerk_library::validate_execute_request(&typed, &self.caps)?;
+        let validate_req = typed.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let _guard = CancelOnDrop(Arc::clone(&cancel));
+        let remaining_ms = deadline_unix_ms.saturating_sub(unix_now_ms()).max(1);
+        tokio::select! {
+            () = tokio::time::sleep(std::time::Duration::from_millis(remaining_ms)) => {
+                cancel.store(true, Ordering::SeqCst);
+                Err(bookclerk_library::LibraryError::Unavailable(
+                    "deadline_exceeded: host RPC deadline elapsed".into(),
                 ))
-            }),
-            Err(err) => Err(map_plugin_err(err)),
+            }
+            result = self.session.db_execute_request(typed, Arc::clone(&cancel)) => match result {
+                Ok(reply) => {
+                    bookclerk_library::validate_execute_reply(&validate_req, &reply, &self.caps)?;
+                    let exec = bookclerk_library::plan_exec_from_execute_reply(reply);
+                    bookclerk_library::validate_exec_result(
+                        &compiled.plan,
+                        &exec,
+                        &self.caps,
+                        &operation_id,
+                    )?;
+                    Ok(bookclerk_library::interpret_exec(
+                        &compiled.plan,
+                        &exec,
+                        &compiled.expected_hash,
+                    ))
+                }
+                Err(err) => Err(map_atomic_rpc_err(err)),
+            }
         }
     }
 }
@@ -521,6 +1270,78 @@ fn map_plugin_err(err: crate::PluginError) -> bookclerk_library::LibraryError {
     } else {
         bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string()))
     }
+}
+
+/// In-flight atomic abort is ambiguous (the guest may already have committed).
+fn map_atomic_rpc_err(err: crate::PluginError) -> bookclerk_library::LibraryError {
+    match &err {
+        crate::PluginError::Abi { code, .. } if code == "cancelled" => {
+            bookclerk_library::LibraryError::Unavailable(err.to_string())
+        }
+        _ => map_plugin_err(err),
+    }
+}
+
+/// Maps host RPC failures onto the ABI [`PluginError`](AbiPluginError) the
+/// granted job session returns to guests.
+fn host_err_to_abi(err: crate::PluginError) -> AbiPluginError {
+    match err {
+        crate::PluginError::Abi { code, message } => AbiPluginError::from_wire(&code, message),
+        crate::PluginError::Unavailable(message) => AbiPluginError::unavailable(message),
+        other => AbiPluginError::internal(other.to_string()),
+    }
+}
+
+/// Sets `cancel` when an in-flight `db_execute_request` future is dropped.
+struct CancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Current unix time in milliseconds.
+fn unix_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+/// Runs host DDL as one `bookclerk.atomic` batch (D1 V27).
+async fn exec_host_ddl_batch(
+    session: &PluginSession,
+    caps: &DbCapabilities,
+    stmts: Vec<String>,
+) -> bookclerk_library::Result<()> {
+    if stmts.is_empty() {
+        return Ok(());
+    }
+    let operation_id = format!("host-schema-{}", uuid::Uuid::new_v4());
+    let typed = ExecuteRequest {
+        operation_id: operation_id.clone(),
+        request_hash: String::new(),
+        statements: stmts
+            .into_iter()
+            .map(|sql| TypedDbStatement {
+                sql,
+                parameters: vec![],
+                kind: DbPlanStatementKind::Execute,
+                max_rows: 0,
+                result_selection: DbResultSelection::AffectedRows,
+            })
+            .collect(),
+        deadline_unix_ms: 0,
+    };
+    let validate_req = typed.clone();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let reply = session
+        .db_execute_request(typed, cancel)
+        .await
+        .map_err(|err| bookclerk_library::LibraryError::Orm(DbErr::Custom(err.to_string())))?;
+    bookclerk_library::validate_execute_reply(&validate_req, &reply, caps)?;
+    Ok(())
 }
 
 /// Translates a guest atomic status string into a library error, or `None` on `ok`.
@@ -564,6 +1385,35 @@ fn decode_payload<T: serde::de::DeserializeOwned>(
             "database atomic {what} payload: {err}"
         ))
     })
+}
+
+#[async_trait]
+impl bookclerk_library::TypedAtomicExec for RpcAtomicBackend {
+    async fn execute_typed(
+        &self,
+        envelope: HostExecuteEnvelope,
+    ) -> std::result::Result<ExecuteReply, AbiPluginError> {
+        let mut request = envelope.request.clone();
+        let proofs = envelope.proofs.clone();
+        bookclerk_library::authorize_typed_request(&mut request, &self.caps)
+            .map_err(|err| AbiPluginError::invalid_params(err.to_string()))?;
+        self.caps
+            .admit_proven_execute(&request, &proofs)
+            .map_err(|err| AbiPluginError::invalid_params(err.to_string()))?;
+        let validate_req = request.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let reply = self
+            .session
+            .db_execute_envelope_request(
+                HostExecuteEnvelope::new(request, envelope.guest_receipt).with_proofs(proofs),
+                cancel,
+            )
+            .await
+            .map_err(host_err_to_abi)?;
+        bookclerk_library::validate_execute_reply(&validate_req, &reply, &self.caps)
+            .map_err(map_reply_validation_abi)?;
+        Ok(reply)
+    }
 }
 
 #[async_trait]
@@ -938,6 +1788,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         event_id: &str,
         subscribers: &[bookclerk_library::EventSubscriber],
         operation_id: &str,
+        mark_dispatched: bool,
     ) -> bookclerk_library::Result<u32> {
         let subscribers_json = serde_json::to_string(subscribers).map_err(|err| {
             bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string()))
@@ -948,6 +1799,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
                 DbAtomicParams::DispatchEventDeliveries {
                     event_id: event_id.to_string(),
                     subscribers_json,
+                    mark_dispatched,
                 },
             )
             .await?;
@@ -965,25 +1817,31 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
             .unwrap_or(0) as u32)
     }
 
-    async fn claim_next_event_delivery(
+    #[allow(clippy::too_many_arguments)]
+    async fn claim_event_delivery(
         &self,
+        delivery_id: &str,
         owner: &str,
         lease_secs: u64,
         operation_id: &str,
-        plugin_ids: &[String],
+        plugin_id: &str,
+        resource_class: &str,
         max_in_flight: u32,
     ) -> bookclerk_library::Result<Option<bookclerk_library::EventDeliveryRecord>> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let compiled = bookclerk_library::compile_claim_event_delivery(
+            operation_id,
+            delivery_id,
+            owner,
+            i64::try_from(lease_secs).unwrap_or(60),
+            plugin_id,
+            resource_class,
+            i64::from(max_in_flight),
+            &now,
+        )
+        .map_err(bookclerk_library::LibraryError::Orm)?;
         let result = self
-            .call_with_id(
-                operation_id.to_string(),
-                DbAtomicParams::ClaimNextEventDelivery {
-                    owner: owner.to_string(),
-                    lease_secs: i64::try_from(lease_secs).unwrap_or(60),
-                    plugin_ids_json: serde_json::to_string(plugin_ids)
-                        .unwrap_or_else(|_| "[]".into()),
-                    max_in_flight: i64::from(max_in_flight),
-                },
-            )
+            .send_compiled(compiled, operation_id.to_string())
             .await?;
         if result.status == atomic_status::EMPTY {
             return Ok(None);
@@ -1074,57 +1932,166 @@ struct AtomicWebauthnChallenge {
     state_json: String,
 }
 
-/// Builds guest `db.connect` params (SQLite path, D1 token, or Postgres URL) from host config.
-fn connect_params(
+/// Builds a [`bookclerk_plugin_sdk::DatabaseContext`] for `database.openSession`.
+///
+/// Used by the CLI diagnose probe and mirrors [`ExternalDatabase::connect`].
+///
+/// # Errors
+///
+/// Returns an error when plugin data paths, secrets, or context encoding fail.
+pub fn database_connect_context(
+    config: &Config,
+    plugin: &DiscoveredPlugin,
+    session: &PluginSession,
+) -> PluginResult<bookclerk_plugin_sdk::DatabaseContext> {
+    let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
+    let table = crate::settings_table(config, plugin);
+    let settings_json = toml_to_json(&toml::Value::Table(table));
+    connect_context(
+        config,
+        &plugin.manifest.id,
+        &plugin_data_dir,
+        session,
+        &settings_json,
+    )
+    .map_err(|err| PluginError::message(err.to_string()))
+}
+
+/// Builds the `database.openSession` factory context from host config.
+///
+/// First-party ids (`sqlite`, `d1`, `postgres`) receive host-private connect
+/// params with host-injected paths / secrets. Any other id is a third-party
+/// adapter and receives the public [`bookclerk_plugin_abi::DatabaseAdapterConfig`]
+/// payload carrying its granted `[database.<id>]` settings, so custom adapters
+/// bootstrap without a host registry change.
+fn connect_context(
     config: &Config,
     plugin_id: &str,
     plugin_data_dir: &Path,
-    session: &V2PluginSession,
-) -> Result<DbConnectParams, DbErr> {
+    session: &PluginSession,
+    settings_json: &Value,
+) -> Result<bookclerk_plugin_sdk::DatabaseContext, DbErr> {
     let data_dir = plugin_data_dir.display().to_string();
-    match DatabasePluginKind::parse(plugin_id) {
-        Some(DatabasePluginKind::Sqlite) => {
-            let path = config.database.sqlite_path(&config.paths().files_dir);
-            Ok(DbConnectParams::Sqlite {
-                plugin_data_dir: data_dir,
-                sqlite_path: Some(path.display().to_string()),
-            })
-        }
+    let params = match DatabasePluginKind::parse(plugin_id) {
+        Some(DatabasePluginKind::Sqlite) => sqlite_connect_params(config, plugin_data_dir),
         Some(DatabasePluginKind::D1) => {
             session
                 .require_binding("secrets")
                 .map_err(|err| DbErr::Custom(err.to_string()))?;
-            Ok(DbConnectParams::D1 {
+            DbConnectParams::D1 {
                 plugin_data_dir: data_dir,
                 account_id: config.database.d1.account_id.clone(),
                 database_id: config.database.d1.database_id.clone(),
                 api_base: config.database.d1.api_base.clone(),
                 api_token: resolve_d1_api_token().map_err(map_config_err)?,
-            })
+                binding: None,
+                database_name: None,
+            }
         }
         Some(DatabasePluginKind::Postgres) => {
             session
                 .require_binding("secrets")
                 .map_err(|err| DbErr::Custom(err.to_string()))?;
-            Ok(DbConnectParams::Postgres {
+            DbConnectParams::Postgres {
                 plugin_data_dir: data_dir,
                 url: resolve_postgres_url(config).map_err(map_config_err)?,
-            })
+                binding: None,
+                database: None,
+            }
         }
-        None => Err(DbErr::Custom(format!(
-            "unknown database plugin `{plugin_id}`"
+        None => return adapter_config_context(&data_dir, settings_json),
+    };
+    database_context_from_params(&params).map_err(|err| DbErr::Custom(err.to_string()))
+}
+
+/// Public third-party adapter factory context (granted settings + data dir).
+fn adapter_config_context(
+    data_dir: &str,
+    settings_json: &Value,
+) -> Result<bookclerk_plugin_sdk::DatabaseContext, DbErr> {
+    let adapter_config = bookclerk_plugin_abi::DatabaseAdapterConfig {
+        plugin_data_dir: data_dir.to_string(),
+        config: if settings_json.is_null() {
+            Value::Object(serde_json::Map::new())
+        } else {
+            settings_json.clone()
+        },
+        binding: None,
+        instance_id: None,
+    };
+    bookclerk_plugin_abi::database_context_from_adapter_config(&adapter_config)
+        .map_err(|err| DbErr::Custom(err.to_string()))
+}
+
+/// SeaORM proxy backend from [`DbBootstrap`] metadata.
+fn seaorm_backend_from_bootstrap(bootstrap: &DbBootstrap) -> Result<DbBackend, DbErr> {
+    match bootstrap.sql_family.to_ascii_lowercase().as_str() {
+        "postgres" | "postgresql" | "pg" => return Ok(DbBackend::Postgres),
+        "sqlite" => return Ok(DbBackend::Sqlite),
+        "" => {}
+        other => {
+            return Err(DbErr::Custom(format!(
+                "unknown database bootstrap sqlFamily `{other}`"
+            )));
+        }
+    }
+    match bootstrap.dialect.to_ascii_lowercase().as_str() {
+        "postgres" | "postgresql" | "pg" => Ok(DbBackend::Postgres),
+        "sqlite" => Ok(DbBackend::Sqlite),
+        other => Err(DbErr::Custom(format!(
+            "unknown database bootstrap dialect `{other}`"
         ))),
     }
 }
 
-/// Maps the guest-reported dialect string to a SeaORM [`DbBackend`].
-fn dialect_to_backend(dialect: &str) -> Result<DbBackend, DbErr> {
-    match dialect.trim().to_ascii_lowercase().as_str() {
-        "sqlite" => Ok(DbBackend::Sqlite),
-        "postgres" | "postgresql" => Ok(DbBackend::Postgres),
-        other => Err(DbErr::Custom(format!(
-            "database plugin returned unknown dialect `{other}`"
-        ))),
+/// Fills missing bootstrap-only SeaORM proxy metadata from the plugin id.
+///
+/// Guest-reported `sqlFamily` / `dialect` always win; the configured
+/// first-party plugin id only fills fields the guest left empty.
+fn apply_bootstrap_metadata(bootstrap: &mut DbBootstrap, plugin_id: &str) {
+    if !bootstrap.sql_family.is_empty() && !bootstrap.dialect.is_empty() {
+        return;
+    }
+    let (sql_family, dialect) = match DatabasePluginKind::parse(plugin_id) {
+        Some(DatabasePluginKind::Postgres) => ("postgres", "postgres"),
+        Some(DatabasePluginKind::D1) | Some(DatabasePluginKind::Sqlite) => ("sqlite", "sqlite"),
+        None => return,
+    };
+    if bootstrap.sql_family.is_empty() {
+        bootstrap.sql_family = sql_family.into();
+    }
+    if bootstrap.dialect.is_empty() {
+        bootstrap.dialect = dialect.into();
+    }
+}
+
+/// SQLite connect params for first-party `sqlite` and arbitrary sqlite-family ids.
+fn sqlite_connect_params(config: &Config, plugin_data_dir: &Path) -> DbConnectParams {
+    let path = config.database.sqlite_path(&config.paths().files_dir);
+    DbConnectParams::Sqlite {
+        plugin_data_dir: plugin_data_dir.display().to_string(),
+        sqlite_path: Some(path.display().to_string()),
+        binding: None,
+    }
+}
+
+/// Maps host reply validation onto a plugin-host RPC error.
+fn map_reply_validation_err(err: bookclerk_library::LibraryError) -> crate::PluginError {
+    match err {
+        bookclerk_library::LibraryError::Unavailable(message) => {
+            crate::PluginError::Unavailable(message)
+        }
+        other => crate::PluginError::from_abi(Some("invalid_params"), other.to_string()),
+    }
+}
+
+/// Maps host reply validation onto the ABI error returned to guests.
+fn map_reply_validation_abi(err: bookclerk_library::LibraryError) -> AbiPluginError {
+    match err {
+        bookclerk_library::LibraryError::Unavailable(message) => {
+            AbiPluginError::unavailable(message)
+        }
+        other => AbiPluginError::invalid_params(other.to_string()),
     }
 }
 
@@ -1146,11 +2113,112 @@ fn toml_to_json(value: &toml::Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bookclerk_plugin_sdk::DbCapabilities;
 
     #[test]
-    fn maps_dialects() {
-        assert_eq!(dialect_to_backend("sqlite").unwrap(), DbBackend::Sqlite);
-        assert_eq!(dialect_to_backend("postgres").unwrap(), DbBackend::Postgres);
+    fn apply_bootstrap_metadata_from_plugin_id() {
+        let mut bootstrap = DbBootstrap::default();
+        apply_bootstrap_metadata(&mut bootstrap, "d1");
+        assert_eq!(bootstrap.sql_family, "sqlite");
+        assert_eq!(bootstrap.dialect, "sqlite");
+        assert!(bootstrap.backend_failure_reason().is_none());
+
+        let mut pg = DbBootstrap::default();
+        apply_bootstrap_metadata(&mut pg, "postgres");
+        assert_eq!(pg.sql_family, "postgres");
+        assert_eq!(pg.dialect, "postgres");
+
+        let mut unknown = DbBootstrap::sqlite();
+        apply_bootstrap_metadata(&mut unknown, "sql-conformance");
+        assert_eq!(unknown.sql_family, "sqlite");
+        assert_eq!(unknown.dialect, "sqlite");
+        assert_eq!(
+            seaorm_backend_from_bootstrap(&unknown).unwrap(),
+            DbBackend::Sqlite
+        );
+    }
+
+    #[test]
+    fn row_migrations_kind_is_independent_of_sqlite_bootstrap() {
+        let mut caps = DbCapabilities::advertised_sqlite();
+        caps.pragma_user_version = false;
+        caps.schema_migrations = true;
+        let kind = bookclerk_library::HostSchemaKind::from_db_capabilities(&caps).unwrap();
+        assert_eq!(kind, bookclerk_library::HostSchemaKind::RowMarker);
+        assert_eq!(
+            seaorm_backend_from_bootstrap(&DbBootstrap::sqlite()).unwrap(),
+            DbBackend::Sqlite
+        );
+    }
+
+    #[test]
+    fn unknown_plugin_id_gets_public_adapter_config_with_granted_settings() {
+        assert!(DatabasePluginKind::parse("sql-conformance").is_none());
+        // Granted `[database.sql-conformance]` settings the operator wrote.
+        let settings = serde_json::json!({ "url": "custom://host/db", "pool_size": 4 });
+        let ctx = adapter_config_context("/tmp/plugins/sql-conformance/data", &settings)
+            .expect("adapter context");
+        // No host-private connect params travel to third-party adapters …
+        bookclerk_plugin_abi::db::connect_params_from_context(&ctx)
+            .expect_err("public adapter config must not decode as host connect params");
+        // … the public payload carries the granted settings, readable without
+        // the abi `host` feature.
+        let cfg = bookclerk_plugin_abi::database_adapter_config_from_context(&ctx)
+            .expect("public decode");
+        assert_eq!(cfg.plugin_data_dir, "/tmp/plugins/sql-conformance/data");
+        assert_eq!(cfg.config["url"], "custom://host/db");
+        assert_eq!(cfg.config["pool_size"], 4);
+    }
+
+    #[test]
+    fn unknown_plugin_id_without_settings_gets_empty_config_object() {
+        let ctx = adapter_config_context("/tmp/plugins/custom/data", &Value::Null)
+            .expect("adapter context");
+        let cfg = bookclerk_plugin_abi::database_adapter_config_from_context(&ctx)
+            .expect("public decode");
+        assert!(cfg.config.is_object(), "{:?}", cfg.config);
+        assert!(cfg.instance_id.is_none());
+    }
+
+    #[test]
+    fn binding_instance_ids_are_distinct_for_the_collision_pair() {
+        let alpha = binding_instance_id("alpha", "DB");
+        let beta = binding_instance_id("beta", "DB");
+        assert_ne!(alpha, beta);
+        assert_eq!(alpha.len(), 64);
+        assert_eq!(
+            binding_instance_id("ab_c", "D"),
+            binding_instance_id("ab_c", "D"),
+            "stable across calls"
+        );
+        let a = postgres_binding_database_name("ab_c", "D");
+        let b = postgres_binding_database_name("ab", "C_D");
+        assert_ne!(a, b, "sanitized concatenation must not collide");
+        assert!(a.starts_with("pb_"), "{a}");
+        assert!(a.len() <= 63, "{a}");
+        assert!(b.len() <= 63, "{b}");
+        let d1_a = d1_binding_database_name("ab_c", "D");
+        let d1_b = d1_binding_database_name("ab", "C_D");
+        assert_ne!(d1_a, d1_b);
+        let long_owner = "p".repeat(256);
+        let long_binding = "b".repeat(256);
+        let pg_long = postgres_binding_database_name(&long_owner, &long_binding);
+        let d1_long = d1_binding_database_name(&long_owner, &long_binding);
+        assert!(pg_long.len() <= 63, "{pg_long}");
+        assert!(d1_long.len() <= 64, "{d1_long}");
+        assert_eq!(binding_instance_id(&long_owner, &long_binding).len(), 64);
+    }
+
+    #[test]
+    fn guest_bootstrap_from_session_overrides_plugin_id_inference() {
+        let mut bootstrap = DbBootstrap::sqlite();
+        apply_bootstrap_metadata(&mut bootstrap, "postgres");
+        assert_eq!(bootstrap.sql_family, "sqlite");
+        assert!(bootstrap.backend_failure_reason().is_none());
+        assert_eq!(
+            seaorm_backend_from_bootstrap(&bootstrap).unwrap(),
+            DbBackend::Sqlite
+        );
     }
 
     #[test]
@@ -1176,17 +2244,188 @@ mod tests {
         let params = DbAtomicParams::TakeOidcRpState {
             state_hash: "abc".into(),
         };
-        let first = serde_json::to_value(DbAtomicRequest {
-            operation_id: bookclerk_library::db_atomic_operation_id(&params),
-            operation: params.clone(),
-        })
-        .unwrap();
-        let second = serde_json::to_value(DbAtomicRequest {
-            operation_id: bookclerk_library::db_atomic_operation_id(&params),
-            operation: params,
-        })
-        .unwrap();
-        assert_eq!(first["operationId"], second["operationId"]);
-        assert_eq!(first["operationId"], "takeOidcRpState:abc");
+        let first = bookclerk_library::db_atomic_operation_id(&params);
+        let second = bookclerk_library::db_atomic_operation_id(&params);
+        assert_eq!(first, second);
+        assert_eq!(first, "takeOidcRpState:abc");
+    }
+
+    #[test]
+    fn omitted_rows_affected_fails_deserialize() {
+        let err = serde_json::from_str::<bookclerk_db_exec::DbPlanStmtExecResult>(r#"{"rows":[]}"#)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("rowsAffected") || err.to_string().contains("missing field"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn malformed_atomic_json_maps_to_unavailable() {
+        let err = crate::PluginError::unavailable("lost reply");
+        assert!(matches!(
+            map_plugin_err(err),
+            bookclerk_library::LibraryError::Unavailable(_)
+        ));
+    }
+
+    /// Defense in depth: even a test-only host-library grant that allows
+    /// `books` cannot reach `jobs`. Production jobs never inject this session.
+    #[tokio::test]
+    async fn granted_job_database_allows_books_and_denies_jobs() {
+        let store = bookclerk_library::LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+        .with_db_capabilities(DbCapabilities::advertised_sqlite());
+        let session = granted_job_database(store);
+        session
+            .execute(ExecuteRequest {
+                operation_id: "job-books".into(),
+                request_hash: String::new(),
+                statements: vec![TypedDbStatement {
+                    sql: "SELECT id FROM books LIMIT 1".into(),
+                    parameters: vec![],
+                    kind: DbPlanStatementKind::Select,
+                    max_rows: 8,
+                    result_selection: DbResultSelection::Rows,
+                }],
+                deadline_unix_ms: 0,
+            })
+            .await
+            .expect("books grant");
+        let err = session
+            .execute(ExecuteRequest {
+                operation_id: "job-jobs".into(),
+                request_hash: String::new(),
+                statements: vec![TypedDbStatement {
+                    sql: "SELECT id FROM jobs".into(),
+                    parameters: vec![],
+                    kind: DbPlanStatementKind::Select,
+                    max_rows: 8,
+                    result_selection: DbResultSelection::Rows,
+                }],
+                deadline_unix_ms: 0,
+            })
+            .await
+            .expect_err("jobs denied");
+        assert_eq!(
+            err.code,
+            bookclerk_plugin_sdk::PluginErrorCode::InvalidParams
+        );
+        assert!(err.to_string().contains("unauthorized table"), "{err}");
+    }
+    #[tokio::test]
+    async fn granted_job_database_binding_retries_and_conflicts_on_counters() {
+        use bookclerk_plugin_sdk::{DatabaseBinding, DbValue, RetryToken};
+        use sea_orm::{ConnectionTrait, Statement};
+
+        let store = bookclerk_library::LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+        .with_db_capabilities(DbCapabilities::advertised_sqlite());
+        store
+            .connection()
+            .execute_raw(Statement::from_string(
+                DbBackend::Sqlite,
+                "CREATE TABLE counters (id INTEGER PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)",
+            ))
+            .await
+            .unwrap();
+        let session = granted_job_database_with_policy(
+            store,
+            bookclerk_library::GuestSqlPolicy::allow_tables(["counters"]),
+        );
+        let binding = DatabaseBinding::from_session(session);
+        let token = RetryToken {
+            operation_id: "inc-1".into(),
+            request_hash: String::new(),
+        };
+        let insert = "INSERT INTO counters (id, n) VALUES (?, ?)";
+        binding
+            .prepare(insert)
+            .bind(vec![DbValue::Int64(1), DbValue::Int64(1)])
+            .run(Some(token.clone()))
+            .await
+            .expect("first insert");
+        binding
+            .prepare(insert)
+            .bind(vec![DbValue::Int64(1), DbValue::Int64(1)])
+            .run(Some(token.clone()))
+            .await
+            .expect("idempotent retry");
+        let row = binding
+            .prepare("SELECT n FROM counters WHERE id = 1")
+            .first(None)
+            .await
+            .expect("select")
+            .expect("row");
+        let n = row
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("n"))
+            .map(|(_, v)| v.clone())
+            .expect("n column");
+        assert_eq!(n, DbValue::Int64(1), "{n:?}");
+        let err = binding
+            .prepare(insert)
+            .bind(vec![DbValue::Int64(1), DbValue::Int64(99)])
+            .run(Some(token))
+            .await
+            .expect_err("hash mismatch must conflict");
+        assert_eq!(err.code, bookclerk_plugin_sdk::PluginErrorCode::Conflict);
+        let row = binding
+            .prepare("SELECT n FROM counters WHERE id = 1")
+            .first(None)
+            .await
+            .expect("select after conflict")
+            .expect("row");
+        let n = row
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("n"))
+            .map(|(_, v)| v.clone())
+            .expect("n column");
+        assert_eq!(n, DbValue::Int64(1), "{n:?}");
+    }
+
+    #[test]
+    fn capped_binding_deadline_inherits_host_when_guest_is_unlimited() {
+        assert_eq!(
+            capped_binding_deadline(0, 1_700_000_000_000),
+            1_700_000_000_000
+        );
+        assert_eq!(capped_binding_deadline(50, 100), 50);
+        assert_eq!(capped_binding_deadline(100, 50), 50);
+        assert_eq!(capped_binding_deadline(100, 0), 100);
+        assert_eq!(capped_binding_deadline(0, 0), 0);
+    }
+
+    #[tokio::test]
+    async fn drop_provisioned_sqlite_unit_deletes_file_and_sidecars() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("binding.db");
+        std::fs::write(&path, b"sqlite").expect("db file");
+        let unit = path.display().to_string();
+        std::fs::write(format!("{unit}-wal"), b"wal").expect("wal");
+        std::fs::write(format!("{unit}-shm"), b"shm").expect("shm");
+        std::fs::write(format!("{unit}-journal"), b"j").expect("journal");
+        ExternalDatabase::drop_provisioned_unit(&Config::default(), "sqlite", &unit)
+            .await
+            .expect("drop sqlite unit");
+        assert!(!path.exists(), "binding file must be gone");
+        assert!(!std::path::Path::new(&format!("{unit}-wal")).exists());
+        assert!(!std::path::Path::new(&format!("{unit}-shm")).exists());
+        assert!(!std::path::Path::new(&format!("{unit}-journal")).exists());
+    }
+
+    #[tokio::test]
+    async fn drop_provisioned_unknown_adapter_fails_closed() {
+        let err =
+            ExternalDatabase::drop_provisioned_unit(&Config::default(), "custom-sql", "unit-ref")
+                .await
+                .expect_err("unknown adapter must not unregister");
+        assert!(err.to_string().contains("cannot drop"), "{err}");
     }
 }

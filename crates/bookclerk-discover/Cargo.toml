@@ -41,7 +41,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-bookclerk-plugin-database-sqlite.workspace = true
+bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 wiremock.workspace = true

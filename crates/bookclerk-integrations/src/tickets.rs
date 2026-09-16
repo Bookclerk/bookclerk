@@ -121,7 +121,7 @@ pub async fn redeem_ticket_to_session(
 /// Peek a claim ticket's identity without consuming it.
 ///
 /// Unredeemed expired tickets fail. Already-redeemed tickets succeed so a
-/// browser retry can submit the stable `dbAtomic` operation id after a lost
+/// browser retry can submit the stable atomic operation id after a lost
 /// reply. Credential mutation happens only inside
 /// [`redeem_ticket_to_session_with_client`].
 pub struct InspectedClaimTicket {
@@ -167,11 +167,11 @@ pub async fn inspect_claim_ticket(
 ///
 /// `password_hash` is applied in the same transaction as ticket consume and
 /// session insert, and only while the ticket-bound local user has no password.
-/// `password_fingerprint` is hashed into the `dbAtomic` request so a retry with
+/// `password_fingerprint` is hashed into the atomic request so a retry with
 /// a freshly salted Argon2id encoding still matches the receipt.
 ///
 /// The raw session token is derived from the claim ticket, browser nonce, and
-/// process DEK so a lost `dbAtomic` reply plus a new HTTP request reuse the
+/// process DEK so a lost atomic reply plus a new HTTP request reuse the
 /// same operation id. Possession of the used magic link without the nonce
 /// cannot recover the session.
 ///

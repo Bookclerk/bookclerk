@@ -314,7 +314,7 @@ pub fn resolve_graphql_url(source_config: &Value) -> String {
         .unwrap_or_else(|| DEFAULT_GRAPHQL_URL.to_string())
 }
 
-/// Source id returned in handshake; must match [`crate::source::ID`].
+/// Source id returned in describe(); must match [`crate::source::ID`].
 #[must_use]
 pub fn source_id() -> &'static str {
     ID

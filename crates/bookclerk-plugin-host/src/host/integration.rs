@@ -10,26 +10,26 @@ use bookclerk_integrations::{
     Brand, EventSubscription, ExternalUser, Integration, IntegrationContext, IntegrationEvent,
     IntegrationHealth, IntegrationRegistry, ProvidedOidcClient,
 };
-use bookclerk_plugin_sdk::v2::{DomainEvent, EventResult, HealthOk, PRODUCT_API_VERSION};
+use bookclerk_plugin_sdk::{DomainEvent, EventResult, HealthOk, PRODUCT_API_VERSION};
 use serde_json::Value;
 use tracing::warn;
 
 use crate::discover::DiscoveredPlugin;
 use crate::protocol::EventPollResultDto;
-use crate::rpc_v2::{V2PluginSession, HOST_SHARED_ACCOUNT};
+use crate::rpc_session::{PluginSession, HOST_SHARED_ACCOUNT};
 use crate::Result;
 
 /// External integration backed by a discovered plugin binary.
 pub struct ExternalIntegration {
-    /// Cap'n Proto v2 session (never given `library.db`).
-    session: Arc<V2PluginSession>,
+    /// Cap'n Proto session (never given `library.db`).
+    session: Arc<PluginSession>,
     /// JSON factory context (plugin config table).
     ctx_json: String,
-    /// Operator-facing name from the handshake (falls back to the manifest id).
+    /// Operator-facing name from describe metadata (falls back to the manifest id).
     display_name: String,
-    /// Whether this integration is enabled in host config after handshake.
+    /// Whether this integration is enabled in host config after describe.
     enabled: bool,
-    /// Portal brand colors/icon leaked from the handshake DTO, if the guest supplied one.
+    /// Portal brand colors/icon leaked from describe metadata, if the guest supplied one.
     brand: Option<Brand>,
     /// When true, the host may call the guest credential-login RPC (username/password).
     allow_credential_login: bool,
@@ -42,7 +42,7 @@ pub struct ExternalIntegration {
 }
 
 impl ExternalIntegration {
-    /// Spawn and handshake an integration plugin.
+    /// Spawn and describe an integration plugin.
     ///
     /// # Errors
     ///
@@ -50,7 +50,7 @@ impl ExternalIntegration {
     pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> Result<Self> {
         if plugin.manifest.api_version != PRODUCT_API_VERSION {
             return Err(crate::PluginError::message(format!(
-                "plugin `{}` api_version {} is not v2",
+                "plugin `{}` api_version {} is not supported",
                 plugin.manifest.id, plugin.manifest.api_version
             )));
         }
@@ -66,7 +66,7 @@ impl ExternalIntegration {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
         let session = Arc::new(
-            V2PluginSession::spawn_for_account(
+            PluginSession::spawn_for_account(
                 plugin,
                 config,
                 config_json.clone(),
@@ -74,8 +74,8 @@ impl ExternalIntegration {
             )
             .await?,
         );
-        let source_config = crate::handshake_config_for_grant(session.grant(), config_json);
-        let hs = session.handshake_metadata();
+        let source_config = crate::spawn_config_for_grant(session.grant(), config_json);
+        let hs = session.plugin_metadata();
         let display_name = hs
             .display_name
             .clone()
@@ -113,7 +113,7 @@ impl ExternalIntegration {
         })
     }
 
-    /// Forwards one integration RPC through the v2 session.
+    /// Forwards one integration RPC through the plugin session.
     ///
     /// # Errors
     ///
@@ -521,7 +521,7 @@ fn parse_diagnose_lines(raw: &str) -> Vec<String> {
     vec![raw.to_string()]
 }
 
-/// Copies a handshake brand DTO into a `'static` [`Brand`] (strings are leaked once at load).
+/// Copies a describe-metadata brand DTO into a `'static` [`Brand`] (strings are leaked once at load).
 fn brand_from_dto(dto: Option<&crate::protocol::BrandDto>) -> Option<Brand> {
     let b = dto?;
     Some(Brand {

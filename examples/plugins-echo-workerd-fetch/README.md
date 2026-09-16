@@ -13,7 +13,7 @@ not fail the probe — origins may return any status while still proving the
 domain grant works. A thrown/`TypeError` (or egress deny) fails the probe.
 
 ```bash
-cd packages/plugin-sdk && npm ci && npm run build && npm run check-schema
+cd packages/plugin-sdk && npm ci && npm run build
 cd ../../examples/plugins-echo-workerd-fetch && npm ci && npm run typecheck
 ```
 

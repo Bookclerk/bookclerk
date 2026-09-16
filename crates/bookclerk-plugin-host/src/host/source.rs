@@ -33,36 +33,36 @@ use crate::protocol::{
     PurchaseHintParams, ScanBookDto, ScanParams, ScanSummaryDto, SearchCatalogParams,
     SourceAccountDto, SourceFetchDto,
 };
-use crate::rpc_v2::{V2PluginSession, HOST_SHARED_ACCOUNT};
+use crate::rpc_session::{PluginSession, HOST_SHARED_ACCOUNT};
 use crate::Result;
-use bookclerk_plugin_sdk::v2::PRODUCT_API_VERSION;
+use bookclerk_plugin_sdk::PRODUCT_API_VERSION;
 
 /// External content source backed by a discovered plugin binary.
 pub struct ExternalSource {
-    /// Cap'n Proto v2 session (never given `library.db`).
-    session: Arc<V2PluginSession>,
+    /// Cap'n Proto session (never given `library.db`).
+    session: Arc<PluginSession>,
     /// JSON factory context (plugin config table).
     ctx_json: String,
-    /// Operator-facing storefront name from handshake or the manifest.
+    /// Operator-facing storefront name from describe metadata or the manifest.
     display_name: String,
-    /// UI brand colors and icon from handshake, or a slate fallback.
+    /// UI brand colors and icon from describe metadata, or a slate fallback.
     brand: SourceBrand,
-    /// `oauth` vs password login, from the guest handshake.
+    /// `oauth` vs password login, from the guest describe metadata.
     auth_mode: PortalAuthMode,
-    /// Leaked handshake aliases used as extra storefront ids.
+    /// Leaked describe-metadata aliases used as extra storefront ids.
     aliases: &'static [&'static str],
     /// Optional env var the guest accepts for a password (never put on argv).
     password_env: Option<&'static str>,
-    /// Registry sort order from handshake (`200` when the guest omits it).
+    /// Registry sort order from describe metadata (`200` when the guest omits it).
     sort_key: u32,
     /// Scoped data directory for this plugin only.
     plugin_data_dir: PathBuf,
-    /// `[sources.<id>]` table from main config (also sent on handshake).
+    /// `[sources.<id>]` table from main config (also delivered in the spawn config).
     source_config: Value,
 }
 
 impl ExternalSource {
-    /// Spawn and handshake a source plugin.
+    /// Spawn and describe a source plugin.
     ///
     /// # Errors
     ///
@@ -70,14 +70,14 @@ impl ExternalSource {
     pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> Result<Self> {
         if plugin.manifest.api_version != PRODUCT_API_VERSION {
             return Err(crate::PluginError::message(format!(
-                "plugin `{}` api_version {} is not v2",
+                "plugin `{}` api_version {} is not supported",
                 plugin.manifest.id, plugin.manifest.api_version
             )));
         }
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
         let session = Arc::new(
-            V2PluginSession::spawn_for_account(
+            PluginSession::spawn_for_account(
                 plugin,
                 config,
                 config_json.clone(),
@@ -85,8 +85,8 @@ impl ExternalSource {
             )
             .await?,
         );
-        let source_config = crate::handshake_config_for_grant(session.grant(), config_json);
-        let hs = session.handshake_metadata();
+        let source_config = crate::spawn_config_for_grant(session.grant(), config_json);
+        let hs = session.plugin_metadata();
         let display_name = hs
             .display_name
             .clone()
@@ -118,7 +118,7 @@ impl ExternalSource {
         })
     }
 
-    /// Forwards one content-source RPC through the v2 session and deserializes the JSON result.
+    /// Forwards one content-source RPC through the plugin session and deserializes the JSON result.
     ///
     /// # Errors
     ///
@@ -790,7 +790,7 @@ async fn seal_login_result(
     Ok(account)
 }
 
-/// Leaks handshake strings into `'static` slices for [`SourceBrand`] / aliases.
+/// Leaks describe-metadata strings into `'static` slices for [`SourceBrand`] / aliases.
 fn leak_str_slice(owned: &[String], fallback: &[&'static str]) -> &'static [&'static str] {
     if owned.is_empty() {
         return Box::leak(fallback.to_vec().into_boxed_slice());
@@ -802,7 +802,7 @@ fn leak_str_slice(owned: &[String], fallback: &[&'static str]) -> &'static [&'st
     Box::leak(leaked.into_boxed_slice())
 }
 
-/// Builds a [`SourceBrand`] from handshake, or a slate fallback using plugin id/name.
+/// Builds a [`SourceBrand`] from describe metadata, or a slate fallback using plugin id/name.
 fn brand_from_dto(dto: Option<&crate::protocol::BrandDto>, id: &str, name: &str) -> SourceBrand {
     if let Some(b) = dto {
         SourceBrand {
@@ -825,7 +825,7 @@ fn brand_from_dto(dto: Option<&crate::protocol::BrandDto>, id: &str, name: &str)
     }
 }
 
-/// Converts a TOML value tree into JSON for handshake `config` delivery.
+/// Converts a TOML value tree into JSON for spawn `config` delivery.
 fn toml_to_json(value: &toml::Value) -> Value {
     match value {
         toml::Value::String(s) => Value::String(s.clone()),
@@ -848,12 +848,25 @@ fn toml_to_json(value: &toml::Value) -> Value {
 mod tests {
     use super::*;
     use bookclerk_library::configure_master_key;
-    use tempfile::tempdir;
+    use std::sync::OnceLock;
+    use tempfile::TempDir;
+
+    static MASTER_KEY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn shared_test_master_key() {
+        static SHARED: OnceLock<TempDir> = OnceLock::new();
+        let dir = SHARED.get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            configure_master_key(dir.path()).unwrap();
+            dir
+        });
+        configure_master_key(dir.path()).unwrap();
+    }
 
     #[tokio::test]
     async fn scan_credentials_only_from_this_scope() {
-        let dir = tempdir().unwrap();
-        configure_master_key(dir.path()).unwrap();
+        let _guard = MASTER_KEY_TEST_LOCK.lock().await;
+        shared_test_master_key();
         let store = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
             .unwrap();
@@ -883,8 +896,8 @@ mod tests {
 
     #[tokio::test]
     async fn scan_credentials_skips_scan_disabled_unless_explicit() {
-        let dir = tempdir().unwrap();
-        configure_master_key(dir.path()).unwrap();
+        let _guard = MASTER_KEY_TEST_LOCK.lock().await;
+        shared_test_master_key();
         let store = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
             .unwrap();

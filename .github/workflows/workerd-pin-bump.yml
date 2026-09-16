@@ -120,7 +120,7 @@ jobs:
             ## Summary
             - Bump pinned Cloudflare `workerd` to `${{ steps.pin.outputs.tag }}`
             - Cooldown: releases must be published ≥ **${{ env.WORKERD_PIN_COOLDOWN_DAYS }} days** ago
-            - Echo workerd guests (`ts` / `python` / `rust`) handshake + `cliInvoke` passed in this workflow
+            - Echo workerd guests (`ts` / `python` / `rust`) describe + health + `cliInvoke` passed in this workflow
 
             ## Test plan
             - [x] `scripts/bump-workerd-pin.py` (cooldown filter + digests → workerd-pin.json)

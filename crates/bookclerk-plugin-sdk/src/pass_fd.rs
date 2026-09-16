@@ -1,7 +1,7 @@
 //! Receive descriptors the host *could* pass over a Unix SCM_RIGHTS side channel.
 //!
-//! Audience: leftover helpers for a native fetch/`putFile` shortcut that v2
-//! does **not** wire. Current hosts never set [`PLUGIN_FD_CHANNEL_ENV`], so
+//! Audience: leftover helpers for a native fetch/`putFile` shortcut that the
+//! product does **not** wire. Current hosts never set [`PLUGIN_FD_CHANNEL_ENV`], so
 //! [`crate::FetchWorkDir`] / [`crate::UploadFile`] use path strings. Calling
 //! [`recv_passed_fd`] while the env is unset returns an error; if the env is
 //! set without a matching `sendmsg`, it blocks forever.
@@ -22,7 +22,7 @@ pub const PLUGIN_FD_CHANNEL: i32 = 3;
 
 /// Environment variable the host *would* set to the decimal form of [`PLUGIN_FD_CHANNEL`].
 ///
-/// v2 hosts do **not** set this. Presence still arms [`crate::FetchWorkDir::open`]
+/// Hosts do **not** set this. Presence still arms [`crate::FetchWorkDir::open`]
 /// / [`crate::UploadFile::open`] to call [`recv_passed_fd`] instead of path
 /// strings — only set it when the host is actually sending an FD.
 pub const PLUGIN_FD_CHANNEL_ENV: &str = "BOOKCLERK_PLUGIN_FD_CHANNEL";
@@ -30,7 +30,7 @@ pub const PLUGIN_FD_CHANNEL_ENV: &str = "BOOKCLERK_PLUGIN_FD_CHANNEL";
 /// Receives one file descriptor from the host side channel (SCM_RIGHTS).
 ///
 /// Blocks until the host sends a control message on [`PLUGIN_FD_CHANNEL`].
-/// v2 hosts do not send; prefer path strings unless you are implementing a
+/// Hosts do not send; prefer path strings unless you are implementing a
 /// native shortcut that actually `sendmsg`s.
 ///
 /// # Returns

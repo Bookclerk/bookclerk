@@ -4,7 +4,7 @@
 //! `bookclerk-jail`'s own tests check that a policy survives `exec`. Neither
 //! proves the two halves meet: a host that assembled a perfect spec and then
 //! spawned the guest directly would pass both. So these tests go through
-//! [`V2PluginSession`] spawn — the same call the daemon makes — and have the guest
+//! [`PluginSession`] spawn — the same call the daemon makes — and have the guest
 //! report what it could open.
 //!
 //! The guest is a shell script rather than one of the plugins we ship, because
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use bookclerk_config::{Config, Isolation, Paths};
 use bookclerk_plugin_host::{
     consent_request, discover_plugins, grant_has_binding, plugin_data_dir, require_grant,
-    DiscoveredPlugin, PluginGrantStore, V2PluginSession, HOST_SHARED_ACCOUNT,
+    DiscoveredPlugin, PluginGrantStore, PluginSession, HOST_SHARED_ACCOUNT,
 };
 
 /// Where cargo left the launcher for this test run.
@@ -99,13 +99,13 @@ try_write() {
         };
         body.push_str(&format!("{verb} {name} \"{}\"\n", path.display()));
     }
-    // Answer requests so the host completes its handshake, then stay alive until
+    // Answer requests so the host completes its Cap'n Proto handshake, then stay alive until
     // stdin closes. The id is echoed back rather than assumed, so this does not
     // depend on where the host's request counter started.
     body.push_str(
         r#"
 # Probes finished. Stay alive until stdin closes so the host spawn can observe
-# the report even if the v2 Cap'n Proto handshake fails (this fixture is a
+# the report even if the Cap'n Proto handshake fails (this fixture is a
 # shell script, not a PluginRoot guest).
 cat >/dev/null
 "#,
@@ -184,10 +184,10 @@ impl Fixture {
     async fn probe_results(&self) -> BTreeMap<String, String> {
         let plugin = self.plugin();
         // Shell probe guests cannot speak Cap'n Proto; spawn still applies the
-        // jail and runs probes before the handshake fails.
+        // jail and runs probes before the Cap'n Proto handshake fails.
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            V2PluginSession::spawn_for_account(
+            PluginSession::spawn_for_account(
                 &plugin,
                 &self.config,
                 serde_json::json!({}),
@@ -301,7 +301,7 @@ async fn a_guest_that_cannot_be_jailed_is_not_spawned() {
     config.plugins.isolation = Isolation::Required;
     config.plugins.jail_bin = Some(fixture.files.path().join("no-such-launcher"));
 
-    let message = match V2PluginSession::spawn_for_account(
+    let message = match PluginSession::spawn_for_account(
         &fixture.plugin(),
         &config,
         serde_json::json!({}),
@@ -330,7 +330,7 @@ async fn spawn_fails_without_consent_grant() {
     let grants_path = fixture.config.paths().files_dir.join("plugin-grants.json");
     std::fs::remove_file(&grants_path).expect("remove grants");
 
-    let message = match V2PluginSession::spawn_for_account(
+    let message = match PluginSession::spawn_for_account(
         &fixture.plugin(),
         &fixture.config,
         serde_json::json!({}),
@@ -377,7 +377,7 @@ async fn spawn_keeps_stored_grant_when_manifest_widens() {
 
     match tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        V2PluginSession::spawn_for_account(
+        PluginSession::spawn_for_account(
             &plugin,
             &fixture.config,
             serde_json::json!({}),

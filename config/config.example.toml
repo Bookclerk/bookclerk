@@ -250,7 +250,7 @@ json_logs = true
 # Enable / configure by id in this file — external integrations default off:
 # [integrations.echo]
 # enabled = true
-# # … opaque knobs forwarded on handshake …
+# # … opaque knobs forwarded in the spawn config …
 
 # Recommendations / embeddings / request queue (see docs/discovery.md).
 # Storefront candidates (Libro related + Audible catalog) are the primary

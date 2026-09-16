@@ -18,8 +18,6 @@ REQUIRED_WIRE_FIXTURES = (
     "scan.result.json",
     "fetchTitle.request.json",
     "put.s3.request.json",
-    "dbConnect.sqlite.json",
-    "dbExecute.result.json",
 )
 
 
@@ -55,11 +53,6 @@ class WireFixtureCasing(unittest.TestCase):
         data = json.loads((WIRE / "login.request.json").read_text(encoding="utf-8"))
         self.assertIn("pluginDataDir", data)
         self.assertNotIn("plugin_data_dir", data)
-
-    def test_db_execute_result_keys(self) -> None:
-        data = json.loads((WIRE / "dbExecute.result.json").read_text(encoding="utf-8"))
-        self.assertIn("lastInsertId", data)
-        self.assertIn("rowsAffected", data)
 
     def test_put_s3_force_path_style_camel(self) -> None:
         data = json.loads((WIRE / "put.s3.request.json").read_text(encoding="utf-8"))

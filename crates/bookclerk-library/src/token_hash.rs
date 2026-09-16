@@ -58,7 +58,7 @@ pub fn parse_claim_redeem_nonce(raw: &str) -> Result<&str> {
 /// The raw session is
 /// `HMAC-SHA256(DEK, "bookclerk-claim-session-v1:" || ticket || 0x00 || nonce)`
 /// hex-encoded (64 characters). The same ticket, nonce, and process DEK always
-/// yield the same session, so a browser retry after a lost `dbAtomic` reply
+/// yield the same session, so a browser retry after a lost atomic reply
 /// reuses `redeemClaimTicket:{token}:{session}`. A different nonce (another
 /// browser, or the magic link alone) cannot replay that receipt. The plaintext
 /// bearer is never written to a receipt; only [`hash_token`] of this value is
@@ -85,7 +85,7 @@ pub fn derive_claim_session_token(dek: &MasterKey, raw_ticket: &str, nonce: &str
 /// Stable, non-secret fingerprint of an invite/reset password for idempotency.
 ///
 /// Argon2id storage hashes use a fresh salt on every POST, so they cannot be
-/// the `dbAtomic` request hash. This value is
+/// the atomic request hash. This value is
 /// `HMAC-SHA256(subkey, nonce || 0x00 || password)` where
 /// `subkey = HMAC-SHA256(DEK, "bookclerk-claim-password-subkey-v1")`.
 /// The randomized Argon2id hash is still what gets stored on the user row.

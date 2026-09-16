@@ -15,6 +15,10 @@
 use std::path::Path;
 
 /// Replace `to` with `from`.
+///
+/// # Errors
+///
+/// Returns an I/O error when the platform replace operation fails.
 pub(crate) fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
     #[cfg(not(windows))]
     {

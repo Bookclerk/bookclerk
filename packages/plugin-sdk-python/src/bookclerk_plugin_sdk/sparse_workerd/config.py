@@ -61,6 +61,9 @@ def is_legacy_sdk_embed(name: str) -> bool:
         "@bookclerk/plugin-sdk/workerd",
         "@bookclerk/plugin-sdk/workerd.js",
         "bookclerk_plugin_sdk/workerd.py",
+        "bookclerk_plugin_sdk/db_value.py",
+        "bookclerk_plugin_sdk/_abi.py",
+        "bookclerk_plugin_sdk/guest_sql.py",
         "bookclerk_plugin_sdk/__init__.py",
     }
 
@@ -265,6 +268,24 @@ def materialize_config(
             sdk_py.read_text(encoding="utf-8"), encoding="utf-8"
         )
         (bookclerk_dir / "sdk-init.py").write_text(SDK_PY_INIT, encoding="utf-8")
+        # Modules imported by workerd.py / db_value.py inside the isolate.
+        py_siblings = (
+            ("bookclerk_plugin_sdk/_abi.py", "_abi.py", "sdk-product-abi.py"),
+            ("bookclerk_plugin_sdk/guest_sql.py", "guest_sql.py", "sdk-guest-sql.py"),
+            ("bookclerk_plugin_sdk/db_value.py", "db_value.py", "sdk-db-value.py"),
+        )
+        for mod_name, src_name, embed_file in py_siblings:
+            src = sdk_root / src_name
+            if not src.is_file():
+                raise FileNotFoundError(f"missing Python workerd SDK module at {src}")
+            (bookclerk_dir / embed_file).write_text(
+                src.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            if mod_name not in seen_names:
+                module_embeds.append(
+                    f'(name = "{escape_capnp(mod_name)}", pythonModule = embed ".bookclerk/{embed_file}")'
+                )
+                seen_names.add(mod_name)
         if SDK_PY_INIT_MODULE not in seen_names:
             module_embeds.append(
                 f'(name = "{escape_capnp(SDK_PY_INIT_MODULE)}", pythonModule = embed ".bookclerk/sdk-init.py")'

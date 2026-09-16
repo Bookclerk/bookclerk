@@ -17,9 +17,4 @@ secrets = true
 list = [
     "health",
     "diagnose",
-    "dbConnect",
-    "dbPing",
-    "dbQuery",
-    "dbExecute",
-    "dbAtomic",
 ]

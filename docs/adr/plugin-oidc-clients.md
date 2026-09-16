@@ -46,7 +46,7 @@ hardcoded catalog.
 | Surface | When it is used | Authority |
 | --- | --- | --- |
 | `plugin.toml` `[[oidc.clients]]` | Install / discovery without spawning (disabled-but-installed cards) | Fallback when the guest is not loaded or `oidcClients` fails |
-| ABI v2 `BookclerkPlugin.oidcClients @10` | Loaded guests (`abiMinor` ≥ 3) | **Authoritative** overlay for that plugin id + client id |
+| ABI `BookclerkPlugin.oidcClients @10` | Loaded guests that implement the method | **Authoritative** overlay for that plugin id + client id |
 
 `originConfigKey` is a dotted config path such as
 `integrations.audiobookshelf.base_url`. The host resolves it to the player

@@ -13,7 +13,7 @@ anyhow.workspace = true
 chrono.workspace = true
 bookclerk-config.workspace = true
 bookclerk-library.workspace = true
-bookclerk-plugin-database-sqlite.workspace = true
+bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

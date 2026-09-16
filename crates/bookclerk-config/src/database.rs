@@ -66,7 +66,8 @@ impl DatabasePluginKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct DatabaseConfig {
-    /// Active plugin id (`sqlite`, `d1`, or `postgres`).
+    /// Active plugin id (first-party `sqlite` / `d1` / `postgres`, or any
+    /// third-party database adapter plugin id).
     pub plugin: String,
     /// Local SQLite knobs (`[database.sqlite]`).
     pub sqlite: DatabaseSqliteConfig,
@@ -74,6 +75,12 @@ pub struct DatabaseConfig {
     pub d1: DatabaseD1Config,
     /// PostgreSQL knobs (`[database.postgres]`).
     pub postgres: DatabasePostgresConfig,
+    /// Opaque `[database.<id>]` tables for third-party database adapters.
+    ///
+    /// The host does not interpret these; the granted table is delivered to
+    /// the adapter as its `DatabaseAdapterConfig.config` payload.
+    #[serde(flatten)]
+    pub plugins: toml::Table,
 }
 
 impl Default for DatabaseConfig {
@@ -83,23 +90,30 @@ impl Default for DatabaseConfig {
             sqlite: DatabaseSqliteConfig::default(),
             d1: DatabaseD1Config::default(),
             postgres: DatabasePostgresConfig::default(),
+            plugins: toml::Table::new(),
         }
     }
 }
 
 impl DatabaseConfig {
-    /// Parsed active plugin, or error if unknown.
+    /// Parsed first-party active plugin; `Err` for third-party adapter ids.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Returns an error when the id is not a first-party plugin id.
     pub fn active_plugin(&self) -> Result<DatabasePluginKind> {
         DatabasePluginKind::parse(&self.plugin).ok_or_else(|| {
             ConfigError::Invalid(format!(
-                "unknown [database].plugin `{}` (expected sqlite, d1, or postgres)",
+                "[database].plugin `{}` is not a first-party plugin id",
                 self.plugin
             ))
         })
+    }
+
+    /// Borrow the opaque `[database.<id>]` table for a third-party adapter.
+    #[must_use]
+    pub fn plugin_table(&self, id: &str) -> Option<&toml::Table> {
+        self.plugins.get(id)?.as_table()
     }
 
     /// Resolve the SQLite file path (relative paths join `files_dir`).
@@ -129,7 +143,12 @@ impl DatabaseConfig {
         if self.plugin.trim().is_empty() {
             return Ok(());
         }
-        match self.active_plugin()? {
+        // Third-party adapter ids validate their own knobs from the granted
+        // `[database.<id>]` table; the host has nothing to check here.
+        let Ok(active) = self.active_plugin() else {
+            return Ok(());
+        };
+        match active {
             DatabasePluginKind::Sqlite => Ok(()),
             DatabasePluginKind::D1 => {
                 if self.d1.account_id.trim().is_empty() {
@@ -388,17 +407,28 @@ mod tests {
     }
 
     #[test]
-    fn unknown_plugin_error_mentions_postgres() {
-        let db = DatabaseConfig {
-            plugin: "unknown-db".into(),
-            ..Default::default()
-        };
-        let err = db.active_plugin().unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("postgres"),
-            "error should mention postgres: {msg}"
+    fn third_party_plugin_id_validates_and_keeps_its_table() {
+        let toml_text = r#"
+plugin = "custom-db"
+
+[custom-db]
+url = "custom://host/db"
+pool_size = 4
+"#;
+        let db: DatabaseConfig = toml::from_str(toml_text).expect("parse");
+        assert!(db.active_plugin().is_err(), "not a first-party id");
+        assert!(db.validate().is_ok(), "third-party ids validate");
+        let table = db.plugin_table("custom-db").expect("granted table");
+        assert_eq!(
+            table.get("url").and_then(|v| v.as_str()),
+            Some("custom://host/db")
         );
+        assert_eq!(
+            table.get("pool_size").and_then(toml::Value::as_integer),
+            Some(4)
+        );
+        // First-party tables stay on their typed fields, not in `plugins`.
+        assert!(db.plugin_table("sqlite").is_none());
     }
 
     #[test]

@@ -70,7 +70,7 @@ openidconnect.workspace = true
 svg-hush.workspace = true
 
 [dev-dependencies]
-bookclerk-plugin-database-sqlite.workspace = true
+bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 http-body-util = "0.1"
 tempfile.workspace = true
 tower = { version = "0.5", features = ["util"] }

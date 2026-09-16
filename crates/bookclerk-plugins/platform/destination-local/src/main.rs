@@ -1,10 +1,10 @@
-//! External local filesystem output plugin for Bookclerk (ABI v2).
+//! External local filesystem output plugin for Bookclerk.
 
-use bookclerk_plugin_destination_local::v2::LocalRoot;
-use bookclerk_plugin_sdk::serve_v2;
+use bookclerk_plugin_destination_local::plugin::LocalRoot;
+use bookclerk_plugin_sdk::serve;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    serve_v2(LocalRoot).await?;
+    serve(LocalRoot).await?;
     Ok(())
 }

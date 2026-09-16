@@ -7,14 +7,14 @@
 use std::sync::Arc;
 
 use bookclerk_config::{normalize_storage_prefix, Config};
-use bookclerk_plugin_sdk::v2::{DestinationContext, PRODUCT_API_VERSION};
+use bookclerk_plugin_sdk::{DestinationContext, PRODUCT_API_VERSION};
 use bookclerk_storage::{load_s3_credentials, S3Credentials, StorageBackend, StorageError};
 use sea_orm::DatabaseConnection;
 use serde_json::Value;
 
 use crate::discover::DiscoveredPlugin;
 use crate::protocol::OutputS3ContextDto;
-use crate::rpc_v2::{V2PluginSession, V2Storage};
+use crate::rpc_session::{PluginSession, PluginStorage};
 use crate::Result as PluginResult;
 
 /// Manifest id of the platform S3 output plugin (`s3`).
@@ -23,12 +23,12 @@ const S3_PLUGIN_ID: &str = "s3";
 /// Long-lived external output plugins loaded at host startup.
 #[derive(Default, Clone)]
 pub struct DestinationRegistry {
-    /// Spawned S3 output backend when `[output.s3].enabled` and handshake succeeded.
+    /// Spawned S3 output backend when `[output.s3].enabled` and describe succeeded.
     s3: Option<Arc<dyn StorageBackend>>,
     /// Spawned local-filesystem output backend when that plugin loaded.
     local: Option<Arc<dyn StorageBackend>>,
-    /// ABI v2 sessions keyed by `(plugin_id, account_id)`.
-    v2_sessions: std::collections::HashMap<String, Arc<V2PluginSession>>,
+    /// Plugin sessions keyed by `(plugin_id, account_id)`.
+    plugin_sessions: std::collections::HashMap<String, Arc<PluginSession>>,
 }
 
 impl DestinationRegistry {
@@ -44,10 +44,10 @@ impl DestinationRegistry {
         self.local.clone()
     }
 
-    /// ABI v2 session for `plugin_id` and `account_id`, when that guest was loaded as v2.
+    /// Plugin session for `plugin_id` and `account_id`, when that guest was loaded.
     #[must_use]
-    pub fn v2_session(&self, plugin_id: &str, account_id: &str) -> Option<Arc<V2PluginSession>> {
-        self.v2_sessions
+    pub fn plugin_session(&self, plugin_id: &str, account_id: &str) -> Option<Arc<PluginSession>> {
+        self.plugin_sessions
             .get(&crate::plugin_instance_key(plugin_id, account_id))
             .cloned()
     }
@@ -57,9 +57,9 @@ impl DestinationRegistry {
         self.local = Some(dest);
     }
 
-    /// Records an ABI v2 session used for `JobHandler` invocations.
-    pub(crate) fn set_v2_session(&mut self, session: Arc<V2PluginSession>) {
-        self.v2_sessions
+    /// Records a plugin session used for `JobHandler` invocations.
+    pub(crate) fn set_plugin_session(&mut self, session: Arc<PluginSession>) {
+        self.plugin_sessions
             .insert(session.instance_key().to_string(), session);
     }
 }
@@ -92,7 +92,7 @@ pub async fn load_external_destinations(
                 tracing::debug!(id = %plugin.manifest.id, "S3 output disabled in config; skipping external plugin");
                 continue;
             }
-            match spawn_v2_s3(&plugin, config, db).await {
+            match spawn_s3_guest(&plugin, config, db).await {
                 Ok((storage, session)) => {
                     tracing::info!(
                         id = %plugin.manifest.id,
@@ -100,13 +100,13 @@ pub async fn load_external_destinations(
                         "loaded external S3 output plugin (api_version 2)"
                     );
                     registry.s3 = Some(Arc::new(storage));
-                    registry.set_v2_session(session);
+                    registry.set_plugin_session(session);
                 }
                 Err(err) => {
                     tracing::warn!(
                         id = %plugin.manifest.id,
                         %err,
-                        "failed to start v2 S3 output plugin; falling back to in-process backend"
+                        "failed to start S3 output plugin guest; falling back to in-process backend"
                     );
                 }
             }
@@ -117,12 +117,12 @@ pub async fn load_external_destinations(
     Ok(registry)
 }
 
-/// Spawns the S3 destination as an ABI v2 Cap'n Proto guest.
-async fn spawn_v2_s3(
+/// Spawns the S3 destination as an external Cap'n Proto guest.
+async fn spawn_s3_guest(
     plugin: &DiscoveredPlugin,
     config: &Config,
     db: Option<&DatabaseConnection>,
-) -> PluginResult<(V2Storage, Arc<V2PluginSession>)> {
+) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
     let table = crate::settings_table(config, plugin);
     let config_json = toml_to_json(&toml::Value::Table(table));
     let s3_config = config.output.s3.clone();
@@ -160,7 +160,7 @@ async fn spawn_v2_s3(
         }
     }
     let session = Arc::new(
-        V2PluginSession::spawn_for_account_with_env(
+        PluginSession::spawn_for_account_with_env(
             plugin,
             config,
             config_json,
@@ -174,7 +174,7 @@ async fn spawn_v2_s3(
             json: serde_json::to_string(&ctx).map_err(crate::PluginError::Json)?,
         })
         .await?;
-    Ok((V2Storage::new(Arc::clone(&session)), session))
+    Ok((PluginStorage::new(Arc::clone(&session)), session))
 }
 
 /// Resolves AWS keys from `BOOKCLERK_AWS_*` env, else unseals the operator `encrypted_secrets` row (process DEK).
@@ -209,7 +209,7 @@ mod tests {
     use crate::protocol::{OutputS3ContextDto, S3CredentialsDto};
 
     #[test]
-    fn v2_s3_destination_json_omits_paths_and_secrets() {
+    fn s3_destination_json_omits_paths_and_secrets() {
         let ctx = OutputS3ContextDto {
             plugin_data_dir: String::new(),
             bucket: "library".into(),

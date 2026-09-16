@@ -1,8 +1,9 @@
 /**
- * Out-of-tree workerd plugin smoke: ensure → materialize → handshake + health.
+ * Out-of-tree workerd plugin smoke: ensure → materialize → describe + health.
  *
  * Spawns the pinned `workerd` binary against a materialised Cap'n Proto config
- * and exercises the bridge `/health` plus `handshake` / `health` RPC methods.
+ * and exercises the bridge `/health`, `describe()`, and (for content-source /
+ * integration kinds) the role `health` route.
  */
 
 import fs from "node:fs";
@@ -55,34 +56,32 @@ async function waitForHealth(
   }
 }
 
-async function postRpc(
-  rpcUrl: string,
-  body: { id: string | number; method: string; params?: unknown },
+async function postJson(
+  url: string,
+  body: unknown,
   token: string,
 ): Promise<unknown> {
-  const res = await fetch(rpcUrl, {
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body ?? {}),
   });
   const text = await res.text();
   if (!res.ok && res.status !== 400) {
     throw new Error(`bridge HTTP ${res.status}: ${text}`);
   }
   const value = JSON.parse(text) as {
-    id?: unknown;
-    result?: unknown;
     error?: { code?: string; message?: string };
   };
   if (value.error) {
     throw new Error(
-      `RPC ${body.method} failed: ${value.error.code ?? "internal"}: ${value.error.message ?? "bridge error"}`,
+      `POST ${url} failed: ${value.error.code ?? "internal"}: ${value.error.message ?? "bridge error"}`,
     );
   }
-  return value.result;
+  return value;
 }
 
 function loadManifest(pluginDir: string): Manifest {
@@ -117,9 +116,9 @@ function killChild(child: ChildProcess): void {
  * Smokes a workerd plugin directory without the Rust `bookclerk-workerd` binary.
  *
  * @param pluginDir - Plugin root with `runtime = "workerd"`.
- * @returns Human-readable success summary including handshake/health JSON.
+ * @returns Human-readable success summary including describe/health JSON.
  * @throws {Error} When the runtime is not workerd, workerd fails to start, or
- *   RPC calls fail.
+ *   bridge calls fail.
  *
  * @example
  * ```ts
@@ -165,29 +164,21 @@ export async function runSmoke(pluginDir: string): Promise<string> {
 
   try {
     await waitForHealth(base, bridgeToken);
-    const rpcUrl = `${base}/rpc`;
-    const handshake = await postRpc(
-      rpcUrl,
-      {
-        id: 1,
-        method: "handshake",
-        params: { apiVersion: 1, config: {} },
-      },
-      bridgeToken,
-    );
-    const health = await postRpc(
-      rpcUrl,
-      {
-        id: 2,
-        method: "health",
-        params: {},
-      },
-      bridgeToken,
-    );
+    const describe = await postJson(`${base}/describe`, {}, bridgeToken);
+    // Role `health` exists for content-source / integration kinds only.
+    const healthPath =
+      manifest.kind === "source"
+        ? "/contentSource/health"
+        : manifest.kind === "integration"
+          ? "/integration/health"
+          : null;
+    const health = healthPath
+      ? await postJson(`${base}${healthPath}`, {}, bridgeToken)
+      : null;
     const detail = {
       plugin: manifest.id,
       listen: generated.listenAddr,
-      handshake,
+      describe,
       health,
     };
     return `smoke ok ${manifest.id}\n${JSON.stringify(detail, null, 2)}`;

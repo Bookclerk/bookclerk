@@ -27,11 +27,6 @@
       "import": "./dist/workerd.js",
       "default": "./dist/workerd.js"
     },
-    "./native": {
-      "types": "./dist/native.d.ts",
-      "import": "./dist/native.js",
-      "default": "./dist/native.js"
-    },
     "./sparse-workerd": {
       "types": "./dist/sparse-workerd/index.d.ts",
       "import": "./dist/sparse-workerd/index.js",
@@ -41,13 +36,13 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-ambient.mjs",
-    "check-schema": "node scripts/check-schema.mjs",
     "check-wire": "node scripts/check-wire-fixtures.mjs",
     "docs": "typedoc --options typedoc.json",
     "docs:check": "typedoc --options typedoc.json",
     "lint": "oxlint",
     "prepare": "npm run build",
-    "test:tools": "node scripts/test-tools.mjs"
+    "test:tools": "node scripts/test-tools.mjs",
+    "test:db-value": "node scripts/test-db-value.mjs"
   },
   "engines": {
     "node": ">=20"

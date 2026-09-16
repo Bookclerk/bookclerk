@@ -118,8 +118,8 @@ reconcile. Dead letters use the longer `dead_letter_retention_days`. Cleanup
 runs at daemon start and hourly, not on every dispatcher tick.
 `concurrency` is the number of local delivery workers **and** the cluster-wide
 max `running` deliveries per `(plugin_id, resource_class)` (claim still filters by
-loaded plugin ids; PostgreSQL serializes that count with
-`pg_advisory_xact_lock`). See [jobs.md](jobs.md) and [plugins.md](plugins.md).
+loaded plugin ids; a portable `db_serialization_slots` row serializes that
+count). See [jobs.md](jobs.md) and [plugins.md](plugins.md).
 
 ## Identity broker (`[auth.oidc]`)
 

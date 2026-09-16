@@ -10,7 +10,7 @@ use bookclerk_plugin_abi::{
 };
 use serde_json::{json, Value};
 
-/// Handshake / health plugin id (`echo_workerd_rust`); must match `plugin.toml`.
+/// Describe / health plugin id (`echo_workerd_rust`); must match `plugin.toml`.
 const PLUGIN_ID: &str = "echo_workerd_rust";
 
 /// CLI schema advertised at `cliDescribe` (`ping --message`).
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn describe_v2() {
+    fn describe_reports_api_version() {
         let out = dispatch_json("describe", "{}").unwrap();
         assert!(out.contains("\"apiVersion\":2"));
         assert!(out.contains("echo_workerd_rust"));

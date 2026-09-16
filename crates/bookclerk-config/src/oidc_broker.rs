@@ -335,6 +335,10 @@ impl OidcBrokerConfig {
 }
 
 /// Accepts `owner` / `administrator` / `member`; rejects `operator` and unknown roles.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Invalid`] when `role` is `operator` or not a supported member role.
 fn validate_role(role: &str, field: &str) -> Result<()> {
     match role.trim() {
         "owner" | "administrator" | "member" => Ok(()),

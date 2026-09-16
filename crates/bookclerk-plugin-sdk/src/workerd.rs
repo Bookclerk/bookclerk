@@ -7,11 +7,11 @@
 //! - **Workerd:** JS modules import the package; Rust implements ABI dispatch:
 //!
 //! ```js
-//! import { wasmBookclerkPlugin } from "@bookclerk/plugin-sdk/workerd";
+//! import { BookclerkPlugin, Integration } from "@bookclerk/plugin-sdk/workerd";
 //! import { initSync, dispatch } from "./pkg/….js";
 //! import wasmModule from "./pkg/…_bg.wasm";
 //! initSync({ module: wasmModule });
-//! export default wasmBookclerkPlugin(dispatch);
+//! export default class EchoPlugin extends BookclerkPlugin { /* … */ }
 //! ```
 //!
 //! `bookclerk-workerd` injects `@bookclerk/plugin-sdk/workerd` (and the package
@@ -28,7 +28,7 @@
 //! src/lib.rs                  ABI-typed `dispatch_json`
 //! ```
 
-pub use crate::v2::PluginRoot;
+pub use crate::PluginRoot;
 
 /// Suggested main module filename for JS+Wasm workerd guests.
 ///
@@ -49,7 +49,7 @@ pub const EMBED_BOOKCLERK_PLUGIN_JS: &str = "bookclerk_plugin.js";
 
 /// Source text of the embeddable workerd runtime helper.
 ///
-/// Contains the `BookclerkPlugin` base class and `wasmBookclerkPlugin` factory
+/// Contains the `BookclerkPlugin` base class and role `RpcTarget` classes
 /// mirrored by the npm package. Written to
 /// `modules/@bookclerk/plugin-sdk/workerd.js` by [`crate::tools::sync_embed`]
 /// when authors need an offline vendor (feature `tools`).

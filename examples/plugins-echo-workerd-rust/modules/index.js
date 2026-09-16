@@ -1,7 +1,7 @@
 /**
  * Workerd JS entry — Rust/Wasm Echo via `dispatch` (api_version = 2).
  *
- * `describe` + `integration` live in JS so the guest matches BookclerkPlugin v2
+ * `describe` + `integration` live in JS so the guest matches the BookclerkPlugin contract
  * without a Wasm rebuild. Health / diagnose / CLI still forward to Wasm.
  */
 
@@ -57,7 +57,7 @@ class EchoIntegration extends Integration {
     try {
       call("onEvent", event);
     } catch {
-      // wasm may still export handshake-era dispatch; ack anyway
+      // wasm dispatch may not handle onEvent; ack anyway
     }
     if (event?.type === "book_acquired" && this.env?.HOST?.notify) {
       const titleId = event.payload?.titleId ?? "";

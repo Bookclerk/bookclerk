@@ -7,9 +7,9 @@
 use async_trait::async_trait;
 use bookclerk_plugin_abi::{
     CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-    HandshakeResult,
+    PluginMetadata,
 };
-use bookclerk_plugin_sdk::v2::{
+use bookclerk_plugin_sdk::{
     decode_json, encode_json, DomainEvent, EventResult, HealthOk, Integration, IntegrationContext,
     PluginDescribe, PluginRoot, ScalarLimits, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
@@ -38,9 +38,9 @@ fn cli_schema() -> CliSchema {
     }
 }
 
-/// Handshake extras stored on `describe.metadata_json` for the host.
+/// Identity extras stored on `describe.metadata_json` for the host.
 fn describe_metadata() -> Result<String, PluginError> {
-    encode_json(HandshakeResult {
+    encode_json(PluginMetadata {
         api_version: PRODUCT_API_VERSION,
         id: PLUGIN_ID.into(),
         kind: "integration".into(),
@@ -53,7 +53,7 @@ fn describe_metadata() -> Result<String, PluginError> {
             "cli".into(),
         ],
         cli: Some(cli_schema()),
-        ..HandshakeResult::default()
+        ..PluginMetadata::default()
     })
 }
 
@@ -72,7 +72,6 @@ impl PluginRoot for EchoRoot {
             scalar_limits: ScalarLimits::default().into(),
             supported_roles: vec!["integration".into()],
             metadata_json: describe_metadata()?,
-            ..PluginDescribe::default()
         })
     }
 

@@ -1,108 +1,201 @@
-//! Named atomic library operations for Cloudflare D1 HTTP `batch()`.
+//! Generic D1 HTTP `batch()` executor for host-authored SQL plans.
 //!
-//! Each [`DbAtomicParams`] variant is compiled to a list of SQL statements
-//! that D1 runs as **one** SQL transaction. Control flow lives in `WHERE`
-//! clauses (and a status `SELECT`) so the guest never needs mid-transaction
-//! round-trips. Consume-once ops use `DELETE … RETURNING` so concurrent
-//! callers cannot both observe the unused row. A statement failure aborts
-//! the HTTP batch and rolls back.
+//! The guest does not parse Bookclerk operation names. The host compiles
+//! domain work into [`DbAtomicPlan`]; this module runs that list as one
+//! D1 `{ "batch": [...] }` SQL transaction and returns statement results.
 
 use std::time::Duration;
 
+use bookclerk_db_exec::{
+    sea_null_kind, DbAtomicPlan, DbAtomicRequest, DbAtomicTiming, DbPlanExecResult,
+    DbPlanStatementKind, DbPlanStmtExecResult,
+};
+
+/// Collapses adapter-private companions then host-schema pack extras.
+fn collapse_d1_wire(
+    wire_len: usize,
+    groups: &[usize],
+    statements: Vec<bookclerk_plugin_abi::StatementResult>,
+) -> Vec<bookclerk_plugin_abi::StatementResult> {
+    bookclerk_db_exec::collapse_host_schema_results(
+        wire_len,
+        bookclerk_db_exec::collapse_companion_groups(groups, statements),
+    )
+}
+use bookclerk_plugin_abi::{
+    lowered_statement_preflight_len_proven, DbCapabilities, D1_MAX_SQL_STATEMENT_BYTES,
+};
 use bookclerk_plugin_sdk::{
-    atomic_status, DbAtomicParams, DbAtomicRequest, DbAtomicResult, DbAtomicTiming,
+    encoded_execute_reply_bytes, encoded_statement_result_bytes, DbColumn, DbResultSelection,
+    DbRow, DbTiming, DbType, DbValue, ExecuteReply, ExecuteRequest, PluginError, StatementResult,
+    TypedDbStatement,
 };
 use sea_orm::DbErr;
-use serde_json::{json, Value as JsonValue};
+use serde_json::Value as JsonValue;
 
 use super::d1::D1Proxy;
 
 /// One statement in a D1 HTTP batch body.
 pub(crate) type SqlStmt = (String, Vec<JsonValue>);
 
-/// Planned batch plus the index of the application-status `SELECT`.
-struct AtomicPlan {
-    /// Ordered D1 HTTP batch statements that run as one SQL transaction.
-    statements: Vec<SqlStmt>,
-    /// Index of the application-status `SELECT` inside [`AtomicPlan::statements`].
-    outcome_index: usize,
-    /// Index of the payload `SELECT` when the op returns a user or identity row.
-    payload_index: Option<usize>,
-    /// `DELETE … RETURNING` consume-once; when set, expiry uses this cutoff.
-    consume_once: Option<(ConsumeOnceKind, String)>,
-    /// When set, interpret from this `SELECT` of `db_atomic_receipts`.
-    receipt_select_index: Option<usize>,
-    /// Receipt `SELECT` immediately after prune; a row means this attempt is a replay.
-    prior_receipt_index: Option<usize>,
-    /// SHA-256 hex of the idempotency-relevant request; compared on receipt replay.
-    expected_hash: Option<String>,
+/// Outcome of the guest-receipt stub INSERT sent as its own D1 HTTP batch.
+enum GuestReceiptClaim {
+    /// `rows_affected = 1`: this host owns the operation and may run guest SQL.
+    Won {
+        /// Claim INSERT result appended onto the wrap so finalize still sees the stub.
+        stub: StatementResult,
+    },
+    /// `rows_affected = 0` or a unique conflict: another host already claimed.
+    Lost,
 }
 
-/// Bindings shared by every receipt prune/select/insert in one atomic attempt.
-struct ReceiptCtx {
-    /// Caller-owned idempotency key reused across HTTP retries of the same attempt.
-    operation_id: String,
-    /// SHA-256 hex of the operation payload; a mismatch is an idempotency conflict.
-    request_hash: String,
-    /// Wire operation name stored on the receipt (`deleteUser`, `redeemClaimTicket`, …).
-    kind: &'static str,
-    /// RFC 3339 timestamp shared by every statement in this batch.
-    now: String,
-    /// RFC 3339 cutoff after which this receipt may be pruned (24 hours from `now`).
-    expires_at: String,
+/// True when the claim INSERT hit a unique/PK conflict (treat as lost claim).
+fn is_claim_constraint(err: &DbErr) -> bool {
+    let t = err.to_string().to_ascii_lowercase();
+    t.contains("sqlite_constraint")
+        || t.contains("unique constraint")
+        || (t.contains("unique") && t.contains("db_atomic_receipts"))
 }
 
-#[derive(Debug, Clone, Copy)]
-/// Which consume-once table a `DELETE … RETURNING` plan targets.
-enum ConsumeOnceKind {
-    /// OIDC RP state row consumed from `oidc_rp_states`.
-    OidcRpState,
-    /// WebAuthn challenge row consumed from `webauthn_challenges`.
-    WebauthnChallenge,
+/// True when the guest-receipt wrap contains ungated DDL (CREATE/DROP).
+fn wrap_has_ungated_ddl(statements: &[TypedDbStatement]) -> bool {
+    let end = statements
+        .len()
+        .saturating_sub(bookclerk_db_exec::GUEST_RECEIPT_STUB_SUFFIX);
+    statements
+        .iter()
+        .skip(bookclerk_db_exec::GUEST_RECEIPT_WRAP_PREFIX)
+        .take(end.saturating_sub(bookclerk_db_exec::GUEST_RECEIPT_WRAP_PREFIX))
+        .any(|s| bookclerk_plugin_abi::statement_is_ddl(&s.sql))
+}
+
+/// Strips the host wrap's DML receipt gate after D1 has claimed the operation.
+fn ungate_claimed_guest_write(sql_stmt: &mut SqlStmt, typed: &mut TypedDbStatement) {
+    let stripped = bookclerk_db_exec::strip_guest_receipt_write_gate(&sql_stmt.0);
+    if stripped == sql_stmt.0 {
+        return;
+    }
+    sql_stmt.0 = stripped;
+    let _ = sql_stmt.1.pop();
+    typed.sql = sql_stmt.0.clone();
+    let _ = typed.parameters.pop();
 }
 
 /// Maximum D1 HTTP batch attempts, including retries after ambiguous responses.
 const ATOMIC_HTTP_ATTEMPTS: usize = 3;
 
+/// True when any statement is DDL (`CREATE` / `ALTER` / `DROP`), which
+/// invalidates the declared-type cache.
+fn sql_is_ddl(sql: &str) -> bool {
+    let t = sql.trim_start();
+    ["CREATE", "ALTER", "DROP"]
+        .iter()
+        .any(|verb| t.len() >= verb.len() && t[..verb.len()].eq_ignore_ascii_case(verb))
+}
+
+/// Cache key for a parsed table reference (quotes stripped, lowercased).
+fn table_cache_key(name: &str) -> String {
+    name.trim()
+        .trim_matches('"')
+        .trim_matches('`')
+        .trim_matches('[')
+        .trim_matches(']')
+        .to_ascii_lowercase()
+}
+
+/// True when every plan statement is a read (`Select`) — resubmitting after an
+/// ambiguous response cannot mutate state twice.
+fn plan_is_read_only(plan: &DbAtomicPlan) -> bool {
+    plan.statements
+        .iter()
+        .all(|s| matches!(s.kind, DbPlanStatementKind::Select))
+}
+
+/// True when every typed statement is a read (`Select`).
+fn typed_is_read_only(statements: &[TypedDbStatement]) -> bool {
+    statements
+        .iter()
+        .all(|s| matches!(s.kind, DbPlanStatementKind::Select))
+}
+
 impl D1Proxy {
-    /// Runs a named library operation as one D1 HTTP batch (one SQL transaction).
+    /// Runs a host-authored plan as one D1 HTTP batch (one SQL transaction).
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Returns an error when the plan is missing, HTTP fails, or the batch
+    /// response is malformed.
     pub async fn run_atomic(
         &self,
         req: DbAtomicRequest,
-    ) -> std::result::Result<DbAtomicResult, DbErr> {
+    ) -> std::result::Result<DbPlanExecResult, DbErr> {
         let started = std::time::Instant::now();
-        let now = chrono::Utc::now().to_rfc3339();
-        let plan = plan_atomic(&req, &now)?;
+        check_d1_session(
+            bookclerk_db_exec::AtomicInterruptPhase::BeforeBegin,
+            req.deadline_unix_ms,
+        )?;
+        let plan = req.plan.clone().ok_or_else(|| {
+            DbErr::Custom("atomic execute requires a host-authored executePlan".into())
+        })?;
+        if plan.statements.iter().any(|s| sql_is_ddl(&s.sql)) {
+            self.clear_table_types();
+        }
+        reject_unbounded_returning(&plan)?;
+        // D1 `batch()` makes each attempt atomic, not retries across attempts.
+        // Resubmitting a possibly-committed mutation is exactly-once only when
+        // the plan is receipt-gated (replay detects the prior commit) or the
+        // batch cannot mutate at all.
+        let retry_safe = plan.prior_receipt_index.is_some() || plan_is_read_only(&plan);
+        let d1_caps = DbCapabilities::advertised_d1();
+        let cap = d1_caps.max_result_rows;
+        let statements: Vec<SqlStmt> = plan
+            .statements
+            .iter()
+            .map(|s| {
+                let sql = if s.kind.wrap_select_limit() {
+                    bookclerk_db_exec::cap_query_sql(&s.sql, cap)
+                } else {
+                    s.sql.clone()
+                };
+                let sql =
+                    bookclerk_db_exec::lower_canonical_sql(sea_orm::DatabaseBackend::Sqlite, &sql);
+                ensure_d1_physical_sql(&sql)?;
+                Ok((sql, d1_wire_binds(&s.binds)))
+            })
+            .collect::<Result<Vec<_>, DbErr>>()?;
         let mut last_err = None;
         for attempt in 0..ATOMIC_HTTP_ATTEMPTS {
-            let raw = match self.run_batch(&plan.statements).await {
-                Ok(value) => value,
-                Err(err) if err.is_retryable() && attempt + 1 < ATOMIC_HTTP_ATTEMPTS => {
-                    sleep_before_d1_retry(attempt, err.retry_after()).await;
+            check_d1_session(
+                bookclerk_db_exec::AtomicInterruptPhase::BeforeBegin,
+                req.deadline_unix_ms,
+            )?;
+            let timeout = d1_http_timeout(req.deadline_unix_ms)?;
+            let raw = match self.run_batch_with_timeout(&statements, timeout).await {
+                Ok(value) => {
+                    check_d1_session(
+                        bookclerk_db_exec::AtomicInterruptPhase::AroundCommit,
+                        req.deadline_unix_ms,
+                    )?;
+                    value
+                }
+                Err(err)
+                    if err.is_retryable() && retry_safe && attempt + 1 < ATOMIC_HTTP_ATTEMPTS =>
+                {
+                    sleep_before_d1_retry_bounded(attempt, err.retry_after(), req.deadline_unix_ms)
+                        .await?;
                     last_err = Some(DbErr::from(err));
                     continue;
                 }
                 Err(err) => return Err(err.into()),
             };
-            match parse_and_validate_batch(&plan, &raw, &req.operation_id) {
-                Ok(results) => {
-                    let mut result = interpret_atomic(&plan, &results);
-                    let db_execution_us = d1_sql_duration_us(&raw);
-                    result.operation_id = req.operation_id;
-                    result.timing = Some(DbAtomicTiming {
-                        attempt_elapsed_us: u64::try_from(started.elapsed().as_micros())
-                            .unwrap_or(u64::MAX),
-                        db_execution_us,
-                        db_timing_source: db_execution_us.map(|_| "d1_sql_duration".into()),
-                    });
-                    return Ok(result);
-                }
-                Err(err) if is_ambiguous_d1(&err) && attempt + 1 < ATOMIC_HTTP_ATTEMPTS => {
-                    sleep_before_d1_retry(attempt, None).await;
+            match parse_generic_batch(&plan, &raw, req.operation_id.clone(), started) {
+                Ok(result) => return Ok(result),
+                Err(err)
+                    if is_ambiguous_d1(&err)
+                        && retry_safe
+                        && attempt + 1 < ATOMIC_HTTP_ATTEMPTS =>
+                {
+                    sleep_before_d1_retry_bounded(attempt, None, req.deadline_unix_ms).await?;
                     last_err = Some(err);
                 }
                 Err(err) => return Err(err),
@@ -110,38 +203,862 @@ impl D1Proxy {
         }
         Err(last_err.unwrap_or_else(|| ambiguous_d1("exhausted retries")))
     }
+
+    /// Runs a typed [`ExecuteRequest`] as one D1 HTTP batch.
+    ///
+    /// [`DbValue::Bytes`] parameters are stored as true BLOBs: the placeholder
+    /// is rewritten to `unhex(?)` with hex text (JSON has no binary scalar).
+    /// BLOB result cells arrive as JSON byte arrays and decode back to
+    /// [`DbValue::Bytes`]; text is never re-encoded, so a [`DbValue::Text`]
+    /// cell cannot masquerade as bytes. After HTTP success, encode/size
+    /// failures are ambiguous (`unavailable`).
+    ///
+    /// Ambiguous (possibly committed) failures are retried only when the
+    /// request is receipt-gated or read-only; an unwrapped mutation returns
+    /// the ambiguous error without resubmitting.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the batch is rejected, HTTP fails, or the reply cannot be
+    /// encoded after commit.
+    pub async fn run_typed_atomic(
+        &self,
+        req: &ExecuteRequest,
+        guest_receipt: bookclerk_plugin_abi::GuestReceiptPersist,
+        proofs: &[bookclerk_plugin_abi::ResolvedStatement],
+    ) -> std::result::Result<ExecuteReply, DbErr> {
+        let started = std::time::Instant::now();
+        let deadline = (req.deadline_unix_ms > 0).then_some(req.deadline_unix_ms);
+        check_d1_session(
+            bookclerk_db_exec::AtomicInterruptPhase::BeforeBegin,
+            deadline,
+        )?;
+        // Host schema batches travel canonical; this adapter edge splits the
+        // pack for the SQLite family and collapses results back to the wire
+        // request shape after parsing.
+        let wire_len = req.statements.len();
+        let expanded = bookclerk_db_exec::expand_host_schema_execute_request(
+            sea_orm::DatabaseBackend::Sqlite,
+            req,
+        );
+        let host_schema = expanded
+            .statements
+            .last()
+            .is_some_and(|s| bookclerk_db_exec::is_host_schema_version_marker(&s.sql));
+        let (expanded, companion_groups) = if host_schema {
+            let n = expanded.statements.len();
+            (expanded, vec![1usize; n])
+        } else {
+            bookclerk_db_exec::expand_binding_execute_request(
+                sea_orm::DatabaseBackend::Sqlite,
+                &expanded,
+            )
+        };
+        let req = &expanded;
+        if req.statements.iter().any(|s| sql_is_ddl(&s.sql)) {
+            self.clear_table_types();
+        }
+        reject_unbounded_returning_typed(&req.statements)?;
+        // Retrying after an ambiguous (possibly committed) response is
+        // exactly-once only when the request is receipt-gated (replay detects
+        // the prior commit) or provably read-only. An unwrapped mutation must
+        // surface the ambiguity instead of resubmitting.
+        let retry_safe = !guest_receipt.is_absent() || typed_is_read_only(&req.statements);
+        let d1_caps = DbCapabilities::advertised_d1();
+        let cap = d1_caps.max_result_rows;
+        if (!guest_receipt.is_absent() || !proofs.is_empty()) && proofs.len() != wire_len {
+            return Err(DbErr::Custom(
+                "host execute envelope proofs must match statement count".into(),
+            ));
+        }
+        let expanded_proofs = proofs_for_expanded(proofs, &companion_groups)?;
+        if expanded_proofs.len() != req.statements.len() {
+            return Err(DbErr::Custom(
+                "host execute envelope proofs must match statement count".into(),
+            ));
+        }
+        let statements: Vec<SqlStmt> = req
+            .statements
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let (sql, binds) = d1_typed_statement(&s.sql, &s.parameters, expanded_proofs[i])?;
+                let sql = if s.kind.wrap_select_limit() {
+                    bookclerk_db_exec::cap_query_sql(&sql, cap)
+                } else {
+                    sql
+                };
+                Ok((sql, binds))
+            })
+            .collect::<Result<Vec<_>, DbErr>>()?;
+        // D1 cannot skip later statements in the same HTTP batch based on
+        // earlier results. Claim the receipt stub INSERT first so two hosts
+        // cannot both run ungated guest DDL. Do not send prune as its own
+        // committing HTTP — that would consume lost-reply tests.
+        let needs_claim = !guest_receipt.is_absent()
+            && req.statements.len() > bookclerk_db_exec::GUEST_RECEIPT_WRAP_PREFIX
+            && statements
+                .last()
+                .is_some_and(|(sql, _)| bookclerk_db_exec::is_guest_receipt_stub_insert(sql))
+            && wrap_has_ungated_ddl(&req.statements);
+        let mut last_err = None;
+        let mut claim = None;
+        if needs_claim {
+            for attempt in 0..ATOMIC_HTTP_ATTEMPTS {
+                check_d1_session(
+                    bookclerk_db_exec::AtomicInterruptPhase::BeforeBegin,
+                    deadline,
+                )?;
+                let timeout = d1_http_timeout(deadline)?;
+                match self
+                    .claim_guest_receipt_stub(req, &statements, timeout, deadline, started)
+                    .await
+                {
+                    Ok(c) => {
+                        claim = Some(c);
+                        break;
+                    }
+                    Err(err)
+                        if is_ambiguous_d1(&err)
+                            && retry_safe
+                            && attempt + 1 < ATOMIC_HTTP_ATTEMPTS =>
+                    {
+                        sleep_before_d1_retry_bounded(attempt, None, deadline).await?;
+                        last_err = Some(err);
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+            let Some(c) = claim else {
+                return Err(last_err.unwrap_or_else(|| ambiguous_d1("exhausted claim retries")));
+            };
+            match c {
+                GuestReceiptClaim::Lost => {
+                    let timeout = d1_http_timeout(deadline)?;
+                    return self
+                        .replay_lost_guest_receipt_claim(
+                            req,
+                            &statements,
+                            timeout,
+                            deadline,
+                            started,
+                            wire_len,
+                            &companion_groups,
+                            &guest_receipt,
+                            cap,
+                        )
+                        .await;
+                }
+                GuestReceiptClaim::Won { stub } => {
+                    #[cfg(test)]
+                    if self.consume_fail_after_won_claim() {
+                        return Err(DbErr::Custom(
+                            "unavailable: guest receipt claimed; DDL not started".into(),
+                        ));
+                    }
+                    let timeout = d1_http_timeout(deadline)?;
+                    return self
+                        .run_claimed_guest_ddl(
+                            req,
+                            &statements,
+                            stub,
+                            timeout,
+                            deadline,
+                            started,
+                            wire_len,
+                            &companion_groups,
+                            &guest_receipt,
+                            cap,
+                        )
+                        .await;
+                }
+            }
+        }
+        for attempt in 0..ATOMIC_HTTP_ATTEMPTS {
+            check_d1_session(
+                bookclerk_db_exec::AtomicInterruptPhase::BeforeBegin,
+                deadline,
+            )?;
+            let timeout = d1_http_timeout(deadline)?;
+            let raw = match self.run_batch_with_timeout(&statements, timeout).await {
+                Ok(value) => {
+                    check_d1_session(
+                        bookclerk_db_exec::AtomicInterruptPhase::AroundCommit,
+                        deadline,
+                    )?;
+                    value
+                }
+                Err(err)
+                    if err.is_retryable() && retry_safe && attempt + 1 < ATOMIC_HTTP_ATTEMPTS =>
+                {
+                    sleep_before_d1_retry_bounded(attempt, err.retry_after(), deadline).await?;
+                    last_err = Some(DbErr::from(err));
+                    continue;
+                }
+                Err(err) => return Err(err.into()),
+            };
+            match parse_typed_batch(req, &raw, started) {
+                Ok(mut reply) => {
+                    self.normalize_reply_from_declared(req, &mut reply, timeout)
+                        .await?;
+                    reply.statements =
+                        collapse_d1_wire(wire_len, &companion_groups, reply.statements);
+                    if !guest_receipt.is_absent() {
+                        // Guest-receipt finalize needs statement results, so D1 runs a
+                        // follow-up HTTP batch after the main batch commits. Same-batch
+                        // finalize would require provider support for dependent SQL.
+                        let hint = &guest_receipt;
+                        let finalize = bookclerk_db_exec::guest_receipt_finalize_stmts(
+                            &reply,
+                            usize::try_from(hint.guest_statement_len).unwrap_or(usize::MAX),
+                            &hint.guest_request_hash,
+                        )?;
+                        if !finalize.is_empty() {
+                            let fin_stmts: Vec<SqlStmt> = finalize
+                                .iter()
+                                .map(|s| {
+                                    let (sql, binds) =
+                                        d1_typed_statement(&s.sql, &s.parameters, None)?;
+                                    let sql = if s.kind.wrap_select_limit() {
+                                        bookclerk_db_exec::cap_query_sql(&sql, cap)
+                                    } else {
+                                        sql
+                                    };
+                                    Ok((sql, binds))
+                                })
+                                .collect::<Result<Vec<_>, DbErr>>()?;
+                            self.run_batch_with_timeout(&fin_stmts, timeout).await?;
+                        }
+                    }
+                    return Ok(reply);
+                }
+                Err(err)
+                    if is_ambiguous_d1(&err)
+                        && retry_safe
+                        && attempt + 1 < ATOMIC_HTTP_ATTEMPTS =>
+                {
+                    sleep_before_d1_retry_bounded(attempt, None, deadline).await?;
+                    last_err = Some(err);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| ambiguous_d1("exhausted retries")))
+    }
+
+    /// INSERT-only claim of the guest-receipt stub (one committing HTTP).
+    async fn claim_guest_receipt_stub(
+        &self,
+        req: &ExecuteRequest,
+        statements: &[SqlStmt],
+        timeout: Duration,
+        deadline: Option<u64>,
+        started: std::time::Instant,
+    ) -> std::result::Result<GuestReceiptClaim, DbErr> {
+        #[cfg(test)]
+        self.maybe_pause_claim().await;
+        let stub_idx = statements.len().saturating_sub(1);
+        let raw = match self
+            .run_batch_with_timeout(&statements[stub_idx..=stub_idx], timeout)
+            .await
+        {
+            Ok(value) => {
+                check_d1_session(
+                    bookclerk_db_exec::AtomicInterruptPhase::AroundCommit,
+                    deadline,
+                )?;
+                value
+            }
+            Err(err) => return Err(err.into()),
+        };
+        let claim_req = ExecuteRequest {
+            operation_id: req.operation_id.clone(),
+            request_hash: req.request_hash.clone(),
+            statements: vec![req.statements[stub_idx].clone()],
+            deadline_unix_ms: req.deadline_unix_ms,
+        };
+        match parse_typed_batch(&claim_req, &raw, started) {
+            Ok(reply) => {
+                let won = reply
+                    .statements
+                    .first()
+                    .is_some_and(|s| s.rows_affected > 0);
+                if won {
+                    Ok(GuestReceiptClaim::Won {
+                        stub: reply
+                            .statements
+                            .into_iter()
+                            .next()
+                            .unwrap_or_else(|| StatementResult::from_affected(1)),
+                    })
+                } else {
+                    Ok(GuestReceiptClaim::Lost)
+                }
+            }
+            Err(err) if is_claim_constraint(&err) => Ok(GuestReceiptClaim::Lost),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Prior-receipt SELECT after a lost claim; pads skipped guest work.
+    ///
+    /// A [`bookclerk_db_exec::GUEST_RECEIPT_STATUS_CLAIMED`] row with the same
+    /// guest hash is an in-flight claim (crash between stub INSERT and DDL).
+    /// Resume ungated DDL instead of treating the empty payload as result-lost.
+    #[allow(clippy::too_many_arguments)]
+    async fn replay_lost_guest_receipt_claim(
+        &self,
+        req: &ExecuteRequest,
+        statements: &[SqlStmt],
+        timeout: Duration,
+        deadline: Option<u64>,
+        started: std::time::Instant,
+        wire_len: usize,
+        companion_groups: &[usize],
+        guest_receipt: &bookclerk_plugin_abi::GuestReceiptPersist,
+        cap: u32,
+    ) -> std::result::Result<ExecuteReply, DbErr> {
+        let peek_idx = 1;
+        let raw = match self
+            .run_batch_with_timeout(&statements[peek_idx..=peek_idx], timeout)
+            .await
+        {
+            Ok(value) => {
+                check_d1_session(
+                    bookclerk_db_exec::AtomicInterruptPhase::AroundCommit,
+                    deadline,
+                )?;
+                value
+            }
+            Err(err) => return Err(err.into()),
+        };
+        let peek_req = ExecuteRequest {
+            operation_id: req.operation_id.clone(),
+            request_hash: req.request_hash.clone(),
+            statements: vec![req.statements[peek_idx].clone()],
+            deadline_unix_ms: req.deadline_unix_ms,
+        };
+        let peek = parse_typed_batch(&peek_req, &raw, started)?;
+        if let Some(prior) = peek.statements.first() {
+            if bookclerk_db_exec::prior_receipt_should_resume_guest(
+                prior,
+                &guest_receipt.guest_request_hash,
+            ) {
+                return self
+                    .run_claimed_guest_ddl(
+                        req,
+                        statements,
+                        StatementResult::from_affected(0),
+                        timeout,
+                        deadline,
+                        started,
+                        wire_len,
+                        companion_groups,
+                        guest_receipt,
+                        cap,
+                    )
+                    .await;
+            }
+        }
+        let mut reply = peek;
+        let mut out = vec![StatementResult::from_affected(0)];
+        out.extend(std::mem::take(&mut reply.statements));
+        bookclerk_db_exec::pad_skipped_guest_results(&mut out, req.statements.len());
+        reply.statements = collapse_d1_wire(wire_len, companion_groups, out);
+        Ok(reply)
+    }
+
+    /// After a won claim, run prune + ungated guest SQL (DDL and DML) and mark
+    /// the receipt `applied` in the same HTTP, then reassemble the wrap shape
+    /// for unwrap/finalize.
+    ///
+    /// The host wrap still gates DML with [`bookclerk_db_exec::GUEST_RECEIPT_WRITE_GATE`].
+    /// After the claim stub commits, that predicate would be false on first
+    /// execution, so this path strips it. Resume only for `claimed` rows;
+    /// `applied` means guest DML already ran.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_claimed_guest_ddl(
+        &self,
+        req: &ExecuteRequest,
+        statements: &[SqlStmt],
+        stub: StatementResult,
+        timeout: Duration,
+        deadline: Option<u64>,
+        started: std::time::Instant,
+        wire_len: usize,
+        companion_groups: &[usize],
+        guest_receipt: &bookclerk_plugin_abi::GuestReceiptPersist,
+        cap: u32,
+    ) -> std::result::Result<ExecuteReply, DbErr> {
+        let stub_idx = statements.len().saturating_sub(1);
+        let prefix = bookclerk_db_exec::GUEST_RECEIPT_WRAP_PREFIX;
+        let mut rest_sql: Vec<SqlStmt> = Vec::with_capacity(stub_idx.saturating_sub(1));
+        let mut rest_req_stmts = Vec::with_capacity(stub_idx.saturating_sub(1));
+        rest_sql.push(statements[0].clone());
+        rest_req_stmts.push(req.statements[0].clone());
+        for (mut sql_stmt, mut typed) in statements[prefix..stub_idx]
+            .iter()
+            .cloned()
+            .zip(req.statements[prefix..stub_idx].iter().cloned())
+        {
+            ungate_claimed_guest_write(&mut sql_stmt, &mut typed);
+            rest_sql.push(sql_stmt);
+            rest_req_stmts.push(typed);
+        }
+        let applied = bookclerk_db_exec::guest_receipt_applied_stmt(&req.operation_id);
+        let (applied_sql, applied_binds) =
+            d1_typed_statement(&applied.sql, &applied.parameters, None)?;
+        rest_sql.push((applied_sql, applied_binds));
+        rest_req_stmts.push(applied);
+        let rest_req = ExecuteRequest {
+            operation_id: req.operation_id.clone(),
+            request_hash: req.request_hash.clone(),
+            statements: rest_req_stmts,
+            deadline_unix_ms: req.deadline_unix_ms,
+        };
+        let raw = self
+            .run_batch_with_timeout(&rest_sql, timeout)
+            .await
+            .map_err(DbErr::from)?;
+        check_d1_session(
+            bookclerk_db_exec::AtomicInterruptPhase::AroundCommit,
+            deadline,
+        )?;
+        let mut reply = parse_typed_batch(&rest_req, &raw, started)?;
+        // Applied-mark is adapter-private; unwrap still sees prune + guest + stub.
+        let _applied = reply.statements.pop();
+        let mut assembled = Vec::with_capacity(req.statements.len());
+        assembled.push(
+            reply
+                .statements
+                .first()
+                .cloned()
+                .unwrap_or_else(|| StatementResult::from_affected(0)),
+        );
+        assembled.push(StatementResult::from_affected(0));
+        assembled.extend(reply.statements.into_iter().skip(1));
+        assembled.push(stub);
+        reply.statements = assembled;
+        self.normalize_reply_from_declared(req, &mut reply, timeout)
+            .await?;
+        reply.statements = collapse_d1_wire(wire_len, companion_groups, reply.statements);
+        let finalize = bookclerk_db_exec::guest_receipt_finalize_stmts(
+            &reply,
+            usize::try_from(guest_receipt.guest_statement_len).unwrap_or(usize::MAX),
+            &guest_receipt.guest_request_hash,
+        )?;
+        if !finalize.is_empty() {
+            let fin_stmts: Vec<SqlStmt> = finalize
+                .iter()
+                .map(|s| {
+                    let (sql, binds) = d1_typed_statement(&s.sql, &s.parameters, None)?;
+                    let sql = if s.kind.wrap_select_limit() {
+                        bookclerk_db_exec::cap_query_sql(&sql, cap)
+                    } else {
+                        sql
+                    };
+                    Ok((sql, binds))
+                })
+                .collect::<Result<Vec<_>, DbErr>>()?;
+            self.run_batch_with_timeout(&fin_stmts, timeout).await?;
+        }
+        Ok(reply)
+    }
+
+    /// Declared-type normalization of a typed reply.
+    ///
+    /// D1's JSON channel carries no column metadata. Declared types come from
+    /// `pragma_table_info` on tables each `Rows` statement references (cached
+    /// per table, cleared on DDL). Only SELECT items that are proven direct
+    /// column references (`col` / `table.col`, with or without `AS alias`)
+    /// are normalized; aliases that remap a different column keep the engine
+    /// type. A failed metadata fetch is **unavailable**, not a silent
+    /// unnormalized reply.
+    async fn normalize_reply_from_declared(
+        &self,
+        req: &ExecuteRequest,
+        reply: &mut ExecuteReply,
+        timeout: Duration,
+    ) -> std::result::Result<(), DbErr> {
+        use std::collections::{BTreeSet, HashMap, HashSet};
+
+        let mut per_stmt: Vec<Option<Vec<String>>> = Vec::with_capacity(req.statements.len());
+        let mut wanted: BTreeSet<String> = BTreeSet::new();
+        for stmt in &req.statements {
+            if stmt.result_selection != DbResultSelection::Rows {
+                per_stmt.push(None);
+                continue;
+            }
+            match bookclerk_plugin_abi::parse_guest_sql_refs(&stmt.sql) {
+                Ok(refs) => {
+                    let tables: Vec<String> =
+                        refs.tables.iter().map(|t| table_cache_key(t)).collect();
+                    wanted.extend(tables.iter().cloned());
+                    per_stmt.push(Some(tables));
+                }
+                Err(_) => per_stmt.push(None),
+            }
+        }
+        if wanted.is_empty() {
+            return Ok(());
+        }
+        let missing: Vec<String> = wanted
+            .iter()
+            .filter(|t| self.cached_table_types(t).is_none())
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            let stmts: Vec<SqlStmt> = missing
+                .iter()
+                .map(|t| {
+                    (
+                        "SELECT name, type FROM pragma_table_info(?)".to_string(),
+                        vec![JsonValue::String(t.clone())],
+                    )
+                })
+                .collect();
+            let raw = self
+                .run_batch_with_timeout(&stmts, timeout)
+                .await
+                .map_err(|err| {
+                    DbErr::Custom(format!(
+                        "unavailable: declared types for {} could not be loaded: {}",
+                        missing.join(","),
+                        DbErr::from(err)
+                    ))
+                })?;
+            let Some(arr) = raw.get("result").and_then(JsonValue::as_array) else {
+                return Err(DbErr::Custom(
+                    "unavailable: declared-type pragma reply missing result array".into(),
+                ));
+            };
+            for (table, entry) in missing.iter().zip(arr) {
+                let mut columns = HashMap::new();
+                if let Some(rows) = entry.get("results").and_then(JsonValue::as_array) {
+                    for row in rows {
+                        let name = row.get("name").and_then(JsonValue::as_str);
+                        let decl = row.get("type").and_then(JsonValue::as_str);
+                        if let (Some(name), Some(decl)) = (name, decl) {
+                            columns.insert(
+                                name.to_ascii_lowercase(),
+                                bookclerk_plugin_abi::db_type_from_declared(decl),
+                            );
+                        }
+                    }
+                }
+                self.store_table_types(table.clone(), columns);
+            }
+            for table in &missing {
+                if self.cached_table_types(table).is_none() {
+                    return Err(DbErr::Custom(format!(
+                        "unavailable: declared types for `{table}` were not cached after pragma"
+                    )));
+                }
+            }
+        }
+        for (i, tables) in per_stmt.iter().enumerate() {
+            let Some(tables) = tables else { continue };
+            let mut map: HashMap<String, DbType> = HashMap::new();
+            let mut conflicted: HashSet<String> = HashSet::new();
+            for table in tables {
+                let Some(columns) = self.cached_table_types(table) else {
+                    continue;
+                };
+                for (name, ty) in columns {
+                    if conflicted.contains(&name) {
+                        continue;
+                    }
+                    match map.get(&name) {
+                        None => {
+                            map.insert(name, ty);
+                        }
+                        Some(prev) if *prev != ty => {
+                            map.remove(&name);
+                            conflicted.insert(name);
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
+            if map.is_empty() {
+                continue;
+            }
+            let Some(sql) = req.statements.get(i).map(|s| s.sql.as_str()) else {
+                continue;
+            };
+            let Some(stmt) = reply.statements.get_mut(i) else {
+                continue;
+            };
+            apply_proven_declared_types(stmt, sql, &map);
+        }
+        Ok(())
+    }
+}
+
+/// HTTP timeout for one D1 batch, capped by the guest-visible deadline.
+fn d1_http_timeout(deadline_unix_ms: Option<u64>) -> std::result::Result<Duration, DbErr> {
+    match deadline_unix_ms {
+        Some(dl) => {
+            let now = d1_unix_now_ms();
+            if now >= dl {
+                return Err(DbErr::Custom(
+                    "deadline_exceeded: atomic deadline elapsed".into(),
+                ));
+            }
+            Ok(Duration::from_millis(dl - now).min(super::d1::D1_REQUEST_TIMEOUT))
+        }
+        None => Ok(super::d1::D1_REQUEST_TIMEOUT),
+    }
+}
+
+/// Checks cancel/deadline inject plus a guest-visible `deadlineUnixMs`.
+fn check_d1_session(
+    phase: bookclerk_db_exec::AtomicInterruptPhase,
+    deadline_unix_ms: Option<u64>,
+) -> std::result::Result<(), DbErr> {
+    use bookclerk_db_exec::{AtomicInterruptKind, AtomicInterruptPhase};
+    let kind = bookclerk_db_exec::consume_atomic_interrupt(phase);
+    let expired = deadline_unix_ms.is_some_and(|ms| d1_unix_now_ms() >= ms);
+    let kind = kind.or_else(|| expired.then_some(AtomicInterruptKind::Deadline));
+    let Some(kind) = kind else {
+        return Ok(());
+    };
+    match phase {
+        AtomicInterruptPhase::AroundCommit => Err(ambiguous_d1("session interrupt at HTTP return")),
+        AtomicInterruptPhase::BeforeBegin | AtomicInterruptPhase::BetweenStatements => {
+            let msg = match kind {
+                AtomicInterruptKind::Cancel => "cancelled: atomic session cancelled",
+                AtomicInterruptKind::Deadline => "deadline_exceeded: atomic deadline elapsed",
+            };
+            Err(DbErr::Custom(msg.into()))
+        }
+    }
+}
+
+/// Current unix time in milliseconds.
+fn d1_unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+/// Maps 1:1 wire proofs onto expanded companion groups (companions have no proof).
+fn proofs_for_expanded<'a>(
+    proofs: &'a [bookclerk_plugin_abi::ResolvedStatement],
+    groups: &[usize],
+) -> Result<Vec<Option<&'a bookclerk_plugin_abi::ResolvedStatement>>, DbErr> {
+    let expanded_len: usize = groups.iter().copied().sum();
+    if proofs.is_empty() {
+        return Ok(vec![None; expanded_len]);
+    }
+    if proofs.len() != groups.len() {
+        return Err(DbErr::Custom(
+            "host execute envelope proofs must match statement count".into(),
+        ));
+    }
+    let mut out = Vec::with_capacity(expanded_len);
+    for (proof, &g) in proofs.iter().zip(groups.iter()) {
+        out.push(Some(proof));
+        for _ in 1..g {
+            out.push(None);
+        }
+    }
+    Ok(out)
+}
+
+/// Rejects lowered D1 SQL that exceeds Cloudflare's physical statement limit.
+fn ensure_d1_physical_sql(sql: &str) -> Result<(), DbErr> {
+    if sql.len() > D1_MAX_SQL_STATEMENT_BYTES as usize {
+        return Err(DbErr::Custom(format!(
+            "lowered SQL is {} bytes; D1 physical statement limit is {D1_MAX_SQL_STATEMENT_BYTES}",
+            sql.len()
+        )));
+    }
+    Ok(())
+}
+
+/// D1 HTTP statement for one typed statement: `Bytes` placeholders are
+/// rewritten to `unhex(?)` with hex-encoded text params so D1 stores true
+/// BLOBs (JSON has no binary scalar). All other values map directly; text is
+/// never re-encoded, so a `Text` cell can never masquerade as bytes.
+pub(crate) fn d1_typed_statement(
+    sql: &str,
+    params: &[DbValue],
+    proof: Option<&bookclerk_plugin_abi::ResolvedStatement>,
+) -> Result<SqlStmt, DbErr> {
+    let pre = lowered_statement_preflight_len_proven(sql, params.len(), proof)
+        .map_err(|err| DbErr::Custom(format!("D1 physical SQL preflight: {err}")))?;
+    if pre > D1_MAX_SQL_STATEMENT_BYTES as usize {
+        return Err(DbErr::Custom(format!(
+            "D1 physical SQL preflight is {pre} bytes; D1 physical statement limit is {D1_MAX_SQL_STATEMENT_BYTES}"
+        )));
+    }
+    let sql =
+        bookclerk_db_exec::lower_canonical_sql_typed(sea_orm::DatabaseBackend::Sqlite, sql, proof)
+            .map_err(|err| DbErr::Custom(err.to_string()))?;
+    let sql = wrap_bytes_placeholders(&sql, params);
+    ensure_d1_physical_sql(&sql)?;
+    let binds = params
+        .iter()
+        .map(|v| match v {
+            DbValue::Null(_) => JsonValue::Null,
+            DbValue::Boolean(b) => JsonValue::Bool(*b),
+            DbValue::Int64(n) => JsonValue::from(*n),
+            DbValue::Float64(n) => JsonValue::from(*n),
+            DbValue::Text(s) => JsonValue::String(s.clone()),
+            DbValue::Bytes(b) => JsonValue::String(hex::encode(b)),
+        })
+        .collect();
+    Ok((sql, binds))
+}
+
+/// Rewrites the i-th `?` placeholder to `unhex(?)` when parameter `i` is
+/// [`DbValue::Bytes`]. Quoted strings / identifiers are copied verbatim.
+fn wrap_bytes_placeholders(sql: &str, params: &[DbValue]) -> String {
+    if !params.iter().any(|p| matches!(p, DbValue::Bytes(_))) {
+        return sql.to_string();
+    }
+    let bytes = sql.as_bytes();
+    let mut out = String::with_capacity(sql.len() + 16);
+    let mut i = 0usize;
+    let mut param = 0usize;
+    let mut in_squote = false;
+    let mut in_dquote = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_squote {
+            if c == b'\'' {
+                if bytes.get(i + 1) == Some(&b'\'') {
+                    out.push_str("''");
+                    i += 2;
+                    continue;
+                }
+                in_squote = false;
+            }
+            out.push(c as char);
+            i += 1;
+            continue;
+        }
+        if in_dquote {
+            if c == b'"' {
+                if bytes.get(i + 1) == Some(&b'"') {
+                    out.push_str("\"\"");
+                    i += 2;
+                    continue;
+                }
+                in_dquote = false;
+            }
+            out.push(c as char);
+            i += 1;
+            continue;
+        }
+        match c {
+            b'\'' => {
+                in_squote = true;
+                out.push('\'');
+                i += 1;
+            }
+            b'"' => {
+                in_dquote = true;
+                out.push('"');
+                i += 1;
+            }
+            b'?' => {
+                if matches!(params.get(param), Some(DbValue::Bytes(_))) {
+                    out.push_str("unhex(?)");
+                } else {
+                    out.push('?');
+                }
+                param += 1;
+                i += 1;
+            }
+            _ => {
+                let ch = sql[i..].chars().next().unwrap_or('\0');
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+    out
+}
+
+/// D1 HTTP params are untyped JSON; typed `$sea_null` objects become SQL NULL.
+fn d1_wire_binds(binds: &[JsonValue]) -> Vec<JsonValue> {
+    binds
+        .iter()
+        .map(|v| {
+            if sea_null_kind(v).is_some() {
+                JsonValue::Null
+            } else {
+                v.clone()
+            }
+        })
+        .collect()
 }
 
 /// Waits before a D1 retry, honoring `Retry-After` or a capped exponential backoff.
-async fn sleep_before_d1_retry(attempt: usize, retry_after: Option<Duration>) {
+async fn sleep_before_d1_retry_bounded(
+    attempt: usize,
+    retry_after: Option<Duration>,
+    deadline_unix_ms: Option<u64>,
+) -> std::result::Result<(), DbErr> {
     let delay = retry_after.unwrap_or_else(|| {
         Duration::from_millis((50u64.saturating_mul(3u64.saturating_pow(attempt as u32))).min(400))
     });
-    tokio::time::sleep(delay.min(Duration::from_secs(5))).await;
+    let delay = delay.min(Duration::from_secs(5));
+    if let Some(dl) = deadline_unix_ms {
+        let now = d1_unix_now_ms();
+        if now >= dl {
+            return Err(DbErr::Custom(
+                "deadline_exceeded: atomic deadline elapsed".into(),
+            ));
+        }
+        let remain = Duration::from_millis(dl - now);
+        tokio::time::sleep(delay.min(remain)).await;
+        if d1_unix_now_ms() >= dl {
+            return Err(DbErr::Custom(
+                "deadline_exceeded: atomic deadline elapsed".into(),
+            ));
+        }
+        return Ok(());
+    }
+    tokio::time::sleep(delay).await;
+    Ok(())
 }
 
-/// True when a D1 HTTP/parse failure may have already committed the batch.
+/// True when `err` is a post-commit declared-type / result recovery failure.
 ///
-/// Permanent 4xx responses are encoded as `D1 HTTP {status}: …` and are not
-/// retryable. Transport, incomplete 2xx, JSON parse, and 408/429/5xx use the
-/// `D1 ambiguous response` prefix.
+/// SeaORM prefixes [`DbErr::Custom`] with `Custom Error: `, so match anywhere
+/// rather than at the start of `Display`.
+fn is_post_commit_unavailable(err: &DbErr) -> bool {
+    err.to_string().contains("unavailable:")
+}
+
+/// True when `err` is a D1 ambiguous-commit marker.
 pub fn is_ambiguous_d1(err: &DbErr) -> bool {
     err.to_string().contains("D1 ambiguous")
 }
 
 /// Maps a D1 [`DbErr`] onto the guest ABI: retryable/ambiguous → `unavailable`,
-/// client 4xx → `invalid_params`, other failures → `internal`.
+/// client 4xx → `invalid_params`, engine codes via the shared mapper.
 #[must_use]
-pub fn plugin_error_from_d1(err: DbErr) -> bookclerk_plugin_sdk::PluginError {
+pub fn plugin_error_from_d1(err: DbErr) -> PluginError {
+    if bookclerk_db_exec::is_guest_receipt_result_lost(&err) {
+        return PluginError::unavailable(err.to_string());
+    }
     if is_ambiguous_d1(&err) {
-        return bookclerk_plugin_sdk::PluginError::unavailable(err.to_string());
+        return PluginError::unavailable(err.to_string());
+    }
+    if is_post_commit_unavailable(&err) {
+        return PluginError::unavailable(err.to_string());
     }
     if let Some(status) = permanent_http_status(&err) {
         if (400..500).contains(&status) {
-            return bookclerk_plugin_sdk::PluginError::invalid_params(err.to_string());
+            return PluginError::invalid_params(err.to_string());
         }
     }
-    bookclerk_plugin_sdk::PluginError::internal(err.to_string())
+    bookclerk_plugin_sdk::database_adapter::plugin_error_from_engine(err)
 }
 
 /// Extracts a permanent `D1 HTTP {status}` code from a [`DbErr`], if present.
@@ -158,6 +1075,698 @@ fn permanent_http_status(err: &DbErr) -> Option<u16> {
 /// Builds a [`DbErr`] whose message marks the batch as possibly already committed.
 fn ambiguous_d1(msg: impl std::fmt::Display) -> DbErr {
     DbErr::Custom(format!("D1 ambiguous response: {msg}"))
+}
+
+/// Fails closed on DML `RETURNING` that D1 HTTP cannot prove is at most one row.
+///
+/// Cloudflare commits the batch before JSON is parsed. `Returning` requires a
+/// host-IR `maxRows = 1`. Top-level `;` (multi-statement SQL) and multi-tuple
+/// `VALUES` are rejected before HTTP.
+fn reject_unbounded_returning(plan: &DbAtomicPlan) -> std::result::Result<(), DbErr> {
+    let cap = DbCapabilities::advertised_d1().max_result_rows;
+    for (i, stmt) in plan.statements.iter().enumerate() {
+        if sql_has_top_level_semicolon(&stmt.sql) {
+            return Err(DbErr::Custom(format!(
+                "D1 statement {i} contains multiple SQL statements; maxResultRows is {cap}"
+            )));
+        }
+        let looks_returning = matches!(stmt.kind, DbPlanStatementKind::Returning);
+        if !looks_returning {
+            continue;
+        }
+        if stmt.max_rows != 1 {
+            return Err(DbErr::Custom(format!(
+                "D1 statement {i} Returning is not proven bounded; maxResultRows is {cap}"
+            )));
+        }
+        if has_top_level_keyword(&stmt.sql, "VALUES") {
+            let tuples = count_top_level_values_tuples(&stmt.sql);
+            if tuples != 1 {
+                return Err(DbErr::Custom(format!(
+                    "D1 statement {i} Returning VALUES is not a single tuple ({tuples}); maxResultRows is {cap}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fails closed on DML `RETURNING` that D1 HTTP cannot prove is at most one row.
+///
+/// # Errors
+///
+/// Returns when SQL is multi-statement, `max_rows != 1`, or `VALUES` is not a
+/// single tuple.
+fn reject_unbounded_returning_typed(
+    statements: &[TypedDbStatement],
+) -> std::result::Result<(), DbErr> {
+    let cap = DbCapabilities::advertised_d1().max_result_rows;
+    for (i, stmt) in statements.iter().enumerate() {
+        if sql_has_top_level_semicolon(&stmt.sql) {
+            return Err(DbErr::Custom(format!(
+                "D1 statement {i} contains multiple SQL statements; maxResultRows is {cap}"
+            )));
+        }
+        let looks_returning = matches!(stmt.kind, DbPlanStatementKind::Returning);
+        if !looks_returning {
+            continue;
+        }
+        if stmt.max_rows != 1 {
+            return Err(DbErr::Custom(format!(
+                "D1 statement {i} Returning is not proven bounded; maxResultRows is {cap}"
+            )));
+        }
+        if has_top_level_keyword(&stmt.sql, "VALUES") {
+            let tuples = count_top_level_values_tuples(&stmt.sql);
+            if tuples != 1 {
+                return Err(DbErr::Custom(format!(
+                    "D1 statement {i} Returning VALUES is not a single tuple ({tuples}); maxResultRows is {cap}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Maps one D1 HTTP JSON cell onto a typed [`DbValue`] (strings stay text).
+///
+/// BLOB cells arrive as JSON arrays of byte integers (Cloudflare D1
+/// type-conversion: BLOB reads as arrays) and decode to [`DbValue::Bytes`].
+///
+/// # Errors
+///
+/// Returns when the cell is a non-byte array, an object, or a non-finite
+/// number.
+fn d1_json_cell_to_db_value(v: &JsonValue) -> Result<DbValue, String> {
+    match v {
+        JsonValue::Null => Ok(DbValue::Null(DbType::Unspecified)),
+        JsonValue::Bool(b) => Ok(DbValue::Boolean(*b)),
+        JsonValue::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                return Ok(DbValue::Int64(i));
+            }
+            if let Some(u) = n.as_u64() {
+                let i = i64::try_from(u)
+                    .map_err(|_| format!("unsigned integer {u} overflows int64"))?;
+                return Ok(DbValue::Int64(i));
+            }
+            let f = n
+                .as_f64()
+                .ok_or_else(|| "number is not a finite float64".to_string())?;
+            if !f.is_finite() {
+                return Err("float64 value is not finite".into());
+            }
+            Ok(DbValue::Float64(f))
+        }
+        JsonValue::String(s) => Ok(DbValue::Text(s.clone())),
+        JsonValue::Array(cells) => {
+            let mut bytes = Vec::with_capacity(cells.len());
+            for cell in cells {
+                let n = cell
+                    .as_u64()
+                    .and_then(|n| u8::try_from(n).ok())
+                    .ok_or_else(|| "array cell is not a D1 BLOB byte array".to_string())?;
+                bytes.push(n);
+            }
+            Ok(DbValue::Bytes(bytes))
+        }
+        JsonValue::Object(_) => Err("objects are not a baseline DbValue".into()),
+    }
+}
+
+/// Column metadata for a D1 HTTP result page.
+///
+/// JSON row objects are unordered, so the positional column order comes from
+/// the SELECT list whenever the parsed identifiers cover the row keys
+/// exactly; otherwise the first row's keys are used. Empty pages (and `{}`
+/// all-null objects that omit keys) fall back to the SELECT-list identifiers.
+fn d1_result_columns(sql: &str, raw_rows: &[JsonValue]) -> Vec<DbColumn> {
+    let unspecified = |name: String| DbColumn {
+        name,
+        db_type: DbType::Unspecified,
+    };
+    let select_names = select_list_column_names(sql);
+    if let Some(map) = raw_rows.first().and_then(JsonValue::as_object) {
+        if !map.is_empty() {
+            if select_names.len() == map.len()
+                && select_names.iter().all(|name| map.contains_key(name))
+            {
+                return select_names.into_iter().map(unspecified).collect();
+            }
+            return map.keys().cloned().map(unspecified).collect();
+        }
+    }
+    select_names.into_iter().map(unspecified).collect()
+}
+
+/// Fills [`DbType`] from the first non-null cell in each column.
+fn refine_column_types(columns: &mut [DbColumn], rows: &[DbRow]) {
+    for (i, col) in columns.iter_mut().enumerate() {
+        if col.db_type != DbType::Unspecified {
+            continue;
+        }
+        for row in rows {
+            match row.values.get(i) {
+                Some(DbValue::Null(_)) | None => continue,
+                Some(DbValue::Boolean(_)) => col.db_type = DbType::Bool,
+                Some(DbValue::Int64(_)) => col.db_type = DbType::Int64,
+                Some(DbValue::Float64(_)) => col.db_type = DbType::Float64,
+                Some(DbValue::Text(_)) => col.db_type = DbType::Text,
+                Some(DbValue::Bytes(_)) => col.db_type = DbType::Bytes,
+            }
+            break;
+        }
+    }
+}
+
+/// SELECT-list identifiers used when D1 HTTP returns no row objects.
+fn select_list_column_names(sql: &str) -> Vec<String> {
+    let select = match select_list_slice(sql) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let mut names = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let bytes = select.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                if let Some(name) = select_item_name(&select[start..i]) {
+                    names.push(name);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if let Some(name) = select_item_name(&select[start..]) {
+        names.push(name);
+    }
+    names
+}
+
+/// True when `bytes[i..]` is keyword `kw` not continued as an identifier.
+fn starts_keyword(bytes: &[u8], i: usize, kw: &[u8]) -> bool {
+    bytes[i..].starts_with(kw) && !ident_cont_at(bytes, i + kw.len())
+}
+
+/// Text of the main SELECT list (depth-0): through `FROM`, or through
+/// `WHERE`/`GROUP`/`HAVING`/`ORDER`/`LIMIT`/`UNION`/`EXCEPT`/`INTERSECT`/
+/// `WINDOW` when there is no `FROM` (literal `SELECT …` rows).
+fn select_list_slice(sql: &str) -> Option<&str> {
+    let upper = sql.to_ascii_uppercase();
+    let mut depth = 0i32;
+    let bytes = upper.as_bytes();
+    let mut i = 0usize;
+    let mut select_at = None;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            b'S' if depth == 0 && starts_keyword(bytes, i, b"SELECT") => {
+                select_at = Some(i + 6);
+                i += 6;
+            }
+            b'F' if depth == 0 && select_at.is_some() && starts_keyword(bytes, i, b"FROM") => {
+                return Some(sql[select_at?..i].trim());
+            }
+            b'W' if depth == 0
+                && select_at.is_some()
+                && (starts_keyword(bytes, i, b"WHERE") || starts_keyword(bytes, i, b"WINDOW")) =>
+            {
+                return Some(sql[select_at?..i].trim());
+            }
+            b'G' if depth == 0 && select_at.is_some() && starts_keyword(bytes, i, b"GROUP") => {
+                return Some(sql[select_at?..i].trim());
+            }
+            b'H' if depth == 0 && select_at.is_some() && starts_keyword(bytes, i, b"HAVING") => {
+                return Some(sql[select_at?..i].trim());
+            }
+            b'O' if depth == 0 && select_at.is_some() && starts_keyword(bytes, i, b"ORDER") => {
+                return Some(sql[select_at?..i].trim());
+            }
+            b'L' if depth == 0 && select_at.is_some() && starts_keyword(bytes, i, b"LIMIT") => {
+                return Some(sql[select_at?..i].trim());
+            }
+            b'U' if depth == 0 && select_at.is_some() && starts_keyword(bytes, i, b"UNION") => {
+                return Some(sql[select_at?..i].trim());
+            }
+            b'E' if depth == 0 && select_at.is_some() && starts_keyword(bytes, i, b"EXCEPT") => {
+                return Some(sql[select_at?..i].trim());
+            }
+            b'I' if depth == 0 && select_at.is_some() && starts_keyword(bytes, i, b"INTERSECT") => {
+                return Some(sql[select_at?..i].trim());
+            }
+            _ => i += 1,
+        }
+    }
+    select_at.map(|at| sql[at..].trim())
+}
+
+/// True when `bytes[i]` continues an identifier (`[A-Za-z0-9_]`).
+fn ident_cont_at(bytes: &[u8], i: usize) -> bool {
+    bytes
+        .get(i)
+        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+}
+
+/// Last identifier in a SELECT item (`col`, `table.col`, `expr AS alias`).
+fn select_item_name(item: &str) -> Option<String> {
+    let item = item.trim();
+    if item.is_empty() || item == "*" || item.ends_with(".*") {
+        return None;
+    }
+    let upper = item.to_ascii_uppercase();
+    let token = if let Some(idx) = upper.rfind(" AS ") {
+        item[idx + 4..].trim()
+    } else {
+        item.rsplit([' ', '.']).next().unwrap_or(item).trim()
+    };
+    let token = token.trim_matches(|c| c == '"' || c == '`' || c == '\'');
+    if token.is_empty()
+        || token == "*"
+        || !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+/// Source column of a SELECT item when it is a proven direct reference.
+///
+/// `col`, `table.col`, and `expr AS alias` where `expr` is one of those
+/// forms. Computed expressions (`n + 1`, `NOT flag`) return `None` so the
+/// engine type is kept instead of matching the output alias to a physical
+/// column (the `SELECT n AS flag` boolean collision).
+fn select_item_proven_column(item: &str) -> Option<String> {
+    let item = item.trim();
+    if item.is_empty() || item == "*" || item.ends_with(".*") {
+        return None;
+    }
+    let upper = item.to_ascii_uppercase();
+    let expr = if let Some(idx) = upper.rfind(" AS ") {
+        item[..idx].trim()
+    } else {
+        item
+    };
+    let expr = expr.trim_matches(|c| c == '"' || c == '`' || c == '\'');
+    if expr.is_empty() || expr.contains('(') || expr.contains('+') || expr.contains(' ') {
+        return None;
+    }
+    let col = expr.rsplit('.').next().unwrap_or(expr).trim();
+    let col = col.trim_matches(|c| c == '"' || c == '`' || c == '\'');
+    if col.is_empty() || col == "*" || !col.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(col.to_ascii_lowercase())
+}
+
+/// Proven source column per SELECT-list item (same split as [`select_list_column_names`]).
+fn select_list_proven_columns(sql: &str) -> Vec<Option<String>> {
+    let select = match select_list_slice(sql) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let mut cols = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let bytes = select.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                cols.push(select_item_proven_column(&select[start..i]));
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    cols.push(select_item_proven_column(&select[start..]));
+    cols
+}
+
+/// Applies declared types to SELECT items proven to be direct columns.
+///
+/// Declared metadata wins over JSON-inferred types (D1 stores booleans as
+/// integers, so a `BOOLEAN` column would otherwise stay `Int64`).
+fn apply_proven_declared_types(
+    stmt: &mut StatementResult,
+    sql: &str,
+    map: &std::collections::HashMap<String, DbType>,
+) {
+    let proven = select_list_proven_columns(sql);
+    for col_idx in 0..stmt.columns.len() {
+        let key = proven
+            .get(col_idx)
+            .and_then(|c| c.as_deref())
+            .map(str::to_string);
+        let Some(key) = key else { continue };
+        let Some(&ty) = map.get(&key) else { continue };
+        stmt.columns[col_idx].db_type = ty;
+        for row in &mut stmt.rows {
+            if let Some(cell) = row.values.get_mut(col_idx) {
+                *cell = bookclerk_plugin_abi::normalize_db_value_for_column(cell.clone(), ty);
+            }
+        }
+    }
+}
+
+/// Parses a D1 HTTP batch body into [`ExecuteReply`] and encodes before return.
+///
+/// # Errors
+///
+/// Returns [`DbErr`] when the body is malformed, a row fails conversion, or
+/// the encoded reply exceeds `maxAtomicResultBytes` (ambiguous after HTTP).
+fn parse_typed_batch(
+    req: &ExecuteRequest,
+    value: &JsonValue,
+    started: std::time::Instant,
+) -> std::result::Result<ExecuteReply, DbErr> {
+    let Some(arr) = value.get("result").and_then(JsonValue::as_array) else {
+        return Err(ambiguous_d1("batch response missing result array"));
+    };
+    if arr.len() != req.statements.len() {
+        return Err(ambiguous_d1(format!(
+            "expected {} statement results, got {}",
+            req.statements.len(),
+            arr.len()
+        )));
+    }
+    let caps = DbCapabilities::advertised_d1();
+    let row_cap = usize::try_from(caps.max_result_rows).unwrap_or(1_000);
+    let mut statements = Vec::with_capacity(arr.len());
+    for (i, entry) in arr.iter().enumerate() {
+        if entry.get("success").and_then(JsonValue::as_bool) == Some(false) {
+            return Err(DbErr::Custom(format!(
+                "D1 batch statement {i} failed: {entry}"
+            )));
+        }
+        let kind = req.statements[i].kind;
+        let selection = req.statements[i].result_selection;
+        let changes = entry
+            .get("meta")
+            .and_then(|m| m.get("changes"))
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0);
+        let stmt_result = match selection {
+            DbResultSelection::AffectedRows | DbResultSelection::Discard => {
+                let n = if matches!(selection, DbResultSelection::Discard)
+                    || matches!(kind, DbPlanStatementKind::Select)
+                {
+                    0
+                } else {
+                    changes
+                };
+                StatementResult::from_affected(n)
+            }
+            DbResultSelection::Rows => {
+                let raw_rows = entry
+                    .get("results")
+                    .and_then(JsonValue::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                if raw_rows.len() > row_cap {
+                    return Err(ambiguous_d1(format!(
+                        "D1 statement {i} returned {} rows; maxResultRows is {row_cap}",
+                        raw_rows.len()
+                    )));
+                }
+                let mut columns: Vec<DbColumn> =
+                    d1_result_columns(&req.statements[i].sql, raw_rows);
+                let mut rows = Vec::new();
+                for row in raw_rows {
+                    let Some(map) = row.as_object() else {
+                        return Err(ambiguous_d1(format!(
+                            "D1 statement {i} row is not an object"
+                        )));
+                    };
+                    let mut values = Vec::with_capacity(columns.len());
+                    for col in &columns {
+                        let cell = map.get(&col.name).unwrap_or(&JsonValue::Null);
+                        values.push(d1_json_cell_to_db_value(cell).map_err(DbErr::Custom)?);
+                    }
+                    rows.push(DbRow { values });
+                }
+                refine_column_types(&mut columns, &rows);
+                let mut result = StatementResult::from_rows(columns, rows).map_err(ambiguous_d1)?;
+                result.rows_affected = match kind {
+                    DbPlanStatementKind::Select => 0,
+                    DbPlanStatementKind::Returning => {
+                        u64::try_from(result.rows.len()).unwrap_or(u64::MAX)
+                    }
+                    DbPlanStatementKind::Execute => changes,
+                };
+                result
+            }
+        };
+        if caps.max_result_bytes > 0 {
+            let used = encoded_statement_result_bytes(&stmt_result)
+                .map_err(ambiguous_d1)?
+                .len();
+            let cap = usize::try_from(caps.max_result_bytes).unwrap_or(usize::MAX);
+            if used > cap {
+                return Err(ambiguous_d1(format!(
+                    "query result is {used} bytes; maxResultBytes is {}",
+                    caps.max_result_bytes
+                )));
+            }
+        }
+        statements.push(stmt_result);
+    }
+    let db_execution_us = d1_sql_duration_us(value);
+    let reply = ExecuteReply {
+        operation_id: req.operation_id.clone(),
+        statements,
+        timing: DbTiming {
+            attempt_elapsed_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            db_execution_us: db_execution_us.unwrap_or(0),
+            db_timing_source: db_execution_us
+                .map(|_| "d1_sql_duration".to_string())
+                .unwrap_or_default(),
+        },
+    };
+    reply.validate_positional().map_err(ambiguous_d1)?;
+    match encoded_execute_reply_bytes(&reply) {
+        Ok(bytes) => {
+            let cap = usize::try_from(caps.max_atomic_result_bytes).unwrap_or(0);
+            if cap > 0 && bytes.len() > cap {
+                return Err(ambiguous_d1(format!(
+                    "atomic result is {} bytes; maxAtomicResultBytes is {cap}",
+                    bytes.len()
+                )));
+            }
+        }
+        Err(err) => {
+            return Err(ambiguous_d1(format!(
+                "failed to encode ExecuteReply after D1 HTTP commit: {err}"
+            )));
+        }
+    }
+    Ok(reply)
+}
+
+/// True when a top-level semicolon would start another statement.
+fn sql_has_top_level_semicolon(sql: &str) -> bool {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    let mut depth = 0usize;
+    let mut in_squote = false;
+    let mut in_dquote = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_squote {
+            if c == b'\'' {
+                if bytes.get(i + 1) == Some(&b'\'') {
+                    i += 2;
+                    continue;
+                }
+                in_squote = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_dquote {
+            if c == b'"' {
+                if bytes.get(i + 1) == Some(&b'"') {
+                    i += 2;
+                    continue;
+                }
+                in_dquote = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'\'' => in_squote = true,
+            b'"' => in_dquote = true,
+            b'(' => depth = depth.saturating_add(1),
+            b')' => depth = depth.saturating_sub(1),
+            b';' if depth == 0 => {
+                let rest = sql[i + 1..].trim();
+                if !rest.is_empty() {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Number of top-level `VALUES` tuples (`(1),(2)` → 2). `0` when none parsed.
+fn count_top_level_values_tuples(sql: &str) -> usize {
+    let Some(idx) = top_level_keyword_index(sql, "VALUES") else {
+        return 0;
+    };
+    let bytes = sql.as_bytes();
+    let mut i = idx + "VALUES".len();
+    let mut depth = 0usize;
+    let mut tuples = 0usize;
+    let mut in_squote = false;
+    let mut in_dquote = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_squote {
+            if c == b'\'' {
+                if bytes.get(i + 1) == Some(&b'\'') {
+                    i += 2;
+                    continue;
+                }
+                in_squote = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_dquote {
+            if c == b'"' {
+                if bytes.get(i + 1) == Some(&b'"') {
+                    i += 2;
+                    continue;
+                }
+                in_dquote = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'\'' => in_squote = true,
+            b'"' => in_dquote = true,
+            b'(' => {
+                if depth == 0 {
+                    tuples = tuples.saturating_add(1);
+                }
+                depth = depth.saturating_add(1);
+            }
+            b')' => depth = depth.saturating_sub(1),
+            _ => {
+                if depth == 0 {
+                    let rest = &sql[i..];
+                    if rest.len() >= 9 && rest[..9].eq_ignore_ascii_case("RETURNING") {
+                        break;
+                    }
+                    if c == b';' {
+                        break;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    tuples
+}
+
+/// Byte offset of a top-level keyword, if present.
+fn top_level_keyword_index(sql: &str, keyword: &str) -> Option<usize> {
+    let mut found = None;
+    for_each_top_level_keyword(sql, |idx, kw| {
+        if kw.eq_ignore_ascii_case(keyword) {
+            found = Some(idx);
+        }
+    });
+    found
+}
+
+/// True when `keyword` appears at parenthesis depth 0 (not inside quotes).
+fn has_top_level_keyword(sql: &str, keyword: &str) -> bool {
+    let mut found = false;
+    for_each_top_level_keyword(sql, |_, kw| {
+        if kw.eq_ignore_ascii_case(keyword) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Invokes `on_keyword` for each unquoted, top-level identifier.
+fn for_each_top_level_keyword(sql: &str, mut on_keyword: impl FnMut(usize, &str)) {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    let mut depth = 0usize;
+    let mut in_squote = false;
+    let mut in_dquote = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_squote {
+            if c == b'\'' {
+                if bytes.get(i + 1) == Some(&b'\'') {
+                    i += 2;
+                    continue;
+                }
+                in_squote = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_dquote {
+            if c == b'"' {
+                if bytes.get(i + 1) == Some(&b'"') {
+                    i += 2;
+                    continue;
+                }
+                in_dquote = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'\'' => {
+                in_squote = true;
+                i += 1;
+            }
+            b'"' => {
+                in_dquote = true;
+                i += 1;
+            }
+            b'(' => {
+                depth = depth.saturating_add(1);
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            _ if depth == 0 && c.is_ascii_alphabetic() => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                on_keyword(start, &sql[start..i]);
+            }
+            _ => i += 1,
+        }
+    }
 }
 
 /// Sums D1 `sql_duration_ms` timings from a batch response and returns microseconds.
@@ -179,1965 +1788,67 @@ fn d1_sql_duration_us(raw: &JsonValue) -> Option<u64> {
     any.then_some((ms * 1000.0) as u64)
 }
 
-/// SHA-256 hex of the idempotency-relevant fields of `op`, mapped to [`DbErr`].
-fn request_hash(op: &DbAtomicParams) -> std::result::Result<String, DbErr> {
-    bookclerk_library::db_atomic_request_hash(op).map_err(|err| DbErr::Custom(err.to_string()))
-}
-
-/// Wire `operationKind` string stored on `db_atomic_receipts` for `op`.
-fn operation_kind(op: &DbAtomicParams) -> &'static str {
-    match op {
-        DbAtomicParams::DeleteUser { .. } => "deleteUser",
-        DbAtomicParams::SetUserStatus { .. } => "setUserStatus",
-        DbAtomicParams::SetUserPasswordHash { .. } => "setUserPasswordHash",
-        DbAtomicParams::SetUserRole { .. } => "setUserRole",
-        DbAtomicParams::RedeemClaimTicket { .. } => "redeemClaimTicket",
-        DbAtomicParams::TakeOidcRpState { .. } => "takeOidcRpState",
-        DbAtomicParams::TakeWebauthnChallenge { .. } => "takeWebauthnChallenge",
-        DbAtomicParams::EnqueueJob { .. } => "enqueueJob",
-        DbAtomicParams::ClaimNextJob { .. } => "claimNextJob",
-        DbAtomicParams::ReserveJobTemp { .. } => "reserveJobTemp",
-        DbAtomicParams::ConfirmTotpEnrollment { .. } => "confirmTotpEnrollment",
-        DbAtomicParams::DisableUserTotp { .. } => "disableUserTotp",
-        DbAtomicParams::PublishDomainEvent { .. } => "publishDomainEvent",
-        DbAtomicParams::SetAcquireStatus { .. } => "setAcquireStatus",
-        DbAtomicParams::DispatchEventDeliveries { .. } => "dispatchEventDeliveries",
-        DbAtomicParams::ClaimNextEventDelivery { .. } => "claimNextEventDelivery",
-    }
-}
-
-/// RFC 3339 timestamp 24 hours after `now`, or `now` when the input is unparseable.
-fn receipt_expiry(now: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(now)
-        .map(|dt| (dt + chrono::Duration::hours(24)).to_rfc3339())
-        .unwrap_or_else(|_| now.to_string())
-}
-
-/// Reject oversized or blank `publishDomainEvent` fields before hashing.
-fn validate_publish_domain_event(op: &DbAtomicParams) -> std::result::Result<(), DbErr> {
-    let DbAtomicParams::PublishDomainEvent {
-        event_type,
-        dedup_key,
-        payload,
-        ..
-    } = op
-    else {
-        return Ok(());
-    };
-    const MAX_PAYLOAD: usize = 65_536;
-    if payload.len() > MAX_PAYLOAD {
-        return Err(DbErr::Custom(format!(
-            "domain event payload of {} bytes exceeds {MAX_PAYLOAD}",
-            payload.len()
-        )));
-    }
-    if event_type.trim().is_empty() || dedup_key.trim().is_empty() {
-        return Err(DbErr::Custom(
-            "domain event type and dedup_key are required".into(),
-        ));
-    }
-    Ok(())
-}
-
-/// Builds the D1 batch for `op`. `now` is the RFC 3339 timestamp shared by
-/// every statement in the batch (consume correlation, `updated_at`, sessions).
-fn plan_atomic(req: &DbAtomicRequest, now: &str) -> std::result::Result<AtomicPlan, DbErr> {
-    validate_publish_domain_event(&req.operation)?;
-    let inner = plan_inner(&req.operation, now);
-    let ctx = ReceiptCtx {
-        operation_id: req.operation_id.clone(),
-        request_hash: request_hash(&req.operation)?,
-        kind: operation_kind(&req.operation),
-        now: now.to_string(),
-        expires_at: receipt_expiry(now),
-    };
-    Ok(match &req.operation {
-        DbAtomicParams::TakeOidcRpState { state_hash } => wrap_consume_oidc(state_hash, now, &ctx),
-        DbAtomicParams::TakeWebauthnChallenge { challenge_id, kind } => {
-            wrap_consume_webauthn(challenge_id, kind, now, &ctx)
-        }
-        DbAtomicParams::DeleteUser { .. } => wrap_status_op(inner, &ctx, PayloadKind::None),
-        DbAtomicParams::SetUserStatus { user_id, .. }
-        | DbAtomicParams::SetUserPasswordHash { user_id, .. }
-        | DbAtomicParams::SetUserRole { user_id, .. } => {
-            wrap_status_op(inner, &ctx, PayloadKind::User { user_id: *user_id })
-        }
-        DbAtomicParams::RedeemClaimTicket { .. } => {
-            wrap_status_op(inner, &ctx, PayloadKind::Identity)
-        }
-        DbAtomicParams::EnqueueJob { .. }
-        | DbAtomicParams::ClaimNextJob { .. }
-        | DbAtomicParams::ReserveJobTemp { .. }
-        | DbAtomicParams::PublishDomainEvent { .. }
-        | DbAtomicParams::SetAcquireStatus { .. }
-        | DbAtomicParams::DispatchEventDeliveries { .. }
-        | DbAtomicParams::ClaimNextEventDelivery { .. } => {
-            wrap_status_op(inner, &ctx, PayloadKind::JsonFromPlan)
-        }
-        DbAtomicParams::ConfirmTotpEnrollment { .. } | DbAtomicParams::DisableUserTotp { .. } => {
-            wrap_status_op(inner, &ctx, PayloadKind::None)
-        }
-    })
-}
-
-/// Compiles `op` into the inner SQL statements before receipt wrapping.
-fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
-    match op {
-        DbAtomicParams::DeleteUser { user_id } => plan_delete_user(*user_id),
-        DbAtomicParams::SetUserStatus { user_id, status } => {
-            plan_set_user_status(*user_id, status, now)
-        }
-        DbAtomicParams::SetUserPasswordHash {
-            user_id,
-            password_hash,
-        } => plan_set_user_password_hash(*user_id, password_hash.as_deref(), now),
-        DbAtomicParams::SetUserRole { user_id, role } => plan_set_user_role(*user_id, role, now),
-        DbAtomicParams::RedeemClaimTicket {
-            token_hash,
-            session_hash,
-            expires_at,
-            user_agent,
-            device_type,
-            client_label,
-            new_password_hash,
-            password_fingerprint: _,
-        } => plan_redeem_claim(
-            token_hash,
-            session_hash,
-            expires_at,
-            user_agent.as_deref(),
-            device_type.as_deref(),
-            client_label.as_deref(),
-            new_password_hash.as_deref(),
-            now,
-        ),
-        DbAtomicParams::TakeOidcRpState { state_hash } => plan_take_oidc_rp_state(state_hash, now),
-        DbAtomicParams::TakeWebauthnChallenge { challenge_id, kind } => {
-            plan_take_webauthn_challenge(challenge_id, kind, now)
-        }
-        DbAtomicParams::EnqueueJob {
-            kind,
-            payload_json,
-            priority,
-            max_attempts,
-            max_pending,
-            run_after,
-        } => plan_enqueue_job(
-            kind,
-            payload_json,
-            *priority,
-            *max_attempts,
-            *max_pending,
-            run_after.as_deref(),
-            now,
-        ),
-        DbAtomicParams::ClaimNextJob {
-            resource_class,
-            owner,
-            lease_secs,
-        } => plan_claim_next_job(resource_class, owner, *lease_secs, now),
-        DbAtomicParams::ReserveJobTemp {
-            job_id,
-            path,
-            reserved_bytes,
-            quota_bytes,
-        } => plan_reserve_job_temp(job_id, path, *reserved_bytes, *quota_bytes, now),
-        DbAtomicParams::ConfirmTotpEnrollment {
-            user_id,
-            format,
-            ciphertext,
-            cipher_algorithm,
-            cipher_nonce,
-            kdf_algorithm,
-            kdf_salt,
-            kdf_m_cost,
-            kdf_t_cost,
-            kdf_p_cost,
-            created_at,
-        } => plan_confirm_totp_enrollment(
-            *user_id,
-            format,
-            ciphertext,
-            cipher_algorithm.as_deref(),
-            cipher_nonce.as_deref(),
-            kdf_algorithm.as_deref(),
-            kdf_salt.as_deref(),
-            *kdf_m_cost,
-            *kdf_t_cost,
-            *kdf_p_cost,
-            created_at,
-            now,
-        ),
-        DbAtomicParams::DisableUserTotp { user_id } => plan_disable_user_totp(*user_id, now),
-        DbAtomicParams::PublishDomainEvent {
-            id,
-            event_type,
-            schema_version,
-            account_id,
-            source,
-            correlation_id,
-            causation_id,
-            dedup_key,
-            payload,
-            ordering_key,
-        } => {
-            let minted = if id.trim().is_empty() {
-                uuid::Uuid::new_v4().to_string()
-            } else {
-                id.trim().to_string()
-            };
-            plan_publish_domain_event(
-                &minted,
-                event_type,
-                *schema_version,
-                account_id,
-                source,
-                correlation_id,
-                causation_id,
-                dedup_key,
-                payload,
-                ordering_key,
-                now,
-            )
-        }
-        DbAtomicParams::SetAcquireStatus {
-            book_uuid,
-            status,
-            storage_key,
-            error_message,
-            event_id,
-            event_type,
-            schema_version,
-            event_account_id,
-            source,
-            correlation_id,
-            causation_id,
-            dedup_key,
-            payload,
-            ordering_key,
-        } => {
-            let minted = if event_id.trim().is_empty() && !event_type.trim().is_empty() {
-                uuid::Uuid::new_v4().to_string()
-            } else {
-                event_id.trim().to_string()
-            };
-            plan_set_acquire_status(
-                book_uuid,
-                status,
-                storage_key.as_deref(),
-                error_message.as_deref(),
-                &minted,
-                event_type,
-                *schema_version,
-                event_account_id,
-                source,
-                correlation_id,
-                causation_id,
-                dedup_key,
-                payload,
-                ordering_key,
-                now,
-            )
-        }
-        DbAtomicParams::DispatchEventDeliveries {
-            event_id,
-            subscribers_json,
-        } => plan_dispatch_event_deliveries(event_id, subscribers_json, now),
-        DbAtomicParams::ClaimNextEventDelivery {
-            owner,
-            lease_secs,
-            plugin_ids_json,
-            max_in_flight,
-        } => {
-            plan_claim_next_event_delivery(owner, *lease_secs, plugin_ids_json, *max_in_flight, now)
-        }
-    }
-}
-
-/// Pairs a SQL text with JSON bind parameters for a D1 batch statement.
-fn sql(text: &str, params: Vec<JsonValue>) -> SqlStmt {
-    (text.to_string(), params)
-}
-
-/// JSON number bind for a signed 64-bit integer column.
-fn j_i64(n: i64) -> JsonValue {
-    JsonValue::from(n)
-}
-
-/// JSON string bind; the value is copied into the batch body.
-fn j_str(s: &str) -> JsonValue {
-    JsonValue::String(s.to_string())
-}
-
-/// JSON string bind, or JSON null when the optional value is absent.
-fn j_opt_str(s: Option<&str>) -> JsonValue {
-    match s {
-        Some(v) => JsonValue::String(v.to_string()),
-        None => JsonValue::Null,
-    }
-}
-
-/// JSON number bind, or JSON null when the optional value is absent.
-fn j_opt_i64(n: Option<i64>) -> JsonValue {
-    match n {
-        Some(v) => JsonValue::from(v),
-        None => JsonValue::Null,
-    }
-}
-
-/// Which receipt payload `SELECT` to attach after a status-gated write.
-enum PayloadKind {
-    /// No payload row; the receipt stores status only.
-    None,
-    /// Scoped to a concrete library user id.
-    User {
-        /// Library user id for this atomic scope.
-        user_id: i64,
-    },
-    /// Portal-identity JSON payload after a successful claim redeem.
-    Identity,
-    /// Use the inner plan's payload `SELECT` as receipt JSON.
-    JsonFromPlan,
-}
-
-/// Deletes expired receipts except the current `operation_id` so a replay can still match.
-fn prune_receipts(ctx: &ReceiptCtx) -> SqlStmt {
-    sql(
-        "DELETE FROM db_atomic_receipts WHERE expires_at <= ? AND operation_id != ?",
-        vec![j_str(&ctx.now), j_str(&ctx.operation_id)],
-    )
-}
-
-/// Selects the receipt row for this `operation_id`, if one already exists.
-fn select_receipt(ctx: &ReceiptCtx) -> SqlStmt {
-    sql(
-        "SELECT operation_id, request_hash, status, payload, created_at \
-         FROM db_atomic_receipts WHERE operation_id = ?",
-        vec![j_str(&ctx.operation_id)],
-    )
-}
-
-/// Appends a `NOT EXISTS` receipt gate so writes skip when this attempt already ran.
-fn gate_write(sql_text: String, mut params: Vec<JsonValue>, operation_id: &str) -> SqlStmt {
-    let trimmed = sql_text.trim_start();
-    let is_write = trimmed.starts_with("INSERT")
-        || trimmed.starts_with("UPDATE")
-        || trimmed.starts_with("DELETE");
-    if !is_write {
-        return (sql_text, params);
-    }
-    params.push(j_str(operation_id));
-    (
-        format!(
-            "{sql_text} AND NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)"
-        ),
-        params,
-    )
-}
-
-/// Restricts a later write to run only after this attempt's receipt claimed `ok`.
-fn gate_claimed_ok(sql_text: String, mut params: Vec<JsonValue>, operation_id: &str) -> SqlStmt {
-    let trimmed = sql_text.trim_start();
-    let is_write = trimmed.starts_with("INSERT")
-        || trimmed.starts_with("UPDATE")
-        || trimmed.starts_with("DELETE");
-    if !is_write {
-        return (sql_text, params);
-    }
-    params.push(j_str(operation_id));
-    (
-        format!(
-            "{sql_text} AND EXISTS (\
-                SELECT 1 FROM db_atomic_receipts \
-                 WHERE operation_id = ? AND status = '{ok}'\
-            )",
-            ok = atomic_status::OK,
-        ),
-        params,
-    )
-}
-
-/// SQL that builds the guest user JSON object (password present as a boolean).
-fn user_payload_json_sql() -> &'static str {
-    "SELECT json_object(\
-        'id', id, 'role', role, 'status', status, \
-        'display_name', display_name, 'login_name', login_name, 'email', email, \
-        'has_password', json(CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 'true' ELSE 'false' END), \
-        'security_version', security_version, 'created_at', created_at, 'updated_at', updated_at, \
-        'last_seen_at', last_seen_at, 'avatar_source', avatar_source\
-     ) AS payload FROM users WHERE id = ?"
-}
-
-/// Opening SQL for wrapping a portal-identity subquery as receipt payload JSON.
-fn identity_payload_json_sql() -> &'static str {
-    "SELECT json_object(\
-        'id', id, 'provider', provider, 'external_user_id', external_user_id, \
-        'label', label, 'user_id', user_id, 'created_at', created_at, 'picture_url', picture_url\
-     ) AS payload FROM ("
-}
-
-/// Wraps a status-gated plan with prune, prior-receipt select, gated writes, and a final receipt select.
-fn wrap_status_op(plan: AtomicPlan, ctx: &ReceiptCtx, payload: PayloadKind) -> AtomicPlan {
-    let outcome_index = plan.outcome_index;
-    let payload_index = plan.payload_index;
-    let outcome = plan.statements[outcome_index].clone();
-    let payload_stmt = payload_index.and_then(|idx| plan.statements.get(idx).cloned());
-    let mut statements = vec![prune_receipts(ctx), select_receipt(ctx)];
-    let prior_receipt_index = Some(statements.len() - 1);
-    for (i, (sql_text, params)) in plan.statements.into_iter().enumerate() {
-        if Some(i) == payload_index {
-            continue;
-        }
-        if i == outcome_index {
-            // Claim status now so later mutations cannot change the receipt.
-            statements.push(receipt_insert_from_outcome(ctx, &outcome));
-            continue;
-        }
-        if i < outcome_index {
-            statements.push(gate_write(sql_text, params, &ctx.operation_id));
-        } else {
-            statements.push(gate_claimed_ok(sql_text, params, &ctx.operation_id));
-        }
-    }
-    if let Some(update) = receipt_payload_update(ctx, payload, payload_stmt) {
-        statements.push(update);
-    }
-    statements.push(select_receipt(ctx));
-    let receipt_select_index = statements.len() - 1;
-    AtomicPlan {
-        statements,
-        outcome_index: 0,
-        payload_index: None,
-        consume_once: None,
-        receipt_select_index: Some(receipt_select_index),
-        prior_receipt_index,
-        expected_hash: Some(ctx.request_hash.clone()),
-    }
-}
-
-/// Inserts a receipt whose status comes from the plan's outcome `SELECT`, skipping if one exists.
-fn receipt_insert_from_outcome(ctx: &ReceiptCtx, outcome: &SqlStmt) -> SqlStmt {
-    let insert_sql = format!(
-        "INSERT INTO db_atomic_receipts (\
-            operation_id, operation_kind, request_hash, status, payload, created_at, expires_at\
-         ) SELECT ?, ?, ?, o.status, NULL, ?, ? FROM ({}) o \
-         WHERE NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)",
-        outcome.0
-    );
-    let mut params = vec![
-        j_str(&ctx.operation_id),
-        j_str(ctx.kind),
-        j_str(&ctx.request_hash),
-        j_str(&ctx.now),
-        j_str(&ctx.expires_at),
-    ];
-    params.extend(outcome.1.clone());
-    params.push(j_str(&ctx.operation_id));
-    (insert_sql, params)
-}
-
-/// Updates an `ok` receipt with user or identity JSON when the payload is still null.
-fn receipt_payload_update(
-    ctx: &ReceiptCtx,
-    payload: PayloadKind,
-    payload_stmt: Option<SqlStmt>,
-) -> Option<SqlStmt> {
-    match payload {
-        PayloadKind::None => None,
-        PayloadKind::User { user_id } => {
-            let sql = format!(
-                "UPDATE db_atomic_receipts SET payload = ({}) \
-                 WHERE operation_id = ? AND status = '{ok}' AND payload IS NULL",
-                user_payload_json_sql(),
-                ok = atomic_status::OK,
-            );
-            Some((sql, vec![j_i64(user_id), j_str(&ctx.operation_id)]))
-        }
-        PayloadKind::Identity => {
-            let (inner_sql, inner_params) = payload_stmt?;
-            let sql = format!(
-                "UPDATE db_atomic_receipts SET payload = ({}{inner_sql})) \
-                 WHERE operation_id = ? AND status = '{ok}' AND payload IS NULL",
-                identity_payload_json_sql(),
-                ok = atomic_status::OK,
-            );
-            let mut params = inner_params;
-            params.push(j_str(&ctx.operation_id));
-            Some((sql, params))
-        }
-        PayloadKind::JsonFromPlan => {
-            let (inner_sql, inner_params) = payload_stmt?;
-            let sql = format!(
-                "UPDATE db_atomic_receipts SET payload = ({inner_sql}) \
-                 WHERE operation_id = ? AND status IN ('{ok}', '{dup}') AND payload IS NULL",
-                ok = atomic_status::OK,
-                dup = atomic_status::DUPLICATE,
-            );
-            let mut params = inner_params;
-            params.push(j_str(&ctx.operation_id));
-            Some((sql, params))
-        }
-    }
-}
-
-/// Builds the consume-once batch that copies then deletes an OIDC RP state row.
-fn wrap_consume_oidc(state_hash: &str, now: &str, ctx: &ReceiptCtx) -> AtomicPlan {
-    wrap_consume(
-        ctx,
-        "takeOidcRpState",
-        "oidc_rp_states",
-        "state_hash = ?",
-        vec![j_str(state_hash)],
-        format!("oidc:{state_hash}"),
-        "json_object(\
-            'provider_id', d.provider_id, 'pkce_verifier', d.pkce_verifier, \
-            'nonce', d.nonce, 'purpose', d.purpose, 'user_id', d.user_id)",
-        now,
-    )
-}
-
-/// Builds the consume-once batch that copies then deletes a WebAuthn challenge row.
-fn wrap_consume_webauthn(
-    challenge_id: &str,
-    kind: &str,
-    now: &str,
-    ctx: &ReceiptCtx,
-) -> AtomicPlan {
-    wrap_consume(
-        ctx,
-        "takeWebauthnChallenge",
-        "webauthn_challenges",
-        "challenge_id = ? AND kind = ?",
-        vec![j_str(challenge_id), j_str(kind)],
-        format!("webauthn:{challenge_id}:{kind}"),
-        "json_object('user_id', d.user_id, 'state_json', d.state_json)",
-        now,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-/// Copies a consume-once row into a receipt (unique `consume_key`), then deletes the source.
-fn wrap_consume(
-    ctx: &ReceiptCtx,
-    kind: &str,
-    table: &str,
-    where_sql: &str,
-    where_params: Vec<JsonValue>,
-    consume_key: String,
-    ok_json: &str,
-    now: &str,
-) -> AtomicPlan {
-    // SQLite (and D1) reject `DELETE … RETURNING` in a subquery. Copy the row
-    // into the receipt first with a unique `consume_key` so a second caller
-    // cannot also observe it, then delete the source row.
-    let insert_from_row = format!(
-        "INSERT OR IGNORE INTO db_atomic_receipts (\
-            operation_id, operation_kind, request_hash, status, payload, created_at, expires_at, consume_key\
-         ) SELECT ?, ?, ?, \
-            CASE WHEN d.expires_at <= ? THEN '{empty}' ELSE '{ok}' END, \
-            CASE WHEN d.expires_at <= ? THEN NULL ELSE {ok_json} END, \
-            ?, ?, ? \
-           FROM {table} AS d \
-          WHERE {where_sql} \
-            AND NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)",
-        empty = atomic_status::EMPTY,
-        ok = atomic_status::OK,
-    );
-    let mut from_row_params = vec![
-        j_str(&ctx.operation_id),
-        j_str(kind),
-        j_str(&ctx.request_hash),
-        j_str(now),
-        j_str(now),
-        j_str(&ctx.now),
-        j_str(&ctx.expires_at),
-        j_str(&consume_key),
-    ];
-    from_row_params.extend(where_params.clone());
-    from_row_params.push(j_str(&ctx.operation_id));
-
-    let delete_sql = format!(
-        "DELETE FROM {table} \
-         WHERE {where_sql} \
-           AND EXISTS (\
-             SELECT 1 FROM db_atomic_receipts \
-              WHERE operation_id = ? AND created_at = ?\
-           )"
-    );
-    let mut delete_params = where_params;
-    delete_params.push(j_str(&ctx.operation_id));
-    delete_params.push(j_str(&ctx.now));
-
-    let insert_empty = format!(
-        "INSERT INTO db_atomic_receipts (\
-            operation_id, operation_kind, request_hash, status, payload, created_at, expires_at, consume_key\
-         ) SELECT ?, ?, ?, '{empty}', NULL, ?, ?, NULL \
-          WHERE NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)",
-        empty = atomic_status::EMPTY,
-    );
-    let empty_params = vec![
-        j_str(&ctx.operation_id),
-        j_str(kind),
-        j_str(&ctx.request_hash),
-        j_str(&ctx.now),
-        j_str(&ctx.expires_at),
-        j_str(&ctx.operation_id),
-    ];
-    let statements = vec![
-        prune_receipts(ctx),
-        select_receipt(ctx),
-        (insert_from_row, from_row_params),
-        (delete_sql, delete_params),
-        (insert_empty, empty_params),
-        select_receipt(ctx),
-    ];
-    AtomicPlan {
-        statements,
-        outcome_index: 0,
-        payload_index: None,
-        consume_once: None,
-        receipt_select_index: Some(5),
-        prior_receipt_index: Some(1),
-        expected_hash: Some(ctx.request_hash.clone()),
-    }
-}
-
-/// Last active owner predicate. Binds `user_id` twice.
-fn last_owner_sql() -> &'static str {
-    "((SELECT role FROM users WHERE id = ?) = 'owner' \
-      AND (SELECT status FROM users WHERE id = ?) = 'active' \
-      AND (SELECT COUNT(*) FROM users WHERE role = 'owner' AND status = 'active') <= 1)"
-}
-
-/// Bind parameters for [`last_owner_sql`], which references `user_id` twice.
-fn last_owner_params(user_id: i64) -> Vec<JsonValue> {
-    vec![j_i64(user_id), j_i64(user_id)]
-}
-
-/// `WHERE` fragment that allows mutation only when the user exists and is not the last active owner.
-fn allow_mutate_sql() -> String {
-    format!(
-        "EXISTS (SELECT 1 FROM users WHERE id = ?) AND NOT {}",
-        last_owner_sql()
-    )
-}
-
-/// Bind parameters for [`allow_mutate_sql`]: user id plus the last-owner pair.
-fn allow_mutate_params(user_id: i64) -> Vec<JsonValue> {
-    let mut p = vec![j_i64(user_id)];
-    p.extend(last_owner_params(user_id));
-    p
-}
-
-/// Plans cascading deletes for a user, refusing when they are the last active owner.
-fn plan_delete_user(user_id: i64) -> AtomicPlan {
-    let mut statements = vec![
-        sql(
-            "UPDATE users SET updated_at = updated_at \
-             WHERE role = 'owner' AND status = 'active'",
-            vec![],
-        ),
-        sql(
-            &format!(
-                "SELECT CASE \
-                   WHEN NOT EXISTS (SELECT 1 FROM users WHERE id = ?) THEN '{not_found}' \
-                   WHEN {last_owner} THEN '{last_owner_st}' \
-                   ELSE '{ok}' \
-                 END AS status",
-                not_found = atomic_status::NOT_FOUND,
-                last_owner = last_owner_sql(),
-                last_owner_st = atomic_status::LAST_OWNER,
-                ok = atomic_status::OK,
-            ),
-            {
-                let mut p = vec![j_i64(user_id)];
-                p.extend(last_owner_params(user_id));
-                p
-            },
-        ),
-    ];
-    let outcome_index = 1;
-    let allow = allow_mutate_sql();
-    let allow_p = allow_mutate_params(user_id);
-
-    let identity_deletes = [
-        "DELETE FROM account_links WHERE identity_id IN \
-         (SELECT id FROM portal_identities WHERE user_id = ?) AND ",
-        "DELETE FROM title_requests WHERE identity_id IN \
-         (SELECT id FROM portal_identities WHERE user_id = ?) AND ",
-        "DELETE FROM claim_tickets WHERE identity_id IN \
-         (SELECT id FROM portal_identities WHERE user_id = ?) AND ",
-        "DELETE FROM portal_sessions WHERE identity_id IN \
-         (SELECT id FROM portal_identities WHERE user_id = ?) AND ",
-        "DELETE FROM listening_progress WHERE identity_id IN \
-         (SELECT id FROM portal_identities WHERE user_id = ?) AND ",
-        "DELETE FROM user_preferences WHERE identity_id IN \
-         (SELECT id FROM portal_identities WHERE user_id = ?) AND ",
-    ];
-    for prefix in identity_deletes {
-        let mut params = vec![j_i64(user_id)];
-        params.extend(allow_p.clone());
-        statements.push(sql(&format!("{prefix}{allow}"), params));
-    }
-
-    let mut elevated_p = vec![j_i64(user_id)];
-    elevated_p.extend(allow_p.clone());
-    statements.push(sql(
-        &format!("DELETE FROM operator_sessions WHERE elevated_from_user_id = ? AND {allow}"),
-        elevated_p,
-    ));
-
-    let mut impersonate_p = vec![j_i64(user_id)];
-    impersonate_p.extend(allow_p.clone());
-    statements.push(sql(
-        &format!(
-            "UPDATE operator_sessions SET impersonating_user_id = NULL \
-             WHERE impersonating_user_id = ? AND {allow}"
-        ),
-        impersonate_p,
-    ));
-
-    for table in [
-        "oidc_refresh_tokens",
-        "oidc_auth_codes",
-        "webauthn_credentials",
-        "webauthn_challenges",
-        "oidc_rp_states",
-    ] {
-        let mut p = vec![j_i64(user_id)];
-        p.extend(allow_p.clone());
-        statements.push(sql(
-            &format!("DELETE FROM {table} WHERE user_id = ? AND {allow}"),
-            p,
-        ));
-    }
-
-    let mut totp_p = vec![j_str(&user_id.to_string())];
-    totp_p.extend(allow_p.clone());
-    statements.push(sql(
-        &format!(
-            "DELETE FROM encrypted_secrets WHERE kind = 'totp' AND account_type = 'user' \
-             AND account_id = ? AND {allow}"
-        ),
-        totp_p,
-    ));
-
-    let mut ident_p = vec![j_i64(user_id)];
-    ident_p.extend(allow_p.clone());
-    statements.push(sql(
-        &format!("DELETE FROM portal_identities WHERE user_id = ? AND {allow}"),
-        ident_p,
-    ));
-
-    let subject = format!("user:{user_id}");
-    let mut prefs_p = vec![j_str(&subject)];
-    prefs_p.extend(allow_p.clone());
-    statements.push(sql(
-        &format!("DELETE FROM user_preferences WHERE subject_key = ? AND {allow}"),
-        prefs_p,
-    ));
-
-    let mut user_p = vec![j_i64(user_id)];
-    user_p.extend(last_owner_params(user_id));
-    statements.push(sql(
-        &format!(
-            "DELETE FROM users WHERE id = ? AND NOT {}",
-            last_owner_sql()
-        ),
-        user_p,
-    ));
-
-    AtomicPlan {
-        statements,
-        outcome_index,
-        payload_index: None,
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Plans a status update that refuses disabling the last active owner and drops elevated sessions.
-fn plan_set_user_status(user_id: i64, status: &str, now: &str) -> AtomicPlan {
-    let last_owner_disable = format!("(? = 'disabled' AND {})", last_owner_sql());
-    let mut outcome_params = vec![j_i64(user_id), j_str(status)];
-    outcome_params.extend(last_owner_params(user_id));
-    let statements = vec![
-        sql(
-            "UPDATE users SET updated_at = updated_at \
-             WHERE role = 'owner' AND status = 'active'",
-            vec![],
-        ),
-        sql(
-            &format!(
-                "SELECT CASE \
-                   WHEN NOT EXISTS (SELECT 1 FROM users WHERE id = ?) THEN '{not_found}' \
-                   WHEN {last_owner_disable} THEN '{last_owner}' \
-                   ELSE '{ok}' \
-                 END AS status",
-                not_found = atomic_status::NOT_FOUND,
-                last_owner = atomic_status::LAST_OWNER,
-                ok = atomic_status::OK,
-            ),
-            outcome_params,
-        ),
-        {
-            let mut p = vec![j_str(status), j_str(now), j_i64(user_id), j_str(status)];
-            p.extend(last_owner_params(user_id));
-            sql(
-                &format!(
-                    "UPDATE users SET status = ?, updated_at = ? \
-                     WHERE id = ? AND NOT {last_owner_disable}"
-                ),
-                p,
-            )
-        },
-        sql(
-            "DELETE FROM operator_sessions \
-             WHERE elevated_from_user_id = ? AND ? = 'disabled' \
-               AND EXISTS (SELECT 1 FROM users WHERE id = ? AND status = 'disabled')",
-            vec![j_i64(user_id), j_str(status), j_i64(user_id)],
-        ),
-        sql(
-            "SELECT id, role, status, display_name, login_name, email, password_hash, \
-                    security_version, created_at, updated_at, last_seen_at, avatar_source \
-             FROM users WHERE id = ?",
-            vec![j_i64(user_id)],
-        ),
-    ];
-    AtomicPlan {
-        statements,
-        outcome_index: 1,
-        payload_index: Some(4),
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Plans a password-hash write that bumps `security_version` and clears elevated sessions.
-fn plan_set_user_password_hash(user_id: i64, password_hash: Option<&str>, now: &str) -> AtomicPlan {
-    AtomicPlan {
-        statements: vec![
-            sql(
-                &format!(
-                    "SELECT CASE \
-                       WHEN NOT EXISTS (SELECT 1 FROM users WHERE id = ?) THEN '{not_found}' \
-                       ELSE '{ok}' \
-                     END AS status",
-                    not_found = atomic_status::NOT_FOUND,
-                    ok = atomic_status::OK,
-                ),
-                vec![j_i64(user_id)],
-            ),
-            sql(
-                "UPDATE users SET password_hash = ?, security_version = security_version + 1, \
-                        updated_at = ? \
-                 WHERE id = ?",
-                vec![j_opt_str(password_hash), j_str(now), j_i64(user_id)],
-            ),
-            sql(
-                "DELETE FROM operator_sessions WHERE elevated_from_user_id = ?",
-                vec![j_i64(user_id)],
-            ),
-            sql(
-                "SELECT id, role, status, display_name, login_name, email, password_hash, \
-                        security_version, created_at, updated_at, last_seen_at, avatar_source \
-                 FROM users WHERE id = ?",
-                vec![j_i64(user_id)],
-            ),
-        ],
-        outcome_index: 0,
-        payload_index: Some(3),
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Plans TOTP confirm: replace primary secret, drop pending, set `totp_enabled`.
-#[allow(clippy::too_many_arguments)]
-fn plan_confirm_totp_enrollment(
-    user_id: i64,
-    format: &str,
-    ciphertext: &str,
-    cipher_algorithm: Option<&str>,
-    cipher_nonce: Option<&str>,
-    kdf_algorithm: Option<&str>,
-    kdf_salt: Option<&str>,
-    kdf_m_cost: Option<i64>,
-    kdf_t_cost: Option<i64>,
-    kdf_p_cost: Option<i64>,
-    created_at: &str,
-    now: &str,
-) -> AtomicPlan {
-    let account_id = user_id.to_string();
-    let created = if created_at.is_empty() {
-        now
-    } else {
-        created_at
-    };
-    AtomicPlan {
-        statements: vec![
-            sql(
-                &format!(
-                    "SELECT CASE \
-                       WHEN NOT EXISTS (SELECT 1 FROM users WHERE id = ?) THEN '{not_found}' \
-                       ELSE '{ok}' \
-                     END AS status",
-                    not_found = atomic_status::NOT_FOUND,
-                    ok = atomic_status::OK,
-                ),
-                vec![j_i64(user_id)],
-            ),
-            sql(
-                "DELETE FROM encrypted_secrets \
-                 WHERE kind = 'totp' AND provider = 'local' AND account_type = 'user' \
-                   AND account_id = ? AND name IN ('primary', 'pending')",
-                vec![j_str(&account_id)],
-            ),
-            sql(
-                "INSERT INTO encrypted_secrets (\
-                    kind, provider, account_type, account_id, name, format, ciphertext, \
-                    kdf_algorithm, kdf_salt, kdf_m_cost, kdf_t_cost, kdf_p_cost, \
-                    cipher_algorithm, cipher_nonce, created_at, updated_at\
-                 ) SELECT 'totp', 'local', 'user', ?, 'primary', ?, ?, \
-                    ?, ?, ?, ?, ?, \
-                    ?, ?, ?, ? \
-                 WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)",
-                vec![
-                    j_str(&account_id),
-                    j_str(format),
-                    j_str(ciphertext),
-                    j_opt_str(kdf_algorithm),
-                    j_opt_str(kdf_salt),
-                    j_opt_i64(kdf_m_cost),
-                    j_opt_i64(kdf_t_cost),
-                    j_opt_i64(kdf_p_cost),
-                    j_opt_str(cipher_algorithm),
-                    j_opt_str(cipher_nonce),
-                    j_str(created),
-                    j_str(now),
-                    j_i64(user_id),
-                ],
-            ),
-            sql(
-                "UPDATE users SET totp_enabled = 1, updated_at = ? WHERE id = ?",
-                vec![j_str(now), j_i64(user_id)],
-            ),
-        ],
-        outcome_index: 0,
-        payload_index: None,
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Plans TOTP disable: drop secrets and clear `totp_enabled`.
-fn plan_disable_user_totp(user_id: i64, now: &str) -> AtomicPlan {
-    let account_id = user_id.to_string();
-    AtomicPlan {
-        statements: vec![
-            sql(
-                &format!(
-                    "SELECT CASE \
-                       WHEN NOT EXISTS (SELECT 1 FROM users WHERE id = ?) THEN '{not_found}' \
-                       ELSE '{ok}' \
-                     END AS status",
-                    not_found = atomic_status::NOT_FOUND,
-                    ok = atomic_status::OK,
-                ),
-                vec![j_i64(user_id)],
-            ),
-            sql(
-                "DELETE FROM encrypted_secrets \
-                 WHERE kind = 'totp' AND provider = 'local' AND account_type = 'user' \
-                   AND account_id = ? AND name IN ('primary', 'pending')",
-                vec![j_str(&account_id)],
-            ),
-            sql(
-                "UPDATE users SET totp_enabled = 0, updated_at = ? WHERE id = ?",
-                vec![j_str(now), j_i64(user_id)],
-            ),
-        ],
-        outcome_index: 0,
-        payload_index: None,
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Plans a role change that refuses demoting the last active owner and drops elevated sessions.
-fn plan_set_user_role(user_id: i64, role: &str, now: &str) -> AtomicPlan {
-    let last_owner_demote = format!("(? != 'owner' AND {})", last_owner_sql());
-    let mut outcome_params = vec![j_i64(user_id), j_str(role)];
-    outcome_params.extend(last_owner_params(user_id));
-    AtomicPlan {
-        statements: vec![
-            sql(
-                "UPDATE users SET updated_at = updated_at \
-                 WHERE role = 'owner' AND status = 'active'",
-                vec![],
-            ),
-            sql(
-                &format!(
-                    "SELECT CASE \
-                       WHEN NOT EXISTS (SELECT 1 FROM users WHERE id = ?) THEN '{not_found}' \
-                       WHEN {last_owner_demote} THEN '{last_owner}' \
-                       ELSE '{ok}' \
-                     END AS status",
-                    not_found = atomic_status::NOT_FOUND,
-                    last_owner = atomic_status::LAST_OWNER,
-                    ok = atomic_status::OK,
-                ),
-                outcome_params,
-            ),
-            {
-                let mut p = vec![j_i64(user_id), j_i64(user_id), j_str(role), j_str(role)];
-                p.extend(last_owner_params(user_id));
-                sql(
-                    &format!(
-                        "DELETE FROM operator_sessions \
-                         WHERE elevated_from_user_id = ? \
-                           AND EXISTS (SELECT 1 FROM users WHERE id = ? AND role != ?) \
-                           AND NOT {last_owner_demote}"
-                    ),
-                    p,
-                )
-            },
-            {
-                let mut p = vec![j_str(role), j_str(now), j_i64(user_id), j_str(role)];
-                p.extend(last_owner_params(user_id));
-                sql(
-                    &format!(
-                        "UPDATE users SET role = ?, updated_at = ? \
-                         WHERE id = ? AND NOT {last_owner_demote}"
-                    ),
-                    p,
-                )
-            },
-            sql(
-                "SELECT id, role, status, display_name, login_name, email, password_hash, \
-                        security_version, created_at, updated_at, last_seen_at, avatar_source \
-                 FROM users WHERE id = ?",
-                vec![j_i64(user_id)],
-            ),
-        ],
-        outcome_index: 1,
-        payload_index: Some(4),
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-/// Marks a claim ticket redeemed, optionally sets a local password, and inserts the portal session.
-fn plan_redeem_claim(
-    token_hash: &str,
-    session_hash: &str,
-    expires_at: &str,
-    user_agent: Option<&str>,
-    device_type: Option<&str>,
-    client_label: Option<&str>,
-    new_password_hash: Option<&str>,
-    now: &str,
-) -> AtomicPlan {
-    let password_provided = i64::from(new_password_hash.is_some());
-    let token = j_str(token_hash);
-    let now_v = j_str(now);
-    AtomicPlan {
-        statements: vec![
-            sql(
-                "UPDATE claim_tickets SET redeemed_at = ? \
-                 WHERE token_hash = ? AND redeemed_at IS NULL AND expires_at > ? \
-                   AND identity_id IS NOT NULL \
-                   AND EXISTS (SELECT 1 FROM portal_identities WHERE id = claim_tickets.identity_id) \
-                   AND NOT EXISTS ( \
-                         SELECT 1 FROM portal_identities i \
-                         WHERE i.id = claim_tickets.identity_id \
-                           AND i.provider = 'local' \
-                           AND i.user_id IS NOT NULL \
-                           AND NOT EXISTS (SELECT 1 FROM users WHERE id = i.user_id) \
-                       ) \
-                   AND NOT EXISTS ( \
-                         SELECT 1 FROM portal_identities i \
-                         JOIN users u ON u.id = i.user_id \
-                         WHERE i.id = claim_tickets.identity_id \
-                           AND i.provider = 'local' \
-                           AND u.password_hash IS NULL \
-                           AND ? = 0 \
-                       )",
-                vec![
-                    now_v.clone(),
-                    token.clone(),
-                    now_v.clone(),
-                    JsonValue::from(password_provided),
-                ],
-            ),
-            sql(
-                "DELETE FROM operator_sessions \
-                 WHERE elevated_from_user_id IN ( \
-                         SELECT i.user_id FROM claim_tickets t \
-                         JOIN portal_identities i ON i.id = t.identity_id \
-                         JOIN users u ON u.id = i.user_id \
-                         WHERE t.token_hash = ? AND t.redeemed_at = ? \
-                           AND i.provider = 'local' \
-                           AND u.password_hash IS NULL \
-                           AND ? = 1 \
-                       )",
-                vec![
-                    token.clone(),
-                    now_v.clone(),
-                    JsonValue::from(password_provided),
-                ],
-            ),
-            sql(
-                "UPDATE users SET password_hash = ?, \
-                        security_version = security_version + 1, \
-                        updated_at = ? \
-                 WHERE ? = 1 AND password_hash IS NULL AND id IN ( \
-                         SELECT i.user_id FROM claim_tickets t \
-                         JOIN portal_identities i ON i.id = t.identity_id \
-                         WHERE t.token_hash = ? AND t.redeemed_at = ? \
-                           AND i.provider = 'local' AND i.user_id IS NOT NULL \
-                       )",
-                vec![
-                    j_opt_str(new_password_hash),
-                    now_v.clone(),
-                    JsonValue::from(password_provided),
-                    token.clone(),
-                    now_v.clone(),
-                ],
-            ),
-            sql(
-                "INSERT INTO portal_sessions ( \
-                    token_hash, identity_id, expires_at, created_at, last_used_at, \
-                    user_agent, device_type, client_label \
-                 ) \
-                 SELECT ?, t.identity_id, ?, ?, ?, ?, ?, ? \
-                   FROM claim_tickets t \
-                  WHERE t.token_hash = ? AND t.redeemed_at = ? AND t.identity_id IS NOT NULL",
-                vec![
-                    j_str(session_hash),
-                    j_str(expires_at),
-                    now_v.clone(),
-                    now_v.clone(),
-                    j_opt_str(user_agent),
-                    j_opt_str(device_type),
-                    j_opt_str(client_label),
-                    token.clone(),
-                    now_v.clone(),
-                ],
-            ),
-            sql(
-                &format!(
-                    "SELECT CASE \
-                       WHEN EXISTS ( \
-                              SELECT 1 FROM claim_tickets t \
-                              JOIN portal_sessions s ON s.token_hash = ? \
-                             WHERE t.token_hash = ? AND t.redeemed_at = ? \
-                           ) THEN '{ok}' \
-                       WHEN EXISTS ( \
-                              SELECT 1 FROM claim_tickets t \
-                              JOIN portal_identities i ON i.id = t.identity_id \
-                              JOIN users u ON u.id = i.user_id \
-                             WHERE t.token_hash = ? AND t.redeemed_at IS NULL \
-                               AND t.expires_at > ? \
-                               AND i.provider = 'local' \
-                               AND u.password_hash IS NULL \
-                               AND ? = 0 \
-                           ) THEN '{password_required}' \
-                       ELSE '{claim_invalid}' \
-                     END AS status",
-                    ok = atomic_status::OK,
-                    password_required = atomic_status::PASSWORD_REQUIRED,
-                    claim_invalid = atomic_status::CLAIM_INVALID,
-                ),
-                vec![
-                    j_str(session_hash),
-                    token.clone(),
-                    now_v.clone(),
-                    token.clone(),
-                    now_v.clone(),
-                    JsonValue::from(password_provided),
-                ],
-            ),
-            sql(
-                "SELECT i.id, i.provider, i.external_user_id, i.label, i.user_id, i.created_at, \
-                        i.picture_url \
-                   FROM portal_identities i \
-                   JOIN claim_tickets t ON t.identity_id = i.id \
-                  WHERE t.token_hash = ? AND t.redeemed_at = ?",
-                vec![token, now_v],
-            ),
-        ],
-        outcome_index: 4,
-        payload_index: Some(5),
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Inner `DELETE … RETURNING` for an OIDC RP state; wrapping adds the receipt copy.
-fn plan_take_oidc_rp_state(state_hash: &str, now: &str) -> AtomicPlan {
-    AtomicPlan {
-        statements: vec![sql(
-            "DELETE FROM oidc_rp_states \
-             WHERE state_hash = ? \
-             RETURNING provider_id, pkce_verifier, nonce, purpose, user_id, expires_at",
-            vec![j_str(state_hash)],
-        )],
-        outcome_index: 0,
-        payload_index: Some(0),
-        consume_once: Some((ConsumeOnceKind::OidcRpState, now.to_string())),
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Inner `DELETE … RETURNING` for a WebAuthn challenge; wrapping adds the receipt copy.
-fn plan_take_webauthn_challenge(challenge_id: &str, kind: &str, now: &str) -> AtomicPlan {
-    AtomicPlan {
-        statements: vec![sql(
-            "DELETE FROM webauthn_challenges \
-             WHERE challenge_id = ? AND kind = ? \
-             RETURNING user_id, state_json, expires_at",
-            vec![j_str(challenge_id), j_str(kind)],
-        )],
-        outcome_index: 0,
-        payload_index: Some(0),
-        consume_once: Some((ConsumeOnceKind::WebauthnChallenge, now.to_string())),
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Write-locks the singleton queue-control row for this D1 batch.
-fn plan_lock_job_queue() -> SqlStmt {
-    sql("UPDATE job_queue_control SET id = 1 WHERE id = 1", vec![])
-}
-
-/// Marks pending rows that cannot be decoded as `invalid_job` before claim.
-///
-/// `json(payload)` aborts a D1 batch. Rewriting the envelope in the same
-/// transaction keeps a malformed highest-priority row from poisoning claim.
-fn plan_mark_unreadable_pending_jobs(now: &str) -> SqlStmt {
-    sql(
-        "UPDATE jobs SET \
-            state = 'failed', \
-            kind = 'invalid', \
-            resource_class = 'network', \
-            payload = '{\"v\":1}', \
-            error_kind = 'invalid_job', \
-            error_message = CASE \
-                WHEN json_valid(payload) = 0 THEN 'malformed job payload JSON' \
-                WHEN IFNULL(CAST(json_extract(payload, '$.v') AS INTEGER), -1) != 1 \
-                    THEN 'unsupported job payload version' \
-                WHEN resource_class NOT IN ('network', 'media', 'transcription', 'indexing') \
-                    THEN 'unknown job resource class' \
-                ELSE 'unknown job kind' \
-            END, \
-            finished_at = ?, \
-            updated_at = ?, \
-            lease_owner = NULL, \
-            lease_expires_at = NULL \
-         WHERE state = 'pending' AND ( \
-            json_valid(payload) = 0 \
-            OR IFNULL(CAST(json_extract(payload, '$.v') AS INTEGER), -1) != 1 \
-            OR kind NOT IN ('scan', 'acquire', 'listen_sync', 'integration_scan') \
-            OR resource_class NOT IN ('network', 'media', 'transcription', 'indexing') \
-         )",
-        vec![j_str(now), j_str(now)],
-    )
-}
-
-/// Dedup + cap + insert for a durable job row.
-fn plan_enqueue_job(
-    kind: &str,
-    payload_json: &str,
-    priority: i64,
-    max_attempts: i64,
-    max_pending: i64,
-    run_after: Option<&str>,
-    now: &str,
-) -> AtomicPlan {
-    let run_after = run_after.unwrap_or(now);
-    let dedup = match kind {
-        "scan" => format!("scan:account={}", json_account_from_payload(payload_json)),
-        "acquire" => format!(
-            "acquire:title={}:account={}",
-            json_title_from_payload(payload_json),
-            json_account_from_payload(payload_json)
-        ),
-        "listen_sync" => "listen_sync".into(),
-        "integration_scan" => format!(
-            "integration_scan:id={}:force={}",
-            json_integration_from_payload(payload_json),
-            json_force_from_payload(payload_json)
-        ),
-        other => format!("{other}:unknown"),
-    };
-    AtomicPlan {
-        statements: vec![
-            plan_lock_job_queue(),
-            sql(
-                "INSERT INTO jobs (\
-                    id, kind, state, priority, resource_class, payload, progress, \
-                    attempt_count, max_attempts, run_after, lease_owner, lease_expires_at, \
-                    dedup_key, error_kind, error_message, cancel_requested, \
-                    created_at, updated_at, started_at, finished_at, lease_generation\
-                 ) SELECT ? || '-' || lower(hex(randomblob(16))), ?, 'pending', ?, 'network', ?, \
-                    NULL, 0, ?, ?, NULL, NULL, ?, NULL, NULL, 0, ?, ?, NULL, NULL, 0 \
-                 WHERE NOT EXISTS (\
-                    SELECT 1 FROM jobs WHERE dedup_key = ? AND state IN ('pending', 'running')\
-                 ) AND (SELECT COUNT(*) FROM jobs WHERE state IN ('pending', 'running')) < ?",
-                vec![
-                    j_str(kind),
-                    j_str(kind),
-                    j_i64(priority),
-                    j_str(payload_json),
-                    j_i64(max_attempts.max(1)),
-                    j_str(run_after),
-                    j_str(&dedup),
-                    j_str(now),
-                    j_str(now),
-                    j_str(&dedup),
-                    j_i64(max_pending.max(0)),
-                ],
-            ),
-            sql(
-                "SELECT CASE \
-                    WHEN EXISTS (SELECT 1 FROM jobs WHERE dedup_key = ? AND state IN ('pending','running') \
-                         AND created_at = ?) THEN 'ok' \
-                    WHEN EXISTS (SELECT 1 FROM jobs WHERE dedup_key = ? AND state IN ('pending','running')) \
-                         THEN 'duplicate' \
-                    ELSE 'queueFull' END AS status",
-                vec![j_str(&dedup), j_str(now), j_str(&dedup)],
-            ),
-            sql(
-                "SELECT json_object('id', id) AS payload FROM jobs \
-                 WHERE dedup_key = ? AND state IN ('pending','running') \
-                 ORDER BY created_at ASC LIMIT 1",
-                vec![j_str(&dedup)],
-            ),
-        ],
-        outcome_index: 2,
-        payload_index: Some(3),
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Conditional claim of the next pending job in `resource_class`.
-fn plan_claim_next_job(
-    resource_class: &str,
-    owner: &str,
-    lease_secs: i64,
-    now: &str,
-) -> AtomicPlan {
-    let expires = chrono::DateTime::parse_from_rfc3339(now)
-        .map(|dt| (dt + chrono::Duration::seconds(lease_secs.max(5))).to_rfc3339())
-        .unwrap_or_else(|_| now.to_string());
-    AtomicPlan {
-        statements: vec![
-            plan_mark_unreadable_pending_jobs(now),
-            sql(
-                "UPDATE jobs SET \
-                    state = 'running', \
-                    attempt_count = attempt_count + 1, \
-                    lease_owner = ?, \
-                    lease_expires_at = ?, \
-                    lease_generation = lease_generation + 1, \
-                    started_at = COALESCE(started_at, ?), \
-                    updated_at = ?, \
-                    error_kind = NULL, \
-                    error_message = NULL \
-                 WHERE id = (\
-                    SELECT id FROM jobs \
-                     WHERE resource_class = ? AND state = 'pending' AND run_after <= ? \
-                       AND cancel_requested = 0 \
-                       AND json_valid(payload) = 1 \
-                       AND IFNULL(CAST(json_extract(payload, '$.v') AS INTEGER), -1) = 1 \
-                       AND kind IN ('scan', 'acquire', 'listen_sync', 'integration_scan') \
-                       AND resource_class IN ('network', 'media', 'transcription', 'indexing') \
-                     ORDER BY priority DESC, created_at ASC LIMIT 1\
-                 ) AND state = 'pending'",
-                vec![
-                    j_str(owner),
-                    j_str(&expires),
-                    j_str(now),
-                    j_str(now),
-                    j_str(resource_class),
-                    j_str(now),
-                ],
-            ),
-            sql(
-                "SELECT CASE WHEN EXISTS (\
-                    SELECT 1 FROM jobs WHERE lease_owner = ? AND state = 'running' AND updated_at = ?\
-                 ) THEN 'ok' ELSE 'empty' END AS status",
-                vec![j_str(owner), j_str(now)],
-            ),
-            sql(
-                "SELECT json_object(\
-                    'id', id, 'kind', kind, 'state', state, 'priority', priority, \
-                    'resource_class', resource_class, 'payload', json(payload), \
-                    'progress', progress, 'attempt_count', attempt_count, \
-                    'max_attempts', max_attempts, 'run_after', run_after, \
-                    'lease_owner', lease_owner, 'lease_expires_at', lease_expires_at, \
-                    'dedup_key', dedup_key, 'error_kind', error_kind, \
-                    'error_message', error_message, \
-                    'cancel_requested', json(CASE WHEN cancel_requested != 0 THEN 'true' ELSE 'false' END), \
-                    'created_at', created_at, 'updated_at', updated_at, \
-                    'started_at', started_at, 'finished_at', finished_at, \
-                    'lease_generation', lease_generation\
-                 ) AS payload FROM jobs \
-                 WHERE lease_owner = ? AND state = 'running' AND updated_at = ? \
-                 ORDER BY started_at DESC LIMIT 1",
-                vec![j_str(owner), j_str(now)],
-            ),
-        ],
-        outcome_index: 2,
-        payload_index: Some(3),
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Reserve scratch bytes when the sum of reservations stays at or under the quota.
-fn plan_reserve_job_temp(
-    job_id: &str,
-    path: &str,
-    reserved_bytes: i64,
-    quota_bytes: i64,
-    now: &str,
-) -> AtomicPlan {
-    AtomicPlan {
-        statements: vec![
-            plan_lock_job_queue(),
-            sql(
-                "INSERT OR IGNORE INTO job_temp_paths (job_id, path, created_at, reserved_bytes) \
-                 VALUES (?, ?, ?, 0)",
-                vec![j_str(job_id), j_str(path), j_str(now)],
-            ),
-            sql(
-                "UPDATE job_temp_paths SET reserved_bytes = ? \
-                 WHERE job_id = ? AND path = ? \
-                   AND (SELECT COALESCE(SUM(reserved_bytes), 0) FROM job_temp_paths) \
-                       - reserved_bytes + ? <= ?",
-                vec![
-                    j_i64(reserved_bytes),
-                    j_str(job_id),
-                    j_str(path),
-                    j_i64(reserved_bytes),
-                    j_i64(quota_bytes),
-                ],
-            ),
-            sql(
-                "SELECT CASE WHEN EXISTS (\
-                    SELECT 1 FROM job_temp_paths WHERE job_id = ? AND path = ? AND reserved_bytes = ?\
-                 ) THEN 'ok' ELSE 'notFound' END AS status",
-                vec![j_str(job_id), j_str(path), j_i64(reserved_bytes)],
-            ),
-        ],
-        outcome_index: 3,
-        payload_index: None,
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Insert a domain event unless `(account_id, source, event_type, dedup_key)` already exists.
-#[allow(clippy::too_many_arguments)]
-fn plan_publish_domain_event(
-    id: &str,
-    event_type: &str,
-    schema_version: i64,
-    account_id: &str,
-    source: &str,
-    correlation_id: &str,
-    causation_id: &str,
-    dedup_key: &str,
-    payload: &str,
-    ordering_key: &str,
-    now: &str,
-) -> AtomicPlan {
-    AtomicPlan {
-        statements: vec![
-            sql(
-                "INSERT INTO domain_events (\
-                    id, event_type, schema_version, occurred_at, account_id, source, \
-                    correlation_id, causation_id, dedup_key, payload, ordering_key, \
-                    dispatch_state, created_at, wake_pending\
-                 ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1 \
-                 WHERE NOT EXISTS (\
-                    SELECT 1 FROM domain_events \
-                    WHERE account_id = ? AND source = ? AND event_type = ? AND dedup_key = ?\
-                 )",
-                vec![
-                    j_str(id),
-                    j_str(event_type),
-                    j_i64(schema_version.max(1)),
-                    j_str(now),
-                    j_str(account_id),
-                    j_str(source),
-                    j_str(correlation_id),
-                    j_str(causation_id),
-                    j_str(dedup_key),
-                    j_str(payload),
-                    j_str(ordering_key),
-                    j_str(now),
-                    j_str(account_id),
-                    j_str(source),
-                    j_str(event_type),
-                    j_str(dedup_key),
-                ],
-            ),
-            sql(
-                "SELECT CASE \
-                    WHEN EXISTS (SELECT 1 FROM domain_events WHERE id = ?) THEN 'ok' \
-                    WHEN EXISTS (SELECT 1 FROM domain_events \
-                         WHERE account_id = ? AND source = ? AND event_type = ? AND dedup_key = ?) \
-                         THEN 'duplicate' \
-                    ELSE 'notFound' END AS status",
-                vec![
-                    j_str(id),
-                    j_str(account_id),
-                    j_str(source),
-                    j_str(event_type),
-                    j_str(dedup_key),
-                ],
-            ),
-            sql(
-                "SELECT json_object('id', id) AS payload FROM domain_events \
-                 WHERE account_id = ? AND source = ? AND event_type = ? AND dedup_key = ? LIMIT 1",
-                vec![
-                    j_str(account_id),
-                    j_str(source),
-                    j_str(event_type),
-                    j_str(dedup_key),
-                ],
-            ),
-        ],
-        outcome_index: 1,
-        payload_index: Some(2),
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Update a book and optionally insert `book_acquired` in the same batch.
-#[allow(clippy::too_many_arguments)]
-fn plan_set_acquire_status(
-    book_uuid: &str,
-    status: &str,
-    storage_key: Option<&str>,
-    error_message: Option<&str>,
-    event_id: &str,
-    event_type: &str,
-    schema_version: i64,
-    event_account_id: &str,
-    source: &str,
-    correlation_id: &str,
-    causation_id: &str,
-    dedup_key: &str,
-    payload: &str,
-    ordering_key: &str,
-    now: &str,
-) -> AtomicPlan {
-    AtomicPlan {
-        statements: vec![
-            sql(
-                "UPDATE books SET acquire_status = ?, storage_key = ?, error_message = ?, updated_at = ? \
-                 WHERE uuid = ?",
-                vec![
-                    j_str(status),
-                    j_opt_str(storage_key),
-                    j_opt_str(error_message),
-                    j_str(now),
-                    j_str(book_uuid),
-                ],
-            ),
-            sql(
-                "INSERT INTO domain_events (\
-                    id, event_type, schema_version, occurred_at, account_id, source, \
-                    correlation_id, causation_id, dedup_key, payload, ordering_key, \
-                    dispatch_state, created_at, wake_pending\
-                 ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1 \
-                 WHERE ? != '' AND NOT EXISTS (\
-                    SELECT 1 FROM domain_events \
-                    WHERE account_id = ? AND source = ? AND event_type = ? AND dedup_key = ?\
-                 ) AND EXISTS (SELECT 1 FROM books WHERE uuid = ?)",
-                vec![
-                    j_str(event_id),
-                    j_str(event_type),
-                    j_i64(schema_version.max(1)),
-                    j_str(now),
-                    j_str(event_account_id),
-                    j_str(source),
-                    j_str(correlation_id),
-                    j_str(causation_id),
-                    j_str(dedup_key),
-                    j_str(payload),
-                    j_str(ordering_key),
-                    j_str(now),
-                    j_str(event_type),
-                    j_str(event_account_id),
-                    j_str(source),
-                    j_str(event_type),
-                    j_str(dedup_key),
-                    j_str(book_uuid),
-                ],
-            ),
-            sql(
-                "SELECT CASE WHEN EXISTS (SELECT 1 FROM books WHERE uuid = ?) \
-                    THEN 'ok' ELSE 'notFound' END AS status",
-                vec![j_str(book_uuid)],
-            ),
-        ],
-        outcome_index: 2,
-        payload_index: None,
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Create deliveries from a JSON subscriber array and mark the event dispatched.
-fn plan_dispatch_event_deliveries(event_id: &str, subscribers_json: &str, now: &str) -> AtomicPlan {
-    AtomicPlan {
-        statements: vec![
-            sql(
-                "INSERT OR IGNORE INTO event_deliveries (\
-                    id, event_id, plugin_id, idempotency_key, state, attempt_count, max_attempts, \
-                    lease_owner, lease_expires_at, lease_generation, run_after, invocation_sequence, \
-                    resume_pending, checkpoint_json, checkpoint_schema_version, ordering_key, \
-                    outcome, error_message, created_at, updated_at, cancel_requested, resource_class, \
-                    wake_event_type, wake_filter_json, wake_grants_json\
-                 ) SELECT \
-                    ? || ':' || json_extract(j.value, '$.pluginId'), \
-                    ?, \
-                    json_extract(j.value, '$.pluginId'), \
-                    ? || ':' || json_extract(j.value, '$.pluginId'), \
-                    'pending', 0, 8, NULL, NULL, 0, ?, 0, 0, NULL, 0, \
-                    COALESCE((SELECT ordering_key FROM domain_events WHERE id = ?), ''), \
-                    NULL, NULL, ?, ?, 0, \
-                    COALESCE(\
-                        json_extract(j.value, '$.resourceClass'), \
-                        json_extract(j.value, '$.resource_class'), \
-                        'network'\
-                    ), \
-                    '', '', '' \
-                 FROM json_each(?) AS j \
-                 WHERE json_extract(j.value, '$.pluginId') IS NOT NULL \
-                   AND COALESCE(\
-                        json_extract(j.value, '$.resourceClass'), \
-                        json_extract(j.value, '$.resource_class'), \
-                        'network'\
-                   ) = 'network' \
-                   AND EXISTS (SELECT 1 FROM domain_events WHERE id = ?)",
-                vec![
-                    j_str(event_id),
-                    j_str(event_id),
-                    j_str(event_id),
-                    j_str(now),
-                    j_str(event_id),
-                    j_str(now),
-                    j_str(now),
-                    j_str(subscribers_json),
-                    j_str(event_id),
-                ],
-            ),
-            sql(
-                "INSERT OR IGNORE INTO event_outbox_stats (\
-                    id, retries_total, suspensions_total, dead_letters_total, \
-                    dispatch_latency_ms_sum, dispatch_count, handler_latency_ms_sum, handler_count\
-                 ) SELECT 1, 0, 0, 0, 0, 0, 0, 0 WHERE 1",
-                vec![],
-            ),
-            sql(
-                "UPDATE event_outbox_stats SET \
-                    dispatch_count = dispatch_count + 1, \
-                    dispatch_latency_ms_sum = dispatch_latency_ms_sum + MAX(0, \
-                        CAST((julianday(?) - julianday((SELECT created_at FROM domain_events WHERE id = ?))) * 86400000 AS INTEGER)\
-                    ) \
-                 WHERE id = 1 AND EXISTS (\
-                    SELECT 1 FROM domain_events WHERE id = ? AND dispatch_state = 'pending'\
-                 )",
-                vec![j_str(now), j_str(event_id), j_str(event_id)],
-            ),
-            sql(
-                "UPDATE domain_events SET dispatch_state = 'dispatched' \
-                 WHERE id = ? AND dispatch_state = 'pending'",
-                vec![j_str(event_id)],
-            ),
-            sql(
-                "SELECT CASE WHEN EXISTS (SELECT 1 FROM domain_events WHERE id = ?) \
-                    THEN 'ok' ELSE 'notFound' END AS status",
-                vec![j_str(event_id)],
-            ),
-            sql(
-                "SELECT json_object('created', \
-                    (SELECT COUNT(*) FROM event_deliveries WHERE event_id = ?)) AS payload",
-                vec![j_str(event_id)],
-            ),
-        ],
-        outcome_index: 4,
-        payload_index: Some(5),
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Conditional claim of the next pending event delivery.
-fn plan_claim_next_event_delivery(
-    owner: &str,
-    lease_secs: i64,
-    plugin_ids_json: &str,
-    max_in_flight: i64,
-    now: &str,
-) -> AtomicPlan {
-    let expires = chrono::DateTime::parse_from_rfc3339(now)
-        .map(|dt| (dt + chrono::Duration::seconds(lease_secs.max(5))).to_rfc3339())
-        .unwrap_or_else(|_| now.to_string());
-    let ids_json = if plugin_ids_json.trim().is_empty() {
-        "[]"
-    } else {
-        plugin_ids_json
-    };
-    AtomicPlan {
-        statements: vec![
-            sql(
-                "UPDATE event_deliveries SET \
-                    state = 'rejected', \
-                    outcome = 'reject', \
-                    error_message = 'unknown event resource class `' || resource_class || '`', \
-                    updated_at = ? \
-                 WHERE id IN (\
-                    SELECT id FROM event_deliveries \
-                    WHERE state = 'pending' \
-                      AND COALESCE(resource_class, 'network') != 'network' \
-                      AND COALESCE(resource_class, '') != '' \
-                    LIMIT 32\
-                 )",
-                vec![j_str(now)],
-            ),
-            sql(
-                "UPDATE event_deliveries SET \
-                    state = 'running', \
-                    attempt_count = CASE WHEN resume_pending = 1 THEN MAX(attempt_count, 1) ELSE attempt_count + 1 END, \
-                    resume_pending = 0, \
-                    lease_owner = ?, \
-                    lease_expires_at = ?, \
-                    lease_generation = lease_generation + 1, \
-                    updated_at = ? \
-                 WHERE id = (\
-                    SELECT d.id FROM event_deliveries d \
-                    WHERE d.state = 'pending' AND d.run_after <= ? \
-                      AND d.plugin_id IN (SELECT value FROM json_each(?)) \
-                      AND COALESCE(d.resource_class, 'network') = 'network' \
-                      AND NOT EXISTS (\
-                        SELECT 1 FROM event_deliveries earlier \
-                        WHERE earlier.plugin_id = d.plugin_id \
-                          AND earlier.ordering_key = d.ordering_key \
-                          AND earlier.ordering_key != '' \
-                          AND earlier.created_at < d.created_at \
-                          AND earlier.state IN ('pending', 'running')\
-                      ) \
-                      AND ( \
-                        SELECT COUNT(*) FROM event_deliveries running \
-                        WHERE running.plugin_id = d.plugin_id \
-                          AND running.state = 'running' \
-                          AND COALESCE(running.resource_class, 'network') = COALESCE(d.resource_class, 'network') \
-                      ) < ? \
-                    ORDER BY d.created_at ASC LIMIT 1\
-                 ) AND state = 'pending'",
-                vec![
-                    j_str(owner),
-                    j_str(&expires),
-                    j_str(now),
-                    j_str(now),
-                    j_str(ids_json),
-                    j_i64(max_in_flight.max(0)),
-                ],
-            ),
-            sql(
-                "SELECT CASE WHEN EXISTS (\
-                    SELECT 1 FROM event_deliveries WHERE lease_owner = ? AND state = 'running' \
-                    AND updated_at = ?\
-                 ) THEN 'ok' ELSE 'empty' END AS status",
-                vec![j_str(owner), j_str(now)],
-            ),
-            sql(
-                "SELECT json_object(\
-                    'id', id, 'event_id', event_id, 'plugin_id', plugin_id, \
-                    'idempotency_key', idempotency_key, 'state', state, \
-                    'attempt_count', attempt_count, 'max_attempts', max_attempts, \
-                    'lease_owner', lease_owner, 'lease_expires_at', lease_expires_at, \
-                    'lease_generation', lease_generation, 'run_after', run_after, \
-                    'invocation_sequence', invocation_sequence, \
-                    'resume_pending', json(CASE WHEN resume_pending != 0 THEN 'true' ELSE 'false' END), \
-                    'checkpoint_json', checkpoint_json, \
-                    'checkpoint_schema_version', checkpoint_schema_version, \
-                    'ordering_key', ordering_key, 'outcome', outcome, \
-                    'error_message', error_message, 'created_at', created_at, 'updated_at', updated_at, \
-                    'cancel_requested', json(CASE WHEN cancel_requested != 0 THEN 'true' ELSE 'false' END), \
-                    'resource_class', COALESCE(resource_class, 'network'), \
-                    'wake_event_type', COALESCE(wake_event_type, ''), \
-                    'wake_filter_json', COALESCE(wake_filter_json, ''), \
-                    'wake_grants_json', COALESCE(wake_grants_json, '')\
-                 ) AS payload FROM event_deliveries \
-                 WHERE lease_owner = ? AND state = 'running' AND updated_at = ? \
-                 ORDER BY lease_generation DESC LIMIT 1",
-                vec![j_str(owner), j_str(now)],
-            ),
-        ],
-        outcome_index: 2,
-        payload_index: Some(3),
-        consume_once: None,
-        receipt_select_index: None,
-        prior_receipt_index: None,
-        expected_hash: None,
-    }
-}
-
-/// Best-effort account filter from a job payload JSON string.
-fn json_account_from_payload(payload_json: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(payload_json)
-        .ok()
-        .and_then(|v| {
-            v.get("account")
-                .and_then(|a| a.as_str())
-                .map(str::to_string)
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "all".into())
-}
-
-/// Best-effort title filter from a job payload JSON string.
-fn json_title_from_payload(payload_json: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(payload_json)
-        .ok()
-        .and_then(|v| v.get("title").and_then(|a| a.as_str()).map(str::to_string))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "all".into())
-}
-
-/// Best-effort `force` flag from a job payload JSON string (`0` or `1`).
-fn json_force_from_payload(payload_json: &str) -> u8 {
-    u8::from(
-        serde_json::from_str::<serde_json::Value>(payload_json)
-            .ok()
-            .and_then(|v| v.get("force").and_then(JsonValue::as_bool))
-            .unwrap_or(false),
-    )
-}
-
-/// Best-effort integration id from a job payload JSON string.
-fn json_integration_from_payload(payload_json: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(payload_json)
-        .ok()
-        .and_then(|v| {
-            v.get("integration_id")
-                .and_then(|a| a.as_str())
-                .map(str::to_string)
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "all".into())
-}
-
-#[derive(Debug, Clone)]
-/// Rows returned by one statement in a D1 HTTP batch response.
-struct BatchStmtResult {
-    /// Result rows for this statement; empty when the statement did not return rows.
-    rows: Vec<JsonValue>,
-}
-
-/// Parses a D1 batch response and checks receipt rows match `operation_id` and statement count.
-fn parse_and_validate_batch(
-    plan: &AtomicPlan,
+/// Parses a D1 batch for a host-authored [`DbAtomicPlan`].
+fn parse_generic_batch(
+    plan: &DbAtomicPlan,
     value: &JsonValue,
-    operation_id: &str,
-) -> std::result::Result<Vec<BatchStmtResult>, DbErr> {
-    let results = parse_batch_results(value)?;
-    if results.len() != plan.statements.len() {
+    operation_id: String,
+    started: std::time::Instant,
+) -> std::result::Result<DbPlanExecResult, DbErr> {
+    let statements = parse_batch_results(plan, value)?;
+    if statements.len() != plan.statements.len() {
         return Err(ambiguous_d1(format!(
             "expected {} statement results, got {}",
             plan.statements.len(),
-            results.len()
+            statements.len()
         )));
     }
-    if let Some(idx) = plan.prior_receipt_index {
-        if let Some(row) = results.get(idx).and_then(|r| r.rows.first()) {
-            validate_receipt_row(row, operation_id)?;
+    let cap = usize::try_from(DbCapabilities::advertised_d1().max_result_rows).unwrap_or(1_000);
+    for (i, stmt) in statements.iter().enumerate() {
+        if stmt.rows.len() > cap {
+            return Err(ambiguous_d1(format!(
+                "D1 statement {i} returned {} rows; maxResultRows is {cap}",
+                stmt.rows.len()
+            )));
         }
     }
-    if let Some(idx) = plan.receipt_select_index {
-        let Some(row) = results.get(idx).and_then(|r| r.rows.first()) else {
-            return Err(ambiguous_d1("missing final receipt row"));
-        };
-        validate_receipt_row(row, operation_id)?;
+    let db_execution_us = d1_sql_duration_us(value);
+    let result = DbPlanExecResult {
+        operation_id,
+        statements,
+        timing: Some(DbAtomicTiming {
+            attempt_elapsed_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            db_execution_us,
+            db_timing_source: db_execution_us.map(|_| "d1_sql_duration".into()),
+        }),
+    };
+    let atomic_cap =
+        usize::try_from(DbCapabilities::advertised_d1().max_atomic_result_bytes).unwrap_or(0);
+    if atomic_cap > 0 {
+        let used = serde_json::to_vec(&result)
+            .map(|b| b.len())
+            .unwrap_or(usize::MAX);
+        if used > atomic_cap {
+            return Err(ambiguous_d1(format!(
+                "atomic result is {used} bytes; maxAtomicResultBytes is {atomic_cap}"
+            )));
+        }
     }
-    Ok(results)
-}
-
-/// Reads a required non-empty string field from a receipt row, or marks the response ambiguous.
-fn required_receipt_string<'a>(
-    row: &'a JsonValue,
-    field: &str,
-) -> std::result::Result<&'a str, DbErr> {
-    row.get(field)
-        .and_then(JsonValue::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ambiguous_d1(format!("malformed receipt row: missing {field}")))
-}
-
-/// Requires `operation_id`, `request_hash`, `status`, and `created_at`, and checks the id matches.
-fn validate_receipt_row(
-    row: &JsonValue,
-    expected_operation_id: &str,
-) -> std::result::Result<(), DbErr> {
-    let op_id = required_receipt_string(row, "operation_id")?;
-    let _hash = required_receipt_string(row, "request_hash")?;
-    let _status = required_receipt_string(row, "status")?;
-    let _created = required_receipt_string(row, "created_at")?;
-    if op_id != expected_operation_id {
-        return Err(ambiguous_d1(format!(
-            "receipt operation_id {op_id} != {expected_operation_id}"
-        )));
-    }
-    Ok(())
+    Ok(result)
 }
 
 /// Parses the D1 `result` array; a `success: false` entry is a hard statement failure.
-fn parse_batch_results(value: &JsonValue) -> std::result::Result<Vec<BatchStmtResult>, DbErr> {
+fn parse_batch_results(
+    plan: &DbAtomicPlan,
+    value: &JsonValue,
+) -> std::result::Result<Vec<DbPlanStmtExecResult>, DbErr> {
     let Some(arr) = value.get("result").and_then(JsonValue::as_array) else {
         return Err(ambiguous_d1("batch response missing result array"));
     };
+    let caps = DbCapabilities::advertised_d1();
+    let row_cap = usize::try_from(caps.max_result_rows).unwrap_or(1_000);
+    let result_cap = usize::try_from(caps.max_result_bytes).unwrap_or(usize::MAX);
+    let cell_cap = usize::try_from(caps.max_cell_bytes).unwrap_or(usize::MAX);
     let mut out = Vec::with_capacity(arr.len());
     for (i, entry) in arr.iter().enumerate() {
         if entry.get("success").and_then(JsonValue::as_bool) == Some(false) {
@@ -2145,1537 +1856,433 @@ fn parse_batch_results(value: &JsonValue) -> std::result::Result<Vec<BatchStmtRe
                 "D1 batch statement {i} failed: {entry}"
             )));
         }
-        let rows = entry
+        let raw_rows = entry
             .get("results")
             .and_then(JsonValue::as_array)
-            .cloned()
-            .unwrap_or_default();
-        out.push(BatchStmtResult { rows });
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let mut rows = Vec::new();
+        let mut used = 0usize;
+        for row in raw_rows {
+            if caps.max_cell_bytes > 0 {
+                if let JsonValue::Object(map) = row {
+                    for (name, cell) in map {
+                        let n = bookclerk_db_exec::json_cell_utf8_len(cell);
+                        if n > cell_cap {
+                            return Err(ambiguous_d1(format!(
+                                "D1 statement {i} column `{name}` is {n} bytes; maxCellBytes is {}",
+                                caps.max_cell_bytes
+                            )));
+                        }
+                    }
+                }
+            }
+            if caps.max_result_bytes > 0 {
+                used = used.saturating_add(row.to_string().len());
+                if used > result_cap {
+                    return Err(ambiguous_d1(format!(
+                        "D1 statement {i} result is {used} bytes; maxResultBytes is {}",
+                        caps.max_result_bytes
+                    )));
+                }
+            }
+            rows.push(row.clone());
+            if rows.len() > row_cap {
+                break;
+            }
+        }
+        let changes = entry
+            .get("meta")
+            .and_then(|m| m.get("changes"))
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0);
+        let kind = plan
+            .statements
+            .get(i)
+            .map(|s| s.kind)
+            .unwrap_or(DbPlanStatementKind::Returning);
+        let rows_affected = match kind {
+            DbPlanStatementKind::Select => 0,
+            DbPlanStatementKind::Returning => u64::try_from(rows.len()).unwrap_or(u64::MAX),
+            DbPlanStatementKind::Execute => changes,
+        };
+        out.push(DbPlanStmtExecResult {
+            rows,
+            rows_affected,
+        });
     }
     Ok(out)
-}
-
-/// Maps batch rows onto a [`DbAtomicResult`], preferring a prior or final receipt when present.
-fn interpret_atomic(plan: &AtomicPlan, results: &[BatchStmtResult]) -> DbAtomicResult {
-    if let Some(idx) = plan.prior_receipt_index {
-        if let Some(row) = results.get(idx).and_then(|r| r.rows.first()) {
-            return interpret_receipt(Some(row), plan.expected_hash.as_deref().unwrap_or(""), true);
-        }
-    }
-    if let Some(idx) = plan.receipt_select_index {
-        return interpret_receipt(
-            results.get(idx).and_then(|r| r.rows.first()),
-            plan.expected_hash.as_deref().unwrap_or(""),
-            false,
-        );
-    }
-    if let Some((kind, now)) = &plan.consume_once {
-        return interpret_consume_once(*kind, now, results.get(plan.outcome_index));
-    }
-    let Some(outcome) = results.get(plan.outcome_index).and_then(|r| r.rows.first()) else {
-        return DbAtomicResult::with_status(atomic_status::CLAIM_INVALID);
-    };
-    let status = outcome
-        .get("status")
-        .and_then(JsonValue::as_str)
-        .unwrap_or(atomic_status::CLAIM_INVALID);
-    if status != atomic_status::OK {
-        return DbAtomicResult::with_status(status);
-    }
-    let Some(payload_index) = plan.payload_index else {
-        return DbAtomicResult::ok_unit();
-    };
-    let Some(row) = results.get(payload_index).and_then(|r| r.rows.first()) else {
-        return DbAtomicResult::with_status(atomic_status::NOT_FOUND);
-    };
-    if row.get("provider").is_some() {
-        DbAtomicResult::ok(identity_payload(row))
-    } else {
-        DbAtomicResult::ok(user_payload(row))
-    }
-}
-
-/// Decodes a receipt row, flagging an idempotency conflict when `request_hash` differs.
-fn interpret_receipt(
-    row: Option<&JsonValue>,
-    expected_hash: &str,
-    replayed: bool,
-) -> DbAtomicResult {
-    let Some(row) = row else {
-        return DbAtomicResult::with_status(atomic_status::EMPTY);
-    };
-    let stored_hash = row
-        .get("request_hash")
-        .and_then(JsonValue::as_str)
-        .unwrap_or_default();
-    if stored_hash != expected_hash {
-        return DbAtomicResult::with_status(atomic_status::IDEMPOTENCY_CONFLICT);
-    }
-    let status = row
-        .get("status")
-        .and_then(JsonValue::as_str)
-        .unwrap_or(atomic_status::EMPTY);
-    let created_at = row
-        .get("created_at")
-        .and_then(JsonValue::as_str)
-        .map(str::to_string);
-    let mut result = if status == atomic_status::OK {
-        match decode_receipt_payload(row.get("payload")) {
-            Some(payload) => DbAtomicResult::ok(payload),
-            None => DbAtomicResult::ok_unit(),
-        }
-    } else {
-        DbAtomicResult::with_status(status)
-    };
-    result.replayed = replayed;
-    result.receipt_created_at = created_at;
-    result
-}
-
-/// Parses a receipt `payload` cell, accepting JSON objects or a JSON-encoded string.
-fn decode_receipt_payload(value: Option<&JsonValue>) -> Option<JsonValue> {
-    match value {
-        None | Some(JsonValue::Null) => None,
-        Some(JsonValue::String(s)) => serde_json::from_str(s)
-            .ok()
-            .or_else(|| Some(JsonValue::String(s.clone()))),
-        Some(other) => Some(other.clone()),
-    }
-}
-
-/// Interprets a consume-once `RETURNING` row as empty when missing or already expired.
-fn interpret_consume_once(
-    kind: ConsumeOnceKind,
-    now: &str,
-    result: Option<&BatchStmtResult>,
-) -> DbAtomicResult {
-    let Some(row) = result.and_then(|r| r.rows.first()) else {
-        return DbAtomicResult::with_status(atomic_status::EMPTY);
-    };
-    let expired = row
-        .get("expires_at")
-        .and_then(JsonValue::as_str)
-        .map(|expires_at| expires_at <= now)
-        .unwrap_or(true);
-    if expired {
-        return DbAtomicResult::with_status(atomic_status::EMPTY);
-    }
-    match kind {
-        ConsumeOnceKind::OidcRpState => DbAtomicResult::ok(oidc_rp_state_payload(row)),
-        ConsumeOnceKind::WebauthnChallenge => DbAtomicResult::ok(webauthn_challenge_payload(row)),
-    }
-}
-
-/// Guest user JSON: `has_password` is derived; the hash itself is never returned.
-fn user_payload(row: &JsonValue) -> JsonValue {
-    let has_password = match row.get("password_hash") {
-        Some(JsonValue::Null) | None => false,
-        Some(JsonValue::String(s)) => !s.is_empty(),
-        Some(_) => true,
-    };
-    json!({
-        "id": row.get("id").cloned().unwrap_or(JsonValue::Null),
-        "role": row.get("role").cloned().unwrap_or(JsonValue::Null),
-        "status": row.get("status").cloned().unwrap_or(JsonValue::Null),
-        "display_name": row.get("display_name").cloned().unwrap_or(JsonValue::Null),
-        "login_name": row.get("login_name").cloned().unwrap_or(JsonValue::Null),
-        "email": row.get("email").cloned().unwrap_or(JsonValue::Null),
-        "has_password": has_password,
-        "security_version": row.get("security_version").cloned().unwrap_or(JsonValue::from(0)),
-        "created_at": row.get("created_at").cloned().unwrap_or(JsonValue::Null),
-        "updated_at": row.get("updated_at").cloned().unwrap_or(JsonValue::Null),
-        "last_seen_at": row.get("last_seen_at").cloned().unwrap_or(JsonValue::Null),
-        "avatar_source": row.get("avatar_source").cloned().unwrap_or(JsonValue::Null),
-    })
-}
-
-/// Guest portal-identity JSON after a successful claim redeem.
-fn identity_payload(row: &JsonValue) -> JsonValue {
-    json!({
-        "id": row.get("id").cloned().unwrap_or(JsonValue::Null),
-        "provider": row.get("provider").cloned().unwrap_or(JsonValue::Null),
-        "external_user_id": row.get("external_user_id").cloned().unwrap_or(JsonValue::Null),
-        "label": row.get("label").cloned().unwrap_or(JsonValue::Null),
-        "user_id": row.get("user_id").cloned().unwrap_or(JsonValue::Null),
-        "created_at": row.get("created_at").cloned().unwrap_or(JsonValue::Null),
-        "picture_url": row.get("picture_url").cloned().unwrap_or(JsonValue::Null),
-    })
-}
-
-/// Guest OIDC RP-state JSON (provider, PKCE verifier, nonce, purpose, user).
-fn oidc_rp_state_payload(row: &JsonValue) -> JsonValue {
-    json!({
-        "provider_id": row.get("provider_id").cloned().unwrap_or(JsonValue::Null),
-        "pkce_verifier": row.get("pkce_verifier").cloned().unwrap_or(JsonValue::Null),
-        "nonce": row.get("nonce").cloned().unwrap_or(JsonValue::Null),
-        "purpose": row.get("purpose").cloned().unwrap_or(JsonValue::Null),
-        "user_id": row.get("user_id").cloned().unwrap_or(JsonValue::Null),
-    })
-}
-
-/// Guest WebAuthn challenge JSON (`user_id` plus opaque `state_json`).
-fn webauthn_challenge_payload(row: &JsonValue) -> JsonValue {
-    json!({
-        "user_id": row.get("user_id").cloned().unwrap_or(JsonValue::Null),
-        "state_json": row.get("state_json").cloned().unwrap_or(JsonValue::Null),
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bookclerk_plugin_sdk::{atomic_status, DbAtomicParams, DbAtomicRequest};
-    use rusqlite::Connection;
+    use serde_json::json;
 
-    fn migrate(conn: &Connection) {
-        for sql in bookclerk_library::migrations::migration_sql() {
-            conn.execute_batch(sql).unwrap();
-        }
-    }
-
-    fn json_to_rusqlite(v: &JsonValue) -> rusqlite::types::Value {
-        match v {
-            JsonValue::Null => rusqlite::types::Value::Null,
-            JsonValue::Bool(b) => rusqlite::types::Value::Integer(i64::from(*b)),
-            JsonValue::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    rusqlite::types::Value::Integer(i)
-                } else if let Some(f) = n.as_f64() {
-                    rusqlite::types::Value::Real(f)
-                } else {
-                    rusqlite::types::Value::Text(n.to_string())
-                }
-            }
-            JsonValue::String(s) => rusqlite::types::Value::Text(s.clone()),
-            other => rusqlite::types::Value::Text(other.to_string()),
-        }
-    }
-
-    fn run_plan(conn: &Connection, plan: &AtomicPlan) -> DbAtomicResult {
-        let txn = conn.unchecked_transaction().unwrap();
-        let mut results = Vec::new();
-        for (sql_text, params) in &plan.statements {
-            let binds: Vec<rusqlite::types::Value> = params.iter().map(json_to_rusqlite).collect();
-            let mut stmt = txn.prepare(sql_text).unwrap();
-            let col_count = stmt.column_count();
-            let names: Vec<String> = stmt
-                .column_names()
-                .into_iter()
-                .map(str::to_string)
-                .collect();
-            let mut rows_out = Vec::new();
-            if col_count == 0 {
-                stmt.execute(rusqlite::params_from_iter(binds.iter()))
-                    .unwrap();
-            } else {
-                let mut rows = stmt
-                    .query(rusqlite::params_from_iter(binds.iter()))
-                    .unwrap();
-                while let Some(row) = rows.next().unwrap() {
-                    let mut obj = serde_json::Map::new();
-                    for (i, name) in names.iter().enumerate() {
-                        let val = row.get_ref(i).unwrap();
-                        let json = match val {
-                            rusqlite::types::ValueRef::Null => JsonValue::Null,
-                            rusqlite::types::ValueRef::Integer(n) => JsonValue::from(n),
-                            rusqlite::types::ValueRef::Real(n) => JsonValue::from(n),
-                            rusqlite::types::ValueRef::Text(t) => {
-                                JsonValue::String(String::from_utf8_lossy(t).into_owned())
-                            }
-                            rusqlite::types::ValueRef::Blob(_) => JsonValue::Null,
-                        };
-                        obj.insert(name.clone(), json);
-                    }
-                    rows_out.push(JsonValue::Object(obj));
-                }
-            }
-            results.push(BatchStmtResult { rows: rows_out });
-        }
-        txn.commit().unwrap();
-        interpret_atomic(plan, &results)
-    }
-
-    fn seed_user(conn: &Connection, role: &str, status: &str, name: &str) -> i64 {
-        conn.execute(
-            "INSERT INTO users (role, status, display_name, security_version, created_at, updated_at) \
-             VALUES (?, ?, ?, 0, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
-            rusqlite::params![role, status, name],
+    #[test]
+    fn proofs_for_expanded_keeps_original_and_skips_companions() {
+        let original = bookclerk_plugin_abi::ResolvedStatement::bound_empty("SELECT 1");
+        let create = bookclerk_plugin_abi::ResolvedStatement::bound_empty(
+            "CREATE TABLE IF NOT EXISTS t (n INTEGER)",
+        );
+        let proofs = [original, create];
+        let mapped = proofs_for_expanded(&proofs, &[1, 3]).expect("map");
+        assert_eq!(mapped.len(), 4);
+        assert!(mapped[0].is_some());
+        assert!(mapped[1].is_some());
+        assert!(mapped[2].is_none());
+        assert!(mapped[3].is_none());
+        let empty = proofs_for_expanded(&[], &[1, 2]).expect("pre-admission");
+        assert_eq!(empty.len(), 3);
+        assert!(empty.iter().all(|p| p.is_none()));
+        proofs_for_expanded(
+            &[bookclerk_plugin_abi::ResolvedStatement::bound_empty(
+                "SELECT 1",
+            )],
+            &[1, 1],
         )
-        .unwrap();
-        conn.last_insert_rowid()
+        .expect_err("misaligned sidecar");
     }
 
     #[test]
-    fn last_owner_delete_is_refused_and_keeps_the_row() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let owner = seed_user(&conn, "owner", "active", "Only");
-        let plan = plan_delete_user(owner);
-        let result = run_plan(&conn, &plan);
-        assert_eq!(result.status, atomic_status::LAST_OWNER);
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM users WHERE id = ?", [owner], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn last_owner_disable_and_demote_are_refused() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let owner = seed_user(&conn, "owner", "active", "Only");
-        let now = "2024-01-01T00:00:00Z";
-        let disable = run_plan(&conn, &plan_set_user_status(owner, "disabled", now));
-        assert_eq!(disable.status, atomic_status::LAST_OWNER);
-        let demote = run_plan(&conn, &plan_set_user_role(owner, "member", now));
-        assert_eq!(demote.status, atomic_status::LAST_OWNER);
-        let status: String = conn
-            .query_row(
-                "SELECT status || ',' || role FROM users WHERE id = ?",
-                [owner],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "active,owner");
-    }
-
-    #[test]
-    fn second_owner_can_be_removed() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let a = seed_user(&conn, "owner", "active", "A");
-        let b = seed_user(&conn, "owner", "active", "B");
-        let result = run_plan(&conn, &plan_delete_user(b));
-        assert_eq!(result.status, atomic_status::OK);
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 1);
-        let remaining: i64 = conn
-            .query_row("SELECT id FROM users", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(remaining, a);
-    }
-
-    fn seed_claim(conn: &Connection, password: Option<&str>) -> (i64, i64, String) {
-        let user = seed_user(conn, "member", "active", "Invitee");
-        if let Some(hash) = password {
-            conn.execute(
-                "UPDATE users SET password_hash = ? WHERE id = ?",
-                rusqlite::params![hash, user],
-            )
-            .unwrap();
-        }
-        conn.execute(
-            "INSERT INTO portal_identities (provider, external_user_id, label, user_id, created_at) \
-             VALUES ('local', 'invitee', 'Invitee', ?, '2020-01-01T00:00:00Z')",
-            [user],
-        )
-        .unwrap();
-        let identity = conn.last_insert_rowid();
-        let token = "ticket-hash";
-        conn.execute(
-            "INSERT INTO claim_tickets (token_hash, identity_id, expires_at, created_by, created_at) \
-             VALUES (?, ?, '2099-01-01T00:00:00Z', 'test', '2020-01-01T00:00:00Z')",
-            rusqlite::params![token, identity],
-        )
-        .unwrap();
-        (user, identity, token.to_string())
-    }
-
-    #[test]
-    fn redeem_winner_consumes_ticket_loser_is_a_no_op() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let (user, identity, token) = seed_claim(&conn, None);
-        let now = "2024-06-01T12:00:00.000000000Z";
-        let winner = plan_redeem_claim(
-            &token,
-            "session-a",
-            "2099-01-01T00:00:00Z",
-            None,
-            None,
-            None,
-            Some("argon2-hash"),
-            now,
+    fn d1_typed_statement_rejects_over_physical_sql() {
+        let sql = format!(
+            "SELECT '{}'",
+            "a".repeat(bookclerk_plugin_abi::D1_MAX_SQL_STATEMENT_BYTES as usize)
         );
-        let result = run_plan(&conn, &winner);
-        assert_eq!(result.status, atomic_status::OK);
-        assert_eq!(result.payload.as_ref().unwrap()["id"], identity);
-        let hash: String = conn
-            .query_row(
-                "SELECT password_hash FROM users WHERE id = ?",
-                [user],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(hash, "argon2-hash");
-
-        let loser = plan_redeem_claim(
-            &token,
-            "session-b",
-            "2099-01-01T00:00:00Z",
-            None,
-            None,
-            None,
-            Some("other-hash"),
-            "2024-06-01T12:00:00.000000001Z",
-        );
-        let lost = run_plan(&conn, &loser);
-        assert_eq!(lost.status, atomic_status::CLAIM_INVALID);
-        let sessions: i64 = conn
-            .query_row("SELECT COUNT(*) FROM portal_sessions", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(sessions, 1);
-        let hash2: String = conn
-            .query_row(
-                "SELECT password_hash FROM users WHERE id = ?",
-                [user],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(hash2, "argon2-hash");
-        let sessions_b: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM portal_sessions WHERE token_hash = 'session-b'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(sessions_b, 0);
-    }
-
-    #[test]
-    fn redeem_without_required_password_does_not_consume() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let (user, identity, token) = seed_claim(&conn, None);
-        let plan = plan_redeem_claim(
-            &token,
-            "session-x",
-            "2099-01-01T00:00:00Z",
-            None,
-            None,
-            None,
-            None,
-            "2024-06-01T12:00:00Z",
-        );
-        let result = run_plan(&conn, &plan);
-        assert_eq!(result.status, atomic_status::PASSWORD_REQUIRED);
-        let redeemed: Option<String> = conn
-            .query_row(
-                "SELECT redeemed_at FROM claim_tickets WHERE token_hash = ?",
-                rusqlite::params![token],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(redeemed.is_none());
-        let sessions: i64 = conn
-            .query_row("SELECT COUNT(*) FROM portal_sessions", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(sessions, 0);
-        let hash: Option<String> = conn
-            .query_row(
-                "SELECT password_hash FROM users WHERE id = ?",
-                [user],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(hash.is_none());
-        let _ = identity;
-    }
-
-    fn seed_oidc_rp_state(
-        conn: &Connection,
-        state_hash: &str,
-        expires_at: &str,
-        user_id: Option<i64>,
-    ) {
-        let nonce = ["n", "once", "-", "1"].concat();
-        conn.execute(
-            "INSERT INTO oidc_rp_states \
-             (state_hash, provider_id, pkce_verifier, nonce, purpose, user_id, expires_at, created_at) \
-             VALUES (?, 'corp', 'verifier', ?, 'login', ?, ?, '2020-01-01T00:00:00Z')",
-            rusqlite::params![state_hash, nonce, user_id, expires_at],
-        )
-        .unwrap();
-    }
-
-    fn seed_webauthn_challenge(
-        conn: &Connection,
-        challenge_id: &str,
-        kind: &str,
-        expires_at: &str,
-    ) {
-        conn.execute(
-            "INSERT INTO webauthn_challenges \
-             (challenge_id, user_id, kind, state_json, expires_at, created_at) \
-             VALUES (?, 9, ?, '{\"x\":1}', ?, '2020-01-01T00:00:00Z')",
-            rusqlite::params![challenge_id, kind, expires_at],
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn take_oidc_rp_state_returns_payload_and_deletes() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        seed_oidc_rp_state(&conn, "abc", "2099-01-01T00:00:00Z", Some(42));
-        let now = "2024-06-01T00:00:00Z";
-        let result = run_plan(&conn, &plan_take_oidc_rp_state("abc", now));
-        assert_eq!(result.status, atomic_status::OK);
-        let payload = result.payload.as_ref().unwrap();
-        assert_eq!(payload["provider_id"], "corp");
-        assert_eq!(payload["pkce_verifier"], "verifier");
-        assert_eq!(payload["nonce"], ["n", "once", "-", "1"].concat());
-        assert_eq!(payload["purpose"], "login");
-        assert_eq!(payload["user_id"], 42);
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM oidc_rp_states", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn take_oidc_rp_state_second_take_is_empty() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        seed_oidc_rp_state(&conn, "abc", "2099-01-01T00:00:00Z", None);
-        let now = "2024-06-01T00:00:00Z";
-        let first = run_plan(&conn, &plan_take_oidc_rp_state("abc", now));
-        assert_eq!(first.status, atomic_status::OK);
-        let second = run_plan(&conn, &plan_take_oidc_rp_state("abc", now));
-        assert_eq!(second.status, atomic_status::EMPTY);
-        assert!(second.payload.is_none());
-    }
-
-    #[test]
-    fn take_oidc_rp_state_expired_deletes_and_returns_empty() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        seed_oidc_rp_state(&conn, "abc", "2020-01-01T00:00:00Z", Some(1));
-        let result = run_plan(
-            &conn,
-            &plan_take_oidc_rp_state("abc", "2024-06-01T00:00:00Z"),
-        );
-        assert_eq!(result.status, atomic_status::EMPTY);
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM oidc_rp_states", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn take_webauthn_challenge_returns_payload_and_deletes() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        seed_webauthn_challenge(&conn, "chal-1", "login", "2099-01-01T00:00:00Z");
-        let result = run_plan(
-            &conn,
-            &plan_take_webauthn_challenge("chal-1", "login", "2024-06-01T00:00:00Z"),
-        );
-        assert_eq!(result.status, atomic_status::OK);
-        let payload = result.payload.as_ref().unwrap();
-        assert_eq!(payload["user_id"], 9);
-        assert_eq!(payload["state_json"], "{\"x\":1}");
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM webauthn_challenges", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn take_webauthn_challenge_wrong_kind_does_not_delete() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        seed_webauthn_challenge(&conn, "chal-1", "login", "2099-01-01T00:00:00Z");
-        let result = run_plan(
-            &conn,
-            &plan_take_webauthn_challenge("chal-1", "register", "2024-06-01T00:00:00Z"),
-        );
-        assert_eq!(result.status, atomic_status::EMPTY);
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM webauthn_challenges", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn take_webauthn_challenge_expired_deletes_and_returns_empty() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        seed_webauthn_challenge(&conn, "chal-1", "login", "2020-01-01T00:00:00Z");
-        let result = run_plan(
-            &conn,
-            &plan_take_webauthn_challenge("chal-1", "login", "2024-06-01T00:00:00Z"),
-        );
-        assert_eq!(result.status, atomic_status::EMPTY);
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM webauthn_challenges", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 0);
-    }
-
-    fn test_req(op: DbAtomicParams, id: &str) -> DbAtomicRequest {
-        DbAtomicRequest {
-            operation_id: id.to_string(),
-            operation: op,
-        }
-    }
-
-    #[test]
-    fn delete_user_removes_webauthn_and_oidc_rows() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let keep = seed_user(&conn, "owner", "active", "Keep");
-        let doomed = seed_user(&conn, "owner", "active", "Go");
-        conn.execute(
-            "INSERT INTO webauthn_credentials (user_id, credential_id, passkey_json, created_at) \
-             VALUES (?, 'cred-reuse', '{}', '2020-01-01T00:00:00Z')",
-            [doomed],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO webauthn_challenges (challenge_id, user_id, kind, state_json, expires_at, created_at) \
-             VALUES ('chal-del', ?, 'login', '{}', '2099-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
-            [doomed],
-        )
-        .unwrap();
-        let nonce = ["n", "once"].concat();
-        conn.execute(
-            "INSERT INTO oidc_rp_states \
-             (state_hash, provider_id, pkce_verifier, nonce, purpose, user_id, expires_at, created_at) \
-             VALUES ('state-del', 'corp', 'v', ?, 'elevate', ?, '2099-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
-            rusqlite::params![nonce, doomed],
-        )
-        .unwrap();
-        let result = run_plan(&conn, &plan_delete_user(doomed));
-        assert_eq!(result.status, atomic_status::OK);
-        let creds: i64 = conn
-            .query_row("SELECT COUNT(*) FROM webauthn_credentials", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        let chals: i64 = conn
-            .query_row("SELECT COUNT(*) FROM webauthn_challenges", [], |r| r.get(0))
-            .unwrap();
-        let states: i64 = conn
-            .query_row("SELECT COUNT(*) FROM oidc_rp_states", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!((creds, chals, states), (0, 0, 0));
-        let _ = keep;
-    }
-
-    #[test]
-    fn delete_user_plan_atomic_ok_replay_then_not_found() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let _keep = seed_user(&conn, "owner", "active", "Keep");
-        let doomed = seed_user(&conn, "owner", "active", "Go");
-        let now = "2024-06-01T00:00:00Z";
-        let req = test_req(DbAtomicParams::DeleteUser { user_id: doomed }, "del-1");
-        let plan = plan_atomic(&req, now).unwrap();
-        let first = run_plan(&conn, &plan);
-        assert_eq!(first.status, atomic_status::OK);
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM users WHERE id = ?", [doomed], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(n, 0);
-
-        let second = run_plan(&conn, &plan);
-        assert_eq!(second.status, atomic_status::OK);
-        assert!(second.replayed);
-
-        let again = plan_atomic(
-            &test_req(DbAtomicParams::DeleteUser { user_id: doomed }, "del-2"),
-            now,
-        )
-        .unwrap();
-        let third = run_plan(&conn, &again);
-        assert_eq!(third.status, atomic_status::NOT_FOUND);
-    }
-
-    #[test]
-    fn last_owner_delete_plan_atomic_keeps_the_row() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let owner = seed_user(&conn, "owner", "active", "Only");
-        let now = "2024-06-01T00:00:00Z";
-        let plan = plan_atomic(
-            &test_req(DbAtomicParams::DeleteUser { user_id: owner }, "del-owner"),
-            now,
-        )
-        .unwrap();
-        let result = run_plan(&conn, &plan);
-        assert_eq!(result.status, atomic_status::LAST_OWNER);
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM users WHERE id = ?", [owner], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn redeem_plan_atomic_replays_identity_after_lost_response() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let (_user, identity, token) = seed_claim(&conn, Some("already-set"));
-        let now = "2024-06-01T12:00:00Z";
-        let req = test_req(
-            DbAtomicParams::RedeemClaimTicket {
-                token_hash: token,
-                session_hash: "session-a".into(),
-                expires_at: "2099-01-01T00:00:00Z".into(),
-                user_agent: None,
-                device_type: None,
-                client_label: None,
-                new_password_hash: None,
-                password_fingerprint: None,
-            },
-            "redeem-1",
-        );
-        let plan = plan_atomic(&req, now).unwrap();
-        let first = run_plan(&conn, &plan);
-        assert_eq!(first.status, atomic_status::OK);
-        assert_eq!(first.payload.as_ref().unwrap()["id"], identity);
-        let second = run_plan(&conn, &plan);
-        assert_eq!(second.status, atomic_status::OK);
-        assert!(second.replayed);
-        assert_eq!(second.payload, first.payload);
-        let sessions: i64 = conn
-            .query_row("SELECT COUNT(*) FROM portal_sessions", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(sessions, 1);
-    }
-
-    #[test]
-    fn take_oidc_receipt_replays_after_commit() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        seed_oidc_rp_state(&conn, "abc", "2099-01-01T00:00:00Z", Some(42));
-        let now = "2024-06-01T00:00:00Z";
-        let req = test_req(
-            DbAtomicParams::TakeOidcRpState {
-                state_hash: "abc".into(),
-            },
-            "op-take-1",
-        );
-        let plan = plan_atomic(&req, now).unwrap();
-        let first = run_plan(&conn, &plan);
-        assert_eq!(first.status, atomic_status::OK);
-        assert!(!first.replayed);
-        assert_eq!(first.payload.as_ref().unwrap()["pkce_verifier"], "verifier");
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM oidc_rp_states", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 0);
-
-        let second = run_plan(&conn, &plan);
-        assert_eq!(second.status, atomic_status::OK);
-        assert!(second.replayed);
-        assert_eq!(second.payload, first.payload);
-
-        let conflict = plan_atomic(
-            &test_req(
-                DbAtomicParams::TakeOidcRpState {
-                    state_hash: "other".into(),
-                },
-                "op-take-1",
-            ),
-            now,
-        )
-        .unwrap();
-        let lost = run_plan(&conn, &conflict);
-        assert_eq!(lost.status, atomic_status::IDEMPOTENCY_CONFLICT);
-    }
-
-    fn envelope_for_plan(plan: &AtomicPlan, final_row: JsonValue) -> JsonValue {
-        let results: Vec<JsonValue> = plan
-            .statements
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
-                if Some(i) == plan.receipt_select_index {
-                    json!({ "success": true, "results": [final_row.clone()] })
-                } else {
-                    json!({ "success": true, "results": [] })
-                }
-            })
-            .collect();
-        json!({ "success": true, "result": results })
-    }
-
-    #[test]
-    fn malformed_final_receipt_row_with_correct_count_is_ambiguous() {
-        let req = test_req(
-            DbAtomicParams::TakeOidcRpState {
-                state_hash: "abc".into(),
-            },
-            "op-malformed",
-        );
-        let plan = plan_atomic(&req, "2024-06-01T00:00:00Z").unwrap();
-        let value = envelope_for_plan(
-            &plan,
-            json!({
-                "operation_id": "op-malformed",
-                "status": "ok",
-                "created_at": "2024-06-01T00:00:00Z"
-            }),
-        );
-        let err = parse_and_validate_batch(&plan, &value, &req.operation_id).unwrap_err();
-        assert!(is_ambiguous_d1(&err), "{err}");
-        assert!(err.to_string().contains("request_hash"), "{err}");
-    }
-
-    #[test]
-    fn valid_different_request_hash_is_idempotency_conflict() {
-        let req = test_req(
-            DbAtomicParams::TakeOidcRpState {
-                state_hash: "abc".into(),
-            },
-            "op-conflict",
-        );
-        let plan = plan_atomic(&req, "2024-06-01T00:00:00Z").unwrap();
-        let value = envelope_for_plan(
-            &plan,
-            json!({
-                "operation_id": "op-conflict",
-                "request_hash": "different-hash",
-                "status": "ok",
-                "created_at": "2024-06-01T00:00:00Z"
-            }),
-        );
-        let parsed = parse_and_validate_batch(&plan, &value, &req.operation_id).unwrap();
-        let result = interpret_atomic(&plan, &parsed);
-        assert_eq!(result.status, atomic_status::IDEMPOTENCY_CONFLICT);
-    }
-
-    fn seed_pending_job(conn: &Connection, id: &str, kind: &str, payload: &str, priority: i64) {
-        seed_pending_job_class(conn, id, kind, "network", payload, priority);
-    }
-
-    fn seed_pending_job_class(
-        conn: &Connection,
-        id: &str,
-        kind: &str,
-        resource_class: &str,
-        payload: &str,
-        priority: i64,
-    ) {
-        conn.execute(
-            "INSERT INTO jobs (\
-                id, kind, state, priority, resource_class, payload, progress, \
-                attempt_count, max_attempts, run_after, lease_owner, lease_expires_at, \
-                dedup_key, error_kind, error_message, cancel_requested, \
-                created_at, updated_at, started_at, finished_at, lease_generation\
-             ) VALUES (?, ?, 'pending', ?, ?, ?, NULL, 0, 3, \
-                '2020-01-01T00:00:00Z', NULL, NULL, ?, NULL, NULL, 0, \
-                '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z', NULL, NULL, 0)",
-            rusqlite::params![id, kind, priority, resource_class, payload, id],
-        )
-        .unwrap();
-    }
-
-    fn claim_row(conn: &Connection, id: &str) -> (String, String, Option<String>, Option<String>) {
-        conn.query_row(
-            "SELECT state, kind, error_kind, payload FROM jobs WHERE id = ?",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn claim_marks_malformed_json_invalid_without_aborting_batch() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        seed_pending_job(&conn, "bad-json", "scan", "{not-json", 10);
-        seed_pending_job(&conn, "good", "scan", r#"{"v":1}"#, 0);
-        let result = run_plan(
-            &conn,
-            &plan_claim_next_job("network", "worker-1", 60, "2024-06-01T00:00:00Z"),
-        );
-        assert_eq!(result.status, atomic_status::OK);
-        let (state, kind, error, payload) = claim_row(&conn, "bad-json");
-        assert_eq!(state, "failed");
-        assert_eq!(kind, "invalid");
-        assert_eq!(error.as_deref(), Some("invalid_job"));
-        assert_eq!(payload.as_deref(), Some(r#"{"v":1}"#));
-        let claimed: String = conn
-            .query_row("SELECT id FROM jobs WHERE state = 'running'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(claimed, "good");
-    }
-
-    #[test]
-    fn claim_marks_unknown_kind_and_unsupported_version() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        seed_pending_job(&conn, "bad-kind", "nope", r#"{"v":1}"#, 5);
-        seed_pending_job(&conn, "bad-ver", "scan", r#"{"v":99}"#, 4);
-        let result = run_plan(
-            &conn,
-            &plan_claim_next_job("network", "worker-1", 60, "2024-06-01T00:00:00Z"),
-        );
-        assert_eq!(result.status, atomic_status::EMPTY);
-        for id in ["bad-kind", "bad-ver"] {
-            let (state, kind, error, _) = claim_row(&conn, id);
-            assert_eq!(state, "failed");
-            assert_eq!(kind, "invalid");
-            assert_eq!(error.as_deref(), Some("invalid_job"));
-        }
-    }
-
-    #[test]
-    fn claim_marks_unknown_resource_class_and_still_claims_valid() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        seed_pending_job_class(&conn, "bad-class", "scan", "not_a_class", r#"{"v":1}"#, 10);
-        seed_pending_job(&conn, "good", "scan", r#"{"v":1}"#, 0);
-        let result = run_plan(
-            &conn,
-            &plan_claim_next_job("network", "worker-1", 60, "2024-06-01T00:00:00Z"),
-        );
-        assert_eq!(result.status, atomic_status::OK);
-        let (state, kind, error, _) = claim_row(&conn, "bad-class");
-        assert_eq!(state, "failed");
-        assert_eq!(kind, "invalid");
-        assert_eq!(error.as_deref(), Some("invalid_job"));
-        let claimed: String = conn
-            .query_row("SELECT id FROM jobs WHERE state = 'running'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(claimed, "good");
-    }
-
-    #[test]
-    fn enqueue_keeps_forced_integration_scan_distinct() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let now = "2024-06-01T00:00:00Z";
-        let normal = run_plan(
-            &conn,
-            &plan_enqueue_job(
-                "integration_scan",
-                r#"{"v":1,"integration_id":"echo"}"#,
-                0,
-                3,
-                8,
-                None,
-                now,
-            ),
-        );
-        assert_eq!(normal.status, atomic_status::OK);
-        let forced = run_plan(
-            &conn,
-            &plan_enqueue_job(
-                "integration_scan",
-                r#"{"v":1,"integration_id":"echo","force":true}"#,
-                0,
-                3,
-                8,
-                None,
-                "2024-06-01T00:00:01Z",
-            ),
-        );
-        assert_eq!(forced.status, atomic_status::OK);
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 2);
-        let again = run_plan(
-            &conn,
-            &plan_enqueue_job(
-                "integration_scan",
-                r#"{"v":1,"integration_id":"echo","force":true}"#,
-                0,
-                3,
-                8,
-                None,
-                "2024-06-01T00:00:02Z",
-            ),
-        );
-        assert_eq!(again.status, atomic_status::DUPLICATE);
-    }
-
-    fn confirm_totp_params(user_id: i64) -> DbAtomicParams {
-        DbAtomicParams::ConfirmTotpEnrollment {
-            user_id,
-            format: "sealed-v1".into(),
-            ciphertext: "b64:AA==".into(),
-            cipher_algorithm: Some("xchacha20poly1305".into()),
-            cipher_nonce: Some("b64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()),
-            kdf_algorithm: None,
-            kdf_salt: None,
-            kdf_m_cost: None,
-            kdf_t_cost: None,
-            kdf_p_cost: None,
-            created_at: "2024-06-01T00:00:00Z".into(),
-        }
-    }
-
-    fn seed_totp_secret(conn: &Connection, user_id: i64, name: &str) {
-        conn.execute(
-            "INSERT INTO encrypted_secrets (\
-                kind, provider, account_type, account_id, name, format, ciphertext, \
-                created_at, updated_at\
-             ) VALUES ('totp', 'local', 'user', ?, ?, 'sealed-v1', x'00', \
-                '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
-            rusqlite::params![user_id.to_string(), name],
-        )
-        .unwrap();
-    }
-
-    fn totp_names(conn: &Connection, user_id: i64) -> Vec<String> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT name FROM encrypted_secrets \
-                 WHERE kind = 'totp' AND account_id = ? ORDER BY name",
-            )
-            .unwrap();
-        stmt.query_map([user_id.to_string()], |row| row.get(0))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-    }
-
-    fn totp_enabled(conn: &Connection, user_id: i64) -> i64 {
-        conn.query_row(
-            "SELECT totp_enabled FROM users WHERE id = ?",
-            [user_id],
-            |row| row.get(0),
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn confirm_totp_missing_user_skips_secret_writes() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let other = seed_user(&conn, "member", "active", "Keep");
-        seed_totp_secret(&conn, other, "pending");
-        seed_totp_secret(&conn, 999, "pending");
-        let req = test_req(confirm_totp_params(999), "totp-missing");
-        let result = run_plan(&conn, &plan_atomic(&req, "2024-06-01T00:00:00Z").unwrap());
-        assert_eq!(result.status, atomic_status::NOT_FOUND);
-        assert_eq!(totp_names(&conn, 999), vec!["pending".to_string()]);
-        assert_eq!(totp_names(&conn, other), vec!["pending".to_string()]);
-    }
-
-    #[test]
-    fn confirm_totp_then_disable_round_trip_and_replay() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let user = seed_user(&conn, "member", "active", "Totp");
-        seed_totp_secret(&conn, user, "pending");
-        let now = "2024-06-01T00:00:00Z";
-        let req = test_req(confirm_totp_params(user), "totp-confirm");
-        let plan = plan_atomic(&req, now).unwrap();
-        let first = run_plan(&conn, &plan);
-        assert_eq!(first.status, atomic_status::OK);
-        assert_eq!(totp_names(&conn, user), vec!["primary".to_string()]);
-        assert_eq!(totp_enabled(&conn, user), 1);
-
-        let replay = run_plan(&conn, &plan);
-        assert_eq!(replay.status, atomic_status::OK);
-        assert!(replay.replayed);
-        assert_eq!(totp_names(&conn, user), vec!["primary".to_string()]);
-        assert_eq!(totp_enabled(&conn, user), 1);
-
-        let disable_req = test_req(
-            DbAtomicParams::DisableUserTotp { user_id: user },
-            "totp-disable",
-        );
-        let disable_plan = plan_atomic(&disable_req, now).unwrap();
-        let disabled = run_plan(&conn, &disable_plan);
-        assert_eq!(disabled.status, atomic_status::OK);
-        assert!(totp_names(&conn, user).is_empty());
-        assert_eq!(totp_enabled(&conn, user), 0);
-
-        let disable_replay = run_plan(&conn, &disable_plan);
-        assert_eq!(disable_replay.status, atomic_status::OK);
-        assert!(disable_replay.replayed);
-        assert!(totp_names(&conn, user).is_empty());
-        assert_eq!(totp_enabled(&conn, user), 0);
-    }
-
-    #[test]
-    fn disable_totp_missing_user_skips_writes() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let other = seed_user(&conn, "member", "active", "Keep");
-        seed_totp_secret(&conn, other, "primary");
-        conn.execute("UPDATE users SET totp_enabled = 1 WHERE id = ?", [other])
-            .unwrap();
-        let req = test_req(
-            DbAtomicParams::DisableUserTotp { user_id: 999 },
-            "totp-disable-missing",
-        );
-        let result = run_plan(&conn, &plan_atomic(&req, "2024-06-01T00:00:00Z").unwrap());
-        assert_eq!(result.status, atomic_status::NOT_FOUND);
-        assert_eq!(totp_names(&conn, other), vec!["primary".to_string()]);
-        assert_eq!(totp_enabled(&conn, other), 1);
-    }
-
-    #[test]
-    fn publish_dispatch_claim_event_delivery_round_trip() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let now = "2024-06-01T00:00:00Z";
-        let publish = test_req(
-            DbAtomicParams::PublishDomainEvent {
-                id: "evt-1".into(),
-                event_type: "book_acquired".into(),
-                schema_version: 1,
-                account_id: "acct".into(),
-                source: "audible".into(),
-                correlation_id: String::new(),
-                causation_id: String::new(),
-                dedup_key: "book_acquired:u1".into(),
-                payload: r#"{"titleId":"u1"}"#.into(),
-                ordering_key: "u1".into(),
-            },
-            "evt-pub",
-        );
-        let created = run_plan(&conn, &plan_atomic(&publish, now).unwrap());
-        assert_eq!(created.status, atomic_status::OK);
-        let ordering: String = conn
-            .query_row(
-                "SELECT ordering_key FROM domain_events WHERE id = 'evt-1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(ordering, "u1");
-        let source: String = conn
-            .query_row(
-                "SELECT source FROM domain_events WHERE id = 'evt-1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(source, "audible");
-        let wake_pending: i64 = conn
-            .query_row(
-                "SELECT wake_pending FROM domain_events WHERE id = 'evt-1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(wake_pending, 1);
-        let dup = run_plan(&conn, &plan_atomic(&publish, now).unwrap());
-        assert_eq!(dup.status, atomic_status::OK);
-        assert!(dup.replayed);
-
-        let dispatch = test_req(
-            DbAtomicParams::DispatchEventDeliveries {
-                event_id: "evt-1".into(),
-                subscribers_json: r#"[{"pluginId":"echo"}]"#.into(),
-            },
-            "evt-disp",
-        );
-        let dispatched = run_plan(&conn, &plan_atomic(&dispatch, now).unwrap());
-        assert_eq!(dispatched.status, atomic_status::OK);
-
-        let claim = test_req(
-            DbAtomicParams::ClaimNextEventDelivery {
-                owner: "worker-1".into(),
-                lease_secs: 60,
-                plugin_ids_json: r#"["echo"]"#.into(),
-                max_in_flight: 1,
-            },
-            "evt-claim",
-        );
-        let claimed = run_plan(&conn, &plan_atomic(&claim, now).unwrap());
-        assert_eq!(claimed.status, atomic_status::OK);
-        let payload = claimed.payload.expect("claim payload");
-        assert_eq!(payload["plugin_id"], "echo");
-        assert_eq!(payload["state"], "running");
-
-        let empty = test_req(
-            DbAtomicParams::ClaimNextEventDelivery {
-                owner: "worker-empty".into(),
-                lease_secs: 60,
-                plugin_ids_json: "[]".into(),
-                max_in_flight: 1,
-            },
-            "evt-claim-empty",
-        );
-        let skipped = run_plan(&conn, &plan_atomic(&empty, now).unwrap());
-        assert_eq!(skipped.status, atomic_status::EMPTY);
-    }
-
-    #[test]
-    fn publish_domain_event_namespaces_dedup_by_account_and_source() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let now = "2024-06-01T00:00:00Z";
-        let a = test_req(
-            DbAtomicParams::PublishDomainEvent {
-                id: "evt-ns-a".into(),
-                event_type: "book_acquired".into(),
-                schema_version: 1,
-                account_id: "acct-a".into(),
-                source: String::new(),
-                correlation_id: String::new(),
-                causation_id: String::new(),
-                dedup_key: "book_acquired:ns".into(),
-                payload: "{}".into(),
-                ordering_key: String::new(),
-            },
-            "evt-ns-a",
-        );
-        assert_eq!(
-            run_plan(&conn, &plan_atomic(&a, now).unwrap()).status,
-            atomic_status::OK
-        );
-        let b = test_req(
-            DbAtomicParams::PublishDomainEvent {
-                id: "evt-ns-b".into(),
-                event_type: "book_acquired".into(),
-                schema_version: 1,
-                account_id: "acct-b".into(),
-                source: String::new(),
-                correlation_id: String::new(),
-                causation_id: String::new(),
-                dedup_key: "book_acquired:ns".into(),
-                payload: "{}".into(),
-                ordering_key: String::new(),
-            },
-            "evt-ns-b",
-        );
-        assert_eq!(
-            run_plan(&conn, &plan_atomic(&b, now).unwrap()).status,
-            atomic_status::OK
-        );
-        let c = test_req(
-            DbAtomicParams::PublishDomainEvent {
-                id: "evt-ns-src".into(),
-                event_type: "book_acquired".into(),
-                schema_version: 1,
-                account_id: "acct-a".into(),
-                source: "audible".into(),
-                correlation_id: String::new(),
-                causation_id: String::new(),
-                dedup_key: "book_acquired:ns".into(),
-                payload: "{}".into(),
-                ordering_key: String::new(),
-            },
-            "evt-ns-src",
-        );
-        assert_eq!(
-            run_plan(&conn, &plan_atomic(&c, now).unwrap()).status,
-            atomic_status::OK
-        );
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM domain_events", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 3);
-        let dup = test_req(
-            DbAtomicParams::PublishDomainEvent {
-                id: "evt-ns-dup".into(),
-                event_type: "book_acquired".into(),
-                schema_version: 1,
-                account_id: "acct-a".into(),
-                source: String::new(),
-                correlation_id: String::new(),
-                causation_id: String::new(),
-                dedup_key: "book_acquired:ns".into(),
-                payload: "{}".into(),
-                ordering_key: String::new(),
-            },
-            "evt-ns-dup",
-        );
-        assert_eq!(
-            run_plan(&conn, &plan_atomic(&dup, now).unwrap()).status,
-            atomic_status::DUPLICATE
-        );
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM domain_events", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 3);
-    }
-
-    #[test]
-    fn dispatch_late_join_second_plugin_does_not_idempotency_conflict() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let now = "2024-06-01T00:00:00Z";
-        let publish = test_req(
-            DbAtomicParams::PublishDomainEvent {
-                id: "evt-late".into(),
-                event_type: "book_acquired".into(),
-                schema_version: 1,
-                account_id: "acct".into(),
-                source: String::new(),
-                correlation_id: String::new(),
-                causation_id: String::new(),
-                dedup_key: "book_acquired:late".into(),
-                payload: r#"{"titleId":"late"}"#.into(),
-                ordering_key: "late".into(),
-            },
-            "evt-late-pub",
-        );
-        assert_eq!(
-            run_plan(&conn, &plan_atomic(&publish, now).unwrap()).status,
-            atomic_status::OK
-        );
-
-        let first = test_req(
-            DbAtomicParams::DispatchEventDeliveries {
-                event_id: "evt-late".into(),
-                subscribers_json: r#"[{"pluginId":"echo"}]"#.into(),
-            },
-            "reconcile-evt-late-echo",
-        );
-        let a = run_plan(&conn, &plan_atomic(&first, now).unwrap());
-        assert_eq!(a.status, atomic_status::OK);
-        assert_ne!(a.status, atomic_status::IDEMPOTENCY_CONFLICT);
-
-        let second = test_req(
-            DbAtomicParams::DispatchEventDeliveries {
-                event_id: "evt-late".into(),
-                subscribers_json: r#"[{"pluginId":"echo"},{"pluginId":"audiobookshelf"}]"#.into(),
-            },
-            "reconcile-evt-late-audiobookshelf",
-        );
-        let ab = run_plan(&conn, &plan_atomic(&second, now).unwrap());
-        assert_eq!(ab.status, atomic_status::OK);
-        assert_ne!(ab.status, atomic_status::IDEMPOTENCY_CONFLICT);
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM event_deliveries WHERE event_id = 'evt-late'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 2);
-        let plugins: Vec<String> = {
-            let mut stmt = conn
-                .prepare("SELECT plugin_id FROM event_deliveries WHERE event_id = 'evt-late' ORDER BY plugin_id")
-                .unwrap();
-            stmt.query_map([], |r| r.get(0))
-                .unwrap()
-                .map(|r| r.unwrap())
-                .collect()
-        };
-        assert_eq!(
-            plugins,
-            vec!["audiobookshelf".to_string(), "echo".to_string()]
-        );
-    }
-
-    #[test]
-    fn claim_respects_per_plugin_in_flight_cap() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let now = "2024-06-01T00:00:00Z";
-        for (id, key) in [("evt-cap-a", "ka"), ("evt-cap-b", "kb")] {
-            let publish = test_req(
-                DbAtomicParams::PublishDomainEvent {
-                    id: id.into(),
-                    event_type: "book_acquired".into(),
-                    schema_version: 1,
-                    account_id: "acct".into(),
-                    source: String::new(),
-                    correlation_id: String::new(),
-                    causation_id: String::new(),
-                    dedup_key: format!("book_acquired:{key}"),
-                    payload: "{}".into(),
-                    ordering_key: key.into(),
-                },
-                &format!("{id}-pub"),
-            );
-            assert_eq!(
-                run_plan(&conn, &plan_atomic(&publish, now).unwrap()).status,
-                atomic_status::OK
-            );
-            let dispatch = test_req(
-                DbAtomicParams::DispatchEventDeliveries {
-                    event_id: id.into(),
-                    subscribers_json: r#"[{"pluginId":"echo"}]"#.into(),
-                },
-                &format!("dispatch-{id}-echo"),
-            );
-            assert_eq!(
-                run_plan(&conn, &plan_atomic(&dispatch, now).unwrap()).status,
-                atomic_status::OK
-            );
-        }
-        let first = test_req(
-            DbAtomicParams::ClaimNextEventDelivery {
-                owner: "cap-w1".into(),
-                lease_secs: 60,
-                plugin_ids_json: r#"["echo"]"#.into(),
-                max_in_flight: 1,
-            },
-            "evt-cap-claim-1",
-        );
-        let claimed = run_plan(&conn, &plan_atomic(&first, now).unwrap());
-        assert_eq!(claimed.status, atomic_status::OK);
-        let second = test_req(
-            DbAtomicParams::ClaimNextEventDelivery {
-                owner: "cap-w2".into(),
-                lease_secs: 60,
-                plugin_ids_json: r#"["echo"]"#.into(),
-                max_in_flight: 1,
-            },
-            "evt-cap-claim-2",
-        );
-        let blocked = run_plan(&conn, &plan_atomic(&second, now).unwrap());
-        assert_eq!(blocked.status, atomic_status::EMPTY);
-    }
-
-    #[test]
-    fn set_acquire_status_publishes_outbox_in_same_batch() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let now = "2024-06-01T00:00:00Z";
-        conn.execute(
-            "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-             VALUES ('user-1', 'us', 'audible', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO books (uuid, source, account_id, product_id, marketplace, title, created_at, updated_at) \
-             VALUES ('b1', 'audible', 'user-1', 'B00X', 'us', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let req = test_req(
-            DbAtomicParams::SetAcquireStatus {
-                book_uuid: "b1".into(),
-                status: "acquired".into(),
-                storage_key: Some("Author/T/book.m4b".into()),
-                error_message: None,
-                event_id: "evt-acq".into(),
-                event_type: "book_acquired".into(),
-                schema_version: 1,
-                event_account_id: "user-1".into(),
-                source: "audible".into(),
-                correlation_id: "b1".into(),
-                causation_id: String::new(),
-                dedup_key: "book_acquired:b1".into(),
-                payload: r#"{"titleId":"b1"}"#.into(),
-                ordering_key: "b1".into(),
-            },
-            "acq-1",
-        );
-        let result = run_plan(&conn, &plan_atomic(&req, now).unwrap());
-        assert_eq!(result.status, atomic_status::OK);
-        let status: String = conn
-            .query_row(
-                "SELECT acquire_status FROM books WHERE uuid = 'b1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "acquired");
-        let ordering: String = conn
-            .query_row(
-                "SELECT ordering_key FROM domain_events WHERE id = 'evt-acq'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(ordering, "b1");
-
-        let missing = test_req(
-            DbAtomicParams::SetAcquireStatus {
-                book_uuid: "missing".into(),
-                status: "acquired".into(),
-                storage_key: None,
-                error_message: None,
-                event_id: "evt-missing".into(),
-                event_type: "book_acquired".into(),
-                schema_version: 1,
-                event_account_id: "user-1".into(),
-                source: "audible".into(),
-                correlation_id: String::new(),
-                causation_id: String::new(),
-                dedup_key: "book_acquired:missing".into(),
-                payload: "{}".into(),
-                ordering_key: "missing".into(),
-            },
-            "acq-missing",
-        );
-        let not_found = run_plan(&conn, &plan_atomic(&missing, now).unwrap());
-        assert_eq!(not_found.status, atomic_status::NOT_FOUND);
-        let events: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM domain_events WHERE id = 'evt-missing'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(events, 0);
-    }
-
-    #[test]
-    fn publish_domain_event_mints_empty_id_and_rejects_oversized_payload() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn);
-        let now = "2024-06-01T00:00:00Z";
-        let publish = test_req(
-            DbAtomicParams::PublishDomainEvent {
-                id: String::new(),
-                event_type: "book_acquired".into(),
-                schema_version: 1,
-                account_id: "acct".into(),
-                source: String::new(),
-                correlation_id: String::new(),
-                causation_id: String::new(),
-                dedup_key: "book_acquired:mint".into(),
-                payload: r#"{"titleId":"mint"}"#.into(),
-                ordering_key: "mint".into(),
-            },
-            "evt-mint",
-        );
-        let created = run_plan(&conn, &plan_atomic(&publish, now).unwrap());
-        assert_eq!(created.status, atomic_status::OK);
-        let id: String = conn
-            .query_row("SELECT id FROM domain_events", [], |r| r.get(0))
-            .unwrap();
-        assert!(!id.is_empty(), "empty event id must be minted");
-        let payload_id = created
-            .payload
-            .as_ref()
-            .and_then(|v| v.get("id"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        assert_eq!(payload_id, id);
-
-        let huge = test_req(
-            DbAtomicParams::PublishDomainEvent {
-                id: String::new(),
-                event_type: "book_acquired".into(),
-                schema_version: 1,
-                account_id: "acct".into(),
-                source: String::new(),
-                correlation_id: String::new(),
-                causation_id: String::new(),
-                dedup_key: "book_acquired:huge".into(),
-                payload: "x".repeat(65_537),
-                ordering_key: "huge".into(),
-            },
-            "evt-huge",
-        );
-        let err = match plan_atomic(&huge, now) {
-            Ok(_) => panic!("oversized payload must fail"),
-            Err(err) => err,
-        };
+        let err = d1_typed_statement(&sql, &[], None).expect_err("physical cap");
         assert!(
-            err.to_string().contains("exceeds"),
-            "unexpected error: {err}"
+            err.to_string().contains("physical statement limit"),
+            "{err}"
         );
+        d1_typed_statement("SELECT 1", &[], None).expect("short SQL");
+    }
+
+    #[test]
+    fn d1_typed_statement_rejects_overflow_at_preflight() {
+        let mut sql = String::from("SELECT 1");
+        for _ in 0..400 {
+            sql.push_str("+1");
+        }
+        let req = bookclerk_plugin_abi::ExecuteRequest {
+            operation_id: "t".into(),
+            request_hash: String::new(),
+            deadline_unix_ms: 0,
+            statements: vec![bookclerk_plugin_abi::TypedDbStatement {
+                sql: sql.clone(),
+                parameters: vec![],
+                kind: bookclerk_plugin_abi::DbPlanStatementKind::Select,
+                max_rows: 0,
+                result_selection: bookclerk_plugin_abi::DbResultSelection::Rows,
+            }],
+        };
+        let proof = bookclerk_plugin_abi::typecheck_execute_request_proofs(
+            &req,
+            &bookclerk_plugin_abi::SqlTypeEnv::new(),
+        )
+        .expect("typecheck")
+        .remove(0);
+        let err = d1_typed_statement(&sql, &[], Some(&proof)).expect_err("overflow preflight");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("D1 physical SQL preflight"),
+            "must fail before lowering: {msg}"
+        );
+        assert!(
+            !msg.contains("lowered SQL is"),
+            "must not be the post-lower 100KiB check: {msg}"
+        );
+    }
+
+    #[test]
+    fn d1_typed_statement_rejects_column_overflow_when_host_is_bypassed() {
+        let mut sql = String::from("SELECT n");
+        for _ in 0..400 {
+            sql.push_str("+n");
+        }
+        sql.push_str(" FROM t");
+        let mut env = bookclerk_plugin_abi::SqlTypeEnv::new();
+        env.insert_table(
+            "t",
+            vec![("n".into(), bookclerk_plugin_abi::SqlType::Integer)],
+        );
+        let req = bookclerk_plugin_abi::ExecuteRequest {
+            operation_id: "t".into(),
+            request_hash: String::new(),
+            deadline_unix_ms: 0,
+            statements: vec![bookclerk_plugin_abi::TypedDbStatement {
+                sql: sql.clone(),
+                parameters: vec![],
+                kind: bookclerk_plugin_abi::DbPlanStatementKind::Select,
+                max_rows: 0,
+                result_selection: bookclerk_plugin_abi::DbResultSelection::Rows,
+            }],
+        };
+        let proof = bookclerk_plugin_abi::typecheck_execute_request_proofs(&req, &env)
+            .expect("column typecheck")
+            .remove(0);
+        assert!(!proof.integer_arith_sites.is_empty());
+        let err = d1_typed_statement(&sql, &[], Some(&proof)).expect_err("adapter preflight");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("D1 physical SQL preflight"),
+            "adapter must reject oversized column arithmetic independently: {msg}"
+        );
+    }
+
+    #[test]
+    fn missing_result_array_is_ambiguous() {
+        let plan = DbAtomicPlan {
+            statements: vec![],
+            outcome_index: 0,
+            payload_index: None,
+            prior_receipt_index: None,
+            receipt_select_index: None,
+        };
+        let started = std::time::Instant::now();
+        let err = parse_generic_batch(&plan, &json!({}), "op-1".into(), started).unwrap_err();
+        assert!(is_ambiguous_d1(&err), "{err}");
+    }
+
+    #[test]
+    fn statement_failure_is_not_ambiguous() {
+        let plan = DbAtomicPlan {
+            statements: vec![bookclerk_db_exec::DbPlanStatement {
+                sql: "INSERT INTO t (k) VALUES ('a')".into(),
+                binds: vec![],
+                kind: DbPlanStatementKind::Execute,
+                max_rows: 0,
+            }],
+            outcome_index: 0,
+            payload_index: None,
+            prior_receipt_index: None,
+            receipt_select_index: None,
+        };
+        let value = json!({
+            "result": [{ "success": false, "error": "constraint" }]
+        });
+        let err = parse_batch_results(&plan, &value).unwrap_err();
+        assert!(!is_ambiguous_d1(&err), "{err}");
+    }
+
+    #[test]
+    fn parse_caps_result_rows() {
+        let plan = DbAtomicPlan {
+            statements: vec![bookclerk_db_exec::DbPlanStatement {
+                sql: "SELECT 1".into(),
+                binds: vec![],
+                kind: bookclerk_plugin_sdk::DbPlanStatementKind::Select,
+                max_rows: 0,
+            }],
+            outcome_index: 0,
+            payload_index: None,
+            prior_receipt_index: None,
+            receipt_select_index: None,
+        };
+        let mut rows = Vec::new();
+        for i in 0..1_050 {
+            rows.push(json!({ "n": i }));
+        }
+        let value = json!({
+            "result": [{ "success": true, "results": rows, "meta": { "changes": 0 } }]
+        });
+        let started = std::time::Instant::now();
+        let err = parse_generic_batch(&plan, &value, "op-cap".into(), started).unwrap_err();
+        assert!(
+            err.to_string().contains("maxResultRows"),
+            "D1 must fail closed on over-cap rows: {err}"
+        );
+        assert!(
+            is_ambiguous_d1(&err),
+            "overflow after HTTP commit must be ambiguous: {err}"
+        );
+        let at_cap = json!({
+            "result": [{ "success": true, "results": rows[..1000].to_vec(), "meta": { "changes": 0 } }]
+        });
+        let exec = parse_generic_batch(&plan, &at_cap, "op-cap-ok".into(), started).unwrap();
+        assert_eq!(exec.statements[0].rows.len(), 1_000);
+    }
+
+    fn stmt(sql: &str, kind: DbPlanStatementKind) -> bookclerk_db_exec::DbPlanStatement {
+        bookclerk_db_exec::DbPlanStatement::new(sql, vec![], kind)
+    }
+
+    fn plan_of(sql: &str, kind: DbPlanStatementKind) -> DbAtomicPlan {
+        DbAtomicPlan {
+            statements: vec![stmt(sql, kind)],
+            outcome_index: 0,
+            payload_index: None,
+            prior_receipt_index: None,
+            receipt_select_index: None,
+        }
+    }
+
+    #[test]
+    fn host_insert_returning_is_proven_single_row() {
+        let sql = "INSERT OR IGNORE INTO event_deliveries (id) \
+             SELECT ? WHERE EXISTS (SELECT 1 FROM domain_events WHERE id = ?) RETURNING id";
+        let mut plan = plan_of(sql, DbPlanStatementKind::Returning);
+        plan.statements[0].max_rows = 1;
+        reject_unbounded_returning(&plan).unwrap();
+    }
+
+    #[test]
+    fn recursive_insert_returning_is_rejected_before_http() {
+        let sql = "WITH RECURSIVE t(id) AS (SELECT 0 UNION ALL SELECT id+1 FROM t WHERE id < 5) \
+             INSERT INTO vec_ret_ins (id) SELECT id FROM t RETURNING id";
+        let err =
+            reject_unbounded_returning(&plan_of(sql, DbPlanStatementKind::Returning)).unwrap_err();
+        assert!(err.to_string().contains("maxResultRows"), "{err}");
+        assert!(!is_ambiguous_d1(&err), "{err}");
+    }
+
+    #[test]
+    fn multi_values_returning_is_not_proven() {
+        let sql = "INSERT INTO t(id) VALUES (1),(2) RETURNING id";
+        let mut plan = plan_of(sql, DbPlanStatementKind::Returning);
+        plan.statements[0].max_rows = 1;
+        let err = reject_unbounded_returning(&plan).unwrap_err();
+        assert!(err.to_string().contains("VALUES"), "{err}");
+        assert!(err.to_string().contains("maxResultRows"), "{err}");
+        assert_eq!(count_top_level_values_tuples(sql), 2);
+    }
+
+    #[test]
+    fn semicolon_joined_sql_is_rejected() {
+        let sql = "INSERT INTO t(id) VALUES (1); INSERT INTO t(id) VALUES (2)";
+        let err =
+            reject_unbounded_returning(&plan_of(sql, DbPlanStatementKind::Execute)).unwrap_err();
+        assert!(err.to_string().contains("multiple SQL statements"), "{err}");
+    }
+
+    fn typed_select(sql: &str) -> ExecuteRequest {
+        ExecuteRequest {
+            operation_id: "d1".into(),
+            request_hash: String::new(),
+            statements: vec![TypedDbStatement {
+                sql: sql.into(),
+                parameters: vec![],
+                kind: DbPlanStatementKind::Select,
+                max_rows: 8,
+                result_selection: DbResultSelection::Rows,
+            }],
+            deadline_unix_ms: 0,
+        }
+    }
+
+    #[test]
+    fn empty_select_uses_select_list_column_names() {
+        let req = typed_select("SELECT id, title FROM books WHERE 0");
+        let value = json!({
+            "result": [{ "success": true, "results": [], "meta": { "changes": 0 } }]
+        });
+        let reply = parse_typed_batch(&req, &value, std::time::Instant::now()).unwrap();
+        let names: Vec<&str> = reply.statements[0]
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["id", "title"]);
+        assert!(reply.statements[0].rows.is_empty());
+    }
+
+    #[test]
+    fn select_without_from_keeps_select_list_order() {
+        let req = typed_select("SELECT '汉语' AS cjk, 'مرحبا' AS ar");
+        let value = json!({
+            "result": [{
+                "success": true,
+                "results": [{ "ar": "مرحبا", "cjk": "汉语" }],
+                "meta": { "changes": 0 }
+            }]
+        });
+        let reply = parse_typed_batch(&req, &value, std::time::Instant::now()).unwrap();
+        let names: Vec<&str> = reply.statements[0]
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["cjk", "ar"]);
+        assert_eq!(
+            reply.statements[0].rows[0].values,
+            vec![DbValue::Text("汉语".into()), DbValue::Text("مرحبا".into())]
+        );
+    }
+
+    #[test]
+    fn all_null_row_keeps_column_names_and_null_cells() {
+        let req = typed_select("SELECT id, title FROM books");
+        let value = json!({
+            "result": [{
+                "success": true,
+                "results": [{ "id": null, "title": null }],
+                "meta": { "changes": 0 }
+            }]
+        });
+        let reply = parse_typed_batch(&req, &value, std::time::Instant::now()).unwrap();
+        assert_eq!(reply.statements[0].columns.len(), 2);
+        assert_eq!(
+            reply.statements[0].rows[0].values,
+            vec![
+                DbValue::Null(DbType::Unspecified),
+                DbValue::Null(DbType::Unspecified)
+            ]
+        );
+    }
+
+    #[test]
+    fn text_starting_with_b64_stays_text() {
+        let req = typed_select("SELECT note FROM books");
+        let value = json!({
+            "result": [{
+                "success": true,
+                "results": [{ "note": "b64:not-bytes" }],
+                "meta": { "changes": 0 }
+            }]
+        });
+        let reply = parse_typed_batch(&req, &value, std::time::Instant::now()).unwrap();
+        assert_eq!(
+            reply.statements[0].rows[0].values[0],
+            DbValue::Text("b64:not-bytes".into())
+        );
+        assert_eq!(reply.statements[0].columns[0].db_type, DbType::Text);
+    }
+
+    #[test]
+    fn proven_column_ignores_alias_collision() {
+        assert_eq!(select_item_proven_column("n AS flag").as_deref(), Some("n"));
+        assert_eq!(select_item_proven_column("flag").as_deref(), Some("flag"));
+        assert_eq!(select_item_proven_column("x.flag").as_deref(), Some("flag"));
+        assert_eq!(select_item_proven_column("n + 1 AS flag"), None);
+        assert_eq!(select_item_proven_column("NOT flag"), None);
+        let sql = "SELECT n AS flag, flag FROM x";
+        assert_eq!(
+            select_list_proven_columns(sql),
+            vec![Some("n".into()), Some("flag".into())]
+        );
+        let mut stmt = StatementResult {
+            rows: vec![DbRow {
+                values: vec![DbValue::Int64(1), DbValue::Int64(1)],
+            }],
+            columns: vec![
+                DbColumn {
+                    name: "flag".into(),
+                    db_type: DbType::Unspecified,
+                },
+                DbColumn {
+                    name: "flag".into(),
+                    db_type: DbType::Unspecified,
+                },
+            ],
+            rows_affected: 0,
+        };
+        let mut map = std::collections::HashMap::new();
+        map.insert("flag".into(), DbType::Bool);
+        map.insert("n".into(), DbType::Int64);
+        apply_proven_declared_types(&mut stmt, sql, &map);
+        assert_eq!(stmt.rows[0].values[0], DbValue::Int64(1));
+        assert_eq!(stmt.rows[0].values[1], DbValue::Boolean(true));
+        assert_eq!(stmt.columns[0].db_type, DbType::Int64);
+        assert_eq!(stmt.columns[1].db_type, DbType::Bool);
     }
 }

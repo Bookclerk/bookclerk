@@ -2,10 +2,12 @@
 
 Bookclerk stores library state (accounts, books, portal, discovery) in a
 **database plugin**. Exactly one backend is active — unlike destinations, which
-may fan out.
+may fan out. Supported backends are **SQL-like only**: SQLite, PostgreSQL, and
+Cloudflare D1. Document / key-value stores are out of scope and must fail
+capability negotiation ([ADR: SQL database contract](adr/sql-database-contract.md)).
 
 Default: local SQLite file (`$BOOKCLERK_FILES_DIR/library.db`). Optional:
-Cloudflare D1 (remote SQLite via the Cloudflare HTTP API).
+Cloudflare D1 (remote SQLite via the Cloudflare HTTP API) or PostgreSQL.
 
 ## ORM choice (Prisma-like maintainability)
 
@@ -113,15 +115,34 @@ in-process engine fallback.
 External `kind = "database"` guests also load for **D1** and **Postgres** when
 discovered and `[database].plugin` matches the plugin id. SeaORM proxy calls
 (`db.query` / `db.execute`) forward through the guest; `master.key` never leaves
-the host. Connect params are a tagged `DbConnectParams` shape; the guest returns
-`{ "dialect": "sqlite" | "postgres" }` so the host builds the RPC proxy without
-hardcoding backends.
+the host. First-party ids receive host-private connect params with
+host-injected paths/secrets (`sqlite` / `d1` / `postgres`), while any other
+database plugin id receives the public `DatabaseAdapterConfig` payload
+(`pluginDataDir` plus its granted `[database.<id>]` settings). The guest
+returns bootstrap `{ "sqlFamily", "dialect" }` (and related capability fields)
+so the host builds the RPC proxy without hardcoding backends.
 
 First-party guests: `bookclerk-plugin-database-sqlite` (platform),
 `bookclerk-plugin-database-d1` and `bookclerk-plugin-database-postgres` (optional).
 Each is a full Workers-RPC guest with its own binary and `plugin.toml`. Install
 platform sqlite under `$BOOKCLERK_FILES_DIR/plugins/sqlite/`; stage optional DB
 guests with `cargo stage-plugins --optional`.
+
+### Isolated plugin database bindings
+
+Plugins that declare `capabilities.bindings.databases = ["DB", ...]` get
+Workers-style **named database bindings**: one isolated database per binding,
+provisioned by the active adapter (SQLite file / PostgreSQL **database** /
+Cloudflare D1 database by name) and recorded in the host
+`plugin_databases` registry. Bindings are consented per name
+(`database:<NAME>` grant entries), carry their own `db_atomic_receipts` for
+retry-token replay, and allow plugin-owned schema (full DML plus idempotent
+`CREATE`/`DROP` `TABLE`/`INDEX` with `IF [NOT] EXISTS`). Jobs never receive
+the host library as guest SQL. Operator lifecycle:
+`bookclerk plugins db list` / `bookclerk plugins db drop <plugin> [binding]`
+(physical delete of the SQLite file / `DROP DATABASE` / D1 delete, then the
+registry row; unknown adapters fail closed).
+See [plugins.md — Isolated plugin database bindings](plugins.md#isolated-plugin-database-bindings).
 
 ### Switching backends (opt-in migration)
 
@@ -172,13 +193,13 @@ BOOKCLERK_DATABASE_POSTGRES_URL_FILE=/run/secrets/postgres_url
 ```
 
 **Schema migrations**: Fresh Postgres databases apply
-[`latest_schema_postgres`](../crates/bookclerk-library/src/migrations.rs)
+[`latest_schema_postgres`](../crates/bookclerk-db-exec/src/schema_postgres.rs)
 (the single greenfield DDL, with `BIGSERIAL` / `BIGINT` / `BYTEA` so integer
 columns match the shared `i64` entities) and record version `1` in
 `schema_migrations`. Every statement is `IF NOT EXISTS`, so re-application is a
 no-op. Because the schema is greenfield rather than an incremental chain,
-changing it means editing `latest_schema_postgres` and recreating (or manually
-altering) an existing Postgres DB.
+changing it means editing the Postgres pack in `bookclerk-db-exec` and
+recreating (or manually altering) an existing Postgres DB.
 
 **Compiled features**: `sqlx-postgres` + `runtime-tokio-rustls` are enabled on
 the `sea-orm` workspace dependency. `sqlx-sqlite` is intentionally excluded to
@@ -192,38 +213,69 @@ avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
   interactive `BEGIN` open across RPCs, and Cloudflare Time Travel is a
   **database-wide restore**, not a per-request rollback (it cannot exclude
   other writers, and a crash before restore leaves partial writes committed).
-- The D1 guest therefore **rejects** `dbBegin` / `dbCommit` / `dbRollback`.
-  Autocommit `dbQuery` / `dbExecute` use the documented REST body
+- The D1 guest therefore keeps the host-private interactive-transaction
+  interface unsupported (`begin` fails; there is no `commit` / `rollback`).
+  Ordinary autocommit statements use the documented REST body
   `{ "sql", "params" }`.   Atomic library operations (claim redeem, last-owner
   demote/disable/delete, password rotation, TOTP enroll/disable, consume-once OIDC RP state and
-  WebAuthn challenges) use `dbAtomic` on every bundled backend. The D1 plugin
-  sends those writes as **one** `{ "batch": [...] }` REST request (a real SQL
-  transaction) with control flow encoded in `WHERE` clauses. SQLite and
-  PostgreSQL guests run the same named command in a native local transaction.
-  Each call carries an `operationId`; the plugin writes a durable receipt in
-  the same SQL transaction so a committed result whose HTTP/RPC response is
-  lost can be retried without a second mutation. Structured statuses include
-  `ok`, `empty`, `lastOwner`, `claimInvalid`, `passwordRequired`, `notFound`,
-  and `idempotencyConflict`. Consume-once ops use `DELETE … RETURNING` (D1)
-  or transactional delete-and-return (SQLite/Postgres) so a missing or expired
-  row cannot be observed twice. `dbConnect` reports `interactiveTxn: false` on
-  D1 (no `dbBegin`); SQLite/Postgres still expose `dbBegin` for unrelated work.
-  Time Travel is not used.
-- Schema migrations run in the D1 plugin module via
-  `bookclerk_db_guest::apply_pending_migrations` (tracked in
-  `schema_migrations`).
+  WebAuthn challenges, job admit/claim, event publish/dispatch/claim) use the
+  typed atomic `execute` on every bundled backend. The **host** compiles a
+  bounded generic SQL plan (statements + binds + outcome selectors + receipt
+  wrapping). The
+  D1 plugin runs that plan as **one** `{ "batch": [...] }` REST request (a real
+  SQL transaction) and returns per-statement `rows` / `rowsAffected`. SQLite
+  and PostgreSQL guests run the same plan in a native local transaction and
+  return the same generic batch result. The host interprets receipts and
+  application status (`ok`, `empty`, `lastOwner`, …). Guests do not parse
+  Bookclerk operation names or table names. Each call carries an
+  `operationId` and `requestHash`; host-authored SQL writes a durable receipt
+  in the same transaction so a committed result whose HTTP/RPC response is
+  lost can be retried without a second mutation.
+  Structured statuses include `ok`, `empty`, `lastOwner`, `claimInvalid`,
+  `passwordRequired`, `notFound`, and `idempotencyConflict`. Consume-once ops
+  use `DELETE … RETURNING` so a missing or expired row cannot be observed
+  twice. After `openSession` the host calls typed
+  `DatabaseSession.capabilities`. Schema selection uses `pragmaUserVersion` /
+  `schemaMigrations` / `atomicSchemaBatch`, not `sqlFamily`. D1 reports
+  `atomicSchemaBatch: true` and `maxBinds: 100`. The host stores the
+  negotiated `DbCapabilities` and rejects plans that exceed `maxStatements`,
+  per-statement `maxBinds`, `maxPayloadBytes`, or out-of-range selectors.
+  A statement that yields more than `maxResultRows` **fails the plan**
+  (no silent truncate). Guests also advertise `maxResultBytes`, `maxCellBytes`,
+  `maxRequestBytes`, and `maxAtomicResultBytes` (`0` is unspecified and
+  fails closed). Batch request/result caps are at or below the scalar
+  limit. D1 refuses
+  `RETURNING` unless host-IR `maxRows` is `1` (and rejects multi-tuple
+  `VALUES` / semicolon-joined SQL) before HTTP; overflow or an oversized body
+  after HTTP commit is `unavailable`. Guests that omit `returning`, advertise
+  `0` row/payload/atomic caps, or mismatch bootstrap `dialect`/`sqlFamily`
+  are not loaded. Time Travel is not used.
+- Guest failures are classified from SQLSTATE / `SQLITE_*` codes (not English
+  `"unique"` matching). Constraint → `conflict`; busy/serialization →
+  `unavailable` (the same `operationId` is retried); timeout →
+  `deadline_exceeded`; syntax → `invalid_params`. Cancel and deadlines stay
+  RPC/session-level (`deadlineUnixMs` on the atomic request is transport
+  metadata and is not hashed). Observed cancel/deadline before `BEGIN`/HTTP
+  or between statements is `cancelled` / `deadline_exceeded`; around `COMMIT`
+  or HTTP return is `unavailable` (ambiguous).
+- Schema versions are **host-owned**. After `db.connect` and capability
+  negotiation the host reads the current version and sends remaining DDL as
+  generic execute (D1 V27 stays one host-compiled `{ "batch": [...] }`).
+  Guests connect and ping only.
 
 ### Boundary: core vs database plugins
 
 | Crate | Owns |
 | --- | --- |
-| [`bookclerk-library`](../crates/bookclerk-library) | Greenfield DDL ([`migrations`](../crates/bookclerk-library/src/migrations.rs)), SeaORM entities, [`LibraryStore`](../crates/bookclerk-library) CRUD (`from_connection` only) |
-| `bookclerk-plugin-database-{sqlite,d1,postgres}` | Per-engine connect/migrate/proxy quirks and the jailed Workers-RPC guest |
-| Host (`bookclerk-plugin-host`) | Spawn guest, mediate secrets into tagged `DbConnectParams`, forward SeaORM via RPC proxy |
+| [`bookclerk-library`](../crates/bookclerk-library) | Greenfield DDL ([`migrations`](../crates/bookclerk-library/src/migrations.rs)), SeaORM entities, domain invariants, host-owned atomic SQL plans, schema application after connect, [`LibraryStore`](../crates/bookclerk-library) CRUD (`from_connection` only) |
+| `bookclerk-plugin-database-{sqlite,d1,postgres}` | Connection/transport, capability advertisement, bind encoding, generic query/execute/atomic-batch, error/timing normalization. **Not** Bookclerk table names, schema version selection, or named domain operations. |
+| Host (`bookclerk-plugin-host`) | Spawn guest, mediate secrets into tagged `DbConnectParams`, negotiate capabilities, apply remaining DDL, compile plans, validate result envelopes, interpret statement results, forward SeaORM via RPC proxy |
 
 Core stays database-agnostic: it sees a migrated `DatabaseConnection`, and
 the host always attaches [`AtomicTxnBackend`](../crates/bookclerk-library)
-(`dbAtomic` on the guest) for named security operations.
+(generic atomic plan on the guest; host `interpret_plan` on the result)
+for atomic security, job, and event operations. Domain names stay in host
+code.
 Hosts must install/stage the active database guest; missing guests are hard errors.
 
 ### LibraryStore status
@@ -257,10 +309,13 @@ Admin→Owner upgrade; testing and development hosts should recreate
 ### Single greenfield schema
 
 Bookclerk is mostly greenfield: [`migrations.rs`](../crates/bookclerk-library/src/migrations.rs)
-exposes `latest_schema_sqlite()` / `latest_schema_postgres()` as the base DDL,
-plus a short ordered list (`migration_sql` / `migration_sql_postgres`) so
-additive columns (e.g. Discover preference fields on `user_preferences`) can
-bump `PRAGMA user_version` / `schema_migrations` without wiping data. Base
+exposes `latest_schema_sqlite()` as the canonical base DDL, and
+[`schema_postgres.rs`](../crates/bookclerk-db-exec/src/schema_postgres.rs)
+holds the Postgres adapter-edge pack (`latest_schema_postgres()` /
+`migration_sql_postgres`). Canonical SQLite also keeps a short ordered list
+(`migration_sql`) so additive columns (e.g. Discover preference fields on
+`user_preferences`) can bump `PRAGMA user_version` / `schema_migrations`
+without wiping data. Base
 statements use `CREATE TABLE/INDEX IF NOT EXISTS`. Tables:
 `accounts`, `books`, `ignored_titles`, `saved_filters`, `portal_identities`,
 `claim_tickets`, `portal_sessions`, `account_links`, `works`, `work_editions`,
@@ -319,20 +374,22 @@ bounded page of sleepers, and stores host-derived `event_deliveries.wake_grants_
 (schema versions + intersected filter). Publish is commit + notify; the
 dispatcher drains `wake_pending`. File SQLite applies V27 under
 `PRAGMA foreign_keys=OFF` (drop parent while the cascading child exists).
-D1 enforces FKs, so V27 is **not** the SQLite DROP-parent rebuild: versions
-1–26 go through the guest migrator, then V27 is one D1 `{ "batch": [...] }`
-SQL transaction that rebuilds both tables, **drops `event_deliveries` then
-`domain_events`**, renames, recreates indexes, and inserts
-`schema_migrations` version 28 (the last sqlite/D1 step index; the extra V3
-portal migration means named V27 is not bookkeeping version 27). Wake
+D1 enforces FKs, so V27 is **not** the SQLite DROP-parent rebuild: the host
+applies versions 1–26 as autocommit execute, then V27 as one D1
+`{ "batch": [...] }` SQL transaction that rebuilds both tables, **drops
+`event_deliveries` then `domain_events`**, renames, recreates indexes, and
+inserts `schema_migrations` version 28 (frozen bookkeeping id; the extra V3
+portal migration means named V27 is not bookkeeping version 27). V28 adds
+`db_serialization_slots` for portable COUNT+mutate serialization (no
+PostgreSQL advisory locks). Wake
 registration (`wake_event_type` / `wake_filter_json` / `wake_grants_json`) is
 cleared when a matching event is accepted so retry is not re-woken. Wake
-pages are 64 rows so parent `IN (…)` and the fenced sleeper UPDATE stay under
-D1’s 100 bound-parameter limit (#178 will negotiate `maxBinds`). The sleeper
+page size is derived from the guest’s negotiated `maxBinds` (D1 is 100) minus
+the fenced UPDATE’s fixed binds. The sleeper
 UPDATE is one statement gated on `wake_pending = 1` and `wake_lease_owner`.
-Claim uses this node’s catalog (type + schema + filter); cluster dispatch still
-unions live nodes. D1/`dbAtomic` claim SQL is plugin-id-only; the host
-releases an incompatible row and node-locally claims a later match.
+Claim uses this node’s catalog (type + schema + filter) in **host** code;
+the atomic mutation is a compare-and-set on a concrete delivery id. Cluster
+dispatch still unions live nodes.
 
 ## Encrypted secrets
 
