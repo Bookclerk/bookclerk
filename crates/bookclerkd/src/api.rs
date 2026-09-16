@@ -497,6 +497,18 @@ struct PluginGrantView {
     operator_added_domains: Vec<String>,
     /// Operator-denied destinations still listed by the manifest.
     operator_denied_domains: Vec<String>,
+    /// Effective raw TCP grants.
+    tcp: Vec<TcpGrantView>,
+    /// Operator-added TCP grants.
+    operator_added_tcp: Vec<TcpGrantView>,
+    /// Effective address-space CIDRs.
+    address_cidrs: Vec<String>,
+    /// Operator-added CIDRs.
+    operator_added_cidrs: Vec<String>,
+    /// Undeclared public redirect permission.
+    allow_undeclared_public_redirects: bool,
+    /// SHA-256 of persisted operator consent (no host overlays).
+    grant_revision: String,
     /// SHA-256 of the canonical effective authority.
     authority_revision: String,
     /// Host bindings the operator approved.
@@ -525,6 +537,25 @@ struct PluginGrantView {
     extra_processes: Option<u32>,
 }
 
+/// Operator-facing TCP grant (`host` + `ports`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TcpGrantView {
+    /// Hostname or `*.` wildcard.
+    host: String,
+    /// Destination ports.
+    ports: Vec<u16>,
+}
+
+impl From<&bookclerk_plugin_host::TcpGrant> for TcpGrantView {
+    fn from(grant: &bookclerk_plugin_host::TcpGrant) -> Self {
+        Self {
+            host: grant.host.clone(),
+            ports: grant.ports.clone(),
+        }
+    }
+}
+
 impl PluginGrantView {
     /// Projects a stored grant into operator-facing camelCase JSON, converting CPU percent to cores.
     fn from_grant(grant: &PluginGrant) -> Self {
@@ -540,6 +571,16 @@ impl PluginGrantView {
             manifest_domains: grant.manifest_domains.iter().cloned().collect(),
             operator_added_domains: grant.operator_added_domains.iter().cloned().collect(),
             operator_denied_domains: grant.operator_denied_domains.iter().cloned().collect(),
+            tcp: grant.tcp.iter().map(TcpGrantView::from).collect(),
+            operator_added_tcp: grant
+                .operator_added_tcp
+                .iter()
+                .map(TcpGrantView::from)
+                .collect(),
+            address_cidrs: grant.address_cidrs.iter().cloned().collect(),
+            operator_added_cidrs: grant.operator_added_cidrs.iter().cloned().collect(),
+            allow_undeclared_public_redirects: grant.allow_undeclared_public_redirects,
+            grant_revision: bookclerk_plugin_host::grant_revision(grant),
             authority_revision: bookclerk_plugin_host::authority_revision(grant),
             bindings: grant.bindings.iter().cloned().collect(),
             compatibility_flags: grant.compatibility_flags.iter().cloned().collect(),
@@ -591,7 +632,7 @@ struct PluginConsentApproveRequest {
     grant: Option<PluginGrantOverride>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// Operator-supplied grant fields that replace matching request values.
 struct PluginGrantOverride {
@@ -599,6 +640,12 @@ struct PluginGrantOverride {
     network_mode: Option<String>,
     /// Override approved hostnames when set.
     domains: Option<Vec<String>>,
+    /// Override raw TCP grants when set.
+    tcp: Option<Vec<TcpGrantView>>,
+    /// Override address-space CIDRs when set.
+    address_cidrs: Option<Vec<String>>,
+    /// Override undeclared-public-redirect permission when set.
+    allow_undeclared_public_redirects: Option<bool>,
     /// Override approved host bindings when set.
     bindings: Option<Vec<String>>,
     /// Override compatibility flags when set.
@@ -2789,6 +2836,22 @@ fn build_approved_grant(
     }
     if let Some(domains) = grant_override.domains {
         approved.domains = vec_to_set(domains);
+    }
+    if let Some(tcp) = grant_override.tcp {
+        approved.tcp = tcp
+            .into_iter()
+            .map(|t| bookclerk_plugin_host::TcpGrant {
+                host: t.host,
+                ports: t.ports,
+            })
+            .collect();
+    }
+    if let Some(cidrs) = grant_override.address_cidrs {
+        approved.address_cidrs = vec_to_set(cidrs);
+    }
+    if let Some(flag) = grant_override.allow_undeclared_public_redirects {
+        approved.allow_undeclared_public_redirects = flag;
+        approved.operator_allow_undeclared_public_redirects = Some(flag);
     }
     if let Some(bindings) = grant_override.bindings {
         approved.bindings = vec_to_set(bindings);
@@ -5197,6 +5260,7 @@ mod tests {
             cpu_rate_percent: Some(80),
             extra_processes: Some(2),
             approved_at: "2026-01-01T00:00:00Z".into(),
+            ..PluginGrant::empty()
         };
         let approved = build_approved_grant(
             &baseline,
@@ -5211,6 +5275,7 @@ mod tests {
                 memory_mib: Some(256),
                 cpu_cores: Some(0.40),
                 extra_processes: Some(1),
+                ..PluginGrantOverride::default()
             }),
         )
         .expect("narrow");
@@ -5238,6 +5303,7 @@ mod tests {
                 memory_mib: Some(1024),
                 cpu_cores: Some(0.90),
                 extra_processes: Some(8),
+                ..PluginGrantOverride::default()
             }),
         )
         .expect("network widen beyond baseline");
@@ -5263,6 +5329,7 @@ mod tests {
                 memory_mib: None,
                 cpu_cores: None,
                 extra_processes: None,
+                ..PluginGrantOverride::default()
             }),
         );
         assert!(steal.is_err(), "operator must not invent oauth binding");

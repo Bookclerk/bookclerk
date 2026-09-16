@@ -385,6 +385,10 @@ fn apply_landlock(
         }
         // Deny signalling and abstract-socket connections to processes outside
         // this domain (ABI 6+). Downgrades to a no-op on older kernels.
+        // Nested native-behind-workerd guests therefore cannot use a parent
+        // `abstract:` SOCKET_PROXY; the launcher advertises a pathname under
+        // `/proc/self/fd/{inherited dir fd}/` instead (see bookclerk-workerd
+        // `unix_bind::bind_socket_proxy`).
         ruleset = ruleset.scope(Scope::from_all(abi))?;
 
         let mut created = ruleset.create()?;

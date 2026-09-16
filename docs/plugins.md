@@ -391,7 +391,7 @@ dependency bump, and becomes a property of the jail.
 A manifest declares network and host bindings under **`[capabilities]`** — not
 a free-form filesystem widen.
 
-**Workerd** (hostname-filtered outbound):
+**Workerd** (hostname-filtered `fetch()` plus separate TCP `connect()`):
 
 ```toml
 runtime = "workerd"
@@ -399,10 +399,13 @@ runtime = "workerd"
 
 [capabilities.network]
 mode = "outbound"
-domains = ["api.example.com", "www.example.com"]   # required; isolate allowlist
+domains = ["api.example.com", "www.example.com"]   # required; isolate fetch allowlist
+tcp = [{ host = "db.example.com", ports = [5432] }]  # optional; fetch does not imply TCP
+# allow_undeclared_public_redirects = true           # operator-visible; never grants private ranges
+address_cidrs = ["10.0.60.100/32"]                   # optional; default is public Internet only
 ```
 
-**Native** (jail default-deny; brokered HTTP uses the same domain grants):
+**Native** (nested jail denies ambient `AF_INET`; SDK sockets share the same policy):
 
 ```toml
 runtime = "native"
@@ -410,39 +413,38 @@ command = "./my-plugin"
 
 [capabilities.network]
 mode = "outbound"
-# domains are the product grant. Full native broker enforcement (every hop,
-# resolved IP, Host/SNI) is follow-up — do not treat native as permanently
-# coarse-unrestricted, and do not freeze initial-host-only into the ABI.
+tcp = [{ host = "api.example.com", ports = [443] }]
+# domains are workerd-only — omit them on native plugins.
 ```
 
-| Network `mode` | Native | Workerd |
+| Network `mode` | Native-behind-workerd | Workerd |
 | --- | --- | --- |
-| `deny` | no IP sockets (`NetPolicy::Deny`, including OAuth listen) | OS jail stays `OutboundListen` for the RPC bridge; isolate `globalOutbound` → blocked (grant is isolate-enforced; see the ADR) |
-| `outbound` | jail internet with brokered HTTP on the same domain grants; **raw TCP, UDP, and listen are distinct capabilities** | isolate egress allowlist; **`domains` required**; **every redirect hop** is checked |
+| `deny` | nested guest jail `NetPolicy::Deny`; no socket proxy grants | OS jail stays `OutboundListen` for the RPC bridge; isolate `globalOutbound` → blocked |
+| `outbound` | nested guest jail still `Deny`; TCP via `bookclerk_plugin_sdk::connect` → Unix HTTP CONNECT proxy | isolate `globalOutbound` → egress worker; `fetch()` and `connect()` share one `EgressPolicy` |
 
-`capabilities.network.domains` is the product grant for both runtimes. Today's
-native spawn still cannot hostname-filter raw sockets without a mediator;
-AppContainer blocks loopback `HTTP_PROXY`, and an HTTP-only IPC mediator cannot
-carry Postgres TCP, the AWS SDK, or libraries that embed their own HTTP client.
-That is an enforcement gap to close in the broker, **not** the frozen ABI.
-Do **not** invent domains on native plugins for Settings favicons — use optional
-top-level `logo` instead.
+`capabilities.network.domains` is the **fetch** allowlist (workerd only). Raw TCP is `capabilities.network.tcp` (`host` + `ports`). The operator may add extra fetch hosts, TCP targets, and CIDRs; the guest `describe()` cannot. Default address-space policy is public Internet only — loopback, RFC1918, link-local, ULA, and metadata stay denied unless an explicit CIDR is granted. `allow_undeclared_public_redirects` lets fetch redirects leave the domain allowlist for **public** destinations only; it never implies those special ranges.
 
-When you need enforceable hostname allowlists today, ship a **workerd** plugin.
-The operator still **approves** native `outbound` (with an explicit warning).
+When you need enforceable hostname allowlists for `fetch()`, ship a **workerd** plugin. Native plugins that need networking must use the SDK socket capability.
 
 Workerd egress matching (shared `EgressPolicy` + `bridge/egress.js`):
 
 - **Every hop.** The request URL's host must be on
   `capabilities.network.domains` (with `*.` prefix wildcards), including
-  **redirect hops** — not only the initial host. Matching uses
-  **IDNA ToASCII** on both the request host and allowlist patterns; percent-encoded
-  hosts and failed IDNA are **rejected** (fail closed). Unicode and Punycode forms
-  of the same name match after normalization.
-- **IP / SNI.** Resolved IPs are checked against private, local, and metadata
-  ranges. DNS rebinding and Host/SNI mismatch are rejected. Full native-broker
-  enforcement of this contract is follow-up; the ABI/manifest must not freeze
-  the opposite (initial-host-only, native=coarse).
+  **redirect hops**, unless the operator granted undeclared public redirects.
+  Matching uses **IDNA ToASCII** on both the request host and allowlist
+  patterns; percent-encoded hosts and failed IDNA are **rejected** (fail
+  closed). Unicode and Punycode forms of the same name match after
+  normalization.
+- **Resolved addresses.** Permission is enforced against the resolved IP
+  (`public` plus explicit CIDRs in workerd `network.allow`). DNS rebinding
+  from a public hostname to a private/loopback/metadata address is denied
+  unless that CIDR is granted.
+- **TCP.** `import { connect } from "cloudflare:sockets"` is forwarded to the
+  egress worker's inbound CONNECT handler (`compatibilityFlags =
+  ["experimental"]` plus `workerd serve --experimental`; workerd#6059). Fetch
+  grants never imply TCP. Prefer `secureTransport: "starttls"` then
+  `socket.startTls()`; incoming CONNECT with TLS is not supported by the
+  pinned workerd.
 - Cross-origin redirects drop `Authorization`
   (Fetch CORS non-wildcard request-header) plus `Cookie` / `Cookie2` /
   `Proxy-Authorization` as defense in depth. Method/body follow Fetch
@@ -882,30 +884,59 @@ bookclerk plugins enable echo
 ```
 
 Platform guests (`sqlite`, `local`) skip the consent UX and are enabled by
-default; the host auto-persists a covering grant on first spawn when their
+default **only when host-controlled provenance says they are verified
+Bookclerk platform artifacts** (not because the manifest id is `sqlite` /
+`local`). The host auto-persists a covering grant on first spawn when their
 manifest stays within the installer envelope (deny network, `config` /
-`work_fs` only).
+`work_fs` only). A third-party package that reuses those ids gets no
+privilege.
 
-Grants are persisted under `$BOOKCLERK_FILES_DIR/plugin-grants.json`. The
-manifest consent request is a **baseline**, not a hard ceiling: operators may
-**widen or narrow** domains, bindings, flags, network mode, workerd budgets, and
-per-plugin disk / jail memory / CPU rate / extra process budget (`diskMib`,
-`memoryMib`, `cpuRatePercent` and `extraProcesses` for **native** only). Host
-hard caps still apply (`WorkerdLimits` maxes, disk/memory max 4096 MiB, CPU rate
+Grants are persisted under `$BOOKCLERK_FILES_DIR/plugin-grants.json`, keyed
+by provenance-qualified PluginKey. Saving that file is the operator
+mechanism (`bookclerk plugins approve` and `POST /api/plugins/{id}/consent`).
+`bookclerkd` watches the file (and same-process saves notify immediately)
+and **proactively** fences any live session whose persisted
+`grant_revision` no longer matches. Malformed grant files keep
+last-known-good authority and are retried on later ticks; the watcher
+does not advance its fingerprint until a grant file loads successfully.
+The vat receives `Work::Shutdown`, the jailed
+`bookclerk-workerd` child is killed, the native guest and mediated TCP
+proxy drop, and EVENTS / granted database channels go with the vat. This
+does **not** wait for the next plugin RPC.
+
+`grant_revision` is the digest of **persisted** operator consent.
+`authority_revision` is the digest of **effective** runtime authority
+(manifest ∩ grant ∩ host policy, plus host-controlled overlays such as a
+configured PostgreSQL TCP URL, and clamped resource budgets). The watcher
+never compares one digest type against the other. Host-config overlay
+changes fence/restart through `configuration_revision` on the executor
+identity. `authority_revision` is also distinct from
+`configuration_revision` (installed `plugin.toml` hash).
+
+Structural capabilities originate in the
+manifest; the operator may **narrow** them but cannot invent entrypoints,
+producers, or host bindings. Network destinations are operator-extensible:
+operators may add fetch hosts, TCP `host:ports`, and CIDRs beyond the
+manifest, and may grant undeclared public redirects. Host hard caps still
+apply (`WorkerdLimits` maxes, disk/memory max 4096 MiB, CPU rate
 up to `logical_cpus × 100` one-core percent, extra processes 62 / absolute PIDs
 64, known bindings). Workerd plugins use isolate `cpuMs` instead of per-plugin
 `cpuRatePercent`; jail CPU for workerd follows the host default /
 `[plugins.jail]` per-jail ceiling (default 80). Process headroom for workerd is
 host-managed (overhead 2 + default extra 2). Bookclerk does **not** guarantee
-plugin behaviour if overrides remove capabilities the guest needs. Domain
-allowlists are enforced for **workerd** guests (via `BOOKCLERK_WORKERD_GRANT_*`
-→ `EGRESS_POLICY`); **native** guests get OS-jail allow-or-deny for network (no
-hostname filter). Jail Spec memory/CPU/PID ceilings and disk budgets apply to
-**both** runtimes. Redirect following does **not** expand the consented domain
-list (hops stay free by design; only the initial host is allowlisted).
+plugin behaviour if overrides remove capabilities the guest needs.
 
-Approving a **native** plugin with `mode = "outbound"` shows an explicit warning
-that networking is **not** hostname-filtered.
+Domain allowlists and TCP grants are enforced for **both** workerd and
+native-behind-workerd guests through one canonical `EgressPolicy` (workerd
+`EGRESS_POLICY` / `BOOKCLERK_WORKERD_GRANT_POLICY`; native Unix CONNECT
+proxy). Direct-native diagnostic transport is test-only and still uses the
+OS jail mapping. Redirect hops stay on the fetch allowlist unless the
+operator grants undeclared public redirects; address-space policy still
+applies.
+
+Guest filesystem access remains install read-only plus host-managed
+`plugin-state/<PluginKey fs-id>/data` and `plugin-state/<PluginKey fs-id>/tmp`
+— not a free-form widen.
 
 Global confinement knobs (Settings → Confinement, or `config.toml`):
 
@@ -917,10 +948,6 @@ Global confinement knobs (Settings → Confinement, or `config.toml`):
 | `plugins.jail.cpu_rate_percent` | per-jail CPU ceiling as integer percent of one core (default **80**; 100 = 1.00 core; UI edits cores to two decimals; max = cores×100; OS shares if oversubscribed) |
 | `plugins.jail.extra_processes` | ceiling on extra processes/threads beyond launcher overhead (default **2**; Spec `active_processes` = overhead + extra) |
 
-Guest filesystem access remains install read-only plus host-managed
-`plugin-state/<PluginKey fs-id>/data` and `plugin-state/<PluginKey fs-id>/tmp`
-— not a free-form widen.
-
 **Deferred (discovery/install):** a content hash bound to the grant so a
 different binary under the same id cannot keep an old grant forever. End goal
 once install/upgrade exists: on upgrade, **refresh the registered hash without
@@ -928,6 +955,11 @@ re-prompting** when capabilities did not widen; re-prompt only when the
 capability scope expands (new structural caps stay pending; `grant_covers`
 is identity-only so the previous approval remains usable). Do not
 expect spawn-time hash checks in this release.
+
+On upgrade of the **same PluginKey**, operator-added network destinations
+survive; new structural capabilities stay pending until the operator
+consents (`grant_covers` is identity-only). A different provenance (even
+with the same manifest alias) does not inherit grants.
 
 ## Enabling and settings in `config.toml`
 
@@ -1039,8 +1071,8 @@ Scalar RPC values are capped at **256 KiB** (`payload_too_large` if exceeded).
 List pages are clamped. Integrity metadata (etag / sha256) rides on
 `PutResult` / `ReadResult`. Optional facilities *within* the ABI are feature
 flags (`rpc.streams`, `rpc.scalarLimits`, `storage.copy`), not a substitute
-for `apiVersion`. Spawn **negotiates** `apiVersion == 3`, matching signed
-`id` / declared `entrypoints` + triggers, required `rpc.streams` +
+for `apiVersion`. Spawn **negotiates** `apiVersion == 3`, matching verified
+provenance-qualified identity / declared `entrypoints` + triggers, required `rpc.streams` +
 `rpc.scalarLimits`, and rejects zero/unsafe limits. There is no `kind` or
 `supportedRoles` on the wire.
 

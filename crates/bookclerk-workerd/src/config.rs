@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use bookclerk_plugin_abi::{Entrypoint, PluginDescribe};
 use bookclerk_plugin_manifest::{
-    manifest_needs_python, with_python_runtime_hosts, EffectiveWorkerdLimits, NetworkMode,
-    PluginManifest,
+    manifest_needs_python, with_python_runtime_hosts, workerd_network_allow, CidrGrant,
+    EffectiveWorkerdLimits, EgressPolicy, NetworkMode, PluginManifest,
 };
 
 use crate::egress::EgressProxy;
@@ -17,6 +17,17 @@ use crate::pin::BUNDLED_WORKERD_COMPAT_DATE;
 const BRIDGE_JS: &str = include_str!("../bridge/bridge.js");
 /// Isolate-side egress proxy that enforces the operator domain grant.
 const EGRESS_JS: &str = include_str!("../bridge/egress.js");
+/// Incoming CONNECT (`connect()` via `globalOutbound`) is experimental-gated
+/// in workerd (workerd#6059). Only the egress worker needs this flag.
+///
+/// The `$experimental` annotation also requires [`WORKERD_SERVE_EXPERIMENTAL`]
+/// on `workerd serve`; the compat flag alone is not enough.
+const EGRESS_COMPAT_FLAGS: &str = r#"compatibilityFlags = ["experimental"],"#;
+/// `workerd serve` flag that unlocks `$experimental` compatibility flags.
+///
+/// Required so the egress worker can export a `connect()` handler. Author
+/// isolates do not receive this compat flag unless their own manifest lists it.
+pub const WORKERD_SERVE_EXPERIMENTAL: &str = "--experimental";
 /// Stub `host` module injected so guest JS can call host RPCs inside the isolate.
 /// Injected as `@bookclerk/plugin-sdk` + `@bookclerk/plugin-sdk/workerd`.
 const SDK_WORKERD_JS: &str = include_str!("../../../packages/plugin-sdk/embed/bookclerk_plugin.js");
@@ -581,7 +592,7 @@ pub fn materialize_native_backend(
 
 const bookclerkPlugin :Workerd.Config = (
   services = [
-    (name = "internet", network = (allow = ["public"])),
+    (name = "internet", network = (allow = [{internet_allow}])),
     (name = "blocked", network = (allow = [])),
     (name = "egress", worker = .egressWorker),
     (name = "adapter", worker = .adapterWorker),
@@ -598,6 +609,7 @@ const egressWorker :Workerd.Worker = (
     (name = "egress.js", esModule = embed ".bookclerk/egress.js")
   ],
   compatibilityDate = "{compat_date}",
+  {egress_flags}
   bindings = [
     (name = "EGRESS_POLICY", json = "{policy_escaped}")
   ],
@@ -633,6 +645,8 @@ const bridgeWorker :Workerd.Worker = (
         extra_services = extra_services,
         adapter_bindings = adapter_bindings,
         bridge_bindings = bridge_bindings,
+        internet_allow = internet_allow_tokens(&policy),
+        egress_flags = EGRESS_COMPAT_FLAGS,
     );
 
     let config_path = state_dir.join("workerd-config.capnp");
@@ -834,7 +848,7 @@ pub fn materialize(
         format!("compatibilityFlags = [{list}],")
     };
 
-    // Host/egress/bridge stay plain JS — never inherit python_workers (heavy).
+    // Host/adapter/bridge stay plain JS — never inherit python_workers (heavy).
     let bridge_flags = String::new();
 
     // Domain allowlist must match consent_request (manifest language + outbound),
@@ -937,7 +951,7 @@ pub fn materialize(
 
 const bookclerkPlugin :Workerd.Config = (
   services = [
-    (name = "internet", network = (allow = ["public"])),
+    (name = "internet", network = (allow = [{internet_allow}])),
     (name = "blocked", network = (allow = [])),
     (name = "egress", worker = .egressWorker),
     (name = "plugin", worker = .pluginWorker),
@@ -955,7 +969,7 @@ const egressWorker :Workerd.Worker = (
     (name = "egress.js", esModule = embed ".bookclerk/egress.js")
   ],
   compatibilityDate = "{compat_date}",
-  {bridge_flags}
+  {egress_flags}
   bindings = [
     (name = "EGRESS_POLICY", json = "{policy_escaped}")
   ],
@@ -1007,6 +1021,8 @@ const bridgeWorker :Workerd.Worker = (
         adapter_bindings = adapter_bindings,
         bridge_bindings = bridge_bindings,
         plugin_outbound = plugin_outbound,
+        internet_allow = internet_allow_tokens(&policy),
+        egress_flags = EGRESS_COMPAT_FLAGS,
     );
 
     let config_path = state_dir.join("workerd-config.capnp");
@@ -1037,6 +1053,20 @@ pub fn plugin_global_outbound(mode: NetworkMode) -> &'static str {
         NetworkMode::Deny => "blocked",
         NetworkMode::Outbound => "egress",
     }
+}
+
+/// Workerd `network.allow` inner list: `public` plus explicit CIDRs, never `private`.
+fn internet_allow_tokens(policy: &EgressPolicy) -> String {
+    let cidrs: Vec<CidrGrant> = policy
+        .address_cidrs
+        .iter()
+        .filter_map(|raw| CidrGrant::parse(raw).ok())
+        .collect();
+    workerd_network_allow(&cidrs)
+        .into_iter()
+        .map(|token| format!("\"{}\"", escape_capnp(&token)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Egress allowlist: plugin domains, plus Pyodide CDN hosts when Python + Outbound.
@@ -1280,6 +1310,7 @@ mode = "deny"
             domains: vec!["api.example.com".into()],
             max_redirects: 10,
             subrequests: Some(limits.subrequests),
+            ..EgressPolicy::deny()
         };
         let v = policy.to_policy_json();
         assert_eq!(v["subrequests"], 50);
@@ -1291,6 +1322,60 @@ mode = "deny"
         }
         .effective();
         assert_eq!(capped.subrequests, WorkerdLimits::MAX_SUBREQUESTS);
+    }
+
+    #[test]
+    fn internet_service_lists_public_and_explicit_cidrs_never_private() {
+        use bookclerk_plugin_manifest::{EgressPolicy, NetworkMode, PluginManifest, WorkerdLimits};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let modules = dir.path().join("modules");
+        std::fs::create_dir_all(&modules).expect("modules dir");
+        std::fs::write(modules.join("index.js"), "export default {};").expect("index.js");
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "workerd"
+entrypoints = ["cli"]
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+[capabilities.network]
+mode = "outbound"
+domains = ["api.example.com"]
+address_cidrs = ["10.0.60.100/32"]
+"#,
+        )
+        .expect("manifest");
+        let mut policy = EgressPolicy::from_manifest(&manifest);
+        policy.mode = NetworkMode::Outbound;
+        policy.address_cidrs = vec!["10.0.60.100/32".into()];
+        let generated = materialize(
+            dir.path(),
+            &manifest,
+            &EgressProxy::from_policy(policy),
+            WorkerdLimits::default().effective(),
+            ListenSpec::TcpLoopback(0),
+            None,
+            "token",
+            None,
+        )
+        .expect("materialize");
+        let capnp = std::fs::read_to_string(&generated.config_path).expect("read capnp");
+        assert!(
+            capnp.contains(r#"allow = ["10.0.60.100/32", "public"]"#)
+                || capnp.contains(r#"allow = ["public", "10.0.60.100/32"]"#),
+            "{capnp}"
+        );
+        assert!(!capnp.contains("\"private\""));
+        assert!(!capnp.contains("\"local\""));
+        assert!(
+            capnp.contains(r#"compatibilityFlags = ["experimental"]"#),
+            "egress worker must opt into inbound CONNECT: {capnp}"
+        );
+        assert_eq!(WORKERD_SERVE_EXPERIMENTAL, "--experimental");
     }
 
     fn socket_names(capnp: &str) -> Vec<String> {

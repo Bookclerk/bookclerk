@@ -62,9 +62,13 @@ pub use bookclerk_plugin_sdk::{
 };
 
 pub use authority::{
-    authority_revision, fence_plugin_key, fence_stale_sessions, is_fenced, register_session,
-    unregister_session,
+    apply_grant_store, authority_revision, fence_plugin_key, fence_stale_grant_revisions,
+    fence_stale_sessions, is_fenced, notify_grants_changed, reconcile_grants_from_disk,
+    register_session, register_session_revisions, register_session_with_shutdown,
+    spawn_grant_watcher, unregister_session, watch_grants_loop, SessionShutdown,
+    GRANT_WATCH_INTERVAL,
 };
+pub use bookclerk_plugin_manifest::TcpGrant;
 pub use bookclerk_plugin_sdk::{JobCheckpoint, JobInvocationLease, JobOutcome};
 pub use builtins::{
     load_integrations, load_sources, register_builtin_integrations, register_builtin_sources,
@@ -85,7 +89,7 @@ pub use consent::{
     PLUGIN_JAIL_CPU_RATE_MAX, PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT, PLUGIN_JAIL_EXTRA_PROCESSES_MAX,
     PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX, PLUGIN_STATE_BUDGET_MIB_DEFAULT,
     PLUGIN_STATE_BUDGET_MIB_MAX, WORKERD_GRANT_CPU_MS_ENV, WORKERD_GRANT_DOMAINS_ENV,
-    WORKERD_GRANT_NETWORK_MODE_ENV, WORKERD_GRANT_SUBREQUESTS_ENV,
+    WORKERD_GRANT_NETWORK_MODE_ENV, WORKERD_GRANT_POLICY_ENV, WORKERD_GRANT_SUBREQUESTS_ENV,
 };
 pub use crates_io::search_crates_io;
 pub use destinations::{build_acquire_destinations, build_storage_backend};
@@ -125,7 +129,7 @@ pub use rpc_session::{
 };
 pub use spawn_plan::{
     GuestRuntimeKind, SpawnPlan, SpawnTransport, WorkerdFrontDoor, NATIVE_BACKEND_ENV,
-    WORKERD_BIN_ENV, WORKERD_LAUNCHER_ENV,
+    NESTED_JAIL_BIN_ENV, NESTED_NATIVE_JAIL_ENV, WORKERD_BIN_ENV, WORKERD_LAUNCHER_ENV,
 };
 
 /// Register discovered external plugins into the in-process registries.

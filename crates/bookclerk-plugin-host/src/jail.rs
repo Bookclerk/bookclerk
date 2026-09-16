@@ -486,10 +486,11 @@ fn jail_net_policy(
         // `bookclerk-workerd` must `bind(127.0.0.1:0)` for the host↔isolate RPC
         // bridge, for author isolates and native backends alike. Linux Landlock
         // has no loopback-only policy, so `OutboundListen` also permits
-        // `connect`. Isolate egress (`WORKERD_GRANT_NETWORK_MODE` →
+        // `connect` for the launcher. Isolate egress (`WORKERD_GRANT_*` →
         // `globalOutbound = blocked` under deny) remains the grant enforcement
-        // layer for isolates; a native backend's own sockets are not
-        // OS-denied on this path.
+        // layer for isolates. Native-behind-workerd guests are wrapped in a
+        // nested `NetPolicy::Deny` jail (`native_guest.rs`) and must use the
+        // SDK socket proxy rather than ambient `AF_INET`.
         return NetPolicy::OutboundListen;
     }
     let denied = grant.is_some_and(|g| g.network_mode.eq_ignore_ascii_case("deny"));
@@ -785,7 +786,7 @@ entrypoints = ["{entrypoint}"]
 
     /// Front-door plan against fake `bookclerk-workerd` + `workerd` files in `helpers`.
     fn fronted(plugin: &DiscoveredPlugin, helpers: &Path) -> SpawnPlan {
-        for name in ["bookclerk-workerd", "workerd"] {
+        for name in ["bookclerk-workerd", "workerd", "bookclerk-jail"] {
             let path = helpers.join(name);
             if !path.exists() {
                 std::fs::write(&path, b"").expect("fake helper");
@@ -979,9 +980,9 @@ entrypoints = ["{entrypoint}"]
     }
 
     /// The product path: the jail execs `bookclerk-workerd`, which execs the
-    /// pinned `workerd` and the native backend. All three must stay readable,
-    /// the loopback bridge needs `OutboundListen`, and the pids budget counts
-    /// the whole launcher tree.
+    /// pinned `workerd`, the nested `bookclerk-jail`, and the native backend.
+    /// All four must stay readable, the loopback bridge needs `OutboundListen`,
+    /// and the pids budget counts the whole launcher tree.
     #[test]
     fn a_native_guest_behind_workerd_gets_the_launcher_tree_grants() {
         let files = tempfile::tempdir().expect("tempdir");
@@ -1006,6 +1007,9 @@ entrypoints = ["{entrypoint}"]
             &plan.launcher,
             plan.workerd_bin.as_ref().expect("workerd bin"),
             &plugin.command,
+            plan.nested_jail_helper()
+                .as_ref()
+                .expect("nested jail beside launcher"),
         ] {
             assert!(
                 spec.reads.iter().any(|r| exe.starts_with(r)),
@@ -1114,6 +1118,7 @@ entrypoints = ["{entrypoint}"]
             cpu_rate_percent: None,
             extra_processes: None,
             approved_at: "2026-01-01T00:00:00Z".into(),
+            ..PluginGrant::empty()
         };
         let denied = build_spec_with_grant(
             &workerd,
@@ -1162,6 +1167,7 @@ entrypoints = ["{entrypoint}"]
                 cpu_rate_percent: None,
                 extra_processes: None,
                 approved_at: "2026-01-01T00:00:00Z".into(),
+                ..PluginGrant::empty()
             }),
         );
         assert_eq!(native_denied.net, NetPolicy::Deny);
@@ -1263,6 +1269,7 @@ entrypoints = ["{entrypoint}"]
                 cpu_rate_percent: Some(40),
                 extra_processes: Some(4),
                 approved_at: "2026-01-01T00:00:00Z".into(),
+                ..PluginGrant::empty()
             }),
         );
         assert_eq!(native_with_grant.memory_bytes, Some(256 * 1024 * 1024));
@@ -1353,6 +1360,7 @@ entrypoints = ["{entrypoint}"]
                 cpu_rate_percent: Some(want),
                 extra_processes: Some(2),
                 approved_at: "2026-01-01T00:00:00Z".into(),
+                ..PluginGrant::empty()
             }),
         );
         assert_eq!(spec.cpu_rate_percent, Some(want));

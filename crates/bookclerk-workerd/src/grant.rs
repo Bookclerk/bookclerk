@@ -21,6 +21,8 @@ pub const GRANT_DOMAINS_ENV: &str = "BOOKCLERK_WORKERD_GRANT_DOMAINS";
 pub const GRANT_CPU_MS_ENV: &str = "BOOKCLERK_WORKERD_GRANT_CPU_MS";
 /// Env: workerd subrequest budget override.
 pub const GRANT_SUBREQUESTS_ENV: &str = "BOOKCLERK_WORKERD_GRANT_SUBREQUESTS";
+/// Env: canonical JSON [`EgressPolicy`] (preferred over piecemeal domain vars).
+pub const GRANT_POLICY_ENV: &str = "BOOKCLERK_WORKERD_GRANT_POLICY";
 
 /// Optional operator grant fields parsed from the process environment.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -29,6 +31,8 @@ pub struct OperatorGrantEnv {
     pub network_mode: Option<NetworkMode>,
     /// Domain allowlist subset (`Some` even when empty).
     pub domains: Option<Vec<String>>,
+    /// Canonical policy JSON when the host injected [`GRANT_POLICY_ENV`].
+    pub policy: Option<EgressPolicy>,
     /// CPU budget override (milliseconds).
     pub cpu_ms: Option<u32>,
     /// Subrequest budget override.
@@ -42,6 +46,9 @@ impl OperatorGrantEnv {
     /// Invalid mode / non-numeric limits are ignored (fail open to manifest).
     #[must_use]
     pub fn from_env() -> Self {
+        let policy = std::env::var(GRANT_POLICY_ENV)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<EgressPolicy>(&raw).ok());
         Self {
             network_mode: std::env::var(GRANT_NETWORK_MODE_ENV)
                 .ok()
@@ -54,6 +61,7 @@ impl OperatorGrantEnv {
                     .map(str::to_string)
                     .collect()
             }),
+            policy,
             cpu_ms: parse_u32_env(GRANT_CPU_MS_ENV),
             subrequests: parse_u32_env(GRANT_SUBREQUESTS_ENV),
         }
@@ -64,6 +72,7 @@ impl OperatorGrantEnv {
     pub fn is_empty(&self) -> bool {
         self.network_mode.is_none()
             && self.domains.is_none()
+            && self.policy.is_none()
             && self.cpu_ms.is_none()
             && self.subrequests.is_none()
     }
@@ -74,6 +83,21 @@ impl OperatorGrantEnv {
     /// Python + outbound guests still receive Pyodide CDN hosts.
     #[must_use]
     pub fn apply_egress(&self, manifest: &PluginManifest, egress: EgressProxy) -> EgressProxy {
+        if let Some(ref policy) = self.policy {
+            let mut policy = policy.clone();
+            if let Some(sub) = self.clamped_subrequests() {
+                policy.subrequests = Some(match policy.subrequests {
+                    Some(existing) => existing.min(sub),
+                    None => sub,
+                });
+            }
+            policy.domains = with_python_runtime_hosts(
+                manifest_needs_python(manifest),
+                policy.mode,
+                &policy.domains,
+            );
+            return EgressProxy::from_policy(policy);
+        }
         let mut policy = egress.policy().clone();
 
         if let Some(mode) = self.network_mode {
@@ -213,6 +237,7 @@ domains = [
         let grant = OperatorGrantEnv {
             network_mode: Some(NetworkMode::Outbound),
             domains: Some(vec!["api.example.com".into()]),
+            policy: None,
             cpu_ms: Some(15_000),
             subrequests: Some(10),
         };
@@ -235,6 +260,7 @@ domains = [
         let grant = OperatorGrantEnv {
             network_mode: Some(NetworkMode::Deny),
             domains: Some(vec![]),
+            policy: None,
             cpu_ms: None,
             subrequests: Some(5),
         };
@@ -249,6 +275,7 @@ domains = [
         let grant = OperatorGrantEnv {
             network_mode: None,
             domains: None,
+            policy: None,
             cpu_ms: Some(60_000),
             subrequests: Some(200),
         };
@@ -266,6 +293,7 @@ domains = [
         let grant = OperatorGrantEnv {
             network_mode: None,
             domains: None,
+            policy: None,
             cpu_ms: Some(WorkerdLimits::MAX_CPU_MS + 50),
             subrequests: Some(WorkerdLimits::MAX_SUBREQUESTS + 50),
         };

@@ -333,8 +333,10 @@ pub struct ExecutorIdentity {
     pub account_id: String,
     /// Configuration revision (installed `plugin.toml` SHA-256).
     pub configuration_revision: String,
-    /// Grant revision (revocation changes this).
+    /// Grant revision (persisted operator consent; revocation changes this).
     pub grant_revision: String,
+    /// Effective runtime authority (host overlays + clamped budgets).
+    pub authority_revision: String,
     /// `workerd` / `native-behind-workerd` / `native-direct`
     /// ([`GuestRuntimeKind::label`]).
     pub runtime_backend: String,
@@ -386,6 +388,7 @@ impl ExecutorIdentity {
             account_id: account_id.to_string(),
             configuration_revision: plugin.identity.artifact.manifest_sha256.clone(),
             grant_revision: String::new(),
+            authority_revision: String::new(),
             runtime_backend: runtime.label().to_string(),
             compatibility_date: plugin
                 .manifest
@@ -396,10 +399,27 @@ impl ExecutorIdentity {
         }
     }
 
-    /// Fills [`Self::grant_revision`] from the covering consent grant.
+    /// Fills persisted [`Self::grant_revision`] and effective
+    /// [`Self::authority_revision`] from a grant snapshot.
+    ///
+    /// When host overlays apply, pass the persisted grant to
+    /// [`Self::with_persisted_and_effective`].
     #[must_use]
     pub fn with_grant_revision(mut self, grant: &crate::PluginGrant) -> Self {
         self.grant_revision = crate::consent::grant_revision(grant);
+        self.authority_revision = crate::authority::authority_revision(grant);
+        self
+    }
+
+    /// Fills revisions from a persisted operator grant and the effective runtime grant.
+    #[must_use]
+    pub fn with_persisted_and_effective(
+        mut self,
+        persisted: &crate::PluginGrant,
+        effective: &crate::PluginGrant,
+    ) -> Self {
+        self.grant_revision = crate::consent::grant_revision(persisted);
+        self.authority_revision = crate::authority::authority_revision(effective);
         self
     }
 
@@ -408,7 +428,7 @@ impl ExecutorIdentity {
     #[must_use]
     pub fn session_key(&self) -> String {
         format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             self.plugin_id,
             self.artifact_digest,
             self.version,
@@ -416,6 +436,7 @@ impl ExecutorIdentity {
             self.account_id,
             self.configuration_revision,
             self.grant_revision,
+            self.authority_revision,
             self.runtime_backend,
             self.compatibility_date
         )
@@ -633,40 +654,48 @@ impl PluginSession {
         let instance_key = plugin_instance_key(&id, account_id);
         let identity = ExecutorIdentity::from_plugin_with_runtime(plugin, account_id, plan.runtime)
             .with_grant_revision(&grant);
-        let authority_fence = crate::authority::register_session(
-            plugin.plugin_key().canonical(),
-            &identity.grant_revision,
-        );
+        let files_dir = spawned.files_dir.clone();
         let (tx, rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) =
             oneshot::channel::<Result<(PluginDescribe, ScalarLimits, Vec<String>)>>();
         let vat_account = account_id.to_string();
-        if let Err(err) = thread::Builder::new()
-            .name(format!("plugin-vat-{}", id))
+        thread::Builder::new()
+            .name(vat_thread_name(&id))
             .spawn(move || vat_thread(spawned, manifest, vat_account, events, rx, ready_tx))
-        {
-            crate::authority::unregister_session(&authority_fence);
-            return Err(PluginError::message(format!("plugin vat thread: {err}")));
-        }
-        let (desc, limits, features) = match ready_rx.await {
-            Ok(Ok(ready)) => ready,
-            Ok(Err(err)) => {
-                crate::authority::unregister_session(&authority_fence);
-                return Err(err);
-            }
-            Err(err) => {
-                crate::authority::unregister_session(&authority_fence);
-                return Err(PluginError::message(format!("plugin vat dropped: {err}")));
-            }
-        };
+            .map_err(|err| PluginError::message(format!("plugin vat thread: {err}")))?;
+        // Live-session registration happens after describe succeeds; pre-register
+        // failures must not call unregister_session.
+        let (desc, limits, features) = ready_rx
+            .await
+            .map_err(|err| PluginError::message(format!("plugin vat dropped: {err}")))??;
         if desc.api_version != PRODUCT_API_VERSION {
-            crate::authority::unregister_session(&authority_fence);
             let _ = tx.send(Work::Shutdown);
             return Err(PluginError::message(format!(
                 "plugin `{id}` describe apiVersion {} is not {PRODUCT_API_VERSION}",
                 desc.api_version
             )));
         }
+        match crate::consent::spawn_grant(&files_dir, plugin) {
+            Ok(fresh)
+                if crate::authority::authority_revision(&fresh) == identity.authority_revision => {}
+            Ok(_) => {
+                let _ = tx.send(Work::Shutdown);
+                return Err(crate::authority::fenced_error());
+            }
+            Err(err) => {
+                let _ = tx.send(Work::Shutdown);
+                return Err(err);
+            }
+        }
+        let shutdown_tx = tx.clone();
+        let authority_fence = crate::authority::register_session_revisions(
+            plugin.plugin_key().canonical(),
+            &identity.grant_revision,
+            &identity.authority_revision,
+            Arc::new(move || {
+                let _ = shutdown_tx.send(Work::Shutdown);
+            }),
+        );
         Ok(Self {
             tx,
             id,
@@ -1791,6 +1820,14 @@ async fn open_database_adapter(
         .ok_or_else(|| missing_entrypoint("databaseAdapter"))
 }
 
+/// Short OS thread name (Linux `TASK_COMM_LEN` is 16 bytes including NUL).
+fn vat_thread_name(plugin_key: &str) -> String {
+    let alias = plugin_key.rsplit('#').next().unwrap_or("plugin");
+    let mut name = format!("bc-{alias}");
+    name.truncate(15);
+    name
+}
+
 fn vat_thread(
     spawned: crate::spawn_stdio::SpawnedStdio,
     manifest: PluginManifest,
@@ -1813,11 +1850,14 @@ fn vat_thread(
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async move {
+                let grant = spawned.grant;
+                let mut child = spawned.child;
+                let stderr_tail = spawned.stderr_tail;
                 let (client, rpc) =
                     connect_plugin(spawned.stdout, spawned.stdin, MAX_STREAM_WINDOW_BYTES);
                 tokio::task::spawn_local(rpc);
                 let client = match client.describe().await {
-                    Ok(desc) => match negotiate_describe(&desc, &manifest, &spawned.grant) {
+                    Ok(desc) => match negotiate_describe(&desc, &manifest, &grant) {
                         Ok((limits, features)) => {
                             let client = client.with_limits(limits);
                             let _ = ready.send(Ok((desc, limits, features)));
@@ -1829,7 +1869,13 @@ fn vat_thread(
                         }
                     },
                     Err(err) => {
-                        let _ = ready.send(Err(map_abi(err)));
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        let extra =
+                            crate::spawn_stdio::spawn_failure_detail(&mut child, &stderr_tail);
+                        let _ = ready.send(Err(crate::spawn_stdio::with_spawn_detail(
+                            map_abi(err),
+                            extra,
+                        )));
                         return;
                     }
                 };
@@ -2401,7 +2447,7 @@ fn vat_thread(
                         }
                     }
                 }
-                drop(spawned.child);
+                drop(child);
             })
             .await;
     });
@@ -2906,6 +2952,16 @@ mod tests {
             plugin_instance_key("local", OPERATOR_ACCOUNT),
             plugin_instance_key("local", "acct-a")
         );
+    }
+
+    #[test]
+    fn vat_thread_name_stays_short_and_uses_alias() {
+        assert_eq!(
+            super::vat_thread_name("path:file:///tmp/install#postgres"),
+            "bc-postgres"
+        );
+        assert_eq!(super::vat_thread_name("sqlite").len(), 9);
+        assert!(super::vat_thread_name("sqlite").len() <= 15);
     }
 
     fn manifest_with(entrypoint: &str) -> PluginManifest {

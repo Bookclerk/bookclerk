@@ -158,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
         event_node_id: std::sync::OnceLock::new(),
     });
 
+    bookclerk_plugin_host::spawn_grant_watcher(paths.files_dir.clone());
     start_integration_watchers(&state).await;
     if let Err(err) = crate::oidc::sync_plugin_oidc_clients(&state).await {
         tracing::warn!(error = %err, "failed to sync plugin OIDC clients");

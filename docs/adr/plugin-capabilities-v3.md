@@ -93,6 +93,23 @@ payloads for several storefront / integration surfaces, and a reverse
    `crates/bookclerk-workerd/tests/conformance.rs` plus
    `bookclerk-workerd-native-fixture` keep the transports honest.
 
+8. **One network policy engine.** `fetch()`, workerd `connect()`, and the
+   native-behind-workerd socket proxy consume the same `EgressPolicy`:
+   fetch hosts, TCP `host+ports`, redirect consent, and CIDR address-space
+   grants. Fetch does not imply TCP. Default address space is public
+   Internet only. Native guests are nested under `NetPolicy::Deny` and must
+   use the SDK socket capability; the launcher jail stays `OutboundListen`
+   for the RPC bridge. Grant mutation is live: `plugin-grants.json` changes
+   fence running vats immediately (vat shutdown + kill child + drop the
+   socket proxy and granted channels), including CLI writes observed by
+   `bookclerkd`. Idle mediated TCP is interrupted on the fence; enforcement
+   does not wait for the next host RPC. `grant_revision` (persisted operator
+   consent) is distinct from `authority_revision` (effective runtime grant
+   after host overlays and clamped budgets) and from
+   `configuration_revision` (manifest / host-config hash). The grant
+   watcher compares grant revisions only and retries malformed files
+   without mass-fencing.
+
 ## Consequences
 
 - Daemon / CLI / UI group plugins by handler family, not `PluginKind`.

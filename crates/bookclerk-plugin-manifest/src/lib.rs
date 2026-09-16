@@ -47,6 +47,7 @@
 //! assert_eq!(manifest.id, "echo");
 //! ```
 
+pub mod address;
 pub mod egress;
 pub mod error;
 pub mod fmt;
@@ -54,9 +55,14 @@ pub mod id;
 pub mod logo;
 pub mod types;
 
+pub use address::{
+    address_allowed, canonical_ip, is_public_internet, is_restricted_hostname,
+    workerd_network_allow, CidrGrant,
+};
+
 pub use egress::{
     consent_domains_for, host_matches, manifest_needs_python, normalize_domain_pattern,
-    normalize_hostname, with_python_runtime_hosts, EgressPolicy, DEFAULT_MAX_REDIRECTS,
+    normalize_hostname, with_python_runtime_hosts, EgressPolicy, TcpGrant, DEFAULT_MAX_REDIRECTS,
     PYODIDE_EGRESS_HOSTS,
 };
 pub use error::{Error, Result};

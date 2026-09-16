@@ -1,29 +1,25 @@
 /**
- * Domain-allowlisted egress for plugin `fetch()`.
+ * Domain-allowlisted egress for plugin `fetch()` and TCP `connect()`.
  *
  * Bound as the plugin's `globalOutbound`. Policy JSON is injected by
- * bookclerk-workerd (`mode`, `domains`, `maxRedirects`, optional `subrequests`).
+ * bookclerk-workerd (`mode`, `domains`, `maxRedirects`, `subrequests`,
+ * `allowUndeclaredPublicRedirects`, `tcp`, `addressCidrs`).
  *
  * - Initial (hop 0) hosts must match `domains` (IDNA ASCII; reject `%` / non-ASCII).
- * - Redirect hops after an allowed initial host are followed without re-allowlisting
- *   (intentional — hops stay free so storefront APIs can bounce across CDNs).
+ * - Redirect hops must also match `domains` unless `allowUndeclaredPublicRedirects`
+ *   is set. That flag never grants loopback, RFC1918, link-local, or metadata.
+ * - Workerd `internet` `allow = ["public", …cidrs]` is the resolved-address
+ *   layer (SSRF / DNS rebinding). This script is hostname policy.
+ * - TCP `connect` requires a matching `tcp[]` host+port grant. Fetch grants
+ *   do not imply TCP. Author isolates keep using `import { connect } from
+ *   "cloudflare:sockets"`; this worker is the gateway, not a polyfill.
  * - When `policy.subrequests` is a finite number, each network hop in **this**
- *   egress invocation (the plugin's one `fetch()` plus its redirect chain)
- *   counts toward the budget; exceeding it returns 429. The counter is
- *   intentionally local to the invocation — Cloudflare Workers also budget
- *   subrequests per invocation, not per isolate lifetime. Aggregating across
- *   multiple plugin `fetch()` calls inside one host RPC needs a defined
- *   invocation unit comparable to CF's request model (deferred).
+ *   egress invocation counts toward the budget.
  * - Redirect method/body and Authorization stripping follow the Fetch
- *   HTTP-redirect fetch algorithm (https://fetch.spec.whatwg.org/#http-redirect-fetch):
- *   - 301/302 + POST → GET with null body
- *   - 303 + non-GET/HEAD → GET with null body
- *   - 307/308 preserve method/body
- *   - Cross-origin redirects drop Authorization (CORS non-wildcard request-header)
- * - Defense in depth: also drop Cookie / Cookie2 / Proxy-Authorization on
- *   cross-origin hops (plugin bridges forward caller headers explicitly).
- * - AbortSignal and other RequestInit metadata survive redirects.
+ *   HTTP-redirect fetch algorithm.
  */
+
+import { connect } from "cloudflare:sockets";
 
 const CREDENTIAL_HEADERS = [
   "authorization",
@@ -64,11 +60,100 @@ function normalizeHostToken(host) {
   return h;
 }
 
+function parseIpv4(host) {
+  const h = normalizeHostToken(host);
+  if (h == null) return null;
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!v4) return null;
+  const o = v4.slice(1).map((n) => Number(n));
+  if (o.some((n) => n > 255)) return null;
+  return (o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3];
+}
+
+function isPublicIpv4(addr) {
+  const a = (addr >>> 24) & 0xff;
+  const b = (addr >>> 16) & 0xff;
+  if (a === 0 || a === 10 || a === 127) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 192 && b === 168) return false;
+  if (a === 169 && b === 254) return false;
+  if (a === 100 && b >= 64 && b <= 127) return false;
+  if (a === 198 && (b === 18 || b === 19)) return false;
+  return true;
+}
+
+function cidrContainsIpv4(cidr, addr) {
+  const parts = String(cidr).split("/");
+  const net = parseIpv4(parts[0]);
+  if (net == null) return false;
+  const prefix = parts.length > 1 ? Number(parts[1]) : 32;
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return false;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return ((addr >>> 0) & mask) === ((net >>> 0) & mask);
+}
+
+function ipv4Granted(addr, policy) {
+  if (isPublicIpv4(addr)) return true;
+  const cidrs = policy.addressCidrs || [];
+  return cidrs.some((c) => cidrContainsIpv4(c, addr));
+}
+
+function isRestrictedHostname(host) {
+  const h = normalizeHostToken(host);
+  if (h == null) return true;
+  return (
+    h === "localhost" ||
+    h === "localhost.localdomain" ||
+    h.endsWith(".localhost") ||
+    h === "metadata.google.internal"
+  );
+}
+
+function hostnameAddressOk(host, policy) {
+  const cidrs = policy.addressCidrs || [];
+  if (isRestrictedHostname(host)) {
+    const loop4 = parseIpv4("127.0.0.1");
+    return cidrs.some((c) => cidrContainsIpv4(c, loop4) || String(c).startsWith("::1"));
+  }
+  const addr = parseIpv4(host);
+  if (addr != null) {
+    return ipv4Granted(addr, policy);
+  }
+  if (normalizeHostToken(host) === "::1") {
+    return cidrs.some((c) => String(c) === "::1/128" || String(c) === "::1");
+  }
+  return true;
+}
+
 function allowsInitial(host, policy) {
   if (policy.mode !== "outbound") return false;
+  if (!hostnameAddressOk(host, policy)) return false;
   const normalized = normalizeHostToken(host);
   if (normalized == null) return false;
   return (policy.domains || []).some((d) => hostMatches(normalized, d));
+}
+
+function allowsRedirect(host, hop, policy, maxRedirects) {
+  if (policy.mode !== "outbound") return false;
+  if (hop >= maxRedirects) return false;
+  if (!hostnameAddressOk(host, policy)) return false;
+  if (policy.allowUndeclaredPublicRedirects) {
+    return true;
+  }
+  const normalized = normalizeHostToken(host);
+  if (normalized == null) return false;
+  return (policy.domains || []).some((d) => hostMatches(normalized, d));
+}
+
+function allowsTcp(host, port, policy) {
+  if (policy.mode !== "outbound") return false;
+  if (!hostnameAddressOk(host, policy)) return false;
+  const normalized = normalizeHostToken(host);
+  if (normalized == null) return false;
+  const grants = policy.tcp || [];
+  return grants.some(
+    (g) => hostMatches(normalized, g.host) && Array.isArray(g.ports) && g.ports.includes(port),
+  );
 }
 
 function sameOrigin(a, b) {
@@ -158,11 +243,41 @@ function subrequestBudget(policy) {
   return n;
 }
 
+function parseAuthority(authority) {
+  if (typeof authority !== "string" || !authority) {
+    return { hostname: "", port: 0 };
+  }
+  if (authority.startsWith("[")) {
+    const end = authority.indexOf("]");
+    if (end === -1) return { hostname: authority, port: 0 };
+    const hostname = authority.slice(1, end);
+    const rest = authority.slice(end + 1);
+    const port = rest.startsWith(":") ? Number(rest.slice(1)) : 0;
+    return { hostname, port };
+  }
+  const idx = authority.lastIndexOf(":");
+  if (idx === -1) return { hostname: authority, port: 0 };
+  return {
+    hostname: authority.slice(0, idx),
+    port: Number(authority.slice(idx + 1)),
+  };
+}
+
+/** Workerd `json` bindings arrive as objects; keep string parse for tests. */
+function loadPolicy(raw) {
+  if (raw == null || raw === "") return {};
+  if (typeof raw === "string") {
+    return JSON.parse(raw);
+  }
+  if (typeof raw === "object") return raw;
+  throw new Error("invalid egress policy type");
+}
+
 export default {
   async fetch(request, env) {
     let policy;
     try {
-      policy = JSON.parse(env.EGRESS_POLICY || "{}");
+      policy = loadPolicy(env.EGRESS_POLICY);
     } catch {
       return new Response("invalid egress policy", { status: 500 });
     }
@@ -190,8 +305,13 @@ export default {
             { status: 403 },
           );
         }
-      } else if (hop >= maxRedirects) {
-        return new Response("too many redirects", { status: 508 });
+      } else if (!allowsRedirect(url.hostname, hop, policy, maxRedirects)) {
+        return new Response(
+          hop >= maxRedirects
+            ? "too many redirects"
+            : `redirect host \`${url.hostname}\` is not permitted`,
+          { status: hop >= maxRedirects ? 508 : 403 },
+        );
       }
 
       if (subrequestLimit != null && subrequestCount >= subrequestLimit) {
@@ -220,5 +340,45 @@ export default {
       }
       return response;
     }
+  },
+
+  /**
+   * Inbound CONNECT from the plugin isolate's `cloudflare:sockets` `connect()`.
+   *
+   * `socket.opened.localAddress` is the CONNECT authority (`host:port`) the
+   * peer targeted. Dial the destination through this worker's `internet`
+   * service after TCP policy checks, then splice streams.
+   */
+  async connect(socket, env) {
+    let policy;
+    try {
+      policy = loadPolicy(env.EGRESS_POLICY);
+    } catch {
+      throw new Error("invalid egress policy");
+    }
+    if (policy.mode === "deny") {
+      throw new Error("network denied by plugin capabilities");
+    }
+    const opened = await socket.opened;
+    const authority = (opened && opened.localAddress) || "";
+    const parsed = parseAuthority(authority);
+    const hostname = parsed.hostname;
+    const port = parsed.port;
+    if (!allowsTcp(hostname, port, policy)) {
+      try {
+        await socket.close();
+      } catch {
+        /* already closed */
+      }
+      throw new Error(
+        `tcp connect \`${hostname}:${port}\` is not in capabilities.network.tcp`,
+      );
+    }
+    const outbound = connect({ hostname, port });
+    await outbound.opened;
+    await Promise.all([
+      socket.readable.pipeTo(outbound.writable),
+      outbound.readable.pipeTo(socket.writable),
+    ]);
   },
 };

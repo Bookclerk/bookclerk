@@ -15,14 +15,16 @@ pub mod ensure;
 pub mod grant;
 pub mod granted;
 pub mod invoke;
+pub mod native_guest;
 pub mod pin;
+pub mod socket_proxy;
 #[cfg(unix)]
 pub mod unix_bind;
 
 pub use bridge_http::generate_bridge_token;
 pub use config::{
     adapter_binding_plan, generated_backend_proxy_plan, materialize_native_backend, BindingSpec,
-    BindingTarget, EntrypointSource, GeneratedConfig, ListenSpec,
+    BindingTarget, EntrypointSource, GeneratedConfig, ListenSpec, WORKERD_SERVE_EXPERIMENTAL,
 };
 pub use egress::EgressProxy;
 pub use ensure::{ensure_workerd, workerd_bin_path};

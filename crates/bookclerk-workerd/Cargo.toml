@@ -33,6 +33,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 bookclerk-plugin-abi.workspace = true
 bookclerk-plugin-manifest.workspace = true
+bookclerk-sandbox.workspace = true
 capnp.workspace = true
 capnp-rpc.workspace = true
 flate2 = "1"

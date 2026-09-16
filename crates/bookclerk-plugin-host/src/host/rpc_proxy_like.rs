@@ -254,6 +254,28 @@ async fn production_rpc_proxy_keeps_like_through_sqlite_guest() {
     assert_like_through_production_proxy(&config, &staged.plugin).await;
 }
 
+/// Describe-only: no live Postgres. Catches workerd/native spawn regressions
+/// that the ignored LIKE vector only runs in the postgres CI job.
+#[tokio::test]
+async fn postgres_guest_describes_through_workerd() {
+    let Some(staged) = stage_first_party_guest("postgres") else {
+        eprintln!(
+            "skipping: build bookclerk-plugin-database-postgres (cargo build -p bookclerk-plugin-database-postgres)"
+        );
+        return;
+    };
+    eprintln!(
+        "postgres PluginKey={} command={}",
+        staged.plugin.plugin_key().canonical(),
+        staged.plugin.command.display()
+    );
+    let config = guest_config(&staged, "postgres", None);
+    approve_guest(&config, &staged.plugin);
+    let _ext = ExternalDatabase::spawn(&staged.plugin, &config)
+        .await
+        .unwrap_or_else(|err| panic!("spawn postgres describe: {err}"));
+}
+
 #[tokio::test]
 #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and bookclerk-plugin-database-postgres"]
 async fn production_rpc_proxy_keeps_like_through_postgres_guest() {

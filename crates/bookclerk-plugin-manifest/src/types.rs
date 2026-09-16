@@ -102,8 +102,9 @@ pub enum PluginRuntimeKind {
     /// OS binary speaking the Workers RPC ABI, spawned through `bookclerk-jail`.
     ///
     /// Requires a non-empty `command`. Must not declare
-    /// `capabilities.network.domains` (native outbound is coarse jail
-    /// networking with no hostname filter).
+    /// `capabilities.network.domains` (fetch allowlists are workerd-only).
+    /// Raw TCP uses `capabilities.network.tcp` via the Bookclerk socket
+    /// capability; ambient `AF_INET` is not a grant.
     #[default]
     Native,
     /// Author modules loaded by first-party `bookclerk-workerd` (one jail +
@@ -128,10 +129,21 @@ pub enum NetworkMode {
     /// Coarse jail outbound (native) or workerd isolate egress.
     ///
     /// For **workerd**, pair with `domains` (isolate hostname allowlist;
-    /// required and validated). For **native**, do **not** set `domains` —
-    /// the OS jail cannot filter by hostname; outbound means open internet
-    /// (plus oauth listen when `bindings.oauth` is set).
+    /// required and validated). For **native**, do **not** set `domains`;
+    /// declare `tcp` for mediated `connect()`. Ambient internet sockets are
+    /// not a grant (native-behind-workerd nested jail is `NetPolicy::Deny`).
     Outbound,
+}
+
+/// One raw TCP grant: hostname or wildcard plus allowed destination ports.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(deny_unknown_fields)]
+pub struct TcpCapability {
+    /// Hostname or `*.` prefix wildcard (IDNA-normalized at validate time).
+    pub host: String,
+    /// Destination ports that may be dialed. Empty is fail-closed (no ports).
+    #[serde(default)]
+    pub ports: Vec<u16>,
 }
 
 /// `[capabilities.network]` — mode plus optional workerd host allowlist.
@@ -149,6 +161,18 @@ pub struct NetworkCapabilities {
     /// `runtime = "native"` and non-empty for workerd + outbound.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub domains: Vec<String>,
+    /// Raw TCP (`connect`) grants. Fetch allowlists do not imply these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tcp: Vec<TcpCapability>,
+    /// When true, fetch redirects may target undeclared **public** hosts.
+    ///
+    /// Address-space policy still applies: loopback / RFC1918 / link-local /
+    /// metadata never piggy-back on this flag.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_undeclared_public_redirects: bool,
+    /// Explicit CIDR grants beyond the public Internet (no blanket `private`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub address_cidrs: Vec<String>,
 }
 
 impl Default for NetworkCapabilities {
@@ -156,6 +180,9 @@ impl Default for NetworkCapabilities {
         Self {
             mode: NetworkMode::Deny,
             domains: vec![],
+            tcp: vec![],
+            allow_undeclared_public_redirects: false,
+            address_cidrs: vec![],
         }
     }
 }
@@ -529,7 +556,7 @@ fn default_module_type() -> String {
 /// - `id` must pass [`crate::validate_plugin_id`]
 /// - at least one entrypoint or trigger must be declared
 /// - native requires `command`; workerd requires `[workerd]` with date + main
-/// - `domains` forbidden on native; required for workerd + outbound
+/// - `domains` forbidden on native (use `tcp` for mediated sockets); required for workerd + outbound
 /// - optional `logo` must pass [`crate::validate_logo`]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -984,7 +1011,7 @@ impl PluginManifest {
         {
             return Err(Error::message(
                 "plugin.toml: capabilities.network.domains is only valid for runtime = \"workerd\" \
-                 (native outbound is coarse jail networking with no hostname filter — omit domains)",
+                 (native guests use capabilities.network.tcp for mediated connect(); omit domains)",
             ));
         }
         if self.runtime == PluginRuntimeKind::Workerd
@@ -1003,6 +1030,27 @@ impl PluginManifest {
                      hostname (IDNA ToASCII failed or percent-encoded host)"
                 )));
             }
+        }
+        for tcp in &self.capabilities.network.tcp {
+            if crate::egress::normalize_domain_pattern(&tcp.host).is_none() {
+                return Err(Error::message(format!(
+                    "plugin.toml: capabilities.network.tcp host `{}` is not a valid hostname",
+                    tcp.host
+                )));
+            }
+            if tcp.ports.is_empty() {
+                return Err(Error::message(format!(
+                    "plugin.toml: capabilities.network.tcp host `{}` must declare at least one port",
+                    tcp.host
+                )));
+            }
+        }
+        for cidr in &self.capabilities.network.address_cidrs {
+            crate::address::CidrGrant::parse(cidr).map_err(|err| {
+                Error::message(format!(
+                    "plugin.toml: capabilities.network.address_cidrs entry `{cidr}`: {err}"
+                ))
+            })?;
         }
         if self.entrypoints.is_empty() && !self.consumes_events() && !self.runs_jobs() {
             return Err(Error::message(
@@ -1159,13 +1207,13 @@ impl PluginManifest {
 
     /// Maps manifest network + oauth binding to OS jail network policy.
     ///
-    /// Native guests get coarse jail outbound ([`JailNetworkNeed::Outbound`])
-    /// when `mode = "outbound"`; **hostname allowlists are not supported** on
-    /// native (see `domains` / workerd). With `bindings.oauth`, native guests
-    /// also need loopback listen for the host OAuth callback tunnel
-    /// ([`JailNetworkNeed::Listen`]). Workerd always needs loopback
-    /// listen/connect to its Cloudflare child (domain policy is enforced
-    /// inside the isolate when `domains` are set).
+    /// Native-behind-workerd guests are nested under `NetPolicy::Deny`; they
+    /// must use the SDK socket capability, not ambient `AF_INET`. Direct-native
+    /// diagnostics still map `mode = "outbound"` to
+    /// [`JailNetworkNeed::Outbound`]. Fetch hostname allowlists (`domains`)
+    /// remain workerd-only. With `[oauth]`, native guests also need loopback
+    /// listen for the host callback tunnel ([`JailNetworkNeed::Listen`]).
+    /// Workerd always needs loopback listen/connect to its Cloudflare child.
     ///
     /// # Returns
     ///
@@ -1799,6 +1847,28 @@ mode = "outbound"
             "native outbound + oauth needs loopback listen"
         );
         assert!(m.logo_kind().unwrap().is_none());
+    }
+
+    #[test]
+    fn native_outbound_tcp_ok() {
+        let m = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "audible"
+runtime = "native"
+command = "./bookclerk-plugin-source-audible"
+entrypoints = ["storefront"]
+[capabilities.network]
+mode = "outbound"
+tcp = [{ host = "api.audible.com", ports = [443] }]
+[oauth]
+[secrets]
+"#,
+        )
+        .unwrap();
+        assert_eq!(m.capabilities.network.tcp.len(), 1);
+        assert_eq!(m.capabilities.network.tcp[0].host, "api.audible.com");
+        assert_eq!(m.capabilities.network.tcp[0].ports, vec![443]);
     }
 
     #[test]

@@ -21,7 +21,11 @@
 /// this fails closed like the rest of the launcher.
 #[cfg(unix)]
 pub fn close_inherited(preserve: &[i32]) -> Result<(), String> {
-    if preserve.is_empty() && close_range_above_stdio() {
+    // Nested native jails run inside the outer Landlock domain, which often
+    // cannot list `/proc/self/fd`. `close_range` over the gaps around the
+    // preserved fds (stdio, plus an inherited socket-proxy directory fd) does
+    // not need a directory listing.
+    if close_range_preserving(preserve) {
         return Ok(());
     }
 
@@ -40,6 +44,35 @@ pub fn close_inherited(preserve: &[i32]) -> Result<(), String> {
     Ok(())
 }
 
+/// Inclusive `close_range` gaps above stderr, skipping every fd in `preserve`.
+///
+/// Linux production uses this from [`close_range_preserving`]. Other Unix
+/// builds only compile it under `cfg(test)` (gap arithmetic is OS-independent).
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn close_gaps_after_stdio(preserve: &[i32]) -> Vec<(u32, u32)> {
+    let mut keep: Vec<u32> = preserve
+        .iter()
+        .copied()
+        .filter(|fd| *fd > libc::STDERR_FILENO)
+        .filter_map(|fd| u32::try_from(fd).ok())
+        .collect();
+    keep.sort_unstable();
+    keep.dedup();
+    let mut gaps = Vec::new();
+    let mut start = u32::try_from(libc::STDERR_FILENO).unwrap_or(2) + 1;
+    for fd in keep {
+        if fd > start {
+            gaps.push((start, fd - 1));
+        }
+        start = fd.saturating_add(1);
+        if start == 0 {
+            return gaps;
+        }
+    }
+    gaps.push((start, u32::MAX));
+    gaps
+}
+
 /// Windows inherits only the handles a spawn names, and this one names stdio.
 #[cfg(not(unix))]
 pub fn close_inherited(_preserve: &[i32]) -> Result<(), String> {
@@ -47,18 +80,29 @@ pub fn close_inherited(_preserve: &[i32]) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-/// Linux `close_range` from fd 3 upward; false means the listing fallback must run.
-fn close_range_above_stdio() -> bool {
-    let first = libc::c_uint::try_from(libc::STDERR_FILENO).unwrap_or(2) + 1;
-    // SAFETY: a raw syscall taking three scalars. The range starts above stdio,
-    // so the descriptors the host handed over are not in it.
-    let rc = unsafe { libc::syscall(libc::SYS_close_range, first, libc::c_uint::MAX, 0) };
+/// Linux `close_range` over the gaps in [`close_gaps_after_stdio`]; false means
+/// the listing fallback must run.
+fn close_range_preserving(preserve: &[i32]) -> bool {
+    close_gaps_after_stdio(preserve)
+        .into_iter()
+        .all(|(first, last)| close_range_inclusive(first, last))
+}
+
+#[cfg(target_os = "linux")]
+/// One inclusive `close_range` syscall; empty or inverted ranges are no-ops.
+fn close_range_inclusive(first: u32, last: u32) -> bool {
+    if first > last {
+        return true;
+    }
+    // SAFETY: a raw syscall taking three scalars. The ranges skip every
+    // preserved fd, including stdio and an inherited socket-proxy dir fd.
+    let rc = unsafe { libc::syscall(libc::SYS_close_range, first, last, 0) };
     rc == 0
 }
 
 /// No equivalent outside Linux; macOS and the BSDs are served by the listing.
 #[cfg(all(unix, not(target_os = "linux")))]
-fn close_range_above_stdio() -> bool {
+fn close_range_preserving(_preserve: &[i32]) -> bool {
     false
 }
 
@@ -99,6 +143,22 @@ mod tests {
         assert!(
             listed.contains(&fd),
             "listing {listed:?} is missing the file at fd {fd}"
+        );
+    }
+
+    #[test]
+    fn stdio_preserve_is_stdio_only() {
+        assert_eq!(close_gaps_after_stdio(&[]), vec![(3, u32::MAX)]);
+        assert_eq!(close_gaps_after_stdio(&[0, 1, 2]), vec![(3, u32::MAX)]);
+        assert_eq!(close_gaps_after_stdio(&[2]), vec![(3, u32::MAX)]);
+    }
+
+    #[test]
+    fn extra_preserve_fd_uses_two_close_range_gaps() {
+        // Nested native SOCKET_PROXY dir fd (typically a small number after stdio).
+        assert_eq!(
+            close_gaps_after_stdio(&[0, 1, 2, 7]),
+            vec![(3, 6), (8, u32::MAX)]
         );
     }
 }

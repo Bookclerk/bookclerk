@@ -81,12 +81,14 @@ impl EgressProxy {
         self.inner.allows_initial(host)
     }
 
-    /// Redirect hops are allowed without re-checking the domain allowlist.
+    /// Redirect hops must stay in the fetch allowlist unless
+    /// `allowUndeclaredPublicRedirects` is set. Address-space policy still
+    /// applies (loopback / RFC1918 / link-local / metadata stay denied).
     ///
     /// # Arguments
     ///
-    /// * `host` - Hostname being checked for egress.
-    /// * `hop_index` - Numeric `hop_index` value for this call.
+    /// * `host` - Redirect target hostname.
+    /// * `hop_index` - Numeric hop index after the initial request.
     ///
     /// # Returns
     ///
@@ -107,12 +109,13 @@ mod tests {
             mode: NetworkMode::Outbound,
             domains: vec!["api.example.com".into(), "*.cdn.example.com".into()],
             max_redirects: 5,
-            subrequests: None,
+            ..EgressPolicy::deny()
         });
         assert!(proxy.allows_initial_host("api.example.com"));
         assert!(proxy.allows_initial_host("a.cdn.example.com"));
         assert!(!proxy.allows_initial_host("evil.com"));
-        assert!(proxy.allows_redirect_hop("evil.com", 1));
+        assert!(proxy.allows_redirect_hop("api.example.com", 1));
+        assert!(!proxy.allows_redirect_hop("evil.com", 1));
         assert!(!proxy.allows_redirect_hop("evil.com", 5));
     }
 }

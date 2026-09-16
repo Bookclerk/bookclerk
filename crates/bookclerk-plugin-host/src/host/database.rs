@@ -154,15 +154,16 @@ impl ExternalDatabase {
         let extra_env = match DatabasePluginKind::parse(&plugin.manifest.id) {
             Some(DatabasePluginKind::D1) | Some(DatabasePluginKind::Postgres) => Vec::new(),
             Some(DatabasePluginKind::Sqlite) => {
-                if crate::jail::is_sqlite_database_plugin(plugin) {
-                    let path = config.database.sqlite_path(&config.paths().files_dir);
-                    vec![(
-                        "BOOKCLERK_SQLITE_PATH",
-                        std::ffi::OsString::from(path.as_os_str()),
-                    )]
-                } else {
-                    Vec::new()
-                }
+                // Host-selected sqlite adapter: tell the guest (and the nested
+                // native jail) where `library.db` lives. Provenance must not
+                // gate this path — a staged copy of the platform guest still
+                // needs the file, and a bare `id = "sqlite"` without platform
+                // provenance must not receive auto-consent elsewhere.
+                let path = config.database.sqlite_path(&config.paths().files_dir);
+                vec![(
+                    "BOOKCLERK_SQLITE_PATH",
+                    std::ffi::OsString::from(path.as_os_str()),
+                )]
             }
             None => Vec::new(),
         };

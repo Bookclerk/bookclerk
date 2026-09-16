@@ -12,6 +12,7 @@
 //! | --- | --- |
 //! | Native guest (`runtime = "native"`) | [`PluginWorker`] / [`serve`] (`api_version = 3`) |
 //! | Fetch / upload work paths | [`fetch_work_dir`], [`upload_file_path`] |
+//! | Mediated TCP sockets | [`connect_socket`] / [`net`] (Workers `connect()` equivalent) |
 //! | OAuth callback without guest listen | [`callback_tunnel`] |
 //! | Workerd / Wasm guests | [`workerd`] + npm `@bookclerk/plugin-sdk` |
 //! | ABI DTOs / method names | [`protocol`] (re-exports `bookclerk-plugin-abi`) |
@@ -59,6 +60,7 @@ mod error;
 mod fetch_dir;
 mod json;
 mod manifest_caps;
+pub mod net;
 mod pass_fd;
 pub mod protocol;
 pub mod tools;
@@ -75,6 +77,10 @@ pub use error::{Result, SdkError};
 pub use fetch_dir::{fetch_work_dir, upload_file_path, FetchWorkDir, UploadFile};
 pub use json::{decode as decode_json, encode as encode_json, encode_atomic_result, page_rows};
 pub use manifest_caps::manifest_capabilities;
+pub use net::{
+    connect as connect_socket, ConnectOptions, PluginSocket, SecureTransport, SocketAddress,
+    SOCKET_PROXY_ENV,
+};
 pub use pass_fd::{fd_proc_path, recv_passed_fd, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV};
 pub use protocol::{
     methods, Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogDetail,

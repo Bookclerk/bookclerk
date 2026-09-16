@@ -6,18 +6,21 @@
 //! - **Initial** request hosts must match [`EgressPolicy::domains`] (`*.`
 //!   prefix wildcards). Hosts and patterns are IDNA ToASCII–normalized;
 //!   percent-encoded hosts fail closed.
-//! - **Redirect** hops after an allowed initial request do **not** re-check
-//!   domains (intentional — operators approve the initial allowlist only).
+//! - **Redirect** hops must stay on the fetch allowlist unless the operator
+//!   grants [`EgressPolicy::allow_undeclared_public_redirects`]. That flag
+//!   never implies loopback, RFC1918, link-local, or metadata.
 //! - Hop count is capped by [`EgressPolicy::max_redirects`] (wire
 //!   `maxRedirects`).
 //! - **Python + outbound** workerd guests also receive
 //!   [`PYODIDE_EGRESS_HOSTS`] in consent and egress lists.
 //!
-//! Native guests never get hostname filtering; see [`crate::NetworkMode`] and
-//! [`crate::PluginManifest::validate`].
+//! Native-behind-workerd guests use the same policy through the host socket
+//! proxy; ambient `AF_INET`/`AF_INET6` is denied by the nested jail. See
+//! [`crate::NetworkMode`] and [`crate::PluginManifest::validate`].
 
 use serde::{Deserialize, Serialize};
 
+use crate::address::{address_allowed, is_restricted_hostname, CidrGrant};
 use crate::types::{
     NetworkCapabilities, NetworkMode, PluginManifest, PluginRuntimeKind, WorkerdRuntimeManifest,
 };
@@ -38,17 +41,20 @@ pub const DEFAULT_MAX_REDIRECTS: u32 = 10;
 pub const PYODIDE_EGRESS_HOSTS: &[&str] =
     &["cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"];
 
-/// Initial-host allowlist with redirect-follow and optional subrequest budget.
+/// Initial-host allowlist with redirect, TCP, and address-space policy.
 ///
-/// Serialized as camelCase for injection into workerd `EGRESS_POLICY` and the
-/// native helper (`mode`, `domains`, `maxRedirects`, optional `subrequests`).
+/// Serialized as camelCase for injection into workerd `EGRESS_POLICY`.
 ///
 /// # Matching rules
 ///
-/// - [`Self::allows_initial`] — hostname must match an allowlist entry after
-///   IDNA normalization (`*.example.com` or exact host).
-/// - [`Self::allows_redirect`] — after an allowed initial fetch, hops are
-///   permitted solely by index `< max_redirects` (domain not re-checked).
+/// - [`Self::allows_initial`] — hostname must match [`Self::domains`] after
+///   IDNA normalization. IP literals also pass [`Self::allows_ip`].
+/// - [`Self::allows_redirect`] — hop budget plus either the domain allowlist
+///   or [`Self::allow_undeclared_public_redirects`] for **public** targets.
+/// - [`Self::allows_tcp`] — host + port must match a TCP grant. Fetch grants
+///   never imply TCP.
+/// - [`Self::allows_ip`] — public Internet by default; extra CIDRs are
+///   explicit. Redirect-to-undeclared-public never implies private ranges.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EgressPolicy {
@@ -75,6 +81,32 @@ pub struct EgressPolicy {
     /// Wire name: `subrequests`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subrequests: Option<u32>,
+
+    /// When true, redirect hops may target undeclared public hosts.
+    ///
+    /// Private / loopback / link-local / metadata destinations still require
+    /// an address-space grant.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_undeclared_public_redirects: bool,
+
+    /// Raw TCP grants (`connect`). Fetch allowlists do not imply these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tcp: Vec<TcpGrant>,
+
+    /// Explicit CIDR grants beyond the public Internet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub address_cidrs: Vec<String>,
+}
+
+/// One TCP grant in the injected policy (`host` + `ports`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct TcpGrant {
+    /// Hostname or `*.` wildcard (IDNA-normalized).
+    pub host: String,
+    /// Destination ports. Empty is fail-closed.
+    #[serde(default)]
+    pub ports: Vec<u16>,
 }
 
 /// Serde default for [`EgressPolicy::max_redirects`] when the wire field is omitted (`10`).
@@ -117,11 +149,30 @@ impl EgressPolicy {
     /// Returns a string describing the first invalid domain pattern.
     pub fn try_from_network(caps: &NetworkCapabilities) -> Result<Self, String> {
         let domains = normalize_domain_list(&caps.domains)?;
+        let mut tcp = Vec::new();
+        for t in &caps.tcp {
+            let Some(host) = normalize_domain_pattern(&t.host) else {
+                return Err(format!("invalid TCP host `{}`", t.host));
+            };
+            let mut ports = t.ports.clone();
+            ports.sort_unstable();
+            ports.dedup();
+            tcp.push(TcpGrant { host, ports });
+        }
+        tcp.sort();
+        let mut address_cidrs = Vec::new();
+        for raw in &caps.address_cidrs {
+            let grant = CidrGrant::parse(raw)?;
+            address_cidrs.push(format!("{}/{}", grant.network, grant.prefix));
+        }
         Ok(Self {
             mode: caps.mode,
             domains,
             max_redirects: DEFAULT_MAX_REDIRECTS,
             subrequests: None,
+            allow_undeclared_public_redirects: caps.allow_undeclared_public_redirects,
+            tcp,
+            address_cidrs,
         })
     }
 
@@ -200,6 +251,9 @@ impl EgressPolicy {
             domains: Vec::new(),
             max_redirects: DEFAULT_MAX_REDIRECTS,
             subrequests: None,
+            allow_undeclared_public_redirects: false,
+            tcp: Vec::new(),
+            address_cidrs: Vec::new(),
         }
     }
 
@@ -239,9 +293,17 @@ impl EgressPolicy {
         match self.mode {
             NetworkMode::Deny => false,
             NetworkMode::Outbound => {
+                if is_restricted_hostname(host) && !self.hostname_address_ok(host) {
+                    return false;
+                }
                 let Some(host) = normalize_hostname(host) else {
                     return false;
                 };
+                if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                    if !self.allows_ip(ip) {
+                        return false;
+                    }
+                }
                 self.domains
                     .iter()
                     .any(|d| host_matches_normalized(&host, d))
@@ -249,25 +311,91 @@ impl EgressPolicy {
         }
     }
 
-    /// Returns whether a redirect hop is allowed without re-checking domains.
-    ///
-    /// Deny mode always returns `false`. Outbound mode allows hops while
-    /// `hop_index < max_redirects`. The `host` argument is intentionally
-    /// unused — redirect targets are not re-allowlisted.
-    ///
-    /// # Arguments
-    ///
-    /// * `_host` - Redirect target hostname (ignored by design).
-    /// * `hop_index` - Zero-based redirect hop index after the initial request.
-    ///
-    /// # Returns
-    ///
-    /// `true` when mode is outbound and the hop is within budget.
+    /// Parsed CIDR grants; invalid stored strings are ignored (fail closed).
+    /// Parsed CIDR grants; invalid stored strings are ignored (fail closed).
+    fn cidr_grants(&self) -> Vec<CidrGrant> {
+        self.address_cidrs
+            .iter()
+            .filter_map(|s| CidrGrant::parse(s).ok())
+            .collect()
+    }
+
+    /// True when `ip` is the public Internet or an explicit CIDR grant.
     #[must_use]
-    pub fn allows_redirect(&self, _host: &str, hop_index: u32) -> bool {
+    pub fn allows_ip(&self, ip: std::net::IpAddr) -> bool {
+        if self.mode == NetworkMode::Deny {
+            return false;
+        }
+        address_allowed(ip, &self.cidr_grants())
+    }
+
+    /// Loopback / metadata hostnames need a matching CIDR, not any CIDR.
+    fn hostname_address_ok(&self, host: &str) -> bool {
+        if host.eq_ignore_ascii_case("localhost")
+            || host.to_ascii_lowercase().ends_with(".localhost")
+        {
+            return self.allows_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+                || self.allows_ip(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
+        }
+        true
+    }
+
+    /// Raw TCP `connect` to `host:port`. Fetch domain grants do not apply.
+    #[must_use]
+    pub fn allows_tcp(&self, host: &str, port: u16) -> bool {
+        if self.mode == NetworkMode::Deny {
+            return false;
+        }
+        if is_restricted_hostname(host) && !self.hostname_address_ok(host) {
+            return false;
+        }
+        let Some(host) = normalize_hostname(host) else {
+            return false;
+        };
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            if !self.allows_ip(ip) {
+                return false;
+            }
+        }
+        self.tcp
+            .iter()
+            .any(|grant| host_matches_normalized(&host, &grant.host) && grant.ports.contains(&port))
+    }
+
+    /// Returns whether a redirect hop is allowed.
+    ///
+    /// Deny mode always returns `false`. Outbound mode requires
+    /// `hop_index < max_redirects`. The hop host must match the fetch
+    /// allowlist unless [`Self::allow_undeclared_public_redirects`] is set,
+    /// in which case only public destinations (plus explicit CIDRs) pass.
+    #[must_use]
+    pub fn allows_redirect(&self, host: &str, hop_index: u32) -> bool {
         match self.mode {
             NetworkMode::Deny => false,
-            NetworkMode::Outbound => hop_index < self.max_redirects,
+            NetworkMode::Outbound => {
+                if hop_index >= self.max_redirects {
+                    return false;
+                }
+                if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                    if !self.allows_ip(ip) {
+                        return false;
+                    }
+                } else if is_restricted_hostname(host) && !self.hostname_address_ok(host) {
+                    return false;
+                }
+                if self.allow_undeclared_public_redirects {
+                    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                        return self.allows_ip(ip);
+                    }
+                    return !is_restricted_hostname(host);
+                }
+                let Some(host) = normalize_hostname(host) else {
+                    return false;
+                };
+                self.domains
+                    .iter()
+                    .any(|d| host_matches_normalized(&host, d))
+            }
         }
     }
 
@@ -290,6 +418,12 @@ impl EgressPolicy {
                 "maxRedirects": DEFAULT_MAX_REDIRECTS,
             })
         })
+    }
+}
+
+impl Default for EgressPolicy {
+    fn default() -> Self {
+        Self::deny()
     }
 }
 
@@ -518,16 +652,88 @@ mod tests {
             mode: NetworkMode::Outbound,
             domains: vec!["api.example.com".into(), "*.cdn.example.com".into()],
             max_redirects: 5,
-            subrequests: None,
+            ..EgressPolicy::deny()
         };
         assert!(policy.allows_initial("api.example.com"));
         assert!(policy.allows_initial("a.cdn.example.com"));
         assert!(policy.allows_initial("cdn.example.com"));
         assert!(!policy.allows_initial("evil.com"));
-        // Redirect hops stay free (intentional — no per-hop re-allowlist).
-        assert!(policy.allows_redirect("evil.com", 1));
-        assert!(!policy.allows_redirect("evil.com", 5));
+        assert!(policy.allows_redirect("api.example.com", 1));
+        assert!(policy.allows_redirect("a.cdn.example.com", 1));
+        assert!(
+            !policy.allows_redirect("evil.com", 1),
+            "undeclared redirect denied by default"
+        );
+        assert!(!policy.allows_redirect("api.example.com", 5));
         assert!(!EgressPolicy::deny().allows_initial("api.example.com"));
+    }
+
+    #[test]
+    fn undeclared_public_redirect_capability() {
+        let mut policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["api.example.com".into()],
+            max_redirects: 5,
+            allow_undeclared_public_redirects: true,
+            ..EgressPolicy::deny()
+        };
+        assert!(policy.allows_redirect("cdn.example.net", 1));
+        assert!(!policy.allows_redirect("127.0.0.1", 1));
+        assert!(!policy.allows_redirect("10.0.0.1", 1));
+        assert!(!policy.allows_redirect("169.254.169.254", 1));
+        assert!(!policy.allows_redirect("localhost", 1));
+        policy.address_cidrs = vec!["10.0.0.0/8".into()];
+        assert!(policy.allows_redirect("10.0.0.1", 1));
+    }
+
+    #[test]
+    fn tcp_does_not_follow_fetch_allowlist() {
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["api.example.com".into()],
+            tcp: vec![TcpGrant {
+                host: "db.example.com".into(),
+                ports: vec![5432],
+            }],
+            ..EgressPolicy::deny()
+        };
+        assert!(policy.allows_initial("api.example.com"));
+        assert!(!policy.allows_tcp("api.example.com", 443));
+        assert!(policy.allows_tcp("db.example.com", 5432));
+        assert!(!policy.allows_tcp("db.example.com", 22));
+        assert!(!policy.allows_tcp("evil.example.com", 5432));
+    }
+
+    #[test]
+    fn ip_literals_need_address_grants() {
+        let policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["127.0.0.1".into()],
+            ..EgressPolicy::deny()
+        };
+        assert!(!policy.allows_initial("127.0.0.1"));
+        let mut granted = policy.clone();
+        granted.address_cidrs = vec!["127.0.0.1/32".into()];
+        assert!(granted.allows_initial("127.0.0.1"));
+    }
+
+    #[test]
+    fn undeclared_public_redirect_requires_explicit_flag() {
+        let mut policy = EgressPolicy {
+            mode: NetworkMode::Outbound,
+            domains: vec!["api.example.com".into()],
+            ..EgressPolicy::deny()
+        };
+        assert!(policy.allows_initial("api.example.com"));
+        assert!(!policy.allows_redirect("cdn.example.com", 1));
+        policy.allow_undeclared_public_redirects = true;
+        assert!(policy.allows_redirect("cdn.example.com", 1));
+        assert!(!policy.allows_redirect("10.0.0.1", 1));
+        assert!(!policy.allows_redirect("127.0.0.1", 1));
+        assert!(!policy.allows_redirect("169.254.169.254", 1));
+        assert!(!policy.allows_redirect("localhost", 1));
+        policy.address_cidrs = vec!["10.0.0.1/32".into()];
+        assert!(policy.allows_redirect("10.0.0.1", 1));
     }
 
     #[test]
@@ -547,8 +753,7 @@ mod tests {
         let policy = EgressPolicy {
             mode: NetworkMode::Outbound,
             domains: vec!["xn--bcher-kva.de".into()],
-            max_redirects: 10,
-            subrequests: None,
+            ..EgressPolicy::deny()
         };
         assert!(policy.allows_initial("bücher.de"));
         assert!(policy.allows_initial("xn--bcher-kva.de"));
@@ -562,8 +767,7 @@ mod tests {
         let policy = EgressPolicy {
             mode: NetworkMode::Outbound,
             domains: vec!["evil.com".into()],
-            max_redirects: 10,
-            subrequests: None,
+            ..EgressPolicy::deny()
         };
         assert!(!policy.allows_initial("evil%2ecom"));
         assert!(normalize_domain_pattern("api%2eexample.com").is_none());
@@ -576,6 +780,7 @@ mod tests {
         let policy = EgressPolicy::try_from_network(&NetworkCapabilities {
             mode: NetworkMode::Outbound,
             domains: vec!["API.Example.COM.".into()],
+            ..Default::default()
         })
         .unwrap();
         assert_eq!(policy.domains, vec!["api.example.com".to_string()]);
@@ -587,12 +792,14 @@ mod tests {
         let err = EgressPolicy::try_from_network(&NetworkCapabilities {
             mode: NetworkMode::Outbound,
             domains: vec!["ok.example.com".into(), "bad%2eexample.com".into()],
+            ..Default::default()
         })
         .expect_err("percent-encoded pattern");
         assert!(err.contains("bad%2eexample.com"), "{err}");
         let denied = EgressPolicy::from_network(&NetworkCapabilities {
             mode: NetworkMode::Outbound,
             domains: vec!["bad%2eexample.com".into()],
+            ..Default::default()
         });
         assert_eq!(denied.mode, NetworkMode::Deny);
         assert!(!denied.allows_initial("bad.example.com"));
@@ -604,7 +811,7 @@ mod tests {
             mode: NetworkMode::Outbound,
             domains: vec!["libro.fm".into()],
             max_redirects: 10,
-            subrequests: None,
+            ..EgressPolicy::deny()
         };
         let v = policy.to_policy_json();
         assert_eq!(v["mode"], "outbound");
@@ -620,6 +827,7 @@ mod tests {
             domains: vec!["api.example.com".into()],
             max_redirects: 10,
             subrequests: Some(50),
+            ..EgressPolicy::deny()
         };
         let v = policy.to_policy_json();
         assert_eq!(v["subrequests"], 50);
@@ -697,7 +905,11 @@ domains = ["api.example.com"]
         }
         let policy = EgressPolicy::from_manifest(&manifest);
         assert!(policy.allows_initial("cdn.jsdelivr.net"));
-        assert!(policy.allows_redirect("evil.com", 1));
+        assert!(
+            !policy.allows_redirect("evil.com", 1),
+            "Pyodide hosts do not imply undeclared public redirects"
+        );
+        assert!(policy.allows_redirect("cdn.jsdelivr.net", 1));
     }
 
     #[test]

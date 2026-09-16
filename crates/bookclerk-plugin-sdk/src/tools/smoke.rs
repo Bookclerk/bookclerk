@@ -81,6 +81,7 @@ pub fn smoke_plugin(plugin_dir: &Path) -> Result<String, String> {
 
     let mut child = Command::new(&workerd_bin)
         .arg("serve")
+        .arg(bookclerk_workerd::WORKERD_SERVE_EXPERIMENTAL)
         .arg(&generated.config_path)
         .arg(format!("--import-path={}", generated.import_path.display()))
         .current_dir(&generated.state_dir)

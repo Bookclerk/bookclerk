@@ -1,0 +1,30 @@
+api_version = 3
+id = "sockets_fixture"
+name = "Sockets gateway fixture"
+version = "1.0.0"
+runtime = "workerd"
+entrypoints = ["storage"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 50
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[capabilities.network]
+mode = "outbound"
+domains = ["127.0.0.1"]
+tcp = [{ host = "127.0.0.1", ports = [1] }]
+address_cidrs = ["127.0.0.1/32"]
+
+[vars]

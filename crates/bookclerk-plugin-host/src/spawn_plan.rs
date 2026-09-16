@@ -26,6 +26,11 @@ pub const WORKERD_LAUNCHER_ENV: &str = "BOOKCLERK_PLUGIN_WORKERD";
 pub const WORKERD_BIN_ENV: &str = "BOOKCLERK_WORKERD_BIN";
 /// Environment variable naming the native backend `bookclerk-workerd` fronts.
 pub const NATIVE_BACKEND_ENV: &str = "BOOKCLERK_NATIVE_BACKEND";
+/// Set to `1` when the host jail is confined so `bookclerk-workerd` may wrap
+/// the native backend in a nested `NetPolicy::Deny` jail.
+pub const NESTED_NATIVE_JAIL_ENV: &str = "BOOKCLERK_NESTED_NATIVE_JAIL";
+/// Jail helper used to wrap the native backend (same env as the outer launcher).
+pub const NESTED_JAIL_BIN_ENV: &str = "BOOKCLERK_PLUGIN_JAIL";
 
 /// Which transport a spawn uses to reach the guest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -259,7 +264,28 @@ impl SpawnPlan {
         let mut reads = vec![self.launcher.clone()];
         reads.extend(self.native_backend.iter().cloned());
         reads.extend(self.workerd_bin.iter().cloned());
+        reads.extend(self.nested_jail_helper());
         reads
+    }
+
+    /// `bookclerk-jail` that `bookclerk-workerd` execs around the native backend.
+    ///
+    /// Nested Deny is a second launcher process. The outer jail must grant
+    /// this path or a confined workerd gets `EACCES` on spawn.
+    #[must_use]
+    pub fn nested_jail_helper(&self) -> Option<PathBuf> {
+        self.native_backend.as_ref()?;
+        let name = format!("bookclerk-jail{}", std::env::consts::EXE_SUFFIX);
+        if let Some(path) = std::env::var_os(NESTED_JAIL_BIN_ENV) {
+            let path = PathBuf::from(path);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+        self.launcher
+            .parent()
+            .map(|dir| dir.join(name))
+            .filter(|p| p.is_file())
     }
 }
 
@@ -405,6 +431,11 @@ mode = "deny"
     fn fake_front_door(dir: &Path) -> WorkerdFrontDoor {
         std::fs::write(dir.join(launcher_bin_name()), b"").expect("launcher");
         std::fs::write(dir.join(cloudflare_workerd_bin_name()), b"").expect("workerd");
+        std::fs::write(
+            dir.join(format!("bookclerk-jail{}", std::env::consts::EXE_SUFFIX)),
+            b"",
+        )
+        .expect("jail");
         WorkerdFrontDoor::locate_in(dir).expect("fake front door")
     }
 
@@ -433,6 +464,10 @@ mode = "deny"
         assert!(plan.fronted_by_workerd());
         assert!(plan.args.is_empty());
         assert!(plan.executable_reads().contains(&plugin.command));
+        assert!(
+            plan.nested_jail_helper().is_some(),
+            "nested jail helper must be granted beside the workerd launcher"
+        );
     }
 
     #[test]

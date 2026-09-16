@@ -9,6 +9,9 @@ import { cn } from "@/lib/utils";
 export type PluginConsentGrantDraft = {
   networkMode: string;
   domains: string[];
+  tcp?: { host: string; ports: number[] }[];
+  addressCidrs?: string[];
+  allowUndeclaredPublicRedirects?: boolean;
   bindings: string[];
   compatibilityFlags: string[];
   cpuMs?: number;
@@ -20,6 +23,24 @@ export type PluginConsentGrantDraft = {
 };
 
 type SectionId = "network" | "bindings" | "resources" | "workerd" | "flags";
+
+function formatTcp(grant: { host: string; ports: number[] }): string {
+  return `${grant.host}:${grant.ports.join(",")}`;
+}
+
+function parseTcp(raw: string): { host: string; ports: number[] } | null {
+  const value = raw.trim();
+  const idx = value.lastIndexOf(":");
+  if (idx <= 0) return null;
+  const host = value.slice(0, idx).trim();
+  const ports = value
+    .slice(idx + 1)
+    .split(",")
+    .map((p) => Number.parseInt(p.trim(), 10))
+    .filter((p) => Number.isInteger(p) && p >= 1 && p <= 65535);
+  if (!host || ports.length === 0) return null;
+  return { host, ports };
+}
 
 function uniqueValues(values: string[] | undefined): string[] {
   const out: string[] = [];
@@ -166,6 +187,12 @@ export function PluginConsentDialog({
   const [networkMode, setNetworkMode] = useState(request.networkMode || "deny");
   const [domains, setDomains] = useState<string[]>([]);
   const [domainDraft, setDomainDraft] = useState("");
+  const [tcp, setTcp] = useState<{ host: string; ports: number[] }[]>([]);
+  const [tcpDraft, setTcpDraft] = useState("");
+  const [addressCidrs, setAddressCidrs] = useState<string[]>([]);
+  const [cidrDraft, setCidrDraft] = useState("");
+  const [allowUndeclaredPublicRedirects, setAllowUndeclaredPublicRedirects] =
+    useState(false);
   const [bindings, setBindings] = useState<string[]>([]);
   const [compatibilityFlags, setCompatibilityFlags] = useState<string[]>([]);
   const [flagDraft, setFlagDraft] = useState("");
@@ -181,6 +208,17 @@ export function PluginConsentDialog({
   useEffect(() => {
     setNetworkMode(existing?.networkMode || request.networkMode || "deny");
     setDomains(initialList(request.domains, existing?.domains));
+    setTcp(
+      (existing?.tcp && existing.tcp.length > 0 ? existing.tcp : request.tcp) ?? [],
+    );
+    setAddressCidrs(
+      initialList(request.addressCidrs ?? [], existing?.addressCidrs),
+    );
+    setAllowUndeclaredPublicRedirects(
+      existing?.allowUndeclaredPublicRedirects ??
+        request.allowUndeclaredPublicRedirects ??
+        false,
+    );
     setBindings(initialList(request.bindings, existing?.bindings));
     setCompatibilityFlags(
       initialList(request.compatibilityFlags, existing?.compatibilityFlags),
@@ -203,6 +241,8 @@ export function PluginConsentDialog({
       ),
     );
     setDomainDraft("");
+    setTcpDraft("");
+    setCidrDraft("");
     setFlagDraft("");
     setOpenSection(null);
   }, [consent, existing, request, limits]);
@@ -215,12 +255,37 @@ export function PluginConsentDialog({
 
   const networkSummary = useMemo(() => {
     if (networkMode === "deny") return "No network access";
-    if (!isWorkerd) return "Outbound network (OS jail allow-or-deny)";
-    if (selectedDomains.length === 0) {
-      return "Outbound network with no domains selected";
+    const parts: string[] = [];
+    if (isWorkerd) {
+      parts.push(
+        selectedDomains.length === 0
+          ? "no fetch hosts"
+          : `${selectedDomains.length} fetch host${selectedDomains.length === 1 ? "" : "s"}`,
+      );
     }
-    return "Outbound network to these domains";
-  }, [isWorkerd, networkMode, selectedDomains.length]);
+    if (tcp.length > 0) {
+      parts.push(`${tcp.length} TCP grant${tcp.length === 1 ? "" : "s"}`);
+    }
+    if (addressCidrs.length > 0) {
+      parts.push(`${addressCidrs.length} CIDR${addressCidrs.length === 1 ? "" : "s"}`);
+    }
+    if (allowUndeclaredPublicRedirects) {
+      parts.push("undeclared public redirects");
+    }
+    if (parts.length === 0) {
+      return isWorkerd
+        ? "Outbound network with no destinations selected"
+        : "Outbound network (mediated TCP; no ambient Internet)";
+    }
+    return `Outbound network: ${parts.join(", ")}`;
+  }, [
+    allowUndeclaredPublicRedirects,
+    addressCidrs.length,
+    isWorkerd,
+    networkMode,
+    selectedDomains.length,
+    tcp.length,
+  ]);
 
   const networkDomainPreview =
     isWorkerd && networkMode !== "deny" && selectedDomains.length > 0 ? (
@@ -303,6 +368,25 @@ export function PluginConsentDialog({
     if (!value) return;
     setDomains((current) => uniqueValues([...current, value]));
     setDomainDraft("");
+  }
+
+  function addTcp() {
+    const parsed = parseTcp(tcpDraft);
+    if (!parsed) return;
+    setTcp((current) => {
+      if (current.some((item) => formatTcp(item) === formatTcp(parsed))) {
+        return current;
+      }
+      return [...current, parsed];
+    });
+    setTcpDraft("");
+  }
+
+  function addCidr() {
+    const value = cidrDraft.trim();
+    if (!value) return;
+    setAddressCidrs((current) => uniqueValues([...current, value]));
+    setCidrDraft("");
   }
 
   function addFlag() {
@@ -406,8 +490,8 @@ export function PluginConsentDialog({
           >
             <p className="text-xs text-ink/55">
               {isWorkerd
-                ? "Workerd guests enforce deny/outbound plus the domain allowlist. You may add destinations the author omitted; the plugin cannot widen this itself."
-                : "Native guests use OS-jail allow-or-deny for network (no hostname filter)."}
+                ? "Fetch hosts are the isolate allowlist. You may add destinations the author omitted. TCP connect() is a separate grant. Undeclared public redirects never include loopback, RFC1918, or metadata."
+                : "Native guests cannot declare fetch domains. Outbound TCP uses the Bookclerk socket proxy (same policy as workerd connect()). Ambient AF_INET is denied by the nested jail."}
             </p>
             <select
               className="w-full rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm text-ink shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
@@ -480,6 +564,124 @@ export function PluginConsentDialog({
                     Add
                   </Button>
                 </div>
+              </div>
+            ) : null}
+            {networkMode !== "deny" ? (
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-ink/70">TCP connect (host:ports)</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {tcp.map((grant) => (
+                      <button
+                        key={formatTcp(grant)}
+                        type="button"
+                        disabled={busy}
+                        className="rounded-md border border-teal/40 bg-teal/15 px-2 py-1 text-xs font-medium text-ink"
+                        onClick={() =>
+                          setTcp((current) =>
+                            current.filter(
+                              (item) => formatTcp(item) !== formatTcp(grant),
+                            ),
+                          )
+                        }
+                      >
+                        {formatTcp(grant)}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <Input
+                      value={tcpDraft}
+                      disabled={busy}
+                      onChange={(e) => setTcpDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          addTcp();
+                        }
+                      }}
+                      placeholder="db.example.com:5432"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={busy || !tcpDraft.trim()}
+                      onClick={addTcp}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-ink/70">Address-space CIDRs</p>
+                  <p className="text-xs text-ink/50">
+                    Default is public Internet only. Grant loopback, RFC1918, or
+                    link-local explicitly (`127.0.0.1/32`, `10.0.0.0/8`).
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {addressCidrs.map((cidr) => (
+                      <button
+                        key={cidr}
+                        type="button"
+                        disabled={busy}
+                        className="rounded-md border border-teal/40 bg-teal/15 px-2 py-1 font-mono text-xs text-ink"
+                        onClick={() =>
+                          setAddressCidrs((current) =>
+                            current.filter((item) => item !== cidr),
+                          )
+                        }
+                      >
+                        {cidr}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <Input
+                      value={cidrDraft}
+                      disabled={busy}
+                      onChange={(e) => setCidrDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          addCidr();
+                        }
+                      }}
+                      placeholder="10.0.60.100/32"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={busy || !cidrDraft.trim()}
+                      onClick={addCidr}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                </div>
+                {isWorkerd ? (
+                  <label className="flex items-start gap-2 text-sm text-ink">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-4 w-4 accent-teal"
+                      checked={allowUndeclaredPublicRedirects}
+                      disabled={busy}
+                      onChange={(e) =>
+                        setAllowUndeclaredPublicRedirects(e.target.checked)
+                      }
+                    />
+                    <span>
+                      Allow redirects to undeclared public destinations
+                      <span className="mt-0.5 block text-xs text-ink/50">
+                        Still cannot reach loopback, RFC1918, link-local, or
+                        metadata without a CIDR grant.
+                      </span>
+                    </span>
+                  </label>
+                ) : null}
               </div>
             ) : null}
           </ConsentSection>
@@ -737,6 +939,10 @@ export function PluginConsentDialog({
               void onApprove({
                 networkMode,
                 domains: networkMode === "deny" ? [] : selectedDomains,
+                tcp: networkMode === "deny" ? [] : tcp,
+                addressCidrs: networkMode === "deny" ? [] : addressCidrs,
+                allowUndeclaredPublicRedirects:
+                  networkMode === "deny" ? false : allowUndeclaredPublicRedirects,
                 bindings,
                 compatibilityFlags: isWorkerd ? compatibilityFlags : [],
                 cpuMs: isWorkerd
