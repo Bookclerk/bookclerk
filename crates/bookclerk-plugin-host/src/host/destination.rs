@@ -66,10 +66,15 @@ impl DestinationRegistry {
 
 /// Discover and spawn external output plugins.
 ///
+/// Every enabled destination guest goes through the generic
+/// [`PluginSession`] front door; there is no direct-native or in-process
+/// fallback when a guest cannot start.
+///
 /// # Errors
 ///
-/// Returns an error when discovery fails. Individual guests that are not
-/// `api_version = 3` or fail to start are skipped with a warning.
+/// Returns an error when discovery fails or an **enabled** destination guest
+/// fails to spawn / `open`. Guests that are not `api_version = 3` are skipped
+/// with a warning.
 pub async fn load_external_destinations(
     config: &Config,
     db: Option<&DatabaseConnection>,
@@ -92,27 +97,27 @@ pub async fn load_external_destinations(
                 tracing::debug!(id = %plugin.manifest.id, "S3 output disabled in config; skipping external plugin");
                 continue;
             }
-            match spawn_s3_guest(&plugin, config, db).await {
-                Ok((storage, session)) => {
-                    tracing::info!(
-                        id = %plugin.manifest.id,
-                        path = %plugin.command.display(),
-                        "loaded external S3 output plugin (api_version 2)"
-                    );
-                    registry.s3 = Some(Arc::new(storage));
-                    registry.set_plugin_session(session);
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        id = %plugin.manifest.id,
-                        %err,
-                        "failed to start S3 output plugin guest; falling back to in-process backend"
-                    );
-                }
-            }
+            let (storage, session) = spawn_s3_guest(&plugin, config, db).await.map_err(|err| {
+                crate::PluginError::message(format!(
+                    "failed to start S3 output plugin guest: {err}"
+                ))
+            })?;
+            tracing::info!(
+                id = %plugin.manifest.id,
+                path = %plugin.command.display(),
+                "loaded external S3 output plugin (api_version 2)"
+            );
+            registry.s3 = Some(Arc::new(storage));
+            registry.set_plugin_session(session);
             continue;
         }
-        super::destination_local::try_load_local(&plugin, config, &mut registry).await;
+        super::destination_local::try_load_local(&plugin, config, &mut registry)
+            .await
+            .map_err(|err| {
+                crate::PluginError::message(format!(
+                    "failed to start local output plugin guest: {err}"
+                ))
+            })?;
     }
     Ok(registry)
 }

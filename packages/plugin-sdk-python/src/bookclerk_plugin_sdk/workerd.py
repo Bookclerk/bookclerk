@@ -114,6 +114,7 @@ __all__ = [
     "js",
     "json_payload",
     "py",
+    "transport_database",
 ]
 
 
@@ -375,9 +376,15 @@ def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
     if databases is not None:
         for entry in databases:
             name = _get(entry, "name")
+            if not isinstance(name, str) or not name:
+                continue
             database = _get(entry, "database")
-            if isinstance(name, str) and database is not None:
+            if database is not None:
                 granted[name] = database
+                continue
+            transport = _get(entry, "transport")
+            if transport is not None:
+                granted[name] = transport_database(transport)
     return _EnvView(raw_env, granted)
 
 
@@ -1073,14 +1080,95 @@ class RemoteLibraryEntrypoint(NamedEntrypoint):
         raise _unsupported("pollEvents")
 
 
+_ADAPTER_SESSIONS: dict[str, Any] = {}
+"""Open adapter sessions by id.
+
+Workers RPC stubs cannot be retained across bridge requests, so the session
+object stays in the author isolate and the launcher names it through
+``X-Bookclerk-Target``.
+"""
+
+_ADAPTER_SESSION_METHODS: frozenset[str] = frozenset(
+    {
+        "capabilities",
+        "execute",
+        "close",
+        "bootstrap",
+        "exportIdentity",
+        "importIdentity",
+        "listUserRelations",
+        "prepareUnitRestore",
+        "dropUserRelations",
+        "assertRestoreConstraints",
+    }
+)
+
+
+def _fresh_session_id() -> str:
+    import secrets
+
+    return secrets.token_hex(16)
+
+
 class DatabaseAdapterEntrypoint(NamedEntrypoint):
-    """``databaseAdapter`` entrypoint: opens typed SQL sessions for the host library."""
+    """``databaseAdapter`` entrypoint: opens typed SQL sessions for the host library.
+
+    The adapter isolate drives sessions through two dispatch verbs on
+    :meth:`bookclerkInvoke`: ``openSession`` returns a fresh session id, and
+    ``session(id, method, *params)`` calls ``method`` on the retained
+    :class:`AdapterDatabaseSession`; ``close`` releases the entry.
+    """
 
     bookclerk_methods = ("openSession",)
 
     async def openSession(self):
         """Open an :class:`AdapterDatabaseSession`."""
         raise _unsupported("openSession")
+
+    async def bookclerkInvoke(self, context=None, method="", *args):
+        """Adapter dispatch: ``openSession`` → session id; ``session`` → call on a retained session.
+
+        Args:
+            context: Granted bindings for this invocation.
+            method: ``openSession`` or ``session``.
+            *args: For ``session``: ``(id, session_method, *params)``.
+
+        Returns:
+            The session id (``str``) for ``openSession``, else the session
+            method result converted with :func:`js`.
+
+        Raises:
+            PluginError: ``invalid_params`` for an unknown session id,
+                ``unsupported`` for a method outside the session surface.
+        """
+        method = str(method)
+        if method == "openSession":
+            session = await super().bookclerkInvoke(context, "openSession")
+            if session is None:
+                raise PluginError.from_wire("internal", "openSession returned no session")
+            session_id = _fresh_session_id()
+            _ADAPTER_SESSIONS[session_id] = session
+            return session_id
+        if method == "session":
+            if not args:
+                raise PluginError.from_wire("invalid_params", "session requires an id")
+            session_id = py(args[0])
+            session = _ADAPTER_SESSIONS.get(session_id) if isinstance(session_id, str) else None
+            if session is None:
+                raise PluginError.from_wire("invalid_params", f"unknown adapter session {session_id!r}")
+            name = str(py(args[1])) if len(args) > 1 else ""
+            target = getattr(session, name, None)
+            if name not in _ADAPTER_SESSION_METHODS or not callable(target):
+                raise _unsupported(name)
+            _apply_invocation_env(self, context)
+            self.invocation = _invocation_of(context)
+            try:
+                result = await _await_maybe(target(*(py(a) for a in args[2:])))
+            finally:
+                if name == "close":
+                    _ADAPTER_SESSIONS.pop(session_id, None)
+            return js(result)
+        return await super().bookclerkInvoke(context, method, *args)
 
 
 class CliEntrypoint(NamedEntrypoint):
@@ -1129,7 +1217,11 @@ class GuestDatabase:
 
 
 class AdapterDatabaseSession:
-    """Host ↔ database adapter session (``capabilities`` + typed ``execute``)."""
+    """Host ↔ database adapter session (``capabilities`` + typed ``execute``).
+
+    The restore / identity methods are optional; the base class raises
+    ``unsupported`` for each.
+    """
 
     async def capabilities(self) -> Any:
         """Typed SQL-contract advertisement."""
@@ -1142,6 +1234,34 @@ class AdapterDatabaseSession:
     async def close(self) -> None:
         """Close the session."""
         return None
+
+    async def bootstrap(self) -> Any:
+        """Bootstrap-only diagnostic metadata (``DbBootstrap``)."""
+        raise _unsupported("bootstrap")
+
+    async def exportIdentity(self) -> list[Any]:
+        """Identity high-water marks for a logical export (``IdentityHighWater`` rows)."""
+        raise _unsupported("exportIdentity")
+
+    async def importIdentity(self, _rows: list[Any]) -> None:
+        """Restore identity high-water marks after a logical import."""
+        raise _unsupported("importIdentity")
+
+    async def listUserRelations(self) -> list[str]:
+        """Names of user relations the host may drop before a restore."""
+        raise _unsupported("listUserRelations")
+
+    async def prepareUnitRestore(self) -> None:
+        """Prepare the engine for a unit restore."""
+        raise _unsupported("prepareUnitRestore")
+
+    async def dropUserRelations(self, _names: list[str]) -> None:
+        """Drop the named user relations."""
+        raise _unsupported("dropUserRelations")
+
+    async def assertRestoreConstraints(self) -> None:
+        """Re-check constraints after a unit restore."""
+        raise _unsupported("assertRestoreConstraints")
 
 
 class _GrantedFetcher(Protocol):
@@ -1232,3 +1352,53 @@ def granted_databases(
 
         databases[name] = _bind(binding_guest)
     return databases
+
+
+class _TransportGuestDatabase(GuestDatabase):
+    """``GuestDatabase`` over the adapter's granted transport stub.
+
+    The trusted adapter isolate hands the author a ``GrantedDatabaseTransport``
+    for each named ``[[databases]]`` binding; its ``executeBytes`` carries the
+    Cap'n ``ExecuteRequest`` / ``ExecuteResultReply`` bytes, so the author
+    encodes and decodes locally and never sees the grant token.
+    """
+
+    def __init__(self, transport: Any) -> None:
+        self._transport = transport
+
+    async def execute(self, request: ExecuteRequest) -> ExecuteReply:
+        from bookclerk_plugin_sdk.db_value import (
+            decode_execute_result_reply,
+            encode_execute_request,
+        )
+
+        body = encode_execute_request(request)
+        raw = await self._transport.executeBytes(js(body))
+        data = _bytes(raw)
+        if not data:
+            raise PluginError.from_wire("internal", "granted execute reply missing body")
+        try:
+            return decode_execute_result_reply(data)
+        except PluginError:
+            raise
+        except Exception as err:
+            raise PluginError.from_wire("internal", str(err)) from err
+
+
+def transport_database(transport: Any) -> DatabaseBinding:
+    """Wrap an adapter ``GrantedDatabaseTransport`` stub as a :class:`DatabaseBinding`.
+
+    Args:
+        transport: Stub exposing ``executeBytes(bytes) -> bytes``.
+
+    Returns:
+        D1-shaped binding whose terminal methods route through the transport.
+    """
+    from bookclerk_plugin_sdk.db_value import create_database_binding
+
+    guest = _TransportGuestDatabase(transport)
+
+    async def bound_execute(request: ExecuteRequest) -> ExecuteReply:
+        return await guest.execute(request)
+
+    return create_database_binding(bound_execute)

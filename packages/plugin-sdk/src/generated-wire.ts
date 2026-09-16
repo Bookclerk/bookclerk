@@ -87,6 +87,9 @@ function unknownUnion(struct: string, member: string | number): Error {
   return new Error(`unknown ${struct} union member: ${String(member)}`);
 }
 
+/** Default for absent `Data` fields (Cap'n Proto empty blob). */
+const EMPTY_BYTES = new Uint8Array(0);
+
 /**
  * Params envelope of `ByteSource.pull`.
  *
@@ -1090,9 +1093,9 @@ export const ScalarLimitsCodec: StructCodec<T.ScalarLimits> = {
   pointerCount: 0,
   write(s, v, caps) {
     void caps;
-    s.setUint32(0, v.maxScalarBytes);
-    s.setUint32(1, v.maxStreamWindowBytes);
-    s.setUint32(2, v.maxListPage);
+    s.setUint32(0, v.maxScalarBytes ?? 0);
+    s.setUint32(1, v.maxStreamWindowBytes ?? 0);
+    s.setUint32(2, v.maxListPage ?? 0);
   },
   read(s, caps) {
     void caps;
@@ -1114,8 +1117,8 @@ export const PluginErrorCodec: StructCodec<T.PluginError> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.code);
-    s.setText(1, v.message);
+    s.setText(0, v.code ?? "");
+    s.setText(1, v.message ?? "");
   },
   read(s, caps) {
     void caps;
@@ -1136,11 +1139,11 @@ export const ObjectMetadataCodec: StructCodec<T.ObjectMetadata> = {
   pointerCount: 4,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.key);
-    s.setUint64(0, BigInt(v.size));
-    s.setText(1, v.contentType);
-    s.setText(2, v.etag);
-    s.setData(3, v.sha256);
+    s.setText(0, v.key ?? "");
+    s.setUint64(0, BigInt(v.size ?? 0));
+    s.setText(1, v.contentType ?? "");
+    s.setText(2, v.etag ?? "");
+    s.setData(3, v.sha256 ?? EMPTY_BYTES);
   },
   read(s, caps) {
     void caps;
@@ -1164,8 +1167,8 @@ export const ObjectInfoCodec: StructCodec<T.ObjectInfo> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.key);
-    s.setUint64(0, BigInt(v.size));
+    s.setText(0, v.key ?? "");
+    s.setUint64(0, BigInt(v.size ?? 0));
   },
   read(s, caps) {
     void caps;
@@ -1186,9 +1189,9 @@ export const ListOptionsCodec: StructCodec<T.ListOptions> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.prefix);
-    s.setText(1, v.cursor);
-    s.setUint32(0, v.limit);
+    s.setText(0, v.prefix ?? "");
+    s.setText(1, v.cursor ?? "");
+    s.setUint32(0, v.limit ?? 0);
   },
   read(s, caps) {
     void caps;
@@ -1210,12 +1213,13 @@ export const ListPageCodec: StructCodec<T.ListPage> = {
   pointerCount: 2,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.objects.length, 1, 1);
+      const list = v.objects ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
       for (let i = 0; i < items.length; i++) {
-        ObjectInfoCodec.write(items[i]!, v.objects[i]!, caps);
+        ObjectInfoCodec.write(items[i]!, list[i]!, caps);
       }
     }
-    s.setText(1, v.nextCursor);
+    s.setText(1, v.nextCursor ?? "");
   },
   read(s, caps) {
     return {
@@ -1235,8 +1239,8 @@ export const ByteRangeCodec: StructCodec<T.ByteRange> = {
   pointerCount: 0,
   write(s, v, caps) {
     void caps;
-    s.setUint64(0, BigInt(v.offset));
-    s.setUint64(1, BigInt(v.length));
+    s.setUint64(0, BigInt(v.offset ?? 0));
+    s.setUint64(1, BigInt(v.length ?? 0));
   },
   read(s, caps) {
     void caps;
@@ -1256,7 +1260,9 @@ export const ReadOptionsCodec: StructCodec<T.ReadOptions> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    ByteRangeCodec.write(s.initStruct(0, 2, 0), v.range, caps);
+    if (v.range != null) {
+      ByteRangeCodec.write(s.initStruct(0, 2, 0), v.range, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -1275,11 +1281,11 @@ export const WriteOptionsCodec: StructCodec<T.WriteOptions> = {
   pointerCount: 3,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.contentType);
-    s.setUint64(0, BigInt(v.contentLength));
-    s.setData(1, v.sha256);
-    s.setText(2, v.commitToken);
-    s.setBool(64, v.stageOnly);
+    s.setText(0, v.contentType ?? "");
+    s.setUint64(0, BigInt(v.contentLength ?? 0));
+    s.setData(1, v.sha256 ?? EMPTY_BYTES);
+    s.setText(2, v.commitToken ?? "");
+    s.setBool(64, v.stageOnly ?? false);
   },
   read(s, caps) {
     void caps;
@@ -1303,10 +1309,10 @@ export const PutResultCodec: StructCodec<T.PutResult> = {
   pointerCount: 3,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.key);
-    s.setUint64(0, BigInt(v.bytesWritten));
-    s.setText(1, v.etag);
-    s.setData(2, v.sha256);
+    s.setText(0, v.key ?? "");
+    s.setUint64(0, BigInt(v.bytesWritten ?? 0));
+    s.setText(1, v.etag ?? "");
+    s.setData(2, v.sha256 ?? EMPTY_BYTES);
   },
   read(s, caps) {
     void caps;
@@ -1329,7 +1335,7 @@ export const CopyResultCodec: StructCodec<T.CopyResult> = {
   pointerCount: 0,
   write(s, v, caps) {
     void caps;
-    s.setUint64(0, BigInt(v.bytesCopied));
+    s.setUint64(0, BigInt(v.bytesCopied ?? 0));
   },
   read(s, caps) {
     void caps;
@@ -1348,26 +1354,35 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
   dataWords: 2,
   pointerCount: 10,
   write(s, v, caps) {
-    s.setUint32(0, v.apiVersion);
-    s.setText(0, v.id);
-    s.setText(1, v.displayName);
-    s.setTextList(2, v.rpcFeatures);
-    ScalarLimitsCodec.write(s.initStruct(3, 2, 0), v.scalarLimits, caps);
-    PluginCapabilitiesCodec.write(s.initStruct(4, 0, 6), v.capabilities, caps);
-    s.setUint16(2, ord(A.PORTAL_AUTH_MODES, v.portalAuthMode, "PortalAuthMode"));
-    if (v.passwordEnvVar !== undefined) {
-      s.setText(5, v.passwordEnvVar);
+    s.setUint32(0, v.apiVersion ?? 0);
+    s.setText(0, v.id ?? "");
+    s.setText(1, v.displayName ?? "");
+    s.setTextList(2, v.rpcFeatures ?? []);
+    if (v.scalarLimits != null) {
+      ScalarLimitsCodec.write(s.initStruct(3, 2, 0), v.scalarLimits, caps);
     }
-    s.setTextList(6, v.aliases);
-    s.setUint32(2, v.sortKey);
-    BrandCodec.write(s.initStruct(7, 0, 6), v.brand, caps);
+    if (v.capabilities != null) {
+      PluginCapabilitiesCodec.write(s.initStruct(4, 0, 6), v.capabilities, caps);
+    }
+    s.setUint16(2, ord(A.PORTAL_AUTH_MODES, v.portalAuthMode ?? A.PORTAL_AUTH_MODES[0]!, "PortalAuthMode"));
+    if (v.passwordEnvVar !== undefined) {
+      s.setText(5, v.passwordEnvVar ?? "");
+    }
+    s.setTextList(6, v.aliases ?? []);
+    s.setUint32(2, v.sortKey ?? 0);
+    if (v.brand != null) {
+      BrandCodec.write(s.initStruct(7, 0, 6), v.brand, caps);
+    }
     {
-      const items = s.initStructList(8, v.configOptions.length, 0, 3);
+      const list = v.configOptions ?? [];
+      const items = s.initStructList(8, list.length, 0, 3);
       for (let i = 0; i < items.length; i++) {
-        ConfigOptionCodec.write(items[i]!, v.configOptions[i]!, caps);
+        ConfigOptionCodec.write(items[i]!, list[i]!, caps);
       }
     }
-    CliSchemaCodec.write(s.initStruct(9, 0, 1), v.cli, caps);
+    if (v.cli != null) {
+      CliSchemaCodec.write(s.initStruct(9, 0, 1), v.cli, caps);
+    }
   },
   read(s, caps) {
     const out: T.PluginDescribe = {
@@ -1402,13 +1417,13 @@ export const OidcClientTemplateCodec: StructCodec<T.OidcClientTemplate> = {
   pointerCount: 5,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.clientId);
-    s.setText(1, v.displayName);
-    s.setText(2, v.callbackPath);
-    s.setBool(0, v.publicClient);
-    s.setTextList(3, v.defaultScopes);
-    s.setBool(1, v.issueRefreshToken);
-    s.setText(4, v.originConfigKey);
+    s.setText(0, v.clientId ?? "");
+    s.setText(1, v.displayName ?? "");
+    s.setText(2, v.callbackPath ?? "");
+    s.setBool(0, v.publicClient ?? false);
+    s.setTextList(3, v.defaultScopes ?? []);
+    s.setBool(1, v.issueRefreshToken ?? false);
+    s.setText(4, v.originConfigKey ?? "");
   },
   read(s, caps) {
     void caps;
@@ -1434,9 +1449,10 @@ export const OidcClientsOkCodec: StructCodec<T.OidcClientsOk> = {
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.clients.length, 1, 5);
+      const list = v.clients ?? [];
+      const items = s.initStructList(0, list.length, 1, 5);
       for (let i = 0; i < items.length; i++) {
-        OidcClientTemplateCodec.write(items[i]!, v.clients[i]!, caps);
+        OidcClientTemplateCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -1459,11 +1475,15 @@ export const OidcClientsReplyCodec: StructCodec<T.OidcClientsReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        OidcClientsOkCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          OidcClientsOkCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("OidcClientsReply", (v as { kind: string }).kind);
@@ -1492,9 +1512,9 @@ export const ExtensibleConfigCodec: StructCodec<T.ExtensibleConfig> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setUint32(0, v.schemaVersion);
-    s.setText(0, v.mediaType);
-    s.setData(1, v.payload);
+    s.setUint32(0, v.schemaVersion ?? 0);
+    s.setText(0, v.mediaType ?? "");
+    s.setData(1, v.payload ?? EMPTY_BYTES);
   },
   read(s, caps) {
     void caps;
@@ -1515,14 +1535,21 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
   dataWords: 0,
   pointerCount: 7,
   write(s, v, caps) {
-    ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
-    ExtensibleConfigCodec.write(s.initStruct(1, 1, 2), v.secrets, caps);
-    DatabaseAdapterConfigCodec.write(s.initStruct(2, 1, 4), v.adapter, caps);
+    if (v.config != null) {
+      ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
+    }
+    if (v.secrets != null) {
+      ExtensibleConfigCodec.write(s.initStruct(1, 1, 2), v.secrets, caps);
+    }
+    if (v.adapter != null) {
+      DatabaseAdapterConfigCodec.write(s.initStruct(2, 1, 4), v.adapter, caps);
+    }
     s.setCap(3, caps.exportCap(v.events));
     {
-      const items = s.initStructList(4, v.databases.length, 0, 2);
+      const list = v.databases ?? [];
+      const items = s.initStructList(4, list.length, 0, 2);
       for (let i = 0; i < items.length; i++) {
-        NamedDatabaseCodec.write(items[i]!, v.databases[i]!, caps);
+        NamedDatabaseCodec.write(items[i]!, list[i]!, caps);
       }
     }
     s.setCap(5, caps.exportCap(v.cancel));
@@ -1585,11 +1612,15 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        EntrypointsCodec.write(s.initStruct(0, 0, 8), v.value, caps);
+        if (v.value != null) {
+          EntrypointsCodec.write(s.initStruct(0, 0, 8), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("EntrypointsReply", (v as { kind: string }).kind);
@@ -1618,19 +1649,19 @@ export const JobInvocationCodec: StructCodec<T.JobInvocation> = {
   pointerCount: 8,
   write(s, v, caps) {
     void caps;
-    s.setUint32(0, v.payloadSchemaVersion);
-    s.setText(0, v.invocationId);
-    s.setText(1, v.commandType);
-    s.setText(2, v.payloadJson);
-    s.setText(3, v.idempotencyKey);
-    s.setUint32(1, v.attempt);
-    s.setText(4, v.correlationId);
-    s.setText(5, v.causationId);
-    s.setUint64(1, BigInt(v.deadlineUnixMs));
-    s.setText(6, v.checkpointJson);
-    s.setUint32(4, v.checkpointSchemaVersion);
-    s.setUint32(5, v.invocationSequence);
-    s.setText(7, v.stepId);
+    s.setUint32(0, v.payloadSchemaVersion ?? 0);
+    s.setText(0, v.invocationId ?? "");
+    s.setText(1, v.commandType ?? "");
+    s.setText(2, v.payloadJson ?? "");
+    s.setText(3, v.idempotencyKey ?? "");
+    s.setUint32(1, v.attempt ?? 0);
+    s.setText(4, v.correlationId ?? "");
+    s.setText(5, v.causationId ?? "");
+    s.setUint64(1, BigInt(v.deadlineUnixMs ?? 0));
+    s.setText(6, v.checkpointJson ?? "");
+    s.setUint32(4, v.checkpointSchemaVersion ?? 0);
+    s.setUint32(5, v.invocationSequence ?? 0);
+    s.setText(7, v.stepId ?? "");
   },
   read(s, caps) {
     void caps;
@@ -1662,8 +1693,8 @@ export const CompletedOutcomeCodec: StructCodec<T.CompletedOutcome> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.message);
-    s.setUint64(0, BigInt(v.bytesCopied));
+    s.setText(0, v.message ?? "");
+    s.setUint64(0, BigInt(v.bytesCopied ?? 0));
   },
   read(s, caps) {
     void caps;
@@ -1684,8 +1715,8 @@ export const RetryableOutcomeCodec: StructCodec<T.RetryableOutcome> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.message);
-    s.setUint64(0, BigInt(v.retryAfterUnixMs));
+    s.setText(0, v.message ?? "");
+    s.setUint64(0, BigInt(v.retryAfterUnixMs ?? 0));
   },
   read(s, caps) {
     void caps;
@@ -1706,7 +1737,7 @@ export const RejectedOutcomeCodec: StructCodec<T.RejectedOutcome> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.message);
+    s.setText(0, v.message ?? "");
   },
   read(s, caps) {
     void caps;
@@ -1726,7 +1757,7 @@ export const CancelledOutcomeCodec: StructCodec<T.CancelledOutcome> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.message);
+    s.setText(0, v.message ?? "");
   },
   read(s, caps) {
     void caps;
@@ -1746,9 +1777,9 @@ export const SuspendedOutcomeCodec: StructCodec<T.SuspendedOutcome> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.checkpointJson);
-    s.setUint32(0, v.checkpointSchemaVersion);
-    s.setUint64(1, BigInt(v.wakeAtUnixMs));
+    s.setText(0, v.checkpointJson ?? "");
+    s.setUint32(0, v.checkpointSchemaVersion ?? 0);
+    s.setUint64(1, BigInt(v.wakeAtUnixMs ?? 0));
   },
   read(s, caps) {
     void caps;
@@ -1772,23 +1803,33 @@ export const JobOutcomeCodec: StructCodec<T.JobOutcome> = {
     switch (v.kind) {
       case "completed":
         s.setUint16(0, 0);
-        CompletedOutcomeCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        if (v.value != null) {
+          CompletedOutcomeCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
         break;
       case "retryable":
         s.setUint16(0, 1);
-        RetryableOutcomeCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        if (v.value != null) {
+          RetryableOutcomeCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
         break;
       case "rejected":
         s.setUint16(0, 2);
-        RejectedOutcomeCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          RejectedOutcomeCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "cancelled":
         s.setUint16(0, 3);
-        CancelledOutcomeCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          CancelledOutcomeCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "suspended":
         s.setUint16(0, 4);
-        SuspendedOutcomeCodec.write(s.initStruct(0, 2, 1), v.value, caps);
+        if (v.value != null) {
+          SuspendedOutcomeCodec.write(s.initStruct(0, 2, 1), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("JobOutcome", (v as { kind: string }).kind);
@@ -1823,21 +1864,21 @@ export const DomainEventCodec: StructCodec<T.DomainEvent> = {
   pointerCount: 9,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.eventId);
-    s.setText(1, v.eventType);
-    s.setUint32(0, v.schemaVersion);
-    s.setUint64(1, BigInt(v.occurredAtUnixMs));
-    s.setText(2, v.accountId);
-    s.setText(3, v.correlationId);
-    s.setText(4, v.causationId);
-    s.setText(5, v.deduplicationKey);
-    s.setUint32(1, v.deliveryAttempt);
-    s.setData(6, v.payload);
-    s.setText(7, v.checkpointJson);
-    s.setUint32(4, v.checkpointSchemaVersion);
-    s.setUint32(5, v.invocationSequence);
-    s.setBool(192, v.resumePending);
-    s.setText(8, v.source);
+    s.setText(0, v.eventId ?? "");
+    s.setText(1, v.eventType ?? "");
+    s.setUint32(0, v.schemaVersion ?? 0);
+    s.setUint64(1, BigInt(v.occurredAtUnixMs ?? 0));
+    s.setText(2, v.accountId ?? "");
+    s.setText(3, v.correlationId ?? "");
+    s.setText(4, v.causationId ?? "");
+    s.setText(5, v.deduplicationKey ?? "");
+    s.setUint32(1, v.deliveryAttempt ?? 0);
+    s.setData(6, v.payload ?? EMPTY_BYTES);
+    s.setText(7, v.checkpointJson ?? "");
+    s.setUint32(4, v.checkpointSchemaVersion ?? 0);
+    s.setUint32(5, v.invocationSequence ?? 0);
+    s.setBool(192, v.resumePending ?? false);
+    s.setText(8, v.source ?? "");
   },
   read(s, caps) {
     void caps;
@@ -1892,8 +1933,8 @@ export const EventRetryCodec: StructCodec<T.EventRetry> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setUint64(0, BigInt(v.retryAtUnixMs));
-    s.setText(0, v.reason);
+    s.setUint64(0, BigInt(v.retryAtUnixMs ?? 0));
+    s.setText(0, v.reason ?? "");
   },
   read(s, caps) {
     void caps;
@@ -1914,7 +1955,7 @@ export const EventRejectCodec: StructCodec<T.EventReject> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.reason);
+    s.setText(0, v.reason ?? "");
   },
   read(s, caps) {
     void caps;
@@ -1934,7 +1975,7 @@ export const EventDeadLetterCodec: StructCodec<T.EventDeadLetter> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.reason);
+    s.setText(0, v.reason ?? "");
   },
   read(s, caps) {
     void caps;
@@ -1954,11 +1995,11 @@ export const EventSuspendedCodec: StructCodec<T.EventSuspended> = {
   pointerCount: 3,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.checkpointJson);
-    s.setUint32(0, v.checkpointSchemaVersion);
-    s.setUint64(1, BigInt(v.wakeAtUnixMs));
-    s.setText(1, v.wakeOnEventType);
-    s.setText(2, v.wakeOnFilterJson);
+    s.setText(0, v.checkpointJson ?? "");
+    s.setUint32(0, v.checkpointSchemaVersion ?? 0);
+    s.setUint64(1, BigInt(v.wakeAtUnixMs ?? 0));
+    s.setText(1, v.wakeOnEventType ?? "");
+    s.setText(2, v.wakeOnFilterJson ?? "");
   },
   read(s, caps) {
     void caps;
@@ -1984,23 +2025,33 @@ export const EventResultCodec: StructCodec<T.EventResult> = {
     switch (v.kind) {
       case "ack":
         s.setUint16(0, 0);
-        EventAckCodec.write(s.initStruct(0, 0, 0), v.value, caps);
+        if (v.value != null) {
+          EventAckCodec.write(s.initStruct(0, 0, 0), v.value, caps);
+        }
         break;
       case "retry":
         s.setUint16(0, 1);
-        EventRetryCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        if (v.value != null) {
+          EventRetryCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
         break;
       case "reject":
         s.setUint16(0, 2);
-        EventRejectCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          EventRejectCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "deadLetter":
         s.setUint16(0, 3);
-        EventDeadLetterCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          EventDeadLetterCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "suspended":
         s.setUint16(0, 4);
-        EventSuspendedCodec.write(s.initStruct(0, 2, 3), v.value, caps);
+        if (v.value != null) {
+          EventSuspendedCodec.write(s.initStruct(0, 2, 3), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("EventResult", (v as { kind: string }).kind);
@@ -2035,9 +2086,10 @@ export const EventBatchCodec: StructCodec<T.EventBatch> = {
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.events.length, 4, 9);
+      const list = v.events ?? [];
+      const items = s.initStructList(0, list.length, 4, 9);
       for (let i = 0; i < items.length; i++) {
-        DomainEventCodec.write(items[i]!, v.events[i]!, caps);
+        DomainEventCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -2061,15 +2113,18 @@ export const EventBatchReplyCodec: StructCodec<T.EventBatchReply> = {
       case "ok":
         s.setUint16(0, 0);
         {
-          const items = s.initStructList(0, v.value.length, 1, 1);
+          const list = v.value ?? [];
+          const items = s.initStructList(0, list.length, 1, 1);
           for (let i = 0; i < items.length; i++) {
-            EventResultCodec.write(items[i]!, v.value[i]!, caps);
+            EventResultCodec.write(items[i]!, list[i]!, caps);
           }
         }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("EventBatchReply", (v as { kind: string }).kind);
@@ -2097,7 +2152,9 @@ export const JobControllerCodec: StructCodec<T.JobController> = {
   dataWords: 0,
   pointerCount: 5,
   write(s, v, caps) {
-    JobInvocationCodec.write(s.initStruct(0, 3, 8), v.invocation, caps);
+    if (v.invocation != null) {
+      JobInvocationCodec.write(s.initStruct(0, 3, 8), v.invocation, caps);
+    }
     s.setCap(1, caps.exportCap(v.input));
     s.setCap(2, caps.exportCap(v.output));
     s.setCap(3, caps.exportCap(v.progress));
@@ -2123,8 +2180,10 @@ export const HeadOkCodec: StructCodec<T.HeadOk> = {
   dataWords: 1,
   pointerCount: 1,
   write(s, v, caps) {
-    s.setBool(0, v.found);
-    ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
+    s.setBool(0, v.found ?? false);
+    if (v.meta != null) {
+      ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -2146,11 +2205,15 @@ export const HeadReplyCodec: StructCodec<T.HeadReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        HeadOkCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        if (v.value != null) {
+          HeadOkCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("HeadReply", (v as { kind: string }).kind);
@@ -2181,11 +2244,15 @@ export const ListReplyCodec: StructCodec<T.ListReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        ListPageCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          ListPageCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("ListReply", (v as { kind: string }).kind);
@@ -2213,7 +2280,9 @@ export const GetOkCodec: StructCodec<T.GetOk> = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
-    ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
+    if (v.meta != null) {
+      ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
+    }
     s.setCap(1, caps.exportCap(v.body));
   },
   read(s, caps) {
@@ -2236,11 +2305,15 @@ export const GetReplyCodec: StructCodec<T.GetReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        GetOkCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          GetOkCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("GetReply", (v as { kind: string }).kind);
@@ -2271,11 +2344,15 @@ export const PutReplyCodec: StructCodec<T.PutReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        PutResultCodec.write(s.initStruct(0, 1, 3), v.value, caps);
+        if (v.value != null) {
+          PutResultCodec.write(s.initStruct(0, 1, 3), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("PutReply", (v as { kind: string }).kind);
@@ -2306,11 +2383,15 @@ export const CopyReplyCodec: StructCodec<T.CopyReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        CopyResultCodec.write(s.initStruct(0, 1, 0), v.value, caps);
+        if (v.value != null) {
+          CopyResultCodec.write(s.initStruct(0, 1, 0), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("CopyReply", (v as { kind: string }).kind);
@@ -2344,7 +2425,9 @@ export const EmptyReplyCodec: StructCodec<T.EmptyReply> = {
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("EmptyReply", (v as { kind: string }).kind);
@@ -2373,8 +2456,8 @@ export const PullOkCodec: StructCodec<T.PullOk> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setData(0, v.chunk);
-    s.setBool(0, v.done);
+    s.setData(0, v.chunk ?? EMPTY_BYTES);
+    s.setBool(0, v.done ?? false);
   },
   read(s, caps) {
     void caps;
@@ -2397,11 +2480,15 @@ export const PullReplyCodec: StructCodec<T.PullReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        PullOkCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        if (v.value != null) {
+          PullOkCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("PullReply", (v as { kind: string }).kind);
@@ -2429,7 +2516,9 @@ export const OpenOkCodec: StructCodec<T.OpenOk> = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
-    ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
+    if (v.meta != null) {
+      ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
+    }
     s.setCap(1, caps.exportCap(v.body));
   },
   read(s, caps) {
@@ -2452,11 +2541,15 @@ export const OpenReplyCodec: StructCodec<T.OpenReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        OpenOkCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          OpenOkCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("OpenReply", (v as { kind: string }).kind);
@@ -2487,11 +2580,15 @@ export const DescribeReplyCodec: StructCodec<T.DescribeReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        PluginDescribeCodec.write(s.initStruct(0, 2, 10), v.value, caps);
+        if (v.value != null) {
+          PluginDescribeCodec.write(s.initStruct(0, 2, 10), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("DescribeReply", (v as { kind: string }).kind);
@@ -2522,11 +2619,15 @@ export const HandleReplyCodec: StructCodec<T.HandleReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        JobOutcomeCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        if (v.value != null) {
+          JobOutcomeCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("HandleReply", (v as { kind: string }).kind);
@@ -2555,8 +2656,8 @@ export const HealthOkCodec: StructCodec<T.HealthOk> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setBool(0, v.ok);
-    s.setText(0, v.detail);
+    s.setBool(0, v.ok ?? false);
+    s.setText(0, v.detail ?? "");
   },
   read(s, caps) {
     void caps;
@@ -2579,11 +2680,15 @@ export const HealthReplyCodec: StructCodec<T.HealthReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        HealthOkCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        if (v.value != null) {
+          HealthOkCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("HealthReply", (v as { kind: string }).kind);
@@ -2618,7 +2723,9 @@ export const AdapterSessionReplyCodec: StructCodec<T.AdapterSessionReply> = {
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("AdapterSessionReply", (v as { kind: string }).kind);
@@ -2653,7 +2760,9 @@ export const GuestDatabaseReplyCodec: StructCodec<T.GuestDatabaseReply> = {
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("GuestDatabaseReply", (v as { kind: string }).kind);
@@ -2681,7 +2790,7 @@ export const NamedDatabaseCodec: StructCodec<T.NamedDatabase> = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
-    s.setText(0, v.name);
+    s.setText(0, v.name ?? "");
     s.setCap(1, caps.exportCap(v.database));
   },
   read(s, caps) {
@@ -2702,9 +2811,9 @@ export const EventConsumerSpecCodec: StructCodec<T.EventConsumerSpec> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.eventType);
-    s.setUint32List(1, v.schemaVersions);
-    s.setBool(0, v.supportsSuspend);
+    s.setText(0, v.eventType ?? "");
+    s.setUint32List(1, v.schemaVersions ?? []);
+    s.setBool(0, v.supportsSuspend ?? false);
   },
   read(s, caps) {
     void caps;
@@ -2725,17 +2834,18 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
   dataWords: 0,
   pointerCount: 6,
   write(s, v, caps) {
-    s.setUint16List(0, v.entrypoints.map((v) => ord(A.ENTRYPOINTS, v, "Entrypoint")));
+    s.setUint16List(0, (v.entrypoints ?? []).map((v) => ord(A.ENTRYPOINTS, v, "Entrypoint")));
     {
-      const items = s.initStructList(1, v.consumes.length, 1, 2);
+      const list = v.consumes ?? [];
+      const items = s.initStructList(1, list.length, 1, 2);
       for (let i = 0; i < items.length; i++) {
-        EventConsumerSpecCodec.write(items[i]!, v.consumes[i]!, caps);
+        EventConsumerSpecCodec.write(items[i]!, list[i]!, caps);
       }
     }
-    s.setTextList(2, v.produces);
-    s.setTextList(3, v.jobs);
-    s.setTextList(4, v.databases);
-    s.setTextList(5, v.bindings);
+    s.setTextList(2, v.produces ?? []);
+    s.setTextList(3, v.jobs ?? []);
+    s.setTextList(4, v.databases ?? []);
+    s.setTextList(5, v.bindings ?? []);
   },
   read(s, caps) {
     return {
@@ -2759,13 +2869,13 @@ export const BrandCodec: StructCodec<T.Brand> = {
   pointerCount: 6,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.id);
-    s.setText(1, v.name);
-    s.setText(2, v.bg);
-    s.setText(3, v.fg);
-    s.setText(4, v.accent);
+    s.setText(0, v.id ?? "");
+    s.setText(1, v.name ?? "");
+    s.setText(2, v.bg ?? "");
+    s.setText(3, v.fg ?? "");
+    s.setText(4, v.accent ?? "");
     if (v.iconUrl !== undefined) {
-      s.setText(5, v.iconUrl);
+      s.setText(5, v.iconUrl ?? "");
     }
   },
   read(s, caps) {
@@ -2794,12 +2904,13 @@ export const ConfigOptionCodec: StructCodec<T.ConfigOption> = {
   dataWords: 0,
   pointerCount: 3,
   write(s, v, caps) {
-    s.setText(0, v.key);
-    s.setText(1, v.label);
+    s.setText(0, v.key ?? "");
+    s.setText(1, v.label ?? "");
     {
-      const items = s.initStructList(2, v.values.length, 0, 2);
+      const list = v.values ?? [];
+      const items = s.initStructList(2, list.length, 0, 2);
       for (let i = 0; i < items.length; i++) {
-        ConfigOptionValueCodec.write(items[i]!, v.values[i]!, caps);
+        ConfigOptionValueCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -2822,8 +2933,8 @@ export const ConfigOptionValueCodec: StructCodec<T.ConfigOptionValue> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.id);
-    s.setText(1, v.label);
+    s.setText(0, v.id ?? "");
+    s.setText(1, v.label ?? "");
   },
   read(s, caps) {
     void caps;
@@ -2844,9 +2955,10 @@ export const CliSchemaCodec: StructCodec<T.CliSchema> = {
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.commands.length, 0, 3);
+      const list = v.commands ?? [];
+      const items = s.initStructList(0, list.length, 0, 3);
       for (let i = 0; i < items.length; i++) {
-        CliCommandSpecCodec.write(items[i]!, v.commands[i]!, caps);
+        CliCommandSpecCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -2866,14 +2978,15 @@ export const CliCommandSpecCodec: StructCodec<T.CliCommandSpec> = {
   dataWords: 0,
   pointerCount: 3,
   write(s, v, caps) {
-    s.setText(0, v.name);
+    s.setText(0, v.name ?? "");
     if (v.about !== undefined) {
-      s.setText(1, v.about);
+      s.setText(1, v.about ?? "");
     }
     {
-      const items = s.initStructList(2, v.args.length, 1, 5);
+      const list = v.args ?? [];
+      const items = s.initStructList(2, list.length, 1, 5);
       for (let i = 0; i < items.length; i++) {
-        CliArgSpecCodec.write(items[i]!, v.args[i]!, caps);
+        CliArgSpecCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -2900,22 +3013,22 @@ export const CliArgSpecCodec: StructCodec<T.CliArgSpec> = {
   pointerCount: 5,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.name);
+    s.setText(0, v.name ?? "");
     if (v.long !== undefined) {
-      s.setText(1, v.long);
+      s.setText(1, v.long ?? "");
     }
     if (v.short !== undefined) {
-      s.setText(2, v.short);
+      s.setText(2, v.short ?? "");
     }
-    s.setUint16(0, ord(A.CLI_ARG_KINDS, v.kind, "CliArgKind"));
-    s.setBool(16, v.required);
+    s.setUint16(0, ord(A.CLI_ARG_KINDS, v.kind ?? A.CLI_ARG_KINDS[0]!, "CliArgKind"));
+    s.setBool(16, v.required ?? false);
     if (v.default !== undefined) {
-      s.setText(3, v.default);
+      s.setText(3, v.default ?? "");
     }
     if (v.about !== undefined) {
-      s.setText(4, v.about);
+      s.setText(4, v.about ?? "");
     }
-    s.setBool(17, v.positional);
+    s.setBool(17, v.positional ?? false);
   },
   read(s, caps) {
     void caps;
@@ -2955,8 +3068,8 @@ export const CliArgCodec: StructCodec<T.CliArg> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.name);
-    s.setText(1, v.value);
+    s.setText(0, v.name ?? "");
+    s.setText(1, v.value ?? "");
   },
   read(s, caps) {
     void caps;
@@ -2976,11 +3089,12 @@ export const CliInvokeParamsCodec: StructCodec<T.CliInvokeParams> = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
-    s.setText(0, v.command);
+    s.setText(0, v.command ?? "");
     {
-      const items = s.initStructList(1, v.args.length, 0, 2);
+      const list = v.args ?? [];
+      const items = s.initStructList(1, list.length, 0, 2);
       for (let i = 0; i < items.length; i++) {
-        CliArgCodec.write(items[i]!, v.args[i]!, caps);
+        CliArgCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -3001,10 +3115,12 @@ export const CliInvokeResultCodec: StructCodec<T.CliInvokeResult> = {
   dataWords: 1,
   pointerCount: 3,
   write(s, v, caps) {
-    s.setInt32(0, v.exitCode);
-    s.setText(0, v.stdout);
-    s.setText(1, v.stderr);
-    ExtensibleConfigCodec.write(s.initStruct(2, 1, 2), v.payload, caps);
+    s.setInt32(0, v.exitCode ?? 0);
+    s.setText(0, v.stdout ?? "");
+    s.setText(1, v.stderr ?? "");
+    if (v.payload != null) {
+      ExtensibleConfigCodec.write(s.initStruct(2, 1, 2), v.payload, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -3028,11 +3144,15 @@ export const CliSchemaReplyCodec: StructCodec<T.CliSchemaReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        CliSchemaCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          CliSchemaCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("CliSchemaReply", (v as { kind: string }).kind);
@@ -3063,11 +3183,15 @@ export const CliInvokeReplyCodec: StructCodec<T.CliInvokeReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        CliInvokeResultCodec.write(s.initStruct(0, 1, 3), v.value, caps);
+        if (v.value != null) {
+          CliInvokeResultCodec.write(s.initStruct(0, 1, 3), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("CliInvokeReply", (v as { kind: string }).kind);
@@ -3095,15 +3219,17 @@ export const DatabaseAdapterConfigCodec: StructCodec<T.DatabaseAdapterConfig> = 
   dataWords: 1,
   pointerCount: 4,
   write(s, v, caps) {
-    s.setText(0, v.pluginDataDir);
-    ExtensibleConfigCodec.write(s.initStruct(1, 1, 2), v.settings, caps);
+    s.setText(0, v.pluginDataDir ?? "");
+    if (v.settings != null) {
+      ExtensibleConfigCodec.write(s.initStruct(1, 1, 2), v.settings, caps);
+    }
     if (v.binding !== undefined) {
-      s.setText(2, v.binding);
+      s.setText(2, v.binding ?? "");
     }
     if (v.instanceId !== undefined) {
-      s.setText(3, v.instanceId);
+      s.setText(3, v.instanceId ?? "");
     }
-    s.setBool(0, v.openExisting);
+    s.setBool(0, v.openExisting ?? false);
   },
   read(s, caps) {
     const out: T.DatabaseAdapterConfig = {
@@ -3133,7 +3259,7 @@ export const DiagnoseResultCodec: StructCodec<T.DiagnoseResult> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setTextList(0, v.lines);
+    s.setTextList(0, v.lines ?? []);
   },
   read(s, caps) {
     void caps;
@@ -3155,11 +3281,15 @@ export const DiagnoseReplyCodec: StructCodec<T.DiagnoseReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        DiagnoseResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          DiagnoseResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("DiagnoseReply", (v as { kind: string }).kind);
@@ -3188,13 +3318,13 @@ export const SourceAccountCodec: StructCodec<T.SourceAccount> = {
   pointerCount: 4,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.accountId);
-    s.setText(1, v.source);
-    s.setText(2, v.marketplace);
+    s.setText(0, v.accountId ?? "");
+    s.setText(1, v.source ?? "");
+    s.setText(2, v.marketplace ?? "");
     if (v.label !== undefined) {
-      s.setText(3, v.label);
+      s.setText(3, v.label ?? "");
     }
-    s.setBool(0, v.scanEnabled);
+    s.setBool(0, v.scanEnabled ?? false);
   },
   read(s, caps) {
     void caps;
@@ -3221,36 +3351,38 @@ export const LoginParamsCodec: StructCodec<T.LoginParams> = {
   dataWords: 2,
   pointerCount: 10,
   write(s, v, caps) {
-    s.setText(0, v.pluginDataDir);
-    s.setText(1, v.marketplace);
+    s.setText(0, v.pluginDataDir ?? "");
+    s.setText(1, v.marketplace ?? "");
     if (v.label !== undefined) {
-      s.setText(2, v.label);
+      s.setText(2, v.label ?? "");
     }
     if (v.email !== undefined) {
-      s.setText(3, v.email);
+      s.setText(3, v.email ?? "");
     }
     if (v.password !== undefined) {
-      s.setText(4, v.password);
+      s.setText(4, v.password ?? "");
     }
-    s.setBool(0, v.force);
+    s.setBool(0, v.force ?? false);
     if (v.callbackBind !== undefined) {
-      s.setText(5, v.callbackBind);
+      s.setText(5, v.callbackBind ?? "");
     }
     if (v.callbackIpc !== undefined) {
-      s.setText(6, v.callbackIpc);
+      s.setText(6, v.callbackIpc ?? "");
     }
     if (v.callbackPublicBase !== undefined) {
-      s.setText(7, v.callbackPublicBase);
+      s.setText(7, v.callbackPublicBase ?? "");
     }
-    s.setBool(1, v.external);
+    s.setBool(1, v.external ?? false);
     if (v.responseUrl !== undefined) {
-      s.setText(8, v.responseUrl);
+      s.setText(8, v.responseUrl ?? "");
     }
-    s.setBool(2, v.showQr);
+    s.setBool(2, v.showQr ?? false);
     if (v.timeoutSecs !== undefined) {
-      s.setUint64(1, BigInt(v.timeoutSecs));
+      s.setUint64(1, BigInt(v.timeoutSecs ?? 0));
     }
-    ExtensibleConfigCodec.write(s.initStruct(9, 1, 2), v.extra, caps);
+    if (v.extra != null) {
+      ExtensibleConfigCodec.write(s.initStruct(9, 1, 2), v.extra, caps);
+    }
   },
   read(s, caps) {
     const out: T.LoginParams = {
@@ -3306,9 +3438,11 @@ export const LoginResultCodec: StructCodec<T.LoginResult> = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
-    SourceAccountCodec.write(s.initStruct(0, 1, 4), v.account, caps);
+    if (v.account != null) {
+      SourceAccountCodec.write(s.initStruct(0, 1, 4), v.account, caps);
+    }
     if (v.credentials !== undefined) {
-      s.setData(1, v.credentials);
+      s.setData(1, v.credentials ?? EMPTY_BYTES);
     }
   },
   read(s, caps) {
@@ -3333,8 +3467,8 @@ export const LoginStartResultCodec: StructCodec<T.LoginStartResult> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.sessionId);
-    s.setText(1, v.url);
+    s.setText(0, v.sessionId ?? "");
+    s.setText(1, v.url ?? "");
   },
   read(s, caps) {
     void caps;
@@ -3355,7 +3489,7 @@ export const LoginCompleteParamsCodec: StructCodec<T.LoginCompleteParams> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.sessionId);
+    s.setText(0, v.sessionId ?? "");
   },
   read(s, caps) {
     void caps;
@@ -3377,11 +3511,15 @@ export const LoginReplyCodec: StructCodec<T.LoginReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        LoginResultCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          LoginResultCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("LoginReply", (v as { kind: string }).kind);
@@ -3412,11 +3550,15 @@ export const LoginStartReplyCodec: StructCodec<T.LoginStartReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        LoginStartResultCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          LoginStartResultCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("LoginStartReply", (v as { kind: string }).kind);
@@ -3445,8 +3587,8 @@ export const AccountCredentialCodec: StructCodec<T.AccountCredential> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.accountId);
-    s.setData(1, v.credentials);
+    s.setText(0, v.accountId ?? "");
+    s.setData(1, v.credentials ?? EMPTY_BYTES);
   },
   read(s, caps) {
     void caps;
@@ -3466,15 +3608,16 @@ export const ScanParamsCodec: StructCodec<T.ScanParams> = {
   dataWords: 1,
   pointerCount: 3,
   write(s, v, caps) {
-    s.setText(0, v.pluginDataDir);
-    s.setTextList(1, v.accounts);
-    s.setUint32(0, v.pageSize);
-    s.setBool(32, v.importEpisodes);
-    s.setBool(33, v.importPlusTitles);
+    s.setText(0, v.pluginDataDir ?? "");
+    s.setTextList(1, v.accounts ?? []);
+    s.setUint32(0, v.pageSize ?? 0);
+    s.setBool(32, v.importEpisodes ?? false);
+    s.setBool(33, v.importPlusTitles ?? false);
     {
-      const items = s.initStructList(2, v.credentials.length, 0, 2);
+      const list = v.credentials ?? [];
+      const items = s.initStructList(2, list.length, 0, 2);
       for (let i = 0; i < items.length; i++) {
-        AccountCredentialCodec.write(items[i]!, v.credentials[i]!, caps);
+        AccountCredentialCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -3500,41 +3643,41 @@ export const ScanBookCodec: StructCodec<T.ScanBook> = {
   pointerCount: 13,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.accountId);
-    s.setText(1, v.productId);
-    s.setText(2, v.title);
+    s.setText(0, v.accountId ?? "");
+    s.setText(1, v.productId ?? "");
+    s.setText(2, v.title ?? "");
     if (v.marketplace !== undefined) {
-      s.setText(3, v.marketplace);
+      s.setText(3, v.marketplace ?? "");
     }
     if (v.asin !== undefined) {
-      s.setText(4, v.asin);
+      s.setText(4, v.asin ?? "");
     }
     if (v.isbn !== undefined) {
-      s.setText(5, v.isbn);
+      s.setText(5, v.isbn ?? "");
     }
     if (v.authors !== undefined) {
-      s.setText(6, v.authors);
+      s.setText(6, v.authors ?? "");
     }
     if (v.narrators !== undefined) {
-      s.setText(7, v.narrators);
+      s.setText(7, v.narrators ?? "");
     }
     if (v.series !== undefined) {
-      s.setText(8, v.series);
+      s.setText(8, v.series ?? "");
     }
     if (v.seriesIndex !== undefined) {
-      s.setText(9, v.seriesIndex);
+      s.setText(9, v.seriesIndex ?? "");
     }
     if (v.contentKind !== undefined) {
-      s.setText(10, v.contentKind);
+      s.setText(10, v.contentKind ?? "");
     }
     if (v.publisher !== undefined) {
-      s.setText(11, v.publisher);
+      s.setText(11, v.publisher ?? "");
     }
     if (v.lengthMinutes !== undefined) {
-      s.setInt64(0, v.lengthMinutes);
+      s.setInt64(0, v.lengthMinutes ?? 0);
     }
     if (v.subtitle !== undefined) {
-      s.setText(12, v.subtitle);
+      s.setText(12, v.subtitle ?? "");
     }
   },
   read(s, caps) {
@@ -3601,14 +3744,15 @@ export const ScanSummaryCodec: StructCodec<T.ScanSummary> = {
   dataWords: 2,
   pointerCount: 1,
   write(s, v, caps) {
-    s.setUint32(0, v.accounts);
-    s.setUint32(1, v.booksUpserted);
-    s.setUint32(2, v.pages);
-    s.setUint32(3, v.skippedDisabled);
+    s.setUint32(0, v.accounts ?? 0);
+    s.setUint32(1, v.booksUpserted ?? 0);
+    s.setUint32(2, v.pages ?? 0);
+    s.setUint32(3, v.skippedDisabled ?? 0);
     {
-      const items = s.initStructList(0, v.books.length, 1, 13);
+      const list = v.books ?? [];
+      const items = s.initStructList(0, list.length, 1, 13);
       for (let i = 0; i < items.length; i++) {
-        ScanBookCodec.write(items[i]!, v.books[i]!, caps);
+        ScanBookCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -3635,11 +3779,15 @@ export const ScanReplyCodec: StructCodec<T.ScanReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        ScanSummaryCodec.write(s.initStruct(0, 2, 1), v.value, caps);
+        if (v.value != null) {
+          ScanSummaryCodec.write(s.initStruct(0, 2, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("ScanReply", (v as { kind: string }).kind);
@@ -3668,23 +3816,23 @@ export const FetchOptionsCodec: StructCodec<T.FetchOptions> = {
   pointerCount: 4,
   write(s, v, caps) {
     void caps;
-    s.setBool(0, v.widevine);
-    s.setBool(1, v.xheAac);
+    s.setBool(0, v.widevine ?? false);
+    s.setBool(1, v.xheAac ?? false);
     if (v.widevineCdmPath !== undefined) {
-      s.setText(0, v.widevineCdmPath);
+      s.setText(0, v.widevineCdmPath ?? "");
     }
     if (v.widevineCdmProvider !== undefined) {
-      s.setText(1, v.widevineCdmProvider);
+      s.setText(1, v.widevineCdmProvider ?? "");
     }
-    s.setBool(2, v.downloadCover);
-    s.setBool(3, v.downloadPdf);
-    s.setText(2, v.coverSize);
-    s.setText(3, v.chapterLayout);
-    s.setBool(4, v.stripAudibleBrandAudio);
-    s.setBool(5, v.downloadClipsBookmarks);
-    s.setBool(6, v.retainAaxFile);
-    s.setUint32(1, v.downloadSpeedLimitKbps);
-    s.setBool(7, v.saveMetadataJson);
+    s.setBool(2, v.downloadCover ?? false);
+    s.setBool(3, v.downloadPdf ?? false);
+    s.setText(2, v.coverSize ?? "");
+    s.setText(3, v.chapterLayout ?? "");
+    s.setBool(4, v.stripAudibleBrandAudio ?? false);
+    s.setBool(5, v.downloadClipsBookmarks ?? false);
+    s.setBool(6, v.retainAaxFile ?? false);
+    s.setUint32(1, v.downloadSpeedLimitKbps ?? 0);
+    s.setBool(7, v.saveMetadataJson ?? false);
   },
   read(s, caps) {
     void caps;
@@ -3722,15 +3870,19 @@ export const FetchTitleParamsCodec: StructCodec<T.FetchTitleParams> = {
   dataWords: 0,
   pointerCount: 7,
   write(s, v, caps) {
-    s.setText(0, v.pluginDataDir);
-    s.setText(1, v.accountId);
-    s.setText(2, v.titleId);
-    s.setText(3, v.cacheDir);
+    s.setText(0, v.pluginDataDir ?? "");
+    s.setText(1, v.accountId ?? "");
+    s.setText(2, v.titleId ?? "");
+    s.setText(3, v.cacheDir ?? "");
     if (v.credentials !== undefined) {
-      s.setData(4, v.credentials);
+      s.setData(4, v.credentials ?? EMPTY_BYTES);
     }
-    ExtensibleConfigCodec.write(s.initStruct(5, 1, 2), v.sourceConfig, caps);
-    FetchOptionsCodec.write(s.initStruct(6, 1, 4), v.fetch, caps);
+    if (v.sourceConfig != null) {
+      ExtensibleConfigCodec.write(s.initStruct(5, 1, 2), v.sourceConfig, caps);
+    }
+    if (v.fetch != null) {
+      FetchOptionsCodec.write(s.initStruct(6, 1, 4), v.fetch, caps);
+    }
   },
   read(s, caps) {
     const out: T.FetchTitleParams = {
@@ -3759,12 +3911,12 @@ export const PlainPartCodec: StructCodec<T.PlainPart> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.path);
+    s.setText(0, v.path ?? "");
     if (v.title !== undefined) {
-      s.setText(1, v.title);
+      s.setText(1, v.title ?? "");
     }
     if (v.durationMs !== undefined) {
-      s.setUint64(0, BigInt(v.durationMs));
+      s.setUint64(0, BigInt(v.durationMs ?? 0));
     }
   },
   read(s, caps) {
@@ -3794,8 +3946,8 @@ export const ChapterMarkerCodec: StructCodec<T.ChapterMarker> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.title);
-    s.setUint64(0, BigInt(v.startMs));
+    s.setText(0, v.title ?? "");
+    s.setUint64(0, BigInt(v.startMs ?? 0));
   },
   read(s, caps) {
     void caps;
@@ -3816,25 +3968,27 @@ export const PlainFetchCodec: StructCodec<T.PlainFetch> = {
   pointerCount: 5,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.parts.length, 1, 2);
+      const list = v.parts ?? [];
+      const items = s.initStructList(0, list.length, 1, 2);
       for (let i = 0; i < items.length; i++) {
-        PlainPartCodec.write(items[i]!, v.parts[i]!, caps);
+        PlainPartCodec.write(items[i]!, list[i]!, caps);
       }
     }
     if (v.m4bPath !== undefined) {
-      s.setText(1, v.m4bPath);
+      s.setText(1, v.m4bPath ?? "");
     }
     if (v.coverPath !== undefined) {
-      s.setText(2, v.coverPath);
+      s.setText(2, v.coverPath ?? "");
     }
     {
-      const items = s.initStructList(3, v.chapters.length, 1, 1);
+      const list = v.chapters ?? [];
+      const items = s.initStructList(3, list.length, 1, 1);
       for (let i = 0; i < items.length; i++) {
-        ChapterMarkerCodec.write(items[i]!, v.chapters[i]!, caps);
+        ChapterMarkerCodec.write(items[i]!, list[i]!, caps);
       }
     }
     if (v.pdfUrl !== undefined) {
-      s.setText(4, v.pdfUrl);
+      s.setText(4, v.pdfUrl ?? "");
     }
   },
   read(s, caps) {
@@ -3870,11 +4024,15 @@ export const FetchTitleReplyCodec: StructCodec<T.FetchTitleReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        PlainFetchCodec.write(s.initStruct(0, 0, 5), v.value, caps);
+        if (v.value != null) {
+          PlainFetchCodec.write(s.initStruct(0, 0, 5), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("FetchTitleReply", (v as { kind: string }).kind);
@@ -3903,9 +4061,10 @@ export const SourceAccountsCodec: StructCodec<T.SourceAccounts> = {
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.accounts.length, 1, 4);
+      const list = v.accounts ?? [];
+      const items = s.initStructList(0, list.length, 1, 4);
       for (let i = 0; i < items.length; i++) {
-        SourceAccountCodec.write(items[i]!, v.accounts[i]!, caps);
+        SourceAccountCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -3928,11 +4087,15 @@ export const SourceAccountsReplyCodec: StructCodec<T.SourceAccountsReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        SourceAccountsCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          SourceAccountsCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("SourceAccountsReply", (v as { kind: string }).kind);
@@ -3961,14 +4124,14 @@ export const SearchCatalogParamsCodec: StructCodec<T.SearchCatalogParams> = {
   pointerCount: 3,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.query);
-    s.setText(1, v.region);
-    s.setUint32(0, v.limit);
-    s.setUint32(1, v.page);
-    s.setUint16(4, ord(A.CATALOG_SORTS, v.sort, "CatalogSort"));
-    s.setUint16(5, ord(A.CATALOG_FIELDS, v.field, "CatalogField"));
+    s.setText(0, v.query ?? "");
+    s.setText(1, v.region ?? "");
+    s.setUint32(0, v.limit ?? 0);
+    s.setUint32(1, v.page ?? 0);
+    s.setUint16(4, ord(A.CATALOG_SORTS, v.sort ?? A.CATALOG_SORTS[0]!, "CatalogSort"));
+    s.setUint16(5, ord(A.CATALOG_FIELDS, v.field ?? A.CATALOG_FIELDS[0]!, "CatalogField"));
     if (v.language !== undefined) {
-      s.setText(2, v.language);
+      s.setText(2, v.language ?? "");
     }
   },
   read(s, caps) {
@@ -3999,29 +4162,29 @@ export const ExpandCandidatesParamsCodec: StructCodec<T.ExpandCandidatesParams> 
   pointerCount: 10,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.source);
-    s.setText(1, v.productId);
-    s.setText(2, v.title);
+    s.setText(0, v.source ?? "");
+    s.setText(1, v.productId ?? "");
+    s.setText(2, v.title ?? "");
     if (v.authors !== undefined) {
-      s.setText(3, v.authors);
+      s.setText(3, v.authors ?? "");
     }
     if (v.narrators !== undefined) {
-      s.setText(4, v.narrators);
+      s.setText(4, v.narrators ?? "");
     }
     if (v.series !== undefined) {
-      s.setText(5, v.series);
+      s.setText(5, v.series ?? "");
     }
     if (v.seriesAsin !== undefined) {
-      s.setText(6, v.seriesAsin);
+      s.setText(6, v.seriesAsin ?? "");
     }
     if (v.asin !== undefined) {
-      s.setText(7, v.asin);
+      s.setText(7, v.asin ?? "");
     }
     if (v.isbn !== undefined) {
-      s.setText(8, v.isbn);
+      s.setText(8, v.isbn ?? "");
     }
-    s.setText(9, v.region);
-    s.setUint32(0, v.limit);
+    s.setText(9, v.region ?? "");
+    s.setUint32(0, v.limit ?? 0);
   },
   read(s, caps) {
     void caps;
@@ -4071,22 +4234,22 @@ export const PurchaseHintParamsCodec: StructCodec<T.PurchaseHintParams> = {
   write(s, v, caps) {
     void caps;
     if (v.productId !== undefined) {
-      s.setText(0, v.productId);
+      s.setText(0, v.productId ?? "");
     }
     if (v.title !== undefined) {
-      s.setText(1, v.title);
+      s.setText(1, v.title ?? "");
     }
     if (v.authors !== undefined) {
-      s.setText(2, v.authors);
+      s.setText(2, v.authors ?? "");
     }
     if (v.asin !== undefined) {
-      s.setText(3, v.asin);
+      s.setText(3, v.asin ?? "");
     }
     if (v.isbn !== undefined) {
-      s.setText(4, v.isbn);
+      s.setText(4, v.isbn ?? "");
     }
-    s.setText(5, v.region);
-    s.setBool(0, v.withPrice);
+    s.setText(5, v.region ?? "");
+    s.setBool(0, v.withPrice ?? false);
   },
   read(s, caps) {
     void caps;
@@ -4129,7 +4292,7 @@ export const ListDealsParamsCodec: StructCodec<T.ListDealsParams> = {
   write(s, v, caps) {
     void caps;
     if (v.limit !== undefined) {
-      s.setUint32(0, v.limit);
+      s.setUint32(0, v.limit ?? 0);
     }
   },
   read(s, caps) {
@@ -4154,9 +4317,9 @@ export const CatalogDetailParamsCodec: StructCodec<T.CatalogDetailParams> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.productId);
+    s.setText(0, v.productId ?? "");
     if (v.isbn !== undefined) {
-      s.setText(1, v.isbn);
+      s.setText(1, v.isbn ?? "");
     }
   },
   read(s, caps) {
@@ -4182,70 +4345,70 @@ export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
   pointerCount: 19,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.productId);
-    s.setText(1, v.title);
+    s.setText(0, v.productId ?? "");
+    s.setText(1, v.title ?? "");
     if (v.authors !== undefined) {
-      s.setText(2, v.authors);
+      s.setText(2, v.authors ?? "");
     }
     if (v.narrators !== undefined) {
-      s.setText(3, v.narrators);
+      s.setText(3, v.narrators ?? "");
     }
     if (v.series !== undefined) {
-      s.setText(4, v.series);
+      s.setText(4, v.series ?? "");
     }
     if (v.seriesIndex !== undefined) {
-      s.setText(5, v.seriesIndex);
+      s.setText(5, v.seriesIndex ?? "");
     }
     if (v.asin !== undefined) {
-      s.setText(6, v.asin);
+      s.setText(6, v.asin ?? "");
     }
     if (v.isbn !== undefined) {
-      s.setText(7, v.isbn);
+      s.setText(7, v.isbn ?? "");
     }
     if (v.url !== undefined) {
-      s.setText(8, v.url);
+      s.setText(8, v.url ?? "");
     }
     if (v.coverUrl !== undefined) {
-      s.setText(9, v.coverUrl);
+      s.setText(9, v.coverUrl ?? "");
     }
-    s.setText(10, v.origin);
+    s.setText(10, v.origin ?? "");
     if (v.subtitle !== undefined) {
-      s.setText(11, v.subtitle);
+      s.setText(11, v.subtitle ?? "");
     }
     if (v.description !== undefined) {
-      s.setText(12, v.description);
+      s.setText(12, v.description ?? "");
     }
     if (v.publisher !== undefined) {
-      s.setText(13, v.publisher);
+      s.setText(13, v.publisher ?? "");
     }
     if (v.lengthMinutes !== undefined) {
-      s.setInt64(0, v.lengthMinutes);
+      s.setInt64(0, v.lengthMinutes ?? 0);
     }
     if (v.publishedAt !== undefined) {
-      s.setText(14, v.publishedAt);
+      s.setText(14, v.publishedAt ?? "");
     }
     if (v.categories !== undefined) {
-      s.setText(15, v.categories);
+      s.setText(15, v.categories ?? "");
     }
     if (v.language !== undefined) {
-      s.setText(16, v.language);
+      s.setText(16, v.language ?? "");
     }
     if (v.priceCents !== undefined) {
-      s.setInt64(1, v.priceCents);
+      s.setInt64(1, v.priceCents ?? 0);
     }
     if (v.currency !== undefined) {
-      s.setText(17, v.currency);
+      s.setText(17, v.currency ?? "");
     }
     if (v.priceLabel !== undefined) {
-      s.setText(18, v.priceLabel);
+      s.setText(18, v.priceLabel ?? "");
     }
     if (v.ratingOverall !== undefined) {
-      s.setFloat64(2, v.ratingOverall);
+      s.setFloat64(2, v.ratingOverall ?? 0);
     }
     if (v.ratingCount !== undefined) {
-      s.setInt64(3, v.ratingCount);
+      s.setInt64(3, v.ratingCount ?? 0);
     }
-    s.setUint16(16, ord(A.ABRIDGEMENTS, v.abridgement, "Abridgement"));
+    s.setUint16(16, ord(A.ABRIDGEMENTS, v.abridgement ?? A.ABRIDGEMENTS[0]!, "Abridgement"));
   },
   read(s, caps) {
     void caps;
@@ -4349,9 +4512,10 @@ export const CatalogHitsCodec: StructCodec<T.CatalogHits> = {
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.hits.length, 5, 19);
+      const list = v.hits ?? [];
+      const items = s.initStructList(0, list.length, 5, 19);
       for (let i = 0; i < items.length; i++) {
-        CatalogHitCodec.write(items[i]!, v.hits[i]!, caps);
+        CatalogHitCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -4374,11 +4538,15 @@ export const CatalogHitsReplyCodec: StructCodec<T.CatalogHitsReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        CatalogHitsCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          CatalogHitsCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("CatalogHitsReply", (v as { kind: string }).kind);
@@ -4406,8 +4574,10 @@ export const CatalogDetailCodec: StructCodec<T.CatalogDetail> = {
   dataWords: 1,
   pointerCount: 1,
   write(s, v, caps) {
-    s.setBool(0, v.found);
-    CatalogHitCodec.write(s.initStruct(0, 5, 19), v.hit, caps);
+    s.setBool(0, v.found ?? false);
+    if (v.hit != null) {
+      CatalogHitCodec.write(s.initStruct(0, 5, 19), v.hit, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -4429,11 +4599,15 @@ export const CatalogDetailReplyCodec: StructCodec<T.CatalogDetailReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        CatalogDetailCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        if (v.value != null) {
+          CatalogDetailCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("CatalogDetailReply", (v as { kind: string }).kind);
@@ -4462,33 +4636,33 @@ export const PurchaseHintCodec: StructCodec<T.PurchaseHint> = {
   pointerCount: 7,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.productId);
+    s.setText(0, v.productId ?? "");
     if (v.title !== undefined) {
-      s.setText(1, v.title);
+      s.setText(1, v.title ?? "");
     }
     if (v.url !== undefined) {
-      s.setText(2, v.url);
+      s.setText(2, v.url ?? "");
     }
     if (v.priceCents !== undefined) {
-      s.setInt64(0, v.priceCents);
+      s.setInt64(0, v.priceCents ?? 0);
     }
     if (v.currency !== undefined) {
-      s.setText(3, v.currency);
+      s.setText(3, v.currency ?? "");
     }
     if (v.priceLabel !== undefined) {
-      s.setText(4, v.priceLabel);
+      s.setText(4, v.priceLabel ?? "");
     }
     if (v.listPriceCents !== undefined) {
-      s.setInt64(1, v.listPriceCents);
+      s.setInt64(1, v.listPriceCents ?? 0);
     }
     if (v.listPriceLabel !== undefined) {
-      s.setText(5, v.listPriceLabel);
+      s.setText(5, v.listPriceLabel ?? "");
     }
     if (v.memberPriceCents !== undefined) {
-      s.setInt64(2, v.memberPriceCents);
+      s.setInt64(2, v.memberPriceCents ?? 0);
     }
     if (v.memberPriceLabel !== undefined) {
-      s.setText(6, v.memberPriceLabel);
+      s.setText(6, v.memberPriceLabel ?? "");
     }
   },
   read(s, caps) {
@@ -4545,8 +4719,10 @@ export const PurchaseHintResultCodec: StructCodec<T.PurchaseHintResult> = {
   dataWords: 1,
   pointerCount: 1,
   write(s, v, caps) {
-    s.setBool(0, v.found);
-    PurchaseHintCodec.write(s.initStruct(0, 3, 7), v.hint, caps);
+    s.setBool(0, v.found ?? false);
+    if (v.hint != null) {
+      PurchaseHintCodec.write(s.initStruct(0, 3, 7), v.hint, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -4568,11 +4744,15 @@ export const PurchaseHintReplyCodec: StructCodec<T.PurchaseHintReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        PurchaseHintResultCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        if (v.value != null) {
+          PurchaseHintResultCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("PurchaseHintReply", (v as { kind: string }).kind);
@@ -4601,7 +4781,7 @@ export const ScanLibraryParamsCodec: StructCodec<T.ScanLibraryParams> = {
   pointerCount: 0,
   write(s, v, caps) {
     void caps;
-    s.setBool(0, v.force);
+    s.setBool(0, v.force ?? false);
   },
   read(s, caps) {
     void caps;
@@ -4621,8 +4801,8 @@ export const AuthenticateUserParamsCodec: StructCodec<T.AuthenticateUserParams> 
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.username);
-    s.setText(1, v.password);
+    s.setText(0, v.username ?? "");
+    s.setText(1, v.password ?? "");
   },
   read(s, caps) {
     void caps;
@@ -4643,13 +4823,13 @@ export const ExternalUserCodec: StructCodec<T.ExternalUser> = {
   pointerCount: 4,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.provider);
-    s.setText(1, v.externalUserId);
+    s.setText(0, v.provider ?? "");
+    s.setText(1, v.externalUserId ?? "");
     if (v.displayName !== undefined) {
-      s.setText(2, v.displayName);
+      s.setText(2, v.displayName ?? "");
     }
     if (v.accessToken !== undefined) {
-      s.setText(3, v.accessToken);
+      s.setText(3, v.accessToken ?? "");
     }
   },
   read(s, caps) {
@@ -4682,11 +4862,15 @@ export const ExternalUserReplyCodec: StructCodec<T.ExternalUserReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        ExternalUserCodec.write(s.initStruct(0, 0, 4), v.value, caps);
+        if (v.value != null) {
+          ExternalUserCodec.write(s.initStruct(0, 0, 4), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("ExternalUserReply", (v as { kind: string }).kind);
@@ -4715,9 +4899,10 @@ export const EventPollResultCodec: StructCodec<T.EventPollResult> = {
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.users.length, 0, 4);
+      const list = v.users ?? [];
+      const items = s.initStructList(0, list.length, 0, 4);
       for (let i = 0; i < items.length; i++) {
-        ExternalUserCodec.write(items[i]!, v.users[i]!, caps);
+        ExternalUserCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -4740,11 +4925,15 @@ export const EventPollReplyCodec: StructCodec<T.EventPollReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        EventPollResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          EventPollResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("EventPollReply", (v as { kind: string }).kind);
@@ -4773,35 +4962,35 @@ export const ListeningProgressCodec: StructCodec<T.ListeningProgress> = {
   pointerCount: 6,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.externalUserId);
-    s.setText(1, v.externalItemId);
+    s.setText(0, v.externalUserId ?? "");
+    s.setText(1, v.externalItemId ?? "");
     if (v.identityId !== undefined) {
-      s.setInt64(0, v.identityId);
+      s.setInt64(0, v.identityId ?? 0);
     }
     if (v.title !== undefined) {
-      s.setText(2, v.title);
+      s.setText(2, v.title ?? "");
     }
     if (v.authors !== undefined) {
-      s.setText(3, v.authors);
+      s.setText(3, v.authors ?? "");
     }
     if (v.asin !== undefined) {
-      s.setText(4, v.asin);
+      s.setText(4, v.asin ?? "");
     }
     if (v.isbn !== undefined) {
-      s.setText(5, v.isbn);
+      s.setText(5, v.isbn ?? "");
     }
     if (v.progress !== undefined) {
-      s.setFloat64(1, v.progress);
+      s.setFloat64(1, v.progress ?? 0);
     }
     if (v.currentTimeSeconds !== undefined) {
-      s.setFloat64(2, v.currentTimeSeconds);
+      s.setFloat64(2, v.currentTimeSeconds ?? 0);
     }
     if (v.durationSeconds !== undefined) {
-      s.setFloat64(3, v.durationSeconds);
+      s.setFloat64(3, v.durationSeconds ?? 0);
     }
-    s.setBool(256, v.isFinished);
+    s.setBool(256, v.isFinished ?? false);
     if (v.lastListenedAtUnixMs !== undefined) {
-      s.setUint64(5, BigInt(v.lastListenedAtUnixMs));
+      s.setUint64(5, BigInt(v.lastListenedAtUnixMs ?? 0));
     }
   },
   read(s, caps) {
@@ -4861,9 +5050,10 @@ export const SyncListeningResultCodec: StructCodec<T.SyncListeningResult> = {
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.items.length, 6, 6);
+      const list = v.items ?? [];
+      const items = s.initStructList(0, list.length, 6, 6);
       for (let i = 0; i < items.length; i++) {
-        ListeningProgressCodec.write(items[i]!, v.items[i]!, caps);
+        ListeningProgressCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -4886,11 +5076,15 @@ export const SyncListeningReplyCodec: StructCodec<T.SyncListeningReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        SyncListeningResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          SyncListeningResultCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("SyncListeningReply", (v as { kind: string }).kind);
@@ -4919,13 +5113,13 @@ export const PluginEventCodec: StructCodec<T.PluginEvent> = {
   pointerCount: 5,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.eventType);
-    s.setUint32(0, v.schemaVersion);
-    s.setText(1, v.deduplicationKey);
-    s.setData(2, v.payload);
-    s.setUint64(1, BigInt(v.occurredAtUnixMs));
-    s.setText(3, v.correlationId);
-    s.setText(4, v.causationId);
+    s.setText(0, v.eventType ?? "");
+    s.setUint32(0, v.schemaVersion ?? 0);
+    s.setText(1, v.deduplicationKey ?? "");
+    s.setData(2, v.payload ?? EMPTY_BYTES);
+    s.setUint64(1, BigInt(v.occurredAtUnixMs ?? 0));
+    s.setText(3, v.correlationId ?? "");
+    s.setText(4, v.causationId ?? "");
   },
   read(s, caps) {
     void caps;
@@ -4951,8 +5145,8 @@ export const PublishOkCodec: StructCodec<T.PublishOk> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.eventId);
-    s.setBool(0, v.duplicate);
+    s.setText(0, v.eventId ?? "");
+    s.setBool(0, v.duplicate ?? false);
   },
   read(s, caps) {
     void caps;
@@ -4975,11 +5169,15 @@ export const PublishReplyCodec: StructCodec<T.PublishReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        PublishOkCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        if (v.value != null) {
+          PublishOkCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("PublishReply", (v as { kind: string }).kind);
@@ -5008,11 +5206,11 @@ export const InvocationCodec: StructCodec<T.Invocation> = {
   pointerCount: 4,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.id);
-    s.setText(1, v.accountId);
-    s.setUint64(0, BigInt(v.deadlineUnixMs));
-    s.setText(2, v.correlationId);
-    s.setText(3, v.causationId);
+    s.setText(0, v.id ?? "");
+    s.setText(1, v.accountId ?? "");
+    s.setUint64(0, BigInt(v.deadlineUnixMs ?? 0));
+    s.setText(2, v.correlationId ?? "");
+    s.setText(3, v.causationId ?? "");
   },
   read(s, caps) {
     void caps;
@@ -5039,27 +5237,27 @@ export const DbValueCodec: StructCodec<T.DbValue> = {
     switch (v.kind) {
       case "null":
         s.setUint16(1, 0);
-        s.setUint16(0, ord(A.DB_TYPES, v.value, "DbType"));
+        s.setUint16(0, ord(A.DB_TYPES, v.value ?? A.DB_TYPES[0]!, "DbType"));
         break;
       case "boolean":
         s.setUint16(1, 1);
-        s.setBool(0, v.value);
+        s.setBool(0, v.value ?? false);
         break;
       case "int64":
         s.setUint16(1, 2);
-        s.setInt64(1, v.value);
+        s.setInt64(1, v.value ?? 0);
         break;
       case "float64":
         s.setUint16(1, 3);
-        s.setFloat64(1, v.value);
+        s.setFloat64(1, v.value ?? 0);
         break;
       case "text":
         s.setUint16(1, 4);
-        s.setText(0, v.value);
+        s.setText(0, v.value ?? "");
         break;
       case "bytes":
         s.setUint16(1, 5);
-        s.setData(0, v.value);
+        s.setData(0, v.value ?? EMPTY_BYTES);
         break;
       default:
         throw unknownUnion("DbValue", (v as { kind: string }).kind);
@@ -5097,8 +5295,8 @@ export const DbColumnCodec: StructCodec<T.DbColumn> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.name);
-    s.setUint16(0, ord(A.DB_TYPES, v.dbType, "DbType"));
+    s.setText(0, v.name ?? "");
+    s.setUint16(0, ord(A.DB_TYPES, v.dbType ?? A.DB_TYPES[0]!, "DbType"));
   },
   read(s, caps) {
     void caps;
@@ -5119,9 +5317,10 @@ export const DbRowCodec: StructCodec<T.DbRow> = {
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.values.length, 2, 1);
+      const list = v.values ?? [];
+      const items = s.initStructList(0, list.length, 2, 1);
       for (let i = 0; i < items.length; i++) {
-        DbValueCodec.write(items[i]!, v.values[i]!, caps);
+        DbValueCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -5141,16 +5340,17 @@ export const DbStatementCodec: StructCodec<T.DbStatement> = {
   dataWords: 1,
   pointerCount: 2,
   write(s, v, caps) {
-    s.setText(0, v.sql);
+    s.setText(0, v.sql ?? "");
     {
-      const items = s.initStructList(1, v.parameters.length, 2, 1);
+      const list = v.parameters ?? [];
+      const items = s.initStructList(1, list.length, 2, 1);
       for (let i = 0; i < items.length; i++) {
-        DbValueCodec.write(items[i]!, v.parameters[i]!, caps);
+        DbValueCodec.write(items[i]!, list[i]!, caps);
       }
     }
-    s.setUint16(0, ord(A.DB_STATEMENT_KINDS, v.kind, "DbStatementKind"));
-    s.setUint32(1, v.maxRows);
-    s.setUint16(1, ord(A.DB_RESULT_SELECTIONS, v.resultSelection, "DbResultSelection"));
+    s.setUint16(0, ord(A.DB_STATEMENT_KINDS, v.kind ?? A.DB_STATEMENT_KINDS[0]!, "DbStatementKind"));
+    s.setUint32(1, v.maxRows ?? 0);
+    s.setUint16(1, ord(A.DB_RESULT_SELECTIONS, v.resultSelection ?? A.DB_RESULT_SELECTIONS[0]!, "DbResultSelection"));
   },
   read(s, caps) {
     return {
@@ -5172,15 +5372,16 @@ export const ExecuteRequestCodec: StructCodec<T.ExecuteRequest> = {
   dataWords: 1,
   pointerCount: 3,
   write(s, v, caps) {
-    s.setText(0, v.operationId);
-    s.setText(1, v.requestHash);
+    s.setText(0, v.operationId ?? "");
+    s.setText(1, v.requestHash ?? "");
     {
-      const items = s.initStructList(2, v.statements.length, 1, 2);
+      const list = v.statements ?? [];
+      const items = s.initStructList(2, list.length, 1, 2);
       for (let i = 0; i < items.length; i++) {
-        DbStatementCodec.write(items[i]!, v.statements[i]!, caps);
+        DbStatementCodec.write(items[i]!, list[i]!, caps);
       }
     }
-    s.setUint64(0, BigInt(v.deadlineUnixMs));
+    s.setUint64(0, BigInt(v.deadlineUnixMs ?? 0));
   },
   read(s, caps) {
     return {
@@ -5202,8 +5403,8 @@ export const SqlSpanCodec: StructCodec<T.SqlSpan> = {
   pointerCount: 0,
   write(s, v, caps) {
     void caps;
-    s.setUint32(0, v.start);
-    s.setUint32(1, v.end);
+    s.setUint32(0, v.start ?? 0);
+    s.setUint32(1, v.end ?? 0);
   },
   read(s, caps) {
     void caps;
@@ -5223,7 +5424,9 @@ export const TextCollateSiteCodec: StructCodec<T.TextCollateSite> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    SqlSpanCodec.write(s.initStruct(0, 1, 0), v.span, caps);
+    if (v.span != null) {
+      SqlSpanCodec.write(s.initStruct(0, 1, 0), v.span, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -5241,10 +5444,16 @@ export const IntegerArithSiteCodec: StructCodec<T.IntegerArithSite> = {
   dataWords: 1,
   pointerCount: 3,
   write(s, v, caps) {
-    SqlSpanCodec.write(s.initStruct(0, 1, 0), v.full, caps);
-    SqlSpanCodec.write(s.initStruct(1, 1, 0), v.lhs, caps);
-    SqlSpanCodec.write(s.initStruct(2, 1, 0), v.rhs, caps);
-    s.setUint16(0, ord(A.INTEGER_ARITH_KINDS, v.kind, "IntegerArithKind"));
+    if (v.full != null) {
+      SqlSpanCodec.write(s.initStruct(0, 1, 0), v.full, caps);
+    }
+    if (v.lhs != null) {
+      SqlSpanCodec.write(s.initStruct(1, 1, 0), v.lhs, caps);
+    }
+    if (v.rhs != null) {
+      SqlSpanCodec.write(s.initStruct(2, 1, 0), v.rhs, caps);
+    }
+    s.setUint16(0, ord(A.INTEGER_ARITH_KINDS, v.kind ?? A.INTEGER_ARITH_KINDS[0]!, "IntegerArithKind"));
   },
   read(s, caps) {
     return {
@@ -5266,8 +5475,8 @@ export const PhysicalAccessCodec: StructCodec<T.PhysicalAccess> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.table);
-    s.setText(1, v.column);
+    s.setText(0, v.table ?? "");
+    s.setText(1, v.column ?? "");
   },
   read(s, caps) {
     void caps;
@@ -5288,10 +5497,10 @@ export const ResolvedAssignmentCodec: StructCodec<T.ResolvedAssignment> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.table);
-    s.setText(1, v.column);
-    s.setUint16(0, ord(A.RESOLVED_SQL_TYPES, v.dest, "ResolvedSqlType"));
-    s.setUint16(1, ord(A.RESOLVED_SQL_TYPES, v.source, "ResolvedSqlType"));
+    s.setText(0, v.table ?? "");
+    s.setText(1, v.column ?? "");
+    s.setUint16(0, ord(A.RESOLVED_SQL_TYPES, v.dest ?? A.RESOLVED_SQL_TYPES[0]!, "ResolvedSqlType"));
+    s.setUint16(1, ord(A.RESOLVED_SQL_TYPES, v.source ?? A.RESOLVED_SQL_TYPES[0]!, "ResolvedSqlType"));
   },
   read(s, caps) {
     void caps;
@@ -5314,8 +5523,8 @@ export const NamedSqlTypeCodec: StructCodec<T.NamedSqlType> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.name);
-    s.setUint16(0, ord(A.RESOLVED_SQL_TYPES, v.sqlType, "ResolvedSqlType"));
+    s.setText(0, v.name ?? "");
+    s.setUint16(0, ord(A.RESOLVED_SQL_TYPES, v.sqlType ?? A.RESOLVED_SQL_TYPES[0]!, "ResolvedSqlType"));
   },
   read(s, caps) {
     void caps;
@@ -5336,8 +5545,8 @@ export const ColumnReferenceCodec: StructCodec<T.ColumnReference> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.refTable);
-    s.setTextList(1, v.refColumns);
+    s.setText(0, v.refTable ?? "");
+    s.setTextList(1, v.refColumns ?? []);
   },
   read(s, caps) {
     void caps;
@@ -5363,7 +5572,9 @@ export const OptionalColumnReferenceCodec: StructCodec<T.OptionalColumnReference
         break;
       case "some":
         s.setUint16(0, 1);
-        ColumnReferenceCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          ColumnReferenceCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("OptionalColumnReference", (v as { kind: string }).kind);
@@ -5392,9 +5603,9 @@ export const ForeignKeyConstraintCodec: StructCodec<T.ForeignKeyConstraint> = {
   pointerCount: 3,
   write(s, v, caps) {
     void caps;
-    s.setTextList(0, v.columns);
-    s.setText(1, v.refTable);
-    s.setTextList(2, v.refColumns);
+    s.setTextList(0, v.columns ?? []);
+    s.setText(1, v.refTable ?? "");
+    s.setTextList(2, v.refColumns ?? []);
   },
   read(s, caps) {
     void caps;
@@ -5418,19 +5629,21 @@ export const TableConstraintCodec: StructCodec<T.TableConstraint> = {
     switch (v.kind) {
       case "primaryKey":
         s.setUint16(0, 0);
-        s.setTextList(0, v.value);
+        s.setTextList(0, v.value ?? []);
         break;
       case "unique":
         s.setUint16(0, 1);
-        s.setTextList(0, v.value);
+        s.setTextList(0, v.value ?? []);
         break;
       case "check":
         s.setUint16(0, 2);
-        s.setText(0, v.value);
+        s.setText(0, v.value ?? "");
         break;
       case "foreignKey":
         s.setUint16(0, 3);
-        ForeignKeyConstraintCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        if (v.value != null) {
+          ForeignKeyConstraintCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("TableConstraint", (v as { kind: string }).kind);
@@ -5462,29 +5675,32 @@ export const CreateTableSchemaCodec: StructCodec<T.CreateTableSchema> = {
   dataWords: 0,
   pointerCount: 10,
   write(s, v, caps) {
-    s.setText(0, v.table);
+    s.setText(0, v.table ?? "");
     {
-      const items = s.initStructList(1, v.columns.length, 1, 1);
+      const list = v.columns ?? [];
+      const items = s.initStructList(1, list.length, 1, 1);
       for (let i = 0; i < items.length; i++) {
-        NamedSqlTypeCodec.write(items[i]!, v.columns[i]!, caps);
+        NamedSqlTypeCodec.write(items[i]!, list[i]!, caps);
       }
     }
-    s.setText(2, v.identityColumn);
-    s.setBoolList(3, v.columnNotNull);
-    s.setBoolList(4, v.columnUnique);
-    s.setBoolList(5, v.columnPrimaryKey);
-    s.setTextList(6, v.columnDefaults);
-    s.setTextList(7, v.columnChecks);
+    s.setText(2, v.identityColumn ?? "");
+    s.setBoolList(3, v.columnNotNull ?? []);
+    s.setBoolList(4, v.columnUnique ?? []);
+    s.setBoolList(5, v.columnPrimaryKey ?? []);
+    s.setTextList(6, v.columnDefaults ?? []);
+    s.setTextList(7, v.columnChecks ?? []);
     {
-      const items = s.initStructList(8, v.columnReferences.length, 1, 1);
+      const list = v.columnReferences ?? [];
+      const items = s.initStructList(8, list.length, 1, 1);
       for (let i = 0; i < items.length; i++) {
-        OptionalColumnReferenceCodec.write(items[i]!, v.columnReferences[i]!, caps);
+        OptionalColumnReferenceCodec.write(items[i]!, list[i]!, caps);
       }
     }
     {
-      const items = s.initStructList(9, v.tableConstraints.length, 1, 1);
+      const list = v.tableConstraints ?? [];
+      const items = s.initStructList(9, list.length, 1, 1);
       for (let i = 0; i < items.length; i++) {
-        TableConstraintCodec.write(items[i]!, v.tableConstraints[i]!, caps);
+        TableConstraintCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -5513,9 +5729,11 @@ export const SchemaCreateCodec: StructCodec<T.SchemaCreate> = {
   dataWords: 1,
   pointerCount: 2,
   write(s, v, caps) {
-    CreateTableSchemaCodec.write(s.initStruct(0, 0, 10), v.schema, caps);
-    s.setText(1, v.fingerprint);
-    s.setBool(0, v.noop);
+    if (v.schema != null) {
+      CreateTableSchemaCodec.write(s.initStruct(0, 0, 10), v.schema, caps);
+    }
+    s.setText(1, v.fingerprint ?? "");
+    s.setBool(0, v.noop ?? false);
   },
   read(s, caps) {
     return {
@@ -5541,11 +5759,13 @@ export const SchemaActionCodec: StructCodec<T.SchemaAction> = {
         break;
       case "create":
         s.setUint16(0, 1);
-        SchemaCreateCodec.write(s.initStruct(0, 1, 2), v.value, caps);
+        if (v.value != null) {
+          SchemaCreateCodec.write(s.initStruct(0, 1, 2), v.value, caps);
+        }
         break;
       case "drop":
         s.setUint16(0, 2);
-        s.setText(0, v.value);
+        s.setText(0, v.value ?? "");
         break;
       default:
         throw unknownUnion("SchemaAction", (v as { kind: string }).kind);
@@ -5575,39 +5795,46 @@ export const ResolvedStatementCodec: StructCodec<T.ResolvedStatement> = {
   dataWords: 0,
   pointerCount: 8,
   write(s, v, caps) {
-    s.setText(0, v.statementHash);
+    s.setText(0, v.statementHash ?? "");
     {
-      const items = s.initStructList(1, v.outputColumns.length, 1, 1);
+      const list = v.outputColumns ?? [];
+      const items = s.initStructList(1, list.length, 1, 1);
       for (let i = 0; i < items.length; i++) {
-        NamedSqlTypeCodec.write(items[i]!, v.outputColumns[i]!, caps);
+        NamedSqlTypeCodec.write(items[i]!, list[i]!, caps);
       }
     }
     {
-      const items = s.initStructList(2, v.physicalAccesses.length, 0, 2);
+      const list = v.physicalAccesses ?? [];
+      const items = s.initStructList(2, list.length, 0, 2);
       for (let i = 0; i < items.length; i++) {
-        PhysicalAccessCodec.write(items[i]!, v.physicalAccesses[i]!, caps);
+        PhysicalAccessCodec.write(items[i]!, list[i]!, caps);
       }
     }
     {
-      const items = s.initStructList(3, v.assignments.length, 1, 2);
+      const list = v.assignments ?? [];
+      const items = s.initStructList(3, list.length, 1, 2);
       for (let i = 0; i < items.length; i++) {
-        ResolvedAssignmentCodec.write(items[i]!, v.assignments[i]!, caps);
+        ResolvedAssignmentCodec.write(items[i]!, list[i]!, caps);
       }
     }
     {
-      const items = s.initStructList(4, v.textCollateSites.length, 0, 1);
+      const list = v.textCollateSites ?? [];
+      const items = s.initStructList(4, list.length, 0, 1);
       for (let i = 0; i < items.length; i++) {
-        TextCollateSiteCodec.write(items[i]!, v.textCollateSites[i]!, caps);
+        TextCollateSiteCodec.write(items[i]!, list[i]!, caps);
       }
     }
     {
-      const items = s.initStructList(5, v.integerArithSites.length, 1, 3);
+      const list = v.integerArithSites ?? [];
+      const items = s.initStructList(5, list.length, 1, 3);
       for (let i = 0; i < items.length; i++) {
-        IntegerArithSiteCodec.write(items[i]!, v.integerArithSites[i]!, caps);
+        IntegerArithSiteCodec.write(items[i]!, list[i]!, caps);
       }
     }
-    s.setTextList(6, v.functions);
-    SchemaActionCodec.write(s.initStruct(7, 1, 1), v.schemaAction, caps);
+    s.setTextList(6, v.functions ?? []);
+    if (v.schemaAction != null) {
+      SchemaActionCodec.write(s.initStruct(7, 1, 1), v.schemaAction, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -5633,8 +5860,8 @@ export const AdapterReceiptCodec: StructCodec<T.AdapterReceipt> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setUint32(0, v.guestLen);
-    s.setText(0, v.guestHash);
+    s.setUint32(0, v.guestLen ?? 0);
+    s.setText(0, v.guestHash ?? "");
   },
   read(s, caps) {
     void caps;
@@ -5654,17 +5881,20 @@ export const AdapterStatementCodec: StructCodec<T.AdapterStatement> = {
   dataWords: 1,
   pointerCount: 3,
   write(s, v, caps) {
-    s.setText(0, v.sql);
+    s.setText(0, v.sql ?? "");
     {
-      const items = s.initStructList(1, v.parameters.length, 2, 1);
+      const list = v.parameters ?? [];
+      const items = s.initStructList(1, list.length, 2, 1);
       for (let i = 0; i < items.length; i++) {
-        DbValueCodec.write(items[i]!, v.parameters[i]!, caps);
+        DbValueCodec.write(items[i]!, list[i]!, caps);
       }
     }
-    s.setUint16(0, ord(A.DB_STATEMENT_KINDS, v.kind, "DbStatementKind"));
-    s.setUint32(1, v.maxRows);
-    s.setUint16(1, ord(A.DB_RESULT_SELECTIONS, v.resultSelection, "DbResultSelection"));
-    ResolvedStatementCodec.write(s.initStruct(2, 0, 8), v.proof, caps);
+    s.setUint16(0, ord(A.DB_STATEMENT_KINDS, v.kind ?? A.DB_STATEMENT_KINDS[0]!, "DbStatementKind"));
+    s.setUint32(1, v.maxRows ?? 0);
+    s.setUint16(1, ord(A.DB_RESULT_SELECTIONS, v.resultSelection ?? A.DB_RESULT_SELECTIONS[0]!, "DbResultSelection"));
+    if (v.proof != null) {
+      ResolvedStatementCodec.write(s.initStruct(2, 0, 8), v.proof, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -5687,17 +5917,20 @@ export const AdapterExecuteRequestCodec: StructCodec<T.AdapterExecuteRequest> = 
   dataWords: 2,
   pointerCount: 4,
   write(s, v, caps) {
-    s.setText(0, v.operationId);
-    s.setText(1, v.requestHash);
+    s.setText(0, v.operationId ?? "");
+    s.setText(1, v.requestHash ?? "");
     {
-      const items = s.initStructList(2, v.statements.length, 1, 3);
+      const list = v.statements ?? [];
+      const items = s.initStructList(2, list.length, 1, 3);
       for (let i = 0; i < items.length; i++) {
-        AdapterStatementCodec.write(items[i]!, v.statements[i]!, caps);
+        AdapterStatementCodec.write(items[i]!, list[i]!, caps);
       }
     }
-    s.setUint64(0, BigInt(v.deadlineUnixMs));
-    s.setUint16(4, ord(A.ISOLATION_REQS, v.isolation, "IsolationReq"));
-    AdapterReceiptCodec.write(s.initStruct(3, 1, 1), v.receipt, caps);
+    s.setUint64(0, BigInt(v.deadlineUnixMs ?? 0));
+    s.setUint16(4, ord(A.ISOLATION_REQS, v.isolation ?? A.ISOLATION_REQS[0]!, "IsolationReq"));
+    if (v.receipt != null) {
+      AdapterReceiptCodec.write(s.initStruct(3, 1, 1), v.receipt, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -5721,18 +5954,20 @@ export const StatementResultCodec: StructCodec<T.StatementResult> = {
   pointerCount: 2,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.rows.length, 0, 1);
+      const list = v.rows ?? [];
+      const items = s.initStructList(0, list.length, 0, 1);
       for (let i = 0; i < items.length; i++) {
-        DbRowCodec.write(items[i]!, v.rows[i]!, caps);
+        DbRowCodec.write(items[i]!, list[i]!, caps);
       }
     }
     {
-      const items = s.initStructList(1, v.columns.length, 1, 1);
+      const list = v.columns ?? [];
+      const items = s.initStructList(1, list.length, 1, 1);
       for (let i = 0; i < items.length; i++) {
-        DbColumnCodec.write(items[i]!, v.columns[i]!, caps);
+        DbColumnCodec.write(items[i]!, list[i]!, caps);
       }
     }
-    s.setUint64(0, BigInt(v.rowsAffected));
+    s.setUint64(0, BigInt(v.rowsAffected ?? 0));
   },
   read(s, caps) {
     return {
@@ -5753,9 +5988,9 @@ export const DbTimingCodec: StructCodec<T.DbTiming> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setUint64(0, BigInt(v.attemptElapsedUs));
-    s.setUint64(1, BigInt(v.dbExecutionUs));
-    s.setText(0, v.dbTimingSource);
+    s.setUint64(0, BigInt(v.attemptElapsedUs ?? 0));
+    s.setUint64(1, BigInt(v.dbExecutionUs ?? 0));
+    s.setText(0, v.dbTimingSource ?? "");
   },
   read(s, caps) {
     void caps;
@@ -5776,14 +6011,17 @@ export const ExecuteReplyCodec: StructCodec<T.ExecuteReply> = {
   dataWords: 0,
   pointerCount: 3,
   write(s, v, caps) {
-    s.setText(0, v.operationId);
+    s.setText(0, v.operationId ?? "");
     {
-      const items = s.initStructList(1, v.statements.length, 1, 2);
+      const list = v.statements ?? [];
+      const items = s.initStructList(1, list.length, 1, 2);
       for (let i = 0; i < items.length; i++) {
-        StatementResultCodec.write(items[i]!, v.statements[i]!, caps);
+        StatementResultCodec.write(items[i]!, list[i]!, caps);
       }
     }
-    DbTimingCodec.write(s.initStruct(2, 2, 1), v.timing, caps);
+    if (v.timing != null) {
+      DbTimingCodec.write(s.initStruct(2, 2, 1), v.timing, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -5806,11 +6044,15 @@ export const ExecuteResultReplyCodec: StructCodec<T.ExecuteResultReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        ExecuteReplyCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        if (v.value != null) {
+          ExecuteReplyCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("ExecuteResultReply", (v as { kind: string }).kind);
@@ -5839,28 +6081,28 @@ export const DbCapabilitiesCodec: StructCodec<T.DbCapabilities> = {
   pointerCount: 0,
   write(s, v, caps) {
     void caps;
-    s.setUint32(0, v.sqlContractVersion);
-    s.setBool(32, v.atomicBatch);
-    s.setBool(33, v.returning);
-    s.setBool(34, v.affectedRows);
-    s.setBool(35, v.schemaMigrations);
-    s.setBool(36, v.cancellation);
-    s.setBool(37, v.timing);
-    s.setUint32(2, v.maxBinds);
-    s.setUint32(3, v.maxStatements);
-    s.setUint32(4, v.maxResultRows);
-    s.setUint32(5, v.maxPayloadBytes);
-    s.setUint32(6, v.maxResultBytes);
-    s.setUint32(7, v.maxCellBytes);
-    s.setUint32(8, v.maxRequestBytes);
-    s.setUint32(9, v.maxAtomicResultBytes);
-    s.setBool(38, v.pluginDatabases);
-    s.setUint32(10, v.maxFunctionArgs);
-    s.setUint32(11, v.maxSchemaColumns);
-    s.setUint32(12, v.maxPatternBytes);
-    s.setUint32(13, v.maxLoweredStatementBytes);
-    s.setBool(39, v.consistentBackupRead);
-    s.setBool(40, v.atomicUnitRestore);
+    s.setUint32(0, v.sqlContractVersion ?? 0);
+    s.setBool(32, v.atomicBatch ?? false);
+    s.setBool(33, v.returning ?? false);
+    s.setBool(34, v.affectedRows ?? false);
+    s.setBool(35, v.schemaMigrations ?? false);
+    s.setBool(36, v.cancellation ?? false);
+    s.setBool(37, v.timing ?? false);
+    s.setUint32(2, v.maxBinds ?? 0);
+    s.setUint32(3, v.maxStatements ?? 0);
+    s.setUint32(4, v.maxResultRows ?? 0);
+    s.setUint32(5, v.maxPayloadBytes ?? 0);
+    s.setUint32(6, v.maxResultBytes ?? 0);
+    s.setUint32(7, v.maxCellBytes ?? 0);
+    s.setUint32(8, v.maxRequestBytes ?? 0);
+    s.setUint32(9, v.maxAtomicResultBytes ?? 0);
+    s.setBool(38, v.pluginDatabases ?? false);
+    s.setUint32(10, v.maxFunctionArgs ?? 0);
+    s.setUint32(11, v.maxSchemaColumns ?? 0);
+    s.setUint32(12, v.maxPatternBytes ?? 0);
+    s.setUint32(13, v.maxLoweredStatementBytes ?? 0);
+    s.setBool(39, v.consistentBackupRead ?? false);
+    s.setBool(40, v.atomicUnitRestore ?? false);
   },
   read(s, caps) {
     void caps;
@@ -5903,11 +6145,15 @@ export const DbBootstrapReplyCodec: StructCodec<T.DbBootstrapReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        DbBootstrapCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          DbBootstrapCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("DbBootstrapReply", (v as { kind: string }).kind);
@@ -5936,7 +6182,7 @@ export const DbBootstrapCodec: StructCodec<T.DbBootstrap> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.engine);
+    s.setText(0, v.engine ?? "");
   },
   read(s, caps) {
     void caps;
@@ -5958,11 +6204,15 @@ export const DbCapabilitiesReplyCodec: StructCodec<T.DbCapabilitiesReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        DbCapabilitiesCodec.write(s.initStruct(0, 7, 0), v.value, caps);
+        if (v.value != null) {
+          DbCapabilitiesCodec.write(s.initStruct(0, 7, 0), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("DbCapabilitiesReply", (v as { kind: string }).kind);
@@ -5991,8 +6241,8 @@ export const IdentityHighWaterCodec: StructCodec<T.IdentityHighWater> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.table);
-    s.setInt64(0, v.last);
+    s.setText(0, v.table ?? "");
+    s.setInt64(0, v.last ?? 0);
   },
   read(s, caps) {
     void caps;
@@ -6016,15 +6266,18 @@ export const IdentityExportReplyCodec: StructCodec<T.IdentityExportReply> = {
       case "ok":
         s.setUint16(0, 0);
         {
-          const items = s.initStructList(0, v.value.length, 1, 1);
+          const list = v.value ?? [];
+          const items = s.initStructList(0, list.length, 1, 1);
           for (let i = 0; i < items.length; i++) {
-            IdentityHighWaterCodec.write(items[i]!, v.value[i]!, caps);
+            IdentityHighWaterCodec.write(items[i]!, list[i]!, caps);
           }
         }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("IdentityExportReply", (v as { kind: string }).kind);
@@ -6055,11 +6308,13 @@ export const UserRelationsReplyCodec: StructCodec<T.UserRelationsReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        s.setTextList(0, v.value);
+        s.setTextList(0, v.value ?? []);
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("UserRelationsReply", (v as { kind: string }).kind);
@@ -6091,11 +6346,11 @@ export const PluginMigrationOpCodec: StructCodec<T.PluginMigrationOp> = {
     switch (v.kind) {
       case "schema":
         s.setUint16(0, 0);
-        s.setText(0, v.value);
+        s.setText(0, v.value ?? "");
         break;
       case "data":
         s.setUint16(0, 1);
-        s.setText(0, v.value);
+        s.setText(0, v.value ?? "");
         break;
       default:
         throw unknownUnion("PluginMigrationOp", (v as { kind: string }).kind);
@@ -6124,11 +6379,12 @@ export const PluginMigrationCodec: StructCodec<T.PluginMigration> = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
-    s.setText(0, v.id);
+    s.setText(0, v.id ?? "");
     {
-      const items = s.initStructList(1, v.operations.length, 1, 1);
+      const list = v.operations ?? [];
+      const items = s.initStructList(1, list.length, 1, 1);
       for (let i = 0; i < items.length; i++) {
-        PluginMigrationOpCodec.write(items[i]!, v.operations[i]!, caps);
+        PluginMigrationOpCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -6150,9 +6406,10 @@ export const PluginMigrationsOkCodec: StructCodec<T.PluginMigrationsOk> = {
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.migrations.length, 0, 2);
+      const list = v.migrations ?? [];
+      const items = s.initStructList(0, list.length, 0, 2);
       for (let i = 0; i < items.length; i++) {
-        PluginMigrationCodec.write(items[i]!, v.migrations[i]!, caps);
+        PluginMigrationCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -6175,11 +6432,15 @@ export const PluginMigrationsReplyCodec: StructCodec<T.PluginMigrationsReply> = 
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        PluginMigrationsOkCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        if (v.value != null) {
+          PluginMigrationsOkCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
         break;
       case "err":
         s.setUint16(0, 1);
-        PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
         break;
       default:
         throw unknownUnion("PluginMigrationsReply", (v as { kind: string }).kind);
@@ -6208,7 +6469,7 @@ export const ByteSourcePullParamsCodec: StructCodec<ByteSourcePullParams> = {
   pointerCount: 0,
   write(s, v, caps) {
     void caps;
-    s.setUint32(0, v.maxBytes);
+    s.setUint32(0, v.maxBytes ?? 0);
   },
   read(s, caps) {
     void caps;
@@ -6227,7 +6488,9 @@ export const ByteSourcePullResultsCodec: StructCodec<ByteSourcePullResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    PullReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      PullReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6246,7 +6509,7 @@ export const DestinationHeadParamsCodec: StructCodec<DestinationHeadParams> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.key);
+    s.setText(0, v.key ?? "");
   },
   read(s, caps) {
     void caps;
@@ -6265,7 +6528,9 @@ export const DestinationHeadResultsCodec: StructCodec<DestinationHeadResults> = 
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    HeadReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      HeadReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6283,7 +6548,9 @@ export const DestinationListParamsCodec: StructCodec<DestinationListParams> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    ListOptionsCodec.write(s.initStruct(0, 1, 2), v.options, caps);
+    if (v.options != null) {
+      ListOptionsCodec.write(s.initStruct(0, 1, 2), v.options, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6301,7 +6568,9 @@ export const DestinationListResultsCodec: StructCodec<DestinationListResults> = 
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    ListReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      ListReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6319,8 +6588,10 @@ export const DestinationGetParamsCodec: StructCodec<DestinationGetParams> = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
-    s.setText(0, v.key);
-    ReadOptionsCodec.write(s.initStruct(1, 0, 1), v.options, caps);
+    s.setText(0, v.key ?? "");
+    if (v.options != null) {
+      ReadOptionsCodec.write(s.initStruct(1, 0, 1), v.options, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6339,7 +6610,9 @@ export const DestinationGetResultsCodec: StructCodec<DestinationGetResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    GetReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      GetReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6357,9 +6630,11 @@ export const DestinationPutParamsCodec: StructCodec<DestinationPutParams> = {
   dataWords: 0,
   pointerCount: 3,
   write(s, v, caps) {
-    s.setText(0, v.key);
+    s.setText(0, v.key ?? "");
     s.setCap(1, caps.exportCap(v.body));
-    WriteOptionsCodec.write(s.initStruct(2, 2, 3), v.options, caps);
+    if (v.options != null) {
+      WriteOptionsCodec.write(s.initStruct(2, 2, 3), v.options, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6379,7 +6654,9 @@ export const DestinationPutResultsCodec: StructCodec<DestinationPutResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    PutReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      PutReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6398,8 +6675,8 @@ export const DestinationCopyParamsCodec: StructCodec<DestinationCopyParams> = {
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.from);
-    s.setText(1, v.to);
+    s.setText(0, v.from ?? "");
+    s.setText(1, v.to ?? "");
   },
   read(s, caps) {
     void caps;
@@ -6419,7 +6696,9 @@ export const DestinationCopyResultsCodec: StructCodec<DestinationCopyResults> = 
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    CopyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      CopyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6438,7 +6717,7 @@ export const DestinationDeleteParamsCodec: StructCodec<DestinationDeleteParams> 
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.key);
+    s.setText(0, v.key ?? "");
   },
   read(s, caps) {
     void caps;
@@ -6457,7 +6736,9 @@ export const DestinationDeleteResultsCodec: StructCodec<DestinationDeleteResults
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6476,8 +6757,8 @@ export const DestinationCommitParamsCodec: StructCodec<DestinationCommitParams> 
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.key);
-    s.setText(1, v.commitToken);
+    s.setText(0, v.key ?? "");
+    s.setText(1, v.commitToken ?? "");
   },
   read(s, caps) {
     void caps;
@@ -6497,7 +6778,9 @@ export const DestinationCommitResultsCodec: StructCodec<DestinationCommitResults
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    PutReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      PutReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6516,8 +6799,8 @@ export const DestinationAbortStageParamsCodec: StructCodec<DestinationAbortStage
   pointerCount: 2,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.key);
-    s.setText(1, v.commitToken);
+    s.setText(0, v.key ?? "");
+    s.setText(1, v.commitToken ?? "");
   },
   read(s, caps) {
     void caps;
@@ -6537,7 +6820,9 @@ export const DestinationAbortStageResultsCodec: StructCodec<DestinationAbortStag
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6556,7 +6841,7 @@ export const SourceOpenParamsCodec: StructCodec<SourceOpenParams> = {
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.key);
+    s.setText(0, v.key ?? "");
   },
   read(s, caps) {
     void caps;
@@ -6575,7 +6860,9 @@ export const SourceOpenResultsCodec: StructCodec<SourceOpenResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    OpenReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      OpenReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6594,8 +6881,8 @@ export const ProgressSinkReportParamsCodec: StructCodec<ProgressSinkReportParams
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setFloat32(0, v.percent);
-    s.setText(0, v.message);
+    s.setFloat32(0, v.percent ?? 0);
+    s.setText(0, v.message ?? "");
   },
   read(s, caps) {
     void caps;
@@ -6615,7 +6902,9 @@ export const ProgressSinkReportResultsCodec: StructCodec<ProgressSinkReportResul
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6654,7 +6943,7 @@ export const CancellationPollResultsCodec: StructCodec<CancellationPollResults> 
   pointerCount: 0,
   write(s, v, caps) {
     void caps;
-    s.setBool(0, v.cancelled);
+    s.setBool(0, v.cancelled ?? false);
   },
   read(s, caps) {
     void caps;
@@ -6673,7 +6962,9 @@ export const JobRunnerJobParamsCodec: StructCodec<JobRunnerJobParams> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    JobControllerCodec.write(s.initStruct(0, 0, 5), v.controller, caps);
+    if (v.controller != null) {
+      JobControllerCodec.write(s.initStruct(0, 0, 5), v.controller, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6691,7 +6982,9 @@ export const JobRunnerJobResultsCodec: StructCodec<JobRunnerJobResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    HandleReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      HandleReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6709,7 +7002,9 @@ export const EventConsumerEventParamsCodec: StructCodec<EventConsumerEventParams
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EventBatchCodec.write(s.initStruct(0, 0, 1), v.batch, caps);
+    if (v.batch != null) {
+      EventBatchCodec.write(s.initStruct(0, 0, 1), v.batch, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6727,7 +7022,9 @@ export const EventConsumerEventResultsCodec: StructCodec<EventConsumerEventResul
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EventBatchReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EventBatchReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6745,7 +7042,9 @@ export const EventPublisherPublishParamsCodec: StructCodec<EventPublisherPublish
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    PluginEventCodec.write(s.initStruct(0, 2, 5), v.event, caps);
+    if (v.event != null) {
+      PluginEventCodec.write(s.initStruct(0, 2, 5), v.event, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6763,7 +7062,9 @@ export const EventPublisherPublishResultsCodec: StructCodec<EventPublisherPublis
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    PublishReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      PublishReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6781,7 +7082,9 @@ export const ContentSourceLoginParamsCodec: StructCodec<ContentSourceLoginParams
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    LoginParamsCodec.write(s.initStruct(0, 2, 10), v.params, caps);
+    if (v.params != null) {
+      LoginParamsCodec.write(s.initStruct(0, 2, 10), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6799,7 +7102,9 @@ export const ContentSourceLoginResultsCodec: StructCodec<ContentSourceLoginResul
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    LoginReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      LoginReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6817,7 +7122,9 @@ export const ContentSourceScanParamsCodec: StructCodec<ContentSourceScanParams> 
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    ScanParamsCodec.write(s.initStruct(0, 1, 3), v.params, caps);
+    if (v.params != null) {
+      ScanParamsCodec.write(s.initStruct(0, 1, 3), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6835,7 +7142,9 @@ export const ContentSourceScanResultsCodec: StructCodec<ContentSourceScanResults
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    ScanReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      ScanReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6853,7 +7162,9 @@ export const ContentSourceFetchTitleParamsCodec: StructCodec<ContentSourceFetchT
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    FetchTitleParamsCodec.write(s.initStruct(0, 0, 7), v.params, caps);
+    if (v.params != null) {
+      FetchTitleParamsCodec.write(s.initStruct(0, 0, 7), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6871,7 +7182,9 @@ export const ContentSourceFetchTitleResultsCodec: StructCodec<ContentSourceFetch
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    FetchTitleReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      FetchTitleReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6909,7 +7222,9 @@ export const ContentSourceListAccountsResultsCodec: StructCodec<ContentSourceLis
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    SourceAccountsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      SourceAccountsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6927,7 +7242,9 @@ export const ContentSourceLoginStartParamsCodec: StructCodec<ContentSourceLoginS
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    LoginParamsCodec.write(s.initStruct(0, 2, 10), v.params, caps);
+    if (v.params != null) {
+      LoginParamsCodec.write(s.initStruct(0, 2, 10), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6945,7 +7262,9 @@ export const ContentSourceLoginStartResultsCodec: StructCodec<ContentSourceLogin
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    LoginStartReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      LoginStartReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6963,7 +7282,9 @@ export const ContentSourceLoginCompleteParamsCodec: StructCodec<ContentSourceLog
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    LoginCompleteParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    if (v.params != null) {
+      LoginCompleteParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6981,7 +7302,9 @@ export const ContentSourceLoginCompleteResultsCodec: StructCodec<ContentSourceLo
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    LoginReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      LoginReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -6999,7 +7322,9 @@ export const ContentSourceSearchCatalogParamsCodec: StructCodec<ContentSourceSea
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    SearchCatalogParamsCodec.write(s.initStruct(0, 2, 3), v.params, caps);
+    if (v.params != null) {
+      SearchCatalogParamsCodec.write(s.initStruct(0, 2, 3), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7017,7 +7342,9 @@ export const ContentSourceSearchCatalogResultsCodec: StructCodec<ContentSourceSe
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    CatalogHitsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      CatalogHitsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7035,7 +7362,9 @@ export const ContentSourceExpandCandidatesParamsCodec: StructCodec<ContentSource
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    ExpandCandidatesParamsCodec.write(s.initStruct(0, 1, 10), v.params, caps);
+    if (v.params != null) {
+      ExpandCandidatesParamsCodec.write(s.initStruct(0, 1, 10), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7053,7 +7382,9 @@ export const ContentSourceExpandCandidatesResultsCodec: StructCodec<ContentSourc
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    CatalogHitsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      CatalogHitsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7071,7 +7402,9 @@ export const ContentSourcePurchaseHintParamsCodec: StructCodec<ContentSourcePurc
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    PurchaseHintParamsCodec.write(s.initStruct(0, 1, 6), v.params, caps);
+    if (v.params != null) {
+      PurchaseHintParamsCodec.write(s.initStruct(0, 1, 6), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7089,7 +7422,9 @@ export const ContentSourcePurchaseHintResultsCodec: StructCodec<ContentSourcePur
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    PurchaseHintReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      PurchaseHintReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7107,7 +7442,9 @@ export const ContentSourceListDealsParamsCodec: StructCodec<ContentSourceListDea
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    ListDealsParamsCodec.write(s.initStruct(0, 1, 0), v.params, caps);
+    if (v.params != null) {
+      ListDealsParamsCodec.write(s.initStruct(0, 1, 0), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7125,7 +7462,9 @@ export const ContentSourceListDealsResultsCodec: StructCodec<ContentSourceListDe
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    CatalogHitsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      CatalogHitsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7163,7 +7502,9 @@ export const ContentSourceHealthResultsCodec: StructCodec<ContentSourceHealthRes
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7201,7 +7542,9 @@ export const ContentSourceDiagnoseResultsCodec: StructCodec<ContentSourceDiagnos
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    DiagnoseReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      DiagnoseReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7219,7 +7562,9 @@ export const ContentSourceCatalogDetailParamsCodec: StructCodec<ContentSourceCat
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    CatalogDetailParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    if (v.params != null) {
+      CatalogDetailParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7237,7 +7582,9 @@ export const ContentSourceCatalogDetailResultsCodec: StructCodec<ContentSourceCa
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    CatalogDetailReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      CatalogDetailReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7275,7 +7622,9 @@ export const RemoteLibraryHealthResultsCodec: StructCodec<RemoteLibraryHealthRes
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7313,7 +7662,9 @@ export const RemoteLibraryStartResultsCodec: StructCodec<RemoteLibraryStartResul
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7351,7 +7702,9 @@ export const RemoteLibraryStopResultsCodec: StructCodec<RemoteLibraryStopResults
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7389,7 +7742,9 @@ export const RemoteLibraryDiagnoseResultsCodec: StructCodec<RemoteLibraryDiagnos
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    DiagnoseReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      DiagnoseReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7407,7 +7762,9 @@ export const RemoteLibraryScanLibraryParamsCodec: StructCodec<RemoteLibraryScanL
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    ScanLibraryParamsCodec.write(s.initStruct(0, 1, 0), v.params, caps);
+    if (v.params != null) {
+      ScanLibraryParamsCodec.write(s.initStruct(0, 1, 0), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7425,7 +7782,9 @@ export const RemoteLibraryScanLibraryResultsCodec: StructCodec<RemoteLibraryScan
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7463,7 +7822,9 @@ export const RemoteLibrarySyncListeningResultsCodec: StructCodec<RemoteLibrarySy
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    SyncListeningReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      SyncListeningReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7501,7 +7862,9 @@ export const RemoteLibraryPollEventsResultsCodec: StructCodec<RemoteLibraryPollE
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EventPollReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EventPollReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7539,7 +7902,9 @@ export const PluginCliDescribeResultsCodec: StructCodec<PluginCliDescribeResults
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    CliSchemaReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      CliSchemaReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7557,7 +7922,9 @@ export const PluginCliInvokeParamsCodec: StructCodec<PluginCliInvokeParams> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    CliInvokeParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    if (v.params != null) {
+      CliInvokeParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7575,7 +7942,9 @@ export const PluginCliInvokeResultsCodec: StructCodec<PluginCliInvokeResults> = 
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    CliInvokeReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      CliInvokeReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7613,7 +7982,9 @@ export const OidcClientsResultsCodec: StructCodec<OidcClientsResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    OidcClientsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      OidcClientsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7631,7 +8002,9 @@ export const OidcAuthenticateUserParamsCodec: StructCodec<OidcAuthenticateUserPa
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    AuthenticateUserParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    if (v.params != null) {
+      AuthenticateUserParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7649,7 +8022,9 @@ export const OidcAuthenticateUserResultsCodec: StructCodec<OidcAuthenticateUserR
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    ExternalUserReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      ExternalUserReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7687,7 +8062,9 @@ export const DatabaseOpenSessionResultsCodec: StructCodec<DatabaseOpenSessionRes
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    AdapterSessionReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      AdapterSessionReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7725,7 +8102,9 @@ export const AdapterDatabaseSessionCapabilitiesResultsCodec: StructCodec<Adapter
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    DbCapabilitiesReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      DbCapabilitiesReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7743,7 +8122,9 @@ export const AdapterDatabaseSessionExecuteParamsCodec: StructCodec<AdapterDataba
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    AdapterExecuteRequestCodec.write(s.initStruct(0, 2, 4), v.request, caps);
+    if (v.request != null) {
+      AdapterExecuteRequestCodec.write(s.initStruct(0, 2, 4), v.request, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7761,7 +8142,9 @@ export const AdapterDatabaseSessionExecuteResultsCodec: StructCodec<AdapterDatab
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    ExecuteResultReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      ExecuteResultReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7799,7 +8182,9 @@ export const AdapterDatabaseSessionCloseResultsCodec: StructCodec<AdapterDatabas
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7837,7 +8222,9 @@ export const AdapterDatabaseSessionBootstrapResultsCodec: StructCodec<AdapterDat
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    DbBootstrapReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      DbBootstrapReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7875,7 +8262,9 @@ export const AdapterDatabaseSessionExportIdentityResultsCodec: StructCodec<Adapt
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    IdentityExportReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      IdentityExportReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7894,9 +8283,10 @@ export const AdapterDatabaseSessionImportIdentityParamsCodec: StructCodec<Adapte
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const items = s.initStructList(0, v.rows.length, 1, 1);
+      const list = v.rows ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
       for (let i = 0; i < items.length; i++) {
-        IdentityHighWaterCodec.write(items[i]!, v.rows[i]!, caps);
+        IdentityHighWaterCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
@@ -7916,7 +8306,9 @@ export const AdapterDatabaseSessionImportIdentityResultsCodec: StructCodec<Adapt
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7954,7 +8346,9 @@ export const AdapterDatabaseSessionListUserRelationsResultsCodec: StructCodec<Ad
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    UserRelationsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      UserRelationsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -7992,7 +8386,9 @@ export const AdapterDatabaseSessionPrepareUnitRestoreResultsCodec: StructCodec<A
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -8011,7 +8407,7 @@ export const AdapterDatabaseSessionDropUserRelationsParamsCodec: StructCodec<Ada
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setTextList(0, v.names);
+    s.setTextList(0, v.names ?? []);
   },
   read(s, caps) {
     void caps;
@@ -8030,7 +8426,9 @@ export const AdapterDatabaseSessionDropUserRelationsResultsCodec: StructCodec<Ad
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -8068,7 +8466,9 @@ export const AdapterDatabaseSessionAssertRestoreConstraintsResultsCodec: StructC
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -8086,7 +8486,9 @@ export const GuestDatabaseExecuteParamsCodec: StructCodec<GuestDatabaseExecutePa
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    ExecuteRequestCodec.write(s.initStruct(0, 1, 3), v.request, caps);
+    if (v.request != null) {
+      ExecuteRequestCodec.write(s.initStruct(0, 1, 3), v.request, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -8104,7 +8506,9 @@ export const GuestDatabaseExecuteResultsCodec: StructCodec<GuestDatabaseExecuteR
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    ExecuteResultReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      ExecuteResultReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -8142,7 +8546,9 @@ export const GuestDatabaseCloseResultsCodec: StructCodec<GuestDatabaseCloseResul
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -8180,7 +8586,9 @@ export const PluginWorkerDescribeResultsCodec: StructCodec<PluginWorkerDescribeR
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    DescribeReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      DescribeReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -8198,8 +8606,12 @@ export const PluginWorkerOpenParamsCodec: StructCodec<PluginWorkerOpenParams> = 
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
-    InvocationCodec.write(s.initStruct(0, 1, 4), v.invocation, caps);
-    BindingsCodec.write(s.initStruct(1, 0, 7), v.bindings, caps);
+    if (v.invocation != null) {
+      InvocationCodec.write(s.initStruct(0, 1, 4), v.invocation, caps);
+    }
+    if (v.bindings != null) {
+      BindingsCodec.write(s.initStruct(1, 0, 7), v.bindings, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -8218,7 +8630,9 @@ export const PluginWorkerOpenResultsCodec: StructCodec<PluginWorkerOpenResults> 
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EntrypointsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EntrypointsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -8256,7 +8670,9 @@ export const PluginWorkerShutdownResultsCodec: StructCodec<PluginWorkerShutdownR
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {
@@ -8275,7 +8691,7 @@ export const PluginWorkerDatabaseMigrationsParamsCodec: StructCodec<PluginWorker
   pointerCount: 1,
   write(s, v, caps) {
     void caps;
-    s.setText(0, v.binding);
+    s.setText(0, v.binding ?? "");
   },
   read(s, caps) {
     void caps;
@@ -8294,7 +8710,9 @@ export const PluginWorkerDatabaseMigrationsResultsCodec: StructCodec<PluginWorke
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
-    PluginMigrationsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    if (v.result != null) {
+      PluginMigrationsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
   },
   read(s, caps) {
     return {

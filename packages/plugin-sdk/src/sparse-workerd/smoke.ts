@@ -3,7 +3,8 @@
  *
  * Spawns the pinned `workerd` binary against a materialised Cap'n Proto config
  * and exercises the bridge `/health`, `describe()`, and (for `storefront` /
- * `remoteLibrary` entrypoints) the entrypoint `health` route.
+ * `remoteLibrary` entrypoints) the entrypoint `health` method over
+ * `POST /invoke`.
  */
 
 import fs from "node:fs";
@@ -12,6 +13,15 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { parse as parseToml } from "smol-toml";
+import {
+  ContentSourceHealthParamsCodec,
+  ContentSourceHealthResultsCodec,
+  RemoteLibraryHealthParamsCodec,
+  RemoteLibraryHealthResultsCodec,
+  decodeMessage,
+  encodeMessage,
+} from "../generated-wire.js";
+import type { HealthReply } from "../generated.js";
 import { validateManifest, type Manifest } from "../tools/validate.js";
 import { materializeConfig } from "./config.js";
 import { defaultCacheDir, ensureWorkerd } from "./ensure.js";
@@ -82,6 +92,43 @@ async function postJson(
     );
   }
   return value;
+}
+
+/**
+ * `POST /invoke` health probe: the `health$Params` Cap'n message for the
+ * entrypoint's interface, decoded as its `health$Results` reply union.
+ *
+ * @param base Bridge base URL (`http://host:port`).
+ * @param iface Cap'n interface that owns the `health` method.
+ * @param token Bridge bearer token.
+ * @returns The decoded `HealthReply` (`ok` arm; `err` arms throw).
+ */
+async function invokeHealth(
+  base: string,
+  iface: "ContentSource" | "RemoteLibrary",
+  token: string,
+): Promise<HealthReply> {
+  const params = iface === "ContentSource" ? ContentSourceHealthParamsCodec : RemoteLibraryHealthParamsCodec;
+  const results = iface === "ContentSource" ? ContentSourceHealthResultsCodec : RemoteLibraryHealthResultsCodec;
+  const res = await fetch(`${base}/invoke`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-capnp",
+      Authorization: `Bearer ${token}`,
+      "x-bookclerk-interface": iface,
+      "x-bookclerk-method": "health",
+      "x-bookclerk-context": JSON.stringify({ invocation: { id: "smoke" } }),
+    },
+    body: encodeMessage(params, {}),
+  });
+  if (!res.ok) {
+    throw new Error(`bridge HTTP ${res.status}: ${await res.text()}`);
+  }
+  const reply = decodeMessage(results, new Uint8Array(await res.arrayBuffer())).result;
+  if (reply.kind === "err") {
+    throw new Error(`${iface}.health failed: ${reply.value.code}: ${reply.value.message}`);
+  }
+  return reply;
 }
 
 function loadManifest(pluginDir: string): Manifest {
@@ -167,14 +214,12 @@ export async function runSmoke(pluginDir: string): Promise<string> {
     // `health` is a method of the storefront and remoteLibrary entrypoints;
     // the default entrypoint (event/job triggers) has no health probe.
     const entrypoints = manifest.entrypoints ?? [];
-    const healthPath = entrypoints.includes("storefront")
-      ? "/contentSource/health"
+    const healthIface = entrypoints.includes("storefront")
+      ? "ContentSource"
       : entrypoints.includes("remoteLibrary")
-        ? "/integration/health"
+        ? "RemoteLibrary"
         : null;
-    const health = healthPath
-      ? await postJson(`${base}${healthPath}`, {}, bridgeToken)
-      : null;
+    const health = healthIface ? (await invokeHealth(base, healthIface, bridgeToken)).value : null;
     const detail = {
       plugin: manifest.id,
       listen: generated.listenAddr,

@@ -9,7 +9,10 @@
 //!
 //! The guest is a shell script rather than one of the plugins we ship, because
 //! the interesting part is the kernel's answer and a script can be asked to try
-//! things a real plugin never would.
+//! things a real plugin never would. A shell script is not a Cap'n Proto guest
+//! `bookclerk-workerd` could front, so these spawns use the diagnostic direct
+//! transport (`SpawnTransport::DirectNativeDiagnostic`) — the jail policy
+//! under test is the same one the front door applies.
 
 #![cfg(unix)]
 
@@ -19,8 +22,24 @@ use std::path::{Path, PathBuf};
 use bookclerk_config::{Config, Isolation, Paths};
 use bookclerk_plugin_host::{
     consent_request, discover_plugins, grant_has_binding, plugin_data_dir, require_grant,
-    DiscoveredPlugin, PluginGrantStore, PluginSession, HOST_SHARED_ACCOUNT,
+    DiscoveredPlugin, PluginGrantStore, PluginSession, SessionServices, HOST_SHARED_ACCOUNT,
 };
+
+/// Spawns `plugin` the way the daemon does, minus the workerd front door.
+async fn spawn_direct(
+    plugin: &DiscoveredPlugin,
+    config: &Config,
+) -> bookclerk_plugin_host::Result<PluginSession> {
+    PluginSession::spawn_with(
+        plugin,
+        config,
+        serde_json::json!({}),
+        HOST_SHARED_ACCOUNT,
+        &[],
+        SessionServices::direct_native_diagnostic(),
+    )
+    .await
+}
 
 /// Where cargo left the launcher for this test run.
 ///
@@ -187,12 +206,7 @@ impl Fixture {
         // jail and runs probes before the Cap'n Proto handshake fails.
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            PluginSession::spawn_for_account(
-                &plugin,
-                &self.config,
-                serde_json::json!({}),
-                HOST_SHARED_ACCOUNT,
-            ),
+            spawn_direct(&plugin, &self.config),
         )
         .await;
         let report = plugin_data_dir(&self.config, "probe")
@@ -301,14 +315,7 @@ async fn a_guest_that_cannot_be_jailed_is_not_spawned() {
     config.plugins.isolation = Isolation::Required;
     config.plugins.jail_bin = Some(fixture.files.path().join("no-such-launcher"));
 
-    let message = match PluginSession::spawn_for_account(
-        &fixture.plugin(),
-        &config,
-        serde_json::json!({}),
-        HOST_SHARED_ACCOUNT,
-    )
-    .await
-    {
+    let message = match spawn_direct(&fixture.plugin(), &config).await {
         Ok(_) => panic!("a guest must not start unconfined under `required`"),
         Err(err) => err.to_string(),
     };
@@ -330,14 +337,7 @@ async fn spawn_fails_without_consent_grant() {
     let grants_path = fixture.config.paths().files_dir.join("plugin-grants.json");
     std::fs::remove_file(&grants_path).expect("remove grants");
 
-    let message = match PluginSession::spawn_for_account(
-        &fixture.plugin(),
-        &fixture.config,
-        serde_json::json!({}),
-        HOST_SHARED_ACCOUNT,
-    )
-    .await
-    {
+    let message = match spawn_direct(&fixture.plugin(), &fixture.config).await {
         Ok(_) => panic!("spawn must fail without a grant"),
         Err(err) => err.to_string(),
     };
@@ -377,12 +377,7 @@ async fn spawn_keeps_stored_grant_when_manifest_widens() {
 
     match tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        PluginSession::spawn_for_account(
-            &plugin,
-            &fixture.config,
-            serde_json::json!({}),
-            HOST_SHARED_ACCOUNT,
-        ),
+        spawn_direct(&plugin, &fixture.config),
     )
     .await
     {

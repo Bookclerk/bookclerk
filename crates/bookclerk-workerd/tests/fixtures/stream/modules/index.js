@@ -174,6 +174,17 @@ export default class StreamPlugin extends BookclerkEntrypoint {
 
   async job(job) {
     const spec = job.json();
+    if (spec.awaitCancel) {
+      // Host cancellation reaches the author as the locally projected
+      // `job.signal`; report it back as the `cancelled` outcome.
+      await job.progress(0, "waiting for cancel");
+      await new Promise((resolve, reject) => {
+        if (job.signal.aborted) return resolve();
+        job.signal.addEventListener("abort", () => resolve(), { once: true });
+        setTimeout(() => reject(new Error("cancel never arrived")), 15000);
+      });
+      throw PluginError.fromWire("cancelled", "host cancelled the copy");
+    }
     await job.progress(0, "opening");
     const opened = await job.input.open(spec.from);
     await job.progress(10, "copying");

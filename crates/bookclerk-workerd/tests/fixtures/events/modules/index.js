@@ -47,6 +47,26 @@ export default class EventPlugin extends BookclerkEntrypoint {
           }
           break;
         }
+        case "test_database": {
+          // Named `[[databases]]` binding: the adapter installs `env.DB`
+          // over the granted `/db/execute` channel; report the first row
+          // (or the failure) as the reject reason for the contract test.
+          const db = this.env.DB;
+          if (!db) {
+            msg.reject("no DB binding");
+            break;
+          }
+          try {
+            const row = await db
+              .prepare("SELECT ? AS n")
+              .bind({ kind: "int64", value: 41n })
+              .first();
+            msg.reject(JSON.stringify(row, (_k, v) => (typeof v === "bigint" ? Number(v) : v)));
+          } catch (err) {
+            msg.reject(`database failed: ${err.code ?? "unknown"}: ${err.message}`);
+          }
+          break;
+        }
         case "test_publish_forbidden": {
           try {
             await this.env.EVENTS.publish({ eventType: "not_granted", payload: {} });

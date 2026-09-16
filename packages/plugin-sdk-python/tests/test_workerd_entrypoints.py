@@ -5,8 +5,10 @@ from __future__ import annotations
 import unittest
 
 from bookclerk_plugin_sdk.workerd import (
+    AdapterDatabaseSession,
     BookclerkEntrypoint,
     CliEntrypoint,
+    DatabaseAdapterEntrypoint,
     EventBatch,
     EventMessage,
     JobController,
@@ -200,6 +202,58 @@ class NamedEntrypointTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PluginError) as ctx:
             await Cli().bookclerkInvoke({}, "not_a_method")
         self.assertEqual(ctx.exception.code, "unsupported")
+
+
+class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_open_session_then_session_calls_by_id(self) -> None:
+        dropped: list[list[str]] = []
+
+        class Session(AdapterDatabaseSession):
+            async def capabilities(self):
+                return {"sqlContractVersion": 1, "atomicBatch": True}
+
+            async def dropUserRelations(self, names):
+                dropped.append(list(names))
+
+        class DatabaseAdapter(DatabaseAdapterEntrypoint):
+            async def openSession(self):
+                return Session()
+
+        adapter = DatabaseAdapter()
+        session_id = await adapter.bookclerkInvoke({"invocation": {"id": "inv-1"}}, "openSession")
+        self.assertIsInstance(session_id, str)
+        self.assertEqual(len(session_id), 32)
+        self.assertEqual(adapter.invocation["id"], "inv-1")
+
+        caps = await adapter.bookclerkInvoke({}, "session", session_id, "capabilities")
+        self.assertEqual(caps, {"sqlContractVersion": 1, "atomicBatch": True})
+        self.assertIsNone(
+            await adapter.bookclerkInvoke({}, "session", session_id, "dropUserRelations", ["books"])
+        )
+        self.assertEqual(dropped, [["books"]])
+
+        with self.assertRaises(PluginError) as ctx:
+            await adapter.bookclerkInvoke({}, "session", session_id, "bootstrap")
+        self.assertEqual(ctx.exception.code, "unsupported")
+        with self.assertRaises(PluginError) as ctx:
+            await adapter.bookclerkInvoke({}, "session", session_id, "__class__")
+        self.assertEqual(ctx.exception.code, "unsupported")
+        with self.assertRaises(PluginError) as ctx:
+            await adapter.bookclerkInvoke({}, "session", "nope", "capabilities")
+        self.assertEqual(ctx.exception.code, "invalid_params")
+
+        self.assertIsNone(await adapter.bookclerkInvoke({}, "session", session_id, "close"))
+        with self.assertRaises(PluginError) as ctx:
+            await adapter.bookclerkInvoke({}, "session", session_id, "capabilities")
+        self.assertEqual(ctx.exception.code, "invalid_params")
+
+    async def test_open_session_unsupported_by_default(self) -> None:
+        with self.assertRaises(PluginError) as ctx:
+            await DatabaseAdapterEntrypoint().bookclerkInvoke({}, "openSession")
+        self.assertEqual(ctx.exception.code, "unsupported")
+        with self.assertRaises(PluginError) as ctx:
+            await DatabaseAdapterEntrypoint().bookclerkInvoke({}, "session")
+        self.assertEqual(ctx.exception.code, "invalid_params")
 
 
 if __name__ == "__main__":

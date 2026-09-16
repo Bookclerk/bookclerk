@@ -73,6 +73,8 @@ Classic Libation setting names are accepted as aliases where documented in
 | `BOOKCLERK_PLUGIN_DIRS` | Extra plugin search roots (OS path list) |
 | `BOOKCLERK_PLUGIN_ISOLATION` | `required` / `best-effort` / `off` for plugin guests |
 | `BOOKCLERK_PLUGIN_JAIL` | Path to `bookclerk-jail` |
+| `BOOKCLERK_PLUGIN_WORKERD` | Path to `bookclerk-workerd` (the front door every plugin spawns through) |
+| `BOOKCLERK_WORKERD_BIN` | Path to the pinned Cloudflare `workerd` (default: beside `bookclerk-workerd`) |
 | `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` | Diagnostics collector (build-time or runtime) |
 
 ## Library

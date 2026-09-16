@@ -137,3 +137,16 @@ npm run test:db-value         # DbValue goldens
 npm run test:plugin-migrations
 npm run test:entrypoints      # event/job translation, env bindings, named dispatch
 ```
+
+## Isolate embed
+
+`embed/bookclerk_plugin.js` is the module `bookclerk-workerd` injects into
+every plugin isolate as `@bookclerk/plugin-sdk/workerd`. It is **generated**:
+`npm run build` compiles `src/` with `tsc` and bundles `dist/workerd.js` into
+that single file with `scripts/build-embed.mjs` (esbuild; only
+`cloudflare:workers` stays external). Edit `src/plugin.ts` and friends, never
+the embed. The bundle is committed; CI fails when it is stale, and
+`scripts/gen-plugin-abi.py --check` / `scripts/sync-workerd-pin.py --check`
+keep the Rust and Python mirrors byte-identical. See
+[`docs/workerd-bridge.md`](../../docs/workerd-bridge.md) for the wire the
+launcher and the embedded adapter speak.

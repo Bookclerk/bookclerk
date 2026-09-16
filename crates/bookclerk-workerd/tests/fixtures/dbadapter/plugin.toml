@@ -1,0 +1,27 @@
+api_version = 3
+id = "dbadapter_fixture"
+name = "Database adapter contract fixture"
+version = "1.0.0"
+runtime = "workerd"
+entrypoints = ["databaseAdapter"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 50
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[capabilities.network]
+mode = "deny"
+
+[vars]

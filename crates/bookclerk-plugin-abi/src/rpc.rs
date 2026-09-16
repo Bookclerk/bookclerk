@@ -2959,6 +2959,23 @@ impl PluginClient {
             plugin_migrations_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
         }
     }
+
+    /// Asks the guest to release its resources (`PluginWorker.shutdown`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the RPC fails or the guest reports one.
+    pub async fn shutdown(&self) -> Result<()> {
+        let req = self.client.shutdown_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_empty(
+            reply
+                .get()
+                .map_err(from_capnp)?
+                .get_result()
+                .map_err(from_capnp)?,
+        )
+    }
 }
 
 /// Decode a health success/error union.
@@ -2994,6 +3011,15 @@ macro_rules! reply_result {
 #[derive(Clone)]
 pub struct ContentSourceClient {
     client: content_source_capnp::Client,
+}
+
+impl ContentSourceClient {
+    /// Wraps a `ContentSource` capability client (any transport that yields one, including
+    /// the bookclerk-workerd `/invoke` hook).
+    #[must_use]
+    pub fn new(client: content_source_capnp::Client) -> Self {
+        Self { client }
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -3095,6 +3121,15 @@ pub struct RemoteLibraryClient {
     client: remote_library_capnp::Client,
 }
 
+impl RemoteLibraryClient {
+    /// Wraps a `RemoteLibrary` capability client (any transport that yields one, including
+    /// the bookclerk-workerd `/invoke` hook).
+    #[must_use]
+    pub fn new(client: remote_library_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
 #[async_trait::async_trait(?Send)]
 impl RemoteLibrary for RemoteLibraryClient {
     async fn health(&self) -> Result<HealthOk> {
@@ -3147,6 +3182,15 @@ pub struct OidcClient {
     client: oidc_capnp::Client,
 }
 
+impl OidcClient {
+    /// Wraps a `Oidc` capability client (any transport that yields one, including
+    /// the bookclerk-workerd `/invoke` hook).
+    #[must_use]
+    pub fn new(client: oidc_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
 #[async_trait::async_trait(?Send)]
 impl Oidc for OidcClient {
     async fn clients(&self) -> Result<Vec<OidcClientTemplate>> {
@@ -3180,6 +3224,15 @@ pub struct PluginCliClient {
     client: plugin_cli_capnp::Client,
 }
 
+impl PluginCliClient {
+    /// Wraps a `PluginCli` capability client (any transport that yields one, including
+    /// the bookclerk-workerd `/invoke` hook).
+    #[must_use]
+    pub fn new(client: plugin_cli_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
 #[async_trait::async_trait(?Send)]
 impl PluginCli for PluginCliClient {
     async fn describe(&self) -> Result<CliSchema> {
@@ -3199,6 +3252,15 @@ impl PluginCli for PluginCliClient {
 #[derive(Clone)]
 pub struct EventConsumerClient {
     client: event_consumer_capnp::Client,
+}
+
+impl EventConsumerClient {
+    /// Wraps a `EventConsumer` capability client (any transport that yields one, including
+    /// the bookclerk-workerd `/invoke` hook).
+    #[must_use]
+    pub fn new(client: event_consumer_capnp::Client) -> Self {
+        Self { client }
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -3265,6 +3327,15 @@ pub struct JobRunnerClient {
 }
 
 impl JobRunnerClient {
+    /// Wraps a `JobRunner` capability client with the negotiated stream window.
+    #[must_use]
+    pub fn new(client: job_runner_capnp::Client, window: u32) -> Self {
+        Self {
+            client,
+            window: window.clamp(1, MAX_STREAM_WINDOW_BYTES),
+        }
+    }
+
     /// Runs one job with host-served input / output / progress / cancel
     /// capabilities.
     ///
@@ -3279,17 +3350,41 @@ impl JobRunnerClient {
         progress: Arc<dyn ProgressSink>,
         cancel: Arc<dyn Cancellation>,
     ) -> Result<JobOutcome> {
+        self.job_with_capabilities(
+            invocation,
+            capnp_rpc::new_client(SourceServer::new(input, self.window)),
+            capnp_rpc::new_client(DestinationServer::new(output, self.window)),
+            capnp_rpc::new_client(ProgressServer { inner: progress }),
+            capnp_rpc::new_client(CancellationServer { inner: cancel }),
+        )
+        .await
+    }
+
+    /// Runs one job with caller-built `JobController` capability clients.
+    ///
+    /// Transports that do not host a local vat (the bookclerk-workerd
+    /// `/invoke` hook, where each capability is a grant-token descriptor)
+    /// build the four clients themselves and reuse the typed envelope here.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the runner fails.
+    pub async fn job_with_capabilities(
+        &self,
+        invocation: &JobInvocation,
+        input: source_capnp::Client,
+        output: dest_iface::Client,
+        progress: progress_sink::Client,
+        cancel: cancellation::Client,
+    ) -> Result<JobOutcome> {
         let mut req = self.client.job_request();
         {
             let mut c = req.get().init_controller();
             fill_job_invocation(c.reborrow().init_invocation(), invocation).map_err(from_capnp)?;
-            c.set_input(capnp_rpc::new_client(SourceServer::new(input, self.window)));
-            c.set_output(capnp_rpc::new_client(DestinationServer::new(
-                output,
-                self.window,
-            )));
-            c.set_progress(capnp_rpc::new_client(ProgressServer { inner: progress }));
-            c.set_cancel(capnp_rpc::new_client(CancellationServer { inner: cancel }));
+            c.set_input(input);
+            c.set_output(output);
+            c.set_progress(progress);
+            c.set_cancel(cancel);
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply_result!(reply);
@@ -3297,6 +3392,28 @@ impl JobRunnerClient {
             handle_reply::Ok(o) => read_job_outcome(o.map_err(from_capnp)?),
             handle_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
         }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl JobRunner for JobRunnerClient {
+    async fn job(&self, controller: JobController) -> Result<JobOutcome> {
+        let JobController {
+            invocation,
+            input,
+            output,
+            progress,
+            cancel,
+        } = controller;
+        JobRunnerClient::job(
+            self,
+            &invocation,
+            Arc::from(input),
+            Arc::from(output),
+            Arc::from(progress),
+            Arc::from(cancel),
+        )
+        .await
     }
 }
 
@@ -3379,6 +3496,15 @@ fn read_event_result(r: event_result_capnp::Reader<'_>) -> Result<EventResult> {
 #[derive(Clone)]
 pub struct DatabaseClient {
     client: database_capnp::Client,
+}
+
+impl DatabaseClient {
+    /// Wraps a `Database` capability client (any transport that yields one, including
+    /// the bookclerk-workerd `/invoke` hook).
+    #[must_use]
+    pub fn new(client: database_capnp::Client) -> Self {
+        Self { client }
+    }
 }
 
 /// Public adapter session plus host-private interactive transaction client.

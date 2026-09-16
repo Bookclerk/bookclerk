@@ -36,7 +36,7 @@ use tokio::task::{try_id, Id as TaskId};
 
 use crate::discover::DiscoveredPlugin;
 use crate::jail::plugin_data_dir;
-use crate::rpc_session::{PluginSession, OPERATOR_ACCOUNT};
+use crate::rpc_session::{PluginSession, SessionServices, OPERATOR_ACCOUNT};
 use crate::{PluginError, Result as PluginResult};
 use bookclerk_library::{
     atomic_status, binding_bootstrap_plan, binding_bootstrap_type_env, history_from_execute_reply,
@@ -126,6 +126,22 @@ impl ExternalDatabase {
     ///
     /// Returns an error when the operation fails.
     pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> PluginResult<Self> {
+        Self::spawn_with(plugin, config, SessionServices::default()).await
+    }
+
+    /// [`Self::spawn`] with explicit session services (spawn transport, …).
+    ///
+    /// Product callers use [`Self::spawn`]; this exists so transport
+    /// diagnostics can compare the front door against direct native.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the guest cannot start or negotiate.
+    pub async fn spawn_with(
+        plugin: &DiscoveredPlugin,
+        config: &Config,
+        services: SessionServices,
+    ) -> PluginResult<Self> {
         if plugin.manifest.api_version != PRODUCT_API_VERSION {
             return Err(PluginError::message(format!(
                 "plugin `{}` api_version {} is not supported",
@@ -147,12 +163,13 @@ impl ExternalDatabase {
             None => Vec::new(),
         };
         let session = Arc::new(
-            PluginSession::spawn_for_account_with_env(
+            PluginSession::spawn_with(
                 plugin,
                 config,
                 config_json.clone(),
                 OPERATOR_ACCOUNT,
                 extra_env.as_slice(),
+                services,
             )
             .await?,
         );

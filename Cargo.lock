@@ -2145,6 +2145,8 @@ dependencies = [
  "async-trait",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-manifest",
+ "capnp",
+ "capnp-rpc",
  "flate2",
  "hex",
  "libc",

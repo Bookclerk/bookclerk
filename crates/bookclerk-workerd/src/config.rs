@@ -36,7 +36,10 @@ const SDK_GUEST_SQL_PY: &str =
 const ADAPTER_JS: &str = r#"import { wrapPluginFromBinding } from "@bookclerk/plugin-sdk/workerd";
 export default wrapPluginFromBinding();
 "#;
-/// Generated native-behind-workerd adapter: `PLUGIN_BACKEND` only (no author isolate).
+/// Generated native-behind-workerd adapter: control plane only (`describe`
+/// merge, `open` policy, `shutdown`) against `PLUGIN_DESCRIBE`; no author
+/// isolate and no data-plane binding — the launcher forwards entrypoint calls
+/// to the native guest as typed Cap'n Proto.
 const NATIVE_ADAPTER_JS: &str = r#"import { wrapPluginFromNative } from "@bookclerk/plugin-sdk/workerd";
 export default wrapPluginFromNative();
 "#;
@@ -341,7 +344,7 @@ pub enum EntrypointSource {
 /// One workerd binding the wrapper or author isolate may receive.
 #[derive(Debug, Clone)]
 pub struct BindingSpec {
-    /// Binding name (`HTTP`, `STORAGE`, `PLUGIN_BACKEND`, …).
+    /// Binding name (`HTTP`, `STORAGE`, `GRANTED`, …).
     pub name: String,
     /// Where the binding is realized.
     pub target: BindingTarget,
@@ -466,8 +469,9 @@ pub fn manifest_describe_json(manifest: &PluginManifest) -> Result<String> {
 
 /// Entrypoint + bindings for a generated native-behind-workerd proxy.
 ///
-/// Does not require an author `[workerd]` module tree. A later host executor
-/// writes `module_source` and attaches `PLUGIN_BACKEND`.
+/// Does not require an author `[workerd]` module tree and binds no data-plane
+/// service: the adapter isolate only owns the control plane (`GRANTED`,
+/// `BRIDGE_TOKEN`, `PLUGIN_DESCRIBE`).
 #[must_use]
 pub fn generated_backend_proxy_plan() -> (EntrypointSource, Vec<BindingSpec>) {
     (
@@ -475,43 +479,39 @@ pub fn generated_backend_proxy_plan() -> (EntrypointSource, Vec<BindingSpec>) {
             module_source: NATIVE_ADAPTER_JS.to_string(),
             entrypoint: "default".into(),
         },
-        vec![
-            BindingSpec {
-                name: "PLUGIN_BACKEND".into(),
-                target: BindingTarget::ExternalFetch {
-                    address: "unix:native-broker".into(),
-                },
+        vec![BindingSpec {
+            name: "GRANTED".into(),
+            target: BindingTarget::IsolateService {
+                service: "granted".into(),
             },
-            BindingSpec {
-                name: "GRANTED".into(),
-                target: BindingTarget::IsolateService {
-                    service: "granted".into(),
-                },
-            },
-        ],
+        }],
     )
 }
 
-/// Materialize a generated adapter isolate with `PLUGIN_BACKEND` (no author `[workerd]` modules).
+/// Materialize a generated control-plane adapter isolate for a native guest
+/// (no author `[workerd]` modules).
 ///
-/// Host executor owns the process tree: it launches workerd and the trusted
-/// native broker; the broker connects to the verified native guest. Plugin
-/// input cannot choose the executable or weaken the sandbox.
+/// The host executor owns the process tree: it launches workerd and the
+/// verified native guest, and forwards every entrypoint call to the guest as
+/// typed Cap'n Proto. The adapter isolate decides `describe` / `open` policy
+/// from the manifest projection bound as `PLUGIN_DESCRIBE`. Plugin input
+/// cannot choose the executable or weaken the sandbox.
 ///
 /// `state_dir` is an existing session directory from [`workerd_state_dir`], or
 /// `None` to allocate a unique directory.
 ///
 /// # Errors
 ///
-/// Returns an error when state-dir I/O or config write fails.
+/// Returns an error when state-dir I/O, describe serialization, or the config
+/// write fails.
 #[allow(clippy::too_many_arguments)]
 pub fn materialize_native_backend(
     root: &Path,
+    manifest: &PluginManifest,
     egress: &EgressProxy,
     limits: EffectiveWorkerdLimits,
     listen: ListenSpec,
     granted_addr: Option<&str>,
-    backend_addr: &str,
     bridge_token: &str,
     state_dir: Option<&Path>,
 ) -> Result<GeneratedConfig> {
@@ -542,15 +542,10 @@ pub fn materialize_native_backend(
     );
 
     let mut extra_services = String::new();
-    extra_services.push_str(&format!(
-        r#"    (name = "nativeBackend", external = (address = "{}", http = ())),"#,
-        escape_capnp(backend_addr)
-    ));
-    extra_services.push('\n');
-
     let mut adapter_bindings = format!(
         r#"{bridge_token_binding},
-    (name = "PLUGIN_BACKEND", service = "nativeBackend")"#
+    (name = "PLUGIN_DESCRIBE", json = "{}")"#,
+        escape_capnp(&manifest_describe_json(manifest)?)
     );
     if let Some(addr) = granted_addr {
         extra_services.push_str(&format!(
@@ -1142,6 +1137,23 @@ fn escape_capnp(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Native `storage` manifest for the native-behind-workerd materializer.
+    fn native_manifest() -> PluginManifest {
+        PluginManifest::parse(
+            r#"
+api_version = 3
+id = "local"
+runtime = "native"
+command = "./bookclerk-plugin-destination-local"
+entrypoints = ["storage"]
+
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .expect("native manifest")
+    }
+
     #[test]
     fn module_field_python_and_wasm() {
         assert_eq!(
@@ -1480,9 +1492,9 @@ mode = "deny"
             entrypoint: None,
         };
         let _ = BindingSpec {
-            name: "PLUGIN_BACKEND".into(),
+            name: "GRANTED".into(),
             target: BindingTarget::IsolateService {
-                service: "backend".into(),
+                service: "granted".into(),
             },
         };
         match src {
@@ -1504,7 +1516,10 @@ mode = "deny"
             EntrypointSource::AuthorModules { .. } => panic!("expected generated proxy"),
         }
         assert!(bindings.iter().any(|b| b.name == "GRANTED"));
-        assert!(bindings.iter().any(|b| b.name == "PLUGIN_BACKEND"));
+        assert!(
+            !bindings.iter().any(|b| b.name == "PLUGIN_BACKEND"),
+            "native-behind-workerd adapter has no data-plane binding"
+        );
         assert!(
             !bindings.iter().any(|b| b.name == "PLUGIN"),
             "native-behind-workerd adapter must not bind an author PLUGIN isolate"
@@ -1516,18 +1531,39 @@ mode = "deny"
         let dir = tempfile::tempdir().expect("tempdir");
         let generated = materialize_native_backend(
             dir.path(),
+            &native_manifest(),
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
             ListenSpec::InheritedTcp { port: 9 },
             Some("unix:/tmp/granted.sock"),
-            "127.0.0.1:9",
             "token",
             None,
         )
         .expect("materialize native");
         let capnp = std::fs::read_to_string(&generated.config_path).expect("read");
-        assert!(capnp.contains(r#"(name = "PLUGIN_BACKEND", service = "nativeBackend")"#));
-        assert!(capnp.contains(r#"(name = "nativeBackend", external"#));
+        assert!(
+            !capnp.contains("PLUGIN_BACKEND") && !capnp.contains("nativeBackend"),
+            "native-behind-workerd must not bind a data-plane service:\n{capnp}"
+        );
+        let adapter = capnp
+            .split("const adapterWorker")
+            .nth(1)
+            .and_then(|rest| rest.split("const ").next())
+            .unwrap_or("");
+        assert!(
+            adapter.contains(r#"(name = "PLUGIN_DESCRIBE", json = ""#)
+                && adapter.contains(r#"(name = "GRANTED", service = "granted")"#)
+                && adapter.contains(r#"(name = "BRIDGE_TOKEN""#),
+            "native adapter owns the control plane (PLUGIN_DESCRIBE / GRANTED / BRIDGE_TOKEN):\n{adapter}"
+        );
+        assert!(
+            adapter.contains(r#"\"entrypoints\":[\"storage\"]"#),
+            "PLUGIN_DESCRIBE carries the manifest capabilities:\n{adapter}"
+        );
+        assert!(
+            !adapter.contains(r#"(name = "PLUGIN","#),
+            "native adapter must not bind an author PLUGIN isolate:\n{adapter}"
+        );
         assert!(
             !capnp.contains("const pluginWorker"),
             "native-behind-workerd must not require an author plugin isolate:\n{capnp}"
@@ -1564,11 +1600,11 @@ mode = "deny"
                 std::thread::spawn(move || {
                     materialize_native_backend(
                         &root,
+                        &native_manifest(),
                         &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
                         bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
                         ListenSpec::InheritedTcp { port: 9 },
                         Some("unix:/tmp/granted.sock"),
-                        "127.0.0.1:9",
                         "token",
                         None,
                     )
@@ -1617,22 +1653,21 @@ mode = "deny"
                         let dir = tempfile::tempdir().expect("tempdir");
                         let generated = materialize_native_backend(
                             dir.path(),
+                            &native_manifest(),
                             &EgressProxy::from_policy(
                                 bookclerk_plugin_manifest::EgressPolicy::deny(),
                             ),
                             bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
                             ListenSpec::InheritedTcp { port: 9 },
                             Some("unix:/tmp/granted.sock"),
-                            "127.0.0.1:9",
                             "token",
                             None,
                         )
                         .expect("materialize native");
                         let capnp = std::fs::read_to_string(&generated.config_path).expect("read");
                         assert!(
-                            capnp.contains(
-                                r#"(name = "PLUGIN_BACKEND", service = "nativeBackend")"#
-                            ),
+                            capnp.contains(r#"(name = "PLUGIN_DESCRIBE", json = ""#)
+                                && !capnp.contains("const pluginWorker"),
                             "native config clobbered:\n{capnp}"
                         );
                         let _ = std::fs::remove_dir_all(&generated.state_dir);
@@ -1653,11 +1688,11 @@ mode = "deny"
         let plugin = tempfile::tempdir().expect("plugin");
         let generated = materialize_native_backend(
             plugin.path(),
+            &native_manifest(),
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
             ListenSpec::InheritedTcp { port: 9 },
             Some("unix:/tmp/granted.sock"),
-            "127.0.0.1:9",
             "token",
             None,
         )
@@ -1698,11 +1733,11 @@ mode = "deny"
             .expect("chmod 0755");
         let generated = materialize_native_backend(
             plugin.path(),
+            &native_manifest(),
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
             bookclerk_plugin_manifest::WorkerdLimits::default().effective(),
             ListenSpec::InheritedTcp { port: 9 },
             Some("unix:/tmp/granted.sock"),
-            "127.0.0.1:9",
             "token",
             Some(session.path()),
         )

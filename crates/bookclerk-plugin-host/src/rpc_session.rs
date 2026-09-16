@@ -36,6 +36,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::discover::DiscoveredPlugin;
 use crate::event_publisher::EventOutbox;
+use crate::spawn_plan::{GuestRuntimeKind, SpawnPlan, SpawnTransport};
 use crate::PluginManifest;
 use crate::{PluginError, Result};
 
@@ -334,16 +335,42 @@ pub struct ExecutorIdentity {
     pub configuration_revision: String,
     /// Grant revision (revocation changes this).
     pub grant_revision: String,
-    /// `workerd` / `native` / `native-behind-workerd`.
+    /// `workerd` / `native-behind-workerd` / `native-direct`
+    /// ([`GuestRuntimeKind::label`]).
     pub runtime_backend: String,
     /// Workerd compatibility date when applicable.
     pub compatibility_date: String,
 }
 
 impl ExecutorIdentity {
-    /// Builds an identity from a discovered plugin and account.
+    /// Builds an identity from a discovered plugin and account on the default
+    /// (front-door) transport.
     #[must_use]
     pub fn from_plugin(plugin: &DiscoveredPlugin, account_id: &str) -> Self {
+        Self::from_plugin_on(plugin, account_id, SpawnTransport::default())
+    }
+
+    /// Builds an identity for `plugin` spawned over `transport`.
+    #[must_use]
+    pub fn from_plugin_on(
+        plugin: &DiscoveredPlugin,
+        account_id: &str,
+        transport: SpawnTransport,
+    ) -> Self {
+        Self::from_plugin_with_runtime(
+            plugin,
+            account_id,
+            GuestRuntimeKind::for_manifest(plugin.manifest.runtime, transport),
+        )
+    }
+
+    /// Builds an identity whose `runtime_backend` is the resolved launcher tree.
+    #[must_use]
+    pub fn from_plugin_with_runtime(
+        plugin: &DiscoveredPlugin,
+        account_id: &str,
+        runtime: GuestRuntimeKind,
+    ) -> Self {
         Self {
             plugin_id: plugin.manifest.id.clone(),
             artifact_digest: plugin.command.to_string_lossy().into_owned(),
@@ -352,7 +379,7 @@ impl ExecutorIdentity {
             account_id: account_id.to_string(),
             configuration_revision: String::new(),
             grant_revision: String::new(),
-            runtime_backend: format!("{:?}", plugin.manifest.runtime),
+            runtime_backend: runtime.label().to_string(),
             compatibility_date: plugin
                 .manifest
                 .workerd
@@ -402,6 +429,10 @@ pub struct SessionServices {
     /// Library store whose outbox backs the `EVENTS` binding. `None` (the
     /// default) never exposes `EVENTS`, even to a granted producer.
     pub event_outbox: Option<bookclerk_library::LibraryStore>,
+    /// How the guest is reached. The default fronts every guest with
+    /// `bookclerk-workerd`; [`SpawnTransport::DirectNativeDiagnostic`] is for
+    /// tests and diagnostics only and no product binary selects it.
+    pub spawn_transport: SpawnTransport,
 }
 
 impl SessionServices {
@@ -410,6 +441,7 @@ impl SessionServices {
     pub fn with_event_outbox(store: bookclerk_library::LibraryStore) -> Self {
         Self {
             event_outbox: Some(store),
+            spawn_transport: SpawnTransport::default(),
         }
     }
 
@@ -418,6 +450,19 @@ impl SessionServices {
     pub fn from_outbox(store: Option<&bookclerk_library::LibraryStore>) -> Self {
         Self {
             event_outbox: store.cloned(),
+            spawn_transport: SpawnTransport::default(),
+        }
+    }
+
+    /// Default services on the direct native diagnostic transport.
+    ///
+    /// For shell-probe jail tests and transport benchmarks: the host speaks
+    /// Cap'n Proto to the native guest's stdio with no `bookclerk-workerd`.
+    #[must_use]
+    pub fn direct_native_diagnostic() -> Self {
+        Self {
+            event_outbox: None,
+            spawn_transport: SpawnTransport::DirectNativeDiagnostic,
         }
     }
 }
@@ -508,11 +553,18 @@ impl PluginSession {
     }
 
     /// [`Self::spawn_for_account_with_env`] plus the host services the guest
-    /// may receive as bindings (`EVENTS` outbox, …).
+    /// may receive as bindings (`EVENTS` outbox, …) and the spawn transport.
+    ///
+    /// This is the one place every product spawn passes through: the
+    /// [`SpawnPlan`] resolved here decides that a `runtime = "native"` manifest
+    /// is fronted by `bookclerk-workerd` (its executable exported as
+    /// `BOOKCLERK_NATIVE_BACKEND`) unless `services.spawn_transport` opted into
+    /// the diagnostic direct transport.
     ///
     /// # Errors
     ///
-    /// Fails when the child cannot start, describe fails, or negotiation fails.
+    /// Fails when the front door (`bookclerk-workerd` + pinned `workerd`) is
+    /// missing, the child cannot start, describe fails, or negotiation fails.
     pub async fn spawn_with(
         plugin: &DiscoveredPlugin,
         config: &Config,
@@ -533,14 +585,18 @@ impl PluginSession {
                 plugin.manifest.id
             )));
         }
+        let plan = SpawnPlan::resolve(plugin, services.spawn_transport)?;
         let spawned =
-            crate::spawn_stdio::spawn_stdio_guest(plugin, config, config_table, extra_env).await?;
-        Self::connect_spawned(spawned, plugin, account_id, services).await
+            crate::spawn_stdio::spawn_stdio_guest(plugin, &plan, config, config_table, extra_env)
+                .await?;
+        Self::connect_spawned(spawned, plugin, &plan, account_id, services).await
     }
 
+    /// Connects Cap'n Proto over the spawned stdio and negotiates `describe`.
     async fn connect_spawned(
         spawned: crate::spawn_stdio::SpawnedStdio,
         plugin: &DiscoveredPlugin,
+        plan: &SpawnPlan,
         account_id: &str,
         services: SessionServices,
     ) -> Result<Self> {
@@ -559,7 +615,9 @@ impl PluginSession {
         let package_sid = spawned.package_sid.clone();
         let guest_pid = spawned.child.id();
         let instance_key = plugin_instance_key(&id, account_id);
-        let session_key = ExecutorIdentity::from_plugin(plugin, account_id).session_key();
+        let session_key =
+            ExecutorIdentity::from_plugin_with_runtime(plugin, account_id, plan.runtime)
+                .session_key();
         let (tx, rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) =
             oneshot::channel::<Result<(PluginDescribe, ScalarLimits, Vec<String>)>>();

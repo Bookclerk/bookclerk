@@ -46,6 +46,7 @@ mod manifest;
 mod registry;
 mod rpc;
 mod rpc_session;
+mod spawn_plan;
 mod spawn_stdio;
 
 pub use bookclerk_plugin_sdk::protocol;
@@ -108,6 +109,10 @@ pub use registry::{
 pub use rpc_session::{
     plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,
     RpcBackupOps, SessionServices, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
+};
+pub use spawn_plan::{
+    GuestRuntimeKind, SpawnPlan, SpawnTransport, WorkerdFrontDoor, NATIVE_BACKEND_ENV,
+    WORKERD_BIN_ENV, WORKERD_LAUNCHER_ENV,
 };
 
 /// Register discovered external plugins into the in-process registries.

@@ -344,4 +344,111 @@ const jobInvocation = {
   );
 }
 
+// --- Native-behind-workerd control plane (dist + bundled embed) ---
+
+const embed = await import(join(root, "../embed/bookclerk_plugin.js"));
+const distAdapter = await import(join(dist, "plugin.js"));
+
+for (const [label, mod] of [
+  ["dist", distAdapter],
+  ["embed", embed],
+]) {
+  const { allowedEntrypointFamilies, wrapPluginFromNative, PluginError: Err } = mod;
+  assert.equal(typeof allowedEntrypointFamilies, "function", `${label} exports the filter`);
+  assert.equal(mod.HttpNativeRoot, undefined, `${label} has no HTTP native data plane`);
+
+  const storageOnly = { entrypoints: ["storage"], consumes: [], jobs: [] };
+  assert.deepEqual(
+    allowedEntrypointFamilies(storageOnly, [
+      "eventConsumer",
+      "jobRunner",
+      "storage",
+      "cli",
+      "databaseAdapter",
+      "bogus",
+    ]),
+    ["jobRunner", "storage"],
+    `${label}: storage guests keep jobRunner (stream_copy) and lose undeclared families`,
+  );
+  assert.deepEqual(
+    allowedEntrypointFamilies({ entrypoints: ["cli"], consumes: [], jobs: [] }, [
+      "jobRunner",
+      "storage",
+      "cli",
+    ]),
+    ["cli"],
+    `${label}: cli-only manifest nulls storage and jobRunner`,
+  );
+  assert.deepEqual(
+    allowedEntrypointFamilies(
+      { entrypoints: [], consumes: [{ type: "book_acquired" }], jobs: [] },
+      ["eventConsumer", "jobRunner", "storage", "storage"],
+    ),
+    ["eventConsumer"],
+    `${label}: eventConsumer requires consumers; duplicates collapse`,
+  );
+  assert.deepEqual(
+    allowedEntrypointFamilies({ entrypoints: [], consumes: [], jobs: ["stream_copy"] }, ["jobRunner"]),
+    ["jobRunner"],
+    `${label}: declared jobs enable jobRunner`,
+  );
+  assert.deepEqual(allowedEntrypointFamilies(null, ["storage"]), [], `${label}: missing manifest fails closed`);
+
+  const Adapter = wrapPluginFromNative();
+  const manifest = {
+    apiVersion: 3,
+    id: "sqlite",
+    name: "SQLite",
+    version: "0.1.0",
+    capabilities: { entrypoints: ["databaseAdapter"], consumes: [], jobs: [], databases: [] },
+    cli: { commands: [{ name: "vacuum", summary: "", args: [] }] },
+  };
+  const adapter = new Adapter({}, { PLUGIN_DESCRIBE: JSON.stringify(manifest), BRIDGE_TOKEN: "t" });
+
+  assert.deepEqual(
+    await adapter.openInvocation({ invocation: { id: "inv-1" } }, ["databaseAdapter", "storage", "jobRunner"]),
+    ["databaseAdapter"],
+    `${label}: openInvocation keeps only manifest-declared families`,
+  );
+  await assert.rejects(
+    () => adapter.openInvocation({ invocation: { id: "" } }, ["databaseAdapter"]),
+    (err) => err instanceof Err && err.wireCode === "invalid_params",
+    `${label}: openInvocation rejects an empty invocation id`,
+  );
+  await assert.rejects(
+    () => adapter.openInvocation(undefined, ["databaseAdapter"]),
+    (err) => err instanceof Err && err.wireCode === "invalid_params",
+    `${label}: openInvocation rejects a missing envelope`,
+  );
+
+  const merged = await adapter.describe({
+    apiVersion: 3,
+    id: "guest-says-otherwise",
+    name: "Guest Name",
+    version: "9.9.9",
+    capabilities: { entrypoints: ["storage"], consumes: [], jobs: [], databases: [] },
+    features: ["rpcFeature"],
+    limits: { maxBatch: 7 },
+    cli: { commands: [] },
+  });
+  assert.equal(merged.id, "sqlite", `${label}: manifest id wins`);
+  assert.deepEqual(merged.capabilities.entrypoints, ["databaseAdapter"], `${label}: manifest capabilities win`);
+  assert.equal(merged.name, "Guest Name", `${label}: guest presentation is kept`);
+  assert.equal(merged.version, "9.9.9", `${label}: guest version is kept`);
+  assert.deepEqual(merged.features, ["rpcFeature"], `${label}: guest features are kept`);
+  assert.deepEqual(merged.limits, { maxBatch: 7 }, `${label}: guest limits are kept`);
+  assert.equal(merged.cli.commands[0].name, "vacuum", `${label}: an empty guest cli keeps the manifest cli`);
+  const guestCli = await adapter.describe({
+    cli: { commands: [{ name: "compact", summary: "", args: [] }] },
+  });
+  assert.equal(guestCli.cli.commands[0].name, "compact", `${label}: a guest cli with commands wins`);
+  assert.equal(guestCli.id, "sqlite", `${label}: partial guest describe still takes manifest identity`);
+  await assert.rejects(
+    () => adapter.describe(null),
+    (err) => err instanceof Err && err.wireCode === "invalid_params",
+    `${label}: describe(null) is rejected`,
+  );
+  await adapter.shutdown();
+}
+
 console.log("v3 entrypoint translation ok");

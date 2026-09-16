@@ -1,7 +1,7 @@
 {
   "name": "@bookclerk/plugin-sdk",
   "version": "0.1.0",
-  "description": "Bookclerk plugin guest SDK — ABI types, workerd + native runtimes, author tools",
+  "description": "Bookclerk plugin guest SDK \u2014 ABI types, workerd + native runtimes, author tools",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -35,7 +35,7 @@
     "./embed/bookclerk_plugin.js": "./embed/bookclerk_plugin.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-ambient.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/copy-ambient.mjs && node scripts/build-embed.mjs",
     "docs": "typedoc --options typedoc.json",
     "docs:check": "typedoc --options typedoc.json",
     "lint": "oxlint",
@@ -43,7 +43,9 @@
     "test:tools": "node scripts/test-tools.mjs",
     "test:db-value": "node scripts/test-db-value.mjs",
     "test:plugin-migrations": "node scripts/test-plugin-migrations.mjs",
-    "test:entrypoints": "node scripts/test-entrypoints.mjs"
+    "test:entrypoints": "node scripts/test-entrypoints.mjs",
+    "test:invoke": "node scripts/test-invoke.mjs",
+    "build:embed": "node scripts/build-embed.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -53,6 +55,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
+    "esbuild": "0.28.2",
     "oxlint": "^1.78.0",
     "typedoc": "^0.28.20",
     "typescript": "^5.8.2"

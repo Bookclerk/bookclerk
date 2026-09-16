@@ -28,6 +28,7 @@ Start here if you are new:
 | --- | --- |
 | [Plugins](plugins.md) | Ship or host a third-party source/integration (Workers RPC ABI, jail, workerd) |
 | [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Product `api_version = 3` decision: class ABI, streams, Cap'n Proto / JSRPC |
+| [bookclerk-workerd bridge](workerd-bridge.md) | Maintainer reference: launcher ↔ isolate wire (`/invoke` Cap'n bytes, control plane, granted channel, bundled embed) |
 | [ADR: First-party identity](adr/first-party-identity.md) | Operator / Owner / Administrator / Member, optional multi-IdP broker, passkeys, OIDC for ABS |
 | [ADR: Plugin-provided OIDC clients](adr/plugin-oidc-clients.md) | Players declare IdP clients via `oidcClients` / `[[oidc.clients]]`; enable toggles; redirects from plugin settings |
 | [ADR: SQL database contract](adr/sql-database-contract.md) | SQL-only backends; host-resolved canonical SQL + proofs; adapter-owned lowering |

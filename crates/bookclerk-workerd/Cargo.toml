@@ -22,6 +22,8 @@ anyhow.workspace = true
 async-trait.workspace = true
 bookclerk-plugin-abi.workspace = true
 bookclerk-plugin-manifest.workspace = true
+capnp.workspace = true
+capnp-rpc.workspace = true
 flate2 = "1"
 hex.workspace = true
 rand.workspace = true
@@ -38,6 +40,7 @@ ureq.workspace = true
 libc = "0.2"
 
 [dev-dependencies]
+bookclerk-plugin-abi = { workspace = true, features = ["host"] }
 tempfile.workspace = true
 
 [lints]

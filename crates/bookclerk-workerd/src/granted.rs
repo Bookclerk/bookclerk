@@ -1,7 +1,7 @@
 //! Host-granted HTTP reverse channel for workerd isolates: `JobRunner.job`
-//! streams (`Source` / `Destination` / `ProgressSink`), named database
-//! sessions (`/db/execute`), and the `EVENTS` outbox publisher
-//! (`/events/publish`).
+//! streams (`Source` / `Destination` / `ProgressSink`), the job's
+//! `Cancellation` long poll (`/cancel`), named database sessions
+//! (`/db/execute`), and the `EVENTS` outbox publisher (`/events/publish`).
 //!
 //! HTTP accept/read/write runs on the multi-thread runtime (`tokio::spawn`) so
 //! it is not starved by the Cap'n Proto vat `LocalSet`. Stub calls stay on the
@@ -22,8 +22,9 @@ use bookclerk_plugin_abi::{
     guest_statement_kind, validate_guest_execute_request, GuestSqlPolicy, PluginError,
 };
 use bookclerk_plugin_abi::{
-    encoded_execute_result_reply_bytes, Destination, EventPublisher, GuestDatabase, ObjectMetadata,
-    PluginEvent, ProgressSink, PublishOk, Source, WriteOptions, MAX_EVENT_PAYLOAD_BYTES,
+    encoded_execute_result_reply_bytes, Cancellation, Destination, EventPublisher, GuestDatabase,
+    ObjectMetadata, PluginEvent, ProgressSink, PublishOk, Source, WriteOptions,
+    MAX_EVENT_PAYLOAD_BYTES, MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -31,6 +32,14 @@ use tokio::sync::{mpsc, oneshot};
 /// Largest `/events/publish` request body: a base64 payload at
 /// [`MAX_EVENT_PAYLOAD_BYTES`] plus the envelope fields.
 pub const MAX_EVENT_PUBLISH_BODY_BYTES: u32 = MAX_EVENT_PAYLOAD_BYTES * 2 + 8 * 1024;
+
+/// How long one `GET /cancel` long poll waits before answering `204` so the
+/// isolate re-arms; short enough that a dropped isolate cannot pin the
+/// cancellation stub for long.
+pub const CANCEL_POLL_WINDOW: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Interval at which the `/cancel` long poll re-checks the host stub.
+const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// One grant token's host stubs (vat-thread only): a `JobRunner.job`
 /// invocation, a named database binding, or an `EVENTS` publisher.
@@ -41,6 +50,8 @@ pub struct GrantedSlot {
     pub output: Option<Box<dyn Destination>>,
     /// Progress sink.
     pub progress: Option<Box<dyn ProgressSink>>,
+    /// Host cancellation stub behind the `/cancel` long poll.
+    pub cancel: Option<Box<dyn Cancellation>>,
     /// Absolute expiry; dispatch fails closed after this instant.
     pub expires: std::time::Instant,
     /// Whether `open` is permitted on this grant.
@@ -70,6 +81,7 @@ impl GrantedSlot {
             input: None,
             output: None,
             progress: None,
+            cancel: None,
             expires,
             allow_open: false,
             allow_put: false,
@@ -79,6 +91,28 @@ impl GrantedSlot {
             sql_policy: GuestSqlPolicy::host_authoritative(),
             max_request_bytes: 0,
             events: Some(events),
+        }
+    }
+
+    /// A grant that only reaches one named plugin database over
+    /// `/db/execute` (no streams, no events). The host-side binding session
+    /// enforces the binding-owned scope; the broker defers to it.
+    #[must_use]
+    pub fn database_only(database: Rc<dyn GuestDatabase>, expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: None,
+            progress: None,
+            cancel: None,
+            expires,
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: Some(database),
+            allow_database: true,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: MAX_SCALAR_BYTES,
+            events: None,
         }
     }
 }
@@ -104,6 +138,12 @@ enum GrantedCmd {
         percent: f32,
         message: String,
         resp: oneshot::Sender<Result<(), String>>,
+    },
+    /// Long poll: resolves `Ok(true)` once the host cancels, `Ok(false)` when
+    /// the window elapses first.
+    CancelPoll {
+        invocation: String,
+        resp: oneshot::Sender<Result<bool, String>>,
     },
     Execute {
         invocation: String,
@@ -179,6 +219,10 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                 } => {
                     let _ =
                         resp.send(dispatch_progress(&table, invocation, percent, message).await);
+                }
+                GrantedCmd::CancelPoll { invocation, resp } => {
+                    let _ = resp
+                        .send(dispatch_cancel_poll(&table, invocation, CANCEL_POLL_WINDOW).await);
                 }
                 GrantedCmd::Execute {
                     invocation,
@@ -364,6 +408,48 @@ async fn dispatch_progress(
         }
     }
     Ok(())
+}
+
+/// Polls the host `Cancellation` stub until it fires or the window elapses.
+/// A failed poll is an error (never "not cancelled"), matching the fail-closed
+/// contract of [`Cancellation::poll`].
+async fn dispatch_cancel_poll(
+    table: &GrantedTable,
+    invocation: String,
+    window: std::time::Duration,
+) -> Result<bool, String> {
+    let cancel = {
+        let mut table = table.borrow_mut();
+        let slot = table
+            .get_mut(&invocation)
+            .ok_or_else(|| "unknown or revoked grant".to_string())?;
+        if slot.expires <= std::time::Instant::now() {
+            table.remove(&invocation);
+            return Err("grant expired".into());
+        }
+        slot.cancel
+            .take()
+            .ok_or_else(|| "cancellation not granted or already being polled".to_string())?
+    };
+    let deadline = tokio::time::Instant::now() + window;
+    let outcome = loop {
+        match cancel.poll().await {
+            Err(err) => break Err(err.to_string()),
+            Ok(true) => break Ok(true),
+            Ok(false) => {}
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break Ok(false);
+        }
+        tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+    };
+    {
+        let mut table = table.borrow_mut();
+        if let Some(slot) = table.get_mut(&invocation) {
+            slot.cancel = Some(cancel);
+        }
+    }
+    outcome
 }
 
 fn dispatch_atomic_budget(table: &GrantedTable, invocation: String) -> Result<u32, String> {
@@ -680,6 +766,38 @@ where
             .context("granted progress dropped")?
             .map_err(anyhow::Error::msg)?;
         write_status(&mut writer, 200, "ok").await?;
+        return Ok(());
+    }
+
+    if method == "GET" && path_only == "/cancel" {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        cmds.send(GrantedCmd::CancelPoll {
+            invocation,
+            resp: resp_tx,
+        })
+        .await
+        .context("granted dispatch closed")?;
+        match resp_rx.await.context("granted cancel poll dropped")? {
+            Ok(true) => {
+                let payload = br#"{"cancelled":true}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    payload.len()
+                );
+                writer.write_all(resp.as_bytes()).await?;
+                writer.write_all(payload).await?;
+                writer.flush().await?;
+            }
+            Ok(false) => {
+                writer
+                    .write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n")
+                    .await?;
+                writer.flush().await?;
+            }
+            Err(err) => {
+                write_plugin_error(&mut writer, &PluginError::forbidden(err)).await?;
+            }
+        }
         return Ok(());
     }
 
@@ -1121,6 +1239,7 @@ mod tests {
                 input: None,
                 output: None,
                 progress: None,
+                cancel: None,
                 expires: Instant::now() - Duration::from_secs(1),
                 allow_open: true,
                 allow_put: true,
@@ -1166,6 +1285,7 @@ mod tests {
                 input: None,
                 output: None,
                 progress: None,
+                cancel: None,
                 expires: Instant::now() + Duration::from_secs(60),
                 allow_open: true,
                 allow_put: true,
@@ -1198,6 +1318,7 @@ mod tests {
                 input: None,
                 output: None,
                 progress: None,
+                cancel: None,
                 expires: Instant::now() + Duration::from_secs(60),
                 allow_open: true,
                 allow_put: true,
@@ -1295,6 +1416,7 @@ mod tests {
                 input: None,
                 output: None,
                 progress: None,
+                cancel: None,
                 expires: Instant::now() + Duration::from_secs(60),
                 allow_open: false,
                 allow_put: false,
@@ -1344,6 +1466,101 @@ mod tests {
 
         assert_eq!(plugin_error_status(&oversized), 413);
         assert_eq!(plugin_error_status(&no_events), 403);
+    }
+
+    struct FlagCancel {
+        cancelled: Rc<std::cell::Cell<bool>>,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl Cancellation for FlagCancel {
+        async fn poll(&self) -> bookclerk_plugin_abi::Result<bool> {
+            if self.fail {
+                return Err(PluginError::unavailable("lease lost"));
+            }
+            Ok(self.cancelled.get())
+        }
+    }
+
+    fn cancel_slot(cancel: Option<Box<dyn Cancellation>>) -> GrantedSlot {
+        GrantedSlot {
+            input: None,
+            output: None,
+            progress: None,
+            cancel,
+            expires: Instant::now() + Duration::from_secs(60),
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::deny_all(),
+            max_request_bytes: 0,
+            events: None,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancel_poll_fires_times_out_and_fails_closed() {
+        let window = CANCEL_POLL_INTERVAL * 3;
+        let flag = Rc::new(std::cell::Cell::new(false));
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert(
+            "g-job".into(),
+            cancel_slot(Some(Box::new(FlagCancel {
+                cancelled: Rc::clone(&flag),
+                fail: false,
+            }))),
+        );
+        table.borrow_mut().insert(
+            "g-broken".into(),
+            cancel_slot(Some(Box::new(FlagCancel {
+                cancelled: Rc::new(std::cell::Cell::new(false)),
+                fail: true,
+            }))),
+        );
+        table
+            .borrow_mut()
+            .insert("g-nocancel".into(), cancel_slot(None));
+
+        // Window elapses first.
+        let timed_out = dispatch_cancel_poll(&table, "g-job".into(), window)
+            .await
+            .expect("poll ok");
+        assert!(!timed_out, "no cancellation within the window → 204");
+        assert!(
+            table.borrow()["g-job"].cancel.is_some(),
+            "stub is returned to the slot after the poll"
+        );
+
+        // The host fences the job while a poll is armed.
+        let (fired, ()) = tokio::join!(
+            dispatch_cancel_poll(&table, "g-job".into(), window * 10),
+            async {
+                tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+                flag.set(true);
+            }
+        );
+        assert!(
+            fired.expect("poll ok"),
+            "cancellation surfaces as 200 {{cancelled:true}}"
+        );
+
+        let broken = dispatch_cancel_poll(&table, "g-broken".into(), window)
+            .await
+            .expect_err("failed poll is an error, never 'not cancelled'");
+        assert!(broken.contains("lease lost"), "{broken}");
+
+        let missing = dispatch_cancel_poll(&table, "g-nocancel".into(), window)
+            .await
+            .expect_err("no cancellation on this grant");
+        assert!(missing.contains("not granted"), "{missing}");
+
+        let unknown = dispatch_cancel_poll(&table, "nope".into(), window)
+            .await
+            .expect_err("unknown grant");
+        assert!(unknown.contains("unknown or revoked"), "{unknown}");
     }
 
     struct FlagSession {
@@ -1401,6 +1618,7 @@ mod tests {
                 input: None,
                 output: None,
                 progress: None,
+                cancel: None,
                 expires: Instant::now() + Duration::from_secs(60),
                 allow_open: true,
                 allow_put: true,

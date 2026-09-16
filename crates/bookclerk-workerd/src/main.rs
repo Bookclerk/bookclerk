@@ -273,11 +273,13 @@ async fn run_isolate(
     result
 }
 
-/// Host-owned native-behind-workerd: workerd + trusted broker + verified native guest.
+/// Host-owned native-behind-workerd: workerd control plane + verified native guest.
 ///
 /// `BOOKCLERK_NATIVE_BACKEND` names the verified executable. Plugin input cannot
-/// choose it or weaken the sandbox. Direct Cap'n Proto remains a host-selected
-/// fallback, never plugin-selectable.
+/// choose it or weaken the sandbox. The launcher connects to the guest's Cap'n
+/// Proto vat and forwards every entrypoint call typed; only `describe` /
+/// `open` policy and `shutdown` pass through the adapter isolate. Direct Cap'n
+/// Proto remains a host-selected fallback, never plugin-selectable.
 async fn run_native_behind_workerd(
     backend: &Path,
     root: &Path,
@@ -305,11 +307,6 @@ async fn run_native_behind_workerd(
         .with_context(|| format!("spawn native guest {}", backend.display()))?;
     let guest_stdin = guest.stdin.take().context("native guest stdin")?;
     let guest_stdout = guest.stdout.take().context("native guest stdout")?;
-
-    let broker_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .context("bind native broker loopback")?;
-    let backend_addr = format!("127.0.0.1:{}", broker_listener.local_addr()?.port());
 
     let state_dir = config::workerd_state_dir(root)?;
     let _state_cleanup = RemoveDirOnDrop(state_dir.clone());
@@ -357,11 +354,11 @@ async fn run_native_behind_workerd(
 
     let generated = config::materialize_native_backend(
         root,
+        manifest,
         &egress,
         limits,
         listen,
         Some(granted_addr.as_str()),
-        &backend_addr,
         &bridge_token,
         Some(state_dir.as_path()),
     )?;
@@ -392,12 +389,6 @@ async fn run_native_behind_workerd(
         .await
         .context("workerd bridge /health did not become ready")?;
 
-    let plugin_id = manifest.id.clone();
-    let policy = if manifest.has_entrypoint(bookclerk_plugin_manifest::Entrypoint::Storage) {
-        bookclerk_workerd::native_broker::BrokerPolicy::destination(plugin_id, "1")
-    } else {
-        bookclerk_workerd::native_broker::BrokerPolicy::integration(plugin_id, "1")
-    };
     let result = mediate_native(
         generated.listen.port(),
         bridge_token.clone(),
@@ -407,8 +398,6 @@ async fn run_native_behind_workerd(
         granted_tcp,
         guest_stdout,
         guest_stdin,
-        broker_listener,
-        policy,
         manifest.capabilities(),
     )
     .await;
@@ -420,8 +409,7 @@ async fn run_native_behind_workerd(
     result
 }
 
-/// Cap'n Proto stdio plus a native broker feeding `PLUGIN_BACKEND`.
-#[allow(clippy::too_many_arguments)]
+/// Cap'n Proto stdio with the native guest's vat as the typed data plane.
 async fn mediate_native(
     port: u16,
     token: String,
@@ -429,19 +417,16 @@ async fn mediate_native(
     #[cfg(not(unix))] granted_tcp: Option<std::net::TcpListener>,
     guest_stdout: tokio::process::ChildStdout,
     guest_stdin: tokio::process::ChildStdin,
-    broker_listener: tokio::net::TcpListener,
-    policy: bookclerk_workerd::native_broker::BrokerPolicy,
     capabilities: bookclerk_plugin_abi::PluginCapabilities,
 ) -> Result<()> {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
 
-    use bookclerk_plugin_abi::connect_plugin;
+    use bookclerk_plugin_abi::{connect_plugin, MAX_STREAM_WINDOW_BYTES};
     use bookclerk_workerd::bridge_http::BridgeHttp;
-    use bookclerk_workerd::bridge_stdio::mediate_bridge_stdio;
+    use bookclerk_workerd::bridge_stdio::{mediate_bridge_stdio, Backend};
     use bookclerk_workerd::granted::{spawn_granted, GrantedTable};
-    use bookclerk_workerd::native_broker::spawn_native_broker;
 
     let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
     let http = BridgeHttp {
@@ -451,9 +436,8 @@ async fn mediate_native(
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async move {
-            let (client, rpc) = connect_plugin(guest_stdout, guest_stdin, 64 * 1024);
+            let (client, rpc) = connect_plugin(guest_stdout, guest_stdin, MAX_STREAM_WINDOW_BYTES);
             tokio::task::spawn_local(rpc);
-            spawn_native_broker(broker_listener, client, policy);
             #[cfg(unix)]
             {
                 let std_listener = granted_unix.context("missing granted unix listener")?;
@@ -468,7 +452,7 @@ async fn mediate_native(
                 let listener = tokio::net::TcpListener::from_std(std_listener)?;
                 spawn_granted(listener, token, Rc::clone(&table));
             }
-            mediate_bridge_stdio(http, table, capabilities).await
+            mediate_bridge_stdio(http, table, capabilities, Backend::Native(client)).await
         })
         .await
 }
@@ -486,7 +470,7 @@ async fn mediate_bridge(
     use std::rc::Rc;
 
     use bookclerk_workerd::bridge_http::BridgeHttp;
-    use bookclerk_workerd::bridge_stdio::mediate_bridge_stdio;
+    use bookclerk_workerd::bridge_stdio::{mediate_bridge_stdio, Backend};
     use bookclerk_workerd::granted::{spawn_granted, GrantedTable};
 
     let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
@@ -511,7 +495,7 @@ async fn mediate_bridge(
                 let listener = tokio::net::TcpListener::from_std(std_listener)?;
                 spawn_granted(listener, token, Rc::clone(&table));
             }
-            mediate_bridge_stdio(http, table, capabilities).await
+            mediate_bridge_stdio(http, table, capabilities, Backend::Author).await
         })
         .await
 }

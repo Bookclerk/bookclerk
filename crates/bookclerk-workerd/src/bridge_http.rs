@@ -1,4 +1,5 @@
-//! Minimal HTTP/1.1 client for the workerd bridge (JSON + streamed bodies).
+//! Minimal HTTP/1.1 client for the workerd bridge (JSON control plane, Cap'n
+//! Proto `/invoke` bodies, and streamed object bodies).
 
 #![allow(clippy::missing_docs_in_private_items)]
 
@@ -226,6 +227,42 @@ impl BridgeHttp {
         })
     }
 
+    /// POST an unpacked Cap'n Proto message and read the whole reply.
+    ///
+    /// Unlike [`json_post`](Self::json_post) this does not interpret the
+    /// status or the body: `/invoke` replies are Cap'n bytes on `200` and a
+    /// JSON error envelope otherwise, and the caller owns that mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport failures, or `payload_too_large` when either body
+    /// exceeds `max_body_bytes`.
+    pub async fn capnp_post(
+        &self,
+        path: &str,
+        extra: &[(&str, &str)],
+        body: &[u8],
+        max_body_bytes: u32,
+    ) -> Result<CapnpResponse> {
+        if body.len() > max_body_bytes as usize {
+            bail!(
+                "payload_too_large: Cap'n body of {} bytes exceeds {max_body_bytes}",
+                body.len()
+            );
+        }
+        let mut headers = Vec::with_capacity(extra.len() + 1);
+        headers.push(("content-type", "application/x-capnp"));
+        headers.extend_from_slice(extra);
+        let (status, response_headers, rest, mut stream) =
+            self.exchange("POST", path, &headers, Some(body)).await?;
+        let body = read_body_capped(&mut stream, &response_headers, rest, max_body_bytes).await?;
+        Ok(CapnpResponse {
+            status,
+            headers: response_headers,
+            body,
+        })
+    }
+
     async fn exchange(
         &self,
         method: &str,
@@ -252,6 +289,24 @@ impl BridgeHttp {
         stream.flush().await?;
         let (status, headers, rest) = read_response_head(&mut stream).await?;
         Ok((status, headers, rest, stream))
+    }
+}
+
+/// Fully buffered reply of [`BridgeHttp::capnp_post`].
+pub struct CapnpResponse {
+    /// HTTP status code.
+    pub status: u16,
+    /// Response headers as received (names keep the bridge's casing).
+    pub headers: Vec<(String, String)>,
+    /// Whole response body.
+    pub body: Vec<u8>,
+}
+
+impl CapnpResponse {
+    /// First non-empty header value with the given name (case-insensitive).
+    #[must_use]
+    pub fn header(&self, name: &str) -> Option<String> {
+        header(&self.headers, name)
     }
 }
 
@@ -310,9 +365,18 @@ async fn read_body(
     headers: &[(String, String)],
     prefix: Vec<u8>,
 ) -> Result<Vec<u8>> {
+    read_body_capped(stream, headers, prefix, MAX_SCALAR_BYTES).await
+}
+
+async fn read_body_capped(
+    stream: &mut TcpStream,
+    headers: &[(String, String)],
+    prefix: Vec<u8>,
+    max_bytes: u32,
+) -> Result<Vec<u8>> {
     if let Some(len) = header(headers, "content-length").and_then(|s| s.parse::<u64>().ok()) {
-        if len > u64::from(MAX_SCALAR_BYTES) {
-            anyhow::bail!("payload_too_large: JSON body of {len} bytes");
+        if len > u64::from(max_bytes) {
+            anyhow::bail!("payload_too_large: response body of {len} bytes exceeds {max_bytes}");
         }
     }
     let mut reader = body_reader_owned(stream, headers, prefix);
@@ -324,8 +388,11 @@ async fn read_body(
             break;
         }
         out.extend_from_slice(&tmp[..n]);
-        if out.len() > MAX_SCALAR_BYTES as usize {
-            anyhow::bail!("payload_too_large: JSON body of {} bytes", out.len());
+        if out.len() > max_bytes as usize {
+            anyhow::bail!(
+                "payload_too_large: response body of {} bytes exceeds {max_bytes}",
+                out.len()
+            );
         }
     }
     Ok(out)

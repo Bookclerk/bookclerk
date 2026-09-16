@@ -16,6 +16,7 @@ use tokio::process::Command;
 use bookclerk_plugin_abi::{PluginCapabilities, PortalAuthMode};
 
 use crate::manifest::{PluginManifest, PluginRuntimeKind, WorkerdLimits};
+use crate::spawn_plan::GuestRuntimeKind;
 use crate::{PluginError, Result};
 
 /// Filename under `$BOOKCLERK_FILES_DIR` for persisted grants.
@@ -56,14 +57,13 @@ pub const PLUGIN_JAIL_ACTIVE_PROCESSES_MAX: u32 = 64;
 
 /// Fixed jail occupancy for the launcher / primary guest tree.
 ///
-/// Native: `bookclerk-jail` execs the guest (1 PID). Workerd: `bookclerk-workerd`
-/// plus the `workerd` child (2 PIDs).
+/// Workerd isolate: `bookclerk-workerd` plus the `workerd` child (2 PIDs).
+/// Native behind workerd (the product path for `runtime = "native"`): launcher,
+/// `workerd`, and the native guest (3 PIDs). Direct native (diagnostic
+/// transport): `bookclerk-jail` execs the guest (1 PID).
 #[must_use]
-pub fn jail_process_overhead(runtime: PluginRuntimeKind) -> u32 {
-    match runtime {
-        PluginRuntimeKind::Native => 1,
-        PluginRuntimeKind::Workerd => 2,
-    }
+pub fn jail_process_overhead(runtime: GuestRuntimeKind) -> u32 {
+    runtime.process_overhead()
 }
 
 /// Clamp an operator/manifest extra-process budget (`0..=`[`PLUGIN_JAIL_EXTRA_PROCESSES_MAX`]).
@@ -76,7 +76,7 @@ pub fn effective_extra_processes(value: Option<u32>) -> u32 {
 
 /// Absolute Spec `active_processes` from runtime overhead + extra budget.
 #[must_use]
-pub fn active_processes_for(runtime: PluginRuntimeKind, extra: u32) -> u32 {
+pub fn active_processes_for(runtime: GuestRuntimeKind, extra: u32) -> u32 {
     let overhead = jail_process_overhead(runtime);
     let extra = extra.min(PLUGIN_JAIL_EXTRA_PROCESSES_MAX);
     (overhead.saturating_add(extra)).min(PLUGIN_JAIL_ACTIVE_PROCESSES_MAX)

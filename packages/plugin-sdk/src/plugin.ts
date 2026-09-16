@@ -22,9 +22,25 @@
 
 import "./cloudflare-workers.d.ts";
 import { WorkerEntrypoint, RpcTarget } from "cloudflare:workers";
-import { MAX_CHECKPOINT_BYTES } from "./abi.js";
-import type { DatabaseBinding, ExecuteReply, ExecuteRequest } from "./db-execute.js";
-import type { BookclerkEnv, EventPublisherBinding, JsonObject } from "./env.js";
+import { MAX_CHECKPOINT_BYTES, MAX_EVENT_PAYLOAD_BYTES } from "./abi.js";
+import {
+  createDatabaseBinding,
+  decodeExecuteResultReply,
+  encodeExecuteRequest,
+  type AtomicTransport,
+  type DatabaseBinding,
+  type ExecuteReply,
+  type ExecuteRequest,
+} from "./db-execute.js";
+import type { BookclerkEnv, EventPublisherBinding, JsonObject, PublishEvent } from "./env.js";
+import { PluginError } from "./errors.js";
+import {
+  dispatchInvoke,
+  InvokeError,
+  type CapDescriptor,
+  type InvokeHost,
+  type InvokeOutcome,
+} from "./invoke.js";
 import { requirePluginMigrationRegistration } from "./plugin-migrations.js";
 import type {
   AuthenticateUserParams,
@@ -33,12 +49,14 @@ import type {
   CliInvokeParams,
   CliInvokeResult,
   CliSchema,
+  DbBootstrap,
   DomainEvent,
   ExpandCandidatesParams,
   ExtensibleConfig,
   ExternalUser,
   FetchTitleParams,
   HealthOk,
+  IdentityHighWater,
   Invocation,
   JobInvocation,
   ListDealsParams,
@@ -49,8 +67,10 @@ import type {
   LoginStartResult,
   OidcClientTemplate,
   PlainFetch,
+  PluginCapabilities as WirePluginCapabilities,
   PluginDescribe as WirePluginDescribe,
   PluginMigration,
+  PublishOk,
   PurchaseHint,
   PurchaseHintParams,
   ScanLibraryParams,
@@ -59,6 +79,8 @@ import type {
   SearchCatalogParams,
   SourceAccount,
 } from "./generated.js";
+
+export { PluginError } from "./errors.js";
 
 // Product constants come from the generated `abi.ts` projection of
 // `schema/plugin.capnp` — re-exported here for guest convenience.
@@ -98,52 +120,8 @@ export type {
 } from "./generated.js";
 
 // ---------------------------------------------------------------------------
-// Errors
+// Errors (`PluginError` lives in `errors.ts`; re-exported above)
 // ---------------------------------------------------------------------------
-
-const KNOWN_ERROR_CODES = new Set([
-  "invalid_params",
-  "unauthorized",
-  "forbidden",
-  "not_found",
-  "unavailable",
-  "unsupported",
-  "internal",
-  "payload_too_large",
-  "deadline_exceeded",
-  "invalid_cursor",
-  "cancelled",
-  "conflict",
-]);
-
-/** Thrown by the SDK when a wire union carries `err`. Unknown codes are kept. */
-export class PluginError extends Error {
-  /** Known `PluginErrorCode` wire string, or `unknown`. */
-  readonly code: string;
-  /** Raw wire code, including codes this SDK does not know. */
-  readonly wireCode: string;
-
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "PluginError";
-    this.wireCode = code;
-    this.code = KNOWN_ERROR_CODES.has(code) ? code : "unknown";
-  }
-
-  /**
-   * Construct a {@link PluginError} from a Cap'n Proto / JSON wire code.
-   *
-   * Unknown codes become `unknown` on {@link PluginError.code} while
-   * {@link PluginError.wireCode} keeps the raw value.
-   *
-   * @param code - Wire error code (known or unknown).
-   * @param message - Operator-facing error text.
-   * @returns Typed plugin error.
-   */
-  static fromWire(code: string, message: string): PluginError {
-    return new PluginError(code, message);
-  }
-}
 
 function unsupported(method: string): PluginError {
   return PluginError.fromWire("unsupported", `${method} not implemented`);
@@ -424,6 +402,71 @@ export class AdapterDatabaseSession extends RpcTarget {
   close(): Promise<void> {
     return Promise.resolve();
   }
+
+  /**
+   * Bootstrap-only diagnostic metadata (`DbBootstrap`); optional.
+   *
+   * @returns Engine identity for diagnostics.
+   */
+  bootstrap(): Promise<DbBootstrap> {
+    return Promise.reject(unsupported("bootstrap"));
+  }
+
+  /**
+   * Identity high-water marks for a logical export; optional.
+   *
+   * @returns One row per identity column.
+   */
+  exportIdentity(): Promise<IdentityHighWater[]> {
+    return Promise.reject(unsupported("exportIdentity"));
+  }
+
+  /**
+   * Restore identity high-water marks after a logical import; optional.
+   *
+   * @param _rows - Rows from an earlier {@link AdapterDatabaseSession.exportIdentity}.
+   * @returns Resolves when the marks are applied.
+   */
+  importIdentity(_rows: IdentityHighWater[]): Promise<void> {
+    return Promise.reject(unsupported("importIdentity"));
+  }
+
+  /**
+   * Names of user relations the host may drop before a restore; optional.
+   *
+   * @returns Relation names.
+   */
+  listUserRelations(): Promise<string[]> {
+    return Promise.reject(unsupported("listUserRelations"));
+  }
+
+  /**
+   * Prepare the engine for a unit restore (disable constraints, …); optional.
+   *
+   * @returns Resolves when the engine is ready for the restore.
+   */
+  prepareUnitRestore(): Promise<void> {
+    return Promise.reject(unsupported("prepareUnitRestore"));
+  }
+
+  /**
+   * Drop the named user relations; optional.
+   *
+   * @param _names - Relation names from {@link AdapterDatabaseSession.listUserRelations}.
+   * @returns Resolves when the relations are gone.
+   */
+  dropUserRelations(_names: string[]): Promise<void> {
+    return Promise.reject(unsupported("dropUserRelations"));
+  }
+
+  /**
+   * Re-check constraints after a unit restore; optional.
+   *
+   * @returns Resolves when every constraint holds.
+   */
+  assertRestoreConstraints(): Promise<void> {
+    return Promise.reject(unsupported("assertRestoreConstraints"));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +491,50 @@ export interface GrantedContext {
   /** `EVENTS` publisher, when `[[events.producers]]` is granted. */
   events?: EventPublisherBinding;
   /** Named `[[databases]]` bindings. */
-  databases?: Array<{ name: string; database: DatabaseBinding }>;
+  databases?: NamedDatabase[];
+}
+
+/**
+ * Granted-channel SQL transport the adapter hands to the author isolate for
+ * one named `[[databases]]` binding. The author-side SDK wraps it as the
+ * D1-shaped {@link DatabaseBinding} on `env.<BINDING>`; Python authors call
+ * {@link GrantedDatabaseTransport.executeBytes} with Cap'n bytes instead.
+ */
+export interface GrantedDatabaseTransport extends AtomicTransport {
+  /**
+   * Same batch as {@link AtomicTransport.execute}, as Cap'n Proto bytes
+   * (`ExecuteRequest` in, `ExecuteResultReply` out).
+   *
+   * @param bytes - Unpacked `ExecuteRequest` message.
+   * @returns Unpacked `ExecuteResultReply` message.
+   */
+  executeBytes(bytes: Uint8Array): Promise<Uint8Array>;
+}
+
+/**
+ * One named `[[databases]]` binding on the granted context: either an
+ * in-isolate {@link DatabaseBinding} or the adapter's granted-channel
+ * {@link GrantedDatabaseTransport} the author-side SDK wraps.
+ */
+export interface NamedDatabase {
+  /** Binding name (`env.<name>`). */
+  name: string;
+  /** Ready binding (same isolate). */
+  database?: DatabaseBinding;
+  /** Granted transport (crosses the adapter → author RPC boundary). */
+  transport?: GrantedDatabaseTransport;
+}
+
+/**
+ * Context as the launcher sends it on the bridge: {@link GrantedContext}
+ * plus the grant tokens the adapter exchanges for the author's `EVENTS` and
+ * `env.<BINDING>` stubs. Authors never receive this shape.
+ */
+export interface BridgeContext extends Omit<GrantedContext, "databases"> {
+  /** Granted-channel bearer for `env.EVENTS.publish`; stripped before dispatch. */
+  eventsToken?: string;
+  /** Named `[[databases]]` binding → database-only bearer for `/db/execute`. */
+  databases?: Record<string, string>;
 }
 
 /** Job-runner bridge context: the durable job id plus {@link GrantedContext}. */
@@ -533,8 +619,12 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
     if (context.events) merged.EVENTS = context.events;
     if (Array.isArray(context.databases)) {
       for (const entry of context.databases) {
-        if (entry && typeof entry.name === "string" && entry.database) {
+        if (!entry || typeof entry.name !== "string" || !entry.name) continue;
+        if (entry.database) {
           merged[entry.name] = entry.database;
+        } else if (entry.transport) {
+          const transport = entry.transport;
+          merged[entry.name] = createDatabaseBinding({ execute: (request) => transport.execute(request) });
         }
       }
     }
@@ -1624,8 +1714,46 @@ export class RemoteLibraryEntrypoint<Env extends BookclerkEnv = BookclerkEnv> ex
 }
 
 /**
+ * Open adapter sessions by id. Workers RPC stubs cannot be retained across
+ * bridge requests, so the session object stays in the author isolate and the
+ * launcher names it through `X-Bookclerk-Target`.
+ */
+const ADAPTER_SESSIONS = new Map<string, AdapterDatabaseSession>();
+
+const ADAPTER_SESSION_METHODS: ReadonlySet<string> = new Set([
+  "capabilities",
+  "execute",
+  "close",
+  "bootstrap",
+  "exportIdentity",
+  "importIdentity",
+  "listUserRelations",
+  "prepareUnitRestore",
+  "dropUserRelations",
+  "assertRestoreConstraints",
+]);
+
+function freshSessionId(): string {
+  const c = (
+    globalThis as {
+      crypto?: { randomUUID?: () => string; getRandomValues?: (out: Uint8Array) => Uint8Array };
+    }
+  ).crypto;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (c && typeof c.getRandomValues === "function") c.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
  * `databaseAdapter` entrypoint: opens typed SQL sessions for the host
  * library. Export it as `export class DatabaseAdapter extends DatabaseAdapterEntrypoint`.
+ *
+ * The adapter isolate drives sessions through two dispatch verbs on
+ * {@link DatabaseAdapterEntrypoint.bookclerkInvoke}: `openSession` returns a
+ * fresh session id, and `session(id, method, ...params)` calls `method` on
+ * the retained {@link AdapterDatabaseSession}; `close` releases the entry.
  */
 export class DatabaseAdapterEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends NamedEntrypoint<Env> {
   static override bookclerkMethods = Object.freeze(["openSession"]);
@@ -1637,6 +1765,48 @@ export class DatabaseAdapterEntrypoint<Env extends BookclerkEnv = BookclerkEnv> 
    */
   openSession(): Promise<AdapterDatabaseSession> {
     return Promise.reject(unsupported("openSession"));
+  }
+
+  /**
+   * Adapter dispatch: `openSession` → session id; `session` → call on a
+   * retained session (`args` = `[id, method, ...params]`).
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param method - `openSession` or `session`.
+   * @param args - Method arguments.
+   * @returns Session id for `openSession`, else the session method result.
+   * @internal
+   */
+  override async bookclerkInvoke(context: GrantedContext, method: string, ...args: unknown[]): Promise<unknown> {
+    if (method === "openSession") {
+      const session = (await super.bookclerkInvoke(context, "openSession")) as AdapterDatabaseSession;
+      if (!session || typeof session !== "object") {
+        throw PluginError.fromWire("internal", "openSession returned no session");
+      }
+      const id = freshSessionId();
+      ADAPTER_SESSIONS.set(id, session);
+      return id;
+    }
+    if (method === "session") {
+      const [id, sessionMethod, ...params] = args;
+      const session = typeof id === "string" ? ADAPTER_SESSIONS.get(id) : undefined;
+      if (!session) {
+        throw PluginError.fromWire("invalid_params", `unknown adapter session ${String(id)}`);
+      }
+      const name = String(sessionMethod ?? "");
+      const target = (session as unknown as Record<string, unknown>)[name];
+      if (!ADAPTER_SESSION_METHODS.has(name) || typeof target !== "function") {
+        throw unsupported(name);
+      }
+      applyInvocationEnv(this, context);
+      this.invocation = invocationOf(context);
+      try {
+        return await (target as (...a: unknown[]) => unknown).apply(session, params);
+      } finally {
+        if (name === "close") ADAPTER_SESSIONS.delete(id as string);
+      }
+    }
+    return super.bookclerkInvoke(context, method, ...args);
   }
 }
 
@@ -1695,7 +1865,7 @@ export class OidcEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends Nam
 }
 
 // ---------------------------------------------------------------------------
-// Adapter isolate (trusted; owns GRANTED / BRIDGE_TOKEN / PLUGIN_BACKEND)
+// Adapter isolate (trusted; owns GRANTED / BRIDGE_TOKEN / PLUGIN_DESCRIBE)
 // ---------------------------------------------------------------------------
 
 /** Wire name of each named entrypoint (`plugin.toml` `entrypoints`). */
@@ -1763,11 +1933,6 @@ export interface AdapterEnv {
   PLUGIN_OIDC?: NamedStub;
   /** Manifest `PluginDescribe` projection (JSON binding). */
   PLUGIN_DESCRIBE?: string | WirePluginDescribe;
-  /** Native jail / workerd backend handle (native-behind-workerd). */
-  PLUGIN_BACKEND?: {
-    /** Broker HTTP surface reached through the service binding. */
-    fetch: typeof fetch;
-  };
   /** Per-invocation grant reverse channel. */
   GRANTED?: GrantedFetcher;
   /** Isolate-to-host bridge bearer. */
@@ -1900,15 +2065,161 @@ class GrantedProgress extends ProgressSink {
   }
 }
 
-/** Resolves `wait()` once the adapter observes host cancellation. */
+/**
+ * Encode a `PublishEvent.payload` (bytes, string, or JSON value) as bytes.
+ *
+ * @param payload - Author-supplied payload.
+ * @returns UTF-8 / raw payload bytes.
+ */
+function publishPayloadBytes(payload: PublishEvent["payload"]): Uint8Array {
+  if (payload === undefined || payload === null) return new Uint8Array(0);
+  if (payload instanceof Uint8Array) return payload;
+  if (payload instanceof ArrayBuffer) return new Uint8Array(payload);
+  if (typeof payload === "string") return new TextEncoder().encode(payload);
+  return new TextEncoder().encode(JSON.stringify(payload));
+}
+
+/**
+ * `EVENTS` binding handed to the author: the adapter exchanges the host's
+ * events grant token on the granted channel, so the author isolate never
+ * holds the bearer itself.
+ */
+class GrantedEvents extends RpcTarget implements EventPublisherBinding {
+  #granted: GrantedFetcher;
+  #auth: Record<string, string>;
+
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the events grant.
+   */
+  constructor(granted: GrantedFetcher, auth: Record<string, string>) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+
+  /**
+   * Publish one domain event through the host outbox.
+   *
+   * @param event - Event type, schema version, payload, dedup key.
+   * @returns Outbox row identity.
+   */
+  async publish(event: PublishEvent): Promise<PublishOk> {
+    if (!event || typeof event.eventType !== "string" || !event.eventType) {
+      throw PluginError.fromWire("invalid_params", "publish requires eventType");
+    }
+    const payload = publishPayloadBytes(event.payload);
+    if (payload.byteLength > MAX_EVENT_PAYLOAD_BYTES) {
+      throw PluginError.fromWire(
+        "payload_too_large",
+        `event payload of ${payload.byteLength} bytes exceeds ${MAX_EVENT_PAYLOAD_BYTES}`,
+      );
+    }
+    const wire = toBridgeJson({
+      eventType: event.eventType,
+      schemaVersion: Number(event.schemaVersion ?? 1) || 1,
+      deduplicationKey: String(event.deduplicationKey ?? ""),
+      payload,
+      occurredAtUnixMs: Number(event.occurredAtUnixMs ?? 0) || 0,
+      correlationId: String(event.correlationId ?? ""),
+      causationId: String(event.causationId ?? ""),
+    });
+    const resp = await this.#granted.fetch("http://granted/events/publish", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/json" },
+      body: JSON.stringify(wire),
+    });
+    const value = (await resp.json().catch(() => ({}))) as {
+      error?: { code?: string; message?: string };
+      eventId?: unknown;
+      duplicate?: unknown;
+    };
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `events publish HTTP ${resp.status}`);
+    }
+    return { eventId: String(value.eventId ?? ""), duplicate: Boolean(value.duplicate) };
+  }
+}
+
+/**
+ * Named `[[databases]]` binding transport handed to the author: the adapter
+ * exchanges the binding's database-only grant token on `POST /db/execute`,
+ * so the author isolate never holds the bearer itself. ABI failures come
+ * back inside the `ExecuteResultReply` union and surface as `PluginError`.
+ */
+class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
+  #granted: GrantedFetcher;
+  #auth: Record<string, string>;
+
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the database grant.
+   */
+  constructor(granted: GrantedFetcher, auth: Record<string, string>) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+
+  /**
+   * Run one typed atomic batch through the host broker.
+   *
+   * @param request - Structured `ExecuteRequest`.
+   * @returns Structured `ExecuteReply`.
+   */
+  async execute(request: ExecuteRequest): Promise<ExecuteReply> {
+    return decodeExecuteResultReply(await this.executeBytes(encodeExecuteRequest(request)));
+  }
+
+  /**
+   * Same batch as Cap'n Proto bytes (Python authors encode locally).
+   *
+   * @param bytes - Unpacked `ExecuteRequest` message.
+   * @returns Unpacked `ExecuteResultReply` message.
+   */
+  async executeBytes(bytes: Uint8Array): Promise<Uint8Array> {
+    const resp = await this.#granted.fetch("http://granted/db/execute", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/octet-stream" },
+      body: bytes,
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw PluginError.fromWire(
+        resp.status === 401 ? "unauthorized" : resp.status === 413 ? "payload_too_large" : "unavailable",
+        `database grant: ${resp.status} ${text}`.trim(),
+      );
+    }
+    return new Uint8Array(await resp.arrayBuffer());
+  }
+}
+
+/**
+ * Host cancellation as a granted long poll: `GET /cancel` answers `200` once
+ * the host fences the invocation and `204` when the poll window lapses, in
+ * which case the watch re-arms. Polling stops without resolving on any error
+ * or once `stop` aborts (the adapter aborts it when the job call returns).
+ */
 class CancelWatch extends RpcTarget implements CancelWatchLike {
   #promise: Promise<void>;
 
-  constructor(signal: AbortSignal) {
+  constructor(granted: GrantedFetcher, auth: Record<string, string>, stop: AbortSignal) {
     super();
-    this.#promise = new Promise((resolve) => {
-      if (signal.aborted) resolve();
-      else signal.addEventListener("abort", () => resolve(), { once: true });
+    this.#promise = new Promise<void>((resolve) => {
+      const poll = async (): Promise<void> => {
+        while (!stop.aborted) {
+          const resp = await granted.fetch("http://granted/cancel", { headers: auth, signal: stop });
+          if (resp.status === 200) {
+            resolve();
+            return;
+          }
+          if (resp.status !== 204) return;
+        }
+      };
+      poll().catch(() => {});
     });
   }
 
@@ -1917,46 +2228,53 @@ class CancelWatch extends RpcTarget implements CancelWatchLike {
   }
 }
 
-function grantedJobCapabilities(
-  env: AdapterEnv,
-  grantToken: string,
-  controller: AbortController,
-): GrantedJobCapabilities {
-  const granted = env.GRANTED;
-  if (!granted || typeof grantToken !== "string" || !grantToken) {
-    throw PluginError.fromWire("internal", "granted reverse channel missing");
-  }
-  const auth = { Authorization: `Bearer ${grantToken}` };
-  return {
-    input: new GrantedSource(granted, auth, controller.signal),
-    output: new GrantedDestination(granted, auth, controller.signal),
-    progress: new GrantedProgress(granted, auth, controller.signal),
-    cancel: new CancelWatch(controller.signal),
-  };
-}
-
-type NativeErrorEnvelope = { error?: { code: string; message: string } };
-
-async function readNativeJson<T>(resp: Response): Promise<T> {
-  const value = (await resp.json().catch(() => ({}))) as T & NativeErrorEnvelope;
-  if (value && value.error) {
-    throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
-  }
-  if (!resp.ok) {
-    throw PluginError.fromWire("internal", `native broker HTTP ${resp.status}`);
-  }
-  return value;
-}
-
 function bytesToBase64(bytes: Uint8Array): string {
   let bin = "";
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
   return btoa(bin);
 }
 
+function base64ToBytes(text: string): Uint8Array {
+  const bin = atob(text);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** Cap'n `Data` field names; bridge JSON carries them as base64 text. */
+const BRIDGE_BYTES_FIELDS: ReadonlySet<string> = new Set(["payload", "sha256", "credentials"]);
+
 /**
- * Typed ABI value → native-broker JSON: Cap'n `Data` fields (`Uint8Array`)
- * travel as base64 text; `bookclerk-workerd` decodes with the same convention.
+ * Bridge JSON → typed ABI value: base64 `Data` fields (`payload`, `sha256`,
+ * `credentials`) become `Uint8Array`; everything else is structurally
+ * identical, so no per-struct codec is needed.
+ *
+ * @param value - Bridge JSON value.
+ * @returns Typed struct value.
+ */
+export function fromBridgeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(fromBridgeJson);
+  if (value === null || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+    if (BRIDGE_BYTES_FIELDS.has(key) && typeof inner === "string") {
+      out[key] = base64ToBytes(inner);
+    } else if (
+      BRIDGE_BYTES_FIELDS.has(key) &&
+      Array.isArray(inner) &&
+      inner.every((n) => typeof n === "number")
+    ) {
+      out[key] = Uint8Array.from(inner as number[]);
+    } else {
+      out[key] = fromBridgeJson(inner);
+    }
+  }
+  return out;
+}
+
+/**
+ * Typed ABI value → bridge JSON: Cap'n `Data` fields (`Uint8Array`) travel as
+ * base64 text; `bookclerk-workerd` decodes with the same convention.
  *
  * @param value - Plain typed struct value.
  * @returns JSON-safe projection.
@@ -1974,144 +2292,13 @@ export function toBridgeJson(value: unknown): unknown {
   return out;
 }
 
-/**
- * Native-behind-workerd backend (`PLUGIN_BACKEND` is the trusted broker's
- * HTTP surface). Entrypoint methods map onto the broker's role routes.
- */
-class HttpNativeRoot {
-  #fetcher: { fetch: typeof fetch };
-
-  constructor(fetcher: { fetch: typeof fetch }) {
-    this.#fetcher = fetcher;
+function parseHeaderJson(text: string | null | undefined, name: string): unknown {
+  if (text === null || text === undefined || text === "") return undefined;
+  try {
+    return JSON.parse(String(text)) as unknown;
+  } catch (err) {
+    throw new InvokeError(400, "invalid_params", `${name} header is not JSON: ${errorMessage(err)}`);
   }
-
-  #headers(ctx: GrantedContext | undefined): Record<string, string> {
-    return {
-      "content-type": "application/json",
-      "x-bookclerk-context": JSON.stringify(toBridgeJson(ctx ?? {})),
-    };
-  }
-
-  async #json<T>(path: string, ctx: GrantedContext | undefined, body?: Record<string, unknown>): Promise<T> {
-    const resp = await this.#fetcher.fetch(`http://backend${path}`, {
-      method: "POST",
-      headers: this.#headers(ctx),
-      body: JSON.stringify(toBridgeJson({ ...(body ?? {}), context: ctx ?? {} })),
-    });
-    return readNativeJson<T>(resp);
-  }
-
-  async describe(): Promise<WirePluginDescribe> {
-    const resp = await this.#fetcher.fetch("http://backend/describe", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    });
-    return readNativeJson<WirePluginDescribe>(resp);
-  }
-
-  async storage(ctx: GrantedContext | undefined, method: string, args: unknown[]): Promise<unknown> {
-    const [a, b, c] = args as [unknown, unknown, WriteOptions | undefined];
-    switch (method) {
-      case "head": {
-        const v = await this.#json<{ found?: boolean; meta?: ObjectMetadata }>(
-          "/destination/head",
-          ctx,
-          { key: String(a ?? "") },
-        );
-        return v.found ? (v.meta ?? null) : null;
-      }
-      case "list":
-        return this.#json<ListPage>("/destination/list", ctx, { options: a ?? {} });
-      case "get": {
-        let path = `/destination/get?key=${encodeURIComponent(String(a ?? ""))}`;
-        const range = (b as ReadOptions | undefined)?.range;
-        if (range) {
-          path += `&offset=${range.offset}`;
-          if (range.length != null) path += `&length=${range.length}`;
-        }
-        const resp = await this.#fetcher.fetch(`http://backend${path}`, {
-          headers: this.#headers(ctx),
-        });
-        if (!resp.ok) {
-          throw PluginError.fromWire("internal", await resp.text());
-        }
-        return streamedRead(resp, String(a ?? ""));
-      }
-      case "put": {
-        const headers = this.#headers(ctx);
-        if (c?.contentType) headers["content-type"] = c.contentType;
-        if (c?.contentLength != null) headers["content-length"] = String(c.contentLength);
-        if (c?.commitToken) headers["x-bookclerk-commit-token"] = c.commitToken;
-        if (c?.stageOnly) headers["x-bookclerk-stage-only"] = "1";
-        const resp = await this.#fetcher.fetch(
-          `http://backend/destination/put?key=${encodeURIComponent(String(a ?? ""))}`,
-          { method: "PUT", headers, body: b as ReadableStream<Uint8Array> },
-        );
-        return readNativeJson<PutResult>(resp);
-      }
-      case "copy":
-        return this.#json<CopyResult>("/destination/copy", ctx, { from: a, to: b });
-      case "delete":
-        await this.#json<unknown>("/destination/delete", ctx, { key: String(a ?? "") });
-        return undefined;
-      case "commit":
-        return this.#json<PutResult>("/destination/commit", ctx, { key: a, commitToken: b });
-      case "abortStage":
-        await this.#json<unknown>("/destination/abortStage", ctx, { key: a, commitToken: b });
-        return undefined;
-      default:
-        throw unsupported(`storage.${method}`);
-    }
-  }
-
-  async remoteLibrary(ctx: GrantedContext | undefined, method: string, args: unknown[]): Promise<unknown> {
-    if (!REMOTE_LIBRARY_METHODS.includes(method)) {
-      throw unsupported(`remoteLibrary.${method}`);
-    }
-    const v = await this.#json<unknown>(
-      `/integration/${method}`,
-      ctx,
-      args[0] != null ? { params: args[0] } : {},
-    );
-    if (method === "diagnose") {
-      const lines = (v as { lines?: string[] } | string[] | undefined);
-      return Array.isArray(lines) ? lines : Array.isArray(lines?.lines) ? lines.lines : [];
-    }
-    if (method === "pollEvents") {
-      const users = (v as { users?: ExternalUser[] } | ExternalUser[] | undefined);
-      return Array.isArray(users) ? users : Array.isArray(users?.users) ? users.users : [];
-    }
-    return v;
-  }
-
-  async event(ctx: GrantedContext | undefined, event: Partial<DomainEvent>): Promise<EventOutcome> {
-    return this.#json<EventOutcome>("/integration/onEvent", ctx, { event });
-  }
-
-  async invoke(name: EntrypointName, ctx: GrantedContext | undefined, method: string, args: unknown[]): Promise<unknown> {
-    switch (name) {
-      case "storage":
-        return this.storage(ctx, method, args);
-      case "remoteLibrary":
-        return this.remoteLibrary(ctx, method, args);
-      case "oidc":
-        if (method === "authenticateUser") {
-          return this.#json<ExternalUser>("/integration/authenticateUser", ctx, { params: args[0] });
-        }
-        throw unsupported(`oidc.${method}`);
-      default:
-        throw unsupported(`${name}.${method} via native broker`);
-    }
-  }
-}
-
-function nativeRoot(env: AdapterEnv): HttpNativeRoot {
-  const backend = env.PLUGIN_BACKEND;
-  if (!backend) {
-    throw PluginError.fromWire("unavailable", "PLUGIN_BACKEND binding missing");
-  }
-  return new HttpNativeRoot(backend);
 }
 
 function parseJsonBinding(value: unknown): WirePluginDescribe | null {
@@ -2128,9 +2315,10 @@ function parseJsonBinding(value: unknown): WirePluginDescribe | null {
 
 /**
  * Generated adapter isolate: `env.PLUGIN` is the author's default entrypoint
- * and `env.PLUGIN_<ENTRYPOINT>` the named ones. Each bridge route becomes one
- * `bookclerk*` dispatch on the author class; authors cannot replace adapter
- * behavior with adapter-internal names.
+ * and `env.PLUGIN_<ENTRYPOINT>` the named ones. Every `POST /invoke` call
+ * (Cap'n Proto bytes) and every stream route becomes one `bookclerk*`
+ * dispatch on the author class; authors cannot replace adapter behavior with
+ * adapter-internal names.
  *
  * @returns Adapter entrypoint class bound to {@link AdapterEnv}.
  */
@@ -2139,8 +2327,11 @@ export function wrapPluginFromBinding() {
 }
 
 /**
- * Native-behind-workerd generated adapter. Forwards through `PLUGIN_BACKEND`,
- * which stays private workerd config.
+ * Native-behind-workerd generated adapter: control plane only. The launcher
+ * forwards every entrypoint call to the native guest as typed Cap'n Proto;
+ * this isolate decides `describe` (merged against `PLUGIN_DESCRIBE`) and
+ * `open` policy (`openInvocation`) and receives `shutdown`. There is no
+ * author `PLUGIN` binding.
  *
  * @returns Adapter entrypoint class bound to {@link AdapterEnv}.
  */
@@ -2148,10 +2339,80 @@ export function wrapPluginFromNative() {
   return createInvocationAdapter();
 }
 
+/** Wire names of the trigger families the launcher may ask `openInvocation` about. */
+export const TRIGGER_FAMILIES: Readonly<Record<"eventConsumer" | "jobRunner", string>> =
+  Object.freeze({
+    eventConsumer: "eventConsumer",
+    jobRunner: "jobRunner",
+  });
+
+/**
+ * Filters requested entrypoint / trigger family names against the manifest
+ * capabilities: named entrypoints must be declared in `entrypoints`,
+ * `eventConsumer` needs a non-empty `consumes`, and `jobRunner` needs
+ * `jobs` or the `storage` entrypoint (storage guests run the host
+ * `stream_copy` job). Unknown names and a missing manifest fail closed.
+ *
+ * @param capabilities - Manifest capabilities from `PLUGIN_DESCRIBE`.
+ * @param requested - Family names the launcher wants to export.
+ * @returns The authorized subset in request order.
+ */
+export function allowedEntrypointFamilies(
+  capabilities: Partial<WirePluginCapabilities> | null | undefined,
+  requested: readonly string[],
+): string[] {
+  if (!capabilities || typeof capabilities !== "object") return [];
+  const entrypoints = Array.isArray(capabilities.entrypoints) ? capabilities.entrypoints : [];
+  const consumes = Array.isArray(capabilities.consumes) ? capabilities.consumes : [];
+  const jobs = Array.isArray(capabilities.jobs) ? capabilities.jobs : [];
+  const exportsStorage = entrypoints.includes("storage");
+  const out: string[] = [];
+  for (const name of requested) {
+    if (typeof name !== "string" || out.includes(name)) continue;
+    if (name === TRIGGER_FAMILIES.eventConsumer) {
+      if (consumes.length > 0) out.push(name);
+    } else if (name === TRIGGER_FAMILIES.jobRunner) {
+      if (jobs.length > 0 || exportsStorage) out.push(name);
+    } else if (name in ENTRYPOINT_BINDINGS && entrypoints.includes(name as EntrypointName)) {
+      out.push(name);
+    }
+  }
+  return out;
+}
+
+/**
+ * Merges a guest's `describe()` under the manifest projection: identity,
+ * `apiVersion`, and `capabilities` always come from the manifest; the guest's
+ * presentation fields, features, and limits are kept. The guest's `cli`
+ * schema wins only when it declares commands.
+ *
+ * @param base - Manifest projection (`PLUGIN_DESCRIBE`).
+ * @param guest - Guest-reported describe (author refinement or native).
+ * @returns Wire describe.
+ */
+function mergeDescribe(
+  base: Partial<WirePluginDescribe>,
+  guest: Partial<WirePluginDescribe>,
+): WirePluginDescribe {
+  const guestCli = guest.cli;
+  const cli =
+    guestCli && Array.isArray(guestCli.commands) && guestCli.commands.length > 0
+      ? guestCli
+      : base.cli ?? guestCli;
+  return {
+    ...base,
+    ...guest,
+    apiVersion: base.apiVersion ?? guest.apiVersion ?? 3,
+    id: base.id ?? guest.id,
+    capabilities: base.capabilities ?? guest.capabilities,
+    ...(cli === undefined ? {} : { cli }),
+  } as WirePluginDescribe;
+}
+
 function createInvocationAdapter() {
   return class InvocationAdapter extends WorkerEntrypoint<AdapterEnv> {
-    #native(): HttpNativeRoot | null {
-      return this.env.PLUGIN_BACKEND && !this.env.PLUGIN ? nativeRoot(this.env) : null;
+    #manifest(): Partial<WirePluginDescribe> {
+      return parseJsonBinding(this.env.PLUGIN_DESCRIBE) ?? ({} as Partial<WirePluginDescribe>);
     }
 
     #author(): AuthorStub {
@@ -2168,29 +2429,83 @@ function createInvocationAdapter() {
       return stub as NamedStub;
     }
 
+    /**
+     * Turn the bridge context into the author-facing one: the host's events
+     * grant token becomes an `EVENTS` stub and never reaches the author.
+     *
+     * @param ctx - Bridge context from the launcher.
+     * @returns Author-facing granted context.
+     */
+    #bindContext(ctx: BridgeContext | undefined): GrantedContext {
+      const source = ctx && typeof ctx === "object" ? ctx : {};
+      const { eventsToken, databases, ...rest } = source;
+      const bound: GrantedContext = rest;
+      const granted = this.env.GRANTED;
+      if (typeof eventsToken === "string" && eventsToken && granted) {
+        bound.events = new GrantedEvents(granted, {
+          Authorization: `Bearer ${eventsToken}`,
+        });
+      }
+      if (databases && typeof databases === "object" && !Array.isArray(databases) && granted) {
+        const named: NamedDatabase[] = [];
+        for (const [name, token] of Object.entries(databases)) {
+          if (!name || typeof token !== "string" || !token) continue;
+          named.push({
+            name,
+            transport: new GrantedDatabase(granted, { Authorization: `Bearer ${token}` }),
+          });
+        }
+        if (named.length > 0) bound.databases = named;
+      }
+      return bound;
+    }
+
     async fetch(_request?: Request): Promise<Response> {
       return new Response(null, { status: 404 });
     }
 
     /**
      * `PluginDescribe`: the manifest projection the launcher binds as
-     * `PLUGIN_DESCRIBE`, refined by the author's optional `describe()`.
-     * Identity and capabilities always come from the manifest.
+     * `PLUGIN_DESCRIBE`, refined by the guest's describe. Author mode calls
+     * the author's optional `describe()`; native-behind-workerd passes the
+     * native guest's typed describe as `native`. Identity and capabilities
+     * always come from the manifest.
      *
+     * @param native - Native guest describe (native-behind-workerd only).
      * @returns Wire describe.
      */
-    async describe(): Promise<WirePluginDescribe> {
-      const native = this.#native();
-      if (native) return native.describe();
-      const base = parseJsonBinding(this.env.PLUGIN_DESCRIBE) ?? ({} as Partial<WirePluginDescribe>);
+    async describe(native?: Partial<WirePluginDescribe>): Promise<WirePluginDescribe> {
+      const base = this.#manifest();
+      if (native !== undefined) {
+        if (native === null || typeof native !== "object") {
+          throw PluginError.fromWire("invalid_params", "native describe must be an object");
+        }
+        return mergeDescribe(base, native);
+      }
       const author = (await this.#author().bookclerkDescribe()) ?? {};
-      return {
-        ...base,
-        ...author,
-        apiVersion: base.apiVersion ?? author.apiVersion ?? 3,
-        id: base.id ?? author.id,
-        capabilities: base.capabilities ?? author.capabilities,
-      } as WirePluginDescribe;
+      return mergeDescribe(base, author);
+    }
+
+    /**
+     * `/open` policy for native-behind-workerd: validates the invocation
+     * envelope and returns the requested entrypoint / trigger families the
+     * manifest (`PLUGIN_DESCRIBE`) lets this plugin export. The launcher
+     * nulls every family that is not returned.
+     *
+     * @param ctx - Open context (`invocation`, `config`, `secrets`).
+     * @param requested - Family names the launcher wants to export.
+     * @returns Authorized subset of `requested`.
+     */
+    async openInvocation(
+      ctx: GrantedContext | undefined,
+      requested: readonly string[] = [],
+    ): Promise<string[]> {
+      const invocation = ctx && typeof ctx === "object" ? ctx.invocation : undefined;
+      if (!invocation || typeof invocation.id !== "string" || !invocation.id) {
+        throw PluginError.fromWire("invalid_params", "open requires a non-empty invocation id");
+      }
+      const list = Array.isArray(requested) ? requested : [];
+      return allowedEntrypointFamilies(this.#manifest().capabilities, list);
     }
 
     /**
@@ -2204,38 +2519,20 @@ function createInvocationAdapter() {
      */
     async invokeEntrypoint(
       name: EntrypointName,
-      ctx: GrantedContext | undefined,
+      ctx: BridgeContext | undefined,
       method: string,
       args: unknown[] = [],
     ): Promise<unknown> {
       const list = Array.isArray(args) ? args : [];
-      const native = this.#native();
-      if (native) return native.invoke(name, ctx ?? {}, method, list);
-      return this.#named(name).bookclerkInvoke(ctx ?? {}, method, ...list);
+      return this.#named(name).bookclerkInvoke(this.#bindContext(ctx), method, ...list);
     }
 
     /**
-     * Deliver one domain event to the default entrypoint's `event(batch)`.
+     * Stream routes (`GET /destination/get`, `PUT /destination/put`) →
+     * `storage` entrypoint. Every other `Destination` method travels on
+     * `POST /invoke` ({@link InvocationAdapter.invoke}).
      *
-     * @param ctx - Granted context.
-     * @param event - Wire domain event.
-     * @returns Recorded outcome.
-     */
-    async invokeEvent(ctx: GrantedContext | undefined, event: Partial<DomainEvent>): Promise<EventOutcome> {
-      const native = this.#native();
-      if (native) return native.event(ctx ?? {}, event);
-      const results = await this.#author().bookclerkEvent(ctx ?? {}, { events: [event] });
-      const first = Array.isArray(results) ? results[0] : undefined;
-      if (!first || typeof first.kind !== "string") {
-        throw PluginError.fromWire("internal", "event handler returned no result");
-      }
-      return first;
-    }
-
-    /**
-     * `/destination/<op>` route → `storage` entrypoint.
-     *
-     * @param op - Destination method name.
+     * @param op - `get` or `put`.
      * @param ctx - Granted context.
      * @param args - Route arguments.
      * @param body - Stream body for `put`.
@@ -2243,15 +2540,11 @@ function createInvocationAdapter() {
      */
     async invokeDestination(
       op: string,
-      ctx: GrantedContext | undefined,
+      ctx: BridgeContext | undefined,
       args: Record<string, unknown> = {},
       body?: ReadableStream<Uint8Array>,
     ): Promise<unknown> {
       switch (op) {
-        case "head":
-          return this.invokeEntrypoint("storage", ctx, "head", [String(args.key ?? "")]);
-        case "list":
-          return this.invokeEntrypoint("storage", ctx, "list", [args.options ?? {}]);
         case "get":
           return this.invokeEntrypoint("storage", ctx, "get", [String(args.key ?? ""), args.options]);
         case "put": {
@@ -2262,24 +2555,8 @@ function createInvocationAdapter() {
           const bounded = exactLengthBody(body, options?.contentLength);
           return this.invokeEntrypoint("storage", ctx, "put", [String(args.key ?? ""), bounded, options]);
         }
-        case "copy":
-          return this.invokeEntrypoint("storage", ctx, "copy", [String(args.from ?? ""), String(args.to ?? "")]);
-        case "delete":
-          await this.invokeEntrypoint("storage", ctx, "delete", [String(args.key ?? "")]);
-          return { ok: true };
-        case "commit":
-          return this.invokeEntrypoint("storage", ctx, "commit", [
-            String(args.key ?? ""),
-            String(args.commitToken ?? ""),
-          ]);
-        case "abortStage":
-          await this.invokeEntrypoint("storage", ctx, "abortStage", [
-            String(args.key ?? ""),
-            String(args.commitToken ?? ""),
-          ]);
-          return { ok: true };
         default:
-          throw PluginError.fromWire("unsupported", `destination.${op}`);
+          throw PluginError.fromWire("unsupported", `destination.${op} is not a stream route`);
       }
     }
 
@@ -2290,84 +2567,108 @@ function createInvocationAdapter() {
      * @param key - Object key.
      * @returns Opened byte source result.
      */
-    async invokeSourceOpen(ctx: GrantedContext | undefined, key: string): Promise<unknown> {
+    async invokeSourceOpen(ctx: BridgeContext | undefined, key: string): Promise<unknown> {
       return this.invokeEntrypoint("storage", ctx, "get", [String(key ?? "")]);
     }
 
     /**
-     * `/worker/handle` route → default entrypoint `job(controller)`.
+     * Resolve one request capability descriptor (`X-Bookclerk-Caps` entry)
+     * into the granted-channel stub handed to the author.
      *
-     * @param ctx - Granted context.
-     * @param invocation - Durable command envelope.
-     * @param grantToken - Per-invocation grant token.
-     * @param _databases - Per-binding grant tokens (bound in a later ABI step).
-     * @returns Wire job outcome.
+     * @param descriptor - Capability descriptor.
+     * @param stop - Aborts when the call returns.
+     * @returns Granted stub, or `undefined` for an unknown kind.
      */
-    async invokeHandle(
-      ctx: JobRunnerContext | undefined,
-      invocation: Partial<JobInvocation>,
-      grantToken: string,
-      _databases?: Record<string, string>,
-    ): Promise<JobOutcomeRecord> {
-      if (this.#native()) {
-        throw PluginError.fromWire("unsupported", "native job runner via broker not bound");
+    #importCap(descriptor: CapDescriptor, stop: AbortSignal): unknown {
+      const granted = this.env.GRANTED;
+      if (!granted) {
+        throw new InvokeError(500, "unavailable", "GRANTED reverse channel missing");
       }
-      const controller = new AbortController();
+      const auth = { Authorization: `Bearer ${String(descriptor.token ?? "")}` };
+      switch (descriptor.kind) {
+        case "source":
+          return new GrantedSource(granted, auth, stop);
+        case "destination":
+          return new GrantedDestination(granted, auth, stop);
+        case "progress":
+          return new GrantedProgress(granted, auth, stop);
+        case "cancellation":
+          return new CancelWatch(granted, auth, stop);
+        default:
+          return undefined;
+      }
+    }
+
+    /**
+     * `POST /invoke`: one ABI method call as Cap'n Proto bytes. The bridge
+     * passes the request headers through verbatim; the reply carries the
+     * `$Results` bytes plus the descriptors of capabilities it exported.
+     * Transport failures (unknown method, malformed message, missing
+     * binding) come back as an {@link InvokeFailure} with the HTTP status the
+     * bridge should answer with — never as a thrown error, because Workers
+     * RPC drops own properties of thrown errors.
+     *
+     * @param iface - `X-Bookclerk-Interface` (Cap'n interface name).
+     * @param method - `X-Bookclerk-Method`.
+     * @param contextJson - `X-Bookclerk-Context` bridge JSON, or `null`.
+     * @param capsJson - `X-Bookclerk-Caps` JSON descriptor array, or `null`.
+     * @param target - `X-Bookclerk-Target` isolate object id, or `null`.
+     * @param body - `$Params` message bytes.
+     * @returns Reply bytes plus capability descriptors, or a transport failure.
+     */
+    async invoke(
+      iface: string,
+      method: string,
+      contextJson: string | null,
+      capsJson: string | null,
+      target: string | null,
+      body: Uint8Array,
+    ): Promise<InvokeOutcome> {
+      const host: InvokeHost = {
+        author: () => this.env.PLUGIN,
+        named: (name) => {
+          const binding = ENTRYPOINT_BINDINGS[name];
+          return (this.env as Record<string, unknown>)[binding] as NamedStub | undefined;
+        },
+        bindContext: (ctx) => this.#bindContext(ctx),
+        importCap: (descriptor, stop) => this.#importCap(descriptor, stop),
+      };
       try {
-        const granted = grantedJobCapabilities(this.env, grantToken, controller);
-        return await this.#author().bookclerkJob(ctx ?? {}, invocation ?? {}, granted);
-      } finally {
-        controller.abort();
+        const context = parseHeaderJson(contextJson, "context");
+        if (context !== undefined && (context === null || typeof context !== "object" || Array.isArray(context))) {
+          throw new InvokeError(400, "invalid_params", "context header must be a JSON object");
+        }
+        const caps = parseHeaderJson(capsJson, "caps") ?? [];
+        if (!Array.isArray(caps)) {
+          throw new InvokeError(400, "invalid_params", "caps header must be a JSON array");
+        }
+        const ctx = context === undefined ? undefined : (fromBridgeJson(context) as BridgeContext);
+        return await dispatchInvoke(
+          String(iface ?? ""),
+          String(method ?? ""),
+          ctx,
+          caps as CapDescriptor[],
+          typeof target === "string" && target ? target : null,
+          body instanceof Uint8Array ? body : new Uint8Array(body ?? []),
+          host,
+        );
+      } catch (err) {
+        if (err instanceof InvokeError) {
+          return { status: err.status, error: { code: err.wireCode, message: err.message } };
+        }
+        return { status: 500, error: { code: "internal", message: errorMessage(err) } };
       }
     }
 
     /**
-     * `/cliDescribe` route → `cli.describe`.
-     *
-     * @returns CLI schema.
-     */
-    async cliDescribe(): Promise<CliSchema> {
-      return (await this.invokeEntrypoint("cli", {}, "describe", [])) as CliSchema;
-    }
-
-    /**
-     * `/cliInvoke` route → `cli.invoke`.
-     *
-     * @param params - Command and arguments.
-     * @returns Invocation result.
-     */
-    async cliInvoke(params: CliInvokeParams): Promise<CliInvokeResult> {
-      return (await this.invokeEntrypoint("cli", {}, "invoke", [params ?? {}])) as CliInvokeResult;
-    }
-
-    /**
-     * `/oidcClients` route → `oidc.clients`.
-     *
-     * @returns Client templates.
-     */
-    async oidcClients(): Promise<OidcClientTemplate[]> {
-      const clients = await this.invokeEntrypoint("oidc", {}, "clients", []);
-      return Array.isArray(clients) ? (clients as OidcClientTemplate[]) : [];
-    }
-
-    /**
-     * `/databaseMigrations` route → default entrypoint `databaseMigrations`.
-     *
-     * @param binding - Binding name.
-     * @returns Bounded registration.
-     */
-    async databaseMigrations(binding: string): Promise<PluginMigration[]> {
-      if (this.#native()) return [];
-      return this.#author().bookclerkDatabaseMigrations(String(binding ?? ""));
-    }
-
-    /**
-     * Shutdown hook → default entrypoint `shutdown`.
+     * `/shutdown` route → default entrypoint `shutdown`. Without an author
+     * `PLUGIN` binding (native-behind-workerd) there is nothing to run here:
+     * the launcher shuts the native guest down over Cap'n Proto.
      *
      * @returns Resolves when the author hook has run.
      */
     async shutdown(): Promise<void> {
-      if (this.#native()) return;
+      if (!this.env.PLUGIN) return;
       await this.#author().bookclerkShutdown();
     }
   };

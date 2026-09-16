@@ -1,7 +1,7 @@
 """Out-of-tree workerd plugin smoke: ensure → materialize → describe + health.
 
 Spawns the pinned Cloudflare ``workerd`` with a materialized Cap'n Proto config
-and POSTs ``describe`` (plus the entrypoint ``health`` route for storefront /
+and POSTs ``describe`` (plus a ``POST /invoke`` ``health`` call for storefront /
 remoteLibrary guests) to the HTTP bridge. Does not require the Rust
 ``bookclerk-workerd`` binary.
 """
@@ -49,6 +49,56 @@ def _wait_for_health(base: str, token: str, timeout_s: float = 15.0) -> None:
         if time.monotonic() > deadline:
             raise TimeoutError(f"timeout waiting for {url}")
         time.sleep(0.05)
+
+
+def _invoke_health(base: str, iface: str, token: str) -> Any:
+    """``POST /invoke`` health probe for ``ContentSource`` / ``RemoteLibrary``.
+
+    Args:
+        base: Bridge base URL.
+        iface: Cap'n interface name (``ContentSource`` or ``RemoteLibrary``).
+        token: Bridge bearer token.
+
+    Returns:
+        The ``HealthOk`` dict from the reply union.
+
+    Raises:
+        RuntimeError: On a non-200 transport answer or an ``err`` reply.
+    """
+    from .. import _wire
+
+    if iface == "ContentSource":
+        params = _wire._content_source_health_params_codec
+        results = _wire._content_source_health_results_codec
+    else:
+        params = _wire._remote_library_health_params_codec
+        results = _wire._remote_library_health_results_codec
+    req = urllib.request.Request(
+        f"{base}/invoke",
+        data=_wire._encode_message(params, {}, _wire.NO_CAPS),
+        headers={
+            "content-type": "application/x-capnp",
+            "Authorization": f"Bearer {token}",
+            "x-bookclerk-interface": iface,
+            "x-bookclerk-method": "health",
+            "x-bookclerk-context": json.dumps({"invocation": {"id": "smoke"}}),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30.0) as resp:  # noqa: S310 — loopback
+            body = resp.read()
+    except urllib.error.HTTPError as err:
+        text = err.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"bridge HTTP {err.code}: {text}") from err
+    reply = _wire._decode_message(results, body)["result"]
+    if reply.get("kind") == "err":
+        failure = reply.get("value") or {}
+        raise RuntimeError(
+            f"{iface}.health failed: {failure.get('code', 'internal')}: "
+            f"{failure.get('message', 'plugin error')}"
+        )
+    return reply.get("value")
 
 
 def _post_json(url: str, body: dict[str, Any], token: str) -> Any:
@@ -137,13 +187,13 @@ def run_smoke(plugin_dir: Path) -> str:
         # the default entrypoint (event/job triggers) has no health probe.
         entrypoints = [str(e) for e in (manifest.get("entrypoints") or [])]
         if "storefront" in entrypoints:
-            health_path: str | None = "/contentSource/health"
+            health_iface: str | None = "ContentSource"
         elif "remoteLibrary" in entrypoints:
-            health_path = "/integration/health"
+            health_iface = "RemoteLibrary"
         else:
-            health_path = None
+            health_iface = None
         health = (
-            _post_json(f"{base}{health_path}", {}, bridge_token) if health_path else None
+            _invoke_health(base, health_iface, bridge_token) if health_iface else None
         )
         detail = {
             "plugin": manifest["id"],

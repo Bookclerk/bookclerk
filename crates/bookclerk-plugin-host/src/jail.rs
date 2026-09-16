@@ -43,6 +43,7 @@ use bookclerk_sandbox::{Enforcement, NetPolicy, Spec};
 
 use crate::discover::DiscoveredPlugin;
 use crate::manifest::JailNetworkNeed;
+use crate::spawn_plan::{GuestRuntimeKind, SpawnPlan};
 use crate::{PluginError, PluginGrant, PluginRuntimeKind, Result};
 
 /// Launcher binary that applies the jail.
@@ -209,7 +210,14 @@ impl GuestJail {
     /// cannot be applied — a missing launcher, or a host with no backend. The
     /// caller skips the plugin, which is the point: a storefront guest parses
     /// hostile input, so running it unconfined is worse than not running it.
-    pub(crate) fn plan(config: &Config, plugin: &DiscoveredPlugin) -> Result<Self> {
+    ///
+    /// `spawn` decides which executables the jail must let the launcher tree
+    /// read and exec, the loopback bridge exception, and the process budget.
+    pub(crate) fn plan(
+        config: &Config,
+        plugin: &DiscoveredPlugin,
+        spawn: &SpawnPlan,
+    ) -> Result<Self> {
         let id = &plugin.manifest.id;
         let data = plugin_data_dir(config, id)?;
         let scratch = plugin_scratch_dir(config, id)?;
@@ -306,6 +314,7 @@ impl GuestJail {
                             launcher,
                             spec: Box::new(build_spec_with_grant(
                                 plugin,
+                                spawn,
                                 config,
                                 &data,
                                 &scratch,
@@ -343,8 +352,10 @@ impl GuestJail {
 
 /// Build the allowlist for one guest.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn build_spec(
     plugin: &DiscoveredPlugin,
+    spawn: &SpawnPlan,
     config: &Config,
     data: &Path,
     scratch: &Path,
@@ -354,6 +365,7 @@ fn build_spec(
 ) -> Spec {
     build_spec_with_grant(
         plugin,
+        spawn,
         config,
         data,
         scratch,
@@ -365,9 +377,10 @@ fn build_spec(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Builds a jail `Spec`: install/command reads, data/tmp (and granted output/SQLite) writes, and grant-derived net/resources.
+/// Builds a jail `Spec`: install/launcher-tree reads, data/tmp (and granted output/SQLite) writes, and grant-derived net/resources.
 fn build_spec_with_grant(
     plugin: &DiscoveredPlugin,
+    spawn: &SpawnPlan,
     config: &Config,
     data: &Path,
     scratch: &Path,
@@ -393,35 +406,24 @@ fn build_spec_with_grant(
         // bindings live under one host-managed tree the adapter owns.
         writes.push(plugin_databases_dir(config));
     }
-    let mut resources = guest_spec_resource_limits(plugin, grant);
+    let mut resources = guest_spec_resource_limits(plugin, spawn.runtime, grant);
     // Global jail knobs only override resource ceilings. Guest filesystems remain
     // install read-only plus host-managed data/tmp grants, not free-form paths.
-    apply_global_jail_resource_overrides(
-        &mut resources,
-        &config.plugins.jail,
-        plugin.manifest.runtime,
-    );
+    apply_global_jail_resource_overrides(&mut resources, &config.plugins.jail, spawn.runtime);
     Spec {
         label: format!("plugin:{}", plugin.manifest.id),
         // The install directory covers `plugin.toml` and, in the usual layout,
-        // the binary. A manifest may name an absolute `command` elsewhere, so
-        // grant that too rather than relying on the two coinciding.
+        // the binary. A manifest may name an absolute `command` elsewhere, and
+        // a workerd-fronted guest also execs `bookclerk-workerd`, the pinned
+        // `workerd`, and (native) the backend — grant each executable
+        // explicitly rather than relying on them sharing a directory.
         reads: {
-            let mut reads = vec![plugin.root.clone(), plugin.command.clone()];
-            // workerd guests also exec the pinned Cloudflare `workerd` beside
-            // `bookclerk-workerd` (or BOOKCLERK_WORKERD_BIN).
-            if plugin.manifest.runtime == crate::PluginRuntimeKind::Workerd {
-                if let Some(parent) = plugin.command.parent() {
-                    reads.push(parent.join(cloudflare_workerd_bin_name()));
-                }
-                if let Ok(override_bin) = std::env::var("BOOKCLERK_WORKERD_BIN") {
-                    reads.push(PathBuf::from(override_bin));
-                }
-            }
+            let mut reads = vec![plugin.root.clone()];
+            reads.extend(spawn.executable_reads());
             reads
         },
         writes,
-        net: jail_net_policy(plugin, grant),
+        net: jail_net_policy(plugin, spawn, grant),
         // The launcher has to exec the guest to hand over. See the
         // `bookclerk-jail` crate docs on why this is close to free.
         // On Windows, `allow_exec` is not separately enforceable at CreateProcess;
@@ -441,7 +443,7 @@ fn build_spec_with_grant(
 fn apply_global_jail_resource_overrides(
     resources: &mut bookclerk_sandbox::ResourceLimits,
     jail: &bookclerk_config::PluginsJailConfig,
-    runtime: PluginRuntimeKind,
+    runtime: GuestRuntimeKind,
 ) {
     use crate::consent::{
         active_processes_for, effective_extra_processes, jail_process_overhead,
@@ -479,19 +481,25 @@ fn apply_global_jail_resource_overrides(
     }
 }
 
-/// Maps manifest network need and a deny grant onto Landlock/AppContainer `NetPolicy` (workerd Listen stays `OutboundListen`).
-fn jail_net_policy(plugin: &DiscoveredPlugin, grant: Option<&PluginGrant>) -> NetPolicy {
+/// Maps manifest network need and a deny grant onto Landlock/AppContainer `NetPolicy` (workerd-fronted guests stay `OutboundListen`).
+fn jail_net_policy(
+    plugin: &DiscoveredPlugin,
+    spawn: &SpawnPlan,
+    grant: Option<&PluginGrant>,
+) -> NetPolicy {
+    if spawn.fronted_by_workerd() {
+        // Intentional OS-jail exception (see docs/adr/plugin-workers-rpc-workerd.md):
+        // `bookclerk-workerd` must `bind(127.0.0.1:0)` for the host↔isolate RPC
+        // bridge, for author isolates and native backends alike. Linux Landlock
+        // has no loopback-only policy, so `OutboundListen` also permits
+        // `connect`. Isolate egress (`WORKERD_GRANT_NETWORK_MODE` →
+        // `globalOutbound = blocked` under deny) remains the grant enforcement
+        // layer for isolates; a native backend's own sockets are not
+        // OS-denied on this path.
+        return NetPolicy::OutboundListen;
+    }
     let denied = grant.is_some_and(|g| g.network_mode.eq_ignore_ascii_case("deny"));
     match plugin.manifest.jail_network_need() {
-        JailNetworkNeed::Listen if plugin.manifest.runtime == PluginRuntimeKind::Workerd => {
-            // Intentional OS-jail exception (see docs/adr/plugin-workers-rpc-workerd.md):
-            // `bookclerk-workerd` must `bind(127.0.0.1:0)` for the host↔isolate RPC
-            // bridge. Linux Landlock has no loopback-only policy, so `OutboundListen`
-            // also permits `connect`. Isolate egress (`WORKERD_GRANT_NETWORK_MODE` →
-            // `globalOutbound = blocked` under deny) remains the grant enforcement
-            // layer. Native Listen guests never take this branch.
-            NetPolicy::OutboundListen
-        }
         JailNetworkNeed::Listen => {
             if denied {
                 NetPolicy::Deny
@@ -515,13 +523,16 @@ fn jail_net_policy(plugin: &DiscoveredPlugin, grant: Option<&PluginGrant>) -> Ne
 /// Applies to **native and workerd** confined guests:
 ///
 /// - `memory_bytes` from grant `memoryMib` (default 512 MiB)
-/// - `active_processes` = overhead(runtime) + extra budget (default extra 2;
-///   native grant `extraProcesses`; workerd uses default extra only)
+/// - `active_processes` = overhead(launcher tree) + extra budget (default
+///   extra 2; native grant `extraProcesses`; workerd isolates use the default
+///   extra only). The overhead follows the spawn plan, so a native guest behind
+///   `bookclerk-workerd` budgets launcher + `workerd` + guest (3), not 1.
 /// - `cpu_rate_percent`: **native** from grant `cpuRatePercent` (default 80);
 ///   **workerd** always uses the host default (80) so isolate budgets stay on
 ///   `cpu_ms`. `[plugins.jail]` then applies as a per-jail ceiling.
 fn guest_spec_resource_limits(
     plugin: &DiscoveredPlugin,
+    runtime: GuestRuntimeKind,
     grant: Option<&PluginGrant>,
 ) -> bookclerk_sandbox::ResourceLimits {
     use crate::consent::{
@@ -530,15 +541,15 @@ fn guest_spec_resource_limits(
     };
 
     let memory_mib = effective_memory_mib(grant.and_then(|g| g.memory_mib));
-    let runtime = plugin.manifest.runtime;
-    let extra = if runtime == PluginRuntimeKind::Workerd {
+    let isolate = plugin.manifest.runtime == PluginRuntimeKind::Workerd;
+    let extra = if isolate {
         // Workerd process headroom is host-managed (not a per-plugin consent knob).
         effective_extra_processes(None)
     } else {
         effective_extra_processes(grant.and_then(|g| g.extra_processes))
     };
 
-    let cpu_rate = if runtime == PluginRuntimeKind::Workerd {
+    let cpu_rate = if isolate {
         // Isolate-facing budget is cpu_ms; jail CPU is host per-jail policy only.
         effective_cpu_rate_percent(None)
     } else {
@@ -558,15 +569,6 @@ fn is_sqlite_database_plugin(plugin: &DiscoveredPlugin) -> bool {
         .manifest
         .has_entrypoint(crate::Entrypoint::DatabaseAdapter)
         && plugin.manifest.id.eq_ignore_ascii_case("sqlite")
-}
-
-/// Filename of the pinned Cloudflare `workerd` binary (`workerd.exe` on Windows).
-fn cloudflare_workerd_bin_name() -> &'static str {
-    if cfg!(windows) {
-        "workerd.exe"
-    } else {
-        "workerd"
-    }
 }
 
 /// `library.db` plus the journal sidecars SQLite opens beside it.
@@ -757,6 +759,46 @@ entrypoints = ["{entrypoint}"]
         plugin_with_entrypoint(root, "sqlite", JailNetworkNeed::None, "databaseAdapter")
     }
 
+    /// Diagnostic-transport plan: the jail execs the native command itself.
+    fn direct(plugin: &DiscoveredPlugin) -> SpawnPlan {
+        SpawnPlan::resolve_with(
+            plugin,
+            crate::SpawnTransport::DirectNativeDiagnostic,
+            || panic!("direct native never needs the front door"),
+        )
+        .expect("direct plan")
+    }
+
+    /// Front-door plan against fake `bookclerk-workerd` + `workerd` files in `helpers`.
+    fn fronted(plugin: &DiscoveredPlugin, helpers: &Path) -> SpawnPlan {
+        for name in ["bookclerk-workerd", "workerd"] {
+            let path = helpers.join(name);
+            if !path.exists() {
+                std::fs::write(&path, b"").expect("fake helper");
+            }
+        }
+        SpawnPlan::resolve_with(plugin, crate::SpawnTransport::WorkerdFrontDoor, || {
+            crate::WorkerdFrontDoor::locate_in(helpers)
+        })
+        .expect("front-door plan")
+    }
+
+    /// Manifest flipped to a workerd isolate (no native command).
+    fn as_workerd_isolate(plugin: &mut DiscoveredPlugin, limits: crate::manifest::WorkerdLimits) {
+        use crate::manifest::WorkerdRuntimeManifest;
+
+        plugin.manifest.runtime = PluginRuntimeKind::Workerd;
+        plugin.manifest.command = None;
+        plugin.manifest.workerd = Some(WorkerdRuntimeManifest {
+            compatibility_date: "2026-08-01".into(),
+            compatibility_flags: vec![],
+            main_module: "index.js".into(),
+            modules_dir: "modules".into(),
+            entrypoint: "default".into(),
+            limits,
+        });
+    }
+
     #[test]
     fn the_allowlist_covers_the_guest_dirs_and_nothing_else() {
         let files = tempfile::tempdir().expect("tempdir");
@@ -766,6 +808,7 @@ entrypoints = ["{entrypoint}"]
 
         let spec = build_spec(
             &plugin,
+            &direct(&plugin),
             &config,
             &plugin_data_dir(&config, "libro").unwrap(),
             &plugin_scratch_dir(&config, "libro").unwrap(),
@@ -778,7 +821,7 @@ entrypoints = ["{entrypoint}"]
         assert_eq!(
             spec.net,
             NetPolicy::Outbound,
-            "native outbound gets coarse jail outbound"
+            "direct native outbound gets coarse jail outbound"
         );
         assert!(spec.allow_exec, "the launcher has to exec the guest");
 
@@ -817,6 +860,7 @@ entrypoints = ["{entrypoint}"]
 
         let spec = build_spec(
             &plugin,
+            &direct(&plugin),
             &config,
             &plugin_data_dir(&config, "sqlite").unwrap(),
             &plugin_scratch_dir(&config, "sqlite").unwrap(),
@@ -858,7 +902,7 @@ entrypoints = ["{entrypoint}"]
         config.plugins.isolation = Isolation::Off;
         let plugin = sqlite_plugin_at(install.path());
 
-        let _jail = GuestJail::plan(&config, &plugin).expect("plan");
+        let _jail = GuestJail::plan(&config, &plugin, &direct(&plugin)).expect("plan");
         for path in sqlite_library_paths(&config) {
             assert!(path.is_file(), "expected {}", path.display());
         }
@@ -874,6 +918,7 @@ entrypoints = ["{entrypoint}"]
         let plugin = plugin_at(install.path(), "libro", JailNetworkNeed::Outbound);
         let spec = build_spec(
             &plugin,
+            &direct(&plugin),
             &config,
             &plugin_data_dir(&config, "libro").unwrap(),
             &plugin_scratch_dir(&config, "libro").unwrap(),
@@ -883,6 +928,54 @@ entrypoints = ["{entrypoint}"]
         );
         assert!(!spec.writes.contains(&config.paths().files_dir));
         assert!(!spec.reads.contains(&config.paths().files_dir));
+    }
+
+    /// The product path: the jail execs `bookclerk-workerd`, which execs the
+    /// pinned `workerd` and the native backend. All three must stay readable,
+    /// the loopback bridge needs `OutboundListen`, and the pids budget counts
+    /// the whole launcher tree.
+    #[test]
+    fn a_native_guest_behind_workerd_gets_the_launcher_tree_grants() {
+        let files = tempfile::tempdir().expect("tempdir");
+        let install = tempfile::tempdir().expect("tempdir");
+        let helpers = tempfile::tempdir().expect("tempdir");
+        let config = config_at(files.path());
+        let plugin = plugin_at(install.path(), "sqlite", JailNetworkNeed::None);
+        let plan = fronted(&plugin, helpers.path());
+        assert_eq!(plan.runtime, GuestRuntimeKind::NativeBehindWorkerd);
+
+        let spec = build_spec(
+            &plugin,
+            &plan,
+            &config,
+            &plugin_data_dir(&config, "sqlite").unwrap(),
+            &plugin_scratch_dir(&config, "sqlite").unwrap(),
+            Vec::new(),
+            Enforcement::Required,
+            None,
+        );
+        for exe in [
+            &plan.launcher,
+            plan.workerd_bin.as_ref().expect("workerd bin"),
+            &plugin.command,
+        ] {
+            assert!(
+                spec.reads.iter().any(|r| exe.starts_with(r)),
+                "{} must be readable inside the jail: {:?}",
+                exe.display(),
+                spec.reads
+            );
+        }
+        assert!(spec.allow_exec);
+        assert_eq!(
+            spec.net,
+            NetPolicy::OutboundListen,
+            "the loopback RPC bridge needs bind even for a deny-network native"
+        );
+        // launcher + workerd + native guest (3) + default extra (2).
+        assert_eq!(spec.active_processes, Some(5));
+        // The helpers directory itself is never granted, only the two files.
+        assert!(!spec.reads.contains(&helpers.path().to_path_buf()));
     }
 
     #[test]
@@ -897,12 +990,11 @@ entrypoints = ["{entrypoint}"]
 
     #[test]
     fn network_need_maps_to_the_matching_policy() {
-        use crate::manifest::{PluginRuntimeKind, WorkerdRuntimeManifest};
-
         let files = tempfile::tempdir().expect("tempdir");
         let install = tempfile::tempdir().expect("tempdir");
+        let helpers = tempfile::tempdir().expect("tempdir");
         let config = config_at(files.path());
-        // Native: deny / outbound / outbound+oauth → Deny / Outbound / OutboundListen.
+        // Direct native: deny / outbound / outbound+oauth → Deny / Outbound / OutboundListen.
         for (need, expected) in [
             (JailNetworkNeed::None, NetPolicy::Deny),
             (JailNetworkNeed::Outbound, NetPolicy::Outbound),
@@ -911,6 +1003,7 @@ entrypoints = ["{entrypoint}"]
             let plugin = plugin_at(install.path(), "xx", need);
             let spec = build_spec(
                 &plugin,
+                &direct(&plugin),
                 &config,
                 &plugin_data_dir(&config, "xx").unwrap(),
                 &plugin_scratch_dir(&config, "xx").unwrap(),
@@ -923,22 +1016,16 @@ entrypoints = ["{entrypoint}"]
 
         // Workerd needs loopback listen/connect to its Cloudflare child.
         let mut workerd = plugin_at(install.path(), "echo", JailNetworkNeed::None);
-        workerd.manifest.runtime = PluginRuntimeKind::Workerd;
-        workerd.manifest.command = None;
-        workerd.manifest.workerd = Some(WorkerdRuntimeManifest {
-            compatibility_date: "2026-08-01".into(),
-            compatibility_flags: vec![],
-            main_module: "index.js".into(),
-            modules_dir: "modules".into(),
-            entrypoint: "default".into(),
-            limits: Default::default(),
-        });
+        as_workerd_isolate(&mut workerd, Default::default());
+        let workerd_plan = fronted(&workerd, helpers.path());
+        assert_eq!(workerd_plan.runtime, GuestRuntimeKind::Workerd);
         assert_eq!(
             workerd.manifest.jail_network_need(),
             JailNetworkNeed::Listen
         );
         let spec = build_spec(
             &workerd,
+            &workerd_plan,
             &config,
             &plugin_data_dir(&config, "echo").unwrap(),
             &plugin_scratch_dir(&config, "echo").unwrap(),
@@ -968,6 +1055,7 @@ entrypoints = ["{entrypoint}"]
         };
         let denied = build_spec_with_grant(
             &workerd,
+            &workerd_plan,
             &config,
             &plugin_data_dir(&config, "echo").unwrap(),
             &plugin_scratch_dir(&config, "echo").unwrap(),
@@ -978,11 +1066,12 @@ entrypoints = ["{entrypoint}"]
         );
         assert_eq!(denied.net, NetPolicy::OutboundListen);
 
-        // Native OAuth Listen + stored deny grant stays OS-Deny (no workerd
-        // bridge exception).
+        // Direct native OAuth Listen + stored deny grant stays OS-Deny (no
+        // workerd bridge to keep open).
         let native_listen = plugin_at(install.path(), "oauth", JailNetworkNeed::Listen);
         let native_denied = build_spec_with_grant(
             &native_listen,
+            &direct(&native_listen),
             &config,
             &plugin_data_dir(&config, "oauth").unwrap(),
             &plugin_scratch_dir(&config, "oauth").unwrap(),
@@ -1020,6 +1109,7 @@ entrypoints = ["{entrypoint}"]
         let native = plugin_at(install.path(), "native", JailNetworkNeed::None);
         let spec = build_spec(
             &native,
+            &direct(&native),
             &config,
             &plugin_data_dir(&config, "native").unwrap(),
             &plugin_scratch_dir(&config, "native").unwrap(),
@@ -1032,19 +1122,12 @@ entrypoints = ["{entrypoint}"]
         assert_eq!(spec.memory_bytes, Some(256 * 1024 * 1024));
         assert_eq!(spec.cpu_rate_percent, Some(80));
         assert_eq!(spec.active_processes, Some(2));
-    }
 
-    #[test]
-    fn workerd_jail_cpu_uses_host_default_not_cpu_ms_heuristic() {
-        use crate::manifest::{PluginRuntimeKind, WorkerdLimits, WorkerdRuntimeManifest};
-
-        let files = tempfile::tempdir().expect("tempdir");
-        let install = tempfile::tempdir().expect("tempdir");
-        let config = config_at(files.path());
-
-        let native = plugin_at(install.path(), "native", JailNetworkNeed::None);
-        let native_spec = build_spec(
+        // Same ceiling behind the front door keeps the launcher tree: 3 + 1 = 4.
+        let helpers = tempfile::tempdir().expect("tempdir");
+        let fronted_spec = build_spec(
             &native,
+            &fronted(&native, helpers.path()),
             &config,
             &plugin_data_dir(&config, "native").unwrap(),
             &plugin_scratch_dir(&config, "native").unwrap(),
@@ -1052,13 +1135,37 @@ entrypoints = ["{entrypoint}"]
             Enforcement::Required,
             None,
         );
-        // Native: overhead 1 + default extra 2 = 3. Workerd: overhead 2 + extra 2 = 4.
+        assert_eq!(fronted_spec.active_processes, Some(4));
+    }
+
+    #[test]
+    fn workerd_jail_cpu_uses_host_default_not_cpu_ms_heuristic() {
+        use crate::manifest::WorkerdLimits;
+
+        let files = tempfile::tempdir().expect("tempdir");
+        let install = tempfile::tempdir().expect("tempdir");
+        let helpers = tempfile::tempdir().expect("tempdir");
+        let config = config_at(files.path());
+
+        let native = plugin_at(install.path(), "native", JailNetworkNeed::None);
+        let native_spec = build_spec(
+            &native,
+            &direct(&native),
+            &config,
+            &plugin_data_dir(&config, "native").unwrap(),
+            &plugin_scratch_dir(&config, "native").unwrap(),
+            vec![],
+            Enforcement::Required,
+            None,
+        );
+        // Direct native: overhead 1 + default extra 2 = 3. Workerd: overhead 2 + extra 2 = 4.
         assert_eq!(native_spec.memory_bytes, Some(512 * 1024 * 1024));
         assert_eq!(native_spec.active_processes, Some(3));
         assert_eq!(native_spec.cpu_rate_percent, Some(80));
 
         let native_with_grant = build_spec_with_grant(
             &native,
+            &direct(&native),
             &config,
             &plugin_data_dir(&config, "native").unwrap(),
             &plugin_scratch_dir(&config, "native").unwrap(),
@@ -1088,21 +1195,17 @@ entrypoints = ["{entrypoint}"]
         assert_eq!(native_with_grant.active_processes, Some(3));
 
         let mut workerd = plugin_at(install.path(), "echo", JailNetworkNeed::None);
-        workerd.manifest.runtime = PluginRuntimeKind::Workerd;
-        workerd.manifest.command = None;
-        workerd.manifest.workerd = Some(WorkerdRuntimeManifest {
-            compatibility_date: "2026-08-01".into(),
-            compatibility_flags: vec![],
-            main_module: "index.js".into(),
-            modules_dir: "modules".into(),
-            entrypoint: "default".into(),
-            limits: WorkerdLimits {
+        as_workerd_isolate(
+            &mut workerd,
+            WorkerdLimits {
                 cpu_ms: Some(15_000),
                 subrequests: None,
             },
-        });
+        );
+        let workerd_plan = fronted(&workerd, helpers.path());
         let default_spec = build_spec(
             &workerd,
+            &workerd_plan,
             &config,
             &plugin_data_dir(&config, "echo").unwrap(),
             &plugin_scratch_dir(&config, "echo").unwrap(),
@@ -1121,6 +1224,7 @@ entrypoints = ["{entrypoint}"]
         config_ceil.plugins.jail.cpu_rate_percent = Some(25);
         let capped = build_spec(
             &workerd,
+            &workerd_plan,
             &config_ceil,
             &plugin_data_dir(&config_ceil, "echo").unwrap(),
             &plugin_scratch_dir(&config_ceil, "echo").unwrap(),
@@ -1144,6 +1248,7 @@ entrypoints = ["{entrypoint}"]
         config.plugins.jail.cpu_rate_percent = Some(host_max);
         let spec = build_spec_with_grant(
             &native,
+            &direct(&native),
             &config,
             &plugin_data_dir(&config, "native").unwrap(),
             &plugin_scratch_dir(&config, "native").unwrap(),
@@ -1198,6 +1303,7 @@ entrypoints = ["{entrypoint}"]
         let plugin = plugin_at(install.path(), "libro", JailNetworkNeed::Outbound);
         let spec = build_spec(
             &plugin,
+            &direct(&plugin),
             &config,
             &plugin_data_dir(&config, "libro").unwrap(),
             &plugin_scratch_dir(&config, "libro").unwrap(),
@@ -1221,7 +1327,7 @@ entrypoints = ["{entrypoint}"]
         config.plugins.isolation = Isolation::Off;
         let plugin = plugin_at(install.path(), "libro", JailNetworkNeed::Outbound);
 
-        let jail = GuestJail::plan(&config, &plugin).expect("plan");
+        let jail = GuestJail::plan(&config, &plugin, &direct(&plugin)).expect("plan");
         assert!(jail.data.is_dir(), "{}", jail.data.display());
         assert!(jail.scratch.is_dir(), "{}", jail.scratch.display());
         assert!(matches!(jail.start, Start::Unconfined { .. }));
@@ -1237,7 +1343,7 @@ entrypoints = ["{entrypoint}"]
         config.plugins.jail_bin = Some(files.path().join("no-such-launcher"));
         let plugin = plugin_at(install.path(), "libro", JailNetworkNeed::Outbound);
 
-        let err = GuestJail::plan(&config, &plugin).expect_err("must refuse");
+        let err = GuestJail::plan(&config, &plugin, &direct(&plugin)).expect_err("must refuse");
         assert!(err.to_string().contains("refusing to run"), "got: {err}");
     }
 
@@ -1250,7 +1356,7 @@ entrypoints = ["{entrypoint}"]
         config.plugins.jail_bin = Some(files.path().join("no-such-launcher"));
         let plugin = plugin_at(install.path(), "libro", JailNetworkNeed::Outbound);
 
-        let jail = GuestJail::plan(&config, &plugin).expect("plan");
+        let jail = GuestJail::plan(&config, &plugin, &direct(&plugin)).expect("plan");
         match jail.start {
             Start::Unconfined { reason } => {
                 assert!(reason.contains("not a file"), "got: {reason}")
@@ -1298,7 +1404,7 @@ entrypoints = ["{entrypoint}"]
             .expect("set_len");
         drop(file);
 
-        let err = GuestJail::plan(&config, &plugin).expect_err("must refuse");
+        let err = GuestJail::plan(&config, &plugin, &direct(&plugin)).expect_err("must refuse");
         assert!(err.to_string().contains("state directory"), "got: {err}");
     }
 }

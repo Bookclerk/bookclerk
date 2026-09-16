@@ -1,7 +1,7 @@
 //! Serde helpers projecting Cap'n Proto `Data` fields as base64 text in JSON.
 //!
 //! The typed ABI travels as Cap'n Proto; JSON projections exist only for
-//! transport-private bridges (workerd HTTP bridge, native broker), operator
+//! transport-private bridges (the workerd HTTP bridge), operator
 //! diagnostics, and tests. Bytes serialize as standard base64 (padded) and
 //! deserialize from either base64 text or a JSON number array, so hand-written
 //! fixtures stay readable.

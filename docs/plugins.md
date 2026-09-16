@@ -34,9 +34,10 @@ exported class with the matching name extending its base (`Storefront`,
 implement Rust `PluginWorker` (`describe` / `open(invocation, bindings) ->
 Entrypoints`) and call `serve`. The trusted adapter isolate installs the
 granted bindings on `env` per invocation (`CONFIG`, `SECRETS`, `EVENTS`,
-`WORK_FS`, named databases) and never exposes `PLUGIN_BACKEND`, HTTP
-endpoints, PIDs, credentials, or Cap'n Proto to authors. `PLUGIN_BACKEND`
-may exist as private workerd config only. Byte `Source` is the job input
+`WORK_FS`, named databases) and never exposes HTTP endpoints, PIDs,
+credentials, or Cap'n Proto to authors. Native guests behind workerd are
+reached as typed Cap'n Proto by the launcher, never through an isolate
+binding. Byte `Source` is the job input
 opener; storefronts are the separately named `storefront` entrypoint. JSON is
 allowed only for plugin-specific extensible config (`schemaVersion` +
 `mediaType`/`schemaId` + bounded payload).
@@ -216,10 +217,23 @@ choice made by whoever installs the plugin, not by whoever shipped the binary.
 ## The guest jail
 
 Every external guest is started by **`bookclerk-jail`**, a small launcher that
-applies a confinement policy to itself and then `exec`s the plugin process
-(native binary **or** `bookclerk-workerd`). What it grants is decided entirely
-by the host. Workerd is not a substitute for the jail — one jail + one isolate
-per plugin.
+applies a confinement policy to itself and then `exec`s **`bookclerk-workerd`**
+— the front door for every plugin. For `runtime = "workerd"` it loads the
+author's isolate; for `runtime = "native"` it spawns the native Cap'n Proto
+guest itself (`BOOKCLERK_NATIVE_BACKEND`) and forwards every entrypoint family
+typed while the isolate stays the control plane. `runtime` only selects the
+backend behind the isolate. What the jail grants is decided entirely by the
+host, and the whole launcher tree (`bookclerk-workerd`, the pinned `workerd`,
+the native backend) runs inside the one jail. Workerd is not a substitute for
+the jail — one jail + one isolate per plugin.
+
+Direct host↔native Cap'n Proto (no `bookclerk-workerd` in between) exists only
+as `SpawnTransport::DirectNativeDiagnostic` on `SessionServices`, used by jail
+probe tests and the transport latency benchmark; `bookclerkd` and `bookclerk`
+never select it. A missing `bookclerk-workerd` or pinned `workerd` is a hard
+spawn error in **every** isolation mode (`refusing to start plugin … the
+bookclerk-workerd front door … is unavailable`); nothing falls back to direct
+native.
 
 A guest gets four paths and nothing else:
 
@@ -408,13 +422,20 @@ isolation = "required"  # required | best-effort | off
 # jail_bin = "/usr/local/bin/bookclerk-jail"
 ```
 
-Environment overrides: `BOOKCLERK_PLUGIN_ISOLATION`, `BOOKCLERK_PLUGIN_JAIL`.
+Environment overrides: `BOOKCLERK_PLUGIN_ISOLATION`, `BOOKCLERK_PLUGIN_JAIL`,
+`BOOKCLERK_PLUGIN_WORKERD` (path to `bookclerk-workerd`), `BOOKCLERK_WORKERD_BIN`
+(path to the pinned `workerd`).
 
 - **`required`** (default) — a plugin that cannot be jailed is not loaded. The
   error names the reason and the plugin is skipped; the rest of the host runs.
 - **`best-effort`** — start the guest unconfined when the platform or the
   installation cannot support a jail, with a warning that says so per plugin.
 - **`off`** — no jail. Development only.
+
+Isolation is only about the **OS jail**. The `bookclerk-workerd` front door is
+required in all three modes: `best-effort` and `off` still spawn every guest
+through `bookclerk-workerd`, and a missing launcher or `workerd` binary is a
+hard spawn error rather than a fallback to direct native.
 
 The same three modes as `[media].isolation`, and the same reasoning: the tiers
 differ in what they reach for, not in how a missing jail is handled. Confirm
@@ -603,9 +624,9 @@ covers the current manifest).
 | `config.toml` (`[sources.<id>]` / `[integrations.<id>]`) | **User settings** — `enabled`, opaque knobs |
 
 The plugin (or its installer) drops a directory under a search root. Bookclerk
-scans for `plugin.toml`, spawns the native `command` or `bookclerk-workerd`, and
-passes the matching main-config table in the spawn config. Users never put `command`
-in `config.toml`.
+scans for `plugin.toml`, spawns `bookclerk-workerd` (fronting the native
+`command` or loading the isolate), and passes the matching main-config table in
+the spawn config. Users never put `command` in `config.toml`.
 
 ## Layout
 
@@ -889,8 +910,18 @@ resolves each `Entrypoints` capability to the matching exported class through
 its `PLUGIN_<ENTRYPOINT>` service binding and merges `Bindings` (`config`,
 `secrets`, `events`, `databases`, `storage`) onto the author's `env` before
 every call. Authors never subclass bare `WorkerEntrypoint`; adapter-private
-`GRANTED` / `BRIDGE_TOKEN` / `PLUGIN_BACKEND` live only on the wrapper
+`GRANTED` / `BRIDGE_TOKEN` / `PLUGIN_DESCRIBE` live only on the wrapper
 (`AdapterEnv`).
+
+Between the launcher and the adapter isolate every ABI method call is one
+`POST /invoke` whose body is the `<Interface>.<method>$Params` struct as Cap'n
+Proto bytes and whose reply is the `$Results` struct — the launcher reuses the
+host's typed Cap'n clients over an HTTP hook, and the isolate decodes with the
+generated `generated-wire.ts` codecs. Only the control handshake
+(`describe` / `open` / `shutdown`) is JSON, and object bodies stream over
+dedicated routes; `JobController` capabilities travel as grant-token
+descriptors the isolate redeems on `GRANTED`. Maintainer reference:
+[`workerd-bridge.md`](workerd-bridge.md).
 
 `event(batch)` mirrors Workers `queue(batch)`: each `EventMessage` records one
 outcome — `ack()`, `retry({ retryAt | delaySeconds, reason })`, `reject(reason)`,
@@ -919,11 +950,17 @@ invocation. Media flows through those streams. Progress, checkpoints,
 completion, retry class, and cancellation stay job state — not chunk messages.
 
 Workerd is the **control-plane** front door (invocation / policy / binding /
-lifecycle / outcome). Isolate vs native-jail vs future container are backends
-behind `PLUGIN_BACKEND`. Large streams may take a broker → destination **media
-fast path** without entering JavaScript; Cap'n Proto remains the broker↔native
-protocol. Direct native Cap'n Proto is host-selected fallback, not
-plugin-selectable policy bypass. The OS jail is still required.
+lifecycle / outcome) for **every** plugin: the host spawns `bookclerk-workerd`
+and nothing else. Isolate vs native-jail vs future container are backends the
+launcher selects from `runtime`. For a native guest the launcher speaks typed
+Cap'n Proto to it directly and forwards every `Entrypoints` family (event
+consumer, job runner, storefront, storage, database adapter, remote library,
+CLI, OIDC) without entering JavaScript; the adapter isolate only decides
+`describe` (merged against `PLUGIN_DESCRIBE`) and `open` policy (`POST /open`
+→ `openInvocation`) and receives `shutdown`. Direct host↔native Cap'n Proto is
+not a product path: it exists only as `SpawnTransport::DirectNativeDiagnostic`
+for tests and diagnostics, and a missing `bookclerk-workerd` / `workerd` is a
+hard spawn error in every isolation mode. The OS jail is still required.
 
 List pagination is **opaque and bounded**. Missing/stale cursors return
 `invalid_cursor` (never silently restart at page one). Concurrent mutation is
@@ -943,7 +980,8 @@ zero/unsafe limits.
 | Runtime | Wire |
 | --- | --- |
 | **workerd** | Isolate keeps `RpcTarget` stubs; `bookclerk-workerd` serves Bookclerk Cap'n Proto on stdio and talks HTTP/JSRPC to the isolate with streamed bodies (`capnpConnectHost = "plugin"` on the rpc socket) |
-| **native** | Guest SDK `serve` serves `schema/plugin.capnp` (`capnp-rpc`) with windowed byte streams |
+| **native** (behind workerd) | Guest SDK `serve` serves `schema/plugin.capnp` (`capnp-rpc`) with windowed byte streams on its stdio; `bookclerk-workerd` owns that stdio, forwards every entrypoint family typed, and serves the host on its own stdio. `ExecutorIdentity.runtime_backend = "native-behind-workerd"` |
+| **native** (direct, diagnostic) | Same guest wire, host connected to the guest's stdio with no launcher in between. `SpawnTransport::DirectNativeDiagnostic` only (`runtime_backend = "native-direct"`) |
 
 FD passing / `localPath` remain native-only optimizations behind the stream
 adapter, never author-facing. Describe rejects unsupported versions.
@@ -1299,11 +1337,14 @@ edit the journal.
 
 Delivery: `PluginWorker.open` receives the bindings as the append-only
 `Bindings.databases :List(NamedDatabase)` field. Rust guests call
-`DatabaseBinding::take_named_from_bindings(&mut bindings, "DB")`; workerd guests
-get one grant token per binding on the invocation envelope — the TS SDK
-exposes `context.databases.get("DB")` and the Python SDK
-`context.databases["DB"]`, each a full `prepare`/`bind`/`run`/`all`/`first`/
-`raw`/`batch` `DatabaseBinding`.
+`DatabaseBinding::take_named_from_bindings(&mut bindings, "DB")`. For workerd
+guests the launcher mints one database-only grant token per binding at `open`
+and carries it in the bridge context (`databases: { DB: <token> }`); the
+trusted adapter isolate turns each token into a granted-channel transport over
+`POST /db/execute` and installs the resulting `env.DB` — a full
+`prepare`/`bind`/`run`/`all`/`first`/`raw`/`batch` `DatabaseBinding` — on the
+author's `env` for every call of that `open` (events, storefront, jobs, …).
+Authors never see the token.
 
 ## Examples
 

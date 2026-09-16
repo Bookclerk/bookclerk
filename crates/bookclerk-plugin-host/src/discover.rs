@@ -180,43 +180,10 @@ fn resolve_spawn_command(root: &Path, manifest: &PluginManifest) -> Result<PathB
             })?;
             resolve_command(root, command)
         }
-        PluginRuntimeKind::Workerd => resolve_workerd_runtime(),
+        // Discovery only records where the launcher is; the pinned `workerd`
+        // beside it is checked when the spawn plan resolves.
+        PluginRuntimeKind::Workerd => crate::spawn_plan::locate_launcher(),
     }
-}
-
-/// Finds `bookclerk-workerd` beside the host executable or on `PATH`.
-pub(crate) fn resolve_workerd_runtime() -> Result<PathBuf> {
-    const NAME: &str = if cfg!(windows) {
-        "bookclerk-workerd.exe"
-    } else {
-        "bookclerk-workerd"
-    };
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(NAME);
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    if let Ok(path) = which_in_path(NAME) {
-        return Ok(path);
-    }
-    Err(PluginError::message(format!(
-        "bookclerk-workerd not found beside the host binary or on PATH ({NAME})"
-    )))
-}
-
-/// Returns the first `PATH` entry that contains an executable named `name`.
-fn which_in_path(name: &str) -> std::result::Result<PathBuf, ()> {
-    let path = std::env::var_os("PATH").ok_or(())?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-    Err(())
 }
 
 /// Treats relative `command` as rooted at the plugin install directory.

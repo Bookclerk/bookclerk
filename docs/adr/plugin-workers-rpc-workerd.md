@@ -27,20 +27,22 @@ contract must be **identical** across runtimes.
    - **Control plane:** invocation, policy, binding, lifecycle, and outcome
      always pass through the workerd entrypoint (or a generated backend-proxy
      entrypoint the first-party wrapper owns).
-   - **Media fast path:** large `ByteSource` streams may be realized by a
-     trusted broker **directly to the destination** without entering JavaScript
-     memory. Observable backpressure, cancellation, checksum, and error
-     semantics stay identical to the isolate path.
-   - **Cap'n Proto** is the broker↔native protocol. Direct native Cap'n Proto
-     to the host is a **host-selected** compatibility fallback — the plugin
-     cannot request it to bypass policy.
+   - **Typed passthrough:** for a native guest the `bookclerk-workerd`
+     launcher forwards every `Entrypoints` family to the guest as typed Cap'n
+     Proto **without entering JavaScript** memory. Observable backpressure,
+     cancellation, checksum, and error semantics stay identical to the isolate
+     path.
+   - **Cap'n Proto** is the launcher↔native protocol. Direct native Cap'n
+     Proto to the host is a **host-selected** compatibility fallback — the
+     plugin cannot request it to bypass policy.
    - **Bindings:** authors see frozen `BookclerkContext.bindings` (`HTTP` /
      `STORAGE` / `SECRETS` / `OAUTH`) and optional `ctx.native`. The trusted
-     adapter sees private `AdapterEnv.PLUGIN_BACKEND`. Do **not** freeze
-     `env.NATIVE_PLUGIN`. The host executor owns the process tree and outer
-     sandbox; it launches workerd and the trusted native broker. The broker
-     launches or connects to the verified native guest. Plugin-controlled
-     input cannot choose the executable or weaken the sandbox.
+     adapter sees private `AdapterEnv.PLUGIN_DESCRIBE` (the manifest
+     projection) and answers `describe` / `open` policy for native guests. Do
+     **not** freeze `env.NATIVE_PLUGIN`. The host executor owns the process
+     tree and outer sandbox; it launches workerd and the launcher, which
+     launches the verified native guest. Plugin-controlled input cannot choose
+     the executable or weaken the sandbox.
    - **Native:** guests serve [`plugin.capnp`](../../crates/bookclerk-plugin-abi/schema/plugin.capnp)
      via `capnp-rpc` (`serve`). They do **not** speak newline JSON as the
      product ABI. Native DRM plugins do not implement Cloudflare’s private
@@ -128,10 +130,18 @@ Every guest is an **external** (jailed) subprocess, including platform sqlite/lo
 
 ## Follow-ups (deferred)
 
-Production native-behind-workerd executor, deny-direct-native-egress / HTTP
-proxy, OAuth/listen broker, container executor, and VPS benchmarks are
-**out of this ABI freeze**. Direct native Cap'n Proto stays as a host-selected
-fallback.
+The native-behind-workerd executor is now the production path: the host spawns
+every plugin through `bookclerk-workerd` (`SpawnPlan` in
+`bookclerk-plugin-host`), `runtime = "native"` only selects the backend behind
+the isolate, and a missing `bookclerk-workerd` / pinned `workerd` is a hard
+spawn error in every `[plugins].isolation` mode. Direct host↔native Cap'n
+Proto survives only as `SpawnTransport::DirectNativeDiagnostic` for tests and
+diagnostics; no product binary selects it.
+
+Still deferred: deny-direct-native-egress / HTTP proxy (a native backend behind
+the front door shares the launcher's `OutboundListen` jail, so a deny-network
+native manifest is no longer OS-denied `connect`), OAuth/listen broker,
+container executor, and VPS benchmarks.
 
 Instances are keyed by `(plugin_id, account_id)`. Shared-isolate concurrent
 principals are not a proven isolation boundary (stubs are transferable).

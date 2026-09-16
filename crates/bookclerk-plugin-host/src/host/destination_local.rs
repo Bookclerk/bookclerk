@@ -1,8 +1,9 @@
 //! [`StorageBackend`] adapter over the local filesystem output plugin process.
 //!
-//! Local output speaks Cap'n Proto `api_version = 3` only. When
-//! `bookclerk-workerd` is available the host wraps the native guest
-//! (native-behind-workerd); otherwise it falls back to direct Cap'n Proto.
+//! Local output speaks Cap'n Proto `api_version = 3` only, spawned through the
+//! same [`PluginSession`] front door as every other guest (`bookclerk-workerd`
+//! fronting the native backend). There is no direct-native or in-process
+//! fallback: a guest that cannot start is a load error.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,18 +30,23 @@ fn resolved_local_output_root(config: &Config) -> PathBuf {
     }
 }
 
-/// Spawns the local output guest when enabled; logs and falls back in-process on failure.
+/// Spawns the local output guest when enabled and records it in `registry`.
+///
+/// # Errors
+///
+/// Returns the spawn / `open` error when the guest cannot start; the caller
+/// decides whether the host may run without local output.
 pub(crate) async fn try_load_local(
     plugin: &DiscoveredPlugin,
     config: &Config,
     registry: &mut super::destination::DestinationRegistry,
-) {
+) -> PluginResult<()> {
     if plugin.manifest.id != LOCAL_PLUGIN_ID {
-        return;
+        return Ok(());
     }
     if !config.output.local.enabled {
         tracing::debug!(id = %plugin.manifest.id, "local output disabled in config; skipping external plugin");
-        return;
+        return Ok(());
     }
     if plugin.manifest.api_version != PRODUCT_API_VERSION {
         tracing::warn!(
@@ -48,26 +54,17 @@ pub(crate) async fn try_load_local(
             api_version = plugin.manifest.api_version,
             "local output plugin is not api_version 2; skipping"
         );
-        return;
+        return Ok(());
     }
-    match spawn_local_guest(plugin, config).await {
-        Ok((storage, session)) => {
-            tracing::info!(
-                id = %plugin.manifest.id,
-                path = %plugin.command.display(),
-                "loaded external local output plugin (api_version 2)"
-            );
-            registry.set_local(Arc::new(storage));
-            registry.set_plugin_session(session);
-        }
-        Err(err) => {
-            tracing::warn!(
-                id = %plugin.manifest.id,
-                %err,
-                "failed to start local output plugin guest; falling back to in-process backend"
-            );
-        }
-    }
+    let (storage, session) = spawn_local_guest(plugin, config).await?;
+    tracing::info!(
+        id = %plugin.manifest.id,
+        path = %plugin.command.display(),
+        "loaded external local output plugin (api_version 2)"
+    );
+    registry.set_local(Arc::new(storage));
+    registry.set_plugin_session(session);
+    Ok(())
 }
 
 /// Spawns the local destination as an external Cap'n Proto guest.
@@ -83,37 +80,16 @@ async fn spawn_local_guest(
         "BOOKCLERK_OUTPUT_LOCAL_ROOT",
         std::ffi::OsString::from(root.as_os_str()),
     )];
-    let session = match crate::discover::resolve_workerd_runtime() {
-        Ok(workerd) => {
-            let mut wrapped = plugin.clone();
-            wrapped.command = workerd;
-            wrapped.manifest.runtime = crate::PluginRuntimeKind::Workerd;
-            let mut env = extra_env.to_vec();
-            env.push((
-                "BOOKCLERK_NATIVE_BACKEND",
-                std::ffi::OsString::from(plugin.command.as_os_str()),
-            ));
-            PluginSession::spawn_for_account_with_env(
-                &wrapped,
-                config,
-                config_json.clone(),
-                crate::OPERATOR_ACCOUNT,
-                &env,
-            )
-            .await
-        }
-        Err(_) => {
-            PluginSession::spawn_for_account_with_env(
-                plugin,
-                config,
-                config_json,
-                crate::OPERATOR_ACCOUNT,
-                &extra_env,
-            )
-            .await
-        }
-    }?;
-    let session = Arc::new(session);
+    let session = Arc::new(
+        PluginSession::spawn_for_account_with_env(
+            plugin,
+            config,
+            config_json,
+            crate::OPERATOR_ACCOUNT,
+            &extra_env,
+        )
+        .await?,
+    );
     let ctx = OutputLocalContextDto {
         plugin_data_dir: String::new(),
         root: String::new(),

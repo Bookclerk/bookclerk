@@ -269,6 +269,9 @@ jobs:
           cd packages/plugin-sdk
           npm ci
           npm run build
+          # The isolate embed is bundled from src/ by `npm run build`; a stale
+          # committed bundle (or mirror) is drift.
+          git diff --exit-code -- embed/bookclerk_plugin.js
           npm run lint
           npm run test:tools
           npm run test:db-value
@@ -686,9 +689,15 @@ jobs:
         env:
           BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
           BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
+          BOOKCLERK_WORKERD_BIN: ${{ github.workspace }}/target/debug/workerd
         run: |
           set -euo pipefail
-          cargo build -p bookclerk-plugin-database-postgres
+          # Production spawn always goes through bookclerk-workerd; the guest
+          # binary alone is not enough after the mandatory front-door change
+          # (mirrors the main Test job's PATH / BOOKCLERK_WORKERD_BIN setup).
+          cargo build -p bookclerk-plugin-database-postgres -p bookclerk-workerd
+          cargo ensure-workerd
+          export PATH="${{ github.workspace }}/target/debug:$PATH"
           cargo test -p bookclerk-plugin-host --lib production_rpc_proxy_keeps_like_through_postgres_guest -- --ignored --nocapture
 
   ci-gate:

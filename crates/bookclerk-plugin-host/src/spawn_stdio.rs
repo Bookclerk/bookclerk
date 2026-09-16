@@ -13,7 +13,7 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use crate::consent::{inject_workerd_grant_env, spawn_config_for_grant, spawn_grant, PluginGrant};
 use crate::discover::DiscoveredPlugin;
 use crate::jail::{GuestJail, Start};
-use crate::manifest::PluginRuntimeKind;
+use crate::spawn_plan::{SpawnPlan, NATIVE_BACKEND_ENV, WORKERD_BIN_ENV};
 use crate::{PluginError, Result};
 
 /// Jailed plugin child with stdio pipes (describe not yet called).
@@ -44,12 +44,16 @@ pub(crate) struct SpawnedStdio {
 
 /// Spawns the jailed guest with piped stdio. Caller performs Cap'n Proto connect.
 ///
+/// `plan` names the program the jail execs (`bookclerk-workerd` on the product
+/// path) and, for a native backend, the executable the launcher must front.
+///
 /// # Errors
 ///
 /// Fails when no covering grant exists, the jail cannot be applied, or the
 /// process cannot be started.
 pub(crate) async fn spawn_stdio_guest(
     plugin: &DiscoveredPlugin,
+    plan: &SpawnPlan,
     config: &Config,
     config_table: Value,
     extra_env: &[(&str, std::ffi::OsString)],
@@ -57,32 +61,31 @@ pub(crate) async fn spawn_stdio_guest(
     let id = plugin.manifest.id.clone();
     let grant = spawn_grant(&config.paths().files_dir, &plugin.manifest)?;
     let spawn_config = spawn_config_for_grant(&grant, config_table);
-    let jail = GuestJail::plan(config, plugin)?;
+    let jail = GuestJail::plan(config, plugin, plan)?;
 
     let mut cmd = match &jail.start {
         Start::Confined { launcher, .. } => {
             tracing::debug!(
                 plugin = %id,
                 launcher = %launcher.display(),
+                program = %plan.launcher.display(),
+                runtime = plan.runtime.label(),
                 "starting plugin guest under a jail"
             );
             let mut cmd = Command::new(launcher);
-            cmd.arg("--")
-                .arg(&plugin.command)
-                .args(&plugin.manifest.args);
-            cmd.env("BOOKCLERK_PLUGIN_ROOT", &plugin.root);
-            cmd.env("BOOKCLERK_PLUGIN_TOML", plugin.root.join("plugin.toml"));
+            cmd.arg("--").arg(&plan.launcher).args(&plan.args);
             cmd
         }
         Start::Unconfined { reason } => {
             tracing::warn!(
                 plugin = %id,
                 %reason,
+                runtime = plan.runtime.label(),
                 "starting plugin guest WITHOUT a jail; it can reach everything \
                  this user can"
             );
-            let mut cmd = Command::new(&plugin.command);
-            cmd.args(&plugin.manifest.args);
+            let mut cmd = Command::new(&plan.launcher);
+            cmd.args(&plan.args);
             cmd
         }
     };
@@ -99,8 +102,19 @@ pub(crate) async fn spawn_stdio_guest(
         }
     }
     cmd.env("BOOKCLERK_PLUGIN_ID", &id);
-    if plugin.manifest.runtime == PluginRuntimeKind::Workerd {
+    // `bookclerk-workerd` reads the manifest from here (falling back to cwd).
+    cmd.env("BOOKCLERK_PLUGIN_ROOT", &plugin.root);
+    cmd.env("BOOKCLERK_PLUGIN_TOML", plugin.root.join("plugin.toml"));
+    if plan.fronted_by_workerd() {
         inject_workerd_grant_env(&mut cmd, &grant);
+        if let Some(backend) = &plan.native_backend {
+            cmd.env(NATIVE_BACKEND_ENV, backend);
+        }
+        // The launcher resolves `workerd` beside itself unless told otherwise;
+        // the jail already grants whichever the plan resolved.
+        if let Some(workerd_bin) = &plan.workerd_bin {
+            cmd.env(WORKERD_BIN_ENV, workerd_bin);
+        }
     }
     for key in ["TMPDIR", "TEMP", "TMP"] {
         cmd.env(key, &jail.scratch);

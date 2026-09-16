@@ -1,20 +1,29 @@
 /**
  * Bookclerk bridge worker — HTTP ↔ Workers RPC service binding.
  *
- * Role routes (`/describe`, `/destination/*`, `/contentSource/<op>`,
- * `/integration/<op>`, `/worker/handle`, …): one invocation envelope per HTTP
- * request. `env.PLUGIN` is the trusted adapter isolate, which maps each route
- * onto the author's v3 entrypoints (`invokeEntrypoint`, `invokeEvent`,
- * `invokeHandle`, …). No role stubs or dest-id tables are retained across
- * requests.
+ * `env.PLUGIN` is the trusted adapter isolate; this worker only turns
+ * loopback HTTP from `bookclerk-workerd` into one adapter call per request
+ * and retains nothing across requests. Three route families
+ * (see `docs/workerd-bridge.md`):
  *
- * Envelopes are the camelCase JSON projection of the typed Cap'n Proto ABI
- * structs (`PluginDescribe`, `CliSchema`, `LoginParams`, …) with `Data`
- * fields as base64 text; `fromBridgeJson` / `toBridgeJson` convert them to
- * and from Workers RPC values. This transport is private to bookclerk-workerd.
+ * - Control plane, JSON: `GET /health`, `POST /describe` (optional
+ *   `{ native }` body merged against `PLUGIN_DESCRIBE`), `POST /open`
+ *   (`{ context, entrypoints }` → the authorized subset), `POST /shutdown`.
+ *   Shared with native-behind-workerd, where only policy passes through here.
+ * - Data plane, Cap'n Proto bytes: `POST /invoke` — every entrypoint method
+ *   and `PluginWorker.databaseMigrations`. Interface, method, bridge-JSON
+ *   context, capability descriptors, and target object id ride in
+ *   `X-Bookclerk-*` headers; the body is the `$Params` struct and the `200`
+ *   reply body the `$Results` struct (`X-Bookclerk-Caps` lists exported
+ *   capabilities). ABI failures stay inside the reply union; non-200 answers
+ *   are transport failures (`{ "error": { "code", "message" } }`).
+ * - Streams, HTTP bodies: `GET /destination/get`, `PUT /destination/put`,
+ *   `GET /source/open` — object bytes never enter a Cap'n message.
  *
- * All role-route and `/health` requests require `Authorization: Bearer`
- * matching the per-isolate `BRIDGE_TOKEN` binding.
+ * Control-plane envelopes are the camelCase JSON projection of the typed ABI
+ * structs with `Data` fields as base64 text; `fromBridgeJson` / `toBridgeJson`
+ * convert them to and from Workers RPC values. Every request requires
+ * `Authorization: Bearer` matching the per-isolate `BRIDGE_TOKEN` binding.
  */
 
 function timingSafeEqual(a, b) {
@@ -64,88 +73,6 @@ function catchErr(err) {
   return { code, message };
 }
 
-const MAX_LIST_PAGE = 256;
-const MAX_PLUGIN_MIGRATION_OPS = 256;
-const MAX_PLUGIN_MIGRATION_TOTAL_OPS = 2048;
-const MAX_SCALAR_BYTES = 262144;
-const MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES = 262144;
-
-function utf8Bytes(value) {
-  return new TextEncoder().encode(String(value ?? "")).byteLength;
-}
-
-function migrationOpSql(op) {
-  if (op && typeof op === "object") {
-    if (typeof op.schema === "string") return op.schema;
-    if (typeof op.data === "string") return op.data;
-  }
-  return "";
-}
-
-function requirePluginMigrationRegistration(migrations) {
-  const list = Array.isArray(migrations) ? migrations : [];
-  if (list.length > MAX_LIST_PAGE) {
-    const err = new Error(
-      `plugin migration count ${list.length} exceeds maxListPage (${MAX_LIST_PAGE})`,
-    );
-    err.code = "payload_too_large";
-    err.wireCode = "payload_too_large";
-    throw err;
-  }
-  let total = 0;
-  let totalOps = 0;
-  for (const migration of list) {
-    const ops = Array.isArray(migration?.operations) ? migration.operations : [];
-    if (ops.length > MAX_PLUGIN_MIGRATION_OPS) {
-      const err = new Error(
-        `plugin migration \`${migration?.id}\` has ${ops.length} operations; exceeds maxPluginMigrationOps (${MAX_PLUGIN_MIGRATION_OPS})`,
-      );
-      err.code = "payload_too_large";
-      err.wireCode = "payload_too_large";
-      throw err;
-    }
-    totalOps += ops.length;
-    if (totalOps > MAX_PLUGIN_MIGRATION_TOTAL_OPS) {
-      const err = new Error(
-        `plugin migration registration has ${totalOps} operations; exceeds maxPluginMigrationTotalOps (${MAX_PLUGIN_MIGRATION_TOTAL_OPS})`,
-      );
-      err.code = "payload_too_large";
-      err.wireCode = "payload_too_large";
-      throw err;
-    }
-    total += utf8Bytes(migration?.id);
-    if (total > MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES) {
-      const err = new Error(
-        `plugin migration registration is ${total} bytes; exceeds maxPluginMigrationRegistrationBytes (${MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES})`,
-      );
-      err.code = "payload_too_large";
-      err.wireCode = "payload_too_large";
-      throw err;
-    }
-    for (const op of ops) {
-      const n = utf8Bytes(migrationOpSql(op));
-      if (n > MAX_SCALAR_BYTES) {
-        const err = new Error(
-          `plugin migration \`${migration?.id}\` SQL is ${n} bytes; exceeds maxScalarBytes (${MAX_SCALAR_BYTES})`,
-        );
-        err.code = "payload_too_large";
-        err.wireCode = "payload_too_large";
-        throw err;
-      }
-      total += n;
-      if (total > MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES) {
-        const err = new Error(
-          `plugin migration registration is ${total} bytes; exceeds maxPluginMigrationRegistrationBytes (${MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES})`,
-        );
-        err.code = "payload_too_large";
-        err.wireCode = "payload_too_large";
-        throw err;
-      }
-    }
-  }
-  return list;
-}
-
 function metaHeaders(meta) {
   const headers = {
     "x-bookclerk-key": meta?.key || "",
@@ -174,12 +101,12 @@ function adapterMethod(plugin, name) {
   return (...args) => plugin[name](...args);
 }
 
-/** `storage` entrypoint call through the adapter (`invokeDestination`). */
+/** `storage` stream call through the adapter (`invokeDestination`: `get` / `put`). */
 function invokeDest(plugin, op, ctx, args, body) {
   return adapterMethod(plugin, "invokeDestination")(op, ctx, args, body);
 }
 
-/** `storage.get` through the adapter for the legacy `/source/open` route. */
+/** `storage.get` through the adapter for the `/source/open` route. */
 function invokeSourceOpen(plugin, ctx, key) {
   return adapterMethod(plugin, "invokeSourceOpen")(ctx, key);
 }
@@ -240,9 +167,9 @@ function bridgeJson(value) {
 }
 
 /**
- * Typed factory context (`DestinationContext` / `SourceContext` /
- * `WorkerContext` / `IntegrationContext` / `ContentSourceContext`) from the
- * `x-bookclerk-context` header or the `context` body field.
+ * Bridge-JSON context (`BridgeContext`: `invocation`, `config`, `secrets`,
+ * `eventsToken`) from the `x-bookclerk-context` header or the `context`
+ * body field, decoded to Workers RPC values.
  */
 function contextFrom(request, body) {
   const header = request.headers.get("x-bookclerk-context");
@@ -259,15 +186,79 @@ function contextFrom(request, body) {
   return {};
 }
 
-async function handleRoleInvoke(request, env, url) {
+/** Header value, or `null` when absent / empty. */
+function headerOrNull(request, name) {
+  const value = request.headers.get(name);
+  return value === null || value === "" ? null : value;
+}
+
+/**
+ * `POST /invoke`: one ABI method call as Cap'n Proto bytes. The adapter
+ * decodes the header strings itself (`invoke(iface, method, contextJson,
+ * capsJson, target, body)`) and answers either `{ body, caps }` or a plain
+ * `{ status, error }` transport failure — a value rather than a thrown error,
+ * because Workers RPC drops own properties such as `status` from exceptions.
+ */
+async function handleInvoke(request, plugin) {
+  let reply;
+  try {
+    const iface = request.headers.get("x-bookclerk-interface") || "";
+    const method = request.headers.get("x-bookclerk-method") || "";
+    const context = headerOrNull(request, "x-bookclerk-context");
+    const caps = headerOrNull(request, "x-bookclerk-caps");
+    const target = headerOrNull(request, "x-bookclerk-target");
+    const body = new Uint8Array(await request.arrayBuffer());
+    reply = await adapterMethod(plugin, "invoke")(iface, method, context, caps, target, body);
+  } catch (err) {
+    const { code, message } = catchErr(err);
+    const status = Number(err && typeof err === "object" ? err.status : 0) || 500;
+    return errJson(null, code, message, status);
+  }
+  if (!reply || typeof reply !== "object") {
+    return errJson(null, "internal", "adapter invoke returned no reply", 500);
+  }
+  if (reply.error) {
+    const status = Number(reply.status) || 500;
+    const code = typeof reply.error.code === "string" ? reply.error.code : "internal";
+    const message = typeof reply.error.message === "string" ? reply.error.message : "";
+    return errJson(null, code, message, status);
+  }
+  const bytes =
+    reply.body instanceof Uint8Array
+      ? reply.body
+      : reply.body instanceof ArrayBuffer
+        ? new Uint8Array(reply.body)
+        : null;
+  if (!bytes) {
+    return errJson(null, "internal", "adapter invoke returned no message bytes", 500);
+  }
+  return new Response(bytes, {
+    status: 200,
+    headers: {
+      "content-type": "application/x-capnp",
+      "x-bookclerk-caps": JSON.stringify(Array.isArray(reply.caps) ? reply.caps : []),
+    },
+  });
+}
+
+async function handleRoute(request, env, url) {
   const plugin = env.PLUGIN;
   if (!plugin) {
     return errJson(null, "unavailable", "PLUGIN binding missing", 500);
   }
 
+  if (request.method === "POST" && url.pathname === "/invoke") {
+    return handleInvoke(request, plugin);
+  }
+
   if (request.method === "POST" && url.pathname === "/describe") {
     try {
-      const result = await plugin.describe();
+      const body = await request.json().catch(() => ({}));
+      const native =
+        body && typeof body === "object" && body.native && typeof body.native === "object"
+          ? fromBridgeJson(body.native)
+          : undefined;
+      const result = native === undefined ? await plugin.describe() : await plugin.describe(native);
       return bridgeJson(result);
     } catch (err) {
       const { code, message } = catchErr(err);
@@ -275,25 +266,27 @@ async function handleRoleInvoke(request, env, url) {
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/destination/head") {
+  if (request.method === "POST" && url.pathname === "/open") {
     try {
       const body = await request.json();
       const ctx = contextFrom(request, body);
-      const meta = await invokeDest(plugin, "head", ctx, { key: body.key || "" });
-      return bridgeJson({ found: meta != null, meta: meta ?? null });
+      const requested = Array.isArray(body.entrypoints)
+        ? body.entrypoints.filter((name) => typeof name === "string")
+        : [];
+      const allowed = await adapterMethod(plugin, "openInvocation")(ctx, requested);
+      return Response.json({ entrypoints: Array.isArray(allowed) ? allowed : [] });
     } catch (err) {
       const { code, message } = catchErr(err);
       return errJson(null, code, message);
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/destination/list") {
+  if (request.method === "POST" && url.pathname === "/shutdown") {
     try {
-      const body = await request.json();
-      const ctx = contextFrom(request, body);
-      return bridgeJson(
-        await invokeDest(plugin, "list", ctx, { options: body.options ?? body }),
-      );
+      if (typeof plugin.shutdown === "function") {
+        await plugin.shutdown();
+      }
+      return Response.json({ ok: true });
     } catch (err) {
       const { code, message } = catchErr(err);
       return errJson(null, code, message);
@@ -345,187 +338,12 @@ async function handleRoleInvoke(request, env, url) {
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/destination/copy") {
-    try {
-      const body = await request.json();
-      const ctx = contextFrom(request, body);
-      return bridgeJson(
-        await invokeDest(plugin, "copy", ctx, { from: body.from, to: body.to }),
-      );
-    } catch (err) {
-      const { code, message } = catchErr(err);
-      return errJson(null, code, message);
-    }
-  }
-
-  if (request.method === "POST" && url.pathname === "/destination/delete") {
-    try {
-      const body = await request.json();
-      const ctx = contextFrom(request, body);
-      await invokeDest(plugin, "delete", ctx, { key: body.key || "" });
-      return Response.json({ ok: true });
-    } catch (err) {
-      const { code, message } = catchErr(err);
-      return errJson(null, code, message);
-    }
-  }
-
-  if (request.method === "POST" && url.pathname === "/destination/commit") {
-    try {
-      const body = await request.json();
-      const ctx = contextFrom(request, body);
-      return bridgeJson(
-        await invokeDest(plugin, "commit", ctx, {
-          key: body.key || "",
-          commitToken: body.commitToken || "",
-        }),
-      );
-    } catch (err) {
-      const { code, message } = catchErr(err);
-      return errJson(null, code, message);
-    }
-  }
-
-  if (request.method === "POST" && url.pathname === "/destination/abortStage") {
-    try {
-      const body = await request.json();
-      const ctx = contextFrom(request, body);
-      await invokeDest(plugin, "abortStage", ctx, {
-        key: body.key || "",
-        commitToken: body.commitToken || "",
-      });
-      return Response.json({ ok: true });
-    } catch (err) {
-      const { code, message } = catchErr(err);
-      return errJson(null, code, message);
-    }
-  }
-
   if (request.method === "GET" && url.pathname === "/source/open") {
     try {
       const ctx = contextFrom(request, null);
       const key = url.searchParams.get("key") || "";
       const result = await invokeSourceOpen(plugin, ctx, key);
       return new Response(result.body, { headers: metaHeaders(result.meta) });
-    } catch (err) {
-      const { code, message } = catchErr(err);
-      return errJson(null, code, message);
-    }
-  }
-
-  if (request.method === "POST" && url.pathname === "/worker/handle") {
-    try {
-      const body = await request.json();
-      const ctx = contextFrom(request, body);
-      const grantToken = body.grantToken;
-      const invocation = body.invocation ?? {};
-      const databases = body.databases ?? {};
-      return bridgeJson(
-        await adapterMethod(plugin, "invokeHandle")(
-          ctx,
-          fromBridgeJson(invocation),
-          grantToken,
-          databases,
-        ),
-      );
-    } catch (err) {
-      const { code, message } = catchErr(err);
-      return errJson(null, code, message);
-    }
-  }
-
-  if (request.method === "POST" && url.pathname === "/cliDescribe") {
-    try {
-      const schema = typeof plugin.cliDescribe === "function" ? await plugin.cliDescribe() : {};
-      // Typed `CliSchema`; legacy guests that still return JSON text are parsed.
-      return bridgeJson(typeof schema === "string" ? JSON.parse(schema || "{}") : schema ?? {});
-    } catch (err) {
-      const { code, message } = catchErr(err);
-      return errJson(null, code, message);
-    }
-  }
-
-  if (request.method === "POST" && url.pathname === "/cliInvoke") {
-    try {
-      const body = await request.json();
-      const params = fromBridgeJson(body.params ?? {});
-      if (typeof plugin.cliInvoke !== "function") {
-        return errJson(null, "unsupported", "cliInvoke");
-      }
-      const result = await plugin.cliInvoke(params);
-      // Typed `CliInvokeResult`; legacy guests that still return JSON text are parsed.
-      return bridgeJson(typeof result === "string" ? JSON.parse(result || "{}") : result ?? {});
-    } catch (err) {
-      const { code, message } = catchErr(err);
-      return errJson(null, code, message);
-    }
-  }
-
-  if (request.method === "POST" && url.pathname === "/oidcClients") {
-    try {
-      const clients =
-        typeof plugin.oidcClients === "function" ? await plugin.oidcClients() : [];
-      return Response.json({ clients: Array.isArray(clients) ? clients : [] });
-    } catch (err) {
-      const { code, message } = catchErr(err);
-      return errJson(null, code, message);
-    }
-  }
-
-  if (request.method === "POST" && url.pathname === "/databaseMigrations") {
-    try {
-      const body = await request.json().catch(() => ({}));
-      const binding = typeof body.binding === "string" ? body.binding : "";
-      const migrations =
-        typeof plugin.databaseMigrations === "function"
-          ? await plugin.databaseMigrations(binding)
-          : [];
-      return Response.json({
-        migrations: requirePluginMigrationRegistration(migrations),
-      });
-    } catch (err) {
-      const { code, message } = catchErr(err);
-      return errJson(null, code, message);
-    }
-  }
-
-  // `/contentSource/<op>` → `storefront` entrypoint; `/integration/<op>` →
-  // `onEvent` on the default entrypoint's `event(batch)` trigger,
-  // `authenticateUser` on `oidc`, everything else on `remoteLibrary`.
-  const roleMatch = url.pathname.match(/^\/(contentSource|integration)\/([^/]+)$/);
-  if (roleMatch && request.method === "POST") {
-    try {
-      const role = roleMatch[1];
-      const op = roleMatch[2];
-      const body = await request.json();
-      const ctx = contextFrom(request, body);
-      if (role === "integration" && op === "onEvent") {
-        if (typeof plugin.invokeEvent !== "function") {
-          return errJson(null, "unsupported", "integration.onEvent");
-        }
-        return bridgeJson(await plugin.invokeEvent(ctx, fromBridgeJson(body.event ?? {})));
-      }
-      if (typeof plugin.invokeEntrypoint !== "function") {
-        return errJson(null, "unsupported", `${role}.${op}`);
-      }
-      const entrypoint =
-        role === "contentSource"
-          ? "storefront"
-          : op === "authenticateUser"
-            ? "oidc"
-            : "remoteLibrary";
-      // `{ context, params }` for typed method params. Methods without params
-      // receive no arguments.
-      const args = body.params != null ? [fromBridgeJson(body.params)] : [];
-      const result = await plugin.invokeEntrypoint(entrypoint, ctx, op, args);
-      if (op === "diagnose") {
-        const lines = Array.isArray(result) ? result : Array.isArray(result?.lines) ? result.lines : [];
-        return Response.json({ lines: lines.map((l) => String(l)) });
-      }
-      if (op === "pollEvents" && Array.isArray(result)) {
-        return bridgeJson({ users: result });
-      }
-      return bridgeJson(result ?? { ok: true });
     } catch (err) {
       const { code, message } = catchErr(err);
       return errJson(null, code, message);
@@ -545,6 +363,6 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") {
       return new Response("ok", { status: 200 });
     }
-    return handleRoleInvoke(request, env, url);
+    return handleRoute(request, env, url);
   },
 };
