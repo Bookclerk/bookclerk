@@ -119,7 +119,8 @@ pub enum PluginsCommand {
     /// Approve network domains and host bindings for a plugin.
     ///
     /// Grants cover the plugin's declared outbound domains and bindings.
-    /// Redirect hops after an allowed initial host do not require re-approval.
+    /// Operators may add extra network destinations. Structural capabilities
+    /// cannot be invented beyond the package. Redirect policy is separate.
     Approve {
         /// Plugin id.
         id: String,
@@ -342,6 +343,17 @@ pub async fn run(
             let schema = plugin.manifest.cli.clone().unwrap_or_default();
             let enabled = is_enabled(config, &plugin);
             let receipt = InstallReceipt::load(&plugin.root).ok();
+            let requested = consent_request(&plugin.manifest, plugin.plugin_key());
+            let stored = PluginGrantStore::load(&config.paths().files_dir)
+                .ok()
+                .and_then(|store| {
+                    store
+                        .get_by_plugin_key(plugin.plugin_key().canonical())
+                        .cloned()
+                });
+            let pending = stored
+                .as_ref()
+                .map(|g| bookclerk_plugin_host::pending_structural(g, &requested));
             let payload = json!({
                 "id": plugin.manifest.id,
                 "family": plugin.manifest.primary_family().as_str(),
@@ -357,9 +369,12 @@ pub async fn run(
                 "receipt": receipt,
                 "host_target": host_bookclerk_target(),
                 "runtime": plugin.manifest.runtime,
+                "plugin_key": plugin.plugin_key().canonical(),
+                "pending_structural": pending.as_ref().map(|p| p.summary_lines()),
             });
             emit(format, &payload, || {
                 println!("id={}", plugin.manifest.id);
+                println!("plugin_key={}", plugin.plugin_key().canonical());
                 println!("family={}", plugin.manifest.primary_family().as_str());
                 println!(
                     "entrypoints={}",
@@ -380,6 +395,11 @@ pub async fn run(
                     println!("version={}", r.version);
                     println!("artifact_sha256={}", r.archive_sha256);
                 }
+                if let Some(pending) = pending.as_ref() {
+                    for line in pending.summary_lines() {
+                        println!("{line}");
+                    }
+                }
                 if schema.commands.is_empty() {
                     println!(
                         "cli commands: (none in plugin.toml; may still advertise via describe)"
@@ -395,11 +415,9 @@ pub async fn run(
         PluginsCommand::Diagnose { id } => {
             let plugins = bookclerk_plugin_host::discover_plugins(config)?;
             let targets: Vec<_> = if let Some(id) = id {
-                let p = plugins
-                    .into_iter()
-                    .find(|p| p.manifest.id == id)
-                    .ok_or_else(|| anyhow::anyhow!("plugin `{id}` not discovered"))?;
-                vec![p]
+                vec![bookclerk_plugin_host::resolve_plugin_ref(&plugins, &id)
+                    .map_err(|err| anyhow::anyhow!("{err}"))?
+                    .clone()]
             } else {
                 plugins
                     .into_iter()

@@ -31,7 +31,18 @@ payloads for several storefront / integration surfaces, and a reverse
    `[triggers] jobs`, `[cli]`, `[[oidc.clients]]`. There is **no** `kind`,
    `methods.list`, or `supportedRoles`. Handler family is derived from
    declared entrypoints and triggers. Consent is by entrypoint + binding +
-   producer (+ network), not by role string.
+   producer + **event consumer** + **job trigger** (+ network), not by role
+   string. Event-consumer identity includes `type`, `schema_versions`,
+   `supports_suspend`, and `filter` (what the plugin receives). Operational
+   knobs `resource_class` and `max_retries` are not authority. Operators may
+   narrow structural capabilities; they may not invent ones the package did
+   not declare. Adding a consumer or job on a same-PluginKey upgrade leaves
+   the existing approval usable for the previously granted subset; the new
+   capability stays pending until the operator consents. Empty structural
+   sets mean “approve none” for every grant schema version, including
+   omitted/`0` legacy JSON; they do not inherit the manifest.
+   `authority_revision` includes consumers, jobs,
+   and operator-controlled resource budgets.
 
 2. **`PluginWorker.open(invocation, bindings) -> Entrypoints`.** One open per
    invocation returns typed capabilities (`eventConsumer`, `jobRunner`,

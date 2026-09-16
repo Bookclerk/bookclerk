@@ -208,6 +208,17 @@ pub async fn enqueue_plugin_copy(
     dest_key: String,
     trigger: JobTrigger,
 ) -> anyhow::Result<AdmitJob> {
+    let config = state.config.read().await.clone();
+    let plugin = bookclerk_plugin_host::discover_plugins(&config)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?
+        .into_iter()
+        .find(|p| p.manifest.id == plugin_id)
+        .ok_or_else(|| anyhow::anyhow!("plugin `{plugin_id}` is not installed"))?;
+    let grant = bookclerk_plugin_host::require_grant(&config.paths().files_dir, &plugin)
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    if !grant.allows_job("stream_copy") {
+        anyhow::bail!("plugin `{plugin_id}` grant does not authorize job trigger `stream_copy`");
+    }
     let (max_pending, max_attempts) = queue_limits(&state).await;
     admit(
         &state,

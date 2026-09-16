@@ -170,7 +170,11 @@ function coresSettingValue(cores: number | null | undefined): string {
 }
 
 function pluginRowKey(plugin: PluginSettingsGroup): string {
-  return `${plugin.family}:${plugin.id}`;
+  return `${plugin.family}:${plugin.plugin_key ?? plugin.id}`;
+}
+
+function pluginConsentKey(plugin: PluginSettingsGroup): string {
+  return plugin.plugin_key ?? plugin.id;
 }
 
 /** Prefer the standard `*.enabled` knob; fall back to an "Enabled" label. */
@@ -477,7 +481,10 @@ export function SettingsPage({
     const entries = await Promise.all(
       nextSettings.plugins.map(async (plugin) => {
         try {
-          return [plugin.id, await fetchPluginConsent(plugin.id)] as const;
+          return [
+            pluginConsentKey(plugin),
+            await fetchPluginConsent(plugin.id, plugin.plugin_key),
+          ] as const;
         } catch {
           return null;
         }
@@ -769,11 +776,15 @@ export function SettingsPage({
     } catch {
       setConsentPrompt({
         plugin_id: pluginId,
+        plugin_key: "",
+        provenance: "",
         runtime: "native",
         request: {
           pluginId,
           entrypoints: [],
           producers: [],
+          consumers: [],
+          jobs: [],
           networkMode: "deny",
           domains: [],
           bindings: [],
@@ -824,8 +835,10 @@ export function SettingsPage({
       return rest;
     });
     try {
-      const consent = consentCoverage[plugin.id] ?? (await fetchPluginConsent(plugin.id));
-      setConsentCoverage((current) => ({ ...current, [plugin.id]: consent }));
+      const consent =
+        consentCoverage[pluginConsentKey(plugin)] ??
+        (await fetchPluginConsent(plugin.id, plugin.plugin_key));
+      setConsentCoverage((current) => ({ ...current, [pluginConsentKey(plugin)]: consent }));
       if (consent.covered) {
         setPluginValue(option, "true");
         return;
@@ -869,10 +882,14 @@ export function SettingsPage({
     setConsentBusy(true);
     setError(null);
     try {
-      const approved = await approvePluginConsent(consentPrompt.plugin_id, grant);
+      const approved = await approvePluginConsent(
+        consentPrompt.plugin_id,
+        grant,
+        consentPrompt.plugin_key,
+      );
       setConsentCoverage((current) => ({
         ...current,
-        [consentPrompt.plugin_id]: approved,
+        [consentPrompt.plugin_key || consentPrompt.plugin_id]: approved,
       }));
       if (pendingEnableOption) {
         setPluginValue(pendingEnableOption, "true");
@@ -1514,7 +1531,7 @@ export function SettingsPage({
                           );
                           const canExpand =
                             detailSettings.length > 0 || plugin.settings.length === 0;
-                          const consent = consentCoverage[plugin.id];
+                          const consent = consentCoverage[pluginConsentKey(plugin)];
                           const loaded = effectiveLoaded(settings, plugin);
 
                           return (
@@ -1549,6 +1566,14 @@ export function SettingsPage({
                                   <span className="hidden text-xs text-ink/45 sm:inline">
                                     {plugin.family}
                                   </span>
+                                  {plugin.provenance ? (
+                                    <span
+                                      className="hidden max-w-[14rem] truncate font-mono text-[10px] text-ink/40 sm:inline"
+                                      title={plugin.plugin_key ?? plugin.provenance}
+                                    >
+                                      {plugin.provenance}
+                                    </span>
+                                  ) : null}
                                 </button>
 
                                 {enabled !== null && enabledOption ? (

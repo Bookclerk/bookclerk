@@ -24,4 +24,7 @@ type = "js"
 [capabilities.network]
 mode = "deny"
 
+[triggers]
+jobs = ["stream_copy"]
+
 [vars]

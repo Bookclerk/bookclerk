@@ -21,8 +21,9 @@ use std::path::{Path, PathBuf};
 
 use bookclerk_config::{Config, Isolation, Paths};
 use bookclerk_plugin_host::{
-    consent_request, discover_plugins, grant_has_binding, plugin_data_dir, require_grant,
-    DiscoveredPlugin, PluginGrantStore, PluginSession, SessionServices, HOST_SHARED_ACCOUNT,
+    consent_request, discover_plugins, grant_has_binding, pending_structural, plugin_data_dir,
+    require_grant, DiscoveredPlugin, PluginGrantStore, PluginSession, SessionServices,
+    HOST_SHARED_ACCOUNT,
 };
 
 /// Spawns `plugin` the way the daemon does, minus the workerd front door.
@@ -344,10 +345,11 @@ async fn spawn_fails_without_consent_grant() {
     );
 }
 
-/// Extra bindings in a later `plugin.toml` stay off the effective grant.
-/// The stored operator subset remains covering, so spawn is not refused.
+/// Extra bindings in a later `plugin.toml` stay pending. The existing grant
+/// still covers spawn; the new binding is not delivered until the operator
+/// consents.
 #[tokio::test]
-async fn spawn_keeps_stored_grant_when_manifest_widens() {
+async fn spawn_keeps_grant_when_manifest_adds_structural_bindings() {
     let fixture = Fixture::new(|_| BTreeMap::new());
     let install = fixture
         .config
@@ -365,34 +367,24 @@ async fn spawn_keeps_stored_grant_when_manifest_widens() {
     .expect("widen plugin.toml");
 
     let plugin = fixture.plugin();
-    let grant = require_grant(fixture.config.paths().files_dir.as_path(), &plugin)
-        .expect("stored grant still covers a widened manifest");
+    let effective = require_grant(fixture.config.paths().files_dir.as_path(), &plugin)
+        .expect("existing approval still covers the previously granted surface");
     assert!(
-        !grant_has_binding(&grant, "secrets"),
-        "extra manifest bindings must stay off the effective grant"
+        !grant_has_binding(&effective, "secrets"),
+        "new secrets binding must not become effective automatically: {effective:?}"
     );
-
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        spawn_direct(&plugin, &fixture.config),
-    )
-    .await
-    {
-        Ok(Ok(_)) => {}
-        Err(_) => {
-            // Shell probe cannot complete Cap'n Proto handshake; timeout is not
-            // a grant failure.
-        }
-        Ok(Err(err)) => {
-            let message = err.to_string();
-            assert!(
-                !message.contains("no permission grant")
-                    && !message.contains("approve")
-                    && !message.contains("capabilities widened")
-                    && !message.contains("re-approve")
-                    && !message.contains("grant does not match"),
-                "stored grant must still cover spawn after widening; got: {message}"
-            );
-        }
-    }
+    assert!(
+        !grant_has_binding(&effective, "config"),
+        "new config binding must not become effective automatically: {effective:?}"
+    );
+    let requested = consent_request(&plugin.manifest, plugin.plugin_key());
+    let pending = pending_structural(&effective, &requested);
+    assert!(
+        pending.bindings.contains("secrets"),
+        "secrets must stay pending until the operator consents: {pending:?}"
+    );
+    assert!(
+        pending.bindings.contains("config"),
+        "config must stay pending until the operator consents: {pending:?}"
+    );
 }

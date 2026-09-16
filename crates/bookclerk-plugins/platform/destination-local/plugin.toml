@@ -13,3 +13,6 @@ mode = "deny"
 [vars]
 
 [work_fs]
+
+[triggers]
+jobs = ["stream_copy"]

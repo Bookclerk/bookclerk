@@ -509,6 +509,8 @@ pub struct PluginSession {
     scratch: std::path::PathBuf,
     /// Spawn config JSON captured at spawn.
     spawn_config: Value,
+    /// Cancelled when effective authority for this PluginKey changes.
+    authority_fence: Arc<AtomicBool>,
     /// AppContainer package SID.
     #[cfg(windows)]
     package_sid: Option<String>,
@@ -631,18 +633,35 @@ impl PluginSession {
         let instance_key = plugin_instance_key(&id, account_id);
         let identity = ExecutorIdentity::from_plugin_with_runtime(plugin, account_id, plan.runtime)
             .with_grant_revision(&grant);
+        let authority_fence = crate::authority::register_session(
+            plugin.plugin_key().canonical(),
+            &identity.grant_revision,
+        );
         let (tx, rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) =
             oneshot::channel::<Result<(PluginDescribe, ScalarLimits, Vec<String>)>>();
         let vat_account = account_id.to_string();
-        thread::Builder::new()
+        if let Err(err) = thread::Builder::new()
             .name(format!("plugin-vat-{}", id))
             .spawn(move || vat_thread(spawned, manifest, vat_account, events, rx, ready_tx))
-            .map_err(|err| PluginError::message(format!("plugin vat thread: {err}")))?;
-        let (desc, limits, features) = ready_rx
-            .await
-            .map_err(|err| PluginError::message(format!("plugin vat dropped: {err}")))??;
+        {
+            crate::authority::unregister_session(&authority_fence);
+            return Err(PluginError::message(format!("plugin vat thread: {err}")));
+        }
+        let (desc, limits, features) = match ready_rx.await {
+            Ok(Ok(ready)) => ready,
+            Ok(Err(err)) => {
+                crate::authority::unregister_session(&authority_fence);
+                return Err(err);
+            }
+            Err(err) => {
+                crate::authority::unregister_session(&authority_fence);
+                return Err(PluginError::message(format!("plugin vat dropped: {err}")));
+            }
+        };
         if desc.api_version != PRODUCT_API_VERSION {
+            crate::authority::unregister_session(&authority_fence);
+            let _ = tx.send(Work::Shutdown);
             return Err(PluginError::message(format!(
                 "plugin `{id}` describe apiVersion {} is not {PRODUCT_API_VERSION}",
                 desc.api_version
@@ -662,6 +681,7 @@ impl PluginSession {
             grant,
             scratch,
             spawn_config,
+            authority_fence,
             #[cfg(windows)]
             package_sid,
         })
@@ -717,6 +737,10 @@ impl PluginSession {
 
     /// Sends work to the vat thread.
     async fn call<T>(&self, build: impl FnOnce(oneshot::Sender<Result<T>>) -> Work) -> Result<T> {
+        if crate::authority::is_fenced(&self.authority_fence) {
+            let _ = self.tx.send(Work::Shutdown);
+            return Err(crate::authority::fenced_error());
+        }
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(build(reply))
@@ -814,6 +838,11 @@ impl PluginSession {
         progress: Option<(bookclerk_library::LibraryStore, bookclerk_library::JobFence)>,
         databases: Vec<(String, GuestDatabaseFactory)>,
     ) -> Result<bookclerk_plugin_sdk::JobOutcome> {
+        if !self.grant.allows_job("stream_copy") {
+            return Err(PluginError::message(
+                "plugin grant does not authorize job trigger `stream_copy`",
+            ));
+        }
         self.call(|reply| Work::StreamCopy {
             lease,
             spec: StreamCopySpec {
@@ -993,6 +1022,17 @@ impl PluginSession {
         batch: Vec<DomainEvent>,
         cancel: Arc<AtomicBool>,
     ) -> Result<Vec<EventResult>> {
+        for event in &batch {
+            if !self
+                .grant
+                .allows_event_consumer(&event.event_type, event.schema_version)
+            {
+                return Err(PluginError::message(format!(
+                    "plugin grant does not authorize event consumer `{}` schema {}",
+                    event.event_type, event.schema_version
+                )));
+            }
+        }
         self.call(|reply| Work::DeliverEvents {
             batch,
             cancel,
@@ -1419,6 +1459,7 @@ impl PluginSession {
 
 impl Drop for PluginSession {
     fn drop(&mut self) {
+        crate::authority::unregister_session(&self.authority_fence);
         let _ = self.tx.send(Work::Shutdown);
     }
 }

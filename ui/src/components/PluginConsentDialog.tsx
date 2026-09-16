@@ -362,10 +362,19 @@ export function PluginConsentDialog({
             <div className="min-w-0">
               <p className="truncate text-base font-semibold text-ink">{brandName}</p>
               <p className="truncate text-xs text-ink/50">
-                {[request.entrypoints?.length ? request.entrypoints.join(" · ") : "plugin", isWorkerd ? "workerd" : "native"]
+                {[
+                  request.entrypoints?.length ? request.entrypoints.join(" · ") : "plugin",
+                  isWorkerd ? "workerd" : "native",
+                  consent.provenance,
+                ]
                   .filter(Boolean)
                   .join(" · ")}
               </p>
+              {consent.plugin_key ? (
+                <p className="mt-1 truncate font-mono text-[10px] text-ink/40" title={consent.plugin_key}>
+                  {consent.plugin_key}
+                </p>
+              ) : null}
             </div>
           </div>
 
@@ -397,7 +406,7 @@ export function PluginConsentDialog({
           >
             <p className="text-xs text-ink/55">
               {isWorkerd
-                ? "Workerd guests enforce deny/outbound plus the domain allowlist."
+                ? "Workerd guests enforce deny/outbound plus the domain allowlist. You may add destinations the author omitted; the plugin cannot widen this itself."
                 : "Native guests use OS-jail allow-or-deny for network (no hostname filter)."}
             </p>
             <select

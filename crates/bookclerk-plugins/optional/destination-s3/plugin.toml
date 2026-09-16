@@ -16,3 +16,6 @@ mode = "outbound"
 [secrets]
 
 [work_fs]
+
+[triggers]
+jobs = ["stream_copy"]

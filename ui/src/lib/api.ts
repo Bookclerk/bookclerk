@@ -1616,6 +1616,10 @@ export interface PluginSettingsGroup {
   id: string;
   /** Handler family (`source`, `integration`, `output`, `database`). */
   family: string;
+  /** Provenance-qualified PluginKey when this row came from a discovered install. */
+  plugin_key?: string;
+  /** Host-evaluated provenance (`platform_bundled`, `verified_installed`, …). */
+  provenance?: string;
   /** Google favicon (or portal brand) URL for Settings list rows. */
   logo?: string;
   settings: PluginSettingOption[];
@@ -1638,13 +1642,27 @@ export interface SettingsResponse {
  * Plugin consent grant shape serialized by the daemon.
  */
 export interface PluginGrant {
+  pluginKey?: string;
   pluginId: string;
   /** Exported entrypoints the operator approved (`storefront`, `cli`, …). */
   entrypoints: string[];
   /** Event types the operator approved the plugin to publish. */
   producers: string[];
+  /** Approved event-consumer subscriptions (type + schemas + suspend + filter). */
+  consumers?: Array<{
+    eventType: string;
+    schemaVersions: number[];
+    supportsSuspend: boolean;
+    filter?: string | null;
+  }>;
+  /** Approved `[triggers].jobs` types. */
+  jobs?: string[];
   networkMode: string;
   domains: string[];
+  manifestDomains?: string[];
+  operatorAddedDomains?: string[];
+  operatorDeniedDomains?: string[];
+  authorityRevision?: string;
   bindings: string[];
   compatibilityFlags: string[];
   approvedAt: string;
@@ -1701,6 +1719,8 @@ export interface PluginConsentLimits {
  */
 export interface PluginConsentResponse {
   plugin_id: string;
+  plugin_key?: string;
+  provenance?: string;
   /** Guest runtime: `native` or `workerd`. */
   runtime: string;
   request: PluginGrant;
@@ -1711,27 +1731,41 @@ export interface PluginConsentResponse {
   limits: PluginConsentLimits;
 }
 
+function consentQuery(pluginKey?: string): string {
+  const trimmed = pluginKey?.trim();
+  if (!trimmed) return "";
+  return `?plugin_key=${encodeURIComponent(trimmed)}`;
+}
+
 /**
  * Loads network/capability consent status for a plugin before enable.
  *
  * Call from Settings when an operator reviews domains/bindings that still need
  * approval; `covered` is false until approvePluginConsent succeeds.
  *
- * @param id - Plugin id from describe() / Settings list.
+ * @param id - Display alias from Settings.
+ * @param pluginKey - Provenance-qualified PluginKey when the alias is ambiguous.
  * @returns Current consent request payload and whether it already covers the ask.
  */
-export async function fetchPluginConsent(id: string): Promise<PluginConsentResponse> {
-  const res = await fetch(`/api/plugins/${encodeURIComponent(id)}/consent`, {
-    credentials: "include",
-  });
+export async function fetchPluginConsent(
+  id: string,
+  pluginKey?: string,
+): Promise<PluginConsentResponse> {
+  const res = await fetch(
+    `/api/plugins/${encodeURIComponent(id)}/consent${consentQuery(pluginKey)}`,
+    {
+      credentials: "include",
+    },
+  );
   return parseJson<PluginConsentResponse>(res);
 }
 
 /**
  * Approves network consent for a plugin.
  *
- * @param id - Plugin id.
- * @param grant
+ * @param id - Display alias from Settings.
+ * @param grant - Operator-approved grant overlay; omitted fields keep defaults.
+ * @param pluginKey - Provenance-qualified PluginKey when the alias is ambiguous.
  * @returns Updated consent response after approval.
  */
 export async function approvePluginConsent(
@@ -1748,13 +1782,17 @@ export async function approvePluginConsent(
     cpuCores?: number;
     extraProcesses?: number;
   },
+  pluginKey?: string,
 ): Promise<PluginConsentResponse> {
-  const res = await fetch(`/api/plugins/${encodeURIComponent(id)}/consent`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ approve: true, ...(grant ? { grant } : {}) }),
-  });
+  const res = await fetch(
+    `/api/plugins/${encodeURIComponent(id)}/consent${consentQuery(pluginKey)}`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approve: true, ...(grant ? { grant } : {}) }),
+    },
+  );
   return parseJson<PluginConsentResponse>(res);
 }
 

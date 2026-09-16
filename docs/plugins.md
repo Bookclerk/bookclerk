@@ -925,7 +925,8 @@ Guest filesystem access remains install read-only plus host-managed
 different binary under the same id cannot keep an old grant forever. End goal
 once install/upgrade exists: on upgrade, **refresh the registered hash without
 re-prompting** when capabilities did not widen; re-prompt only when the
-capability scope expands (`grant_covers` already encodes that rule). Do not
+capability scope expands (new structural caps stay pending; `grant_covers`
+is identity-only so the previous approval remains usable). Do not
 expect spawn-time hash checks in this release.
 
 ## Enabling and settings in `config.toml`
