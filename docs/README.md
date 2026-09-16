@@ -27,7 +27,8 @@ Start here if you are new:
 | Doc | When to read |
 | --- | --- |
 | [Plugins](plugins.md) | Ship or host a third-party source/integration (Workers RPC ABI, jail, workerd) |
-| [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Product `api_version = 3` decision: class ABI, streams, Cap'n Proto / JSRPC |
+| [ADR: Plugin capabilities v3](adr/plugin-capabilities-v3.md) | Product `api_version = 3`: entrypoints, triggers, typed Cap'n Proto, `env.EVENTS`, workerd front door |
+| [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Jail / isolation / workerd pin (role sections superseded by capabilities v3) |
 | [bookclerk-workerd bridge](workerd-bridge.md) | Maintainer reference: launcher ↔ isolate wire (`/invoke` Cap'n bytes, control plane, granted channel, bundled embed) |
 | [ADR: First-party identity](adr/first-party-identity.md) | Operator / Owner / Administrator / Member, optional multi-IdP broker, passkeys, OIDC for ABS |
 | [ADR: Plugin-provided OIDC clients](adr/plugin-oidc-clients.md) | Players declare IdP clients via `oidcClients` / `[[oidc.clients]]`; enable toggles; redirects from plugin settings |
@@ -45,7 +46,7 @@ Start here if you are new:
 | --- | --- |
 | [Migration](migration.md) | Moving from classic Libation Files |
 | [Libation parity](libation-parity.md) | Headless CLI/settings matrix vs Libation Chardonnay |
-| [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Plugin ABI target state (object-capability Cap'n Proto / Workers RPC; not newline JSON as the product ABI) |
+| [ADR: Plugin capabilities v3](adr/plugin-capabilities-v3.md) | Plugin ABI target state (capability entrypoints, typed Cap'n Proto / Workers RPC; not newline JSON as the product ABI) |
 
 ## API reference (generated)
 

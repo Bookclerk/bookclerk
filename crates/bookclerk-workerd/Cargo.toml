@@ -17,6 +17,17 @@ path = "src/lib.rs"
 name = "bookclerk-workerd"
 path = "src/main.rs"
 
+# Native Cap'n Proto twin of the workerd author fixtures. Built with the
+# launcher so `tests/conformance.rs` can run identical storefront / CLI / job
+# vectors on all three transports; never staged or packaged (bookclerk-dev
+# copies helpers by name).
+[[bin]]
+name = "bookclerk-workerd-native-fixture"
+path = "tests/fixtures/native/main.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true

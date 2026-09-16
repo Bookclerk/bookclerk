@@ -1,8 +1,10 @@
 # Content sources (storefronts)
 
-Sources implement the shared `ContentSource` trait: login, list accounts, scan
-library, fetch title. Enable or disable each store under `[sources.<id>]`, or
-via `BOOKCLERK_SOURCE_<ID>_ENABLED` for any source/plugin id (`<ID>` is the
+Sources implement the shared `ContentSource` / storefront entrypoint: login,
+list accounts, scan library, fetch title. There is no plugin `kind = "source"`
+— storefront guests export `storefront` under `entrypoints` (see
+[plugins.md](plugins.md)). Enable or disable each store under `[sources.<id>]`,
+or via `BOOKCLERK_SOURCE_<ID>_ENABLED` for any source/plugin id (`<ID>` is the
 uppercased plugin id — e.g. `BOOKCLERK_SOURCE_ECHO_ENABLED=0`).
 
 | Id | Auth | Media path | Notes |
@@ -15,7 +17,7 @@ uppercased plugin id — e.g. `BOOKCLERK_SOURCE_ECHO_ENABLED=0`).
 First-party source binaries live under `crates/bookclerk-plugins/`. Workspace
 builds also `register()` them in-process; distributed installs use the plugin
 search path (`$BOOKCLERK_FILES_DIR/plugins` or `BOOKCLERK_PLUGIN_DIRS`). See
-[plugins.md](plugins.md). External third-party source plugins use the same
+[plugins.md](plugins.md). External third-party storefront plugins use the same
 config table shape.
 
 ## Connecting stores

@@ -1,8 +1,13 @@
 # ADR: Workers RPC plugin ABI + per-jail embedded workerd
 
-- **Status:** Accepted
+- **Status:** Accepted (partially superseded)
 - **Date:** 2026-08-09
 - **Updated:** 2026-08-15 (`api_version = 2` freeze: workerd control-plane front door, typed errors, JobInvocation, backend-neutral bindings)
+- **Superseded in part by:** [`plugin-capabilities-v3.md`](plugin-capabilities-v3.md)
+  (2026-09-10) for product `api_version = 3` — capability entrypoints, typed
+  Cap'n payloads, `env.EVENTS` / outbox replace role factories and
+  `HOST.notify`. Isolation, jail, network consent, workerd pin, and
+  distribution-tier decisions below remain in force.
 
 ## Context
 

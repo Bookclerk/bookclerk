@@ -11,7 +11,7 @@ Built-in destinations today:
 | Local filesystem | `[output.local]` | none | Platform guest `plugins/local/` (sandboxed); in-process fallback |
 | S3 / MinIO | `[output.s3]` | `AWS_*` env override → `encrypted_secrets` → SDK chain | Platform guest `plugins/s3/` when staged |
 
-External `kind = "output"` plugins are loaded when discovered. First-party
+External `storage` entrypoint plugins are loaded when discovered. First-party
 guests replace the in-process backend when staged and enabled
 ([plugins.md](plugins.md)). The local guest is granted write access only to
 `[output.local].root` (plus its private `plugins/local/data` and `tmp`).

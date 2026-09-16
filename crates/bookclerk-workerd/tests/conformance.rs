@@ -1,8 +1,13 @@
 //! Identical contract vectors against three backends.
 //!
-//! 1. Workerd author class (fixture `stream`)
-//! 2. Workerd control plane → typed Cap'n Proto passthrough to a native guest (`local`)
-//! 3. Direct Cap'n Proto fallback (`local`)
+//! 1. Workerd author class (fixtures `stream`, `storefront`, `events`, `dbadapter`)
+//! 2. Workerd control plane → typed Cap'n Proto passthrough to a native guest
+//!    (`local`, `sqlite`, Echo, and the `bookclerk-workerd-native-fixture` bin)
+//! 3. Direct Cap'n Proto (diagnostic transport) to the same native guests
+//!
+//! Storage, events, storefront + CLI, jobs, and the database adapter each
+//! run on every path their fixtures support; the storefront and job vectors
+//! are shared functions so the three transports cannot drift apart.
 //!
 //! Never set `BOOKCLERK_SKIP_WORKERD`. CI must ship `target/debug/workerd`.
 
@@ -962,6 +967,63 @@ fn require_workerd() -> PathBuf {
     })
 }
 
+/// Native twin of the `storefront` + `stream` author fixtures, built beside
+/// the launcher (`[[bin]] bookclerk-workerd-native-fixture`).
+fn native_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_bookclerk-workerd-native-fixture"))
+}
+
+/// Manifest directory of the native fixture (`tests/fixtures/native`).
+fn native_fixture_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native")
+}
+
+/// Connects directly to the native fixture's stdio (diagnostic transport)
+/// and pins `describe()`. Call inside a `LocalSet`.
+async fn spawn_native_fixture_direct(tmp: &Path) -> (tokio::process::Child, PluginClient) {
+    let mut child = Command::new(native_fixture())
+        .env("TMPDIR", tmp)
+        .env("HOME", tmp)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn native fixture");
+    let stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
+    tokio::task::spawn_local(rpc);
+    let desc = tokio::time::timeout(Duration::from_secs(30), client.describe())
+        .await
+        .expect("describe timed out")
+        .expect("describe");
+    assert_eq!(desc.api_version, PRODUCT_API_VERSION);
+    assert_eq!(desc.id, "native_fixture");
+    (child, client)
+}
+
+/// Spawns the native fixture behind the `bookclerk-workerd` front door
+/// (typed passthrough) and pins `describe()`. Call inside a `LocalSet`.
+async fn spawn_native_fixture_behind_workerd(
+    workerd: &Path,
+    tmp: &Path,
+) -> (tokio::process::Child, PluginClient) {
+    let mut child =
+        spawn_native_behind_workerd(workerd, &native_fixture_root(), &native_fixture(), tmp, &[]);
+    let stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
+    tokio::task::spawn_local(rpc);
+    let desc = tokio::time::timeout(Duration::from_secs(90), client.describe())
+        .await
+        .expect("describe timed out — native-behind-workerd fixture failed to start")
+        .expect("describe");
+    assert_eq!(desc.api_version, PRODUCT_API_VERSION);
+    assert_eq!(desc.id, "native_fixture");
+    (child, client)
+}
+
 /// Every `ContentSource` / `PluginCli` method travels as one typed `/invoke`
 /// round trip: partial author objects land as defaults, `null` optional
 /// results land as `None`, and thrown `PluginError`s keep their wire code.
@@ -975,129 +1037,170 @@ async fn workerd_author_storefront_vectors() {
         .run_until(async {
             let (mut child, client) =
                 spawn_author(&workerd, &fixture, tmp.path(), "storefront_fixture").await;
-            let opened = client
-                .open(
-                    &Invocation {
-                        id: "storefront".into(),
-                        ..Default::default()
-                    },
-                    HostBindings::default(),
-                )
-                .await
-                .expect("open");
-            assert!(opened.storage.is_none(), "storage is not declared");
-            assert!(opened.event_consumer.is_none(), "no event consumer");
-            assert!(opened.job_runner.is_none(), "no job runner");
-            assert!(opened.database_adapter.is_none(), "no database adapter");
-            assert!(opened.remote_library.is_none(), "no remote library");
-            assert!(opened.oidc.is_none(), "no oidc");
-            let storefront = opened.storefront.expect("storefront entrypoint");
-            let cli = opened.cli.expect("cli entrypoint");
-
-            let health = storefront.health().await.expect("health");
-            assert!(health.ok);
-            assert!(
-                health.detail.starts_with("env="),
-                "author env reaches the named entrypoint: {}",
-                health.detail
-            );
-            assert_eq!(
-                storefront.diagnose().await.expect("diagnose"),
-                vec!["line one".to_string(), "line two".to_string()]
-            );
-
-            let accounts = storefront.list_accounts().await.expect("listAccounts");
-            assert_eq!(accounts.len(), 2);
-            assert_eq!(accounts[0].account_id, "acct-1");
-            assert_eq!(accounts[0].label.as_deref(), Some("One"));
-            assert!(accounts[0].scan_enabled);
-            assert_eq!(accounts[1].marketplace, "uk");
-            assert_eq!(accounts[1].label, None, "absent optional text is None");
-            assert!(!accounts[1].scan_enabled, "absent bool is the default");
-
-            let hits = storefront
-                .search_catalog(SearchCatalogParams {
-                    query: "dune".into(),
-                    limit: 5,
-                    page: 2,
-                    ..Default::default()
-                })
-                .await
-                .expect("searchCatalog");
-            assert_eq!(hits.len(), 1);
-            assert_eq!(hits[0].product_id, "hit:dune:5:2");
-            assert_eq!(hits[0].title, "dune");
-            assert_eq!(hits[0].authors.as_deref(), Some("A. Author"));
-            assert_eq!(hits[0].narrators, None);
-
-            assert_eq!(
-                storefront
-                    .purchase_hint(PurchaseHintParams::default())
-                    .await
-                    .expect("purchaseHint"),
-                None,
-                "author `null` is `found = false`"
-            );
-            assert_eq!(
-                storefront
-                    .catalog_detail(CatalogDetailParams {
-                        product_id: "missing".into(),
-                        ..Default::default()
-                    })
-                    .await
-                    .expect("catalogDetail missing"),
-                None
-            );
-            let detail = storefront
-                .catalog_detail(CatalogDetailParams {
-                    product_id: "p1".into(),
-                    ..Default::default()
-                })
-                .await
-                .expect("catalogDetail")
-                .expect("found");
-            assert_eq!(detail.product_id, "p1");
-            assert_eq!(detail.title, "Detail p1");
-
-            let err = storefront
-                .login(LoginParams {
-                    marketplace: "us".into(),
-                    ..Default::default()
-                })
-                .await
-                .expect_err("login fails");
-            assert_eq!(err.code, PluginErrorCode::Unauthorized);
-            assert_eq!(err.message, "no credentials for us");
-
-            let schema = cli.describe().await.expect("cli describe");
-            assert_eq!(schema.commands.len(), 1);
-            assert_eq!(schema.commands[0].name, "echo");
-            assert_eq!(
-                schema.commands[0].about.as_deref(),
-                Some("Echo the arguments")
-            );
-            let out = cli
-                .invoke(CliInvokeParams {
-                    command: "echo".into(),
-                    args: vec![
-                        CliArg {
-                            name: "a".into(),
-                            value: "1".into(),
-                        },
-                        CliArg {
-                            name: "b".into(),
-                            value: "2".into(),
-                        },
-                    ],
-                })
-                .await
-                .expect("cli invoke");
-            assert_eq!(out.exit_code, 3);
-            assert_eq!(out.stdout, "echo:a=1;b=2");
-            assert_eq!(out.stderr, "");
+            storefront_vectors(&client, false).await;
             let _ = child.kill().await;
         })
         .await;
+}
+
+/// The same storefront / CLI vectors through the launcher's typed Cap'n
+/// Proto passthrough to the native fixture (no JavaScript on the path).
+#[tokio::test(flavor = "current_thread")]
+async fn native_behind_workerd_storefront_vectors() {
+    let workerd = require_workerd();
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut child, client) =
+                spawn_native_fixture_behind_workerd(&workerd, tmp.path()).await;
+            storefront_vectors(&client, true).await;
+            let _ = child.kill().await;
+        })
+        .await;
+}
+
+/// The same storefront / CLI vectors over the diagnostic direct transport.
+#[tokio::test(flavor = "current_thread")]
+async fn direct_capnp_storefront_vectors() {
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut child, client) = spawn_native_fixture_direct(tmp.path()).await;
+            storefront_vectors(&client, true).await;
+            let _ = child.kill().await;
+        })
+        .await;
+}
+
+/// Shared storefront + CLI contract vectors. `exports_jobs` is true for the
+/// native fixture, whose manifest also declares `[triggers] jobs`.
+async fn storefront_vectors(client: &PluginClient, exports_jobs: bool) {
+    let opened = client
+        .open(
+            &Invocation {
+                id: "storefront".into(),
+                ..Default::default()
+            },
+            HostBindings::default(),
+        )
+        .await
+        .expect("open");
+    assert!(opened.storage.is_none(), "storage is not declared");
+    assert!(opened.event_consumer.is_none(), "no event consumer");
+    assert_eq!(
+        opened.job_runner.is_some(),
+        exports_jobs,
+        "job runner follows the manifest's `[triggers] jobs`"
+    );
+    assert!(opened.database_adapter.is_none(), "no database adapter");
+    assert!(opened.remote_library.is_none(), "no remote library");
+    assert!(opened.oidc.is_none(), "no oidc");
+    let storefront = opened.storefront.expect("storefront entrypoint");
+    let cli = opened.cli.expect("cli entrypoint");
+
+    let health = storefront.health().await.expect("health");
+    assert!(health.ok);
+    assert!(
+        health.detail.starts_with("env="),
+        "author env reaches the named entrypoint: {}",
+        health.detail
+    );
+    assert_eq!(
+        storefront.diagnose().await.expect("diagnose"),
+        vec!["line one".to_string(), "line two".to_string()]
+    );
+
+    let accounts = storefront.list_accounts().await.expect("listAccounts");
+    assert_eq!(accounts.len(), 2);
+    assert_eq!(accounts[0].account_id, "acct-1");
+    assert_eq!(accounts[0].label.as_deref(), Some("One"));
+    assert!(accounts[0].scan_enabled);
+    assert_eq!(accounts[1].marketplace, "uk");
+    assert_eq!(accounts[1].label, None, "absent optional text is None");
+    assert!(!accounts[1].scan_enabled, "absent bool is the default");
+
+    let hits = storefront
+        .search_catalog(SearchCatalogParams {
+            query: "dune".into(),
+            limit: 5,
+            page: 2,
+            ..Default::default()
+        })
+        .await
+        .expect("searchCatalog");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].product_id, "hit:dune:5:2");
+    assert_eq!(hits[0].title, "dune");
+    assert_eq!(hits[0].authors.as_deref(), Some("A. Author"));
+    assert_eq!(hits[0].narrators, None);
+
+    assert_eq!(
+        storefront
+            .purchase_hint(PurchaseHintParams::default())
+            .await
+            .expect("purchaseHint"),
+        None,
+        "author `null` is `found = false`"
+    );
+    assert_eq!(
+        storefront
+            .catalog_detail(CatalogDetailParams {
+                product_id: "missing".into(),
+                ..Default::default()
+            })
+            .await
+            .expect("catalogDetail missing"),
+        None
+    );
+    let detail = storefront
+        .catalog_detail(CatalogDetailParams {
+            product_id: "p1".into(),
+            ..Default::default()
+        })
+        .await
+        .expect("catalogDetail")
+        .expect("found");
+    assert_eq!(detail.product_id, "p1");
+    assert_eq!(detail.title, "Detail p1");
+
+    let err = storefront
+        .login(LoginParams {
+            marketplace: "us".into(),
+            ..Default::default()
+        })
+        .await
+        .expect_err("login fails");
+    assert_eq!(err.code, PluginErrorCode::Unauthorized);
+    assert_eq!(err.message, "no credentials for us");
+
+    let schema = cli.describe().await.expect("cli describe");
+    assert_eq!(schema.commands.len(), 1);
+    assert_eq!(schema.commands[0].name, "echo");
+    assert_eq!(
+        schema.commands[0].about.as_deref(),
+        Some("Echo the arguments")
+    );
+    let out = cli
+        .invoke(CliInvokeParams {
+            command: "echo".into(),
+            args: vec![
+                CliArg {
+                    name: "a".into(),
+                    value: "1".into(),
+                },
+                CliArg {
+                    name: "b".into(),
+                    value: "2".into(),
+                },
+            ],
+        })
+        .await
+        .expect("cli invoke");
+    assert_eq!(out.exit_code, 3);
+    assert_eq!(out.stdout, "echo:a=1;b=2");
+    assert_eq!(out.stderr, "");
 }
 
 /// Host-side capabilities the job test grants to the author.
@@ -1247,103 +1350,141 @@ async fn workerd_author_job_vectors() {
         .run_until(async {
             let (mut child, client) =
                 spawn_author(&workerd, &fixture, tmp.path(), "stream_fixture").await;
-            let opened = client
-                .open(
-                    &Invocation {
-                        id: "job-1".into(),
-                        account_id: "acct".into(),
-                        ..Default::default()
-                    },
-                    HostBindings::default(),
-                )
-                .await
-                .expect("open");
-            let runner = opened.job_runner.expect("job runner");
-
-            let input = Arc::new(MemoryObjects::default());
-            input
-                .objects
-                .lock()
-                .expect("objects")
-                .insert("in/a".into(), b"abc".to_vec());
-            let output = Arc::new(MemoryObjects::default());
-            let progress = Arc::new(RecordingProgress::default());
-            let outcome = runner
-                .job(
-                    &job_invocation(
-                        "copy-1",
-                        serde_json::json!({ "from": "in/a", "to": "out/a" }),
-                    ),
-                    Arc::clone(&input) as Arc<dyn Source>,
-                    Arc::clone(&output) as Arc<dyn Destination>,
-                    Arc::clone(&progress) as Arc<dyn ProgressSink>,
-                    Arc::new(FlagCancel::default()) as Arc<dyn Cancellation>,
-                )
-                .await
-                .expect("job");
-            assert_eq!(
-                outcome,
-                JobOutcome::Completed {
-                    message: "copied in/a -> out/a".into(),
-                    bytes_copied: 3,
-                }
-            );
-            assert_eq!(
-                output.objects.lock().expect("objects").get("out/a"),
-                Some(&b"abc".to_vec()),
-                "bytes crossed source → author → destination"
-            );
-            assert_eq!(
-                *progress.reports.lock().expect("reports"),
-                vec![
-                    (0, "opening".to_string()),
-                    (10, "copying".to_string()),
-                    (100, "done".to_string()),
-                ]
-            );
-
-            let cancel = Arc::new(FlagCancel::default());
-            let progress = Arc::new(RecordingProgress::default());
-            let flip = {
-                let cancel = Arc::clone(&cancel);
-                let progress = Arc::clone(&progress);
-                async move {
-                    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-                    while progress.reports.lock().expect("reports").is_empty() {
-                        assert!(
-                            tokio::time::Instant::now() < deadline,
-                            "author never reported it was waiting"
-                        );
-                        tokio::time::sleep(Duration::from_millis(20)).await;
-                    }
-                    cancel
-                        .cancelled
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                }
-            };
-            let invocation = job_invocation("cancel-1", serde_json::json!({ "awaitCancel": true }));
-            let run = runner.job(
-                &invocation,
-                Arc::clone(&input) as Arc<dyn Source>,
-                Arc::clone(&output) as Arc<dyn Destination>,
-                Arc::clone(&progress) as Arc<dyn ProgressSink>,
-                Arc::clone(&cancel) as Arc<dyn Cancellation>,
-            );
-            let (outcome, ()) = tokio::join!(run, flip);
-            assert_eq!(
-                outcome.expect("cancelled run still yields an outcome"),
-                JobOutcome::Cancelled {
-                    message: "host cancelled the copy".into(),
-                },
-                "a thrown `cancelled` error is the cancelled outcome"
-            );
-            assert_eq!(
-                progress.reports.lock().expect("reports")[0],
-                (0, "waiting for cancel".to_string())
-            );
+            job_vectors(&client).await;
             let _ = child.kill().await;
         })
         .await;
+}
+
+/// The same job vectors through the launcher's typed passthrough: the four
+/// granted capabilities are forwarded to the native guest as Cap'n Proto
+/// capabilities and progress / cancellation round-trip without JavaScript.
+#[tokio::test(flavor = "current_thread")]
+async fn native_behind_workerd_job_vectors() {
+    let workerd = require_workerd();
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut child, client) =
+                spawn_native_fixture_behind_workerd(&workerd, tmp.path()).await;
+            job_vectors(&client).await;
+            let _ = child.kill().await;
+        })
+        .await;
+}
+
+/// The same job vectors over the diagnostic direct transport.
+#[tokio::test(flavor = "current_thread")]
+async fn direct_capnp_job_vectors() {
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut child, client) = spawn_native_fixture_direct(tmp.path()).await;
+            job_vectors(&client).await;
+            let _ = child.kill().await;
+        })
+        .await;
+}
+
+/// Shared `JobRunner.job` contract vectors: a stream copy through the granted
+/// source / destination with ordered progress, then a run the host cancels.
+async fn job_vectors(client: &PluginClient) {
+    let opened = client
+        .open(
+            &Invocation {
+                id: "job-1".into(),
+                account_id: "acct".into(),
+                ..Default::default()
+            },
+            HostBindings::default(),
+        )
+        .await
+        .expect("open");
+    let runner = opened.job_runner.expect("job runner");
+
+    let input = Arc::new(MemoryObjects::default());
+    input
+        .objects
+        .lock()
+        .expect("objects")
+        .insert("in/a".into(), b"abc".to_vec());
+    let output = Arc::new(MemoryObjects::default());
+    let progress = Arc::new(RecordingProgress::default());
+    let outcome = runner
+        .job(
+            &job_invocation(
+                "copy-1",
+                serde_json::json!({ "from": "in/a", "to": "out/a" }),
+            ),
+            Arc::clone(&input) as Arc<dyn Source>,
+            Arc::clone(&output) as Arc<dyn Destination>,
+            Arc::clone(&progress) as Arc<dyn ProgressSink>,
+            Arc::new(FlagCancel::default()) as Arc<dyn Cancellation>,
+        )
+        .await
+        .expect("job");
+    assert_eq!(
+        outcome,
+        JobOutcome::Completed {
+            message: "copied in/a -> out/a".into(),
+            bytes_copied: 3,
+        }
+    );
+    assert_eq!(
+        output.objects.lock().expect("objects").get("out/a"),
+        Some(&b"abc".to_vec()),
+        "bytes crossed source → author → destination"
+    );
+    assert_eq!(
+        *progress.reports.lock().expect("reports"),
+        vec![
+            (0, "opening".to_string()),
+            (10, "copying".to_string()),
+            (100, "done".to_string()),
+        ]
+    );
+
+    let cancel = Arc::new(FlagCancel::default());
+    let progress = Arc::new(RecordingProgress::default());
+    let flip = {
+        let cancel = Arc::clone(&cancel);
+        let progress = Arc::clone(&progress);
+        async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            while progress.reports.lock().expect("reports").is_empty() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "author never reported it was waiting"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            cancel
+                .cancelled
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    };
+    let invocation = job_invocation("cancel-1", serde_json::json!({ "awaitCancel": true }));
+    let run = runner.job(
+        &invocation,
+        Arc::clone(&input) as Arc<dyn Source>,
+        Arc::clone(&output) as Arc<dyn Destination>,
+        Arc::clone(&progress) as Arc<dyn ProgressSink>,
+        Arc::clone(&cancel) as Arc<dyn Cancellation>,
+    );
+    let (outcome, ()) = tokio::join!(run, flip);
+    assert_eq!(
+        outcome.expect("cancelled run still yields an outcome"),
+        JobOutcome::Cancelled {
+            message: "host cancelled the copy".into(),
+        },
+        "a thrown `cancelled` error is the cancelled outcome"
+    );
+    assert_eq!(
+        progress.reports.lock().expect("reports")[0],
+        (0, "waiting for cancel".to_string())
+    );
 }
 
 /// One `EventConsumer.event` call with a batch keeps one result per event in

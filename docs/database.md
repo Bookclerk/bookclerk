@@ -113,7 +113,7 @@ Built-in **local SQLite** is a **platform-shipped guest**
 `[sandbox].network = none`. The matching guest is **required** — there is no
 in-process engine fallback.
 
-External `kind = "database"` guests also load for **D1** and **Postgres** when
+External `databaseAdapter` guests also load for **D1** and **Postgres** when
 discovered and `[database].plugin` matches the plugin id. SeaORM proxy calls
 (`db.query` / `db.execute`) forward through the guest; `master.key` never leaves
 the host. First-party ids receive host-private connect params with

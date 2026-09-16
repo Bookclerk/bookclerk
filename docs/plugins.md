@@ -9,16 +9,18 @@ jail, consent, and Workers RPC — distinct from the runtime install tree
 `$BOOKCLERK_FILES_DIR/plugins/`.
 
 The product ABI is **object-capability Workers RPC** at `api_version = 3`
-(role classes, transferred `ReadableStream` / Cap'n Proto byte sources, no
-public `handleId` / `writeChunk` / base64 media). Native guests serve the
-Bookclerk Cap'n Proto schema on stdio; workerd guests keep isolate `RpcTarget`
-stubs. Each HTTP/RPC request is **invocation-scoped**: the trusted adapter
-creates the role, invokes the method, and disposes the stub before the
-request completes. Survival across suspend is checkpoint data plus stable
-binding identifiers — never an in-memory `RpcTarget`, adapter map id, PID,
-or open connection. Decision record:
-[`docs/adr/plugin-workers-rpc-workerd.md`](adr/plugin-workers-rpc-workerd.md).
-Authoritative artifacts: Cap'n Proto
+(capability entrypoints + triggers, transferred `ReadableStream` / Cap'n
+Proto byte sources, no public `handleId` / `writeChunk` / base64 media).
+Native guests serve the Bookclerk Cap'n Proto schema on stdio; workerd
+guests keep isolate `RpcTarget` stubs. Each HTTP/RPC request is
+**invocation-scoped**: the trusted adapter opens the guest, invokes the
+method, and disposes stubs before the request completes. Survival across
+suspend is checkpoint data plus stable binding identifiers — never an
+in-memory `RpcTarget`, adapter map id, PID, or open connection. Decision
+records: [`docs/adr/plugin-capabilities-v3.md`](adr/plugin-capabilities-v3.md)
+(v3 surface) and
+[`docs/adr/plugin-workers-rpc-workerd.md`](adr/plugin-workers-rpc-workerd.md)
+(jail / workerd front door). Authoritative artifacts: Cap'n Proto
 [`schema/plugin.capnp`](../crates/bookclerk-plugin-abi/schema/plugin.capnp)
 (append-only ordinals; unknown union members fail closed or return typed
 `unsupported`) and TypeScript
@@ -969,25 +971,40 @@ unsorted directory without an index.
 
 Scalar RPC values are capped at **256 KiB** (`payload_too_large` if exceeded).
 List pages are clamped. Integrity metadata (etag / sha256) rides on
-`PutResult` / `ReadResult`. Optional facilities *within* the ABI are feature flags
-(`rpc.streams`, `rpc.scalarLimits`, `storage.copy`), not a substitute for
-`apiVersion`. Spawn **negotiates** `apiVersion == 2`, matching signed
-`id`/`kind`, required `rpc.streams` + `rpc.scalarLimits`, and rejects
-zero/unsafe limits.
+`PutResult` / `ReadResult`. Optional facilities *within* the ABI are feature
+flags (`rpc.streams`, `rpc.scalarLimits`, `storage.copy`), not a substitute
+for `apiVersion`. Spawn **negotiates** `apiVersion == 3`, matching signed
+`id` / declared `entrypoints` + triggers, required `rpc.streams` +
+`rpc.scalarLimits`, and rejects zero/unsafe limits. There is no `kind` or
+`supportedRoles` on the wire.
 
 **Transports** (same observable contract):
 
 | Runtime | Wire |
 | --- | --- |
-| **workerd** | Isolate keeps `RpcTarget` stubs; `bookclerk-workerd` serves Bookclerk Cap'n Proto on stdio and talks HTTP/JSRPC to the isolate with streamed bodies (`capnpConnectHost = "plugin"` on the rpc socket) |
+| **workerd** | Isolate keeps `RpcTarget` stubs; `bookclerk-workerd` serves Bookclerk Cap'n Proto on stdio and talks HTTP/JSRPC to the isolate with streamed bodies (`capnpConnectHost = "plugin"` on the rpc socket). Author methods travel as one `POST /invoke` Cap'n `$Params` body. |
 | **native** (behind workerd) | Guest SDK `serve` serves `schema/plugin.capnp` (`capnp-rpc`) with windowed byte streams on its stdio; `bookclerk-workerd` owns that stdio, forwards every entrypoint family typed, and serves the host on its own stdio. `ExecutorIdentity.runtime_backend = "native-behind-workerd"` |
 | **native** (direct, diagnostic) | Same guest wire, host connected to the guest's stdio with no launcher in between. `SpawnTransport::DirectNativeDiagnostic` only (`runtime_backend = "native-direct"`) |
 
 FD passing / `localPath` remain native-only optimizations behind the stream
 adapter, never author-facing. Describe rejects unsupported versions.
 
-First-party destinations (`local`, `s3`) and remaining product guests speak the object-capability ABI.
-Echo examples are `api_version = 3` Integration.
+First-party destinations (`local`, `s3`) and remaining product guests speak
+the object-capability ABI. Echo examples are `api_version = 3` guests that
+export `cli` (and optional event/job triggers) — not a `kind = "integration"`.
+
+### Coming from Cloudflare Workers
+
+| Workers concept | Bookclerk v3 |
+| --- | --- |
+| `export default class extends WorkerEntrypoint` | `export default class extends BookclerkEntrypoint` (`event` / `job` triggers) |
+| Named `export class` entrypoints | `entrypoints = ["storefront", …]` + matching `*Entrypoint` subclass |
+| `env.DB` / `env.KV` / `env.SECRETS` | `[[databases]]`, `[[kv_namespaces]]`, `[secrets]` → granted on `env` |
+| Queue consumer | `[[events.consumers]]` → `event(batch)` with `ack` / `retry` / `reject` / `deadLetter` / `suspend` |
+| `env.QUEUE.send` | `[[events.producers]]` → `env.EVENTS.publish` (host outbox; forced `source`) |
+| Cron / scheduled | `[triggers] jobs` → `job(controller)` (durable command envelope) |
+| `wrangler types` | `bookclerk-plugin types` → generated `Env` |
+| Workers for Platforms / Dynamic Workers | **Not used** — local embedded workerd + OS jail only |
 
 ## Publishing events (`env.EVENTS`)
 
@@ -1094,20 +1111,23 @@ Example schema (JSON / `metadataJson` `cli` / `cliDescribe`):
 `cliInvoke` params: `{ "command": "ping", "args": { "message": "hi" } }`.
 Result: `{ "exitCode": 0, "stdout": "…", "stderr": "…", "json": … }`.
 
-### Integration capabilities
+### Integration / remote-library capabilities
 
-Advertise in `describe()` metadata `capabilities`: `start`, `onEvent`,
-`health`, `diagnose`, `scanLibrary`, `syncListening`, `authenticateUser`,
-`cli`.
+Handler family is derived from declared entrypoints and triggers — there is
+no `kind = "integration"`. Remote-library guests export `remoteLibrary` (and
+often `oidc` / `cli`); event-driven guests declare `[[events.consumers]]` and
+implement `event(batch)` on the default `BookclerkEntrypoint`.
 
-| Method | Notes |
+| Surface | Notes |
 | --- | --- |
-| `start` | Background watchers |
-| `onEvent` | Versioned [`DomainEvent`](../packages/plugin-sdk/src/plugin.ts) (`eventId`, `eventType`, `schemaVersion`, correlation/causation, `source`, `deduplicationKey`, `deliveryAttempt`, bounded payload). A `suspended` result parks a checkpoint; the next `onEvent` copies `checkpointJson`, `checkpointSchemaVersion`, `invocationSequence`, and `resumePending`. `wakeOnEventType` / `wakeOnFilterJson` ask the host to wake on a matching later event (empty = timestamp-only). Return `EventResult`: `ack`, `retry` (`retryAtUnixMs`; exhausted attempts dead-letter), `reject`, `deadLetter`, or `suspended` (`checkpointJson`, `checkpointSchemaVersion`, `wakeAtUnixMs`, optional wake-on-event fields). Host delivery is at-least-once; guests must be idempotent on `deduplicationKey`. |
-| `scanLibrary` | `{ "force": bool }` |
-| `syncListening` | Return listening progress snapshots; host upserts tagged with plugin id |
-| `authenticateUser` | `{ "username", "password" }` → external user |
-| `pollEvents` | Return observed external users — host polls after `start` and kicks off **core** workflows (e.g. claim tickets). The plugin stays oblivious to portal/tickets |
+| `event(batch)` | Typed [`DomainEvent`](../packages/plugin-sdk/src/plugin.ts) batch (`eventId`, `eventType`, `schemaVersion`, correlation/causation, `source`, `deduplicationKey`, `deliveryAttempt`, bounded payload). Each `EventMessage` records `ack` / `retry` / `reject` / `deadLetter` / `suspend`. A `suspend` parks a checkpoint; the next delivery copies `checkpointJson`, `checkpointSchemaVersion`, `invocationSequence`, and `resumePending`. `wakeOnEventType` / `wakeOnFilterJson` ask the host to wake on a matching later event (empty = timestamp-only). Host delivery is at-least-once; guests must be idempotent on `deduplicationKey`. |
+| `remoteLibrary.health` / `diagnose` | Liveness and human-readable probe lines |
+| `remoteLibrary.start` / `stop` | Background watchers |
+| `remoteLibrary.scanLibrary` | `{ force: bool }` |
+| `remoteLibrary.syncListening` | Listening progress snapshots; host upserts tagged with plugin id |
+| `remoteLibrary.pollEvents` | Observed external users — host polls after `start` and kicks off **core** workflows (e.g. claim tickets). The plugin stays oblivious to portal/tickets |
+| `oidc.authenticateUser` | `{ username, password }` → external user (when `oidc` is exported) |
+| `cli` | Declared under `[cli]` / `entrypoints = ["cli"]` |
 
 Declare durable consumers in `plugin.toml` (omit them to receive **no**
 outbox deliveries — fail closed):
@@ -1170,30 +1190,34 @@ max `running` deliveries per `(plugin_id, resource_class)` (`network` today),
 enforced at claim time with a portable `bookclerk_slots` row so two
 VPSes cannot over-admit under `READ COMMITTED`. FIFO per ordering key stays; unrelated keys are only
 blocked by that cap. The delivery worker
-heartbeats the lease during `onEvent` (`lease/3`); fence loss or operator
+heartbeats the lease during `event(batch)` (`lease/3`); fence loss or operator
 `cancel_requested` cancels the in-flight RPC (including workerd/native).
 Expired-lease reclaim restores `resume_pending` when `checkpoint_json` is set.
 See [jobs.md](jobs.md).
 
-### Source capabilities
+### Storefront capabilities
+
+Export `storefront` (there is no `kind = "source"`). Typed Cap'n methods on
+[`ContentSource`](../packages/plugin-sdk/src/plugin.ts) / `StorefrontEntrypoint`:
 
 | Method | Notes |
 | --- | --- |
-| `login` | Password sources. Params include `pluginDataDir`, marketplace/label/email/password. Result: `{ account, credentials? }` — host seals credentials (`provider = plugin id`) and upserts the account row |
-| `loginStart` / `loginComplete` | OAuth sources (Audible). Start returns `{ sessionId, url }`; complete returns login result |
+| `login` | Password storefronts. Params include `pluginDataDir`, marketplace/label/email/password. Result: `{ account, credentials? }` — host seals credentials (`provider = plugin id`) and upserts the account row |
+| `loginStart` / `loginComplete` | OAuth storefronts (Audible). Start returns `{ sessionId, url }`; complete returns login result |
 | `scan` | Params include `pluginDataDir`, filters, and host-injected `credentials` map (`accountId` → opaque JSON; **no** library DB path). Result includes `books[]` DTOs; host upserts with `source` forced to plugin id |
 | `fetchTitle` | Host injects `credentials` from `encrypted_secrets`; plugin writes media under the work directory and returns **plain** paths (DRM guests decrypt before return) |
 
 Plugins must not open `library.db` or read `master.key`. Do not put Encrypted
 content keys on the wire — decrypt in the guest when needed.
 
-### Output plugins
+### Storage entrypoints
 
-`kind = "output"` guests implement [`Destination`](../packages/plugin-sdk/src/plugin.ts):
-`head` / `list` (paginated) / streamed `get` / streamed `put` / optional
-`copy`. The host never reassembles a large object into `Bytes` and never writes
-the full object to guest scratch then `put_file`. S3 guests feed the existing
-multipart sink as bytes arrive.
+Export `storage` (there is no `kind = "output"`). Guests implement
+[`Destination`](../packages/plugin-sdk/src/plugin.ts) /
+`StorageEntrypoint`: `head` / `list` (paginated) / streamed `get` / streamed
+`put` / optional `copy`. The host never reassembles a large object into
+`Bytes` and never writes the full object to guest scratch then `put_file`. S3
+guests feed the existing multipart sink as bytes arrive.
 
 Oversized scalar `put`/`get` fail closed. There is no public `handleId` /
 `readChunk` / `writeChunk` protocol: destinations transfer media through
@@ -1205,10 +1229,11 @@ When the guest is discovered under `plugins/s3/` and `[output.s3].enabled = true
 the host loads it at startup via external destination loading instead of the
 in-process S3 backend.
 
-### Database plugins
+### Database adapter entrypoints
 
-`kind = "database"` guests are **BookclerkSQL adapters**. They implement the
-SeaORM proxy boundary over Workers RPC plus a generic atomic-plan executor.
+Export `databaseAdapter` (there is no `kind = "database"`). Guests are
+**BookclerkSQL adapters**. They implement the SeaORM proxy boundary over
+Workers RPC plus a generic atomic-plan executor.
 Guests speak only canonical BookclerkSQL; adapters lower at execute
 (`bookclerk-db-exec`). Engine connect/migrate/proxy code lives in the guest
 (`bookclerk-plugin-database-sqlite` and optional d1/postgres guests); the host

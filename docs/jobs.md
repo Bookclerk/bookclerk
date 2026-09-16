@@ -12,7 +12,7 @@ DDL. Job lifecycle (admit, claim, heartbeat, complete) stays host SeaORM /
 typed host plans on the library.
 
 This is not a general pub/sub bus. Domain events such as `book_acquired` /
-plugin `onEvent` stay **off** `JobKind`. They use a durable outbox
+plugin `event(batch)` stay **off** `JobKind`. They use a durable outbox
 (`domain_events` + `event_deliveries` + `event_subscriber_nodes`) with
 the same fenced-lease pattern as jobs. Acquire success publishes
 `book_acquired` with producer `source` on the envelope. Each host heartbeats discovered (config-enabled, even if spawn
@@ -123,7 +123,7 @@ pending → running → succeeded
 | `acquire` | `acquire:title={id\|all}:account={id\|all}` | `network` | `run_acquire` |
 | `listen_sync` | `listen_sync` | `network` | `run_listen_sync` |
 | `integration_scan` | `integration_scan:id={id}:force={0\|1}` | `network` | `run_integration_scan` |
-| `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI `JobHandler` stream-copy (`run_plugin_copy`) |
+| `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI `JobRunner` stream-copy (`run_plugin_copy`) |
 
 Reserved classes (no worker in this release): `media`, `transcription`,
 `indexing`.
@@ -173,7 +173,7 @@ this queue.
   `fail_job(..., "cancelled")` only when `cancel_requested` is set. A local
   cancel without that flag is treated as fence loss and ignored.
 - Event delivery workers use the same 60s lease and `lease/3` heartbeat
-  during `onEvent`. Fence loss cancels the guest RPC and ignores the
+  during `event(batch)`. Fence loss cancels the guest RPC and ignores the
   result. Claims are restricted to plugin ids loaded on this process;
   releasing an unexecuted claim does not consume `attempt_count`.
   Expired-lease reclaim restores `resume_pending` when a checkpoint exists

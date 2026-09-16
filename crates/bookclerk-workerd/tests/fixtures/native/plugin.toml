@@ -1,0 +1,15 @@
+api_version = 3
+id = "native_fixture"
+name = "Native contract fixture"
+version = "1.0.0"
+runtime = "native"
+command = "./bookclerk-workerd-native-fixture"
+entrypoints = ["storefront", "cli"]
+
+[triggers]
+jobs = ["stream_copy"]
+
+[capabilities.network]
+mode = "deny"
+
+[vars]

@@ -151,7 +151,7 @@ always uses the canonical SQLite-shaped query builder.
 
 First-party connect wiring (`DbConnectParams::{Sqlite,D1,Postgres}`) injects
 host-resolved paths and secrets for `sqlite` / `d1` / `postgres`. That is a
-convenience, not the contract: any other `kind = "database"` plugin id receives
+convenience, not the contract: any other `databaseAdapter` plugin id receives
 the public `DatabaseAdapterConfig` payload and must read connection settings
 from plugin-owned config / secrets bindings. Missing semantic capabilities
 fail closed; an unfamiliar diagnostic `engine` does not.

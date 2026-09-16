@@ -3,14 +3,17 @@
 Integrations are **outbound** plugins: they react to library events, expose
 health/diagnose probes, and optionally participate in the **SPA Accounts /
 claim-ticket** flow (external identities for Discover personalization).
+There is no plugin `kind = "integration"` — guests export `remoteLibrary`
+and/or declare `[[events.consumers]]` / `oidc` / `cli` (see
+[plugins.md](plugins.md)).
 
 First-party today: **Audiobookshelf** (dual load — in-process `register()` for
 `cargo run`, plus `crates/bookclerk-plugins/integration-audiobookshelf/`).
 Third-party integrations install as external plugins ([plugins.md](plugins.md)).
 
 The ABS plugin is **ABS-only** (scan, listening sync, credential auth, user
-observation via `event_poll`). Claim tickets and the SPA Accounts portal live
-in core Bookclerk; the host polls `event_poll` and kicks off those workflows.
+observation via `pollEvents`). Claim tickets and the SPA Accounts portal live
+in core Bookclerk; the host polls `pollEvents` and kicks off those workflows.
 
 ## CLI
 
@@ -55,8 +58,8 @@ Typical behavior when enabled:
 
 - Health / diagnose via `integrations status` / `test`
 - On `book_acquired`, optionally notify ABS to scan the library
-- Optional user watch via `event_poll` — host may mint claim tickets / notify
-- SPA credential return-visit login (`authenticate_user`) when allowed
+- Optional user watch via `pollEvents` — host may mint claim tickets / notify
+- SPA credential return-visit login (`oidc.authenticateUser`) when allowed
 - Optional **listening sync** (`supports_listening_sync`) into the shared
   `listening_progress` table — used by Discover when present, ignored when not
 
