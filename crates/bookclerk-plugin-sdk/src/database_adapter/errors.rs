@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn sqlite_constraint_is_conflict() {
         let err = plugin_error_from_engine(
-            "SQLITE_CONSTRAINT (2067): UNIQUE constraint failed: db_serialization_slots.slot_key",
+            "SQLITE_CONSTRAINT (2067): UNIQUE constraint failed: bookclerk_slots.slot_key",
         );
         assert_eq!(err.code, PluginErrorCode::Conflict, "{err}");
     }

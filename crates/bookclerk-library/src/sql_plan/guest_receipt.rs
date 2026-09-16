@@ -1,6 +1,6 @@
 //! Durable `(operationId, requestHash)` receipt wrap for guest-authored typed batches.
 //!
-//! Host domain plans already gate DML with `db_atomic_receipts`. Guest
+//! Host domain plans already gate DML with `bookclerk_receipts`. Guest
 //! `executeAtomic` must use the same envelope so a D1 (or any) adapter cannot
 //! apply guest mutations twice after an ambiguous commit.
 
@@ -42,7 +42,7 @@ pub(crate) fn wrap_guest_typed_request(
     let guest_len = u32::try_from(req.statements.len()).unwrap_or(u32::MAX);
 
     let prune = typed_exec(
-        "DELETE FROM db_atomic_receipts WHERE expires_at <= ? AND operation_id != ?",
+        "DELETE FROM bookclerk_receipts WHERE expires_at <= ? AND operation_id != ?",
         vec![
             DbValue::Text(created.clone()),
             DbValue::Text(operation_id.clone()),
@@ -50,7 +50,7 @@ pub(crate) fn wrap_guest_typed_request(
     );
     let select = typed_query(
         "SELECT operation_id, request_hash, status, payload, created_at \
-         FROM db_atomic_receipts WHERE operation_id = ?",
+         FROM bookclerk_receipts WHERE operation_id = ?",
         vec![DbValue::Text(operation_id.clone())],
     );
     let mut gated = Vec::with_capacity(req.statements.len());
@@ -72,10 +72,10 @@ pub(crate) fn wrap_guest_typed_request(
     statements.extend(gated);
     let expires = (now + Duration::hours(24)).to_rfc3339();
     statements.push(typed_exec(
-        "INSERT INTO db_atomic_receipts (\
+        "INSERT INTO bookclerk_receipts (\
             operation_id, operation_kind, request_hash, status, payload, created_at, expires_at\
          ) SELECT ?, ?, ?, 'claimed', '', ?, ? \
-           WHERE NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)",
+           WHERE NOT EXISTS (SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?)",
         vec![
             DbValue::Text(operation_id.clone()),
             DbValue::Text(GUEST_TYPED_KIND.into()),
@@ -196,7 +196,7 @@ fn decode_guest_replay_payload(
     }))
 }
 
-/// JSON envelope stored in `db_atomic_receipts.payload` for guest replay.
+/// JSON envelope stored in `bookclerk_receipts.payload` for guest replay.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[allow(clippy::missing_docs_in_private_items)]
 struct GuestReplayPayload {
@@ -274,7 +274,7 @@ mod replay_finalize {
 
     fn slots_env() -> SqlTypeEnv {
         sql_type_env_from_canonical_ddl(
-            "CREATE TABLE db_serialization_slots (slot_key TEXT NOT NULL, bump INTEGER NOT NULL)",
+            "CREATE TABLE bookclerk_slots (slot_key TEXT NOT NULL, bump INTEGER NOT NULL)",
         )
     }
 
@@ -288,9 +288,8 @@ mod replay_finalize {
             operation_id: "guest-replay-op".into(),
             request_hash: guest_hash.clone(),
             statements: vec![TypedDbStatement {
-                sql:
-                    "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('guest-replay', 1)"
-                        .into(),
+                sql: "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('guest-replay', 1)"
+                    .into(),
                 parameters: vec![],
                 kind: DbPlanStatementKind::Execute,
                 max_rows: 0,
@@ -320,7 +319,7 @@ mod replay_finalize {
             operation_id: "guest-replay-op".into(),
             request_hash: guest_hash.clone(),
             statements: vec![TypedDbStatement {
-                sql: "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('guest-replay', 99)"
+                sql: "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('guest-replay', 99)"
                     .into(),
                 parameters: vec![],
                 kind: DbPlanStatementKind::Execute,
@@ -358,9 +357,8 @@ mod replay_finalize {
             operation_id: "guest-nested-op".into(),
             request_hash: guest_hash.clone(),
             statements: vec![TypedDbStatement {
-                sql:
-                    "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('guest-nested', 1)"
-                        .into(),
+                sql: "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('guest-nested', 1)"
+                    .into(),
                 parameters: vec![],
                 kind: DbPlanStatementKind::Execute,
                 max_rows: 0,
@@ -392,7 +390,7 @@ mod replay_finalize {
         let rows = db
             .query_all_raw(Statement::from_string(
                 db.get_database_backend(),
-                "SELECT payload, status FROM db_atomic_receipts \
+                "SELECT payload, status FROM bookclerk_receipts \
                  WHERE operation_id = 'guest-nested-op'",
             ))
             .await
@@ -410,7 +408,7 @@ mod replay_finalize {
             operation_id: "guest-nested-op".into(),
             request_hash: guest_hash.clone(),
             statements: vec![TypedDbStatement {
-                sql: "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('guest-nested', 99)"
+                sql: "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('guest-nested', 99)"
                     .into(),
                 parameters: vec![],
                 kind: DbPlanStatementKind::Execute,
@@ -473,7 +471,7 @@ mod tests {
         assert!(
             wrapped.request.statements[1]
                 .sql
-                .contains("db_atomic_receipts"),
+                .contains("bookclerk_receipts"),
             "prior receipt select at index 1"
         );
         let gated = &wrapped.request.statements[2];
@@ -529,7 +527,7 @@ mod tests {
         let wrapped = wrap_guest_typed_request(req, &SqlTypeEnv::new()).expect("wrap");
         let ddl = &wrapped.request.statements[2];
         assert!(
-            !ddl.sql.contains("db_atomic_receipts"),
+            !ddl.sql.contains("bookclerk_receipts"),
             "DDL must not grow a write predicate: {}",
             ddl.sql
         );

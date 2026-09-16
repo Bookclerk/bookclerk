@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn custom_db_err_uses_sqlite_constraint_token() {
         let err = DbErr::Custom(
-            "SQLITE_CONSTRAINT (2067): UNIQUE constraint failed: schema_migrations.version".into(),
+            "SQLITE_CONSTRAINT (2067): UNIQUE constraint failed: bookclerk_schema_migrations.version".into(),
         );
         assert_eq!(classify_db_err(&err), DbErrorClass::Conflict);
         assert!(is_schema_apply_retryable(&err));

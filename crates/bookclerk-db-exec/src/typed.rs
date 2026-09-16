@@ -732,7 +732,7 @@ fn host_adapter_private_sql(sql: &str) -> bool {
 /// Host-authored `schema:{namespace}` fencing DML (not guest SQL).
 fn serialization_slot_sql(upper: &str) -> bool {
     (upper.starts_with("INSERT ") || upper.starts_with("UPDATE "))
-        && upper.contains("DB_SERIALIZATION_SLOTS")
+        && upper.contains("BOOKCLERK_SLOTS")
 }
 
 fn type_env_with_bookkeeping(catalog: &SqlTypeEnv) -> SqlTypeEnv {
@@ -1639,7 +1639,7 @@ async fn execute_typed_on_session_proofs(
 }
 
 /// Like [`execute_typed_on_session`], running extra statements in the same transaction
-/// before COMMIT (used to persist guest replay payloads on `db_atomic_receipts`).
+/// before COMMIT (used to persist guest replay payloads on `bookclerk_receipts`).
 ///
 /// `guest_hash` is the guest `requestHash` used to decide whether a claimed
 /// prior receipt should resume remaining guest SQL instead of skipping it.
@@ -2590,7 +2590,7 @@ mod tests {
             request_hash: String::new(),
             deadline_unix_ms: 0,
             statements: vec![TypedDbStatement {
-                sql: "SELECT user_version FROM pragma_user_version".into(),
+                sql: "SELECT name, type FROM pragma_table_info('books')".into(),
                 parameters: Vec::new(),
                 kind: DbPlanStatementKind::Select,
                 max_rows: 0,
@@ -2610,7 +2610,7 @@ mod tests {
             deadline_unix_ms: 0,
             statements: vec![
                 TypedDbStatement {
-                    sql: "CREATE TABLE IF NOT EXISTS db_atomic_receipts (\
+                    sql: "CREATE TABLE IF NOT EXISTS bookclerk_receipts (\
                          operation_id TEXT PRIMARY KEY NOT NULL, operation_kind TEXT NOT NULL, \
                          request_hash TEXT NOT NULL, status TEXT NOT NULL, payload TEXT, \
                          created_at TEXT NOT NULL, expires_at TEXT NOT NULL, consume_key TEXT UNIQUE)"
@@ -2621,7 +2621,7 @@ mod tests {
                     result_selection: DbResultSelection::AffectedRows,
                 },
                 TypedDbStatement {
-                    sql: "CREATE TABLE IF NOT EXISTS schema_migrations (\
+                    sql: "CREATE TABLE IF NOT EXISTS bookclerk_schema_migrations (\
                          version INTEGER PRIMARY KEY NOT NULL, checksum TEXT NOT NULL, \
                          app_version TEXT NOT NULL, applied_at TEXT NOT NULL)"
                         .into(),
@@ -2638,7 +2638,7 @@ mod tests {
                     result_selection: DbResultSelection::AffectedRows,
                 },
                 TypedDbStatement {
-                    sql: "INSERT INTO schema_migrations (version, checksum, app_version, applied_at) \
+                    sql: "INSERT INTO bookclerk_schema_migrations (version, checksum, app_version, applied_at) \
                          VALUES (1, 'abc', '0.1.0', '2026-01-01T00:00:00Z')"
                         .into(),
                     parameters: Vec::new(),

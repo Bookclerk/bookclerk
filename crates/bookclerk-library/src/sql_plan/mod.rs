@@ -2,8 +2,9 @@
 //!
 //! The library compiles Bookclerk domain operations into a typed
 //! [`bookclerk_plugin_abi::ExecuteRequest`] plus host-only
-//! [`AtomicSelection`] indexes. Database guests execute the statements as
-//! one transaction and return a typed [`bookclerk_plugin_abi::ExecuteReply`].
+//! [`crate::sql_plan::host_ir::AtomicSelection`] indexes. Database guests
+//! execute the statements as one transaction and return a typed
+//! [`bookclerk_plugin_abi::ExecuteReply`].
 
 #[cfg(test)]
 mod conformance;
@@ -16,10 +17,11 @@ mod interpret;
 mod named;
 mod reply;
 mod slots;
-mod typed_vectors;
+#[cfg(any(test, feature = "test-support"))]
 mod vectors_typed;
 
 /// Injected `maxResultRows` for conn-vector row-cap cases (sqlite / postgres).
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const CONTRACT_VECTOR_ROW_CAP: u32 = 5;
 
 use bookclerk_plugin_abi::{encoded_execute_request_bytes, DbCapabilities, ExecuteRequest};
@@ -37,8 +39,11 @@ pub use interpret::{interpret_typed_exec, PlanStmtResult};
 pub use named::{compile_claim_event_delivery, compile_named_request};
 pub use reply::validate_execute_reply;
 pub use slots::{event_inflight_slot, lock_serialization_slot, JOB_QUEUE_SLOT};
-pub use typed_vectors::{run_typed_conn_vectors, run_typed_request_vectors, stamp_typed_vector};
-pub use vectors_typed::run_typed_contract_vectors;
+#[cfg(any(test, feature = "test-support"))]
+pub use vectors_typed::{
+    run_typed_conn_vectors, run_typed_contract_vectors, run_typed_request_vectors,
+    stamp_typed_vector,
+};
 
 /// Compiled typed request plus host result-selection indexes.
 #[derive(Debug, Clone)]
@@ -238,7 +243,7 @@ pub fn authorize_typed_request(
 /// for callers that execute on something other than the library connection —
 /// e.g. an isolated plugin database binding session. `exec` receives the
 /// receipt-wrapped envelope and must run it atomically on the target
-/// database (which needs its own `db_atomic_receipts` table — see
+/// database (which needs its own `bookclerk_receipts` table — see
 /// [`crate::migrations::binding_bootstrap_ops`]).
 ///
 /// # Errors

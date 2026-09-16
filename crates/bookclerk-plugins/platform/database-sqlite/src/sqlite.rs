@@ -13,7 +13,7 @@ use bookclerk_db_exec::{
     ExecBudget,
 };
 #[cfg(feature = "host-helpers")]
-use bookclerk_library::{apply_host_schema, HostSchemaKind, LibraryStore};
+use bookclerk_library::{apply_host_schema, LibraryStore};
 use bookclerk_plugin_abi::DbCapabilities;
 use bookclerk_plugin_sdk::{DbColumn, DbType};
 use rusqlite::Connection;
@@ -270,7 +270,7 @@ pub async fn open_memory() -> bookclerk_library::Result<DatabaseConnection> {
     let db = open_memory_unmigrated()
         .await
         .map_err(bookclerk_library::LibraryError::Orm)?;
-    apply_host_schema(&db, HostSchemaKind::RowMarker).await?;
+    apply_host_schema(&db).await?;
     Ok(db)
 }
 
@@ -307,7 +307,7 @@ pub async fn open_store(path: &Path) -> bookclerk_library::Result<LibraryStore> 
     let db = open(path)
         .await
         .map_err(bookclerk_library::LibraryError::Orm)?;
-    apply_host_schema(&db, HostSchemaKind::RowMarker).await?;
+    apply_host_schema(&db).await?;
     Ok(LibraryStore::from_connection(db))
 }
 

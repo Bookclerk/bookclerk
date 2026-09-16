@@ -4,7 +4,7 @@ use sea_orm::entity::prelude::*;
 
 /// Row shape for this table (`DeriveEntityModel`).
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
-#[sea_orm(table_name = "db_atomic_receipts")]
+#[sea_orm(table_name = "bookclerk_receipts")]
 pub struct Model {
     /// Caller-chosen idempotency key (`operationId`).
     #[sea_orm(primary_key, auto_increment = false)]

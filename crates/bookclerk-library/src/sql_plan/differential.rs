@@ -114,9 +114,7 @@ mod tests {
         let db = bookclerk_plugin_database_sqlite::open_memory()
             .await
             .expect("sqlite");
-        crate::apply_host_schema(&db, crate::HostSchemaKind::RowMarker)
-            .await
-            .expect("sqlite schema");
+        crate::apply_host_schema(&db).await.expect("sqlite schema");
         db
     }
 
@@ -161,7 +159,7 @@ mod tests {
             None => format!("{}/{db_name}", &trimmed[..slash]),
         };
         let db = sea_orm::Database::connect(&db_url).await.expect("connect");
-        crate::apply_host_schema(&db, crate::HostSchemaKind::RowMarker)
+        crate::apply_host_schema(&db)
             .await
             .expect("postgres schema");
         db
@@ -185,11 +183,11 @@ mod tests {
             ),
             ("SELECT ? AS v".into(), vec![DbValue::Text("z".into())]),
             (
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup-diff', 0)".into(),
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('dup-diff', 0)".into(),
                 Vec::new(),
             ),
             (
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup-diff', 1)".into(),
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('dup-diff', 1)".into(),
                 Vec::new(),
             ),
             (

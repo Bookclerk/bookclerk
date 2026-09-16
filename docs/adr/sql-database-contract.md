@@ -57,14 +57,15 @@ policy ignores `timing`), and all
 numeric limits (`maxBinds`, `maxStatements`, `maxResultRows`, `maxPayloadBytes`,
 `maxResultBytes`, `maxCellBytes`, `maxRequestBytes`,
 `maxAtomicResultBytes`, `maxFunctionArgs`, `maxSchemaColumns`,
-`maxPatternBytes`, `maxLoweredStatementBytes`). Schema kind is chosen from the schema flags
-(exactly one of `pragmaUserVersion` or `schemaMigrations`;
-`atomicSchemaBatch` requires `schemaMigrations`). Bootstrap metadata
+`maxPatternBytes`, `maxLoweredStatementBytes`). `schemaMigrations` is the
+only schema flag: every adapter must keep the host's
+`bookclerk_schema_migrations` journal (there is no `PRAGMA user_version`
+alternative and no separate atomic-schema-batch flag). Bootstrap metadata
 (`sqlFamily`, SeaORM `dialect`) is **not** on typed `DbCapabilities`;
 it travels on the separate typed `DbBootstrap` / the host connect path after
-semantic negotiation succeeds. `DbCapabilities` `@17` is `pluginDatabases`,
-not a leftover `sqlFamily` tombstone. `@21` is `maxLoweredStatementBytes`.
-`@22` `consistentBackupRead` and `@23` `atomicUnitRestore` split consistent
+semantic negotiation succeeds. `DbCapabilities` `@15` is `pluginDatabases`,
+not a leftover `sqlFamily` tombstone. `@19` is `maxLoweredStatementBytes`.
+`@20` `consistentBackupRead` and `@21` `atomicUnitRestore` split consistent
 capture from complete per-unit replacement. Backup orchestration must not
 branch on sqlite/postgres/d1 plugin identity. First-party D1 advertises
 neither flag (sequential HTTP is not a consistent image and is not complete
@@ -137,8 +138,8 @@ env exists.
 
 `sqlFamily` and SeaORM `dialect` are bootstrap-only (typed `DbBootstrap` on
 the plugin-host connect path). Typed `DbCapabilities` does not carry them
-(`@17` is `pluginDatabases`; `@18`–`@21` are numeric caps including
-`maxLoweredStatementBytes`; `@22`/`@23` are backup flags). `DbBootstrap.engine`
+(`@15` is `pluginDatabases`; `@16`–`@19` are numeric caps including
+`maxLoweredStatementBytes`; `@20`/`@21` are backup flags). `DbBootstrap.engine`
 is a diagnostic physical-engine name. The host never admits, rejects, or
 generates SQL from `engine` — any string is valid. An architecture lint
 (`scripts/check-db-plugin-isolation.py`) forbids `bookclerk-library` production
@@ -177,7 +178,7 @@ unless the host-IR `maxRows` is `1`, the SQL string is a single statement
 (no top-level `;`), and any `VALUES` list is exactly one tuple. Overflow
 or an oversized HTTP body after a committed batch is `unavailable` (replay
 the same `operationId`); only a definitive non-retryable 4xx is permanent.
-Receipt rows live in host-authored SQL against `db_atomic_receipts`.
+Receipt rows live in host-authored SQL against `bookclerk_receipts`.
 Guests must not parse Bookclerk operation names or interpret receipts.
 `rowsAffected` is uniform by kind: `select` is `0`; `returning` is the
 number of returned rows; `execute` is the engine change count.
@@ -200,9 +201,10 @@ before `BEGIN`/HTTP or between statements is `cancelled` /
 
 Domain/store code must not branch on a concrete database type for
 correctness. Serialization uses schema-based slot rows
-(`db_serialization_slots`): `INSERT` the key, then `UPDATE bump = bump + 1`
-to take a write lock. PostgreSQL advisory locks and SQLite-only
-`job_queue_control` dual-paths are not used for new atomic work.
+(`bookclerk_slots`): `INSERT` the key, then `UPDATE bump = bump + 1`
+to take a write lock. There are no PostgreSQL advisory locks or
+engine-specific singleton-row dual paths; the job queue takes the same
+slot lock as every other atomic unit.
 
 JSON filter / catalog matching for event claim is evaluated in the host.
 The atomic mutation is a compare-and-set on a concrete delivery id.
@@ -217,7 +219,7 @@ limits is not loaded.
 ## Consequences
 
 - First-party database plugins connect, advertise caps, and call the shared
-  adapter SDK. The host selects and applies `schema_migrations` after
+  adapter SDK. The host selects and applies `bookclerk_schema_migrations` after
   capability negotiation (generic execute / one atomic batch; D1 schema
   apply is still one host-compiled HTTP batch).
 - An architecture lint forbids plugin and `bookclerk-db-guest` production

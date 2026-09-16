@@ -79,10 +79,10 @@ impl fmt::Display for SchemaState {
     }
 }
 
-/// On-disk `schema_migrations.state` for an unreleased development pack.
+/// On-disk `bookclerk_schema_migrations.state` for an unreleased development pack.
 pub const SCHEMA_STATE_UNRELEASED: &str = "unreleased";
 
-/// On-disk `schema_migrations.state` for a frozen plan version.
+/// On-disk `bookclerk_schema_migrations.state` for a frozen plan version.
 pub const SCHEMA_STATE_FROZEN: &str = "frozen";
 
 #[cfg(test)]

@@ -1232,45 +1232,43 @@ struct DbCapabilities {
   returning @2 :Bool;
   affectedRows @3 :Bool;
   schemaMigrations @4 :Bool;
-  pragmaUserVersion @5 :Bool;
-  atomicSchemaBatch @6 :Bool;
-  cancellation @7 :Bool;
-  timing @8 :Bool;
-  maxBinds @9 :UInt32;
-  maxStatements @10 :UInt32;
-  maxResultRows @11 :UInt32;
-  maxPayloadBytes @12 :UInt32;
-  maxResultBytes @13 :UInt32;
-  maxCellBytes @14 :UInt32;
-  maxRequestBytes @15 :UInt32;
-  maxAtomicResultBytes @16 :UInt32;
+  cancellation @5 :Bool;
+  timing @6 :Bool;
+  maxBinds @7 :UInt32;
+  maxStatements @8 :UInt32;
+  maxResultRows @9 :UInt32;
+  maxPayloadBytes @10 :UInt32;
+  maxResultBytes @11 :UInt32;
+  maxCellBytes @12 :UInt32;
+  maxRequestBytes @13 :UInt32;
+  maxAtomicResultBytes @14 :UInt32;
   # Append-only. Adapter can open additional isolated sessions
   # for plugin-owned database bindings (per-binding file / schema / database).
-  pluginDatabases @17 :Bool;
+  pluginDatabases @15 :Bool;
   # Maximum arguments in one physical function call after adapter hiding
   # (nested min / max / coalesce). Portable json_object is already ≤ 32
   # arguments (16 pairs), matching D1. `0` is unspecified.
-  maxFunctionArgs @18 :UInt32;
+  maxFunctionArgs @16 :UInt32;
   # Maximum columns in one CREATE TABLE / result row. `0` is unspecified.
-  maxSchemaColumns @19 :UInt32;
+  maxSchemaColumns @17 :UInt32;
   # Maximum UTF-8 bytes of a BookclerkSQL LIKE pattern value (literals and
   # TEXT binds). Adapters that expand LIKE into GLOB must advertise a
   # conservative value that still fits the physical pattern cap. `0` is
   # unspecified.
-  maxPatternBytes @20 :UInt32;
+  maxPatternBytes @18 :UInt32;
   # Maximum UTF-8 bytes of sqlite-family lowered SQL the adapter can realize
   # for one statement (INTEGER overflow wraps, LIKE→GLOB, NULLIF, INSERT OR
   # IGNORE, query LIMIT wrap, bytes-placeholder expansion). `0` is
   # unspecified: the host does not enforce a lowered-size ceiling. First-party
   # D1 advertises 100000. Hosts compare a standardized Bookclerk lowering
   # upper bound against this number and must not branch on engine identity.
-  maxLoweredStatementBytes @21 :UInt32;
+  maxLoweredStatementBytes @19 :UInt32;
   # Adapter can expose one stable logical database state while the host
   # reads schema, rows, and identity.
-  consistentBackupRead @22 :Bool;
+  consistentBackupRead @20 :Bool;
   # Adapter can destructively replace one logical database unit so an
   # ordinary restore failure does not leave that unit partially replaced.
-  atomicUnitRestore @23 :Bool;
+  atomicUnitRestore @21 :Bool;
 }
 
 struct DbBootstrapReply {

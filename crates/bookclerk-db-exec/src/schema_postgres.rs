@@ -79,12 +79,12 @@ pub fn lower_binding_ddl_execute_request(
     }
 }
 
-/// True when `sql` is a host schema version marker (`schema_migrations` or `PRAGMA user_version`).
+/// True when `sql` is a host schema version marker (`bookclerk_schema_migrations` or `PRAGMA user_version`).
 #[must_use]
 pub fn is_host_schema_version_marker(sql: &str) -> bool {
     let t = sql.trim();
-    t.starts_with("INSERT INTO schema_migrations")
-        || t.starts_with("DELETE FROM schema_migrations")
+    t.starts_with("INSERT INTO bookclerk_schema_migrations")
+        || t.starts_with("DELETE FROM bookclerk_schema_migrations")
         || t.starts_with("PRAGMA user_version =")
 }
 
@@ -464,7 +464,7 @@ mod tests {
         let canonical = "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT)";
         let batch = vec![
             canonical.to_string(),
-            "INSERT INTO schema_migrations (version) VALUES (1)".to_string(),
+            "INSERT INTO bookclerk_schema_migrations (version) VALUES (1)".to_string(),
         ];
         let expanded =
             expand_host_schema_batch(DatabaseBackend::Postgres, &batch).expect("host schema batch");
@@ -484,7 +484,7 @@ mod tests {
         );
         assert_eq!(
             expanded.last().map(String::as_str),
-            Some("INSERT INTO schema_migrations (version) VALUES (1)")
+            Some("INSERT INTO bookclerk_schema_migrations (version) VALUES (1)")
         );
         assert!(
             expand_host_schema_batch(DatabaseBackend::Postgres, &expanded).is_none(),
@@ -507,7 +507,7 @@ mod tests {
                     result_selection: DbResultSelection::AffectedRows,
                 },
                 TypedDbStatement {
-                    sql: "INSERT INTO schema_migrations (version) VALUES (1)".into(),
+                    sql: "INSERT INTO bookclerk_schema_migrations (version) VALUES (1)".into(),
                     parameters: vec![],
                     kind: DbPlanStatementKind::Execute,
                     max_rows: 0,
@@ -542,7 +542,7 @@ mod tests {
         );
         assert_eq!(
             expanded.statements.last().map(|s| s.sql.as_str()),
-            Some("INSERT INTO schema_migrations (version) VALUES (1)")
+            Some("INSERT INTO bookclerk_schema_migrations (version) VALUES (1)")
         );
     }
 

@@ -46,7 +46,7 @@ fn is_claim_constraint(err: &DbErr) -> bool {
     let t = err.to_string().to_ascii_lowercase();
     t.contains("sqlite_constraint")
         || t.contains("unique constraint")
-        || (t.contains("unique") && t.contains("db_atomic_receipts"))
+        || (t.contains("unique") && t.contains("bookclerk_receipts"))
 }
 
 /// True when the guest-receipt wrap contains ungated DDL (CREATE/DROP).
@@ -102,11 +102,11 @@ fn typed_is_read_only(statements: &[TypedDbStatement]) -> bool {
         .all(|s| matches!(s.kind, DbPlanStatementKind::Select))
 }
 
-/// True when the batch includes host `db_atomic_receipts` gating (named atomics).
+/// True when the batch includes host `bookclerk_receipts` gating (named atomics).
 fn typed_is_receipt_gated(statements: &[TypedDbStatement]) -> bool {
     statements
         .iter()
-        .any(|s| s.sql.to_ascii_lowercase().contains("db_atomic_receipts"))
+        .any(|s| s.sql.to_ascii_lowercase().contains("bookclerk_receipts"))
 }
 
 impl D1Proxy {

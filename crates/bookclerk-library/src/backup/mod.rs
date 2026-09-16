@@ -31,7 +31,7 @@ use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{LibraryError, Result};
-use crate::host_schema::{ensure_restore_target_is_replaceable, HostSchemaKind};
+use crate::host_schema::{ensure_restore_target_is_replaceable, require_schema_migrations};
 use crate::schema_state::SchemaState;
 use crate::store::LibraryStore;
 
@@ -235,8 +235,6 @@ pub struct CanonicalRestoreOpts {
     pub max_payload_bytes: u32,
     /// Maximum encoded bytes of one [`bookclerk_plugin_abi::ExecuteRequest`].
     pub max_request_bytes: u32,
-    /// Capability-derived schema marker contract (never inferred from `DbBackend`).
-    pub host_schema_kind: HostSchemaKind,
     /// Adapter restore hooks. `None` uses the in-process SDK (tests).
     pub adapter: Option<SharedAdapterBackupOps>,
     /// True when leftover SQL is physically lowered on the opened connection.
@@ -250,7 +248,6 @@ impl std::fmt::Debug for CanonicalRestoreOpts {
             .field("max_binds", &self.max_binds)
             .field("max_payload_bytes", &self.max_payload_bytes)
             .field("max_request_bytes", &self.max_request_bytes)
-            .field("host_schema_kind", &self.host_schema_kind)
             .field("adapter", &self.adapter.as_ref().map(|_| "Some"))
             .field("in_process", &self.in_process)
             .finish()
@@ -265,10 +262,10 @@ impl Default for CanonicalRestoreOpts {
 }
 
 impl CanonicalRestoreOpts {
-    /// Restore limits and marker kind copied from negotiated adapter capabilities.
+    /// Restore limits copied from negotiated adapter capabilities.
     ///
-    /// [`Self::host_schema_kind`] comes from [`HostSchemaKind::from_db_capabilities`],
-    /// never from SeaORM [`sea_orm::DbBackend`]. Host policy requires
+    /// The versioning contract is checked with [`require_schema_migrations`],
+    /// never inferred from SeaORM [`sea_orm::DbBackend`]. Host policy requires
     /// `schemaMigrations`.
     ///
     /// # Errors
@@ -276,12 +273,12 @@ impl CanonicalRestoreOpts {
     /// Returns when `caps` is not a known versioning contract (`schemaMigrations`
     /// missing).
     pub fn from_caps(caps: &DbCapabilities) -> Result<Self> {
+        require_schema_migrations(caps)?;
         Ok(Self {
             atomic_unit_restore: caps.supports_atomic_unit_restore(),
             max_binds: caps.max_binds.max(1),
             max_payload_bytes: caps.max_payload_bytes.max(1),
             max_request_bytes: caps.max_request_bytes.max(1),
-            host_schema_kind: HostSchemaKind::from_db_capabilities(caps)?,
             adapter: None,
             in_process: false,
         })
@@ -815,9 +812,9 @@ pub async fn restore_backup(
 
 /// Restores from an already-open repository (extracted archives).
 ///
-/// Target [`crate::SchemaState`] is read with [`CanonicalRestoreOpts::host_schema_kind`]
-/// (capability-derived). This function never infers a marker contract from
-/// [`sea_orm::DbBackend`].
+/// Target [`crate::SchemaState`] is read from the canonical
+/// `bookclerk_schema_migrations` rows. This function never infers a
+/// versioning contract from [`sea_orm::DbBackend`].
 ///
 /// # Errors
 ///
@@ -828,7 +825,7 @@ pub async fn restore_backup_in_repo(
     id: &str,
     opts: &CanonicalRestoreOpts,
 ) -> Result<RestorePlan> {
-    ensure_restore_target_is_replaceable(db, opts.host_schema_kind).await?;
+    ensure_restore_target_is_replaceable(db).await?;
     let validated = verify_recovery_point(repo, id)?;
     // Preserve when no plugin units were captured — `include_plugin_databases`
     // alone is not enough (an empty registry at backup still sets the flag).

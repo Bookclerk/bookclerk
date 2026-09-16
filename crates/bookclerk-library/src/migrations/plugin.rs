@@ -33,7 +33,7 @@ const PLUGIN_TXN_TIMING: &str = "plugin_migrate_txn";
 pub const MAX_PLUGIN_MIGRATION_APPLY_ATTEMPTS: usize = 8;
 
 /// Per-binding serialization slot for plugin migration apply.
-pub const PLUGIN_MIGRATION_SLOT_KEY: &str = "plugin_migrations";
+pub const PLUGIN_MIGRATION_SLOT_KEY: &str = "bookclerk_plugin_migrations";
 
 /// Proven, ordered plugin migration sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -391,7 +391,9 @@ where
         MAX_LIST_PAGE,
     )
     .await
-    .map_err(|err| LibraryError::Schema(format!("cannot read plugin_migrations: {err}")))?;
+    .map_err(|err| {
+        LibraryError::Schema(format!("cannot read bookclerk_plugin_migrations: {err}"))
+    })?;
     history_from_execute_reply(&reply)
 }
 
@@ -408,14 +410,15 @@ pub fn history_from_execute_reply(reply: &ExecuteReply) -> Result<PluginMigratio
     for (i, row) in stmt.rows.iter().enumerate() {
         if row.values.len() < 3 {
             return Err(LibraryError::Schema(
-                "plugin_migrations row is missing ordinal, migration_id, or checksum".into(),
+                "bookclerk_plugin_migrations row is missing ordinal, migration_id, or checksum"
+                    .into(),
             ));
         }
         let ordinal = match &row.values[0] {
             DbValue::Int64(n) => *n,
             other => {
                 return Err(LibraryError::Schema(format!(
-                    "plugin_migrations.ordinal must be INTEGER, got {other:?}"
+                    "bookclerk_plugin_migrations.ordinal must be INTEGER, got {other:?}"
                 )))
             }
         };
@@ -423,7 +426,7 @@ pub fn history_from_execute_reply(reply: &ExecuteReply) -> Result<PluginMigratio
             DbValue::Text(s) => s.clone(),
             other => {
                 return Err(LibraryError::Schema(format!(
-                    "plugin_migrations.migration_id must be TEXT, got {other:?}"
+                    "bookclerk_plugin_migrations.migration_id must be TEXT, got {other:?}"
                 )))
             }
         };
@@ -431,14 +434,14 @@ pub fn history_from_execute_reply(reply: &ExecuteReply) -> Result<PluginMigratio
             DbValue::Text(s) => s.clone(),
             other => {
                 return Err(LibraryError::Schema(format!(
-                    "plugin_migrations.checksum must be TEXT, got {other:?}"
+                    "bookclerk_plugin_migrations.checksum must be TEXT, got {other:?}"
                 )))
             }
         };
         let expect = i64::try_from(i).unwrap_or(i64::MAX);
         if ordinal != expect {
             return Err(LibraryError::Schema(format!(
-                "plugin_migrations ordinal {ordinal} is not contiguous (expected {expect})"
+                "bookclerk_plugin_migrations ordinal {ordinal} is not contiguous (expected {expect})"
             )));
         }
         entries.push(PluginJournalEntry {
@@ -471,8 +474,8 @@ pub fn plugin_journal_insert_sql(ordinal: i64, id: &str, checksum: &str) -> Stri
 pub fn plugin_slot_lock_sql() -> Vec<String> {
     let key = sql_string_literal(PLUGIN_MIGRATION_SLOT_KEY);
     vec![
-        format!("INSERT OR IGNORE INTO db_serialization_slots (slot_key, bump) VALUES ({key}, 0)"),
-        format!("UPDATE db_serialization_slots SET bump = bump + 1 WHERE slot_key = {key}"),
+        format!("INSERT OR IGNORE INTO bookclerk_slots (slot_key, bump) VALUES ({key}, 0)"),
+        format!("UPDATE bookclerk_slots SET bump = bump + 1 WHERE slot_key = {key}"),
     ]
 }
 
@@ -736,12 +739,12 @@ mod tests {
         let batch = &batches[0];
         assert!(batch.len() >= 4, "{batch:?}");
         assert!(
-            batch[0].contains("db_serialization_slots") && batch[0].contains("INSERT OR IGNORE"),
+            batch[0].contains("bookclerk_slots") && batch[0].contains("INSERT OR IGNORE"),
             "{}",
             batch[0]
         );
         assert!(
-            batch[1].contains("db_serialization_slots") && batch[1].contains("UPDATE"),
+            batch[1].contains("bookclerk_slots") && batch[1].contains("UPDATE"),
             "{}",
             batch[1]
         );
@@ -856,7 +859,7 @@ mod tests {
         let err = prove_plugin_migration_sequence(vec![mig(
             "evil",
             vec![schema(
-                "CREATE TABLE IF NOT EXISTS plugin_migrations (\
+                "CREATE TABLE IF NOT EXISTS bookclerk_plugin_migrations (\
                     ordinal INTEGER PRIMARY KEY NOT NULL, \
                     migration_id TEXT NOT NULL, \
                     checksum TEXT NOT NULL, \
@@ -866,7 +869,7 @@ mod tests {
         )])
         .unwrap_err();
         assert!(
-            err.to_string().contains("plugin_migrations")
+            err.to_string().contains("bookclerk_plugin_migrations")
                 || err.to_string().to_lowercase().contains("reserved"),
             "{err}"
         );
@@ -1311,7 +1314,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.to_string().contains("plugin_migrations")
+            err.to_string().contains("bookclerk_plugin_migrations")
                 || err.to_string().to_lowercase().contains("reserved")
                 || err.to_string().to_lowercase().contains("unauthorized"),
             "{err}"

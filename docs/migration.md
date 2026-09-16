@@ -60,7 +60,7 @@ archive** (config, `library.db`, optional extras). It is not a schema walk.
 
 ## Host schema backups (`bookclerk db`)
 
-Schema state, in-place backups, and last-reversible downgrade live on
+Schema state, in-place backups, and explicit migrate live on
 `bookclerk db`, not `export native` or `config database migrate` (backend
 switch) or `plugins db` (binding list/drop). See
 [ADR: schema versioning](adr/schema-versioning.md).
@@ -75,7 +75,6 @@ bookclerk db backup prune
 bookclerk db restore --from ./recovery-point.tar.gz
 bookclerk db restore --from <recovery-point-id-or-timestamp>
 bookclerk db migrate --to 1
-bookclerk db downgrade
 ```
 
 `db version` prints `uninitialized`, `unreleased@base<n>+<checksum>`, or
@@ -86,8 +85,8 @@ frozen revisions. Automatic `pre-migrate` recovery points land under
 `manual` backups are never pruned. Restore **replaces** schema and data using
 canonical Bookclerk content (cross-adapter) and does not auto-migrate. Integrity
 is verified before any destructive step. There is no production frozen v1 pack
-yet: `downgrade` is a no-op until a reversible frozen step exists; use restore
-for time travel.
+yet: `migrate --to <older>` walks reversible downs only once a reversible
+frozen step exists; use restore for time travel.
 
 `--include-plugin-databases` captures plugin-owned bindings from the
 `plugin_databases` registry in portable Bookclerk format. Plugin schema

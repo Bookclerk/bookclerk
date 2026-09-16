@@ -1,7 +1,7 @@
 //! Host-mediated plugin binding schema lifecycle.
 //!
 //! Each isolated binding database records durable [`SchemaState`] in
-//! `schema_migrations` (same table shape as the library). Host bootstrap
+//! `bookclerk_schema_migrations` (same table shape as the library). Host bootstrap
 //! ([`crate::migrations::binding_bootstrap_ops`]) is the unreleased binding
 //! schema. Progression is ordered, host-mediated BookclerkSQL only — no
 //! `pg_dump`, `VACUUM INTO`, D1 REST migrate, or other backend-native escape
@@ -15,7 +15,7 @@
 //! [`crate::migrations::prove_plugin_migration_sequence`] /
 //! [`crate::migrations::apply_plugin_migrations`] and do **not** bump
 //! host-owned bootstrap [`SchemaState`]. Restore writes captured rows
-//! (including `plugin_migrations`) and does **not** run plugin migrations
+//! (including `bookclerk_plugin_migrations`) and does **not** run plugin migrations
 //! inside the restore transaction.
 
 use std::time::Duration;
@@ -26,7 +26,7 @@ use bookclerk_plugin_abi::{
 use sea_orm::DatabaseConnection;
 
 use crate::error::{LibraryError, Result};
-use crate::host_schema::{current_schema_state, ensure_schema_migrations, HostSchemaKind};
+use crate::host_schema::{current_schema_state, ensure_schema_migrations};
 use crate::migrations::{
     binding_bootstrap_ops, binding_bootstrap_statements, binding_unreleased_checksum,
     prove_migration_ops, unreleased_state_marker_sql, BINDING_SCHEMA_VERSION,
@@ -81,7 +81,7 @@ pub fn binding_bootstrap_plan(state: &SchemaState) -> Result<Option<Vec<String>>
 /// Applies host-owned binding bootstrap when the binding is uninitialized.
 ///
 /// Matching [`SchemaState::Unreleased`] is a no-op. Restore that rewrites
-/// `schema_migrations` as ordinary rows will take this no-op path and will not
+/// `bookclerk_schema_migrations` as ordinary rows will take this no-op path and will not
 /// re-run plugin-owned DDL.
 ///
 /// # Errors
@@ -89,7 +89,7 @@ pub fn binding_bootstrap_plan(state: &SchemaState) -> Result<Option<Vec<String>>
 /// Returns when schema apply or the binding state machine fails closed.
 pub async fn apply_binding_bootstrap(db: &DatabaseConnection) -> Result<()> {
     ensure_schema_migrations(db).await?;
-    let state = current_schema_state(db, HostSchemaKind::RowMarker).await?;
+    let state = current_schema_state(db).await?;
     let Some(stmts) = binding_bootstrap_plan(&state)? else {
         return Ok(());
     };
@@ -98,7 +98,7 @@ pub async fn apply_binding_bootstrap(db: &DatabaseConnection) -> Result<()> {
     for attempt in 0..8 {
         match run_binding_batch(db, stmts.clone()).await {
             Ok(()) => return Ok(()),
-            Err(err) => match current_schema_state(db, HostSchemaKind::RowMarker).await {
+            Err(err) => match current_schema_state(db).await {
                 Ok(SchemaState::Unreleased { checksum, .. })
                     if checksum == binding_unreleased_checksum() =>
                 {
@@ -174,11 +174,13 @@ mod tests {
         let stmts = binding_bootstrap_plan(&SchemaState::Uninitialized)
             .unwrap()
             .expect("apply");
-        assert!(stmts.iter().any(|s| s.contains("db_atomic_receipts")));
-        assert!(stmts.iter().any(|s| s.contains("schema_migrations")));
+        assert!(stmts.iter().any(|s| s.contains("bookclerk_receipts")));
         assert!(stmts
             .iter()
-            .any(|s| s.contains("INSERT INTO schema_migrations")));
+            .any(|s| s.contains("bookclerk_schema_migrations")));
+        assert!(stmts
+            .iter()
+            .any(|s| s.contains("INSERT INTO bookclerk_schema_migrations")));
         assert!(!stmts
             .iter()
             .any(|s| s.contains("VACUUM") || s.contains("pg_dump")));
@@ -190,13 +192,9 @@ mod tests {
             .await
             .unwrap();
         apply_binding_bootstrap(&db).await.unwrap();
-        let first = current_schema_state(&db, HostSchemaKind::RowMarker)
-            .await
-            .unwrap();
+        let first = current_schema_state(&db).await.unwrap();
         apply_binding_bootstrap(&db).await.unwrap();
-        let second = current_schema_state(&db, HostSchemaKind::RowMarker)
-            .await
-            .unwrap();
+        let second = current_schema_state(&db).await.unwrap();
         assert_eq!(first, second);
         match first {
             SchemaState::Unreleased {

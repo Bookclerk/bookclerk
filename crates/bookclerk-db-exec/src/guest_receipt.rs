@@ -11,7 +11,7 @@ use bookclerk_plugin_abi::{
 };
 use sea_orm::DbErr;
 
-/// Maximum UTF-8 bytes stored in `db_atomic_receipts.payload` for guest replay.
+/// Maximum UTF-8 bytes stored in `bookclerk_receipts.payload` for guest replay.
 pub const GUEST_TYPED_REPLAY_PAYLOAD_MAX_BYTES: usize = 65536;
 
 /// Error text when a receipt committed but the caller-visible payload was lost.
@@ -36,7 +36,7 @@ pub const GUEST_RECEIPT_STATUS_APPLIED: &str = "applied";
 /// D1 claimed-owner batches strip this after the stub INSERT commits, because
 /// the claim row would otherwise make the predicate false on first execution.
 pub const GUEST_RECEIPT_WRITE_GATE: &str =
-    "NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)";
+    "NOT EXISTS (SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?)";
 
 /// True when `err` is [`GUEST_RECEIPT_RESULT_LOST`].
 #[must_use]
@@ -57,7 +57,7 @@ pub const GUEST_RECEIPT_STUB_SUFFIX: usize = 1;
 #[must_use]
 pub fn is_guest_receipt_stub_insert(sql: &str) -> bool {
     let t = sql.to_ascii_lowercase();
-    t.contains("insert into db_atomic_receipts") && t.contains("where not exists")
+    t.contains("insert into bookclerk_receipts") && t.contains("where not exists")
 }
 
 /// Removes the **host-appended** [`GUEST_RECEIPT_WRITE_GATE`] predicate.
@@ -103,7 +103,7 @@ fn strip_trailing_where_or_and(sql: &str) -> &str {
 #[must_use]
 pub fn guest_receipt_applied_stmt(operation_id: &str) -> TypedDbStatement {
     typed_exec(
-        "UPDATE db_atomic_receipts SET status = 'applied' \
+        "UPDATE bookclerk_receipts SET status = 'applied' \
          WHERE operation_id = ? AND status = 'claimed'",
         vec![DbValue::Text(operation_id.into())],
     )
@@ -231,7 +231,7 @@ pub fn guest_receipt_finalize_stmts(
 /// Host UPDATE that promotes a claimed stub to a durable `ok` payload.
 fn finalize_claimed_payload(payload: &str, operation_id: &str) -> TypedDbStatement {
     typed_exec(
-        "UPDATE db_atomic_receipts SET payload = ?, status = 'ok' \
+        "UPDATE bookclerk_receipts SET payload = ?, status = 'ok' \
          WHERE operation_id = ? AND status IN ('claimed', 'applied')",
         vec![
             DbValue::Text(payload.into()),
@@ -317,7 +317,7 @@ fn encode_guest_replay_payload(reply: &ExecuteReply) -> Result<String, DbErr> {
     Ok(text)
 }
 
-/// JSON envelope stored in `db_atomic_receipts.payload` for guest replay.
+/// JSON envelope stored in `bookclerk_receipts.payload` for guest replay.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct GuestReplayPayload {
     operation_id: String,
@@ -530,16 +530,16 @@ mod tests {
     #[test]
     fn stub_insert_is_the_gated_receipt_claim() {
         assert!(is_guest_receipt_stub_insert(
-            "INSERT INTO db_atomic_receipts (\
+            "INSERT INTO bookclerk_receipts (\
                 operation_id, operation_kind, request_hash, status, payload, created_at, expires_at\
              ) SELECT ?, ?, ?, 'claimed', '', ?, ? \
-               WHERE NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)"
+               WHERE NOT EXISTS (SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?)"
         ));
         assert!(!is_guest_receipt_stub_insert(
-            "UPDATE db_atomic_receipts SET payload = ? WHERE operation_id = ?"
+            "UPDATE bookclerk_receipts SET payload = ? WHERE operation_id = ?"
         ));
         assert!(!is_guest_receipt_stub_insert(
-            "SELECT operation_id FROM db_atomic_receipts WHERE operation_id = ?"
+            "SELECT operation_id FROM bookclerk_receipts WHERE operation_id = ?"
         ));
     }
 

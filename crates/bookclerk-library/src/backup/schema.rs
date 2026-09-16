@@ -306,7 +306,7 @@ pub fn library_ddl_for_schema_state(state: &SchemaState) -> Result<String> {
     )
 }
 
-/// Ordered canonical statements matching `state` (schema_migrations, then ops).
+/// Ordered canonical statements matching `state` (bookclerk_schema_migrations, then ops).
 ///
 /// # Errors
 ///

@@ -201,7 +201,7 @@ impl ExternalDatabase {
         if !caps.meets_host_minimums() {
             return Err(DbErr::Custom(caps.capability_failure_reason()));
         }
-        let _kind = bookclerk_library::HostSchemaKind::from_db_capabilities(&caps)
+        bookclerk_library::require_schema_migrations(&caps)
             .map_err(|err| DbErr::Custom(err.to_string()))?;
         // Fail closed: transport/internal/deadline failures must not be
         // silently replaced with plugin-id-derived metadata. Only a typed
@@ -247,7 +247,7 @@ impl ExternalDatabase {
         db: &DatabaseConnection,
         caps: &DbCapabilities,
     ) -> Result<(), DbErr> {
-        let kind = bookclerk_library::HostSchemaKind::from_db_capabilities(caps)
+        bookclerk_library::require_schema_migrations(caps)
             .map_err(|err| DbErr::Custom(err.to_string()))?;
         let session = self.session.clone();
         let caps = caps.clone();
@@ -265,7 +265,7 @@ impl ExternalDatabase {
                 adapter: Some(self.library_backup_ops()),
             }),
         };
-        bookclerk_library::apply_host_schema_with_batch_opts(db, kind, opts, move |stmts| {
+        bookclerk_library::apply_host_schema_with_batch_opts(db, opts, move |stmts| {
             let session = session.clone();
             let caps = caps.clone();
             async move { exec_host_ddl_batch(&session, &caps, stmts).await }
@@ -286,11 +286,11 @@ impl ExternalDatabase {
         target: i64,
         opts: bookclerk_library::SchemaApplyOptions,
     ) -> Result<bookclerk_library::SchemaWalk, DbErr> {
-        let kind = bookclerk_library::HostSchemaKind::from_db_capabilities(caps)
+        bookclerk_library::require_schema_migrations(caps)
             .map_err(|err| DbErr::Custom(err.to_string()))?;
         let session = self.session.clone();
         let caps = caps.clone();
-        bookclerk_library::migrate_host_schema_to_with_batch(db, kind, target, opts, move |stmts| {
+        bookclerk_library::migrate_host_schema_to_with_batch(db, target, opts, move |stmts| {
             let session = session.clone();
             let caps = caps.clone();
             async move { exec_host_ddl_batch(&session, &caps, stmts).await }
@@ -497,7 +497,7 @@ fn capped_binding_deadline(guest_unix_ms: u64, host_unix_ms: u64) -> u64 {
 ///
 /// The adapter holds an isolated session (own file / database / D1 database);
 /// guest SQL is authorized with [`bookclerk_library::GuestSqlPolicy::binding_owned`]
-/// and receipt-wrapped against the binding's own `db_atomic_receipts` table.
+/// and receipt-wrapped against the binding's own `bookclerk_receipts` table.
 /// Execute uses the host-private envelope path so receipts finalize, and
 /// forwards the job cancel flag plus a capped host lease deadline.
 struct BindingGuestDatabase {
@@ -867,7 +867,7 @@ fn binding_sql_request(operation_id: String, sqls: Vec<String>) -> ExecuteReques
     }
 }
 
-/// Reads binding `schema_migrations` rows into [`SchemaState`].
+/// Reads binding `bookclerk_schema_migrations` rows into [`SchemaState`].
 fn binding_schema_state_from_reply(reply: &ExecuteReply) -> PluginResult<SchemaState> {
     let Some(stmt) = reply.statements.first() else {
         return Ok(SchemaState::Uninitialized);
@@ -883,7 +883,7 @@ fn binding_schema_state_from_reply(reply: &ExecuteReply) -> PluginResult<SchemaS
             Some(DbValue::Text(s)) => s.parse::<i64>().unwrap_or(0),
             _ => {
                 return Err(PluginError::message(
-                    "binding schema_migrations row is missing version",
+                    "binding bookclerk_schema_migrations row is missing version",
                 ));
             }
         };
@@ -899,7 +899,7 @@ fn binding_schema_state_from_reply(reply: &ExecuteReply) -> PluginResult<SchemaS
             "unreleased" => {
                 if unreleased.is_some() {
                     return Err(PluginError::message(
-                        "binding schema_migrations has multiple unreleased rows",
+                        "binding bookclerk_schema_migrations has multiple unreleased rows",
                     ));
                 }
                 unreleased = Some((version, checksum));
@@ -912,7 +912,7 @@ fn binding_schema_state_from_reply(reply: &ExecuteReply) -> PluginResult<SchemaS
             }
             other => {
                 return Err(PluginError::message(format!(
-                    "unrecognized binding schema_migrations.state `{other}`"
+                    "unrecognized binding bookclerk_schema_migrations.state `{other}`"
                 )));
             }
         }
@@ -1209,7 +1209,7 @@ impl ExternalDatabase {
             deadline_unix_ms: 0,
             statements: vec![TypedDbStatement {
                 sql: format!(
-                    "SELECT version, state, checksum FROM schema_migrations \
+                    "SELECT version, state, checksum FROM bookclerk_schema_migrations \
                      WHERE namespace = {}",
                     sql_string_literal(BOOKCLERK_SCHEMA_NAMESPACE)
                 ),
@@ -2758,19 +2758,17 @@ mod tests {
         assert_eq!(reported.engine, "foundationdb-sql");
         let caps = DbCapabilities::advertised_sqlite();
         assert!(caps.meets_host_minimums());
-        let kind = bookclerk_library::HostSchemaKind::from_db_capabilities(&caps).unwrap();
-        assert_eq!(kind, bookclerk_library::HostSchemaKind::RowMarker);
+        bookclerk_library::require_schema_migrations(&caps).unwrap();
         assert_eq!(canonical_seaorm_backend(), DbBackend::Sqlite);
     }
 
     #[test]
-    fn row_migrations_kind_is_independent_of_sqlite_bootstrap() {
+    fn row_migrations_requirement_is_independent_of_sqlite_bootstrap() {
         let caps = DbCapabilities::advertised_sqlite();
-        let kind = bookclerk_library::HostSchemaKind::from_db_capabilities(&caps).unwrap();
-        assert_eq!(kind, bookclerk_library::HostSchemaKind::RowMarker);
+        bookclerk_library::require_schema_migrations(&caps).unwrap();
         let mut none = caps;
         none.schema_migrations = false;
-        assert!(bookclerk_library::HostSchemaKind::from_db_capabilities(&none).is_err());
+        assert!(bookclerk_library::require_schema_migrations(&none).is_err());
         assert_eq!(canonical_seaorm_backend(), DbBackend::Sqlite);
     }
 

@@ -16,7 +16,7 @@ use crate::{
 pub const MAX_PLUGIN_MIGRATION_ID_BYTES: usize = 128;
 
 /// Host-private plugin-binding migration journal (not a plugin-owned table).
-pub const PLUGIN_MIGRATIONS_TABLE: &str = "plugin_migrations";
+pub const PLUGIN_MIGRATIONS_TABLE: &str = "bookclerk_plugin_migrations";
 
 /// One already-separated BookclerkSQL operation in a registered migration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

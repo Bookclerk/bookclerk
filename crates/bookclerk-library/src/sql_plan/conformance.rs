@@ -1,7 +1,7 @@
 //! Shared SQL-plan conformance vectors (SQLite in-process).
 //!
 //! **Admission (#178):** database plugins must pass
-//! [`super::typed_vectors::run_typed_request_vectors`] with a callback that
+//! [`super::vectors_typed::run_typed_request_vectors`] with a callback that
 //! executes native [`ExecuteRequest`] / [`ExecuteReply`] (Cap'n Proto on the wire).
 
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
@@ -78,7 +78,7 @@ async fn seed_rowcap_slots(db: &sea_orm::DatabaseConnection, n: i32) {
             db,
             sea_orm::Statement::from_sql_and_values(
                 backend,
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES (?, 0)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES (?, 0)",
                 [format!("rowcap-{i:02}").into()],
             ),
         )
@@ -102,7 +102,7 @@ fn typed_req(
 #[tokio::test]
 async fn typed_shared_vectors_on_sqlite() {
     let db = mem_db().await;
-    super::typed_vectors::run_typed_conn_vectors(&db, DbCapabilities::advertised_sqlite()).await;
+    super::vectors_typed::run_typed_conn_vectors(&db, DbCapabilities::advertised_sqlite()).await;
 }
 
 #[tokio::test]
@@ -112,7 +112,7 @@ async fn typed_shared_vectors_on_postgres() {
         return;
     }
     let db = postgres_migrated_db().await;
-    super::typed_vectors::run_typed_conn_vectors(&db, DbCapabilities::advertised_postgres()).await;
+    super::vectors_typed::run_typed_conn_vectors(&db, DbCapabilities::advertised_postgres()).await;
 }
 
 #[tokio::test]
@@ -149,7 +149,7 @@ async fn sqlite_query_stops_after_cap_plus_one() {
     seed_rowcap_slots(&db, 50).await;
     let plan = vec![{
         let mut s = typed_stmt(
-            "SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'rowcap-%' ORDER BY slot_key",
+            "SELECT slot_key FROM bookclerk_slots WHERE slot_key LIKE 'rowcap-%' ORDER BY slot_key",
             bookclerk_plugin_abi::DbPlanStatementKind::Returning,
         );
         s.max_rows = 0;
@@ -182,7 +182,7 @@ async fn concurrent_attempts_keep_independent_deadlines_and_caps() {
     }];
     let select = vec![{
         let mut s = typed_stmt(
-            "SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'rowcap-%' ORDER BY slot_key",
+            "SELECT slot_key FROM bookclerk_slots WHERE slot_key LIKE 'rowcap-%' ORDER BY slot_key",
             bookclerk_plugin_abi::DbPlanStatementKind::Returning,
         );
         s.max_rows = 0;
@@ -284,7 +284,7 @@ async fn unique_constraint_on_generic_insert_is_engine_error() {
     let plan = vec![
         {
             let mut s = typed_stmt(
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup', 0)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('dup', 0)",
                 bookclerk_plugin_abi::DbPlanStatementKind::Execute,
             );
             s.max_rows = 0;
@@ -292,7 +292,7 @@ async fn unique_constraint_on_generic_insert_is_engine_error() {
         },
         {
             let mut s = typed_stmt(
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup', 1)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('dup', 1)",
                 bookclerk_plugin_abi::DbPlanStatementKind::Execute,
             );
             s.max_rows = 0;
@@ -315,7 +315,7 @@ async fn failed_statement_rolls_back_earlier_inserts() {
     let plan = vec![
         {
             let mut s = typed_stmt(
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('rb', 0)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('rb', 0)",
                 bookclerk_plugin_abi::DbPlanStatementKind::Execute,
             );
             s.max_rows = 0;
@@ -323,7 +323,7 @@ async fn failed_statement_rolls_back_earlier_inserts() {
         },
         {
             let mut s = typed_stmt(
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('rb', 1)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('rb', 1)",
                 bookclerk_plugin_abi::DbPlanStatementKind::Execute,
             );
             s.max_rows = 0;
@@ -339,7 +339,7 @@ async fn failed_statement_rolls_back_earlier_inserts() {
         &db,
         sea_orm::Statement::from_string(
             sea_orm::DatabaseBackend::Sqlite,
-            "SELECT bump FROM db_serialization_slots WHERE slot_key = 'rb'",
+            "SELECT bump FROM bookclerk_slots WHERE slot_key = 'rb'",
         ),
     )
     .await
@@ -356,7 +356,7 @@ async fn conditional_update_zero_rows_is_ok_execute() {
     let plan = vec![
         {
             let mut s = typed_stmt(
-                "UPDATE db_serialization_slots SET bump = 1 WHERE slot_key = 'missing'",
+                "UPDATE bookclerk_slots SET bump = 1 WHERE slot_key = 'missing'",
                 bookclerk_plugin_abi::DbPlanStatementKind::Execute,
             );
             s.max_rows = 0;
@@ -416,12 +416,12 @@ async fn leftover_physical_sqlite_glob_lowers_like_case_sensitivity() {
     let db = mem_db().await;
     bookclerk_db_exec::execute_canonical(
         &db,
-        "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('ABC', 0)",
+        "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('ABC', 0)",
         std::iter::empty::<sea_orm::Value>(),
     )
     .await
     .unwrap();
-    let sql = "SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'abc'";
+    let sql = "SELECT slot_key FROM bookclerk_slots WHERE slot_key LIKE 'abc'";
     let canonical =
         bookclerk_db_exec::query_canonical(&db, sql, std::iter::empty::<sea_orm::Value>())
             .await
@@ -461,7 +461,7 @@ async fn serialization_slot_bump_is_monotonic() {
         &db,
         sea_orm::Statement::from_string(
             sea_orm::DatabaseBackend::Sqlite,
-            "SELECT bump FROM db_serialization_slots WHERE slot_key = 'job-queue'",
+            "SELECT bump FROM bookclerk_slots WHERE slot_key = 'job-queue'",
         ),
     )
     .await
@@ -558,7 +558,7 @@ async fn postgres_migrated_db() -> sea_orm::DatabaseConnection {
     let db = sea_orm::Database::connect(&db_url)
         .await
         .expect("connect to disposable postgres database");
-    crate::apply_host_schema(&db, crate::HostSchemaKind::RowMarker)
+    crate::apply_host_schema(&db)
         .await
         .expect("host-applied postgres schema");
     db
@@ -661,7 +661,7 @@ async fn plan_cancel_hook_aborts_before_commit() {
     crate::inject_commit_failures(1);
     let plan = vec![{
         let mut s = typed_stmt(
-            "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('cancel', 0)",
+            "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('cancel', 0)",
             bookclerk_plugin_abi::DbPlanStatementKind::Execute,
         );
         s.max_rows = 0;
@@ -675,7 +675,7 @@ async fn plan_cancel_hook_aborts_before_commit() {
         &db,
         sea_orm::Statement::from_string(
             sea_orm::DatabaseBackend::Sqlite,
-            "SELECT bump FROM db_serialization_slots WHERE slot_key = 'cancel'",
+            "SELECT bump FROM bookclerk_slots WHERE slot_key = 'cancel'",
         ),
     )
     .await
@@ -691,7 +691,7 @@ async fn execute_caps_collected_rows_at_max_result_rows() {
             &db,
             sea_orm::Statement::from_sql_and_values(
                 sea_orm::DatabaseBackend::Sqlite,
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES (?, 0)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES (?, 0)",
                 [format!("cap-{i}").into()],
             ),
         )
@@ -699,7 +699,10 @@ async fn execute_caps_collected_rows_at_max_result_rows() {
         .unwrap();
     }
     let plan = vec![{
-        let mut s = typed_stmt("SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'cap-%' ORDER BY slot_key", bookclerk_plugin_abi::DbPlanStatementKind::Returning);
+        let mut s = typed_stmt(
+            "SELECT slot_key FROM bookclerk_slots WHERE slot_key LIKE 'cap-%' ORDER BY slot_key",
+            bookclerk_plugin_abi::DbPlanStatementKind::Returning,
+        );
         s.max_rows = 0;
         s
     }];
@@ -773,7 +776,7 @@ async fn postgres_execute_caps_collected_rows() {
             &db,
             sea_orm::Statement::from_sql_and_values(
                 backend,
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ($1, 0)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ($1, 0)",
                 [format!("pg-cap-{i}").into()],
             ),
         )
@@ -781,7 +784,10 @@ async fn postgres_execute_caps_collected_rows() {
         .unwrap();
     }
     let plan = vec![{
-        let mut s = typed_stmt("SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'pg-cap-%' ORDER BY slot_key", bookclerk_plugin_abi::DbPlanStatementKind::Returning);
+        let mut s = typed_stmt(
+            "SELECT slot_key FROM bookclerk_slots WHERE slot_key LIKE 'pg-cap-%' ORDER BY slot_key",
+            bookclerk_plugin_abi::DbPlanStatementKind::Returning,
+        );
         s.max_rows = 0;
         s
     }];
@@ -803,14 +809,12 @@ async fn host_applies_schema_to_unmigrated_sqlite() {
     let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
         .await
         .expect("unmigrated sqlite");
-    crate::apply_host_schema(&db, crate::HostSchemaKind::RowMarker)
-        .await
-        .expect("host schema");
+    crate::apply_host_schema(&db).await.expect("host schema");
     let rows = sea_orm::ConnectionTrait::query_all_raw(
         &db,
         sea_orm::Statement::from_string(
             sea_orm::DatabaseBackend::Sqlite,
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='db_serialization_slots'",
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='bookclerk_slots'",
         ),
     )
     .await
@@ -821,7 +825,7 @@ async fn host_applies_schema_to_unmigrated_sqlite() {
 fn interrupt_plan(slot: &str) -> Vec<bookclerk_plugin_abi::TypedDbStatement> {
     vec![{
         let mut s = typed_stmt(
-            format!("INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('{slot}', 0)"),
+            format!("INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('{slot}', 0)"),
             bookclerk_plugin_abi::DbPlanStatementKind::Execute,
         );
         s.max_rows = 0;
@@ -834,7 +838,7 @@ async fn slot_missing(db: &sea_orm::DatabaseConnection, key: &str) -> bool {
         db,
         sea_orm::Statement::from_sql_and_values(
             sea_orm::DatabaseBackend::Sqlite,
-            "SELECT bump FROM db_serialization_slots WHERE slot_key = ?",
+            "SELECT bump FROM bookclerk_slots WHERE slot_key = ?",
             [key.into()],
         ),
     )
@@ -968,11 +972,11 @@ async fn postgres_host_applies_schema() {
         &db,
         sea_orm::Statement::from_string(
             sea_orm::DatabaseBackend::Postgres,
-            "SELECT 1 FROM db_serialization_slots LIMIT 1",
+            "SELECT 1 FROM bookclerk_slots LIMIT 1",
         ),
     )
     .await
-    .expect("db_serialization_slots exists after host schema");
+    .expect("bookclerk_slots exists after host schema");
 }
 
 #[tokio::test]

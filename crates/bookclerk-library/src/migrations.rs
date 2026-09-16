@@ -54,9 +54,9 @@ pub fn unreleased_sql() -> &'static str {
 /// Host bookkeeping table created before applying plan versions.
 ///
 /// `namespace` separates Bookclerk-owned ledger rows (`bookclerk`) from any
-/// leftover rows. Plugin-owned history uses the separate `plugin_migrations`
+/// leftover rows. Plugin-owned history uses the separate `bookclerk_plugin_migrations`
 /// journal, not this table.
-pub const SCHEMA_MIGRATIONS_DDL: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
+pub const SCHEMA_MIGRATIONS_DDL: &str = "CREATE TABLE IF NOT EXISTS bookclerk_schema_migrations (
         namespace TEXT NOT NULL,
         version INTEGER NOT NULL,
         state TEXT NOT NULL,
@@ -124,13 +124,13 @@ pub use plugin::{
 
 /// One host-owned schema version in the canonical Bookclerk migration plan.
 ///
-/// Marker capabilities ([`crate::HostSchemaKind`]) choose only how each version
-/// is recorded (`schema_migrations` row). The live connection backend lowers
+/// Each version is recorded as a `bookclerk_schema_migrations` row (adapters
+/// must advertise `schemaMigrations`). The live connection backend lowers
 /// each [`MigrationOp`] at the adapter boundary (Postgres) or applies it
 /// verbatim (SQLite / D1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostMigrationStep {
-    /// `schema_migrations.version` for this step.
+    /// `bookclerk_schema_migrations.version` for this step.
     pub version: i64,
     /// Ordered schema and data ops for this version (the `up`).
     pub steps: &'static [MigrationOp],
@@ -368,7 +368,7 @@ pub fn unreleased_checksum() -> String {
     migration_ops_checksum(unreleased_ops(), None)
 }
 
-/// `INSERT` for an unreleased `schema_migrations` row in the Bookclerk namespace.
+/// `INSERT` for an unreleased `bookclerk_schema_migrations` row in the Bookclerk namespace.
 #[must_use]
 pub fn unreleased_state_marker_sql(checksum: &str, base_version: i64) -> String {
     unreleased_marker_sql_in(BOOKCLERK_SCHEMA_NAMESPACE, checksum, base_version)
@@ -467,15 +467,15 @@ fn ops_to_statements(ops: &[MigrationOp]) -> Vec<String> {
 }
 
 /// Host table names declared by [`current_canonical_schema`], plus
-/// `schema_migrations`.
+/// `bookclerk_schema_migrations`.
 #[must_use]
 pub fn current_canonical_table_names() -> Vec<String> {
     static NAMES: OnceLock<Vec<String>> = OnceLock::new();
     NAMES
         .get_or_init(|| {
             let mut names = table_names_from_statements(current_canonical_statements());
-            if !names.iter().any(|n| n == "schema_migrations") {
-                names.push("schema_migrations".into());
+            if !names.iter().any(|n| n == "bookclerk_schema_migrations") {
+                names.push("bookclerk_schema_migrations".into());
             }
             names
         })
@@ -650,13 +650,13 @@ mod tests {
         assert!(!unreleased_sql().trim().is_empty());
         assert!(unreleased_sql().contains("plugin_databases"));
         assert!(unreleased_sql().contains("dispatch_snapshot_json"));
-        assert!(unreleased_sql().contains("db_serialization_slots"));
+        assert!(unreleased_sql().contains("bookclerk_slots"));
         assert_eq!(current_canonical_statements(), unreleased_statements());
         assert_eq!(current_canonical_schema(), unreleased_sql());
         assert!(
             unreleased_ops()
                 .iter()
-                .any(|op| op.is_data() && op.sql().contains("job_queue_control")),
+                .any(|op| op.is_data() && op.sql().contains("event_outbox_stats")),
             "seed INSERT must be MigrationOp::Data"
         );
         prove_migration_ops(unreleased_ops()).expect("unreleased ops must typecheck");
@@ -664,7 +664,7 @@ mod tests {
         assert_eq!(unreleased_checksum().len(), 64);
         let tables = current_canonical_table_names();
         assert!(tables.contains(&"books".into()));
-        assert!(tables.contains(&"schema_migrations".into()));
+        assert!(tables.contains(&"bookclerk_schema_migrations".into()));
         assert!(tables.contains(&"plugin_databases".into()));
     }
 

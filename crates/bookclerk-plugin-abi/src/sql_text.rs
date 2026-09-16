@@ -819,14 +819,14 @@ pub fn admitted_bookclerk_sql_samples(seed: u64, count: usize) -> Vec<String> {
             6 => {
                 let id = format!("s{i:04}");
                 format!(
-                    "INSERT OR IGNORE INTO db_serialization_slots (slot_key, bump) VALUES ('{id}', {})",
+                    "INSERT OR IGNORE INTO bookclerk_slots (slot_key, bump) VALUES ('{id}', {})",
                     rng.bounded(8)
                 )
             }
             _ => {
                 let id = format!("s{i:04}");
                 format!(
-                    "SELECT slot_key FROM db_serialization_slots WHERE slot_key = '{id}' ORDER BY slot_key"
+                    "SELECT slot_key FROM bookclerk_slots WHERE slot_key = '{id}' ORDER BY slot_key"
                 )
             }
         };

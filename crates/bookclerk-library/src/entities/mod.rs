@@ -10,9 +10,9 @@
 
 pub mod account_links;
 pub mod accounts;
+pub mod bookclerk_receipts;
 pub mod books;
 pub mod claim_tickets;
-pub mod db_atomic_receipts;
 pub mod domain_events;
 pub mod embeddings;
 pub mod encrypted_secrets;

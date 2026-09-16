@@ -1,7 +1,7 @@
-//! Plan walking for host schema upgrades and last-reversible CLI downgrades.
+//! Plan walking for host schema upgrades and explicit `db migrate --to` downs.
 
 use crate::error::{LibraryError, Result};
-use crate::migrations::{min_supported_schema_version_in, HostMigrationStep, SCHEMA_VERSION};
+use crate::migrations::{min_supported_schema_version_in, HostMigrationStep};
 use crate::schema_state::SchemaState;
 
 /// Result of walking a host migration plan from one version to another.
@@ -121,15 +121,6 @@ fn plan_schema_walk_bounded(
         downs,
         blocked,
     })
-}
-
-/// Walks the compiled host plan from `from` to this binary's [`SCHEMA_VERSION`].
-///
-/// # Errors
-///
-/// Propagates [`plan_schema_walk`] failures.
-pub fn plan_downgrade_to_binary(plan: &[HostMigrationStep], from: i64) -> Result<SchemaWalk> {
-    plan_schema_walk(plan, from, SCHEMA_VERSION)
 }
 
 /// Plans a frozen walk from an explicit [`SchemaState`].

@@ -8,6 +8,12 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Test-only helpers shared with sibling crates' test suites: the typed
+# conformance vector runners and the in-process SQLite atomic backend.
+# Never enabled by product binaries.
+test-support = []
+
 [dependencies]
 anyhow.workspace = true
 argon2.workspace = true

@@ -1069,7 +1069,7 @@ id inside a generic atomic plan. Wake page size follows negotiated `maxBinds`
 the UPDATE includes `EXISTS (wake_pending ∧ lease owner)`. `[events.concurrency]`
 (default 1) is the number of local delivery workers **and** the cluster-wide
 max `running` deliveries per `(plugin_id, resource_class)` (`network` today),
-enforced at claim time with a portable `db_serialization_slots` row so two
+enforced at claim time with a portable `bookclerk_slots` row so two
 VPSes cannot over-admit under `READ COMMITTED`. FIFO per ordering key stays; unrelated keys are only
 blocked by that cap. The delivery worker
 heartbeats the lease during `onEvent` (`lease/3`); fence loss or operator
@@ -1200,22 +1200,26 @@ most `maxListPage` migrations, `maxPluginMigrationOps` operations per
 migration, `maxPluginMigrationTotalOps` operations across the registration,
 each SQL at most `maxScalarBytes`, and aggregate id+SQL UTF-8 at most
 `maxPluginMigrationRegistrationBytes`. The host proves the sequence with one evolving
-type environment, verifies durable `plugin_migrations` history is an exact
+type environment, verifies durable `bookclerk_plugin_migrations` history is an exact
 prefix of the registration, and applies only the pending suffix. Ordinary
 binding `execute` is query/DML only; durable `CREATE`/`DROP` is admitted only
 while the host applies that registration. `ALTER` and `CREATE TABLE AS` stay
 refused.
-`REFERENCES` targets use the same reserved-name rules as `CREATE`/`DROP`
-(no `db_atomic_receipts` / `schema_migrations` / `plugin_migrations` /
-`plugin_databases` / `db_serialization_slots`, no
-schema-qualified names). The guest grammar still applies —
+`REFERENCES` targets use the same reserved-name rules as `CREATE`/`DROP`:
+inside a binding the host reserves exactly one identifier prefix,
+`bookclerk_` (its bookkeeping — `bookclerk_schema_migrations`,
+`bookclerk_plugin_migrations`, `bookclerk_receipts`, `bookclerk_slots`, the
+`bookclerk_sql_*` catalog, the `bookclerk_src` wrap alias — all carry it),
+plus engine catalogs (`sqlite_*`, `pg_*`, `information_schema`) and
+schema-qualified names. Any other name, including a framework's own
+`schema_migrations`, is the plugin's. The guest grammar still applies —
 single statement, no `ATTACH`/`PRAGMA`/session verbs, no schema-qualified
 names — and functions are Bookclerk SQL v1 portable helpers (not a wider
 SQLite dialect; `hex` is denied; column types are `INTEGER` / `REAL` /
 `TEXT` / `BLOB` / `BOOLEAN`; `INSERT OR IGNORE` is unique/PK-conflict only and
 is lowered to `ON CONFLICT DO NOTHING` on every backend, including SQLite and
 D1 (`SELECT`/`WITH` sources are wrapped as `SELECT * FROM (<source>) AS
-_bc_src WHERE true`); helper arity and wire types are enforced so callers need
+bookclerk_src WHERE true`); helper arity and wire types are enforced so callers need
 not `CAST` for `round` / `sum` / `avg` / `count`. Canonical `LIKE` is
 case-sensitive (SQLite/D1 `GLOB` lowering; Postgres `COLLATE "C"`). Schema
 metadata is durable in adapter-private `bookclerk_sql_catalog` /
@@ -1229,7 +1233,7 @@ See [`docs/sql-contract/v1.md`](sql-contract/v1.md).
 Plugin schema apply is one atomic receipt per registered migration (slot
 lock, ops, journal append). Mixed guest `CREATE` + `INSERT` is not a product
 path: register/apply, then DML. Same-token DML replay must not double-insert.
-The binding's own `db_atomic_receipts` and `plugin_migrations` tables stay
+The binding's own `bookclerk_receipts` and `bookclerk_plugin_migrations` tables stay
 host-owned so retry tokens replay inside the binding and plugins cannot
 edit the journal.
 

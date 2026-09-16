@@ -175,7 +175,7 @@ async fn binding_denies_reserved_tables_and_qualified_names() {
         &db,
         req(
             "reserved",
-            vec![stmt("SELECT operation_id FROM db_atomic_receipts", vec![])],
+            vec![stmt("SELECT operation_id FROM bookclerk_receipts", vec![])],
         ),
     )
     .await
@@ -188,13 +188,16 @@ async fn binding_denies_reserved_tables_and_qualified_names() {
         &db,
         req(
             "plugin-journal",
-            vec![stmt("SELECT ordinal FROM plugin_migrations", vec![])],
+            vec![stmt(
+                "SELECT ordinal FROM bookclerk_plugin_migrations",
+                vec![],
+            )],
         ),
     )
     .await
     .expect_err("plugin migration journal must stay host-owned");
     assert!(
-        err.to_string().contains("plugin_migrations")
+        err.to_string().contains("bookclerk_plugin_migrations")
             || err.to_string().contains("reserved")
             || err.to_string().contains("unauthorized"),
         "{err}"
@@ -225,7 +228,7 @@ async fn binding_denies_reserved_foreign_key_references() {
         req(
             "fk-receipts",
             vec![stmt(
-                "CREATE TABLE IF NOT EXISTS t (id INTEGER REFERENCES db_atomic_receipts(operation_id))",
+                "CREATE TABLE IF NOT EXISTS t (id INTEGER REFERENCES bookclerk_receipts(operation_id))",
                 vec![],
             )],
         ),

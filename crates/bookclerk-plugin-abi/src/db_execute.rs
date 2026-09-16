@@ -489,7 +489,7 @@ pub struct DbCapabilities {
     pub returning: bool,
     /// Guest reports `rowsAffected`.
     pub affected_rows: bool,
-    /// Guest versions schema with a `schema_migrations` table.
+    /// Guest versions schema with a `bookclerk_schema_migrations` table.
     pub schema_migrations: bool,
     /// Guest honors RPC/session cancellation.
     pub cancellation: bool,
@@ -671,7 +671,7 @@ impl DbCapabilities {
         self.atomic_unit_restore
     }
 
-    /// First-party SQLite capability advertisement (`schema_migrations` rows).
+    /// First-party SQLite capability advertisement (`bookclerk_schema_migrations` rows).
     #[must_use]
     pub fn advertised_sqlite() -> Self {
         Self {
@@ -700,7 +700,7 @@ impl DbCapabilities {
         }
     }
 
-    /// First-party Cloudflare D1 capability advertisement (`schema_migrations`).
+    /// First-party Cloudflare D1 capability advertisement (`bookclerk_schema_migrations`).
     ///
     /// D1 HTTP has no interactive transaction and no complete per-unit
     /// replacement primitive on sequential REST statements, so it does **not**
@@ -726,7 +726,7 @@ impl DbCapabilities {
         }
     }
 
-    /// First-party PostgreSQL capability advertisement (`schema_migrations` rows).
+    /// First-party PostgreSQL capability advertisement (`bookclerk_schema_migrations` rows).
     #[must_use]
     pub fn advertised_postgres() -> Self {
         Self {

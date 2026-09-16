@@ -19,7 +19,6 @@ mod canonical;
 mod classify;
 mod exec;
 pub mod guest_receipt;
-mod json_bridge;
 mod lower;
 pub mod proxy_txn;
 mod schema_postgres;
@@ -77,7 +76,6 @@ pub use guest_receipt::{
     GUEST_RECEIPT_STATUS_APPLIED, GUEST_RECEIPT_STATUS_CLAIMED, GUEST_RECEIPT_STATUS_OK,
     GUEST_RECEIPT_STUB_SUFFIX, GUEST_RECEIPT_WRAP_PREFIX, GUEST_RECEIPT_WRITE_GATE,
 };
-pub use json_bridge::{db_value_from_b64_json, db_value_from_json, db_value_to_json};
 pub use lower::{
     lower_canonical_ddl_to_postgres, lower_canonical_sql, lower_canonical_sql_typed,
     lower_canonical_to_postgres,

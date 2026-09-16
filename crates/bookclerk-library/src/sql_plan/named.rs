@@ -42,7 +42,7 @@ struct AtomicPlan {
     /// `DELETE … RETURNING` consume-once; when set, expiry uses this cutoff.
     #[allow(dead_code)]
     consume_once: Option<(ConsumeOnceKind, String)>,
-    /// When set, interpret from this `SELECT` of `db_atomic_receipts`.
+    /// When set, interpret from this `SELECT` of `bookclerk_receipts`.
     receipt_select_index: Option<usize>,
     /// Receipt `SELECT` immediately after prune; a row means this attempt is a replay.
     prior_receipt_index: Option<usize>,
@@ -150,7 +150,7 @@ fn request_hash(op: &DbAtomicParams) -> std::result::Result<String, DbErr> {
     crate::db_atomic_request_hash(op).map_err(|err| DbErr::Custom(err.to_string()))
 }
 
-/// Wire `operationKind` string stored on `db_atomic_receipts` for `op`.
+/// Wire `operationKind` string stored on `bookclerk_receipts` for `op`.
 fn operation_kind(op: &DbAtomicParams) -> &'static str {
     match op {
         DbAtomicParams::DeleteUser { .. } => "deleteUser",
@@ -796,7 +796,7 @@ enum PayloadKind {
 /// Deletes expired receipts except the current `operation_id` so a replay can still match.
 fn prune_receipts(ctx: &ReceiptCtx) -> SqlStmt {
     sql(
-        "DELETE FROM db_atomic_receipts WHERE expires_at <= ? AND operation_id != ?",
+        "DELETE FROM bookclerk_receipts WHERE expires_at <= ? AND operation_id != ?",
         vec![j_str(&ctx.now), j_str(&ctx.operation_id)],
     )
 }
@@ -805,7 +805,7 @@ fn prune_receipts(ctx: &ReceiptCtx) -> SqlStmt {
 fn select_receipt(ctx: &ReceiptCtx) -> SqlStmt {
     sql(
         "SELECT operation_id, request_hash, status, payload, created_at \
-         FROM db_atomic_receipts WHERE operation_id = ?",
+         FROM bookclerk_receipts WHERE operation_id = ?",
         vec![j_str(&ctx.operation_id)],
     )
 }
@@ -822,14 +822,14 @@ fn gate_write(mut stmt: SqlStmt, operation_id: &str) -> SqlStmt {
     stmt.sql = apply_write_predicate(
         &stmt.sql,
         stmt.kind,
-        "NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)",
+        "NOT EXISTS (SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?)",
     );
     stmt
 }
 
 /// Like [`gate_write`], and only when this attempt's outcome `SELECT` is `ok`.
 ///
-/// Uses the live outcome subquery, not a prior `db_atomic_receipts` row, so a
+/// Uses the live outcome subquery, not a prior `bookclerk_receipts` row, so a
 /// committed `ok` receipt cannot authorize replay mutations.
 fn gate_write_when_outcome_ok(mut stmt: SqlStmt, operation_id: &str, outcome: &SqlStmt) -> SqlStmt {
     if !matches!(
@@ -841,7 +841,7 @@ fn gate_write_when_outcome_ok(mut stmt: SqlStmt, operation_id: &str, outcome: &S
     stmt.binds.push(j_str(operation_id));
     stmt.binds.extend(outcome.binds.clone());
     let pred = format!(
-        "NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?) \
+        "NOT EXISTS (SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?) \
          AND EXISTS (SELECT 1 FROM ({}) o WHERE o.status = '{ok}')",
         outcome.sql,
         ok = atomic_status::OK,
@@ -850,7 +850,7 @@ fn gate_write_when_outcome_ok(mut stmt: SqlStmt, operation_id: &str, outcome: &S
     stmt
 }
 
-/// Scratch `db_serialization_slots` key that holds this attempt's outcome bump.
+/// Scratch `bookclerk_slots` key that holds this attempt's outcome bump.
 fn outcome_scratch_key(operation_id: &str) -> String {
     format!("atomic-outcome:{operation_id}")
 }
@@ -910,9 +910,9 @@ fn bump_to_status_sql(bump_sql: &str) -> String {
 /// Inserts the outcome scratch row unless this `operation_id` already has a receipt.
 fn snapshot_outcome_insert(ctx: &ReceiptCtx) -> SqlStmt {
     sql(
-        "INSERT OR IGNORE INTO db_serialization_slots (slot_key, bump) \
+        "INSERT OR IGNORE INTO bookclerk_slots (slot_key, bump) \
          SELECT ?, 0 WHERE NOT EXISTS (\
-            SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?\
+            SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?\
          )",
         vec![
             j_str(&outcome_scratch_key(&ctx.operation_id)),
@@ -928,7 +928,7 @@ fn snapshot_outcome_update(ctx: &ReceiptCtx, outcome: &SqlStmt) -> SqlStmt {
     params.push(j_str(&outcome_scratch_key(&ctx.operation_id)));
     sql(
         &format!(
-            "UPDATE db_serialization_slots SET bump = (\
+            "UPDATE bookclerk_slots SET bump = (\
                 SELECT {bump} FROM ({}) o\
              ) WHERE slot_key = ? AND bump = 0",
             outcome.sql,
@@ -942,12 +942,12 @@ fn receipt_insert_from_snapshot(ctx: &ReceiptCtx) -> SqlStmt {
     let status = bump_to_status_sql("s.bump");
     sql(
         &format!(
-            "INSERT INTO db_atomic_receipts (\
+            "INSERT INTO bookclerk_receipts (\
                 operation_id, operation_kind, request_hash, status, payload, created_at, expires_at\
              ) SELECT ?, ?, ?, {status}, NULL, ?, ? \
-               FROM db_serialization_slots s \
+               FROM bookclerk_slots s \
                WHERE s.slot_key = ? \
-                 AND NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)"
+                 AND NOT EXISTS (SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?)"
         ),
         vec![
             j_str(&ctx.operation_id),
@@ -964,7 +964,7 @@ fn receipt_insert_from_snapshot(ctx: &ReceiptCtx) -> SqlStmt {
 /// Drops the outcome scratch row after the receipt is durable.
 fn clear_outcome_snapshot(ctx: &ReceiptCtx) -> SqlStmt {
     sql(
-        "DELETE FROM db_serialization_slots WHERE slot_key = ?",
+        "DELETE FROM bookclerk_slots WHERE slot_key = ?",
         vec![j_str(&outcome_scratch_key(&ctx.operation_id))],
     )
 }
@@ -1119,7 +1119,7 @@ fn receipt_payload_update(
         PayloadKind::None => None,
         PayloadKind::User { user_id } => {
             let sql = format!(
-                "UPDATE db_atomic_receipts SET payload = ({}) \
+                "UPDATE bookclerk_receipts SET payload = ({}) \
                  WHERE operation_id = ? AND status = '{ok}' AND payload IS NULL",
                 user_payload_json_sql(),
                 ok = atomic_status::OK,
@@ -1132,7 +1132,7 @@ fn receipt_payload_update(
         PayloadKind::Identity => {
             let payload = payload_stmt?;
             let sql = format!(
-                "UPDATE db_atomic_receipts SET payload = ({}{}) AS ident) \
+                "UPDATE bookclerk_receipts SET payload = ({}{}) AS ident) \
                  WHERE operation_id = ? AND status = '{ok}' AND payload IS NULL",
                 identity_payload_json_sql(),
                 payload.sql,
@@ -1145,7 +1145,7 @@ fn receipt_payload_update(
         PayloadKind::JsonFromPlan => {
             let payload = payload_stmt?;
             let sql = format!(
-                "UPDATE db_atomic_receipts SET payload = ({}) \
+                "UPDATE bookclerk_receipts SET payload = ({}) \
                  WHERE operation_id = ? AND status IN ('{ok}', '{dup}') AND payload IS NULL",
                 payload.sql,
                 ok = atomic_status::OK,
@@ -1209,7 +1209,7 @@ fn wrap_consume(
     // into the receipt first with a unique `consume_key` so a second caller
     // cannot also observe it, then delete the source row.
     let insert_from_row = format!(
-        "INSERT OR IGNORE INTO db_atomic_receipts (\
+        "INSERT OR IGNORE INTO bookclerk_receipts (\
             operation_id, operation_kind, request_hash, status, payload, created_at, expires_at, consume_key\
          ) SELECT ?, ?, ?, \
             CASE WHEN d.expires_at <= ? THEN '{empty}' ELSE '{ok}' END, \
@@ -1217,7 +1217,7 @@ fn wrap_consume(
             ?, ?, ? \
            FROM {table} AS d \
           WHERE {where_sql} \
-            AND NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)",
+            AND NOT EXISTS (SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?)",
         empty = atomic_status::EMPTY,
         ok = atomic_status::OK,
     );
@@ -1238,7 +1238,7 @@ fn wrap_consume(
         "DELETE FROM {table} \
          WHERE {where_sql} \
            AND EXISTS (\
-             SELECT 1 FROM db_atomic_receipts \
+             SELECT 1 FROM bookclerk_receipts \
               WHERE operation_id = ? AND created_at = ?\
            )"
     );
@@ -1247,10 +1247,10 @@ fn wrap_consume(
     delete_params.push(j_str(&ctx.now));
 
     let insert_empty = format!(
-        "INSERT INTO db_atomic_receipts (\
+        "INSERT INTO bookclerk_receipts (\
             operation_id, operation_kind, request_hash, status, payload, created_at, expires_at, consume_key\
          ) SELECT ?, ?, ?, '{empty}', NULL, ?, ?, NULL \
-          WHERE NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)",
+          WHERE NOT EXISTS (SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?)",
         empty = atomic_status::EMPTY,
     );
     let empty_params = vec![
@@ -1912,14 +1912,14 @@ fn plan_lock_job_queue() -> Vec<SqlStmt> {
 fn plan_lock_slot(slot_key: &str) -> Vec<SqlStmt> {
     vec![
         sql(
-            "INSERT OR IGNORE INTO db_serialization_slots (slot_key, bump) \
+            "INSERT OR IGNORE INTO bookclerk_slots (slot_key, bump) \
              SELECT ?, 0 WHERE NOT EXISTS (\
-                SELECT 1 FROM db_serialization_slots WHERE slot_key = ?\
+                SELECT 1 FROM bookclerk_slots WHERE slot_key = ?\
              )",
             vec![j_str(slot_key), j_str(slot_key)],
         ),
         sql(
-            "UPDATE db_serialization_slots SET bump = bump + 1 WHERE slot_key = ?",
+            "UPDATE bookclerk_slots SET bump = bump + 1 WHERE slot_key = ?",
             vec![j_str(slot_key)],
         ),
     ]
@@ -2994,14 +2994,14 @@ mod tests {
         assert!(
             update
                 .sql
-                .contains("NOT EXISTS (SELECT 1 FROM db_atomic_receipts"),
+                .contains("NOT EXISTS (SELECT 1 FROM bookclerk_receipts"),
             "post-outcome write must skip when a receipt already exists: {}",
             update.sql
         );
         assert!(
             !update
                 .sql
-                .contains("FROM db_atomic_receipts WHERE operation_id = ? AND status = 'ok'"),
+                .contains("FROM bookclerk_receipts WHERE operation_id = ? AND status = 'ok'"),
             "must not treat a prior ok receipt as this transaction's claim: {}",
             update.sql
         );
@@ -3014,7 +3014,7 @@ mod tests {
             .request
             .statements
             .iter()
-            .position(|s| s.sql.contains("INSERT INTO db_atomic_receipts"))
+            .position(|s| s.sql.contains("INSERT INTO bookclerk_receipts"))
             .unwrap();
         let update_idx = compiled
             .request
@@ -3041,7 +3041,7 @@ mod tests {
             .request
             .statements
             .iter()
-            .position(|s| s.sql.contains("UPDATE db_serialization_slots SET bump"))
+            .position(|s| s.sql.contains("UPDATE bookclerk_slots SET bump"))
             .expect("outcome snapshot");
         let delete_idx = compiled
             .request
@@ -3053,7 +3053,7 @@ mod tests {
             .request
             .statements
             .iter()
-            .position(|s| s.sql.contains("INSERT INTO db_atomic_receipts"))
+            .position(|s| s.sql.contains("INSERT INTO bookclerk_receipts"))
             .unwrap();
         assert!(
             snapshot_idx < delete_idx,
@@ -3066,7 +3066,7 @@ mod tests {
         assert!(
             compiled.request.statements[insert_idx]
                 .sql
-                .contains("FROM db_serialization_slots"),
+                .contains("FROM bookclerk_slots"),
             "receipt must use the pre-write snapshot: {}",
             compiled.request.statements[insert_idx].sql
         );
@@ -3115,11 +3115,11 @@ mod tests {
         let gated = apply_write_predicate(
             sql,
             DbPlanStatementKind::Returning,
-            "NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)",
+            "NOT EXISTS (SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?)",
         );
         let returning = gated.to_ascii_uppercase().rfind("RETURNING").unwrap();
         let gate = gated
-            .find("NOT EXISTS (SELECT 1 FROM db_atomic_receipts")
+            .find("NOT EXISTS (SELECT 1 FROM bookclerk_receipts")
             .unwrap();
         assert!(
             gate < returning,
@@ -3138,11 +3138,11 @@ mod tests {
         let gated = apply_write_predicate(
             sql,
             DbPlanStatementKind::Returning,
-            "NOT EXISTS (SELECT 1 FROM db_atomic_receipts WHERE operation_id = ?)",
+            "NOT EXISTS (SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?)",
         );
         let order = gated.to_ascii_uppercase().find("ORDER BY").unwrap();
         let gate = gated
-            .find("NOT EXISTS (SELECT 1 FROM db_atomic_receipts")
+            .find("NOT EXISTS (SELECT 1 FROM bookclerk_receipts")
             .unwrap();
         assert!(
             gate < order,
@@ -3176,7 +3176,7 @@ mod tests {
         let returning = insert.sql.to_ascii_uppercase().rfind("RETURNING").unwrap();
         let gate = insert
             .sql
-            .find("NOT EXISTS (SELECT 1 FROM db_atomic_receipts")
+            .find("NOT EXISTS (SELECT 1 FROM bookclerk_receipts")
             .expect("receipt gate");
         assert!(
             gate < returning,

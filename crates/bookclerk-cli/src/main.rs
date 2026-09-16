@@ -100,10 +100,10 @@ enum Commands {
         /// Nested `import` verb (native backups or classic Libation Files).
         command: commands::import_cmd::ImportCommand,
     },
-    /// Host schema version, backups, migrate, and last-reversible downgrade.
+    /// Host schema version, backups, and explicit migrate.
     Db {
         #[command(subcommand)]
-        /// Nested `db` verb (version, backup, restore, migrate, downgrade).
+        /// Nested `db` verb (version, backup, restore, migrate).
         command: commands::db::DbCommand,
     },
     /// Talk to a running bookclerkd control plane.

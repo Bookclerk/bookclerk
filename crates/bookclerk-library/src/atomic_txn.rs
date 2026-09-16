@@ -4,7 +4,7 @@
 //! typed `execute` batch. Database guests run that batch as one SQL
 //! transaction (D1 HTTP `batch()`, SQLite/Postgres `BEGIN`) and must not
 //! parse Bookclerk operation names. Receipts live in host-authored SQL
-//! against `db_atomic_receipts`. Host-private interactive transactions
+//! against `bookclerk_receipts`. Host-private interactive transactions
 //! remain for unrelated work.
 
 use async_trait::async_trait;

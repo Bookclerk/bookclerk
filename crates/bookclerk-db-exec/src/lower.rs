@@ -1770,7 +1770,7 @@ mod tests {
             "INSERT OR IGNORE INTO t (id) SELECT ? RETURNING id",
         );
         assert!(
-            sql.contains("SELECT * FROM (SELECT ?) AS _bc_src WHERE true"),
+            sql.contains("SELECT * FROM (SELECT ?) AS bookclerk_src WHERE true"),
             "{sql}"
         );
         assert!(sql.contains("ON CONFLICT DO NOTHING RETURNING"), "{sql}");
@@ -1778,7 +1778,7 @@ mod tests {
             "INSERT OR IGNORE INTO t (id) VALUES (?) RETURNING id",
         );
         assert!(
-            !values.contains("_bc_src"),
+            !values.contains("bookclerk_src"),
             "VALUES must stay unwrapped: {values}"
         );
         let glob = lower_canonical_sql(

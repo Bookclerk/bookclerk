@@ -45,7 +45,7 @@ integrations.
 4. **Integrations** — durable `book_acquired` outbox deliveries to the live
    per-node subscriber catalog (`event_subscriber_nodes`); each VPS claims only locally loaded
    plugin ids, with a cluster-wide per-plugin in-flight cap from
-   `[events.concurrency]` (portable `db_serialization_slots` lock at claim; Audiobookshelf scan notify, Echo examples). Duplicate
+   `[events.concurrency]` (portable `bookclerk_slots` lock at claim; Audiobookshelf scan notify, Echo examples). Duplicate
    outbox keys are namespaced by `(account_id, source, event_type, dedup_key)`.
    Publish is commit + notify; claimed wake slices drain parked deliveries.
    One plugin failure

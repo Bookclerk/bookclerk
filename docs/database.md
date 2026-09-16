@@ -137,8 +137,11 @@ Workers-style **named database bindings**: one isolated database per binding,
 provisioned by the active adapter (SQLite file / PostgreSQL **database** /
 Cloudflare D1 database by name) and recorded in the host
 `plugin_databases` registry. Bindings are consented per name
-(`database:<NAME>` grant entries), carry their own `db_atomic_receipts` for
-retry-token replay, and own schema through startup migration registration
+(`database:<NAME>` grant entries), carry their own `bookclerk_receipts` for
+retry-token replay (host bookkeeping inside a binding is always
+`bookclerk_`-prefixed and that prefix is the only reserved name space; a
+plugin may create its own `schema_migrations`), and own schema through
+startup migration registration
 (full DML on ordinary execute; durable `CREATE`/`DROP` only through the
 host-controlled `databaseMigrations` sequence). Jobs never receive
 the host library as guest SQL. Operator lifecycle:
@@ -337,10 +340,10 @@ a database is “at schema zero.”
 - **`Frozen`** — verify checksums, apply remaining frozen steps, then the current unreleased bucket if any
 - **Frozen newer than this binary** — fail closed (never auto-downgrade). Restore a backup.
 
-`bookclerk db version|backup|restore|migrate|downgrade` inspects
+`bookclerk db version|backup|restore|migrate` inspects
 state and walks frozen revisions without applying on connect. Version display
 is `uninitialized` / `unreleased@base<n>+<checksum>` / `frozen@<version>+<checksum>`.
-With an empty frozen plan, `downgrade` is a no-op; restore is time travel.
+With an empty frozen plan, `migrate --to` is a no-op; restore is time travel.
 
 A Bookclerk **recovery point** is one complete logical database state. The
 backup **repository** may physically reuse immutable canonical objects from
@@ -396,12 +399,12 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. Tables include
 `portal_identities`, `claim_tickets`, `portal_sessions`, `operator_sessions`,
 `account_links`, `works`, `work_editions`, `listening_progress`,
 `title_requests`, `title_request_sources`, `embeddings`, `user_preferences`,
-`encrypted_secrets`, `jobs`, `job_temp_paths`, `job_queue_control`,
+`encrypted_secrets`, `jobs`, `job_temp_paths`,
 `domain_events`, `event_deliveries`, `event_subscriber_nodes`,
-`event_outbox_stats`, `db_serialization_slots`, `plugin_databases`, and
-`schema_migrations`. The `jobs` table is the durable daemon queue (see
+`event_outbox_stats`, `bookclerk_slots`, `plugin_databases`, and
+`bookclerk_schema_migrations`. The `jobs` table is the durable daemon queue (see
 [jobs.md](jobs.md)). Domain events use a durable outbox with fenced
-deliveries, per-node catalogs, and portable `db_serialization_slots` (no
+deliveries, per-node catalogs, and portable `bookclerk_slots` (no
 PostgreSQL advisory locks). Isolated plugin binding databases are
 registered in `plugin_databases`; plugins own their own DDL inside those
 units. Wake registration (`wake_event_type` / `wake_filter_json` /
@@ -491,7 +494,7 @@ an unencrypted fallback.
 use bookclerk_library::{
     SecretStore, EncryptedSecretRecord, secret_kind, secret_account_type,
     build_sealed_record, unseal_secret, upsert_secret,
-    configure_master_key, require_master_key, seal_with_dek, unseal_with_dek,
+    configure_master_key, require_master_key,
 };
 
 // At startup: configure_master_key(&paths.files_dir)?;

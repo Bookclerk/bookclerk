@@ -145,10 +145,9 @@ impl GuestSqlPolicy {
     ///
     /// Ordinary binding execute is query/DML only. Durable `CREATE`/`DROP` is
     /// admitted only via [`Self::binding_migration`] (host migration engine).
-    /// Any table may be named except reserved host bookkeeping
-    /// (`db_atomic_receipts`, `schema_migrations`, `plugin_migrations`,
-    /// `plugin_databases`, `db_serialization_slots`), catalog identifiers,
-    /// and schema-qualified names. Grammar and size
+    /// Any table may be named except identifiers starting with
+    /// [`BOOKCLERK_RESERVED_PREFIX`] (host bookkeeping), engine catalog
+    /// identifiers, and schema-qualified names. Grammar and size
     /// checks still run. Functions are the Bookclerk SQL v1 portable set.
     #[must_use]
     pub fn binding_owned() -> Self {
@@ -348,32 +347,56 @@ impl GuestSqlPolicy {
     }
 }
 
-/// Host bookkeeping tables reserved inside a plugin-owned binding database.
-const BINDING_RESERVED_TABLES: &[&str] = &[
-    "db_atomic_receipts",
-    "schema_migrations",
-    "plugin_migrations",
-    "plugin_databases",
-    "db_serialization_slots",
-    SQL_CATALOG_TABLE,
-    SQL_IDENTITY_TABLE,
-    SQL_SCHEMA_TABLE,
-    SQL_DDL_TABLE,
-    INSERT_SELECT_WRAP_ALIAS,
-];
+/// Identifier prefix reserved for host bookkeeping inside a plugin-owned
+/// binding database.
+///
+/// Every table the host creates in a binding (`bookclerk_schema_migrations`,
+/// `bookclerk_plugin_migrations`, `bookclerk_receipts`, `bookclerk_slots`, the
+/// SQL catalog tables, the `INSERT ... SELECT` wrap alias) carries this prefix,
+/// so the single rule "no plugin identifier starts with `bookclerk_`" keeps
+/// plugin tables from colliding with present or future host bookkeeping.
+/// Everything else (including names such as `schema_migrations` that a plugin
+/// framework may itself want) is the plugin's to use.
+pub const BOOKCLERK_RESERVED_PREFIX: &str = "bookclerk_";
+
+/// True when `name` is reserved for host bookkeeping in a binding database.
+///
+/// Case-insensitive on the normalized identifier; quoted names are unwrapped
+/// first so `"Bookclerk_x"` is reserved too.
+#[must_use]
+pub fn is_reserved_binding_name(name: &str) -> bool {
+    normalize_ident(name).starts_with(BOOKCLERK_RESERVED_PREFIX)
+}
 
 /// True when `name` may not be touched inside a plugin-owned binding.
 ///
-/// Denies catalog identifiers, reserved host bookkeeping, and any
-/// schema-qualified name (defense in depth: bindings are physically
-/// separate databases, so a qualified name still must not name another
-/// catalog).
+/// Denies schema-qualified names (bindings are physically separate
+/// databases, so a qualified name must not reach another catalog), engine
+/// catalogs (`sqlite_*`, `pg_*`, `information_schema`), and any identifier
+/// starting with [`BOOKCLERK_RESERVED_PREFIX`]. Host-library tables such as
+/// `encrypted_secrets` or `plugin_databases` never exist inside a binding and
+/// are therefore not part of this rule; [`table_denied`] keeps refusing them
+/// on host-library grants.
 fn binding_table_denied(name: &str) -> bool {
-    if name.contains('.') || table_denied(name) {
+    if name.contains('.') {
         return true;
     }
     let lower = normalize_ident(name);
-    BINDING_RESERVED_TABLES.iter().any(|t| *t == lower)
+    engine_catalog_denied(&lower) || lower.starts_with(BOOKCLERK_RESERVED_PREFIX)
+}
+
+/// Engine catalog identifiers no guest may name in any grant.
+fn engine_catalog_denied(lower: &str) -> bool {
+    matches!(
+        lower,
+        "sqlite_master"
+            | "sqlite_temp_master"
+            | "sqlite_schema"
+            | "sqlite_temp_schema"
+            | "sqlite_sequence"
+            | "information_schema"
+    ) || lower.starts_with("sqlite_")
+        || lower.starts_with("pg_")
 }
 
 fn builtin_functions() -> std::collections::BTreeSet<String> {
@@ -583,8 +606,8 @@ pub fn statement_is_ddl(sql: &str) -> bool {
 /// schema-qualified names anywhere in the statement (including
 /// `REFERENCES other.table`) are refused. Unqualified `REFERENCES` targets
 /// are authorized with the same reserved-name rules as `CREATE`/`DROP`
-/// object names (`db_atomic_receipts`, `schema_migrations`,
-/// `plugin_databases`, catalogs). `IF [NOT] EXISTS` is required so
+/// object names ([`BOOKCLERK_RESERVED_PREFIX`], engine catalogs).
+/// `IF [NOT] EXISTS` is required so
 /// a retried D1 batch cannot re-execute non-idempotent DDL.
 ///
 /// # Errors
@@ -2734,9 +2757,7 @@ fn validate_selection(
 fn table_denied(name: &str) -> bool {
     name.split('.').any(|part| {
         let lower = normalize_ident(part);
-        DENIED_TABLES.iter().any(|t| *t == lower)
-            || lower.starts_with("sqlite_")
-            || lower.starts_with("pg_")
+        DENIED_TABLES.iter().any(|t| *t == lower) || engine_catalog_denied(&lower)
     })
 }
 
@@ -3923,7 +3944,7 @@ mod tests {
             "CREATE TABLE IF NOT EXISTS t (flag BOOLEAN DEFAULT 1)",
             "CREATE TABLE IF NOT EXISTS t (n INTEGER DEFAULT (1))",
             "CREATE TABLE IF NOT EXISTS t (n INTEGER DEFAULT CAST('x' AS INTEGER))",
-            "CREATE TABLE IF NOT EXISTS _bc_src (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE IF NOT EXISTS bookclerk_src (id INTEGER PRIMARY KEY)",
         ] {
             let err = binding_check(sql, DbResultSelection::Discard, 0).unwrap_err();
             assert!(
@@ -3965,15 +3986,56 @@ mod tests {
     }
 
     #[test]
+    fn binding_reserves_only_the_bookclerk_prefix() {
+        // A plugin framework may keep its own `schema_migrations`; only the
+        // `bookclerk_` prefix, engine catalogs, and qualified names are the
+        // host's. Host-library tables are not part of the binding rule.
+        for sql in [
+            "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)",
+            "CREATE TABLE IF NOT EXISTS plugin_migrations (id TEXT PRIMARY KEY)",
+            "CREATE TABLE IF NOT EXISTS db_atomic_receipts (id TEXT PRIMARY KEY)",
+            "CREATE TABLE IF NOT EXISTS plugin_databases (id TEXT PRIMARY KEY)",
+            "CREATE TABLE IF NOT EXISTS encrypted_secrets (id TEXT PRIMARY KEY)",
+            "CREATE TABLE IF NOT EXISTS bookclerkish (id TEXT PRIMARY KEY)",
+            "CREATE INDEX IF NOT EXISTS schema_migrations_idx ON notes (id)",
+        ] {
+            binding_check(sql, DbResultSelection::Discard, 0)
+                .unwrap_or_else(|err| panic!("{sql} must be allowed in a binding: {err}"));
+        }
+        for sql in [
+            "CREATE TABLE IF NOT EXISTS bookclerk_anything (id TEXT PRIMARY KEY)",
+            "CREATE TABLE IF NOT EXISTS BOOKCLERK_Anything (id TEXT PRIMARY KEY)",
+            "CREATE INDEX IF NOT EXISTS bookclerk_idx ON notes (id)",
+            "DROP TABLE IF EXISTS bookclerk_plugin_migrations",
+            "DROP TABLE IF EXISTS bookclerk_slots",
+            "SELECT * FROM bookclerk_sql_catalog",
+            "SELECT * FROM sqlite_master",
+            "SELECT * FROM pg_class",
+            "SELECT * FROM information_schema",
+        ] {
+            let err = binding_check(sql, DbResultSelection::Discard, 0).unwrap_err();
+            assert!(
+                err.to_string().contains("reserved") || err.to_string().contains("unauthorized"),
+                "{sql}: {err}"
+            );
+        }
+        assert!(is_reserved_binding_name("bookclerk_receipts"));
+        assert!(is_reserved_binding_name("Bookclerk_x"));
+        assert!(!is_reserved_binding_name("bookclerkish"));
+        assert!(!is_reserved_binding_name("schema_migrations"));
+    }
+
+    #[test]
     fn binding_owned_denies_reserved_qualified_and_unbounded_ddl() {
         // Reserved host bookkeeping stays denied for both DML and DDL.
         for sql in [
-            "SELECT * FROM db_atomic_receipts",
-            "DELETE FROM schema_migrations",
-            "SELECT * FROM plugin_databases",
-            "DROP TABLE IF EXISTS db_atomic_receipts",
-            "CREATE TABLE IF NOT EXISTS schema_migrations (v INTEGER)",
-            "CREATE INDEX IF NOT EXISTS i ON db_atomic_receipts(expires_at)",
+            "SELECT * FROM bookclerk_receipts",
+            "DELETE FROM bookclerk_schema_migrations",
+            "SELECT * FROM bookclerk_anything",
+            "DROP TABLE IF EXISTS bookclerk_receipts",
+            "DROP TABLE IF EXISTS Bookclerk_Future",
+            "CREATE TABLE IF NOT EXISTS bookclerk_schema_migrations (v INTEGER)",
+            "CREATE INDEX IF NOT EXISTS i ON bookclerk_receipts(expires_at)",
         ] {
             let err = binding_check(sql, DbResultSelection::Discard, 0).unwrap_err();
             assert!(
@@ -4058,9 +4120,9 @@ mod tests {
     #[test]
     fn binding_owned_denies_reserved_references_targets() {
         for sql in [
-            "CREATE TABLE IF NOT EXISTS t (id INTEGER REFERENCES db_atomic_receipts(operation_id))",
-            "CREATE TABLE IF NOT EXISTS t (id INTEGER, FOREIGN KEY (id) REFERENCES schema_migrations(v))",
-            "CREATE TABLE IF NOT EXISTS t (id INTEGER REFERENCES plugin_databases(id))",
+            "CREATE TABLE IF NOT EXISTS t (id INTEGER REFERENCES bookclerk_receipts(operation_id))",
+            "CREATE TABLE IF NOT EXISTS t (id INTEGER, FOREIGN KEY (id) REFERENCES bookclerk_schema_migrations(v))",
+            "CREATE TABLE IF NOT EXISTS t (id INTEGER REFERENCES bookclerk_anything(id))",
         ] {
             let err = binding_check(sql, DbResultSelection::Discard, 0).unwrap_err();
             assert!(

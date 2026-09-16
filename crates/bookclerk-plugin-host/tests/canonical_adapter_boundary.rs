@@ -73,7 +73,7 @@ fn like_req() -> ExecuteRequest {
         operation_id: "like-boundary".into(),
         request_hash: String::new(),
         statements: vec![TypedDbStatement {
-            sql: "SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE ?".into(),
+            sql: "SELECT slot_key FROM bookclerk_slots WHERE slot_key LIKE ?".into(),
             parameters: vec![DbValue::Text("rowcap-%".into())],
             kind: DbPlanStatementKind::Select,
             max_rows: 0,
@@ -85,7 +85,7 @@ fn like_req() -> ExecuteRequest {
 
 #[test]
 fn seaorm_proxy_statement_keeps_like_and_question_marks() {
-    let sql = "SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE ?";
+    let sql = "SELECT slot_key FROM bookclerk_slots WHERE slot_key LIKE ?";
     let stmt =
         Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, [Value::from("rowcap-%")]);
     assert_eq!(stmt.db_backend, DatabaseBackend::Sqlite);
@@ -271,7 +271,7 @@ async fn seaorm_rpc_proxy_frontend_keeps_like_and_question_marks() {
         &db,
         Statement::from_sql_and_values(
             DatabaseBackend::Sqlite,
-            "SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE ?",
+            "SELECT slot_key FROM bookclerk_slots WHERE slot_key LIKE ?",
             [Value::from("rowcap-%")],
         ),
     )

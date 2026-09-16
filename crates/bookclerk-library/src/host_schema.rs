@@ -3,7 +3,7 @@
 //! The host reads [`crate::SchemaState`] (`Uninitialized` / `Unreleased` /
 //! `Frozen`) and applies remaining canonical schema as atomic units (each
 //! frozen plan step, then the unreleased pack). A frozen database newer than
-//! this binary fails closed. Marker kind selects only the versioning mechanic.
+//! this binary fails closed. Versions live in `bookclerk_schema_migrations` rows.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -50,7 +50,7 @@ impl SchemaBatch {
         Self { statements }
     }
 
-    /// Unreleased development pack plus `schema_migrations` unreleased row.
+    /// Unreleased development pack plus `bookclerk_schema_migrations` unreleased row.
     #[must_use]
     pub fn unreleased(stmts: impl IntoIterator<Item = impl Into<String>>, checksum: &str) -> Self {
         Self::from_statements_and_marker(
@@ -67,54 +67,26 @@ pub struct SchemaApplyOptions {
     pub backup: Option<SchemaBackupOpts>,
 }
 
-/// Which versioning mechanic the host should use.
+/// Requires the `schemaMigrations` versioning contract from typed
+/// [`bookclerk_plugin_abi::DbCapabilities`].
 ///
-/// The host always records versions in canonical `schema_migrations` rows.
-/// Canonical Bookclerk SQL is [`crate::migrations::current_canonical_schema`].
-/// Adapters lower canonical DDL for the live connection backend at execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HostSchemaKind {
-    /// Canonical `schema_migrations` rows.
-    #[default]
-    RowMarker,
-}
-
-impl HostSchemaKind {
-    /// Selects the host schema marker from typed
-    /// [`bookclerk_plugin_abi::DbCapabilities`] versioning flags.
-    ///
-    /// Plugin identity and diagnostic engine names are not consulted. A
-    /// conforming adapter must advertise `schemaMigrations`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Other`] when `schemaMigrations` is missing.
-    pub fn from_db_capabilities(caps: &bookclerk_plugin_abi::DbCapabilities) -> Result<Self> {
-        let kind = Self::RowMarker;
-        kind.advertised_db_capabilities_match(caps)?;
-        Ok(kind)
-    }
-
-    /// Checks typed capability flags against this marker kind.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Other`] when the guest advertised a different
-    /// versioning scheme than this kind requires.
-    pub fn advertised_db_capabilities_match(
-        self,
-        caps: &bookclerk_plugin_abi::DbCapabilities,
-    ) -> Result<()> {
-        let _ = self;
-        if caps.schema_migrations {
-            Ok(())
-        } else {
-            Err(LibraryError::Other(anyhow::anyhow!(
-                "database guest schema flags are not a known versioning contract \
-                 (schemaMigrations={})",
-                caps.schema_migrations
-            )))
-        }
+/// The host always records versions in canonical `bookclerk_schema_migrations`
+/// rows; canonical Bookclerk SQL is [`crate::migrations::current_canonical_schema`]
+/// and adapters lower it for the live connection backend at execution. Plugin
+/// identity and diagnostic engine names are not consulted.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Other`] when `schemaMigrations` is missing.
+pub fn require_schema_migrations(caps: &bookclerk_plugin_abi::DbCapabilities) -> Result<()> {
+    if caps.schema_migrations {
+        Ok(())
+    } else {
+        Err(LibraryError::Other(anyhow::anyhow!(
+            "database guest schema flags are not a known versioning contract \
+             (schemaMigrations={})",
+            caps.schema_migrations
+        )))
     }
 }
 
@@ -129,8 +101,8 @@ impl HostSchemaKind {
 ///
 /// Returns [`LibraryError`] when a version read or DDL statement fails, the
 /// database is newer than this binary, or a frozen checksum does not match.
-pub async fn apply_host_schema(db: &DatabaseConnection, kind: HostSchemaKind) -> Result<()> {
-    apply_host_schema_with_options(db, kind, SchemaApplyOptions::default()).await
+pub async fn apply_host_schema(db: &DatabaseConnection) -> Result<()> {
+    apply_host_schema_with_options(db, SchemaApplyOptions::default()).await
 }
 
 /// Applies pending host schema with optional in-place backups.
@@ -140,11 +112,10 @@ pub async fn apply_host_schema(db: &DatabaseConnection, kind: HostSchemaKind) ->
 /// Returns [`LibraryError`] when a version read, backup, or DDL statement fails.
 pub async fn apply_host_schema_with_options(
     db: &DatabaseConnection,
-    kind: HostSchemaKind,
     opts: SchemaApplyOptions,
 ) -> Result<()> {
     let exec = db.clone();
-    apply_host_schema_with_batch_opts(db, kind, opts, move |stmts| {
+    apply_host_schema_with_batch_opts(db, opts, move |stmts| {
         let exec = exec.clone();
         async move { run_atomic_ddl(&exec, "schema-apply", stmts).await }
     })
@@ -158,14 +129,13 @@ pub async fn apply_host_schema_with_options(
 /// Returns [`LibraryError`] when a version read, DDL statement, or batch fails.
 pub async fn apply_host_schema_with_batch<F, Fut>(
     db: &DatabaseConnection,
-    kind: HostSchemaKind,
     run_batch: F,
 ) -> Result<()>
 where
     F: FnMut(Vec<String>) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    apply_host_schema_with_batch_opts(db, kind, SchemaApplyOptions::default(), run_batch).await
+    apply_host_schema_with_batch_opts(db, SchemaApplyOptions::default(), run_batch).await
 }
 
 /// Applies schema with backups using `run_batch` for each version.
@@ -175,7 +145,6 @@ where
 /// Returns [`LibraryError`] when a version read, backup, DDL, or batch fails.
 pub async fn apply_host_schema_with_batch_opts<F, Fut>(
     db: &DatabaseConnection,
-    kind: HostSchemaKind,
     opts: SchemaApplyOptions,
     mut run_batch: F,
 ) -> Result<()>
@@ -183,7 +152,7 @@ where
     F: FnMut(Vec<String>) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    reconcile_schema_state(db, kind, &opts, &mut run_batch).await
+    reconcile_schema_state(db, &opts, &mut run_batch).await
 }
 
 /// Migrates toward `target`, including reversible downs for CLI rollback.
@@ -195,12 +164,11 @@ where
 /// (the caller treats `blocked` / `stopped_at != target` as failure).
 pub async fn migrate_host_schema_to(
     db: &DatabaseConnection,
-    kind: HostSchemaKind,
     target: i64,
     opts: SchemaApplyOptions,
 ) -> Result<SchemaWalk> {
     let exec = db.clone();
-    migrate_host_schema_to_with_batch(db, kind, target, opts, move |stmts| {
+    migrate_host_schema_to_with_batch(db, target, opts, move |stmts| {
         let exec = exec.clone();
         async move { run_atomic_ddl(&exec, "schema-migrate", stmts).await }
     })
@@ -214,7 +182,6 @@ pub async fn migrate_host_schema_to(
 /// Returns [`LibraryError`] when the walk cannot start, a backup fails, or a batch fails.
 pub async fn migrate_host_schema_to_with_batch<F, Fut>(
     db: &DatabaseConnection,
-    kind: HostSchemaKind,
     target: i64,
     opts: SchemaApplyOptions,
     mut run_batch: F,
@@ -223,15 +190,14 @@ where
     F: FnMut(Vec<String>) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    let walk = prepare_schema_change(db, kind, target, &opts).await?;
-    apply_walk_batch(db, kind, &walk, &mut run_batch).await?;
+    let walk = prepare_schema_change(db, target, &opts).await?;
+    apply_walk_batch(db, &walk, &mut run_batch).await?;
     Ok(walk)
 }
 
 /// Reconciles durable [`SchemaState`] with this binary's current canonical schema.
 async fn reconcile_schema_state<F, Fut>(
     db: &DatabaseConnection,
-    kind: HostSchemaKind,
     opts: &SchemaApplyOptions,
     run_batch: &mut F,
 ) -> Result<()>
@@ -240,10 +206,9 @@ where
     Fut: Future<Output = Result<()>>,
 {
     ensure_schema_migrations(db).await?;
-    let _ = kind;
-    let state = current_schema_state(db, kind).await?;
+    let state = current_schema_state(db).await?;
     match state {
-        SchemaState::Uninitialized => apply_unreleased_pack(db, kind, run_batch).await,
+        SchemaState::Uninitialized => apply_unreleased_pack(db, run_batch).await,
         SchemaState::Unreleased {
             base_version,
             checksum,
@@ -279,10 +244,10 @@ where
                      or restore a backup captured with a binary that knows that freeze"
                 )));
             }
-            let walk = prepare_schema_change(db, kind, SCHEMA_VERSION, opts).await?;
-            apply_walk_batch(db, kind, &walk, run_batch).await?;
+            let walk = prepare_schema_change(db, SCHEMA_VERSION, opts).await?;
+            apply_walk_batch(db, &walk, run_batch).await?;
             if !unreleased_ops().is_empty() {
-                apply_unreleased_bucket(db, kind, run_batch).await?;
+                apply_unreleased_bucket(db, run_batch).await?;
             }
             Ok(())
         }
@@ -291,24 +256,21 @@ where
 
 /// Reads explicit [`SchemaState`] in the Bookclerk host/bootstrap namespace.
 ///
-/// An empty `schema_migrations` table is uninitialized; leftover SQLite
+/// An empty `bookclerk_schema_migrations` table is uninitialized; leftover SQLite
 /// `PRAGMA user_version` is ignored.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Schema`] on malformed, partial, or contradictory markers.
-pub async fn current_schema_state(
-    db: &DatabaseConnection,
-    kind: HostSchemaKind,
-) -> Result<SchemaState> {
-    current_schema_state_in(db, kind, BOOKCLERK_SCHEMA_NAMESPACE).await
+pub async fn current_schema_state(db: &DatabaseConnection) -> Result<SchemaState> {
+    current_schema_state_in(db, BOOKCLERK_SCHEMA_NAMESPACE).await
 }
 
 /// Reads explicit [`SchemaState`] for one ledger `namespace`.
 ///
 /// Host library and binding bootstrap use [`BOOKCLERK_SCHEMA_NAMESPACE`].
 /// Frozen checksums are verified against [`host_migration_plan`] only for
-/// the Bookclerk namespace. Plugin-owned history uses `plugin_migrations`,
+/// the Bookclerk namespace. Plugin-owned history uses `bookclerk_plugin_migrations`,
 /// not this ledger.
 ///
 /// # Errors
@@ -316,10 +278,8 @@ pub async fn current_schema_state(
 /// Returns [`LibraryError::Schema`] on malformed, partial, or contradictory markers.
 pub async fn current_schema_state_in(
     db: &DatabaseConnection,
-    kind: HostSchemaKind,
     namespace: &str,
 ) -> Result<SchemaState> {
-    let _ = kind;
     let host_ns = namespace == BOOKCLERK_SCHEMA_NAMESPACE;
     let rows = match query_schema_migration_rows(db, namespace).await {
         Ok(rows) => rows,
@@ -333,7 +293,7 @@ pub async fn current_schema_state_in(
                     }
                 }
                 return Err(LibraryError::Schema(
-                    "database has host tables but no readable schema_migrations state; \
+                    "database has host tables but no readable bookclerk_schema_migrations state; \
                      recreate the database (`cargo reset --yes`)"
                         .into(),
                 ));
@@ -362,7 +322,7 @@ pub async fn current_schema_state_in(
     Ok(SchemaState::Uninitialized)
 }
 
-/// Reads [`SchemaState`] from `schema_migrations` on an already-open connection
+/// Reads [`SchemaState`] from `bookclerk_schema_migrations` on an already-open connection
 /// (including a backup capture transaction).
 ///
 /// # Errors
@@ -392,13 +352,13 @@ where
         .await
         .map_err(|err| {
             LibraryError::Schema(format!(
-                "backup cannot re-read schema_migrations inside the capture transaction: {err}"
+                "backup cannot re-read bookclerk_schema_migrations inside the capture transaction: {err}"
             ))
         })?;
     match schema_state_from_migration_rows(rows, namespace == BOOKCLERK_SCHEMA_NAMESPACE)? {
         Some(state) => Ok(state),
         None if namespace == BOOKCLERK_SCHEMA_NAMESPACE => Err(LibraryError::Schema(
-            "backup capture found schema_migrations without a state marker \
+            "backup capture found bookclerk_schema_migrations without a state marker \
              for namespace `bookclerk`"
                 .into(),
         )),
@@ -406,7 +366,7 @@ where
     }
 }
 
-/// Loads namespaced `schema_migrations` version/state/checksum rows.
+/// Loads namespaced `bookclerk_schema_migrations` version/state/checksum rows.
 async fn query_schema_migration_rows(
     db: &DatabaseConnection,
     namespace: &str,
@@ -418,7 +378,7 @@ async fn query_schema_migration_rows(
 /// `SELECT` for one ledger namespace.
 fn schema_migrations_select_sql(namespace: &str) -> String {
     format!(
-        "SELECT version, state, checksum FROM schema_migrations WHERE namespace = {}",
+        "SELECT version, state, checksum FROM bookclerk_schema_migrations WHERE namespace = {}",
         sql_string_literal(namespace)
     )
 }
@@ -432,12 +392,12 @@ fn schema_migration_version(row: &QueryResult) -> Option<i64> {
         .or_else(|| row.try_get_by_index::<i32>(0).ok().map(i64::from))
 }
 
-/// Interprets `schema_migrations` rows. `Ok(None)` means the table exists but
+/// Interprets `bookclerk_schema_migrations` rows. `Ok(None)` means the table exists but
 /// has no unreleased or frozen marker.
 ///
 /// When `verify_host_plan` is true, frozen checksums are checked against
 /// [`host_migration_plan`]. Non-bookclerk namespaces skip that host-plan
-/// check (legacy rows only; plugin history is `plugin_migrations`).
+/// check (legacy rows only; plugin history is `bookclerk_plugin_migrations`).
 /// engine verifies the installed plugin plan.
 fn schema_state_from_migration_rows(
     rows: Vec<QueryResult>,
@@ -447,7 +407,7 @@ fn schema_state_from_migration_rows(
     let mut frozen: Vec<(i64, String)> = Vec::new();
     for row in rows {
         let version = schema_migration_version(&row).ok_or_else(|| {
-            LibraryError::Schema("schema_migrations row is missing version".into())
+            LibraryError::Schema("bookclerk_schema_migrations row is missing version".into())
         })?;
         let state = row
             .try_get::<String>("", "state")
@@ -461,14 +421,14 @@ fn schema_state_from_migration_rows(
             .unwrap_or_default();
         if checksum.is_empty() {
             return Err(LibraryError::Schema(
-                "schema_migrations row is missing a checksum".into(),
+                "bookclerk_schema_migrations row is missing a checksum".into(),
             ));
         }
         match state.as_str() {
             SCHEMA_STATE_UNRELEASED => {
                 if unreleased.is_some() {
                     return Err(LibraryError::Schema(
-                        "schema_migrations has multiple unreleased rows".into(),
+                        "bookclerk_schema_migrations has multiple unreleased rows".into(),
                     ));
                 }
                 unreleased = Some((version, checksum));
@@ -476,14 +436,14 @@ fn schema_state_from_migration_rows(
             SCHEMA_STATE_FROZEN => frozen.push((version, checksum)),
             "" => {
                 return Err(LibraryError::Schema(
-                    "schema_migrations row is missing state; unsupported old metadata — \
+                    "bookclerk_schema_migrations row is missing state; unsupported old metadata — \
                      recreate (`cargo reset --yes`)"
                         .into(),
                 ));
             }
             other => {
                 return Err(LibraryError::Schema(format!(
-                    "unrecognized schema_migrations.state `{other}`"
+                    "unrecognized bookclerk_schema_migrations.state `{other}`"
                 )));
             }
         }
@@ -540,7 +500,7 @@ fn is_schema_marker_visibility_race(err: &LibraryError) -> bool {
     match err {
         LibraryError::Schema(msg) => {
             msg.contains("without a schema state marker")
-                || msg.contains("no readable schema_migrations state")
+                || msg.contains("no readable bookclerk_schema_migrations state")
         }
         _ => false,
     }
@@ -551,10 +511,10 @@ async fn host_tables_present(db: &DatabaseConnection) -> Result<bool> {
     crate::backup::util::table_exists(db, "books").await
 }
 
-/// `INSERT` for the unreleased `schema_migrations` row (no `PRAGMA user_version`).
+/// `INSERT` for the unreleased `bookclerk_schema_migrations` row (no `PRAGMA user_version`).
 ///
 /// `base_version` is the highest frozen revision this pack sits on (`0` before
-/// any freeze). It is stored in `schema_migrations.version` and is not an
+/// any freeze). It is stored in `bookclerk_schema_migrations.version` and is not an
 /// identity for uninitialized databases.
 fn unreleased_marker_sql(checksum: &str, base_version: i64) -> String {
     unreleased_state_marker_sql(checksum, base_version)
@@ -565,18 +525,13 @@ fn unreleased_marker_sql(checksum: &str, base_version: i64) -> String {
 /// When `unreleased` is empty, the database ends [`SchemaState::Frozen`] at the
 /// last plan version (or stays uninitialized if the plan is also empty). When
 /// the unreleased bucket is non-empty, frozen checksums are recorded first.
-async fn apply_unreleased_pack<F, Fut>(
-    db: &DatabaseConnection,
-    kind: HostSchemaKind,
-    run_batch: &mut F,
-) -> Result<()>
+async fn apply_unreleased_pack<F, Fut>(db: &DatabaseConnection, run_batch: &mut F) -> Result<()>
 where
     F: FnMut(Vec<String>) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
     apply_fresh_schema(
         db,
-        kind,
         run_batch,
         &host_migration_plan(),
         unreleased_ops(),
@@ -588,7 +543,6 @@ where
 /// Testable fresh-init apply: frozen steps then optional unreleased marker.
 pub(crate) async fn apply_fresh_schema<F, Fut>(
     db: &DatabaseConnection,
-    kind: HostSchemaKind,
     run_batch: &mut F,
     plan: &[HostMigrationStep],
     unreleased: &[crate::migrations::MigrationOp],
@@ -599,7 +553,6 @@ where
     Fut: Future<Output = Result<()>>,
 {
     ensure_schema_migrations(db).await?;
-    let _ = kind;
     for step in plan {
         crate::migrations::prove_migration_ops(step.steps)?;
         if let Some(down) = step.down {
@@ -613,7 +566,6 @@ where
     crate::migrations::prove_migration_ops(unreleased)?;
     apply_unreleased_ops(
         db,
-        kind,
         run_batch,
         unreleased,
         &crate::migrations::migration_ops_checksum(unreleased, None),
@@ -626,7 +578,6 @@ where
 #[cfg(test)]
 pub(crate) async fn apply_fresh_schema_sqlite(
     db: &DatabaseConnection,
-    kind: HostSchemaKind,
     plan: &[HostMigrationStep],
     unreleased: &[crate::migrations::MigrationOp],
     schema_version: i64,
@@ -636,22 +587,17 @@ pub(crate) async fn apply_fresh_schema_sqlite(
         let exec = exec.clone();
         async move { run_atomic_ddl(&exec, "schema-apply", stmts).await }
     };
-    apply_fresh_schema(db, kind, &mut run_batch, plan, unreleased, schema_version).await
+    apply_fresh_schema(db, &mut run_batch, plan, unreleased, schema_version).await
 }
 
 /// Applies only [`crate::migrations::unreleased_ops`] after frozen ups.
-async fn apply_unreleased_bucket<F, Fut>(
-    db: &DatabaseConnection,
-    kind: HostSchemaKind,
-    run_batch: &mut F,
-) -> Result<()>
+async fn apply_unreleased_bucket<F, Fut>(db: &DatabaseConnection, run_batch: &mut F) -> Result<()>
 where
     F: FnMut(Vec<String>) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
     apply_unreleased_ops(
         db,
-        kind,
         run_batch,
         unreleased_ops(),
         &unreleased_checksum(),
@@ -663,7 +609,6 @@ where
 /// Applies one unreleased op list plus the checksum marker.
 async fn apply_unreleased_ops<F, Fut>(
     db: &DatabaseConnection,
-    kind: HostSchemaKind,
     run_batch: &mut F,
     ops: &[crate::migrations::MigrationOp],
     checksum: &str,
@@ -682,7 +627,7 @@ where
     for attempt in 0..8 {
         match run_batch(stmts.clone()).await {
             Ok(()) => return Ok(()),
-            Err(err) => match current_schema_state(db, kind).await {
+            Err(err) => match current_schema_state(db).await {
                 Ok(SchemaState::Unreleased {
                     checksum: applied, ..
                 }) if applied == checksum => return Ok(()),
@@ -713,12 +658,11 @@ where
 /// Reads explicit [`SchemaState`], verifies frozen checksums, backs up, and plans a walk.
 async fn prepare_schema_change(
     db: &DatabaseConnection,
-    kind: HostSchemaKind,
     target: i64,
     opts: &SchemaApplyOptions,
 ) -> Result<SchemaWalk> {
     ensure_schema_migrations(db).await?;
-    let state = current_schema_state(db, kind).await?;
+    let state = current_schema_state(db).await?;
     let plan = host_migration_plan();
     if let SchemaState::Frozen { version, .. } = &state {
         verify_applied_checksums(db, &host_migration_plan(), *version).await?;
@@ -752,7 +696,6 @@ async fn prepare_schema_change(
 /// Applies a prepared walk using a guest `run_batch` closure.
 async fn apply_walk_batch<F, Fut>(
     db: &DatabaseConnection,
-    kind: HostSchemaKind,
     walk: &SchemaWalk,
     run_batch: &mut F,
 ) -> Result<()>
@@ -760,7 +703,6 @@ where
     F: FnMut(Vec<String>) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    let _ = kind;
     for step in &walk.ups {
         apply_one_schema_migration_with_batch(db, step, run_batch).await?;
     }
@@ -780,8 +722,8 @@ where
 /// # Errors
 ///
 /// Returns when the state query fails or the marker is malformed.
-pub async fn current_schema_version(db: &DatabaseConnection, kind: HostSchemaKind) -> Result<i64> {
-    Ok(current_schema_state(db, kind)
+pub async fn current_schema_version(db: &DatabaseConnection) -> Result<i64> {
+    Ok(current_schema_state(db)
         .await?
         .frozen_version()
         .unwrap_or(0))
@@ -797,11 +739,8 @@ pub async fn current_schema_version(db: &DatabaseConnection, kind: HostSchemaKin
 /// # Errors
 ///
 /// Returns [`LibraryError::Schema`] when the target is newer or uninterpretable.
-pub async fn ensure_restore_target_is_replaceable(
-    db: &DatabaseConnection,
-    kind: HostSchemaKind,
-) -> Result<()> {
-    let state = current_schema_state(db, kind).await?;
+pub async fn ensure_restore_target_is_replaceable(db: &DatabaseConnection) -> Result<()> {
+    let state = current_schema_state(db).await?;
     let plan = host_migration_plan();
     match state {
         SchemaState::Uninitialized => Ok(()),
@@ -841,14 +780,14 @@ pub async fn ensure_restore_target_is_replaceable(
     }
 }
 
-/// Canonical DDL plus the `schema_migrations` insert.
+/// Canonical DDL plus the `bookclerk_schema_migrations` insert.
 fn version_marker_statements(step: &HostMigrationStep) -> Vec<String> {
     let mut stmts: Vec<String> = step.steps.iter().map(|op| op.sql().to_string()).collect();
     stmts.push(schema_migrations_insert(step));
     stmts
 }
 
-/// Reverse DDL plus deletion of this step's `schema_migrations` row.
+/// Reverse DDL plus deletion of this step's `bookclerk_schema_migrations` row.
 fn down_statements(step: &HostMigrationStep) -> Vec<String> {
     let mut stmts = Vec::new();
     if let Some(down) = step.down {
@@ -861,7 +800,7 @@ fn down_statements(step: &HostMigrationStep) -> Vec<String> {
     stmts
 }
 
-/// `INSERT` for `schema_migrations` including checksum, app version, and timestamp.
+/// `INSERT` for `bookclerk_schema_migrations` including checksum, app version, and timestamp.
 fn schema_migrations_insert(step: &HostMigrationStep) -> String {
     frozen_marker_sql(BOOKCLERK_SCHEMA_NAMESPACE, step.version, &step.checksum())
 }
@@ -911,7 +850,7 @@ where
     verify_frozen_checksums(plan, &found_by_version, current)
 }
 
-/// Refuses when frozen `schema_migrations` rows through `through_version` are
+/// Refuses when frozen `bookclerk_schema_migrations` rows through `through_version` are
 /// missing or do not match this binary's plan.
 pub(crate) fn verify_frozen_checksums(
     plan: &[HostMigrationStep],
@@ -945,7 +884,7 @@ pub(crate) fn verify_frozen_checksums(
     Ok(())
 }
 
-/// Applies one `schema_migrations` step via `run_batch`.
+/// Applies one `bookclerk_schema_migrations` step via `run_batch`.
 async fn apply_one_schema_migration_with_batch<F, Fut>(
     db: &DatabaseConnection,
     step: &HostMigrationStep,
@@ -993,10 +932,10 @@ where
     if schema_versions_applied(db).await?.contains(&version) {
         return Ok(());
     }
-    Err(last_err.expect("schema_migrations version retry"))
+    Err(last_err.expect("bookclerk_schema_migrations version retry"))
 }
 
-/// `CREATE TABLE IF NOT EXISTS schema_migrations`.
+/// `CREATE TABLE IF NOT EXISTS bookclerk_schema_migrations`.
 pub(crate) async fn ensure_schema_migrations(db: &DatabaseConnection) -> Result<()> {
     let mut delay_ms = 20u64;
     let mut last_err = None;
@@ -1062,12 +1001,12 @@ async fn run_atomic_ddl(
     Ok(())
 }
 
-/// Loads `schema_migrations.version` rows.
+/// Loads `bookclerk_schema_migrations.version` rows.
 async fn schema_versions_applied(db: &DatabaseConnection) -> Result<HashSet<i64>> {
     let rows = bookclerk_db_exec::query_canonical(
         db,
         &format!(
-            "SELECT version FROM schema_migrations WHERE namespace = {}",
+            "SELECT version FROM bookclerk_schema_migrations WHERE namespace = {}",
             sql_string_literal(BOOKCLERK_SCHEMA_NAMESPACE)
         ),
         std::iter::empty::<sea_orm::Value>(),
@@ -1099,7 +1038,7 @@ mod tests {
                 .into()
         )));
         assert!(is_schema_marker_visibility_race(&LibraryError::Schema(
-            "database has host tables but no readable schema_migrations state; \
+            "database has host tables but no readable bookclerk_schema_migrations state; \
              recreate the database (`cargo reset --yes`)"
                 .into()
         )));
@@ -1122,26 +1061,14 @@ mod tests {
     }
 
     #[test]
-    fn from_db_capabilities_selects_kind_from_flags_not_identity() {
-        assert_eq!(
-            HostSchemaKind::from_db_capabilities(&DbCapabilities::advertised_sqlite()).unwrap(),
-            HostSchemaKind::RowMarker
-        );
-        assert_eq!(
-            HostSchemaKind::from_db_capabilities(&DbCapabilities::advertised_postgres()).unwrap(),
-            HostSchemaKind::RowMarker
-        );
-        assert_eq!(
-            HostSchemaKind::from_db_capabilities(&DbCapabilities::advertised_d1()).unwrap(),
-            HostSchemaKind::RowMarker
-        );
+    fn require_schema_migrations_reads_flags_not_identity() {
+        require_schema_migrations(&DbCapabilities::advertised_sqlite()).unwrap();
+        require_schema_migrations(&DbCapabilities::advertised_postgres()).unwrap();
+        require_schema_migrations(&DbCapabilities::advertised_d1()).unwrap();
 
         let mut none = DbCapabilities::advertised_sqlite();
         none.schema_migrations = false;
-        assert!(HostSchemaKind::from_db_capabilities(&none).is_err());
-        assert!(HostSchemaKind::RowMarker
-            .advertised_db_capabilities_match(&none)
-            .is_err());
+        assert!(require_schema_migrations(&none).is_err());
     }
 
     #[test]
@@ -1185,19 +1112,10 @@ mod tests {
             let exec = exec.clone();
             async move { run_atomic_ddl(&exec, "schema-apply", stmts).await }
         };
-        apply_fresh_schema(
-            &db,
-            HostSchemaKind::RowMarker,
-            &mut run_batch,
-            &plan,
-            &[],
-            1,
-        )
-        .await
-        .expect("fresh frozen");
-        let state = current_schema_state(&db, HostSchemaKind::RowMarker)
+        apply_fresh_schema(&db, &mut run_batch, &plan, &[], 1)
             .await
-            .expect("state");
+            .expect("fresh frozen");
+        let state = current_schema_state(&db).await.expect("state");
         match state {
             SchemaState::Frozen { version, checksum } => {
                 assert_eq!(version, 1);
@@ -1228,19 +1146,10 @@ mod tests {
             let exec = exec.clone();
             async move { run_atomic_ddl(&exec, "schema-apply", stmts).await }
         };
-        apply_fresh_schema(
-            &db,
-            HostSchemaKind::RowMarker,
-            &mut run_batch,
-            &plan,
-            EXTRA_OPS,
-            1,
-        )
-        .await
-        .expect("fresh unreleased");
-        let state = current_schema_state(&db, HostSchemaKind::RowMarker)
+        apply_fresh_schema(&db, &mut run_batch, &plan, EXTRA_OPS, 1)
             .await
-            .expect("state");
+            .expect("fresh unreleased");
+        let state = current_schema_state(&db).await.expect("state");
         match state {
             SchemaState::Unreleased {
                 base_version,
@@ -1257,7 +1166,7 @@ mod tests {
         let rows = db
             .query_all_raw(Statement::from_string(
                 DbBackend::Sqlite,
-                "SELECT version, state, checksum FROM schema_migrations ORDER BY state, version",
+                "SELECT version, state, checksum FROM bookclerk_schema_migrations ORDER BY state, version",
             ))
             .await
             .expect("rows");
@@ -1281,7 +1190,7 @@ mod tests {
         let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
             .await
             .expect("unmigrated sqlite");
-        apply_host_schema(&db, HostSchemaKind::RowMarker)
+        apply_host_schema(&db)
             .await
             .expect("canonical sqlite pack on sqlite backend");
         let cols = db
@@ -1303,15 +1212,13 @@ mod tests {
             .await
             .expect("unmigrated sqlite");
         let db_batch = db.clone();
-        apply_host_schema_with_batch(&db, HostSchemaKind::RowMarker, move |stmts| {
+        apply_host_schema_with_batch(&db, move |stmts| {
             let db_batch = db_batch.clone();
             async move { run_atomic_ddl(&db_batch, "atomic-batch", stmts).await }
         })
         .await
         .expect("atomic batch schema");
-        let state = current_schema_state(&db, HostSchemaKind::RowMarker)
-            .await
-            .unwrap();
+        let state = current_schema_state(&db).await.unwrap();
         assert!(matches!(state, SchemaState::Unreleased { .. }), "{state}");
         let cols = db
             .query_all_raw(Statement::from_string(
@@ -1330,7 +1237,7 @@ mod tests {
         );
         db.query_all_raw(Statement::from_string(
             DbBackend::Sqlite,
-            "SELECT slot_key FROM db_serialization_slots LIMIT 1",
+            "SELECT slot_key FROM bookclerk_slots LIMIT 1",
         ))
         .await
         .expect("serialization slots table");
@@ -1347,23 +1254,17 @@ mod tests {
             crate::AtomicInterruptKind::Cancel,
             ddl,
         );
-        let err = apply_host_schema(&db, HostSchemaKind::RowMarker)
+        let err = apply_host_schema(&db)
             .await
             .expect_err("interrupt before version marker");
         assert!(err.to_string().to_lowercase().contains("cancel"), "{err}");
         assert_eq!(
-            current_schema_state(&db, HostSchemaKind::RowMarker)
-                .await
-                .unwrap(),
+            current_schema_state(&db).await.unwrap(),
             SchemaState::Uninitialized
         );
-        apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect("retry after crash");
+        apply_host_schema(&db).await.expect("retry after crash");
         assert!(matches!(
-            current_schema_state(&db, HostSchemaKind::RowMarker)
-                .await
-                .unwrap(),
+            current_schema_state(&db).await.unwrap(),
             SchemaState::Unreleased { .. }
         ));
     }
@@ -1381,17 +1282,12 @@ mod tests {
             let db2 = bookclerk_plugin_database_sqlite::open(&path)
                 .await
                 .expect("open 2");
-            let (a, b) = tokio::join!(
-                apply_host_schema(&db1, HostSchemaKind::RowMarker),
-                apply_host_schema(&db2, HostSchemaKind::RowMarker),
-            );
+            let (a, b) = tokio::join!(apply_host_schema(&db1), apply_host_schema(&db2),);
             a.unwrap_or_else(|err| panic!("round {round} first apply: {err}"));
             b.unwrap_or_else(|err| panic!("round {round} second apply: {err}"));
             assert!(
                 matches!(
-                    current_schema_state(&db1, HostSchemaKind::RowMarker)
-                        .await
-                        .unwrap(),
+                    current_schema_state(&db1).await.unwrap(),
                     SchemaState::Unreleased { .. }
                 ),
                 "round {round}"
@@ -1446,13 +1342,9 @@ mod tests {
             crate::AtomicInterruptKind::Cancel,
             ddl,
         );
-        let err = apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect_err("interrupt");
+        let err = apply_host_schema(&db).await.expect_err("interrupt");
         assert!(err.to_string().to_lowercase().contains("cancel"), "{err}");
-        apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect("retry");
+        apply_host_schema(&db).await.expect("retry");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1489,10 +1381,7 @@ mod tests {
         };
         let db1 = sea_orm::Database::connect(&db_url).await.expect("c1");
         let db2 = sea_orm::Database::connect(&db_url).await.expect("c2");
-        let (a, b) = tokio::join!(
-            apply_host_schema(&db1, HostSchemaKind::RowMarker,),
-            apply_host_schema(&db2, HostSchemaKind::RowMarker,),
-        );
+        let (a, b) = tokio::join!(apply_host_schema(&db1), apply_host_schema(&db2),);
         a.expect("first apply");
         b.expect("second apply");
     }
@@ -1503,17 +1392,11 @@ mod tests {
             .await
             .expect("unmigrated sqlite");
         assert_eq!(
-            current_schema_state(&db, HostSchemaKind::RowMarker)
-                .await
-                .unwrap(),
+            current_schema_state(&db).await.unwrap(),
             SchemaState::Uninitialized
         );
-        apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect("apply unreleased");
-        let first = current_schema_state(&db, HostSchemaKind::RowMarker)
-            .await
-            .unwrap();
+        apply_host_schema(&db).await.expect("apply unreleased");
+        let first = current_schema_state(&db).await.unwrap();
         assert!(matches!(first, SchemaState::Unreleased { .. }), "{first}");
         assert_eq!(
             first.display(),
@@ -1521,12 +1404,8 @@ mod tests {
         );
         assert_eq!(first.unreleased_base_version(), Some(0));
         assert_eq!(first.frozen_version(), None);
-        apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect("idempotent");
-        let second = current_schema_state(&db, HostSchemaKind::RowMarker)
-            .await
-            .unwrap();
+        apply_host_schema(&db).await.expect("idempotent");
+        let second = current_schema_state(&db).await.unwrap();
         assert_eq!(first, second);
     }
 
@@ -1535,19 +1414,15 @@ mod tests {
         let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
             .await
             .expect("unmigrated sqlite");
-        apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect("apply");
+        apply_host_schema(&db).await.expect("apply");
         exec_sql(
             &db,
             DbBackend::Sqlite,
-            "UPDATE schema_migrations SET checksum = 'deadbeef' WHERE state = 'unreleased'",
+            "UPDATE bookclerk_schema_migrations SET checksum = 'deadbeef' WHERE state = 'unreleased'",
         )
         .await
         .expect("tamper");
-        let err = apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect_err("checksum");
+        let err = apply_host_schema(&db).await.expect_err("checksum");
         assert!(
             err.to_string().contains("does not match this binary"),
             "{err}"
@@ -1560,27 +1435,23 @@ mod tests {
         let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
             .await
             .expect("unmigrated sqlite");
-        apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect("apply");
+        apply_host_schema(&db).await.expect("apply");
         exec_sql(
             &db,
             DbBackend::Sqlite,
-            "DELETE FROM schema_migrations WHERE state = 'unreleased'",
+            "DELETE FROM bookclerk_schema_migrations WHERE state = 'unreleased'",
         )
         .await
         .expect("drop unreleased");
         exec_sql(
             &db,
             DbBackend::Sqlite,
-            "INSERT INTO schema_migrations (namespace, version, state, checksum, app_version, applied_at) \
+            "INSERT INTO bookclerk_schema_migrations (namespace, version, state, checksum, app_version, applied_at) \
              VALUES ('bookclerk', 99, 'frozen', 'abc', 'test', 't')",
         )
         .await
         .expect("fake frozen");
-        let err = apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect_err("newer frozen");
+        let err = apply_host_schema(&db).await.expect_err("newer frozen");
         assert!(err.to_string().contains("newer than this binary"), "{err}");
         assert!(err.to_string().contains("frozen@99"), "{err}");
     }
@@ -1590,17 +1461,15 @@ mod tests {
         let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
             .await
             .expect("unmigrated sqlite");
-        apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect("apply");
+        apply_host_schema(&db).await.expect("apply");
         exec_sql(
             &db,
             DbBackend::Sqlite,
-            "UPDATE schema_migrations SET version = 1 WHERE state = 'unreleased'",
+            "UPDATE bookclerk_schema_migrations SET version = 1 WHERE state = 'unreleased'",
         )
         .await
         .expect("bump base");
-        let err = current_schema_state(&db, HostSchemaKind::RowMarker)
+        let err = current_schema_state(&db)
             .await
             .expect_err("base without frozen");
         assert!(err.to_string().contains("no frozen base row"), "{err}");
@@ -1608,14 +1477,12 @@ mod tests {
         exec_sql(
             &db,
             DbBackend::Sqlite,
-            "INSERT INTO schema_migrations (namespace, version, state, checksum, app_version, applied_at) \
+            "INSERT INTO bookclerk_schema_migrations (namespace, version, state, checksum, app_version, applied_at) \
              VALUES ('bookclerk', 1, 'frozen', 'f1', 'test', 't')",
         )
         .await
         .expect("frozen v1");
-        let state = current_schema_state(&db, HostSchemaKind::RowMarker)
-            .await
-            .unwrap();
+        let state = current_schema_state(&db).await.unwrap();
         assert_eq!(
             state,
             SchemaState::Unreleased {
@@ -1627,11 +1494,11 @@ mod tests {
         exec_sql(
             &db,
             DbBackend::Sqlite,
-            "UPDATE schema_migrations SET version = 0 WHERE state = 'unreleased'",
+            "UPDATE bookclerk_schema_migrations SET version = 0 WHERE state = 'unreleased'",
         )
         .await
         .expect("reset base 0");
-        let err = current_schema_state(&db, HostSchemaKind::RowMarker)
+        let err = current_schema_state(&db)
             .await
             .expect_err("base 0 with frozen v1");
         assert!(err.to_string().contains("does not match frozen@1"), "{err}");
@@ -1662,27 +1529,23 @@ mod tests {
         let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
             .await
             .expect("unmigrated sqlite");
-        apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect("apply");
+        apply_host_schema(&db).await.expect("apply");
 
         exec_sql(
             &db,
             DbBackend::Sqlite,
-            "UPDATE schema_migrations SET checksum = '' WHERE state = 'unreleased'",
+            "UPDATE bookclerk_schema_migrations SET checksum = '' WHERE state = 'unreleased'",
         )
         .await
         .expect("empty checksum");
-        let err = current_schema_state(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect_err("empty checksum");
+        let err = current_schema_state(&db).await.expect_err("empty checksum");
         assert!(err.to_string().contains("missing a checksum"), "{err}");
 
         exec_sql(
             &db,
             DbBackend::Sqlite,
             &format!(
-                "UPDATE schema_migrations SET checksum = '{}' WHERE state = 'unreleased'",
+                "UPDATE bookclerk_schema_migrations SET checksum = '{}' WHERE state = 'unreleased'",
                 unreleased_checksum()
             ),
         )
@@ -1691,12 +1554,12 @@ mod tests {
         exec_sql(
             &db,
             DbBackend::Sqlite,
-            "INSERT INTO schema_migrations (namespace, version, state, checksum, app_version, applied_at) \
+            "INSERT INTO bookclerk_schema_migrations (namespace, version, state, checksum, app_version, applied_at) \
              VALUES ('bookclerk', 1, 'unreleased', 'other', 'test', 't')",
         )
         .await
         .expect("second unreleased");
-        let err = current_schema_state(&db, HostSchemaKind::RowMarker)
+        let err = current_schema_state(&db)
             .await
             .expect_err("multiple unreleased");
         assert!(err.to_string().contains("multiple unreleased"), "{err}");
@@ -1704,20 +1567,18 @@ mod tests {
         exec_sql(
             &db,
             DbBackend::Sqlite,
-            "DELETE FROM schema_migrations WHERE checksum = 'other'",
+            "DELETE FROM bookclerk_schema_migrations WHERE checksum = 'other'",
         )
         .await
         .expect("drop extra");
         exec_sql(
             &db,
             DbBackend::Sqlite,
-            "UPDATE schema_migrations SET state = 'weird' WHERE state = 'unreleased'",
+            "UPDATE bookclerk_schema_migrations SET state = 'weird' WHERE state = 'unreleased'",
         )
         .await
         .expect("unknown state");
-        let err = current_schema_state(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect_err("unknown state");
+        let err = current_schema_state(&db).await.expect_err("unknown state");
         assert!(err.to_string().contains("unrecognized"), "{err}");
     }
 
@@ -1729,13 +1590,11 @@ mod tests {
         exec_sql(&db, DbBackend::Sqlite, "PRAGMA user_version = 99")
             .await
             .expect("bump");
-        apply_host_schema(&db, HostSchemaKind::RowMarker)
+        apply_host_schema(&db)
             .await
             .expect("pragma is adapter-private");
         assert!(matches!(
-            current_schema_state(&db, HostSchemaKind::RowMarker)
-                .await
-                .expect("state"),
+            current_schema_state(&db).await.expect("state"),
             SchemaState::Unreleased { .. } | SchemaState::Frozen { .. }
         ));
     }
@@ -1745,15 +1604,15 @@ mod tests {
         let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
             .await
             .expect("unmigrated sqlite");
-        apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect("apply");
-        exec_sql(&db, DbBackend::Sqlite, "DELETE FROM schema_migrations")
-            .await
-            .expect("drop marker");
-        let err = apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect_err("malformed");
+        apply_host_schema(&db).await.expect("apply");
+        exec_sql(
+            &db,
+            DbBackend::Sqlite,
+            "DELETE FROM bookclerk_schema_migrations",
+        )
+        .await
+        .expect("drop marker");
+        let err = apply_host_schema(&db).await.expect_err("malformed");
         assert!(
             err.to_string().contains("without a schema state marker")
                 || err.to_string().contains("recreate"),
@@ -1766,9 +1625,7 @@ mod tests {
         let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
             .await
             .expect("unmigrated sqlite");
-        apply_host_schema(&db, HostSchemaKind::RowMarker)
-            .await
-            .expect("apply");
+        apply_host_schema(&db).await.expect("apply");
         let err = exec_sql(
             &db,
             DbBackend::Sqlite,

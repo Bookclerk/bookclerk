@@ -963,9 +963,10 @@ impl LibraryStore {
 
 /// Serializes admission and quota updates for the current transaction.
 ///
-/// PostgreSQL uses an advisory transaction lock so `COUNT` then `INSERT` is
-/// safe under `READ COMMITTED`. SQLite and D1 take a write lock on the
-/// singleton `job_queue_control` row.
+/// Takes the portable `bookclerk_slots` write lock for
+/// [`crate::sql_plan::JOB_QUEUE_SLOT`] so `COUNT` then `INSERT` is safe on
+/// every engine (`READ COMMITTED` PostgreSQL included) without an
+/// engine-specific advisory lock.
 ///
 /// # Errors
 ///

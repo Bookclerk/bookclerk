@@ -48,11 +48,11 @@ Malformed / missing checksum / contradictory markers are a failure class,
 not a state to continue from. Do not infer uninitialized or unreleased from
 integer `0` alone.
 
-On disk, `schema_migrations` stores `namespace`, `state` (`unreleased` |
+On disk, `bookclerk_schema_migrations` stores `namespace`, `state` (`unreleased` |
 `frozen`), `version`, `checksum`, `app_version`, and `applied_at`. Primary
 key is `(namespace, state, version)`. Host library and Bookclerk-owned
 binding bootstrap use namespace `bookclerk`. Plugin-owned evolution uses a
-separate `plugin_migrations` journal in the binding database, not this
+separate `bookclerk_plugin_migrations` journal in the binding database, not this
 table and not the `bookclerk` namespace. For unreleased host rows, `version`
 **is** the frozen base (`0` before any freeze). Host logic keys off `state`
 plus that base. `PRAGMA user_version` is a frozen-version cache only.
@@ -220,11 +220,13 @@ migration was edited, removed, renamed, or reordered, or if durable history
 is longer than the installed plugin (older/incompatible plugin). Only a new
 suffix is pending.
 
-The journal is `plugin_migrations(ordinal, migration_id, checksum, applied_at)`
+The journal is `bookclerk_plugin_migrations(ordinal, migration_id, checksum, applied_at)`
 inside the binding database. `ordinal` is host-private storage order only and
-is not a plugin migration version. Journal, serialization slots, atomic
-receipts, and catalog tables are reserved; ordinary plugin SQL cannot name
-them. There is no native SQL escape hatch.
+is not a plugin migration version. Every host table inside a binding
+(journal, serialization slots, atomic receipts, catalog tables, the
+`bookclerk_src` wrap alias) carries the `bookclerk_` prefix, and that prefix
+is the only name space reserved from plugin SQL (besides engine catalogs and
+schema-qualified names). There is no native SQL escape hatch.
 
 Each pending suffix migration is one atomic unit (serialization-slot
 mutation + ops + journal append) in a short transaction. Concurrent
@@ -253,7 +255,7 @@ the session if the digest changed (peer advanced or rewritten history).
 Fencing does not use a plugin-chosen latest ID.
 
 Host-owned binding bootstrap remains [`binding_bootstrap_ops`](../../crates/bookclerk-library/src/migrations.rs)
-(`Schema` ops: receipts, SQL catalog, `plugin_migrations`, serialization
+(`Schema` ops: receipts, SQL catalog, `bookclerk_plugin_migrations`, serialization
 slots). `BINDING_SCHEMA_VERSION = 0` until a binding freeze. Connect:
 
 | Binding | Open |
@@ -291,22 +293,23 @@ migration SQL fails closed (never checksumed as one opaque statement).
 
 `host_migration_plan()` stays **empty**. Live schema is [`unreleased_ops`](../../crates/bookclerk-library/src/migrations.rs)
 (mostly `Schema`, plus seed `Data` inserts). Checksums hash the
-**length-prefixed ordered statement list**, not a joined script. CLI downgrade
-applies `down` only when every step has it; otherwise restore a backup.
+**length-prefixed ordered statement list**, not a joined script. `db migrate
+--to <older>` applies `down` only when every step has it; otherwise restore a
+backup.
 
 Invariants (locked with synthetic plans, not a v1 freeze):
 
 - Integer version order for **host** schema; fail closed on contradictory
-  `schema_migrations` rows. Plugin history uses opaque IDs and exact-prefix
-  `plugin_migrations` verification, not host numeric versions.
+  `bookclerk_schema_migrations` rows. Plugin history uses opaque IDs and exact-prefix
+  `bookclerk_plugin_migrations` verification, not host numeric versions.
 - Retry uniqueness / duplicate-object / unavailable after re-read; matching
   host version+checksum or plugin `(id, checksum)` at the expected ordinal is
   success; FK / CHECK / NOT NULL are not races.
 - Crash: marker/journal row not visible ⇒ retry the same unit.
 - Forward-only on library/binding open; rolling binaries fail closed on
   unknown newer frozen host state or plugin history that is not a prefix.
-- Multi-node: portable `db_serialization_slots` (`schema:{namespace}` for
-  host; `plugin_migrations` for plugin suffix). Stale sessions re-check the
+- Multi-node: portable `bookclerk_slots` (`schema:{namespace}` for
+  host; `bookclerk_plugin_migrations` for plugin suffix). Stale sessions re-check the
   plugin history digest at execute boundaries.
 - Backup capture includes the plugin journal and history digest; restore
   into a newer app stays fail-closed until registration/suffix apply is an
@@ -317,10 +320,10 @@ Invariants (locked with synthetic plans, not a v1 freeze):
 
 ### Last-reversible CLI
 
-`bookclerk db version|backup|restore|migrate|downgrade` uses
+`bookclerk db version|backup|restore|migrate` uses
 `connect_without_migrate`.
 
-With an empty frozen plan, schema-version downgrade is a no-op. Time-based
+With an empty frozen plan, `migrate --to` is a no-op. Time-based
 **restore** is how operators move independently of schema revision.
 
 ### Out of scope
@@ -328,7 +331,7 @@ With an empty frozen plan, schema-version downgrade is a no-op. Time-based
 - Declaring production schema v1
 - D1 Time Travel / portable PITR / canonical change journaling
 - Transactional atomicity across library DB + independent plugin DBs
-- Using semver as `schema_migrations.version`
+- Using semver as `bookclerk_schema_migrations.version`
 
 ### Plugin binding migration registration
 
@@ -339,7 +342,7 @@ storage order only.
 
 | Concern | Rule |
 | --- | --- |
-| Per-plugin / per-binding history | Private `plugin_migrations` journal in the binding DB (not `schema_migrations`, not namespace `bookclerk`). |
+| Per-plugin / per-binding history | Private `bookclerk_plugin_migrations` journal in the binding DB (not `bookclerk_schema_migrations`, not namespace `bookclerk`). |
 | Ordered progression | Registration order. Host proves BookclerkSQL with one evolving `SqlTypeEnv`. |
 | Durable vs registered | `durable history == prefix(current registered history)`; anything else fails closed. |
 | DDL outside registration | Fail closed. Ordinary binding execute is DML/query only. |

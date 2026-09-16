@@ -29,10 +29,6 @@ FORBIDDEN_IMPORTS = (
     re.compile(r"use\s+bookclerk_library::entities"),
     re.compile(r"bookclerk_library::sql_plan"),
     re.compile(r"bookclerk_library::migrations"),
-    re.compile(r"\bmigration_sql\b"),
-    re.compile(r"\bmigration_sql_postgres\b"),
-    re.compile(r"\bmigration_sql_d1\b"),
-    re.compile(r"\binterpret_plan\b"),
     re.compile(r"\bDbAtomicParams\b"),
     re.compile(r"\batomic_status\b"),
     # Host semantic frontend — adapters must not rerun it.
@@ -50,7 +46,6 @@ FORBIDDEN_TABLES = (
     "users",
     "jobs",
     "job_temp_paths",
-    "job_queue_control",
     "books",
     "accounts",
     "claim_tickets",
@@ -60,8 +55,8 @@ FORBIDDEN_TABLES = (
     "portal_sessions",
     "operator_sessions",
     "encrypted_secrets",
-    "db_atomic_receipts",
-    "db_serialization_slots",
+    "bookclerk_receipts",
+    "bookclerk_slots",
 )
 
 TABLE_RE = re.compile(
@@ -245,13 +240,34 @@ def check_file(path: Path) -> list[str]:
 LIBRARY_BOOTSTRAP_GLOBS = ("crates/bookclerk-library/src/**/*.rs",)
 
 FORBIDDEN_BOOTSTRAP_READS = (
-    re.compile(r"\bSqlFamily\b"),
     re.compile(r"\bfamily_from_connect\b"),
     re.compile(r"\bmod\s+dialect\b"),
-    re.compile(r"\.sql_family\b"),
-    re.compile(r"\bsql_family\s*:"),
     re.compile(r"\.diagnostic_engine\b"),
     re.compile(r"\bdiagnostic_engine\s*:"),
+)
+
+# Host bookkeeping created inside plugin bindings must carry the `bookclerk_`
+# prefix (the only name space reserved from plugin SQL). These are the
+# pre-prefix spellings; matching one in production host code means a table
+# escaped the rule. `DbCapabilities.schema_migrations` (a Rust field, always
+# written `.schema_migrations` / `schema_migrations:`) is excluded. Patterns
+# are case-insensitive so `SCHEMA_MIGRATIONS` / `BOOKCLERK_` string literals
+# match the same invariant as runtime SQL identifier folding.
+FORBIDDEN_UNPREFIXED_BOOKKEEPING = (
+    re.compile(r"(?<![.\w])schema_migrations\b(?!\s*:(?!:))", re.IGNORECASE),
+    re.compile(r"(?<![.\w])plugin_migrations\b(?!\s*:(?!:))", re.IGNORECASE),
+    re.compile(r"(?<![.\w])db_atomic_receipts\b", re.IGNORECASE),
+    re.compile(r"(?<![.\w])db_serialization_slots\b", re.IGNORECASE),
+    re.compile(r"(?<!\w)_bc_src\b", re.IGNORECASE),
+)
+UNPREFIXED_BOOKKEEPING_GLOBS = (
+    "crates/bookclerk-library/src/**/*.rs",
+    "crates/bookclerk-db-exec/src/**/*.rs",
+    "crates/bookclerk-db-guest/src/**/*.rs",
+    "crates/bookclerk-plugin-abi/src/**/*.rs",
+    "crates/bookclerk-plugin-host/src/**/*.rs",
+    "crates/bookclerk-plugins/platform/database-*/src/**/*.rs",
+    "crates/bookclerk-plugins/optional/database-*/src/**/*.rs",
 )
 
 # Host domain/planner crates must not rewrite canonical `?` into engine `$n`.
@@ -296,7 +312,6 @@ FORBIDDEN_LIBRARY_DIALECT_SQL = (
     re.compile(r"defer_foreign_keys", re.IGNORECASE),
     re.compile(r"DROP\s+FUNCTION\b", re.IGNORECASE),
     re.compile(r"PRAGMA\s+user_version", re.IGNORECASE),
-    re.compile(r"FROM\s+pragma_user_version\b", re.IGNORECASE),
 )
 
 
@@ -465,6 +480,22 @@ def check_no_sqlite_fallback(path: Path) -> list[str]:
     return hits
 
 
+def check_prefixed_bookkeeping(path: Path) -> list[str]:
+    """Forbid unprefixed host bookkeeping table names in production host code."""
+    rel = path.relative_to(ROOT).as_posix()
+    src = path.read_text(encoding="utf-8")
+    scanned = strip_comments(strip_cfg_test_regions(src))
+    hits: list[str] = []
+    for rx in FORBIDDEN_UNPREFIXED_BOOKKEEPING:
+        for m in rx.finditer(scanned):
+            line = scanned.count("\n", 0, m.start()) + 1
+            hits.append(
+                f"{rel}:{line}: host bookkeeping `{m.group(0)}` must carry the "
+                "`bookclerk_` prefix (the only name space reserved from plugin SQL)"
+            )
+    return hits
+
+
 def check_library_no_backend_ident(path: Path) -> list[str]:
     """Forbid SeaORM backend identity and PhysicalEngine in library production."""
     rel = path.relative_to(ROOT).as_posix()
@@ -507,6 +538,8 @@ def main() -> int:
         hits.extend(check_no_schema_split(path))
     for path in iter_glob_sources(SQLITE_FALLBACK_GLOBS, skip_tests):
         hits.extend(check_no_sqlite_fallback(path))
+    for path in iter_glob_sources(UNPREFIXED_BOOKKEEPING_GLOBS, skip_tests):
+        hits.extend(check_prefixed_bookkeeping(path))
     if hits:
         print("Database plugin isolation violations:", file=sys.stderr)
         for h in hits:

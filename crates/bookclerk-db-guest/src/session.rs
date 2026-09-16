@@ -2081,8 +2081,8 @@ mod tests {
         let unique_err = execute_stamped(typed_exec(
             "dup-op",
             &[
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup-g', 0)",
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup-g', 1)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('dup-g', 0)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('dup-g', 1)",
             ],
         ))
         .await
@@ -2101,7 +2101,7 @@ mod tests {
         bookclerk_db_exec::inject_commit_failures(1);
         let commit_err = execute_stamped(typed_exec(
             "commit-op",
-            &["INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('c-g', 0)"],
+            &["INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('c-g', 0)"],
         ))
         .await
         .unwrap_err();
@@ -2129,15 +2129,15 @@ mod tests {
         use bookclerk_plugin_abi::PluginErrorCode;
         let _lock = SESSION_LOCK.lock().await;
         let db = postgres_test_pool().await;
-        bookclerk_library::apply_host_schema(&db, bookclerk_library::HostSchemaKind::RowMarker)
+        bookclerk_library::apply_host_schema(&db)
             .await
             .expect("host postgres schema");
         set_connection(db).await;
         let err = execute_stamped(typed_exec(
             "pg-dup",
             &[
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('pg-dup', 0)",
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('pg-dup', 1)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('pg-dup', 0)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('pg-dup', 1)",
             ],
         ))
         .await
@@ -2450,7 +2450,7 @@ mod tests {
         assert_eq!(reply.statements[0].rows_affected, 1);
         guest_commit(txn_id).await.unwrap();
         let rows = guest_query(stmt(
-            "SELECT payload, status FROM db_atomic_receipts WHERE operation_id = 'nested-receipt-op'",
+            "SELECT payload, status FROM bookclerk_receipts WHERE operation_id = 'nested-receipt-op'",
         ))
         .await
         .unwrap();

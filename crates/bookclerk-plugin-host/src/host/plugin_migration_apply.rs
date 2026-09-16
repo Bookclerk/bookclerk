@@ -22,7 +22,7 @@ use crate::{PluginError, Result as PluginResult};
 /// Host that can re-read the durable journal and execute one atomic apply unit.
 #[async_trait]
 pub(crate) trait PluginMigrationApplyHost: Send + Sync {
-    /// Load host-private `plugin_migrations` rows for this binding.
+    /// Load host-private `bookclerk_plugin_migrations` rows for this binding.
     async fn load_plugin_migration_history(&self) -> PluginResult<PluginMigrationHistory>;
     /// Execute one short atomic unit (slot + ops + journal append).
     ///

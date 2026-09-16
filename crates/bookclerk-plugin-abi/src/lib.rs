@@ -145,10 +145,10 @@ pub use db_execute::{
 pub use db_value::{db_type_from_declared, normalize_db_value_for_column, DbType, DbValue};
 pub use error::{PluginError, PluginErrorCode, Result};
 pub use guest_sql::{
-    authorize_guest_sql_policy, guest_statement_kind, parse_guest_sql_refs,
-    returning_single_row_proven, statement_is_ddl, validate_guest_execute_request,
-    validate_guest_execute_request_for_policy, validate_sql_v1_grammar, GuestSqlPolicy,
-    GuestSqlRefs,
+    authorize_guest_sql_policy, guest_statement_kind, is_reserved_binding_name,
+    parse_guest_sql_refs, returning_single_row_proven, statement_is_ddl,
+    validate_guest_execute_request, validate_guest_execute_request_for_policy,
+    validate_sql_v1_grammar, GuestSqlPolicy, GuestSqlRefs, BOOKCLERK_RESERVED_PREFIX,
 };
 #[cfg(feature = "host")]
 pub use host_envelope::GuestReceiptPersist;

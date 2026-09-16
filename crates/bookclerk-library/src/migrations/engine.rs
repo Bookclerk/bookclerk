@@ -1,9 +1,9 @@
 //! Shared apply engine for namespaced host-owned [`super::MigrationPlan`]s.
 //!
 //! Host library frozen steps and Bookclerk binding bootstrap persist
-//! [`crate::SchemaState`] in `schema_migrations` keyed by namespace.
+//! [`crate::SchemaState`] in `bookclerk_schema_migrations` keyed by namespace.
 //! Plugin-owned binding evolution uses [`super::plugin`] (opaque IDs and
-//! `plugin_migrations`), not this numeric engine.
+//! `bookclerk_plugin_migrations`), not this numeric engine.
 
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ use super::plan::{
     MigrationPlan, MigrationStep, PlanOp,
 };
 use crate::error::{LibraryError, Result};
-use crate::host_schema::{current_schema_state_in, ensure_schema_migrations, HostSchemaKind};
+use crate::host_schema::{current_schema_state_in, ensure_schema_migrations};
 use crate::schema_state::SchemaState;
 use crate::sql_plan::execute_typed_on_binding;
 
@@ -59,12 +59,12 @@ pub async fn apply_migration_plan(
 ) -> Result<SchemaState> {
     ensure_schema_migrations(db).await?;
     lock_schema_slot(db, &plan.namespace).await?;
-    let state = current_schema_state_in(db, HostSchemaKind::RowMarker, &plan.namespace).await?;
+    let state = current_schema_state_in(db, &plan.namespace).await?;
     let remaining = forward_steps(plan, &state)?;
     for step in remaining {
         apply_one_frozen_step(db, plan, step, ApplyDirection::Upgrade).await?;
     }
-    current_schema_state_in(db, HostSchemaKind::RowMarker, &plan.namespace).await
+    current_schema_state_in(db, &plan.namespace).await
 }
 
 /// Explicit downgrade of `plan.namespace` toward `to_version` (0 = fully reverse).
@@ -88,12 +88,12 @@ pub async fn downgrade_migration_plan(
     }
     ensure_schema_migrations(db).await?;
     lock_schema_slot(db, &plan.namespace).await?;
-    let state = current_schema_state_in(db, HostSchemaKind::RowMarker, &plan.namespace).await?;
+    let state = current_schema_state_in(db, &plan.namespace).await?;
     let downs = reverse_steps(plan, &state, to_version)?;
     for step in downs {
         apply_one_frozen_step(db, plan, step, ApplyDirection::Downgrade).await?;
     }
-    current_schema_state_in(db, HostSchemaKind::RowMarker, &plan.namespace).await
+    current_schema_state_in(db, &plan.namespace).await
 }
 
 /// True when a binding session's expected host schema still matches durable state.
@@ -271,7 +271,7 @@ async fn apply_one_frozen_step(
     };
     let mut delay_ms = 20u64;
     for attempt in 0..8 {
-        match current_schema_state_in(db, HostSchemaKind::RowMarker, &plan.namespace).await {
+        match current_schema_state_in(db, &plan.namespace).await {
             Ok(state) if schema_states_equivalent(&state, &expected) => return Ok(()),
             Ok(_) | Err(_) => {}
         }
@@ -291,42 +291,39 @@ async fn apply_one_frozen_step(
         .await
         {
             Ok(()) => return Ok(()),
-            Err(err) => {
-                match current_schema_state_in(db, HostSchemaKind::RowMarker, &plan.namespace).await
+            Err(err) => match current_schema_state_in(db, &plan.namespace).await {
+                Ok(state) if schema_states_equivalent(&state, &expected) => return Ok(()),
+                Ok(SchemaState::Uninitialized) | Ok(SchemaState::Frozen { .. })
+                    if attempt + 1 < 8 && err.is_schema_apply_retryable() =>
                 {
-                    Ok(state) if schema_states_equivalent(&state, &expected) => return Ok(()),
-                    Ok(SchemaState::Uninitialized) | Ok(SchemaState::Frozen { .. })
-                        if attempt + 1 < 8 && err.is_schema_apply_retryable() =>
-                    {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms = delay_ms.saturating_mul(2).min(250);
+                    continue;
+                }
+                Ok(other) => {
+                    if !err.is_schema_apply_retryable() {
+                        return Err(err);
+                    }
+                    return Err(LibraryError::Schema(format!(
+                        "namespace `{}` schema apply left contradictory state {} \
+                         (wanted {}); {err}",
+                        plan.namespace,
+                        other.display(),
+                        expected.display()
+                    )));
+                }
+                Err(_) => {
+                    if attempt + 1 < 8 && err.is_schema_apply_retryable() {
                         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                         delay_ms = delay_ms.saturating_mul(2).min(250);
                         continue;
                     }
-                    Ok(other) => {
-                        if !err.is_schema_apply_retryable() {
-                            return Err(err);
-                        }
-                        return Err(LibraryError::Schema(format!(
-                            "namespace `{}` schema apply left contradictory state {} \
-                         (wanted {}); {err}",
-                            plan.namespace,
-                            other.display(),
-                            expected.display()
-                        )));
-                    }
-                    Err(_) => {
-                        if attempt + 1 < 8 && err.is_schema_apply_retryable() {
-                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                            delay_ms = delay_ms.saturating_mul(2).min(250);
-                            continue;
-                        }
-                        return Err(err);
-                    }
+                    return Err(err);
                 }
-            }
+            },
         }
     }
-    match current_schema_state_in(db, HostSchemaKind::RowMarker, &plan.namespace).await {
+    match current_schema_state_in(db, &plan.namespace).await {
         Ok(state) if schema_states_equivalent(&state, &expected) => Ok(()),
         Ok(state) => Err(LibraryError::Schema(format!(
             "namespace `{}` schema apply exhausted retries; durable state is {}",
@@ -365,10 +362,10 @@ fn slot_lock_sql(namespace: &str) -> Vec<String> {
     let key = sql_string_literal(&schema_slot_key(namespace));
     vec![
         format!(
-            "INSERT OR IGNORE INTO db_serialization_slots (slot_key, bump) \
+            "INSERT OR IGNORE INTO bookclerk_slots (slot_key, bump) \
              VALUES ({key}, 0)"
         ),
-        format!("UPDATE db_serialization_slots SET bump = bump + 1 WHERE slot_key = {key}"),
+        format!("UPDATE bookclerk_slots SET bump = bump + 1 WHERE slot_key = {key}"),
     ]
 }
 
@@ -386,13 +383,13 @@ async fn lock_schema_slot(db: &DatabaseConnection, namespace: &str) -> Result<()
             Ok(()) => return Ok(()),
             Err(err) => {
                 let msg = err.to_string().to_ascii_lowercase();
-                if msg.contains("db_serialization_slots")
+                if msg.contains("bookclerk_slots")
                     && (msg.contains("no such table")
                         || msg.contains("does not exist")
                         || msg.contains("no such relation"))
                 {
                     return Err(LibraryError::Schema(format!(
-                        "schema apply for namespace `{namespace}` requires db_serialization_slots \
+                        "schema apply for namespace `{namespace}` requires bookclerk_slots \
                          (apply binding bootstrap first): {err}"
                     )));
                 }
@@ -735,9 +732,7 @@ mod tests {
             .await
             .expect_err("interrupt before marker");
         assert!(err.to_string().to_lowercase().contains("cancel"), "{err}");
-        let before = current_schema_state_in(&db, HostSchemaKind::RowMarker, "echo_sql")
-            .await
-            .unwrap();
+        let before = current_schema_state_in(&db, "echo_sql").await.unwrap();
         assert_eq!(before, SchemaState::Uninitialized);
         let state = apply_migration_plan(&db, &plan).await.unwrap();
         assert_eq!(state.frozen_version(), Some(1));
@@ -778,30 +773,20 @@ mod tests {
     #[tokio::test]
     async fn bookclerk_bootstrap_and_plugin_plan_are_separate_namespaces() {
         let db = binding_with_bootstrap().await;
-        let boot = current_schema_state_in(
-            &db,
-            HostSchemaKind::RowMarker,
-            crate::BOOKCLERK_SCHEMA_NAMESPACE,
-        )
-        .await
-        .unwrap();
+        let boot = current_schema_state_in(&db, crate::BOOKCLERK_SCHEMA_NAMESPACE)
+            .await
+            .unwrap();
         match boot {
             SchemaState::Unreleased { base_version, .. } => assert_eq!(base_version, 0),
             other => panic!("expected bookclerk unreleased, got {other}"),
         }
         let plan = notes_plan("echo_sql", true);
         apply_migration_plan(&db, &plan).await.unwrap();
-        let plugin = current_schema_state_in(&db, HostSchemaKind::RowMarker, "echo_sql")
+        let plugin = current_schema_state_in(&db, "echo_sql").await.unwrap();
+        assert_eq!(plugin.frozen_version(), Some(1));
+        let boot_after = current_schema_state_in(&db, crate::BOOKCLERK_SCHEMA_NAMESPACE)
             .await
             .unwrap();
-        assert_eq!(plugin.frozen_version(), Some(1));
-        let boot_after = current_schema_state_in(
-            &db,
-            HostSchemaKind::RowMarker,
-            crate::BOOKCLERK_SCHEMA_NAMESPACE,
-        )
-        .await
-        .unwrap();
         assert_eq!(boot, boot_after);
     }
 
@@ -812,9 +797,7 @@ mod tests {
         let expected = apply_migration_plan(&db, &v1).await.unwrap();
         let v2 = two_step_plan("echo_sql");
         apply_migration_plan(&db, &v2).await.unwrap();
-        let observed = current_schema_state_in(&db, HostSchemaKind::RowMarker, "echo_sql")
-            .await
-            .unwrap();
+        let observed = current_schema_state_in(&db, "echo_sql").await.unwrap();
         let err = schema_session_matches(&expected, &observed).unwrap_err();
         assert!(err.to_string().contains("schema advanced"), "{err}");
     }
@@ -831,7 +814,7 @@ mod tests {
             sea_orm::Statement::from_string(
                 sea_orm::DbBackend::Sqlite,
                 format!(
-                    "INSERT INTO schema_migrations \
+                    "INSERT INTO bookclerk_schema_migrations \
                      (namespace, version, state, checksum, app_version, applied_at) \
                      VALUES ('echo_sql', 1, 'frozen', {}, 'test', 't')",
                     crate::migrations::sql_string_literal(&v1.steps[0].checksum())
@@ -849,7 +832,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let before = current_schema_state_in(&restored, HostSchemaKind::RowMarker, "echo_sql")
+        let before = current_schema_state_in(&restored, "echo_sql")
             .await
             .unwrap();
         assert_eq!(before.frozen_version(), Some(1));

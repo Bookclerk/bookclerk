@@ -5,7 +5,7 @@ use super::MigrationOp;
 /// Host-owned bootstrap applied inside every isolated plugin binding.
 pub(super) const BINDING_BOOTSTRAP_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS db_atomic_receipts (
+        r"CREATE TABLE IF NOT EXISTS bookclerk_receipts (
         operation_id TEXT PRIMARY KEY NOT NULL,
         operation_kind TEXT NOT NULL,
         request_hash TEXT NOT NULL,
@@ -17,7 +17,7 @@ pub(super) const BINDING_BOOTSTRAP_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_db_atomic_receipts_expires ON db_atomic_receipts(expires_at)",
+        r"CREATE INDEX IF NOT EXISTS idx_bookclerk_receipts_expires ON bookclerk_receipts(expires_at)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS bookclerk_sql_catalog (
@@ -53,13 +53,13 @@ pub(super) const BINDING_BOOTSTRAP_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS db_serialization_slots (
+        r"CREATE TABLE IF NOT EXISTS bookclerk_slots (
         slot_key TEXT PRIMARY KEY NOT NULL,
         bump INTEGER NOT NULL DEFAULT 0
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS plugin_migrations (
+        r"CREATE TABLE IF NOT EXISTS bookclerk_plugin_migrations (
         ordinal INTEGER PRIMARY KEY NOT NULL,
         migration_id TEXT NOT NULL UNIQUE,
         checksum TEXT NOT NULL,

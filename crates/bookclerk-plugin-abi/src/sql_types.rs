@@ -23,7 +23,7 @@ pub const SQL_CATALOG_TABLE: &str = "bookclerk_sql_catalog";
 pub const SQL_IDENTITY_TABLE: &str = "bookclerk_identity";
 
 /// Internal alias used when wrapping `INSERT OR IGNORE … SELECT`.
-pub const INSERT_SELECT_WRAP_ALIAS: &str = "_bc_src";
+pub const INSERT_SELECT_WRAP_ALIAS: &str = "bookclerk_src";
 
 /// Portable bound for every canonical SQL v1 identifier after case fold.
 ///
@@ -1412,11 +1412,10 @@ pub fn sql_type_env_from_canonical_ddl(sql: &str) -> SqlTypeEnv {
 #[must_use]
 pub fn sql_host_bookkeeping_type_env() -> SqlTypeEnv {
     sql_type_env_from_canonical_statements([
-        "CREATE TABLE db_atomic_receipts (\
+        "CREATE TABLE bookclerk_receipts (\
          operation_id TEXT PRIMARY KEY NOT NULL, operation_kind TEXT NOT NULL, \
          request_hash TEXT NOT NULL, status TEXT NOT NULL, payload TEXT, \
          created_at TEXT NOT NULL, expires_at TEXT NOT NULL, consume_key TEXT UNIQUE)",
-        "CREATE TABLE pragma_user_version (user_version INTEGER NOT NULL)",
         "CREATE TABLE pragma_table_info (\
          cid INTEGER NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, \
          notnull INTEGER NOT NULL, dflt_value TEXT, pk INTEGER NOT NULL)",
@@ -4052,7 +4051,7 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("duplicate"), "{err}");
         typecheck_execute_request(
-            &req("SELECT operation_id FROM db_atomic_receipts"),
+            &req("SELECT operation_id FROM bookclerk_receipts"),
             &sql_host_bookkeeping_type_env(),
         )
         .unwrap();

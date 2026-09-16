@@ -97,7 +97,7 @@ impl MigrationStep {
 /// Ordered frozen plan for one ledger namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationPlan {
-    /// `schema_migrations.namespace` (`bookclerk` for host-owned plans).
+    /// `bookclerk_schema_migrations.namespace` (`bookclerk` for host-owned plans).
     pub namespace: String,
     /// Frozen steps in increasing version order.
     pub steps: Vec<MigrationStep>,
@@ -233,26 +233,26 @@ pub fn sql_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-/// `INSERT` for a frozen namespaced `schema_migrations` row.
+/// `INSERT` for a frozen namespaced `bookclerk_schema_migrations` row.
 #[must_use]
 pub fn frozen_marker_sql(namespace: &str, version: i64, checksum: &str) -> String {
     marker_insert_sql(namespace, version, SCHEMA_STATE_FROZEN, checksum)
 }
 
-/// `INSERT` for an unreleased namespaced `schema_migrations` row.
+/// `INSERT` for an unreleased namespaced `bookclerk_schema_migrations` row.
 #[must_use]
 pub fn unreleased_marker_sql_in(namespace: &str, checksum: &str, base_version: i64) -> String {
     marker_insert_sql(namespace, base_version, SCHEMA_STATE_UNRELEASED, checksum)
 }
 
-/// Namespaced `schema_migrations` INSERT for frozen or unreleased markers.
+/// Namespaced `bookclerk_schema_migrations` INSERT for frozen or unreleased markers.
 fn marker_insert_sql(namespace: &str, version: i64, state: &str, checksum: &str) -> String {
     let app = env!("CARGO_PKG_VERSION").replace('\'', "''");
     let at = chrono::Utc::now().to_rfc3339().replace('\'', "''");
     let ns = sql_string_literal(namespace);
     let checksum = sql_string_literal(checksum);
     format!(
-        "INSERT INTO schema_migrations \
+        "INSERT INTO bookclerk_schema_migrations \
          (namespace, version, state, checksum, app_version, applied_at) \
          VALUES ({ns}, {version}, '{state}', {checksum}, '{app}', '{at}')"
     )
@@ -262,7 +262,7 @@ fn marker_insert_sql(namespace: &str, version: i64, state: &str, checksum: &str)
 #[must_use]
 pub fn frozen_marker_delete_sql(namespace: &str, version: i64) -> String {
     format!(
-        "DELETE FROM schema_migrations WHERE namespace = {} AND state = '{}' AND version = {version}",
+        "DELETE FROM bookclerk_schema_migrations WHERE namespace = {} AND state = '{}' AND version = {version}",
         sql_string_literal(namespace),
         SCHEMA_STATE_FROZEN
     )

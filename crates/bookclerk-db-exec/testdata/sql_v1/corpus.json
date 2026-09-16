@@ -33,12 +33,12 @@
     {
       "id": "insert-or-ignore-returning",
       "canonical": "INSERT OR IGNORE INTO t (id) SELECT ? RETURNING id",
-      "postgres": "INSERT INTO t (id) SELECT * FROM (SELECT $1) AS _bc_src WHERE true  ON CONFLICT DO NOTHING RETURNING id"
+      "postgres": "INSERT INTO t (id) SELECT * FROM (SELECT $1) AS bookclerk_src WHERE true  ON CONFLICT DO NOTHING RETURNING id"
     },
     {
       "id": "insert-or-ignore-returning-lowercase",
       "canonical": "insert or ignore into t (id) select ? returning id",
-      "postgres": "INSERT INTO t (id) SELECT * FROM (select $1) AS _bc_src WHERE true  ON CONFLICT DO NOTHING RETURNING id"
+      "postgres": "INSERT INTO t (id) SELECT * FROM (select $1) AS bookclerk_src WHERE true  ON CONFLICT DO NOTHING RETURNING id"
     },
     {
       "id": "json-object",

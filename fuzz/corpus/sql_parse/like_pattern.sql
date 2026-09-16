@@ -1,1 +1,1 @@
-SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'abc%'
+SELECT slot_key FROM bookclerk_slots WHERE slot_key LIKE 'abc%'

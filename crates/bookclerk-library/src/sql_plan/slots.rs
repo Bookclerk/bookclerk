@@ -1,4 +1,4 @@
-//! Portable COUNT+mutate serialization via `db_serialization_slots`.
+//! Portable COUNT+mutate serialization via `bookclerk_slots`.
 
 use sea_orm::{ConnectionTrait, StreamTrait};
 
@@ -33,11 +33,11 @@ pub async fn lock_serialization_slot<C>(db: &C, in_process: bool, slot_key: &str
 where
     C: ConnectionTrait + StreamTrait,
 {
-    const INSERT: &str = "INSERT OR IGNORE INTO db_serialization_slots (slot_key, bump) \
+    const INSERT: &str = "INSERT OR IGNORE INTO bookclerk_slots (slot_key, bump) \
          SELECT ?, 0 WHERE NOT EXISTS (\
-            SELECT 1 FROM db_serialization_slots WHERE slot_key = ?\
+            SELECT 1 FROM bookclerk_slots WHERE slot_key = ?\
          )";
-    const BUMP: &str = "UPDATE db_serialization_slots SET bump = bump + 1 WHERE slot_key = ?";
+    const BUMP: &str = "UPDATE bookclerk_slots SET bump = bump + 1 WHERE slot_key = ?";
     let env = crate::migrations::host_sql_type_env();
     crate::sql_plan::execute_sql_on(
         in_process,
@@ -70,11 +70,11 @@ mod tests {
 
     #[test]
     fn serialization_slot_sql_typechecks_against_host_env() {
-        const INSERT: &str = "INSERT OR IGNORE INTO db_serialization_slots (slot_key, bump) \
+        const INSERT: &str = "INSERT OR IGNORE INTO bookclerk_slots (slot_key, bump) \
          SELECT ?, 0 WHERE NOT EXISTS (\
-            SELECT 1 FROM db_serialization_slots WHERE slot_key = ?\
+            SELECT 1 FROM bookclerk_slots WHERE slot_key = ?\
          )";
-        const BUMP: &str = "UPDATE db_serialization_slots SET bump = bump + 1 WHERE slot_key = ?";
+        const BUMP: &str = "UPDATE bookclerk_slots SET bump = bump + 1 WHERE slot_key = ?";
         let env = crate::migrations::host_sql_type_env();
         let req = ExecuteRequest {
             operation_id: "slot".into(),

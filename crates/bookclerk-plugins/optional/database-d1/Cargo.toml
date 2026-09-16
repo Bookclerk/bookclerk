@@ -38,7 +38,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-bookclerk-library.workspace = true
+bookclerk-library = { workspace = true, features = ["test-support"] }
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 wiremock.workspace = true

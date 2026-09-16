@@ -33,7 +33,7 @@ dispatch receipts are per pair (`dispatch-{event_id}-{plugin_id}` /
 that process **and** only events its own node catalog matches (type, schema
 version, filter). `[events.concurrency]` is both the local worker count **and** the
 cluster-wide max `running` deliveries per `(plugin_id, resource_class)`
-(serialized with a portable `db_serialization_slots` row).
+(serialized with a portable `bookclerk_slots` row).
 `EventResult::suspended` may set `wakeOnEventType` / `wakeOnFilterJson`; the
 host derives wake grants from declared subscriptions (schema versions plus the
 intersection of `sub.filter` and the requested filter — requested keys only
@@ -146,7 +146,7 @@ worker that is about to claim. Admission waits up to 15s for a read permit
 and returns `503` if a swap holds the lock too long.
 
 Admission, claim, and scratch-quota updates take a write lock on a
-`db_serialization_slots` row (`job-queue`) so `COUNT` then `INSERT` cannot
+`bookclerk_slots` row (`job-queue`) so `COUNT` then `INSERT` cannot
 exceed `max_pending` under `READ COMMITTED` on every required backend. The required `postgres job queue` CI job runs those
 concurrency tests against a disposable multi-connection database
 (`BOOKCLERK_TEST_POSTGRES_URL` + `BOOKCLERK_REQUIRE_POSTGRES_TESTS=1`).
