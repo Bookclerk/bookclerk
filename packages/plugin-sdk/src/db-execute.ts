@@ -7,7 +7,7 @@
  */
 
 import {
-  DB_COLUMN_TYPES,
+  DB_TYPES,
   DB_RESULT_SELECTIONS,
   DB_STATEMENT_KINDS,
   type DbResultSelection,
@@ -31,9 +31,9 @@ const SELECT_ORD: Record<DbResultSelection, number> = Object.fromEntries(
   DB_RESULT_SELECTIONS.map((sel, ord) => [sel, ord]),
 ) as Record<DbResultSelection, number>;
 
-const COL_TYPE_FROM = DB_COLUMN_TYPES;
+const COL_TYPE_FROM = DB_TYPES;
 const COL_TYPE_ORD: Record<DbType, number> = Object.fromEntries(
-  DB_COLUMN_TYPES.map((ty, ord) => [ty, ord]),
+  DB_TYPES.map((ty, ord) => [ty, ord]),
 ) as Record<DbType, number>;
 
 /**

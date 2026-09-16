@@ -75,20 +75,15 @@ pub use fetch_dir::{fetch_work_dir, upload_file_path, FetchWorkDir, UploadFile};
 pub use json::{decode as decode_json, encode as encode_json, encode_atomic_result, page_rows};
 pub use pass_fd::{fd_proc_path, recv_passed_fd, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV};
 pub use protocol::{
-    methods, AuthenticateUserParams, BookAcquiredDto, BrandDto, CatalogDetailParams, CatalogHitDto,
+    methods, Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogDetail,
+    CatalogDetailParams, CatalogField, CatalogHit, CatalogHits, CatalogSort, ChapterMarker, CliArg,
     CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-    ConfigOptionDto, ConfigOptionValueDto, CopyParams, EventPollResultDto, ExistsResultDto,
-    ExpandCandidatesParams, ExternalUserDto, FetchTitleParams, GetParams, GetResultDto, HealthDto,
-    HealthResult, KeyParams, ListAccountsParams, ListDealsParams, ListParams, ListeningProgressDto,
-    LocalCopyParams, LocalGetParams, LocalKeyParams, LocalListParams, LocalPutFileParams,
-    LocalPutParams, LocalTouchFileParams, LoginCompleteParams, LoginParams, LoginResultDto,
-    LoginStartParams, LoginStartResultDto, ObjectInfoDto, ObjectMetaDto, ObjectProbeDto,
-    OutputCopyParams, OutputGetParams, OutputKeyParams, OutputListParams, OutputLocalContextDto,
-    OutputPutFileParams, OutputPutParams, OutputS3ContextDto, OutputTouchFileParams, PlainPartDto,
-    PluginMetadata, PurchaseHintDto, PurchaseHintParams, PutFileParams, PutParams,
-    S3CredentialsDto, ScanBookDto, ScanLibraryParams, ScanParams, ScanSummaryDto,
-    SearchCatalogParams, SourceAccountDto, SourceFetchDto, SyncListeningResultDto, TouchFileParams,
-    MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
+    ConfigOption, ConfigOptionValue, EventPollResult, ExpandCandidatesParams, ExternalUser,
+    FetchOptions, FetchTitleParams, ListDealsParams, ListeningProgress, LoginCompleteParams,
+    LoginParams, LoginResult, LoginStartResult, OutputLocalContextDto, OutputS3ContextDto,
+    PlainFetch, PlainPart, PortalAuthMode, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
+    S3CredentialsDto, ScanBook, ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams,
+    SourceAccount, SourceAccounts, SyncListeningResult, MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
 };
 
 pub use bookclerk_plugin_abi::{
@@ -104,18 +99,17 @@ pub use bookclerk_plugin_abi::{
     DatabaseContext, DbBootstrap, DbCapabilities, DbColumn, DbIdentityHighWater,
     DbPlanStatementKind, DbResultSelection, DbRow, DbTiming, DbType, DbValue, Destination,
     DestinationClient, DestinationContext, DestinationServer, DiagnoseResult, DomainEvent,
-    EventResult, ExecuteReply, ExecuteRequest, GuestDatabase, HealthOk, Integration,
-    IntegrationClient, IntegrationContext, IsolationReq, JobCheckpoint, JobHandler,
+    EventResult, ExecuteReply, ExecuteRequest, ExtensibleConfig, GuestDatabase, HealthOk,
+    Integration, IntegrationClient, IntegrationContext, IsolationReq, JobCheckpoint, JobHandler,
     JobHandlerContext, JobInvocation, JobInvocationLease, JobOutcome, ListOptions, ListPage,
     NeverCancel, ObjectInfo, ObjectMetadata, OidcClientTemplate, PluginClient, PluginDescribe,
     PluginError, PluginErrorCode, PluginMigration, PluginMigrationOp, PluginRoot, PluginServer,
     ProgressSink, PutResult, QueryPage, ReadResult, ScalarLimits, Source, SourceClient,
     SourceContext, SourceServer, StatementResult, StreamCopyHandler, StreamCopySpec,
-    TypedDbStatement, WorkerContext, WriteOptions, DATABASE_ADAPTER_CONFIG_MEDIA_TYPE,
-    FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY, FEATURE_STREAMS, MAX_LIST_PAGE,
-    MAX_PLUGIN_MIGRATION_OPS, MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
-    MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
-    SQL_CONTRACT_VERSION,
+    TypedDbStatement, WorkerContext, WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY,
+    FEATURE_STREAMS, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
+    MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES,
+    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION, SQL_CONTRACT_VERSION,
 };
 
 /// Serves a [`PluginRoot`] on stdin/stdout (Cap'n Proto RPC).

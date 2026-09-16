@@ -17,6 +17,27 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use crate::generated::{
+    read_authenticate_user_params, read_brand, read_catalog_detail_params,
+    read_catalog_detail_reply, read_catalog_hits_reply, read_cli_invoke_params,
+    read_cli_invoke_reply, read_cli_schema, read_cli_schema_reply, read_config_option,
+    read_database_adapter_config, read_diagnose_reply, read_event_poll_reply,
+    read_expand_candidates_params, read_external_user_reply, read_fetch_title_params,
+    read_fetch_title_reply, read_list_deals_params, read_login_complete_params, read_login_params,
+    read_login_reply, read_login_start_reply, read_purchase_hint_params, read_purchase_hint_reply,
+    read_scan_library_params, read_scan_params, read_scan_reply, read_search_catalog_params,
+    read_source_accounts_reply, read_sync_listening_reply, write_authenticate_user_params,
+    write_brand, write_catalog_detail_params, write_catalog_detail_reply, write_catalog_hits_reply,
+    write_cli_invoke_params, write_cli_invoke_reply, write_cli_schema, write_cli_schema_reply,
+    write_config_option, write_database_adapter_config, write_diagnose_reply,
+    write_event_poll_reply, write_expand_candidates_params, write_external_user_reply,
+    write_fetch_title_params, write_fetch_title_reply, write_list_deals_params,
+    write_login_complete_params, write_login_params, write_login_reply, write_login_start_reply,
+    write_purchase_hint_params, write_purchase_hint_reply, write_scan_library_params,
+    write_scan_params, write_scan_reply, write_search_catalog_params, write_source_accounts_reply,
+    write_sync_listening_reply, CatalogDetail, CatalogHits, DiagnoseResult, EventPollResult,
+    PurchaseHintResult, SourceAccounts, SyncListeningResult,
+};
 #[cfg(feature = "host")]
 use crate::host_roles::HostAdapterDatabaseSession;
 use crate::limits::{
@@ -32,7 +53,7 @@ use crate::plugin_capnp::{
     event_result as event_result_capnp, event_result_reply, get_reply,
     guest_database as guest_database_capnp, handle_reply, head_reply, health_reply,
     integration as integration_capnp, integration_reply, job_handler, job_invocation, job_outcome,
-    json_reply, list_reply, object_metadata, oidc_client_template, oidc_clients_reply, open_reply,
+    list_reply, object_metadata, oidc_client_template, oidc_clients_reply, open_reply,
     plugin_describe, plugin_error, plugin_migration, plugin_migration_op, plugin_migrations_ok,
     plugin_migrations_reply, progress_sink, pull_reply, put_reply, source as source_capnp,
     source_reply, worker_reply, write_options,
@@ -51,8 +72,13 @@ use crate::rpc_types::{
     MAX_CHECKPOINT_BYTES,
 };
 use crate::{
-    capnp_u32_len, require_plugin_migration_registration, PluginError, PluginMigration,
-    PluginMigrationOp, Result, MAX_PLUGIN_MIGRATION_ID_BYTES,
+    capnp_u32_len, require_plugin_migration_registration, AuthenticateUserParams,
+    CatalogDetailParams, CatalogHit, CliInvokeParams, CliInvokeResult, CliSchema,
+    ExpandCandidatesParams, ExternalUser, FetchTitleParams, ListDealsParams, ListeningProgress,
+    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginError,
+    PluginMigration, PluginMigrationOp, PurchaseHint, PurchaseHintParams, Result,
+    ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams, SourceAccount,
+    MAX_PLUGIN_MIGRATION_ID_BYTES,
 };
 
 pub(super) fn from_capnp(err: impl std::fmt::Display) -> PluginError {
@@ -232,18 +258,135 @@ fn fill_describe(mut b: plugin_describe::Builder<'_>, d: &PluginDescribe) -> cap
     lim.set_max_scalar_bytes(d.scalar_limits.max_scalar_bytes);
     lim.set_max_stream_window_bytes(d.scalar_limits.max_stream_window_bytes);
     lim.set_max_list_page(d.scalar_limits.max_list_page);
+    fill_text_list(
+        b.reborrow()
+            .init_supported_roles(u32_len(d.supported_roles.len())?),
+        &d.supported_roles,
+    );
+    fill_text_list(
+        b.reborrow()
+            .init_capabilities(u32_len(d.capabilities.len())?),
+        &d.capabilities,
+    );
+    b.set_portal_auth_mode(d.portal_auth_mode.into());
+    if let Some(env) = &d.password_env_var {
+        b.set_password_env_var(env);
+    }
+    fill_text_list(
+        b.reborrow().init_aliases(u32_len(d.aliases.len())?),
+        &d.aliases,
+    );
+    b.set_sort_key(d.sort_key);
+    if let Some(brand) = &d.brand {
+        write_brand(b.reborrow().init_brand(), brand)?;
+    }
     {
-        let mut roles = b
+        let mut opts = b
             .reborrow()
-            .init_supported_roles(d.supported_roles.len() as u32);
-        for (i, role) in d.supported_roles.iter().enumerate() {
-            roles.set(i as u32, role);
+            .init_config_options(u32_len(d.config_options.len())?);
+        for (i, opt) in d.config_options.iter().enumerate() {
+            write_config_option(opts.reborrow().get(i as u32), opt)?;
         }
     }
-    if !d.metadata_json.is_empty() {
-        b.set_metadata_json(&d.metadata_json);
-    }
+    write_cli_schema(b.reborrow().init_cli(), &d.cli)?;
     Ok(())
+}
+
+/// Cap'n Proto list lengths are `u32`.
+///
+/// # Errors
+///
+/// Returns when `len` exceeds `u32::MAX`.
+fn u32_len(len: usize) -> capnp::Result<u32> {
+    u32::try_from(len)
+        .map_err(|_| capnp::Error::failed(format!("list length {len} exceeds UInt32")))
+}
+
+/// Copy `items` into an already-sized `List(Text)` builder.
+fn fill_text_list(mut list: capnp::text_list::Builder<'_>, items: &[String]) {
+    for (i, item) in items.iter().enumerate() {
+        list.set(i as u32, item);
+    }
+}
+
+/// Owned strings of a `List(Text)` reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when an element is not valid UTF-8.
+fn read_text_list(list: capnp::text_list::Reader<'_>) -> Result<Vec<String>> {
+    let mut out = Vec::with_capacity(list.len() as usize);
+    for item in list.iter() {
+        out.push(text_of(item.map_err(from_capnp)?));
+    }
+    Ok(out)
+}
+
+/// Decode [`PluginDescribe`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns [`PluginError`] when a text or nested field cannot be read.
+fn read_describe(m: plugin_describe::Reader<'_>) -> Result<PluginDescribe> {
+    let lim = m.get_scalar_limits().map_err(from_capnp)?;
+    let brand = if m.has_brand() {
+        let brand = read_brand(m.get_brand().map_err(from_capnp)?).map_err(from_capnp)?;
+        if brand.id.is_empty() {
+            None
+        } else {
+            Some(brand)
+        }
+    } else {
+        None
+    };
+    let config_options = {
+        let list = m.get_config_options().map_err(from_capnp)?;
+        let mut out = Vec::with_capacity(list.len() as usize);
+        for item in list.iter() {
+            out.push(read_config_option(item).map_err(from_capnp)?);
+        }
+        out
+    };
+    let cli = if m.has_cli() {
+        read_cli_schema(m.get_cli().map_err(from_capnp)?).map_err(from_capnp)?
+    } else {
+        CliSchema::default()
+    };
+    Ok(PluginDescribe {
+        api_version: m.get_api_version(),
+        id: text_of(m.get_id().map_err(from_capnp)?),
+        kind: text_of(m.get_kind().map_err(from_capnp)?),
+        display_name: {
+            let n = text_of(m.get_display_name().map_err(from_capnp)?);
+            if n.is_empty() {
+                None
+            } else {
+                Some(n)
+            }
+        },
+        rpc_features: read_text_list(m.get_rpc_features().map_err(from_capnp)?)?,
+        scalar_limits: crate::rpc_types::ScalarLimitsDto {
+            max_scalar_bytes: lim.get_max_scalar_bytes(),
+            max_stream_window_bytes: lim.get_max_stream_window_bytes(),
+            max_list_page: lim.get_max_list_page(),
+        },
+        supported_roles: read_text_list(m.get_supported_roles().map_err(from_capnp)?)?,
+        capabilities: read_text_list(m.get_capabilities().map_err(from_capnp)?)?,
+        portal_auth_mode: m.get_portal_auth_mode().map(Into::into).unwrap_or_default(),
+        password_env_var: {
+            let v = text_of(m.get_password_env_var().map_err(from_capnp)?);
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
+        },
+        aliases: read_text_list(m.get_aliases().map_err(from_capnp)?)?,
+        sort_key: m.get_sort_key(),
+        brand,
+        config_options,
+        cli,
+    })
 }
 
 /// Encode a [`JobOutcome`] union onto a Cap'n Proto builder.
@@ -1299,7 +1442,7 @@ impl bookclerk_plugin::Server for PluginServer {
     ) -> capnp::Result<()> {
         let c = params.get()?.get_context()?;
         let ctx = DestinationContext {
-            json: c.get_json().ok().map(text_of).unwrap_or_default(),
+            config: read_extensible_config(c.get_config()?),
         };
         let mut result = results.get().init_result();
         match self.inner.destination(ctx).await {
@@ -1320,7 +1463,7 @@ impl bookclerk_plugin::Server for PluginServer {
     ) -> capnp::Result<()> {
         let c = params.get()?.get_context()?;
         let ctx = SourceContext {
-            json: c.get_json().ok().map(text_of).unwrap_or_default(),
+            config: read_extensible_config(c.get_config()?),
         };
         let mut result = results.get().init_result();
         match self.inner.source(ctx).await {
@@ -1342,7 +1485,7 @@ impl bookclerk_plugin::Server for PluginServer {
         let c = params.get()?.get_context()?;
         let ctx = WorkerContext {
             job_id: c.get_job_id().ok().map(text_of).unwrap_or_default(),
-            json: c.get_json().ok().map(text_of).unwrap_or_default(),
+            config: read_extensible_config(c.get_config()?),
         };
         let mut result = results.get().init_result();
         match self.inner.worker(ctx).await {
@@ -1376,7 +1519,7 @@ impl bookclerk_plugin::Server for PluginServer {
     ) -> capnp::Result<()> {
         let c = params.get()?.get_context()?;
         let ctx = ContentSourceContext {
-            json: c.get_json().ok().map(text_of).unwrap_or_default(),
+            config: read_extensible_config(c.get_config()?),
         };
         let mut result = results.get().init_result();
         match self.inner.content_source(ctx).await {
@@ -1399,7 +1542,7 @@ impl bookclerk_plugin::Server for PluginServer {
     ) -> capnp::Result<()> {
         let c = params.get()?.get_context()?;
         let ctx = IntegrationContext {
-            json: c.get_json().ok().map(text_of).unwrap_or_default(),
+            config: read_extensible_config(c.get_config()?),
         };
         let mut result = results.get().init_result();
         match self.inner.integration(ctx).await {
@@ -1421,8 +1564,8 @@ impl bookclerk_plugin::Server for PluginServer {
     ) -> capnp::Result<()> {
         let c = params.get()?.get_context()?;
         let ctx = DatabaseContext {
-            json: c.get_json().ok().map(text_of).unwrap_or_default(),
             config: read_extensible_config(c.get_config()?),
+            adapter: read_database_adapter_config(c.get_adapter()?)?,
         };
         let mut result = results.get().init_result();
         match self.inner.database(ctx).await {
@@ -1442,9 +1585,8 @@ impl bookclerk_plugin::Server for PluginServer {
         _params: bookclerk_plugin::CliDescribeParams,
         mut results: bookclerk_plugin::CliDescribeResults,
     ) -> capnp::Result<()> {
-        let result = results.get().init_result();
-        write_json_reply(result, self.inner.cli_describe().await);
-        Ok(())
+        let outcome = self.inner.cli_describe().await;
+        write_cli_schema_reply(results.get().init_result(), &outcome)
     }
 
     async fn cli_invoke(
@@ -1452,15 +1594,9 @@ impl bookclerk_plugin::Server for PluginServer {
         params: bookclerk_plugin::CliInvokeParams,
         mut results: bookclerk_plugin::CliInvokeResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
-        let result = results.get().init_result();
-        write_json_reply(result, self.inner.cli_invoke(&json).await);
-        Ok(())
+        let params = read_cli_invoke_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.cli_invoke(params).await;
+        write_cli_invoke_reply(results.get().init_result(), &outcome)
     }
 
     async fn oidc_clients(
@@ -1727,13 +1863,6 @@ fn read_plugin_migration_op(
     }
 }
 
-fn write_json_reply(result: json_reply::Builder<'_>, outcome: Result<String>) {
-    match outcome {
-        Ok(json) => result.init_ok().set_json(&json),
-        Err(err) => write_error(result.init_err(), &err),
-    }
-}
-
 fn write_health_reply(result: health_reply::Builder<'_>, outcome: Result<HealthOk>) {
     match outcome {
         Ok(h) => {
@@ -1830,14 +1959,9 @@ impl content_source_capnp::Server for ContentSourceServer {
         params: content_source_capnp::LoginParams,
         mut results: content_source_capnp::LoginResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
-        write_json_reply(results.get().init_result(), self.inner.login(&json).await);
-        Ok(())
+        let params = read_login_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.login(params).await;
+        write_login_reply(results.get().init_result(), &outcome)
     }
 
     async fn scan(
@@ -1845,14 +1969,9 @@ impl content_source_capnp::Server for ContentSourceServer {
         params: content_source_capnp::ScanParams,
         mut results: content_source_capnp::ScanResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
-        write_json_reply(results.get().init_result(), self.inner.scan(&json).await);
-        Ok(())
+        let params = read_scan_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.scan(params).await;
+        write_scan_reply(results.get().init_result(), &outcome)
     }
 
     async fn fetch_title(
@@ -1860,17 +1979,9 @@ impl content_source_capnp::Server for ContentSourceServer {
         params: content_source_capnp::FetchTitleParams,
         mut results: content_source_capnp::FetchTitleResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
-        write_json_reply(
-            results.get().init_result(),
-            self.inner.fetch_title(&json).await,
-        );
-        Ok(())
+        let params = read_fetch_title_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.fetch_title(params).await;
+        write_fetch_title_reply(results.get().init_result(), &outcome)
     }
 
     async fn list_accounts(
@@ -1878,11 +1989,12 @@ impl content_source_capnp::Server for ContentSourceServer {
         _params: content_source_capnp::ListAccountsParams,
         mut results: content_source_capnp::ListAccountsResults,
     ) -> capnp::Result<()> {
-        write_json_reply(
-            results.get().init_result(),
-            self.inner.list_accounts().await,
-        );
-        Ok(())
+        let outcome = self
+            .inner
+            .list_accounts()
+            .await
+            .map(|accounts| SourceAccounts { accounts });
+        write_source_accounts_reply(results.get().init_result(), &outcome)
     }
 
     async fn login_start(
@@ -1890,17 +2002,9 @@ impl content_source_capnp::Server for ContentSourceServer {
         params: content_source_capnp::LoginStartParams,
         mut results: content_source_capnp::LoginStartResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
-        write_json_reply(
-            results.get().init_result(),
-            self.inner.login_start(&json).await,
-        );
-        Ok(())
+        let params = read_login_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.login_start(params).await;
+        write_login_start_reply(results.get().init_result(), &outcome)
     }
 
     async fn login_complete(
@@ -1908,17 +2012,9 @@ impl content_source_capnp::Server for ContentSourceServer {
         params: content_source_capnp::LoginCompleteParams,
         mut results: content_source_capnp::LoginCompleteResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
-        write_json_reply(
-            results.get().init_result(),
-            self.inner.login_complete(&json).await,
-        );
-        Ok(())
+        let params = read_login_complete_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.login_complete(params).await;
+        write_login_reply(results.get().init_result(), &outcome)
     }
 
     async fn search_catalog(
@@ -1926,17 +2022,13 @@ impl content_source_capnp::Server for ContentSourceServer {
         params: content_source_capnp::SearchCatalogParams,
         mut results: content_source_capnp::SearchCatalogResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
-        write_json_reply(
-            results.get().init_result(),
-            self.inner.search_catalog(&json).await,
-        );
-        Ok(())
+        let params = read_search_catalog_params(params.get()?.get_params()?)?;
+        let outcome = self
+            .inner
+            .search_catalog(params)
+            .await
+            .map(|hits| CatalogHits { hits });
+        write_catalog_hits_reply(results.get().init_result(), &outcome)
     }
 
     async fn expand_candidates(
@@ -1944,17 +2036,13 @@ impl content_source_capnp::Server for ContentSourceServer {
         params: content_source_capnp::ExpandCandidatesParams,
         mut results: content_source_capnp::ExpandCandidatesResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
-        write_json_reply(
-            results.get().init_result(),
-            self.inner.expand_candidates(&json).await,
-        );
-        Ok(())
+        let params = read_expand_candidates_params(params.get()?.get_params()?)?;
+        let outcome = self
+            .inner
+            .expand_candidates(params)
+            .await
+            .map(|hits| CatalogHits { hits });
+        write_catalog_hits_reply(results.get().init_result(), &outcome)
     }
 
     async fn purchase_hint(
@@ -1962,17 +2050,16 @@ impl content_source_capnp::Server for ContentSourceServer {
         params: content_source_capnp::PurchaseHintParams,
         mut results: content_source_capnp::PurchaseHintResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
-        write_json_reply(
-            results.get().init_result(),
-            self.inner.purchase_hint(&json).await,
-        );
-        Ok(())
+        let params = read_purchase_hint_params(params.get()?.get_params()?)?;
+        let outcome = self
+            .inner
+            .purchase_hint(params)
+            .await
+            .map(|hint| PurchaseHintResult {
+                found: hint.is_some(),
+                hint: hint.unwrap_or_default(),
+            });
+        write_purchase_hint_reply(results.get().init_result(), &outcome)
     }
 
     async fn list_deals(
@@ -1980,17 +2067,13 @@ impl content_source_capnp::Server for ContentSourceServer {
         params: content_source_capnp::ListDealsParams,
         mut results: content_source_capnp::ListDealsResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
-        write_json_reply(
-            results.get().init_result(),
-            self.inner.list_deals(&json).await,
-        );
-        Ok(())
+        let params = read_list_deals_params(params.get()?.get_params()?)?;
+        let outcome = self
+            .inner
+            .list_deals(params)
+            .await
+            .map(|hits| CatalogHits { hits });
+        write_catalog_hits_reply(results.get().init_result(), &outcome)
     }
 
     async fn health(
@@ -2007,8 +2090,12 @@ impl content_source_capnp::Server for ContentSourceServer {
         _params: content_source_capnp::DiagnoseParams,
         mut results: content_source_capnp::DiagnoseResults,
     ) -> capnp::Result<()> {
-        write_json_reply(results.get().init_result(), self.inner.diagnose().await);
-        Ok(())
+        let outcome = self
+            .inner
+            .diagnose()
+            .await
+            .map(|lines| DiagnoseResult { lines });
+        write_diagnose_reply(results.get().init_result(), &outcome)
     }
 
     async fn catalog_detail(
@@ -2016,17 +2103,16 @@ impl content_source_capnp::Server for ContentSourceServer {
         params: content_source_capnp::CatalogDetailParams,
         mut results: content_source_capnp::CatalogDetailResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
-        write_json_reply(
-            results.get().init_result(),
-            self.inner.catalog_detail(&json).await,
-        );
-        Ok(())
+        let params = read_catalog_detail_params(params.get()?.get_params()?)?;
+        let outcome = self
+            .inner
+            .catalog_detail(params)
+            .await
+            .map(|hit| CatalogDetail {
+                found: hit.is_some(),
+                hit: hit.unwrap_or_default(),
+            });
+        write_catalog_detail_reply(results.get().init_result(), &outcome)
     }
 }
 
@@ -2109,8 +2195,12 @@ impl integration_capnp::Server for IntegrationServer {
         _params: integration_capnp::DiagnoseParams,
         mut results: integration_capnp::DiagnoseResults,
     ) -> capnp::Result<()> {
-        write_json_reply(results.get().init_result(), self.inner.diagnose().await);
-        Ok(())
+        let outcome = self
+            .inner
+            .diagnose()
+            .await
+            .map(|lines| DiagnoseResult { lines });
+        write_diagnose_reply(results.get().init_result(), &outcome)
     }
 
     async fn scan_library(
@@ -2118,14 +2208,9 @@ impl integration_capnp::Server for IntegrationServer {
         params: integration_capnp::ScanLibraryParams,
         mut results: integration_capnp::ScanLibraryResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
+        let params = read_scan_library_params(params.get()?.get_params()?)?;
         let mut result = results.get().init_result();
-        match self.inner.scan_library(&json).await {
+        match self.inner.scan_library(params).await {
             Ok(()) => result.set_ok(()),
             Err(err) => write_error(result.init_err(), &err),
         }
@@ -2137,11 +2222,12 @@ impl integration_capnp::Server for IntegrationServer {
         _params: integration_capnp::SyncListeningParams,
         mut results: integration_capnp::SyncListeningResults,
     ) -> capnp::Result<()> {
-        write_json_reply(
-            results.get().init_result(),
-            self.inner.sync_listening().await,
-        );
-        Ok(())
+        let outcome = self
+            .inner
+            .sync_listening()
+            .await
+            .map(|items| SyncListeningResult { items });
+        write_sync_listening_reply(results.get().init_result(), &outcome)
     }
 
     async fn authenticate_user(
@@ -2149,17 +2235,9 @@ impl integration_capnp::Server for IntegrationServer {
         params: integration_capnp::AuthenticateUserParams,
         mut results: integration_capnp::AuthenticateUserResults,
     ) -> capnp::Result<()> {
-        let json = params
-            .get()?
-            .get_params_json()
-            .ok()
-            .map(text_of)
-            .unwrap_or_default();
-        write_json_reply(
-            results.get().init_result(),
-            self.inner.authenticate_user(&json).await,
-        );
-        Ok(())
+        let params = read_authenticate_user_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.authenticate_user(params).await;
+        write_external_user_reply(results.get().init_result(), &outcome)
     }
 
     async fn poll_events(
@@ -2167,8 +2245,12 @@ impl integration_capnp::Server for IntegrationServer {
         _params: integration_capnp::PollEventsParams,
         mut results: integration_capnp::PollEventsResults,
     ) -> capnp::Result<()> {
-        write_json_reply(results.get().init_result(), self.inner.poll_events().await);
-        Ok(())
+        let outcome = self
+            .inner
+            .poll_events()
+            .await
+            .map(|users| EventPollResult { users });
+        write_event_poll_reply(results.get().init_result(), &outcome)
     }
 }
 
@@ -2631,40 +2713,7 @@ impl PluginClient {
                 m.get_api_version()
             )));
         }
-        let feats = m.get_rpc_features().map_err(from_capnp)?;
-        let mut rpc_features = Vec::new();
-        for f in feats.iter() {
-            rpc_features.push(f.map_err(from_capnp)?.to_string().unwrap_or_default());
-        }
-        let lim = m.get_scalar_limits().map_err(from_capnp)?;
-        Ok(PluginDescribe {
-            api_version: m.get_api_version(),
-            id: text_of(m.get_id().map_err(from_capnp)?),
-            kind: text_of(m.get_kind().map_err(from_capnp)?),
-            display_name: {
-                let n = text_of(m.get_display_name().map_err(from_capnp)?);
-                if n.is_empty() {
-                    None
-                } else {
-                    Some(n)
-                }
-            },
-            rpc_features,
-            scalar_limits: crate::rpc_types::ScalarLimitsDto {
-                max_scalar_bytes: lim.get_max_scalar_bytes(),
-                max_stream_window_bytes: lim.get_max_stream_window_bytes(),
-                max_list_page: lim.get_max_list_page(),
-            },
-            supported_roles: {
-                let roles = m.get_supported_roles().map_err(from_capnp)?;
-                let mut out = Vec::new();
-                for role in roles.iter() {
-                    out.push(role.map_err(from_capnp)?.to_string().unwrap_or_default());
-                }
-                out
-            },
-            metadata_json: text_of(m.get_metadata_json().map_err(from_capnp)?),
-        })
+        read_describe(m)
     }
 
     /// Returns a destination capability.
@@ -2675,8 +2724,8 @@ impl PluginClient {
     pub async fn destination(&self, ctx: DestinationContext) -> Result<DestinationClient> {
         let mut req = self.client.destination_request();
         {
-            let mut c = req.get().get_context().map_err(from_capnp)?;
-            c.set_json(&ctx.json);
+            let c = req.get().get_context().map_err(from_capnp)?;
+            write_extensible_config(c.init_config(), &ctx.config);
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -2702,8 +2751,8 @@ impl PluginClient {
     pub async fn source(&self, ctx: SourceContext) -> Result<SourceClient> {
         let mut req = self.client.source_request();
         {
-            let mut c = req.get().get_context().map_err(from_capnp)?;
-            c.set_json(&ctx.json);
+            let c = req.get().get_context().map_err(from_capnp)?;
+            write_extensible_config(c.init_config(), &ctx.config);
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -2727,7 +2776,7 @@ impl PluginClient {
         {
             let mut c = req.get().get_context().map_err(from_capnp)?;
             c.set_job_id(&ctx.job_id);
-            c.set_json(&ctx.json);
+            write_extensible_config(c.init_config(), &ctx.config);
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -2832,8 +2881,8 @@ impl PluginClient {
     pub async fn content_source(&self, ctx: ContentSourceContext) -> Result<ContentSourceClient> {
         let mut req = self.client.content_source_request();
         {
-            let mut c = req.get().get_context().map_err(from_capnp)?;
-            c.set_json(&ctx.json);
+            let c = req.get().get_context().map_err(from_capnp)?;
+            write_extensible_config(c.init_config(), &ctx.config);
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -2857,8 +2906,8 @@ impl PluginClient {
     pub async fn integration(&self, ctx: IntegrationContext) -> Result<IntegrationClient> {
         let mut req = self.client.integration_request();
         {
-            let mut c = req.get().get_context().map_err(from_capnp)?;
-            c.set_json(&ctx.json);
+            let c = req.get().get_context().map_err(from_capnp)?;
+            write_extensible_config(c.init_config(), &ctx.config);
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -2883,10 +2932,11 @@ impl PluginClient {
         let mut req = self.client.database_request();
         {
             let mut c = req.get().get_context().map_err(from_capnp)?;
-            c.set_json(&ctx.json);
             // Host-private connect params (postgres URL, D1 token, sqlite path)
-            // travel in `config`, not the json migration bridge.
+            // travel in `config`; third-party adapters get typed `adapter`.
             write_extensible_config(c.reborrow().init_config(), &ctx.config);
+            write_database_adapter_config(c.reborrow().init_adapter(), &ctx.adapter)
+                .map_err(from_capnp)?;
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -2902,39 +2952,37 @@ impl PluginClient {
         }
     }
 
-    /// Returns the guest CLI schema JSON.
+    /// Returns the guest's declared CLI surface.
     ///
     /// # Errors
     ///
     /// Returns a plugin error when the RPC fails.
-    pub async fn cli_describe(&self) -> Result<String> {
+    pub async fn cli_describe(&self) -> Result<CliSchema> {
         let req = self.client.cli_describe_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        read_cli_schema_reply(result).map_err(from_capnp)?
     }
 
-    /// Invokes a guest CLI command (`CliInvokeParams` JSON).
+    /// Runs one guest CLI command.
     ///
     /// # Errors
     ///
     /// Returns a plugin error when the RPC fails.
-    pub async fn cli_invoke(&self, params_json: &str) -> Result<String> {
+    pub async fn cli_invoke(&self, params: CliInvokeParams) -> Result<CliInvokeResult> {
         let mut req = self.client.cli_invoke_request();
-        req.get().set_params_json(params_json);
+        write_cli_invoke_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        read_cli_invoke_reply(result).map_err(from_capnp)?
     }
 
     /// Lists plugin-provided OIDC authorization-server client templates.
@@ -2986,21 +3034,6 @@ impl PluginClient {
     }
 }
 
-/// Decode a JSON success/error union.
-///
-/// # Errors
-///
-/// Returns the nested [`PluginError`] or a Cap'n Proto read failure.
-fn read_json_reply(result: json_reply::Reader<'_>) -> Result<String> {
-    match result.which().map_err(from_capnp)? {
-        json_reply::Ok(ok) => {
-            let ok = ok.map_err(from_capnp)?;
-            Ok(text_of(ok.get_json().map_err(from_capnp)?))
-        }
-        json_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
-    }
-}
-
 /// Decode a health success/error union.
 ///
 /// # Errors
@@ -3019,6 +3052,17 @@ fn read_health_reply(result: health_reply::Reader<'_>) -> Result<HealthOk> {
     }
 }
 
+/// `reply.get()?.get_result()?` for any `(result :T)` method response.
+macro_rules! reply_result {
+    ($reply:expr) => {
+        $reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?
+    };
+}
+
 /// Cap'n Proto client for [`ContentSource`].
 pub struct ContentSourceClient {
     client: content_source_capnp::Client,
@@ -3026,158 +3070,94 @@ pub struct ContentSourceClient {
 
 #[async_trait::async_trait(?Send)]
 impl ContentSource for ContentSourceClient {
-    async fn login(&self, params_json: &str) -> Result<String> {
+    async fn login(&self, params: LoginParams) -> Result<LoginResult> {
         let mut req = self.client.login_request();
-        req.get().set_params_json(params_json);
+        write_login_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_login_reply(reply_result!(reply)).map_err(from_capnp)?
     }
-    async fn scan(&self, params_json: &str) -> Result<String> {
+    async fn scan(&self, params: ScanParams) -> Result<ScanSummary> {
         let mut req = self.client.scan_request();
-        req.get().set_params_json(params_json);
+        write_scan_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_scan_reply(reply_result!(reply)).map_err(from_capnp)?
     }
-    async fn fetch_title(&self, params_json: &str) -> Result<String> {
+    async fn fetch_title(&self, params: FetchTitleParams) -> Result<PlainFetch> {
         let mut req = self.client.fetch_title_request();
-        req.get().set_params_json(params_json);
+        write_fetch_title_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_fetch_title_reply(reply_result!(reply)).map_err(from_capnp)?
     }
-    async fn list_accounts(&self) -> Result<String> {
+    async fn list_accounts(&self) -> Result<Vec<SourceAccount>> {
         let req = self.client.list_accounts_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_source_accounts_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.accounts)
     }
-    async fn login_start(&self, params_json: &str) -> Result<String> {
+    async fn login_start(&self, params: LoginParams) -> Result<LoginStartResult> {
         let mut req = self.client.login_start_request();
-        req.get().set_params_json(params_json);
+        write_login_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_login_start_reply(reply_result!(reply)).map_err(from_capnp)?
     }
-    async fn login_complete(&self, params_json: &str) -> Result<String> {
+    async fn login_complete(&self, params: LoginCompleteParams) -> Result<LoginResult> {
         let mut req = self.client.login_complete_request();
-        req.get().set_params_json(params_json);
+        write_login_complete_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_login_reply(reply_result!(reply)).map_err(from_capnp)?
     }
-    async fn search_catalog(&self, params_json: &str) -> Result<String> {
+    async fn search_catalog(&self, params: SearchCatalogParams) -> Result<Vec<CatalogHit>> {
         let mut req = self.client.search_catalog_request();
-        req.get().set_params_json(params_json);
+        write_search_catalog_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_catalog_hits_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.hits)
     }
-    async fn expand_candidates(&self, params_json: &str) -> Result<String> {
+    async fn expand_candidates(&self, params: ExpandCandidatesParams) -> Result<Vec<CatalogHit>> {
         let mut req = self.client.expand_candidates_request();
-        req.get().set_params_json(params_json);
+        write_expand_candidates_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_catalog_hits_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.hits)
     }
-    async fn purchase_hint(&self, params_json: &str) -> Result<String> {
+    async fn purchase_hint(&self, params: PurchaseHintParams) -> Result<Option<PurchaseHint>> {
         let mut req = self.client.purchase_hint_request();
-        req.get().set_params_json(params_json);
+        write_purchase_hint_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_purchase_hint_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.found.then_some(ok.hint))
     }
-    async fn list_deals(&self, params_json: &str) -> Result<String> {
+    async fn list_deals(&self, params: ListDealsParams) -> Result<Vec<CatalogHit>> {
         let mut req = self.client.list_deals_request();
-        req.get().set_params_json(params_json);
+        write_list_deals_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_catalog_hits_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.hits)
     }
-    async fn catalog_detail(&self, params_json: &str) -> Result<String> {
+    async fn catalog_detail(&self, params: CatalogDetailParams) -> Result<Option<CatalogHit>> {
         let mut req = self.client.catalog_detail_request();
-        req.get().set_params_json(params_json);
+        write_catalog_detail_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_catalog_detail_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.found.then_some(ok.hit))
     }
     async fn health(&self) -> Result<HealthOk> {
         let req = self.client.health_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_health_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_health_reply(reply_result!(reply))
     }
-    async fn diagnose(&self) -> Result<String> {
+    async fn diagnose(&self) -> Result<Vec<String>> {
         let req = self.client.diagnose_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_diagnose_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.lines)
     }
 }
 
@@ -3191,13 +3171,7 @@ impl Integration for IntegrationClient {
     async fn health(&self) -> Result<HealthOk> {
         let req = self.client.health_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_health_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_health_reply(reply_result!(reply))
     }
     async fn on_event(&self, event: DomainEvent) -> Result<EventResult> {
         if event.payload.len() > MAX_EVENT_PAYLOAD_BYTES as usize {
@@ -3245,81 +3219,45 @@ impl Integration for IntegrationClient {
     async fn start(&self) -> Result<()> {
         let req = self.client.start_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_empty(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_empty(reply_result!(reply))
     }
     async fn stop(&self) -> Result<()> {
         let req = self.client.stop_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_empty(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_empty(reply_result!(reply))
     }
-    async fn diagnose(&self) -> Result<String> {
+    async fn diagnose(&self) -> Result<Vec<String>> {
         let req = self.client.diagnose_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_diagnose_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.lines)
     }
-    async fn scan_library(&self, params_json: &str) -> Result<()> {
+    async fn scan_library(&self, params: ScanLibraryParams) -> Result<()> {
         let mut req = self.client.scan_library_request();
-        req.get().set_params_json(params_json);
+        write_scan_library_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_empty(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_empty(reply_result!(reply))
     }
-    async fn sync_listening(&self) -> Result<String> {
+    async fn sync_listening(&self) -> Result<Vec<ListeningProgress>> {
         let req = self.client.sync_listening_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_sync_listening_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.items)
     }
-    async fn authenticate_user(&self, params_json: &str) -> Result<String> {
+    async fn authenticate_user(&self, params: AuthenticateUserParams) -> Result<ExternalUser> {
         let mut req = self.client.authenticate_user_request();
-        req.get().set_params_json(params_json);
+        write_authenticate_user_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_external_user_reply(reply_result!(reply)).map_err(from_capnp)?
     }
-    async fn poll_events(&self) -> Result<String> {
+    async fn poll_events(&self) -> Result<Vec<ExternalUser>> {
         let req = self.client.poll_events_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
-        read_json_reply(
-            reply
-                .get()
-                .map_err(from_capnp)?
-                .get_result()
-                .map_err(from_capnp)?,
-        )
+        read_event_poll_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.users)
     }
 }
 
@@ -4619,12 +4557,16 @@ mod tests {
                 let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
                 tokio::task::spawn_local(rpc);
                 let sent = DatabaseContext {
-                    json: String::new(),
                     config: ExtensibleConfig {
                         schema_version: 1,
-                        media_type: crate::db::DATABASE_ADAPTER_CONFIG_MEDIA_TYPE.into(),
+                        media_type: "application/vnd.bookclerk.db-connect+json".into(),
                         payload: br#"{"backend":"postgres","url":"postgres://example/db"}"#
                             .to_vec(),
+                    },
+                    adapter: crate::DatabaseAdapterConfig {
+                        plugin_data_dir: "/tmp/plugins/probe/data".into(),
+                        binding: Some("DB".into()),
+                        ..crate::DatabaseAdapterConfig::default()
                     },
                 };
                 let err = match client.database(sent.clone()).await {
@@ -4641,6 +4583,7 @@ mod tests {
                 assert_eq!(got.config.schema_version, sent.config.schema_version);
                 assert_eq!(got.config.media_type, sent.config.media_type);
                 assert_eq!(got.config.payload, sent.config.payload);
+                assert_eq!(got.adapter, sent.adapter);
             })
             .await;
     }

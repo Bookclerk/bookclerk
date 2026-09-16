@@ -11,7 +11,7 @@ use std::time::Duration;
 use bookclerk_config::AudiobookshelfConfig;
 use bookclerk_integrations::{ExternalUser, IntegrationError, Result};
 use bookclerk_plugin_sdk::{
-    EventPollResultDto, ExternalUserDto, HealthDto, ListeningProgressDto, SyncListeningResultDto,
+    EventPollResult, ExternalUser as AbiExternalUser, HealthOk, ListeningProgress,
 };
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -34,7 +34,7 @@ pub struct AbsGuestState {
     /// ABS user ids already seen by the watch loop (dedupes event-poll queue).
     known_users: HashSet<String>,
     /// Newly observed users waiting for the host to claim via `guest_event_poll`.
-    queued_users: VecDeque<ExternalUserDto>,
+    queued_users: VecDeque<AbiExternalUser>,
     /// True after the background user-watch task has been spawned.
     watch_started: bool,
 }
@@ -143,7 +143,7 @@ pub async fn guest_start(state: Arc<Mutex<AbsGuestState>>) -> Result<()> {
                                 username = %user.username,
                                 "ABS guest user observed"
                             );
-                            g.queued_users.push_back(ExternalUserDto {
+                            g.queued_users.push_back(AbiExternalUser {
                                 provider: PROVIDER.into(),
                                 external_user_id: user.id,
                                 display_name: Some(user.username),
@@ -163,13 +163,13 @@ pub async fn guest_start(state: Arc<Mutex<AbsGuestState>>) -> Result<()> {
 ///
 /// Call from the host's event-poll RPC so user create/update notifications can
 /// be applied without blocking the watch task.
-pub async fn guest_event_poll(state: &Mutex<AbsGuestState>) -> EventPollResultDto {
+pub async fn guest_event_poll(state: &Mutex<AbsGuestState>) -> EventPollResult {
     let mut g = state.lock().await;
     let users: Vec<_> = g.queued_users.drain(..).collect();
-    EventPollResultDto { users }
+    EventPollResult { users }
 }
 
-/// Probes ABS connectivity and returns a health DTO for the host status strip.
+/// Probes ABS connectivity and returns the typed health reply for the host status strip.
 ///
 /// Misconfiguration (no client) yields `ok: false` with a detail message rather
 /// than an RPC error so diagnose/health UIs can render it.
@@ -177,31 +177,28 @@ pub async fn guest_event_poll(state: &Mutex<AbsGuestState>) -> EventPollResultDt
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub async fn guest_health(state: &Mutex<AbsGuestState>) -> Result<HealthDto> {
+pub async fn guest_health(state: &Mutex<AbsGuestState>) -> Result<HealthOk> {
     let g = state.lock().await;
     let Some(client) = g.client.as_ref() else {
-        return Ok(HealthDto {
-            id: PROVIDER.into(),
-            enabled: g.config.enabled,
+        return Ok(HealthOk {
             ok: false,
             detail: g
                 .config_error
                 .clone()
-                .or_else(|| Some("audiobookshelf integration is misconfigured".into())),
+                .unwrap_or_else(|| "audiobookshelf integration is misconfigured".into()),
         });
     };
     match client.authorize().await {
-        Ok(auth) => Ok(HealthDto {
-            id: PROVIDER.into(),
-            enabled: g.config.enabled,
+        Ok(auth) => Ok(HealthOk {
             ok: true,
-            detail: auth.user.map(|u| format!("authorized as {}", u.username)),
+            detail: auth
+                .user
+                .map(|u| format!("authorized as {}", u.username))
+                .unwrap_or_default(),
         }),
-        Err(err) => Ok(HealthDto {
-            id: PROVIDER.into(),
-            enabled: g.config.enabled,
+        Err(err) => Ok(HealthOk {
             ok: false,
-            detail: Some(err.to_string()),
+            detail: err.to_string(),
         }),
     }
 }
@@ -248,34 +245,34 @@ pub async fn guest_scan_library(state: &Mutex<AbsGuestState>, force: bool) -> Re
     client.scan_library(library_id, force).await
 }
 
-/// Collect listening progress as protocol DTOs (host upserts).
+/// Collect listening progress as typed ABI rows (host upserts).
 ///
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub async fn guest_sync_listening(state: &Mutex<AbsGuestState>) -> Result<SyncListeningResultDto> {
+pub async fn guest_sync_listening(state: &Mutex<AbsGuestState>) -> Result<Vec<ListeningProgress>> {
     let g = state.lock().await;
     let client = g.require_client()?;
     let snapshots = collect_listening_snapshots(client).await?;
-    Ok(SyncListeningResultDto {
-        items: snapshots
-            .into_iter()
-            .map(|row| ListeningProgressDto {
-                external_user_id: row.external_user_id,
-                external_item_id: row.external_item_id,
-                identity_id: row.identity_id,
-                title: row.title,
-                authors: row.authors,
-                asin: row.asin,
-                isbn: row.isbn,
-                progress: row.progress,
-                current_time_seconds: row.current_time_seconds,
-                duration_seconds: row.duration_seconds,
-                is_finished: row.is_finished,
-                last_listened_at: row.last_listened_at,
-            })
-            .collect(),
-    })
+    Ok(snapshots
+        .into_iter()
+        .map(|row| ListeningProgress {
+            external_user_id: row.external_user_id,
+            external_item_id: row.external_item_id,
+            identity_id: row.identity_id,
+            title: row.title,
+            authors: row.authors,
+            asin: row.asin,
+            isbn: row.isbn,
+            progress: row.progress,
+            current_time_seconds: row.current_time_seconds,
+            duration_seconds: row.duration_seconds,
+            is_finished: row.is_finished,
+            last_listened_at_unix_ms: row
+                .last_listened_at
+                .and_then(|ts| u64::try_from(ts.timestamp_millis()).ok()),
+        })
+        .collect())
 }
 
 /// Username/password login against ABS (when allowed).

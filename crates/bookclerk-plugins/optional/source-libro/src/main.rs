@@ -4,85 +4,16 @@
 
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::{
-    decode_json, encode_json, ContentSource as ContentSourceRole, ContentSourceContext, HealthOk,
-    PluginDescribe, PluginRoot, ScalarLimits, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    serve, Brand, CatalogDetailParams, CatalogHit, ConfigOption, ConfigOptionValue,
+    ContentSource as ContentSourceRole, ContentSourceContext, ExpandCandidatesParams,
+    FetchTitleParams, HealthOk, ListDealsParams, LoginParams, LoginResult, PlainFetch,
+    PluginDescribe, PluginError, PluginRoot, PortalAuthMode, PurchaseHint, PurchaseHintParams,
+    ScalarLimits, ScanParams, ScanSummary, SearchCatalogParams, FEATURE_SCALAR_LIMITS,
+    PRODUCT_API_VERSION,
 };
-use bookclerk_plugin_sdk::{
-    serve, BrandDto, CatalogDetailParams, CatalogHitDto, ConfigOptionDto, ConfigOptionValueDto,
-    ExpandCandidatesParams, FetchTitleParams, ListDealsParams, LoginParams, PluginError,
-    PluginMetadata, PurchaseHintParams, ScanParams, SearchCatalogParams,
-};
-use bookclerk_source::{
-    CatalogSearchOpts, CatalogSearchSort, ContentSource, ExpandSeed, PurchaseHintOpts,
-};
+use bookclerk_source::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
+use bookclerk_source::{CatalogSearchOpts, ContentSource, PurchaseHintOpts};
 use serde_json::Value;
-
-fn describe_metadata() -> Result<String, PluginError> {
-    encode_json(PluginMetadata {
-        api_version: PRODUCT_API_VERSION,
-        id: "libro".into(),
-        kind: "source".into(),
-        display_name: Some("Libro.fm".into()),
-        capabilities: vec![
-            "health".into(),
-            "diagnose".into(),
-            "login".into(),
-            "scan".into(),
-            "fetchTitle".into(),
-            "searchCatalog".into(),
-            "catalogDetail".into(),
-            "expandCandidates".into(),
-            "purchaseHint".into(),
-            "listDeals".into(),
-        ],
-        portal_auth_mode: Some("password".into()),
-        password_env_var: Some(bookclerk_plugin_source_libro::PASSWORD_ENV.into()),
-        aliases: vec!["libro.fm".into(), "librofm".into()],
-        sort_key: Some(1),
-        brand: Some(BrandDto {
-            id: "libro".into(),
-            name: "Libro.fm".into(),
-            bg: "#1F4E3D".into(),
-            fg: "#F4F1EA".into(),
-            accent: "#2F6B53".into(),
-            icon_url: "https://www.google.com/s2/favicons?domain=libro.fm&sz=128".into(),
-        }),
-        config_options: vec![ConfigOptionDto {
-            key: "container".into(),
-            label: "Container".into(),
-            values: vec![
-                ConfigOptionValueDto {
-                    id: "m4b".into(),
-                    label: "M4B".into(),
-                },
-                ConfigOptionValueDto {
-                    id: "zip".into(),
-                    label: "ZIP (MP3 parts)".into(),
-                },
-            ],
-        }],
-        ..PluginMetadata::default()
-    })
-}
-
-fn catalog_opts(params: SearchCatalogParams) -> CatalogSearchOpts {
-    CatalogSearchOpts {
-        query: params.query,
-        region: params.region,
-        limit: params.limit,
-        page: params.page.max(1),
-        sort: params
-            .sort
-            .as_deref()
-            .map(CatalogSearchSort::from_wire)
-            .unwrap_or_default(),
-        field: params
-            .field
-            .as_deref()
-            .and_then(bookclerk_source::CatalogSearchField::from_wire),
-        language: params.language,
-    }
-}
 
 /// External Libro.fm source guest; `describe` advertises scan/fetch/catalog capabilities.
 struct LibroRoot;
@@ -98,7 +29,45 @@ impl PluginRoot for LibroRoot {
             rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
             scalar_limits: ScalarLimits::default().into(),
             supported_roles: vec!["contentSource".into()],
-            metadata_json: describe_metadata()?,
+            capabilities: vec![
+                "health".into(),
+                "diagnose".into(),
+                "login".into(),
+                "scan".into(),
+                "fetchTitle".into(),
+                "searchCatalog".into(),
+                "catalogDetail".into(),
+                "expandCandidates".into(),
+                "purchaseHint".into(),
+                "listDeals".into(),
+            ],
+            portal_auth_mode: PortalAuthMode::Password,
+            password_env_var: Some(bookclerk_plugin_source_libro::PASSWORD_ENV.into()),
+            aliases: vec!["libro.fm".into(), "librofm".into()],
+            sort_key: 1,
+            brand: Some(Brand {
+                id: "libro".into(),
+                name: "Libro.fm".into(),
+                bg: "#1F4E3D".into(),
+                fg: "#F4F1EA".into(),
+                accent: "#2F6B53".into(),
+                icon_url: Some("https://www.google.com/s2/favicons?domain=libro.fm&sz=128".into()),
+            }),
+            config_options: vec![ConfigOption {
+                key: "container".into(),
+                label: "Container".into(),
+                values: vec![
+                    ConfigOptionValue {
+                        id: "m4b".into(),
+                        label: "M4B".into(),
+                    },
+                    ConfigOptionValue {
+                        id: "zip".into(),
+                        label: "ZIP (MP3 parts)".into(),
+                    },
+                ],
+            }],
+            ..PluginDescribe::default()
         })
     }
 
@@ -112,6 +81,14 @@ impl PluginRoot for LibroRoot {
 
 struct LibroContentSource;
 
+fn internal(err: impl std::fmt::Display) -> PluginError {
+    PluginError::internal(err.to_string())
+}
+
+fn hits(hits: Vec<bookclerk_source::CatalogHit>) -> Vec<CatalogHit> {
+    hits.into_iter().map(Into::into).collect()
+}
+
 #[async_trait(?Send)]
 impl ContentSourceRole for LibroContentSource {
     async fn health(&self) -> Result<HealthOk, PluginError> {
@@ -121,57 +98,49 @@ impl ContentSourceRole for LibroContentSource {
         })
     }
 
-    async fn diagnose(&self) -> Result<String, PluginError> {
-        encode_json(vec!["libro plugin diagnose: ok"])
+    async fn diagnose(&self) -> Result<Vec<String>, PluginError> {
+        Ok(vec!["libro plugin diagnose: ok".into()])
     }
 
-    async fn login(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: LoginParams = decode_json(params_json)?;
+    async fn login(&self, params: LoginParams) -> Result<LoginResult, PluginError> {
         let base = bookclerk_plugin_source_libro::resolve_base_url(&Value::Null);
-        encode_json(
-            bookclerk_plugin_source_libro::guest_login_rpc(&base, params)
-                .await
-                .map_err(|e| PluginError::internal(e.to_string()))?,
-        )
-    }
-
-    async fn scan(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: ScanParams = decode_json(params_json)?;
-        let base = bookclerk_plugin_source_libro::resolve_base_url(&Value::Null);
-        encode_json(
-            bookclerk_plugin_source_libro::guest_scan_rpc(&base, &params)
-                .await
-                .map_err(|e| PluginError::internal(e.to_string()))?,
-        )
-    }
-
-    async fn fetch_title(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: FetchTitleParams = decode_json(params_json)?;
-        let base = bookclerk_plugin_source_libro::resolve_base_url(&params.source_config);
-        let container = bookclerk_plugin_source_libro::resolve_container(&params.source_config);
-        encode_json(
-            bookclerk_plugin_source_libro::guest_fetch_title_rpc(&base, &params, container)
-                .await
-                .map_err(|e| PluginError::internal(e.to_string()))?,
-        )
-    }
-
-    async fn search_catalog(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: SearchCatalogParams = decode_json(params_json)?;
-        let source = bookclerk_plugin_source_libro::LibroSource::new();
-        let hits = source
-            .search_catalog(&catalog_opts(params))
+        bookclerk_plugin_source_libro::guest_login_rpc(&base, params)
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))?;
-        encode_json(
-            hits.into_iter()
-                .map(bookclerk_plugin_source_libro::catalog_hit_to_dto)
-                .collect::<Vec<CatalogHitDto>>(),
-        )
+            .map_err(internal)
     }
 
-    async fn catalog_detail(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: CatalogDetailParams = decode_json(params_json)?;
+    async fn scan(&self, params: ScanParams) -> Result<ScanSummary, PluginError> {
+        let base = bookclerk_plugin_source_libro::resolve_base_url(&Value::Null);
+        bookclerk_plugin_source_libro::guest_scan_rpc(&base, &params)
+            .await
+            .map_err(internal)
+    }
+
+    async fn fetch_title(&self, params: FetchTitleParams) -> Result<PlainFetch, PluginError> {
+        let source_config = params.source_config.json_value().unwrap_or(Value::Null);
+        let base = bookclerk_plugin_source_libro::resolve_base_url(&source_config);
+        let container = bookclerk_plugin_source_libro::resolve_container(&source_config);
+        bookclerk_plugin_source_libro::guest_fetch_title_rpc(&base, &params, container)
+            .await
+            .map_err(internal)
+    }
+
+    async fn search_catalog(
+        &self,
+        params: SearchCatalogParams,
+    ) -> Result<Vec<CatalogHit>, PluginError> {
+        let source = bookclerk_plugin_source_libro::LibroSource::new();
+        source
+            .search_catalog(&CatalogSearchOpts::from(params))
+            .await
+            .map(hits)
+            .map_err(internal)
+    }
+
+    async fn catalog_detail(
+        &self,
+        params: CatalogDetailParams,
+    ) -> Result<Option<CatalogHit>, PluginError> {
         let key = params
             .isbn
             .as_deref()
@@ -179,72 +148,46 @@ impl ContentSourceRole for LibroContentSource {
             .filter(|s| !s.is_empty())
             .unwrap_or(params.product_id.trim());
         let source = bookclerk_plugin_source_libro::LibroSource::new();
-        let hit = source
+        source
             .catalog_detail(key)
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))?;
-        encode_json(hit.map(bookclerk_plugin_source_libro::catalog_hit_to_dto))
+            .map(|hit| hit.map(Into::into))
+            .map_err(internal)
     }
 
-    async fn expand_candidates(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: ExpandCandidatesParams = decode_json(params_json)?;
+    async fn expand_candidates(
+        &self,
+        params: ExpandCandidatesParams,
+    ) -> Result<Vec<CatalogHit>, PluginError> {
+        let (seed, limit) = expand_seed_from_params(params);
         let source = bookclerk_plugin_source_libro::LibroSource::new();
-        let hits = source
-            .expand_candidates(
-                &ExpandSeed {
-                    source: params.source,
-                    product_id: params.product_id,
-                    title: params.title,
-                    authors: params.authors,
-                    narrators: params.narrators,
-                    series: params.series,
-                    series_asin: params.series_asin,
-                    asin: params.asin,
-                    isbn: params.isbn,
-                    region: params.region,
-                },
-                params.limit,
-            )
+        source
+            .expand_candidates(&seed, limit)
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))?;
-        encode_json(
-            hits.into_iter()
-                .map(bookclerk_plugin_source_libro::catalog_hit_to_dto)
-                .collect::<Vec<CatalogHitDto>>(),
-        )
+            .map(hits)
+            .map_err(internal)
     }
 
-    async fn purchase_hint(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: PurchaseHintParams = decode_json(params_json)?;
+    async fn purchase_hint(
+        &self,
+        params: PurchaseHintParams,
+    ) -> Result<Option<PurchaseHint>, PluginError> {
         let source = bookclerk_plugin_source_libro::LibroSource::new();
-        let hint = source
-            .purchase_hint(&PurchaseHintOpts {
-                product_id: params.product_id,
-                title: params.title,
-                authors: params.authors,
-                asin: params.asin,
-                isbn: params.isbn,
-                region: params.region,
-                with_price: params.with_price,
-            })
+        source
+            .purchase_hint(&PurchaseHintOpts::from(params))
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))?;
-        encode_json(hint.map(bookclerk_plugin_source_libro::purchase_hint_to_dto))
+            .map(|hint| hint.map(Into::into))
+            .map_err(internal)
     }
 
-    async fn list_deals(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: ListDealsParams = decode_json(params_json)?;
-        let limit = params.limit.unwrap_or(20);
+    async fn list_deals(&self, params: ListDealsParams) -> Result<Vec<CatalogHit>, PluginError> {
+        let limit = params.limit.unwrap_or(DEFAULT_LIST_DEALS_LIMIT);
         let source = bookclerk_plugin_source_libro::LibroSource::new();
-        let hits = source
-            .list_deals(limit)
+        source
+            .list_deals(usize::try_from(limit).unwrap_or(usize::MAX))
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))?;
-        encode_json(
-            hits.into_iter()
-                .map(bookclerk_plugin_source_libro::catalog_hit_to_dto)
-                .collect::<Vec<CatalogHitDto>>(),
-        )
+            .map(hits)
+            .map_err(internal)
     }
 }
 

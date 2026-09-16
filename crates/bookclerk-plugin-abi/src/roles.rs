@@ -4,10 +4,17 @@ use std::pin::Pin;
 
 use tokio::io::AsyncRead;
 
+use crate::generated::{
+    AuthenticateUserParams, CatalogDetailParams, CatalogHit, CliInvokeParams, CliInvokeResult,
+    CliSchema, DatabaseAdapterConfig, ExpandCandidatesParams, ExternalUser, FetchTitleParams,
+    ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
+    LoginStartResult, PlainFetch, PurchaseHint, PurchaseHintParams, ScanLibraryParams, ScanParams,
+    ScanSummary, SearchCatalogParams, SourceAccount,
+};
 use crate::rpc_types::{
-    CopyResult, DestinationContext, DomainEvent, EventResult, JobInvocation, JobOutcome,
-    ListOptions, ListPage, ObjectMetadata, PluginDescribe, PutResult, SourceContext, WorkerContext,
-    WriteOptions,
+    CopyResult, DestinationContext, DomainEvent, EventResult, ExtensibleConfig, JobInvocation,
+    JobOutcome, ListOptions, ListPage, ObjectMetadata, PluginDescribe, PutResult, SourceContext,
+    WorkerContext, WriteOptions,
 };
 use crate::{PluginError, Result};
 
@@ -139,62 +146,64 @@ pub trait JobHandler {
 
 /// Storefront content source (not byte [`Source`]).
 ///
-/// JSON arguments and results are a migration bridge for existing storefront
-/// DTOs. New fields should use typed Cap'n Proto structs.
+/// Every method takes and returns the typed Cap'n Proto payload structs from
+/// [`crate::generated`]; absent methods return
+/// [`PluginError::unsupported`].
 #[async_trait::async_trait(?Send)]
 pub trait ContentSource {
-    /// Interactive or password login.
-    async fn login(&self, _params_json: &str) -> Result<String> {
+    /// Password or one-shot OAuth login. The host seals
+    /// [`LoginResult::credentials`] into `encrypted_secrets`.
+    async fn login(&self, _params: LoginParams) -> Result<LoginResult> {
         Err(PluginError::unsupported("login"))
     }
 
-    /// Library scan.
-    async fn scan(&self, _params_json: &str) -> Result<String> {
+    /// Library scan; the host upserts [`ScanSummary::books`].
+    async fn scan(&self, _params: ScanParams) -> Result<ScanSummary> {
         Err(PluginError::unsupported("scan"))
     }
 
-    /// Fetch one title into the download cache.
-    async fn fetch_title(&self, _params_json: &str) -> Result<String> {
+    /// Fetch one title into `params.cache_dir` and return plain media paths.
+    async fn fetch_title(&self, _params: FetchTitleParams) -> Result<PlainFetch> {
         Err(PluginError::unsupported("fetchTitle"))
     }
 
-    /// List connected accounts.
-    async fn list_accounts(&self) -> Result<String> {
+    /// Accounts the guest knows about.
+    async fn list_accounts(&self) -> Result<Vec<SourceAccount>> {
         Err(PluginError::unsupported("listAccounts"))
     }
 
-    /// Start an OAuth login.
-    async fn login_start(&self, _params_json: &str) -> Result<String> {
+    /// Begin an interactive OAuth login.
+    async fn login_start(&self, _params: LoginParams) -> Result<LoginStartResult> {
         Err(PluginError::unsupported("loginStart"))
     }
 
-    /// Complete an OAuth login.
-    async fn login_complete(&self, _params_json: &str) -> Result<String> {
+    /// Finish an interactive OAuth login started by [`Self::login_start`].
+    async fn login_complete(&self, _params: LoginCompleteParams) -> Result<LoginResult> {
         Err(PluginError::unsupported("loginComplete"))
     }
 
-    /// Search the storefront catalog.
-    async fn search_catalog(&self, _params_json: &str) -> Result<String> {
+    /// Free-text storefront catalog search.
+    async fn search_catalog(&self, _params: SearchCatalogParams) -> Result<Vec<CatalogHit>> {
         Err(PluginError::unsupported("searchCatalog"))
     }
 
-    /// Expand a catalog hit into download candidates.
-    async fn expand_candidates(&self, _params_json: &str) -> Result<String> {
+    /// Related-title expansion from a seed title.
+    async fn expand_candidates(&self, _params: ExpandCandidatesParams) -> Result<Vec<CatalogHit>> {
         Err(PluginError::unsupported("expandCandidates"))
     }
 
-    /// Purchase / ownership hint.
-    async fn purchase_hint(&self, _params_json: &str) -> Result<String> {
+    /// Purchase link / price hint; `Ok(None)` when the title is unknown.
+    async fn purchase_hint(&self, _params: PurchaseHintParams) -> Result<Option<PurchaseHint>> {
         Err(PluginError::unsupported("purchaseHint"))
     }
 
-    /// List current deals.
-    async fn list_deals(&self, _params_json: &str) -> Result<String> {
+    /// Current storefront deals.
+    async fn list_deals(&self, _params: ListDealsParams) -> Result<Vec<CatalogHit>> {
         Err(PluginError::unsupported("listDeals"))
     }
 
-    /// Catalog product detail.
-    async fn catalog_detail(&self, _params_json: &str) -> Result<String> {
+    /// Full catalog record for one product; `Ok(None)` when unknown.
+    async fn catalog_detail(&self, _params: CatalogDetailParams) -> Result<Option<CatalogHit>> {
         Err(PluginError::unsupported("catalogDetail"))
     }
 
@@ -206,9 +215,9 @@ pub trait ContentSource {
         })
     }
 
-    /// Operator-facing diagnostic lines (JSON array).
-    async fn diagnose(&self) -> Result<String> {
-        Ok("[]".into())
+    /// Operator-facing diagnostic lines.
+    async fn diagnose(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
     }
 }
 
@@ -238,28 +247,28 @@ pub trait Integration {
         Ok(())
     }
 
-    /// Operator-facing diagnostic lines (JSON array).
-    async fn diagnose(&self) -> Result<String> {
-        Ok("[]".into())
+    /// Operator-facing diagnostic lines.
+    async fn diagnose(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
     }
 
-    /// Scan an external library.
-    async fn scan_library(&self, _params_json: &str) -> Result<()> {
+    /// Re-sync the remote library.
+    async fn scan_library(&self, _params: ScanLibraryParams) -> Result<()> {
         Err(PluginError::unsupported("scanLibrary"))
     }
 
-    /// Sync listening progress.
-    async fn sync_listening(&self) -> Result<String> {
+    /// Push / pull listening progress; the host upserts the rows.
+    async fn sync_listening(&self) -> Result<Vec<ListeningProgress>> {
         Err(PluginError::unsupported("syncListening"))
     }
 
-    /// Validate an external user.
-    async fn authenticate_user(&self, _params_json: &str) -> Result<String> {
+    /// Verify remote credentials on behalf of the host.
+    async fn authenticate_user(&self, _params: AuthenticateUserParams) -> Result<ExternalUser> {
         Err(PluginError::unsupported("authenticateUser"))
     }
 
-    /// Drain queued plugin-to-host events (JSON).
-    async fn poll_events(&self) -> Result<String> {
+    /// Drain external users observed since the last poll.
+    async fn poll_events(&self) -> Result<Vec<ExternalUser>> {
         Err(PluginError::unsupported("pollEvents"))
     }
 }
@@ -358,27 +367,42 @@ pub trait GuestDatabase {
         Ok(())
     }
 }
-/// Injected factory context for storefronts.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+
+/// Granted storefront configuration (`BookclerkPlugin.contentSource`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContentSourceContext {
-    /// Opaque JSON knobs (migration bridge).
-    pub json: String,
+    /// Granted plugin settings (operator `[sources.<id>]` table as
+    /// `application/json`).
+    #[serde(default)]
+    pub config: ExtensibleConfig,
 }
 
-/// Injected factory context for integrations.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Granted integration configuration (`BookclerkPlugin.integration`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IntegrationContext {
-    /// Opaque JSON knobs (migration bridge).
-    pub json: String,
+    /// Granted plugin settings (operator `[integrations.<id>]` table as
+    /// `application/json`).
+    #[serde(default)]
+    pub config: ExtensibleConfig,
 }
 
-/// Injected factory context for databases.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Granted database-adapter configuration (`BookclerkPlugin.database`).
+///
+/// First-party host-managed adapters receive host-private connect params in
+/// [`Self::config`]; third-party adapters receive the typed [`Self::adapter`]
+/// bootstrap (and an empty `config`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DatabaseContext {
-    /// Opaque JSON knobs (migration bridge).
-    pub json: String,
-    /// Structured connect/config payload (preferred over [`Self::json`]).
-    pub config: crate::ExtensibleConfig,
+    /// Host-private connect params for first-party adapters.
+    #[serde(default)]
+    pub config: ExtensibleConfig,
+    /// Author-facing bootstrap for third-party adapters; `plugin_data_dir` is
+    /// empty when `config` carries host-private params instead.
+    #[serde(default)]
+    pub adapter: DatabaseAdapterConfig,
 }
 
 /// Root `BookclerkPlugin` capability (`describe` / role factories / shutdown).
@@ -423,13 +447,13 @@ pub trait PluginRoot: 'static {
         Err(PluginError::unsupported("database"))
     }
 
-    /// Embedded CLI schema JSON (`CliSchema`). Empty object when unused.
-    async fn cli_describe(&self) -> Result<String> {
-        Ok("{}".into())
+    /// Declared CLI surface. Empty when the guest exposes no commands.
+    async fn cli_describe(&self) -> Result<CliSchema> {
+        Ok(CliSchema::default())
     }
 
-    /// Invokes a guest CLI command. `params_json` is [`crate::CliInvokeParams`].
-    async fn cli_invoke(&self, _params_json: &str) -> Result<String> {
+    /// Runs one plugin CLI command.
+    async fn cli_invoke(&self, _params: CliInvokeParams) -> Result<CliInvokeResult> {
         Err(PluginError::unsupported("cliInvoke"))
     }
 

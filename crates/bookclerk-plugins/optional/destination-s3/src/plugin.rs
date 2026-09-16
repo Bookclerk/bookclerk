@@ -5,14 +5,15 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
+use bookclerk_config::OutputS3Config;
 use bookclerk_plugin_sdk::{
     ByteRange, CopyResult, Destination, DestinationContext, JobHandler, ListOptions, ListPage,
     ObjectInfo, ObjectMetadata, PluginDescribe, PluginRoot, PutResult, ReadResult, ScalarLimits,
     Source, SourceContext, StreamCopyHandler, WorkerContext, WriteOptions, FEATURE_SCALAR_LIMITS,
     FEATURE_STORAGE_COPY, FEATURE_STREAMS, PRODUCT_API_VERSION,
 };
-use bookclerk_plugin_sdk::{OutputS3ContextDto, PluginError};
-use bookclerk_storage::{ObjectMeta, S3Backend, StorageBackend, StorageError};
+use bookclerk_plugin_sdk::{OutputS3ContextDto, PluginError, S3CredentialsDto};
+use bookclerk_storage::{ObjectMeta, S3Backend, S3Credentials, StorageBackend, StorageError};
 use tokio::io::AsyncRead;
 
 use crate::ID;
@@ -37,19 +38,47 @@ pub struct S3Destination {
 }
 
 impl S3Destination {
-    /// Builds a destination from [`DestinationContext`] JSON.
+    /// Builds a destination from the [`DestinationContext`] config payload
+    /// (an [`OutputS3ContextDto`] as `application/json`).
     ///
     /// # Errors
     ///
-    /// Returns invalid_params when JSON is not an S3 context, or internal when
-    /// the client cannot be constructed.
+    /// Returns invalid_params when the payload is not an S3 context, or internal
+    /// when the client cannot be constructed.
     pub async fn from_context(ctx: &DestinationContext) -> Result<Self> {
-        let parsed: OutputS3ContextDto = serde_json::from_str(&ctx.json)
+        let parsed: OutputS3ContextDto = ctx
+            .config
+            .json_into()
             .map_err(|err| PluginError::invalid_params(format!("s3 destination context: {err}")))?;
-        let backend = crate::guest::backend_from_ctx(&parsed)
-            .await
-            .map_err(PluginError::internal)?;
+        let backend = backend_from_ctx(&parsed).await?;
         Ok(Self { backend })
+    }
+}
+
+/// Builds an [`S3Backend`] from the host-injected bucket/region/endpoint context.
+async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
+    let cfg = OutputS3Config {
+        enabled: true,
+        bucket: ctx.bucket.clone(),
+        prefix: ctx.prefix.clone(),
+        region: ctx.region.clone(),
+        endpoint: ctx.endpoint.clone(),
+        force_path_style: ctx.force_path_style,
+        naming: Default::default(),
+    };
+    let creds = ctx.credentials.as_ref().map(credentials_from_dto);
+    S3Backend::from_parts(&cfg, &ctx.prefix, creds.as_ref())
+        .await
+        .map_err(|err| PluginError::internal(err.to_string()))
+}
+
+/// Copies ABI credential fields into the storage crate's credential struct.
+fn credentials_from_dto(dto: &S3CredentialsDto) -> S3Credentials {
+    S3Credentials {
+        access_key_id: dto.access_key_id.clone(),
+        secret_access_key: dto.secret_access_key.clone(),
+        session_token: dto.session_token.clone(),
+        label: None,
     }
 }
 
@@ -241,7 +270,9 @@ impl PluginRoot for S3Root {
     }
 
     async fn source(&self, context: SourceContext) -> Result<Box<dyn Source>> {
-        let dest_ctx = DestinationContext { json: context.json };
+        let dest_ctx = DestinationContext {
+            config: context.config,
+        };
         Ok(Box::new(S3Destination::from_context(&dest_ctx).await?))
     }
 

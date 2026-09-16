@@ -10,12 +10,14 @@ use bookclerk_integrations::{
     Brand, EventSubscription, ExternalUser, Integration, IntegrationContext, IntegrationEvent,
     IntegrationHealth, IntegrationRegistry, ProvidedOidcClient,
 };
-use bookclerk_plugin_sdk::{DomainEvent, EventResult, HealthOk, PRODUCT_API_VERSION};
+use bookclerk_plugin_sdk::{
+    AuthenticateUserParams, DomainEvent, EventResult, ExtensibleConfig,
+    IntegrationContext as AbiIntegrationContext, ScanLibraryParams, PRODUCT_API_VERSION,
+};
 use serde_json::Value;
 use tracing::warn;
 
 use crate::discover::DiscoveredPlugin;
-use crate::protocol::EventPollResultDto;
 use crate::rpc_session::{PluginSession, HOST_SHARED_ACCOUNT};
 use crate::Result;
 
@@ -23,8 +25,8 @@ use crate::Result;
 pub struct ExternalIntegration {
     /// Cap'n Proto session (never given `library.db`).
     session: Arc<PluginSession>,
-    /// JSON factory context (plugin config table).
-    ctx_json: String,
+    /// Typed factory context (granted plugin config table as JSON payload).
+    ctx: AbiIntegrationContext,
     /// Operator-facing name from describe metadata (falls back to the manifest id).
     display_name: String,
     /// Whether this integration is enabled in host config after describe.
@@ -75,13 +77,13 @@ impl ExternalIntegration {
             .await?,
         );
         let source_config = crate::spawn_config_for_grant(session.grant(), config_json);
-        let hs = session.plugin_metadata();
-        let display_name = hs
+        let describe = session.describe_snapshot();
+        let display_name = describe
             .display_name
             .clone()
             .or_else(|| plugin.manifest.name.clone())
             .unwrap_or_else(|| plugin.manifest.id.clone());
-        let brand = brand_from_dto(hs.brand.as_ref());
+        let brand = brand_from_abi(describe.brand.as_ref());
         let event_subscriptions = plugin
             .manifest
             .capabilities
@@ -102,7 +104,9 @@ impl ExternalIntegration {
             .collect();
         Ok(Self {
             session,
-            ctx_json: source_config.to_string(),
+            ctx: AbiIntegrationContext {
+                config: ExtensibleConfig::json(&source_config),
+            },
             display_name,
             enabled: true,
             brand,
@@ -113,21 +117,19 @@ impl ExternalIntegration {
         })
     }
 
-    /// Forwards one integration RPC through the plugin session.
+    /// Runs one typed integration method through the plugin session.
     ///
     /// # Errors
     ///
-    /// Returns when the session call fails or params cannot be serialized.
-    async fn int_call(&self, op: &str, params: Value) -> bookclerk_integrations::Result<String> {
-        let raw = self
-            .session
-            .integration_json(
-                self.ctx_json.clone(),
-                op,
-                serde_json::to_string(&params).unwrap_or_else(|_| "{}".into()),
-            )
-            .await?;
-        Ok(raw)
+    /// Returns when the factory or the guest method fails.
+    async fn int_call<T, F, Fut>(&self, call: F) -> bookclerk_integrations::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::Integration>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        Ok(self.session.integration(self.ctx.clone(), call).await?)
     }
 }
 
@@ -189,7 +191,7 @@ impl Integration for ExternalIntegration {
     async fn start(&self, ctx: IntegrationContext) -> bookclerk_integrations::Result<()> {
         if self.session.has_capability("start") {
             let _ = self
-                .int_call("start", Value::Object(Default::default()))
+                .int_call(|stub| async move { stub.start().await })
                 .await;
         }
         // Host polls `event_poll` and kicks off core workflows (e.g. claim tickets).
@@ -199,7 +201,7 @@ impl Integration for ExternalIntegration {
                 let epoch = self.poll_epoch.fetch_add(1, Ordering::SeqCst) + 1;
                 self.poll_cancel.store(false, Ordering::SeqCst);
                 let session = self.session.clone();
-                let ctx_json = self.ctx_json.clone();
+                let ctx = self.ctx.clone();
                 let plugin_id = self.id().to_string();
                 let cancel = self.poll_cancel.clone();
                 let epoch_flag = self.poll_epoch.clone();
@@ -217,13 +219,14 @@ impl Integration for ExternalIntegration {
                             break;
                         }
                         match session
-                            .integration_json(ctx_json.clone(), "pollEvents", "{}")
+                            .integration(
+                                ctx.clone(),
+                                |stub| async move { stub.poll_events().await },
+                            )
                             .await
                         {
-                            Ok(raw) => {
-                                let dto: EventPollResultDto =
-                                    serde_json::from_str(&raw).unwrap_or_default();
-                                for user in dto.users {
+                            Ok(users) => {
+                                for user in users {
                                     on_user(ExternalUser {
                                         provider: if user.provider.is_empty() {
                                             plugin_id.clone()
@@ -251,9 +254,7 @@ impl Integration for ExternalIntegration {
         self.poll_epoch.fetch_add(1, Ordering::SeqCst);
         self.poll_cancel.store(true, Ordering::SeqCst);
         if self.session.has_capability("shutdown") || self.session.has_capability("stop") {
-            let _ = self
-                .int_call("stop", Value::Object(Default::default()))
-                .await;
+            let _ = self.int_call(|stub| async move { stub.stop().await }).await;
         }
         Ok(())
     }
@@ -282,18 +283,12 @@ impl Integration for ExternalIntegration {
                 reason: "onEvent capability not granted".into(),
             });
         }
-        let params = serde_json::to_value(&event).unwrap_or(Value::Object(Default::default()));
-        let raw = self
+        Ok(self
             .session
-            .integration_json_cancelable(
-                self.ctx_json.clone(),
-                "onEvent",
-                serde_json::to_string(&params).unwrap_or_else(|_| "{}".into()),
-                cancel,
-            )
-            .await?;
-        EventResult::from_json_str(&raw)
-            .map_err(|err| bookclerk_integrations::IntegrationError::message(err.to_string()))
+            .integration_cancelable(self.ctx.clone(), cancel, |stub| async move {
+                stub.on_event(event).await
+            })
+            .await?)
     }
 
     fn event_subscriptions(&self) -> Vec<EventSubscription> {
@@ -309,10 +304,9 @@ impl Integration for ExternalIntegration {
                 detail: Some("external plugin (no health method)".into()),
             });
         }
-        let raw = self
-            .int_call("health", Value::Object(Default::default()))
+        let dto = self
+            .int_call(|stub| async move { stub.health().await })
             .await?;
-        let dto: HealthOk = serde_json::from_str(&raw).unwrap_or_default();
         Ok(IntegrationHealth {
             id: self.id().to_string(),
             enabled: self.enabled,
@@ -330,10 +324,10 @@ impl Integration for ExternalIntegration {
     }
 
     async fn scan_library(&self, force: bool) -> bookclerk_integrations::Result<()> {
-        let _ = self
-            .int_call("scanLibrary", serde_json::json!({ "force": force }))
-            .await?;
-        Ok(())
+        self.int_call(
+            move |stub| async move { stub.scan_library(ScanLibraryParams { force }).await },
+        )
+        .await
     }
 
     fn supports_listening_sync(&self) -> bool {
@@ -344,13 +338,10 @@ impl Integration for ExternalIntegration {
         &self,
         library: &bookclerk_library::LibraryStore,
     ) -> bookclerk_integrations::Result<usize> {
-        let raw = self
-            .int_call("syncListening", Value::Object(Default::default()))
+        let rows = self
+            .int_call(|stub| async move { stub.sync_listening().await })
             .await?;
-        let dto: crate::protocol::SyncListeningResultDto =
-            serde_json::from_str(&raw).map_err(crate::PluginError::from)?;
-        let items: Vec<bookclerk_integrations::ListeningProgressSnapshot> = dto
-            .items
+        let items: Vec<bookclerk_integrations::ListeningProgressSnapshot> = rows
             .into_iter()
             .map(|row| bookclerk_integrations::ListeningProgressSnapshot {
                 external_user_id: row.external_user_id,
@@ -364,7 +355,10 @@ impl Integration for ExternalIntegration {
                 current_time_seconds: row.current_time_seconds,
                 duration_seconds: row.duration_seconds,
                 is_finished: row.is_finished,
-                last_listened_at: row.last_listened_at,
+                last_listened_at: row
+                    .last_listened_at_unix_ms
+                    .and_then(|ms| i64::try_from(ms).ok())
+                    .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis),
             })
             .collect();
         bookclerk_integrations::upsert_listening_snapshots(library, self.id(), &items).await
@@ -381,10 +375,8 @@ impl Integration for ExternalIntegration {
                 h.detail.unwrap_or_default()
             )]);
         }
-        let raw = self
-            .int_call("diagnose", Value::Object(Default::default()))
-            .await?;
-        Ok(parse_diagnose_lines(&raw))
+        self.int_call(|stub| async move { stub.diagnose().await })
+            .await
     }
 
     fn supports_credential_login(&self) -> bool {
@@ -397,13 +389,23 @@ impl Integration for ExternalIntegration {
         password: &str,
     ) -> bookclerk_integrations::Result<ExternalUser> {
         self.session.require_binding("secrets")?;
-        let raw = self
-            .int_call(
-                "authenticateUser",
-                serde_json::json!({ "username": username, "password": password }),
-            )
+        let params = AuthenticateUserParams {
+            username: username.to_string(),
+            password: password.to_string(),
+        };
+        let user = self
+            .int_call(move |stub| async move { stub.authenticate_user(params).await })
             .await?;
-        Ok(serde_json::from_str(&raw).map_err(crate::PluginError::from)?)
+        Ok(ExternalUser {
+            provider: if user.provider.is_empty() {
+                self.id().to_string()
+            } else {
+                user.provider
+            },
+            external_user_id: user.external_user_id,
+            display_name: user.display_name,
+            access_token: user.access_token,
+        })
     }
 
     fn portal_brand(&self) -> Option<Brand> {
@@ -505,32 +507,16 @@ fn domain_event_from(event: &IntegrationEvent) -> DomainEvent {
     }
 }
 
-/// Parses diagnose JSON (`string[]` or `{lines:[…]}`) into operator lines.
-fn parse_diagnose_lines(raw: &str) -> Vec<String> {
-    if let Ok(lines) = serde_json::from_str::<Vec<String>>(raw) {
-        return lines;
-    }
-    if let Ok(obj) = serde_json::from_str::<Value>(raw) {
-        if let Some(arr) = obj.get("lines").and_then(|v| v.as_array()) {
-            return arr
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect();
-        }
-    }
-    vec![raw.to_string()]
-}
-
-/// Copies a describe-metadata brand DTO into a `'static` [`Brand`] (strings are leaked once at load).
-fn brand_from_dto(dto: Option<&crate::protocol::BrandDto>) -> Option<Brand> {
-    let b = dto?;
+/// Copies a describe brand into a `'static` [`Brand`] (strings are leaked once at load).
+fn brand_from_abi(brand: Option<&bookclerk_plugin_sdk::Brand>) -> Option<Brand> {
+    let b = brand.filter(|b| !b.id.is_empty())?;
     Some(Brand {
         id: Box::leak(b.id.clone().into_boxed_str()),
         name: Box::leak(b.name.clone().into_boxed_str()),
         bg: Box::leak(b.bg.clone().into_boxed_str()),
         fg: Box::leak(b.fg.clone().into_boxed_str()),
         accent: Box::leak(b.accent.clone().into_boxed_str()),
-        icon_url: Box::leak(b.icon_url.clone().into_boxed_str()),
+        icon_url: Box::leak(b.icon_url.clone().unwrap_or_default().into_boxed_str()),
     })
 }
 

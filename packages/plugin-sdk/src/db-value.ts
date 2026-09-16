@@ -7,11 +7,10 @@
  * always uses the domain types.
  */
 
-import { DB_COLUMN_TYPES, type DbColumnType } from "./abi.js";
+import { DB_TYPES, type DbType } from "./abi.js";
 import { CapnpMessage, CapnpReader } from "./db-capnp.js";
 
-/** Column / typed-null type tag on the Cap'n `DbValue` wire. */
-export type DbType = DbColumnType;
+export type { DbType };
 
 /**
  * Closed Cap'n `DbValue` union.
@@ -29,7 +28,7 @@ export type DbValue =
   | { kind: "bytes"; value: Uint8Array };
 
 const KINDS = new Set(["null", "boolean", "int64", "float64", "text", "bytes"]);
-const TYPES = new Set<string>(DB_COLUMN_TYPES);
+const TYPES = new Set<string>(DB_TYPES);
 
 /**
  * Reject U+0000 in BookclerkSQL TEXT (allowed only in BYTES).
@@ -52,9 +51,9 @@ const I64_MAX = 0x7fff_ffff_ffff_ffffn;
 
 // Ordinal tables come from the generated `abi.ts` projection of
 // `schema/plugin.capnp` (index = Cap'n Proto ordinal).
-const DB_TYPE_FROM_ORD = DB_COLUMN_TYPES;
+const DB_TYPE_FROM_ORD = DB_TYPES;
 const DB_TYPE_ORD: Record<DbType, number> = Object.fromEntries(
-  DB_COLUMN_TYPES.map((ty, ord) => [ty, ord]),
+  DB_TYPES.map((ty, ord) => [ty, ord]),
 ) as Record<DbType, number>;
 
 /**

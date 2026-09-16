@@ -6,6 +6,11 @@
  * and disposes the stub before completing. No dest-id table is retained
  * across requests.
  *
+ * Envelopes are the camelCase JSON projection of the typed Cap'n Proto ABI
+ * structs (`PluginDescribe`, `CliSchema`, `LoginParams`, …) with `Data`
+ * fields as base64 text; `fromBridgeJson` / `toBridgeJson` convert them to
+ * and from Workers RPC values. This transport is private to bookclerk-workerd.
+ *
  * All role-route and `/health` requests require `Authorization: Bearer`
  * matching the per-isolate `BRIDGE_TOKEN` binding.
  */
@@ -218,22 +223,79 @@ async function invokeSourceOpen(plugin, ctx, key) {
   }
 }
 
+/** Cap'n `Data` field names; bridge JSON carries them as base64 text. */
+const BYTES_FIELDS = new Set(["payload", "sha256", "credentials"]);
+
+function base64ToBytes(text) {
+  const bin = atob(text);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function bytesToBase64(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+/**
+ * Bridge JSON → Workers RPC value: base64 `Data` fields become `Uint8Array`.
+ * Typed struct shapes are otherwise identical (camelCase, `$optional` absent
+ * as `undefined`), so no per-struct codec is needed on this transport.
+ */
+function fromBridgeJson(value) {
+  if (Array.isArray(value)) return value.map(fromBridgeJson);
+  if (value === null || typeof value !== "object") return value;
+  const out = {};
+  for (const [key, inner] of Object.entries(value)) {
+    if (BYTES_FIELDS.has(key) && typeof inner === "string") {
+      out[key] = base64ToBytes(inner);
+    } else if (BYTES_FIELDS.has(key) && Array.isArray(inner) && inner.every((n) => typeof n === "number")) {
+      out[key] = Uint8Array.from(inner);
+    } else {
+      out[key] = fromBridgeJson(inner);
+    }
+  }
+  return out;
+}
+
+/** Workers RPC value → bridge JSON: `Uint8Array` / `ArrayBuffer` become base64. */
+function toBridgeJson(value) {
+  if (value instanceof Uint8Array) return bytesToBase64(value);
+  if (value instanceof ArrayBuffer) return bytesToBase64(new Uint8Array(value));
+  if (Array.isArray(value)) return value.map(toBridgeJson);
+  if (value === null || typeof value !== "object") return value;
+  const out = {};
+  for (const [key, inner] of Object.entries(value)) {
+    if (inner === undefined) continue;
+    out[key] = toBridgeJson(inner);
+  }
+  return out;
+}
+
+function bridgeJson(value) {
+  return Response.json(toBridgeJson(value ?? {}));
+}
+
+/**
+ * Typed factory context (`DestinationContext` / `SourceContext` /
+ * `WorkerContext` / `IntegrationContext` / `ContentSourceContext`) from the
+ * `x-bookclerk-context` header or the `context` body field.
+ */
 function contextFrom(request, body) {
   const header = request.headers.get("x-bookclerk-context");
   if (header) {
     try {
-      return JSON.parse(header);
+      return fromBridgeJson(JSON.parse(header));
     } catch {
-      return { json: header };
+      return {};
     }
   }
-  if (body && typeof body === "object") {
-    if (body.context && typeof body.context === "object") return body.context;
-    if (typeof body.json === "string" || body.json === undefined) {
-      return { json: body.json || "", jobId: body.jobId };
-    }
+  if (body && typeof body === "object" && body.context && typeof body.context === "object") {
+    return fromBridgeJson(body.context);
   }
-  return { json: "" };
+  return {};
 }
 
 async function handleRoleInvoke(request, env, url) {
@@ -245,7 +307,7 @@ async function handleRoleInvoke(request, env, url) {
   if (request.method === "POST" && url.pathname === "/describe") {
     try {
       const result = await plugin.describe();
-      return Response.json(result);
+      return bridgeJson(result);
     } catch (err) {
       const { code, message } = catchErr(err);
       return errJson(null, code, message);
@@ -257,7 +319,7 @@ async function handleRoleInvoke(request, env, url) {
       const body = await request.json();
       const ctx = contextFrom(request, body);
       const meta = await invokeDest(plugin, "head", ctx, { key: body.key || "" });
-      return Response.json({ found: meta != null, meta: meta ?? null });
+      return bridgeJson({ found: meta != null, meta: meta ?? null });
     } catch (err) {
       const { code, message } = catchErr(err);
       return errJson(null, code, message);
@@ -268,7 +330,7 @@ async function handleRoleInvoke(request, env, url) {
     try {
       const body = await request.json();
       const ctx = contextFrom(request, body);
-      return Response.json(
+      return bridgeJson(
         await invokeDest(plugin, "list", ctx, { options: body.options ?? body }),
       );
     } catch (err) {
@@ -315,7 +377,7 @@ async function handleRoleInvoke(request, env, url) {
         stageOnly,
       };
       const result = await invokeDest(plugin, "put", ctx, { key, options }, request.body);
-      return Response.json(result);
+      return bridgeJson(result);
     } catch (err) {
       const { code, message } = catchErr(err);
       return errJson(null, code, message);
@@ -326,7 +388,7 @@ async function handleRoleInvoke(request, env, url) {
     try {
       const body = await request.json();
       const ctx = contextFrom(request, body);
-      return Response.json(
+      return bridgeJson(
         await invokeDest(plugin, "copy", ctx, { from: body.from, to: body.to }),
       );
     } catch (err) {
@@ -351,7 +413,7 @@ async function handleRoleInvoke(request, env, url) {
     try {
       const body = await request.json();
       const ctx = contextFrom(request, body);
-      return Response.json(
+      return bridgeJson(
         await invokeDest(plugin, "commit", ctx, {
           key: body.key || "",
           commitToken: body.commitToken || "",
@@ -398,8 +460,8 @@ async function handleRoleInvoke(request, env, url) {
       const invocation = body.invocation ?? {};
       const databases = body.databases ?? {};
       if (typeof plugin.invokeHandle === "function") {
-        return Response.json(
-          await plugin.invokeHandle(ctx, invocation, grantToken, databases),
+        return bridgeJson(
+          await plugin.invokeHandle(ctx, fromBridgeJson(invocation), grantToken, databases),
         );
       }
       const handler = await plugin.worker(ctx);
@@ -418,8 +480,9 @@ async function handleRoleInvoke(request, env, url) {
 
   if (request.method === "POST" && url.pathname === "/cliDescribe") {
     try {
-      const json = typeof plugin.cliDescribe === "function" ? await plugin.cliDescribe() : "{}";
-      return Response.json({ json: typeof json === "string" ? json : JSON.stringify(json) });
+      const schema = typeof plugin.cliDescribe === "function" ? await plugin.cliDescribe() : {};
+      // Typed `CliSchema`; legacy guests that still return JSON text are parsed.
+      return bridgeJson(typeof schema === "string" ? JSON.parse(schema || "{}") : schema ?? {});
     } catch (err) {
       const { code, message } = catchErr(err);
       return errJson(null, code, message);
@@ -429,12 +492,13 @@ async function handleRoleInvoke(request, env, url) {
   if (request.method === "POST" && url.pathname === "/cliInvoke") {
     try {
       const body = await request.json();
-      const paramsJson = body.paramsJson || JSON.stringify(body);
+      const params = fromBridgeJson(body.params ?? {});
       if (typeof plugin.cliInvoke !== "function") {
         return errJson(null, "unsupported", "cliInvoke");
       }
-      const json = await plugin.cliInvoke(paramsJson);
-      return Response.json({ json: typeof json === "string" ? json : JSON.stringify(json) });
+      const result = await plugin.cliInvoke(params);
+      // Typed `CliInvokeResult`; legacy guests that still return JSON text are parsed.
+      return bridgeJson(typeof result === "string" ? JSON.parse(result || "{}") : result ?? {});
     } catch (err) {
       const { code, message } = catchErr(err);
       return errJson(null, code, message);
@@ -484,9 +548,23 @@ async function handleRoleInvoke(request, env, url) {
         if (typeof cap[op] !== "function") {
           return errJson(null, "unsupported", `${role}.${op}`);
         }
-        const args = body.paramsJson != null ? [body.paramsJson] : body.event != null ? [body.event] : [];
+        // `{ context, params }` for typed method params; `{ context, event }`
+        // for `onEvent`. Methods without params receive no arguments.
+        const args =
+          body.params != null
+            ? [fromBridgeJson(body.params)]
+            : body.event != null
+              ? [fromBridgeJson(body.event)]
+              : [];
         const result = await cap[op](...args);
-        return Response.json(result ?? { ok: true });
+        if (op === "diagnose") {
+          const lines = Array.isArray(result) ? result : Array.isArray(result?.lines) ? result.lines : [];
+          return Response.json({ lines: lines.map((l) => String(l)) });
+        }
+        if (op === "pollEvents" && Array.isArray(result)) {
+          return bridgeJson({ users: result });
+        }
+        return bridgeJson(result ?? { ok: true });
       } finally {
         await disposeRpc(cap);
       }

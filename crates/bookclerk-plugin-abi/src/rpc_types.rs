@@ -2,9 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::generated::{Brand, CliSchema, ConfigOption, PortalAuthMode};
 use crate::limits::{ScalarLimits, PRODUCT_API_VERSION};
 
 /// Guest identity returned by `BookclerkPlugin.describe`.
+///
+/// Every field is a typed Cap'n Proto field of `PluginDescribe`; there is no
+/// side-channel JSON. Storefront UI extras (`brand`, `config_options`,
+/// `portal_auth_mode`, ...) are empty / default for kinds that do not use them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginDescribe {
@@ -25,9 +30,33 @@ pub struct PluginDescribe {
     /// Advertised factories. Host intersects with the signed manifest allowlist.
     #[serde(default)]
     pub supported_roles: Vec<String>,
-    /// Identity extras (brand, CLI, method names). Bounded JSON.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub metadata_json: String,
+    /// Capability method names the guest implements (`health`, `login`, ...).
+    /// The host intersects these with the consent grant.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// Portal Accounts connect mode for storefronts.
+    #[serde(default)]
+    pub portal_auth_mode: PortalAuthMode,
+    /// Env var operators may set for password helpers (never required for
+    /// Accounts UI connect).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_env_var: Option<String>,
+    /// Alternate ids accepted for config / CLI targeting.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// UI sort weight among peers of the same kind; lower sorts first.
+    #[serde(default)]
+    pub sort_key: u32,
+    /// Portal brand; `None` when the guest has no brand (wire `brand.id` is
+    /// empty) and the host renders a neutral fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brand: Option<Brand>,
+    /// Discoverable config option groups for source UIs.
+    #[serde(default)]
+    pub config_options: Vec<ConfigOption>,
+    /// Embedded CLI schema (same shape as `cliDescribe`); empty when unused.
+    #[serde(default)]
+    pub cli: CliSchema,
 }
 
 impl Default for PluginDescribe {
@@ -40,8 +69,25 @@ impl Default for PluginDescribe {
             rpc_features: Vec::new(),
             scalar_limits: ScalarLimits::default().into(),
             supported_roles: Vec::new(),
-            metadata_json: String::new(),
+            capabilities: Vec::new(),
+            portal_auth_mode: PortalAuthMode::Unspecified,
+            password_env_var: None,
+            aliases: Vec::new(),
+            sort_key: 0,
+            brand: None,
+            config_options: Vec::new(),
+            cli: CliSchema::default(),
         }
+    }
+}
+
+impl PluginDescribe {
+    /// True when the guest advertised capability method `name` (or a factory
+    /// role of that name).
+    #[must_use]
+    pub fn has_capability(&self, name: &str) -> bool {
+        self.capabilities.iter().any(|c| c == name)
+            || self.supported_roles.iter().any(|c| c == name)
     }
 }
 
@@ -55,8 +101,91 @@ pub struct ExtensibleConfig {
     #[serde(default)]
     pub media_type: String,
     /// Bounded payload bytes.
-    #[serde(default)]
+    #[serde(default, with = "crate::json_bytes::b64")]
     pub payload: Vec<u8>,
+}
+
+/// Media type of a JSON [`ExtensibleConfig`] payload.
+pub const JSON_MEDIA_TYPE: &str = "application/json";
+
+impl ExtensibleConfig {
+    /// Wraps a JSON document as an `application/json` payload (schema version 1).
+    #[must_use]
+    pub fn json(value: &serde_json::Value) -> Self {
+        Self {
+            schema_version: 1,
+            media_type: JSON_MEDIA_TYPE.into(),
+            payload: serde_json::to_vec(value).unwrap_or_default(),
+        }
+    }
+
+    /// Serializes `value` as an `application/json` payload (schema version 1).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::PluginErrorCode::Internal`] when `value` cannot be
+    /// serialized.
+    pub fn json_from<T: Serialize>(value: &T) -> crate::Result<Self> {
+        let payload = serde_json::to_vec(value).map_err(|err| {
+            crate::PluginError::internal(format!("config payload encode failed: {err}"))
+        })?;
+        Ok(Self {
+            schema_version: 1,
+            media_type: JSON_MEDIA_TYPE.into(),
+            payload,
+        })
+    }
+
+    /// True when no payload was supplied.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.payload.is_empty()
+    }
+
+    /// Decodes the payload as a JSON document; an empty payload is `{}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::PluginErrorCode::InvalidParams`] when the media type is
+    /// not JSON or the bytes are not valid JSON.
+    pub fn json_value(&self) -> crate::Result<serde_json::Value> {
+        if self.payload.is_empty() {
+            return Ok(serde_json::Value::Object(serde_json::Map::new()));
+        }
+        if !self.media_type.is_empty() && !is_json_media_type(&self.media_type) {
+            return Err(crate::PluginError::invalid_params(format!(
+                "config media type `{}` is not JSON",
+                self.media_type
+            )));
+        }
+        serde_json::from_slice(&self.payload).map_err(|err| {
+            crate::PluginError::invalid_params(format!("config payload is not JSON: {err}"))
+        })
+    }
+
+    /// Decodes the JSON payload into `T`; an empty payload decodes `{}`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::json_value`], plus a deserialization failure into `T`.
+    pub fn json_into<T: serde::de::DeserializeOwned>(&self) -> crate::Result<T> {
+        let value = self.json_value()?;
+        serde_json::from_value(value).map_err(|err| {
+            crate::PluginError::invalid_params(format!("config payload decode failed: {err}"))
+        })
+    }
+}
+
+/// `application/json` and `application/*+json` structured-syntax suffixes.
+fn is_json_media_type(media_type: &str) -> bool {
+    // Strip any `; charset=...` parameters to compare the type/subtype essence.
+    let essence = media_type
+        .split_once(';')
+        .map_or(media_type, |(essence, _params)| essence)
+        .trim()
+        .to_ascii_lowercase();
+    essence == JSON_MEDIA_TYPE
+        || (essence.starts_with("application/") && essence.ends_with("+json"))
 }
 
 /// Domain event (not a job). Outbox-produced, at-least-once, idempotent consume.
@@ -89,7 +218,7 @@ pub struct DomainEvent {
     /// 1-based delivery attempt.
     pub delivery_attempt: u32,
     /// Bounded payload.
-    #[serde(default)]
+    #[serde(default, with = "crate::json_bytes::b64")]
     pub payload: Vec<u8>,
     /// Checkpoint JSON from a prior [`EventResult::Suspended`] (≤ [`MAX_CHECKPOINT_BYTES`]).
     #[serde(default)]
@@ -256,35 +385,37 @@ impl From<ScalarLimitsDto> for ScalarLimits {
     }
 }
 
-/// Injected destination knobs. Opaque JSON only — no OS paths.
+/// Granted destination configuration (`BookclerkPlugin.destination`).
+///
+/// Only plugin settings travel here (the operator `[output.<id>]` table as
+/// `application/json`); host-private jail layout stays off this struct.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DestinationContext {
-    /// Opaque JSON (bucket, root, credentials, …). Host-private jail layout
-    /// stays off this struct.
+    /// Granted plugin settings.
     #[serde(default)]
-    pub json: String,
+    pub config: ExtensibleConfig,
 }
 
-/// Injected source knobs. Opaque JSON only — no OS paths.
+/// Granted source configuration (`BookclerkPlugin.source`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceContext {
-    /// Opaque JSON (credentials, marketplace, …).
+    /// Granted plugin settings.
     #[serde(default)]
-    pub json: String,
+    pub config: ExtensibleConfig,
 }
 
-/// Job worker instantiation knobs. Opaque JSON only — no OS paths.
+/// Granted job-handler configuration (`BookclerkPlugin.worker`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerContext {
     /// Durable job id.
     #[serde(default)]
     pub job_id: String,
-    /// Opaque JSON extras.
+    /// Granted plugin settings.
     #[serde(default)]
-    pub json: String,
+    pub config: ExtensibleConfig,
 }
 
 /// Maximum checkpoint payload size (bytes).
@@ -501,7 +632,11 @@ pub struct ObjectMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
     /// SHA-256 digest when computed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::json_bytes::opt_b64"
+    )]
     pub sha256: Option<Vec<u8>>,
 }
 
@@ -546,7 +681,11 @@ pub struct WriteOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_length: Option<u64>,
     /// Expected SHA-256 of the body.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::json_bytes::opt_b64"
+    )]
     pub sha256: Option<Vec<u8>>,
     /// Destination-side stage-and-publish token. Empty means a one-shot put.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -568,7 +707,11 @@ pub struct PutResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
     /// Digest of the written body when computed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::json_bytes::opt_b64"
+    )]
     pub sha256: Option<Vec<u8>>,
 }
 

@@ -32,9 +32,8 @@ pub use db::{delete_auth_from_db, list_auth_from_db, load_auth_from_db, save_aut
 pub use download::{chapters_from_tracks, fetch_title_materials};
 pub use error::{LibroError, Result};
 pub use guest::{
-    catalog_hit_to_dto, guest_fetch_title, guest_fetch_title_rpc, guest_login, guest_login_rpc,
-    guest_scan, guest_scan_rpc, new_book_to_scan, plain_to_dto, purchase_hint_to_dto,
-    resolve_base_url, resolve_container,
+    guest_fetch_title, guest_fetch_title_rpc, guest_login, guest_login_rpc, guest_scan,
+    guest_scan_rpc, resolve_base_url, resolve_container,
 };
 pub use source::{from_config, register, LibroSource, ID as LIBRO_SOURCE_ID, PASSWORD_ENV};
 pub use sync::{

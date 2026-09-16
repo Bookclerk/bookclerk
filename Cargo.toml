@@ -34,6 +34,8 @@ members = [
     "crates/bookclerk-plugins/optional/*",
     "examples/plugins-echo-native-rust",
     "examples/plugins-echo-workerd-rust",
+    # Schema tooling: derives `schema/plugin.layout.json` from the capnp compiler.
+    "tools/abi-layout",
 ]
 default-members = [
     "crates/bookclerk-cli",

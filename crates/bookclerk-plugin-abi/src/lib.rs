@@ -43,7 +43,7 @@
 //! | Module | Contents |
 //! | --- | --- |
 //! | [`methods`] | Capability / consent method name constants (`login`, `onEvent`, …) |
-//! | [`types`] | Shared DTOs (identity metadata, health, CLI) |
+//! | Crate-root DTOs | [`PluginDescribe`], health, CLI, destination objects |
 //! | [`kind`] | Kind-specific DTOs (source / integration / output) |
 //! | [`db`] | Host-private database connect params (feature `host`) |
 //! | [`error`] | [`PluginError`] / [`PluginErrorCode`] |
@@ -58,6 +58,7 @@ mod db_rpc;
 pub mod db_value;
 pub mod error;
 mod features;
+pub mod generated;
 pub mod guest_sql;
 pub(crate) mod host_envelope;
 #[cfg(feature = "host")]
@@ -65,6 +66,7 @@ mod host_roles;
 #[cfg(feature = "host")]
 mod host_rpc;
 mod jobs;
+pub mod json_bytes;
 pub mod kind;
 mod limits;
 pub mod methods;
@@ -78,7 +80,6 @@ mod sql_overflow;
 mod sql_proof;
 mod sql_text;
 pub mod sql_types;
-pub mod types;
 
 /// Generated Cap'n Proto RPC interfaces (`schema/plugin.capnp`).
 ///
@@ -117,16 +118,10 @@ pub mod plugin_host_capnp {
     include!(concat!(env!("OUT_DIR"), "/plugin_host_capnp.rs"));
 }
 
-#[cfg(test)]
-mod wire_fixtures;
-
 pub use backup_ops::{AdapterBackupOps, SharedAdapterBackupOps};
 #[cfg(feature = "host")]
 pub use db::{connect_params_from_context, database_context_from_params, DbConnectParams};
-pub use db::{
-    database_adapter_config_from_context, database_context_from_adapter_config,
-    DATABASE_ADAPTER_CONFIG_MEDIA_TYPE,
-};
+pub use db::{database_adapter_config_from_context, database_context_from_adapter_config};
 #[cfg(feature = "host")]
 pub use db_execute::lowered_statement_preflight_len_proven;
 pub use db_execute::{
@@ -144,6 +139,7 @@ pub use db_execute::{
 };
 pub use db_value::{db_type_from_declared, normalize_db_value_for_column, DbType, DbValue};
 pub use error::{PluginError, PluginErrorCode, Result};
+pub use generated::*;
 pub use guest_sql::{
     authorize_guest_sql_policy, guest_statement_kind, is_reserved_binding_name,
     parse_guest_sql_refs, returning_single_row_proven, statement_is_ddl,
@@ -198,7 +194,6 @@ pub use sql_types::{
 pub use sql_types::{
     catalog_companions_for_action, sql_schema_create_table_sql, typecheck_execute_request_proofs,
 };
-pub use types::*;
 
 #[cfg(feature = "host")]
 pub use host_roles::{AdapterTransaction, HostAdapterDatabaseSession};
@@ -237,7 +232,8 @@ pub use rpc_types::{
     CopyResult, DestinationContext, DomainEvent, EventResult, ExtensibleConfig, HealthOk,
     JobCheckpoint, JobInvocation, JobInvocationLease, JobOutcome, ListOptions, ListPage,
     ObjectInfo, ObjectMetadata, OidcClientTemplate, PluginDescribe, PutResult, QueryPage,
-    ScalarLimitsDto, SourceContext, WorkerContext, WriteOptions, MAX_CHECKPOINT_BYTES,
+    ScalarLimitsDto, SourceContext, WorkerContext, WriteOptions, JSON_MEDIA_TYPE,
+    MAX_CHECKPOINT_BYTES,
 };
 
 /// Embedded JSON Schema for install `plugin.toml` files (shared with language
@@ -250,19 +246,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metadata_roundtrip_camel_case() {
-        let meta = PluginMetadata {
+    fn describe_roundtrip_camel_case() {
+        let describe = PluginDescribe {
             api_version: PRODUCT_API_VERSION,
             id: "echo".into(),
             kind: "integration".into(),
             capabilities: vec!["health".into()],
-            ..PluginMetadata::default()
+            ..PluginDescribe::default()
         };
-        let v = serde_json::to_value(&meta).unwrap();
+        let v = serde_json::to_value(&describe).unwrap();
         assert!(v.get("apiVersion").is_some());
         assert!(v.get("api_version").is_none());
-        let back: PluginMetadata = serde_json::from_value(v).unwrap();
+        assert!(v.get("metadataJson").is_none());
+        let back: PluginDescribe = serde_json::from_value(v).unwrap();
         assert_eq!(back.id, "echo");
+        assert!(back.has_capability("health"));
     }
 
     #[test]

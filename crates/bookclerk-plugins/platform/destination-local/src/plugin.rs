@@ -38,21 +38,22 @@ pub struct LocalDestination {
 }
 
 impl LocalDestination {
-    /// Builds a destination from [`DestinationContext`] JSON.
+    /// Builds a destination from the [`DestinationContext`] config payload
+    /// (an [`OutputLocalContextDto`] as `application/json`; empty means defaults).
     ///
     /// # Errors
     ///
-    /// Returns [`PluginError::invalid_params`] when the context JSON is not a
-    /// local output context, or an internal error when the root cannot be opened.
+    /// Returns [`PluginError::invalid_params`] when the payload is not a local
+    /// output context, or an internal error when the root cannot be opened.
     pub fn from_context(ctx: &DestinationContext) -> Result<Self> {
-        let parsed: OutputLocalContextDto = if ctx.json.trim().is_empty() {
+        let parsed: OutputLocalContextDto = if ctx.config.is_empty() {
             OutputLocalContextDto {
                 plugin_data_dir: String::new(),
                 root: String::new(),
                 prefix: String::new(),
             }
         } else {
-            serde_json::from_str(&ctx.json).map_err(|err| {
+            ctx.config.json_into().map_err(|err| {
                 PluginError::invalid_params(format!("local destination context: {err}"))
             })?
         };
@@ -259,7 +260,9 @@ impl PluginRoot for LocalRoot {
     }
 
     async fn source(&self, context: SourceContext) -> Result<Box<dyn Source>> {
-        let dest_ctx = DestinationContext { json: context.json };
+        let dest_ctx = DestinationContext {
+            config: context.config,
+        };
         Ok(Box::new(LocalDestination::from_context(&dest_ctx)?))
     }
 

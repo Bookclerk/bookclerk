@@ -17,43 +17,46 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bookclerk_config::Config;
-use bookclerk_library::{NewBook, SourceScope};
+use bookclerk_library::SourceScope;
+use bookclerk_plugin_sdk::{ContentSourceContext, ExtensibleConfig, PRODUCT_API_VERSION};
+use bookclerk_source::abi::{
+    self as source_abi, account_credentials, credentials_from_bytes, credentials_to_bytes,
+    expand_candidates_params, scan_book_to_new, scan_summary_from_abi, DEFAULT_EXTERNAL_SORT_KEY,
+    DEFAULT_LIST_DEALS_LIMIT,
+};
 use bookclerk_source::{
     CatalogHit, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions, LoginOptions,
-    OAuthProgress, PlainAudioPart, PlainFetch, PortalAuthMode, PurchaseHintOpts, ScanOptions,
-    ScanSummary, SourceAccount, SourceBrand, SourceFetch, SourcePurchaseHint, SourceRegistry,
+    OAuthProgress, PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount,
+    SourceBrand, SourceFetch, SourcePurchaseHint, SourceRegistry,
 };
 use serde_json::Value;
 
 use crate::discover::DiscoveredPlugin;
 use crate::jail::plugin_data_dir;
 use crate::protocol::{
-    CatalogDetailParams, CatalogHitDto, ExpandCandidatesParams, FetchTitleParams,
-    LoginCompleteParams, LoginParams, LoginResultDto, LoginStartResultDto, PurchaseHintDto,
-    PurchaseHintParams, ScanBookDto, ScanParams, ScanSummaryDto, SearchCatalogParams,
-    SourceAccountDto, SourceFetchDto,
+    CatalogDetailParams, FetchTitleParams, ListDealsParams, LoginCompleteParams, LoginParams,
+    LoginResult, ScanParams, SearchCatalogParams,
 };
 use crate::rpc_session::{PluginSession, HOST_SHARED_ACCOUNT};
 use crate::Result;
-use bookclerk_plugin_sdk::PRODUCT_API_VERSION;
 
 /// External content source backed by a discovered plugin binary.
 pub struct ExternalSource {
     /// Cap'n Proto session (never given `library.db`).
     session: Arc<PluginSession>,
-    /// JSON factory context (plugin config table).
-    ctx_json: String,
-    /// Operator-facing storefront name from describe metadata or the manifest.
+    /// Granted factory context (plugin config table as JSON config).
+    ctx: ContentSourceContext,
+    /// Operator-facing storefront name from `describe()` or the manifest.
     display_name: String,
-    /// UI brand colors and icon from describe metadata, or a slate fallback.
+    /// UI brand colors and icon from `describe()`, or a slate fallback.
     brand: SourceBrand,
-    /// `oauth` vs password login, from the guest describe metadata.
+    /// `oauth` vs password login, from `describe()`.
     auth_mode: PortalAuthMode,
-    /// Leaked describe-metadata aliases used as extra storefront ids.
+    /// Leaked `describe()` aliases used as extra storefront ids.
     aliases: &'static [&'static str],
     /// Optional env var the guest accepts for a password (never put on argv).
     password_env: Option<&'static str>,
-    /// Registry sort order from describe metadata (`200` when the guest omits it).
+    /// Registry sort order from `describe()` (`200` when the guest omits it).
     sort_key: u32,
     /// Scoped data directory for this plugin only.
     plugin_data_dir: PathBuf,
@@ -86,59 +89,62 @@ impl ExternalSource {
             .await?,
         );
         let source_config = crate::spawn_config_for_grant(session.grant(), config_json);
-        let hs = session.plugin_metadata();
-        let display_name = hs
+        let describe = session.describe_snapshot();
+        let display_name = describe
             .display_name
             .clone()
             .or_else(|| plugin.manifest.name.clone())
             .unwrap_or_else(|| plugin.manifest.id.clone());
-        let brand = brand_from_dto(hs.brand.as_ref(), &plugin.manifest.id, &display_name);
-        let auth_mode = match hs.portal_auth_mode.as_deref() {
-            Some("oauth") => PortalAuthMode::Oauth,
-            _ => PortalAuthMode::Password,
+        let brand = brand_from_abi(describe.brand.as_ref(), &plugin.manifest.id, &display_name);
+        let auth_mode = match describe.portal_auth_mode {
+            bookclerk_plugin_sdk::PortalAuthMode::Oauth => PortalAuthMode::Oauth,
+            bookclerk_plugin_sdk::PortalAuthMode::Password
+            | bookclerk_plugin_sdk::PortalAuthMode::Unspecified => PortalAuthMode::Password,
         };
-        let aliases = leak_str_slice(&hs.aliases, &[]);
-        let password_env = hs
+        let aliases = leak_str_slice(&describe.aliases, &[]);
+        let password_env = describe
             .password_env_var
             .as_deref()
             .map(|s| Box::leak(s.to_string().into_boxed_str()) as &'static str);
+        let sort_key = if describe.sort_key == 0 {
+            DEFAULT_EXTERNAL_SORT_KEY
+        } else {
+            describe.sort_key
+        };
         let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
-        let ctx_json = source_config.to_string();
+        let ctx = ContentSourceContext {
+            config: ExtensibleConfig::json(&source_config),
+        };
         Ok(Self {
             session,
-            ctx_json,
+            ctx,
             display_name,
             brand,
             auth_mode,
             aliases,
             password_env,
-            sort_key: hs.sort_key.unwrap_or(200),
+            sort_key,
             plugin_data_dir,
             source_config,
         })
     }
 
-    /// Forwards one content-source RPC through the plugin session and deserializes the JSON result.
+    /// Runs one typed content-source method through the plugin session.
     ///
     /// # Errors
     ///
-    /// Returns when the session call fails, params cannot be serialized, or the JSON result cannot be decoded.
-    async fn cs_call<T: serde::de::DeserializeOwned>(
-        &self,
-        op: &str,
-        params: Value,
-    ) -> bookclerk_source::Result<T> {
-        let raw = self
-            .session
-            .content_source_json(
-                self.ctx_json.clone(),
-                op,
-                serde_json::to_string(&params)
-                    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
-            )
+    /// Returns when the factory or the guest method fails.
+    async fn cs_call<T, F, Fut>(&self, call: F) -> bookclerk_source::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::ContentSource>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        self.session
+            .content_source(self.ctx.clone(), call)
             .await
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
-        serde_json::from_str(&raw).map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
+            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))
     }
 
     /// True when the guest advertised OAuth plus `loginStart`/`loginComplete`.
@@ -146,26 +152,6 @@ impl ExternalSource {
         self.auth_mode == PortalAuthMode::Oauth
             && self.session.has_capability("loginStart")
             && self.session.has_capability("loginComplete")
-    }
-
-    /// Builds guest login params; host fills callback IPC after starting the proxy.
-    fn login_params(plugin_data_dir: String, opts: LoginOptions) -> LoginParams {
-        LoginParams {
-            plugin_data_dir,
-            marketplace: opts.marketplace,
-            label: opts.label,
-            email: opts.email,
-            password: opts.password,
-            force: opts.force,
-            callback_bind: opts.callback_bind,
-            callback_ipc: None,
-            callback_public_base: None,
-            external: opts.external,
-            response_url: opts.response_url,
-            show_qr: opts.show_qr,
-            timeout_secs: opts.timeout_secs,
-            extra: opts.extra,
-        }
     }
 
     /// Password login RPC; requires the `secrets` binding when a password is sent.
@@ -177,15 +163,9 @@ impl ExternalSource {
         if opts.password.is_some() {
             self.session.require_binding("secrets")?;
         }
-        let result: LoginResultDto = self
-            .cs_call(
-                "login",
-                serde_json::to_value(Self::login_params(
-                    self.plugin_data_dir.display().to_string(),
-                    opts,
-                ))
-                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
-            )
+        let params = source_abi::login_params(self.plugin_data_dir.display().to_string(), opts);
+        let result = self
+            .cs_call(move |src| async move { src.login(params).await })
             .await?;
         seal_login_result(scope, self.id(), result).await
     }
@@ -208,16 +188,13 @@ impl ExternalSource {
         .await
         .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
 
-        let mut params = Self::login_params(self.plugin_data_dir.display().to_string(), opts);
+        let mut params: LoginParams =
+            source_abi::login_params(self.plugin_data_dir.display().to_string(), opts);
         params.callback_ipc = Some(proxy.ipc_endpoint.clone());
         params.callback_public_base = Some(proxy.public_base.clone());
 
-        let start: LoginStartResultDto = self
-            .cs_call(
-                "loginStart",
-                serde_json::to_value(params)
-                    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
-            )
+        let start = self
+            .cs_call(move |src| async move { src.login_start(params).await })
             .await?;
         on_progress(OAuthProgress::LoginUrl {
             url: start.url.clone(),
@@ -227,14 +204,11 @@ impl ExternalSource {
             addr: proxy.bind_addr().to_string(),
         });
         on_progress(OAuthProgress::WaitingForCallback);
-        let result: LoginResultDto = self
-            .cs_call(
-                "loginComplete",
-                serde_json::to_value(LoginCompleteParams {
-                    session_id: start.session_id,
-                })
-                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
-            )
+        let complete = LoginCompleteParams {
+            session_id: start.session_id,
+        };
+        let result = self
+            .cs_call(move |src| async move { src.login_complete(complete).await })
             .await?;
         drop(proxy);
         let account = seal_login_result(scope, self.id(), result).await?;
@@ -367,38 +341,26 @@ impl ContentSource for ExternalSource {
         if !credentials.is_empty() {
             self.session.require_binding("secrets")?;
         }
-        let dto: ScanSummaryDto = self
-            .cs_call(
-                "scan",
-                serde_json::to_value(ScanParams {
-                    plugin_data_dir: self.plugin_data_dir.display().to_string(),
-                    accounts: opts.accounts,
-                    page_size: opts.page_size,
-                    import_episodes: opts.import_episodes,
-                    import_plus_titles: opts.import_plus_titles,
-                    credentials,
-                })
-                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
-            )
+        let params = ScanParams {
+            plugin_data_dir: self.plugin_data_dir.display().to_string(),
+            accounts: opts.accounts,
+            page_size: opts.page_size,
+            import_episodes: opts.import_episodes,
+            import_plus_titles: opts.import_plus_titles,
+            credentials,
+        };
+        let summary = self
+            .cs_call(move |src| async move { src.scan(params).await })
             .await?;
         let mut upserted = 0usize;
-        for book in dto.books {
+        for book in &summary.books {
             scope
-                .upsert_book(&scan_book_to_new(self.id(), book))
+                .upsert_book(&scan_book_to_new(self.id(), book.clone()))
                 .await
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
             upserted += 1;
         }
-        Ok(ScanSummary {
-            accounts: dto.accounts,
-            books_upserted: if upserted > 0 {
-                upserted
-            } else {
-                dto.books_upserted
-            },
-            pages: dto.pages,
-            skipped_disabled: dto.skipped_disabled,
-        })
+        Ok(scan_summary_from_abi(&summary, upserted))
     }
 
     async fn fetch_title(
@@ -415,8 +377,7 @@ impl ContentSource for ExternalSource {
         if credentials.is_some() {
             self.session.require_binding("secrets")?;
         }
-        let download = serde_json::to_value(&opts.download)
-            .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        let credentials = credentials.as_ref().map(credentials_to_bytes).transpose()?;
         // Jail-granted scratch (already TMPDIR), not the host download cache.
         let cache_dir = {
             let dir = self.session.scratch_dir().join("fetch");
@@ -425,22 +386,19 @@ impl ContentSource for ExternalSource {
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
             dir
         };
-        let dto: SourceFetchDto = self
-            .cs_call(
-                "fetchTitle",
-                serde_json::to_value(FetchTitleParams {
-                    plugin_data_dir: self.plugin_data_dir.display().to_string(),
-                    account_id: account_id.to_string(),
-                    title_id: title_id.to_string(),
-                    cache_dir: cache_dir.display().to_string(),
-                    credentials,
-                    source_config: self.source_config.clone(),
-                    download,
-                })
-                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
-            )
+        let params = FetchTitleParams {
+            plugin_data_dir: self.plugin_data_dir.display().to_string(),
+            account_id: account_id.to_string(),
+            title_id: title_id.to_string(),
+            cache_dir: cache_dir.display().to_string(),
+            credentials,
+            source_config: ExtensibleConfig::json(&self.source_config),
+            fetch: (&opts.download).into(),
+        };
+        let plain = self
+            .cs_call(move |src| async move { src.fetch_title(params).await })
             .await?;
-        Ok(source_fetch_from_dto(dto))
+        Ok(plain.into())
     }
 
     async fn search_catalog(
@@ -450,24 +408,12 @@ impl ContentSource for ExternalSource {
         if !self.session.has_capability("searchCatalog") {
             return Ok(Vec::new());
         }
-        let params = SearchCatalogParams {
-            query: opts.query.clone(),
-            region: opts.region.clone(),
-            limit: opts.limit,
-            page: opts.page.max(1),
-            sort: Some(opts.sort.as_wire().to_string()),
-            field: opts.field.map(|f| f.as_wire().to_string()),
-            language: opts.language.clone(),
-        };
+        let params = SearchCatalogParams::from(opts);
         match self
-            .cs_call::<Vec<CatalogHitDto>>(
-                "searchCatalog",
-                serde_json::to_value(params)
-                    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
-            )
+            .cs_call(move |src| async move { src.search_catalog(params).await })
             .await
         {
-            Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_dto).collect()),
+            Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_abi).collect()),
             Err(err) => {
                 tracing::warn!(
                     plugin = %self.id(),
@@ -491,14 +437,10 @@ impl ContentSource for ExternalSource {
             isbn: None,
         };
         match self
-            .cs_call::<Option<CatalogHitDto>>(
-                "catalogDetail",
-                serde_json::to_value(params)
-                    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
-            )
+            .cs_call(move |src| async move { src.catalog_detail(params).await })
             .await
         {
-            Ok(hit) => Ok(hit.map(catalog_hit_from_dto)),
+            Ok(hit) => Ok(hit.map(catalog_hit_from_abi)),
             Err(err) => {
                 tracing::debug!(
                     plugin = %self.id(),
@@ -518,28 +460,12 @@ impl ContentSource for ExternalSource {
         if !self.session.has_capability("expandCandidates") {
             return Ok(Vec::new());
         }
-        let params = ExpandCandidatesParams {
-            source: seed.source.clone(),
-            product_id: seed.product_id.clone(),
-            title: seed.title.clone(),
-            authors: seed.authors.clone(),
-            narrators: seed.narrators.clone(),
-            series: seed.series.clone(),
-            series_asin: seed.series_asin.clone(),
-            asin: seed.asin.clone(),
-            isbn: seed.isbn.clone(),
-            region: seed.region.clone(),
-            limit,
-        };
+        let params = expand_candidates_params(seed, limit);
         match self
-            .cs_call::<Vec<CatalogHitDto>>(
-                "expandCandidates",
-                serde_json::to_value(params)
-                    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
-            )
+            .cs_call(move |src| async move { src.expand_candidates(params).await })
             .await
         {
-            Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_dto).collect()),
+            Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_abi).collect()),
             Err(err) => {
                 tracing::debug!(
                     plugin = %self.id(),
@@ -558,24 +484,12 @@ impl ContentSource for ExternalSource {
         if !self.session.has_capability("purchaseHint") {
             return Ok(None);
         }
-        let params = PurchaseHintParams {
-            product_id: opts.product_id.clone(),
-            title: opts.title.clone(),
-            authors: opts.authors.clone(),
-            asin: opts.asin.clone(),
-            isbn: opts.isbn.clone(),
-            region: opts.region.clone(),
-            with_price: opts.with_price,
-        };
+        let params = bookclerk_plugin_sdk::PurchaseHintParams::from(opts);
         match self
-            .cs_call::<Option<PurchaseHintDto>>(
-                "purchaseHint",
-                serde_json::to_value(params)
-                    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?,
-            )
+            .cs_call(move |src| async move { src.purchase_hint(params).await })
             .await
         {
-            Ok(hint) => Ok(hint.map(purchase_hint_from_dto)),
+            Ok(hint) => Ok(hint.map(purchase_hint_from_abi)),
             Err(err) => {
                 tracing::debug!(
                     plugin = %self.id(),
@@ -591,11 +505,14 @@ impl ContentSource for ExternalSource {
         if !self.session.has_capability("listDeals") {
             return Ok(Vec::new());
         }
+        let params = ListDealsParams {
+            limit: Some(u32::try_from(limit).unwrap_or(DEFAULT_LIST_DEALS_LIMIT)),
+        };
         match self
-            .cs_call::<Vec<CatalogHitDto>>("listDeals", serde_json::json!({ "limit": limit }))
+            .cs_call(move |src| async move { src.list_deals(params).await })
             .await
         {
-            Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_dto).collect()),
+            Ok(hits) => Ok(hits.into_iter().map(catalog_hit_from_abi).collect()),
             Err(err) => {
                 tracing::debug!(
                     plugin = %self.id(),
@@ -608,79 +525,14 @@ impl ContentSource for ExternalSource {
     }
 }
 
-/// Map a protocol [`SourceFetchDto`] to the host [`SourceFetch`] (`PlainFetch`).
-#[must_use]
-pub(crate) fn source_fetch_from_dto(dto: SourceFetchDto) -> SourceFetch {
-    match dto {
-        SourceFetchDto::Plain {
-            parts,
-            m4b_path,
-            cover_path,
-            chapters,
-            pdf_url,
-        } => PlainFetch {
-            parts: parts
-                .into_iter()
-                .map(|p| PlainAudioPart {
-                    path: PathBuf::from(p.path),
-                    title: p.title,
-                    duration_ms: p.duration_ms,
-                })
-                .collect(),
-            m4b_path: m4b_path.map(PathBuf::from),
-            cover_path: cover_path.map(PathBuf::from),
-            chapters,
-            pdf_url,
-        },
-    }
+/// Maps a guest catalog hit onto a host [`CatalogHit`], decoding HTML entities.
+fn catalog_hit_from_abi(hit: bookclerk_plugin_sdk::CatalogHit) -> CatalogHit {
+    CatalogHit::from(hit).decode_html_entities()
 }
 
-/// Maps a guest catalog DTO onto a host [`CatalogHit`], decoding HTML entities.
-fn catalog_hit_from_dto(dto: CatalogHitDto) -> CatalogHit {
-    CatalogHit {
-        product_id: dto.product_id,
-        title: dto.title,
-        authors: dto.authors,
-        narrators: dto.narrators,
-        series: dto.series,
-        series_index: dto.series_index,
-        asin: dto.asin,
-        isbn: dto.isbn,
-        url: dto.url,
-        cover_url: dto.cover_url,
-        origin: dto.origin,
-        subtitle: dto.subtitle,
-        description: dto.description,
-        publisher: dto.publisher,
-        length_minutes: dto.length_minutes,
-        published_at: dto.published_at,
-        categories: dto.categories,
-        language: dto.language,
-        price_cents: dto.price_cents,
-        currency: dto.currency,
-        price_label: dto.price_label,
-        rating_overall: dto.rating_overall,
-        rating_count: dto.rating_count,
-        is_abridged: dto.is_abridged,
-    }
-    .decode_html_entities()
-}
-
-/// Maps a guest purchase-hint DTO onto a host hint, decoding HTML entities.
-fn purchase_hint_from_dto(dto: PurchaseHintDto) -> SourcePurchaseHint {
-    SourcePurchaseHint {
-        product_id: dto.product_id,
-        title: dto.title,
-        url: dto.url,
-        price_cents: dto.price_cents,
-        currency: dto.currency,
-        price_label: dto.price_label,
-        list_price_cents: dto.list_price_cents,
-        list_price_label: dto.list_price_label,
-        member_price_cents: dto.member_price_cents,
-        member_price_label: dto.member_price_label,
-    }
-    .decode_html_entities()
+/// Maps a guest purchase hint onto a host hint, decoding HTML entities.
+fn purchase_hint_from_abi(hint: bookclerk_plugin_sdk::PurchaseHint) -> SourcePurchaseHint {
+    SourcePurchaseHint::from(hint).decode_html_entities()
 }
 
 /// Load host-sealed credentials for the accounts a scan will cover.
@@ -690,7 +542,7 @@ fn purchase_hint_from_dto(dto: PurchaseHintDto) -> SourcePurchaseHint {
 async fn scan_credentials_for(
     scope: &SourceScope,
     account_filter: &[String],
-) -> bookclerk_source::Result<std::collections::BTreeMap<String, Value>> {
+) -> bookclerk_source::Result<Vec<bookclerk_plugin_sdk::AccountCredential>> {
     let accounts = scope
         .list_accounts()
         .await
@@ -714,7 +566,7 @@ async fn scan_credentials_for(
         }
         match scope.load_credentials_json(&acct.account_id).await {
             Ok(Some(creds)) => {
-                out.insert(acct.account_id, creds);
+                out.insert(acct.account_id, credentials_to_bytes(&creds)?);
             }
             Ok(None) => {}
             Err(e) => {
@@ -722,54 +574,16 @@ async fn scan_credentials_for(
             }
         }
     }
-    Ok(out)
-}
-
-/// Maps a scan DTO onto [`NewBook`], forcing `source` to the plugin id.
-fn scan_book_to_new(plugin_id: &str, book: ScanBookDto) -> NewBook {
-    NewBook {
-        uuid: None,
-        product_id: book.product_id.clone(),
-        source: plugin_id.to_string(),
-        account_id: book.account_id,
-        asin: book.asin,
-        isbn: book.isbn,
-        marketplace: book.marketplace.unwrap_or_else(|| String::from("us")),
-        title: book.title,
-        authors: book.authors,
-        narrators: book.narrators,
-        series: book.series,
-        series_index: book.series_index,
-        series_asin: None,
-        purchased_at: None,
-        publisher: book.publisher,
-        length_minutes: book.length_minutes,
-        is_abridged: false,
-        content_kind: book.content_kind.unwrap_or_else(|| String::from("book")),
-        categories: None,
-        subtitle: book.subtitle,
-        published_at: None,
-    }
-}
-
-/// Maps a guest account DTO onto a host [`SourceAccount`].
-fn account_from_dto(dto: SourceAccountDto) -> SourceAccount {
-    SourceAccount {
-        account_id: dto.account_id,
-        source: dto.source,
-        marketplace: dto.marketplace,
-        label: dto.label,
-        scan_enabled: dto.scan_enabled,
-    }
+    Ok(account_credentials(out))
 }
 
 /// Upserts the account and seals guest credentials via [`SourceScope`] (plugin cannot write the DB).
 async fn seal_login_result(
     scope: &SourceScope,
     plugin_id: &str,
-    result: LoginResultDto,
+    result: LoginResult,
 ) -> bookclerk_source::Result<SourceAccount> {
-    let mut account = account_from_dto(result.account);
+    let mut account = SourceAccount::from(result.account);
     // Force source id to the plugin id — plugins cannot claim another storefront.
     account.source = plugin_id.to_string();
     scope
@@ -782,6 +596,7 @@ async fn seal_login_result(
         .await
         .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
     if let Some(creds) = result.credentials {
+        let creds = credentials_from_bytes(&creds)?;
         scope
             .save_credentials_json(&account.account_id, &creds)
             .await
@@ -790,7 +605,7 @@ async fn seal_login_result(
     Ok(account)
 }
 
-/// Leaks describe-metadata strings into `'static` slices for [`SourceBrand`] / aliases.
+/// Leaks `describe()` strings into `'static` slices for [`SourceBrand`] / aliases.
 fn leak_str_slice(owned: &[String], fallback: &[&'static str]) -> &'static [&'static str] {
     if owned.is_empty() {
         return Box::leak(fallback.to_vec().into_boxed_slice());
@@ -802,16 +617,20 @@ fn leak_str_slice(owned: &[String], fallback: &[&'static str]) -> &'static [&'st
     Box::leak(leaked.into_boxed_slice())
 }
 
-/// Builds a [`SourceBrand`] from describe metadata, or a slate fallback using plugin id/name.
-fn brand_from_dto(dto: Option<&crate::protocol::BrandDto>, id: &str, name: &str) -> SourceBrand {
-    if let Some(b) = dto {
+/// Builds a [`SourceBrand`] from `describe()`, or a slate fallback using plugin id/name.
+fn brand_from_abi(
+    brand: Option<&bookclerk_plugin_sdk::Brand>,
+    id: &str,
+    name: &str,
+) -> SourceBrand {
+    if let Some(b) = brand {
         SourceBrand {
             id: Box::leak(b.id.clone().into_boxed_str()),
             name: Box::leak(b.name.clone().into_boxed_str()),
             bg: Box::leak(b.bg.clone().into_boxed_str()),
             fg: Box::leak(b.fg.clone().into_boxed_str()),
             accent: Box::leak(b.accent.clone().into_boxed_str()),
-            icon_url: Box::leak(b.icon_url.clone().into_boxed_str()),
+            icon_url: Box::leak(b.icon_url.clone().unwrap_or_default().into_boxed_str()),
         }
     } else {
         SourceBrand {
@@ -890,8 +709,9 @@ mod tests {
 
         let creds = scan_credentials_for(&echo, &[]).await.unwrap();
         assert_eq!(creds.len(), 1);
-        assert_eq!(creds["a1"]["token"], "echo-secret");
-        assert!(!creds.contains_key("b1"));
+        assert_eq!(creds[0].account_id, "a1");
+        let json = credentials_from_bytes(&creds[0].credentials).unwrap();
+        assert_eq!(json["token"], "echo-secret");
     }
 
     #[tokio::test]
@@ -910,65 +730,5 @@ mod tests {
         assert!(scan_credentials_for(&echo, &[]).await.unwrap().is_empty());
         let explicit = scan_credentials_for(&echo, &["a1".into()]).await.unwrap();
         assert_eq!(explicit.len(), 1);
-    }
-
-    #[test]
-    fn scan_book_forces_plugin_source() {
-        let book = ScanBookDto {
-            account_id: "a".into(),
-            product_id: "p".into(),
-            title: "T".into(),
-            marketplace: None,
-            asin: None,
-            isbn: None,
-            authors: None,
-            narrators: None,
-            series: None,
-            series_index: None,
-            content_kind: None,
-            publisher: None,
-            length_minutes: None,
-            subtitle: None,
-        };
-        let new = scan_book_to_new("echo", book);
-        assert_eq!(new.source, "echo");
-    }
-
-    #[test]
-    fn source_fetch_dto_maps_pdf_url() {
-        let dto = SourceFetchDto::Plain {
-            parts: vec![],
-            m4b_path: Some("/tmp/book.m4b".into()),
-            cover_path: None,
-            chapters: vec![("Ch 1".into(), 0)],
-            pdf_url: Some("https://cdn.example/book.pdf".into()),
-        };
-        let plain = source_fetch_from_dto(dto);
-        assert_eq!(
-            plain.pdf_url.as_deref(),
-            Some("https://cdn.example/book.pdf")
-        );
-        assert_eq!(
-            plain.m4b_path.as_deref().map(|p| p.to_string_lossy()),
-            Some("/tmp/book.m4b".into())
-        );
-        assert_eq!(plain.chapters.len(), 1);
-    }
-
-    #[test]
-    fn source_fetch_dto_pdf_url_roundtrip_serde() {
-        let dto = SourceFetchDto::Plain {
-            parts: vec![],
-            m4b_path: None,
-            cover_path: None,
-            chapters: vec![],
-            pdf_url: Some("https://x/y.pdf".into()),
-        };
-        let json = serde_json::to_value(&dto).unwrap();
-        assert_eq!(json["pdfUrl"], "https://x/y.pdf");
-        assert!(json.get("pdf_url").is_none());
-        let back: SourceFetchDto = serde_json::from_value(json).unwrap();
-        let plain = source_fetch_from_dto(back);
-        assert_eq!(plain.pdf_url.as_deref(), Some("https://x/y.pdf"));
     }
 }

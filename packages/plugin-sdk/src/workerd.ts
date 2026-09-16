@@ -11,7 +11,14 @@
  *
  * export default class MyPlugin extends BookclerkPlugin {
  *   async describe(): Promise<PluginDescribe> {
- *     return { apiVersion: 2, id: "my_plugin", kind: "source", rpcFeatures: [], scalarLimits: { maxScalarBytes: 262144, maxStreamWindowBytes: 1048576, maxListPage: 256 } };
+ *     return {
+ *       apiVersion: 2,
+ *       id: "my_plugin",
+ *       kind: "source",
+ *       rpcFeatures: [],
+ *       scalarLimits: { maxScalarBytes: 262144, maxStreamWindowBytes: 1048576, maxListPage: 256 },
+ *       capabilities: ["health", "login", "scan", "fetchTitle"],
+ *     };
  *   }
  * }
  * ```
@@ -60,12 +67,15 @@ export type {
 } from "./plugin.js";
 export type { BookclerkEnv } from "./env.js";
 export type {
-  PluginMetadata,
-  HealthResult,
-  DiagnoseResult,
   CliSchema,
   CliInvokeParams,
   CliInvokeResult,
+  ContentSourceContext,
+  DatabaseContext,
+  ExtensibleConfig,
+  HealthOk,
+  IntegrationContext,
+  SourceContext,
 } from "./generated.js";
 export {
   canonicalExecuteRequestHash,

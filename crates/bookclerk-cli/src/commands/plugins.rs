@@ -10,8 +10,9 @@ use bookclerk_plugin_catalog::{
 };
 use bookclerk_plugin_host::{
     consent_request, consent_summary, host_target_triple, require_grant, search_crates_io,
-    CliInvokeParams, CliInvokeResult, CliSchema, DiscoveredPlugin, PluginGrantStore, PluginKind,
-    PluginSession, CRATE_NAME_PREFIX, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
+    CliInvokeParams, CliInvokeResult, CliSchema, ContentSourceContext, DiscoveredPlugin,
+    IntegrationContext, PluginGrantStore, PluginKind, PluginSession, CRATE_NAME_PREFIX,
+    HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
 use clap::{Subcommand, ValueEnum};
 use serde::Serialize;
@@ -994,10 +995,18 @@ async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<Str
     if session.has_capability("health") {
         match plugin.manifest.kind {
             PluginKind::Source => {
-                let _ = session.content_source_json("{}", "health", "{}").await?;
+                let _ = session
+                    .content_source(ContentSourceContext::default(), |src| async move {
+                        src.health().await
+                    })
+                    .await?;
             }
             PluginKind::Integration => {
-                let _ = session.integration_json("{}", "health", "{}").await?;
+                let _ = session
+                    .integration(IntegrationContext::default(), |int| async move {
+                        int.health().await
+                    })
+                    .await?;
             }
             PluginKind::Database => {
                 probe_database(&session, config, &plugin).await?;
@@ -1091,10 +1100,7 @@ pub async fn run_plugin_cli(
         command: cmd_name.to_string(),
         args,
     };
-    let raw = session
-        .cli_invoke_json(serde_json::to_string(&params)?)
-        .await?;
-    let result: CliInvokeResult = serde_json::from_str(&raw)?;
+    let result: CliInvokeResult = session.cli_invoke(params).await?;
 
     if format.is_json() {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -1111,9 +1117,14 @@ pub async fn run_plugin_cli(
                 eprintln!();
             }
         }
-        if let Some(json) = &result.json {
-            if result.stdout.is_empty() {
-                println!("{}", serde_json::to_string_pretty(json)?);
+        if result.stdout.is_empty() && !result.payload.is_empty() {
+            match result.payload.json_value() {
+                Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
+                Err(_) => println!(
+                    "[{} payload, {} bytes]",
+                    result.payload.media_type,
+                    result.payload.payload.len()
+                ),
             }
         }
     }
@@ -1163,17 +1174,17 @@ pub fn augment_plugins_command(mut plugins_cmd: clap::Command, config: &Config) 
     plugins_cmd
 }
 
-/// Prefers live `cli.describe`, then the describe-metadata CLI schema, then the on-disk manifest schema.
+/// Prefers live `cli.describe`, then the describe-embedded CLI schema, then the on-disk manifest schema.
 async fn resolve_schema(
     session: &PluginSession,
     plugin: &DiscoveredPlugin,
 ) -> anyhow::Result<CliSchema> {
     if session.has_capability("cli") {
-        let raw = session.cli_describe().await?;
-        return Ok(serde_json::from_str(&raw)?);
+        return Ok(session.cli_describe().await?);
     }
-    if let Some(cli) = session.plugin_metadata().cli {
-        return Ok(cli);
+    let described = session.describe_snapshot().cli.clone();
+    if !described.commands.is_empty() {
+        return Ok(described);
     }
     Ok(plugin.manifest.cli.clone().unwrap_or_default())
 }
@@ -1202,18 +1213,22 @@ async fn diagnose_plugin(
             plugin.manifest.id
         )]);
     }
-    let raw: anyhow::Result<String> = match plugin.manifest.kind {
+    let lines: anyhow::Result<Vec<String>> = match plugin.manifest.kind {
         PluginKind::Source => session
-            .content_source_json("{}", "diagnose", "{}")
+            .content_source(ContentSourceContext::default(), |src| async move {
+                src.diagnose().await
+            })
             .await
             .map_err(anyhow::Error::from),
         PluginKind::Integration => session
-            .integration_json("{}", "diagnose", "{}")
+            .integration(IntegrationContext::default(), |int| async move {
+                int.diagnose().await
+            })
             .await
             .map_err(anyhow::Error::from),
         PluginKind::Database => probe_database(&session, config, plugin)
             .await
-            .map(|()| r#"["ping=ok"]"#.to_string()),
+            .map(|()| vec!["ping=ok".to_string()]),
         PluginKind::Output => {
             return Ok(vec![format!(
                 "plugin `{}` advertises diagnose but output guests have no diagnose RPC",
@@ -1221,26 +1236,10 @@ async fn diagnose_plugin(
             )]);
         }
     };
-    match raw {
-        Ok(text) => Ok(parse_diagnose_lines(&text)),
+    match lines {
+        Ok(lines) => Ok(lines),
         Err(err) => Ok(vec![format!("diagnose failed: {err:#}")]),
     }
-}
-
-/// Parses a diagnose JSON array, `{ "lines": [...] }`, or a raw fallback string.
-fn parse_diagnose_lines(raw: &str) -> Vec<String> {
-    if let Ok(lines) = serde_json::from_str::<Vec<String>>(raw) {
-        return lines;
-    }
-    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(raw) {
-        if let Some(arr) = obj.get("lines").and_then(|v| v.as_array()) {
-            return arr
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect();
-        }
-    }
-    vec![raw.to_string()]
 }
 
 /// Interactively (or `--yes`) records a network/binding grant for the plugin.
@@ -1395,25 +1394,4 @@ fn is_enabled(config: &Config, plugin: &DiscoveredPlugin) -> bool {
 /// Converts a plugin settings TOML table to JSON, substituting `{}` if serialization fails.
 fn toml_table_to_json(table: &toml::Table) -> serde_json::Value {
     serde_json::to_value(table).unwrap_or_else(|_| json!({}))
-}
-
-#[cfg(test)]
-#[allow(clippy::missing_panics_doc)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_diagnose_lines_reads_json_array() {
-        assert_eq!(
-            parse_diagnose_lines(r#"["ping=ok","wal=ok"]"#),
-            vec!["ping=ok".to_string(), "wal=ok".to_string()]
-        );
-    }
-
-    #[test]
-    fn parse_diagnose_lines_does_not_treat_cli_schema_as_probes() {
-        let schema = r#"{"name":"d1","commands":[{"name":"query"}]}"#;
-        let lines = parse_diagnose_lines(schema);
-        assert_eq!(lines, vec![schema.to_string()]);
-    }
 }

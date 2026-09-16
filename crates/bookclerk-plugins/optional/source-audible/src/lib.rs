@@ -47,8 +47,8 @@ pub use download::{
 };
 pub use error::{AudibleError, Result};
 pub use guest::{
-    catalog_hit_to_dto, credentials_json_from_auth, guest_fetch_title, guest_login_complete,
-    guest_login_start, guest_scan, purchase_hint_to_dto,
+    credentials_json_from_auth, guest_fetch_title, guest_login_complete, guest_login_start,
+    guest_scan,
 };
 pub use options::DownloadOptions;
 pub use qr::{render_login_qr, QrRenderMode};

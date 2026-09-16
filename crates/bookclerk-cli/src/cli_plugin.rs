@@ -1,8 +1,7 @@
 //! Build clap subcommands from plugin [`CliSchema`] and map matches → invoke args.
 
-use bookclerk_plugin_host::{CliArgKind, CliArgSpec, CliCommandSpec, CliSchema};
+use bookclerk_plugin_host::{CliArg, CliArgKind, CliArgSpec, CliCommandSpec, CliSchema};
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
-use serde_json::{Map, Value};
 
 /// Reserved host subcommands under `bookclerk plugins` (cannot be plugin ids).
 pub const RESERVED_PLUGIN_SUBCOMMANDS: &[&str] = &[
@@ -55,7 +54,7 @@ fn arg_spec_to_clap(spec: &CliArgSpec) -> Arg {
             .clone()
             .unwrap_or_else(|| spec.name.replace('_', "-"));
         arg = arg.long(long);
-        if let Some(short) = spec.short {
+        if let Some(short) = spec.short.as_deref().and_then(|s| s.chars().next()) {
             arg = arg.short(short);
         }
         if spec.required && spec.default.is_none() {
@@ -81,54 +80,52 @@ fn arg_spec_to_clap(spec: &CliArgSpec) -> Arg {
 }
 
 /// Extract invoke args for `command` from clap matches under that subcommand.
+///
+/// Values travel as their string form ([`CliArg::value`]); the guest parses
+/// per [`CliArgSpec::kind`].
 pub fn matches_to_invoke_args(
     spec: &CliCommandSpec,
     matches: &ArgMatches,
-) -> anyhow::Result<Map<String, Value>> {
-    let mut args = Map::new();
+) -> anyhow::Result<Vec<CliArg>> {
+    let mut args = Vec::new();
     for arg in &spec.args {
         if !matches.contains_id(arg.name.as_str()) {
             if let Some(default) = &arg.default {
-                args.insert(arg.name.clone(), value_from_string(arg.kind, default)?);
+                value_from_string(arg.kind, default)?;
+                args.push(CliArg {
+                    name: arg.name.clone(),
+                    value: default.clone(),
+                });
             }
             continue;
         }
         let value = match arg.kind {
-            CliArgKind::Bool => Value::Bool(matches.get_flag(arg.name.as_str())),
-            CliArgKind::Int => {
-                let n = matches
-                    .get_one::<i64>(arg.name.as_str())
-                    .copied()
-                    .ok_or_else(|| anyhow::anyhow!("missing int arg `{}`", arg.name))?;
-                Value::Number(n.into())
-            }
-            CliArgKind::String | CliArgKind::Path => {
-                let s = matches
-                    .get_one::<String>(arg.name.as_str())
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("missing arg `{}`", arg.name))?;
-                Value::String(s)
-            }
+            CliArgKind::Bool => matches.get_flag(arg.name.as_str()).to_string(),
+            CliArgKind::Int => matches
+                .get_one::<i64>(arg.name.as_str())
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("missing int arg `{}`", arg.name))?
+                .to_string(),
+            CliArgKind::String | CliArgKind::Path => matches
+                .get_one::<String>(arg.name.as_str())
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing arg `{}`", arg.name))?,
         };
-        args.insert(arg.name.clone(), value);
+        args.push(CliArg {
+            name: arg.name.clone(),
+            value,
+        });
     }
     Ok(args)
 }
 
-/// Parses a default string into the JSON value expected for that arg kind.
-fn value_from_string(kind: CliArgKind, raw: &str) -> anyhow::Result<Value> {
-    Ok(match kind {
-        CliArgKind::Bool => Value::Bool(matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )),
-        CliArgKind::Int => Value::Number(
-            raw.parse::<i64>()
-                .map_err(|err| anyhow::anyhow!("invalid int default `{raw}`: {err}"))?
-                .into(),
-        ),
-        CliArgKind::String | CliArgKind::Path => Value::String(raw.to_string()),
-    })
+/// Validates that a default string parses for its arg kind.
+fn value_from_string(kind: CliArgKind, raw: &str) -> anyhow::Result<()> {
+    if kind == CliArgKind::Int {
+        raw.parse::<i64>()
+            .map_err(|err| anyhow::anyhow!("invalid int default `{raw}`: {err}"))?;
+    }
+    Ok(())
 }
 
 /// Find a command spec by name.
@@ -168,6 +165,12 @@ mod tests {
         assert_eq!(sub.0, "ping");
         let spec = find_command(&schema, "ping").unwrap();
         let args = matches_to_invoke_args(spec, sub.1).unwrap();
-        assert_eq!(args.get("message").and_then(|v| v.as_str()), Some("hello"));
+        assert_eq!(
+            args,
+            vec![CliArg {
+                name: "message".into(),
+                value: "hello".into(),
+            }]
+        );
     }
 }

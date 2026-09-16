@@ -8,9 +8,11 @@ use std::path::PathBuf;
 
 use bookclerk_config::{Config, Paths};
 use bookclerk_plugin_host::{
-    consent_request, discover_plugins, CatalogHitDto, CliInvokeParams, CliInvokeResult,
-    PluginGrantStore, PluginKind, PluginSession, SearchCatalogParams, HOST_SHARED_ACCOUNT,
-    OPERATOR_ACCOUNT,
+    consent_request, discover_plugins, CliInvokeParams, PluginGrantStore, PluginKind,
+    PluginSession, SearchCatalogParams, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
+};
+use bookclerk_plugin_sdk::{
+    CatalogField, CatalogSort, ContentSourceContext, IntegrationContext, ListDealsParams,
 };
 
 fn artifacts_dir() -> Option<PathBuf> {
@@ -118,21 +120,30 @@ async fn staged_first_party_plugins_describe() {
         }
 
         if session.has_capability("health") {
-            let health_json = match plugin.manifest.kind {
-                PluginKind::Source => session.content_source_json("{}", "health", "{}").await.ok(),
-                PluginKind::Integration => {
-                    session.integration_json("{}", "health", "{}").await.ok()
-                }
+            let health = match plugin.manifest.kind {
+                PluginKind::Source => session
+                    .content_source(ContentSourceContext::default(), |stub| async move {
+                        stub.health().await
+                    })
+                    .await
+                    .ok(),
+                PluginKind::Integration => session
+                    .integration(IntegrationContext::default(), |stub| async move {
+                        stub.health().await
+                    })
+                    .await
+                    .ok(),
                 _ => None,
             };
-            if let Some(raw) = health_json {
-                let health: serde_json::Value =
-                    serde_json::from_str(&raw).unwrap_or(serde_json::json!({}));
-                let ok = health.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+            if let Some(health) = health {
                 if plugin.manifest.id != "audiobookshelf" {
-                    assert!(ok, "{} health not ok: {health}", plugin.manifest.id);
+                    assert!(
+                        health.ok,
+                        "{} health not ok: {health:?}",
+                        plugin.manifest.id
+                    );
                 }
-                let detail = health.get("detail").and_then(|v| v.as_str());
+                let detail = Some(health.detail.as_str()).filter(|d| !d.is_empty());
                 let expected_detail = match plugin.manifest.id.as_str() {
                     "echo_workerd_ts" => Some("echo workerd plugin ready"),
                     "echo_workerd_python" => Some("echo workerd python plugin ready"),
@@ -158,14 +169,14 @@ async fn staged_first_party_plugins_describe() {
                 command: "fetch-example".into(),
                 args: Default::default(),
             };
-            let raw = session
-                .cli_invoke_json(serde_json::to_string(&params).expect("cli params"))
+            let result = session
+                .cli_invoke(params)
                 .await
                 .unwrap_or_else(|e| panic!("echo_workerd_fetch fetch-example must answer: {e}"));
-            let result: CliInvokeResult =
-                serde_json::from_str(&raw).unwrap_or_else(|e| panic!("cli result: {e}"));
             let allowed = result
-                .json
+                .payload
+                .json_value()
+                .ok()
                 .as_ref()
                 .and_then(|v| v.get("allowed"))
                 .and_then(|v| v.as_bool());
@@ -187,21 +198,22 @@ async fn staged_first_party_plugins_describe() {
         }
 
         if plugin.manifest.kind == PluginKind::Source && session.has_capability("searchCatalog") {
-            let params = serde_json::to_string(&SearchCatalogParams {
+            let params = SearchCatalogParams {
                 query: "test".into(),
                 region: "us".into(),
                 limit: 1,
                 page: 1,
-                sort: None,
-                field: None,
+                sort: CatalogSort::Relevance,
+                field: CatalogField::Any,
                 language: None,
-            })
-            .expect("search params");
-            let raw = match session
-                .content_source_json("{}", "searchCatalog", params)
+            };
+            let hits = match session
+                .content_source(ContentSourceContext::default(), move |stub| async move {
+                    stub.search_catalog(params).await
+                })
                 .await
             {
-                Ok(raw) => raw,
+                Ok(hits) => hits,
                 Err(e) if live_storefront_unavailable(&e) => {
                     eprintln!(
                         "{} search_catalog skipped (live storefront unavailable): {e}",
@@ -214,7 +226,6 @@ async fn staged_first_party_plugins_describe() {
                     plugin.manifest.id
                 ),
             };
-            let hits: Vec<CatalogHitDto> = serde_json::from_str(&raw).unwrap_or_default();
             assert!(
                 hits.len() <= 1,
                 "{} search_catalog returned more than limit: {}",
@@ -224,22 +235,19 @@ async fn staged_first_party_plugins_describe() {
         }
 
         if plugin.manifest.id == "chirp" && session.has_capability("listDeals") {
-            let raw = match session
-                .content_source_json(
-                    "{}",
-                    "listDeals",
-                    serde_json::json!({ "limit": 1 }).to_string(),
-                )
+            let deals = match session
+                .content_source(ContentSourceContext::default(), |stub| async move {
+                    stub.list_deals(ListDealsParams { limit: Some(1) }).await
+                })
                 .await
             {
-                Ok(raw) => raw,
+                Ok(deals) => deals,
                 Err(e) if live_storefront_unavailable(&e) => {
                     eprintln!("chirp list_deals skipped (live storefront unavailable): {e}");
                     continue;
                 }
                 Err(e) => panic!("chirp list_deals must succeed (empty ok): {e}"),
             };
-            let deals: Vec<CatalogHitDto> = serde_json::from_str(&raw).unwrap_or_default();
             assert!(
                 deals.len() <= 1,
                 "chirp list_deals over limit: {}",

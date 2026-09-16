@@ -25,9 +25,9 @@ use bookclerk_media::{
     runtime_length_ms_from_chapter_info, track_duration_ms,
 };
 use bookclerk_plugin_sdk::{
-    CatalogHitDto, LoginParams, LoginResultDto, PlainPartDto, PurchaseHintDto, ScanBookDto,
-    ScanSummaryDto, SourceAccountDto, SourceFetchDto,
+    FetchOptions, LoginParams, LoginResult, PlainFetch, PlainPart, ScanSummary, SourceAccount,
 };
+use bookclerk_source::abi::{credentials_to_bytes, scan_summary};
 use serde_json::{json, Value};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -180,12 +180,12 @@ async fn connect_callback_ipc(
         .map_err(|err| AudibleError::Auth(format!("callback IPC open {endpoint}: {err}")))
 }
 
-/// Await a pending OAuth session and return account + credential JSON.
+/// Await a pending OAuth session and return account + opaque credential bytes.
 ///
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub async fn guest_login_complete(session_id: &str) -> Result<LoginResultDto> {
+pub async fn guest_login_complete(session_id: &str) -> Result<LoginResult> {
     let pending = pending_logins()
         .lock()
         .map_err(|_| AudibleError::Auth("guest login session lock poisoned".into()))?
@@ -203,9 +203,11 @@ pub async fn guest_login_complete(session_id: &str) -> Result<LoginResultDto> {
 
     let session = session_from_authenticator(&auth, pending.label);
     let credentials = credentials_json_from_auth(&auth, None)?;
+    let credentials =
+        credentials_to_bytes(&credentials).map_err(|e| AudibleError::Auth(e.to_string()))?;
 
-    Ok(LoginResultDto {
-        account: SourceAccountDto {
+    Ok(LoginResult {
+        account: SourceAccount {
             account_id: session.account_id,
             source: ID.into(),
             marketplace: session.marketplace,
@@ -227,7 +229,7 @@ pub async fn guest_scan(
     page_size: u32,
     import_episodes: bool,
     import_plus_titles: bool,
-) -> Result<ScanSummaryDto> {
+) -> Result<ScanSummary> {
     if credentials.is_empty() {
         return Err(AudibleError::NoAccounts(
             "no Audible credentials from host — run login first".into(),
@@ -264,7 +266,7 @@ pub async fn guest_scan(
         .await?;
         pages = pages.saturating_add(p);
         accounts += 1;
-        books.extend(batch.into_iter().map(new_book_to_scan));
+        books.extend(batch);
     }
 
     if accounts == 0 {
@@ -272,21 +274,14 @@ pub async fn guest_scan(
             "no matching Audible accounts in host credentials".into(),
         ));
     }
-    let n = books.len();
-    Ok(ScanSummaryDto {
-        accounts,
-        books_upserted: n,
-        pages,
-        skipped_disabled: 0,
-        books,
-    })
+    Ok(scan_summary(books, accounts, pages))
 }
 
 /// Download + decrypt one title; return plain paths (never encrypted on the wire).
 ///
-/// `download` is the host [`DownloadOptions`] JSON from the ABI
-/// `FetchTitleParams.download` field.
-/// Plugin bitrate from `source_config` overlays `quality` (same as in-process).
+/// `fetch` carries the host fetch knobs from the ABI `FetchTitleParams.fetch`
+/// field; packaging knobs use guest defaults. Plugin bitrate from
+/// `source_config` overlays `quality` (same as in-process).
 ///
 /// # Errors
 ///
@@ -296,8 +291,8 @@ pub async fn guest_fetch_title(
     title_id: &str,
     cache_dir: &Path,
     source_config: &Value,
-    download: &Value,
-) -> Result<SourceFetchDto> {
+    fetch: &FetchOptions,
+) -> Result<PlainFetch> {
     let auth = authenticator_from_credentials(credentials)?;
     let marketplace = auth.locale().country_code.to_string();
     let account_id = auth
@@ -324,7 +319,7 @@ pub async fn guest_fetch_title(
         }
     }
 
-    let options = download_options_from_host(download, source_config);
+    let options = download_options_from_host(fetch, source_config);
 
     let (account, downloaded, _summary) = fetch_and_download_with_client(
         account_client,
@@ -462,29 +457,25 @@ pub async fn guest_fetch_title(
         .map(flatten_chapters)
         .unwrap_or_default();
 
-    Ok(SourceFetchDto::Plain {
-        parts: vec![PlainPartDto {
+    Ok(PlainFetch {
+        parts: vec![PlainPart {
             path: plain_path.display().to_string(),
             title: None,
             duration_ms: None,
         }],
         m4b_path: Some(plain_path.display().to_string()),
         cover_path: cover_path.map(|p| p.display().to_string()),
-        chapters,
+        chapters: chapters
+            .into_iter()
+            .map(|(title, start_ms)| bookclerk_plugin_sdk::ChapterMarker { title, start_ms })
+            .collect(),
         pdf_url: downloaded.pdf_url,
     })
 }
 
-/// Merge host download options with `[sources.audible]` bitrate (in-process parity).
-fn download_options_from_host(download: &Value, source_config: &Value) -> DownloadOptions {
-    let mut options = if download.is_null() {
-        DownloadOptions::default()
-    } else {
-        serde_json::from_value(download.clone()).unwrap_or_else(|err| {
-            tracing::warn!(error = %err, "invalid fetch_title download options; using defaults");
-            DownloadOptions::default()
-        })
-    };
+/// Merge host fetch knobs with `[sources.audible]` bitrate (in-process parity).
+fn download_options_from_host(fetch: &FetchOptions, source_config: &Value) -> DownloadOptions {
+    let mut options = DownloadOptions::from_fetch_options(fetch);
     options.quality = resolve_bitrate(source_config);
     options
 }
@@ -540,26 +531,6 @@ fn resolve_bitrate(source_config: &Value) -> AudioQuality {
         .unwrap_or_default()
 }
 
-/// Copies a library [`NewBook`] into the guest scan DTO sent back to the host.
-fn new_book_to_scan(book: bookclerk_library::NewBook) -> ScanBookDto {
-    ScanBookDto {
-        account_id: book.account_id,
-        product_id: book.product_id,
-        title: book.title,
-        marketplace: Some(book.marketplace),
-        asin: book.asin,
-        isbn: book.isbn,
-        authors: book.authors,
-        narrators: book.narrators,
-        series: book.series,
-        series_index: book.series_index,
-        content_kind: Some(book.content_kind),
-        publisher: book.publisher,
-        length_minutes: book.length_minutes,
-        subtitle: book.subtitle,
-    }
-}
-
 /// Flattens Audible `chapter_info` into `(title, start_ms)` pairs, sorted and deduped by start.
 fn flatten_chapters(info: &Value) -> Vec<(String, u64)> {
     let mut out = Vec::new();
@@ -594,53 +565,5 @@ fn flatten_chapter_nodes(nodes: &[Value], out: &mut Vec<(String, u64)>) {
         if !title.trim().is_empty() {
             out.push((title.trim().to_string(), start_ms));
         }
-    }
-}
-
-/// Map a catalog hit to the plugin-protocol DTO.
-#[must_use]
-pub fn catalog_hit_to_dto(hit: bookclerk_source::CatalogHit) -> CatalogHitDto {
-    CatalogHitDto {
-        product_id: hit.product_id,
-        title: hit.title,
-        authors: hit.authors,
-        narrators: hit.narrators,
-        series: hit.series,
-        series_index: hit.series_index,
-        asin: hit.asin,
-        isbn: hit.isbn,
-        url: hit.url,
-        cover_url: hit.cover_url,
-        origin: hit.origin,
-        subtitle: hit.subtitle,
-        description: hit.description,
-        publisher: hit.publisher,
-        length_minutes: hit.length_minutes,
-        published_at: hit.published_at,
-        categories: hit.categories,
-        language: hit.language,
-        price_cents: hit.price_cents,
-        currency: hit.currency,
-        price_label: hit.price_label,
-        rating_overall: hit.rating_overall,
-        rating_count: hit.rating_count,
-        is_abridged: hit.is_abridged,
-    }
-}
-
-/// Map a purchase hint to the plugin-protocol DTO.
-#[must_use]
-pub fn purchase_hint_to_dto(hint: bookclerk_source::SourcePurchaseHint) -> PurchaseHintDto {
-    PurchaseHintDto {
-        product_id: hint.product_id,
-        title: hint.title,
-        url: hint.url,
-        price_cents: hint.price_cents,
-        currency: hint.currency,
-        price_label: hint.price_label,
-        list_price_cents: hint.list_price_cents,
-        list_price_label: hint.list_price_label,
-        member_price_cents: hint.member_price_cents,
-        member_price_label: hint.member_price_label,
     }
 }

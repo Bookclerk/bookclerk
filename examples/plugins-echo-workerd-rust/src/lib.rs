@@ -6,7 +6,7 @@
 
 use bookclerk_plugin_abi::{
     CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-    DiagnoseResult, HealthResult,
+    ExtensibleConfig, HealthOk,
 };
 use serde_json::{json, Value};
 
@@ -70,19 +70,16 @@ pub fn dispatch_json(method: &str, params_json: &str) -> Result<String, String> 
                 "maxListPage": 256,
             },
             "supportedRoles": ["integration"],
+            "capabilities": ["health", "diagnose", "onEvent", "cli"],
+            "cli": cli_schema(),
         }),
         "shutdown" => Value::Null,
-        "health" => serde_json::to_value(HealthResult {
+        "health" => serde_json::to_value(HealthOk {
             ok: true,
-            id: Some(PLUGIN_ID.into()),
-            enabled: Some(true),
-            detail: Some("echo workerd rust wasm plugin ready".into()),
+            detail: format!("{PLUGIN_ID}: echo workerd rust wasm plugin ready"),
         })
         .map_err(|e| e.to_string())?,
-        "diagnose" => serde_json::to_value(DiagnoseResult {
-            lines: vec!["echo_workerd_rust: ok".into()],
-        })
-        .map_err(|e| e.to_string())?,
+        "diagnose" => json!(["echo_workerd_rust: ok"]),
         "onEvent" => json!({ "kind": "ack" }),
         "cliDescribe" => serde_json::to_value(cli_schema()).map_err(|e| e.to_string())?,
         "cliInvoke" => {
@@ -90,21 +87,20 @@ pub fn dispatch_json(method: &str, params_json: &str) -> Result<String, String> 
             let out = if p.command != "ping" {
                 CliInvokeResult {
                     exit_code: 2,
-                    stdout: String::new(),
                     stderr: format!("unknown command {}", p.command),
-                    json: None,
+                    ..CliInvokeResult::default()
                 }
             } else {
                 let message = p
                     .args
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("hi");
+                    .iter()
+                    .find(|arg| arg.name == "message")
+                    .map_or("hi", |arg| arg.value.as_str());
                 CliInvokeResult {
                     exit_code: 0,
                     stdout: format!("pong: {message}\n"),
-                    stderr: String::new(),
-                    json: Some(json!({ "pong": message })),
+                    payload: ExtensibleConfig::json(&json!({ "pong": message })),
+                    ..CliInvokeResult::default()
                 }
             };
             serde_json::to_value(out).map_err(|e| e.to_string())?
@@ -146,8 +142,11 @@ mod tests {
 
     #[test]
     fn ping_roundtrip() {
-        let out =
-            dispatch_json("cliInvoke", r#"{"command":"ping","args":{"message":"ci"}}"#).unwrap();
+        let out = dispatch_json(
+            "cliInvoke",
+            r#"{"command":"ping","args":[{"name":"message","value":"ci"}]}"#,
+        )
+        .unwrap();
         assert!(out.contains("pong: ci"));
     }
 

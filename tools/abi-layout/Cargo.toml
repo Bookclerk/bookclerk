@@ -1,0 +1,22 @@
+[package]
+name = "abi-layout"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Derives schema/plugin.layout.json from the Cap'n Proto compiler for the SDK code generator"
+
+[[bin]]
+name = "abi-layout"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+capnp = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -100,8 +100,9 @@ export type {
   WriteOptions,
 } from "./plugin.js";
 
-// JSON payload contracts generated from `schema/plugin.capnp` — the single
-// source of truth. Star-exported so new payload types appear automatically.
+// Every struct, union, and interface of `schema/plugin.capnp` — the single
+// source of truth — projected with TSDoc by `scripts/gen-plugin-abi.py`.
+// Star-exported so new ABI types appear automatically.
 export * from "./generated.js";
 export { MAX_CHECKPOINT_BYTES } from "./abi.js";
 export type { BookclerkEnv, HostBinding } from "./env.js";

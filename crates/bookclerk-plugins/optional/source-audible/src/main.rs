@@ -4,82 +4,18 @@
 
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::{
-    decode_json, encode_json, ContentSource as ContentSourceRole, ContentSourceContext, HealthOk,
-    PluginDescribe, PluginRoot, ScalarLimits, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    serve, Brand, CatalogHit, ConfigOption, ConfigOptionValue, ContentSource as ContentSourceRole,
+    ContentSourceContext, ExpandCandidatesParams, FetchTitleParams, HealthOk, ListDealsParams,
+    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, PlainFetch, PluginDescribe,
+    PluginError, PluginRoot, PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits,
+    ScanParams, ScanSummary, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
-use bookclerk_plugin_sdk::{
-    serve, BrandDto, CatalogHitDto, ConfigOptionDto, ConfigOptionValueDto, ExpandCandidatesParams,
-    FetchTitleParams, ListDealsParams, LoginCompleteParams, LoginStartParams, PluginError,
-    PluginMetadata, PurchaseHintParams, ScanParams, SearchCatalogParams,
+use bookclerk_source::abi::{
+    account_credentials_json, credentials_from_bytes, expand_seed_from_params,
+    DEFAULT_LIST_DEALS_LIMIT,
 };
-use bookclerk_source::{
-    CatalogSearchOpts, CatalogSearchSort, ContentSource, ExpandSeed, PurchaseHintOpts,
-};
-
-fn describe_metadata() -> Result<String, PluginError> {
-    encode_json(PluginMetadata {
-        api_version: PRODUCT_API_VERSION,
-        id: "audible".into(),
-        kind: "source".into(),
-        display_name: Some("Audible".into()),
-        capabilities: vec![
-            "health".into(),
-            "diagnose".into(),
-            "loginStart".into(),
-            "loginComplete".into(),
-            "scan".into(),
-            "fetchTitle".into(),
-            "searchCatalog".into(),
-            "expandCandidates".into(),
-            "purchaseHint".into(),
-            "listDeals".into(),
-        ],
-        portal_auth_mode: Some("oauth".into()),
-        sort_key: Some(0),
-        brand: Some(BrandDto {
-            id: "audible".into(),
-            name: "Audible".into(),
-            bg: "#F8991D".into(),
-            fg: "#111111".into(),
-            accent: "#D97706".into(),
-            icon_url: "https://www.google.com/s2/favicons?domain=audible.com&sz=128".into(),
-        }),
-        config_options: vec![ConfigOptionDto {
-            key: "bitrate".into(),
-            label: "Bitrate".into(),
-            values: vec![
-                ConfigOptionValueDto {
-                    id: "high".into(),
-                    label: "High".into(),
-                },
-                ConfigOptionValueDto {
-                    id: "normal".into(),
-                    label: "Normal".into(),
-                },
-            ],
-        }],
-        ..PluginMetadata::default()
-    })
-}
-
-fn catalog_opts(params: SearchCatalogParams) -> CatalogSearchOpts {
-    CatalogSearchOpts {
-        query: params.query,
-        region: params.region,
-        limit: params.limit,
-        page: params.page.max(1),
-        sort: params
-            .sort
-            .as_deref()
-            .map(CatalogSearchSort::from_wire)
-            .unwrap_or_default(),
-        field: params
-            .field
-            .as_deref()
-            .and_then(bookclerk_source::CatalogSearchField::from_wire),
-        language: params.language,
-    }
-}
+use bookclerk_source::{CatalogSearchOpts, ContentSource, PurchaseHintOpts};
+use serde_json::Value;
 
 /// Audible source guest; OAuth login uses the host-owned callback tunnel.
 struct AudibleRoot;
@@ -95,7 +31,45 @@ impl PluginRoot for AudibleRoot {
             rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
             scalar_limits: ScalarLimits::default().into(),
             supported_roles: vec!["contentSource".into()],
-            metadata_json: describe_metadata()?,
+            capabilities: vec![
+                "health".into(),
+                "diagnose".into(),
+                "loginStart".into(),
+                "loginComplete".into(),
+                "scan".into(),
+                "fetchTitle".into(),
+                "searchCatalog".into(),
+                "expandCandidates".into(),
+                "purchaseHint".into(),
+                "listDeals".into(),
+            ],
+            portal_auth_mode: PortalAuthMode::Oauth,
+            sort_key: 0,
+            brand: Some(Brand {
+                id: "audible".into(),
+                name: "Audible".into(),
+                bg: "#F8991D".into(),
+                fg: "#111111".into(),
+                accent: "#D97706".into(),
+                icon_url: Some(
+                    "https://www.google.com/s2/favicons?domain=audible.com&sz=128".into(),
+                ),
+            }),
+            config_options: vec![ConfigOption {
+                key: "bitrate".into(),
+                label: "Bitrate".into(),
+                values: vec![
+                    ConfigOptionValue {
+                        id: "high".into(),
+                        label: "High".into(),
+                    },
+                    ConfigOptionValue {
+                        id: "normal".into(),
+                        label: "Normal".into(),
+                    },
+                ],
+            }],
+            ..PluginDescribe::default()
         })
     }
 
@@ -109,6 +83,14 @@ impl PluginRoot for AudibleRoot {
 
 struct AudibleContentSource;
 
+fn internal(err: impl std::fmt::Display) -> PluginError {
+    PluginError::internal(err.to_string())
+}
+
+fn hits(hits: Vec<bookclerk_source::CatalogHit>) -> Vec<CatalogHit> {
+    hits.into_iter().map(Into::into).collect()
+}
+
 #[async_trait(?Send)]
 impl ContentSourceRole for AudibleContentSource {
     async fn health(&self) -> Result<HealthOk, PluginError> {
@@ -118,135 +100,105 @@ impl ContentSourceRole for AudibleContentSource {
         })
     }
 
-    async fn diagnose(&self) -> Result<String, PluginError> {
-        encode_json(vec!["audible plugin diagnose: ok"])
+    async fn diagnose(&self) -> Result<Vec<String>, PluginError> {
+        Ok(vec!["audible plugin diagnose: ok".into()])
     }
 
-    async fn login_start(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: LoginStartParams = decode_json(params_json)?;
+    async fn login_start(&self, params: LoginParams) -> Result<LoginStartResult, PluginError> {
         let (session_id, url) = bookclerk_plugin_source_audible::guest_login_start(&params)
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))?;
-        encode_json(bookclerk_plugin_sdk::LoginStartResultDto { session_id, url })
+            .map_err(internal)?;
+        Ok(LoginStartResult { session_id, url })
     }
 
-    async fn login_complete(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: LoginCompleteParams = decode_json(params_json)?;
-        encode_json(
-            bookclerk_plugin_source_audible::guest_login_complete(&params.session_id)
-                .await
-                .map_err(|e| PluginError::internal(e.to_string()))?,
-        )
-    }
-
-    async fn scan(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: ScanParams = decode_json(params_json)?;
-        encode_json(
-            bookclerk_plugin_source_audible::guest_scan(
-                &params.credentials,
-                &params.accounts,
-                params.page_size,
-                params.import_episodes,
-                params.import_plus_titles,
-            )
+    async fn login_complete(
+        &self,
+        params: LoginCompleteParams,
+    ) -> Result<LoginResult, PluginError> {
+        bookclerk_plugin_source_audible::guest_login_complete(&params.session_id)
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))?,
-        )
+            .map_err(internal)
     }
 
-    async fn fetch_title(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: FetchTitleParams = decode_json(params_json)?;
-        let work_dir = bookclerk_plugin_sdk::fetch_work_dir(&params)
-            .map_err(|e| PluginError::internal(e.to_string()))?;
+    async fn scan(&self, params: ScanParams) -> Result<ScanSummary, PluginError> {
+        let credentials = account_credentials_json(&params.credentials)
+            .map_err(|e| PluginError::invalid_params(e.to_string()))?;
+        bookclerk_plugin_source_audible::guest_scan(
+            &credentials,
+            &params.accounts,
+            params.page_size,
+            params.import_episodes,
+            params.import_plus_titles,
+        )
+        .await
+        .map_err(internal)
+    }
+
+    async fn fetch_title(&self, params: FetchTitleParams) -> Result<PlainFetch, PluginError> {
+        let work_dir = bookclerk_plugin_sdk::fetch_work_dir(&params).map_err(internal)?;
         let creds = params
             .credentials
+            .as_deref()
             .ok_or_else(|| PluginError::invalid_params("fetchTitle requires host credentials"))?;
-        encode_json(
-            bookclerk_plugin_source_audible::guest_fetch_title(
-                &creds,
-                &params.title_id,
-                &work_dir,
-                &params.source_config,
-                &params.download,
-            )
-            .await
-            .map_err(|e| PluginError::internal(e.to_string()))?,
+        let creds = credentials_from_bytes(creds)
+            .map_err(|e| PluginError::invalid_params(e.to_string()))?;
+        let source_config = params.source_config.json_value().unwrap_or(Value::Null);
+        bookclerk_plugin_source_audible::guest_fetch_title(
+            &creds,
+            &params.title_id,
+            &work_dir,
+            &source_config,
+            &params.fetch,
         )
+        .await
+        .map_err(internal)
     }
 
-    async fn search_catalog(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: SearchCatalogParams = decode_json(params_json)?;
+    async fn search_catalog(
+        &self,
+        params: SearchCatalogParams,
+    ) -> Result<Vec<CatalogHit>, PluginError> {
         let source = bookclerk_plugin_source_audible::AudibleSource::new();
-        let hits = source
-            .search_catalog(&catalog_opts(params))
+        source
+            .search_catalog(&CatalogSearchOpts::from(params))
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))?;
-        encode_json(
-            hits.into_iter()
-                .map(bookclerk_plugin_source_audible::catalog_hit_to_dto)
-                .collect::<Vec<CatalogHitDto>>(),
-        )
+            .map(hits)
+            .map_err(internal)
     }
 
-    async fn expand_candidates(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: ExpandCandidatesParams = decode_json(params_json)?;
+    async fn expand_candidates(
+        &self,
+        params: ExpandCandidatesParams,
+    ) -> Result<Vec<CatalogHit>, PluginError> {
+        let (seed, limit) = expand_seed_from_params(params);
         let source = bookclerk_plugin_source_audible::AudibleSource::new();
-        let hits = source
-            .expand_candidates(
-                &ExpandSeed {
-                    source: params.source,
-                    product_id: params.product_id,
-                    title: params.title,
-                    authors: params.authors,
-                    narrators: params.narrators,
-                    series: params.series,
-                    series_asin: params.series_asin,
-                    asin: params.asin,
-                    isbn: params.isbn,
-                    region: params.region,
-                },
-                params.limit,
-            )
+        source
+            .expand_candidates(&seed, limit)
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))?;
-        encode_json(
-            hits.into_iter()
-                .map(bookclerk_plugin_source_audible::catalog_hit_to_dto)
-                .collect::<Vec<CatalogHitDto>>(),
-        )
+            .map(hits)
+            .map_err(internal)
     }
 
-    async fn purchase_hint(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: PurchaseHintParams = decode_json(params_json)?;
+    async fn purchase_hint(
+        &self,
+        params: PurchaseHintParams,
+    ) -> Result<Option<PurchaseHint>, PluginError> {
         let source = bookclerk_plugin_source_audible::AudibleSource::new();
-        let hint = source
-            .purchase_hint(&PurchaseHintOpts {
-                product_id: params.product_id,
-                title: params.title,
-                authors: params.authors,
-                asin: params.asin,
-                isbn: params.isbn,
-                region: params.region,
-                with_price: params.with_price,
-            })
+        source
+            .purchase_hint(&PurchaseHintOpts::from(params))
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))?;
-        encode_json(hint.map(bookclerk_plugin_source_audible::purchase_hint_to_dto))
+            .map(|hint| hint.map(Into::into))
+            .map_err(internal)
     }
 
-    async fn list_deals(&self, params_json: &str) -> Result<String, PluginError> {
-        let params: ListDealsParams = decode_json(params_json)?;
-        let limit = params.limit.unwrap_or(20);
+    async fn list_deals(&self, params: ListDealsParams) -> Result<Vec<CatalogHit>, PluginError> {
+        let limit = params.limit.unwrap_or(DEFAULT_LIST_DEALS_LIMIT);
         let source = bookclerk_plugin_source_audible::AudibleSource::new();
-        let hits = source
-            .list_deals(limit)
+        source
+            .list_deals(usize::try_from(limit).unwrap_or(usize::MAX))
             .await
-            .map_err(|e| PluginError::internal(e.to_string()))?;
-        encode_json(
-            hits.into_iter()
-                .map(bookclerk_plugin_source_audible::catalog_hit_to_dto)
-                .collect::<Vec<CatalogHitDto>>(),
-        )
+            .map(hits)
+            .map_err(internal)
     }
 }
 

@@ -8,10 +8,43 @@
 
 import "./cloudflare-workers.d.ts";
 import { WorkerEntrypoint, RpcTarget } from "cloudflare:workers";
-import { MAX_LIST_PAGE, MAX_SCALAR_BYTES, PRODUCT_API_VERSION } from "./abi.js";
+import { MAX_LIST_PAGE, MAX_SCALAR_BYTES } from "./abi.js";
 import { createDatabaseBinding, decodeExecuteResultReply, encodeExecuteRequest } from "./db-execute.js";
 import type { ExecuteReply, ExecuteRequest } from "./db-execute.js";
 import { requirePluginMigrationRegistration } from "./plugin-migrations.js";
+import type {
+  AuthenticateUserParams,
+  CatalogDetailParams,
+  CatalogHit,
+  CliInvokeParams,
+  CliInvokeResult,
+  CliSchema,
+  ContentSourceContext,
+  DatabaseContext,
+  DestinationContext,
+  ExpandCandidatesParams,
+  ExternalUser,
+  FetchTitleParams,
+  HealthOk,
+  IntegrationContext,
+  ListDealsParams,
+  ListeningProgress,
+  LoginCompleteParams,
+  LoginParams,
+  LoginResult,
+  LoginStartResult,
+  PlainFetch,
+  PluginDescribe as WirePluginDescribe,
+  PurchaseHint,
+  PurchaseHintParams,
+  ScanLibraryParams,
+  ScanParams,
+  ScanSummary,
+  SearchCatalogParams,
+  SourceAccount,
+  SourceContext,
+  WorkerContext,
+} from "./generated.js";
 
 // Product constants come from the generated `abi.ts` projection of
 // `schema/plugin.capnp` — re-exported here for guest convenience.
@@ -31,24 +64,41 @@ export {
 } from "./abi.js";
 export { requirePluginMigrationRegistration } from "./plugin-migrations.js";
 
-/** Negotiated numeric limits advertised at {@link PluginDescribe}. */
-export interface ScalarLimits {
-  maxScalarBytes: number;
-  maxStreamWindowBytes: number;
-  maxListPage: number;
-}
+// Typed factory contexts and method payloads are the generated projections of
+// `schema/plugin.capnp`; re-exported so guests can import them beside the
+// role classes.
+export type {
+  CliInvokeParams,
+  CliInvokeResult,
+  CliSchema,
+  ContentSourceContext,
+  DatabaseContext,
+  DestinationContext,
+  ExtensibleConfig,
+  HealthOk,
+  IntegrationContext,
+  ScalarLimits,
+  SourceContext,
+  WorkerContext,
+} from "./generated.js";
 
-/** Guest identity returned by `BookclerkPlugin.describe`. */
-export interface PluginDescribe {
-  apiVersion: typeof PRODUCT_API_VERSION | 2;
-  id: string;
-  kind: string;
-  displayName?: string;
-  rpcFeatures: string[];
-  scalarLimits: ScalarLimits;
-  supportedRoles?: string[];
-  metadataJson?: string;
-}
+/** Describe fields every guest must advertise. */
+type RequiredDescribe = Pick<
+  WirePluginDescribe,
+  "apiVersion" | "id" | "kind" | "rpcFeatures" | "scalarLimits"
+>;
+
+/**
+ * Guest identity returned by `BookclerkPlugin.describe`.
+ *
+ * The wire struct is the generated `PluginDescribe` in `generated.ts`; every
+ * field beyond `apiVersion`, `id`, `kind`, `rpcFeatures`, and `scalarLimits`
+ * defaults to its zero value (empty list, `0`, empty `brand`, empty `cli`)
+ * when omitted.
+ */
+export interface PluginDescribe
+  extends RequiredDescribe,
+    Partial<Omit<WirePluginDescribe, keyof RequiredDescribe>> {}
 
 /** Bookclerk-as-IdP relying-party template declared by a guest. */
 export interface OidcClientTemplate {
@@ -88,22 +138,6 @@ export function schemaMigrationOp(sql: string): PluginMigrationOp {
  */
 export function dataMigrationOp(sql: string): PluginMigrationOp {
   return { data: sql };
-}
-
-/** Injected destination knobs. Opaque JSON only — no OS paths. */
-export interface DestinationContext {
-  json?: string;
-}
-
-/** Injected source knobs. Opaque JSON only — no OS paths. */
-export interface SourceContext {
-  json?: string;
-}
-
-/** Job worker instantiation knobs. Opaque JSON only — no OS paths. */
-export interface WorkerContext {
-  jobId?: string;
-  json?: string;
 }
 
 /** Bounded, versioned checkpoint. */
@@ -211,9 +245,9 @@ export interface NativeBinding {
   destination(ctx: DestinationContext): Destination | Promise<Destination>;
   source(ctx: SourceContext): Source | Promise<Source>;
   worker(ctx: WorkerContext): JobHandler | Promise<JobHandler>;
-  contentSource?(ctx: DestinationContext): ContentSource | Promise<ContentSource>;
-  integration?(ctx: DestinationContext): Integration | Promise<Integration>;
-  database?(ctx: DestinationContext): Database | Promise<Database>;
+  contentSource?(ctx: ContentSourceContext): ContentSource | Promise<ContentSource>;
+  integration?(ctx: IntegrationContext): Integration | Promise<Integration>;
+  database?(ctx: DatabaseContext): Database | Promise<Database>;
 }
 
 /** Frozen per-invocation context constructed by the trusted adapter. */
@@ -543,121 +577,127 @@ export class JobHandler extends RpcTarget {
   }
 }
 
-/** Storefront content source (not byte {@link Source}). */
+/**
+ * Storefront content source (not byte {@link Source}).
+ *
+ * Every method takes and returns the typed ABI structs generated from
+ * `schema/plugin.capnp`; the host never sees JSON text for these payloads.
+ */
 export class ContentSource extends RpcTarget {
   /**
-   * Completes an interactive or password login.
+   * Password or one-shot OAuth login. The host seals
+   * {@link LoginResult.credentials} into `encrypted_secrets`.
    *
-   * @param _paramsJson - Login parameters as JSON.
-   * @returns JSON result for the host/CLI.
+   * @param _params - Login parameters.
+   * @returns Account identity plus opaque credentials.
    */
-  login(_paramsJson?: string): Promise<string> {
+  login(_params: LoginParams): Promise<LoginResult> {
     return Promise.reject(unsupported("login"));
   }
   /**
-   * Scans the connected account library into JSON rows.
+   * Library scan; the host upserts {@link ScanSummary.books}.
    *
-   * @param _paramsJson - Scan parameters as JSON.
-   * @returns JSON scan result.
+   * @param _params - Scan parameters (accounts + credentials).
+   * @returns Books discovered plus per-account counters.
    */
-  scan(_paramsJson?: string): Promise<string> {
+  scan(_params: ScanParams): Promise<ScanSummary> {
     return Promise.reject(unsupported("scan"));
   }
   /**
-   * Fetches one title by storefront identifier.
+   * Fetches one title into `params.cacheDir` and returns plain media paths.
    *
-   * @param _paramsJson - Title identifiers as JSON.
-   * @returns JSON title payload.
+   * @param _params - Title identifiers, credentials, fetch options.
+   * @returns Plain media parts plus metadata.
    */
-  fetchTitle(_paramsJson?: string): Promise<string> {
+  fetchTitle(_params: FetchTitleParams): Promise<PlainFetch> {
     return Promise.reject(unsupported("fetchTitle"));
   }
   /**
-   * Lists connected accounts for this plugin.
+   * Accounts the guest knows about.
    *
-   * @returns JSON account list.
+   * @returns Account list.
    */
-  listAccounts(): Promise<string> {
+  listAccounts(): Promise<SourceAccount[]> {
     return Promise.reject(unsupported("listAccounts"));
   }
   /**
-   * Starts a multi-step login and returns a continuation payload.
+   * Begins an interactive OAuth login.
    *
-   * @param _paramsJson - Login-start parameters as JSON.
-   * @returns JSON continuation for {@link ContentSource.loginComplete}.
+   * @param _params - Login parameters.
+   * @returns Continuation for {@link ContentSource.loginComplete}.
    */
-  loginStart(_paramsJson?: string): Promise<string> {
+  loginStart(_params: LoginParams): Promise<LoginStartResult> {
     return Promise.reject(unsupported("loginStart"));
   }
   /**
    * Finishes a login started by {@link ContentSource.loginStart}.
    *
-   * @param _paramsJson - Continuation plus user input as JSON.
-   * @returns JSON login result.
+   * @param _params - Continuation plus user input.
+   * @returns Account identity plus opaque credentials.
    */
-  loginComplete(_paramsJson?: string): Promise<string> {
+  loginComplete(_params: LoginCompleteParams): Promise<LoginResult> {
     return Promise.reject(unsupported("loginComplete"));
   }
   /**
-   * Searches the storefront catalog.
+   * Free-text storefront catalog search.
    *
-   * @param _paramsJson - Query parameters as JSON.
-   * @returns JSON search hits.
+   * @param _params - Query parameters.
+   * @returns Catalog hits.
    */
-  searchCatalog(_paramsJson?: string): Promise<string> {
+  searchCatalog(_params: SearchCatalogParams): Promise<CatalogHit[]> {
     return Promise.reject(unsupported("searchCatalog"));
   }
   /**
-   * Expands a catalog hit into purchase/download candidates.
+   * Related-title expansion from a seed title.
    *
-   * @param _paramsJson - Candidate parameters as JSON.
-   * @returns JSON candidate list.
+   * @param _params - Seed title plus limits.
+   * @returns Candidate hits.
    */
-  expandCandidates(_paramsJson?: string): Promise<string> {
+  expandCandidates(_params: ExpandCandidatesParams): Promise<CatalogHit[]> {
     return Promise.reject(unsupported("expandCandidates"));
   }
   /**
-   * Returns a purchase hint for a catalog title.
+   * Purchase link / price hint; `null` when the title is unknown.
    *
-   * @param _paramsJson - Title identifiers as JSON.
-   * @returns JSON hint payload.
+   * @param _params - Title identifiers.
+   * @returns Hint or `null`.
    */
-  purchaseHint(_paramsJson?: string): Promise<string> {
+  purchaseHint(_params: PurchaseHintParams): Promise<PurchaseHint | null> {
     return Promise.reject(unsupported("purchaseHint"));
   }
   /**
-   * Lists current storefront deals.
+   * Current storefront deals.
    *
-   * @param _paramsJson - Optional filter JSON.
-   * @returns JSON deal list.
+   * @param _params - Optional filters.
+   * @returns Deal hits.
    */
-  listDeals(_paramsJson?: string): Promise<string> {
+  listDeals(_params: ListDealsParams): Promise<CatalogHit[]> {
     return Promise.reject(unsupported("listDeals"));
   }
   /**
-   * Loads catalog detail for one title.
+   * Full catalog record for one product; `null` when unknown.
    *
-   * @param _paramsJson - Title identifiers as JSON.
-   * @returns JSON detail payload.
+   * @param _params - Product identifiers.
+   * @returns Catalog hit or `null`.
    */
-  catalogDetail(_paramsJson?: string): Promise<string> {
+  catalogDetail(_params: CatalogDetailParams): Promise<CatalogHit | null> {
     return Promise.reject(unsupported("catalogDetail"));
   }
   /**
-   * Runs plugin diagnostics and returns probe lines.
+   * Operator-facing diagnostic lines.
    *
-   * @returns JSON array of diagnostic strings.
+   * @returns Probe lines.
    */
-  diagnose(): Promise<string> {
-    return Promise.resolve("[]");
+  diagnose(): Promise<string[]> {
+    return Promise.resolve([]);
   }
   /**
    * Reports whether the storefront session is usable.
    *
-   * @returns Health flag plus optional detail.
+   * @returns Health flag plus detail.
    */
-  health(): Promise<{ ok: boolean; detail?: string }> {
-    return Promise.resolve({ ok: true });
+  health(): Promise<HealthOk> {
+    return Promise.resolve({ ok: true, detail: "" });
   }
 }
 
@@ -666,18 +706,18 @@ export class Integration extends RpcTarget {
   /**
    * Reports whether the integration session is usable.
    *
-   * @returns Health flag plus optional detail.
+   * @returns Health flag plus detail.
    */
-  health(): Promise<{ ok: boolean; detail?: string }> {
-    return Promise.resolve({ ok: true });
+  health(): Promise<HealthOk> {
+    return Promise.resolve({ ok: true, detail: "" });
   }
   /**
-   * Runs integration diagnostics.
+   * Operator-facing diagnostic lines.
    *
-   * @returns Probe lines as JSON or a `{ lines }` object.
+   * @returns Probe lines.
    */
-  diagnose(): Promise<string | { lines: string[] }> {
-    return Promise.resolve({ lines: [] });
+  diagnose(): Promise<string[]> {
+    return Promise.resolve([]);
   }
   /**
    * Handles one versioned {@link DomainEvent}.
@@ -703,6 +743,40 @@ export class Integration extends RpcTarget {
    */
   stop(): Promise<void> {
     return Promise.resolve();
+  }
+  /**
+   * Re-syncs the remote library.
+   *
+   * @param _params - Scan scope.
+   * @returns Resolves when the scan has been accepted.
+   */
+  scanLibrary(_params: ScanLibraryParams): Promise<void> {
+    return Promise.reject(unsupported("scanLibrary"));
+  }
+  /**
+   * Push / pull listening progress; the host upserts the rows.
+   *
+   * @returns Progress rows.
+   */
+  syncListening(): Promise<ListeningProgress[]> {
+    return Promise.reject(unsupported("syncListening"));
+  }
+  /**
+   * Verifies remote credentials on behalf of the host.
+   *
+   * @param _params - Username / password pair.
+   * @returns External user identity.
+   */
+  authenticateUser(_params: AuthenticateUserParams): Promise<ExternalUser> {
+    return Promise.reject(unsupported("authenticateUser"));
+  }
+  /**
+   * Drains external users observed since the last poll.
+   *
+   * @returns Newly observed users.
+   */
+  pollEvents(): Promise<ExternalUser[]> {
+    return Promise.reject(unsupported("pollEvents"));
   }
 }
 
@@ -988,7 +1062,7 @@ export abstract class BookclerkPlugin extends WorkerEntrypoint<BookclerkPluginEn
   /**
    * Returns a destination capability for this invocation.
    *
-   * @param _context - Opaque JSON knobs (no OS paths).
+   * @param _context - Granted settings (`config`); no OS paths.
    */
   destination(_context: DestinationContext): Destination | Promise<Destination> {
     throw unsupported("destination");
@@ -997,7 +1071,7 @@ export abstract class BookclerkPlugin extends WorkerEntrypoint<BookclerkPluginEn
   /**
    * Returns a source capability for this invocation.
    *
-   * @param _context - Opaque JSON knobs (no OS paths).
+   * @param _context - Granted settings (`config`); no OS paths.
    */
   source(_context: SourceContext): Source | Promise<Source> {
     throw unsupported("source");
@@ -1006,7 +1080,7 @@ export abstract class BookclerkPlugin extends WorkerEntrypoint<BookclerkPluginEn
   /**
    * Returns a job handler for this invocation.
    *
-   * @param _context - Job id plus opaque JSON knobs (no OS paths).
+   * @param _context - Job id plus granted settings (`config`); no OS paths.
    */
   worker(_context: WorkerContext): JobHandler | Promise<JobHandler> {
     throw unsupported("worker");
@@ -1015,46 +1089,46 @@ export abstract class BookclerkPlugin extends WorkerEntrypoint<BookclerkPluginEn
   /**
    * Returns a storefront content-source capability.
    *
-   * @param _ctx - Frozen invocation context.
+   * @param _context - Granted `[sources.<id>]` settings.
    */
-  contentSource(_ctx: BookclerkContext): ContentSource | Promise<ContentSource> {
+  contentSource(_context: ContentSourceContext): ContentSource | Promise<ContentSource> {
     throw unsupported("contentSource");
   }
 
   /**
    * Returns an integration capability.
    *
-   * @param _ctx - Frozen invocation context.
+   * @param _context - Granted `[integrations.<id>]` settings.
    */
-  integration(_ctx: BookclerkContext): Integration | Promise<Integration> {
+  integration(_context: IntegrationContext): Integration | Promise<Integration> {
     throw unsupported("integration");
   }
 
   /**
    * Returns a database factory.
    *
-   * @param _ctx - Frozen invocation context.
+   * @param _context - Adapter bootstrap or host-private connect params.
    */
-  database(_ctx: BookclerkContext): Database | Promise<Database> {
+  database(_context: DatabaseContext): Database | Promise<Database> {
     throw unsupported("database");
   }
 
   /**
-   * Guest CLI schema JSON (`CliSchema`).
+   * Guest CLI schema.
    *
-   * @returns Schema JSON object string or empty object.
+   * @returns Declared commands (`{ commands: [] }` when the guest has no CLI).
    */
-  async cliDescribe(): Promise<string> {
-    return "{}";
+  async cliDescribe(): Promise<CliSchema> {
+    return { commands: [] };
   }
 
   /**
    * Invokes a guest CLI command.
    *
-   * @param _paramsJson - `CliInvokeParams` JSON.
-   * @returns `CliInvokeResult` JSON.
+   * @param _params - Command name plus named argument values.
+   * @returns Exit code, captured output, optional structured payload.
    */
-  async cliInvoke(_paramsJson: string): Promise<string> {
+  async cliInvoke(_params: CliInvokeParams): Promise<CliInvokeResult> {
     throw unsupported("cliInvoke");
   }
 
@@ -1221,6 +1295,44 @@ function assertListPage(page: ListPage): ListPage {
   return { objects, nextCursor: page.nextCursor };
 }
 
+/**
+ * `Uint8Array` → base64 for the native-broker JSON envelope.
+ *
+ * @param bytes - Raw bytes.
+ * @returns Standard (padded) base64 text.
+ */
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+/**
+ * Typed ABI value → native-broker JSON: Cap'n `Data` fields (`Uint8Array`)
+ * travel as base64 text; `bookclerk-workerd` decodes with the same convention.
+ *
+ * @param value - Plain typed struct value.
+ * @returns JSON-safe projection.
+ */
+function toBridgeJson(value: unknown): unknown {
+  if (value instanceof Uint8Array) return bytesToBase64(value);
+  if (value instanceof ArrayBuffer) return bytesToBase64(new Uint8Array(value));
+  if (Array.isArray(value)) return value.map(toBridgeJson);
+  if (value === null || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+    if (inner === undefined) continue;
+    out[key] = toBridgeJson(inner);
+  }
+  return out;
+}
+
+function contextHeader(ctx: unknown): string {
+  return JSON.stringify(toBridgeJson(ctx ?? {}));
+}
+
+const EMPTY_CONFIG = { schemaVersion: 0, mediaType: "", payload: new Uint8Array() };
+
 class HttpNativeDest extends Destination {
   #fetcher: NonNullable<AdapterEnv["PLUGIN_BACKEND"]> & { fetch: typeof fetch };
   #ctx: DestinationContext;
@@ -1231,7 +1343,7 @@ class HttpNativeDest extends Destination {
   ) {
     super();
     this.#fetcher = fetcher;
-    this.#ctx = ctx ?? {};
+    this.#ctx = ctx ?? { config: EMPTY_CONFIG };
   }
 
   async head(key: string) {
@@ -1239,9 +1351,9 @@ class HttpNativeDest extends Destination {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-bookclerk-context": JSON.stringify(this.#ctx),
+        "x-bookclerk-context": contextHeader(this.#ctx),
       },
-      body: JSON.stringify({ key, json: this.#ctx.json }),
+      body: JSON.stringify(toBridgeJson({ key, context: this.#ctx })),
     });
     const value = await readNativeScalar<{ found?: boolean; meta?: ObjectMetadata }>(resp);
     return value.found ? (value.meta ?? null) : null;
@@ -1252,9 +1364,9 @@ class HttpNativeDest extends Destination {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-bookclerk-context": JSON.stringify(this.#ctx),
+        "x-bookclerk-context": contextHeader(this.#ctx),
       },
-      body: JSON.stringify({ options, json: this.#ctx.json }),
+      body: JSON.stringify(toBridgeJson({ options, context: this.#ctx })),
     });
     return assertListPage(await readNativeScalar<ListPage>(resp));
   }
@@ -1266,7 +1378,7 @@ class HttpNativeDest extends Destination {
       if (options.range.length != null) path += `&length=${options.range.length}`;
     }
     const resp = await this.#fetcher.fetch(`http://backend${path}`, {
-      headers: { "x-bookclerk-context": JSON.stringify(this.#ctx) },
+      headers: { "x-bookclerk-context": contextHeader(this.#ctx) },
     });
     if (!resp.ok) {
       throw PluginError.fromWire("internal", await resp.text());
@@ -1284,7 +1396,7 @@ class HttpNativeDest extends Destination {
 
   async put(key: string, body: ReadableStream<Uint8Array>, options?: WriteOptions) {
     const headers: Record<string, string> = {
-      "x-bookclerk-context": JSON.stringify(this.#ctx),
+      "x-bookclerk-context": contextHeader(this.#ctx),
     };
     if (options?.contentType) headers["content-type"] = options.contentType;
     if (options?.contentLength != null) headers["content-length"] = String(options.contentLength);
@@ -1302,9 +1414,9 @@ class HttpNativeDest extends Destination {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-bookclerk-context": JSON.stringify(this.#ctx),
+        "x-bookclerk-context": contextHeader(this.#ctx),
       },
-      body: JSON.stringify({ from, to, json: this.#ctx.json }),
+      body: JSON.stringify(toBridgeJson({ from, to, context: this.#ctx })),
     });
     return readNativeScalar<CopyResult>(resp);
   }
@@ -1314,9 +1426,9 @@ class HttpNativeDest extends Destination {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-bookclerk-context": JSON.stringify(this.#ctx),
+        "x-bookclerk-context": contextHeader(this.#ctx),
       },
-      body: JSON.stringify({ key, json: this.#ctx.json }),
+      body: JSON.stringify(toBridgeJson({ key, context: this.#ctx })),
     });
     await readNativeScalar<unknown>(resp);
   }
@@ -1326,9 +1438,9 @@ class HttpNativeDest extends Destination {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-bookclerk-context": JSON.stringify(this.#ctx),
+        "x-bookclerk-context": contextHeader(this.#ctx),
       },
-      body: JSON.stringify({ key, commitToken, json: this.#ctx.json }),
+      body: JSON.stringify(toBridgeJson({ key, commitToken, context: this.#ctx })),
     });
     return readNativeScalar<PutResult>(resp);
   }
@@ -1338,9 +1450,9 @@ class HttpNativeDest extends Destination {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-bookclerk-context": JSON.stringify(this.#ctx),
+        "x-bookclerk-context": contextHeader(this.#ctx),
       },
-      body: JSON.stringify({ key, commitToken, json: this.#ctx.json }),
+      body: JSON.stringify(toBridgeJson({ key, commitToken, context: this.#ctx })),
     });
     await readNativeScalar<unknown>(resp);
   }
@@ -1356,13 +1468,13 @@ class HttpNativeSource extends Source {
   ) {
     super();
     this.#fetcher = fetcher;
-    this.#ctx = ctx ?? {};
+    this.#ctx = ctx ?? { config: EMPTY_CONFIG };
   }
 
   async open(key: string) {
     const resp = await this.#fetcher.fetch(
       `http://backend/source/open?key=${encodeURIComponent(key)}`,
-      { headers: { "x-bookclerk-context": JSON.stringify(this.#ctx) } },
+      { headers: { "x-bookclerk-context": contextHeader(this.#ctx) } },
     );
     if (!resp.ok) {
       throw PluginError.fromWire("internal", await resp.text());
@@ -1381,15 +1493,15 @@ class HttpNativeSource extends Source {
 
 class HttpNativeIntegration extends Integration {
   #fetcher: NonNullable<AdapterEnv["PLUGIN_BACKEND"]> & { fetch: typeof fetch };
-  #ctx: { json?: string };
+  #ctx: IntegrationContext;
 
   constructor(
     fetcher: NonNullable<AdapterEnv["PLUGIN_BACKEND"]> & { fetch: typeof fetch },
-    ctx: { json?: string },
+    ctx: IntegrationContext,
   ) {
     super();
     this.#fetcher = fetcher;
-    this.#ctx = ctx ?? {};
+    this.#ctx = ctx ?? { config: EMPTY_CONFIG };
   }
 
   async #json<T>(path: string, body: unknown): Promise<T> {
@@ -1397,38 +1509,37 @@ class HttpNativeIntegration extends Integration {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-bookclerk-context": JSON.stringify(this.#ctx),
+        "x-bookclerk-context": contextHeader(this.#ctx),
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(toBridgeJson(body)),
     });
     return readNativeScalar<T>(resp);
   }
 
   health() {
-    return this.#json<{ ok: boolean; detail?: string }>("/integration/health", {
-      json: this.#ctx.json,
-    });
+    return this.#json<HealthOk>("/integration/health", { context: this.#ctx });
   }
 
-  diagnose() {
-    return this.#json<string | { lines: string[] }>("/integration/diagnose", {
-      json: this.#ctx.json,
+  async diagnose() {
+    const v = await this.#json<string[] | { lines?: string[] }>("/integration/diagnose", {
+      context: this.#ctx,
     });
+    return Array.isArray(v) ? v : (v?.lines ?? []);
   }
 
   onEvent(event: DomainEvent) {
     return this.#json<EventResult>("/integration/onEvent", {
-      json: this.#ctx.json,
+      context: this.#ctx,
       event,
     });
   }
 
   async start() {
-    await this.#json<unknown>("/integration/start", { json: this.#ctx.json });
+    await this.#json<unknown>("/integration/start", { context: this.#ctx });
   }
 
   async stop() {
-    await this.#json<unknown>("/integration/stop", { json: this.#ctx.json });
+    await this.#json<unknown>("/integration/stop", { context: this.#ctx });
   }
 }
 
@@ -1456,7 +1567,7 @@ class HttpNativeRoot {
     return new HttpNativeSource(this.#fetcher, ctx);
   }
 
-  integration(ctx: { json?: string }) {
+  integration(ctx: IntegrationContext) {
     return new HttpNativeIntegration(this.#fetcher, ctx);
   }
 }
@@ -1508,24 +1619,24 @@ function createInvocationAdapter() {
       return this.#plugin().worker(ctx);
     }
 
-    contentSource(ctx: BookclerkContext): ContentSource | Promise<ContentSource> {
+    contentSource(ctx: ContentSourceContext): ContentSource | Promise<ContentSource> {
       return this.#plugin().contentSource(ctx);
     }
 
-    integration(ctx: BookclerkContext): Integration | Promise<Integration> {
+    integration(ctx: IntegrationContext): Integration | Promise<Integration> {
       return this.#plugin().integration(ctx);
     }
 
-    database(ctx: BookclerkContext): Database | Promise<Database> {
+    database(ctx: DatabaseContext): Database | Promise<Database> {
       return this.#plugin().database(ctx);
     }
 
-    async cliDescribe(): Promise<string> {
+    async cliDescribe(): Promise<CliSchema> {
       return this.#plugin().cliDescribe();
     }
 
-    async cliInvoke(paramsJson: string): Promise<string> {
-      return this.#plugin().cliInvoke(paramsJson);
+    async cliInvoke(params: CliInvokeParams): Promise<CliInvokeResult> {
+      return this.#plugin().cliInvoke(params);
     }
 
     async oidcClients(): Promise<OidcClientTemplate[]> {
@@ -1571,7 +1682,7 @@ function createInvocationAdapter() {
       args: Record<string, unknown> = {},
       body?: ReadableStream<Uint8Array>,
     ): Promise<unknown> {
-      const dest = await this.#plugin().destination(ctx ?? {});
+      const dest = await this.#plugin().destination(ctx ?? { config: EMPTY_CONFIG });
       try {
         switch (op) {
           case "head":
@@ -1621,7 +1732,7 @@ function createInvocationAdapter() {
      * @returns Opened byte source result.
      */
     async invokeSourceOpen(ctx: SourceContext, key: string): Promise<ReadResult> {
-      const src = await this.#plugin().source(ctx ?? {});
+      const src = await this.#plugin().source(ctx ?? { config: EMPTY_CONFIG });
       try {
         return await src.open(key);
       } finally {
@@ -1644,7 +1755,7 @@ function createInvocationAdapter() {
       grantToken: string,
       databases?: Record<string, string>,
     ): Promise<JobOutcome> {
-      const handler = await this.#plugin().worker(ctx ?? {});
+      const handler = await this.#plugin().worker(ctx ?? { jobId: "", config: EMPTY_CONFIG });
       const controller = new AbortController();
       try {
         const context = grantedContext(this.env, grantToken, controller, databases);

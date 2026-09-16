@@ -21,20 +21,8 @@ use bookclerk_plugin_sdk::{
 };
 use bookclerk_plugin_sdk::{
     AdapterExecuteRequest, DbBootstrap, DbCapabilities, DbIdentityHighWater, ExecuteReply,
-    PluginError, PluginMetadata,
+    PluginError,
 };
-
-fn describe_metadata() -> Result<String, PluginError> {
-    bookclerk_plugin_sdk::encode_json(PluginMetadata {
-        api_version: PRODUCT_API_VERSION,
-        id: "postgres".into(),
-        kind: "database".into(),
-        display_name: Some("PostgreSQL".into()),
-        capabilities: vec!["health".into(), "diagnose".into()],
-        sort_key: Some(5),
-        ..PluginMetadata::default()
-    })
-}
 
 async fn connect_from_context(ctx: &DatabaseContext) -> Result<(), PluginError> {
     let params = connect_params_from_context(ctx)?;
@@ -93,7 +81,9 @@ impl PluginRoot for PostgresRoot {
             rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
             scalar_limits: ScalarLimits::default().into(),
             supported_roles: vec!["database".into()],
-            metadata_json: describe_metadata()?,
+            capabilities: vec!["health".into(), "diagnose".into()],
+            sort_key: 5,
+            ..PluginDescribe::default()
         })
     }
 

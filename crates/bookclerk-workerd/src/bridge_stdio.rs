@@ -16,13 +16,20 @@ use bookclerk_plugin_abi::{
     PluginError, Result as AbiResult,
 };
 use bookclerk_plugin_abi::{
-    serve_plugin_stdio, ByteRange, CopyResult, Destination, DestinationContext, DomainEvent,
-    EventResult, GuestDatabase, HealthOk, Integration, IntegrationContext, JobHandler,
-    JobHandlerContext, JobInvocation, JobOutcome, ListOptions, ListPage, ObjectInfo,
-    ObjectMetadata, OidcClientTemplate, PluginDescribe, PluginMigration, PluginRoot, PutResult,
-    ReadResult, ScalarLimitsDto, Source, SourceContext, WorkerContext, WriteOptions, MAX_LIST_PAGE,
-    MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    serve_plugin_stdio, AuthenticateUserParams, ByteRange, CatalogDetailParams, CatalogHit,
+    CliInvokeParams, CliInvokeResult, CliSchema, ContentSource, ContentSourceContext, CopyResult,
+    Destination, DestinationContext, DomainEvent, EventPollResult, EventResult,
+    ExpandCandidatesParams, ExternalUser, FetchTitleParams, GuestDatabase, HealthOk, Integration,
+    IntegrationContext, JobHandler, JobHandlerContext, JobInvocation, JobOutcome, ListDealsParams,
+    ListOptions, ListPage, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
+    LoginStartResult, ObjectInfo, ObjectMetadata, OidcClientTemplate, PlainFetch, PluginDescribe,
+    PluginMigration, PluginRoot, PurchaseHint, PurchaseHintParams, PutResult, ReadResult,
+    ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams, Source, SourceAccount,
+    SourceContext, WorkerContext, WriteOptions, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
+    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use tokio::io::AsyncRead;
 
 use crate::bridge_http::BridgeHttp;
@@ -55,87 +62,72 @@ fn map_http(err: anyhow::Error) -> PluginError {
     PluginError::internal(msg)
 }
 
+/// Bridge JSON is the camelCase projection of the typed Cap'n structs (bytes
+/// as base64). The isolate side decodes with the same generated types.
+fn to_bridge_json<T: Serialize>(value: &T) -> AbiResult<serde_json::Value> {
+    serde_json::to_value(value)
+        .map_err(|err| PluginError::internal(format!("bridge request encode failed: {err}")))
+}
+
+fn from_bridge_json<T: DeserializeOwned>(path: &str, value: serde_json::Value) -> AbiResult<T> {
+    serde_json::from_value(value).map_err(|err| {
+        PluginError::internal(format!("bridge reply for {path} is malformed: {err}"))
+    })
+}
+
+/// POST a typed envelope and decode a typed reply.
+async fn call<P: Serialize, R: DeserializeOwned>(
+    http: &BridgeHttp,
+    path: &str,
+    body: &P,
+) -> AbiResult<R> {
+    let reply = http
+        .json_post(path, &to_bridge_json(body)?)
+        .await
+        .map_err(map_http)?;
+    from_bridge_json(path, reply)
+}
+
+/// `{ context, params }` envelope for role method routes.
+#[derive(Serialize)]
+struct RoleCall<'a, C: Serialize, P: Serialize> {
+    context: &'a C,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<&'a P>,
+}
+
+/// Guests may answer `diagnose` with a bare array or `{ lines }`.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum DiagnoseReply {
+    Lines(Vec<String>),
+    Object { lines: Vec<String> },
+}
+
+impl From<DiagnoseReply> for Vec<String> {
+    fn from(reply: DiagnoseReply) -> Self {
+        match reply {
+            DiagnoseReply::Lines(lines) | DiagnoseReply::Object { lines } => lines,
+        }
+    }
+}
+
+/// `{ ok: true }` / `{}` acknowledgements for unit-returning methods.
+#[derive(serde::Deserialize)]
+struct Ack {}
+
 #[async_trait(?Send)]
 impl PluginRoot for WorkerdRoot {
     async fn describe(&self) -> AbiResult<PluginDescribe> {
-        let v = self
-            .http
-            .json_post("/describe", &serde_json::json!({}))
-            .await
-            .map_err(map_http)?;
-        let api_version = v.get("apiVersion").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
-        if api_version != PRODUCT_API_VERSION {
+        let describe: PluginDescribe =
+            call(&self.http, "/describe", &serde_json::json!({})).await?;
+        if describe.api_version != PRODUCT_API_VERSION {
             return Err(PluginError::unsupported(format!(
-                "unsupported apiVersion {api_version}"
+                "unsupported apiVersion {}",
+                describe.api_version
             )));
         }
-        Ok(PluginDescribe {
-            api_version,
-            id: v.get("id").and_then(|x| x.as_str()).unwrap_or("").into(),
-            kind: v.get("kind").and_then(|x| x.as_str()).unwrap_or("").into(),
-            display_name: {
-                let name = v
-                    .get("displayName")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string);
-                match v.get("stubCounts") {
-                    Some(counts) => {
-                        let dests = counts.get("dests").and_then(|x| x.as_u64()).unwrap_or(0);
-                        let sources = counts.get("sources").and_then(|x| x.as_u64()).unwrap_or(0);
-                        let handlers = counts.get("handlers").and_then(|x| x.as_u64()).unwrap_or(0);
-                        let suffix = format!("stubs=d:{dests},s:{sources},h:{handlers}");
-                        Some(match name {
-                            Some(n) if !n.is_empty() => format!("{n} {suffix}"),
-                            _ => suffix,
-                        })
-                    }
-                    None => name,
-                }
-            },
-            rpc_features: v
-                .get("rpcFeatures")
-                .and_then(|x| x.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            scalar_limits: {
-                let sl = v.get("scalarLimits");
-                ScalarLimitsDto {
-                    max_scalar_bytes: sl
-                        .and_then(|x| x.get("maxScalarBytes"))
-                        .and_then(|x| x.as_u64())
-                        .unwrap_or(u64::from(MAX_SCALAR_BYTES))
-                        as u32,
-                    max_stream_window_bytes: sl
-                        .and_then(|x| x.get("maxStreamWindowBytes"))
-                        .and_then(|x| x.as_u64())
-                        .unwrap_or(u64::from(MAX_STREAM_WINDOW_BYTES))
-                        as u32,
-                    max_list_page: sl
-                        .and_then(|x| x.get("maxListPage"))
-                        .and_then(|x| x.as_u64())
-                        .unwrap_or(u64::from(MAX_LIST_PAGE))
-                        as u32,
-                }
-            },
-            supported_roles: v
-                .get("supportedRoles")
-                .and_then(|x| x.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            metadata_json: v
-                .get("metadataJson")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string(),
-        })
+        Ok(describe)
     }
 
     async fn destination(&self, context: DestinationContext) -> AbiResult<Box<dyn Destination>> {
@@ -160,6 +152,16 @@ impl PluginRoot for WorkerdRoot {
         }))
     }
 
+    async fn content_source(
+        &self,
+        context: ContentSourceContext,
+    ) -> AbiResult<Box<dyn ContentSource>> {
+        Ok(Box::new(HttpContentSource {
+            http: self.http.clone(),
+            ctx: context,
+        }))
+    }
+
     async fn integration(&self, context: IntegrationContext) -> AbiResult<Box<dyn Integration>> {
         Ok(Box::new(HttpIntegration {
             http: self.http.clone(),
@@ -167,44 +169,27 @@ impl PluginRoot for WorkerdRoot {
         }))
     }
 
-    async fn cli_describe(&self) -> AbiResult<String> {
-        let v = self
-            .http
-            .json_post("/cliDescribe", &serde_json::json!({}))
-            .await
-            .map_err(map_http)?;
-        Ok(v.get("json")
-            .and_then(|x| x.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| v.to_string()))
+    async fn cli_describe(&self) -> AbiResult<CliSchema> {
+        call(&self.http, "/cliDescribe", &serde_json::json!({})).await
     }
 
-    async fn cli_invoke(&self, params_json: &str) -> AbiResult<String> {
-        let v = self
-            .http
-            .json_post(
-                "/cliInvoke",
-                &serde_json::json!({ "paramsJson": params_json }),
-            )
-            .await
-            .map_err(map_http)?;
-        Ok(v.get("json")
-            .and_then(|x| x.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| v.to_string()))
+    async fn cli_invoke(&self, params: CliInvokeParams) -> AbiResult<CliInvokeResult> {
+        call(
+            &self.http,
+            "/cliInvoke",
+            &serde_json::json!({ "params": to_bridge_json(&params)? }),
+        )
+        .await
     }
 
     async fn oidc_clients(&self) -> AbiResult<Vec<OidcClientTemplate>> {
-        let v = self
-            .http
-            .json_post("/oidcClients", &serde_json::json!({}))
-            .await
-            .map_err(map_http)?;
-        let clients = v
-            .get("clients")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!([]));
-        serde_json::from_value(clients).map_err(|err| PluginError::internal(err.to_string()))
+        #[derive(serde::Deserialize)]
+        struct Reply {
+            #[serde(default)]
+            clients: Vec<OidcClientTemplate>,
+        }
+        let reply: Reply = call(&self.http, "/oidcClients", &serde_json::json!({})).await?;
+        Ok(reply.clients)
     }
 
     async fn database_migrations(&self, binding: &str) -> AbiResult<Vec<PluginMigration>> {
@@ -238,53 +223,35 @@ struct HttpIntegration {
     ctx: IntegrationContext,
 }
 
-fn json_string(v: &serde_json::Value) -> String {
-    v.get("json")
-        .and_then(|x| x.as_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| v.to_string())
+impl HttpIntegration {
+    async fn op<P: Serialize, R: DeserializeOwned>(
+        &self,
+        op: &str,
+        params: Option<&P>,
+    ) -> AbiResult<R> {
+        call(
+            &self.http,
+            &format!("/integration/{op}"),
+            &RoleCall {
+                context: &self.ctx,
+                params,
+            },
+        )
+        .await
+    }
 }
+
+const NO_PARAMS: Option<&()> = None;
 
 #[async_trait(?Send)]
 impl Integration for HttpIntegration {
     async fn health(&self) -> AbiResult<HealthOk> {
-        let v = self
-            .http
-            .json_post(
-                "/integration/health",
-                &serde_json::json!({ "json": self.ctx.json }),
-            )
-            .await
-            .map_err(map_http)?;
-        Ok(HealthOk {
-            ok: v.get("ok").and_then(|x| x.as_bool()).unwrap_or(true),
-            detail: v
-                .get("detail")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string(),
-        })
+        self.op("health", NO_PARAMS).await
     }
 
-    async fn diagnose(&self) -> AbiResult<String> {
-        let v = self
-            .http
-            .json_post(
-                "/integration/diagnose",
-                &serde_json::json!({ "json": self.ctx.json }),
-            )
-            .await
-            .map_err(map_http)?;
-        if let Some(s) = v.as_str() {
-            return Ok(s.to_string());
-        }
-        if let Some(lines) = v.get("lines") {
-            return Ok(lines.to_string());
-        }
-        if v.is_array() {
-            return Ok(v.to_string());
-        }
-        Ok(json_string(&v))
+    async fn diagnose(&self) -> AbiResult<Vec<String>> {
+        let reply: DiagnoseReply = self.op("diagnose", NO_PARAMS).await?;
+        Ok(reply.into())
     }
 
     async fn on_event(&self, event: DomainEvent) -> AbiResult<EventResult> {
@@ -293,8 +260,8 @@ impl Integration for HttpIntegration {
             .json_post(
                 "/integration/onEvent",
                 &serde_json::json!({
-                    "json": self.ctx.json,
-                    "event": event,
+                    "context": to_bridge_json(&self.ctx)?,
+                    "event": to_bridge_json(&event)?,
                 }),
             )
             .await
@@ -303,32 +270,120 @@ impl Integration for HttpIntegration {
     }
 
     async fn start(&self) -> AbiResult<()> {
-        let _ = self
-            .http
-            .json_post(
-                "/integration/start",
-                &serde_json::json!({ "json": self.ctx.json }),
-            )
-            .await
-            .map_err(map_http)?;
+        let _: Ack = self.op("start", NO_PARAMS).await?;
         Ok(())
     }
 
     async fn stop(&self) -> AbiResult<()> {
-        let _ = self
-            .http
-            .json_post(
-                "/integration/stop",
-                &serde_json::json!({ "json": self.ctx.json }),
-            )
-            .await
-            .map_err(map_http)?;
+        let _: Ack = self.op("stop", NO_PARAMS).await?;
         Ok(())
+    }
+
+    async fn scan_library(&self, params: ScanLibraryParams) -> AbiResult<()> {
+        let _: Ack = self.op("scanLibrary", Some(&params)).await?;
+        Ok(())
+    }
+
+    async fn sync_listening(&self) -> AbiResult<Vec<ListeningProgress>> {
+        self.op("syncListening", NO_PARAMS).await
+    }
+
+    async fn authenticate_user(&self, params: AuthenticateUserParams) -> AbiResult<ExternalUser> {
+        self.op("authenticateUser", Some(&params)).await
+    }
+
+    async fn poll_events(&self) -> AbiResult<Vec<ExternalUser>> {
+        let reply: EventPollResult = self.op("pollEvents", NO_PARAMS).await?;
+        Ok(reply.users)
     }
 }
 
-fn dest_ctx_json(ctx: &DestinationContext) -> String {
-    serde_json::json!({ "json": ctx.json }).to_string()
+struct HttpContentSource {
+    http: BridgeHttp,
+    ctx: ContentSourceContext,
+}
+
+impl HttpContentSource {
+    async fn op<P: Serialize, R: DeserializeOwned>(
+        &self,
+        op: &str,
+        params: Option<&P>,
+    ) -> AbiResult<R> {
+        call(
+            &self.http,
+            &format!("/contentSource/{op}"),
+            &RoleCall {
+                context: &self.ctx,
+                params,
+            },
+        )
+        .await
+    }
+}
+
+#[async_trait(?Send)]
+impl ContentSource for HttpContentSource {
+    async fn login(&self, params: LoginParams) -> AbiResult<LoginResult> {
+        self.op("login", Some(&params)).await
+    }
+
+    async fn scan(&self, params: ScanParams) -> AbiResult<ScanSummary> {
+        self.op("scan", Some(&params)).await
+    }
+
+    async fn fetch_title(&self, params: FetchTitleParams) -> AbiResult<PlainFetch> {
+        self.op("fetchTitle", Some(&params)).await
+    }
+
+    async fn list_accounts(&self) -> AbiResult<Vec<SourceAccount>> {
+        self.op("listAccounts", NO_PARAMS).await
+    }
+
+    async fn login_start(&self, params: LoginParams) -> AbiResult<LoginStartResult> {
+        self.op("loginStart", Some(&params)).await
+    }
+
+    async fn login_complete(&self, params: LoginCompleteParams) -> AbiResult<LoginResult> {
+        self.op("loginComplete", Some(&params)).await
+    }
+
+    async fn search_catalog(&self, params: SearchCatalogParams) -> AbiResult<Vec<CatalogHit>> {
+        self.op("searchCatalog", Some(&params)).await
+    }
+
+    async fn expand_candidates(
+        &self,
+        params: ExpandCandidatesParams,
+    ) -> AbiResult<Vec<CatalogHit>> {
+        self.op("expandCandidates", Some(&params)).await
+    }
+
+    async fn purchase_hint(&self, params: PurchaseHintParams) -> AbiResult<Option<PurchaseHint>> {
+        self.op("purchaseHint", Some(&params)).await
+    }
+
+    async fn list_deals(&self, params: ListDealsParams) -> AbiResult<Vec<CatalogHit>> {
+        self.op("listDeals", Some(&params)).await
+    }
+
+    async fn catalog_detail(&self, params: CatalogDetailParams) -> AbiResult<Option<CatalogHit>> {
+        self.op("catalogDetail", Some(&params)).await
+    }
+
+    async fn health(&self) -> AbiResult<HealthOk> {
+        self.op("health", NO_PARAMS).await
+    }
+
+    async fn diagnose(&self) -> AbiResult<Vec<String>> {
+        let reply: DiagnoseReply = self.op("diagnose", NO_PARAMS).await?;
+        Ok(reply.into())
+    }
+}
+
+/// `x-bookclerk-context` header value: the typed context as bridge JSON.
+fn context_header<C: Serialize>(ctx: &C) -> AbiResult<String> {
+    serde_json::to_string(ctx)
+        .map_err(|err| PluginError::internal(format!("context encode failed: {err}")))
 }
 
 #[async_trait(?Send)]
@@ -338,7 +393,7 @@ impl Destination for HttpDestination {
             .http
             .json_post(
                 "/destination/head",
-                &serde_json::json!({ "key": key, "json": self.ctx.json }),
+                &serde_json::json!({ "key": key, "context": to_bridge_json(&self.ctx)? }),
             )
             .await
             .map_err(map_http)?;
@@ -354,7 +409,7 @@ impl Destination for HttpDestination {
             .json_post(
                 "/destination/list",
                 &serde_json::json!({
-                    "json": self.ctx.json,
+                    "context": to_bridge_json(&self.ctx)?,
                     "options": {
                         "prefix": options.prefix,
                         "cursor": options.cursor,
@@ -401,7 +456,7 @@ impl Destination for HttpDestination {
                 path.push_str(&format!("&length={len}"));
             }
         }
-        let ctx = dest_ctx_json(&self.ctx);
+        let ctx = context_header(&self.ctx)?;
         let (meta, body) = self
             .http
             .get_stream_headers(&path, &[("x-bookclerk-context", ctx.as_str())])
@@ -417,7 +472,7 @@ impl Destination for HttpDestination {
         options: WriteOptions,
     ) -> AbiResult<PutResult> {
         let path = format!("/destination/put?key={}", percent_encode(key));
-        let ctx = dest_ctx_json(&self.ctx);
+        let ctx = context_header(&self.ctx)?;
         let mut extra = vec![("x-bookclerk-context", ctx.as_str())];
         let token;
         if let Some(t) = &options.commit_token {
@@ -443,7 +498,7 @@ impl Destination for HttpDestination {
             .http
             .json_post(
                 "/destination/copy",
-                &serde_json::json!({ "from": from, "to": to, "json": self.ctx.json }),
+                &serde_json::json!({ "from": from, "to": to, "context": to_bridge_json(&self.ctx)? }),
             )
             .await
             .map_err(map_http)?;
@@ -456,7 +511,7 @@ impl Destination for HttpDestination {
         self.http
             .json_post(
                 "/destination/delete",
-                &serde_json::json!({ "key": key, "json": self.ctx.json }),
+                &serde_json::json!({ "key": key, "context": to_bridge_json(&self.ctx)? }),
             )
             .await
             .map_err(map_http)?;
@@ -471,7 +526,7 @@ impl Destination for HttpDestination {
                 &serde_json::json!({
                     "key": key,
                     "commitToken": commit_token,
-                    "json": self.ctx.json
+                    "context": to_bridge_json(&self.ctx)?,
                 }),
             )
             .await
@@ -495,7 +550,7 @@ impl Destination for HttpDestination {
                 &serde_json::json!({
                     "key": key,
                     "commitToken": commit_token,
-                    "json": self.ctx.json
+                    "context": to_bridge_json(&self.ctx)?,
                 }),
             )
             .await
@@ -513,7 +568,7 @@ struct HttpSource {
 impl Source for HttpSource {
     async fn open(&self, key: &str) -> AbiResult<ReadResult> {
         let path = format!("/source/open?key={}", percent_encode(key));
-        let ctx = serde_json::json!({ "json": self.ctx.json }).to_string();
+        let ctx = context_header(&self.ctx)?;
         let (meta, body) = self
             .http
             .get_stream_headers(&path, &[("x-bookclerk-context", ctx.as_str())])
@@ -598,8 +653,7 @@ impl JobHandler for HttpJobHandler {
                     "grantToken": grant,
                     "databases": binding_tokens,
                     "invocation": invocation,
-                    "jobId": self.ctx.job_id,
-                    "json": self.ctx.json,
+                    "context": to_bridge_json(&self.ctx)?,
                 }),
             )
             .await;

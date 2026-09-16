@@ -52,7 +52,7 @@ pub mod shutdown {
 
 /// Connectivity / configuration probe.
 ///
-/// Result: [`crate::types::HealthResult`] or host-adapter [`crate::types::HealthDto`].
+/// Result: [`crate::HealthOk`].
 pub mod health {
     /// Wire method name `"health"`.
     pub const NAME: &str = "health";
@@ -60,7 +60,7 @@ pub mod health {
 
 /// Human-readable diagnostic lines for `bookclerk plugins diagnose`.
 ///
-/// Result: [`crate::types::DiagnoseResult`].
+/// Result: [`crate::DiagnoseResult`].
 pub mod diagnose {
     /// Wire method name `"diagnose"`.
     pub const NAME: &str = "diagnose";
@@ -86,7 +86,7 @@ pub mod on_event {
 
 /// Poll for plugin-observed external users after [`start`].
 ///
-/// Result: [`crate::kind::EventPollResultDto`].
+/// Result: [`crate::EventPollResult`].
 pub mod poll_events {
     /// Wire method name `"pollEvents"`.
     pub const NAME: &str = "pollEvents";
@@ -94,7 +94,7 @@ pub mod poll_events {
 
 /// Trigger an integration library scan against a remote server (e.g. ABS).
 ///
-/// Params: [`crate::kind::ScanLibraryParams`].
+/// Params: [`crate::ScanLibraryParams`].
 pub mod scan_library {
     /// Wire method name `"scanLibrary"`.
     pub const NAME: &str = "scanLibrary";
@@ -102,7 +102,7 @@ pub mod scan_library {
 
 /// Pull listening-progress snapshots; host upserts tagged with the plugin id.
 ///
-/// Result: [`crate::kind::SyncListeningResultDto`].
+/// Result: [`crate::SyncListeningResult`].
 pub mod sync_listening {
     /// Wire method name `"syncListening"`.
     pub const NAME: &str = "syncListening";
@@ -110,13 +110,13 @@ pub mod sync_listening {
 
 /// Validate a username/password against an integration and return an external user.
 ///
-/// Params: [`crate::kind::AuthenticateUserParams`].
+/// Params: [`crate::AuthenticateUserParams`].
 pub mod authenticate_user {
     /// Wire method name `"authenticateUser"`.
     pub const NAME: &str = "authenticateUser";
 }
 
-/// Return the guest's declared CLI schema ([`crate::types::CliSchema`]).
+/// Return the guest's declared CLI schema ([`crate::CliSchema`]).
 pub mod cli_describe {
     /// Wire method name `"cliDescribe"`.
     pub const NAME: &str = "cliDescribe";
@@ -124,7 +124,7 @@ pub mod cli_describe {
 
 /// Invoke a declared plugin CLI command.
 ///
-/// Params: [`crate::types::CliInvokeParams`]. Result: [`crate::types::CliInvokeResult`].
+/// Params: [`crate::CliInvokeParams`]. Result: [`crate::CliInvokeResult`].
 pub mod cli_invoke {
     /// Wire method name `"cliInvoke"`.
     pub const NAME: &str = "cliInvoke";
@@ -132,7 +132,7 @@ pub mod cli_invoke {
 
 /// Password-style source login; host seals returned credentials.
 ///
-/// Params: [`crate::kind::LoginParams`]. Result: [`crate::kind::LoginResultDto`].
+/// Params: [`crate::LoginParams`]. Result: [`crate::LoginResult`].
 pub mod login {
     /// Wire method name `"login"`.
     pub const NAME: &str = "login";
@@ -140,7 +140,7 @@ pub mod login {
 
 /// Begin interactive OAuth (returns browser URL + session id).
 ///
-/// Params: [`crate::kind::LoginStartParams`]. Result: [`crate::kind::LoginStartResultDto`].
+/// Params: [`crate::LoginParams`]. Result: [`crate::LoginStartResult`].
 pub mod login_start {
     /// Wire method name `"loginStart"`.
     pub const NAME: &str = "loginStart";
@@ -148,15 +148,15 @@ pub mod login_start {
 
 /// Finish interactive OAuth after the operator completes the browser flow.
 ///
-/// Params: [`crate::kind::LoginCompleteParams`]. Result: [`crate::kind::LoginResultDto`].
+/// Params: [`crate::LoginCompleteParams`]. Result: [`crate::LoginResult`].
 pub mod login_complete {
     /// Wire method name `"loginComplete"`.
     pub const NAME: &str = "loginComplete";
 }
 
-/// Scan a source storefront library; host upserts returned [`crate::kind::ScanBookDto`] rows.
+/// Scan a source storefront library; host upserts returned [`crate::ScanBook`] rows.
 ///
-/// Params: [`crate::kind::ScanParams`]. Result: [`crate::kind::ScanSummaryDto`].
+/// Params: [`crate::ScanParams`]. Result: [`crate::ScanSummary`].
 pub mod scan {
     /// Wire method name `"scan"`.
     pub const NAME: &str = "scan";
@@ -164,7 +164,7 @@ pub mod scan {
 
 /// Download/decrypt one title into the host cache directory.
 ///
-/// Params: [`crate::kind::FetchTitleParams`]. Result: [`crate::kind::SourceFetchDto`].
+/// Params: [`crate::FetchTitleParams`]. Result: [`crate::PlainFetch`].
 pub mod fetch_title {
     /// Wire method name `"fetchTitle"`.
     pub const NAME: &str = "fetchTitle";
@@ -172,7 +172,7 @@ pub mod fetch_title {
 
 /// Search a storefront catalog for purchase / discovery UIs.
 ///
-/// Params: [`crate::kind::SearchCatalogParams`]. Result: list of [`crate::kind::CatalogHitDto`].
+/// Params: [`crate::SearchCatalogParams`]. Result: list of [`crate::CatalogHit`].
 pub mod search_catalog {
     /// Wire method name `"searchCatalog"`.
     pub const NAME: &str = "searchCatalog";
@@ -180,7 +180,7 @@ pub mod search_catalog {
 
 /// Expand related catalog candidates from a seed title.
 ///
-/// Params: [`crate::kind::ExpandCandidatesParams`]. Result: list of [`crate::kind::CatalogHitDto`].
+/// Params: [`crate::ExpandCandidatesParams`]. Result: list of [`crate::CatalogHit`].
 pub mod expand_candidates {
     /// Wire method name `"expandCandidates"`.
     pub const NAME: &str = "expandCandidates";
@@ -188,7 +188,7 @@ pub mod expand_candidates {
 
 /// Resolve a purchase URL / price hint for a catalog product.
 ///
-/// Params: [`crate::kind::PurchaseHintParams`]. Result: [`crate::kind::PurchaseHintDto`].
+/// Params: [`crate::PurchaseHintParams`]. Result: [`crate::PurchaseHint`].
 pub mod purchase_hint {
     /// Wire method name `"purchaseHint"`.
     pub const NAME: &str = "purchaseHint";
@@ -196,7 +196,7 @@ pub mod purchase_hint {
 
 /// List current storefront deals / promotions.
 ///
-/// Params: [`crate::kind::ListDealsParams`].
+/// Params: [`crate::ListDealsParams`].
 pub mod list_deals {
     /// Wire method name `"listDeals"`.
     pub const NAME: &str = "listDeals";
@@ -204,7 +204,6 @@ pub mod list_deals {
 
 /// List source accounts known to the guest (host usually prefers DB rows).
 ///
-/// Params: [`crate::kind::ListAccountsParams`].
 pub mod list_accounts {
     /// Wire method name `"listAccounts"`.
     pub const NAME: &str = "listAccounts";
@@ -212,7 +211,7 @@ pub mod list_accounts {
 
 /// Fetch rich catalog detail for one product id.
 ///
-/// Params: [`crate::kind::CatalogDetailParams`]. Result: [`crate::kind::CatalogHitDto`].
+/// Params: [`crate::CatalogDetailParams`]. Result: [`crate::CatalogHit`].
 pub mod catalog_detail {
     /// Wire method name `"catalogDetail"`.
     pub const NAME: &str = "catalogDetail";
@@ -220,7 +219,7 @@ pub mod catalog_detail {
 
 /// Put a small object (cover/sidecar) into an output destination.
 ///
-/// Params: [`crate::kind::OutputPutParams`].
+/// Typed Cap'n Proto `Destination.put` ([`crate::Destination::put`]).
 pub mod put {
     /// Wire method name `"put"`.
     pub const NAME: &str = "put";
@@ -228,7 +227,7 @@ pub mod put {
 
 /// Read a small object from an output destination.
 ///
-/// Params: [`crate::kind::OutputGetParams`]. Result: [`crate::kind::GetResultDto`].
+/// Typed Cap'n Proto `Destination.get` ([`crate::Destination::get`]).
 pub mod get {
     /// Wire method name `"get"`.
     pub const NAME: &str = "get";
@@ -236,7 +235,8 @@ pub mod get {
 
 /// Test whether an object key exists in an output destination.
 ///
-/// Params: [`crate::kind::OutputKeyParams`]. Result: [`crate::kind::ExistsResultDto`].
+/// Wire name kept for consent grants; guests implement existence via
+/// [`crate::Destination::head`] (`None` means the key is missing).
 pub mod exists {
     /// Wire method name `"exists"`.
     pub const NAME: &str = "exists";
@@ -244,7 +244,7 @@ pub mod exists {
 
 /// List object keys under a prefix in an output destination.
 ///
-/// Params: [`crate::kind::OutputListParams`]. Result: list of [`crate::kind::ObjectInfoDto`].
+/// Typed Cap'n Proto `Destination.list` ([`crate::Destination::list`]).
 pub mod list {
     /// Wire method name `"list"`.
     pub const NAME: &str = "list";
@@ -252,7 +252,7 @@ pub mod list {
 
 /// Copy an object within an output destination.
 ///
-/// Params: [`crate::kind::OutputCopyParams`].
+/// Typed Cap'n Proto `Destination.copy` ([`crate::Destination::copy`]).
 pub mod copy {
     /// Wire method name `"copy"`.
     pub const NAME: &str = "copy";
@@ -260,7 +260,7 @@ pub mod copy {
 
 /// Delete an object key from an output destination.
 ///
-/// Params: [`crate::kind::OutputKeyParams`].
+/// Typed Cap'n Proto `Destination.delete` ([`crate::Destination::delete`]).
 pub mod delete {
     /// Wire method name `"delete"`.
     pub const NAME: &str = "delete";

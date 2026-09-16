@@ -1,9 +1,9 @@
-//! Shared role method names and JSON payload types.
+//! Shared role method names and typed method payloads.
 //!
-//! Audience: guest authors who need the JSON payload DTOs carried inside
-//! `Text` fields of the Cap'n Proto ABI without depending on host crates.
-//! Wire types live in `bookclerk_plugin_abi`; this module re-exports them
-//! for a stable SDK import path.
+//! Audience: guest authors who need the Cap'n Proto method parameter / result
+//! structs (generated from `schema/plugin.capnp`) without depending on host
+//! crates. Wire types live in `bookclerk_plugin_abi`; this module re-exports
+//! them for a stable SDK import path.
 //!
 //! # Trust boundary
 //!
@@ -16,19 +16,15 @@
 //! Prefer product docs under `docs/plugins.md` for jail / capability rules.
 
 pub use bookclerk_plugin_abi::{
-    AuthenticateUserParams, BookAcquiredDto, BrandDto, CatalogDetailParams, CatalogHitDto,
+    Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogDetail,
+    CatalogDetailParams, CatalogField, CatalogHit, CatalogHits, CatalogSort, ChapterMarker, CliArg,
     CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-    ConfigOptionDto, ConfigOptionValueDto, CopyParams, EventPollResultDto, ExistsResultDto,
-    ExpandCandidatesParams, ExternalUserDto, FetchTitleParams, GetParams, GetResultDto, HealthDto,
-    HealthResult, KeyParams, ListAccountsParams, ListDealsParams, ListParams, ListeningProgressDto,
-    LocalCopyParams, LocalGetParams, LocalKeyParams, LocalListParams, LocalPutFileParams,
-    LocalPutParams, LocalTouchFileParams, LoginCompleteParams, LoginParams, LoginResultDto,
-    LoginStartParams, LoginStartResultDto, ObjectInfoDto, ObjectMetaDto, ObjectProbeDto,
-    OutputCopyParams, OutputGetParams, OutputKeyParams, OutputListParams, OutputLocalContextDto,
-    OutputPutFileParams, OutputPutParams, OutputS3ContextDto, OutputTouchFileParams, PlainPartDto,
-    PluginMetadata, PurchaseHintDto, PurchaseHintParams, PutFileParams, PutParams,
-    S3CredentialsDto, ScanBookDto, ScanLibraryParams, ScanParams, ScanSummaryDto,
-    SearchCatalogParams, SourceAccountDto, SourceFetchDto, SyncListeningResultDto, TouchFileParams,
+    ConfigOption, ConfigOptionValue, EventPollResult, ExpandCandidatesParams, ExternalUser,
+    FetchOptions, FetchTitleParams, ListDealsParams, ListeningProgress, LoginCompleteParams,
+    LoginParams, LoginResult, LoginStartResult, OutputLocalContextDto, OutputS3ContextDto,
+    PlainFetch, PlainPart, PortalAuthMode, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
+    S3CredentialsDto, ScanBook, ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams,
+    SourceAccount, SourceAccounts, SyncListeningResult,
 };
 
 /// Logical ABI identifier for diagnostics (not a `plugin.toml` field).
@@ -36,9 +32,9 @@ pub use bookclerk_plugin_abi::{
 /// Manifests advertise compatibility via `api_version` only.
 pub const PROTOCOL_NAME: &str = "workers-rpc";
 
-/// Maximum length of one JSON payload line in bytes (including newline).
+/// Maximum length of one framed bridge line in bytes (including newline).
 ///
-/// Used by JSON payload helpers and workerd bridge framing. Currently 16 MiB.
+/// Used by the workerd bridge framing. Currently 16 MiB.
 pub const MAX_RPC_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Role capability method name constants (camelCase wire strings).

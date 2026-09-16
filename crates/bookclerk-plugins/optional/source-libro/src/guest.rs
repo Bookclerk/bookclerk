@@ -1,17 +1,21 @@
 //! Guest-process helpers for the external Libro.fm source plugin.
 //!
 //! These APIs do **not** open the library DB — the host seals credentials and
-//! upserts scan DTOs via `bookclerk_plugin_host::ExternalSource`.
+//! upserts scan rows via `bookclerk_plugin_host::ExternalSource`. Conversions
+//! between storefront types and the typed ABI live in [`bookclerk_source::abi`].
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use bookclerk_library::NewBook;
 use bookclerk_plugin_sdk::{
-    CatalogHitDto, FetchTitleParams, LoginParams, LoginResultDto, PlainPartDto, PurchaseHintDto,
-    ScanBookDto, ScanParams, ScanSummaryDto, SourceAccountDto, SourceFetchDto,
+    FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch, ScanParams,
+    ScanSummary, SourceAccount,
 };
-use bookclerk_source::{CatalogHit, LoginOptions, PlainFetch, SourcePurchaseHint};
+use bookclerk_source::abi::{
+    account_credentials_json, credentials_from_bytes, credentials_to_bytes, scan_summary,
+};
+use bookclerk_source::{LoginOptions, PlainFetch};
 use chrono::{Duration, TimeZone, Utc};
 use serde_json::Value;
 
@@ -22,95 +26,6 @@ use crate::download::fetch_title_materials_with;
 use crate::error::{LibroError, Result};
 use crate::source::ID;
 use crate::sync::collect_account_books;
-
-/// Map a library [`NewBook`] to the plugin-protocol scan DTO.
-#[must_use]
-pub fn new_book_to_scan(book: NewBook) -> ScanBookDto {
-    ScanBookDto {
-        account_id: book.account_id,
-        product_id: book.product_id,
-        title: book.title,
-        marketplace: Some(book.marketplace),
-        asin: book.asin,
-        isbn: book.isbn,
-        authors: book.authors,
-        narrators: book.narrators,
-        series: book.series,
-        series_index: book.series_index,
-        content_kind: Some(book.content_kind),
-        publisher: book.publisher,
-        length_minutes: book.length_minutes,
-        subtitle: book.subtitle,
-    }
-}
-
-/// Map a DRM-free fetch result to the plugin-protocol DTO.
-#[must_use]
-pub fn plain_to_dto(plain: PlainFetch) -> SourceFetchDto {
-    SourceFetchDto::Plain {
-        parts: plain
-            .parts
-            .into_iter()
-            .map(|p| PlainPartDto {
-                path: p.path.display().to_string(),
-                title: p.title,
-                duration_ms: p.duration_ms,
-            })
-            .collect(),
-        m4b_path: plain.m4b_path.map(|p| p.display().to_string()),
-        cover_path: plain.cover_path.map(|p| p.display().to_string()),
-        chapters: plain.chapters,
-        pdf_url: plain.pdf_url,
-    }
-}
-
-/// Map a catalog hit to the plugin-protocol DTO.
-#[must_use]
-pub fn catalog_hit_to_dto(hit: CatalogHit) -> CatalogHitDto {
-    CatalogHitDto {
-        product_id: hit.product_id,
-        title: hit.title,
-        authors: hit.authors,
-        narrators: hit.narrators,
-        series: hit.series,
-        series_index: hit.series_index,
-        asin: hit.asin,
-        isbn: hit.isbn,
-        url: hit.url,
-        cover_url: hit.cover_url,
-        origin: hit.origin,
-        subtitle: hit.subtitle,
-        description: hit.description,
-        publisher: hit.publisher,
-        length_minutes: hit.length_minutes,
-        published_at: hit.published_at,
-        categories: hit.categories,
-        language: hit.language,
-        price_cents: hit.price_cents,
-        currency: hit.currency,
-        price_label: hit.price_label,
-        rating_overall: hit.rating_overall,
-        rating_count: hit.rating_count,
-        is_abridged: hit.is_abridged,
-    }
-}
-
-/// Map a purchase hint to the plugin-protocol DTO.
-#[must_use]
-pub fn purchase_hint_to_dto(hint: SourcePurchaseHint) -> PurchaseHintDto {
-    PurchaseHintDto {
-        product_id: hint.product_id,
-        title: hint.title,
-        url: hint.url,
-        price_cents: hint.price_cents,
-        currency: hint.currency,
-        price_label: hint.price_label,
-        list_price_cents: hint.list_price_cents,
-        list_price_label: hint.list_price_label,
-        member_price_cents: hint.member_price_cents,
-        member_price_label: hint.member_price_label,
-    }
-}
 
 /// Login against Libro.fm and return account metadata + credential JSON.
 ///
@@ -169,27 +84,18 @@ pub async fn guest_login(
     Ok((account_id, marketplace, label, true, credentials))
 }
 
-/// RPC login: build [`LoginOptions`] from params and return a protocol DTO.
+/// RPC login: build [`LoginOptions`] from typed params and return the ABI result.
 ///
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub async fn guest_login_rpc(base_url: &str, params: LoginParams) -> Result<LoginResultDto> {
-    let (account_id, marketplace, label, scan_enabled, credentials) = guest_login(
-        base_url,
-        LoginOptions {
-            marketplace: params.marketplace,
-            label: params.label,
-            email: params.email,
-            password: params.password,
-            force: params.force,
-            callback_bind: params.callback_bind,
-            ..Default::default()
-        },
-    )
-    .await?;
-    Ok(LoginResultDto {
-        account: SourceAccountDto {
+pub async fn guest_login_rpc(base_url: &str, params: LoginParams) -> Result<LoginResult> {
+    let (account_id, marketplace, label, scan_enabled, credentials) =
+        guest_login(base_url, LoginOptions::from(params)).await?;
+    let credentials =
+        credentials_to_bytes(&credentials).map_err(|e| LibroError::auth(e.to_string()))?;
+    Ok(LoginResult {
+        account: SourceAccount {
             account_id,
             source: ID.into(),
             marketplace,
@@ -246,22 +152,16 @@ pub async fn guest_scan(
     Ok((books, accounts, pages))
 }
 
-/// RPC scan: return protocol [`ScanSummaryDto`] (host upserts books).
+/// RPC scan: return the typed [`ScanSummary`] (host upserts books).
 ///
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub async fn guest_scan_rpc(base_url: &str, params: &ScanParams) -> Result<ScanSummaryDto> {
-    let (books, accounts, pages) =
-        guest_scan(base_url, &params.credentials, &params.accounts).await?;
-    let n = books.len();
-    Ok(ScanSummaryDto {
-        accounts,
-        books_upserted: n,
-        pages,
-        skipped_disabled: 0,
-        books: books.into_iter().map(new_book_to_scan).collect(),
-    })
+pub async fn guest_scan_rpc(base_url: &str, params: &ScanParams) -> Result<ScanSummary> {
+    let credentials = account_credentials_json(&params.credentials)
+        .map_err(|e| LibroError::auth(e.to_string()))?;
+    let (books, accounts, pages) = guest_scan(base_url, &credentials, &params.accounts).await?;
+    Ok(scan_summary(books, accounts, pages))
 }
 
 /// Download one title into `cache_dir` using host-injected credentials.
@@ -282,7 +182,7 @@ pub async fn guest_fetch_title(
     fetch_title_materials_with(&client, title_id, cache_dir, container).await
 }
 
-/// RPC fetch: return protocol [`SourceFetchDto`].
+/// RPC fetch: return the typed plain fetch result.
 ///
 /// # Errors
 ///
@@ -291,15 +191,16 @@ pub async fn guest_fetch_title_rpc(
     base_url: &str,
     params: &FetchTitleParams,
     container: LibroContainer,
-) -> Result<SourceFetchDto> {
+) -> Result<AbiPlainFetch> {
     let creds = params
         .credentials
-        .as_ref()
+        .as_deref()
         .ok_or_else(|| LibroError::auth("fetch_title requires host credentials"))?;
+    let creds = credentials_from_bytes(creds).map_err(|e| LibroError::auth(e.to_string()))?;
     let work_dir = bookclerk_plugin_sdk::fetch_work_dir(params)
         .map_err(|err| LibroError::api(format!("fetch work directory: {err}")))?;
-    let plain = guest_fetch_title(base_url, creds, &params.title_id, &work_dir, container).await?;
-    Ok(plain_to_dto(plain))
+    let plain = guest_fetch_title(base_url, &creds, &params.title_id, &work_dir, container).await?;
+    Ok(plain.into())
 }
 
 /// Resolve API base URL (tests may override).

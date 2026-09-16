@@ -36,7 +36,6 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-ambient.mjs",
-    "check-wire": "node scripts/check-wire-fixtures.mjs",
     "docs": "typedoc --options typedoc.json",
     "docs:check": "typedoc --options typedoc.json",
     "lint": "oxlint",

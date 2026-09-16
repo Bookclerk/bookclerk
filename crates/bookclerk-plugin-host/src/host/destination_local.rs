@@ -121,7 +121,8 @@ async fn spawn_local_guest(
     };
     session
         .ensure_destination(DestinationContext {
-            json: serde_json::to_string(&ctx)?,
+            config: bookclerk_plugin_sdk::ExtensibleConfig::json_from(&ctx)
+                .map_err(|err| crate::PluginError::message(err.to_string()))?,
         })
         .await?;
     Ok((PluginStorage::new(Arc::clone(&session)), session))

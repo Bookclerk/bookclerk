@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use bookclerk_plugin_abi::{
-    connect_plugin, ByteRange, Destination, DestinationContext, DomainEvent, Integration,
-    IntegrationContext, ListOptions, PluginClient, PluginDescribe, Source, SourceContext,
-    WriteOptions, MAX_SCALAR_BYTES,
+    connect_plugin, ByteRange, Destination, DestinationContext, DomainEvent, ExtensibleConfig,
+    Integration, IntegrationContext, ListOptions, PluginClient, PluginDescribe, Source,
+    SourceContext, WriteOptions, MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -113,59 +113,59 @@ enum BrokerCmd {
         resp: oneshot::Sender<Result<PluginDescribe, String>>,
     },
     Head {
-        json: String,
+        config: ExtensibleConfig,
         key: String,
         resp: oneshot::Sender<Result<Option<bookclerk_plugin_abi::ObjectMetadata>, String>>,
     },
     List {
-        json: String,
+        config: ExtensibleConfig,
         options: ListOptions,
         resp: oneshot::Sender<Result<bookclerk_plugin_abi::ListPage, String>>,
     },
     Get {
-        json: String,
+        config: ExtensibleConfig,
         key: String,
         range: Option<ByteRange>,
         resp: oneshot::Sender<Result<OpenedObject, String>>,
     },
     Put {
-        json: String,
+        config: ExtensibleConfig,
         key: String,
         options: WriteOptions,
         body_rx: mpsc::Receiver<Vec<u8>>,
         resp: oneshot::Sender<Result<bookclerk_plugin_abi::PutResult, String>>,
     },
     Copy {
-        json: String,
+        config: ExtensibleConfig,
         from: String,
         to: String,
         resp: oneshot::Sender<Result<u64, String>>,
     },
     Delete {
-        json: String,
+        config: ExtensibleConfig,
         key: String,
         resp: oneshot::Sender<Result<(), String>>,
     },
     Commit {
-        json: String,
+        config: ExtensibleConfig,
         key: String,
         token: String,
         resp: oneshot::Sender<Result<bookclerk_plugin_abi::PutResult, String>>,
     },
     AbortStage {
-        json: String,
+        config: ExtensibleConfig,
         key: String,
         token: String,
         resp: oneshot::Sender<Result<(), String>>,
     },
     Open {
-        json: String,
+        config: ExtensibleConfig,
         key: String,
         resp: oneshot::Sender<Result<OpenedObject, String>>,
     },
     Integration {
         op: String,
-        json: String,
+        config: ExtensibleConfig,
         event: Option<DomainEvent>,
         resp: oneshot::Sender<Result<serde_json::Value, String>>,
     },
@@ -244,11 +244,11 @@ async fn dispatch_broker(
                 let out = client.describe().await.map_err(|e| e.to_string());
                 let _ = resp.send(out);
             }
-            BrokerCmd::Head { json, key, resp } => {
+            BrokerCmd::Head { config, key, resp } => {
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
                     let dest = client
-                        .destination(DestinationContext { json })
+                        .destination(DestinationContext { config })
                         .await
                         .map_err(|e| e.to_string())?;
                     dest.head(&key).await.map_err(|e| e.to_string())
@@ -257,14 +257,14 @@ async fn dispatch_broker(
                 let _ = resp.send(out);
             }
             BrokerCmd::List {
-                json,
+                config,
                 options,
                 resp,
             } => {
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
                     let dest = client
-                        .destination(DestinationContext { json })
+                        .destination(DestinationContext { config })
                         .await
                         .map_err(|e| e.to_string())?;
                     dest.list(options).await.map_err(|e| e.to_string())
@@ -273,22 +273,22 @@ async fn dispatch_broker(
                 let _ = resp.send(out);
             }
             BrokerCmd::Get {
-                json,
+                config,
                 key,
                 range,
                 resp,
             } => {
                 let cancelled = Arc::clone(&policy.cancelled);
-                let out = stream_get(&client, json, key, range, false, cancelled).await;
+                let out = stream_get(&client, config, key, range, false, cancelled).await;
                 let _ = resp.send(out);
             }
-            BrokerCmd::Open { json, key, resp } => {
+            BrokerCmd::Open { config, key, resp } => {
                 let cancelled = Arc::clone(&policy.cancelled);
-                let out = stream_get(&client, json, key, None, true, cancelled).await;
+                let out = stream_get(&client, config, key, None, true, cancelled).await;
                 let _ = resp.send(out);
             }
             BrokerCmd::Put {
-                json,
+                config,
                 key,
                 options,
                 mut body_rx,
@@ -297,7 +297,7 @@ async fn dispatch_broker(
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = async {
                     let dest = client
-                        .destination(DestinationContext { json })
+                        .destination(DestinationContext { config })
                         .await
                         .map_err(|e| e.to_string())?;
                     let (mut body_tx, body) = tokio::io::duplex(64 * 1024);
@@ -326,7 +326,7 @@ async fn dispatch_broker(
                 let _ = resp.send(out);
             }
             BrokerCmd::Copy {
-                json,
+                config,
                 from,
                 to,
                 resp,
@@ -334,7 +334,7 @@ async fn dispatch_broker(
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
                     let dest = client
-                        .destination(DestinationContext { json })
+                        .destination(DestinationContext { config })
                         .await
                         .map_err(|e| e.to_string())?;
                     dest.copy(&from, &to)
@@ -345,11 +345,11 @@ async fn dispatch_broker(
                 .await;
                 let _ = resp.send(out);
             }
-            BrokerCmd::Delete { json, key, resp } => {
+            BrokerCmd::Delete { config, key, resp } => {
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
                     let dest = client
-                        .destination(DestinationContext { json })
+                        .destination(DestinationContext { config })
                         .await
                         .map_err(|e| e.to_string())?;
                     dest.delete(&key).await.map_err(|e| e.to_string())
@@ -358,7 +358,7 @@ async fn dispatch_broker(
                 let _ = resp.send(out);
             }
             BrokerCmd::Commit {
-                json,
+                config,
                 key,
                 token,
                 resp,
@@ -366,7 +366,7 @@ async fn dispatch_broker(
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
                     let dest = client
-                        .destination(DestinationContext { json })
+                        .destination(DestinationContext { config })
                         .await
                         .map_err(|e| e.to_string())?;
                     dest.commit(&key, &token).await.map_err(|e| e.to_string())
@@ -375,7 +375,7 @@ async fn dispatch_broker(
                 let _ = resp.send(out);
             }
             BrokerCmd::AbortStage {
-                json,
+                config,
                 key,
                 token,
                 resp,
@@ -383,7 +383,7 @@ async fn dispatch_broker(
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
                     let dest = client
-                        .destination(DestinationContext { json })
+                        .destination(DestinationContext { config })
                         .await
                         .map_err(|e| e.to_string())?;
                     dest.abort_stage(&key, &token)
@@ -395,14 +395,14 @@ async fn dispatch_broker(
             }
             BrokerCmd::Integration {
                 op,
-                json,
+                config,
                 event,
                 resp,
             } => {
                 let cancelled = Arc::clone(&policy.cancelled);
                 let out = race_against_revoke(cancelled, async {
                     let integration = client
-                        .integration(IntegrationContext { json })
+                        .integration(IntegrationContext { config })
                         .await
                         .map_err(|e| e.to_string())?;
                     match op.as_str() {
@@ -411,8 +411,8 @@ async fn dispatch_broker(
                             serde_json::to_value(health).map_err(|e| e.to_string())
                         }
                         "diagnose" => {
-                            let json = integration.diagnose().await.map_err(|e| e.to_string())?;
-                            Ok(serde_json::json!({ "json": json }))
+                            let lines = integration.diagnose().await.map_err(|e| e.to_string())?;
+                            Ok(serde_json::json!({ "lines": lines }))
                         }
                         "onEvent" => {
                             let event = event.ok_or_else(|| "missing event".to_string())?;
@@ -442,7 +442,7 @@ async fn dispatch_broker(
 
 async fn stream_get(
     client: &PluginClient,
-    json: String,
+    config: ExtensibleConfig,
     key: String,
     range: Option<ByteRange>,
     as_source: bool,
@@ -451,7 +451,7 @@ async fn stream_get(
     let (meta, body) = if as_source {
         race_against_revoke(Arc::clone(&cancelled), async {
             let src = client
-                .source(SourceContext { json })
+                .source(SourceContext { config })
                 .await
                 .map_err(|e| e.to_string())?;
             let opened = src.open(&key).await.map_err(|e| e.to_string())?;
@@ -461,7 +461,7 @@ async fn stream_get(
     } else {
         race_against_revoke(Arc::clone(&cancelled), async {
             let dest = client
-                .destination(DestinationContext { json })
+                .destination(DestinationContext { config })
                 .await
                 .map_err(|e| e.to_string())?;
             let got = dest.get(&key, range).await.map_err(|e| e.to_string())?;
@@ -568,14 +568,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
         .find(|(k, _)| k.eq_ignore_ascii_case("x-bookclerk-context"))
         .map(|(_, v)| v.clone())
         .unwrap_or_default();
-    let ctx_json = if ctx_header.is_empty() {
-        String::new()
-    } else {
-        serde_json::from_str::<serde_json::Value>(&ctx_header)
-            .ok()
-            .and_then(|v| v.get("json").and_then(|j| j.as_str()).map(str::to_string))
-            .unwrap_or(ctx_header)
-    };
+    let header_config = broker_config_from_header(&ctx_header);
 
     if method == "POST" && path_only == "/describe" {
         if let Err(err) = policy.check("describe", "describe") {
@@ -601,14 +594,10 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
             .and_then(|k| k.as_str())
             .unwrap_or("")
             .to_string();
-        let json = value
-            .get("json")
-            .and_then(|k| k.as_str())
-            .unwrap_or(&ctx_json)
-            .to_string();
+        let config = broker_config(&value, &header_config);
         let (resp_tx, resp_rx) = oneshot::channel();
         cmds.send(BrokerCmd::Head {
-            json,
+            config,
             key,
             resp: resp_tx,
         })
@@ -627,14 +616,10 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
         let rest = read_content(&mut reader, &headers, prefix, policy.max_scalar_bytes).await?;
         let value: serde_json::Value = serde_json::from_slice(&rest).unwrap_or_default();
         let options = list_options(value.get("options").unwrap_or(&value));
-        let json = value
-            .get("json")
-            .and_then(|k| k.as_str())
-            .unwrap_or(&ctx_json)
-            .to_string();
+        let config = broker_config(&value, &header_config);
         let (resp_tx, resp_rx) = oneshot::channel();
         cmds.send(BrokerCmd::List {
-            json,
+            config,
             options,
             resp: resp_tx,
         })
@@ -664,7 +649,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
             });
         let (resp_tx, resp_rx) = oneshot::channel();
         cmds.send(BrokerCmd::Get {
-            json: ctx_json,
+            config: header_config.clone().unwrap_or_default(),
             key,
             range,
             resp: resp_tx,
@@ -699,7 +684,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
         let (body_tx, body_rx) = mpsc::channel(4);
         let (resp_tx, resp_rx) = oneshot::channel();
         cmds.send(BrokerCmd::Put {
-            json: ctx_json,
+            config: header_config.clone().unwrap_or_default(),
             key,
             options: WriteOptions {
                 content_type,
@@ -726,11 +711,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
         let value: serde_json::Value = serde_json::from_slice(&rest).unwrap_or_default();
         let (resp_tx, resp_rx) = oneshot::channel();
         cmds.send(BrokerCmd::Copy {
-            json: value
-                .get("json")
-                .and_then(|k| k.as_str())
-                .unwrap_or(&ctx_json)
-                .to_string(),
+            config: broker_config(&value, &header_config),
             from: value
                 .get("from")
                 .and_then(|k| k.as_str())
@@ -756,11 +737,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
         let value: serde_json::Value = serde_json::from_slice(&rest).unwrap_or_default();
         let (resp_tx, resp_rx) = oneshot::channel();
         cmds.send(BrokerCmd::Delete {
-            json: value
-                .get("json")
-                .and_then(|k| k.as_str())
-                .unwrap_or(&ctx_json)
-                .to_string(),
+            config: broker_config(&value, &header_config),
             key: value
                 .get("key")
                 .and_then(|k| k.as_str())
@@ -781,11 +758,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
         let value: serde_json::Value = serde_json::from_slice(&rest).unwrap_or_default();
         let (resp_tx, resp_rx) = oneshot::channel();
         cmds.send(BrokerCmd::Commit {
-            json: value
-                .get("json")
-                .and_then(|k| k.as_str())
-                .unwrap_or(&ctx_json)
-                .to_string(),
+            config: broker_config(&value, &header_config),
             key: value
                 .get("key")
                 .and_then(|k| k.as_str())
@@ -811,11 +784,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
         let value: serde_json::Value = serde_json::from_slice(&rest).unwrap_or_default();
         let (resp_tx, resp_rx) = oneshot::channel();
         cmds.send(BrokerCmd::AbortStage {
-            json: value
-                .get("json")
-                .and_then(|k| k.as_str())
-                .unwrap_or(&ctx_json)
-                .to_string(),
+            config: broker_config(&value, &header_config),
             key: value
                 .get("key")
                 .and_then(|k| k.as_str())
@@ -844,7 +813,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
             .unwrap_or_default();
         let (resp_tx, resp_rx) = oneshot::channel();
         cmds.send(BrokerCmd::Open {
-            json: ctx_json,
+            config: header_config.clone().unwrap_or_default(),
             key,
             resp: resp_tx,
         })
@@ -867,11 +836,7 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
         let (resp_tx, resp_rx) = oneshot::channel();
         cmds.send(BrokerCmd::Integration {
             op: op.to_string(),
-            json: value
-                .get("json")
-                .and_then(|k| k.as_str())
-                .unwrap_or(&ctx_json)
-                .to_string(),
+            config: broker_config(&value, &header_config),
             event,
             resp: resp_tx,
         })
@@ -887,6 +852,26 @@ async fn handle_conn<S: AsyncRead + AsyncWrite + Unpin>(
         writer.flush().await?;
         Ok(())
     }
+}
+
+/// Typed context from the `x-bookclerk-context` header (bridge JSON of a
+/// `*Context` struct); `None` when absent or malformed.
+fn broker_config_from_header(header: &str) -> Option<ExtensibleConfig> {
+    if header.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(header).ok()?;
+    serde_json::from_value(value.get("config")?.clone()).ok()
+}
+
+/// Granted config for one broker request: body `context.config` wins, then
+/// the context header, then an empty config.
+fn broker_config(body: &serde_json::Value, header: &Option<ExtensibleConfig>) -> ExtensibleConfig {
+    body.get("context")
+        .and_then(|ctx| ctx.get("config"))
+        .and_then(|cfg| serde_json::from_value(cfg.clone()).ok())
+        .or_else(|| header.clone())
+        .unwrap_or_default()
 }
 
 fn list_options(v: &serde_json::Value) -> ListOptions {

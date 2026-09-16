@@ -137,15 +137,6 @@ async fn connect_from_context(ctx: &DatabaseContext) -> Result<()> {
                 sqlite_path
             })
         })
-        .or_else(|| {
-            serde_json::from_str::<serde_json::Value>(&ctx.json)
-                .ok()
-                .and_then(|v| {
-                    v.get("sqlitePath")
-                        .and_then(|p| p.as_str())
-                        .map(str::to_string)
-                })
-        })
         .unwrap_or_default();
     if path.is_empty() {
         return Err(PluginError::internal(

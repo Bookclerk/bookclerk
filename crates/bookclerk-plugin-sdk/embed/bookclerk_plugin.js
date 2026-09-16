@@ -45,6 +45,29 @@ function utf8Bytes(value) {
   return new TextEncoder().encode(String(value ?? "")).byteLength;
 }
 
+function bytesToBase64(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+/**
+ * Typed ABI value → native-broker JSON: `Uint8Array` fields (Cap'n `Data`)
+ * travel as base64 text. Bookclerk-workerd decodes with the same convention.
+ */
+function toBridgeJson(value) {
+  if (value instanceof Uint8Array) return bytesToBase64(value);
+  if (value instanceof ArrayBuffer) return bytesToBase64(new Uint8Array(value));
+  if (Array.isArray(value)) return value.map(toBridgeJson);
+  if (value === null || typeof value !== "object") return value;
+  const out = {};
+  for (const [key, inner] of Object.entries(value)) {
+    if (inner === undefined) continue;
+    out[key] = toBridgeJson(inner);
+  }
+  return out;
+}
+
 function migrationOpSql(op) {
   if (op && typeof op === "object") {
     if (typeof op.schema === "string") return op.schema;
@@ -171,29 +194,83 @@ export class JobHandler extends RpcTarget {
   }
 }
 
-/** Storefront content source (not byte Source). */
+/**
+ * Storefront content source (not byte Source). Every method takes and
+ * returns the typed ABI structs (`LoginParams` → `LoginResult`, …) as plain
+ * objects; see `@bookclerk/plugin-sdk` `generated.ts` for the shapes.
+ */
 export class ContentSource extends RpcTarget {
-  async health() {
-    return { ok: true };
+  async login(_params) {
+    throw unsupportedMethod("login");
   }
+  async scan(_params) {
+    throw unsupportedMethod("scan");
+  }
+  async fetchTitle(_params) {
+    throw unsupportedMethod("fetchTitle");
+  }
+  async listAccounts() {
+    throw unsupportedMethod("listAccounts");
+  }
+  async loginStart(_params) {
+    throw unsupportedMethod("loginStart");
+  }
+  async loginComplete(_params) {
+    throw unsupportedMethod("loginComplete");
+  }
+  async searchCatalog(_params) {
+    throw unsupportedMethod("searchCatalog");
+  }
+  async expandCandidates(_params) {
+    throw unsupportedMethod("expandCandidates");
+  }
+  async purchaseHint(_params) {
+    throw unsupportedMethod("purchaseHint");
+  }
+  async listDeals(_params) {
+    throw unsupportedMethod("listDeals");
+  }
+  async catalogDetail(_params) {
+    throw unsupportedMethod("catalogDetail");
+  }
+  async health() {
+    return { ok: true, detail: "" };
+  }
+  /** Operator-facing diagnostic lines (`string[]`). */
   async diagnose() {
-    return { lines: [] };
+    return [];
   }
 }
 
-/** Integration role — health / diagnose / onEvent. */
+/** Integration role — health / diagnose / onEvent / lifecycle / sync. */
 export class Integration extends RpcTarget {
   async health() {
-    return { ok: true };
+    return { ok: true, detail: "" };
   }
+  /** Operator-facing diagnostic lines (`string[]`). */
   async diagnose() {
-    return { lines: [] };
+    return [];
   }
   async onEvent(_event) {
     throw unsupportedMethod("onEvent");
   }
   async start() {}
   async stop() {}
+  async scanLibrary(_params) {
+    throw unsupportedMethod("scanLibrary");
+  }
+  /** `ListeningProgress[]`. */
+  async syncListening() {
+    throw unsupportedMethod("syncListening");
+  }
+  /** `AuthenticateUserParams` → `ExternalUser`. */
+  async authenticateUser(_params) {
+    throw unsupportedMethod("authenticateUser");
+  }
+  /** `ExternalUser[]` observed since the last poll. */
+  async pollEvents() {
+    throw unsupportedMethod("pollEvents");
+  }
 }
 
 function exactLengthBody(body, expected) {
@@ -360,19 +437,21 @@ export class BookclerkPlugin extends WorkerEntrypoint {
   worker(_context) {
     throw unsupportedMethod("worker");
   }
-  contentSource(_ctx) {
+  contentSource(_context) {
     throw unsupportedMethod("contentSource");
   }
-  integration(_ctx) {
+  integration(_context) {
     throw unsupportedMethod("integration");
   }
-  database(_ctx) {
+  database(_context) {
     throw unsupportedMethod("database");
   }
+  /** Typed `CliSchema` (`{ commands: [] }` when the guest has no CLI). */
   async cliDescribe() {
-    return "{}";
+    return { commands: [] };
   }
-  async cliInvoke(_paramsJson) {
+  /** Typed `CliInvokeParams` → `CliInvokeResult`. */
+  async cliInvoke(_params) {
     throw unsupportedMethod("cliInvoke");
   }
   async oidcClients() {
@@ -430,7 +509,7 @@ class HttpNativeDest extends Destination {
   #headers(extra) {
     return {
       "content-type": "application/json",
-      "x-bookclerk-context": JSON.stringify(this.ctx),
+      "x-bookclerk-context": JSON.stringify(toBridgeJson(this.ctx)),
       ...(extra || {}),
     };
   }
@@ -450,11 +529,11 @@ class HttpNativeDest extends Destination {
     return value;
   }
   async head(key) {
-    const v = await this.#json("POST", "/destination/head", { key, json: this.ctx.json });
+    const v = await this.#json("POST", "/destination/head", { key, context: this.ctx });
     return v.found ? v.meta : null;
   }
   async list(options) {
-    return this.#json("POST", "/destination/list", { options, json: this.ctx.json });
+    return this.#json("POST", "/destination/list", { options, context: this.ctx });
   }
   async get(key, options) {
     let path = `/destination/get?key=${encodeURIComponent(key)}`;
@@ -498,23 +577,23 @@ class HttpNativeDest extends Destination {
     return value;
   }
   async copy(from, to) {
-    return this.#json("POST", "/destination/copy", { from, to, json: this.ctx.json });
+    return this.#json("POST", "/destination/copy", { from, to, context: this.ctx });
   }
   async delete(key) {
-    await this.#json("POST", "/destination/delete", { key, json: this.ctx.json });
+    await this.#json("POST", "/destination/delete", { key, context: this.ctx });
   }
   async commit(key, commitToken) {
     return this.#json("POST", "/destination/commit", {
       key,
       commitToken,
-      json: this.ctx.json,
+      context: this.ctx,
     });
   }
   async abortStage(key, commitToken) {
     await this.#json("POST", "/destination/abortStage", {
       key,
       commitToken,
-      json: this.ctx.json,
+      context: this.ctx,
     });
   }
 }
@@ -556,14 +635,14 @@ class HttpNativeIntegration extends Integration {
   #headers() {
     return {
       "content-type": "application/json",
-      "x-bookclerk-context": JSON.stringify(this.ctx),
+      "x-bookclerk-context": JSON.stringify(toBridgeJson(this.ctx)),
     };
   }
   async #json(path, body) {
     const resp = await this.fetcher.fetch(`http://backend${path}`, {
       method: "POST",
       headers: this.#headers(),
-      body: JSON.stringify(body ?? { json: this.ctx.json }),
+      body: JSON.stringify(toBridgeJson(body ?? { context: this.ctx })),
     });
     const value = await resp.json().catch(() => ({}));
     if (value && value.error) {
@@ -575,19 +654,20 @@ class HttpNativeIntegration extends Integration {
     return value;
   }
   async health() {
-    return this.#json("/integration/health", { json: this.ctx.json });
+    return this.#json("/integration/health", { context: this.ctx });
   }
   async diagnose() {
-    return this.#json("/integration/diagnose", { json: this.ctx.json });
+    const v = await this.#json("/integration/diagnose", { context: this.ctx });
+    return Array.isArray(v) ? v : Array.isArray(v?.lines) ? v.lines : [];
   }
   async onEvent(event) {
-    return this.#json("/integration/onEvent", { json: this.ctx.json, event });
+    return this.#json("/integration/onEvent", { context: this.ctx, event });
   }
   async start() {
-    await this.#json("/integration/start", { json: this.ctx.json });
+    await this.#json("/integration/start", { context: this.ctx });
   }
   async stop() {
-    await this.#json("/integration/stop", { json: this.ctx.json });
+    await this.#json("/integration/stop", { context: this.ctx });
   }
 }
 
@@ -670,8 +750,8 @@ function createInvocationAdapter() {
     async cliDescribe() {
       return this.plugin().cliDescribe();
     }
-    async cliInvoke(paramsJson) {
-      return this.plugin().cliInvoke(paramsJson);
+    async cliInvoke(params) {
+      return this.plugin().cliInvoke(params);
     }
     async oidcClients() {
       const plugin = this.plugin();

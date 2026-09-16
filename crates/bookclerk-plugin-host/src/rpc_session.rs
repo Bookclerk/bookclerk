@@ -46,6 +46,33 @@ use crate::{PluginError, Result};
 pub type GuestDatabaseFactory =
     Arc<dyn Fn(Arc<AtomicBool>, u64) -> Arc<dyn bookclerk_plugin_sdk::GuestDatabase> + Send + Sync>;
 
+/// Type-erased typed storefront call executed on the vat thread against a
+/// freshly created `ContentSource` stub (or its factory error).
+type ContentSourceCall = Box<
+    dyn FnOnce(
+            std::result::Result<
+                Box<dyn bookclerk_plugin_sdk::ContentSource>,
+                bookclerk_plugin_sdk::PluginError,
+            >,
+        ) -> LocalBoxFuture<'static, ()>
+        + Send,
+>;
+
+/// Type-erased typed integration call executed on the vat thread against a
+/// freshly created `Integration` stub (or its factory error).
+type IntegrationCall = Box<
+    dyn FnOnce(
+            std::result::Result<
+                Box<dyn bookclerk_plugin_sdk::Integration>,
+                bookclerk_plugin_sdk::PluginError,
+            >,
+        ) -> LocalBoxFuture<'static, ()>
+        + Send,
+>;
+
+/// `!Send` boxed future pinned for the vat's `LocalSet`.
+type LocalBoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
+
 /// Work item executed on the plugin vat thread.
 enum Work {
     /// `BookclerkPlugin.describe`.
@@ -125,25 +152,28 @@ enum Work {
         /// Reply channel.
         reply: oneshot::Sender<Result<bookclerk_plugin_sdk::JobOutcome>>,
     },
+    /// One typed `ContentSource` method (create stub → invoke → dispose).
     ContentSource {
-        ctx_json: String,
-        op: String,
-        params: String,
-        reply: oneshot::Sender<Result<String>>,
+        /// Granted storefront config.
+        ctx: bookclerk_plugin_sdk::ContentSourceContext,
+        /// Typed call; replies through the sender it captured.
+        call: ContentSourceCall,
     },
+    /// One typed `Integration` method (create stub → invoke → dispose).
     Integration {
-        ctx_json: String,
-        op: String,
-        params: String,
+        /// Granted integration config.
+        ctx: bookclerk_plugin_sdk::IntegrationContext,
+        /// Typed call; replies through the sender it captured.
+        call: IntegrationCall,
+        /// Abort flag (delivery fence loss).
         cancel: Arc<AtomicBool>,
-        reply: oneshot::Sender<Result<String>>,
     },
     CliDescribe {
-        reply: oneshot::Sender<Result<String>>,
+        reply: oneshot::Sender<Result<bookclerk_plugin_sdk::CliSchema>>,
     },
     CliInvoke {
-        params: String,
-        reply: oneshot::Sender<Result<String>>,
+        params: bookclerk_plugin_sdk::CliInvokeParams,
+        reply: oneshot::Sender<Result<bookclerk_plugin_sdk::CliInvokeResult>>,
     },
     OidcClients {
         reply: oneshot::Sender<Result<Vec<OidcClientTemplate>>>,
@@ -682,115 +712,126 @@ impl PluginSession {
         &self.spawn_config
     }
 
-    /// Identity extras parsed from `describe().metadataJson`.
-    #[must_use]
-    pub fn plugin_metadata(&self) -> crate::PluginMetadata {
-        if self.describe.metadata_json.trim().is_empty() {
-            return crate::PluginMetadata {
-                api_version: PRODUCT_API_VERSION,
-                id: self.describe.id.clone(),
-                kind: self.describe.kind.clone(),
-                display_name: self.describe.display_name.clone(),
-                capabilities: self.describe.supported_roles.clone(),
-                ..crate::PluginMetadata::default()
-            };
-        }
-        serde_json::from_str(&self.describe.metadata_json).unwrap_or_else(|_| {
-            crate::PluginMetadata {
-                api_version: PRODUCT_API_VERSION,
-                id: self.describe.id.clone(),
-                kind: self.describe.kind.clone(),
-                display_name: self.describe.display_name.clone(),
-                ..crate::PluginMetadata::default()
-            }
-        })
-    }
-
-    /// True when `describe.metadataJson` lists a v1-style capability name.
+    /// True when the guest advertised capability method `cap` (or a factory
+    /// role of that name) in `describe()`.
     #[must_use]
     pub fn has_capability(&self, cap: &str) -> bool {
-        let hs = self.plugin_metadata();
-        hs.capabilities.iter().any(|c| c == cap)
-            || self.describe.supported_roles.iter().any(|c| c == cap)
+        self.describe.has_capability(cap)
     }
 
-    /// One content-source method (create → invoke → dispose).
+    /// One typed content-source method (create stub → invoke → dispose).
+    ///
+    /// `call` runs on the vat thread with the freshly created stub; its
+    /// output crosses back to the caller's runtime.
     ///
     /// # Errors
     ///
     /// Returns a plugin error when the factory or method fails.
-    pub async fn content_source_json(
+    pub async fn content_source<T, F, Fut>(
         &self,
-        ctx_json: impl Into<String>,
-        op: impl Into<String>,
-        params: impl Into<String>,
-    ) -> Result<String> {
-        self.call(|reply| Work::ContentSource {
-            ctx_json: ctx_json.into(),
-            op: op.into(),
-            params: params.into(),
-            reply,
-        })
-        .await
+        ctx: bookclerk_plugin_sdk::ContentSourceContext,
+        call: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::ContentSource>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        let (reply, rx) = oneshot::channel::<Result<T>>();
+        let erased: ContentSourceCall = Box::new(move |stub| {
+            Box::pin(async move {
+                let out = match stub {
+                    Ok(stub) => call(stub).await.map_err(map_abi),
+                    Err(err) => Err(map_abi(err)),
+                };
+                let _ = reply.send(out);
+            })
+        });
+        self.tx
+            .send(Work::ContentSource { ctx, call: erased })
+            .map_err(|_| PluginError::unavailable("plugin vat thread closed"))?;
+        rx.await
+            .map_err(|_| PluginError::unavailable("plugin vat thread dropped reply"))?
     }
 
-    /// One integration method (create → invoke → dispose).
+    /// One typed integration method (create stub → invoke → dispose).
     ///
     /// # Errors
     ///
     /// Returns a plugin error when the factory or method fails.
-    pub async fn integration_json(
+    pub async fn integration<T, F, Fut>(
         &self,
-        ctx_json: impl Into<String>,
-        op: impl Into<String>,
-        params: impl Into<String>,
-    ) -> Result<String> {
-        self.integration_json_cancelable(ctx_json, op, params, Arc::new(AtomicBool::new(false)))
+        ctx: bookclerk_plugin_sdk::IntegrationContext,
+        call: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::Integration>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        self.integration_cancelable(ctx, Arc::new(AtomicBool::new(false)), call)
             .await
     }
 
-    /// Integration JSON-RPC, aborted when `cancel` is set (delivery fence loss).
+    /// Typed integration method aborted when `cancel` is set (delivery fence loss).
     ///
     /// # Errors
     ///
     /// Returns a plugin error when the RPC fails or is cancelled.
-    pub async fn integration_json_cancelable(
+    pub async fn integration_cancelable<T, F, Fut>(
         &self,
-        ctx_json: impl Into<String>,
-        op: impl Into<String>,
-        params: impl Into<String>,
+        ctx: bookclerk_plugin_sdk::IntegrationContext,
         cancel: Arc<AtomicBool>,
-    ) -> Result<String> {
-        self.call(|reply| Work::Integration {
-            ctx_json: ctx_json.into(),
-            op: op.into(),
-            params: params.into(),
-            cancel,
-            reply,
-        })
-        .await
+        call: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::Integration>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        let (reply, rx) = oneshot::channel::<Result<T>>();
+        let erased: IntegrationCall = Box::new(move |stub| {
+            Box::pin(async move {
+                let out = match stub {
+                    Ok(stub) => call(stub).await.map_err(map_abi),
+                    Err(err) => Err(map_abi(err)),
+                };
+                let _ = reply.send(out);
+            })
+        });
+        self.tx
+            .send(Work::Integration {
+                ctx,
+                call: erased,
+                cancel,
+            })
+            .map_err(|_| PluginError::unavailable("plugin vat thread closed"))?;
+        rx.await
+            .map_err(|_| PluginError::unavailable("plugin vat thread dropped reply"))?
     }
 
-    /// Guest CLI schema JSON.
+    /// Guest CLI schema.
     ///
     /// # Errors
     ///
     /// Returns a plugin error when the RPC fails.
-    pub async fn cli_describe(&self) -> Result<String> {
+    pub async fn cli_describe(&self) -> Result<bookclerk_plugin_sdk::CliSchema> {
         self.call(|reply| Work::CliDescribe { reply }).await
     }
 
-    /// Guest CLI invoke (`CliInvokeParams` JSON).
+    /// Guest CLI invoke.
     ///
     /// # Errors
     ///
     /// Returns a plugin error when the RPC fails.
-    pub async fn cli_invoke_json(&self, params: impl Into<String>) -> Result<String> {
-        self.call(|reply| Work::CliInvoke {
-            params: params.into(),
-            reply,
-        })
-        .await
+    pub async fn cli_invoke(
+        &self,
+        params: bookclerk_plugin_sdk::CliInvokeParams,
+    ) -> Result<bookclerk_plugin_sdk::CliInvokeResult> {
+        self.call(|reply| Work::CliInvoke { params, reply }).await
     }
 
     /// Plugin-provided OIDC authorization-server client templates.
@@ -1334,104 +1375,6 @@ impl bookclerk_plugin_abi::AdapterBackupOps for RpcBackupOps {
     }
 }
 
-async fn dispatch_content_source(
-    client: &PluginClient,
-    ctx_json: String,
-    op: &str,
-    params: &str,
-) -> Result<String> {
-    use bookclerk_plugin_sdk::ContentSource;
-    let src = client
-        .content_source(bookclerk_plugin_sdk::ContentSourceContext { json: ctx_json })
-        .await
-        .map_err(map_abi)?;
-    let out = match op {
-        "login" => src.login(params).await,
-        "scan" => src.scan(params).await,
-        "fetchTitle" => src.fetch_title(params).await,
-        "listAccounts" => src.list_accounts().await,
-        "loginStart" => src.login_start(params).await,
-        "loginComplete" => src.login_complete(params).await,
-        "searchCatalog" => src.search_catalog(params).await,
-        "expandCandidates" => src.expand_candidates(params).await,
-        "purchaseHint" => src.purchase_hint(params).await,
-        "listDeals" => src.list_deals(params).await,
-        "catalogDetail" => src.catalog_detail(params).await,
-        "health" => src.health().await.and_then(|h| {
-            serde_json::to_string(&h)
-                .map_err(|e| bookclerk_plugin_sdk::PluginError::internal(e.to_string()))
-        }),
-        "diagnose" => src.diagnose().await,
-        other => Err(bookclerk_plugin_sdk::PluginError::unsupported(other)),
-    };
-    out.map_err(map_abi)
-}
-
-async fn dispatch_integration(
-    client: &PluginClient,
-    ctx_json: String,
-    op: &str,
-    params: &str,
-) -> Result<String> {
-    use bookclerk_plugin_sdk::{DomainEvent, EventResult, Integration};
-    let role = client
-        .integration(bookclerk_plugin_sdk::IntegrationContext { json: ctx_json })
-        .await
-        .map_err(map_abi)?;
-    let out = match op {
-        "health" => role.health().await.and_then(|h| {
-            serde_json::to_string(&h)
-                .map_err(|e| bookclerk_plugin_sdk::PluginError::internal(e.to_string()))
-        }),
-        "onEvent" => {
-            let event: DomainEvent = serde_json::from_str(params).unwrap_or(DomainEvent {
-                delivery_attempt: 1,
-                payload: params.as_bytes().to_vec(),
-                ..DomainEvent::default()
-            });
-            role.on_event(event).await.map(|r| match r {
-                EventResult::Ack => "{\"kind\":\"ack\"}".into(),
-                EventResult::Retry {
-                    retry_at_unix_ms,
-                    reason,
-                } => format!(
-                    "{{\"kind\":\"retry\",\"retryAtUnixMs\":{retry_at_unix_ms},\"reason\":{}}}",
-                    serde_json::to_string(&reason).unwrap_or_else(|_| "\"\"".into())
-                ),
-                EventResult::Reject { reason } => format!(
-                    "{{\"kind\":\"reject\",\"reason\":{}}}",
-                    serde_json::to_string(&reason).unwrap_or_else(|_| "\"\"".into())
-                ),
-                EventResult::DeadLetter { reason } => format!(
-                    "{{\"kind\":\"deadLetter\",\"reason\":{}}}",
-                    serde_json::to_string(&reason).unwrap_or_else(|_| "\"\"".into())
-                ),
-                EventResult::Suspended {
-                    checkpoint_json,
-                    checkpoint_schema_version,
-                    wake_at_unix_ms,
-                    wake_on_event_type,
-                    wake_on_filter_json,
-                } => format!(
-                    "{{\"kind\":\"suspended\",\"checkpointJson\":{},\"checkpointSchemaVersion\":{checkpoint_schema_version},\"wakeAtUnixMs\":{wake_at_unix_ms},\"wakeOnEventType\":{},\"wakeOnFilterJson\":{}}}",
-                    serde_json::to_string(&checkpoint_json).unwrap_or_else(|_| "\"\"".into()),
-                    serde_json::to_string(&wake_on_event_type).unwrap_or_else(|_| "\"\"".into()),
-                    serde_json::to_string(&wake_on_filter_json).unwrap_or_else(|_| "\"\"".into())
-                ),
-            })
-        }
-        "start" => role.start().await.map(|()| "{}".into()),
-        "stop" => role.stop().await.map(|()| "{}".into()),
-        "diagnose" => role.diagnose().await,
-        "scanLibrary" => role.scan_library(params).await.map(|()| "{}".into()),
-        "syncListening" => role.sync_listening().await,
-        "authenticateUser" => role.authenticate_user(params).await,
-        "pollEvents" => role.poll_events().await,
-        other => Err(bookclerk_plugin_sdk::PluginError::unsupported(other)),
-    };
-    out.map_err(map_abi)
-}
-
 async fn wait_flag(flag: Arc<AtomicBool>) {
     while !flag.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1639,36 +1582,30 @@ fn vat_thread(
                             };
                             let _ = reply.send(out);
                         }
-                        Work::ContentSource {
-                            ctx_json,
-                            op,
-                            params,
-                            reply,
-                        } => {
-                            let out =
-                                dispatch_content_source(&client, ctx_json, &op, &params).await;
-                            let _ = reply.send(out);
+                        Work::ContentSource { ctx, call } => {
+                            let stub = client.content_source(ctx).await.map(|stub| {
+                                Box::new(stub) as Box<dyn bookclerk_plugin_sdk::ContentSource>
+                            });
+                            call(stub).await;
                         }
-                        Work::Integration {
-                            ctx_json,
-                            op,
-                            params,
-                            cancel,
-                            reply,
-                        } => {
-                            let out = tokio::select! {
+                        Work::Integration { ctx, call, cancel } => {
+                            let stub = client.integration(ctx).await.map(|stub| {
+                                Box::new(stub) as Box<dyn bookclerk_plugin_sdk::Integration>
+                            });
+                            tokio::select! {
                                 () = wait_flag(Arc::clone(&cancel)) => {
-                                    Err(PluginError::from_abi(Some("cancelled"), "fence lost"))
+                                    // The captured reply sender drops with the
+                                    // future, surfacing "fence lost" to the caller.
+                                    tracing::debug!("integration call aborted: fence lost");
                                 }
-                                out = dispatch_integration(&client, ctx_json, &op, &params) => out,
-                            };
-                            let _ = reply.send(out);
+                                () = call(stub) => {}
+                            }
                         }
                         Work::CliDescribe { reply } => {
                             let _ = reply.send(client.cli_describe().await.map_err(map_abi));
                         }
                         Work::CliInvoke { params, reply } => {
-                            let _ = reply.send(client.cli_invoke(&params).await.map_err(map_abi));
+                            let _ = reply.send(client.cli_invoke(params).await.map_err(map_abi));
                         }
                         Work::OidcClients { reply } => {
                             let _ = reply.send(client.oidc_clients().await.map_err(map_abi));
@@ -1982,7 +1919,7 @@ async fn run_stream_copy(
     let handler = client
         .worker(WorkerContext {
             job_id: lease.job_id.clone(),
-            json: String::new(),
+            config: bookclerk_plugin_sdk::ExtensibleConfig::default(),
         })
         .await
         .map_err(map_abi)?;

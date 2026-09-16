@@ -3,12 +3,13 @@
 //! # Audience
 //!
 //! Host registration code and first-party / third-party **source plugin**
-//! authors implementing [`ContentSource`]. Guests that speak the JSON-RPC ABI
-//! map onto these types via the plugin host; they do not depend on this crate
-//! directly from workerd.
+//! authors implementing [`ContentSource`]. Native guests and the plugin host
+//! map these types onto the typed Cap'n Proto ABI through [`abi`]; workerd
+//! guests use the generated TypeScript / Python SDK types instead.
 //!
 //! Product narrative: `docs/plugins.md`. Style: `docs/code-documentation.md`.
 
+pub mod abi;
 mod brand;
 mod error;
 mod language;

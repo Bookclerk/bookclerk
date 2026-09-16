@@ -1350,17 +1350,15 @@ impl ExternalDatabase {
             None => {
                 let adapter_config = bookclerk_plugin_abi::DatabaseAdapterConfig {
                     plugin_data_dir: data_dir,
-                    config: if self.settings_json.is_null() {
-                        Value::Object(serde_json::Map::new())
-                    } else {
-                        self.settings_json.clone()
-                    },
+                    settings: adapter_settings(&self.settings_json)
+                        .map_err(|err| PluginError::message(err.to_string()))?,
                     binding: Some(binding.to_string()),
                     instance_id: Some(binding_instance_id(owner_plugin_id, binding)),
-                    provision,
+                    open_existing: !provision,
                 };
-                return bookclerk_plugin_abi::database_context_from_adapter_config(&adapter_config)
-                    .map_err(|err| PluginError::message(err.to_string()));
+                return Ok(bookclerk_plugin_abi::database_context_from_adapter_config(
+                    &adapter_config,
+                ));
             }
         };
         database_context_from_params(&params).map_err(|err| PluginError::message(err.to_string()))
@@ -2633,17 +2631,27 @@ fn adapter_config_context(
 ) -> Result<bookclerk_plugin_sdk::DatabaseContext, DbErr> {
     let adapter_config = bookclerk_plugin_abi::DatabaseAdapterConfig {
         plugin_data_dir: data_dir.to_string(),
-        config: if settings_json.is_null() {
-            Value::Object(serde_json::Map::new())
-        } else {
-            settings_json.clone()
-        },
+        settings: adapter_settings(settings_json).map_err(|err| DbErr::Custom(err.to_string()))?,
         binding: None,
         instance_id: None,
-        provision: true,
+        open_existing: false,
     };
-    bookclerk_plugin_abi::database_context_from_adapter_config(&adapter_config)
-        .map_err(|err| DbErr::Custom(err.to_string()))
+    Ok(bookclerk_plugin_abi::database_context_from_adapter_config(
+        &adapter_config,
+    ))
+}
+
+/// Granted `[database.<id>]` settings as the adapter's JSON config payload
+/// (`{}` when the operator configured nothing).
+fn adapter_settings(
+    settings_json: &Value,
+) -> bookclerk_plugin_abi::Result<bookclerk_plugin_abi::ExtensibleConfig> {
+    if settings_json.is_null() {
+        return bookclerk_plugin_abi::ExtensibleConfig::json_from(&Value::Object(
+            serde_json::Map::new(),
+        ));
+    }
+    bookclerk_plugin_abi::ExtensibleConfig::json_from(settings_json)
 }
 
 /// SeaORM proxy backend used for host query building.
@@ -2787,8 +2795,9 @@ mod tests {
         let cfg = bookclerk_plugin_abi::database_adapter_config_from_context(&ctx)
             .expect("public decode");
         assert_eq!(cfg.plugin_data_dir, "/tmp/plugins/sql-conformance/data");
-        assert_eq!(cfg.config["url"], "custom://host/db");
-        assert_eq!(cfg.config["pool_size"], 4);
+        let settings = cfg.settings.json_value().expect("json settings");
+        assert_eq!(settings["url"], "custom://host/db");
+        assert_eq!(settings["pool_size"], 4);
     }
 
     #[test]
@@ -2797,7 +2806,8 @@ mod tests {
             .expect("adapter context");
         let cfg = bookclerk_plugin_abi::database_adapter_config_from_context(&ctx)
             .expect("public decode");
-        assert!(cfg.config.is_object(), "{:?}", cfg.config);
+        let settings = cfg.settings.json_value().expect("json settings");
+        assert!(settings.is_object(), "{settings:?}");
         assert!(cfg.instance_id.is_none());
     }
 

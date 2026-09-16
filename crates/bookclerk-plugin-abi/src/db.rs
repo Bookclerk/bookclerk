@@ -4,15 +4,15 @@
 //! boundary. The host never links SQL engines; it opens the library through
 //! `DatabaseContext` + typed adapter sessions after Cap'n Proto spawn.
 //!
-//! Two payload kinds travel in [`crate::DatabaseContext::config`], selected by
-//! media type:
+//! A [`crate::DatabaseContext`] carries one of two bootstraps:
 //!
 //! - `DbConnectParams` (feature `host`) — host-private serde type for
 //!   first-party connect-param building; not public JSON RPC. Wire fields use
 //!   camelCase; its `backend` tag is lowercase (`sqlite`, `d1`, `postgres`).
 //! - [`crate::DatabaseAdapterConfig`] (public) — generic bootstrap for
 //!   third-party adapters: the operator's granted `[database.<id>]` table plus
-//!   the scoped data dir. Decode with [`database_adapter_config_from_context`].
+//!   the scoped data dir. Travels typed in [`crate::DatabaseContext::adapter`];
+//!   read it with [`database_adapter_config_from_context`].
 //!
 //! Semantic capability limits live in [`crate::DbCapabilities`]
 //! (`crate::db_execute`); bootstrap metadata lives in [`crate::DbBootstrap`].
@@ -111,31 +111,18 @@ fn skip_if_true(value: &bool) -> bool {
 #[cfg(feature = "host")]
 pub const DATABASE_CONTEXT_MEDIA_TYPE: &str = "application/vnd.bookclerk.db-connect+json";
 
-/// Media type for the public [`crate::DatabaseAdapterConfig`] payload carried
-/// in [`crate::DatabaseContext::config`] for third-party adapters.
-pub const DATABASE_ADAPTER_CONFIG_MEDIA_TYPE: &str =
-    "application/vnd.bookclerk.db-adapter-config+json";
-
 /// Builds a [`crate::DatabaseContext`] carrying the public author-facing
-/// [`crate::DatabaseAdapterConfig`] (granted settings + data dir).
-///
-/// # Errors
-///
-/// Returns when JSON serialization fails.
+/// [`crate::DatabaseAdapterConfig`] (granted settings + data dir) in the typed
+/// `adapter` field; `config` stays empty so host-private connect params never
+/// reach third-party adapters.
+#[must_use]
 pub fn database_context_from_adapter_config(
     config: &crate::DatabaseAdapterConfig,
-) -> crate::Result<crate::DatabaseContext> {
-    let payload = serde_json::to_vec(config).map_err(|err| {
-        crate::PluginError::internal(format!("database adapter config encode failed: {err}"))
-    })?;
-    Ok(crate::DatabaseContext {
-        json: String::new(),
-        config: crate::ExtensibleConfig {
-            schema_version: 0,
-            media_type: DATABASE_ADAPTER_CONFIG_MEDIA_TYPE.into(),
-            payload,
-        },
-    })
+) -> crate::DatabaseContext {
+    crate::DatabaseContext {
+        config: crate::ExtensibleConfig::default(),
+        adapter: config.clone(),
+    }
 }
 
 /// Decodes the public [`crate::DatabaseAdapterConfig`] from a database
@@ -143,20 +130,17 @@ pub fn database_context_from_adapter_config(
 ///
 /// # Errors
 ///
-/// Returns when the context does not carry an adapter-config payload or the
-/// JSON is invalid.
+/// Returns when the context carries host-private connect params instead of
+/// an adapter bootstrap (empty `adapter.pluginDataDir`).
 pub fn database_adapter_config_from_context(
     ctx: &crate::DatabaseContext,
 ) -> crate::Result<crate::DatabaseAdapterConfig> {
-    if ctx.config.media_type != DATABASE_ADAPTER_CONFIG_MEDIA_TYPE {
-        return Err(crate::PluginError::invalid_params(format!(
-            "database context media type `{}` is not `{DATABASE_ADAPTER_CONFIG_MEDIA_TYPE}`",
-            ctx.config.media_type
-        )));
+    if ctx.adapter.plugin_data_dir.is_empty() {
+        return Err(crate::PluginError::invalid_params(
+            "database context does not carry an adapter bootstrap (pluginDataDir is empty)",
+        ));
     }
-    serde_json::from_slice(&ctx.config.payload).map_err(|err| {
-        crate::PluginError::invalid_params(format!("database adapter config decode failed: {err}"))
-    })
+    Ok(ctx.adapter.clone())
 }
 
 /// Builds a [`crate::DatabaseContext`] from host-internal connect params.
@@ -172,12 +156,12 @@ pub fn database_context_from_params(
         crate::PluginError::internal(format!("database context encode failed: {err}"))
     })?;
     Ok(crate::DatabaseContext {
-        json: String::new(),
         config: crate::ExtensibleConfig {
             schema_version: 0,
             media_type: DATABASE_CONTEXT_MEDIA_TYPE.into(),
             payload,
         },
+        adapter: crate::DatabaseAdapterConfig::default(),
     })
 }
 
@@ -188,23 +172,18 @@ pub fn database_context_from_params(
 /// Returns when the context omits connect params or JSON is invalid.
 #[cfg(feature = "host")]
 pub fn connect_params_from_context(ctx: &crate::DatabaseContext) -> crate::Result<DbConnectParams> {
-    if !ctx.config.payload.is_empty() {
-        if ctx.config.media_type != DATABASE_CONTEXT_MEDIA_TYPE {
-            return Err(crate::PluginError::invalid_params(format!(
-                "database context media type `{}` is not `{DATABASE_CONTEXT_MEDIA_TYPE}`",
-                ctx.config.media_type
-            )));
-        }
-        return serde_json::from_slice(&ctx.config.payload).map_err(|err| {
-            crate::PluginError::invalid_params(format!("database context decode failed: {err}"))
-        });
-    }
-    if ctx.json.trim().is_empty() {
+    if ctx.config.payload.is_empty() {
         return Err(crate::PluginError::invalid_params(
             "database context is missing connect params",
         ));
     }
-    serde_json::from_str(&ctx.json).map_err(|err| {
+    if ctx.config.media_type != DATABASE_CONTEXT_MEDIA_TYPE {
+        return Err(crate::PluginError::invalid_params(format!(
+            "database context media type `{}` is not `{DATABASE_CONTEXT_MEDIA_TYPE}`",
+            ctx.config.media_type
+        )));
+    }
+    serde_json::from_slice(&ctx.config.payload).map_err(|err| {
         crate::PluginError::invalid_params(format!("database context decode failed: {err}"))
     })
 }
@@ -288,12 +267,15 @@ mod host_tests {
     fn adapter_config_context_is_not_decodable_as_connect_params() {
         let cfg = crate::DatabaseAdapterConfig {
             plugin_data_dir: "/tmp/p".into(),
-            config: serde_json::json!({ "url": "custom://x" }),
+            settings: crate::ExtensibleConfig::json_from(
+                &serde_json::json!({ "url": "custom://x" }),
+            )
+            .unwrap(),
             binding: None,
             instance_id: None,
-            provision: true,
+            open_existing: false,
         };
-        let ctx = database_context_from_adapter_config(&cfg).unwrap();
+        let ctx = database_context_from_adapter_config(&cfg);
         connect_params_from_context(&ctx)
             .expect_err("public adapter config must not parse as host connect params");
     }
@@ -306,18 +288,24 @@ mod tests {
 
     #[test]
     fn adapter_config_roundtrips_through_database_context() {
+        let settings = serde_json::json!({ "url": "custom://host/db", "poolSize": 4 });
         let cfg = crate::DatabaseAdapterConfig {
             plugin_data_dir: "/tmp/plugins/custom/data".into(),
-            config: serde_json::json!({ "url": "custom://host/db", "poolSize": 4 }),
+            settings: crate::ExtensibleConfig::json_from(&settings).unwrap(),
             binding: None,
             instance_id: None,
-            provision: true,
+            open_existing: false,
         };
-        let ctx = database_context_from_adapter_config(&cfg).unwrap();
-        assert_eq!(ctx.config.media_type, DATABASE_ADAPTER_CONFIG_MEDIA_TYPE);
-        assert_eq!(ctx.config.schema_version, 0);
+        let ctx = database_context_from_adapter_config(&cfg);
+        assert!(ctx.config.is_empty(), "no host-private connect params");
         let back = database_adapter_config_from_context(&ctx).unwrap();
         assert_eq!(back, cfg);
-        assert_eq!(back.config["url"], "custom://host/db");
+        assert_eq!(
+            back.settings.json_value().unwrap()["url"],
+            "custom://host/db"
+        );
+        let bare = crate::DatabaseContext::default();
+        database_adapter_config_from_context(&bare)
+            .expect_err("empty adapter bootstrap must not decode");
     }
 }

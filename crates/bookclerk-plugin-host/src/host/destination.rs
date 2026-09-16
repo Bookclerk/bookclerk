@@ -171,7 +171,8 @@ async fn spawn_s3_guest(
     );
     session
         .ensure_destination(DestinationContext {
-            json: serde_json::to_string(&ctx).map_err(crate::PluginError::Json)?,
+            config: bookclerk_plugin_sdk::ExtensibleConfig::json_from(&ctx)
+                .map_err(|err| crate::PluginError::message(err.to_string()))?,
         })
         .await?;
     Ok((PluginStorage::new(Arc::clone(&session)), session))

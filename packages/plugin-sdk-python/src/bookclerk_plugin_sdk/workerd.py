@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from bookclerk_plugin_sdk import abi
     from bookclerk_plugin_sdk.db_value import DatabaseBinding, ExecuteReply, ExecuteRequest
 
 try:
@@ -401,42 +402,251 @@ def granted_job_context(
     )
 
 
+def _unsupported(method: str) -> PluginError:
+    """Build the ``unsupported`` error the role base classes raise.
+
+    Args:
+        method: Wire method name.
+
+    Returns:
+        A ``PluginError`` with ``code="unsupported"``.
+    """
+    return PluginError.from_wire("unsupported", f"{method} not implemented")
+
+
+class ContentSource:
+    """Storefront role returned by ``BookclerkPlugin.content_source``.
+
+    Every method mirrors the Cap'n ``ContentSource`` interface; parameters and
+    return values are the generated :mod:`bookclerk_plugin_sdk.abi` TypedDicts
+    (``LoginParams`` → ``LoginResult``, ``ScanParams`` → ``ScanSummary``, …).
+    Python Workers treat the returned object as an RpcTarget. Override only the
+    operations the storefront supports; the rest raise ``unsupported``.
+    """
+
+    async def login(self, _params: "abi.LoginParams"):
+        """Password or one-shot OAuth login.
+
+        Args:
+            _params: ``LoginParams``.
+
+        Returns:
+            ``LoginResult`` — account identity plus opaque credentials.
+        """
+        raise _unsupported("login")
+
+    async def scan(self, _params: "abi.ScanParams"):
+        """Enumerate owned titles for one account.
+
+        Args:
+            _params: ``ScanParams``.
+
+        Returns:
+            ``ScanSummary``.
+        """
+        raise _unsupported("scan")
+
+    async def fetchTitle(self, _params: "abi.FetchTitleParams"):
+        """Fetch one title's media and metadata.
+
+        Args:
+            _params: ``FetchTitleParams``.
+
+        Returns:
+            ``PlainFetch`` — plain parts plus artifacts.
+        """
+        raise _unsupported("fetchTitle")
+
+    async def listAccounts(self):
+        """List accounts known to this storefront.
+
+        Returns:
+            List of ``SourceAccount``.
+        """
+        return js([])
+
+    async def loginStart(self, _params: "abi.LoginParams"):
+        """Begin an interactive OAuth login.
+
+        Args:
+            _params: ``LoginParams``.
+
+        Returns:
+            ``LoginStartResult`` — session id plus authorization URL.
+        """
+        raise _unsupported("loginStart")
+
+    async def loginComplete(self, _params: "abi.LoginCompleteParams"):
+        """Finish an interactive OAuth login started by ``loginStart``.
+
+        Args:
+            _params: ``LoginCompleteParams``.
+
+        Returns:
+            ``LoginResult``.
+        """
+        raise _unsupported("loginComplete")
+
+    async def searchCatalog(self, _params: "abi.SearchCatalogParams"):
+        """Free-text storefront catalog search.
+
+        Args:
+            _params: ``SearchCatalogParams``.
+
+        Returns:
+            List of ``CatalogHit``.
+        """
+        raise _unsupported("searchCatalog")
+
+    async def expandCandidates(self, _params: "abi.ExpandCandidatesParams"):
+        """Related-title expansion from a seed title.
+
+        Args:
+            _params: ``ExpandCandidatesParams``.
+
+        Returns:
+            List of ``CatalogHit``.
+        """
+        raise _unsupported("expandCandidates")
+
+    async def purchaseHint(self, _params: "abi.PurchaseHintParams"):
+        """Purchase link / price hint for one title.
+
+        Args:
+            _params: ``PurchaseHintParams``.
+
+        Returns:
+            ``PurchaseHint``.
+        """
+        raise _unsupported("purchaseHint")
+
+    async def listDeals(self, _params: "abi.ListDealsParams"):
+        """Current storefront deals.
+
+        Args:
+            _params: ``ListDealsParams``.
+
+        Returns:
+            List of ``CatalogHit``.
+        """
+        raise _unsupported("listDeals")
+
+    async def health(self):
+        """Liveness / readiness probe.
+
+        Returns:
+            ``HealthOk`` (empty struct).
+        """
+        return js({})
+
+    async def diagnose(self):
+        """Human-readable diagnostic lines.
+
+        Returns:
+            List of strings.
+        """
+        return js([])
+
+    async def catalogDetail(self, _params: "abi.CatalogDetailParams"):
+        """Full catalog record for one product.
+
+        Args:
+            _params: ``CatalogDetailParams``.
+
+        Returns:
+            ``CatalogHit``.
+        """
+        raise _unsupported("catalogDetail")
+
+
 class Integration:
     """Integration role returned by ``BookclerkPlugin.integration``.
 
-    Python Workers treat the returned object as an RpcTarget. Override
-    ``health``, ``diagnose``, and ``onEvent``.
+    Every method mirrors the Cap'n ``Integration`` interface with generated
+    :mod:`bookclerk_plugin_sdk.abi` TypedDicts. Python Workers treat the
+    returned object as an RpcTarget. Override the operations the integration
+    supports; the lifecycle and probe methods default to no-ops.
     """
 
-    async def health(self, _params=None):
+    async def health(self):
         """Report integration liveness.
 
-        Args:
-            _params: Unused.
-
         Returns:
-            JS object with ``ok: True``.
+            ``HealthOk`` (empty struct).
         """
-        return js({"ok": True})
+        return js({})
 
-    async def diagnose(self, _params=None):
-        """Return diagnostic lines.
-
-        Args:
-            _params: Unused.
-
-        Returns:
-            JS object with a ``lines`` list.
-        """
-        return js({"lines": []})
-
-    async def onEvent(self, _event=None):
-        """Handle a host-pushed domain event.
+    async def onEvent(self, _event: "abi.DomainEvent"):
+        """Handle a host-pushed domain event (at-least-once; must be idempotent).
 
         Args:
-            _event: Domain event payload.
+            _event: ``DomainEvent`` envelope.
 
         Returns:
-            JS object ``{"kind": "ack"}``.
+            ``EventResult`` union projected as ``{"kind": "ack" | "retry" |
+            "reject" | "deadLetter" | "suspended", ...}``; the default
+            acknowledges.
         """
         return js({"kind": "ack"})
+
+    async def start(self):
+        """Start background work after the host has granted bindings.
+
+        Returns:
+            ``None``.
+        """
+        return None
+
+    async def stop(self):
+        """Stop background work; the host may drop the capability afterwards.
+
+        Returns:
+            ``None``.
+        """
+        return None
+
+    async def diagnose(self):
+        """Return diagnostic lines.
+
+        Returns:
+            List of strings.
+        """
+        return js([])
+
+    async def scanLibrary(self, _params: "abi.ScanLibraryParams"):
+        """Re-sync the remote library.
+
+        Args:
+            _params: ``ScanLibraryParams`` (full-rescan flag).
+
+        Returns:
+            ``None``.
+        """
+        raise _unsupported("scanLibrary")
+
+    async def syncListening(self):
+        """Push / pull listening progress.
+
+        Returns:
+            ``SyncListeningResult``.
+        """
+        raise _unsupported("syncListening")
+
+    async def authenticateUser(self, _params: "abi.AuthenticateUserParams"):
+        """Verify remote credentials on behalf of the host.
+
+        Args:
+            _params: ``AuthenticateUserParams`` (username and password).
+
+        Returns:
+            ``ExternalUser``.
+        """
+        raise _unsupported("authenticateUser")
+
+    async def pollEvents(self):
+        """Drain events the remote side produced since the last poll.
+
+        Returns:
+            ``EventPollResult`` (``users`` list).
+        """
+        return js({"users": []})

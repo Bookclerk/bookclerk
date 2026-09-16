@@ -5,7 +5,8 @@
  * so they live here rather than in the generated `generated.ts` projection.
  */
 
-import type { JsonObject } from "./generated.js";
+/** Plain JSON object (string keys, JSON values). */
+export type JsonObject = Record<string, unknown>;
 
 /**
  * Host binding used by guests to push plugin → host notifications.
