@@ -26,6 +26,7 @@ FULL_SUITE_PATH_PREFIXES = (
     ".cargo/",
     ".github/workflows/",
     "scripts/ci_plan/",
+    "fuzz/",
 )
 
 PUBLISH_DOC_CRATES = frozenset(
@@ -75,6 +76,7 @@ KNOWN_TOP_LEVEL = frozenset(
         "crates",
         "docs",
         "examples",
+        "fuzz",
         "packages",
         "scripts",
         "third_party",

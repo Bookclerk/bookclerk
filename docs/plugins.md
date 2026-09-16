@@ -1109,11 +1109,13 @@ in-process S3 backend.
 
 ### Database plugins
 
-`kind = "database"` guests are **thin SQL adapters**. They implement the SeaORM
-proxy boundary over Workers RPC plus a generic atomic-plan executor. Engine
-connect/migrate/proxy code lives in the guest
-(`bookclerk-plugin-database-sqlite` (and optional d1/postgres guests) modules); the host does not link SQL engines.
-The host owns schema, domain SQL, and Bookclerk invariants
+`kind = "database"` guests are **BookclerkSQL adapters**. They implement the
+SeaORM proxy boundary over Workers RPC plus a generic atomic-plan executor.
+Guests speak only canonical BookclerkSQL; adapters lower at execute
+(`bookclerk-db-exec`). Engine connect/migrate/proxy code lives in the guest
+(`bookclerk-plugin-database-sqlite` and optional d1/postgres guests); the host
+does not link SQL engines. The host owns schema, domain SQL, proofs, and
+Bookclerk invariants
 ([ADR: SQL database contract](adr/sql-database-contract.md)). Guests must not
 import Bookclerk entities or embed application table names. The host opens the
 library through the external database loader (guest required — no in-process
@@ -1127,9 +1129,9 @@ closed). Non-SQL engines are unsupported.
 | Method | Notes |
 | --- | --- |
 | `Database.openSession` | Opens the adapter session. The guest connects its engine from `DatabaseContext.config` (first-party guests receive host-injected connect params; SQLite: path grant; D1/Postgres: host-injected credentials). |
-| `AdapterDatabaseSession.capabilities` | Typed control-plane call after `openSession`. Advertises SQL contract version, execution semantics, schema flags (`pragmaUserVersion` / `schemaMigrations` / `atomicSchemaBatch`), and all limits. The host must not invent these from the plugin id. |
-| `AdapterDatabaseSession.bootstrap` | Bootstrap-only SeaORM proxy metadata (`sqlFamily`, `dialect`); not part of `DbCapabilities` and never read by domain planning. |
-| `AdapterDatabaseSession.execute` | The one typed atomic operation (`ExecuteRequest` → `ExecuteReply`). Every request is a non-empty ordered statement list with Cap'n `DbValue` parameters, run as **one** SQL transaction. D1 uses `{ "batch": [...] }` on the REST Query API. SQLite and Postgres run the same plan in a native local transaction. Host compilers emit canonical `?` SQL; adapters lower at execute. Guests do not interpret Bookclerk operation names. `JobHandler.handle` does **not** receive the host library as `context.database`. Plugins that need durable SQL declare named bindings (`capabilities.bindings.databases`) and receive physically separate units on `context.databases`. |
+| `AdapterDatabaseSession.capabilities` | Typed control-plane call after `openSession`. Advertises SQL contract version, execution semantics, `schemaMigrations`, backup flags, and all limits. Host policy requires `schemaMigrations`. Diagnostic engine identity is not a capability. The host must not invent these from the plugin id. |
+| `AdapterDatabaseSession.bootstrap` | Diagnostic engine name only (`engine`). Not part of `DbCapabilities`, never used to admit a guest or generate SQL. Any string is valid. |
+| `AdapterDatabaseSession.execute` | The one typed atomic operation (`AdapterExecuteRequest` → `ExecuteReply`). The request is already-desugared canonical Bookclerk SQL (`?` placeholders) plus 1:1 hash-bound proofs. Adapters lower at execute. Guests do not interpret Bookclerk operation names. `JobHandler.handle` does **not** receive the host library as `context.database`. Plugins that need durable SQL declare named bindings (`capabilities.bindings.databases`) and receive physically separate units on `context.databases`. |
 | `AdapterDatabaseSession.close` | Release the session and its engine connection. |
 
 Host-private (never visible to plugin authors; first-party guests built with
@@ -1138,9 +1140,11 @@ interactive SeaORM transaction and returns an `AdapterTransaction`
 (`execute` / `commit` / `rollback`); the host records a sticky per-task fault
 when `begin` fails so later statements cannot fall back to autocommit, and a
 failed `commit` is surfaced to `LibraryStore` (SeaORM's proxy hook is
-infallible). `HostAdapterDatabaseSession.executeEnvelope` carries the durable
-receipt-persist envelope. D1 keeps `begin` unsupported and routes
-`executeEnvelope` through its native batch proxy.
+infallible). `AdapterDatabaseSession.execute` and
+`HostAdapterDatabaseSession.execute` carry the same
+`AdapterExecuteRequest` (canonical SQL, structured proofs, optional
+receipt-persist hint). D1 keeps `begin` unsupported and routes
+host `execute` through its native batch proxy.
 
 Built-in ids: `sqlite`, `d1`, `postgres` (match `[database].plugin`).
 

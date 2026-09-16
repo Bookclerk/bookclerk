@@ -75,7 +75,9 @@ and — for the sqlite guest — file-level grants for `library.db` and its jour
 sidecars (never the files-dir parent / `master.key`). See [plugins.md](plugins.md).
 Database backends are selected via `[database].plugin` (see [database.md](database.md));
 external `kind = "database"` guests are **required** (no in-process fallback).
-Guests are thin SQL adapters: the host owns schema, queries, and atomic plans
+Guests speak BookclerkSQL only. The host owns schema, admission, typing,
+authorization, and proofs; adapters lower the proven request to SQLite,
+PostgreSQL 16+, or Cloudflare D1
 ([ADR: SQL database contract](adr/sql-database-contract.md)).
 
 ## Workspace crates (by concern)

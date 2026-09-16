@@ -23,8 +23,8 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use bookclerk_plugin_abi::{
-    CreateIndexSchema, CreateTableSchema, DbCapabilities, FIRST_PARTY_MAX_RESULT_BYTES,
-    FIRST_PARTY_MAX_RESULT_ROWS,
+    CreateIndexSchema, CreateTableSchema, DbCapabilities, SharedAdapterBackupOps,
+    FIRST_PARTY_MAX_RESULT_BYTES, FIRST_PARTY_MAX_RESULT_ROWS,
 };
 use chrono::Utc;
 use sea_orm::DatabaseConnection;
@@ -146,7 +146,7 @@ impl CanonicalDatabaseSchema {
 }
 
 /// Options for a consistent canonical export.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CanonicalExportOpts {
     /// Guest advertised `DbCapabilities::supports_consistent_backup_read`.
     pub consistent_backup_read: bool,
@@ -160,6 +160,25 @@ pub struct CanonicalExportOpts {
     pub max_atomic_result_bytes: u32,
     /// Uncompressed JSON target for one table-data chunk.
     pub chunk_target_bytes: usize,
+    /// Adapter snapshot/identity hooks. `None` uses the in-process SDK (tests).
+    pub adapter: Option<SharedAdapterBackupOps>,
+    /// True when leftover SQL is physically lowered on the opened connection.
+    pub in_process: bool,
+}
+
+impl std::fmt::Debug for CanonicalExportOpts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CanonicalExportOpts")
+            .field("consistent_backup_read", &self.consistent_backup_read)
+            .field("skip_tables", &self.skip_tables)
+            .field("max_result_rows", &self.max_result_rows)
+            .field("max_result_bytes", &self.max_result_bytes)
+            .field("max_atomic_result_bytes", &self.max_atomic_result_bytes)
+            .field("chunk_target_bytes", &self.chunk_target_bytes)
+            .field("adapter", &self.adapter.as_ref().map(|_| "Some"))
+            .field("in_process", &self.in_process)
+            .finish()
+    }
 }
 
 impl Default for CanonicalExportOpts {
@@ -171,6 +190,8 @@ impl Default for CanonicalExportOpts {
             max_result_bytes: FIRST_PARTY_MAX_RESULT_BYTES,
             max_atomic_result_bytes: FIRST_PARTY_MAX_RESULT_BYTES,
             chunk_target_bytes: CHUNK_TARGET_UNCOMPRESSED_BYTES,
+            adapter: None,
+            in_process: false,
         }
     }
 }
@@ -186,6 +207,8 @@ impl CanonicalExportOpts {
             max_result_bytes: caps.max_result_bytes.max(1),
             max_atomic_result_bytes: caps.max_atomic_result_bytes.max(1),
             chunk_target_bytes: CHUNK_TARGET_UNCOMPRESSED_BYTES,
+            adapter: None,
+            in_process: false,
         }
     }
 
@@ -202,7 +225,7 @@ impl CanonicalExportOpts {
 }
 
 /// Negotiated limits for parameterized canonical restore.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CanonicalRestoreOpts {
     /// Guest advertised `atomicUnitRestore`.
     pub atomic_unit_restore: bool,
@@ -214,6 +237,24 @@ pub struct CanonicalRestoreOpts {
     pub max_request_bytes: u32,
     /// Capability-derived schema marker contract (never inferred from `DbBackend`).
     pub host_schema_kind: HostSchemaKind,
+    /// Adapter restore hooks. `None` uses the in-process SDK (tests).
+    pub adapter: Option<SharedAdapterBackupOps>,
+    /// True when leftover SQL is physically lowered on the opened connection.
+    pub in_process: bool,
+}
+
+impl std::fmt::Debug for CanonicalRestoreOpts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CanonicalRestoreOpts")
+            .field("atomic_unit_restore", &self.atomic_unit_restore)
+            .field("max_binds", &self.max_binds)
+            .field("max_payload_bytes", &self.max_payload_bytes)
+            .field("max_request_bytes", &self.max_request_bytes)
+            .field("host_schema_kind", &self.host_schema_kind)
+            .field("adapter", &self.adapter.as_ref().map(|_| "Some"))
+            .field("in_process", &self.in_process)
+            .finish()
+    }
 }
 
 impl Default for CanonicalRestoreOpts {
@@ -227,14 +268,13 @@ impl CanonicalRestoreOpts {
     /// Restore limits and marker kind copied from negotiated adapter capabilities.
     ///
     /// [`Self::host_schema_kind`] comes from [`HostSchemaKind::from_db_capabilities`],
-    /// never from SeaORM [`sea_orm::DbBackend`]. A SQLite-family adapter that
-    /// advertises `schemaMigrations` is [`HostSchemaKind::RowMarker`].
+    /// never from SeaORM [`sea_orm::DbBackend`]. Host policy requires
+    /// `schemaMigrations`.
     ///
     /// # Errors
     ///
-    /// Returns when `caps` is not a known versioning contract (missing, mixed,
-    /// or contradictory `pragmaUserVersion` / `schemaMigrations` /
-    /// `atomicSchemaBatch` flags).
+    /// Returns when `caps` is not a known versioning contract (`schemaMigrations`
+    /// missing).
     pub fn from_caps(caps: &DbCapabilities) -> Result<Self> {
         Ok(Self {
             atomic_unit_restore: caps.supports_atomic_unit_restore(),
@@ -242,6 +282,8 @@ impl CanonicalRestoreOpts {
             max_payload_bytes: caps.max_payload_bytes.max(1),
             max_request_bytes: caps.max_request_bytes.max(1),
             host_schema_kind: HostSchemaKind::from_db_capabilities(caps)?,
+            adapter: None,
+            in_process: false,
         })
     }
 }
@@ -387,7 +429,7 @@ impl BackupManifest {
 }
 
 /// Open plugin binding captured through the active adapter session.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PreparedPluginUnit {
     /// Owning plugin id.
     pub plugin_id: String,
@@ -403,10 +445,26 @@ pub struct PreparedPluginUnit {
     pub max_result_bytes: u32,
     /// Negotiated `maxAtomicResultBytes` for this binding session.
     pub max_atomic_result_bytes: u32,
+    /// Binding-scoped adapter hooks. `None` uses the in-process SDK (tests).
+    pub adapter: Option<SharedAdapterBackupOps>,
+}
+
+impl std::fmt::Debug for PreparedPluginUnit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedPluginUnit")
+            .field("plugin_id", &self.plugin_id)
+            .field("binding", &self.binding)
+            .field("backend_at_capture", &self.backend_at_capture)
+            .field("max_result_rows", &self.max_result_rows)
+            .field("max_result_bytes", &self.max_result_bytes)
+            .field("max_atomic_result_bytes", &self.max_atomic_result_bytes)
+            .field("adapter", &self.adapter.as_ref().map(|_| "Some"))
+            .finish_non_exhaustive()
+    }
 }
 
 /// Inputs for an automatic or CLI backup.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BackupRequest {
     /// `$BOOKCLERK_FILES_DIR`.
     pub files_dir: PathBuf,
@@ -430,6 +488,30 @@ pub struct BackupRequest {
     pub max_atomic_result_bytes: u32,
     /// Plugin sessions prepared by the host (must match the registry when inclusion is on).
     pub plugin_units: Vec<PreparedPluginUnit>,
+    /// Library adapter hooks. `None` uses the in-process SDK (tests).
+    pub adapter: Option<SharedAdapterBackupOps>,
+    /// True when leftover SQL is physically lowered on the opened connection.
+    pub in_process: bool,
+}
+
+impl std::fmt::Debug for BackupRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackupRequest")
+            .field("files_dir", &self.files_dir)
+            .field("schema_state", &self.schema_state)
+            .field("reason", &self.reason)
+            .field("to_version", &self.to_version)
+            .field("include_plugin_databases", &self.include_plugin_databases)
+            .field("consistent_backup_read", &self.consistent_backup_read)
+            .field("backend_at_capture", &self.backend_at_capture)
+            .field("max_result_rows", &self.max_result_rows)
+            .field("max_result_bytes", &self.max_result_bytes)
+            .field("max_atomic_result_bytes", &self.max_atomic_result_bytes)
+            .field("plugin_units", &self.plugin_units)
+            .field("adapter", &self.adapter.as_ref().map(|_| "Some"))
+            .field("in_process", &self.in_process)
+            .finish()
+    }
 }
 
 /// Result of publishing a recovery point.
@@ -507,6 +589,8 @@ pub async fn backup_library(
         max_result_bytes: req.max_result_bytes.max(1),
         max_atomic_result_bytes: req.max_atomic_result_bytes.max(1),
         chunk_target_bytes: CHUNK_TARGET_UNCOMPRESSED_BYTES,
+        adapter: req.adapter.clone(),
+        in_process: req.in_process,
     };
     let manifest = {
         let _lock = repo.lock_exclusive()?;
@@ -528,6 +612,8 @@ pub async fn backup_library(
                 max_result_bytes: prepared.max_result_bytes.max(1),
                 max_atomic_result_bytes: prepared.max_atomic_result_bytes.max(1),
                 chunk_target_bytes: CHUNK_TARGET_UNCOMPRESSED_BYTES,
+                adapter: prepared.adapter.clone().or_else(|| req.adapter.clone()),
+                in_process: req.in_process,
             };
             units.push(
                 capture_plugin_unit(
@@ -982,7 +1068,7 @@ fn extract_backup_archive_limited(
 }
 
 /// Optional in-place backup taken before applying ups or downs.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SchemaBackupOpts {
     /// `$BOOKCLERK_FILES_DIR` root for `backups/`.
     pub files_dir: PathBuf,
@@ -1000,6 +1086,24 @@ pub struct SchemaBackupOpts {
     pub max_atomic_result_bytes: u32,
     /// Plugin sessions prepared by the host when inclusion is requested.
     pub plugin_units: Vec<PreparedPluginUnit>,
+    /// Library adapter hooks. `None` uses the in-process SDK (tests).
+    pub adapter: Option<SharedAdapterBackupOps>,
+}
+
+impl std::fmt::Debug for SchemaBackupOpts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SchemaBackupOpts")
+            .field("files_dir", &self.files_dir)
+            .field("include_plugin_databases", &self.include_plugin_databases)
+            .field("consistent_backup_read", &self.consistent_backup_read)
+            .field("backend_at_capture", &self.backend_at_capture)
+            .field("max_result_rows", &self.max_result_rows)
+            .field("max_result_bytes", &self.max_result_bytes)
+            .field("max_atomic_result_bytes", &self.max_atomic_result_bytes)
+            .field("plugin_units", &self.plugin_units)
+            .field("adapter", &self.adapter.as_ref().map(|_| "Some"))
+            .finish()
+    }
 }
 
 impl Default for SchemaBackupOpts {
@@ -1013,6 +1117,7 @@ impl Default for SchemaBackupOpts {
             max_result_bytes: FIRST_PARTY_MAX_RESULT_BYTES,
             max_atomic_result_bytes: FIRST_PARTY_MAX_RESULT_BYTES,
             plugin_units: Vec::new(),
+            adapter: None,
         }
     }
 }

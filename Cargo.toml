@@ -45,7 +45,7 @@ default-members = [
 # Vendored fork is a path dep only — do not fmt/clippy/test it as a workspace member
 # (upstream tests need fixtures we do not ship). Non-Cargo examples are discovered
 # by bookclerk-dev staging, not as workspace members.
-exclude = ["third_party/audible-rs"]
+exclude = ["third_party/audible-rs", "fuzz"]
 
 [workspace.package]
 version = "0.1.0"

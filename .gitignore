@@ -82,3 +82,7 @@ lcov.info
 
 # Vendored crate build outputs
 third_party/**/target/
+
+# cargo-fuzz build products (checked-in corpora stay under fuzz/corpus/)
+fuzz/target/
+fuzz/artifacts/

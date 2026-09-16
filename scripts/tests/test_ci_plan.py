@@ -173,6 +173,11 @@ class CiPlanTests(unittest.TestCase):
         p = self.plan("brand-new-tooling/foo.sh")
         self.assertTrue(p.full_suite)
 
+    def test_fuzz_crate_full_suite(self) -> None:
+        p = self.plan("fuzz/fuzz_targets/sql_parse.rs")
+        self.assertTrue(p.full_suite)
+        self.assertTrue(any("global path" in r for r in p.reasons))
+
     def test_unresolved_manifest_full_suite(self) -> None:
         p = self.plan("crates/does-not-exist-yet/Cargo.toml")
         self.assertTrue(p.full_suite)

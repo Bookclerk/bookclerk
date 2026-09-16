@@ -102,7 +102,7 @@ pub use registry::{
 };
 pub use rpc_session::{
     plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,
-    HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
+    RpcBackupOps, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
 
 /// Register discovered external plugins into the in-process registries.

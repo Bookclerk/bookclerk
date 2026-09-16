@@ -7,7 +7,7 @@
 use crate::atomic_ops::{atomic_status, DbAtomicParams, DbAtomicResult};
 use crate::sql_plan::CompiledAtomic;
 use chrono::{DateTime, Utc};
-use sea_orm::{DatabaseConnection, DbBackend};
+use sea_orm::DatabaseConnection;
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 
@@ -26,11 +26,7 @@ pub async fn execute_db_atomic(
     db: &DatabaseConnection,
     compiled: CompiledAtomic,
 ) -> Result<DbAtomicResult> {
-    let timing_source = match db.get_database_backend() {
-        DbBackend::Postgres => "postgres_txn",
-        _ => "sqlite_txn",
-    };
-    crate::sql_plan::execute_compiled_on(db, compiled, timing_source).await
+    crate::sql_plan::execute_compiled_on(db, compiled).await
 }
 
 /// Compiles `params` and runs the plan as one native SQL transaction.
@@ -121,6 +117,7 @@ pub(crate) async fn set_user_role(
 }
 
 /// Consumes a claim ticket and mints a portal session in one atomic transaction.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn redeem_claim_ticket_to_session(
     db: &DatabaseConnection,
     token_hash: &str,

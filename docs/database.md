@@ -120,8 +120,9 @@ the host. First-party ids receive host-private connect params with
 host-injected paths/secrets (`sqlite` / `d1` / `postgres`), while any other
 database plugin id receives the public `DatabaseAdapterConfig` payload
 (`pluginDataDir` plus its granted `[database.<id>]` settings). The guest
-returns bootstrap `{ "sqlFamily", "dialect" }` (and related capability fields)
-so the host builds the RPC proxy without hardcoding backends.
+returns bootstrap `{ "engine" }` for diagnostics only. The host always builds
+the SeaORM RPC proxy as SQLite-shaped canonical SQL (`?` placeholders) and
+never admits or rejects a guest based on physical engine identity.
 
 First-party guests: `bookclerk-plugin-database-sqlite` (platform),
 `bookclerk-plugin-database-d1` and `bookclerk-plugin-database-postgres` (optional).
@@ -167,9 +168,10 @@ or SIGHUP) also switches backends live when `[database].plugin` changes.
 
 ## Postgres plugin
 
-`plugin = "postgres"` connects to a PostgreSQL server using the sqlx-postgres
-driver inside SeaORM. The connection URL is standard libpq-style:
-`postgres://user:password@host:5432/dbname`.
+`plugin = "postgres"` connects to a PostgreSQL **16+** server using the
+sqlx-postgres driver inside SeaORM. Connect fails closed when
+`server_version_num < 160000` or `server_encoding` is not UTF8. The connection
+URL is standard libpq-style: `postgres://user:password@host:5432/dbname`.
 
 Configuration (at least one of `url` or `url_file` is required):
 
@@ -196,9 +198,8 @@ BOOKCLERK_DATABASE_POSTGRES_URL_FILE=/run/secrets/postgres_url
 
 **Schema migrations**: Fresh databases apply
 [`current_canonical_schema`](../crates/bookclerk-library/src/migrations.rs)
-(today: derived from `unreleased_ops`; Postgres is that pack lowered mechanically in
-[`schema_postgres.rs`](../crates/bookclerk-db-exec/src/schema_postgres.rs)
-to `BIGSERIAL` / `BIGINT` / `BYTEA`) and persist
+(today: derived from `unreleased_ops`; Postgres adapters lower each statement at execute to
+`BIGINT` identity + `BYTEA`, never `BIGSERIAL`) and persist
 `SchemaState::Unreleased { checksum }`. There is no production frozen v1
 pack (`host_migration_plan()` is empty). A frozen database newer than this
 binary **fails closed**; see [schema versioning](adr/schema-versioning.md)
@@ -239,9 +240,9 @@ avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
   `passwordRequired`, `notFound`, and `idempotencyConflict`. Consume-once ops
   use `DELETE … RETURNING` so a missing or expired row cannot be observed
   twice. After `openSession` the host calls typed
-  `AdapterDatabaseSession.capabilities`. Schema selection uses `pragmaUserVersion` /
-  `schemaMigrations` / `atomicSchemaBatch`, not `sqlFamily`. D1 reports
-  `atomicSchemaBatch: true` and `maxBinds: 100`. The host stores the
+  `AdapterDatabaseSession.capabilities`. Host schema markers use
+  `schemaMigrations` (required). `timing` is not host policy. D1 reports `maxBinds: 100` and does not
+  advertise backup flags. The host stores the
   negotiated `DbCapabilities` and rejects plans that exceed `maxStatements`,
   per-statement `maxBinds`, `maxPayloadBytes`, or out-of-range selectors.
   A statement that yields more than `maxResultRows` **fails the plan**
@@ -251,8 +252,8 @@ avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
   limit. D1 refuses
   `RETURNING` unless host-IR `maxRows` is `1` (and rejects multi-tuple
   `VALUES` / semicolon-joined SQL) before HTTP; overflow or an oversized body
-  after HTTP commit is `unavailable`. Guests that omit `returning`, advertise
-  `0` row/payload/atomic caps, or mismatch bootstrap `dialect`/`sqlFamily`
+  after HTTP commit is `unavailable`. Guests that omit `returning` or advertise
+  `0` row/payload/atomic caps
   are not loaded. Time Travel is not used.
 - Guest failures are classified from SQLSTATE / `SQLITE_*` codes (not English
   `"unique"` matching). Constraint → `conflict`; busy/serialization →

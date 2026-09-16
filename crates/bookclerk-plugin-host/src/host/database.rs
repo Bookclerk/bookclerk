@@ -4,6 +4,8 @@
 //! SeaORM proxy calls over JSON-RPC. Engine connect/proxy quirks live in the
 //! database guest. There is no in-process fallback.
 
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,11 +16,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use bookclerk_config::{resolve_d1_api_token, resolve_postgres_url, Config, DatabasePluginKind};
 use bookclerk_db_exec::db_value_from_sea;
-use bookclerk_plugin_abi::HostExecuteEnvelope;
 use bookclerk_plugin_abi::{
     catalog_page_statement, database_context_from_params, reserved_catalog_relation_missing,
-    sql_catalog_page_rows, DbBootstrap, DbCapabilities, DbConnectParams, DbValue, SqlType,
-    SqlTypeEnv, SQL_CATALOG_TABLE, SQL_SCHEMA_TABLE,
+    sql_catalog_page_rows, AdapterExecuteRequest, DbBootstrap, DbCapabilities, DbConnectParams,
+    DbValue, IsolationReq, SqlType, SqlTypeEnv, SQL_CATALOG_TABLE, SQL_SCHEMA_TABLE,
 };
 use bookclerk_plugin_sdk::GuestDatabase;
 use bookclerk_plugin_sdk::PRODUCT_API_VERSION;
@@ -38,11 +39,68 @@ use crate::jail::plugin_data_dir;
 use crate::rpc_session::{PluginSession, OPERATOR_ACCOUNT};
 use crate::{PluginError, Result as PluginResult};
 use bookclerk_library::{
-    atomic_status, binding_bootstrap_plan, history_from_execute_reply,
-    plugin_history_session_matches, plugin_journal_select_request, prove_plugin_migration_sequence,
-    sql_string_literal, DbAtomicParams, PluginMigrationHistory, SchemaState,
-    BOOKCLERK_SCHEMA_NAMESPACE, SCHEMA_MIGRATIONS_DDL,
+    atomic_status, binding_bootstrap_plan, binding_bootstrap_type_env, history_from_execute_reply,
+    plugin_binding_type_env, plugin_history_session_matches, plugin_journal_select_request,
+    prove_plugin_migration_sequence, sql_string_literal, DbAtomicParams, PluginMigrationHistory,
+    PluginMigrationSequence, SchemaState, BOOKCLERK_SCHEMA_NAMESPACE, SCHEMA_MIGRATIONS_DDL,
 };
+
+#[cfg(test)]
+tokio::task_local! {
+    /// Stamped Cap'n SQL captured by [`capture_outbound_adapter_sql`].
+    static ADAPTER_SQL_CAPTURE: RefCell<Vec<String>>;
+}
+
+/// Records stamped adapter SQL when a test has [`capture_outbound_adapter_sql`] in scope.
+#[cfg(test)]
+fn note_outbound_adapter_sql(req: &AdapterExecuteRequest) {
+    let _ = ADAPTER_SQL_CAPTURE.try_with(|slot| {
+        slot.borrow_mut()
+            .extend(req.request.statements.iter().map(|stmt| stmt.sql.clone()));
+    });
+}
+
+/// Runs `f` and returns SQL that [`RpcDatabaseProxy`] stamped for Cap'n `execute`.
+#[cfg(test)]
+pub(super) async fn capture_outbound_adapter_sql<F, Fut, T>(f: F) -> (T, Vec<String>)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    ADAPTER_SQL_CAPTURE
+        .scope(RefCell::new(Vec::new()), async {
+            let value = f().await;
+            let sql = ADAPTER_SQL_CAPTURE.with(|slot| slot.borrow().clone());
+            (value, sql)
+        })
+        .await
+}
+
+/// Stamps 1:1 proofs on already-canonical host SQL for adapter execute.
+fn stamp_adapter_request(
+    req: ExecuteRequest,
+    catalog: &SqlTypeEnv,
+    isolation: IsolationReq,
+) -> std::result::Result<AdapterExecuteRequest, crate::PluginError> {
+    let proofs = bookclerk_db_exec::stamp_host_proofs(&req, catalog)
+        .map_err(|err| crate::PluginError::from_abi(Some("invalid_params"), err.to_string()))?;
+    bookclerk_plugin_abi::CanonicalExecuteRequest::from_desugared(req)
+        .with_isolation(isolation)
+        .bind_proofs(proofs)
+        .map_err(|err| crate::PluginError::from_abi(Some("invalid_params"), err.to_string()))
+}
+
+/// [`stamp_adapter_request`] against the host library SQL catalog.
+fn stamp_library_adapter_request(
+    req: ExecuteRequest,
+    isolation: IsolationReq,
+) -> std::result::Result<AdapterExecuteRequest, crate::PluginError> {
+    stamp_adapter_request(
+        req,
+        &bookclerk_library::migrations::host_sql_type_env(),
+        isolation,
+    )
+}
 
 /// External database backend spawned for `[database].plugin`.
 #[derive(Clone)]
@@ -157,18 +215,30 @@ impl ExternalDatabase {
             Err(err) => return Err(map_rpc_err(err)),
         };
         apply_bootstrap_metadata(&mut bootstrap, &self.plugin_id);
-        if let Some(reason) = bootstrap.backend_failure_reason() {
-            return Err(DbErr::Custom(reason));
-        }
-        let backend = seaorm_backend_from_bootstrap(&bootstrap)?;
+        let _ = &bootstrap;
         let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(RpcDatabaseProxy {
             session: self.session.clone(),
             txn_depth: Arc::new(Mutex::new(HashMap::new())),
             caps: caps.clone(),
             binding: None,
         }));
-        let db = Database::connect_proxy(backend, proxy).await?;
+        let db = Database::connect_proxy(canonical_seaorm_backend(), proxy).await?;
         Ok((db, caps))
+    }
+
+    /// Adapter snapshot/identity/restore hooks for the library session.
+    #[must_use]
+    pub fn library_backup_ops(&self) -> bookclerk_plugin_abi::SharedAdapterBackupOps {
+        crate::rpc_session::RpcBackupOps::library(self.session.clone()).shared()
+    }
+
+    /// Adapter snapshot/identity/restore hooks for one named binding session.
+    #[must_use]
+    pub fn binding_backup_ops(
+        &self,
+        key: impl Into<String>,
+    ) -> bookclerk_plugin_abi::SharedAdapterBackupOps {
+        crate::rpc_session::RpcBackupOps::binding(self.session.clone(), key).shared()
     }
 
     /// Reads the guest schema version and applies remaining host-authored DDL.
@@ -192,6 +262,7 @@ impl ExternalDatabase {
                 max_result_bytes: caps.max_result_bytes,
                 max_atomic_result_bytes: caps.max_atomic_result_bytes,
                 plugin_units: Vec::new(),
+                adapter: Some(self.library_backup_ops()),
             }),
         };
         bookclerk_library::apply_host_schema_with_batch_opts(db, kind, opts, move |stmts| {
@@ -372,7 +443,8 @@ pub async fn open_library_store(
 fn granted_job_database(store: bookclerk_library::LibraryStore) -> Arc<dyn GuestDatabase> {
     granted_job_database_with_policy(
         store,
-        bookclerk_library::GuestSqlPolicy::allow_tables(["books"]),
+        bookclerk_library::GuestSqlPolicy::allow_tables(["books"])
+            .with_sql_types(bookclerk_library::migrations::host_sql_type_env()),
     )
 }
 
@@ -470,6 +542,7 @@ impl GuestDatabase for BindingGuestDatabase {
             &self.cancel,
             request.deadline_unix_ms,
             self.caps.max_result_rows,
+            false,
         )
         .await?;
         let policy = bookclerk_library::GuestSqlPolicy::binding_owned().with_sql_types(env);
@@ -562,6 +635,34 @@ pub fn backup_adapter_id(plugin_id: &str) -> String {
     }
 }
 
+/// Nested savepoint when a binding transaction is already open; else atomic batch.
+fn binding_isolation(on_txn: bool) -> IsolationReq {
+    if on_txn {
+        IsolationReq::NestedSavepoint
+    } else {
+        IsolationReq::AtomicBatch
+    }
+}
+
+/// Typed execute on a named binding session, or on its open transaction.
+async fn exec_binding_request(
+    session: &PluginSession,
+    key: &str,
+    stamped: AdapterExecuteRequest,
+    cancel: &Arc<AtomicBool>,
+    on_txn: bool,
+) -> std::result::Result<ExecuteReply, crate::PluginError> {
+    if on_txn {
+        session
+            .db_txn_execute_binding_request(key, stamped, Arc::clone(cancel))
+            .await
+    } else {
+        session
+            .db_execute_binding_request(key, stamped, Arc::clone(cancel))
+            .await
+    }
+}
+
 /// Reads the durable binding catalog through the host (guest-denied) path.
 async fn load_binding_sql_type_env(
     session: &PluginSession,
@@ -569,6 +670,7 @@ async fn load_binding_sql_type_env(
     cancel: &Arc<AtomicBool>,
     deadline_unix_ms: u64,
     max_result_rows: u32,
+    on_txn: bool,
 ) -> std::result::Result<SqlTypeEnv, AbiPluginError> {
     let page = sql_catalog_page_rows(max_result_rows);
     let mut env = SqlTypeEnv::new();
@@ -599,10 +701,9 @@ async fn load_binding_sql_type_env(
                 result_selection: DbResultSelection::Rows,
             }],
         };
-        let reply = match session
-            .db_execute_binding_request(key, req, Arc::clone(cancel))
-            .await
-        {
+        let stamped = stamp_adapter_request(req, &SqlTypeEnv::new(), binding_isolation(on_txn))
+            .map_err(host_err_to_abi)?;
+        let reply = match exec_binding_request(session, key, stamped, cancel, on_txn).await {
             Ok(reply) => reply,
             Err(err) => {
                 if reserved_catalog_relation_missing(&err.to_string(), SQL_CATALOG_TABLE) {
@@ -641,7 +742,16 @@ async fn load_binding_sql_type_env(
             break;
         }
     }
-    load_binding_sql_schema_env(session, key, cancel, deadline_unix_ms, page, &mut env).await?;
+    load_binding_sql_schema_env(
+        session,
+        key,
+        cancel,
+        deadline_unix_ms,
+        page,
+        on_txn,
+        &mut env,
+    )
+    .await?;
     Ok(env)
 }
 
@@ -652,6 +762,7 @@ async fn load_binding_sql_schema_env(
     cancel: &Arc<AtomicBool>,
     deadline_unix_ms: u64,
     page: u32,
+    on_txn: bool,
     env: &mut SqlTypeEnv,
 ) -> std::result::Result<(), AbiPluginError> {
     let mut cursor = String::new();
@@ -676,10 +787,9 @@ async fn load_binding_sql_schema_env(
                 result_selection: DbResultSelection::Rows,
             }],
         };
-        let reply = match session
-            .db_execute_binding_request(key, req, Arc::clone(cancel))
-            .await
-        {
+        let stamped = stamp_adapter_request(req, &SqlTypeEnv::new(), binding_isolation(on_txn))
+            .map_err(host_err_to_abi)?;
+        let reply = match exec_binding_request(session, key, stamped, cancel, on_txn).await {
             Ok(reply) => reply,
             Err(err) => {
                 if reserved_catalog_relation_missing(&err.to_string(), SQL_SCHEMA_TABLE) {
@@ -832,7 +942,15 @@ async fn load_binding_plugin_history(
     let select =
         plugin_journal_select_request(format!("binding-history-fence-{key}"), deadline_unix_ms);
     let reply = session
-        .db_execute_binding_request(key, select, Arc::clone(cancel))
+        .db_execute_binding_request(
+            key,
+            stamp_adapter_request(
+                select,
+                &binding_bootstrap_type_env(),
+                IsolationReq::AtomicBatch,
+            )?,
+            Arc::clone(cancel),
+        )
         .await?;
     history_from_execute_reply(&reply).map_err(|err| PluginError::message(err.to_string()))
 }
@@ -847,6 +965,8 @@ struct BindingPluginMigrationHost<'a> {
     owner: &'a str,
     /// Binding name inside that plugin.
     binding: &'a str,
+    /// Proven registration used to stamp `plugin_binding_type_env`.
+    registered: &'a PluginMigrationSequence,
 }
 
 #[async_trait]
@@ -859,7 +979,15 @@ impl super::plugin_migration_apply::PluginMigrationApplyHost for BindingPluginMi
         );
         let reply = self
             .session
-            .db_execute_binding_request(self.key, select, cancel)
+            .db_execute_binding_request(
+                self.key,
+                stamp_adapter_request(
+                    select,
+                    &binding_bootstrap_type_env(),
+                    IsolationReq::AtomicBatch,
+                )?,
+                cancel,
+            )
             .await?;
         history_from_execute_reply(&reply).map_err(|err| PluginError::message(err.to_string()))
     }
@@ -868,15 +996,20 @@ impl super::plugin_migration_apply::PluginMigrationApplyHost for BindingPluginMi
         &self,
         operation_id: String,
         statements: Vec<String>,
+        applied_prefix: usize,
     ) -> PluginResult<()> {
         let cancel = Arc::new(AtomicBool::new(false));
         self.session
             .db_execute_binding_request(
                 self.key,
-                super::plugin_migration_apply::plugin_migration_apply_request(
-                    operation_id,
-                    statements,
-                ),
+                stamp_adapter_request(
+                    super::plugin_migration_apply::plugin_migration_apply_request(
+                        operation_id,
+                        statements,
+                    ),
+                    &plugin_binding_type_env(self.registered, applied_prefix),
+                    IsolationReq::AtomicBatch,
+                )?,
                 cancel,
             )
             .await?;
@@ -1014,7 +1147,6 @@ impl ExternalDatabase {
         binding: &str,
         unit_ref: &str,
         provision: bool,
-        backend: DbBackend,
     ) -> PluginResult<(DatabaseConnection, DbCapabilities)> {
         let kind = DatabasePluginKind::parse(&self.plugin_id);
         let ctx = self.binding_connect_context(
@@ -1044,7 +1176,7 @@ impl ExternalDatabase {
             caps: binding_caps.clone(),
             binding: Some(key),
         }));
-        let db = Database::connect_proxy(backend, proxy)
+        let db = Database::connect_proxy(canonical_seaorm_backend(), proxy)
             .await
             .map_err(|err| PluginError::message(err.to_string()))?;
         Ok((db, binding_caps))
@@ -1061,10 +1193,13 @@ impl ExternalDatabase {
         self.session
             .db_execute_binding_request(
                 key,
-                binding_sql_request(
-                    format!("binding-schema-migrations-{owner}-{binding}"),
-                    vec![SCHEMA_MIGRATIONS_DDL.to_string()],
-                ),
+                stamp_library_adapter_request(
+                    binding_sql_request(
+                        format!("binding-schema-migrations-{owner}-{binding}"),
+                        vec![SCHEMA_MIGRATIONS_DDL.to_string()],
+                    ),
+                    IsolationReq::AtomicBatch,
+                )?,
                 Arc::clone(&cancel),
             )
             .await?;
@@ -1086,7 +1221,11 @@ impl ExternalDatabase {
         };
         let reply = self
             .session
-            .db_execute_binding_request(key, select, Arc::clone(&cancel))
+            .db_execute_binding_request(
+                key,
+                stamp_library_adapter_request(select, IsolationReq::AtomicBatch)?,
+                Arc::clone(&cancel),
+            )
             .await?;
         let state = binding_schema_state_from_reply(&reply)?;
         let Some(stmts) =
@@ -1097,7 +1236,10 @@ impl ExternalDatabase {
         self.session
             .db_execute_binding_request(
                 key,
-                binding_sql_request(format!("binding-bootstrap-{owner}-{binding}"), stmts),
+                stamp_library_adapter_request(
+                    binding_sql_request(format!("binding-bootstrap-{owner}-{binding}"), stmts),
+                    IsolationReq::AtomicBatch,
+                )?,
                 cancel,
             )
             .await?;
@@ -1124,6 +1266,7 @@ impl ExternalDatabase {
             key,
             owner,
             binding,
+            registered,
         };
         super::plugin_migration_apply::apply_registered_plugin_migrations(
             &host, owner, binding, registered,
@@ -1143,7 +1286,15 @@ impl ExternalDatabase {
             plugin_journal_select_request(format!("binding-plugin-history-{owner}-{binding}"), 0);
         let reply = self
             .session
-            .db_execute_binding_request(key, select, cancel)
+            .db_execute_binding_request(
+                key,
+                stamp_adapter_request(
+                    select,
+                    &binding_bootstrap_type_env(),
+                    IsolationReq::AtomicBatch,
+                )?,
+                cancel,
+            )
             .await?;
         history_from_execute_reply(&reply).map_err(|err| PluginError::message(err.to_string()))
     }
@@ -1388,6 +1539,10 @@ impl RpcDatabaseProxy {
 
     /// Serializes a SeaORM statement into a typed `ExecuteRequest` statement.
     ///
+    /// The proxy is opened with the canonical SQLite SeaORM backend, so
+    /// `statement.sql` uses Bookclerk `?` placeholders. Adapters lower at
+    /// execute.
+    ///
     /// # Errors
     ///
     /// Returns when a SeaORM bind is outside the universal `DbValue` domain.
@@ -1445,20 +1600,39 @@ impl RpcDatabaseProxy {
             .map_err(|err| crate::PluginError::from_abi(Some("invalid_params"), err.to_string()))?;
         let validate_req = req.clone();
         let cancel = Arc::new(AtomicBool::new(false));
-        let reply = if self.depth() > 0 {
+        let on_txn = self.depth() > 0;
+        let isolation = binding_isolation(on_txn);
+        let catalog = if let Some(binding) = self.binding.as_deref() {
+            load_binding_sql_type_env(
+                &self.session,
+                binding,
+                &cancel,
+                req.deadline_unix_ms,
+                self.caps.max_result_rows,
+                on_txn,
+            )
+            .await
+            .map_err(|err| crate::PluginError::from_abi(Some("invalid_params"), err.to_string()))?
+        } else {
+            bookclerk_library::migrations::host_sql_type_env()
+        };
+        let stamped = stamp_adapter_request(req, &catalog, isolation)?;
+        #[cfg(test)]
+        note_outbound_adapter_sql(&stamped);
+        let reply = if on_txn {
             if let Some(binding) = self.binding.as_deref() {
                 self.session
-                    .db_txn_execute_binding_request(binding, req, cancel)
+                    .db_txn_execute_binding_request(binding, stamped, cancel)
                     .await
             } else {
-                self.session.db_txn_execute_request(req, cancel).await
+                self.session.db_txn_execute_request(stamped, cancel).await
             }
         } else if let Some(binding) = self.binding.as_deref() {
             self.session
-                .db_execute_binding_request(binding, req, cancel)
+                .db_execute_binding_request(binding, stamped, cancel)
                 .await
         } else {
-            self.session.db_execute_request(req, cancel).await
+            self.session.db_execute_request(stamped, cancel).await
         }?;
         bookclerk_library::validate_execute_reply(&validate_req, &reply, &self.caps)
             .map_err(map_reply_validation_err)?;
@@ -1555,9 +1729,10 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
         if prev != 0 {
             return;
         }
+        let isolation = bookclerk_db_exec::pending_begin_isolation();
         if let Err(err) = match self.binding.as_deref() {
-            Some(binding) => self.session.db_begin_binding(binding).await,
-            None => self.session.db_begin().await,
+            Some(binding) => self.session.db_begin_binding(binding, isolation).await,
+            None => self.session.db_begin(isolation).await,
         } {
             self.pop_depth();
             bookclerk_library::note_begin_failed(&err);
@@ -1679,11 +1854,15 @@ impl RpcAtomicBackend {
         let deadline_unix_ms = unix_now_ms().saturating_add(120_000);
         let mut typed = compiled.clone().into_typed_request(operation_id.clone());
         typed.deadline_unix_ms = deadline_unix_ms;
-        bookclerk_library::validate_execute_request(&typed, &self.caps)?;
+        bookclerk_library::authorize_typed_request(&mut typed, &self.caps).map_err(|err| {
+            bookclerk_library::LibraryError::Other(anyhow::anyhow!(err.to_string()))
+        })?;
         let validate_req = typed.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let _guard = CancelOnDrop(Arc::clone(&cancel));
         let remaining_ms = deadline_unix_ms.saturating_sub(unix_now_ms()).max(1);
+        let stamped = stamp_library_adapter_request(typed, IsolationReq::AtomicBatch)
+            .map_err(|err| bookclerk_library::LibraryError::Orm(DbErr::Custom(err.to_string())))?;
         tokio::select! {
             () = tokio::time::sleep(std::time::Duration::from_millis(remaining_ms)) => {
                 cancel.store(true, Ordering::SeqCst);
@@ -1691,7 +1870,7 @@ impl RpcAtomicBackend {
                     "deadline_exceeded: host RPC deadline elapsed".into(),
                 ))
             }
-            result = self.session.db_execute_request(typed, Arc::clone(&cancel)) => match result {
+            result = self.session.db_execute_request(stamped, Arc::clone(&cancel)) => match result {
                 Ok(reply) => {
                     bookclerk_library::validate_execute_reply(&validate_req, &reply, &self.caps)?;
                     Ok(bookclerk_library::interpret_typed_exec(
@@ -1779,8 +1958,10 @@ async fn exec_host_ddl_batch(
     };
     let validate_req = typed.clone();
     let cancel = Arc::new(AtomicBool::new(false));
+    let stamped = stamp_library_adapter_request(typed, IsolationReq::AtomicBatch)
+        .map_err(|err| bookclerk_library::LibraryError::Orm(DbErr::Custom(err.to_string())))?;
     let reply = session
-        .db_execute_request(typed, cancel)
+        .db_execute_request(stamped, cancel)
         .await
         .map_err(|err| bookclerk_library::LibraryError::Orm(DbErr::Custom(err.to_string())))?;
     bookclerk_library::validate_execute_reply(&validate_req, &reply, caps)?;
@@ -1834,23 +2015,19 @@ fn decode_payload<T: serde::de::DeserializeOwned>(
 impl bookclerk_library::TypedAtomicExec for RpcAtomicBackend {
     async fn execute_typed(
         &self,
-        envelope: HostExecuteEnvelope,
+        envelope: AdapterExecuteRequest,
     ) -> std::result::Result<ExecuteReply, AbiPluginError> {
-        let mut request = envelope.request.clone();
-        let proofs = envelope.proofs.clone();
-        bookclerk_library::authorize_typed_request(&mut request, &self.caps)
+        envelope
+            .require_proofs()
             .map_err(|err| AbiPluginError::invalid_params(err.to_string()))?;
         self.caps
-            .admit_proven_execute(&request, &proofs)
+            .admit_proven_execute(&envelope.request, &envelope.proofs)
             .map_err(|err| AbiPluginError::invalid_params(err.to_string()))?;
-        let validate_req = request.clone();
+        let validate_req = envelope.request.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let reply = self
             .session
-            .db_execute_envelope_request(
-                HostExecuteEnvelope::new(request, envelope.guest_receipt).with_proofs(proofs),
-                cancel,
-            )
+            .db_execute_request(envelope, cancel)
             .await
             .map_err(host_err_to_abi)?;
         bookclerk_library::validate_execute_reply(&validate_req, &reply, &self.caps)
@@ -2469,46 +2646,29 @@ fn adapter_config_context(
         .map_err(|err| DbErr::Custom(err.to_string()))
 }
 
-/// SeaORM proxy backend from [`DbBootstrap`] metadata.
-fn seaorm_backend_from_bootstrap(bootstrap: &DbBootstrap) -> Result<DbBackend, DbErr> {
-    match bootstrap.sql_family.to_ascii_lowercase().as_str() {
-        "postgres" | "postgresql" | "pg" => return Ok(DbBackend::Postgres),
-        "sqlite" => return Ok(DbBackend::Sqlite),
-        "" => {}
-        other => {
-            return Err(DbErr::Custom(format!(
-                "unknown database bootstrap sqlFamily `{other}`"
-            )));
-        }
-    }
-    match bootstrap.dialect.to_ascii_lowercase().as_str() {
-        "postgres" | "postgresql" | "pg" => Ok(DbBackend::Postgres),
-        "sqlite" => Ok(DbBackend::Sqlite),
-        other => Err(DbErr::Custom(format!(
-            "unknown database bootstrap dialect `{other}`"
-        ))),
-    }
+/// SeaORM proxy backend used for host query building.
+///
+/// Always SQLite-shaped so SeaORM emits canonical Bookclerk SQL (`?`
+/// placeholders). Adapters lower at execute. Bootstrap `engine` is diagnostic
+/// only and never selects a query dialect or gates connect.
+fn canonical_seaorm_backend() -> DbBackend {
+    DbBackend::Sqlite
 }
 
-/// Fills missing bootstrap-only SeaORM proxy metadata from the plugin id.
+/// Fills missing diagnostic engine identity from the plugin id.
 ///
-/// Guest-reported `sqlFamily` / `dialect` always win; the configured
-/// first-party plugin id only fills fields the guest left empty.
+/// Guest-reported `engine` always wins. The host never requires sqlite or
+/// postgres names.
 fn apply_bootstrap_metadata(bootstrap: &mut DbBootstrap, plugin_id: &str) {
-    if !bootstrap.sql_family.is_empty() && !bootstrap.dialect.is_empty() {
+    if !bootstrap.engine.is_empty() {
         return;
     }
-    let (sql_family, dialect) = match DatabasePluginKind::parse(plugin_id) {
-        Some(DatabasePluginKind::Postgres) => ("postgres", "postgres"),
-        Some(DatabasePluginKind::D1) | Some(DatabasePluginKind::Sqlite) => ("sqlite", "sqlite"),
-        None => return,
+    bootstrap.engine = match DatabasePluginKind::parse(plugin_id) {
+        Some(DatabasePluginKind::Postgres) => "postgres".into(),
+        Some(DatabasePluginKind::D1) => "d1".into(),
+        Some(DatabasePluginKind::Sqlite) => "sqlite".into(),
+        None => plugin_id.to_string(),
     };
-    if bootstrap.sql_family.is_empty() {
-        bootstrap.sql_family = sql_family.into();
-    }
-    if bootstrap.dialect.is_empty() {
-        bootstrap.dialect = dialect.into();
-    }
 }
 
 /// SQLite connect params for first-party `sqlite` and arbitrary sqlite-family ids.
@@ -2574,36 +2734,44 @@ mod tests {
     fn apply_bootstrap_metadata_from_plugin_id() {
         let mut bootstrap = DbBootstrap::default();
         apply_bootstrap_metadata(&mut bootstrap, "d1");
-        assert_eq!(bootstrap.sql_family, "sqlite");
-        assert_eq!(bootstrap.dialect, "sqlite");
-        assert!(bootstrap.backend_failure_reason().is_none());
+        assert_eq!(bootstrap.engine, "d1");
 
         let mut pg = DbBootstrap::default();
         apply_bootstrap_metadata(&mut pg, "postgres");
-        assert_eq!(pg.sql_family, "postgres");
-        assert_eq!(pg.dialect, "postgres");
+        assert_eq!(pg.engine, "postgres");
 
-        let mut unknown = DbBootstrap::sqlite();
+        let mut unknown = DbBootstrap::default();
         apply_bootstrap_metadata(&mut unknown, "sql-conformance");
-        assert_eq!(unknown.sql_family, "sqlite");
-        assert_eq!(unknown.dialect, "sqlite");
+        assert_eq!(unknown.engine, "sql-conformance");
+        assert_eq!(canonical_seaorm_backend(), DbBackend::Sqlite);
         assert_eq!(
-            seaorm_backend_from_bootstrap(&unknown).unwrap(),
-            DbBackend::Sqlite
+            canonical_seaorm_backend(),
+            DbBackend::Sqlite,
+            "SeaORM query building is canonical SQLite-shaped for every engine"
         );
     }
 
     #[test]
-    fn row_migrations_kind_is_independent_of_sqlite_bootstrap() {
-        let mut caps = DbCapabilities::advertised_sqlite();
-        caps.pragma_user_version = false;
-        caps.schema_migrations = true;
+    fn unfamiliar_engine_is_accepted_without_sqlite_or_postgres_metadata() {
+        let mut reported = DbBootstrap::diagnostic("foundationdb-sql");
+        apply_bootstrap_metadata(&mut reported, "custom-sql");
+        assert_eq!(reported.engine, "foundationdb-sql");
+        let caps = DbCapabilities::advertised_sqlite();
+        assert!(caps.meets_host_minimums());
         let kind = bookclerk_library::HostSchemaKind::from_db_capabilities(&caps).unwrap();
         assert_eq!(kind, bookclerk_library::HostSchemaKind::RowMarker);
-        assert_eq!(
-            seaorm_backend_from_bootstrap(&DbBootstrap::sqlite()).unwrap(),
-            DbBackend::Sqlite
-        );
+        assert_eq!(canonical_seaorm_backend(), DbBackend::Sqlite);
+    }
+
+    #[test]
+    fn row_migrations_kind_is_independent_of_sqlite_bootstrap() {
+        let caps = DbCapabilities::advertised_sqlite();
+        let kind = bookclerk_library::HostSchemaKind::from_db_capabilities(&caps).unwrap();
+        assert_eq!(kind, bookclerk_library::HostSchemaKind::RowMarker);
+        let mut none = caps;
+        none.schema_migrations = false;
+        assert!(bookclerk_library::HostSchemaKind::from_db_capabilities(&none).is_err());
+        assert_eq!(canonical_seaorm_backend(), DbBackend::Sqlite);
     }
 
     #[test]
@@ -2668,12 +2836,8 @@ mod tests {
     fn guest_bootstrap_from_session_overrides_plugin_id_inference() {
         let mut bootstrap = DbBootstrap::sqlite();
         apply_bootstrap_metadata(&mut bootstrap, "postgres");
-        assert_eq!(bootstrap.sql_family, "sqlite");
-        assert!(bootstrap.backend_failure_reason().is_none());
-        assert_eq!(
-            seaorm_backend_from_bootstrap(&bootstrap).unwrap(),
-            DbBackend::Sqlite
-        );
+        assert_eq!(bootstrap.engine, "sqlite");
+        assert_eq!(canonical_seaorm_backend(), DbBackend::Sqlite);
     }
 
     #[test]
@@ -2782,17 +2946,18 @@ mod tests {
                 .unwrap(),
         )
         .with_db_capabilities(DbCapabilities::advertised_sqlite());
+        const COUNTERS_DDL: &str =
+            "CREATE TABLE counters (id INTEGER PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)";
         store
             .connection()
-            .execute_raw(Statement::from_string(
-                DbBackend::Sqlite,
-                "CREATE TABLE counters (id INTEGER PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)",
-            ))
+            .execute_raw(Statement::from_string(DbBackend::Sqlite, COUNTERS_DDL))
             .await
             .unwrap();
+        let mut env = bookclerk_library::migrations::host_sql_type_env();
+        bookclerk_plugin_abi::apply_schema_sql_to_env(&mut env, COUNTERS_DDL);
         let session = granted_job_database_with_policy(
             store,
-            bookclerk_library::GuestSqlPolicy::allow_tables(["counters"]),
+            bookclerk_library::GuestSqlPolicy::allow_tables(["counters"]).with_sql_types(env),
         );
         let binding = DatabaseBinding::from_session(session);
         let token = RetryToken {
@@ -2882,5 +3047,30 @@ mod tests {
                 .await
                 .expect_err("unknown adapter must not unregister");
         assert!(err.to_string().contains("cannot drop"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn guest_database_execute_does_not_require_caller_proofs() {
+        let store = bookclerk_library::LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("mem db"),
+        );
+        let db = granted_job_database(store);
+        let req = ExecuteRequest {
+            operation_id: "guest-no-proofs".into(),
+            request_hash: String::new(),
+            statements: vec![TypedDbStatement {
+                sql: "SELECT 1".into(),
+                parameters: vec![],
+                kind: DbPlanStatementKind::Select,
+                max_rows: 1,
+                result_selection: DbResultSelection::Rows,
+            }],
+            deadline_unix_ms: 0,
+        };
+        db.execute(req)
+            .await
+            .expect("GuestDatabase.execute stays untrusted ExecuteRequest");
     }
 }

@@ -671,6 +671,9 @@ impl ProxyDatabaseTrait for D1Proxy {
         let params = statement_json_params(&statement);
         let paged = sql_is_bookclerk_page(&statement.sql);
         let value = self.run_sql(&statement.sql, params).await?;
+        if let Some(msg) = d1_last_statement_error(&value) {
+            return Err(DbErr::Custom(msg));
+        }
         let results = first_result_rows_ref(&value);
         let mut rows = Vec::with_capacity(results.len());
         let mut encoded = 1usize;
@@ -703,6 +706,9 @@ impl ProxyDatabaseTrait for D1Proxy {
         }
         let params = statement_json_params(&statement);
         let value = self.run_sql(&statement.sql, params).await?;
+        if let Some(msg) = d1_last_statement_error(&value) {
+            return Err(DbErr::Custom(msg));
+        }
         let meta = first_result_meta(&value);
         let last_insert_id = meta
             .and_then(|m| m.get("last_row_id"))
@@ -828,6 +834,23 @@ fn first_result_entry(value: &JsonValue) -> Option<&JsonValue> {
         .get("result")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.last())
+}
+
+/// Error text when the last D1 result entry is `success: false`.
+///
+/// Top-level HTTP `success` can still be true; a missing table is nested.
+fn d1_last_statement_error(value: &JsonValue) -> Option<String> {
+    let entry = first_result_entry(value)?;
+    if entry.get("success").and_then(JsonValue::as_bool) != Some(false) {
+        return None;
+    }
+    Some(
+        entry
+            .get("error")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("D1 statement failed")
+            .to_string(),
+    )
 }
 
 /// Row objects from the last result entry's `results` array, or empty.
@@ -1022,16 +1045,35 @@ mod tests {
             .into_typed_request(operation_id)
     }
 
+    fn stamp_catalog(extra_ddl: &[&str]) -> bookclerk_plugin_abi::SqlTypeEnv {
+        let mut env = bookclerk_library::migrations::host_sql_type_env();
+        for sql in extra_ddl {
+            bookclerk_plugin_abi::apply_schema_sql_to_env(&mut env, sql);
+        }
+        env
+    }
+
     async fn run_named_atomic(
         proxy: &D1Proxy,
         req: bookclerk_plugin_abi::ExecuteRequest,
     ) -> std::result::Result<bookclerk_plugin_abi::ExecuteReply, sea_orm::DbErr> {
+        run_named_atomic_catalog(
+            proxy,
+            req,
+            &bookclerk_library::migrations::host_sql_type_env(),
+        )
+        .await
+    }
+
+    async fn run_named_atomic_catalog(
+        proxy: &D1Proxy,
+        req: bookclerk_plugin_abi::ExecuteRequest,
+        catalog: &bookclerk_plugin_abi::SqlTypeEnv,
+    ) -> std::result::Result<bookclerk_plugin_abi::ExecuteReply, sea_orm::DbErr> {
+        let envelope = bookclerk_db_exec::stamp_adapter_execute(req, catalog)
+            .map_err(|err| sea_orm::DbErr::Custom(err.to_string()))?;
         proxy
-            .run_typed_atomic(
-                &req,
-                bookclerk_plugin_abi::GuestReceiptPersist::default(),
-                &[],
-            )
+            .run_typed_atomic(&envelope.request, envelope.guest_receipt, &envelope.proofs)
             .await
     }
 
@@ -2370,7 +2412,13 @@ mod tests {
             ],
             0,
         );
-        let err = run_named_atomic(&proxy, req).await.unwrap_err();
+        let err = run_named_atomic_catalog(
+            &proxy,
+            req,
+            &stamp_catalog(&["CREATE TABLE t (k TEXT PRIMARY KEY)"]),
+        )
+        .await
+        .unwrap_err();
         let mapped = crate::atomic::plugin_error_from_d1(err);
         assert_eq!(
             mapped.code,
@@ -2466,7 +2514,13 @@ mod tests {
             )],
             0,
         );
-        let err = run_named_atomic(&proxy, req).await.unwrap_err();
+        let err = run_named_atomic_catalog(
+            &proxy,
+            req,
+            &stamp_catalog(&["CREATE TABLE rowcap (x INTEGER)"]),
+        )
+        .await
+        .unwrap_err();
         assert!(
             err.to_string().contains("maxResultRows"),
             "row cap must fail closed: {err}"
@@ -2489,7 +2543,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -2570,7 +2624,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         let err = bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -2585,7 +2639,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -2607,7 +2661,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -2615,17 +2669,20 @@ mod tests {
         )
         .await
         .expect("host D1 schema");
+        let mut catalog = bookclerk_library::migrations::host_sql_type_env();
         bookclerk_library::sql_plan::run_typed_request_vectors(
             bookclerk_plugin_abi::DbCapabilities::advertised_d1(),
             bookclerk_plugin_abi::DbCapabilities::advertised_d1().max_result_rows,
             |req| {
                 let proxy = proxy.clone();
+                let envelope = bookclerk_library::sql_plan::stamp_typed_vector(req, &mut catalog);
                 async move {
+                    let envelope = envelope.map_err(sea_orm::DbErr::Custom)?;
                     proxy
                         .run_typed_atomic(
-                            &req,
-                            bookclerk_plugin_abi::GuestReceiptPersist::default(),
-                            &[],
+                            &envelope.request,
+                            envelope.guest_receipt,
+                            &envelope.proofs,
                         )
                         .await
                 }
@@ -2662,12 +2719,13 @@ mod tests {
                 }],
                 deadline_unix_ms: 0,
             };
+            let envelope = bookclerk_db_exec::stamp_adapter_execute(
+                req,
+                &bookclerk_library::migrations::host_sql_type_env(),
+            )
+            .expect("stamp");
             let reply = proxy
-                .run_typed_atomic(
-                    &req,
-                    bookclerk_plugin_abi::GuestReceiptPersist::default(),
-                    &[],
-                )
+                .run_typed_atomic(&envelope.request, envelope.guest_receipt, &envelope.proofs)
                 .await
                 .unwrap_or_else(|e| panic!("{label}: {e}"));
             let got = reply.statements[0].rows[0].values[0].clone();
@@ -2727,7 +2785,7 @@ mod tests {
         let (a, b) = tokio::join!(
             bookclerk_library::apply_host_schema_with_batch(
                 &db1,
-                bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+                bookclerk_library::HostSchemaKind::RowMarker,
                 move |stmts| {
                     let proxy = p1.clone();
                     async move { run_schema_batch(proxy, stmts).await }
@@ -2735,7 +2793,7 @@ mod tests {
             ),
             bookclerk_library::apply_host_schema_with_batch(
                 &db2,
-                bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+                bookclerk_library::HostSchemaKind::RowMarker,
                 move |stmts| {
                     let proxy = p2.clone();
                     async move { run_schema_batch(proxy, stmts).await }
@@ -2814,7 +2872,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -2832,7 +2890,7 @@ mod tests {
     impl bookclerk_library::TypedAtomicExec for ProxyTypedExec {
         async fn execute_typed(
             &self,
-            envelope: bookclerk_plugin_abi::HostExecuteEnvelope,
+            envelope: bookclerk_plugin_abi::AdapterExecuteRequest,
         ) -> std::result::Result<
             bookclerk_plugin_sdk::ExecuteReply,
             bookclerk_plugin_sdk::PluginError,
@@ -2863,7 +2921,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -2877,7 +2935,8 @@ mod tests {
             .with_typed_exec(std::sync::Arc::new(ProxyTypedExec {
                 proxy: proxy.clone(),
             }));
-        let policy = GuestSqlPolicy::allow_tables(["db_serialization_slots", "db_atomic_receipts"]);
+        let policy = GuestSqlPolicy::allow_tables(["db_serialization_slots", "db_atomic_receipts"])
+            .with_sql_types(bookclerk_library::migrations::host_sql_type_env());
         let guest_hash = String::new();
         let req = ExecuteRequest {
             operation_id: "d1-guest-replay".into(),
@@ -2928,7 +2987,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -2942,7 +3001,8 @@ mod tests {
             .with_typed_exec(std::sync::Arc::new(ProxyTypedExec {
                 proxy: proxy.clone(),
             }));
-        let policy = GuestSqlPolicy::allow_tables(["db_serialization_slots", "db_atomic_receipts"]);
+        let policy = GuestSqlPolicy::allow_tables(["db_serialization_slots", "db_atomic_receipts"])
+            .with_sql_types(bookclerk_library::migrations::host_sql_type_env());
         drop_reply.store(true, std::sync::atomic::Ordering::SeqCst);
         let req = ExecuteRequest {
             operation_id: "d1-guest-lost-reply".into(),
@@ -2995,7 +3055,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -3009,7 +3069,8 @@ mod tests {
             .with_typed_exec(std::sync::Arc::new(ProxyTypedExec {
                 proxy: proxy.clone(),
             }));
-        let policy = GuestSqlPolicy::allow_tables(["db_serialization_slots", "db_atomic_receipts"]);
+        let policy = GuestSqlPolicy::allow_tables(["db_serialization_slots", "db_atomic_receipts"])
+            .with_sql_types(bookclerk_library::migrations::host_sql_type_env());
         fail_pragma.store(true, std::sync::atomic::Ordering::SeqCst);
         let req = ExecuteRequest {
             operation_id: "d1-guest-pragma-fail".into(),
@@ -3087,7 +3148,7 @@ mod tests {
         let proxy_for_batch = proxy1.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -3213,7 +3274,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -3311,7 +3372,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -3408,7 +3469,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -3507,7 +3568,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -3608,7 +3669,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -3688,7 +3749,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -3782,7 +3843,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -4334,6 +4395,28 @@ mod tests {
         {
             panic!("{err}");
         }
+        let nullif_guard = sel(
+            "d1-div-nullif-guard",
+            bookclerk_db_exec::sql_v1::PORTABLE_DIV_NULLIF_NOT_ZERO_GUARD,
+        )
+        .await
+        .expect("div NULLIF not-zero guard");
+        if let Some(err) = bookclerk_db_exec::sql_v1::portable_div_nullif_not_zero_guard_mismatch(
+            &nullif_guard.statements[0],
+        ) {
+            panic!("{err}");
+        }
+        let json_obj = sel(
+            "d1-json-object-semantics",
+            bookclerk_db_exec::sql_v1::PORTABLE_JSON_OBJECT_SEMANTICS,
+        )
+        .await
+        .expect("json_object semantics");
+        if let Some(err) = bookclerk_db_exec::sql_v1::portable_json_object_semantics_mismatch(
+            &json_obj.statements[0],
+        ) {
+            panic!("{err}");
+        }
         exec(
             "d1-div-ddl",
             "CREATE TABLE IF NOT EXISTS divops (n INTEGER)",
@@ -4400,12 +4483,13 @@ mod tests {
             }],
             deadline_unix_ms: 0,
         };
+        let envelope = bookclerk_db_exec::stamp_adapter_execute(
+            req,
+            &stamp_catalog(&["CREATE TABLE direct_ops (k TEXT)"]),
+        )
+        .expect("stamp");
         let err = proxy
-            .run_typed_atomic(
-                &req,
-                bookclerk_plugin_abi::GuestReceiptPersist::default(),
-                &[],
-            )
+            .run_typed_atomic(&envelope.request, envelope.guest_receipt, &envelope.proofs)
             .await
             .expect_err("lost reply on an unwrapped mutation must not be retried");
         assert!(crate::atomic::is_ambiguous_d1(&err), "{err}");
@@ -4446,7 +4530,7 @@ mod tests {
         let proxy_for_batch = proxy.clone();
         bookclerk_library::apply_host_schema_with_batch(
             &db,
-            bookclerk_library::HostSchemaKind::AtomicBatchMarker,
+            bookclerk_library::HostSchemaKind::RowMarker,
             move |stmts| {
                 let proxy = proxy_for_batch.clone();
                 async move { run_schema_batch(proxy, stmts).await }
@@ -4529,12 +4613,13 @@ mod tests {
             }],
             deadline_unix_ms: 0,
         };
+        let envelope = bookclerk_db_exec::stamp_adapter_execute(
+            req,
+            &bookclerk_library::migrations::host_sql_type_env(),
+        )
+        .expect("stamp");
         let reply = proxy
-            .run_typed_atomic(
-                &req,
-                bookclerk_plugin_abi::GuestReceiptPersist::default(),
-                &[],
-            )
+            .run_typed_atomic(&envelope.request, envelope.guest_receipt, &envelope.proofs)
             .await
             .expect("read-only lost reply must be retried transparently");
         assert_eq!(reply.statements[0].rows[0].values[0], DbValue::Int64(7));

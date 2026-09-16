@@ -1,11 +1,24 @@
 //! Typed adapter conformance (`ExecuteRequest` / `ExecuteReply`).
 //!
-//! [`super::typed_vectors::run_typed_request_vectors`] is the #178 admission path for database plugins.
+//! Shared vectors run on three first-party adapters (differential suite):
+//! - SQLite in-process: [`run_typed_conn_vectors`] and
+//!   `bookclerk-plugin-database-sqlite` `typed_conformance` (guest execute)
+//! - PostgreSQL: [`run_typed_conn_vectors`] when `BOOKCLERK_TEST_POSTGRES_URL`
+//!   is set (`typed_shared_vectors_on_postgres`)
+//! - D1 HTTP mock: `database-d1` `executing_mock_typed_shared_vectors`
+//!
+//! Compare typed `DbValue` cells and Bookclerk error classes, not engine
+//! strings. Admission N/N+1 for advertised caps lives in `sql_plan::limits_tests`.
+//!
+//! [`super::typed_vectors::run_typed_request_vectors`] is the #178 admission
+//! path for database plugins.
 
 use std::future::Future;
 
-use bookclerk_db_exec::{AtomicSession, ExecCaps};
-use bookclerk_plugin_abi::{DbCapabilities, ExecuteReply, ExecuteRequest};
+use bookclerk_plugin_abi::{
+    apply_schema_sql_to_env, AdapterExecuteRequest, DbCapabilities, ExecuteReply, ExecuteRequest,
+    SqlTypeEnv,
+};
 use sea_orm::DatabaseConnection;
 
 use super::{validate_execute_reply, CONTRACT_VECTOR_ROW_CAP};
@@ -34,40 +47,56 @@ pub async fn run_typed_request_vectors<F, Fut, E>(
     .await;
 }
 
-/// Runs the shared contract suite through typed `execute_typed_on_session`.
+/// Desugars and stamps proofs for one vector, recording DDL in `catalog`.
+///
+/// Adapter-boundary tests (guest execute) must stamp against the host catalog
+/// plus tables created by earlier vectors.
+///
+/// # Errors
+///
+/// Returns when typecheck fails.
+pub fn stamp_typed_vector(
+    req: ExecuteRequest,
+    catalog: &mut SqlTypeEnv,
+) -> Result<AdapterExecuteRequest, String> {
+    let envelope = bookclerk_db_exec::stamp_adapter_execute(req.clone(), catalog)
+        .map_err(|err| err.to_string())?;
+    for stmt in &envelope.request.statements {
+        apply_schema_sql_to_env(catalog, &stmt.sql);
+    }
+    Ok(envelope)
+}
+
+/// Runs the shared contract suite through the host stamp + adapter execute path.
 ///
 /// # Panics
 ///
 /// Panics when a vector fails.
-pub async fn run_typed_conn_vectors(
-    db: &DatabaseConnection,
-    connect: DbCapabilities,
-    timing: &str,
-) {
+pub async fn run_typed_conn_vectors(db: &DatabaseConnection, connect: DbCapabilities) {
     let db = db.clone();
-    let timing = timing.to_string();
     let connect_for_run = connect.clone();
+    let mut catalog = crate::migrations::host_sql_type_env();
     run_typed_contract_vectors(connect, CONTRACT_VECTOR_ROW_CAP, move |typed, cap| {
+        let stamped = stamp_typed_vector(typed, &mut catalog);
         let db = db.clone();
-        let timing = timing.clone();
         let connect = connect_for_run.clone();
         async move {
-            let mut caps = ExecCaps::from_capabilities(&connect);
+            let envelope = stamped?;
+            let mut caps = bookclerk_db_exec::ExecCaps::from_capabilities(&connect);
             if cap > 0 {
                 caps.max_result_rows = cap;
             }
-            let reply = bookclerk_db_exec::execute_typed_on_session(
+            let reply = bookclerk_db_exec::execute_typed_envelope_on_connection(
                 &db,
-                &typed,
-                bookclerk_db_exec::GuestReceiptPersist::default(),
-                &timing,
+                &envelope,
                 caps,
-                AtomicSession::from_deadline(None)
+                bookclerk_db_exec::AtomicSession::from_deadline(None)
                     .with_type_env(crate::migrations::host_sql_type_env()),
             )
             .await
             .map_err(|err| err.to_string())?;
-            validate_execute_reply(&typed, &reply, &connect).map_err(|err| err.to_string())?;
+            validate_execute_reply(&envelope.request, &reply, &connect)
+                .map_err(|err| err.to_string())?;
             Ok(reply)
         }
     })
@@ -120,6 +149,7 @@ fn validate_typed_reply(
 #[cfg(test)]
 mod typed_value_matrix {
     use super::*;
+    use bookclerk_db_exec::{AtomicSession, ExecCaps};
     use bookclerk_plugin_abi::{
         DbPlanStatementKind, DbResultSelection, DbType, DbValue, ExecuteRequest, TypedDbStatement,
     };
@@ -260,14 +290,18 @@ mod typed_value_matrix {
             }],
             deadline_unix_ms: 0,
         };
+        let mut catalog = crate::migrations::host_sql_type_env();
+        bookclerk_plugin_abi::apply_schema_sql_to_env(
+            &mut catalog,
+            "CREATE TABLE typed_null_probe (v INTEGER)",
+        );
         let reply = bookclerk_db_exec::execute_typed_on_session(
             &db,
             &req,
             bookclerk_db_exec::GuestReceiptPersist::default(),
             "sqlite_txn",
             sqlite_caps(),
-            AtomicSession::from_deadline(None)
-                .with_type_env(crate::migrations::host_sql_type_env()),
+            AtomicSession::from_deadline(None).with_type_env(catalog),
         )
         .await
         .expect("typed execute");

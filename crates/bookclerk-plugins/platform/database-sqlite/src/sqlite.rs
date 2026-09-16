@@ -136,6 +136,7 @@ impl SqliteProxy {
         // shorter than catalog paging under CI `spawn_blocking`, which turned
         // snapshot CAS into SQLITE_BUSY instead of a lost update.
         let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+        let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
         let budget = Arc::new(Mutex::new(ExecBudget::unlimited()));
         let handler_budget = Arc::clone(&budget);
         conn.progress_handler(
@@ -269,7 +270,7 @@ pub async fn open_memory() -> bookclerk_library::Result<DatabaseConnection> {
     let db = open_memory_unmigrated()
         .await
         .map_err(bookclerk_library::LibraryError::Orm)?;
-    apply_host_schema(&db, HostSchemaKind::PragmaMarker).await?;
+    apply_host_schema(&db, HostSchemaKind::RowMarker).await?;
     Ok(db)
 }
 
@@ -306,7 +307,7 @@ pub async fn open_store(path: &Path) -> bookclerk_library::Result<LibraryStore> 
     let db = open(path)
         .await
         .map_err(bookclerk_library::LibraryError::Orm)?;
-    apply_host_schema(&db, HostSchemaKind::PragmaMarker).await?;
+    apply_host_schema(&db, HostSchemaKind::RowMarker).await?;
     Ok(LibraryStore::from_connection(db))
 }
 

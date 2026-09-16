@@ -3,16 +3,84 @@
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, RuntimeErr, Statement};
 use std::ops::Deref;
 
+/// Minimum PostgreSQL major BookclerkSQL adapters accept.
+pub const MIN_POSTGRES_MAJOR: u32 = 16;
+
+/// `server_version_num` floor (`160000` for PostgreSQL 16).
+pub const MIN_POSTGRES_VERSION_NUM: u32 = MIN_POSTGRES_MAJOR * 10_000;
+
 /// Open Postgres with a host-mediated connection URL (ping only; host applies schema).
 ///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
+/// Returns an error when the operation fails, the server is older than
+/// [`MIN_POSTGRES_MAJOR`], or the session encoding is not UTF8.
 pub async fn open(url: &str) -> std::result::Result<DatabaseConnection, DbErr> {
     let db = Database::connect(url).await?;
     db.ping().await?;
+    require_postgres_readiness(&db).await?;
     tracing::debug!(plugin = "postgres", "opened library database");
     Ok(db)
+}
+
+/// Reject servers older than [`MIN_POSTGRES_MAJOR`] or without UTF8 encoding.
+async fn require_postgres_readiness(db: &DatabaseConnection) -> std::result::Result<(), DbErr> {
+    let ver = scalar_text(db, "SHOW server_version_num").await?;
+    let num: u32 = ver.trim().parse().map_err(|_| {
+        DbErr::Custom(format!(
+            "postgres server_version_num is not an integer: {ver}"
+        ))
+    })?;
+    if num < MIN_POSTGRES_VERSION_NUM {
+        return Err(DbErr::Custom(format!(
+            "BookclerkSQL requires PostgreSQL {MIN_POSTGRES_MAJOR}+ (server_version_num {num})"
+        )));
+    }
+    let server = scalar_text(db, "SHOW server_encoding").await?;
+    if !is_utf8_encoding(&server) {
+        return Err(DbErr::Custom(format!(
+            "BookclerkSQL requires UTF8 server_encoding (got {server})"
+        )));
+    }
+    let client = scalar_text(db, "SHOW client_encoding").await?;
+    if !is_utf8_encoding(&client) {
+        db.execute_raw(Statement::from_string(
+            db.get_database_backend(),
+            "SET client_encoding TO 'UTF8'".to_string(),
+        ))
+        .await?;
+        let client = scalar_text(db, "SHOW client_encoding").await?;
+        if !is_utf8_encoding(&client) {
+            return Err(DbErr::Custom(format!(
+                "BookclerkSQL requires UTF8 client_encoding (got {client})"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// True when Postgres reports UTF8 / UTF-8 / UNICODE for an encoding GUC.
+fn is_utf8_encoding(s: &str) -> bool {
+    matches!(
+        s.trim().to_ascii_uppercase().as_str(),
+        "UTF8" | "UTF-8" | "UNICODE"
+    )
+}
+
+/// First column of a one-row `SHOW` / scalar query as text.
+async fn scalar_text(db: &DatabaseConnection, sql: &str) -> std::result::Result<String, DbErr> {
+    let rows = db
+        .query_all_raw(Statement::from_string(
+            db.get_database_backend(),
+            sql.to_string(),
+        ))
+        .await?;
+    let row = rows
+        .first()
+        .ok_or_else(|| DbErr::Custom(format!("{sql} returned no rows")))?;
+    row.try_get_by_index::<String>(0)
+        .or_else(|_| row.try_get_by_index::<i32>(0).map(|n| n.to_string()))
+        .or_else(|_| row.try_get_by_index::<i64>(0).map(|n| n.to_string()))
 }
 
 /// Rewrites the database name in a Postgres URL, preserving query options.
@@ -95,7 +163,8 @@ fn binding_database_name_ok(name: &str) -> bool {
 /// # Errors
 ///
 /// Returns an error when the name is unsafe, `CREATE DATABASE` fails (the
-/// role needs `CREATEDB`), or the binding connection cannot ping.
+/// role needs `CREATEDB`), the binding connection cannot ping, or the
+/// binding session is older than [`MIN_POSTGRES_MAJOR`] or not UTF8.
 pub async fn open_binding(
     url: &str,
     database: &str,
@@ -128,6 +197,7 @@ pub async fn open_binding(
     drop(admin);
     let db = Database::connect(postgres_url_with_database(url, database)).await?;
     db.ping().await?;
+    require_postgres_readiness(&db).await?;
     tracing::debug!(plugin = "postgres", database, "opened binding database");
     Ok(db)
 }
@@ -136,7 +206,8 @@ pub async fn open_binding(
 ///
 /// # Errors
 ///
-/// Returns when the name is unsafe, the database is missing, or ping fails.
+/// Returns when the name is unsafe, the database is missing, ping fails, or
+/// the binding session is older than [`MIN_POSTGRES_MAJOR`] or not UTF8.
 pub async fn open_binding_existing(
     url: &str,
     database: &str,
@@ -155,6 +226,7 @@ pub async fn open_binding_existing(
     drop(admin);
     let db = Database::connect(postgres_url_with_database(url, database)).await?;
     db.ping().await?;
+    require_postgres_readiness(&db).await?;
     Ok(db)
 }
 
@@ -404,5 +476,108 @@ mod tests {
         assert!(!present, "reopened binding must not keep the dropped table");
         drop(reopened);
         drop_binding(&url, &name).await.expect("cleanup");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+    async fn postgres_binding_latin1_encoding_fails_readiness() {
+        let url = postgres_test_url();
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let name = format!("pb_latin1_{suffix}");
+        let name = name.chars().take(63).collect::<String>();
+        let admin = Database::connect(url.as_str()).await.expect("admin");
+        let backend = admin.get_database_backend();
+        admin
+            .execute_raw(Statement::from_string(
+                backend,
+                format!(
+                    "CREATE DATABASE {name} ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' \
+                     TEMPLATE template0"
+                ),
+            ))
+            .await
+            .expect("create latin1 binding database");
+        drop(admin);
+        let existing = open_binding_existing(&url, &name)
+            .await
+            .expect_err("latin1 binding must fail TEXT readiness");
+        assert!(
+            existing.to_string().contains("UTF8") || existing.to_string().contains("encoding"),
+            "open_binding_existing: {existing}"
+        );
+        let created = open_binding(&url, &name)
+            .await
+            .expect_err("existing latin1 binding must fail TEXT readiness");
+        assert!(
+            created.to_string().contains("UTF8") || created.to_string().contains("encoding"),
+            "open_binding: {created}"
+        );
+        drop_binding(&url, &name).await.expect("cleanup latin1");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+    async fn postgres_binding_utf8_session_passes_readiness() {
+        let url = postgres_test_url();
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let name = format!("pb_utf8_{suffix}");
+        let name = name.chars().take(63).collect::<String>();
+        let db = open_binding(&url, &name).await.expect("utf8 binding");
+        let server = scalar_text(&db, "SHOW server_encoding")
+            .await
+            .expect("server_encoding");
+        let client = scalar_text(&db, "SHOW client_encoding")
+            .await
+            .expect("client_encoding");
+        assert!(is_utf8_encoding(&server), "server_encoding={server}");
+        assert!(is_utf8_encoding(&client), "client_encoding={client}");
+        drop(db);
+        drop_binding(&url, &name).await.expect("cleanup utf8");
+    }
+
+    #[test]
+    fn ci_postgres_matrix_covers_min_major_and_nothing_older() {
+        let yml = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../.github/workflows/ci.yml"
+        ));
+        let jobs = yml
+            .split("postgres-jobs:")
+            .nth(1)
+            .expect("ci.yml postgres-jobs");
+        let job = jobs.split("ci-gate:").next().expect("postgres-jobs body");
+        let line = job
+            .lines()
+            .find(|l| l.trim_start().starts_with("postgres:"))
+            .expect("matrix postgres list");
+        let mut majors = Vec::new();
+        for part in line.split(|c: char| !c.is_ascii_digit()) {
+            if part.is_empty() {
+                continue;
+            }
+            majors.push(part.parse::<u32>().expect("postgres major"));
+        }
+        assert!(
+            majors.contains(&MIN_POSTGRES_MAJOR),
+            "CI must include postgres:{MIN_POSTGRES_MAJOR}: {majors:?}"
+        );
+        assert!(
+            majors.iter().all(|n| *n >= MIN_POSTGRES_MAJOR),
+            "CI postgres images must be >= {MIN_POSTGRES_MAJOR}: {majors:?}"
+        );
+        assert!(
+            majors.contains(&17) && majors.contains(&18),
+            "CI must matrix current supported majors: {majors:?}"
+        );
+        assert!(
+            !majors.contains(&19),
+            "postgres 19 was beta-only at implement time; add it after GA: {majors:?}"
+        );
     }
 }

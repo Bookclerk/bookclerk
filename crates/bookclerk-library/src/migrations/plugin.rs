@@ -9,18 +9,18 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use bookclerk_plugin_abi::{
-    authorize_guest_sql_policy, canonical_statements_checksum,
+    apply_schema_sql_to_env, authorize_guest_sql_policy, canonical_statements_checksum,
     require_plugin_migration_registration, validate_guest_execute_request_for_policy,
     DbPlanStatementKind, DbResultSelection, DbValue, ExecuteReply, ExecuteRequest, GuestSqlPolicy,
     PluginMigration, PluginMigrationOp, SqlTypeEnv, TypedDbStatement, MAX_LIST_PAGE,
     MAX_PLUGIN_MIGRATION_ID_BYTES, PLUGIN_MIGRATIONS_TABLE,
 };
-use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
+use sea_orm::{ConnectionTrait, DatabaseConnection, StreamTrait};
 
 use super::plan::sql_string_literal;
 use super::prove_plan_sql_op;
 use crate::error::{LibraryError, Result};
-use crate::sql_plan::execute_typed_on_binding;
+use crate::sql_plan::{execute_typed_on_binding, execute_typed_on_open};
 
 /// Timing label for plugin journal apply (not an adapter identity).
 const PLUGIN_TXN_TIMING: &str = "plugin_migrate_txn";
@@ -165,6 +165,25 @@ pub fn prove_plugin_migration_sequence(
         });
     }
     Ok(PluginMigrationSequence { migrations: proven })
+}
+
+/// Binding catalog after host bootstrap plus schema ops from the first `applied`
+/// registered migrations.
+///
+/// Plugin apply stamps journal DML and suffix data ops against this evolving
+/// environment. `applied` is the durable prefix length (host-private ordinal
+/// count), not a plugin version.
+#[must_use]
+pub fn plugin_binding_type_env(registered: &PluginMigrationSequence, applied: usize) -> SqlTypeEnv {
+    let mut env = super::binding_bootstrap_type_env();
+    for migration in registered.migrations.iter().take(applied) {
+        for op in &migration.operations {
+            if op.is_schema() {
+                apply_schema_sql_to_env(&mut env, op.sql());
+            }
+        }
+    }
+    env
 }
 
 /// Proves one registered op: packing, kind, evolving type env, guest grammar,
@@ -362,54 +381,18 @@ pub async fn load_plugin_migration_history(
 /// Returns when the journal cannot be read or ordinals are not contiguous.
 pub async fn load_plugin_migration_history_on<C>(conn: &C) -> Result<PluginMigrationHistory>
 where
-    C: ConnectionTrait,
+    C: ConnectionTrait + StreamTrait,
 {
-    let backend = conn.get_database_backend();
-    let rows = conn
-        .query_all_raw(Statement::from_string(
-            backend,
-            format!(
-                "SELECT ordinal, migration_id, checksum FROM {PLUGIN_MIGRATIONS_TABLE} ORDER BY ordinal"
-            ),
-        ))
-        .await
-        .map_err(|err| LibraryError::Schema(format!("cannot read plugin_migrations: {err}")))?;
-    let mut entries = Vec::with_capacity(rows.len());
-    for (i, row) in rows.iter().enumerate() {
-        let ordinal = row
-            .try_get::<i64>("", "ordinal")
-            .ok()
-            .or_else(|| row.try_get_by_index::<i64>(0).ok())
-            .ok_or_else(|| {
-                LibraryError::Schema("plugin_migrations row is missing ordinal".into())
-            })?;
-        let migration_id = row
-            .try_get::<String>("", "migration_id")
-            .ok()
-            .or_else(|| row.try_get_by_index::<String>(1).ok())
-            .ok_or_else(|| {
-                LibraryError::Schema("plugin_migrations row is missing migration_id".into())
-            })?;
-        let checksum = row
-            .try_get::<String>("", "checksum")
-            .ok()
-            .or_else(|| row.try_get_by_index::<String>(2).ok())
-            .ok_or_else(|| {
-                LibraryError::Schema("plugin_migrations row is missing checksum".into())
-            })?;
-        let expect = i64::try_from(i).unwrap_or(i64::MAX);
-        if ordinal != expect {
-            return Err(LibraryError::Schema(format!(
-                "plugin_migrations ordinal {ordinal} is not contiguous (expected {expect})"
-            )));
-        }
-        entries.push(PluginJournalEntry {
-            ordinal,
-            migration_id,
-            checksum,
-        });
-    }
-    Ok(PluginMigrationHistory { entries })
+    let req = plugin_journal_select_request("plugin-journal-select", 0);
+    let reply = execute_typed_on_open(
+        conn,
+        &req,
+        super::binding_bootstrap_type_env(),
+        MAX_LIST_PAGE,
+    )
+    .await
+    .map_err(|err| LibraryError::Schema(format!("cannot read plugin_migrations: {err}")))?;
+    history_from_execute_reply(&reply)
 }
 
 /// Parses journal rows from a typed select reply.
@@ -552,8 +535,9 @@ pub async fn apply_plugin_migrations(
         else {
             return Ok(history);
         };
-        let ordinal = i64::try_from(ordinal).unwrap_or(i64::MAX);
-        apply_one_plugin_migration(db, ordinal, migration, registered).await?;
+        let catalog = plugin_binding_type_env(registered, ordinal);
+        let ordinal_i64 = i64::try_from(ordinal).unwrap_or(i64::MAX);
+        apply_one_plugin_migration(db, ordinal_i64, migration, registered, &catalog).await?;
     }
 }
 
@@ -568,6 +552,7 @@ async fn apply_one_plugin_migration(
     ordinal: i64,
     migration: &ProvenPluginMigration,
     registered: &PluginMigrationSequence,
+    catalog: &SqlTypeEnv,
 ) -> Result<()> {
     let mut delay_ms = 20u64;
     for attempt in 0..MAX_PLUGIN_MIGRATION_APPLY_ATTEMPTS {
@@ -582,7 +567,7 @@ async fn apply_one_plugin_migration(
         }
         let stmts = plugin_apply_statements(ordinal, migration);
         let operation_id = format!("plugin-migrate-ord{ordinal}-try{attempt}");
-        match run_plugin_atomic(db, &operation_id, stmts).await {
+        match run_plugin_atomic(db, &operation_id, stmts, catalog).await {
             Ok(()) => return Ok(()),
             Err(err) => {
                 let history = load_plugin_migration_history(db).await;
@@ -660,6 +645,7 @@ async fn run_plugin_atomic(
     db: &DatabaseConnection,
     operation_id: &str,
     stmts: Vec<String>,
+    catalog: &SqlTypeEnv,
 ) -> Result<()> {
     let req = ExecuteRequest {
         operation_id: operation_id.into(),
@@ -676,7 +662,7 @@ async fn run_plugin_atomic(
             })
             .collect(),
     };
-    execute_typed_on_binding(db, &req, PLUGIN_TXN_TIMING, 0).await?;
+    execute_typed_on_binding(db, &req, PLUGIN_TXN_TIMING, 0, catalog).await?;
     Ok(())
 }
 
@@ -805,6 +791,26 @@ mod tests {
                 )],
             ),
         ]);
+    }
+
+    #[test]
+    fn plugin_binding_type_env_keeps_bootstrap_and_prefix_schema() {
+        let registered = seq(vec![
+            mig("a", vec![notes_create()]),
+            mig(
+                "b",
+                vec![data("INSERT INTO notes (id, body) VALUES (1, 'seed')")],
+            ),
+        ]);
+        let before = plugin_binding_type_env(&registered, 0);
+        assert!(before.has_table(PLUGIN_MIGRATIONS_TABLE));
+        assert!(!before.has_table("notes"));
+        let after_create = plugin_binding_type_env(&registered, 1);
+        assert!(after_create.has_table("notes"));
+        assert_eq!(
+            after_create.column_type("notes", "body"),
+            Some(bookclerk_plugin_abi::SqlType::Text)
+        );
     }
 
     #[test]
@@ -1143,9 +1149,14 @@ mod tests {
                 .into_iter()
                 .next()
                 .expect("one suffix");
-        run_plugin_atomic(&db, "lost-reply", batch)
-            .await
-            .expect("durable apply whose reply the caller never saw");
+        run_plugin_atomic(
+            &db,
+            "lost-reply",
+            batch,
+            &plugin_binding_type_env(&registered, 0),
+        )
+        .await
+        .expect("durable apply whose reply the caller never saw");
         let after = apply_plugin_migrations(&db, &registered).await.unwrap();
         assert_eq!(after.len(), 1);
         assert_eq!(after.entries[0].migration_id, "create-notes");

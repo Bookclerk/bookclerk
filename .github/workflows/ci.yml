@@ -451,6 +451,21 @@ jobs:
             exit 1
           fi
           export PATH="${{ github.workspace }}/target/debug:$PATH"
+          NEED_SQLITE_GUEST=0
+          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
+            NEED_SQLITE_GUEST=1
+          else
+            case " ${{ needs.plan.outputs.rust_packages }} " in
+              *" bookclerk-plugin-host "*) NEED_SQLITE_GUEST=1 ;;
+            esac
+          fi
+          if [ "$NEED_SQLITE_GUEST" = 1 ]; then
+            # Production Cap'n leftover LIKE needs a guest binary compiled in
+            # this job. `cargo test -p bookclerk-plugin-host` does not rebuild
+            # dependency bins, so a stale snapshot binary advertises
+            # maxFunctionArgs=0 and fails host minimums.
+            cargo build -p bookclerk-plugin-database-sqlite
+          fi
           if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
             # `--lib --bins --tests` keeps unit + integration tests and skips
             # doctests (already run in "Explicit doctests"). `--tests` alone
@@ -596,13 +611,17 @@ jobs:
         run: cargo test -p bookclerk-tray
 
   postgres-jobs:
-    name: postgres job queue
+    name: postgres ${{ matrix.postgres }}
     needs: plan
     if: needs.plan.outputs.run_rust == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["16", "17", "18"]
     services:
       postgres:
-        image: postgres:16
+        image: postgres:${{ matrix.postgres }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -661,6 +680,15 @@ jobs:
           BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
           BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
         run: cargo test -p bookclerk-plugin-database-postgres --lib postgres_ -- --ignored --nocapture
+
+      - name: Postgres production RPC proxy LIKE boundary
+        env:
+          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
+        run: |
+          set -euo pipefail
+          cargo build -p bookclerk-plugin-database-postgres
+          cargo test -p bookclerk-plugin-host --lib production_rpc_proxy_keeps_like_through_postgres_guest -- --ignored --nocapture
 
   ci-gate:
     name: CI Gate

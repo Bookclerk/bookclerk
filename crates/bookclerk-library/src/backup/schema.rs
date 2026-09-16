@@ -250,9 +250,9 @@ pub fn order_key_columns(parsed: &CreateTableSchema) -> Vec<String> {
 /// Canonical `ORDER BY` item list (`col ASC NULLS FIRST`, declared tie-breakers).
 ///
 /// SQLite and PostgreSQL disagree on default NULL placement; the explicit
-/// NULLS clause is the portable order. Capture SELECT uses this string and
-/// [`bookclerk_db_exec::lower_canonical_sql_typed`] so TEXT keys get
-/// Postgres `COLLATE "C"` (SQLite stays binary).
+/// NULLS clause is the portable order. Capture SELECT uses this string;
+/// the adapter SDK applies Postgres `COLLATE "C"` from TEXT proof sites
+/// (SQLite stays binary).
 #[must_use]
 pub fn canonical_order_by_sql(parsed: &CreateTableSchema) -> String {
     order_key_columns(parsed)

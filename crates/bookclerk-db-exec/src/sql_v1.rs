@@ -47,8 +47,10 @@ pub const PORTABLE_INSERT_BLOB: &[u8] = &[1, 2, 3];
 
 /// Scalar portable helpers (no aggregates).
 ///
-/// Column order matches [`portable_select_expects`]. `json_object` is wrapped
-/// in `json_extract` so Postgres `json_build_object` still yields text.
+/// Column order matches [`portable_select_expects`]. `json_object` is
+/// sampled through `json_extract` so the cell is a scalar TEXT value rather
+/// than a JSON document (spacing is engine-specific). Postgres lowering also
+/// casts `json_build_object` to TEXT so `length(json_object(…))` is legal.
 /// Aggregates live in [`PORTABLE_AGGREGATE_SELECT`]: a mixed aggregate +
 /// non-aggregate SELECT list is SQLite-shaped, not Bookclerk SQL v1
 /// (PostgreSQL requires `GROUP BY`). `round`/`sum`/`avg` are `CAST` to
@@ -507,6 +509,71 @@ pub fn portable_div_operands_mismatch(stmt: &StatementResult) -> Option<String> 
         stmt,
         portable_div_operands_expects(),
         "portable div operands",
+    )
+}
+
+/// `/` and `%` of a `NULLIF` that is **not** `NULLIF(expr, 0)` must still
+/// gain an outer zero guard (`NULLIF(0, 1)` evaluates to `0`).
+pub const PORTABLE_DIV_NULLIF_NOT_ZERO_GUARD: &str = "SELECT \
+     1 / NULLIF(0, 1) AS d0, \
+     1 % NULLIF(0, 1) AS m0, \
+     10 / NULLIF(2, 0) AS already";
+
+/// Expected [`PORTABLE_DIV_NULLIF_NOT_ZERO_GUARD`] cells.
+#[must_use]
+pub fn portable_div_nullif_not_zero_guard_expects() -> &'static [PortableExpect] {
+    &[
+        PortableExpect::Null,
+        PortableExpect::Null,
+        PortableExpect::Int(5),
+    ]
+}
+
+/// Formats a mismatch for [`PORTABLE_DIV_NULLIF_NOT_ZERO_GUARD`].
+#[must_use]
+pub fn portable_div_nullif_not_zero_guard_mismatch(stmt: &StatementResult) -> Option<String> {
+    portable_statement_mismatch(
+        stmt,
+        portable_div_nullif_not_zero_guard_expects(),
+        "portable div NULLIF not-zero guard",
+    )
+}
+
+/// `json_object` nulls, duplicate keys, nested objects, and 16-pair (32-arg) arity.
+///
+/// Length comparisons distinguish JSON `null` retention from merge-patch
+/// deletion without depending on exact JSON spacing. Postgres lowering casts
+/// `json_build_object` to TEXT so `length(json_object(…))` is legal.
+pub const PORTABLE_JSON_OBJECT_SEMANTICS: &str = "SELECT \
+     CASE WHEN length(json_object('a', 1, 'b', NULL)) > length(json_object('a', 1)) \
+          THEN 1 ELSE 0 END AS null_retained, \
+     CASE WHEN length(json_object('a', 1, 'a', NULL)) > 2 THEN 1 ELSE 0 END AS dup_null_retained, \
+     json_extract(json_extract(json_object('n', json_object('k', 'v')), '$.n'), '$.k') AS nested, \
+     json_extract(json_object(\
+        'k00', 'v00', 'k01', 'v01', 'k02', 'v02', 'k03', 'v03', \
+        'k04', 'v04', 'k05', 'v05', 'k06', 'v06', 'k07', 'v07', \
+        'k08', 'v08', 'k09', 'v09', 'k10', 'v10', 'k11', 'v11', \
+        'k12', 'v12', 'k13', 'v13', 'k14', 'v14', 'k15', 'v15'\
+     ), '$.k15') AS max_arity";
+
+/// Expected [`PORTABLE_JSON_OBJECT_SEMANTICS`] cells.
+#[must_use]
+pub fn portable_json_object_semantics_expects() -> &'static [PortableExpect] {
+    &[
+        PortableExpect::Int(1),
+        PortableExpect::Int(1),
+        PortableExpect::Text("v"),
+        PortableExpect::Text("v15"),
+    ]
+}
+
+/// Formats a mismatch for [`PORTABLE_JSON_OBJECT_SEMANTICS`].
+#[must_use]
+pub fn portable_json_object_semantics_mismatch(stmt: &StatementResult) -> Option<String> {
+    portable_statement_mismatch(
+        stmt,
+        portable_json_object_semantics_expects(),
+        "portable json_object semantics",
     )
 }
 

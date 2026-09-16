@@ -149,10 +149,13 @@ exit 0
 /// An open descriptor is past the allowlist for good, so the jail has to be the
 /// thing that takes it away.
 ///
-/// Reading `<&3` names no path, which means no policy can answer it. The only
+/// Reading `<&9` names no path, which means no policy can answer it. The only
 /// question is whether the descriptor is still there after the handoff, and the
 /// unjailed half of this test is what makes the jailed half mean anything: it
-/// shows the probe really does leak one.
+/// shows the probe really does leak one. Fd 9 is used instead of 3 so a runner
+/// that already has a diagnostic fd 3 does not make `exec 3<` a no-op. The
+/// guest is re-entered with `/bin/sh` on both halves so a missing execute bit
+/// cannot swallow the unjailed probe (empty stdout, nothing to compare).
 #[test]
 fn an_inherited_descriptor_does_not_survive_the_handoff() {
     if !confinement_available() {
@@ -170,7 +173,7 @@ fn an_inherited_descriptor_does_not_survive_the_handoff() {
     script(
         &guest,
         r#"
-if read -r line <&3 2>/dev/null; then
+if read -r line <&9 2>/dev/null; then
   echo "inherited: $line"
 else
   echo "no descriptor"
@@ -178,22 +181,35 @@ fi
 "#,
     );
 
-    // `exec 3<` opens without CLOEXEC, which is what a host that leaked a
-    // descriptor across the spawn would look like.
-    let opener = jail.path().join("leak-fd-3.sh");
+    // `exec 9<` opens without CLOEXEC, which is what a host that leaked a
+    // descriptor across the spawn would look like. `$@` is either
+    // `/bin/sh guest` (unjailed probe) or `bookclerk-jail /bin/sh guest`.
+    let opener = jail.path().join("leak-fd-9.sh");
     script(
         &opener,
         r#"
-exec 3< "$SECRET"
+exec 9< "$SECRET" || exit 2
 exec "$@"
 "#,
     );
 
-    let unjailed = run_script(&opener, &[guest.as_path()], &[("SECRET", secret.as_path())]);
+    let unjailed = run_script(
+        &opener,
+        &[Path::new("/bin/sh"), guest.as_path()],
+        &[("SECRET", secret.as_path())],
+    );
+    assert!(
+        unjailed.status.success(),
+        "unjailed probe failed: {}\nstdout: {}\nstderr: {}",
+        unjailed.status,
+        String::from_utf8_lossy(&unjailed.stdout),
+        String::from_utf8_lossy(&unjailed.stderr)
+    );
     assert_eq!(
         String::from_utf8_lossy(&unjailed.stdout).trim(),
         "inherited: sealed-dek",
-        "the probe must leak a descriptor, or the jailed half proves nothing"
+        "the probe must leak a descriptor, or the jailed half proves nothing; stderr: {}",
+        String::from_utf8_lossy(&unjailed.stderr)
     );
 
     let spec = Spec {

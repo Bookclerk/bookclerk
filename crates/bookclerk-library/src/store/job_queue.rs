@@ -5,7 +5,7 @@ use sea_orm::{
     ActiveModelTrait,
     ActiveValue::{NotSet, Set},
     ColumnTrait, Condition, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, TransactionTrait,
+    QuerySelect, StreamTrait, TransactionTrait,
 };
 use uuid::Uuid;
 
@@ -38,7 +38,7 @@ impl LibraryStore {
             return atomic.enqueue_job(spec).await;
         }
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        match enqueue_job_on(&txn, spec).await {
+        match enqueue_job_on(&txn, self.leftover_in_process(), spec).await {
             Ok(outcome) => {
                 txn.commit().await.map_err(LibraryError::Orm)?;
                 Ok(outcome)
@@ -71,7 +71,15 @@ impl LibraryStore {
                 .await;
         }
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        match claim_next_job_on(&txn, resource_class, owner, lease_secs).await {
+        match claim_next_job_on(
+            &txn,
+            self.leftover_in_process(),
+            resource_class,
+            owner,
+            lease_secs,
+        )
+        .await
+        {
             Ok(job) => {
                 txn.commit().await.map_err(LibraryError::Orm)?;
                 Ok(job)
@@ -664,7 +672,16 @@ impl LibraryStore {
                 .await;
         }
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        match reserve_job_temp_path_on(&txn, job_id, path, reserved_bytes, quota_bytes).await {
+        match reserve_job_temp_path_on(
+            &txn,
+            self.leftover_in_process(),
+            job_id,
+            path,
+            reserved_bytes,
+            quota_bytes,
+        )
+        .await
+        {
             Ok(()) => {
                 txn.commit().await.map_err(LibraryError::Orm)?;
                 Ok(())
@@ -953,16 +970,23 @@ impl LibraryStore {
 /// # Errors
 ///
 /// Returns [`LibraryError::Orm`] when the lock statement fails.
-pub(crate) async fn lock_job_queue<C: ConnectionTrait>(db: &C) -> Result<()> {
-    crate::sql_plan::lock_serialization_slot(db, crate::sql_plan::JOB_QUEUE_SLOT).await
+pub(crate) async fn lock_job_queue<C>(db: &C, in_process: bool) -> Result<()>
+where
+    C: ConnectionTrait + StreamTrait,
+{
+    crate::sql_plan::lock_serialization_slot(db, in_process, crate::sql_plan::JOB_QUEUE_SLOT).await
 }
 
 /// Transactional admission used by the local path and guest atomic execute.
-pub(crate) async fn enqueue_job_on<C: ConnectionTrait>(
+pub(crate) async fn enqueue_job_on<C>(
     db: &C,
+    in_process: bool,
     spec: EnqueueJobSpec,
-) -> Result<EnqueueOutcome> {
-    lock_job_queue(db).await?;
+) -> Result<EnqueueOutcome>
+where
+    C: ConnectionTrait + StreamTrait,
+{
+    lock_job_queue(db, in_process).await?;
     if spec.kind == JobKind::Invalid {
         return Err(LibraryError::Other(anyhow::anyhow!(
             "cannot enqueue an invalid job kind"
@@ -1028,12 +1052,17 @@ pub(crate) async fn enqueue_job_on<C: ConnectionTrait>(
 }
 
 /// Transactional claim: one conditional `pending` → `running` mutation.
-pub(crate) async fn claim_next_job_on<C: ConnectionTrait>(
+pub(crate) async fn claim_next_job_on<C>(
     db: &C,
+    in_process: bool,
     resource_class: JobResourceClass,
     owner: &str,
     lease_secs: u64,
-) -> Result<Option<JobRecord>> {
+) -> Result<Option<JobRecord>>
+where
+    C: ConnectionTrait + StreamTrait,
+{
+    lock_job_queue(db, in_process).await?;
     let now = Utc::now();
     let now_s = now.to_rfc3339();
     sanitize_unreadable_pending_on(db, &now_s).await?;
@@ -1164,14 +1193,18 @@ pub(crate) async fn claim_next_job_on<C: ConnectionTrait>(
 }
 
 /// Transactional quota reservation for one scratch path.
-pub(crate) async fn reserve_job_temp_path_on<C: ConnectionTrait>(
+pub(crate) async fn reserve_job_temp_path_on<C>(
     db: &C,
+    in_process: bool,
     job_id: &str,
     path: &str,
     reserved_bytes: u64,
     quota_bytes: u64,
-) -> Result<()> {
-    lock_job_queue(db).await?;
+) -> Result<()>
+where
+    C: ConnectionTrait + StreamTrait,
+{
+    lock_job_queue(db, in_process).await?;
     let rows = job_temp_paths::Entity::find()
         .all(db)
         .await

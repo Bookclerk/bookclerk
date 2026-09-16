@@ -26,7 +26,7 @@ pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<
     match backend {
         DatabaseBackend::Postgres => Cow::Owned(crate::lower_canonical_ddl_to_postgres(canonical)),
         DatabaseBackend::Sqlite => Cow::Borrowed(canonical),
-        other => panic!("BookclerkSQL adapters do not support SeaORM backend {other:?}"),
+        other => crate::exec::reject_unknown_seaorm_backend(other),
     }
 }
 
@@ -48,7 +48,7 @@ pub fn lower_binding_sql_for_backend(backend: DatabaseBackend, sql: &str) -> Cow
             Cow::Owned(crate::lower::rewrite_canonical_ddl_types_for_postgres(sql))
         }
         DatabaseBackend::Postgres | DatabaseBackend::Sqlite => Cow::Borrowed(sql),
-        other => panic!("BookclerkSQL adapters do not support SeaORM backend {other:?}"),
+        other => crate::exec::reject_unknown_seaorm_backend(other),
     }
 }
 
@@ -88,19 +88,10 @@ pub fn is_host_schema_version_marker(sql: &str) -> bool {
         || t.starts_with("PRAGMA user_version =")
 }
 
-/// Splits a canonical schema pack on top-level `;` (quote-aware).
+/// Expands `[stmt, …, version_marker]` at the adapter execution edge.
 ///
-/// Uses [`bookclerk_plugin_abi::split_sql_statements`] so literals such as
-/// `DEFAULT 'a;b'` stay inside one statement.
-#[must_use]
-pub fn split_schema_statements(sql: &str) -> Vec<String> {
-    bookclerk_plugin_abi::split_sql_statements(sql)
-}
-
-/// Expands `[canonical_ddl, version_marker, …]` at the adapter execution edge.
-///
-/// Each pack entry is split with the SQL-v1 lexer, then lowered. Adapters may
-/// insert identity companions; they do not use `str::split(';')`.
+/// Each incoming string is already one canonical statement. Adapters lower
+/// per statement and may insert identity companions; they do not split SQL.
 #[must_use]
 pub fn expand_host_schema_batch(backend: DatabaseBackend, batch: &[String]) -> Option<Vec<String>> {
     expand_host_schema_batch_grouped(backend, batch).map(|(stmts, _)| stmts)
@@ -126,18 +117,16 @@ pub fn expand_host_schema_batch_grouped(
     }
     let mut stmts: Vec<String> = Vec::new();
     let mut groups: Vec<usize> = Vec::new();
-    for canonical in &batch[..batch.len() - 1] {
-        for stmt in split_schema_statements(canonical) {
-            let lowered = schema_sql_for_backend(backend, &stmt).into_owned();
-            let companions = if backend == DatabaseBackend::Postgres {
-                postgres_identity_companions(&stmt)
-            } else {
-                Vec::new()
-            };
-            groups.push(1usize.saturating_add(companions.len()));
-            stmts.push(lowered);
-            stmts.extend(companions);
-        }
+    for stmt in &batch[..batch.len() - 1] {
+        let lowered = schema_sql_for_backend(backend, stmt).into_owned();
+        let companions = if backend == DatabaseBackend::Postgres {
+            postgres_identity_companions(stmt)
+        } else {
+            Vec::new()
+        };
+        groups.push(1usize.saturating_add(companions.len()));
+        stmts.push(lowered);
+        stmts.extend(companions);
     }
     stmts.push(version.clone());
     groups.push(1);
@@ -261,6 +250,52 @@ pub fn binding_companions(backend: DatabaseBackend, canonical: &str) -> Vec<Stri
         out.extend(postgres_identity_companions(canonical));
     }
     out
+}
+
+/// Applies one canonical host DDL statement (library restore / schema).
+///
+/// Postgres identity companions are installed; binding catalog DML is not.
+///
+/// # Errors
+///
+/// Returns when the engine rejects the lowered DDL or a companion.
+pub async fn realize_host_ddl<C>(conn: &C, canonical: &str) -> Result<(), sea_orm::DbErr>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    let backend = conn.get_database_backend();
+    let lowered = schema_sql_for_backend(backend, canonical).into_owned();
+    conn.execute_raw(sea_orm::Statement::from_string(backend, lowered))
+        .await?;
+    if backend == DatabaseBackend::Postgres {
+        for companion in postgres_identity_companions(canonical) {
+            conn.execute_raw(sea_orm::Statement::from_string(backend, companion))
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Applies one canonical binding DDL statement (plugin restore).
+///
+/// Includes adapter-private catalog DML and Postgres identity companions.
+///
+/// # Errors
+///
+/// Returns when the engine rejects the lowered DDL or a companion.
+pub async fn realize_binding_ddl<C>(conn: &C, canonical: &str) -> Result<(), sea_orm::DbErr>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    let backend = conn.get_database_backend();
+    let lowered = schema_sql_for_backend(backend, canonical).into_owned();
+    conn.execute_raw(sea_orm::Statement::from_string(backend, lowered))
+        .await?;
+    for companion in binding_companions(backend, canonical) {
+        conn.execute_raw(sea_orm::Statement::from_string(backend, companion))
+            .await?;
+    }
+    Ok(())
 }
 
 /// Expands a binding request with adapter-private catalog/identity companions.
@@ -454,45 +489,6 @@ mod tests {
         assert!(
             expand_host_schema_batch(DatabaseBackend::Postgres, &expanded).is_none(),
             "already-expanded identity companions must not be packed again"
-        );
-    }
-
-    #[test]
-    fn expand_host_schema_batch_keeps_semicolon_inside_quoted_default() {
-        let canonical = "CREATE TABLE IF NOT EXISTS notes (body TEXT NOT NULL DEFAULT 'a;b');\n\
-             CREATE TABLE IF NOT EXISTS tags (id INTEGER);";
-        let naive = canonical
-            .split(';')
-            .filter(|s| !s.trim().is_empty())
-            .count();
-        assert!(
-            naive > 2,
-            "raw split must be the broken baseline this test locks out: {naive}"
-        );
-        let stmts = split_schema_statements(canonical);
-        assert_eq!(stmts.len(), 2, "{stmts:?}");
-        assert!(
-            stmts[0].contains("DEFAULT 'a;b'"),
-            "quoted semicolon must not become a statement boundary: {stmts:?}"
-        );
-        let batch = vec![
-            canonical.to_string(),
-            "INSERT INTO schema_migrations (version) VALUES (1)".to_string(),
-        ];
-        let expanded =
-            expand_host_schema_batch(DatabaseBackend::Sqlite, &batch).expect("host schema batch");
-        assert_eq!(expanded.len(), 3, "{expanded:?}");
-        assert!(
-            expanded[0].contains("DEFAULT 'a;b'"),
-            "adapter expand must keep the DEFAULT literal intact: {expanded:?}"
-        );
-        assert!(
-            expanded[1].contains("CREATE TABLE IF NOT EXISTS tags"),
-            "second CREATE must survive as its own statement: {expanded:?}"
-        );
-        assert_eq!(
-            expanded.last().map(String::as_str),
-            Some("INSERT INTO schema_migrations (version) VALUES (1)")
         );
     }
 
@@ -710,6 +706,14 @@ mod tests {
         assert!(
             drop.iter().all(|s| !s.contains("DROP TRIGGER")),
             "DROP TABLE companions must not name the dropped relation: {drop:?}"
+        );
+        let none = postgres_identity_companions_for_action(
+            sql,
+            Some(&bookclerk_plugin_abi::SchemaAction::None),
+        );
+        assert!(
+            none.is_empty(),
+            "stamped None must not emit identity companions unless the caller parses SQL"
         );
     }
 

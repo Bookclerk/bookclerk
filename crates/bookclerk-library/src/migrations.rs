@@ -115,11 +115,11 @@ pub use plan::{
 pub use plugin::{
     apply_plugin_migrations, history_from_execute_reply, load_plugin_migration_history,
     load_plugin_migration_history_on, next_pending_plugin_migration, pending_plugin_suffix,
-    plugin_apply_statements, plugin_history_digest, plugin_history_session_matches,
-    plugin_journal_has_entry, plugin_journal_select_request, plugin_migration_checksum,
-    prove_plugin_migration_sequence, remaining_plugin_suffix_batches, require_history_prefix,
-    PluginJournalEntry, PluginMigrationHistory, PluginMigrationSequence, ProvenPluginMigration,
-    MAX_PLUGIN_MIGRATION_APPLY_ATTEMPTS, PLUGIN_MIGRATION_SLOT_KEY,
+    plugin_apply_statements, plugin_binding_type_env, plugin_history_digest,
+    plugin_history_session_matches, plugin_journal_has_entry, plugin_journal_select_request,
+    plugin_migration_checksum, prove_plugin_migration_sequence, remaining_plugin_suffix_batches,
+    require_history_prefix, PluginJournalEntry, PluginMigrationHistory, PluginMigrationSequence,
+    ProvenPluginMigration, MAX_PLUGIN_MIGRATION_APPLY_ATTEMPTS, PLUGIN_MIGRATION_SLOT_KEY,
 };
 
 /// One host-owned schema version in the canonical Bookclerk migration plan.
@@ -281,6 +281,21 @@ pub fn binding_bootstrap_statements() -> &'static [String] {
         .as_slice()
 }
 
+/// Type environment implied by [`binding_bootstrap_ops`] (journal, slots, catalog).
+///
+/// Host-private binding bookkeeping lives here so plugin apply can typecheck
+/// journal DML without using the host library catalog.
+#[must_use]
+pub fn binding_bootstrap_type_env() -> SqlTypeEnv {
+    let mut env = SqlTypeEnv::new();
+    for op in binding_bootstrap_ops() {
+        if op.is_schema() {
+            apply_schema_sql_to_env(&mut env, op.sql());
+        }
+    }
+    env
+}
+
 /// SHA-256 of [`binding_bootstrap_ops`] (length-prefixed statement list).
 #[must_use]
 pub fn binding_unreleased_checksum() -> String {
@@ -289,10 +304,15 @@ pub fn binding_unreleased_checksum() -> String {
 
 /// Frozen ups concatenated with [`unreleased_ops`] (derived diagnostic SQL).
 ///
-/// After a future release cut this is `host_migration_plan` DDL plus whatever
-/// is again unreleased — do not assume it equals [`unreleased_sql`] forever.
+/// While the production plan is empty this is exactly [`unreleased_sql`]. After
+/// a release cut it is frozen step SQL plus whatever is again unreleased — do
+/// not assume it equals [`unreleased_sql`] forever. Test plan overrides must
+/// not feed this `OnceLock` (`production_host_migration_plan` only).
 #[must_use]
 pub fn current_canonical_schema() -> &'static str {
+    if production_host_migration_plan().is_empty() {
+        return unreleased_sql();
+    }
     static SQL: OnceLock<String> = OnceLock::new();
     SQL.get_or_init(|| current_canonical_statements().join(";\n"))
         .as_str()
@@ -536,19 +556,6 @@ pub(crate) fn override_host_migration_plan(
 ) -> HostPlanOverrideGuard {
     HOST_PLAN_OVERRIDE.with(|cell| cell.set(Some(plan)));
     HostPlanOverrideGuard
-}
-
-/// Final PostgreSQL DDL for a fresh Bookclerk library database.
-///
-/// The canonical baseline lowered mechanically per statement at the adapter
-/// edge — there is no hand-authored parallel Postgres schema.
-#[must_use]
-pub fn latest_schema_postgres() -> String {
-    current_canonical_statements()
-        .iter()
-        .map(|stmt| bookclerk_db_exec::lower_canonical_ddl_to_postgres(stmt))
-        .collect::<Vec<_>>()
-        .join(";\n")
 }
 
 #[cfg(test)]

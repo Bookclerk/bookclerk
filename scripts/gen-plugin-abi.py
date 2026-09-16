@@ -308,6 +308,7 @@ LEGACY_TOKENS = (
     "abiMajor",
     "abiMinor",
     "envelopeVersion",
+    "executeEnvelope",
     "migration_plan",
 )
 

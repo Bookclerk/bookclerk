@@ -8,12 +8,115 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bookclerk_plugin_abi::{DbCapabilities, DbPlanStatementKind, SqlTypeEnv};
 use futures::TryStreamExt;
-use sea_orm::{ConnectionTrait, DbErr, QueryResult, Statement, StreamTrait, Value};
+use sea_orm::{ConnectionTrait, DbErr, ExecResult, QueryResult, Statement, StreamTrait, Value};
 use serde_json::Value as JsonValue;
 
 use crate::proxy_txn::{
     consume_atomic_interrupt, note_query_row, AtomicInterruptKind, AtomicInterruptPhase,
 };
+
+/// Real engine the adapter opened.
+///
+/// Hosts must not construct this from a SeaORM proxy connection. Physical
+/// lowering ([`crate::lower_canonical_sql`]) happens only against this identity.
+/// Unknown SeaORM backends fail closed — never default to SQLite.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PhysicalEngine {
+    /// SQLite physical engine (rusqlite / files).
+    Sqlite,
+    /// PostgreSQL 16+ physical engine.
+    Postgres,
+    /// Cloudflare D1 (sqlite-family SQL, HTTP batch).
+    D1,
+}
+
+/// Fail closed on SeaORM backends that are not BookclerkSQL engines.
+///
+/// # Panics
+///
+/// Always panics: MySQL and unknown SeaORM backends are not BookclerkSQL engines.
+#[inline]
+pub(crate) fn reject_unknown_seaorm_backend(backend: sea_orm::DatabaseBackend) -> ! {
+    panic!("BookclerkSQL adapters do not support SeaORM backend {backend:?}")
+}
+
+impl PhysicalEngine {
+    /// SQLite physical engine.
+    #[must_use]
+    pub const fn sqlite() -> Self {
+        Self::Sqlite
+    }
+
+    /// PostgreSQL physical engine.
+    #[must_use]
+    pub const fn postgres() -> Self {
+        Self::Postgres
+    }
+
+    /// Cloudflare D1 physical engine.
+    #[must_use]
+    pub const fn d1() -> Self {
+        Self::D1
+    }
+
+    /// Adapter-only: the backend of a connection this adapter opened.
+    ///
+    /// # Panics
+    ///
+    /// Panics on SeaORM backends that are not BookclerkSQL engines (including
+    /// MySQL and future unknown variants).
+    #[must_use]
+    pub fn from_adapter_backend(backend: sea_orm::DatabaseBackend) -> Self {
+        match backend {
+            sea_orm::DatabaseBackend::Postgres => Self::Postgres,
+            sea_orm::DatabaseBackend::Sqlite => Self::Sqlite,
+            other => reject_unknown_seaorm_backend(other),
+        }
+    }
+
+    /// SeaORM backend used for physical SQL and typed binds.
+    #[must_use]
+    pub const fn backend(self) -> sea_orm::DatabaseBackend {
+        match self {
+            Self::Postgres => sea_orm::DatabaseBackend::Postgres,
+            Self::Sqlite | Self::D1 => sea_orm::DatabaseBackend::Sqlite,
+        }
+    }
+
+    /// Timing source label for this physical engine.
+    #[must_use]
+    pub const fn timing_source(self) -> &'static str {
+        match self {
+            Self::Postgres => "postgres_txn",
+            Self::D1 => "d1_txn",
+            Self::Sqlite => "sqlite_txn",
+        }
+    }
+}
+
+/// How leftover host SQL reaches a SeaORM connection.
+///
+/// [`Self::Canonical`] is sqlite-shaped transport with no physical lowering
+/// (production plugin-host proxy). [`Self::InProcess`] lowers exactly once
+/// using the engine of the opened adapter connection (native sqlite / postgres
+/// tests). Host/library code must not name [`PhysicalEngine`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SqlExecTarget {
+    /// Canonical `?` SQL. Adapters lower after RPC.
+    #[default]
+    Canonical,
+    /// In-process adapter connection. Infer the engine from the connection
+    /// and lower once.
+    InProcess,
+}
+
+impl SqlExecTarget {
+    /// True when leftover SQL is physically lowered by the adapter SDK.
+    #[must_use]
+    pub const fn lowers(self) -> bool {
+        matches!(self, Self::InProcess)
+    }
+}
 
 /// Session-level cancel / deadline for one atomic attempt (not hashed).
 #[derive(Clone, Default)]
@@ -159,14 +262,17 @@ pub fn cap_query_sql(sql: &str, max_result_rows: u32) -> String {
 /// # Errors
 ///
 /// Returns when the engine stream/query fails.
-pub(crate) async fn collect_capped_query_results(
-    txn: &sea_orm::DatabaseTransaction,
+pub(crate) async fn collect_capped_query_results<C>(
+    conn: &C,
     stmt: Statement,
     max_result_rows: u32,
-) -> Result<Vec<QueryResult>, DbErr> {
+) -> Result<Vec<QueryResult>, DbErr>
+where
+    C: ConnectionTrait + StreamTrait,
+{
     let stop_after = row_stop_after(max_result_rows);
-    if ConnectionTrait::get_database_backend(txn) == sea_orm::DatabaseBackend::Postgres {
-        let stream = txn.stream_raw(stmt).await?;
+    if ConnectionTrait::get_database_backend(conn) == sea_orm::DatabaseBackend::Postgres {
+        let stream = conn.stream_raw(stmt).await?;
         futures::pin_mut!(stream);
         let mut rows = Vec::new();
         while let Some(row) = stream.try_next().await? {
@@ -178,7 +284,7 @@ pub(crate) async fn collect_capped_query_results(
         }
         return Ok(rows);
     }
-    let rows = txn.query_all_raw(stmt).await?;
+    let rows = conn.query_all_raw(stmt).await?;
     Ok(rows.into_iter().take(stop_after).collect())
 }
 
@@ -277,6 +383,69 @@ pub fn encoded_proxy_row_len<'a>(
     JsonValue::Object(map).to_string().len()
 }
 
+/// Executes canonical SQL on a physical engine the adapter opened.
+///
+/// Does **not** run host semantic desugars. Callers must pass already-canonical
+/// SQL (`?` placeholders). Host/library code must not call this helper.
+///
+/// # Errors
+///
+/// Returns when the engine rejects the lowered statement.
+pub async fn execute_physical_sql<C>(
+    engine: PhysicalEngine,
+    db: &C,
+    sql: &str,
+    values: impl IntoIterator<Item = Value>,
+) -> Result<ExecResult, DbErr>
+where
+    C: ConnectionTrait,
+{
+    let backend = engine.backend();
+    let lowered = crate::lower_canonical_sql(backend, sql);
+    db.execute_raw(Statement::from_sql_and_values(backend, lowered, values))
+        .await
+}
+
+/// Queries canonical SQL on a physical engine the adapter opened.
+///
+/// # Errors
+///
+/// Returns when the engine rejects the lowered statement.
+pub async fn query_physical_sql<C>(
+    engine: PhysicalEngine,
+    db: &C,
+    sql: &str,
+    values: impl IntoIterator<Item = Value>,
+) -> Result<Vec<QueryResult>, DbErr>
+where
+    C: ConnectionTrait,
+{
+    query_physical_sql_typed(engine, db, sql, None, values).await
+}
+
+/// [`query_physical_sql`] with an optional hash-bound proof (TEXT collate /
+/// INTEGER overflow on Postgres).
+///
+/// # Errors
+///
+/// Returns when the proof is not bound to `sql` or the engine rejects the work.
+pub async fn query_physical_sql_typed<C>(
+    engine: PhysicalEngine,
+    db: &C,
+    sql: &str,
+    proof: Option<&bookclerk_plugin_abi::ResolvedStatement>,
+    values: impl IntoIterator<Item = Value>,
+) -> Result<Vec<QueryResult>, DbErr>
+where
+    C: ConnectionTrait,
+{
+    let backend = engine.backend();
+    let lowered = crate::lower_canonical_sql_typed(backend, sql, proof)
+        .map_err(|err| DbErr::Custom(err.to_string()))?;
+    db.query_all_raw(Statement::from_sql_and_values(backend, lowered, values))
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::cap_query_sql;
@@ -310,6 +479,34 @@ mod tests {
             nbytes > alias.len(),
             "JSON punctuation and the numeric cell must count: {nbytes} vs alias {}",
             alias.len()
+        );
+    }
+
+    #[test]
+    fn sql_exec_target_separates_canonical_proxy_from_in_process() {
+        use super::{PhysicalEngine, SqlExecTarget};
+        assert!(!SqlExecTarget::Canonical.lowers());
+        assert!(SqlExecTarget::InProcess.lowers());
+        assert_eq!(PhysicalEngine::postgres().timing_source(), "postgres_txn");
+        assert_eq!(PhysicalEngine::sqlite().timing_source(), "sqlite_txn");
+        assert_eq!(PhysicalEngine::d1().timing_source(), "d1_txn");
+        assert_eq!(
+            PhysicalEngine::d1().backend(),
+            sea_orm::DatabaseBackend::Sqlite
+        );
+    }
+
+    #[test]
+    fn canonical_sql_keeps_question_marks_until_postgres_lower() {
+        use sea_orm::DatabaseBackend;
+        let sql = "SELECT id FROM t WHERE a = ? AND b IN (?, ?)";
+        assert_eq!(
+            crate::lower_canonical_sql(DatabaseBackend::Postgres, sql),
+            "SELECT id FROM t WHERE a = $1 AND b IN ($2, $3)"
+        );
+        assert_eq!(
+            crate::lower_canonical_sql(DatabaseBackend::Sqlite, sql),
+            sql
         );
     }
 }

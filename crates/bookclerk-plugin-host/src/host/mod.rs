@@ -17,3 +17,6 @@ pub use destination::{load_external_destinations, DestinationRegistry};
 pub use integration::{load_external_integrations, ExternalIntegration};
 pub use plugin_backups::{export_registered_plugin_units, restore_plugin_backup_units};
 pub use source::{load_external_sources, ExternalSource};
+
+#[cfg(test)]
+mod rpc_proxy_like;

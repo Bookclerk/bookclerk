@@ -23,6 +23,18 @@ class DbPluginIsolationTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr or proc.stdout)
 
+    def test_library_production_forbids_physical_engine_and_host_sql(self) -> None:
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("LIBRARY_PHYSICAL_ENGINE", text)
+        self.assertIn("LIBRARY_BACKEND_IDENT", text)
+        self.assertNotIn("LIBRARY_BACKEND_ALLOW", text)
+        self.assertNotIn("host_sql.rs", text)
+        src = ROOT / "crates" / "bookclerk-library" / "src"
+        self.assertFalse(
+            (src / "host_sql.rs").exists(),
+            "canonical SeaORM transport must not live in bookclerk-library",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

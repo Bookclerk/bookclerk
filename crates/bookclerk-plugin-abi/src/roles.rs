@@ -293,12 +293,57 @@ pub trait AdapterDatabaseSession {
         ))
     }
 
-    /// Typed atomic batch (`execute`). Every request is a non-empty ordered statement list.
-    async fn execute(&self, request: crate::ExecuteRequest) -> Result<crate::ExecuteReply>;
+    /// Typed atomic batch (`execute`). Canonical SQL plus required 1:1 proofs.
+    async fn execute(
+        &self,
+        request: crate::host_envelope::AdapterExecuteRequest,
+    ) -> Result<crate::ExecuteReply>;
 
     /// Close the session.
     async fn close(&self) -> Result<()> {
         Ok(())
+    }
+
+    /// Identity high-water from adapter catalogs.
+    async fn export_identity(&self) -> Result<Vec<crate::DbIdentityHighWater>> {
+        Err(crate::PluginError::unsupported(
+            "AdapterDatabaseSession.exportIdentity",
+        ))
+    }
+
+    /// Restore identity high-water into adapter catalogs.
+    async fn import_identity(&self, _rows: &[crate::DbIdentityHighWater]) -> Result<()> {
+        Err(crate::PluginError::unsupported(
+            "AdapterDatabaseSession.importIdentity",
+        ))
+    }
+
+    /// User-visible relation names (excludes engine catalogs).
+    async fn list_user_relations(&self) -> Result<Vec<String>> {
+        Err(crate::PluginError::unsupported(
+            "AdapterDatabaseSession.listUserRelations",
+        ))
+    }
+
+    /// Prepare an open restore transaction (deferred FK checks).
+    async fn prepare_unit_restore(&self) -> Result<()> {
+        Err(crate::PluginError::unsupported(
+            "AdapterDatabaseSession.prepareUnitRestore",
+        ))
+    }
+
+    /// Drop named user relations (adapter-owned CASCADE / identity companions).
+    async fn drop_user_relations(&self, _names: &[String]) -> Result<()> {
+        Err(crate::PluginError::unsupported(
+            "AdapterDatabaseSession.dropUserRelations",
+        ))
+    }
+
+    /// Fail closed when the restore transaction still has FK violations.
+    async fn assert_restore_constraints(&self) -> Result<()> {
+        Err(crate::PluginError::unsupported(
+            "AdapterDatabaseSession.assertRestoreConstraints",
+        ))
     }
 }
 

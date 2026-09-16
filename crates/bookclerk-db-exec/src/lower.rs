@@ -19,9 +19,11 @@ use sea_orm::DatabaseBackend;
 ///
 /// Every backend rewrites `INSERT OR IGNORE` to unique/PK `ON CONFLICT DO
 /// NOTHING` (SQLite `OR IGNORE` would otherwise swallow `NOT NULL`). Postgres
-/// adapters then rewrite helpers (`IFNULL`, `json_extract`, 2+-arg `min`/`max`,
-/// `json_valid`, `round`/`sum`/`avg`), `ORDER BY` NULL ordering, and `?`
-/// placeholders. Binding and host **DDL** type/identity rewrites
+/// adapters then rewrite helpers (`IFNULL`, `json_object` → TEXT,
+/// `json_extract`, 2+-arg `min`/`max`, `json_valid`, `round`/`sum`/`avg`)
+/// and `?` placeholders. Default `ORDER BY` NULLS and `/` `%` by-zero
+/// `NULLIF` are host semantic desugars, not adapter rewrites. Binding and host
+/// **DDL** type/identity rewrites
 /// (`AUTOINCREMENT`, `BLOB`, `INTEGER`) stay on the adapter execution edge
 /// ([`crate::schema_sql_for_backend`], [`crate::lower_binding_ddl_execute_request`])
 /// so this function does not classify statements.
@@ -62,7 +64,6 @@ pub fn lower_canonical_sql_typed(
 }
 
 fn lower_mechanical(backend: DatabaseBackend, sql: String) -> String {
-    let sql = rewrite_div_mod_null_on_zero(&sql);
     let sql = rewrite_insert_or_ignore_unique_conflict(&sql);
     if backend != DatabaseBackend::Postgres {
         return rewrite_like_to_glob(&sql);
@@ -73,15 +74,17 @@ fn lower_mechanical(backend: DatabaseBackend, sql: String) -> String {
 /// Lowers canonical SQLite-shaped SQL onto PostgreSQL.
 #[must_use]
 pub fn lower_canonical_to_postgres(sql: &str) -> String {
-    let sql = rewrite_div_mod_null_on_zero(sql);
-    let sql = rewrite_insert_or_ignore_unique_conflict(&sql);
+    let sql = rewrite_insert_or_ignore_unique_conflict(sql);
     lower_canonical_to_postgres_helpers(&sql)
 }
 
-/// Postgres helper / NULLS / placeholder rewrites (after unique-conflict INSERT).
+/// Postgres helper / placeholder rewrites (after unique-conflict INSERT).
+///
+/// Default `ORDER BY` NULLS and `/` `%` by-zero `NULLIF` are host semantic
+/// desugars ([`bookclerk_plugin_abi::desugar_canonical_sql`]), not adapter
+/// dialect generation.
 fn lower_canonical_to_postgres_helpers(sql: &str) -> String {
     let sql = sqlite_fns_to_postgres(sql);
-    let sql = rewrite_order_by_nulls_postgres(&sql);
     rewrite_placeholders_postgres(&sql)
 }
 
@@ -395,97 +398,10 @@ fn overflow_dialect(backend: DatabaseBackend) -> OverflowDialect {
     }
 }
 
-/// Portable `/` and `%` by zero: `NULL` (SQLite/D1 already; Postgres `NULLIF`).
-fn rewrite_div_mod_null_on_zero(sql: &str) -> String {
-    let mut i = 0;
-    let mut out = String::with_capacity(sql.len() + 16);
-    while i < sql.len() {
-        if let Some(len) = literal_or_comment_len(&sql[i..]) {
-            out.push_str(&sql[i..i + len]);
-            i += len;
-            continue;
-        }
-        let ch = sql[i..].chars().next().unwrap_or('\0');
-        if ch == '/' || ch == '%' {
-            out.push(ch);
-            i += ch.len_utf8();
-            let j = skip_trivia_idx(sql, i);
-            out.push_str(&sql[i..j]);
-            if let Some((atom_end, atom)) = take_div_operand(sql, j) {
-                out.push_str("NULLIF(");
-                out.push_str(atom);
-                out.push_str(", 0)");
-                i = atom_end;
-                continue;
-            }
-            continue;
-        }
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
-}
-
-/// Operand of `/` or `%`: admitted primary (paren, ident, call, CAST, unary, number, bind).
-fn take_div_operand(sql: &str, start: usize) -> Option<(usize, &str)> {
-    let s = skip_trivia_idx(sql, start);
-    let end = take_div_primary(sql, s)?;
-    if end > s {
-        Some((end, &sql[s..end]))
-    } else {
-        None
-    }
-}
-
-fn take_div_primary(sql: &str, start: usize) -> Option<usize> {
-    let s = skip_trivia_idx(sql, start);
-    let bytes = sql.as_bytes();
-    if bytes.get(s) == Some(&b'(') {
-        return Some(skip_balanced(sql, s));
-    }
-    if bytes.get(s) == Some(&b'?') {
-        return Some(s + 1);
-    }
-    if bytes.get(s) == Some(&b'+') || bytes.get(s) == Some(&b'-') {
-        return take_div_primary(sql, s + 1);
-    }
-    if let Some((_, end)) = ident_span_at(sql, s) {
-        let mut j = end;
-        loop {
-            let k = skip_trivia_idx(sql, j);
-            if bytes.get(k) == Some(&b'.') {
-                let k2 = skip_trivia_idx(sql, k + 1);
-                if let Some((_, e2)) = ident_span_at(sql, k2) {
-                    j = e2;
-                    continue;
-                }
-            }
-            if bytes.get(k) == Some(&b'(') {
-                return Some(skip_balanced(sql, k));
-            }
-            return Some(j);
-        }
-    }
-    let mut i = s;
-    if i < bytes.len() && bytes[i].is_ascii_digit() {
-        while i < bytes.len() && bytes[i].is_ascii_digit() {
-            i += 1;
-        }
-        if bytes.get(i) == Some(&b'.') {
-            i += 1;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-        }
-        return Some(i);
-    }
-    None
-}
-
 /// Maps SQLite helpers used in host plans onto PostgreSQL equivalents.
 fn sqlite_fns_to_postgres(sql: &str) -> String {
     let mut sql = rewrite_fn_name(sql, "ifnull", "COALESCE");
-    sql = rewrite_fn_name(&sql, "json_object", "json_build_object");
+    sql = rewrite_json_object(&sql);
     sql = rewrite_variadic_min_max(&sql);
     sql = rewrite_round_sum_avg(&sql);
     sql = rewrite_json_valid(&sql);
@@ -533,6 +449,74 @@ fn rewrite_fn_name(sql: &str, name: &str, pg_name: &str) -> String {
         i += ch.len_utf8();
     }
     out
+}
+
+/// Maps `json_object` onto `json_build_object` and the SQL-v1 TEXT wire type.
+///
+/// Postgres `json_build_object` returns `json`, so `length(json_object(…))`
+/// would fail (`length(json)` does not exist). Nested `json_object` values stay
+/// `json` so they nest as objects rather than JSON strings.
+fn rewrite_json_object(sql: &str) -> String {
+    rewrite_json_object_calls(sql, false)
+}
+
+fn rewrite_json_object_calls(sql: &str, keep_json: bool) -> String {
+    let mut i = 0;
+    let mut out = String::with_capacity(sql.len() + 16);
+    while i < sql.len() {
+        if let Some(len) = literal_or_comment_len(&sql[i..]) {
+            out.push_str(&sql[i..i + len]);
+            i += len;
+            continue;
+        }
+        if ident_call_at(sql, i, "json_object") {
+            let open = sql[i + "json_object".len()..]
+                .char_indices()
+                .find(|(_, c)| !c.is_whitespace())
+                .map(|(off, _)| i + "json_object".len() + off)
+                .unwrap_or(i + "json_object".len());
+            if let Some((args, rest)) = split_call_args(&sql[open + 1..]) {
+                let rewritten: Vec<String> = args
+                    .iter()
+                    .map(|a| {
+                        let nested = is_sole_json_object_call(a);
+                        rewrite_json_object_calls(a, nested)
+                    })
+                    .collect();
+                let call = format!("json_build_object({})", rewritten.join(", "));
+                if keep_json {
+                    out.push_str(&call);
+                } else {
+                    out.push('(');
+                    out.push_str(&call);
+                    out.push_str("::text)");
+                }
+                i = sql.len() - rest.len();
+                continue;
+            }
+        }
+        let ch = sql[i..].chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// True when `s` is exactly one `json_object(…)` call (optional outer space).
+fn is_sole_json_object_call(s: &str) -> bool {
+    let s = s.trim();
+    if !ident_call_at(s, 0, "json_object") {
+        return false;
+    }
+    let open = s["json_object".len()..]
+        .char_indices()
+        .find(|(_, c)| !c.is_whitespace())
+        .map(|(off, _)| "json_object".len() + off)
+        .unwrap_or("json_object".len());
+    matches!(
+        split_call_args(&s[open + 1..]),
+        Some((_, rest)) if rest.trim().is_empty()
+    )
 }
 
 /// Rewrites 2+-arg `min`/`max` (SQLite scalars) to `LEAST`/`GREATEST`.
@@ -679,143 +663,6 @@ fn rewrite_sum_or_avg(sql: &str, name: &str, pg_type: &str) -> String {
         i += ch.len_utf8();
     }
     out
-}
-
-/// Appends SQLite-equivalent NULL ordering (`ASC NULLS FIRST`, `DESC NULLS LAST`).
-fn rewrite_order_by_nulls_postgres(sql: &str) -> String {
-    let mut i = 0;
-    let mut out = String::with_capacity(sql.len() + 32);
-    while i < sql.len() {
-        if let Some(len) = literal_or_comment_len(&sql[i..]) {
-            out.push_str(&sql[i..i + len]);
-            i += len;
-            continue;
-        }
-        if ident_eq_ci(sql, i, "ORDER") {
-            let after_order = skip_trivia_idx(sql, i + "ORDER".len());
-            if ident_eq_ci(sql, after_order, "BY") {
-                let by_end = after_order + "BY".len();
-                out.push_str(&sql[i..by_end]);
-                i = rewrite_order_by_items(sql, by_end, &mut out);
-                continue;
-            }
-        }
-        let ch = sql[i..].chars().next().unwrap_or('\0');
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
-}
-
-/// Copies one `ORDER BY` item list, inserting NULLS FIRST/LAST when omitted.
-fn rewrite_order_by_items(sql: &str, mut i: usize, out: &mut String) -> usize {
-    loop {
-        let start = i;
-        i = skip_trivia_idx(sql, i);
-        out.push_str(&sql[start..i]);
-        if i >= sql.len() {
-            return i;
-        }
-        let expr_end = skip_order_by_expr(sql, i);
-        out.push_str(&sql[i..expr_end]);
-        i = skip_trivia_idx(sql, expr_end);
-        let mut desc = false;
-        if ident_eq_ci(sql, i, "ASC") {
-            out.push(' ');
-            out.push_str(&sql[i..i + "ASC".len()]);
-            i = skip_trivia_idx(sql, i + "ASC".len());
-        } else if ident_eq_ci(sql, i, "DESC") {
-            out.push(' ');
-            out.push_str(&sql[i..i + "DESC".len()]);
-            i = skip_trivia_idx(sql, i + "DESC".len());
-            desc = true;
-        }
-        if ident_eq_ci(sql, i, "NULLS") {
-            let after_nulls = skip_trivia_idx(sql, i + "NULLS".len());
-            if ident_eq_ci(sql, after_nulls, "FIRST") || ident_eq_ci(sql, after_nulls, "LAST") {
-                let kw_len = if ident_eq_ci(sql, after_nulls, "FIRST") {
-                    "FIRST".len()
-                } else {
-                    "LAST".len()
-                };
-                out.push(' ');
-                out.push_str(&sql[i..after_nulls + kw_len]);
-                i = skip_trivia_idx(sql, after_nulls + kw_len);
-            }
-        } else if desc {
-            out.push_str(" NULLS LAST");
-        } else {
-            out.push_str(" NULLS FIRST");
-        }
-        if let Some(next) = sql[i..].chars().next() {
-            if !next.is_whitespace() && next != ',' && next != ';' && next != ')' {
-                out.push(' ');
-            }
-        }
-        if sql.as_bytes().get(i) == Some(&b',') {
-            out.push(',');
-            i += 1;
-            continue;
-        }
-        return i;
-    }
-}
-
-/// Byte offset after one `ORDER BY` expression (balanced parens, literals skipped).
-fn skip_order_by_expr(sql: &str, mut i: usize) -> usize {
-    let mut depth = 0i32;
-    while i < sql.len() {
-        if let Some(len) = literal_or_comment_len(&sql[i..]) {
-            i += len;
-            continue;
-        }
-        let ch = sql[i..].chars().next().unwrap_or('\0');
-        if ch == '(' {
-            depth += 1;
-            i += 1;
-            continue;
-        }
-        if ch == ')' {
-            if depth == 0 {
-                return i;
-            }
-            depth -= 1;
-            i += 1;
-            continue;
-        }
-        if depth == 0 {
-            if ch == ',' || ch == ';' {
-                return i;
-            }
-            if ch.is_whitespace() {
-                let next = skip_trivia_idx(sql, i);
-                if order_by_item_terminator(sql, next) {
-                    return i;
-                }
-            }
-            if order_by_item_terminator(sql, i) {
-                return i;
-            }
-        }
-        i += ch.len_utf8();
-    }
-    i
-}
-
-/// True when `ORDER BY` item parsing should stop (`ASC`/`LIMIT`/…).
-fn order_by_item_terminator(sql: &str, i: usize) -> bool {
-    ident_eq_ci(sql, i, "ASC")
-        || ident_eq_ci(sql, i, "DESC")
-        || ident_eq_ci(sql, i, "NULLS")
-        || ident_eq_ci(sql, i, "LIMIT")
-        || ident_eq_ci(sql, i, "OFFSET")
-        || ident_eq_ci(sql, i, "RETURNING")
-        || ident_eq_ci(sql, i, "UNION")
-        || ident_eq_ci(sql, i, "EXCEPT")
-        || ident_eq_ci(sql, i, "INTERSECT")
-        || ident_eq_ci(sql, i, "FETCH")
-        || ident_eq_ci(sql, i, "FOR")
-        || ident_eq_ci(sql, i, "WINDOW")
 }
 
 /// Rewrites `json_valid(expr) = 0/1` and bare `json_valid(expr)` to `IS [NOT] JSON`.
@@ -1523,8 +1370,9 @@ fn dollar_quote_len(s: &str) -> Option<usize> {
 mod tests {
     use super::*;
     use bookclerk_plugin_abi::{
-        sql_type_env_from_canonical_ddl, typecheck_execute_request_proofs, DbPlanStatementKind,
-        DbResultSelection, DbValue, ExecuteRequest, SqlType, SqlTypeEnv, TypedDbStatement,
+        sql_type_env_from_canonical_ddl, sql_type_env_from_canonical_statements,
+        typecheck_execute_request_proofs, DbPlanStatementKind, DbResultSelection, DbValue,
+        ExecuteRequest, SqlType, SqlTypeEnv, TypedDbStatement,
     };
 
     fn proof_of(sql: &str, env: &SqlTypeEnv) -> ResolvedStatement {
@@ -1590,6 +1438,27 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_family_does_not_json_patch_json_object() {
+        let keys: Vec<String> = (0..16).map(|i| format!("'{i}', {i}")).collect();
+        let sql = format!("SELECT json_object({})", keys.join(", "));
+        let out = lower_canonical_sql(DatabaseBackend::Sqlite, &sql);
+        assert_eq!(out, sql, "32-arg json_object must stay identity: {out}");
+        assert!(!out.contains("json_patch"), "{out}");
+        let with_null = lower_canonical_sql(
+            DatabaseBackend::Sqlite,
+            "SELECT json_object('a', 1, 'b', NULL, 'a', NULL)",
+        );
+        assert_eq!(
+            with_null,
+            "SELECT json_object('a', 1, 'b', NULL, 'a', NULL)"
+        );
+        assert!(!with_null.contains("json_patch"), "{with_null}");
+        let lit = lower_canonical_sql(DatabaseBackend::Sqlite, "SELECT json_object('k;semi', 'v')");
+        assert!(lit.contains("'k;semi'"), "{lit}");
+        assert!(!lit.contains("json_patch"), "{lit}");
+    }
+
+    #[test]
     fn dollar_quotes_are_preserved() {
         let sql = lower_canonical_to_postgres("SELECT $tag$?$tag$, ?");
         assert!(sql.contains("$tag$?$tag$"), "{sql}");
@@ -1642,9 +1511,43 @@ mod tests {
             "SELECT COALESCE(NULL, 5), COALESCE(x, 0)"
         );
         let sql = lower_canonical_to_postgres("SELECT json_object('k', ?), JSON_OBJECT('a', 1)");
-        assert!(sql.contains("json_build_object('k', $1)"), "{sql}");
-        assert!(sql.contains("json_build_object('a', 1)"), "{sql}");
+        assert!(sql.contains("(json_build_object('k', $1)::text)"), "{sql}");
+        assert!(sql.contains("(json_build_object('a', 1)::text)"), "{sql}");
         assert!(!sql.to_ascii_lowercase().contains("json_object("), "{sql}");
+    }
+
+    #[test]
+    fn postgres_json_object_is_text_except_nested_constructor_values() {
+        let length = lower_canonical_to_postgres("SELECT length(json_object('a', 1, 'b', NULL))");
+        assert_eq!(
+            length,
+            "SELECT length((json_build_object('a', 1, 'b', NULL)::text))"
+        );
+        let nested = lower_canonical_to_postgres(
+            "SELECT json_extract(json_object('n', json_object('k', 'v')), '$.n')",
+        );
+        assert!(
+            nested.contains("json_build_object('n', json_build_object('k', 'v'))"),
+            "{nested}"
+        );
+        assert!(
+            !nested.contains("json_build_object('k', 'v')::text"),
+            "nested constructor values must stay json: {nested}"
+        );
+        assert!(nested.contains("::text"), "{nested}");
+        let portable = lower_canonical_to_postgres(crate::sql_v1::PORTABLE_JSON_OBJECT_SEMANTICS);
+        assert!(
+            portable.contains("length((json_build_object('a', 1, 'b', NULL)::text))"),
+            "{portable}"
+        );
+        assert!(
+            portable.contains("json_build_object('n', json_build_object('k', 'v'))"),
+            "{portable}"
+        );
+        assert!(
+            !portable.to_ascii_lowercase().contains("json_object("),
+            "{portable}"
+        );
     }
 
     #[test]
@@ -1789,22 +1692,64 @@ mod tests {
     }
 
     #[test]
-    fn postgres_order_by_appends_sqlite_null_ordering() {
+    fn postgres_order_by_preserves_host_desugared_nulls() {
+        let canonical =
+            bookclerk_plugin_abi::desugar_canonical_sql("SELECT a FROM t ORDER BY a, b DESC");
         assert_eq!(
-            lower_canonical_to_postgres("SELECT a FROM t ORDER BY a"),
-            "SELECT a FROM t ORDER BY a NULLS FIRST"
+            canonical,
+            "SELECT a FROM t ORDER BY a NULLS FIRST, b DESC NULLS LAST"
         );
-        assert_eq!(
-            lower_canonical_to_postgres("SELECT a FROM t ORDER BY a DESC"),
-            "SELECT a FROM t ORDER BY a DESC NULLS LAST"
-        );
+        assert_eq!(lower_canonical_to_postgres(&canonical), canonical);
         assert_eq!(
             lower_canonical_to_postgres("SELECT a FROM t ORDER BY a ASC NULLS LAST"),
             "SELECT a FROM t ORDER BY a ASC NULLS LAST"
         );
+        // Adapter mechanical lowering does not insert unspecified NULLS.
         assert_eq!(
-            lower_canonical_to_postgres("SELECT a FROM t ORDER BY a LIMIT 1"),
-            "SELECT a FROM t ORDER BY a NULLS FIRST LIMIT 1"
+            lower_canonical_to_postgres("SELECT a FROM t ORDER BY a"),
+            "SELECT a FROM t ORDER BY a"
+        );
+    }
+
+    /// Mirrors backup capture_select: host desugar, then proof-directed Postgres lower.
+    fn capture_lower_pg(sql: &str, env: &SqlTypeEnv) -> String {
+        let desugared = bookclerk_plugin_abi::desugar_canonical_sql(sql);
+        let proof = proof_of(&desugared, env);
+        lower_canonical_sql_typed(DatabaseBackend::Postgres, &desugared, Some(&proof))
+            .unwrap_or_else(|err| panic!("{desugared}: {err}"))
+    }
+
+    #[test]
+    fn postgres_backup_catalog_select_collates_text_and_keeps_nulls() {
+        let env = sql_type_env_from_canonical_statements([
+            bookclerk_plugin_abi::sql_ddl_create_table_sql(),
+            bookclerk_plugin_abi::sql_schema_create_table_sql(),
+        ]);
+        let catalog = format!(
+            "SELECT kind, name, table_name, canonical_sql FROM {} \
+             ORDER BY kind, name LIMIT 1000 OFFSET 0",
+            bookclerk_plugin_abi::SQL_DDL_TABLE
+        );
+        let catalog_pg = capture_lower_pg(&catalog, &env);
+        assert!(catalog_pg.contains("(kind COLLATE \"C\")"), "{catalog_pg}");
+        assert!(
+            catalog_pg.contains("ORDER BY kind NULLS FIRST, name NULLS FIRST"),
+            "{catalog_pg}"
+        );
+
+        let mut items = SqlTypeEnv::new();
+        items.insert_table(
+            "items",
+            [("k".into(), SqlType::Text), ("extra".into(), SqlType::Text)],
+        );
+        let items_pg = capture_lower_pg(
+            "SELECT k, extra FROM items ORDER BY k ASC NULLS FIRST, extra ASC NULLS FIRST LIMIT 1000 OFFSET 0",
+            &items,
+        );
+        assert!(items_pg.contains("(k COLLATE \"C\")"), "{items_pg}");
+        assert!(
+            items_pg.contains("ORDER BY k ASC NULLS FIRST, extra ASC NULLS FIRST"),
+            "{items_pg}"
         );
     }
 
@@ -1899,10 +1844,26 @@ mod tests {
     }
 
     #[test]
-    fn div_and_mod_by_zero_lower_to_nullif() {
-        let sql = rewrite_div_mod_null_on_zero("SELECT 1 / 0, 4 % 0, a / b");
+    fn div_and_mod_by_zero_are_host_desugars() {
+        let sql = bookclerk_plugin_abi::desugar_canonical_sql("SELECT 1 / 0, 4 % 0, a / b");
         assert!(sql.contains("NULLIF(0, 0)"), "{sql}");
         assert!(sql.contains("NULLIF(b, 0)"), "{sql}");
+        assert_eq!(
+            lower_canonical_sql(DatabaseBackend::Postgres, &sql),
+            sql,
+            "adapter must not double-wrap NULLIF: {sql}"
+        );
+        let misleading = bookclerk_plugin_abi::desugar_canonical_sql("SELECT 1 / NULLIF(0, 1)");
+        assert_eq!(misleading, "SELECT 1 / NULLIF(NULLIF(0, 1), 0)");
+        assert_eq!(
+            lower_canonical_sql(DatabaseBackend::Postgres, &misleading),
+            misleading,
+            "adapter must not wrap an already-structural NULLIF(expr, 0): {misleading}"
+        );
+        assert_eq!(
+            lower_canonical_sql(DatabaseBackend::Sqlite, &misleading),
+            misleading
+        );
     }
 
     #[test]
@@ -1922,7 +1883,7 @@ mod tests {
 
     #[test]
     fn div_operand_covers_call_qualified_unary_and_cast() {
-        let sql = rewrite_div_mod_null_on_zero(
+        let sql = bookclerk_plugin_abi::desugar_canonical_sql(
             "SELECT 10 / abs(n), 10 / t.n, 10 / -n, 10 / CAST(n AS INTEGER), 10 / (n + 1)",
         );
         assert!(sql.contains("NULLIF(abs(n), 0)"), "{sql}");
@@ -1956,6 +1917,32 @@ mod tests {
         assert!(!sql.to_ascii_lowercase().contains("json_extract("), "{sql}");
         assert!(sql.contains("#>>"), "{sql}");
         assert!(sql.contains("COLLATE \"C\""), "{sql}");
+    }
+
+    #[test]
+    fn postgres_collate_comes_from_text_collate_sites() {
+        let env = sql_type_env_from_canonical_ddl("CREATE TABLE t (name TEXT)");
+        let sql = "SELECT name FROM t WHERE name = 'a'";
+        let proof = proof_of(sql, &env);
+        assert!(
+            !proof.text_collate_sites.is_empty(),
+            "TEXT comparisons must record collate sites"
+        );
+        let lowered = lower_canonical_sql_typed(DatabaseBackend::Postgres, sql, Some(&proof))
+            .expect("postgres collate from sites");
+        assert!(
+            lowered.contains("COLLATE \"C\""),
+            "postgres must wrap TEXT from proof sites: {lowered}"
+        );
+        let mut without_sites = proof.clone();
+        without_sites.text_collate_sites.clear();
+        let no_collate =
+            lower_canonical_sql_typed(DatabaseBackend::Postgres, sql, Some(&without_sites))
+                .expect("empty sites skip collate");
+        assert!(
+            !no_collate.contains("COLLATE"),
+            "clearing text_collate_sites must skip COLLATE: {no_collate}"
+        );
     }
 
     #[test]
@@ -2449,5 +2436,79 @@ mod tests {
             pre > D1_MAX_SQL_STATEMENT_BYTES as usize || caps.admit_statement(&over, &[]).is_err(),
             "N+1 proven preflight {pre} must miss the physical ceiling"
         );
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use bookclerk_plugin_abi::SqlTypeEnv;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn lower_never_panics_on_arbitrary_text(s in r"[\x01-\x7f]{0,180}") {
+            let _ = lower_canonical_sql(DatabaseBackend::Sqlite, &s);
+            let _ = lower_canonical_sql(DatabaseBackend::Postgres, &s);
+        }
+
+        #[test]
+        fn string_and_comment_semicolons_are_copied_verbatim(inner in r"[^\x00'*/\n]{0,24}") {
+            let sql = format!(
+                "SELECT '{inner};lit' AS x, /* {inner};block */ 1 -- {inner};line\nFROM t"
+            );
+            let sqlite = lower_canonical_sql(DatabaseBackend::Sqlite, &sql);
+            let postgres = lower_canonical_sql(DatabaseBackend::Postgres, &sql);
+            prop_assert!(sqlite.contains(&format!("'{inner};lit'")), "{sqlite}");
+            prop_assert!(postgres.contains(&format!("'{inner};lit'")), "{postgres}");
+            prop_assert!(sqlite.contains(&format!("/* {inner};block */")), "{sqlite}");
+            prop_assert!(postgres.contains(&format!("/* {inner};block */")), "{postgres}");
+            prop_assert!(sqlite.contains(&format!("-- {inner};line")), "{sqlite}");
+            prop_assert!(postgres.contains(&format!("-- {inner};line")), "{postgres}");
+        }
+
+        #[test]
+        fn proof_hash_mismatch_fails_closed(extra in r"[a-z]{1,8}") {
+            let sql = "SELECT 'ok'";
+            let proof = {
+                use bookclerk_plugin_abi::{
+                    typecheck_execute_request_proofs, DbPlanStatementKind, DbResultSelection,
+                    ExecuteRequest, TypedDbStatement,
+                };
+                let req = ExecuteRequest {
+                    operation_id: "p".into(),
+                    request_hash: String::new(),
+                    statements: vec![TypedDbStatement {
+                        sql: sql.into(),
+                        parameters: vec![],
+                        kind: DbPlanStatementKind::Select,
+                        max_rows: 0,
+                        result_selection: DbResultSelection::Rows,
+                    }],
+                    deadline_unix_ms: 0,
+                };
+                typecheck_execute_request_proofs(&req, &SqlTypeEnv::new())
+                    .expect("typecheck")
+                    .into_iter()
+                    .next()
+                    .expect("proof")
+            };
+            let mutated = format!("{sql} /* {extra} */");
+            let err = lower_canonical_sql_typed(
+                DatabaseBackend::Sqlite,
+                &mutated,
+                Some(&proof),
+            )
+            .expect_err("hash mismatch");
+            prop_assert!(
+                err.to_string().contains("proof") || err.to_string().contains("bound"),
+                "{err}"
+            );
+        }
     }
 }

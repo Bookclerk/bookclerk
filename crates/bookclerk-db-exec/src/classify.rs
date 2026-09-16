@@ -59,7 +59,7 @@ pub fn is_schema_apply_retryable(err: &DbErr) -> bool {
 }
 
 /// SQLSTATE / driver token from sqlx when `err` is a driver `Database` error.
-fn sqlx_engine_code(err: &DbErr) -> Option<String> {
+pub(crate) fn sqlx_engine_code(err: &DbErr) -> Option<String> {
     match err {
         DbErr::Exec(RuntimeErr::SqlxError(e))
         | DbErr::Query(RuntimeErr::SqlxError(e))

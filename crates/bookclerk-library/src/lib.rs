@@ -32,7 +32,7 @@ mod schema_walk;
 pub mod scope;
 pub mod secrets;
 mod session_client;
-/// Host-owned generic SQL atomic plans for thin database adapters.
+/// Host-owned generic SQL atomic plans for database adapters.
 pub mod sql_plan;
 mod store;
 mod text;
@@ -59,7 +59,7 @@ pub use backup::{
     BACKUP_FORMAT_VERSION, BACKUP_RETENTION, LIBRARY_SKIP_TABLES,
 };
 pub use binding_schema::{apply_binding_bootstrap, binding_bootstrap_plan};
-pub use bookclerk_plugin_abi::GuestSqlPolicy;
+pub use bookclerk_plugin_abi::{AdapterBackupOps, GuestSqlPolicy, SharedAdapterBackupOps};
 pub use db_atomic::{
     db_atomic_operation_id, db_atomic_request_hash, execute_db_atomic, execute_named_atomic,
 };
@@ -80,16 +80,16 @@ pub use master_key::{
 };
 pub use migrations::{
     apply_migration_plan, apply_plugin_migrations, binding_bootstrap_sql,
-    binding_bootstrap_statements, current_canonical_schema, current_canonical_table_names,
-    downgrade_migration_plan, history_from_execute_reply, host_migration_plan,
-    latest_schema_postgres, latest_schema_sqlite, load_plugin_migration_history,
+    binding_bootstrap_statements, binding_bootstrap_type_env, current_canonical_schema,
+    current_canonical_table_names, downgrade_migration_plan, history_from_execute_reply,
+    host_migration_plan, latest_schema_sqlite, load_plugin_migration_history,
     min_supported_schema_version, next_pending_plugin_migration, pending_plugin_suffix,
-    plugin_apply_statements, plugin_history_digest, plugin_history_session_matches,
-    plugin_journal_has_entry, plugin_journal_select_request, plugin_migration_checksum,
-    prove_plugin_migration_sequence, remaining_plugin_suffix_batches, remaining_upgrade_batches,
-    require_history_prefix, schema_session_matches, schema_slot_key, sql_string_literal,
-    unreleased_checksum, unreleased_ops, unreleased_sql, HostMigrationStep, MigrationOp,
-    MigrationPlan, MigrationStep, PlanOp, PluginJournalEntry, PluginMigrationHistory,
+    plugin_apply_statements, plugin_binding_type_env, plugin_history_digest,
+    plugin_history_session_matches, plugin_journal_has_entry, plugin_journal_select_request,
+    plugin_migration_checksum, prove_plugin_migration_sequence, remaining_plugin_suffix_batches,
+    remaining_upgrade_batches, require_history_prefix, schema_session_matches, schema_slot_key,
+    sql_string_literal, unreleased_checksum, unreleased_ops, unreleased_sql, HostMigrationStep,
+    MigrationOp, MigrationPlan, MigrationStep, PlanOp, PluginJournalEntry, PluginMigrationHistory,
     PluginMigrationSequence, ProvenPluginMigration, BOOKCLERK_SCHEMA_NAMESPACE,
     MAX_PLUGIN_MIGRATION_APPLY_ATTEMPTS, PLUGIN_MIGRATION_SLOT_KEY, SCHEMA_MIGRATIONS_DDL,
     SCHEMA_VERSION,

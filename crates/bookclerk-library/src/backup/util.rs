@@ -1,10 +1,11 @@
 //! Shared backup I/O helpers (typed cells, identifiers, SQL exec).
 
 use bookclerk_plugin_abi::{
-    encoded_execute_request_bytes, sql_payload_exceeds, DbPlanStatementKind, DbResultSelection,
-    DbType, DbValue, ExecuteRequest, SqlType, TypedDbStatement,
+    encoded_execute_request_bytes, sql_payload_exceeds, DbIdentityHighWater, DbPlanStatementKind,
+    DbResultSelection, DbType, DbValue, ExecuteRequest, SharedAdapterBackupOps, SqlType,
+    SqlTypeEnv, TypedDbStatement,
 };
-use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement};
+use sea_orm::{ConnectionTrait, DatabaseConnection, QueryResult, StreamTrait};
 
 use crate::error::{LibraryError, Result};
 
@@ -25,21 +26,21 @@ pub fn ident_ok(s: &str) -> bool {
 
 /// True when relation `name` exists (empty tables still count).
 ///
-/// Uses a bounded `SELECT` so a missing table is an engine error rather than
-/// an adapter catalog probe.
-pub async fn table_exists<C>(conn: &C, backend: DbBackend, name: &str) -> Result<bool>
+/// Uses a bounded canonical `SELECT` so a missing table is an engine error
+/// rather than an adapter catalog probe. Never inspects the physical backend.
+pub async fn table_exists<C>(conn: &C, name: &str) -> Result<bool>
 where
     C: ConnectionTrait,
 {
     if !ident_ok(name) {
         return Ok(false);
     }
-    match conn
-        .query_all_raw(Statement::from_string(
-            backend,
-            format!("SELECT 1 FROM {name} LIMIT 1"),
-        ))
-        .await
+    match bookclerk_db_exec::query_canonical(
+        conn,
+        &format!("SELECT 1 FROM {name} LIMIT 1"),
+        std::iter::empty::<sea_orm::Value>(),
+    )
+    .await
     {
         Ok(_) => Ok(true),
         Err(err)
@@ -59,25 +60,10 @@ where
     }
 }
 
-/// Executes one SQL string on `conn`.
-///
-/// # Errors
-///
-/// Returns when the engine rejects the statement.
-pub async fn exec_sql<C>(conn: &C, backend: DbBackend, sql: &str) -> Result<()>
-where
-    C: ConnectionTrait,
-{
-    conn.execute_raw(Statement::from_string(backend, sql.to_string()))
-        .await
-        .map_err(LibraryError::from_db_err)?;
-    Ok(())
-}
-
 /// Executes one canonical statement with typed [`DbValue`] binds.
 ///
 /// Honors negotiated `maxBinds`, `maxPayloadBytes`, and `maxRequestBytes`.
-/// Placeholders are Bookclerk `?`; SeaORM lowers them per backend.
+/// Placeholders stay Bookclerk `?`; adapters lower at execute.
 ///
 /// # Errors
 ///
@@ -85,13 +71,13 @@ where
 /// rejects the statement.
 pub(crate) async fn exec_bound<C>(
     conn: &C,
-    backend: DbBackend,
     opts: &CanonicalRestoreOpts,
     sql: &str,
     params: Vec<DbValue>,
+    type_env: SqlTypeEnv,
 ) -> Result<()>
 where
-    C: ConnectionTrait,
+    C: ConnectionTrait + StreamTrait,
 {
     let nbinds = u32::try_from(params.len()).unwrap_or(u32::MAX);
     if nbinds > opts.max_binds {
@@ -130,12 +116,15 @@ where
             opts.max_request_bytes
         )));
     }
-    let engine_sql = bookclerk_db_exec::lower_canonical_sql(backend, sql);
-    conn.execute_raw(Statement::from_sql_and_values(
-        backend,
-        engine_sql,
+    if opts.in_process {
+        crate::sql_plan::execute_typed_on_open(conn, &req, type_env, 0).await?;
+        return Ok(());
+    }
+    bookclerk_db_exec::execute_canonical(
+        conn,
+        sql,
         params.iter().map(bookclerk_db_exec::db_value_to_sea),
-    ))
+    )
     .await
     .map_err(LibraryError::from_db_err)?;
     Ok(())
@@ -158,20 +147,6 @@ pub fn cell_text(row: &QueryResult, name: &str) -> Result<String> {
             })
         })
         .map_err(|err| LibraryError::Schema(format!("catalog column `{name}`: {err}")))
-}
-
-/// Best-effort integer cell.
-#[must_use]
-pub fn int_cell(row: &QueryResult, name: &str) -> Option<i64> {
-    row.try_get::<i64>("", name)
-        .ok()
-        .or_else(|| row.try_get_by_index::<i64>(0).ok())
-        .or_else(|| {
-            row.try_get::<Option<i64>>("", name)
-                .ok()
-                .flatten()
-                .or_else(|| row.try_get_by_index::<Option<i64>>(0).ok().flatten())
-        })
 }
 
 /// Converts one result cell to a portable `DbValue` using the declared column type.
@@ -311,5 +286,117 @@ pub fn validate_cell(
         other => Err(LibraryError::Schema(format!(
             "backup table `{table}` column `{column}` value {other:?} does not match declared {declared:?}"
         ))),
+    }
+}
+
+/// Maps an adapter primitive error onto [`LibraryError::Schema`].
+fn adapter_err(err: bookclerk_plugin_abi::PluginError) -> LibraryError {
+    LibraryError::Schema(err.to_string())
+}
+
+/// Identity high-water from the adapter, or the in-process SDK when `adapter` is `None`.
+pub(crate) async fn backup_export_identity<C>(
+    conn: &C,
+    adapter: Option<&SharedAdapterBackupOps>,
+) -> Result<Vec<DbIdentityHighWater>>
+where
+    C: ConnectionTrait,
+{
+    if let Some(adapter) = adapter {
+        adapter.export_identity().await.map_err(adapter_err)
+    } else {
+        bookclerk_db_exec::export_identity(conn)
+            .await
+            .map_err(LibraryError::from_db_err)
+    }
+}
+
+/// Restore identity high-water through the adapter or in-process SDK.
+pub(crate) async fn backup_import_identity<C>(
+    conn: &C,
+    adapter: Option<&SharedAdapterBackupOps>,
+    rows: &[DbIdentityHighWater],
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    if let Some(adapter) = adapter {
+        adapter.import_identity(rows).await.map_err(adapter_err)
+    } else {
+        bookclerk_db_exec::import_identity(conn, rows)
+            .await
+            .map_err(LibraryError::from_db_err)
+    }
+}
+
+/// User-visible relations through the adapter or in-process SDK.
+pub(crate) async fn backup_list_user_relations(
+    db: &DatabaseConnection,
+    adapter: Option<&SharedAdapterBackupOps>,
+) -> Result<Vec<String>> {
+    if let Some(adapter) = adapter {
+        adapter.list_user_relations().await.map_err(adapter_err)
+    } else {
+        bookclerk_db_exec::list_user_relations(db)
+            .await
+            .map_err(LibraryError::from_db_err)
+    }
+}
+
+/// Prepare the open restore transaction (deferred FK checks).
+pub(crate) async fn backup_prepare_unit_restore<C>(
+    conn: &C,
+    adapter: Option<&SharedAdapterBackupOps>,
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    if let Some(adapter) = adapter {
+        adapter.prepare_unit_restore().await.map_err(adapter_err)
+    } else {
+        bookclerk_db_exec::prepare_unit_restore(conn)
+            .await
+            .map_err(LibraryError::from_db_err)
+    }
+}
+
+/// Drop named user relations through the adapter or in-process SDK.
+pub(crate) async fn backup_drop_user_relations<C>(
+    conn: &C,
+    adapter: Option<&SharedAdapterBackupOps>,
+    names: &[String],
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    if let Some(adapter) = adapter {
+        adapter
+            .drop_user_relations(names)
+            .await
+            .map_err(adapter_err)
+    } else {
+        bookclerk_db_exec::drop_user_relations(conn, names)
+            .await
+            .map_err(LibraryError::from_db_err)
+    }
+}
+
+/// Fail closed when restore FK checks still fail.
+pub(crate) async fn backup_assert_restore_constraints<C>(
+    conn: &C,
+    adapter: Option<&SharedAdapterBackupOps>,
+) -> Result<()>
+where
+    C: ConnectionTrait,
+{
+    if let Some(adapter) = adapter {
+        adapter
+            .assert_restore_constraints()
+            .await
+            .map_err(adapter_err)
+    } else {
+        bookclerk_db_exec::assert_restore_constraints(conn)
+            .await
+            .map_err(LibraryError::from_db_err)
     }
 }

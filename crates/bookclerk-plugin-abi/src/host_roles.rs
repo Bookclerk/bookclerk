@@ -6,45 +6,76 @@ use crate::Result;
 #[async_trait::async_trait(?Send)]
 pub trait AdapterTransaction {
     /// Typed statements on this open transaction (no second `BEGIN`).
-    async fn execute(&self, request: crate::ExecuteRequest) -> Result<crate::ExecuteReply>;
-
-    /// Typed execute with a host-only guest receipt finalize hint.
     ///
-    /// Default forwards [`Self::execute`] when the envelope has no persist
-    /// hint and no proofs. Nested guest-receipt batches must override this.
-    async fn execute_envelope(
+    /// Proofs are required ([`crate::AdapterExecuteRequest::require_proofs`]).
+    async fn execute(
         &self,
-        envelope: crate::host_envelope::HostExecuteEnvelope,
-    ) -> Result<crate::ExecuteReply> {
-        if envelope.guest_receipt.is_absent() && envelope.proofs.is_empty() {
-            return self.execute(envelope.request).await;
-        }
-        Err(crate::PluginError::unsupported(
-            "nested host executeEnvelope not implemented",
-        ))
-    }
+        request: crate::host_envelope::AdapterExecuteRequest,
+    ) -> Result<crate::ExecuteReply>;
 
     /// Commit.
     async fn commit(&self) -> Result<()>;
 
     /// Rollback.
     async fn rollback(&self) -> Result<()>;
+
+    /// Identity high-water from adapter catalogs on this transaction.
+    async fn export_identity(&self) -> Result<Vec<crate::DbIdentityHighWater>> {
+        Err(crate::PluginError::unsupported(
+            "AdapterTransaction.exportIdentity",
+        ))
+    }
+
+    /// Restore identity high-water into adapter catalogs on this transaction.
+    async fn import_identity(&self, _rows: &[crate::DbIdentityHighWater]) -> Result<()> {
+        Err(crate::PluginError::unsupported(
+            "AdapterTransaction.importIdentity",
+        ))
+    }
+
+    /// User-visible relation names visible to this transaction.
+    async fn list_user_relations(&self) -> Result<Vec<String>> {
+        Err(crate::PluginError::unsupported(
+            "AdapterTransaction.listUserRelations",
+        ))
+    }
+
+    /// Prepare this restore transaction (deferred FK checks).
+    async fn prepare_unit_restore(&self) -> Result<()> {
+        Err(crate::PluginError::unsupported(
+            "AdapterTransaction.prepareUnitRestore",
+        ))
+    }
+
+    /// Drop named user relations on this transaction.
+    async fn drop_user_relations(&self, _names: &[String]) -> Result<()> {
+        Err(crate::PluginError::unsupported(
+            "AdapterTransaction.dropUserRelations",
+        ))
+    }
+
+    /// Fail closed when this restore transaction still has FK violations.
+    async fn assert_restore_constraints(&self) -> Result<()> {
+        Err(crate::PluginError::unsupported(
+            "AdapterTransaction.assertRestoreConstraints",
+        ))
+    }
 }
 
 /// Host-only view of an open adapter session (`begin` for interactive txn).
 #[async_trait::async_trait(?Send)]
 pub trait HostAdapterDatabaseSession {
     /// Opens a host-internal interactive transaction (SeaORM proxy).
-    async fn begin(&self) -> Result<Box<dyn AdapterTransaction>>;
+    async fn begin(&self, isolation: crate::IsolationReq) -> Result<Box<dyn AdapterTransaction>>;
 
-    /// Typed execute with a host-only guest receipt finalize hint.
-    async fn execute_envelope(
+    /// Typed atomic execute on this host-private session.
+    async fn execute(
         &self,
-        envelope: crate::host_envelope::HostExecuteEnvelope,
+        request: crate::host_envelope::AdapterExecuteRequest,
     ) -> Result<crate::ExecuteReply> {
-        let _ = envelope;
+        let _ = request;
         Err(crate::PluginError::unsupported(
-            "host executeEnvelope not implemented",
+            "host execute not implemented",
         ))
     }
 }

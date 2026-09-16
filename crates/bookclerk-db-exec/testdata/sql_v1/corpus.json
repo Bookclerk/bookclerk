@@ -43,7 +43,21 @@
     {
       "id": "json-object",
       "canonical": "SELECT json_object('k', ?) AS o",
-      "postgres": "SELECT json_build_object('k', $1) AS o"
+      "postgres": "SELECT (json_build_object('k', $1)::text) AS o"
+    },
+    {
+      "id": "json-object-length",
+      "canonical": "SELECT length(json_object('a', 1, 'b', NULL))",
+      "postgres": "SELECT length((json_build_object('a', 1, 'b', NULL)::text))"
+    },
+    {
+      "id": "json-object-nested",
+      "canonical": "SELECT json_extract(json_object('n', json_object('k', 'v')), '$.n')",
+      "postgresContains": [
+        "json_build_object('n', json_build_object('k', 'v'))",
+        "#>> '{n}'"
+      ],
+      "postgresNotContains": ["json_object(", "json_extract("]
     },
     {
       "id": "ifnull-greatest",
@@ -68,7 +82,7 @@
     },
     {
       "id": "order-by-nulls-default",
-      "canonical": "SELECT a FROM t ORDER BY a, b DESC",
+      "canonical": "SELECT a FROM t ORDER BY a NULLS FIRST, b DESC NULLS LAST",
       "postgres": "SELECT a FROM t ORDER BY a NULLS FIRST, b DESC NULLS LAST"
     },
     {
@@ -82,14 +96,23 @@
     },
     {
       "id": "div-mod-null-on-zero",
-      "canonical": "SELECT 1 / 0, 4 % 0, a / b",
+      "canonical": "SELECT 1 / NULLIF(0, 0), 4 % NULLIF(0, 0), a / NULLIF(b, 0)",
       "postgresContains": ["NULLIF(0, 0)", "NULLIF(b, 0)"]
+    },
+    {
+      "id": "div-nullif-not-zero-still-guarded",
+      "canonical": "SELECT 1 / NULLIF(NULLIF(0, 1), 0), 1 % NULLIF(NULLIF(0, 1), 0)",
+      "postgresContains": ["NULLIF(NULLIF(0, 1), 0)"]
     }
   ],
   "sqliteIdentity": [
     {
       "id": "sqlite-leaves-question-marks",
       "canonical": "a = ? AND b = ?"
+    },
+    {
+      "id": "sqlite-json-object-no-patch",
+      "canonical": "SELECT json_object('a', 1, 'b', NULL, 'a', NULL)"
     }
   ]
 }

@@ -1,0 +1,1 @@
+CREATE TABLE t (x TEXT NOT NULL DEFAULT 'a;b'); SELECT 'it''s;fine' AS t

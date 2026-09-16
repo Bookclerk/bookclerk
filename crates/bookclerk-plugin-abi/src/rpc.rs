@@ -73,6 +73,15 @@ pub(super) fn read_extensible_config(
     }
 }
 
+pub(super) fn write_extensible_config(
+    mut b: crate::plugin_capnp::extensible_config::Builder<'_>,
+    cfg: &crate::ExtensibleConfig,
+) {
+    b.set_schema_version(cfg.schema_version);
+    b.set_media_type(&cfg.media_type);
+    b.set_payload(&cfg.payload);
+}
+
 pub(super) fn write_error(mut b: plugin_error::Builder<'_>, err: &PluginError) {
     b.set_code(err.wire_str());
     b.set_message(&err.message);
@@ -2219,7 +2228,7 @@ impl adapter_database_session_capnp::Server for AdapterDatabaseSessionServer {
             .get_request()
             .map_err(|err| capnp::Error::failed(err.to_string()))
             .and_then(|r| {
-                crate::db_rpc::read_execute_request(r)
+                crate::db_rpc::read_adapter_execute_request(r)
                     .map_err(|err| capnp::Error::failed(err.to_string()))
             })?;
         crate::db_rpc::write_execute_result_reply(
@@ -2253,18 +2262,118 @@ impl adapter_database_session_capnp::Server for AdapterDatabaseSessionServer {
         );
         Ok(())
     }
+
+    async fn export_identity(
+        self: Rc<Self>,
+        _params: adapter_database_session_capnp::ExportIdentityParams,
+        mut results: adapter_database_session_capnp::ExportIdentityResults,
+    ) -> capnp::Result<()> {
+        crate::db_rpc::write_identity_export_reply(
+            results.get().init_result(),
+            self.inner.export_identity().await,
+        );
+        Ok(())
+    }
+
+    async fn import_identity(
+        self: Rc<Self>,
+        params: adapter_database_session_capnp::ImportIdentityParams,
+        mut results: adapter_database_session_capnp::ImportIdentityResults,
+    ) -> capnp::Result<()> {
+        let rows = params
+            .get()?
+            .get_rows()
+            .map_err(|err| capnp::Error::failed(err.to_string()))
+            .and_then(|r| {
+                crate::db_rpc::read_identity_list(r)
+                    .map_err(|err| capnp::Error::failed(err.to_string()))
+            })?;
+        let mut result = results.get().init_result();
+        match self.inner.import_identity(&rows).await {
+            Ok(()) => result.set_ok(()),
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
+    async fn list_user_relations(
+        self: Rc<Self>,
+        _params: adapter_database_session_capnp::ListUserRelationsParams,
+        mut results: adapter_database_session_capnp::ListUserRelationsResults,
+    ) -> capnp::Result<()> {
+        crate::db_rpc::write_user_relations_reply(
+            results.get().init_result(),
+            self.inner.list_user_relations().await,
+        );
+        Ok(())
+    }
+
+    async fn prepare_unit_restore(
+        self: Rc<Self>,
+        _params: adapter_database_session_capnp::PrepareUnitRestoreParams,
+        mut results: adapter_database_session_capnp::PrepareUnitRestoreResults,
+    ) -> capnp::Result<()> {
+        let mut result = results.get().init_result();
+        match self.inner.prepare_unit_restore().await {
+            Ok(()) => result.set_ok(()),
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
+    async fn drop_user_relations(
+        self: Rc<Self>,
+        params: adapter_database_session_capnp::DropUserRelationsParams,
+        mut results: adapter_database_session_capnp::DropUserRelationsResults,
+    ) -> capnp::Result<()> {
+        let names = params
+            .get()?
+            .get_names()
+            .map_err(|err| capnp::Error::failed(err.to_string()))
+            .and_then(|r| {
+                crate::db_rpc::read_text_list(r)
+                    .map_err(|err| capnp::Error::failed(err.to_string()))
+            })?;
+        let mut result = results.get().init_result();
+        match self.inner.drop_user_relations(&names).await {
+            Ok(()) => result.set_ok(()),
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+
+    async fn assert_restore_constraints(
+        self: Rc<Self>,
+        _params: adapter_database_session_capnp::AssertRestoreConstraintsParams,
+        mut results: adapter_database_session_capnp::AssertRestoreConstraintsResults,
+    ) -> capnp::Result<()> {
+        let mut result = results.get().init_result();
+        match self.inner.assert_restore_constraints().await {
+            Ok(()) => result.set_ok(()),
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
 }
 
 #[cfg(feature = "host")]
 impl host_adapter_database_session_capnp::Server for AdapterDatabaseSessionServer {
     async fn begin(
         self: Rc<Self>,
-        _params: host_adapter_database_session_capnp::BeginParams,
+        params: host_adapter_database_session_capnp::BeginParams,
         mut results: host_adapter_database_session_capnp::BeginResults,
     ) -> capnp::Result<()> {
+        let isolation = params
+            .get()?
+            .get_isolation()
+            .map_err(|err| capnp::Error::failed(err.to_string()))
+            .and_then(|iso| {
+                crate::db_rpc::read_isolation(iso)
+                    .map_err(|err| capnp::Error::failed(err.to_string()))
+            })?;
         let mut result = results.get().init_result();
         match &self.host {
-            Some(host) => match host.begin().await {
+            Some(host) => match host.begin(isolation).await {
                 Ok(txn) => {
                     result.set_ok(crate::host_rpc::new_adapter_transaction_client(Arc::from(
                         txn,
@@ -2280,26 +2389,24 @@ impl host_adapter_database_session_capnp::Server for AdapterDatabaseSessionServe
         Ok(())
     }
 
-    async fn execute_envelope(
+    async fn execute(
         self: Rc<Self>,
-        params: host_adapter_database_session_capnp::ExecuteEnvelopeParams,
-        mut results: host_adapter_database_session_capnp::ExecuteEnvelopeResults,
+        params: host_adapter_database_session_capnp::ExecuteParams,
+        mut results: host_adapter_database_session_capnp::ExecuteResults,
     ) -> capnp::Result<()> {
-        let envelope = params
+        let request = params
             .get()?
-            .get_envelope()
+            .get_request()
             .map_err(|err| capnp::Error::failed(err.to_string()))
             .and_then(|r| {
-                crate::db_rpc::read_host_execute_envelope(r)
+                crate::db_rpc::read_adapter_execute_request(r)
                     .map_err(|err| capnp::Error::failed(err.to_string()))
             })?;
         crate::db_rpc::write_execute_result_reply(
             results.get().init_result(),
             match &self.host {
-                Some(host) => host.execute_envelope(envelope).await,
-                None => Err(PluginError::unsupported(
-                    "host executeEnvelope not implemented",
-                )),
+                Some(host) => host.execute(request).await,
+                None => Err(PluginError::unsupported("host execute not implemented")),
             },
         );
         Ok(())
@@ -2777,6 +2884,9 @@ impl PluginClient {
         {
             let mut c = req.get().get_context().map_err(from_capnp)?;
             c.set_json(&ctx.json);
+            // Host-private connect params (postgres URL, D1 token, sqlite path)
+            // travel in `config`, not the json migration bridge.
+            write_extensible_config(c.reborrow().init_config(), &ctx.config);
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -3349,9 +3459,12 @@ impl AdapterDatabaseSession for AdapterDatabaseSessionClient {
         )
     }
 
-    async fn execute(&self, request: crate::ExecuteRequest) -> Result<crate::ExecuteReply> {
+    async fn execute(
+        &self,
+        request: crate::host_envelope::AdapterExecuteRequest,
+    ) -> Result<crate::ExecuteReply> {
         let mut req = self.client.execute_request();
-        crate::db_rpc::write_execute_request(req.get().init_request(), &request)?;
+        crate::db_rpc::write_adapter_execute_request(req.get().init_request(), &request)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
         crate::db_rpc::read_execute_result_reply(
             reply
@@ -3378,6 +3491,88 @@ impl AdapterDatabaseSession for AdapterDatabaseSessionClient {
         let req = self.client.bootstrap_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
         crate::db_rpc::read_db_bootstrap_reply(
+            reply
+                .get()
+                .map_err(from_capnp)?
+                .get_result()
+                .map_err(from_capnp)?,
+        )
+    }
+
+    async fn export_identity(&self) -> Result<Vec<crate::DbIdentityHighWater>> {
+        let req = self.client.export_identity_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::db_rpc::read_identity_export_reply(
+            reply
+                .get()
+                .map_err(from_capnp)?
+                .get_result()
+                .map_err(from_capnp)?,
+        )
+    }
+
+    async fn import_identity(&self, rows: &[crate::DbIdentityHighWater]) -> Result<()> {
+        let mut req = self.client.import_identity_request();
+        {
+            let mut list = req.get().init_rows(rows.len() as u32);
+            crate::db_rpc::write_identity_list(list.reborrow(), rows);
+        }
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_empty(
+            reply
+                .get()
+                .map_err(from_capnp)?
+                .get_result()
+                .map_err(from_capnp)?,
+        )
+    }
+
+    async fn list_user_relations(&self) -> Result<Vec<String>> {
+        let req = self.client.list_user_relations_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::db_rpc::read_user_relations_reply(
+            reply
+                .get()
+                .map_err(from_capnp)?
+                .get_result()
+                .map_err(from_capnp)?,
+        )
+    }
+
+    async fn prepare_unit_restore(&self) -> Result<()> {
+        let req = self.client.prepare_unit_restore_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_empty(
+            reply
+                .get()
+                .map_err(from_capnp)?
+                .get_result()
+                .map_err(from_capnp)?,
+        )
+    }
+
+    async fn drop_user_relations(&self, names: &[String]) -> Result<()> {
+        let mut req = self.client.drop_user_relations_request();
+        {
+            let mut list = req.get().init_names(names.len() as u32);
+            for (i, name) in names.iter().enumerate() {
+                list.set(i as u32, name);
+            }
+        }
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_empty(
+            reply
+                .get()
+                .map_err(from_capnp)?
+                .get_result()
+                .map_err(from_capnp)?,
+        )
+    }
+
+    async fn assert_restore_constraints(&self) -> Result<()> {
+        let req = self.client.assert_restore_constraints_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_empty(
             reply
                 .get()
                 .map_err(from_capnp)?
@@ -3491,14 +3686,15 @@ where
 mod tests {
     use super::*;
     use crate::{
-        ByteRange, Cancellation, CopyResult, Destination, DestinationContext, DomainEvent,
-        EventResult, GuestDatabase, HealthOk, Integration, IntegrationContext, JobHandler,
-        JobHandlerContext, JobInvocation, JobOutcome, ListOptions, ListPage, ObjectInfo,
-        ObjectMetadata, PluginDescribe, PluginRoot, ProgressSink, PutResult, ReadResult,
-        ScalarLimits, Source, SourceContext, WorkerContext, WriteOptions, FEATURE_SCALAR_LIMITS,
-        FEATURE_STREAMS, MAX_CHECKPOINT_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE,
-        MAX_PLUGIN_MIGRATION_OPS, MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
-        MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES, PRODUCT_API_VERSION,
+        ByteRange, Cancellation, CopyResult, Database, DatabaseContext, Destination,
+        DestinationContext, DomainEvent, EventResult, ExtensibleConfig, GuestDatabase, HealthOk,
+        Integration, IntegrationContext, JobHandler, JobHandlerContext, JobInvocation, JobOutcome,
+        ListOptions, ListPage, ObjectInfo, ObjectMetadata, PluginDescribe, PluginRoot,
+        ProgressSink, PutResult, ReadResult, ScalarLimits, Source, SourceContext, WorkerContext,
+        WriteOptions, FEATURE_SCALAR_LIMITS, FEATURE_STREAMS, MAX_CHECKPOINT_BYTES,
+        MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
+        MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES,
+        PRODUCT_API_VERSION,
     };
     use crate::{
         ExecuteRequest, PluginError, PluginErrorCode, PluginMigration, PluginMigrationOp, Result,
@@ -3683,6 +3879,31 @@ mod tests {
                         .into(),
                 )],
             }])
+        }
+    }
+
+    struct CaptureDbPlugin {
+        seen: Mutex<Option<DatabaseContext>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl PluginRoot for CaptureDbPlugin {
+        async fn describe(&self) -> Result<PluginDescribe> {
+            Ok(PluginDescribe {
+                api_version: PRODUCT_API_VERSION,
+                id: "db_ctx".into(),
+                kind: "database".into(),
+                display_name: None,
+                rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
+                scalar_limits: ScalarLimits::default().into(),
+                supported_roles: vec!["database".into()],
+                ..PluginDescribe::default()
+            })
+        }
+
+        async fn database(&self, context: DatabaseContext) -> Result<Box<dyn Database>> {
+            *self.seen.lock().expect("seen") = Some(context);
+            Err(PluginError::unsupported("database"))
         }
     }
 
@@ -4376,6 +4597,50 @@ mod tests {
                     .expect_err("oversize total ops");
                 assert_eq!(err.code, PluginErrorCode::PayloadTooLarge);
                 assert!(err.message.contains("maxPluginMigrationTotalOps"), "{err}");
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn database_factory_forwards_extensible_config() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (client_end, server_end) = duplex(64 * 1024);
+                let (server_r, server_w) = tokio::io::split(server_end);
+                let (client_r, client_w) = tokio::io::split(client_end);
+                let plugin = Arc::new(CaptureDbPlugin {
+                    seen: Mutex::new(None),
+                });
+                let seen = Arc::clone(&plugin);
+                tokio::task::spawn_local(async move {
+                    let _ = serve_plugin(plugin, server_r, server_w, 64 * 1024).await;
+                });
+                let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
+                tokio::task::spawn_local(rpc);
+                let sent = DatabaseContext {
+                    json: String::new(),
+                    config: ExtensibleConfig {
+                        schema_version: 1,
+                        media_type: crate::db::DATABASE_ADAPTER_CONFIG_MEDIA_TYPE.into(),
+                        payload: br#"{"backend":"postgres","url":"postgres://example/db"}"#
+                            .to_vec(),
+                    },
+                };
+                let err = match client.database(sent.clone()).await {
+                    Err(err) => err,
+                    Ok(_) => panic!("probe guest must return unsupported, not a session"),
+                };
+                assert_eq!(err.code, PluginErrorCode::Unsupported);
+                let got = seen
+                    .seen
+                    .lock()
+                    .expect("seen")
+                    .clone()
+                    .expect("guest received DatabaseContext");
+                assert_eq!(got.config.schema_version, sent.config.schema_version);
+                assert_eq!(got.config.media_type, sent.config.media_type);
+                assert_eq!(got.config.payload, sent.config.payload);
             })
             .await;
     }

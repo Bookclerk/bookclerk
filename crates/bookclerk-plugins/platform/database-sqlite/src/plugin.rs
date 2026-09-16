@@ -8,17 +8,24 @@
 
 use async_trait::async_trait;
 use bookclerk_db_guest::{
-    bootstrap_for, capabilities_for, guest_bootstrap, guest_capabilities, guest_execute_request,
-    guest_execute_request_on, host_session, host_session_on, set_connection,
+    bootstrap_for, capabilities_for, guest_assert_restore_constraints,
+    guest_assert_restore_constraints_on, guest_bootstrap, guest_capabilities,
+    guest_drop_user_relations, guest_drop_user_relations_on, guest_execute_request,
+    guest_execute_request_on, guest_export_identity, guest_export_identity_on,
+    guest_import_identity, guest_import_identity_on, guest_list_user_relations,
+    guest_list_user_relations_on, guest_prepare_unit_restore, guest_prepare_unit_restore_on,
+    host_session, host_session_on, set_connection,
 };
 use bookclerk_plugin_abi::db::{connect_params_from_context, DbConnectParams};
 use bookclerk_plugin_abi::HostAdapterDatabaseSession;
+use bookclerk_plugin_sdk::database_adapter::plugin_error_from_engine;
 use bookclerk_plugin_sdk::{
     AdapterDatabaseSession, Database, DatabaseContext, PluginDescribe, PluginRoot, ScalarLimits,
     FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_sdk::{
-    DbBootstrap, DbCapabilities, ExecuteReply, ExecuteRequest, PluginError,
+    AdapterExecuteRequest, DbBootstrap, DbCapabilities, DbIdentityHighWater, ExecuteReply,
+    PluginError,
 };
 use sea_orm::DatabaseConnection;
 
@@ -196,10 +203,76 @@ impl AdapterDatabaseSession for SqliteSession {
         }
     }
 
-    async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply> {
+    async fn execute(&self, request: AdapterExecuteRequest) -> Result<ExecuteReply> {
         match &self.dedicated {
             Some(conn) => guest_execute_request_on(conn, request).await,
             None => guest_execute_request(request).await,
+        }
+    }
+
+    async fn export_identity(&self) -> Result<Vec<DbIdentityHighWater>> {
+        match &self.dedicated {
+            Some(conn) => guest_export_identity_on(conn)
+                .await
+                .map_err(plugin_error_from_engine),
+            None => guest_export_identity()
+                .await
+                .map_err(plugin_error_from_engine),
+        }
+    }
+
+    async fn import_identity(&self, rows: &[DbIdentityHighWater]) -> Result<()> {
+        match &self.dedicated {
+            Some(conn) => guest_import_identity_on(conn, rows)
+                .await
+                .map_err(plugin_error_from_engine),
+            None => guest_import_identity(rows)
+                .await
+                .map_err(plugin_error_from_engine),
+        }
+    }
+
+    async fn list_user_relations(&self) -> Result<Vec<String>> {
+        match &self.dedicated {
+            Some(conn) => guest_list_user_relations_on(conn)
+                .await
+                .map_err(plugin_error_from_engine),
+            None => guest_list_user_relations()
+                .await
+                .map_err(plugin_error_from_engine),
+        }
+    }
+
+    async fn prepare_unit_restore(&self) -> Result<()> {
+        match &self.dedicated {
+            Some(conn) => guest_prepare_unit_restore_on(conn)
+                .await
+                .map_err(plugin_error_from_engine),
+            None => guest_prepare_unit_restore()
+                .await
+                .map_err(plugin_error_from_engine),
+        }
+    }
+
+    async fn drop_user_relations(&self, names: &[String]) -> Result<()> {
+        match &self.dedicated {
+            Some(conn) => guest_drop_user_relations_on(conn, names)
+                .await
+                .map_err(plugin_error_from_engine),
+            None => guest_drop_user_relations(names)
+                .await
+                .map_err(plugin_error_from_engine),
+        }
+    }
+
+    async fn assert_restore_constraints(&self) -> Result<()> {
+        match &self.dedicated {
+            Some(conn) => guest_assert_restore_constraints_on(conn)
+                .await
+                .map_err(plugin_error_from_engine),
+            None => guest_assert_restore_constraints()
+                .await
+                .map_err(plugin_error_from_engine),
         }
     }
 }

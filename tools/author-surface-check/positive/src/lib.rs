@@ -6,8 +6,8 @@
 
 pub use bookclerk_plugin_sdk::database_adapter::{errors, migrate};
 pub use bookclerk_plugin_sdk::{
-    AdapterDatabaseSession, Database, DatabaseBinding, DbBootstrap, DbCapabilities, ExecuteReply,
-    ExecuteRequest, PluginError,
+    AdapterDatabaseSession, AdapterExecuteRequest, Database, DatabaseBinding, DbBootstrap,
+    DbCapabilities, ExecuteReply, PluginError,
 };
 
 /// Type-level proof the adapter traits and typed execute DTOs are visible.
@@ -17,14 +17,14 @@ pub fn author_surface(
     binding: &DatabaseBinding,
     caps: &DbCapabilities,
     bootstrap: &DbBootstrap,
-    request: &ExecuteRequest,
+    request: &AdapterExecuteRequest,
     reply: &ExecuteReply,
 ) -> (u32, usize, usize, usize) {
     let _ = binding;
     (
         caps.max_binds,
-        bootstrap.sql_family.len(),
-        request.statements.len(),
+        bootstrap.engine.len(),
+        request.request.statements.len(),
         reply.statements.len(),
     )
 }

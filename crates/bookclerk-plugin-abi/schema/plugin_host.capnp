@@ -7,32 +7,26 @@
 using Plugin = import "plugin.capnp";
 
 struct AdapterTransactionReply {
-  union {
-    ok @0 :AdapterTransaction;
-    err @1 :Plugin.PluginError;
-  }
+    union {
+        ok @0 :AdapterTransaction;
+        err @1 :Plugin.PluginError;
+    }
 }
 
 interface AdapterTransaction {
-  execute @0 (request :Plugin.ExecuteRequest) -> (result :Plugin.ExecuteResultReply);
+  execute @0 (request :Plugin.AdapterExecuteRequest) -> (result :Plugin.ExecuteResultReply);
   commit @1 () -> (result :Plugin.EmptyReply);
   rollback @2 () -> (result :Plugin.EmptyReply);
-  executeEnvelope @3 (envelope :HostExecuteEnvelope) -> (result :Plugin.ExecuteResultReply);
-}
-
-struct HostGuestReceiptPersist {
-  guestLen @0 :UInt32;
-  guestHash @1 :Text;
-}
-
-struct HostExecuteEnvelope {
-  request @0 :Plugin.ExecuteRequest;
-  guestReceipt @1 :HostGuestReceiptPersist;
-  # Host-private JSON of Vec<ResolvedStatement> (not on public ExecuteRequest).
-  proofsJson @2 :Text;
+  exportIdentity @3 () -> (result :Plugin.IdentityExportReply);
+  importIdentity @4 (rows :List(Plugin.IdentityHighWater)) -> (result :Plugin.EmptyReply);
+  listUserRelations @5 () -> (result :Plugin.UserRelationsReply);
+  prepareUnitRestore @6 () -> (result :Plugin.EmptyReply);
+  dropUserRelations @7 (names :List(Text)) -> (result :Plugin.EmptyReply);
+  assertRestoreConstraints @8 () -> (result :Plugin.EmptyReply);
 }
 
 interface HostAdapterDatabaseSession {
-  begin @0 () -> (result :AdapterTransactionReply);
-  executeEnvelope @1 (envelope :HostExecuteEnvelope) -> (result :Plugin.ExecuteResultReply);
+  # isolation defaults to atomicBatch when omitted (Cap'n zero).
+  begin @0 (isolation :Plugin.IsolationReq) -> (result :AdapterTransactionReply);
+  execute @1 (request :Plugin.AdapterExecuteRequest) -> (result :Plugin.ExecuteResultReply);
 }

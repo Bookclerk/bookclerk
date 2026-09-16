@@ -1379,17 +1379,11 @@ pub fn typecheck_execute_request_proofs(
     typecheck_execute_request_resolved(req, env)
 }
 
-/// Splits canonical SQL-v1 text on top-level statement boundaries (`;`).
+/// Reconstructs a type environment from already-separated canonical
+/// `CREATE TABLE` statements.
 ///
-/// Delegates to [`crate::sql_v1_pack_statements`] so schema packs, type-env
-/// reconstruction, and tests share one lexer. Empty input yields an empty list;
-/// pack errors (for example U+0000 TEXT) yield an empty list.
-#[must_use]
-pub fn split_sql_statements(sql: &str) -> Vec<String> {
-    crate::sql_text::sql_v1_pack_statements(sql).unwrap_or_default()
-}
-
-/// Reconstructs a type environment from an ordered list of canonical statements.
+/// Statement boundaries must come from [`crate::sql_v1_pack_statements`] or an
+/// explicit list — this function does not split on `;`.
 #[must_use]
 pub fn sql_type_env_from_canonical_statements<I, S>(statements: I) -> SqlTypeEnv
 where
@@ -1403,13 +1397,12 @@ where
     env
 }
 
-/// Reconstructs a type environment from canonical `CREATE TABLE` SQL.
+/// Reconstructs a type environment from one canonical `CREATE TABLE` statement.
 ///
-/// Multi-statement scripts are packed with the SQL-v1 lexer. Prefer
-/// [`sql_type_env_from_canonical_statements`] when the caller already has a list.
+/// Multi-statement packs must use [`sql_type_env_from_canonical_statements`].
 #[must_use]
 pub fn sql_type_env_from_canonical_ddl(sql: &str) -> SqlTypeEnv {
-    sql_type_env_from_canonical_statements(split_sql_statements(sql))
+    sql_type_env_from_canonical_statements(std::iter::once(sql))
 }
 
 /// Host bookkeeping tables present on every binding/library database.
@@ -1418,16 +1411,16 @@ pub fn sql_type_env_from_canonical_ddl(sql: &str) -> SqlTypeEnv {
 /// merge it when rebuilding proofs after Cap'n drops host-private proofs.
 #[must_use]
 pub fn sql_host_bookkeeping_type_env() -> SqlTypeEnv {
-    sql_type_env_from_canonical_ddl(
+    sql_type_env_from_canonical_statements([
         "CREATE TABLE db_atomic_receipts (\
          operation_id TEXT PRIMARY KEY NOT NULL, operation_kind TEXT NOT NULL, \
          request_hash TEXT NOT NULL, status TEXT NOT NULL, payload TEXT, \
-         created_at TEXT NOT NULL, expires_at TEXT NOT NULL, consume_key TEXT UNIQUE);\
-         CREATE TABLE pragma_user_version (user_version INTEGER NOT NULL);\
-         CREATE TABLE pragma_table_info (\
+         created_at TEXT NOT NULL, expires_at TEXT NOT NULL, consume_key TEXT UNIQUE)",
+        "CREATE TABLE pragma_user_version (user_version INTEGER NOT NULL)",
+        "CREATE TABLE pragma_table_info (\
          cid INTEGER NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, \
          notnull INTEGER NOT NULL, dflt_value TEXT, pk INTEGER NOT NULL)",
-    )
+    ])
 }
 
 /// Proven v1 CAST matrix: same type, INTEGER↔REAL, or NULL to any admitted type.
@@ -1442,7 +1435,16 @@ pub fn cast_is_legal(from: SqlType, to: SqlType) -> bool {
     )
 }
 
+/// Portable SQL-v1 `json_object` maximum argument count (16 key/value pairs).
+///
+/// Matches Cloudflare D1's physical function-argument limit
+/// ([`crate::D1_MAX_FUNCTION_ARGS`]). Larger objects are not admitted; adapters
+/// must not emulate them with `json_patch` (JSON Merge Patch deletes nulls).
+pub const SQL_V1_JSON_OBJECT_MAX_ARGS: usize = 32;
+
 /// SQL-v1 helper arity `(min, max)` inclusive. Unknown names return `None`.
+///
+/// `json_object` is even arity `2..=`[`SQL_V1_JSON_OBJECT_MAX_ARGS`] (16 pairs).
 #[must_use]
 pub fn sql_v1_helper_arity(name: &str) -> Option<(usize, usize)> {
     Some(match name.to_ascii_lowercase().as_str() {
@@ -1452,7 +1454,7 @@ pub fn sql_v1_helper_arity(name: &str) -> Option<(usize, usize)> {
         "sum" | "avg" | "abs" | "length" | "lower" | "upper" | "json_valid" | "count" => (1, 1),
         "round" => (1, 2),
         "json_extract" => (2, 2),
-        "json_object" => (2, 64),
+        "json_object" => (2, SQL_V1_JSON_OBJECT_MAX_ARGS),
         "replace" => (3, 3),
         "substr" => (2, 3),
         "trim" => (1, 2),
@@ -3819,6 +3821,13 @@ mod tests {
     use super::*;
     use crate::{DbPlanStatementKind, DbResultSelection};
 
+    fn json_object_n_pairs(n: usize) -> String {
+        let args: Vec<String> = (0..n)
+            .flat_map(|i| [format!("'k{i:02}'"), format!("'v{i:02}'")])
+            .collect();
+        format!("json_object({})", args.join(", "))
+    }
+
     fn stmt(sql: &str) -> TypedDbStatement {
         TypedDbStatement {
             sql: sql.into(),
@@ -3917,40 +3926,12 @@ mod tests {
         assert_eq!(env.column_type("typed", "body"), Some(SqlType::Text));
         let err = typecheck_execute_request(&req("SELECT missing FROM typed"), &env).unwrap_err();
         assert!(err.to_string().contains("unknown column"), "{err}");
-        let from_ddl = sql_type_env_from_canonical_ddl(
-            "CREATE TABLE a (id INTEGER PRIMARY KEY); CREATE TABLE b (body TEXT);",
-        );
+        let from_ddl = sql_type_env_from_canonical_statements([
+            "CREATE TABLE a (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE b (body TEXT)",
+        ]);
         assert_eq!(from_ddl.column_type("a", "id"), Some(SqlType::Integer));
         assert_eq!(from_ddl.column_type("b", "body"), Some(SqlType::Text));
-    }
-
-    #[test]
-    fn split_sql_statements_keeps_semicolon_inside_quoted_literal() {
-        let stmts = split_sql_statements(
-            "CREATE TABLE t (name TEXT NOT NULL DEFAULT 'a;b');\n\
-             CREATE TABLE u (id INTEGER CHECK (id <> ';'));",
-        );
-        assert_eq!(stmts.len(), 2, "{stmts:?}");
-        assert!(
-            stmts[0].contains("DEFAULT 'a;b'"),
-            "literal semicolon must stay in the CREATE: {stmts:?}"
-        );
-        assert!(
-            stmts[1].contains("CHECK (id <> ';')"),
-            "CHECK string semicolon must stay in the CREATE: {stmts:?}"
-        );
-        let escaped = split_sql_statements("CREATE TABLE t (name TEXT DEFAULT 'a;''b;c');");
-        assert_eq!(escaped.len(), 1, "{escaped:?}");
-        assert!(escaped[0].contains("DEFAULT 'a;''b;c'"), "{escaped:?}");
-        let commented = split_sql_statements(
-            "CREATE TABLE t (id INTEGER /* ; */);\n-- not; a statement\nCREATE TABLE u (id INTEGER);",
-        );
-        assert_eq!(commented.len(), 2, "{commented:?}");
-        let env = sql_type_env_from_canonical_ddl(
-            "CREATE TABLE t (name TEXT DEFAULT 'a;b'); CREATE TABLE u (id INTEGER);",
-        );
-        assert_eq!(env.column_type("t", "name"), Some(SqlType::Text));
-        assert_eq!(env.column_type("u", "id"), Some(SqlType::Integer));
     }
 
     #[test]
@@ -4360,9 +4341,21 @@ mod tests {
         assert!(!sql_v1_helper_arity_ok("json_object", 3));
         assert!(sql_v1_helper_arity_ok("json_object", 2));
         assert!(sql_v1_helper_arity_ok("json_object", 4));
-        assert!(sql_v1_helper_arity_ok("json_object", 42));
-        assert!(sql_v1_helper_arity_ok("json_object", 64));
+        assert!(sql_v1_helper_arity_ok(
+            "json_object",
+            SQL_V1_JSON_OBJECT_MAX_ARGS
+        ));
+        assert!(!sql_v1_helper_arity_ok(
+            "json_object",
+            SQL_V1_JSON_OBJECT_MAX_ARGS + 2
+        ));
+        assert!(!sql_v1_helper_arity_ok("json_object", 42));
+        assert!(!sql_v1_helper_arity_ok("json_object", 64));
         assert!(!sql_v1_helper_arity_ok("json_object", 65));
+        assert_eq!(
+            sql_v1_helper_arity("json_object"),
+            Some((2, crate::D1_MAX_FUNCTION_ARGS as usize))
+        );
         assert!(sql_v1_helper_arity_ok("coalesce", 2));
         for sql in [
             "SELECT abs()",
@@ -4371,6 +4364,29 @@ mod tests {
             "SELECT json_object('a', 1, 'b')",
         ] {
             let err = typecheck_execute_request(&req(sql), &SqlTypeEnv::new()).unwrap_err();
+            assert!(err.to_string().contains("arity"), "{sql}: {err}");
+        }
+    }
+
+    #[test]
+    fn json_object_portable_arity_is_32_args() {
+        assert!(sql_v1_helper_arity_ok("json_object", 2));
+        assert!(sql_v1_helper_arity_ok("json_object", 32));
+        assert!(!sql_v1_helper_arity_ok("json_object", 34));
+        assert!(!sql_v1_helper_arity_ok("json_object", 33));
+        typecheck_execute_request(&req("SELECT json_object('a', 1)"), &SqlTypeEnv::new())
+            .expect("2 args");
+        typecheck_execute_request(
+            &req(&format!("SELECT {}", json_object_n_pairs(16))),
+            &SqlTypeEnv::new(),
+        )
+        .expect("32 args = 16 pairs");
+        for sql in [
+            format!("SELECT {}", json_object_n_pairs(17)),
+            "SELECT json_object('k')".into(),
+            "SELECT json_object('a', 1, 'b')".into(),
+        ] {
+            let err = typecheck_execute_request(&req(&sql), &SqlTypeEnv::new()).unwrap_err();
             assert!(err.to_string().contains("arity"), "{sql}: {err}");
         }
     }

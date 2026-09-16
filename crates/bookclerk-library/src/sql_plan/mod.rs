@@ -7,6 +7,8 @@
 
 #[cfg(test)]
 mod conformance;
+#[cfg(test)]
+mod differential;
 mod exec;
 mod guest_receipt;
 pub mod host_ir;
@@ -29,12 +31,13 @@ pub use exec::{
     execute_compiled_on, execute_compiled_on_capped, execute_typed_on, execute_typed_on_binding,
     execute_typed_on_session, AtomicSession,
 };
+pub(crate) use exec::{execute_sql_on, execute_typed_on_open, query_sql_on};
 pub(crate) use guest_receipt::{unwrap_guest_typed_reply, wrap_guest_typed_request};
 pub use interpret::{interpret_typed_exec, PlanStmtResult};
 pub use named::{compile_claim_event_delivery, compile_named_request};
 pub use reply::validate_execute_reply;
 pub use slots::{event_inflight_slot, lock_serialization_slot, JOB_QUEUE_SLOT};
-pub use typed_vectors::{run_typed_conn_vectors, run_typed_request_vectors};
+pub use typed_vectors::{run_typed_conn_vectors, run_typed_request_vectors, stamp_typed_vector};
 pub use vectors_typed::run_typed_contract_vectors;
 
 /// Compiled typed request plus host result-selection indexes.
@@ -114,6 +117,8 @@ pub fn validate_execute_request(
         )));
     }
     for (i, stmt) in req.statements.iter().enumerate() {
+        caps.admit_statement(&stmt.sql, &stmt.parameters)
+            .map_err(|err| crate::LibraryError::Other(anyhow::anyhow!(err.to_string())))?;
         let n_binds = u32::try_from(stmt.parameters.len()).unwrap_or(u32::MAX);
         if caps.max_binds > 0 && n_binds > caps.max_binds {
             return Err(crate::LibraryError::Other(anyhow::anyhow!(
@@ -141,8 +146,6 @@ pub fn validate_execute_request(
                 )));
             }
         }
-        caps.admit_statement(&stmt.sql, &stmt.parameters)
-            .map_err(|err| crate::LibraryError::Other(anyhow::anyhow!("{err}")))?;
     }
     let cap = atomic_request_cap_bytes(caps);
     if cap == 0 {
@@ -193,6 +196,7 @@ pub fn authorize_typed_request(
     req: &mut ExecuteRequest,
     caps: &DbCapabilities,
 ) -> crate::error::Result<()> {
+    bookclerk_plugin_abi::desugar_execute_request(req);
     for stmt in &mut req.statements {
         stmt.kind = host_statement_kind(&stmt.sql);
     }
@@ -249,7 +253,7 @@ pub async fn execute_guest_atomic_with<F, Fut>(
     exec: F,
 ) -> std::result::Result<bookclerk_plugin_abi::ExecuteReply, bookclerk_plugin_abi::PluginError>
 where
-    F: FnOnce(bookclerk_db_exec::HostExecuteEnvelope) -> Fut,
+    F: FnOnce(bookclerk_db_exec::AdapterExecuteRequest) -> Fut,
     Fut: std::future::Future<
         Output = std::result::Result<
             bookclerk_plugin_abi::ExecuteReply,
@@ -434,6 +438,153 @@ mod limits_tests {
     }
 
     #[test]
+    fn validate_execute_request_n_plus_one_pattern_columns_function_args() {
+        let mut caps = DbCapabilities::advertised_d1();
+        let n = caps.max_pattern_bytes as usize;
+        let ok = ExecuteRequest {
+            operation_id: "op".into(),
+            request_hash: String::new(),
+            statements: vec![stmt(
+                &format!("SELECT 1 FROM t WHERE x LIKE '{}'", "a".repeat(n)),
+                vec![],
+            )],
+            deadline_unix_ms: 0,
+        };
+        validate_execute_request(&ok, &caps).expect("N pattern");
+        let over = ExecuteRequest {
+            operation_id: "op".into(),
+            request_hash: String::new(),
+            statements: vec![stmt(
+                &format!("SELECT 1 FROM t WHERE x LIKE '{}'", "a".repeat(n + 1)),
+                vec![],
+            )],
+            deadline_unix_ms: 0,
+        };
+        let err = validate_execute_request(&over, &caps).unwrap_err();
+        assert!(err.to_string().contains("maxPatternBytes"), "{err}");
+
+        caps.max_schema_columns = 2;
+        let ok_cols = ExecuteRequest {
+            operation_id: "op".into(),
+            request_hash: String::new(),
+            statements: vec![stmt("CREATE TABLE t (a INTEGER, b TEXT)", vec![])],
+            deadline_unix_ms: 0,
+        };
+        validate_execute_request(&ok_cols, &caps).expect("N columns");
+        let over_cols = ExecuteRequest {
+            operation_id: "op".into(),
+            request_hash: String::new(),
+            statements: vec![stmt("CREATE TABLE t (a INTEGER, b TEXT, c REAL)", vec![])],
+            deadline_unix_ms: 0,
+        };
+        let err = validate_execute_request(&over_cols, &caps).unwrap_err();
+        assert!(err.to_string().contains("maxSchemaColumns"), "{err}");
+
+        caps.max_function_args = 2;
+        let ok_fn = ExecuteRequest {
+            operation_id: "op".into(),
+            request_hash: String::new(),
+            statements: vec![stmt("SELECT replace(a, 'x', 'y')", vec![])],
+            deadline_unix_ms: 0,
+        };
+        let err = validate_execute_request(&ok_fn, &caps).unwrap_err();
+        assert!(err.to_string().contains("maxFunctionArgs"), "{err}");
+        caps.max_function_args = 3;
+        validate_execute_request(&ok_fn, &caps).expect("N replace args");
+        let json_obj = ExecuteRequest {
+            operation_id: "op".into(),
+            request_hash: String::new(),
+            statements: vec![stmt(
+                "SELECT json_object('a', 1, 'b', 2, 'c', 3, 'd', 4)",
+                vec![],
+            )],
+            deadline_unix_ms: 0,
+        };
+        caps.max_function_args = 2;
+        let err = validate_execute_request(&json_obj, &caps).unwrap_err();
+        assert!(
+            err.to_string().contains("maxFunctionArgs"),
+            "json_object is not adapter-chunked: {err}"
+        );
+        caps.max_function_args = 8;
+        validate_execute_request(&json_obj, &caps).expect("4-arg json_object under cap 8");
+
+        for mut advertised in [
+            DbCapabilities::advertised_sqlite(),
+            DbCapabilities::advertised_postgres(),
+            DbCapabilities::advertised_d1(),
+        ] {
+            advertised.max_binds = advertised.max_binds.min(8);
+            advertised.max_statements = advertised.max_statements.min(4);
+
+            let n_binds = advertised.max_binds as usize;
+            let ok_binds = ExecuteRequest {
+                operation_id: "op".into(),
+                request_hash: String::new(),
+                statements: vec![stmt("SELECT 1", vec![DbValue::Int64(1); n_binds])],
+                deadline_unix_ms: 0,
+            };
+            validate_execute_request(&ok_binds, &advertised).expect("N binds");
+            let over_binds = ExecuteRequest {
+                operation_id: "op".into(),
+                request_hash: String::new(),
+                statements: vec![stmt("SELECT 1", vec![DbValue::Int64(1); n_binds + 1])],
+                deadline_unix_ms: 0,
+            };
+            let err = validate_execute_request(&over_binds, &advertised).unwrap_err();
+            assert!(err.to_string().contains("maxBinds"), "{err}");
+
+            let n_stmt = advertised.max_statements as usize;
+            let ok_stmts = ExecuteRequest {
+                operation_id: "op".into(),
+                request_hash: String::new(),
+                statements: vec![stmt("SELECT 1", vec![]); n_stmt],
+                deadline_unix_ms: 0,
+            };
+            validate_execute_request(&ok_stmts, &advertised).expect("N statements");
+            let over_stmts = ExecuteRequest {
+                operation_id: "op".into(),
+                request_hash: String::new(),
+                statements: vec![stmt("SELECT 1", vec![]); n_stmt + 1],
+                deadline_unix_ms: 0,
+            };
+            let err = validate_execute_request(&over_stmts, &advertised).unwrap_err();
+            assert!(err.to_string().contains("maxStatements"), "{err}");
+
+            // Shrink only for payload N/N+1 so bind/statement N does not trip
+            // maxPayloadBytes (8× Int64 Cap'n cells exceed 256 bytes).
+            advertised.max_payload_bytes = advertised.max_payload_bytes.min(256);
+            let ok_pay = ExecuteRequest {
+                operation_id: "op".into(),
+                request_hash: String::new(),
+                statements: vec![stmt("SELECT ?", vec![DbValue::Text("ab".into())])],
+                deadline_unix_ms: 0,
+            };
+            validate_execute_request(&ok_pay, &advertised).expect("N payload");
+            let over_pay = ExecuteRequest {
+                operation_id: "op".into(),
+                request_hash: String::new(),
+                statements: vec![stmt("SELECT ?", vec![DbValue::Text("a".repeat(512))])],
+                deadline_unix_ms: 0,
+            };
+            let err = validate_execute_request(&over_pay, &advertised).unwrap_err();
+            assert!(err.to_string().contains("maxPayloadBytes"), "{err}");
+
+            let nul = ExecuteRequest {
+                operation_id: "op".into(),
+                request_hash: String::new(),
+                statements: vec![stmt("SELECT ?", vec![DbValue::Text("a\0b".into())])],
+                deadline_unix_ms: 0,
+            };
+            let err = validate_execute_request(&nul, &advertised).unwrap_err();
+            assert!(
+                err.to_string().contains("U+0000") || err.to_string().contains("TEXT"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
     fn validate_plan_rejects_payload_bytes() {
         let plan = compiled(
             vec![stmt("SELECT ?", vec![DbValue::Text("x".repeat(200))])],
@@ -558,6 +709,39 @@ mod limits_tests {
         req.request_hash = "deadbeef".into();
         let err = super::authorize_typed_request(&mut req, &caps).unwrap_err();
         assert!(err.to_string().contains("requestHash"), "{err}");
+    }
+
+    #[test]
+    fn authorize_typed_request_desugars_order_by_and_div_before_hash() {
+        use bookclerk_plugin_abi::{
+            canonical_execute_request_hash, desugar_canonical_sql, DbResultSelection,
+            ExecuteRequest, TypedDbStatement,
+        };
+        let caps = DbCapabilities::advertised_sqlite();
+        let mut req = ExecuteRequest {
+            operation_id: "guest-op".into(),
+            request_hash: String::new(),
+            statements: vec![TypedDbStatement {
+                sql: "SELECT 1 / n FROM t ORDER BY n".into(),
+                parameters: vec![],
+                kind: DbPlanStatementKind::Execute,
+                max_rows: 0,
+                result_selection: DbResultSelection::Rows,
+            }],
+            deadline_unix_ms: 0,
+        };
+        super::authorize_typed_request(&mut req, &caps).unwrap();
+        let expected_sql = desugar_canonical_sql("SELECT 1 / n FROM t ORDER BY n");
+        assert_eq!(req.statements[0].sql, expected_sql);
+        assert!(expected_sql.contains("NULLIF(n, 0)"), "{expected_sql}");
+        assert!(expected_sql.contains("NULLS FIRST"), "{expected_sql}");
+        let expected = canonical_execute_request_hash(&req).unwrap();
+        assert_eq!(req.request_hash, expected);
+        // Retry with the original (un-desugared) SQL and the desugared hash.
+        req.statements[0].sql = "SELECT 1 / n FROM t ORDER BY n".into();
+        super::authorize_typed_request(&mut req, &caps).unwrap();
+        assert_eq!(req.statements[0].sql, expected_sql);
+        assert_eq!(req.request_hash, expected);
     }
 
     #[test]

@@ -139,6 +139,15 @@ impl D1Proxy {
             bookclerk_db_exec::AtomicInterruptPhase::BeforeBegin,
             deadline,
         )?;
+        let req = req.clone();
+        bookclerk_plugin_abi::AdapterExecuteRequest {
+            request: req.clone(),
+            guest_receipt: guest_receipt.clone(),
+            proofs: proofs.to_vec(),
+            isolation: bookclerk_plugin_abi::IsolationReq::AtomicBatch,
+        }
+        .require_proofs()
+        .map_err(|err| DbErr::Custom(err.to_string()))?;
         // Host schema batches travel canonical; this adapter edge splits the
         // pack for the SQLite family and collapses results back to the wire
         // request shape after parsing.
@@ -146,7 +155,7 @@ impl D1Proxy {
         let (expanded, schema_groups) =
             bookclerk_db_exec::expand_host_schema_execute_request_grouped(
                 sea_orm::DatabaseBackend::Sqlite,
-                req,
+                &req,
             );
         let host_schema = expanded
             .statements
@@ -174,7 +183,7 @@ impl D1Proxy {
             || typed_is_receipt_gated(&req.statements);
         let d1_caps = DbCapabilities::advertised_d1();
         let cap = d1_caps.max_result_rows;
-        if (!guest_receipt.is_absent() || !proofs.is_empty()) && proofs.len() != wire_len {
+        if proofs.len() != wire_len {
             return Err(DbErr::Custom(
                 "host execute envelope proofs must match statement count".into(),
             ));
@@ -250,7 +259,6 @@ impl D1Proxy {
                             timeout,
                             deadline,
                             started,
-                            wire_len,
                             &companion_groups,
                             &guest_receipt,
                             cap,
@@ -273,7 +281,6 @@ impl D1Proxy {
                             timeout,
                             deadline,
                             started,
-                            wire_len,
                             &companion_groups,
                             &guest_receipt,
                             cap,
@@ -420,7 +427,6 @@ impl D1Proxy {
         timeout: Duration,
         deadline: Option<u64>,
         started: std::time::Instant,
-        wire_len: usize,
         companion_groups: &[usize],
         guest_receipt: &bookclerk_plugin_abi::GuestReceiptPersist,
         cap: u32,
@@ -459,7 +465,6 @@ impl D1Proxy {
                         timeout,
                         deadline,
                         started,
-                        wire_len,
                         companion_groups,
                         guest_receipt,
                         cap,
@@ -492,7 +497,6 @@ impl D1Proxy {
         timeout: Duration,
         deadline: Option<u64>,
         started: std::time::Instant,
-        _wire_len: usize,
         companion_groups: &[usize],
         guest_receipt: &bookclerk_plugin_abi::GuestReceiptPersist,
         cap: u32,
@@ -757,7 +761,9 @@ fn proofs_for_expanded<'a>(
 ) -> Result<Vec<Option<&'a bookclerk_plugin_abi::ResolvedStatement>>, DbErr> {
     let expanded_len: usize = groups.iter().copied().sum();
     if proofs.is_empty() {
-        return Ok(vec![None; expanded_len]);
+        return Err(DbErr::Custom(
+            "host execute envelope proofs must match statement count".into(),
+        ));
     }
     if proofs.len() != groups.len() {
         return Err(DbErr::Custom(
@@ -1665,9 +1671,7 @@ mod tests {
         assert!(mapped[1].is_some());
         assert!(mapped[2].is_none());
         assert!(mapped[3].is_none());
-        let empty = proofs_for_expanded(&[], &[1, 2]).expect("pre-admission");
-        assert_eq!(empty.len(), 3);
-        assert!(empty.iter().all(|p| p.is_none()));
+        proofs_for_expanded(&[], &[1, 2]).expect_err("missing proofs must fail closed");
         proofs_for_expanded(
             &[bookclerk_plugin_abi::ResolvedStatement::bound_empty(
                 "SELECT 1",

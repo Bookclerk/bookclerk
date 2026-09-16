@@ -1,0 +1,122 @@
+# Longer SQL-v1 property tests and coverage-guided fuzz. PR CI keeps modest
+# in-crate case counts plus deterministic corpus replay.
+name: SQL-v1 property tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+
+# Least privilege: checkout + local cargo test / fuzz only.
+permissions:
+  contents: read
+
+jobs:
+  proptest:
+    name: proptest (256 cases)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install capnproto
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
+
+      - name: Parser / TEXT / pack properties
+        env:
+          PROPTEST_CASES: "256"
+        run: cargo test -p bookclerk-plugin-abi --features host --lib sql_text -- --test-threads=1
+
+      - name: Lowering / proof properties
+        env:
+          PROPTEST_CASES: "256"
+        run: cargo test -p bookclerk-db-exec --lib lower::proptests -- --test-threads=1
+
+      - name: Grammar-aware sqlite admission
+        env:
+          PROPTEST_CASES: "256"
+        run: cargo test -p bookclerk-library --lib grammar_aware_sql_is_admitted_on_sqlite -- --test-threads=1
+
+  differential:
+    name: sqlite/postgres differential
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install capnproto
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
+
+      - name: Grammar-aware sqlite vs postgres (normalized DbValue / DbErrorClass)
+        env:
+          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
+        run: cargo test -p bookclerk-library --lib postgres_differential_grammar_aware_matches_sqlite -- --ignored --test-threads=1 --nocapture
+
+  fuzz:
+    name: cargo-fuzz (45s / target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install nightly + llvm-tools
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+
+      - name: Install capnproto and clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto clang
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: RUSTFLAGS
+          workspaces: fuzz
+          cache-on-failure: true
+
+      - name: Fuzz lexer / parser / admission
+        working-directory: fuzz
+        run: cargo +nightly fuzz run sql_parse -- -max_total_time=45 -max_len=2048
+
+      - name: Fuzz physical lowering
+        working-directory: fuzz
+        run: cargo +nightly fuzz run sql_lower -- -max_total_time=45 -max_len=2048

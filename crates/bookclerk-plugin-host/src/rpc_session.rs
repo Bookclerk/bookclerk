@@ -157,6 +157,7 @@ enum Work {
         reply: oneshot::Sender<Result<()>>,
     },
     DbBegin {
+        isolation: bookclerk_plugin_abi::IsolationReq,
         reply: oneshot::Sender<Result<()>>,
     },
     DbCommit {
@@ -172,17 +173,17 @@ enum Work {
         reply: oneshot::Sender<Result<bookclerk_plugin_sdk::DbBootstrap>>,
     },
     DbExecuteRequest {
-        request: bookclerk_plugin_sdk::ExecuteRequest,
+        request: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
         reply: oneshot::Sender<Result<bookclerk_plugin_sdk::ExecuteReply>>,
     },
     DbExecuteEnvelopeRequest {
-        envelope: bookclerk_plugin_abi::HostExecuteEnvelope,
+        envelope: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
         reply: oneshot::Sender<Result<bookclerk_plugin_sdk::ExecuteReply>>,
     },
     DbTxnExecuteRequest {
-        request: bookclerk_plugin_sdk::ExecuteRequest,
+        request: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
         reply: oneshot::Sender<Result<bookclerk_plugin_sdk::ExecuteReply>>,
     },
@@ -198,7 +199,7 @@ enum Work {
     DbExecuteBindingRequest {
         /// Binding name previously opened with [`Work::DbOpenBinding`].
         name: String,
-        request: bookclerk_plugin_sdk::ExecuteRequest,
+        request: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
         reply: oneshot::Sender<Result<bookclerk_plugin_sdk::ExecuteReply>>,
     },
@@ -206,13 +207,14 @@ enum Work {
     DbExecuteBindingEnvelopeRequest {
         /// Binding name previously opened with [`Work::DbOpenBinding`].
         name: String,
-        envelope: bookclerk_plugin_abi::HostExecuteEnvelope,
+        envelope: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
         reply: oneshot::Sender<Result<bookclerk_plugin_sdk::ExecuteReply>>,
     },
     /// Begin a vat-held transaction on a named plugin database binding.
     DbBeginBinding {
         name: String,
+        isolation: bookclerk_plugin_abi::IsolationReq,
         reply: oneshot::Sender<Result<()>>,
     },
     /// Commit the vat-held binding transaction.
@@ -228,12 +230,32 @@ enum Work {
     /// Typed execute on the vat-held binding transaction.
     DbTxnExecuteBindingRequest {
         name: String,
-        request: bookclerk_plugin_sdk::ExecuteRequest,
+        request: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
         reply: oneshot::Sender<Result<bookclerk_plugin_sdk::ExecuteReply>>,
     },
+    DbBackup {
+        binding: Option<String>,
+        kind: BackupKind,
+        reply: oneshot::Sender<Result<BackupOutcome>>,
+    },
     /// Drop the vat.
     Shutdown,
+}
+
+enum BackupKind {
+    ExportIdentity,
+    ImportIdentity(Vec<bookclerk_plugin_abi::DbIdentityHighWater>),
+    ListUserRelations,
+    PrepareUnitRestore,
+    DropUserRelations(Vec<String>),
+    AssertRestoreConstraints,
+}
+
+enum BackupOutcome {
+    Identity(Vec<bookclerk_plugin_abi::DbIdentityHighWater>),
+    Names(Vec<String>),
+    Unit,
 }
 
 /// Isolation key: different accounts never share a plugin isolate.
@@ -832,7 +854,7 @@ impl PluginSession {
     pub async fn db_execute_binding_request(
         &self,
         name: &str,
-        request: bookclerk_plugin_sdk::ExecuteRequest,
+        request: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
     ) -> Result<bookclerk_plugin_sdk::ExecuteReply> {
         let name = name.to_string();
@@ -847,7 +869,7 @@ impl PluginSession {
 
     /// Host-private envelope execute on a named plugin database binding.
     ///
-    /// Forwards [`bookclerk_plugin_abi::HostExecuteEnvelope`] so the adapter
+    /// Forwards [`bookclerk_plugin_abi::AdapterExecuteRequest`] so the adapter
     /// persists guest receipt payloads before COMMIT.
     ///
     /// # Errors
@@ -857,7 +879,7 @@ impl PluginSession {
     pub async fn db_execute_binding_envelope_request(
         &self,
         name: &str,
-        envelope: bookclerk_plugin_abi::HostExecuteEnvelope,
+        envelope: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
     ) -> Result<bookclerk_plugin_sdk::ExecuteReply> {
         let name = name.to_string();
@@ -895,7 +917,7 @@ impl PluginSession {
     /// Returns a plugin error when the guest rejects the call or `cancel` is set.
     pub async fn db_execute_request(
         &self,
-        request: bookclerk_plugin_sdk::ExecuteRequest,
+        request: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
     ) -> Result<bookclerk_plugin_sdk::ExecuteReply> {
         self.call(|reply| Work::DbExecuteRequest {
@@ -906,14 +928,14 @@ impl PluginSession {
         .await
     }
 
-    /// Typed `HostAdapterDatabaseSession.executeEnvelope`.
+    /// Typed `HostAdapterDatabaseSession.execute`.
     ///
     /// # Errors
     ///
     /// Returns a plugin error when the guest rejects the call or `cancel` is set.
     pub async fn db_execute_envelope_request(
         &self,
-        envelope: bookclerk_plugin_abi::HostExecuteEnvelope,
+        envelope: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
     ) -> Result<bookclerk_plugin_sdk::ExecuteReply> {
         self.call(|reply| Work::DbExecuteEnvelopeRequest {
@@ -932,7 +954,7 @@ impl PluginSession {
     /// the call, or `cancel` is set.
     pub async fn db_txn_execute_request(
         &self,
-        request: bookclerk_plugin_sdk::ExecuteRequest,
+        request: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
     ) -> Result<bookclerk_plugin_sdk::ExecuteReply> {
         self.call(|reply| Work::DbTxnExecuteRequest {
@@ -948,8 +970,8 @@ impl PluginSession {
     /// # Errors
     ///
     /// Returns a plugin error when begin fails.
-    pub async fn db_begin(&self) -> Result<()> {
-        self.call(|reply| Work::DbBegin { reply }).await
+    pub async fn db_begin(&self, isolation: bookclerk_plugin_abi::IsolationReq) -> Result<()> {
+        self.call(|reply| Work::DbBegin { isolation, reply }).await
     }
 
     /// Commit the vat-held transaction.
@@ -975,10 +997,18 @@ impl PluginSession {
     /// # Errors
     ///
     /// Returns when the binding is not open or begin fails.
-    pub async fn db_begin_binding(&self, name: &str) -> Result<()> {
+    pub async fn db_begin_binding(
+        &self,
+        name: &str,
+        isolation: bookclerk_plugin_abi::IsolationReq,
+    ) -> Result<()> {
         let name = name.to_string();
-        self.call(|reply| Work::DbBeginBinding { name, reply })
-            .await
+        self.call(|reply| Work::DbBeginBinding {
+            name,
+            isolation,
+            reply,
+        })
+        .await
     }
 
     /// Commit a named plugin database binding transaction.
@@ -1011,7 +1041,7 @@ impl PluginSession {
     pub async fn db_txn_execute_binding_request(
         &self,
         name: &str,
-        request: bookclerk_plugin_sdk::ExecuteRequest,
+        request: bookclerk_plugin_abi::AdapterExecuteRequest,
         cancel: Arc<AtomicBool>,
     ) -> Result<bookclerk_plugin_sdk::ExecuteReply> {
         let name = name.to_string();
@@ -1022,6 +1052,115 @@ impl PluginSession {
             reply,
         })
         .await
+    }
+
+    /// Adapter backup primitive on the library or binding session (uses the open txn when present).
+    async fn db_backup(&self, binding: Option<&str>, kind: BackupKind) -> Result<BackupOutcome> {
+        let binding = binding.map(str::to_string);
+        self.call(|reply| Work::DbBackup {
+            binding,
+            kind,
+            reply,
+        })
+        .await
+    }
+
+    /// Identity high-water from the adapter (open txn if any).
+    ///
+    /// # Errors
+    ///
+    /// Returns when the session is closed or the guest rejects the call.
+    pub async fn db_export_identity(
+        &self,
+        binding: Option<&str>,
+    ) -> Result<Vec<bookclerk_plugin_abi::DbIdentityHighWater>> {
+        match self.db_backup(binding, BackupKind::ExportIdentity).await? {
+            BackupOutcome::Identity(rows) => Ok(rows),
+            _ => Err(PluginError::message("unexpected backup reply")),
+        }
+    }
+
+    /// Restore identity high-water into the adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the session is closed or the guest rejects the call.
+    pub async fn db_import_identity(
+        &self,
+        binding: Option<&str>,
+        rows: Vec<bookclerk_plugin_abi::DbIdentityHighWater>,
+    ) -> Result<()> {
+        match self
+            .db_backup(binding, BackupKind::ImportIdentity(rows))
+            .await?
+        {
+            BackupOutcome::Unit => Ok(()),
+            _ => Err(PluginError::message("unexpected backup reply")),
+        }
+    }
+
+    /// User-visible relation names from the adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the session is closed or the guest rejects the call.
+    pub async fn db_list_user_relations(&self, binding: Option<&str>) -> Result<Vec<String>> {
+        match self
+            .db_backup(binding, BackupKind::ListUserRelations)
+            .await?
+        {
+            BackupOutcome::Names(names) => Ok(names),
+            _ => Err(PluginError::message("unexpected backup reply")),
+        }
+    }
+
+    /// Prepare the open restore transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the session is closed or the guest rejects the call.
+    pub async fn db_prepare_unit_restore(&self, binding: Option<&str>) -> Result<()> {
+        match self
+            .db_backup(binding, BackupKind::PrepareUnitRestore)
+            .await?
+        {
+            BackupOutcome::Unit => Ok(()),
+            _ => Err(PluginError::message("unexpected backup reply")),
+        }
+    }
+
+    /// Drop named user relations.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the session is closed or the guest rejects the call.
+    pub async fn db_drop_user_relations(
+        &self,
+        binding: Option<&str>,
+        names: Vec<String>,
+    ) -> Result<()> {
+        match self
+            .db_backup(binding, BackupKind::DropUserRelations(names))
+            .await?
+        {
+            BackupOutcome::Unit => Ok(()),
+            _ => Err(PluginError::message("unexpected backup reply")),
+        }
+    }
+
+    /// Fail closed when restore FK checks still fail.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the session is closed or the guest rejects the call.
+    pub async fn db_assert_restore_constraints(&self, binding: Option<&str>) -> Result<()> {
+        match self
+            .db_backup(binding, BackupKind::AssertRestoreConstraints)
+            .await?
+        {
+            BackupOutcome::Unit => Ok(()),
+            _ => Err(PluginError::message("unexpected backup reply")),
+        }
     }
 }
 
@@ -1035,6 +1174,164 @@ impl Drop for PluginSession {
 fn map_abi(err: bookclerk_plugin_sdk::PluginError) -> PluginError {
     let code = err.wire_str().to_string();
     PluginError::from_abi(Some(&code), err.message)
+}
+
+fn host_err_to_abi(err: PluginError) -> bookclerk_plugin_abi::PluginError {
+    match err {
+        PluginError::Abi { code, message } => {
+            bookclerk_plugin_abi::PluginError::from_wire(&code, message)
+        }
+        other => bookclerk_plugin_abi::PluginError::internal(other.to_string()),
+    }
+}
+
+async fn backup_on_session(
+    session: &mut dyn bookclerk_plugin_sdk::AdapterDatabaseSession,
+    kind: BackupKind,
+) -> Result<BackupOutcome> {
+    match kind {
+        BackupKind::ExportIdentity => Ok(BackupOutcome::Identity(
+            session.export_identity().await.map_err(map_abi)?,
+        )),
+        BackupKind::ImportIdentity(rows) => {
+            session.import_identity(&rows).await.map_err(map_abi)?;
+            Ok(BackupOutcome::Unit)
+        }
+        BackupKind::ListUserRelations => Ok(BackupOutcome::Names(
+            session.list_user_relations().await.map_err(map_abi)?,
+        )),
+        BackupKind::PrepareUnitRestore => {
+            session.prepare_unit_restore().await.map_err(map_abi)?;
+            Ok(BackupOutcome::Unit)
+        }
+        BackupKind::DropUserRelations(names) => {
+            session.drop_user_relations(&names).await.map_err(map_abi)?;
+            Ok(BackupOutcome::Unit)
+        }
+        BackupKind::AssertRestoreConstraints => {
+            session
+                .assert_restore_constraints()
+                .await
+                .map_err(map_abi)?;
+            Ok(BackupOutcome::Unit)
+        }
+    }
+}
+
+async fn backup_on_txn(
+    txn: &mut dyn bookclerk_plugin_abi::AdapterTransaction,
+    kind: BackupKind,
+) -> Result<BackupOutcome> {
+    match kind {
+        BackupKind::ExportIdentity => Ok(BackupOutcome::Identity(
+            txn.export_identity().await.map_err(map_abi)?,
+        )),
+        BackupKind::ImportIdentity(rows) => {
+            txn.import_identity(&rows).await.map_err(map_abi)?;
+            Ok(BackupOutcome::Unit)
+        }
+        BackupKind::ListUserRelations => Ok(BackupOutcome::Names(
+            txn.list_user_relations().await.map_err(map_abi)?,
+        )),
+        BackupKind::PrepareUnitRestore => {
+            txn.prepare_unit_restore().await.map_err(map_abi)?;
+            Ok(BackupOutcome::Unit)
+        }
+        BackupKind::DropUserRelations(names) => {
+            txn.drop_user_relations(&names).await.map_err(map_abi)?;
+            Ok(BackupOutcome::Unit)
+        }
+        BackupKind::AssertRestoreConstraints => {
+            txn.assert_restore_constraints().await.map_err(map_abi)?;
+            Ok(BackupOutcome::Unit)
+        }
+    }
+}
+
+/// Send-safe backup primitives over a vat-held adapter session (or its open txn).
+pub struct RpcBackupOps {
+    session: Arc<PluginSession>,
+    binding: Option<String>,
+}
+
+impl RpcBackupOps {
+    /// Library adapter session (no named binding).
+    #[must_use]
+    pub fn library(session: Arc<PluginSession>) -> Self {
+        Self {
+            session,
+            binding: None,
+        }
+    }
+
+    /// Named plugin-database binding (`plugin_id/binding`).
+    #[must_use]
+    pub fn binding(session: Arc<PluginSession>, name: impl Into<String>) -> Self {
+        Self {
+            session,
+            binding: Some(name.into()),
+        }
+    }
+
+    /// Shared handle stored on backup/restore options.
+    #[must_use]
+    pub fn shared(self) -> bookclerk_plugin_abi::SharedAdapterBackupOps {
+        Arc::new(self)
+    }
+
+    fn binding_ref(&self) -> Option<&str> {
+        self.binding.as_deref()
+    }
+}
+
+#[async_trait]
+impl bookclerk_plugin_abi::AdapterBackupOps for RpcBackupOps {
+    async fn export_identity(
+        &self,
+    ) -> bookclerk_plugin_abi::Result<Vec<bookclerk_plugin_abi::DbIdentityHighWater>> {
+        self.session
+            .db_export_identity(self.binding_ref())
+            .await
+            .map_err(host_err_to_abi)
+    }
+
+    async fn import_identity(
+        &self,
+        rows: &[bookclerk_plugin_abi::DbIdentityHighWater],
+    ) -> bookclerk_plugin_abi::Result<()> {
+        self.session
+            .db_import_identity(self.binding_ref(), rows.to_vec())
+            .await
+            .map_err(host_err_to_abi)
+    }
+
+    async fn list_user_relations(&self) -> bookclerk_plugin_abi::Result<Vec<String>> {
+        self.session
+            .db_list_user_relations(self.binding_ref())
+            .await
+            .map_err(host_err_to_abi)
+    }
+
+    async fn prepare_unit_restore(&self) -> bookclerk_plugin_abi::Result<()> {
+        self.session
+            .db_prepare_unit_restore(self.binding_ref())
+            .await
+            .map_err(host_err_to_abi)
+    }
+
+    async fn drop_user_relations(&self, names: &[String]) -> bookclerk_plugin_abi::Result<()> {
+        self.session
+            .db_drop_user_relations(self.binding_ref(), names.to_vec())
+            .await
+            .map_err(host_err_to_abi)
+    }
+
+    async fn assert_restore_constraints(&self) -> bookclerk_plugin_abi::Result<()> {
+        self.session
+            .db_assert_restore_constraints(self.binding_ref())
+            .await
+            .map_err(host_err_to_abi)
+    }
 }
 
 async fn dispatch_content_source(
@@ -1416,12 +1713,12 @@ fn vat_thread(
                             .await;
                             let _ = reply.send(out);
                         }
-                        Work::DbBegin { reply } => {
+                        Work::DbBegin { isolation, reply } => {
                             let out = async {
                                 let host = db_host_session.as_ref().ok_or_else(|| {
                                     PluginError::message("database session not open")
                                 })?;
-                                db_txn = Some(host.begin().await.map_err(map_abi)?);
+                                db_txn = Some(host.begin(isolation).await.map_err(map_abi)?);
                                 Ok(())
                             }
                             .await;
@@ -1480,7 +1777,7 @@ fn vat_thread(
                                     let host = db_host_session.as_ref().ok_or_else(|| {
                                         PluginError::message("database session not open")
                                     })?;
-                                    host.execute_envelope(envelope).await.map_err(map_abi)
+                                    host.execute(envelope).await.map_err(map_abi)
                                 } => out,
                             };
                             let _ = reply.send(out);
@@ -1566,21 +1863,53 @@ fn vat_thread(
                                             "database binding `{name}` session not open",
                                         ))
                                     })?;
-                                    host.host.execute_envelope(envelope).await.map_err(map_abi)
+                                    host.host.execute(envelope).await.map_err(map_abi)
                                 } => out,
                             };
                             let _ = reply.send(out);
                         }
-                        Work::DbBeginBinding { name, reply } => {
+                        Work::DbBeginBinding { name, isolation, reply } => {
                             let out = async {
                                 let host = db_bindings.get(&name).ok_or_else(|| {
                                     PluginError::message(format!(
                                         "database binding `{name}` session not open",
                                     ))
                                 })?;
-                                let txn = host.host.begin().await.map_err(map_abi)?;
+                                let txn = host.host.begin(isolation).await.map_err(map_abi)?;
                                 db_binding_txns.insert(name, txn);
                                 Ok(())
+                            }
+                            .await;
+                            let _ = reply.send(out);
+                        }
+                        Work::DbBackup {
+                            binding,
+                            kind,
+                            reply,
+                        } => {
+                            let out = async {
+                                match binding.as_deref() {
+                                    None => {
+                                        if let Some(txn) = db_txn.as_mut() {
+                                            backup_on_txn(txn.as_mut(), kind).await
+                                        } else if let Some(session) = db_session.as_mut() {
+                                            backup_on_session(session.as_mut(), kind).await
+                                        } else {
+                                            Err(PluginError::message("database session not open"))
+                                        }
+                                    }
+                                    Some(name) => {
+                                        if let Some(txn) = db_binding_txns.get_mut(name) {
+                                            backup_on_txn(txn.as_mut(), kind).await
+                                        } else if let Some(open) = db_bindings.get_mut(name) {
+                                            backup_on_session(open.session.as_mut(), kind).await
+                                        } else {
+                                            Err(PluginError::message(format!(
+                                                "database binding `{name}` session not open",
+                                            )))
+                                        }
+                                    }
+                                }
                             }
                             .await;
                             let _ = reply.send(out);

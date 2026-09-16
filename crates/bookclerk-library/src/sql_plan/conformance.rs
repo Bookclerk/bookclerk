@@ -69,6 +69,24 @@ fn typed_stmt(
     }
 }
 
+/// Seeds host-catalog rows so row-cap SELECTs typecheck (`rowcap_probe` is not
+/// in the host SQL type environment).
+async fn seed_rowcap_slots(db: &sea_orm::DatabaseConnection, n: i32) {
+    let backend = sea_orm::ConnectionTrait::get_database_backend(db);
+    for i in 0..n {
+        sea_orm::ConnectionTrait::execute_raw(
+            db,
+            sea_orm::Statement::from_sql_and_values(
+                backend,
+                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES (?, 0)",
+                [format!("rowcap-{i:02}").into()],
+            ),
+        )
+        .await
+        .unwrap();
+    }
+}
+
 fn typed_req(
     op: &str,
     statements: Vec<bookclerk_plugin_abi::TypedDbStatement>,
@@ -84,12 +102,7 @@ fn typed_req(
 #[tokio::test]
 async fn typed_shared_vectors_on_sqlite() {
     let db = mem_db().await;
-    super::typed_vectors::run_typed_conn_vectors(
-        &db,
-        DbCapabilities::advertised_sqlite(),
-        "sqlite_txn",
-    )
-    .await;
+    super::typed_vectors::run_typed_conn_vectors(&db, DbCapabilities::advertised_sqlite()).await;
 }
 
 #[tokio::test]
@@ -99,12 +112,7 @@ async fn typed_shared_vectors_on_postgres() {
         return;
     }
     let db = postgres_migrated_db().await;
-    super::typed_vectors::run_typed_conn_vectors(
-        &db,
-        DbCapabilities::advertised_postgres(),
-        "postgres_txn",
-    )
-    .await;
+    super::typed_vectors::run_typed_conn_vectors(&db, DbCapabilities::advertised_postgres()).await;
 }
 
 #[tokio::test]
@@ -123,7 +131,6 @@ async fn sqlite_recursive_cte_honors_deadline() {
     let err = super::execute_typed_on_session(
         &db,
         &typed_req("op-deadline", plan),
-        "sqlite_txn",
         0,
         super::AtomicSession::from_deadline(Some(deadline)),
     )
@@ -139,37 +146,16 @@ async fn sqlite_recursive_cte_honors_deadline() {
 #[tokio::test]
 async fn sqlite_query_stops_after_cap_plus_one() {
     let db = mem_db().await;
-    let backend = sea_orm::ConnectionTrait::get_database_backend(&db);
-    sea_orm::ConnectionTrait::execute_raw(
-        &db,
-        sea_orm::Statement::from_string(
-            backend,
-            "CREATE TABLE IF NOT EXISTS rowcap_probe (x INTEGER)",
-        ),
-    )
-    .await
-    .ok();
-    for i in 0..50 {
-        sea_orm::ConnectionTrait::execute_raw(
-            &db,
-            sea_orm::Statement::from_sql_and_values(
-                backend,
-                "INSERT INTO rowcap_probe (x) VALUES (?)",
-                [i.into()],
-            ),
-        )
-        .await
-        .unwrap();
-    }
+    seed_rowcap_slots(&db, 50).await;
     let plan = vec![{
         let mut s = typed_stmt(
-            "SELECT x FROM rowcap_probe",
+            "SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'rowcap-%' ORDER BY slot_key",
             bookclerk_plugin_abi::DbPlanStatementKind::Returning,
         );
         s.max_rows = 0;
         s
     }];
-    let err = super::execute_typed_on(&db, &typed_req("op-early", plan), "sqlite_txn", 5)
+    let err = super::execute_typed_on(&db, &typed_req("op-early", plan), 5)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("maxResultRows"), "{err}");
@@ -184,28 +170,7 @@ async fn sqlite_query_stops_after_cap_plus_one() {
 async fn concurrent_attempts_keep_independent_deadlines_and_caps() {
     let db_deadline = mem_db().await;
     let db_cap = mem_db().await;
-    let backend = sea_orm::ConnectionTrait::get_database_backend(&db_cap);
-    sea_orm::ConnectionTrait::execute_raw(
-        &db_cap,
-        sea_orm::Statement::from_string(
-            backend,
-            "CREATE TABLE IF NOT EXISTS rowcap_probe (x INTEGER)",
-        ),
-    )
-    .await
-    .ok();
-    for i in 0..50 {
-        sea_orm::ConnectionTrait::execute_raw(
-            &db_cap,
-            sea_orm::Statement::from_sql_and_values(
-                backend,
-                "INSERT INTO rowcap_probe (x) VALUES (?)",
-                [i.into()],
-            ),
-        )
-        .await
-        .unwrap();
-    }
+    seed_rowcap_slots(&db_cap, 50).await;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
@@ -217,7 +182,7 @@ async fn concurrent_attempts_keep_independent_deadlines_and_caps() {
     }];
     let select = vec![{
         let mut s = typed_stmt(
-            "SELECT x FROM rowcap_probe",
+            "SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'rowcap-%' ORDER BY slot_key",
             bookclerk_plugin_abi::DbPlanStatementKind::Returning,
         );
         s.max_rows = 0;
@@ -228,14 +193,12 @@ async fn concurrent_attempts_keep_independent_deadlines_and_caps() {
     let deadline = execute_typed_on_session(
         &db_deadline,
         &deadline_req,
-        "sqlite_txn",
         0,
         AtomicSession::from_deadline(Some(now.saturating_add(80))),
     );
     let cap = execute_typed_on_session(
         &db_cap,
         &cap_req,
-        "sqlite_txn",
         5,
         AtomicSession::from_deadline(Some(now.saturating_add(60_000))),
     );
@@ -274,14 +237,10 @@ async fn plan_commit_inserts_receipt() {
         },
     );
     let compiled = compile_named_request(req.id, &req.params, now).unwrap();
-    let result = execute_compiled_on(&db, compiled.clone(), "sqlite_txn")
-        .await
-        .unwrap();
+    let result = execute_compiled_on(&db, compiled.clone()).await.unwrap();
     assert_eq!(result.status, atomic_status::OK);
     assert!(!result.replayed);
-    let replay = execute_compiled_on(&db, compiled.clone(), "sqlite_txn")
-        .await
-        .unwrap();
+    let replay = execute_compiled_on(&db, compiled.clone()).await.unwrap();
     assert!(replay.replayed, "same operationId must replay the receipt");
     assert_eq!(replay.status, atomic_status::OK);
 }
@@ -302,9 +261,7 @@ async fn plan_hash_conflict_is_idempotency_conflict() {
         },
     );
     let compiled = compile_named_request(first.id, &first.params, now).unwrap();
-    execute_compiled_on(&db, compiled.clone(), "sqlite_txn")
-        .await
-        .unwrap();
+    execute_compiled_on(&db, compiled.clone()).await.unwrap();
     let second = named(
         "conf-conflict",
         DbAtomicParams::EnqueueJob {
@@ -317,7 +274,7 @@ async fn plan_hash_conflict_is_idempotency_conflict() {
         },
     );
     let other = compile_named_request(second.id, &second.params, now).unwrap();
-    let result = execute_compiled_on(&db, other, "sqlite_txn").await.unwrap();
+    let result = execute_compiled_on(&db, other).await.unwrap();
     assert_eq!(result.status, atomic_status::IDEMPOTENCY_CONFLICT);
 }
 
@@ -342,7 +299,7 @@ async fn unique_constraint_on_generic_insert_is_engine_error() {
             s
         },
     ];
-    let err = super::execute_typed_on(&db, &typed_req("op-unique", plan.clone()), "sqlite_txn", 0)
+    let err = super::execute_typed_on(&db, &typed_req("op-unique", plan.clone()), 0)
         .await
         .unwrap_err();
     let msg = err.to_string().to_lowercase();
@@ -374,7 +331,7 @@ async fn failed_statement_rolls_back_earlier_inserts() {
         },
     ];
     assert!(
-        super::execute_typed_on(&db, &typed_req("op-rb", plan.clone()), "sqlite_txn", 0)
+        super::execute_typed_on(&db, &typed_req("op-rb", plan.clone()), 0)
             .await
             .is_err()
     );
@@ -414,7 +371,7 @@ async fn conditional_update_zero_rows_is_ok_execute() {
             s
         },
     ];
-    let reply = super::execute_typed_on(&db, &typed_req("op-cond", plan.clone()), "sqlite_txn", 0)
+    let reply = super::execute_typed_on(&db, &typed_req("op-cond", plan.clone()), 0)
         .await
         .unwrap();
     let compiled = super::CompiledAtomic {
@@ -447,9 +404,7 @@ async fn timing_receipt_shape_is_uniform() {
         },
     );
     let compiled = compile_named_request(req.id, &req.params, now).unwrap();
-    let result = execute_compiled_on(&db, compiled.clone(), "sqlite_txn")
-        .await
-        .unwrap();
+    let result = execute_compiled_on(&db, compiled.clone()).await.unwrap();
     let timing = result.timing.expect("timing");
     assert!(timing.attempt_elapsed_us > 0);
     assert_eq!(timing.db_timing_source, "sqlite_txn");
@@ -457,12 +412,49 @@ async fn timing_receipt_shape_is_uniform() {
 }
 
 #[tokio::test]
+async fn leftover_physical_sqlite_glob_lowers_like_case_sensitivity() {
+    let db = mem_db().await;
+    bookclerk_db_exec::execute_canonical(
+        &db,
+        "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('ABC', 0)",
+        std::iter::empty::<sea_orm::Value>(),
+    )
+    .await
+    .unwrap();
+    let sql = "SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'abc'";
+    let canonical =
+        bookclerk_db_exec::query_canonical(&db, sql, std::iter::empty::<sea_orm::Value>())
+            .await
+            .unwrap();
+    assert_eq!(
+        canonical.len(),
+        1,
+        "canonical leftover LIKE must stay sqlite nocase"
+    );
+
+    let physical = crate::sql_plan::query_sql_on(
+        true,
+        &db,
+        sql,
+        std::iter::empty::<sea_orm::Value>(),
+        &crate::migrations::host_sql_type_env(),
+        8,
+    )
+    .await
+    .unwrap();
+    assert!(
+        physical.is_empty(),
+        "physical sqlite leftover must GLOB-lower (case-sensitive): {physical:?}"
+    );
+}
+
+#[tokio::test]
 async fn serialization_slot_bump_is_monotonic() {
     let db = mem_db().await;
-    crate::sql_plan::lock_serialization_slot(&db, "job-queue")
+    crate::sql_plan::lock_serialization_slot(&db, true, "job-queue")
         .await
         .unwrap();
-    crate::sql_plan::lock_serialization_slot(&db, "job-queue")
+    crate::sql_plan::lock_serialization_slot(&db, true, "job-queue")
         .await
         .unwrap();
     let rows = sea_orm::ConnectionTrait::query_all_raw(
@@ -480,7 +472,7 @@ async fn serialization_slot_bump_is_monotonic() {
 }
 
 #[test]
-fn postgres_renderer_lowers_canonical_placeholders() {
+fn host_enqueue_plan_stays_canonical_placeholders() {
     let now = "2024-06-01T00:00:00Z";
     let req = named(
         "pg-render",
@@ -505,22 +497,10 @@ fn postgres_renderer_lowers_canonical_placeholders() {
         !joined.contains("$1"),
         "host compiler must emit canonical SQL, not $n:\n{joined}"
     );
-    let mut lowered_any = false;
-    for stmt in &compiled.request.statements {
-        if stmt.sql.contains('?') {
-            let lowered = bookclerk_db_exec::lower_canonical_to_postgres(&stmt.sql);
-            assert!(
-                lowered.contains('$'),
-                "adapter lowering must produce $n binds:\n{lowered}"
-            );
-            assert!(
-                !lowered.contains('?'),
-                "adapter lowering must not leave ? placeholders:\n{lowered}"
-            );
-            lowered_any = true;
-        }
-    }
-    assert!(lowered_any, "enqueue plan must contain binds:\n{joined}");
+    assert!(
+        joined.contains('?'),
+        "enqueue plan must contain canonical binds:\n{joined}"
+    );
 }
 
 #[tokio::test]
@@ -543,13 +523,9 @@ async fn postgres_plan_receipt_replay() {
         },
     );
     let compiled = compile_named_request(req.id, &req.params, now).unwrap();
-    let first = execute_compiled_on(&db, compiled.clone(), "postgres_txn")
-        .await
-        .unwrap();
+    let first = execute_compiled_on(&db, compiled.clone()).await.unwrap();
     assert_eq!(first.status, atomic_status::OK);
-    let replay = execute_compiled_on(&db, compiled.clone(), "postgres_txn")
-        .await
-        .unwrap();
+    let replay = execute_compiled_on(&db, compiled.clone()).await.unwrap();
     assert!(replay.replayed);
 }
 
@@ -628,7 +604,7 @@ async fn postgres_claim_malformed_json_is_quarantined() {
         },
     );
     let compiled = compile_named_request(req.id, &req.params, now).unwrap();
-    let result = execute_compiled_on(&db, compiled.clone(), "postgres_txn")
+    let result = execute_compiled_on(&db, compiled.clone())
         .await
         .expect("malformed payload must not abort the claim batch");
     assert_eq!(result.status, atomic_status::OK);
@@ -691,7 +667,7 @@ async fn plan_cancel_hook_aborts_before_commit() {
         s.max_rows = 0;
         s
     }];
-    let err = super::execute_typed_on(&db, &typed_req("op-cancel", plan.clone()), "sqlite_txn", 0)
+    let err = super::execute_typed_on(&db, &typed_req("op-cancel", plan.clone()), 0)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("commit failed"), "{err}");
@@ -727,11 +703,11 @@ async fn execute_caps_collected_rows_at_max_result_rows() {
         s.max_rows = 0;
         s
     }];
-    let exec = super::execute_typed_on(&db, &typed_req("op-cap", plan.clone()), "sqlite_txn", 5)
+    let exec = super::execute_typed_on(&db, &typed_req("op-cap", plan.clone()), 5)
         .await
         .unwrap();
     assert_eq!(exec.statements[0].rows.len(), 5);
-    let err = super::execute_typed_on(&db, &typed_req("op-cap-over", plan), "sqlite_txn", 2)
+    let err = super::execute_typed_on(&db, &typed_req("op-cap-over", plan), 2)
         .await
         .unwrap_err();
     assert!(
@@ -750,13 +726,9 @@ async fn postgres_plan_commit_inserts_receipt() {
     let now = "2024-06-01T00:00:00Z";
     let op = enqueue_scan("pg-conf-enq-2", "pg");
     let compiled = compile_named_request(op.id, &op.params, now).unwrap();
-    let first = execute_compiled_on(&db, compiled.clone(), "postgres_txn")
-        .await
-        .unwrap();
+    let first = execute_compiled_on(&db, compiled.clone()).await.unwrap();
     assert_eq!(first.status, atomic_status::OK);
-    let replay = execute_compiled_on(&db, compiled.clone(), "postgres_txn")
-        .await
-        .unwrap();
+    let replay = execute_compiled_on(&db, compiled.clone()).await.unwrap();
     assert!(replay.replayed);
 }
 
@@ -813,16 +785,11 @@ async fn postgres_execute_caps_collected_rows() {
         s.max_rows = 0;
         s
     }];
-    let exec = super::execute_typed_on(
-        &db,
-        &typed_req("op-pg-cap", plan.clone()),
-        "postgres_txn",
-        5,
-    )
-    .await
-    .unwrap();
+    let exec = super::execute_typed_on(&db, &typed_req("op-pg-cap", plan.clone()), 5)
+        .await
+        .unwrap();
     assert_eq!(exec.statements[0].rows.len(), 5);
-    let err = super::execute_typed_on(&db, &typed_req("op-pg-cap-over", plan), "postgres_txn", 2)
+    let err = super::execute_typed_on(&db, &typed_req("op-pg-cap-over", plan), 2)
         .await
         .unwrap_err();
     assert!(
@@ -836,7 +803,7 @@ async fn host_applies_schema_to_unmigrated_sqlite() {
     let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
         .await
         .expect("unmigrated sqlite");
-    crate::apply_host_schema(&db, crate::HostSchemaKind::PragmaMarker)
+    crate::apply_host_schema(&db, crate::HostSchemaKind::RowMarker)
         .await
         .expect("host schema");
     let rows = sea_orm::ConnectionTrait::query_all_raw(
@@ -886,7 +853,6 @@ async fn plan_cancel_before_begin_does_not_commit() {
     let err = super::execute_typed_on(
         &db,
         &typed_req("op-c-before", interrupt_plan("c-before")),
-        "sqlite_txn",
         0,
     )
     .await
@@ -905,7 +871,6 @@ async fn plan_cancel_during_statements_rolls_back() {
     let err = super::execute_typed_on(
         &db,
         &typed_req("op-c-during", interrupt_plan("c-during")),
-        "sqlite_txn",
         0,
     )
     .await
@@ -924,7 +889,6 @@ async fn plan_cancel_around_commit_is_unavailable() {
     let err = super::execute_typed_on(
         &db,
         &typed_req("op-c-commit", interrupt_plan("c-commit")),
-        "sqlite_txn",
         0,
     )
     .await
@@ -943,7 +907,6 @@ async fn plan_deadline_before_begin() {
     let err = super::execute_typed_on(
         &db,
         &typed_req("op-d-before", interrupt_plan("d-before")),
-        "sqlite_txn",
         0,
     )
     .await
@@ -966,7 +929,6 @@ async fn postgres_plan_cancel_before_begin() {
     let err = super::execute_typed_on(
         &db,
         &typed_req("op-pg-c-before", interrupt_plan("pg-c-before")),
-        "postgres_txn",
         0,
     )
     .await
@@ -988,7 +950,6 @@ async fn postgres_plan_cancel_during_statements() {
     let err = super::execute_typed_on(
         &db,
         &typed_req("op-pg-c-during", interrupt_plan("pg-c-during")),
-        "postgres_txn",
         0,
     )
     .await
@@ -1028,7 +989,6 @@ async fn postgres_plan_cancel_around_commit_is_unavailable() {
     let err = super::execute_typed_on(
         &db,
         &typed_req("op-pg-c-commit", interrupt_plan("pg-c-commit")),
-        "postgres_txn",
         0,
     )
     .await
@@ -1070,6 +1030,19 @@ async fn seed_typed_probe(db: &sea_orm::DatabaseConnection, sql_values: &str) {
         .unwrap();
 }
 
+fn typed_probe_type_env() -> bookclerk_plugin_abi::SqlTypeEnv {
+    let mut env = crate::migrations::host_sql_type_env();
+    bookclerk_plugin_abi::apply_schema_sql_to_env(
+        &mut env,
+        "CREATE TABLE typed_probe (x INTEGER, y TEXT)",
+    );
+    bookclerk_plugin_abi::apply_schema_sql_to_env(
+        &mut env,
+        "CREATE TABLE typed_rowcap (x INTEGER)",
+    );
+    env
+}
+
 #[tokio::test]
 async fn typed_sqlite_duplicate_alias_zero_row_and_null_metadata() {
     let db = mem_db().await;
@@ -1083,8 +1056,7 @@ async fn typed_sqlite_duplicate_alias_zero_row_and_null_metadata() {
         bookclerk_db_exec::ExecCaps::from_capabilities(
             &bookclerk_plugin_abi::DbCapabilities::advertised_sqlite(),
         ),
-        bookclerk_db_exec::AtomicSession::from_deadline(None)
-            .with_type_env(crate::migrations::host_sql_type_env()),
+        bookclerk_db_exec::AtomicSession::from_deadline(None).with_type_env(typed_probe_type_env()),
     )
     .await;
     match reply {
@@ -1109,8 +1081,7 @@ async fn typed_sqlite_duplicate_alias_zero_row_and_null_metadata() {
         bookclerk_db_exec::ExecCaps::from_capabilities(
             &bookclerk_plugin_abi::DbCapabilities::advertised_sqlite(),
         ),
-        bookclerk_db_exec::AtomicSession::from_deadline(None)
-            .with_type_env(crate::migrations::host_sql_type_env()),
+        bookclerk_db_exec::AtomicSession::from_deadline(None).with_type_env(typed_probe_type_env()),
     )
     .await
     .unwrap();
@@ -1127,8 +1098,7 @@ async fn typed_sqlite_duplicate_alias_zero_row_and_null_metadata() {
         bookclerk_db_exec::ExecCaps::from_capabilities(
             &bookclerk_plugin_abi::DbCapabilities::advertised_sqlite(),
         ),
-        bookclerk_db_exec::AtomicSession::from_deadline(None)
-            .with_type_env(crate::migrations::host_sql_type_env()),
+        bookclerk_db_exec::AtomicSession::from_deadline(None).with_type_env(typed_probe_type_env()),
     )
     .await
     .unwrap();
@@ -1178,8 +1148,7 @@ async fn typed_sqlite_select_stops_after_cap_plus_one() {
         bookclerk_db_exec::GuestReceiptPersist::default(),
         "sqlite_txn",
         caps,
-        bookclerk_db_exec::AtomicSession::from_deadline(None)
-            .with_type_env(crate::migrations::host_sql_type_env()),
+        bookclerk_db_exec::AtomicSession::from_deadline(None).with_type_env(typed_probe_type_env()),
     )
     .await
     .unwrap_err();
@@ -1225,8 +1194,7 @@ async fn typed_sqlite_statement_max_rows_is_a_proven_bound() {
         bookclerk_db_exec::GuestReceiptPersist::default(),
         "sqlite_txn",
         caps,
-        bookclerk_db_exec::AtomicSession::from_deadline(None)
-            .with_type_env(crate::migrations::host_sql_type_env()),
+        bookclerk_db_exec::AtomicSession::from_deadline(None).with_type_env(typed_probe_type_env()),
     )
     .await
     .unwrap_err();
@@ -1238,8 +1206,7 @@ async fn typed_sqlite_statement_max_rows_is_a_proven_bound() {
         bookclerk_db_exec::GuestReceiptPersist::default(),
         "sqlite_txn",
         caps,
-        bookclerk_db_exec::AtomicSession::from_deadline(None)
-            .with_type_env(crate::migrations::host_sql_type_env()),
+        bookclerk_db_exec::AtomicSession::from_deadline(None).with_type_env(typed_probe_type_env()),
     )
     .await
     .unwrap();
@@ -1290,8 +1257,7 @@ async fn typed_sqlite_per_statement_max_result_bytes() {
         bookclerk_db_exec::GuestReceiptPersist::default(),
         "sqlite_txn",
         caps,
-        bookclerk_db_exec::AtomicSession::from_deadline(None)
-            .with_type_env(crate::migrations::host_sql_type_env()),
+        bookclerk_db_exec::AtomicSession::from_deadline(None).with_type_env(typed_probe_type_env()),
     )
     .await
     .unwrap_err();
@@ -1315,8 +1281,7 @@ async fn typed_postgres_duplicate_alias_zero_row_and_null_metadata() {
         bookclerk_db_exec::ExecCaps::from_capabilities(
             &bookclerk_plugin_abi::DbCapabilities::advertised_postgres(),
         ),
-        bookclerk_db_exec::AtomicSession::from_deadline(None)
-            .with_type_env(crate::migrations::host_sql_type_env()),
+        bookclerk_db_exec::AtomicSession::from_deadline(None).with_type_env(typed_probe_type_env()),
     )
     .await
     .unwrap_err();
@@ -1334,8 +1299,7 @@ async fn typed_postgres_duplicate_alias_zero_row_and_null_metadata() {
         bookclerk_db_exec::ExecCaps::from_capabilities(
             &bookclerk_plugin_abi::DbCapabilities::advertised_postgres(),
         ),
-        bookclerk_db_exec::AtomicSession::from_deadline(None)
-            .with_type_env(crate::migrations::host_sql_type_env()),
+        bookclerk_db_exec::AtomicSession::from_deadline(None).with_type_env(typed_probe_type_env()),
     )
     .await
     .unwrap();
@@ -1356,8 +1320,7 @@ async fn typed_postgres_duplicate_alias_zero_row_and_null_metadata() {
         bookclerk_db_exec::ExecCaps::from_capabilities(
             &bookclerk_plugin_abi::DbCapabilities::advertised_postgres(),
         ),
-        bookclerk_db_exec::AtomicSession::from_deadline(None)
-            .with_type_env(crate::migrations::host_sql_type_env()),
+        bookclerk_db_exec::AtomicSession::from_deadline(None).with_type_env(typed_probe_type_env()),
     )
     .await
     .unwrap();
@@ -1398,6 +1361,7 @@ async fn typed_postgres_empty_select_describe_does_not_reexecute() {
         "n",
         bookclerk_plugin_abi::SqlType::Integer,
     );
+    type_env.insert_column("typed_counter", "n", bookclerk_plugin_abi::SqlType::Integer);
     let empty = typed_query("bump", "SELECT n FROM typed_bump_view LIMIT 0");
     let reply = bookclerk_db_exec::execute_typed_on_session(
         &db,
@@ -1423,8 +1387,7 @@ async fn typed_postgres_empty_select_describe_does_not_reexecute() {
         bookclerk_db_exec::ExecCaps::from_capabilities(
             &bookclerk_plugin_abi::DbCapabilities::advertised_postgres(),
         ),
-        bookclerk_db_exec::AtomicSession::from_deadline(None)
-            .with_type_env(crate::migrations::host_sql_type_env()),
+        bookclerk_db_exec::AtomicSession::from_deadline(None).with_type_env(type_env),
     )
     .await
     .unwrap();
@@ -1495,10 +1458,9 @@ async fn run_postgres_binding(
     super::execute_guest_atomic_with(request, &caps, &policy, |envelope| async move {
         let deadline =
             (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
-        bookclerk_db_exec::execute_typed_envelope(
+        bookclerk_db_exec::execute_typed_envelope_on_connection(
             db,
             &envelope,
-            "postgres_txn",
             bookclerk_db_exec::ExecCaps::from_capabilities(&exec_caps),
             bookclerk_db_exec::AtomicSession::from_deadline(deadline),
         )
@@ -2442,6 +2404,32 @@ async fn postgres_binding_sql_v1_p1_vectors() {
         .expect("div operands");
     if let Some(err) =
         bookclerk_db_exec::sql_v1::portable_div_operands_mismatch(&reply.statements[0])
+    {
+        panic!("{err}");
+    }
+    let mut nullif_guard = binding_stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_DIV_NULLIF_NOT_ZERO_GUARD,
+        vec![],
+    );
+    nullif_guard.max_rows = 8;
+    let reply = run_postgres_binding(&db, binding_req("pg-div-nullif-guard", vec![nullif_guard]))
+        .await
+        .expect("div NULLIF not-zero guard");
+    if let Some(err) =
+        bookclerk_db_exec::sql_v1::portable_div_nullif_not_zero_guard_mismatch(&reply.statements[0])
+    {
+        panic!("{err}");
+    }
+    let mut json_obj = binding_stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_JSON_OBJECT_SEMANTICS,
+        vec![],
+    );
+    json_obj.max_rows = 8;
+    let reply = run_postgres_binding(&db, binding_req("pg-json-object-semantics", vec![json_obj]))
+        .await
+        .expect("json_object semantics");
+    if let Some(err) =
+        bookclerk_db_exec::sql_v1::portable_json_object_semantics_mismatch(&reply.statements[0])
     {
         panic!("{err}");
     }

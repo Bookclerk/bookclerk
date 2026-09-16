@@ -59,6 +59,12 @@ pub struct LibraryStore {
     max_payload_bytes: u32,
     /// Full negotiated capability advertisement (limits, schema flags, timing).
     caps: Arc<bookclerk_plugin_abi::DbCapabilities>,
+    /// Leftover canonical `?` SQL execution target.
+    ///
+    /// Production plugin-host stays [`bookclerk_db_exec::SqlExecTarget::Canonical`]
+    /// so the sqlite-shaped proxy never physically lowers. Native in-process
+    /// tests set [`bookclerk_db_exec::SqlExecTarget::InProcess`].
+    sql_exec: bookclerk_db_exec::SqlExecTarget,
 }
 
 impl std::fmt::Debug for LibraryStore {
@@ -84,7 +90,25 @@ impl LibraryStore {
             max_result_rows: 256,
             max_payload_bytes: 256 * 1024,
             caps: Arc::new(bookclerk_plugin_abi::DbCapabilities::advertised_d1()),
+            sql_exec: bookclerk_db_exec::SqlExecTarget::Canonical,
         }
+    }
+
+    /// Leftover SQL is physically lowered by the adapter SDK (in-process tests).
+    ///
+    /// The SDK infers sqlite vs postgres from the opened connection. Production
+    /// plugin-host must not call this — leftover SQL stays canonical on the proxy.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_in_process_sql(mut self) -> Self {
+        self.sql_exec = bookclerk_db_exec::SqlExecTarget::InProcess;
+        self
+    }
+
+    /// True when leftover SQL is physically lowered on this store's connection.
+    #[must_use]
+    pub(crate) fn leftover_in_process(&self) -> bool {
+        self.sql_exec.lowers()
     }
 
     /// Attach a guest atomic backend for named security operations.
@@ -170,55 +194,40 @@ impl LibraryStore {
     /// error when the batch fails.
     pub async fn execute_guest_atomic(
         &self,
-        mut req: bookclerk_plugin_abi::ExecuteRequest,
+        req: bookclerk_plugin_abi::ExecuteRequest,
         policy: &bookclerk_plugin_abi::GuestSqlPolicy,
     ) -> std::result::Result<bookclerk_plugin_abi::ExecuteReply, bookclerk_plugin_abi::PluginError>
     {
-        crate::authorize_guest_typed_request(&mut req, self.db_capabilities(), policy)
-            .map_err(|err| bookclerk_plugin_abi::PluginError::invalid_params(err.to_string()))?;
-        let guest_req = req.clone();
-        // Library connection: wrap with the same snapshot execute uses
-        // (physical tables + durable catalog + host schema + policy types).
-        let mut type_env = bookclerk_db_exec::load_physical_sql_type_env(&self.db)
-            .await
-            .map_err(plugin_err_from_db)?;
-        type_env.merge(
-            &bookclerk_db_exec::load_sql_type_env(&self.db)
-                .await
-                .map_err(plugin_err_from_db)?,
-        );
-        type_env.merge(&crate::migrations::host_sql_type_env());
-        type_env.merge(policy.sql_types());
-        let envelope = crate::sql_plan::wrap_guest_typed_request(req, &type_env)?;
-        self.db_capabilities()
-            .admit_proven_execute(&envelope.request, &envelope.proofs)
-            .map_err(|err| bookclerk_plugin_abi::PluginError::invalid_params(err.to_string()))?;
-        let reply = if let Some(exec) = &self.typed_exec {
-            let reply = exec.execute_typed(envelope.clone()).await?;
-            crate::validate_execute_reply(&envelope.request, &reply, self.db_capabilities())
-                .map_err(|err| bookclerk_plugin_abi::PluginError::unavailable(err.to_string()))?;
-            reply
-        } else {
-            let timing = match self.db.get_database_backend() {
-                sea_orm::DatabaseBackend::Postgres => "postgres_txn",
-                _ => "sqlite_txn",
-            };
-            let deadline = (envelope.request.deadline_unix_ms > 0)
-                .then_some(envelope.request.deadline_unix_ms);
-            let reply = bookclerk_db_exec::execute_typed_envelope(
-                &self.db,
-                &envelope,
-                timing,
-                bookclerk_db_exec::ExecCaps::from_capabilities(self.db_capabilities()),
-                bookclerk_db_exec::AtomicSession::from_deadline(deadline).with_type_env(type_env),
-            )
-            .await
-            .map_err(plugin_err_from_db)?;
-            crate::validate_execute_reply(&envelope.request, &reply, self.db_capabilities())
-                .map_err(|err| bookclerk_plugin_abi::PluginError::unavailable(err.to_string()))?;
-            reply
-        };
-        crate::sql_plan::unwrap_guest_typed_reply(reply, &guest_req, self.db_capabilities())
+        let db = self.db.clone();
+        let caps = self.db_capabilities().clone();
+        let typed_exec = self.typed_exec.clone();
+        let exec_caps = caps.clone();
+        crate::sql_plan::execute_guest_atomic_with(req, &caps, policy, move |envelope| {
+            let db = db.clone();
+            let caps = exec_caps.clone();
+            let typed_exec = typed_exec.clone();
+            async move {
+                if let Some(exec) = typed_exec {
+                    exec.execute_typed(envelope).await
+                } else {
+                    // In-process tests (no RPC adapter). Production hosts
+                    // always inject [`crate::TypedAtomicExec`]. The adapter
+                    // SDK infers sqlite vs postgres from `db`.
+                    let deadline = (envelope.request.deadline_unix_ms > 0)
+                        .then_some(envelope.request.deadline_unix_ms);
+                    bookclerk_db_exec::execute_typed_envelope_on_connection(
+                        &db,
+                        &envelope,
+                        bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
+                        bookclerk_db_exec::AtomicSession::from_deadline(deadline)
+                            .with_type_env(crate::migrations::host_sql_type_env()),
+                    )
+                    .await
+                    .map_err(plugin_err_from_db)
+                }
+            }
+        })
+        .await
     }
 
     /// Subscribers packed into one dispatch plan (receipt overhead is ~12 statements).

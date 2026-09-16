@@ -7,13 +7,10 @@ use bookclerk_plugin_abi::{
     reserved_catalog_relation_missing, sql_ddl_create_table_sql, sql_schema_create_table_sql,
     sql_type_env_from_canonical_statements, typecheck_execute_request_proofs, DbColumn,
     DbPlanStatementKind, DbResultSelection, DbRow, DbType, DbValue, ExecuteRequest, SqlTypeEnv,
-    StatementResult, TypedDbStatement, SQL_CATALOG_TABLE, SQL_CONTRACT_VERSION, SQL_DDL_TABLE,
-    SQL_IDENTITY_TABLE, SQL_SCHEMA_TABLE,
+    StatementResult, TypedDbStatement, UnresolvedExecuteRequest, SQL_CATALOG_TABLE,
+    SQL_CONTRACT_VERSION, SQL_DDL_TABLE, SQL_IDENTITY_TABLE, SQL_SCHEMA_TABLE,
 };
-use sea_orm::{
-    ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbBackend, Statement,
-    TransactionTrait,
-};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction, StreamTrait};
 
 use super::encode::{chunk_would_overflow, CanonicalObject};
 use super::repository::BackupRepository;
@@ -21,7 +18,7 @@ use super::schema::{
     admit_canonical_statements, canonical_order_by_sql, library_canonical_schema_for_state,
     order_key_columns, sort_schema, sql_type_to_db_type,
 };
-use super::util::{cell_text, cell_to_db_value, ident_ok, int_cell};
+use super::util::{cell_text, cell_to_db_value, ident_ok};
 use super::{
     BackupTable, BackupUnit, CanonicalDatabaseSchema, CanonicalExportOpts, CanonicalTableSchema,
     DatabaseUnitKind, IdentityHighWater, LIBRARY_SKIP_TABLES,
@@ -94,22 +91,12 @@ pub async fn capture_plugin_unit(
                 .into(),
         ));
     }
-    match db.get_database_backend() {
-        DbBackend::Postgres => {
-            let txn = begin_repeatable_read(db).await?;
-            let result =
-                capture_plugin_on(&txn, repo, opts, plugin_id, binding, backend_at_capture).await;
-            finish_txn(txn, result.is_ok()).await?;
-            result
-        }
-        _ => {
-            let txn = db.begin().await.map_err(LibraryError::from_db_err)?;
-            let result =
-                capture_plugin_on(&txn, repo, opts, plugin_id, binding, backend_at_capture).await;
-            finish_txn(txn, result.is_ok()).await?;
-            result
-        }
-    }
+    let txn = bookclerk_db_exec::begin_consistent_snapshot(db)
+        .await
+        .map_err(LibraryError::from_db_err)?;
+    let result = capture_plugin_on(&txn, repo, opts, plugin_id, binding, backend_at_capture).await;
+    finish_txn(txn, result.is_ok()).await?;
+    result
 }
 
 /// Capture plugin schema, rows, and identity from an already-open view.
@@ -122,7 +109,7 @@ async fn capture_plugin_on<C>(
     backend_at_capture: &str,
 ) -> Result<BackupUnit>
 where
-    C: ConnectionTrait,
+    C: ConnectionTrait + StreamTrait,
 {
     let schema = plugin_canonical_schema_from_ddl_catalog_on(conn, opts).await?;
     capture_unit_on(
@@ -159,42 +146,23 @@ async fn capture_unit(
                 .into(),
         ));
     }
-    match db.get_database_backend() {
-        DbBackend::Postgres => {
-            let txn = begin_repeatable_read(db).await?;
-            let result = capture_unit_on(
-                &txn,
-                repo,
-                schema,
-                opts,
-                kind,
-                plugin_id,
-                binding,
-                backend_at_capture,
-                expected_state,
-            )
-            .await;
-            finish_txn(txn, result.is_ok()).await?;
-            result
-        }
-        _ => {
-            let txn = db.begin().await.map_err(LibraryError::from_db_err)?;
-            let result = capture_unit_on(
-                &txn,
-                repo,
-                schema,
-                opts,
-                kind,
-                plugin_id,
-                binding,
-                backend_at_capture,
-                expected_state,
-            )
-            .await;
-            finish_txn(txn, result.is_ok()).await?;
-            result
-        }
-    }
+    let txn = bookclerk_db_exec::begin_consistent_snapshot(db)
+        .await
+        .map_err(LibraryError::from_db_err)?;
+    let result = capture_unit_on(
+        &txn,
+        repo,
+        schema,
+        opts,
+        kind,
+        plugin_id,
+        binding,
+        backend_at_capture,
+        expected_state,
+    )
+    .await;
+    finish_txn(txn, result.is_ok()).await?;
+    result
 }
 
 /// Commit a successful capture transaction, or roll it back on failure.
@@ -205,18 +173,6 @@ async fn finish_txn(txn: DatabaseTransaction, commit: bool) -> Result<()> {
         let _ = txn.rollback().await;
     }
     Ok(())
-}
-
-/// Begin a PostgreSQL REPEATABLE READ transaction for a stable read view.
-async fn begin_repeatable_read(db: &DatabaseConnection) -> Result<DatabaseTransaction> {
-    let txn = db.begin().await.map_err(LibraryError::from_db_err)?;
-    txn.execute_raw(Statement::from_string(
-        DbBackend::Postgres,
-        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
-    ))
-    .await
-    .map_err(LibraryError::from_db_err)?;
-    Ok(txn)
 }
 
 /// Export admitted schema, paged table chunks, and identity on `conn`.
@@ -233,7 +189,7 @@ async fn capture_unit_on<C>(
     expected_state: Option<&SchemaState>,
 ) -> Result<BackupUnit>
 where
-    C: ConnectionTrait,
+    C: ConnectionTrait + StreamTrait,
 {
     if let Some(expected) = expected_state {
         let live = schema_state_from_conn(conn).await?;
@@ -257,6 +213,11 @@ where
     })?;
     let mut tables_meta = Vec::new();
     let mut identity = std::collections::BTreeMap::new();
+    let catalog = super::util::backup_export_identity(conn, opts.adapter.as_ref()).await?;
+    let catalog_last: std::collections::BTreeMap<String, i64> = catalog
+        .into_iter()
+        .map(|row| (row.table, row.last))
+        .collect();
     for table in &schema.tables {
         let name = table.parsed.table.as_str();
         if skip_table(name, &opts.skip_tables) {
@@ -269,7 +230,7 @@ where
         }
         let (columns, chunks, last) = capture_table(conn, repo, table, opts).await?;
         if let Some(col) = table.parsed.identity_column.as_deref() {
-            let hw = identity_high_water(conn, conn.get_database_backend(), name, last).await?;
+            let hw = last.max(catalog_last.get(name).copied().unwrap_or(0));
             identity.insert(
                 name.to_string(),
                 IdentityHighWater {
@@ -320,7 +281,7 @@ async fn capture_table<C>(
     opts: &CanonicalExportOpts,
 ) -> Result<(Vec<String>, Vec<String>, i64)>
 where
-    C: ConnectionTrait,
+    C: ConnectionTrait + StreamTrait,
 {
     let name = table.parsed.table.as_str();
     let columns: Vec<String> = table
@@ -358,7 +319,6 @@ where
     let order_sql = canonical_order_by_sql(&table.parsed);
     let max_rows = opts.max_result_rows.max(1);
     let byte_budget = opts.page_byte_budget();
-    let backend = conn.get_database_backend();
     let mut env = SqlTypeEnv::new();
     env.insert_table(
         table.parsed.table.clone(),
@@ -380,10 +340,16 @@ where
             "SELECT {} FROM {name} ORDER BY {order_sql} LIMIT {page} OFFSET {offset}",
             columns.join(", "),
         );
-        let sql = lower_capture_select(backend, &canonical_sql, &env, page)?;
-        let rows = match conn
-            .query_all_raw(Statement::from_string(backend, sql))
-            .await
+        let cells_rows = match capture_table_page(
+            conn,
+            &canonical_sql,
+            &env,
+            page,
+            &columns,
+            &types,
+            opts.in_process,
+        )
+        .await
         {
             Ok(rows) => rows,
             Err(err) if result_bytes_exceeded(&err.to_string()) => {
@@ -402,16 +368,8 @@ where
                 )));
             }
         };
-        if rows.is_empty() {
+        if cells_rows.is_empty() {
             break;
-        }
-        let mut cells_rows = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let mut cells = Vec::with_capacity(columns.len());
-            for (col, ty) in columns.iter().zip(types.iter()) {
-                cells.push(cell_to_db_value(row, col, *ty)?);
-            }
-            cells_rows.push(cells);
         }
         let encoded = encoded_select_page_bytes(&columns, &types, &cells_rows)?;
         if encoded > byte_budget {
@@ -518,77 +476,6 @@ fn skip_table(name: &str, extra: &BTreeSet<String>) -> bool {
     ADAPTER_PRIVATE_TABLES.contains(&folded.as_str()) || extra.contains(&folded)
 }
 
-/// Highest identity value for `table` from rows plus adapter catalogs.
-async fn identity_high_water<C>(
-    conn: &C,
-    backend: DbBackend,
-    table: &str,
-    from_rows: i64,
-) -> Result<i64>
-where
-    C: ConnectionTrait,
-{
-    let mut last = from_rows;
-    if backend == DbBackend::Sqlite {
-        if let Some(seq) = sqlite_sequence(conn, table).await? {
-            last = last.max(seq);
-        }
-    }
-    if let Some(hw) = bookclerk_identity_last(conn, backend, table).await? {
-        last = last.max(hw);
-    }
-    Ok(last)
-}
-
-/// SQLite `sqlite_sequence` high-water for `table`, if present.
-async fn sqlite_sequence<C>(conn: &C, table: &str) -> Result<Option<i64>>
-where
-    C: ConnectionTrait,
-{
-    let sql = format!("SELECT seq FROM sqlite_sequence WHERE name = '{table}'");
-    match conn
-        .query_all_raw(Statement::from_string(DbBackend::Sqlite, sql))
-        .await
-    {
-        Ok(rows) => Ok(rows.first().and_then(|row| int_cell(row, "seq"))),
-        Err(err)
-            if err
-                .to_string()
-                .to_ascii_lowercase()
-                .contains("sqlite_sequence") =>
-        {
-            Ok(None)
-        }
-        Err(err) => Err(LibraryError::Schema(format!(
-            "backup cannot read sqlite_sequence for `{table}`: {err}"
-        ))),
-    }
-}
-
-/// Bookclerk identity high-water from `bookclerk_identity_last`, if present.
-async fn bookclerk_identity_last<C>(
-    conn: &C,
-    backend: DbBackend,
-    table: &str,
-) -> Result<Option<i64>>
-where
-    C: ConnectionTrait,
-{
-    let sql = format!("SELECT last FROM {SQL_IDENTITY_TABLE} WHERE table_name = '{table}'");
-    match conn
-        .query_all_raw(Statement::from_string(backend, sql))
-        .await
-    {
-        Ok(rows) => Ok(rows.first().and_then(|row| int_cell(row, "last"))),
-        Err(err) if reserved_catalog_relation_missing(&err.to_string(), SQL_IDENTITY_TABLE) => {
-            Ok(None)
-        }
-        Err(err) => Err(LibraryError::Schema(format!(
-            "backup cannot read `{SQL_IDENTITY_TABLE}` for `{table}`: {err}"
-        ))),
-    }
-}
-
 /// Rebuilds plugin schema from durable `bookclerk_sql_ddl` on an open connection.
 ///
 /// # Errors
@@ -608,11 +495,9 @@ pub(super) async fn plugin_canonical_schema_from_ddl_catalog_on<C>(
 where
     C: ConnectionTrait,
 {
-    let backend = conn.get_database_backend();
     let env = catalog_type_env();
     let rows = match paged_select(
         conn,
-        backend,
         &format!(
             "SELECT kind, name, table_name, canonical_sql FROM {SQL_DDL_TABLE} \
              ORDER BY kind, name"
@@ -668,7 +553,7 @@ where
         }
     }
     let schema_sql = format!("SELECT table_name FROM {SQL_SCHEMA_TABLE} ORDER BY table_name");
-    match paged_select(conn, backend, &schema_sql, opts, &env).await {
+    match paged_select(conn, &schema_sql, opts, &env).await {
         Ok(schema_rows) => {
             for row in schema_rows {
                 let name = cell_text(&row, "table_name")?;
@@ -699,13 +584,54 @@ fn catalog_type_env() -> SqlTypeEnv {
     ])
 }
 
-/// Proof-directed lowering so Postgres TEXT ORDER BY uses `COLLATE "C"`.
-fn lower_capture_select(
-    backend: DbBackend,
+/// Fetch one capture page: physically lowered SELECT on in-process postgres,
+/// otherwise canonical SeaORM transport.
+async fn capture_table_page<C>(
+    conn: &C,
+    sql: &str,
+    env: &SqlTypeEnv,
+    page: u32,
+    columns: &[String],
+    types: &[DbType],
+    in_process: bool,
+) -> Result<Vec<Vec<DbValue>>>
+where
+    C: ConnectionTrait + StreamTrait,
+{
+    if in_process {
+        let rows = crate::sql_plan::query_sql_on(
+            true,
+            conn,
+            sql,
+            std::iter::empty::<sea_orm::Value>(),
+            env,
+            page,
+        )
+        .await?;
+        return Ok(rows.into_iter().map(|row| row.values).collect());
+    }
+    let rows = capture_select(conn, sql, env, page).await?;
+    let mut cells_rows = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let mut cells = Vec::with_capacity(columns.len());
+        for (col, ty) in columns.iter().zip(types.iter()) {
+            cells.push(cell_to_db_value(row, col, *ty)?);
+        }
+        cells_rows.push(cells);
+    }
+    Ok(cells_rows)
+}
+
+/// Proof-directed SELECT so Postgres TEXT ORDER BY uses `COLLATE "C"`.
+async fn capture_select<C>(
+    conn: &C,
     sql: &str,
     env: &SqlTypeEnv,
     max_rows: u32,
-) -> Result<String> {
+) -> Result<Vec<sea_orm::QueryResult>>
+where
+    C: ConnectionTrait,
+{
     let req = ExecuteRequest {
         operation_id: "backup-capture".into(),
         request_hash: String::new(),
@@ -718,11 +644,15 @@ fn lower_capture_select(
         }],
         deadline_unix_ms: 0,
     };
-    let proofs = typecheck_execute_request_proofs(&req, env).map_err(|err| {
+    // Desugar a copy for host admission/typecheck. Send **source** SQL through
+    // SeaORM so the proxy frontend desugars exactly once before proofs.
+    let canonical = UnresolvedExecuteRequest::new(req).canonicalize();
+    typecheck_execute_request_proofs(&canonical.request, env).map_err(|err| {
         LibraryError::Schema(format!("backup SELECT is not admitted SQL v1: {err}"))
     })?;
-    bookclerk_db_exec::lower_canonical_sql_typed(backend, sql, proofs.first())
-        .map_err(|err| LibraryError::Schema(format!("backup SELECT cannot be lowered: {err}")))
+    bookclerk_db_exec::query_canonical(conn, sql, [])
+        .await
+        .map_err(|err| LibraryError::Schema(format!("backup SELECT failed: {err}")))
 }
 
 /// Default skip set for library capture (`plugin_databases` is environment-local).
@@ -737,7 +667,6 @@ pub fn library_skip_tables() -> BTreeSet<String> {
 /// Run `ordered_select` with `LIMIT/OFFSET` using adapter page size and byte budget.
 async fn paged_select<C>(
     conn: &C,
-    backend: DbBackend,
     ordered_select: &str,
     opts: &CanonicalExportOpts,
     env: &SqlTypeEnv,
@@ -751,25 +680,18 @@ where
     let mut out = Vec::new();
     loop {
         let canonical = format!("{ordered_select} LIMIT {page} OFFSET {offset}");
-        let sql = match lower_capture_select(backend, &canonical, env, page) {
-            Ok(sql) => sql,
-            Err(err) => {
-                return Err(sea_orm::DbErr::Custom(err.to_string()));
-            }
-        };
-        let batch = match conn
-            .query_all_raw(Statement::from_string(backend, sql))
-            .await
-        {
+        let batch = match capture_select(conn, &canonical, env, page).await {
             Ok(batch) => batch,
             Err(err) if result_bytes_exceeded(&err.to_string()) => {
                 if page <= 1 {
-                    return Err(err);
+                    return Err(sea_orm::DbErr::Custom(err.to_string()));
                 }
                 page = (page / 2).max(1);
                 continue;
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                return Err(sea_orm::DbErr::Custom(err.to_string()));
+            }
         };
         if batch.is_empty() {
             break;

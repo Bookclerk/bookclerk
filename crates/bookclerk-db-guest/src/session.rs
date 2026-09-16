@@ -7,7 +7,12 @@
 //! `execute` batches; SQLite and Postgres run named security ops via host IR
 //! envelopes and durable receipts.
 
-#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc, dead_code)]
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::missing_docs_in_private_items,
+    dead_code
+)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, OnceLock};
@@ -16,8 +21,10 @@ use crate::sql::{
     guest_statement_to_seaorm, row_to_guest_row, GuestExecResult, GuestQueryResult, GuestRow,
     GuestStatement,
 };
-use bookclerk_plugin_abi::HostExecuteEnvelope;
-use bookclerk_plugin_abi::{DbCapabilities, ExecuteReply, ExecuteRequest};
+use bookclerk_plugin_abi::{
+    AdapterExecuteRequest, DbCapabilities, DbIdentityHighWater, ExecuteReply, IsolationReq,
+    PluginError,
+};
 use bookclerk_plugin_sdk::database_adapter::plugin_error_from_db_err;
 use bookclerk_plugin_sdk::{QueryPage, MAX_LIST_PAGE, MAX_SCALAR_BYTES};
 use futures::TryStreamExt;
@@ -97,10 +104,36 @@ enum TxnOp {
         /// Opaque txn id the host attached to this batch.
         txn_id: String,
         /// Typed envelope (request + optional guest-receipt persist).
-        envelope: HostExecuteEnvelope,
+        envelope: AdapterExecuteRequest,
         /// Oneshot used to return the typed reply.
         reply:
             oneshot::Sender<std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError>>,
+    },
+    ExportIdentity {
+        txn_id: String,
+        reply: oneshot::Sender<Result<Vec<DbIdentityHighWater>>>,
+    },
+    ImportIdentity {
+        txn_id: String,
+        rows: Vec<DbIdentityHighWater>,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    ListUserRelations {
+        txn_id: String,
+        reply: oneshot::Sender<Result<Vec<String>>>,
+    },
+    PrepareUnitRestore {
+        txn_id: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    DropUserRelations {
+        txn_id: String,
+        names: Vec<String>,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    AssertRestoreConstraints {
+        txn_id: String,
+        reply: oneshot::Sender<Result<()>>,
     },
 }
 
@@ -161,6 +194,19 @@ pub async fn guest_ping() -> Result<()> {
 /// Returns an error string when not connected, the parent is unknown, or the
 /// engine rejects `BEGIN`.
 pub async fn guest_begin(parent_txn_id: Option<String>) -> Result<String> {
+    guest_begin_isolated(parent_txn_id, IsolationReq::AtomicBatch).await
+}
+
+/// Begins a top-level transaction realizing `isolation` (or a nested savepoint).
+///
+/// # Errors
+///
+/// Returns an error string when not connected, the parent is unknown, or the
+/// engine rejects `BEGIN`.
+pub async fn guest_begin_isolated(
+    parent_txn_id: Option<String>,
+    isolation: IsolationReq,
+) -> Result<String> {
     if bookclerk_db_exec::consume_begin_injection() {
         return Err("database begin failed: injected begin failure".into());
     }
@@ -189,7 +235,7 @@ pub async fn guest_begin(parent_txn_id: Option<String>) -> Result<String> {
 
     let permit = txn_gate().lock_owned().await;
     let conn = connection().await?;
-    guest_begin_conn(conn, permit).await
+    guest_begin_conn(conn, permit, isolation).await
 }
 
 /// Begins a top-level transaction on an explicit connection (plugin bindings).
@@ -201,23 +247,36 @@ pub async fn guest_begin(parent_txn_id: Option<String>) -> Result<String> {
 ///
 /// Returns an error string when begin fails.
 pub async fn guest_begin_on(conn: DatabaseConnection) -> Result<String> {
+    guest_begin_on_isolated(conn, IsolationReq::AtomicBatch).await
+}
+
+/// [`guest_begin_on`] with an explicit isolation requirement.
+///
+/// # Errors
+///
+/// Returns an error string when begin fails.
+pub async fn guest_begin_on_isolated(
+    conn: DatabaseConnection,
+    isolation: IsolationReq,
+) -> Result<String> {
     if bookclerk_db_exec::consume_begin_injection() {
         return Err("database begin failed: injected begin failure".into());
     }
     let gate = Arc::new(Mutex::new(()));
     let permit = gate.lock_owned().await;
-    guest_begin_conn(conn, permit).await
+    guest_begin_conn(conn, permit, isolation).await
 }
 
 /// Spawn a transaction worker on `conn`, gated by `permit`.
 async fn guest_begin_conn(
     conn: DatabaseConnection,
     permit: tokio::sync::OwnedMutexGuard<()>,
+    isolation: IsolationReq,
 ) -> Result<String> {
     let (op_tx, op_rx) = mpsc::channel(32);
     let (ready_tx, ready_rx) = oneshot::channel();
     tokio::spawn(async move {
-        txn_worker(conn, permit, op_rx, ready_tx).await;
+        txn_worker(conn, permit, op_rx, ready_tx, isolation).await;
     });
     let root_id = ready_rx
         .await
@@ -252,6 +311,248 @@ pub async fn guest_rollback(txn_id: String) -> Result<()> {
     finish_txn(txn_id, false).await
 }
 
+async fn send_txn_op<T>(
+    txn_id: String,
+    make: impl FnOnce(String, oneshot::Sender<Result<T>>) -> TxnOp,
+) -> Result<T> {
+    let tx = route(&txn_id).await?;
+    let (reply, rx) = oneshot::channel();
+    tx.send(make(txn_id, reply))
+        .await
+        .map_err(|_| "transaction worker closed".to_string())?;
+    rx.await
+        .map_err(|_| "transaction worker closed".to_string())?
+}
+
+/// Identity high-water on the process-wide connection.
+///
+/// # Errors
+///
+/// Returns when not connected or a catalog query fails.
+pub async fn guest_export_identity() -> Result<Vec<DbIdentityHighWater>> {
+    let conn = connection().await?;
+    bookclerk_db_exec::export_identity(&conn)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Identity high-water on `conn`.
+///
+/// # Errors
+///
+/// Returns when a catalog query fails.
+pub async fn guest_export_identity_on(
+    conn: &DatabaseConnection,
+) -> Result<Vec<DbIdentityHighWater>> {
+    bookclerk_db_exec::export_identity(conn)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Identity high-water on an open guest transaction.
+///
+/// # Errors
+///
+/// Returns when the txn id is unknown or a catalog query fails.
+pub async fn guest_export_identity_on_txn(txn_id: String) -> Result<Vec<DbIdentityHighWater>> {
+    send_txn_op(txn_id, |txn_id, reply| TxnOp::ExportIdentity {
+        txn_id,
+        reply,
+    })
+    .await
+}
+
+/// Restore identity on the process-wide connection.
+///
+/// # Errors
+///
+/// Returns when not connected or a catalog write fails.
+pub async fn guest_import_identity(rows: &[DbIdentityHighWater]) -> Result<()> {
+    let conn = connection().await?;
+    bookclerk_db_exec::import_identity(&conn, rows)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Restore identity on `conn`.
+///
+/// # Errors
+///
+/// Returns when a catalog write fails.
+pub async fn guest_import_identity_on(
+    conn: &DatabaseConnection,
+    rows: &[DbIdentityHighWater],
+) -> Result<()> {
+    bookclerk_db_exec::import_identity(conn, rows)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Restore identity on an open guest transaction.
+///
+/// # Errors
+///
+/// Returns when the txn id is unknown or a catalog write fails.
+pub async fn guest_import_identity_on_txn(
+    txn_id: String,
+    rows: Vec<DbIdentityHighWater>,
+) -> Result<()> {
+    send_txn_op(txn_id, |txn_id, reply| TxnOp::ImportIdentity {
+        txn_id,
+        rows,
+        reply,
+    })
+    .await
+}
+
+/// User-visible relations on the process-wide connection.
+///
+/// # Errors
+///
+/// Returns when not connected or the catalog probe fails.
+pub async fn guest_list_user_relations() -> Result<Vec<String>> {
+    let conn = connection().await?;
+    bookclerk_db_exec::list_user_relations(&conn)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// User-visible relations on `conn`.
+///
+/// # Errors
+///
+/// Returns when the catalog probe fails.
+pub async fn guest_list_user_relations_on(conn: &DatabaseConnection) -> Result<Vec<String>> {
+    bookclerk_db_exec::list_user_relations(conn)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// User-visible relations on an open guest transaction.
+///
+/// # Errors
+///
+/// Returns when the txn id is unknown or the catalog probe fails.
+pub async fn guest_list_user_relations_on_txn(txn_id: String) -> Result<Vec<String>> {
+    send_txn_op(txn_id, |txn_id, reply| TxnOp::ListUserRelations {
+        txn_id,
+        reply,
+    })
+    .await
+}
+
+/// Prepare restore on the process-wide connection.
+///
+/// # Errors
+///
+/// Returns when not connected or the pragma fails.
+pub async fn guest_prepare_unit_restore() -> Result<()> {
+    let conn = connection().await?;
+    bookclerk_db_exec::prepare_unit_restore(&conn)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Prepare restore on `conn`.
+///
+/// # Errors
+///
+/// Returns when the pragma fails.
+pub async fn guest_prepare_unit_restore_on(conn: &DatabaseConnection) -> Result<()> {
+    bookclerk_db_exec::prepare_unit_restore(conn)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Prepare restore on an open guest transaction.
+///
+/// # Errors
+///
+/// Returns when the txn id is unknown or the pragma fails.
+pub async fn guest_prepare_unit_restore_on_txn(txn_id: String) -> Result<()> {
+    send_txn_op(txn_id, |txn_id, reply| TxnOp::PrepareUnitRestore {
+        txn_id,
+        reply,
+    })
+    .await
+}
+
+/// Drop relations on the process-wide connection.
+///
+/// # Errors
+///
+/// Returns when not connected or a drop fails.
+pub async fn guest_drop_user_relations(names: &[String]) -> Result<()> {
+    let conn = connection().await?;
+    bookclerk_db_exec::drop_user_relations(&conn, names)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Drop relations on `conn`.
+///
+/// # Errors
+///
+/// Returns when a drop fails.
+pub async fn guest_drop_user_relations_on(
+    conn: &DatabaseConnection,
+    names: &[String],
+) -> Result<()> {
+    bookclerk_db_exec::drop_user_relations(conn, names)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Drop relations on an open guest transaction.
+///
+/// # Errors
+///
+/// Returns when the txn id is unknown or a drop fails.
+pub async fn guest_drop_user_relations_on_txn(txn_id: String, names: Vec<String>) -> Result<()> {
+    send_txn_op(txn_id, |txn_id, reply| TxnOp::DropUserRelations {
+        txn_id,
+        names,
+        reply,
+    })
+    .await
+}
+
+/// Assert restore constraints on the process-wide connection.
+///
+/// # Errors
+///
+/// Returns when not connected or FK violations remain.
+pub async fn guest_assert_restore_constraints() -> Result<()> {
+    let conn = connection().await?;
+    bookclerk_db_exec::assert_restore_constraints(&conn)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Assert restore constraints on `conn`.
+///
+/// # Errors
+///
+/// Returns when FK violations remain.
+pub async fn guest_assert_restore_constraints_on(conn: &DatabaseConnection) -> Result<()> {
+    bookclerk_db_exec::assert_restore_constraints(conn)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Assert restore constraints on an open guest transaction.
+///
+/// # Errors
+///
+/// Returns when the txn id is unknown or FK violations remain.
+pub async fn guest_assert_restore_constraints_on_txn(txn_id: String) -> Result<()> {
+    send_txn_op(txn_id, |txn_id, reply| TxnOp::AssertRestoreConstraints {
+        txn_id,
+        reply,
+    })
+    .await
+}
+
 /// Typed `AdapterDatabaseSession.capabilities` for the connected engine.
 ///
 /// # Errors
@@ -264,7 +565,8 @@ pub async fn guest_capabilities(
         .map_err(bookclerk_plugin_abi::PluginError::internal)?;
     Ok(match conn.get_database_backend() {
         DbBackend::Postgres => DbCapabilities::advertised_postgres(),
-        _ => DbCapabilities::advertised_sqlite(),
+        DbBackend::Sqlite => DbCapabilities::advertised_sqlite(),
+        other => panic!("BookclerkSQL does not support SeaORM backend {other:?}"),
     })
 }
 
@@ -280,7 +582,8 @@ pub async fn guest_bootstrap(
         .map_err(bookclerk_plugin_abi::PluginError::internal)?;
     Ok(match conn.get_database_backend() {
         DbBackend::Postgres => bookclerk_plugin_abi::DbBootstrap::postgres(),
-        _ => bookclerk_plugin_abi::DbBootstrap::sqlite(),
+        DbBackend::Sqlite => bookclerk_plugin_abi::DbBootstrap::sqlite(),
+        other => panic!("BookclerkSQL does not support SeaORM backend {other:?}"),
     })
 }
 
@@ -293,15 +596,18 @@ fn library_typed_session(deadline: Option<u64>) -> bookclerk_db_exec::AtomicSess
 
 /// Typed `AdapterDatabaseSession.execute` on the shared library connection.
 ///
-/// Runs [`ExecuteRequest`] directly. The guest encodes [`ExecuteReply`]
-/// before COMMIT; post-commit failures are classified as `unavailable`.
+/// Proofs are required. The guest encodes [`ExecuteReply`] before COMMIT;
+/// post-commit failures are classified as `unavailable`.
 ///
 /// # Errors
 ///
-/// Returns when no connection is open or the engine rejects the work.
+/// Returns when no connection is open, proofs are missing, isolation is
+/// unsupported, or the engine rejects the work.
 pub async fn guest_execute_atomic(
-    envelope: HostExecuteEnvelope,
+    envelope: AdapterExecuteRequest,
 ) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
+    require_session_isolation(envelope.isolation)?;
+    envelope.require_proofs()?;
     let gate = txn_gate();
     let _gate = gate.lock().await;
     let conn = connection()
@@ -323,8 +629,10 @@ pub async fn guest_execute_atomic(
 /// Returns when the engine rejects the work.
 pub async fn guest_execute_atomic_on(
     conn: &DatabaseConnection,
-    envelope: HostExecuteEnvelope,
+    envelope: AdapterExecuteRequest,
 ) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
+    require_session_isolation(envelope.isolation)?;
+    envelope.require_proofs()?;
     let deadline =
         (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
     guest_execute_typed(
@@ -335,76 +643,56 @@ pub async fn guest_execute_atomic_on(
     .await
 }
 
-/// Pre-admission typed execute: may typecheck. Public `AdapterDatabaseSession.execute`.
+/// First-party adapter execute: proofs required (`require_stamped=true`).
 ///
 /// # Errors
 ///
-/// Returns when no connection is open or the engine rejects the work.
+/// Returns when no connection is open, proofs are missing, or the engine
+/// rejects the work.
 pub async fn guest_execute_request(
-    request: bookclerk_plugin_abi::ExecuteRequest,
+    request: AdapterExecuteRequest,
 ) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
-    let gate = txn_gate();
-    let _gate = gate.lock().await;
-    let conn = connection()
-        .await
-        .map_err(bookclerk_plugin_abi::PluginError::internal)?;
-    let deadline = (request.deadline_unix_ms > 0).then_some(request.deadline_unix_ms);
-    guest_execute_typed_on_session(&conn, request, library_typed_session(deadline)).await
+    guest_execute_atomic(request).await
 }
 
-/// Pre-admission typed execute on an explicit connection.
+/// First-party adapter execute on an explicit connection.
 ///
 /// # Errors
 ///
-/// Returns when the engine rejects the work.
+/// Returns when proofs are missing or the engine rejects the work.
 pub async fn guest_execute_request_on(
     conn: &DatabaseConnection,
-    request: bookclerk_plugin_abi::ExecuteRequest,
+    request: AdapterExecuteRequest,
 ) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
-    let deadline = (request.deadline_unix_ms > 0).then_some(request.deadline_unix_ms);
-    guest_execute_typed_on_session(
-        conn,
-        request,
-        bookclerk_db_exec::AtomicSession::from_deadline(deadline),
-    )
-    .await
+    guest_execute_atomic_on(conn, request).await
 }
 
-/// Pre-admission typed execute: may typecheck against the session type env.
-async fn guest_execute_typed_on_session(
-    conn: &DatabaseConnection,
-    request: bookclerk_plugin_abi::ExecuteRequest,
-    session: bookclerk_db_exec::AtomicSession,
-) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
-    let caps = capabilities_for(conn);
-    let timing_source = match conn.get_database_backend() {
-        DbBackend::Postgres => "postgres_txn",
-        _ => "sqlite_txn",
-    };
-    bookclerk_db_exec::execute_typed_on_session(
-        conn,
-        &request,
-        bookclerk_plugin_abi::GuestReceiptPersist::default(),
-        timing_source,
-        bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
-        session,
-    )
-    .await
-    .map_err(|e| plugin_error_from_db_err(&e))
+fn require_session_isolation(iso: IsolationReq) -> std::result::Result<(), PluginError> {
+    match iso {
+        IsolationReq::AtomicBatch => Ok(()),
+        IsolationReq::NestedSavepoint => Err(PluginError::unsupported(
+            "NestedSavepoint requires an open adapter transaction",
+        )),
+        IsolationReq::ConsistentSnapshot => Err(PluginError::unsupported(
+            "ConsistentSnapshot is not implemented on this session path",
+        )),
+    }
 }
 
 /// Runs a typed envelope with the given session (library vs binding type env).
 async fn guest_execute_typed(
     conn: &DatabaseConnection,
-    envelope: HostExecuteEnvelope,
+    envelope: AdapterExecuteRequest,
     session: bookclerk_db_exec::AtomicSession,
 ) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
     let caps = capabilities_for(conn);
     let timing_source = match conn.get_database_backend() {
         DbBackend::Postgres => "postgres_txn",
-        _ => "sqlite_txn",
+        DbBackend::Sqlite => "sqlite_txn",
+        other => panic!("BookclerkSQL does not support SeaORM backend {other:?}"),
     };
     bookclerk_db_exec::execute_typed_envelope(
+        bookclerk_db_exec::PhysicalEngine::from_adapter_backend(conn.get_database_backend()),
         conn,
         &envelope,
         timing_source,
@@ -420,7 +708,8 @@ async fn guest_execute_typed(
 pub fn capabilities_for(conn: &DatabaseConnection) -> DbCapabilities {
     match conn.get_database_backend() {
         DbBackend::Postgres => DbCapabilities::advertised_postgres(),
-        _ => DbCapabilities::advertised_sqlite(),
+        DbBackend::Sqlite => DbCapabilities::advertised_sqlite(),
+        other => panic!("BookclerkSQL does not support SeaORM backend {other:?}"),
     }
 }
 
@@ -429,7 +718,8 @@ pub fn capabilities_for(conn: &DatabaseConnection) -> DbCapabilities {
 pub fn bootstrap_for(conn: &DatabaseConnection) -> bookclerk_plugin_abi::DbBootstrap {
     match conn.get_database_backend() {
         DbBackend::Postgres => bookclerk_plugin_abi::DbBootstrap::postgres(),
-        _ => bookclerk_plugin_abi::DbBootstrap::sqlite(),
+        DbBackend::Sqlite => bookclerk_plugin_abi::DbBootstrap::sqlite(),
+        other => panic!("BookclerkSQL does not support SeaORM backend {other:?}"),
     }
 }
 
@@ -442,16 +732,9 @@ pub fn bootstrap_for(conn: &DatabaseConnection) -> bookclerk_plugin_abi::DbBoots
 /// Returns when the txn id is unknown or the engine rejects the work.
 pub async fn guest_execute_atomic_on_txn(
     txn_id: String,
-    request: ExecuteRequest,
+    request: AdapterExecuteRequest,
 ) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
-    guest_execute_atomic_on_txn_envelope(
-        txn_id,
-        HostExecuteEnvelope::new(
-            request,
-            bookclerk_plugin_abi::GuestReceiptPersist::default(),
-        ),
-    )
-    .await
+    guest_execute_atomic_on_txn_envelope(txn_id, request).await
 }
 
 /// Typed `Transaction.executeAtomic` with a host-only guest-receipt persist hint.
@@ -461,8 +744,17 @@ pub async fn guest_execute_atomic_on_txn(
 /// Returns when the txn id is unknown or the engine rejects the work.
 pub async fn guest_execute_atomic_on_txn_envelope(
     txn_id: String,
-    envelope: HostExecuteEnvelope,
+    envelope: AdapterExecuteRequest,
 ) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
+    envelope.require_proofs()?;
+    match envelope.isolation {
+        IsolationReq::NestedSavepoint | IsolationReq::AtomicBatch => {}
+        IsolationReq::ConsistentSnapshot => {
+            return Err(PluginError::unsupported(
+                "ConsistentSnapshot requires a dedicated capture session",
+            ));
+        }
+    }
     let tx = route(&txn_id)
         .await
         .map_err(bookclerk_plugin_abi::PluginError::internal)?;
@@ -658,6 +950,7 @@ async fn txn_worker(
     _permit: OwnedMutexGuard<()>,
     mut ops: mpsc::Receiver<TxnOp>,
     ready: oneshot::Sender<Result<String>>,
+    isolation: IsolationReq,
 ) {
     let txn = match conn.begin().await {
         Ok(txn) => txn,
@@ -666,6 +959,11 @@ async fn txn_worker(
             return;
         }
     };
+    if let Err(err) = bookclerk_db_exec::apply_begin_isolation(&txn, isolation).await {
+        let _ = txn.rollback().await;
+        let _ = ready.send(Err(err.to_string()));
+        return;
+    }
     if bookclerk_db_exec::is_txn_broken() {
         let fault =
             bookclerk_db_exec::take_txn_fault().unwrap_or_else(|| "database begin failed".into());
@@ -742,15 +1040,24 @@ async fn txn_worker(
                     Ok(txn) => {
                         let caps = match ConnectionTrait::get_database_backend(txn) {
                             DbBackend::Postgres => DbCapabilities::advertised_postgres(),
-                            _ => DbCapabilities::advertised_sqlite(),
+                            DbBackend::Sqlite => DbCapabilities::advertised_sqlite(),
+                            other => {
+                                panic!("BookclerkSQL does not support SeaORM backend {other:?}")
+                            }
                         };
                         let timing_source = match ConnectionTrait::get_database_backend(txn) {
                             DbBackend::Postgres => "postgres_txn",
-                            _ => "sqlite_txn",
+                            DbBackend::Sqlite => "sqlite_txn",
+                            other => {
+                                panic!("BookclerkSQL does not support SeaORM backend {other:?}")
+                            }
                         };
                         let deadline = (envelope.request.deadline_unix_ms > 0)
                             .then_some(envelope.request.deadline_unix_ms);
                         bookclerk_db_exec::execute_typed_on_txn_envelope(
+                            bookclerk_db_exec::PhysicalEngine::from_adapter_backend(
+                                ConnectionTrait::get_database_backend(txn),
+                            ),
                             txn,
                             &envelope,
                             timing_source,
@@ -762,6 +1069,68 @@ async fn txn_worker(
                         .map_err(|e| plugin_error_from_db_err(&e))
                     }
                     Err(err) => Err(bookclerk_plugin_abi::PluginError::internal(err)),
+                };
+                let _ = reply.send(result);
+            }
+            TxnOp::ExportIdentity { txn_id, reply } => {
+                let result = match stack_txn(&stack, &txn_id) {
+                    Ok(txn) => bookclerk_db_exec::export_identity(txn)
+                        .await
+                        .map_err(|e| e.to_string()),
+                    Err(err) => Err(err),
+                };
+                let _ = reply.send(result);
+            }
+            TxnOp::ImportIdentity {
+                txn_id,
+                rows,
+                reply,
+            } => {
+                let result = match stack_txn(&stack, &txn_id) {
+                    Ok(txn) => bookclerk_db_exec::import_identity(txn, &rows)
+                        .await
+                        .map_err(|e| e.to_string()),
+                    Err(err) => Err(err),
+                };
+                let _ = reply.send(result);
+            }
+            TxnOp::ListUserRelations { txn_id, reply } => {
+                let result = match stack_txn(&stack, &txn_id) {
+                    Ok(txn) => bookclerk_db_exec::list_user_relations(txn)
+                        .await
+                        .map_err(|e| e.to_string()),
+                    Err(err) => Err(err),
+                };
+                let _ = reply.send(result);
+            }
+            TxnOp::PrepareUnitRestore { txn_id, reply } => {
+                let result = match stack_txn(&stack, &txn_id) {
+                    Ok(txn) => bookclerk_db_exec::prepare_unit_restore(txn)
+                        .await
+                        .map_err(|e| e.to_string()),
+                    Err(err) => Err(err),
+                };
+                let _ = reply.send(result);
+            }
+            TxnOp::DropUserRelations {
+                txn_id,
+                names,
+                reply,
+            } => {
+                let result = match stack_txn(&stack, &txn_id) {
+                    Ok(txn) => bookclerk_db_exec::drop_user_relations(txn, &names)
+                        .await
+                        .map_err(|e| e.to_string()),
+                    Err(err) => Err(err),
+                };
+                let _ = reply.send(result);
+            }
+            TxnOp::AssertRestoreConstraints { txn_id, reply } => {
+                let result = match stack_txn(&stack, &txn_id) {
+                    Ok(txn) => bookclerk_db_exec::assert_restore_constraints(txn)
+                        .await
+                        .map_err(|e| e.to_string()),
+                    Err(err) => Err(err),
                 };
                 let _ = reply.send(result);
             }
@@ -1286,9 +1655,14 @@ where
         DbBackend::Postgres => {
             postgres_query_page_once(conn, paged, fetch, postgres_isolation).await?
         }
-        _ => {
+        DbBackend::Sqlite => {
             let stmt = statement_lowered(paged, backend);
             fetch_page_all_raw(conn, stmt, fetch).await?
+        }
+        other => {
+            return Err(format!(
+                "BookclerkSQL does not support SeaORM backend {other:?}"
+            ));
         }
     };
     if rows.len() > fetch {
@@ -1348,12 +1722,43 @@ pub fn row_to_dto(row: &sea_orm::QueryResult) -> GuestRow {
 mod tests {
     use super::GuestStatement;
     use super::*;
+    use bookclerk_plugin_abi::ExecuteRequest;
     use sea_orm::{DbBackend, Statement};
     use std::sync::LazyLock;
     use tokio::sync::Mutex;
 
     /// Serializes tests that mutate the process-wide SeaORM session.
     static SESSION_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn stamp_req(
+        req: ExecuteRequest,
+    ) -> std::result::Result<AdapterExecuteRequest, bookclerk_plugin_abi::PluginError> {
+        stamp_req_env(req, &bookclerk_library::migrations::host_sql_type_env())
+    }
+
+    fn stamp_req_env(
+        req: ExecuteRequest,
+        env: &bookclerk_plugin_abi::SqlTypeEnv,
+    ) -> std::result::Result<AdapterExecuteRequest, bookclerk_plugin_abi::PluginError> {
+        bookclerk_db_exec::stamp_adapter_execute(req, env)
+            .map_err(|err| bookclerk_plugin_abi::PluginError::invalid_params(err.to_string()))
+    }
+
+    async fn execute_stamped(
+        req: ExecuteRequest,
+    ) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
+        guest_execute_request(stamp_req(req)?).await
+    }
+
+    fn stamp_txn_req(req: ExecuteRequest, extra_ddl: &str) -> AdapterExecuteRequest {
+        let mut env = bookclerk_library::migrations::host_sql_type_env();
+        env.merge(&bookclerk_plugin_abi::sql_type_env_from_canonical_ddl(
+            extra_ddl,
+        ));
+        stamp_req_env(req, &env)
+            .expect("stamp host proofs")
+            .with_isolation(IsolationReq::NestedSavepoint)
+    }
 
     fn stmt(sql: &str) -> GuestStatement {
         GuestStatement {
@@ -1370,7 +1775,7 @@ mod tests {
         use bookclerk_plugin_abi::{
             DbPlanStatementKind, DbResultSelection, ExecuteRequest, TypedDbStatement,
         };
-        guest_execute_request(ExecuteRequest {
+        execute_stamped(ExecuteRequest {
             operation_id: "create".into(),
             request_hash: String::new(),
             statements: vec![TypedDbStatement {
@@ -1673,7 +2078,7 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        let unique_err = guest_execute_request(typed_exec(
+        let unique_err = execute_stamped(typed_exec(
             "dup-op",
             &[
                 "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup-g', 0)",
@@ -1694,7 +2099,7 @@ mod tests {
         );
 
         bookclerk_db_exec::inject_commit_failures(1);
-        let commit_err = guest_execute_request(typed_exec(
+        let commit_err = execute_stamped(typed_exec(
             "commit-op",
             &["INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('c-g', 0)"],
         ))
@@ -1706,7 +2111,7 @@ mod tests {
             "{commit_err}"
         );
 
-        let syn_err = guest_execute_request(typed_exec("syn-op", &["FROMM nowhere"]))
+        let syn_err = execute_stamped(typed_exec("syn-op", &["FROMM nowhere"]))
             .await
             .unwrap_err();
         assert!(
@@ -1728,7 +2133,7 @@ mod tests {
             .await
             .expect("host postgres schema");
         set_connection(db).await;
-        let err = guest_execute_request(typed_exec(
+        let err = execute_stamped(typed_exec(
             "pg-dup",
             &[
                 "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('pg-dup', 0)",
@@ -1970,18 +2375,21 @@ mod tests {
         let txn_id = guest_begin(None).await.unwrap();
         let reply = guest_execute_atomic_on_txn(
             txn_id.clone(),
-            ExecuteRequest {
-                operation_id: "nested".into(),
-                request_hash: String::new(),
-                statements: vec![TypedDbStatement {
-                    sql: "INSERT INTO nested_typed (id, v) VALUES (?, ?)".into(),
-                    parameters: vec![DbValue::Int64(1), DbValue::Text("a".into())],
-                    kind: DbPlanStatementKind::Execute,
-                    max_rows: 0,
-                    result_selection: DbResultSelection::AffectedRows,
-                }],
-                deadline_unix_ms: 0,
-            },
+            stamp_txn_req(
+                ExecuteRequest {
+                    operation_id: "nested".into(),
+                    request_hash: String::new(),
+                    statements: vec![TypedDbStatement {
+                        sql: "INSERT INTO nested_typed (id, v) VALUES (?, ?)".into(),
+                        parameters: vec![DbValue::Int64(1), DbValue::Text("a".into())],
+                        kind: DbPlanStatementKind::Execute,
+                        max_rows: 0,
+                        result_selection: DbResultSelection::AffectedRows,
+                    }],
+                    deadline_unix_ms: 0,
+                },
+                "CREATE TABLE nested_typed (id INTEGER PRIMARY KEY, v TEXT)",
+            ),
         )
         .await
         .expect("typed on open txn");
@@ -2058,7 +2466,7 @@ mod tests {
             .unwrap_or("");
         assert!(
             !payload.is_empty(),
-            "nested executeEnvelope must persist replay payload before outer commit, got {payload:?}"
+            "nested host execute must persist replay payload before outer commit, got {payload:?}"
         );
     }
 
@@ -2081,27 +2489,30 @@ mod tests {
         let txn_id = guest_begin(None).await.unwrap();
         let err = guest_execute_atomic_on_txn(
             txn_id.clone(),
-            ExecuteRequest {
-                operation_id: "nested-partial".into(),
-                request_hash: String::new(),
-                statements: vec![
-                    TypedDbStatement {
-                        sql: "INSERT INTO nested_savepoint (id, v) VALUES (?, ?)".into(),
-                        parameters: vec![DbValue::Int64(1), DbValue::Text("keep".into())],
-                        kind: DbPlanStatementKind::Execute,
-                        max_rows: 0,
-                        result_selection: DbResultSelection::AffectedRows,
-                    },
-                    TypedDbStatement {
-                        sql: "INSERT INTO nested_savepoint (id, v) VALUES (?, ?)".into(),
-                        parameters: vec![DbValue::Int64(1), DbValue::Text("dup".into())],
-                        kind: DbPlanStatementKind::Execute,
-                        max_rows: 0,
-                        result_selection: DbResultSelection::AffectedRows,
-                    },
-                ],
-                deadline_unix_ms: 0,
-            },
+            stamp_txn_req(
+                ExecuteRequest {
+                    operation_id: "nested-partial".into(),
+                    request_hash: String::new(),
+                    statements: vec![
+                        TypedDbStatement {
+                            sql: "INSERT INTO nested_savepoint (id, v) VALUES (?, ?)".into(),
+                            parameters: vec![DbValue::Int64(1), DbValue::Text("keep".into())],
+                            kind: DbPlanStatementKind::Execute,
+                            max_rows: 0,
+                            result_selection: DbResultSelection::AffectedRows,
+                        },
+                        TypedDbStatement {
+                            sql: "INSERT INTO nested_savepoint (id, v) VALUES (?, ?)".into(),
+                            parameters: vec![DbValue::Int64(1), DbValue::Text("dup".into())],
+                            kind: DbPlanStatementKind::Execute,
+                            max_rows: 0,
+                            result_selection: DbResultSelection::AffectedRows,
+                        },
+                    ],
+                    deadline_unix_ms: 0,
+                },
+                "CREATE TABLE nested_savepoint (id INTEGER PRIMARY KEY, v TEXT)",
+            ),
         )
         .await
         .expect_err("second insert conflicts");
@@ -2141,18 +2552,21 @@ mod tests {
         bookclerk_db_exec::inject_savepoint_release_failures(1);
         let err = guest_execute_atomic_on_txn(
             txn_id.clone(),
-            ExecuteRequest {
-                operation_id: "nested-release".into(),
-                request_hash: String::new(),
-                statements: vec![TypedDbStatement {
-                    sql: "INSERT INTO nested_release (id, v) VALUES (?, ?)".into(),
-                    parameters: vec![DbValue::Int64(1), DbValue::Text("x".into())],
-                    kind: DbPlanStatementKind::Execute,
-                    max_rows: 0,
-                    result_selection: DbResultSelection::AffectedRows,
-                }],
-                deadline_unix_ms: 0,
-            },
+            stamp_txn_req(
+                ExecuteRequest {
+                    operation_id: "nested-release".into(),
+                    request_hash: String::new(),
+                    statements: vec![TypedDbStatement {
+                        sql: "INSERT INTO nested_release (id, v) VALUES (?, ?)".into(),
+                        parameters: vec![DbValue::Int64(1), DbValue::Text("x".into())],
+                        kind: DbPlanStatementKind::Execute,
+                        max_rows: 0,
+                        result_selection: DbResultSelection::AffectedRows,
+                    }],
+                    deadline_unix_ms: 0,
+                },
+                "CREATE TABLE nested_release (id INTEGER PRIMARY KEY, v TEXT)",
+            ),
         )
         .await
         .expect_err("injected RELEASE must fail");
@@ -2194,27 +2608,30 @@ mod tests {
         bookclerk_db_exec::inject_savepoint_rollback_failures(1);
         let err = guest_execute_atomic_on_txn(
             txn_id.clone(),
-            ExecuteRequest {
-                operation_id: "nested-rollback".into(),
-                request_hash: String::new(),
-                statements: vec![
-                    TypedDbStatement {
-                        sql: "INSERT INTO nested_rollback (id, v) VALUES (?, ?)".into(),
-                        parameters: vec![DbValue::Int64(1), DbValue::Text("keep".into())],
-                        kind: DbPlanStatementKind::Execute,
-                        max_rows: 0,
-                        result_selection: DbResultSelection::AffectedRows,
-                    },
-                    TypedDbStatement {
-                        sql: "INSERT INTO nested_rollback (id, v) VALUES (?, ?)".into(),
-                        parameters: vec![DbValue::Int64(1), DbValue::Text("dup".into())],
-                        kind: DbPlanStatementKind::Execute,
-                        max_rows: 0,
-                        result_selection: DbResultSelection::AffectedRows,
-                    },
-                ],
-                deadline_unix_ms: 0,
-            },
+            stamp_txn_req(
+                ExecuteRequest {
+                    operation_id: "nested-rollback".into(),
+                    request_hash: String::new(),
+                    statements: vec![
+                        TypedDbStatement {
+                            sql: "INSERT INTO nested_rollback (id, v) VALUES (?, ?)".into(),
+                            parameters: vec![DbValue::Int64(1), DbValue::Text("keep".into())],
+                            kind: DbPlanStatementKind::Execute,
+                            max_rows: 0,
+                            result_selection: DbResultSelection::AffectedRows,
+                        },
+                        TypedDbStatement {
+                            sql: "INSERT INTO nested_rollback (id, v) VALUES (?, ?)".into(),
+                            parameters: vec![DbValue::Int64(1), DbValue::Text("dup".into())],
+                            kind: DbPlanStatementKind::Execute,
+                            max_rows: 0,
+                            result_selection: DbResultSelection::AffectedRows,
+                        },
+                    ],
+                    deadline_unix_ms: 0,
+                },
+                "CREATE TABLE nested_rollback (id INTEGER PRIMARY KEY, v TEXT)",
+            ),
         )
         .await
         .expect_err("injected ROLLBACK must fail after inner unique error");

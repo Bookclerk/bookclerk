@@ -58,10 +58,19 @@ plugins, SDKs).
 | `release build` | When hosts/platform packaging are affected (or full suite). Installs `capnproto`. |
 | `sandbox + jailed tiers` | When confinement packages are affected (or full suite). Windows runs `--test-threads=1` so parallel AppContainer tests do not starve `Local\bookclerk-dacl-tx`. |
 | `tray` | When `bookclerk-tray` is affected (or full suite) |
-| `postgres job queue` | When Rust runs (or full suite). Installs `capnproto` so `bookclerk-library` can compile its `bookclerk-plugin-abi` dependency. Requires a Postgres service. Runs ignored job-queue tests and non-ignored TOTP atomic conformance (round-trip, leftover, injected commit rollback). |
+| `postgres 16/17/18` | When Rust runs (or full suite). Matrix of every supported PostgreSQL major ≥ 16 (`fail-fast: false`; `CI Gate` requires the whole job). Installs `capnproto`. Requires a Postgres service at that major. Runs ignored job-queue tests, TOTP atomic conformance, shared SQL-plan vectors, guest page tests, binding-schema isolation, and production RPC LIKE. |
 | `CI Gate` | Stable required check: succeeds for intentional skips; fails on real failures |
 
 OSV scanning remains a separate workflow/gate.
+
+The scheduled **SQL-v1 property** job (`.github/workflows/sql-v1-proptest.yml`)
+runs a longer `proptest` suite (`PROPTEST_CASES=256`) on `bookclerk-plugin-abi`
+and `bookclerk-db-exec`, grammar-aware sqlite admission plus a PostgreSQL 16
+differential (normalized `DbValue` / `DbErrorClass`), and coverage-guided
+`cargo-fuzz` targets (`sql_parse`, `sql_lower`) with checked-in corpora under
+`fuzz/corpus/`. It is `workflow_dispatch` + weekly; PR CI keeps the modest
+in-crate case counts, deterministic corpus replay, and the postgres-jobs
+matrix (binding UTF8 readiness + sqlite/postgres differential).
 
 The scheduled **workerd pin bump** job (`.github/workflows/workerd-pin-bump.yml`)
 also compiles `bookclerk-workerd` / `bookclerk-plugin-abi`, so it installs

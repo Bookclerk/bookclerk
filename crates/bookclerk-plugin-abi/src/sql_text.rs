@@ -560,11 +560,15 @@ pub struct SqlFnCall {
 
 /// Helpers adapters may nest so each physical call stays inside
 /// [`crate::DbCapabilities::max_function_args`].
+///
+/// `json_object` is not chunkable: portable SQL-v1 already caps it at
+/// [`crate::SQL_V1_JSON_OBJECT_MAX_ARGS`] (D1's physical limit). Nesting via
+/// `json_patch` is not equivalent (JSON Merge Patch deletes nulls).
 #[must_use]
 pub fn sql_v1_helper_is_chunkable(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "json_object" | "min" | "max" | "coalesce"
+        "min" | "max" | "coalesce"
     )
 }
 
@@ -687,8 +691,9 @@ fn count_call_args(sql: &str, open: usize) -> Result<Option<(usize, usize)>> {
 
 /// Enforces [`crate::DbCapabilities::max_function_args`] on non-chunkable helpers.
 ///
-/// `json_object` / `min` / `max` / `coalesce` are omitted: adapters nest them
-/// so each physical call stays inside the advertised cap.
+/// `min` / `max` / `coalesce` are omitted: adapters nest them so each physical
+/// call stays inside the advertised cap. `json_object` is enforced here: the
+/// portable maximum is already [`crate::SQL_V1_JSON_OBJECT_MAX_ARGS`].
 ///
 /// # Errors
 ///
@@ -774,6 +779,111 @@ pub fn require_like_patterns_within(
         }
     }
     Ok(())
+}
+
+/// Grammar-aware BookclerkSQL samples for fuzz corpora and differential tests.
+///
+/// Statements stay inside the SQL-v1 grammar (canonical `?`, `LIKE`,
+/// `INSERT OR IGNORE`). TEXT literals are portable UTF-8 without U+0000.
+/// LIKE patterns stay within [`D1_PORTABLE_LIKE_PATTERN_BYTES`].
+#[must_use]
+pub fn admitted_bookclerk_sql_samples(seed: u64, count: usize) -> Vec<String> {
+    let mut rng = SplitMix64::new(seed | 1);
+    let texts = [
+        "ok",
+        "café",
+        "日本語",
+        "a;b",
+        "it's",
+        "emoji😀",
+        "",
+        "line\nbreak",
+    ];
+    let like_pats = ["a%", "_b", "x", "ab", "%", ""];
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let sql = match rng.bounded(8) {
+            0 => format!("SELECT {} AS n", rng.bounded(10_000) as i64 - 5000),
+            1 => {
+                let t = sql_quote(texts[rng.bounded(texts.len() as u64) as usize]);
+                format!("SELECT {t} AS t")
+            }
+            2 => "SELECT ? AS v".to_string(),
+            3 => format!("SELECT {} + {} AS n", rng.bounded(100), rng.bounded(100)),
+            4 => {
+                let t = sql_quote(texts[rng.bounded(texts.len() as u64) as usize]);
+                let p = sql_quote(like_pats[rng.bounded(like_pats.len() as u64) as usize]);
+                format!("SELECT CASE WHEN {t} LIKE {p} THEN 1 ELSE 0 END AS m")
+            }
+            5 => "SELECT CASE WHEN 'x' LIKE NULL THEN 1 ELSE 0 END AS m".to_string(),
+            6 => {
+                let id = format!("s{i:04}");
+                format!(
+                    "INSERT OR IGNORE INTO db_serialization_slots (slot_key, bump) VALUES ('{id}', {})",
+                    rng.bounded(8)
+                )
+            }
+            _ => {
+                let id = format!("s{i:04}");
+                format!(
+                    "SELECT slot_key FROM db_serialization_slots WHERE slot_key = '{id}' ORDER BY slot_key"
+                )
+            }
+        };
+        out.push(sql);
+    }
+    // Length/extract keep SQLite/Postgres differentials portable (JSON
+    // spacing and duplicate-key winner are engine-specific). Postgres
+    // lowering casts `json_build_object` to TEXT so `length` is legal. The
+    // calls still exercise 2-arg null retention and 32-arg (16-pair) arity.
+    out.push(
+        "SELECT CASE WHEN length(json_object('a', 1, 'b', NULL)) \
+             > length(json_object('a', 1)) THEN 1 ELSE 0 END"
+            .into(),
+    );
+    let pairs: Vec<String> = (0..16).map(|i| format!("'k{i:02}', 'v{i:02}'")).collect();
+    out.push(format!(
+        "SELECT json_extract(json_object({}), '$.k15')",
+        pairs.join(", ")
+    ));
+    // Unaliased pair: Postgres names both `?column?`; the adapter uniquifies
+    // those engine labels so this stays a / % semantics sample, not a
+    // duplicate-name check (`SELECT x, x` still fails closed).
+    out.push("SELECT 1 / NULLIF(0, 1), 1 % NULLIF(0, 1)".into());
+    out.push("SELECT 10 / NULLIF(2, 0)".into());
+    out
+}
+
+/// Doubles single quotes for a SQL string literal.
+fn sql_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// SplitMix64 for deterministic sample generation (no extra crate).
+struct SplitMix64 {
+    /// Generator state.
+    state: u64,
+}
+
+impl SplitMix64 {
+    /// Seeds the generator.
+    fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    /// Next 64-bit value.
+    fn next(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform value in `0..n` (`n == 0` is treated as 1).
+    fn bounded(&mut self, n: u64) -> u64 {
+        self.next() % n.max(1)
+    }
 }
 
 #[cfg(test)]
@@ -932,8 +1042,54 @@ mod tests {
         require_function_args_within("SELECT replace(a, 'x', 'y')", 3).expect("N");
         let err = require_function_args_within("SELECT replace(a, 'x', 'y')", 2).unwrap_err();
         assert!(err.to_string().contains("maxFunctionArgs"), "{err}");
-        require_function_args_within("SELECT json_object('a', 1, 'b', 2, 'c', 3, 'd', 4)", 2)
-            .expect("json_object is adapter-chunked");
+        let err =
+            require_function_args_within("SELECT json_object('a', 1, 'b', 2, 'c', 3, 'd', 4)", 2)
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("maxFunctionArgs"),
+            "json_object is not adapter-chunked: {err}"
+        );
+        require_function_args_within("SELECT json_object('a', 1, 'b', 2, 'c', 3, 'd', 4)", 8)
+            .expect("4 args under cap 8");
+        let max_pairs: Vec<String> = (0..16).map(|i| format!("'{i}', {i}")).collect();
+        let max_sql = format!("SELECT json_object({})", max_pairs.join(", "));
+        require_function_args_within(&max_sql, crate::D1_MAX_FUNCTION_ARGS)
+            .expect("32-arg json_object matches D1 cap");
+        let err = require_function_args_within(&max_sql, 31).unwrap_err();
+        assert!(err.to_string().contains("maxFunctionArgs"), "{err}");
+        require_function_args_within("SELECT min(1, 2, 3)", 2).expect("min stays adapter-chunked");
+    }
+
+    #[test]
+    fn admitted_samples_pack_and_pass_grammar() {
+        for sql in admitted_bookclerk_sql_samples(42, 32) {
+            sql_v1_pack_statements(&sql).unwrap_or_else(|err| panic!("{sql}: {err}"));
+            crate::validate_sql_v1_grammar(&sql, false)
+                .unwrap_or_else(|err| panic!("{sql}: {err}"));
+            require_portable_text(&sql).expect("sample SQL is portable TEXT");
+            require_like_patterns_within(&sql, &[], D1_PORTABLE_LIKE_PATTERN_BYTES)
+                .unwrap_or_else(|err| panic!("{sql}: {err}"));
+        }
+    }
+
+    #[test]
+    fn fuzz_corpus_sql_parse_does_not_panic() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fuzz/corpus/sql_parse");
+        for entry in std::fs::read_dir(&dir).expect("fuzz corpus") {
+            let path = entry.expect("entry").path();
+            if !path.is_file() {
+                continue;
+            }
+            let sql = std::fs::read_to_string(&path).expect("read");
+            let _ = sql_v1_pack_statements(&sql);
+            let _ = crate::validate_sql_v1_grammar(&sql, false);
+            let _ = require_portable_text(&sql);
+            let _ = crate::desugar_canonical_sql(&sql);
+            let _ = like_pattern_sources(&sql);
+            let _ = require_like_patterns_within(&sql, &[], D1_PORTABLE_LIKE_PATTERN_BYTES);
+            let _ = require_function_args_within(&sql, 32);
+        }
     }
 
     #[test]

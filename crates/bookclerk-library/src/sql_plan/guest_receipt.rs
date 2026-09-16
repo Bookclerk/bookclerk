@@ -5,11 +5,12 @@
 //! apply guest mutations twice after an ambiguous commit.
 
 use bookclerk_db_exec::{
-    GuestReceiptPersist, HostExecuteEnvelope, GUEST_RECEIPT_WRAP_PREFIX, GUEST_RECEIPT_WRITE_GATE,
+    AdapterExecuteRequest, GuestReceiptPersist, GUEST_RECEIPT_WRAP_PREFIX, GUEST_RECEIPT_WRITE_GATE,
 };
 use bookclerk_plugin_abi::{
-    typecheck_execute_request_proofs, DbCapabilities, DbPlanStatementKind, DbResultSelection,
-    DbValue, ExecuteReply, ExecuteRequest, PluginError, SqlTypeEnv, TypedDbStatement,
+    typecheck_execute_request_proofs, CanonicalExecuteRequest, DbCapabilities, DbPlanStatementKind,
+    DbResultSelection, DbValue, ExecuteReply, ExecuteRequest, PluginError, SqlTypeEnv,
+    TypedDbStatement,
 };
 use chrono::{Duration, Utc};
 
@@ -33,7 +34,7 @@ const GUEST_TYPED_KIND: &str = "guestTyped";
 pub(crate) fn wrap_guest_typed_request(
     mut req: ExecuteRequest,
     type_env: &SqlTypeEnv,
-) -> Result<HostExecuteEnvelope, PluginError> {
+) -> Result<AdapterExecuteRequest, PluginError> {
     let now = Utc::now();
     let created = now.to_rfc3339();
     let operation_id = req.operation_id.clone();
@@ -90,14 +91,12 @@ pub(crate) fn wrap_guest_typed_request(
     let mut env = receipt_wrap_type_env();
     env.merge(type_env);
     let proofs = typecheck_execute_request_proofs(&req, &env)?;
-    Ok(HostExecuteEnvelope::new(
-        req,
-        GuestReceiptPersist {
+    CanonicalExecuteRequest::from_desugared(req)
+        .with_guest_receipt(GuestReceiptPersist {
             guest_statement_len: guest_len,
             guest_request_hash: request_hash,
-        },
-    )
-    .with_proofs(proofs))
+        })
+        .bind_proofs(proofs)
 }
 
 /// Bookkeeping tables present when typing receipt-wrapper SQL.
@@ -304,6 +303,7 @@ mod replay_finalize {
         let wrapped = wrap_guest_typed_request(req, &slots_env()).expect("wrap");
         assert!(!wrapped.guest_receipt.is_absent());
         let reply = bookclerk_db_exec::execute_typed_envelope(
+            bookclerk_db_exec::PhysicalEngine::sqlite(),
             &db,
             &wrapped,
             "sqlite_txn",
@@ -332,6 +332,7 @@ mod replay_finalize {
         let replay_wrapped =
             wrap_guest_typed_request(replay_req.clone(), &slots_env()).expect("wrap replay");
         let replay = bookclerk_db_exec::execute_typed_envelope(
+            bookclerk_db_exec::PhysicalEngine::sqlite(),
             &db,
             &replay_wrapped,
             "sqlite_txn",
@@ -373,6 +374,7 @@ mod replay_finalize {
         assert!(!wrapped.guest_receipt.is_absent());
         let txn = db.begin().await.expect("begin");
         let reply = bookclerk_db_exec::execute_typed_on_txn_envelope(
+            bookclerk_db_exec::PhysicalEngine::sqlite(),
             &txn,
             &wrapped,
             "sqlite_txn",
@@ -401,7 +403,7 @@ mod replay_finalize {
         assert_eq!(status, "ok");
         assert!(
             !payload.is_empty(),
-            "nested executeEnvelope must persist replay payload before outer commit"
+            "nested host execute must persist replay payload before outer commit"
         );
 
         let replay_req = ExecuteRequest {
@@ -420,6 +422,7 @@ mod replay_finalize {
         let replay_wrapped =
             wrap_guest_typed_request(replay_req.clone(), &slots_env()).expect("wrap replay");
         let replay = bookclerk_db_exec::execute_typed_envelope(
+            bookclerk_db_exec::PhysicalEngine::sqlite(),
             &db,
             &replay_wrapped,
             "sqlite_txn",

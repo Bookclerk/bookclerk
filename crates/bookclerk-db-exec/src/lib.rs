@@ -1,18 +1,21 @@
-//! Neutral SQL executor for Bookclerk database guests.
+//! Neutral SQL executor / adapter SDK for Bookclerk database guests.
 //!
-//! Hosts compile domain work into a typed [`bookclerk_plugin_abi::ExecuteRequest`].
-//! This crate runs those statements as one native transaction and records
-//! fail-closed begin/commit faults. It must not import Bookclerk entities or
-//! host domain planners. Postgres adapters lower host-schema packs and binding
-//! DDL types at execute ([`schema_sql_for_backend`],
-//! [`lower_binding_ddl_execute_request`]); [`lower_canonical_sql`] stays
-//! DML/query helpers.
+//! Hosts compile domain work into a typed [`bookclerk_plugin_abi::ExecuteRequest`]
+//! of **canonical** Bookclerk SQL (`?` placeholders, host-desugared NULLS /
+//! `NULLIF`). This crate owns physical lowering and native execution. It must
+//! not import Bookclerk entities or host domain planners. Postgres adapters
+//! lower host-schema packs and binding DDL types at execute
+//! ([`schema_sql_for_backend`], [`lower_binding_ddl_execute_request`]);
+//! [`lower_canonical_sql`] stays DML/query helpers. Host crates must not call
+//! those lowerers.
 
 use std::cell::RefCell;
 
 use bookclerk_plugin_abi::DbColumn;
 
 mod b64;
+mod backup;
+mod canonical;
 mod classify;
 mod exec;
 pub mod guest_receipt;
@@ -50,14 +53,21 @@ pub fn take_positional_result_columns() -> Option<Vec<DbColumn>> {
 }
 
 pub use b64::{b64_string_to_bytes, bytes_to_b64_string};
+pub use backup::{
+    apply_begin_isolation, assert_restore_constraints, begin_consistent_snapshot,
+    drop_user_relations, export_identity, import_identity, list_user_relations,
+    pending_begin_isolation, prepare_unit_restore,
+};
 pub use bookclerk_plugin_abi::DbPlanStatementKind;
-pub use bookclerk_plugin_abi::{GuestReceiptPersist, HostExecuteEnvelope};
+pub use bookclerk_plugin_abi::{AdapterExecuteRequest, GuestReceiptPersist};
+pub use canonical::{canonical_statement, execute_canonical, query_canonical};
 pub use classify::{
     classify_db_err, classify_db_err_message, is_schema_apply_retryable, DbErrorClass,
 };
 pub use exec::{
-    cap_query_sql, encoded_proxy_row_len, json_cell_utf8_len, note_encoded_result_bytes,
-    sea_value_to_json, AtomicSession, ExecCaps,
+    cap_query_sql, encoded_proxy_row_len, execute_physical_sql, json_cell_utf8_len,
+    note_encoded_result_bytes, query_physical_sql, query_physical_sql_typed, sea_value_to_json,
+    AtomicSession, ExecCaps, PhysicalEngine, SqlExecTarget,
 };
 pub use guest_receipt::{
     guest_receipt_applied_stmt, guest_receipt_finalize_stmts, is_guest_receipt_result_lost,
@@ -86,10 +96,13 @@ pub use schema_postgres::{
     expand_binding_execute_request, expand_host_schema_batch, expand_host_schema_execute_request,
     expand_host_schema_execute_request_grouped, is_host_schema_version_marker,
     lower_binding_ddl_execute_request, lower_binding_sql_for_backend, postgres_identity_companions,
-    schema_sql_for_backend, split_schema_statements,
+    realize_binding_ddl, realize_host_ddl, schema_sql_for_backend,
 };
 pub use typed::{
-    db_value_from_sea, db_value_to_sea, execute_typed_envelope, execute_typed_on_session,
-    execute_typed_on_session_then, execute_typed_on_txn, execute_typed_on_txn_envelope,
-    load_physical_sql_type_env, load_sql_type_env, load_sql_type_env_capped,
+    db_value_from_sea, db_value_to_sea, execute_canonical_stamped, execute_typed_envelope,
+    execute_typed_envelope_on_connection, execute_typed_on_open_connection,
+    execute_typed_on_open_envelope, execute_typed_on_session, execute_typed_on_session_then,
+    execute_typed_on_txn, execute_typed_on_txn_envelope, load_physical_sql_type_env,
+    load_sql_type_env, load_sql_type_env_capped, proofs_for_host_plan, query_canonical_stamped,
+    stamp_adapter_execute, stamp_host_proofs,
 };

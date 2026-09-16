@@ -9,8 +9,8 @@ use chrono::{Duration, Utc};
 use sea_orm::{
     ActiveModelTrait,
     ActiveValue::{NotSet, Set},
-    ColumnTrait, Condition, ConnectionTrait, DatabaseBackend, EntityTrait, PaginatorTrait,
-    QueryFilter, QueryOrder, QuerySelect, Statement, TransactionTrait,
+    ColumnTrait, Condition, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, StreamTrait, TransactionTrait,
 };
 use uuid::Uuid;
 
@@ -75,37 +75,6 @@ const WAKE_UPDATE_FIXED_BINDS: usize = 4;
 const EVENT_OUTBOX_STATS_ID: i64 = 1;
 const EVENT_WAKE_FAR_FUTURE: &str = "9999-12-31T23:59:59+00:00";
 
-/// Rewrite SQLite `?` placeholders to Postgres `$1`…`$n` (sqlx does not).
-fn rewrite_sql_placeholders(backend: DatabaseBackend, sql: &str) -> String {
-    if backend != DatabaseBackend::Postgres {
-        return sql.to_string();
-    }
-    let mut n = 0u32;
-    let mut out = String::with_capacity(sql.len() + 16);
-    for ch in sql.chars() {
-        if ch == '?' {
-            n += 1;
-            out.push('$');
-            out.push_str(&n.to_string());
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
-fn statement_for_backend(
-    backend: DatabaseBackend,
-    sql: impl Into<String>,
-    values: impl IntoIterator<Item = sea_orm::Value>,
-) -> Statement {
-    Statement::from_sql_and_values(
-        backend,
-        rewrite_sql_placeholders(backend, &sql.into()),
-        values,
-    )
-}
-
 /// Fenced sleeper UPDATE: one statement so a stale owner cannot clear a later registration.
 fn wake_fenced_update_sql(id_count: usize) -> String {
     let placeholders = vec!["?"; id_count].join(", ");
@@ -131,19 +100,91 @@ fn wake_in_chunk_size(max_binds: usize) -> usize {
     max_binds.saturating_sub(WAKE_UPDATE_FIXED_BINDS).max(1)
 }
 
-/// Wake matching pending deliveries when `owner` still holds the event's wake lease.
-pub(crate) async fn wake_deliveries_fenced_on<C: ConnectionTrait>(
+/// Execute leftover canonical host SQL (`?` placeholders).
+async fn exec_host_sql<C>(
     db: &C,
+    in_process: bool,
+    sql: &str,
+    values: impl IntoIterator<Item = sea_orm::Value>,
+) -> Result<u64>
+where
+    C: ConnectionTrait + StreamTrait,
+{
+    crate::sql_plan::execute_sql_on(
+        in_process,
+        db,
+        sql,
+        values,
+        crate::migrations::host_sql_type_env(),
+    )
+    .await
+}
+
+/// Query leftover canonical host SQL (`?` placeholders).
+async fn query_host_sql_first_text<C>(
+    db: &C,
+    in_process: bool,
+    sql: &str,
+    values: impl IntoIterator<Item = sea_orm::Value>,
+    max_rows: u32,
+) -> Result<Vec<String>>
+where
+    C: ConnectionTrait + StreamTrait,
+{
+    let values: Vec<sea_orm::Value> = values.into_iter().collect();
+    if in_process {
+        let rows = crate::sql_plan::query_sql_on(
+            true,
+            db,
+            sql,
+            values,
+            &crate::migrations::host_sql_type_env(),
+            max_rows,
+        )
+        .await?;
+        return Ok(rows
+            .into_iter()
+            .filter_map(|row| match row.values.first() {
+                Some(bookclerk_plugin_abi::DbValue::Text(s)) if !s.is_empty() => Some(s.clone()),
+                _ => None,
+            })
+            .collect());
+    }
+    let rows = bookclerk_db_exec::query_canonical_stamped(
+        db,
+        sql,
+        values,
+        &crate::migrations::host_sql_type_env(),
+    )
+    .await
+    .map_err(LibraryError::Orm)?;
+    let mut ids = Vec::new();
+    for row in rows {
+        if let Ok(id) = row.try_get_by_index::<String>(0) {
+            if !id.is_empty() {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(ids)
+}
+
+/// Wake matching pending deliveries when `owner` still holds the event's wake lease.
+pub(crate) async fn wake_deliveries_fenced_on<C>(
+    db: &C,
+    in_process: bool,
     event_id: &str,
     owner: &str,
     ids: &[String],
     now: &str,
     max_binds: usize,
-) -> Result<u32> {
+) -> Result<u32>
+where
+    C: ConnectionTrait + StreamTrait,
+{
     if ids.is_empty() {
         return Ok(0);
     }
-    let backend = db.get_database_backend();
     let chunk_size = wake_in_chunk_size(max_binds);
     let mut woken = 0u32;
     for chunk in ids.chunks(chunk_size) {
@@ -156,11 +197,8 @@ pub(crate) async fn wake_deliveries_fenced_on<C: ConnectionTrait>(
         }
         values.push(event_id.to_string().into());
         values.push(owner.to_string().into());
-        let res = db
-            .execute_raw(statement_for_backend(backend, sql, values))
-            .await
-            .map_err(LibraryError::Orm)?;
-        woken = woken.saturating_add(u32::try_from(res.rows_affected()).unwrap_or(0));
+        let affected = exec_host_sql(db, in_process, &sql, values).await?;
+        woken = woken.saturating_add(u32::try_from(affected).unwrap_or(0));
     }
     Ok(woken)
 }
@@ -358,7 +396,9 @@ impl LibraryStore {
             return Ok(total);
         }
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        match dispatch_event_deliveries_on(&txn, event_id, subscribers).await {
+        match dispatch_event_deliveries_on(&txn, self.leftover_in_process(), event_id, subscribers)
+            .await
+        {
             Ok(n) => {
                 txn.commit().await.map_err(LibraryError::Orm)?;
                 Ok(n)
@@ -519,10 +559,27 @@ impl LibraryStore {
         let max_binds =
             usize::try_from(self.max_binds).unwrap_or(bookclerk_plugin_abi::D1_MAX_BINDS as usize);
         if self.atomic.is_some() {
-            return wake_one_page_on(&self.db, row, owner, page, max_binds).await;
+            return wake_one_page_on(
+                &self.db,
+                self.leftover_in_process(),
+                row,
+                owner,
+                page,
+                max_binds,
+            )
+            .await;
         }
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        match wake_one_page_on(&txn, row, owner, page, max_binds).await {
+        match wake_one_page_on(
+            &txn,
+            self.leftover_in_process(),
+            row,
+            owner,
+            page,
+            max_binds,
+        )
+        .await
+        {
             Ok(n) => {
                 txn.commit().await.map_err(LibraryError::Orm)?;
                 Ok(n)
@@ -573,6 +630,7 @@ impl LibraryStore {
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match claim_next_event_delivery_on(
             &txn,
+            self.leftover_in_process(),
             owner,
             lease_secs,
             plugin_ids,
@@ -833,7 +891,7 @@ impl LibraryStore {
         )
         .await?;
         if ok {
-            bump_event_stats(&self.db, 0, 0, 1, None, None).await?;
+            bump_event_stats(&self.db, self.leftover_in_process(), 0, 0, 1, None, None).await?;
         }
         Ok(ok)
     }
@@ -911,7 +969,7 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         if res.rows_affected == 1 {
-            bump_event_stats(&self.db, 1, 0, 0, None, None).await?;
+            bump_event_stats(&self.db, self.leftover_in_process(), 1, 0, 0, None, None).await?;
             return Ok(true);
         }
         Ok(false)
@@ -1031,7 +1089,7 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         if res.rows_affected == 1 {
-            bump_event_stats(&self.db, 0, 1, 0, None, None).await?;
+            bump_event_stats(&self.db, self.leftover_in_process(), 0, 1, 0, None, None).await?;
             Ok(true)
         } else {
             Ok(false)
@@ -1149,6 +1207,7 @@ impl LibraryStore {
         if res.rows_affected > 0 {
             bump_event_stats(
                 &self.db,
+                self.leftover_in_process(),
                 i64::try_from(res.rows_affected).unwrap_or(0),
                 0,
                 0,
@@ -1385,7 +1444,16 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when the write fails.
     pub async fn record_event_handler_latency(&self, duration_ms: i64) -> Result<()> {
-        bump_event_stats(&self.db, 0, 0, 0, None, Some(duration_ms.max(0))).await
+        bump_event_stats(
+            &self.db,
+            self.leftover_in_process(),
+            0,
+            0,
+            0,
+            None,
+            Some(duration_ms.max(0)),
+        )
+        .await
     }
 
     /// Outbox envelopes in `dispatch_state`, oldest first.
@@ -1616,20 +1684,10 @@ impl LibraryStore {
         }
         sql.push_str(" ORDER BY e.created_at ASC, e.id ASC LIMIT ?");
         values.push(i64::try_from(limit).unwrap_or(200).into());
-        let backend = self.db.get_database_backend();
-        let rows = self
-            .db
-            .query_all_raw(statement_for_backend(backend, sql, values))
-            .await
-            .map_err(LibraryError::Orm)?;
-        let mut ids = Vec::new();
-        for row in rows {
-            if let Ok(id) = row.try_get_by_index::<String>(0) {
-                if !id.is_empty() {
-                    ids.push(id);
-                }
-            }
-        }
+        let max_rows = u32::try_from(limit).unwrap_or(200).max(1);
+        let ids =
+            query_host_sql_first_text(&self.db, self.leftover_in_process(), &sql, values, max_rows)
+                .await?;
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -1876,23 +1934,17 @@ impl LibraryStore {
             .exec(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
-        let backend = self.db.get_database_backend();
-        let events = self
-            .db
-            .execute_raw(statement_for_backend(
-                backend,
-                "DELETE FROM domain_events WHERE dispatch_state = 'dispatched' \
-                 AND created_at <= ? AND NOT EXISTS ( \
-                    SELECT 1 FROM event_deliveries d WHERE d.event_id = domain_events.id \
-                 )",
-                [terminal_cutoff.into()],
-            ))
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(acked.rows_affected
-            + dead.rows_affected
-            + stale_nodes.rows_affected
-            + events.rows_affected())
+        let events = exec_host_sql(
+            &self.db,
+            self.leftover_in_process(),
+            "DELETE FROM domain_events WHERE dispatch_state = 'dispatched' \
+             AND created_at <= ? AND NOT EXISTS ( \
+                SELECT 1 FROM event_deliveries d WHERE d.event_id = domain_events.id \
+             )",
+            [terminal_cutoff.into()],
+        )
+        .await?;
+        Ok(acked.rows_affected + dead.rows_affected + stale_nodes.rows_affected + events)
     }
 }
 
@@ -2078,13 +2130,17 @@ pub(crate) async fn publish_domain_event_on<C: ConnectionTrait>(
 ///
 /// Cursor release and finish require `wake_lease_owner = owner` and `wake_pending = 1`.
 /// Zero rows affected is fence loss: do not overwrite another owner’s cursor.
-async fn wake_one_page_on<C: ConnectionTrait>(
+async fn wake_one_page_on<C>(
     db: &C,
+    in_process: bool,
     row: &domain_events::Model,
     owner: &str,
     page: u64,
     max_binds: usize,
-) -> Result<u32> {
+) -> Result<u32>
+where
+    C: ConnectionTrait + StreamTrait,
+{
     let event = map_event(row.clone())?;
     if event.event_type.trim().is_empty() {
         let _ = finish_wake_on(db, &event.id, owner).await?;
@@ -2151,7 +2207,8 @@ async fn wake_one_page_on<C: ConnectionTrait>(
             ids.push(delivery.id);
         }
     }
-    let woken = wake_deliveries_fenced_on(db, &event.id, owner, &ids, &now, max_binds).await?;
+    let woken =
+        wake_deliveries_fenced_on(db, in_process, &event.id, owner, &ids, &now, max_binds).await?;
     if u64::try_from(page_len).unwrap_or(page) < page {
         let _ = finish_wake_on(db, &event.id, owner).await?;
     } else {
@@ -2231,11 +2288,15 @@ pub(crate) async fn finish_wake_on<C: ConnectionTrait>(
 }
 
 /// Create deliveries for `subscribers` and mark the event dispatched.
-pub(crate) async fn dispatch_event_deliveries_on<C: ConnectionTrait>(
+pub(crate) async fn dispatch_event_deliveries_on<C>(
     db: &C,
+    in_process: bool,
     event_id: &str,
     subscribers: &[EventSubscriber],
-) -> Result<u32> {
+) -> Result<u32>
+where
+    C: ConnectionTrait + StreamTrait,
+{
     let Some(event) = domain_events::Entity::find_by_id(event_id)
         .one(db)
         .await
@@ -2306,20 +2367,24 @@ pub(crate) async fn dispatch_event_deliveries_on<C: ConnectionTrait>(
         .map_err(LibraryError::Orm)?;
     if first_dispatch && dispatched.rows_affected == 1 {
         let ms = (Utc::now() - created_at).num_milliseconds().max(0);
-        bump_event_stats(db, 0, 0, 0, Some(ms), None).await?;
+        bump_event_stats(db, in_process, 0, 0, 0, Some(ms), None).await?;
     }
     Ok(created)
 }
 
 /// Claim the next ready delivery, skipping blocked FIFO keys.
-pub(crate) async fn claim_next_event_delivery_on<C: ConnectionTrait>(
+pub(crate) async fn claim_next_event_delivery_on<C>(
     db: &C,
+    in_process: bool,
     owner: &str,
     lease_secs: u64,
     plugin_ids: &[String],
     max_in_flight: u32,
     node_id: &str,
-) -> Result<Option<EventDeliveryRecord>> {
+) -> Result<Option<EventDeliveryRecord>>
+where
+    C: ConnectionTrait + StreamTrait,
+{
     if plugin_ids.is_empty() {
         return Ok(None);
     }
@@ -2361,7 +2426,7 @@ pub(crate) async fn claim_next_event_delivery_on<C: ConnectionTrait>(
             {
                 continue;
             }
-            lock_plugin_in_flight(db, &model.plugin_id, &model.resource_class).await?;
+            lock_plugin_in_flight(db, in_process, &model.plugin_id, &model.resource_class).await?;
             if plugin_in_flight_at_cap(db, &model.plugin_id, &model.resource_class, max_in_flight)
                 .await?
             {
@@ -2493,18 +2558,22 @@ fn is_unique_violation(err: &sea_orm::DbErr) -> bool {
 }
 
 /// Serialize COUNT+claim per plugin under every isolation level.
-async fn lock_plugin_in_flight<C: ConnectionTrait>(
+async fn lock_plugin_in_flight<C>(
     db: &C,
+    in_process: bool,
     plugin_id: &str,
     resource_class: &str,
-) -> Result<()> {
+) -> Result<()>
+where
+    C: ConnectionTrait + StreamTrait,
+{
     let class = if resource_class.trim().is_empty() {
         EVENT_RESOURCE_CLASS_NETWORK
     } else {
         resource_class.trim()
     };
     let key = crate::sql_plan::event_inflight_slot(plugin_id, class);
-    crate::sql_plan::lock_serialization_slot(db, &key).await
+    crate::sql_plan::lock_serialization_slot(db, in_process, &key).await
 }
 
 async fn plugin_in_flight_at_cap<C: ConnectionTrait>(
@@ -2722,16 +2791,19 @@ async fn ensure_event_outbox_stats<C: ConnectionTrait>(
         .ok_or_else(|| LibraryError::Other(anyhow!("event_outbox_stats singleton missing")))
 }
 
-async fn bump_event_stats<C: ConnectionTrait>(
+async fn bump_event_stats<C>(
     db: &C,
+    in_process: bool,
     retries: i64,
     suspensions: i64,
     dead_letters: i64,
     dispatch_latency_ms: Option<i64>,
     handler_latency_ms: Option<i64>,
-) -> Result<()> {
+) -> Result<()>
+where
+    C: ConnectionTrait + StreamTrait,
+{
     let _ = ensure_event_outbox_stats(db).await?;
-    let backend = db.get_database_backend();
     let (dispatch_sum, dispatch_n) = match dispatch_latency_ms {
         Some(ms) => (ms, 1i64),
         None => (0, 0),
@@ -2740,8 +2812,9 @@ async fn bump_event_stats<C: ConnectionTrait>(
         Some(ms) => (ms, 1i64),
         None => (0, 0),
     };
-    db.execute_raw(statement_for_backend(
-        backend,
+    exec_host_sql(
+        db,
+        in_process,
         "UPDATE event_outbox_stats SET \
             retries_total = retries_total + ?, \
             suspensions_total = suspensions_total + ?, \
@@ -2761,9 +2834,8 @@ async fn bump_event_stats<C: ConnectionTrait>(
             handler_n.into(),
             EVENT_OUTBOX_STATS_ID.into(),
         ],
-    ))
-    .await
-    .map_err(LibraryError::Orm)?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -2812,14 +2884,12 @@ mod placeholder_tests {
     use super::*;
 
     #[test]
-    fn postgres_rewrites_question_marks_in_order() {
-        assert_eq!(
-            rewrite_sql_placeholders(DatabaseBackend::Postgres, "a = ? AND b IN (?, ?) LIMIT ?"),
-            "a = $1 AND b IN ($2, $3) LIMIT $4"
-        );
-        assert_eq!(
-            rewrite_sql_placeholders(DatabaseBackend::Sqlite, "a = ? AND b IN (?, ?)"),
-            "a = ? AND b IN (?, ?)"
+    fn host_wake_sql_stays_canonical_question_marks() {
+        let sql = wake_fenced_update_sql(3);
+        assert_eq!(sql.matches('?').count(), wake_delivery_update_bind_count(3));
+        assert!(
+            !sql.contains('$'),
+            "host SQL must not embed Postgres $n placeholders: {sql}"
         );
     }
 
@@ -2842,5 +2912,40 @@ mod placeholder_tests {
             "wake page {page} exceeds D1's {cap} for parent SELECT IN"
         );
         assert!(wake_in_chunk_size(cap) + WAKE_UPDATE_FIXED_BINDS <= cap);
+    }
+
+    #[test]
+    fn missing_dispatched_events_sql_typechecks_against_host_env() {
+        let sql = "SELECT e.id FROM domain_events e \
+             WHERE e.dispatch_state = 'dispatched' \
+               AND e.created_at > ? \
+               AND e.event_type IN (?) \
+               AND NOT EXISTS ( \
+                 SELECT 1 FROM event_deliveries d \
+                 WHERE d.event_id = e.id AND d.plugin_id = ? \
+               ) \
+             ORDER BY e.created_at ASC, e.id ASC LIMIT ?";
+        let req = bookclerk_plugin_abi::ExecuteRequest {
+            operation_id: "reconcile".into(),
+            request_hash: String::new(),
+            deadline_unix_ms: 0,
+            statements: vec![bookclerk_plugin_abi::TypedDbStatement {
+                sql: sql.into(),
+                parameters: vec![
+                    bookclerk_plugin_abi::DbValue::Text("t".into()),
+                    bookclerk_plugin_abi::DbValue::Text("book_acquired".into()),
+                    bookclerk_plugin_abi::DbValue::Text("echo".into()),
+                    bookclerk_plugin_abi::DbValue::Int64(200),
+                ],
+                kind: bookclerk_plugin_abi::DbPlanStatementKind::Select,
+                max_rows: 200,
+                result_selection: bookclerk_plugin_abi::DbResultSelection::Rows,
+            }],
+        };
+        bookclerk_plugin_abi::typecheck_execute_request_proofs(
+            &req,
+            &crate::migrations::host_sql_type_env(),
+        )
+        .expect("reconcile leftover SELECT must typecheck");
     }
 }

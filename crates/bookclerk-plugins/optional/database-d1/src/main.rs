@@ -5,10 +5,10 @@
 use async_trait::async_trait;
 use bookclerk_db_guest::set_connection;
 use bookclerk_plugin_abi::db::{connect_params_from_context, DbConnectParams};
-use bookclerk_plugin_abi::{AdapterTransaction, HostAdapterDatabaseSession};
-use bookclerk_plugin_abi::{GuestReceiptPersist, HostExecuteEnvelope};
+use bookclerk_plugin_abi::IsolationReq;
+use bookclerk_plugin_abi::{AdapterExecuteRequest, AdapterTransaction, HostAdapterDatabaseSession};
 use bookclerk_plugin_sdk::{
-    serve, DbBootstrap, DbCapabilities, ExecuteReply, ExecuteRequest, PluginError, PluginMetadata,
+    serve, DbBootstrap, DbCapabilities, ExecuteReply, PluginError, PluginMetadata,
 };
 use bookclerk_plugin_sdk::{
     AdapterDatabaseSession, Database, DatabaseContext, PluginDescribe, PluginRoot, ScalarLimits,
@@ -147,18 +147,24 @@ struct D1DedicatedHostSession {
 
 #[async_trait(?Send)]
 impl HostAdapterDatabaseSession for D1DedicatedHostSession {
-    async fn begin(&self) -> Result<Box<dyn AdapterTransaction>, PluginError> {
+    async fn begin(
+        &self,
+        _isolation: IsolationReq,
+    ) -> Result<Box<dyn AdapterTransaction>, PluginError> {
         Err(PluginError::unsupported(
             "D1 does not support interactive transactions",
         ))
     }
 
-    async fn execute_envelope(
-        &self,
-        envelope: HostExecuteEnvelope,
-    ) -> Result<ExecuteReply, PluginError> {
+    async fn execute(&self, request: AdapterExecuteRequest) -> Result<ExecuteReply, PluginError> {
+        request.require_proofs()?;
+        if !matches!(request.isolation, IsolationReq::AtomicBatch) {
+            return Err(PluginError::unsupported(
+                "D1 supports AtomicBatch isolation only",
+            ));
+        }
         self.proxy
-            .run_typed_atomic(&envelope.request, envelope.guest_receipt, &envelope.proofs)
+            .run_typed_atomic(&request.request, request.guest_receipt, &request.proofs)
             .await
             .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)
     }
@@ -168,20 +174,26 @@ struct D1HostSession;
 
 #[async_trait(?Send)]
 impl HostAdapterDatabaseSession for D1HostSession {
-    async fn begin(&self) -> Result<Box<dyn AdapterTransaction>, PluginError> {
+    async fn begin(
+        &self,
+        _isolation: IsolationReq,
+    ) -> Result<Box<dyn AdapterTransaction>, PluginError> {
         Err(PluginError::unsupported(
             "D1 does not support interactive transactions",
         ))
     }
 
-    async fn execute_envelope(
-        &self,
-        envelope: HostExecuteEnvelope,
-    ) -> Result<ExecuteReply, PluginError> {
+    async fn execute(&self, request: AdapterExecuteRequest) -> Result<ExecuteReply, PluginError> {
+        request.require_proofs()?;
+        if !matches!(request.isolation, IsolationReq::AtomicBatch) {
+            return Err(PluginError::unsupported(
+                "D1 supports AtomicBatch isolation only",
+            ));
+        }
         let proxy = bookclerk_plugin_database_d1::shared_proxy()
             .ok_or_else(|| PluginError::internal("d1 guest is not connected"))?;
         proxy
-            .run_typed_atomic(&envelope.request, envelope.guest_receipt, &envelope.proofs)
+            .run_typed_atomic(&request.request, request.guest_receipt, &request.proofs)
             .await
             .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)
     }
@@ -211,11 +223,58 @@ impl AdapterDatabaseSession for D1Session {
         Ok(DbBootstrap::sqlite())
     }
 
-    async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply, PluginError> {
+    async fn execute(&self, request: AdapterExecuteRequest) -> Result<ExecuteReply, PluginError> {
+        request.require_proofs()?;
+        if !matches!(request.isolation, IsolationReq::AtomicBatch) {
+            return Err(PluginError::unsupported(
+                "D1 supports AtomicBatch isolation only",
+            ));
+        }
         self.proxy()?
-            .run_typed_atomic(&request, GuestReceiptPersist::default(), &[])
+            .run_typed_atomic(&request.request, request.guest_receipt, &request.proofs)
             .await
             .map_err(bookclerk_plugin_database_d1::atomic::plugin_error_from_d1)
+    }
+
+    async fn export_identity(
+        &self,
+    ) -> Result<Vec<bookclerk_plugin_sdk::DbIdentityHighWater>, PluginError> {
+        Err(PluginError::unsupported(
+            "D1 does not advertise consistentBackupRead",
+        ))
+    }
+
+    async fn import_identity(
+        &self,
+        _rows: &[bookclerk_plugin_sdk::DbIdentityHighWater],
+    ) -> Result<(), PluginError> {
+        Err(PluginError::unsupported(
+            "D1 does not advertise atomicUnitRestore",
+        ))
+    }
+
+    async fn list_user_relations(&self) -> Result<Vec<String>, PluginError> {
+        Err(PluginError::unsupported(
+            "D1 does not advertise consistentBackupRead",
+        ))
+    }
+
+    async fn prepare_unit_restore(&self) -> Result<(), PluginError> {
+        Err(PluginError::unsupported(
+            "D1 does not advertise atomicUnitRestore",
+        ))
+    }
+
+    async fn drop_user_relations(&self, _names: &[String]) -> Result<(), PluginError> {
+        Err(PluginError::unsupported(
+            "D1 does not advertise atomicUnitRestore",
+        ))
+    }
+
+    async fn assert_restore_constraints(&self) -> Result<(), PluginError> {
+        Err(PluginError::unsupported(
+            "D1 does not advertise atomicUnitRestore",
+        ))
     }
 }
 

@@ -30,7 +30,7 @@ Start here if you are new:
 | [ADR: Workers RPC + workerd](adr/plugin-workers-rpc-workerd.md) | Product `api_version = 2` decision: class ABI, streams, Cap'n Proto / JSRPC |
 | [ADR: First-party identity](adr/first-party-identity.md) | Operator / Owner / Administrator / Member, optional multi-IdP broker, passkeys, OIDC for ABS |
 | [ADR: Plugin-provided OIDC clients](adr/plugin-oidc-clients.md) | Players declare IdP clients via `oidcClients` / `[[oidc.clients]]`; enable toggles; redirects from plugin settings |
-| [ADR: SQL database contract](adr/sql-database-contract.md) | SQL-only backends; host-owned schema/plans; plugins are thin adapters |
+| [ADR: SQL database contract](adr/sql-database-contract.md) | SQL-only backends; host-resolved canonical SQL + proofs; adapter-owned lowering |
 | [ADR: Schema versioning](adr/schema-versioning.md) | Frozen schema integers, checksums, backups, fail-closed, last-reversible CLI |
 | [Plugin registry](plugin-registry.md) | crates.io taxonomy, native vs workerd archives, catalog roadmap |
 | [Packaging](packaging.md) | `cargo package-*` aliases, platform bundles, release CI |

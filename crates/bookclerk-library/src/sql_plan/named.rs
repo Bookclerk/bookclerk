@@ -969,6 +969,72 @@ fn clear_outcome_snapshot(ctx: &ReceiptCtx) -> SqlStmt {
     )
 }
 
+/// SQL-v1 `json_object` admits at most 16 key/value pairs (32 arguments).
+///
+/// Concatenating JSON object text preserves JSON `null` (JSON Merge Patch
+/// via `json_patch` would delete those keys).
+fn select_merged_json_object_payload(head: &str, tail: &str, from_and_rest: &str) -> String {
+    format!(
+        "SELECT '{{' || substr(a, 2, length(a) - 2) || ',' || substr(b, 2, length(b) - 2) || '}}' \
+         AS payload FROM (\
+            SELECT CAST({head} AS TEXT) AS a, CAST({tail} AS TEXT) AS b \
+            FROM {from_and_rest}\
+         ) AS _bc_json_parts"
+    )
+}
+
+/// First 16 pairs of a claimed `jobs` row (SQL-v1 `json_object` maximum).
+fn job_payload_json_object_head() -> &'static str {
+    "json_object(\
+        'id', id, 'kind', kind, 'state', state, 'priority', priority, \
+        'resource_class', resource_class, 'payload', json(payload), \
+        'progress', progress, 'attempt_count', attempt_count, \
+        'max_attempts', max_attempts, 'run_after', run_after, \
+        'lease_owner', lease_owner, 'lease_expires_at', lease_expires_at, \
+        'dedup_key', dedup_key, 'error_kind', error_kind, \
+        'error_message', error_message, \
+        'cancel_requested', json(CASE WHEN cancel_requested != 0 THEN 'true' ELSE 'false' END)\
+     )"
+}
+
+/// Remaining `jobs` pairs after [`job_payload_json_object_head`].
+fn job_payload_json_object_tail() -> &'static str {
+    "json_object(\
+        'created_at', created_at, 'updated_at', updated_at, \
+        'started_at', started_at, 'finished_at', finished_at, \
+        'lease_generation', lease_generation\
+     )"
+}
+
+/// First 16 pairs of a claimed `event_deliveries` row.
+fn event_delivery_json_object_head() -> &'static str {
+    "json_object(\
+        'id', id, 'event_id', event_id, 'plugin_id', plugin_id, \
+        'idempotency_key', idempotency_key, 'state', state, \
+        'attempt_count', attempt_count, 'max_attempts', max_attempts, \
+        'lease_owner', lease_owner, 'lease_expires_at', lease_expires_at, \
+        'lease_generation', lease_generation, 'run_after', run_after, \
+        'invocation_sequence', invocation_sequence, \
+        'resume_pending', json(CASE WHEN resume_pending != 0 THEN 'true' ELSE 'false' END), \
+        'checkpoint_json', checkpoint_json, \
+        'checkpoint_schema_version', checkpoint_schema_version, \
+        'ordering_key', ordering_key\
+     )"
+}
+
+/// Remaining `event_deliveries` pairs after [`event_delivery_json_object_head`].
+fn event_delivery_json_object_tail() -> &'static str {
+    "json_object(\
+        'outcome', outcome, \
+        'error_message', error_message, 'created_at', created_at, 'updated_at', updated_at, \
+        'cancel_requested', json(CASE WHEN cancel_requested != 0 THEN 'true' ELSE 'false' END), \
+        'resource_class', COALESCE(resource_class, 'network'), \
+        'wake_event_type', COALESCE(wake_event_type, ''), \
+        'wake_filter_json', COALESCE(wake_filter_json, ''), \
+        'wake_grants_json', COALESCE(wake_grants_json, '')\
+     )"
+}
+
 /// SQL that builds the guest user JSON object (password present as a boolean).
 fn user_payload_json_sql() -> &'static str {
     "SELECT json_object(\
@@ -2024,23 +2090,15 @@ fn plan_claim_next_job(
                 vec![j_str(owner), j_str(now)],
             ));
     statements.push(sql(
-                "SELECT json_object(\
-                    'id', id, 'kind', kind, 'state', state, 'priority', priority, \
-                    'resource_class', resource_class, 'payload', json(payload), \
-                    'progress', progress, 'attempt_count', attempt_count, \
-                    'max_attempts', max_attempts, 'run_after', run_after, \
-                    'lease_owner', lease_owner, 'lease_expires_at', lease_expires_at, \
-                    'dedup_key', dedup_key, 'error_kind', error_kind, \
-                    'error_message', error_message, \
-                    'cancel_requested', json(CASE WHEN cancel_requested != 0 THEN 'true' ELSE 'false' END), \
-                    'created_at', created_at, 'updated_at', updated_at, \
-                    'started_at', started_at, 'finished_at', finished_at, \
-                    'lease_generation', lease_generation\
-                 ) AS payload FROM jobs \
+        &select_merged_json_object_payload(
+            job_payload_json_object_head(),
+            job_payload_json_object_tail(),
+            "jobs \
                  WHERE lease_owner = ? AND state = 'running' AND updated_at = ? \
                  ORDER BY started_at DESC LIMIT 1",
-                vec![j_str(owner), j_str(now)],
-            ));
+        ),
+        vec![j_str(owner), j_str(now)],
+    ));
     AtomicPlan {
         statements,
         outcome_index: 4,
@@ -2432,25 +2490,12 @@ fn plan_claim_event_delivery_cas(
         vec![j_str(delivery_id), j_str(owner), j_str(now)],
     ));
     statements.push(sql(
-        "SELECT json_object(\
-            'id', id, 'event_id', event_id, 'plugin_id', plugin_id, \
-            'idempotency_key', idempotency_key, 'state', state, \
-            'attempt_count', attempt_count, 'max_attempts', max_attempts, \
-            'lease_owner', lease_owner, 'lease_expires_at', lease_expires_at, \
-            'lease_generation', lease_generation, 'run_after', run_after, \
-            'invocation_sequence', invocation_sequence, \
-            'resume_pending', json(CASE WHEN resume_pending != 0 THEN 'true' ELSE 'false' END), \
-            'checkpoint_json', checkpoint_json, \
-            'checkpoint_schema_version', checkpoint_schema_version, \
-            'ordering_key', ordering_key, 'outcome', outcome, \
-            'error_message', error_message, 'created_at', created_at, 'updated_at', updated_at, \
-            'cancel_requested', json(CASE WHEN cancel_requested != 0 THEN 'true' ELSE 'false' END), \
-            'resource_class', COALESCE(resource_class, 'network'), \
-            'wake_event_type', COALESCE(wake_event_type, ''), \
-            'wake_filter_json', COALESCE(wake_filter_json, ''), \
-            'wake_grants_json', COALESCE(wake_grants_json, '')\
-         ) AS payload FROM event_deliveries \
+        &select_merged_json_object_payload(
+            event_delivery_json_object_head(),
+            event_delivery_json_object_tail(),
+            "event_deliveries \
          WHERE id = ? AND state = 'running' AND lease_owner = ? AND updated_at = ?",
+        ),
         vec![j_str(delivery_id), j_str(owner), j_str(now)],
     ));
     let outcome_index = statements.len() - 2;
@@ -2546,26 +2591,13 @@ fn plan_claim_next_event_delivery(
                 vec![j_str(owner), j_str(now)],
             ),
             sql(
-                "SELECT json_object(\
-                    'id', id, 'event_id', event_id, 'plugin_id', plugin_id, \
-                    'idempotency_key', idempotency_key, 'state', state, \
-                    'attempt_count', attempt_count, 'max_attempts', max_attempts, \
-                    'lease_owner', lease_owner, 'lease_expires_at', lease_expires_at, \
-                    'lease_generation', lease_generation, 'run_after', run_after, \
-                    'invocation_sequence', invocation_sequence, \
-                    'resume_pending', json(CASE WHEN resume_pending != 0 THEN 'true' ELSE 'false' END), \
-                    'checkpoint_json', checkpoint_json, \
-                    'checkpoint_schema_version', checkpoint_schema_version, \
-                    'ordering_key', ordering_key, 'outcome', outcome, \
-                    'error_message', error_message, 'created_at', created_at, 'updated_at', updated_at, \
-                    'cancel_requested', json(CASE WHEN cancel_requested != 0 THEN 'true' ELSE 'false' END), \
-                    'resource_class', COALESCE(resource_class, 'network'), \
-                    'wake_event_type', COALESCE(wake_event_type, ''), \
-                    'wake_filter_json', COALESCE(wake_filter_json, ''), \
-                    'wake_grants_json', COALESCE(wake_grants_json, '')\
-                 ) AS payload FROM event_deliveries \
+                &select_merged_json_object_payload(
+                    event_delivery_json_object_head(),
+                    event_delivery_json_object_tail(),
+                    "event_deliveries \
                  WHERE lease_owner = ? AND state = 'running' AND updated_at = ? \
                  ORDER BY lease_generation DESC LIMIT 1",
+                ),
                 vec![j_str(owner), j_str(now)],
             ),
         ],
@@ -4044,11 +4076,6 @@ mod tests {
             insert.sql.contains('?') && !insert.sql.contains('$'),
             "host compiler must emit canonical SQL, not $n:\n{}",
             insert.sql
-        );
-        let lowered = bookclerk_db_exec::lower_canonical_to_postgres(&insert.sql);
-        assert!(
-            lowered.contains("$5"),
-            "adapter lowering must number blob binds:\n{lowered}"
         );
         assert_host_plan_typechecks(&compiled);
     }

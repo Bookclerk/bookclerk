@@ -5,4 +5,7 @@
 
 pub mod postgres;
 
-pub use postgres::{drop_binding, open, open_binding, open_binding_existing};
+pub use postgres::{
+    drop_binding, open, open_binding, open_binding_existing, MIN_POSTGRES_MAJOR,
+    MIN_POSTGRES_VERSION_NUM,
+};

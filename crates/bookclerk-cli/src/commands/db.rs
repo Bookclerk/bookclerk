@@ -141,11 +141,11 @@ async fn apply_opts(
     caps: &bookclerk_plugin_abi::DbCapabilities,
 ) -> anyhow::Result<SchemaApplyOptions> {
     let backend_at_capture = bookclerk_plugin_host::backup_adapter_id(&config.database.plugin);
+    let registry = bookclerk_plugin_host::load_external_database(config).await?;
+    let ext = registry.active().ok_or_else(|| {
+        anyhow::anyhow!("no active database plugin — stage and enable [database].plugin")
+    })?;
     let plugin_units = if include_plugin_databases && !matches!(state, SchemaState::Uninitialized) {
-        let registry = bookclerk_plugin_host::load_external_database(config).await?;
-        let ext = registry.active().ok_or_else(|| {
-            anyhow::anyhow!("no active database plugin — stage and enable [database].plugin")
-        })?;
         bookclerk_plugin_host::export_registered_plugin_units(&ext, config, db)
             .await
             .map_err(|err| anyhow::anyhow!("{err}"))?
@@ -162,6 +162,7 @@ async fn apply_opts(
             max_result_bytes: caps.max_result_bytes,
             max_atomic_result_bytes: caps.max_atomic_result_bytes,
             plugin_units,
+            adapter: Some(ext.library_backup_ops()),
         }),
     })
 }
@@ -208,11 +209,11 @@ async fn run_backup_create(
     }
     let state = current_schema_state(&db, kind).await?;
     let backend_at_capture = bookclerk_plugin_host::backup_adapter_id(&config.database.plugin);
+    let registry = bookclerk_plugin_host::load_external_database(config).await?;
+    let ext = registry.active().ok_or_else(|| {
+        anyhow::anyhow!("no active database plugin — stage and enable [database].plugin")
+    })?;
     let plugin_units = if include_plugin_databases && !matches!(state, SchemaState::Uninitialized) {
-        let registry = bookclerk_plugin_host::load_external_database(config).await?;
-        let ext = registry.active().ok_or_else(|| {
-            anyhow::anyhow!("no active database plugin — stage and enable [database].plugin")
-        })?;
         bookclerk_plugin_host::export_registered_plugin_units(&ext, config, &db)
             .await
             .map_err(|err| anyhow::anyhow!("{err}"))?
@@ -231,6 +232,8 @@ async fn run_backup_create(
         max_result_bytes: caps.max_result_bytes,
         max_atomic_result_bytes: caps.max_atomic_result_bytes,
         plugin_units,
+        adapter: Some(ext.library_backup_ops()),
+        in_process: false,
     };
     let outcome = backup_library(&db, &req)
         .await?
@@ -332,8 +335,13 @@ async fn run_restore(config: &Config, format: OutputFormat, from: String) -> any
     ensure_restore_target_is_replaceable(&db, kind)
         .await
         .map_err(|err| anyhow::anyhow!("{err}"))?;
+    let registry = bookclerk_plugin_host::load_external_database(config).await?;
+    let ext = registry.active().ok_or_else(|| {
+        anyhow::anyhow!("no active database plugin — stage and enable [database].plugin")
+    })?;
     let opts = CanonicalRestoreOpts {
         host_schema_kind: kind,
+        adapter: Some(ext.library_backup_ops()),
         ..CanonicalRestoreOpts::from_caps(&caps)?
     };
     let plan = if is_archive {

@@ -58,6 +58,7 @@ async fn run_binding(
         let deadline =
             (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
         bookclerk_db_exec::execute_typed_envelope(
+            bookclerk_db_exec::PhysicalEngine::sqlite(),
             db,
             &envelope,
             "sqlite_txn",
@@ -84,6 +85,7 @@ async fn run_binding_owned(
         let deadline =
             (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
         bookclerk_db_exec::execute_typed_envelope(
+            bookclerk_db_exec::PhysicalEngine::sqlite(),
             db,
             &envelope,
             "sqlite_txn",
@@ -383,6 +385,7 @@ async fn binding_cancel_before_begin_does_not_commit() {
             let deadline = (envelope.request.deadline_unix_ms > 0)
                 .then_some(envelope.request.deadline_unix_ms);
             bookclerk_db_exec::execute_typed_envelope(
+                    bookclerk_db_exec::PhysicalEngine::sqlite(),
                     &db,
                     &envelope,
                     "sqlite_txn",
@@ -442,6 +445,7 @@ async fn binding_cancel_around_commit_rolls_back() {
             let deadline = (envelope.request.deadline_unix_ms > 0)
                 .then_some(envelope.request.deadline_unix_ms);
             bookclerk_db_exec::execute_typed_envelope(
+                    bookclerk_db_exec::PhysicalEngine::sqlite(),
                     &db,
                     &envelope,
                     "sqlite_txn",
@@ -1413,6 +1417,32 @@ async fn binding_runtime_edges_and_type_negatives() {
     {
         panic!("{err}");
     }
+    let mut nullif_guard = stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_DIV_NULLIF_NOT_ZERO_GUARD,
+        vec![],
+    );
+    nullif_guard.max_rows = 8;
+    let reply = run_binding(&db, req("div-nullif-guard", vec![nullif_guard]))
+        .await
+        .expect("div NULLIF not-zero guard");
+    if let Some(err) =
+        bookclerk_db_exec::sql_v1::portable_div_nullif_not_zero_guard_mismatch(&reply.statements[0])
+    {
+        panic!("{err}");
+    }
+    let mut json_obj = stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_JSON_OBJECT_SEMANTICS,
+        vec![],
+    );
+    json_obj.max_rows = 8;
+    let reply = run_binding(&db, req("json-object-semantics", vec![json_obj]))
+        .await
+        .expect("json_object semantics");
+    if let Some(err) =
+        bookclerk_db_exec::sql_v1::portable_json_object_semantics_mismatch(&reply.statements[0])
+    {
+        panic!("{err}");
+    }
     run_binding(
         &db,
         req(
@@ -1527,12 +1557,13 @@ async fn binding_stamped_proofs_survive_catalog_wipe() {
     ))
     .await
     .expect("wipe schema catalog");
-    let envelope = bookclerk_plugin_abi::HostExecuteEnvelope::new(
+    let envelope = bookclerk_plugin_abi::AdapterExecuteRequest::new(
         req,
         bookclerk_plugin_abi::GuestReceiptPersist::default(),
     )
     .with_proofs(proofs);
     let reply = bookclerk_db_exec::execute_typed_envelope(
+        bookclerk_db_exec::PhysicalEngine::sqlite(),
         &db,
         &envelope,
         "sqlite_txn",

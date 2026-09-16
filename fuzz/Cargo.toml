@@ -1,0 +1,32 @@
+[package]
+name = "bookclerk-sql-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bookclerk-plugin-abi = { path = "../crates/bookclerk-plugin-abi", features = ["host"] }
+bookclerk-db-exec = { path = "../crates/bookclerk-db-exec" }
+sea-orm = { version = "2.0.0", default-features = false }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "sql_parse"
+path = "fuzz_targets/sql_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sql_lower"
+path = "fuzz_targets/sql_lower.rs"
+test = false
+doc = false
+bench = false

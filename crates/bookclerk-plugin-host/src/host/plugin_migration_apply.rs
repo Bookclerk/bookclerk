@@ -25,10 +25,14 @@ pub(crate) trait PluginMigrationApplyHost: Send + Sync {
     /// Load host-private `plugin_migrations` rows for this binding.
     async fn load_plugin_migration_history(&self) -> PluginResult<PluginMigrationHistory>;
     /// Execute one short atomic unit (slot + ops + journal append).
+    ///
+    /// `applied_prefix` is the durable journal length / expected ordinal used
+    /// to stamp the binding catalog (`plugin_binding_type_env`).
     async fn execute_plugin_migration_apply(
         &self,
         operation_id: String,
         statements: Vec<String>,
+        applied_prefix: usize,
     ) -> PluginResult<()>;
 }
 
@@ -146,7 +150,7 @@ where
         let operation_id =
             plugin_migrate_operation_id(owner, binding, ordinal, &migration.id, attempt);
         match host
-            .execute_plugin_migration_apply(operation_id, stmts)
+            .execute_plugin_migration_apply(operation_id, stmts, ordinal)
             .await
         {
             Ok(()) => return Ok(()),
@@ -210,7 +214,7 @@ mod tests {
 
     use bookclerk_library::{
         apply_binding_bootstrap, load_plugin_migration_history, next_pending_plugin_migration,
-        prove_plugin_migration_sequence,
+        plugin_binding_type_env, prove_plugin_migration_sequence, PluginMigrationSequence,
     };
     use bookclerk_plugin_abi::{PluginMigration, PluginMigrationOp};
     use sea_orm::DatabaseConnection;
@@ -224,6 +228,7 @@ mod tests {
 
     struct ScriptedApplyHost {
         db: DatabaseConnection,
+        registered: PluginMigrationSequence,
         script: Mutex<VecDeque<ApplyScript>>,
         executed_ids: Mutex<Vec<String>>,
     }
@@ -240,6 +245,7 @@ mod tests {
             &self,
             operation_id: String,
             statements: Vec<String>,
+            applied_prefix: usize,
         ) -> PluginResult<()> {
             self.executed_ids.lock().unwrap().push(operation_id.clone());
             let behavior = self
@@ -252,9 +258,25 @@ mod tests {
                 ApplyScript::FailRetryable => {
                     Err(PluginError::unavailable("injected retryable apply failure"))
                 }
-                ApplyScript::Commit => commit_apply(&self.db, operation_id, statements).await,
+                ApplyScript::Commit => {
+                    commit_apply(
+                        &self.db,
+                        operation_id,
+                        statements,
+                        &self.registered,
+                        applied_prefix,
+                    )
+                    .await
+                }
                 ApplyScript::CommitThenAmbiguous => {
-                    commit_apply(&self.db, operation_id, statements).await?;
+                    commit_apply(
+                        &self.db,
+                        operation_id,
+                        statements,
+                        &self.registered,
+                        applied_prefix,
+                    )
+                    .await?;
                     Err(PluginError::unavailable(
                         "lost reply after durable apply commit",
                     ))
@@ -267,11 +289,20 @@ mod tests {
         db: &DatabaseConnection,
         operation_id: String,
         statements: Vec<String>,
+        registered: &PluginMigrationSequence,
+        applied_prefix: usize,
     ) -> PluginResult<()> {
         let req = plugin_migration_apply_request(operation_id, statements);
-        bookclerk_library::sql_plan::execute_typed_on_binding(db, &req, "plugin_migrate_txn", 0)
-            .await
-            .map_err(|err| PluginError::message(err.to_string()))?;
+        let catalog = plugin_binding_type_env(registered, applied_prefix);
+        bookclerk_library::sql_plan::execute_typed_on_binding(
+            db,
+            &req,
+            "plugin_migrate_txn",
+            0,
+            &catalog,
+        )
+        .await
+        .map_err(|err| PluginError::message(err.to_string()))?;
         Ok(())
     }
 
@@ -322,6 +353,7 @@ mod tests {
         let registered = seq(n_table_migs(n));
         let host = ScriptedApplyHost {
             db: db.clone(),
+            registered: registered.clone(),
             script: Mutex::new(VecDeque::new()),
             executed_ids: Mutex::new(Vec::new()),
         };
@@ -355,6 +387,7 @@ mod tests {
         script.push_back(ApplyScript::Commit); // m001 after two retries
         let host = ScriptedApplyHost {
             db: db.clone(),
+            registered: registered.clone(),
             script: Mutex::new(script),
             executed_ids: Mutex::new(Vec::new()),
         };
@@ -387,6 +420,7 @@ mod tests {
         }
         let host = ScriptedApplyHost {
             db: db.clone(),
+            registered: registered.clone(),
             script: Mutex::new(script),
             executed_ids: Mutex::new(Vec::new()),
         };
@@ -421,6 +455,7 @@ mod tests {
         script.push_back(ApplyScript::CommitThenAmbiguous);
         let host = ScriptedApplyHost {
             db: db.clone(),
+            registered: registered.clone(),
             script: Mutex::new(script),
             executed_ids: Mutex::new(Vec::new()),
         };
