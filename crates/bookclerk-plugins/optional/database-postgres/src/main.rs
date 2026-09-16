@@ -52,6 +52,7 @@ async fn binding_from_context(
         url,
         binding: Some(binding),
         database,
+        provision,
         ..
     }) = connect_params_from_context(ctx)
     else {
@@ -62,9 +63,12 @@ async fn binding_from_context(
             "database binding `{binding}` open is missing its database name"
         ))
     })?;
-    let db = bookclerk_plugin_database_postgres::open_binding(&url, &database)
-        .await
-        .map_err(|e| PluginError::internal(format!("database binding `{binding}`: {e}")))?;
+    let db = if provision {
+        bookclerk_plugin_database_postgres::open_binding(&url, &database).await
+    } else {
+        bookclerk_plugin_database_postgres::open_binding_existing(&url, &database).await
+    }
+    .map_err(|e| PluginError::internal(format!("database binding `{binding}`: {e}")))?;
     Ok(Some(db))
 }
 

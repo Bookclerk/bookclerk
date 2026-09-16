@@ -42,7 +42,11 @@ pub async fn execute_compiled_on_capped(
     Ok(interpret_typed_exec(&compiled, &reply, &hash))
 }
 
-/// Executes a typed request as one transaction.
+/// Executes a typed request as one transaction against the host library.
+///
+/// Merges [`crate::migrations::host_sql_type_env`] so host DML typechecks
+/// against library tables. Isolated plugin bindings must use
+/// [`execute_typed_on_binding`].
 ///
 /// # Errors
 ///
@@ -63,7 +67,36 @@ pub async fn execute_typed_on(
     .await
 }
 
+/// Typed execute against an isolated plugin binding.
+///
+/// Leaves the session type environment empty so typing uses the binding
+/// catalog, not host library tables.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Orm`] when a statement fails.
+pub async fn execute_typed_on_binding(
+    db: &sea_orm::DatabaseConnection,
+    req: &ExecuteRequest,
+    timing_source: &str,
+    max_result_rows: u32,
+) -> Result<bookclerk_plugin_abi::ExecuteReply> {
+    bookclerk_db_exec::execute_typed_on_session(
+        db,
+        req,
+        GuestReceiptPersist::default(),
+        timing_source,
+        ExecCaps::from(max_result_rows),
+        AtomicSession::default(),
+    )
+    .await
+    .map_err(LibraryError::from_db_err)
+}
+
 /// [`execute_typed_on`] with session cancel / deadline checks.
+///
+/// Always merges the host library type environment. Binding schema apply
+/// must call [`execute_typed_on_binding`] instead.
 ///
 /// # Errors
 ///

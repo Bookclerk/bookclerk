@@ -190,8 +190,8 @@ pub struct CliInvokeParams {
 /// First-party host-managed adapters receive host-private connect params
 /// instead. Decode with [`crate::db::database_adapter_config_from_context`].
 ///
-/// Wire: `{ "pluginDataDir": "…", "config": { … }, "binding"?: "…", "instanceId"?: "…" }`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+/// Wire: `{ "pluginDataDir": "…", "config": { … }, "binding"?: "…", "instanceId"?: "…", "provision"?: true }`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DatabaseAdapterConfig {
     /// Scoped writable directory for this plugin (`…/plugins/<id>/data`).
@@ -212,6 +212,32 @@ pub struct DatabaseAdapterConfig {
     /// `DB`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_id: Option<String>,
+    /// When false, open an existing binding unit and do not provision a
+    /// missing one (read-only backup capture). Default true.
+    #[serde(default = "default_true", skip_serializing_if = "skip_if_true")]
+    pub provision: bool,
+}
+
+/// Serde default for omitted `provision` (create the binding unit).
+fn default_true() -> bool {
+    true
+}
+
+/// Omit `provision` from JSON when it is the default (`true`).
+fn skip_if_true(value: &bool) -> bool {
+    *value
+}
+
+impl Default for DatabaseAdapterConfig {
+    fn default() -> Self {
+        Self {
+            plugin_data_dir: String::new(),
+            config: Value::Null,
+            binding: None,
+            instance_id: None,
+            provision: true,
+        }
+    }
 }
 
 /// Result of [`crate::methods::cli_invoke`].

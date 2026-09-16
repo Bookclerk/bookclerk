@@ -16,6 +16,22 @@ use bookclerk_media::{
 
 const WORKER: &str = env!("CARGO_BIN_EXE_bookclerk-media-worker");
 
+/// On Windows, AppContainer DACL mutations share `Local\bookclerk-dacl-tx`
+/// (30s fail-closed). Parallel pool tests each spawn jailed workers and
+/// otherwise time out waiting for a sibling. A tokio mutex is used so the
+/// lock can be held across `.await` without parking a runtime worker.
+#[cfg(windows)]
+async fn begin_windows_confined_pool_test() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let lock = LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
+    lock.lock().await
+}
+
+/// No-op on hosts that do not share the Windows AppContainer DACL mutex.
+#[cfg(not(windows))]
+#[allow(clippy::unused_async)]
+async fn begin_windows_confined_pool_test() {}
+
 /// See `isolation.rs`: REQUIRE envs turn an unexpected skip into a failure.
 fn confinement_available() -> bool {
     let caps = bookclerk_sandbox::capabilities();
@@ -104,6 +120,7 @@ fn make_audiobook(path: &Path, seconds: usize) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pool_runs_a_real_encode_in_a_confined_worker() {
+    let _serial = begin_windows_confined_pool_test().await;
     if !confinement_available() {
         eprintln!("skipping: no guest confinement on this host");
         return;
@@ -142,6 +159,7 @@ async fn pool_runs_a_real_encode_in_a_confined_worker() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pool_runs_jobs_concurrently_up_to_its_capacity() {
+    let _serial = begin_windows_confined_pool_test().await;
     if !confinement_available() {
         eprintln!("skipping: no guest confinement on this host");
         return;
@@ -207,6 +225,7 @@ async fn pool_runs_jobs_concurrently_up_to_its_capacity() {
 /// transcode of anything else — so both are driven here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pool_packages_m4b_in_a_confined_worker() {
+    let _serial = begin_windows_confined_pool_test().await;
     if !confinement_available() {
         eprintln!("skipping: no guest confinement on this host");
         return;
@@ -296,6 +315,7 @@ async fn pool_packages_m4b_in_a_confined_worker() {
 /// ordering without depending on how long an encode happens to take.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_retired_pool_still_finishes_the_work_it_was_holding() {
+    let _serial = begin_windows_confined_pool_test().await;
     if !confinement_available() {
         eprintln!("skipping: no guest confinement on this host");
         return;
@@ -349,6 +369,7 @@ async fn a_retired_pool_still_finishes_the_work_it_was_holding() {
 /// pool behaviour rather than jail behaviour.
 #[tokio::test]
 async fn pool_surfaces_a_job_failure_without_killing_the_caller() {
+    let _serial = begin_windows_confined_pool_test().await;
     let cache = tempfile::tempdir().expect("tempdir");
     let out = tempfile::tempdir().expect("tempdir");
     let pool = confined_pool(1, supported_confinement());

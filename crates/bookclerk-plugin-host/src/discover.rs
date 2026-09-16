@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use bookclerk_config::Config;
+use bookclerk_library::BOOKCLERK_SCHEMA_NAMESPACE;
 use bookclerk_plugin_abi::PRODUCT_API_VERSION;
 
 use crate::manifest::PluginManifest;
@@ -119,6 +120,12 @@ fn push_manifest(
 ) -> Result<()> {
     let text = std::fs::read_to_string(manifest_path)?;
     let manifest = PluginManifest::parse(&text)?;
+    if manifest.id == BOOKCLERK_SCHEMA_NAMESPACE {
+        return Err(PluginError::message(format!(
+            "plugin `{}`: id `{BOOKCLERK_SCHEMA_NAMESPACE}` is reserved for the host schema namespace",
+            manifest.id
+        )));
+    }
     if manifest.api_version > PRODUCT_API_VERSION {
         tracing::warn!(
             id = %manifest.id,
@@ -427,5 +434,57 @@ mode = "deny"
         assert!(err.contains("source"), "{err}");
         assert!(err.contains("integration"), "{err}");
         assert!(err.contains("globally unique"), "{err}");
+    }
+
+    #[test]
+    fn reserved_bookclerk_plugin_id_is_hard_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins = tmp.path().join("plugins");
+        write_plugin(&plugins.join("host"), "bookclerk", "integration");
+        let cfg = Config {
+            paths: Some(bookclerk_config::Paths::from_files_dir(
+                tmp.path().to_path_buf(),
+            )),
+            ..Config::default()
+        };
+        let err = discover_plugins(&cfg).unwrap_err().to_string();
+        assert!(err.contains("reserved"), "{err}");
+        assert!(err.contains("bookclerk"), "{err}");
+    }
+
+    #[test]
+    fn leftover_migration_plan_toml_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins = tmp.path().join("plugins");
+        let nested = plugins.join("echo_sql");
+        write_plugin(&nested, "echo_sql", "integration");
+        fs::write(
+            nested.join("plugin.toml"),
+            r#"
+api_version = 2
+id = "echo_sql"
+kind = "integration"
+runtime = "native"
+command = "./bin"
+migration_plan = "migrations.toml"
+
+[capabilities.network]
+mode = "deny"
+[capabilities.bindings]
+databases = ["DB"]
+"#,
+        )
+        .unwrap();
+        let cfg = Config {
+            paths: Some(bookclerk_config::Paths::from_files_dir(
+                tmp.path().to_path_buf(),
+            )),
+            ..Config::default()
+        };
+        let err = discover_plugins(&cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("migration_plan") || err.to_lowercase().contains("unknown"),
+            "{err}"
+        );
     }
 }

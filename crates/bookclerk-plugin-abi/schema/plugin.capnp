@@ -33,6 +33,17 @@ const maxCheckpointBytes :UInt32 = 65536;
 const maxIdentifierBytes :UInt32 = 64;
 const maxConfigPayloadBytes :UInt32 = 65536;
 const maxEventPayloadBytes :UInt32 = 65536;
+# Plugin `databaseMigrations` is a startup-time scalar (not a stream). Count is
+# `maxListPage`. Each SQL text is `maxScalarBytes`. Ops-per-migration, total
+# operations across the registration, and the aggregate UTF-8 bytes of ids +
+# SQL have dedicated caps so a jailed guest cannot force unbounded host
+# allocation before semantic proof. `maxPluginMigrationRegistrationBytes` is
+# id+SQL text only; `maxPluginMigrationTotalOps` bounds the structural object
+# graph (2048: enough for realistic histories, including 256 migrations of ~8
+# ops or 8 migrations at the per-migration cap, and far below 256×256).
+const maxPluginMigrationOps :UInt32 = 256;
+const maxPluginMigrationTotalOps :UInt32 = 2048;
+const maxPluginMigrationRegistrationBytes :UInt32 = 262144;
 
 # Negotiable `rpcFeatures` wire names (see `PluginDescribe.rpcFeatures`).
 const featureScalarLimits :Text = "rpc.scalarLimits";
@@ -778,6 +789,10 @@ struct DatabaseAdapterConfig {
   # library open. Third-party adapters must key isolated databases on this
   # value rather than `binding` alone (two plugins may both declare `DB`).
   instanceId @3 :Text;
+  # Append-only. When false, open an existing binding unit and
+  # do not provision a missing one (read-only backup capture). Omitted/true
+  # on older hosts means the adapter may create the unit.
+  provision @4 :Bool;
 }
 
 # JSON health payload for guests that report identity alongside liveness.
@@ -1104,6 +1119,12 @@ struct DbCapabilities {
   # D1 advertises 100000. Hosts compare a standardized Bookclerk lowering
   # upper bound against this number and must not branch on engine identity.
   maxLoweredStatementBytes @21 :UInt32;
+  # Adapter can expose one stable logical database state while the host
+  # reads schema, rows, and identity.
+  consistentBackupRead @22 :Bool;
+  # Adapter can destructively replace one logical database unit so an
+  # ordinary restore failure does not leave that unit partially replaced.
+  atomicUnitRestore @23 :Bool;
 }
 
 struct DbBootstrapReply {
@@ -1147,6 +1168,39 @@ interface GuestDatabase {
   close @1 () -> (result :EmptyReply);
 }
 
+# One already-separated BookclerkSQL operation in a plugin-owned migration.
+# `schema` is admitted DDL; `data` is admitted DML. There is no native SQL
+# escape hatch.
+struct PluginMigrationOp {
+  union {
+    schema @0 :Text;
+    data @1 :Text;
+  }
+}
+
+# One plugin-owned migration application. `id` is an opaque plugin-chosen
+# stable identity (name, UUID, timestamp-like string, or digits-as-text).
+# Bookclerk assigns no order, version, or predecessor meaning to `id`.
+# Registration order is the forward sequence.
+struct PluginMigration {
+  id @0 :Text;
+  operations @1 :List(PluginMigrationOp); # at most `maxPluginMigrationOps`
+}
+
+struct PluginMigrationsOk {
+  # At most `maxListPage` entries; aggregate id+SQL bytes at most
+  # `maxPluginMigrationRegistrationBytes`; total operations at most
+  # `maxPluginMigrationTotalOps`.
+  migrations @0 :List(PluginMigration);
+}
+
+struct PluginMigrationsReply {
+  union {
+    ok @0 :PluginMigrationsOk;
+    err @1 :PluginError;
+  }
+}
+
 interface BookclerkPlugin {
   describe @0 () -> (result :DescribeReply);
   destination @1 (context :DestinationContext) -> (result :DestinationReply);
@@ -1159,6 +1213,12 @@ interface BookclerkPlugin {
   cliDescribe @8 () -> (result :JsonReply);
   cliInvoke @9 (paramsJson :Text) -> (result :JsonReply);
   # Plugin-provided OIDC AS client templates. Empty list when unused.
-  # Hosts ignore `unsupported` from older guests.
   oidcClients @10 () -> (result :OidcClientsReply);
+  # Complete ordered plugin-owned migration sequence for one named binding.
+  # Host calls this at binding initialization, before ordinary execute.
+  # Empty list means the binding has no plugin-owned migrations.
+  # Bounded by `maxListPage` / `maxPluginMigrationOps` /
+  # `maxPluginMigrationTotalOps` / `maxScalarBytes` /
+  # `maxPluginMigrationRegistrationBytes`.
+  databaseMigrations @11 (binding :Text) -> (result :PluginMigrationsReply);
 }

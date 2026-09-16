@@ -56,7 +56,7 @@ plugins, SDKs).
 | `plan` | Always runs; publishes outputs + `ci-plan` artifact |
 | `fmt / clippy / test` | Selective steps driven by plan outputs (when `SELECTIVE_CI=1`). Installs `capnproto`. The plugin ABI contract requires pinned `target/debug/workerd` (fails closed unless a local `BOOKCLERK_SKIP_WORKERD=1` skip is used — CI never sets that) |
 | `release build` | When hosts/platform packaging are affected (or full suite). Installs `capnproto`. |
-| `sandbox + jailed tiers` | When confinement packages are affected (or full suite) |
+| `sandbox + jailed tiers` | When confinement packages are affected (or full suite). Windows runs `--test-threads=1` so parallel AppContainer tests do not starve `Local\bookclerk-dacl-tx`. |
 | `tray` | When `bookclerk-tray` is affected (or full suite) |
 | `postgres job queue` | When Rust runs (or full suite). Installs `capnproto` so `bookclerk-library` can compile its `bookclerk-plugin-abi` dependency. Requires a Postgres service. Runs ignored job-queue tests and non-ignored TOTP atomic conformance (round-trip, leftover, injected commit rollback). |
 | `CI Gate` | Stable required check: succeeds for intentional skips; fails on real failures |

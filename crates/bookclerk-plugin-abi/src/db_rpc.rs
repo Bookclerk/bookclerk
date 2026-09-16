@@ -423,6 +423,8 @@ pub(super) fn write_db_capabilities(mut b: db_caps_capnp::Builder<'_>, caps: &Db
     b.set_max_schema_columns(caps.max_schema_columns);
     b.set_max_pattern_bytes(caps.max_pattern_bytes);
     b.set_max_lowered_statement_bytes(caps.max_lowered_statement_bytes);
+    b.set_consistent_backup_read(caps.consistent_backup_read);
+    b.set_atomic_unit_restore(caps.atomic_unit_restore);
 }
 
 /// Decodes negotiated database capabilities from a Cap'n Proto reader.
@@ -454,6 +456,8 @@ pub(super) fn read_db_capabilities(r: db_caps_capnp::Reader<'_>) -> Result<DbCap
         max_schema_columns: r.get_max_schema_columns(),
         max_pattern_bytes: r.get_max_pattern_bytes(),
         max_lowered_statement_bytes: r.get_max_lowered_statement_bytes(),
+        consistent_backup_read: r.get_consistent_backup_read(),
+        atomic_unit_restore: r.get_atomic_unit_restore(),
     })
 }
 

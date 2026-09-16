@@ -83,7 +83,9 @@ pub fn lower_binding_ddl_execute_request(
 #[must_use]
 pub fn is_host_schema_version_marker(sql: &str) -> bool {
     let t = sql.trim();
-    t.starts_with("INSERT INTO schema_migrations") || t.starts_with("PRAGMA user_version =")
+    t.starts_with("INSERT INTO schema_migrations")
+        || t.starts_with("DELETE FROM schema_migrations")
+        || t.starts_with("PRAGMA user_version =")
 }
 
 /// Splits a canonical schema pack on top-level `;` (quote-aware).

@@ -272,6 +272,7 @@ jobs:
           npm run lint
           npm run test:tools
           npm run test:db-value
+          npm run test:plugin-migrations
 
       - name: Python plugin SDK tools conformance
         if: needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.python_sdk == 'true'
@@ -548,12 +549,21 @@ jobs:
           --all-targets -- -D warnings
 
       - name: Test
+        if: matrix.os != 'windows-latest'
         env:
-          BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: ${{ matrix.os != 'windows-latest' && '1' || '' }}
+          BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: "1"
           BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
         run: >
           cargo test -p bookclerk-sandbox -p bookclerk-media -p bookclerk-media-worker
           -p bookclerk-jail
+
+      - name: Test
+        if: matrix.os == 'windows-latest'
+        env:
+          BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
+        run: >
+          cargo test -p bookclerk-sandbox -p bookclerk-media -p bookclerk-media-worker
+          -p bookclerk-jail -- --test-threads=1
 
   tray:
     name: tray (${{ matrix.os }})

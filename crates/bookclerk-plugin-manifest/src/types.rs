@@ -1152,6 +1152,30 @@ databases = {list}
     }
 
     #[test]
+    fn leftover_migration_plan_field_is_rejected() {
+        let err = PluginManifest::parse(
+            r#"
+api_version = 2
+id = "demo"
+kind = "integration"
+runtime = "native"
+command = "./demo"
+migration_plan = "migrations.toml"
+[capabilities.network]
+mode = "deny"
+[capabilities.bindings]
+databases = ["DB"]
+"#,
+        )
+        .expect_err("static migration_plan is not a plugin.toml field");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("migration_plan") || msg.to_lowercase().contains("unknown"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn native_outbound_forbids_domains() {
         let err = PluginManifest::parse(
             r#"

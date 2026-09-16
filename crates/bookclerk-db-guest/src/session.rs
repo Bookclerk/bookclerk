@@ -189,6 +189,31 @@ pub async fn guest_begin(parent_txn_id: Option<String>) -> Result<String> {
 
     let permit = txn_gate().lock_owned().await;
     let conn = connection().await?;
+    guest_begin_conn(conn, permit).await
+}
+
+/// Begins a top-level transaction on an explicit connection (plugin bindings).
+///
+/// Does not take the process-wide library writer gate; each binding connection
+/// is independent.
+///
+/// # Errors
+///
+/// Returns an error string when begin fails.
+pub async fn guest_begin_on(conn: DatabaseConnection) -> Result<String> {
+    if bookclerk_db_exec::consume_begin_injection() {
+        return Err("database begin failed: injected begin failure".into());
+    }
+    let gate = Arc::new(Mutex::new(()));
+    let permit = gate.lock_owned().await;
+    guest_begin_conn(conn, permit).await
+}
+
+/// Spawn a transaction worker on `conn`, gated by `permit`.
+async fn guest_begin_conn(
+    conn: DatabaseConnection,
+    permit: tokio::sync::OwnedMutexGuard<()>,
+) -> Result<String> {
     let (op_tx, op_rx) = mpsc::channel(32);
     let (ready_tx, ready_rx) = oneshot::channel();
     tokio::spawn(async move {

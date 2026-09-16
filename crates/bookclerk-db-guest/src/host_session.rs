@@ -4,7 +4,7 @@
 
 use bookclerk_plugin_abi::HostExecuteEnvelope;
 use bookclerk_plugin_abi::{AdapterTransaction, HostAdapterDatabaseSession};
-use bookclerk_plugin_abi::{ExecuteReply, ExecuteRequest, PluginError, Result};
+use bookclerk_plugin_abi::{ExecuteReply, ExecuteRequest, Result};
 use sea_orm::DatabaseConnection;
 
 use crate::session::{
@@ -70,9 +70,10 @@ pub struct BoundGuestHostAdapterSession {
 #[async_trait::async_trait(?Send)]
 impl HostAdapterDatabaseSession for BoundGuestHostAdapterSession {
     async fn begin(&self) -> Result<Box<dyn AdapterTransaction>> {
-        Err(PluginError::unsupported(
-            "interactive transactions on plugin database bindings",
-        ))
+        let txn_id = crate::session::guest_begin_on(self.conn.clone())
+            .await
+            .map_err(plugin_error_from_engine)?;
+        Ok(Box::new(GuestHostAdapterTransaction { txn_id }))
     }
 
     async fn execute_envelope(&self, envelope: HostExecuteEnvelope) -> Result<ExecuteReply> {

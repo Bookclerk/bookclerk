@@ -396,6 +396,15 @@ pub trait PluginRoot: 'static {
         Ok(Vec::new())
     }
 
+    /// Complete ordered plugin-owned migration sequence for one named binding.
+    ///
+    /// Called at binding initialization before ordinary execute. Empty means
+    /// the binding has no plugin-owned migrations. `id` values are opaque
+    /// plugin-chosen identities; registration order is the forward sequence.
+    async fn database_migrations(&self, _binding: &str) -> Result<Vec<crate::PluginMigration>> {
+        Ok(Vec::new())
+    }
+
     /// Releases guest resources.
     async fn shutdown(&self) -> Result<()> {
         Ok(())

@@ -56,8 +56,14 @@ execution semantics (`atomicBatch`, `returning`, `affectedRows`,
 `atomicSchemaBatch` requires `schemaMigrations`). Bootstrap metadata
 (`sqlFamily`, SeaORM `dialect`) is **not** on typed `DbCapabilities`;
 it travels on the separate typed `DbBootstrap` / the host connect path after
-semantic negotiation succeeds. `DbCapabilities` `@17` is `pluginDatabases`
-and `@21` is `maxLoweredStatementBytes`.
+semantic negotiation succeeds. `DbCapabilities` `@17` is `pluginDatabases`,
+not a leftover `sqlFamily` tombstone. `@21` is `maxLoweredStatementBytes`.
+`@22` `consistentBackupRead` and `@23` `atomicUnitRestore` split consistent
+capture from complete per-unit replacement. Backup orchestration must not
+branch on sqlite/postgres/d1 plugin identity. First-party D1 advertises
+neither flag (sequential HTTP is not a consistent image and is not complete
+unit replacement). Native D1
+export/import is not a Bookclerk backup path.
 
 The host must not invent capabilities from the plugin id. Missing required
 fields, `atomicBatch: false`, `returning: false`, unspecified (`0`) limits,
@@ -118,7 +124,7 @@ env exists.
 `sqlFamily` and SeaORM `dialect` are bootstrap-only (typed `DbBootstrap` on
 the plugin-host connect path). Typed `DbCapabilities` does not carry them
 (`@17` is `pluginDatabases`; `@18`–`@21` are numeric caps including
-`maxLoweredStatementBytes`). An architecture lint (`scripts/check-db-plugin-isolation.py`)
+`maxLoweredStatementBytes`; `@22`/`@23` are backup flags). An architecture lint (`scripts/check-db-plugin-isolation.py`)
 forbids `bookclerk-library` production sources from reading bootstrap fields
 (or defining planner-side `SqlFamily`). SeaORM proxy open maps bootstrap in
 `bookclerk-plugin-host` after typed capability negotiation succeeds.

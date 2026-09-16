@@ -29,6 +29,9 @@ pub enum ExportCommand {
         /// Include `logs/`.
         #[arg(long)]
         include_logs: bool,
+        /// Include `plugin-databases/` (SQLite binding files).
+        #[arg(long)]
+        include_plugin_databases: bool,
     },
     /// Export Settings.json, AccountsSettings.json, and LibationContext.db.
     Libation {
@@ -82,6 +85,7 @@ pub async fn run(
             include_plugin_manifests,
             include_cache,
             include_logs,
+            include_plugin_databases,
         } => {
             let summary = export_native(NativeExportOptions {
                 files_dir: config.paths().files_dir.clone(),
@@ -90,6 +94,7 @@ pub async fn run(
                 include_plugin_manifests,
                 include_cache,
                 include_logs,
+                include_plugin_databases,
             })?;
             emit(format, &summary, || {
                 println!("exported {} file(s) → {}", summary.files, summary.archive);

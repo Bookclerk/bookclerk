@@ -47,6 +47,8 @@ pub struct NativeExportOptions {
     pub include_cache: bool,
     /// Include `logs/` (off by default).
     pub include_logs: bool,
+    /// Include `plugin-databases/` (SQLite binding files; plugin DDL is not migrated).
+    pub include_plugin_databases: bool,
 }
 
 /// Options for importing a native backup.
@@ -129,6 +131,15 @@ pub fn export_native(opts: NativeExportOptions) -> Result<NativeExportSummary> {
         collect_dir(
             &opts.files_dir.join("logs"),
             "logs",
+            &mut entries,
+            &mut included,
+            true,
+        )?;
+    }
+    if opts.include_plugin_databases {
+        collect_dir(
+            &opts.files_dir.join("plugin-databases"),
+            "plugin-databases",
             &mut entries,
             &mut included,
             true,
@@ -394,6 +405,7 @@ mod tests {
             include_plugin_manifests: true,
             include_cache: false,
             include_logs: false,
+            include_plugin_databases: false,
         })
         .unwrap();
         assert!(summary.files >= 3);

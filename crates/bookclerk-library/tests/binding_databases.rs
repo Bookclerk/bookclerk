@@ -5,9 +5,10 @@
 //! connections, proving plugin-owned DDL, cross-binding isolation, reserved
 //! table denial, and retry-token replay inside the binding.
 
+use bookclerk_library::{apply_plugin_migrations, prove_plugin_migration_sequence};
 use bookclerk_plugin_abi::{
     DbCapabilities, DbPlanStatementKind, DbResultSelection, DbValue, ExecuteReply, ExecuteRequest,
-    GuestSqlPolicy, PluginError, TypedDbStatement,
+    GuestSqlPolicy, PluginError, PluginMigration, PluginMigrationOp, TypedDbStatement,
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
 use std::sync::atomic::AtomicBool;
@@ -18,23 +19,59 @@ async fn binding_db() -> DatabaseConnection {
     let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
         .await
         .expect("in-memory binding database");
-    for sql in bookclerk_plugin_abi::sql_v1_pack_statements(
-        bookclerk_library::migrations::binding_bootstrap_sql(),
-    )
-    .expect("binding bootstrap packs")
-    {
-        db.execute_raw(Statement::from_string(
-            db.get_database_backend(),
-            sql.clone(),
-        ))
+    bookclerk_library::apply_binding_bootstrap(&db)
         .await
-        .expect("binding bootstrap DDL");
-    }
+        .expect("binding bootstrap");
     db
 }
 
+/// Applies plugin-owned CREATE TABLE statements through startup registration.
+async fn apply_plugin_tables(db: &DatabaseConnection, creates: &[&str]) {
+    let migrations: Vec<PluginMigration> = creates
+        .iter()
+        .enumerate()
+        .map(|(i, sql)| PluginMigration {
+            id: format!("create-{i}"),
+            operations: vec![PluginMigrationOp::Schema((*sql).to_string())],
+        })
+        .collect();
+    let sequence = prove_plugin_migration_sequence(migrations).expect("plugin sequence");
+    apply_plugin_migrations(db, &sequence)
+        .await
+        .expect("apply plugin migrations");
+}
+
 /// Executes one guest request through the binding authorization + receipt path.
+///
+/// Tests that apply plugin-owned DDL use [`GuestSqlPolicy::binding_migration`].
+/// Product `BindingGuestDatabase::execute` uses [`run_binding_owned`].
 async fn run_binding(
+    db: &DatabaseConnection,
+    request: ExecuteRequest,
+) -> Result<ExecuteReply, PluginError> {
+    let caps = DbCapabilities::advertised_sqlite();
+    let env = bookclerk_db_exec::load_sql_type_env(db)
+        .await
+        .expect("load binding catalog");
+    let policy = GuestSqlPolicy::binding_migration().with_sql_types(env);
+    bookclerk_library::execute_guest_atomic_with(request, &caps, &policy, |envelope| async move {
+        let deadline =
+            (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
+        bookclerk_db_exec::execute_typed_envelope(
+            db,
+            &envelope,
+            "sqlite_txn",
+            bookclerk_db_exec::ExecCaps::from_capabilities(&DbCapabilities::advertised_sqlite()),
+            bookclerk_db_exec::AtomicSession::from_deadline(deadline),
+        )
+        .await
+        .map_err(|err| PluginError::internal(err.to_string()))
+    })
+    .await
+}
+
+/// Product-path guest execute (`binding_owned`, no DDL).
+async fn run_binding_owned(
     db: &DatabaseConnection,
     request: ExecuteRequest,
 ) -> Result<ExecuteReply, PluginError> {
@@ -57,6 +94,12 @@ async fn run_binding(
         .map_err(|err| PluginError::internal(err.to_string()))
     })
     .await
+}
+async fn run_binding_migration(
+    db: &DatabaseConnection,
+    request: ExecuteRequest,
+) -> Result<ExecuteReply, PluginError> {
+    run_binding(db, request).await
 }
 
 fn stmt(sql: &str, parameters: Vec<DbValue>) -> TypedDbStatement {
@@ -92,18 +135,11 @@ async fn binding_owns_schema_and_stays_isolated_from_its_sibling() {
     // Each binding creates the same-named table and inserts its own row —
     // plugin-owned DDL through the guest path, isolated per binding.
     for (db, marker) in [(&a, "alpha"), (&b, "beta")] {
-        run_binding(
+        apply_plugin_tables(
             db,
-            req(
-                &format!("ddl-{marker}"),
-                vec![stmt(
-                    "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)",
-                    vec![],
-                )],
-            ),
+            &["CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)"],
         )
-        .await
-        .expect("binding DDL");
+        .await;
         run_binding(
             db,
             req(
@@ -149,6 +185,21 @@ async fn binding_denies_reserved_tables_and_qualified_names() {
     let err = run_binding(
         &db,
         req(
+            "plugin-journal",
+            vec![stmt("SELECT ordinal FROM plugin_migrations", vec![])],
+        ),
+    )
+    .await
+    .expect_err("plugin migration journal must stay host-owned");
+    assert!(
+        err.to_string().contains("plugin_migrations")
+            || err.to_string().contains("reserved")
+            || err.to_string().contains("unauthorized"),
+        "{err}"
+    );
+    let err = run_binding(
+        &db,
+        req(
             "qualified",
             vec![stmt("SELECT id FROM main.sqlite_master", vec![])],
         ),
@@ -180,7 +231,9 @@ async fn binding_denies_reserved_foreign_key_references() {
     .await
     .expect_err("FK onto host receipts must be denied");
     assert!(
-        err.to_string().contains("reserved")
+        err.to_string().contains("disallowed SQL verb")
+            || err.to_string().contains("migration execution context")
+            || err.to_string().contains("reserved")
             || err.to_string().contains("qualified")
             || err.to_string().contains("REFERENCES"),
         "{err}"
@@ -190,18 +243,11 @@ async fn binding_denies_reserved_foreign_key_references() {
 #[tokio::test]
 async fn binding_retry_token_replays_without_double_apply() {
     let db = binding_db().await;
-    run_binding(
+    apply_plugin_tables(
         &db,
-        req(
-            "setup",
-            vec![stmt(
-                "CREATE TABLE IF NOT EXISTS counters (id INTEGER PRIMARY KEY, n INTEGER)",
-                vec![],
-            )],
-        ),
+        &["CREATE TABLE IF NOT EXISTS counters (id INTEGER PRIMARY KEY, n INTEGER)"],
     )
-    .await
-    .expect("setup DDL");
+    .await;
 
     let insert = || {
         let mut write = stmt(
@@ -229,20 +275,13 @@ async fn binding_retry_token_replays_without_double_apply() {
 #[tokio::test]
 async fn binding_ddl_hash_mismatch_does_not_change_schema() {
     let db = binding_db().await;
-    run_binding(
+    apply_plugin_tables(
         &db,
-        req(
-            "ddl-op",
-            vec![stmt(
-                "CREATE TABLE IF NOT EXISTS alpha (id INTEGER PRIMARY KEY)",
-                vec![],
-            )],
-        ),
+        &["CREATE TABLE IF NOT EXISTS alpha (id INTEGER PRIMARY KEY)"],
     )
-    .await
-    .expect("first DDL");
+    .await;
 
-    let err = run_binding(
+    let err = run_binding_owned(
         &db,
         req(
             "ddl-op",
@@ -253,8 +292,13 @@ async fn binding_ddl_hash_mismatch_does_not_change_schema() {
         ),
     )
     .await
-    .expect_err("changed hash must conflict");
-    assert_eq!(err.code, bookclerk_plugin_abi::PluginErrorCode::Conflict);
+    .expect_err("guest DDL is denied outside migration context");
+    assert!(
+        err.to_string().contains("disallowed SQL verb")
+            || err.to_string().contains("migration execution context")
+            || err.code == bookclerk_plugin_abi::PluginErrorCode::Conflict,
+        "{err}"
+    );
 
     let alpha = db
         .query_all_raw(Statement::from_string(
@@ -314,18 +358,11 @@ async fn binding_session_caps_are_enforced_independently_of_library_caps() {
 #[tokio::test]
 async fn binding_cancel_before_begin_does_not_commit() {
     let db = binding_db().await;
-    run_binding(
+    apply_plugin_tables(
         &db,
-        req(
-            "ddl-notes",
-            vec![stmt(
-                "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)",
-                vec![],
-            )],
-        ),
+        &["CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)"],
     )
-    .await
-    .expect("create notes");
+    .await;
     let cancel = Arc::new(AtomicBool::new(true));
     let caps = DbCapabilities::advertised_sqlite();
     let env = bookclerk_db_exec::load_sql_type_env(&db)
@@ -376,18 +413,11 @@ async fn binding_cancel_before_begin_does_not_commit() {
 #[tokio::test]
 async fn binding_cancel_around_commit_rolls_back() {
     let db = binding_db().await;
-    run_binding(
+    apply_plugin_tables(
         &db,
-        req(
-            "ddl-notes-2",
-            vec![stmt(
-                "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)",
-                vec![],
-            )],
-        ),
+        &["CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)"],
     )
-    .await
-    .expect("create notes");
+    .await;
     bookclerk_db_exec::inject_atomic_interrupt(
         bookclerk_db_exec::AtomicInterruptPhase::AroundCommit,
         bookclerk_db_exec::AtomicInterruptKind::Cancel,
@@ -459,10 +489,14 @@ async fn binding_mixed_ddl_dml_applies_once_and_replays() {
         insert.result_selection = DbResultSelection::AffectedRows;
         req("mixed-once", vec![ddl, insert])
     };
-    let first = run_binding(&db, mixed()).await.expect("first mixed");
+    let first = run_binding_migration(&db, mixed())
+        .await
+        .expect("first mixed");
     assert_eq!(first.statements.len(), 2);
     assert_eq!(first.statements[1].rows_affected, 1);
-    let replay = run_binding(&db, mixed()).await.expect("replay mixed");
+    let replay = run_binding_migration(&db, mixed())
+        .await
+        .expect("replay mixed");
     assert_eq!(replay.statements[1].rows_affected, 1);
     let rows = db
         .query_all_raw(Statement::from_string(
@@ -487,9 +521,13 @@ async fn binding_mixed_ddl_dml_preserves_gate_text_in_literal_and_comment() {
         insert.result_selection = DbResultSelection::AffectedRows;
         req("mixed-gate-lit", vec![ddl, insert])
     };
-    let first = run_binding(&db, mixed()).await.expect("first mixed gate");
+    let first = run_binding_migration(&db, mixed())
+        .await
+        .expect("first mixed gate");
     assert_eq!(first.statements[1].rows_affected, 1);
-    let replay = run_binding(&db, mixed()).await.expect("replay mixed gate");
+    let replay = run_binding_migration(&db, mixed())
+        .await
+        .expect("replay mixed gate");
     assert_eq!(replay.statements[1].rows_affected, 1);
     let mut select = stmt(bookclerk_db_exec::sql_v1::MIXED_GATE_LITERAL_SELECT, vec![]);
     select.max_rows = 8;

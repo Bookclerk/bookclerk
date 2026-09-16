@@ -60,6 +60,10 @@ from ._abi import (  # noqa: E402  (re-export)
     FEATURE_SCALAR_LIMITS,
     FEATURE_STORAGE_COPY,
     FEATURE_STREAMS,
+    MAX_LIST_PAGE,
+    MAX_PLUGIN_MIGRATION_OPS,
+    MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
+    MAX_PLUGIN_MIGRATION_TOTAL_OPS,
     MAX_SCALAR_BYTES,
     PRODUCT_API_VERSION,
 )
@@ -220,6 +224,17 @@ class BookclerkPlugin(WorkerEntrypoint):
 
         Returns:
             Empty list when the guest is not a relying party.
+        """
+        return js([])
+
+    async def databaseMigrations(self, _binding=""):
+        """Complete ordered plugin-owned migration sequence for one binding.
+
+        Args:
+            _binding: Binding name from ``capabilities.bindings.databases``.
+
+        Returns:
+            Empty list when the binding has no plugin-owned migrations.
         """
         return js([])
 

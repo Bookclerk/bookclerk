@@ -136,6 +136,33 @@ fn d1_management_client() -> std::result::Result<reqwest::Client, DbErr> {
         .map_err(|e| DbErr::Custom(format!("d1 client: {e}")))
 }
 
+/// Resolves an existing D1 database UUID by name. Does not create.
+///
+/// # Errors
+///
+/// Returns when lookup fails or no database with `name` exists.
+pub async fn lookup_database(
+    api_base: &str,
+    account_id: &str,
+    api_token: &str,
+    name: &str,
+) -> std::result::Result<String, DbErr> {
+    let client = d1_management_client()?;
+    let list_url = d1_management_url(
+        api_base,
+        &format!("/accounts/{account_id}/d1/database?name={name}"),
+    )?;
+    let (_status, listed) =
+        d1_management_json(&client, reqwest::Method::GET, list_url, api_token, None)
+            .await
+            .map_err(|e| DbErr::Custom(format!("d1 database lookup `{name}`: {e}")))?;
+    d1_database_uuid_by_name(&listed, name).ok_or_else(|| {
+        DbErr::Custom(format!(
+            "d1 database `{name}` does not exist (lookup-only; will not provision)"
+        ))
+    })
+}
+
 /// Resolves (and provisions) a Cloudflare D1 database by name, returning its UUID.
 ///
 /// Used for named plugin database bindings: each binding gets its own D1
@@ -151,18 +178,12 @@ pub async fn ensure_database(
     api_token: &str,
     name: &str,
 ) -> std::result::Result<String, DbErr> {
-    let client = d1_management_client()?;
-    let list_url = d1_management_url(
-        api_base,
-        &format!("/accounts/{account_id}/d1/database?name={name}"),
-    )?;
-    let (_status, listed) =
-        d1_management_json(&client, reqwest::Method::GET, list_url, api_token, None)
-            .await
-            .map_err(|e| DbErr::Custom(format!("d1 database lookup `{name}`: {e}")))?;
-    if let Some(uuid) = d1_database_uuid_by_name(&listed, name) {
-        return Ok(uuid);
+    match lookup_database(api_base, account_id, api_token, name).await {
+        Ok(uuid) => return Ok(uuid),
+        Err(err) if err.to_string().contains("does not exist") => {}
+        Err(err) => return Err(err),
     }
+    let client = d1_management_client()?;
     let create_url = d1_management_url(api_base, &format!("/accounts/{account_id}/d1/database"))?;
     let (_status, created) = d1_management_json(
         &client,
@@ -1839,6 +1860,21 @@ mod tests {
     }
 
     #[test]
+    fn management_urls_require_https() {
+        let err = d1_management_url(
+            "http://example.com/client/v4",
+            "/accounts/a/d1/database/d/query",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("must be https"), "{err}");
+        assert!(d1_management_url(
+            "https://api.cloudflare.com/client/v4",
+            "/accounts/a/d1/database/d/query"
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn json_to_sea_value_rejects_oversized_string_before_clone() {
         let huge = "x".repeat(MAX_SCALAR_BYTES as usize + 1);
         let err = json_to_sea_value(&JsonValue::String(huge), "v").unwrap_err();
@@ -2276,7 +2312,7 @@ mod tests {
         let env = bookclerk_db_exec::load_sql_type_env(db)
             .await
             .expect("load binding catalog");
-        let policy = bookclerk_library::GuestSqlPolicy::binding_owned().with_sql_types(env);
+        let policy = bookclerk_library::GuestSqlPolicy::binding_migration().with_sql_types(env);
         bookclerk_library::execute_guest_atomic_with(req, &caps, &policy, |envelope| {
             let proxy = proxy.clone();
             async move {
@@ -3061,7 +3097,7 @@ mod tests {
         .expect("host schema for concurrent claim");
 
         let caps = bookclerk_plugin_abi::DbCapabilities::advertised_d1();
-        let policy = GuestSqlPolicy::binding_owned();
+        let policy = GuestSqlPolicy::binding_migration();
         let req_alpha = ExecuteRequest {
             operation_id: "d1-claim-race".into(),
             request_hash: String::new(),
@@ -3187,7 +3223,7 @@ mod tests {
         .expect("host schema for claimed resume");
 
         let caps = bookclerk_plugin_abi::DbCapabilities::advertised_d1();
-        let policy = GuestSqlPolicy::binding_owned();
+        let policy = GuestSqlPolicy::binding_migration();
         let req = ExecuteRequest {
             operation_id: "d1-claim-resume".into(),
             request_hash: String::new(),
@@ -3285,7 +3321,7 @@ mod tests {
         .expect("host schema for mixed batch");
 
         let caps = bookclerk_plugin_abi::DbCapabilities::advertised_d1();
-        let policy = GuestSqlPolicy::binding_owned();
+        let policy = GuestSqlPolicy::binding_migration();
         let mixed = || ExecuteRequest {
             operation_id: "d1-mixed-once".into(),
             request_hash: String::new(),
@@ -3382,7 +3418,7 @@ mod tests {
         .expect("host schema for mixed gate batch");
 
         let caps = bookclerk_plugin_abi::DbCapabilities::advertised_d1();
-        let policy = GuestSqlPolicy::binding_owned();
+        let policy = GuestSqlPolicy::binding_migration();
         let mixed = || ExecuteRequest {
             operation_id: "d1-mixed-gate-lit".into(),
             request_hash: String::new(),

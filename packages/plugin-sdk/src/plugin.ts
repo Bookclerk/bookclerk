@@ -11,6 +11,7 @@ import { WorkerEntrypoint, RpcTarget } from "cloudflare:workers";
 import { MAX_LIST_PAGE, MAX_SCALAR_BYTES, PRODUCT_API_VERSION } from "./abi.js";
 import { createDatabaseBinding, decodeExecuteResultReply, encodeExecuteRequest } from "./db-execute.js";
 import type { ExecuteReply, ExecuteRequest } from "./db-execute.js";
+import { requirePluginMigrationRegistration } from "./plugin-migrations.js";
 
 // Product constants come from the generated `abi.ts` projection of
 // `schema/plugin.capnp` — re-exported here for guest convenience.
@@ -21,10 +22,14 @@ export {
   MAX_CHECKPOINT_BYTES,
   MAX_EVENT_PAYLOAD_BYTES,
   MAX_LIST_PAGE,
+  MAX_PLUGIN_MIGRATION_OPS,
+  MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
+  MAX_PLUGIN_MIGRATION_TOTAL_OPS,
   MAX_SCALAR_BYTES,
   MAX_STREAM_WINDOW_BYTES,
   PRODUCT_API_VERSION,
 } from "./abi.js";
+export { requirePluginMigrationRegistration } from "./plugin-migrations.js";
 
 /** Negotiated numeric limits advertised at {@link PluginDescribe}. */
 export interface ScalarLimits {
@@ -54,6 +59,35 @@ export interface OidcClientTemplate {
   defaultScopes?: string[];
   issueRefreshToken?: boolean;
   originConfigKey: string;
+}
+
+/** One already-separated BookclerkSQL operation in a plugin-owned migration. */
+export type PluginMigrationOp = { schema: string } | { data: string };
+
+/** One plugin-owned migration application. `id` is opaque plugin-chosen identity. */
+export interface PluginMigration {
+  id: string;
+  operations: PluginMigrationOp[];
+}
+
+/**
+ * Schema DDL convenience for {@link PluginMigration.operations}.
+ *
+ * @param sql - Already-separated BookclerkSQL schema statement.
+ * @returns Schema operation tagged for host registration.
+ */
+export function schemaMigrationOp(sql: string): PluginMigrationOp {
+  return { schema: sql };
+}
+
+/**
+ * Data DML convenience for {@link PluginMigration.operations}.
+ *
+ * @param sql - Already-separated BookclerkSQL data statement.
+ * @returns Data operation tagged for host registration.
+ */
+export function dataMigrationOp(sql: string): PluginMigrationOp {
+  return { data: sql };
 }
 
 /** Injected destination knobs. Opaque JSON only — no OS paths. */
@@ -1036,6 +1070,20 @@ export abstract class BookclerkPlugin extends WorkerEntrypoint<BookclerkPluginEn
     return [];
   }
 
+  /**
+   * Complete ordered plugin-owned migration sequence for one named binding.
+   *
+   * The host calls this at binding initialization, before ordinary execute.
+   * `id` is an opaque plugin-chosen identity. Registration order is the
+   * forward sequence. Empty means the binding has no plugin-owned migrations.
+   *
+   * @param _binding - Binding name from `capabilities.bindings.databases`.
+   * @returns Ordered migrations (`[]` when unused).
+   */
+  async databaseMigrations(_binding: string): Promise<PluginMigration[]> {
+    return [];
+  }
+
   /** Releases guest resources. */
   async shutdown(): Promise<void> {}
 }
@@ -1487,6 +1535,21 @@ function createInvocationAdapter() {
       }
       const clients = await fn.call(this.#plugin());
       return Array.isArray(clients) ? clients : [];
+    }
+
+    async databaseMigrations(binding: string): Promise<PluginMigration[]> {
+      const fn = this.#plugin().databaseMigrations;
+      if (typeof fn !== "function") {
+        return [];
+      }
+      const migrations = await fn.call(this.#plugin(), binding);
+      const list = Array.isArray(migrations) ? migrations : [];
+      try {
+        return requirePluginMigrationRegistration(list);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw PluginError.fromWire("payload_too_large", message);
+      }
     }
 
     async shutdown(): Promise<void> {

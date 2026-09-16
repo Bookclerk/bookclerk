@@ -60,6 +60,7 @@ async fn binding_from_context(
         api_token,
         binding: Some(binding),
         database_name,
+        provision,
         ..
     }) = connect_params_from_context(ctx)
     else {
@@ -70,10 +71,15 @@ async fn binding_from_context(
             "database binding `{binding}` open is missing its databaseName"
         ))
     })?;
-    let database_id =
+    let database_id = if provision {
         bookclerk_plugin_database_d1::ensure_database(&api_base, &account_id, &api_token, &name)
             .await
-            .map_err(|e| PluginError::internal(format!("database binding `{binding}`: {e}")))?;
+            .map_err(|e| PluginError::internal(format!("database binding `{binding}`: {e}")))?
+    } else {
+        bookclerk_plugin_database_d1::lookup_database(&api_base, &account_id, &api_token, &name)
+            .await
+            .map_err(|e| PluginError::internal(format!("database binding `{binding}`: {e}")))?
+    };
     Ok(Some(bookclerk_plugin_database_d1::D1Proxy::new(
         api_base,
         account_id,

@@ -1,6 +1,7 @@
 pub mod config_cmd;
 pub mod copydb;
 pub mod daemon_cmd;
+pub mod db;
 pub mod diagnostics_cmd;
 pub mod discover;
 pub mod events;

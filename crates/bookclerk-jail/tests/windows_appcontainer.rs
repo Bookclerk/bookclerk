@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
@@ -38,6 +38,18 @@ fn assert_spawn_capable() {
         "Windows AppContainer tests require spawn_filesystem; got {} [{}]",
         caps.detail, caps.backend
     );
+}
+
+/// Serializes this file's tests onto one rustc test thread.
+///
+/// Each jailed child contends for session mutex `Local\bookclerk-dacl-tx`
+/// (30s fail-closed). Parallel tests in this binary otherwise time out
+/// waiting for a sibling's ACL grant/revoke.
+fn begin_appcontainer_test() -> MutexGuard<'static, ()> {
+    assert_spawn_capable();
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn write_secret(dir: &Path) -> PathBuf {
@@ -98,7 +110,7 @@ fn assert_probe_ok(output: &std::process::Output) -> Value {
 
 #[test]
 fn appcontainer_token_and_path_allowlist_hold() {
-    assert_spawn_capable();
+    let _serial = begin_appcontainer_test();
 
     let root = tempfile::tempdir().expect("tempdir");
     let allowed = root.path().join("allowed");
@@ -219,7 +231,7 @@ fn appcontainer_token_and_path_allowlist_hold() {
 
 #[test]
 fn os_managed_write_grant_is_rejected_before_acl_mutation() {
-    assert_spawn_capable();
+    let _serial = begin_appcontainer_test();
 
     let system_root = std::env::var("SystemRoot").expect("SystemRoot");
     let target = PathBuf::from(&system_root).join("Temp");
@@ -239,7 +251,7 @@ fn os_managed_write_grant_is_rejected_before_acl_mutation() {
 
 #[test]
 fn temporary_aces_are_cleaned_after_exit() {
-    assert_spawn_capable();
+    let _serial = begin_appcontainer_test();
 
     let root = tempfile::tempdir().expect("tempdir");
     let allowed = root.path().join("allowed");
@@ -284,7 +296,7 @@ fn temporary_aces_are_cleaned_after_exit() {
 
 #[test]
 fn required_refuses_missing_allowlist_path() {
-    assert_spawn_capable();
+    let _serial = begin_appcontainer_test();
 
     let root = tempfile::tempdir().expect("tempdir");
     let missing = root.path().join("nope");
@@ -304,7 +316,7 @@ fn required_refuses_missing_allowlist_path() {
 
 #[test]
 fn plan_appcontainer_is_pure_on_windows() {
-    assert_spawn_capable();
+    let _serial = begin_appcontainer_test();
     let plan = bookclerk_sandbox::spawn::plan_appcontainer(
         &bookclerk_sandbox::Policy::new("test:sid").net(NetPolicy::Outbound),
     );
@@ -319,7 +331,7 @@ fn plan_appcontainer_is_pure_on_windows() {
 
 #[test]
 fn disabled_enforcement_runs_guest_unconfined() {
-    assert_spawn_capable();
+    let _serial = begin_appcontainer_test();
 
     let mut spec = base_spec("test:windows-disabled", vec![], vec![]);
     spec.enforcement = Enforcement::Disabled;
@@ -340,7 +352,7 @@ fn disabled_enforcement_runs_guest_unconfined() {
 
 #[test]
 fn overlapping_launches_with_same_label_stay_isolated() {
-    assert_spawn_capable();
+    let _serial = begin_appcontainer_test();
 
     let root = tempfile::tempdir().expect("tempdir");
     let dir_a = root.path().join("a");
@@ -474,7 +486,7 @@ fn overlapping_launches_with_same_label_stay_isolated() {
 
 #[test]
 fn long_label_monikers_do_not_collide() {
-    assert_spawn_capable();
+    let _serial = begin_appcontainer_test();
     let shared = "z".repeat(80);
     let a = bookclerk_sandbox::spawn::unique_profile_moniker(&format!("{shared}-alpha"));
     let b = bookclerk_sandbox::spawn::unique_profile_moniker(&format!("{shared}-beta"));
@@ -492,7 +504,7 @@ fn long_label_monikers_do_not_collide() {
 
 #[test]
 fn forced_job_assign_failure_leaves_no_guest() {
-    assert_spawn_capable();
+    let _serial = begin_appcontainer_test();
     let root = tempfile::tempdir().expect("tempdir");
     let allowed = root.path().join("allowed");
     std::fs::create_dir_all(&allowed).expect("allowed");
@@ -523,7 +535,7 @@ fn forced_job_assign_failure_leaves_no_guest() {
 
 #[test]
 fn jail_exits_promptly_when_guest_exits_with_stdin_held_open() {
-    assert_spawn_capable();
+    let _serial = begin_appcontainer_test();
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -597,7 +609,7 @@ fn jail_exits_promptly_when_guest_exits_with_stdin_held_open() {
 
 #[test]
 fn job_kill_on_close_terminates_spawned_descendant() {
-    assert_spawn_capable();
+    let _serial = begin_appcontainer_test();
     // Guest spawns a long-lived child then exits. Jail drop of the Job
     // (KILL_ON_JOB_CLOSE) must terminate the descendant before ACL/profile cleanup.
     let root = tempfile::tempdir().expect("tempdir");
@@ -644,7 +656,7 @@ fn process_alive(pid: u32) -> bool {
 
 #[test]
 fn named_acl_mutex_serializes_cross_process_grant_revoke() {
-    assert_spawn_capable();
+    let _serial = begin_appcontainer_test();
     use std::process::Stdio;
 
     let root = tempfile::tempdir().expect("tempdir");

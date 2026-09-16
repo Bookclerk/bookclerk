@@ -6040,31 +6040,11 @@ async fn postgres_test_store() -> LibraryStore {
     let db = sea_orm::Database::connect(opt)
         .await
         .expect("connect to disposable postgres database");
-    // Apply the canonical plan through the adapter-edge mechanical lowering,
-    // exactly as a Postgres adapter would at execution.
-    db.execute_raw(sea_orm::Statement::from_string(
-        backend,
-        "CREATE TABLE IF NOT EXISTS schema_migrations (version BIGINT PRIMARY KEY)".to_string(),
-    ))
-    .await
-    .expect("create schema_migrations");
-    for step in crate::migrations::host_migration_plan() {
-        let batch = vec![
-            step.canonical.to_string(),
-            format!(
-                "INSERT INTO schema_migrations (version) VALUES ({})",
-                step.version
-            ),
-        ];
-        let stmts =
-            bookclerk_db_exec::expand_host_schema_batch(sea_orm::DatabaseBackend::Postgres, &batch)
-                .expect("expand host schema batch");
-        for stmt in stmts {
-            db.execute_raw(sea_orm::Statement::from_string(backend, stmt.clone()))
-                .await
-                .unwrap_or_else(|err| panic!("postgres migration `{stmt}` failed: {err}"));
-        }
-    }
+    // `host_migration_plan()` is empty until a release cut. Apply the current
+    // canonical pack (unreleased) through the same host state machine as connect.
+    crate::apply_host_schema(&db, crate::HostSchemaKind::RowMarker)
+        .await
+        .expect("apply unreleased host schema");
     LibraryStore::from_connection(db)
 }
 

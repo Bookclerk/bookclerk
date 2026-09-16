@@ -42,7 +42,8 @@
     "lint": "oxlint",
     "prepare": "npm run build",
     "test:tools": "node scripts/test-tools.mjs",
-    "test:db-value": "node scripts/test-db-value.mjs"
+    "test:db-value": "node scripts/test-db-value.mjs",
+    "test:plugin-migrations": "node scripts/test-plugin-migrations.mjs"
   },
   "engines": {
     "node": ">=20"

@@ -38,6 +38,7 @@ bookclerk-plugin-source-graphicaudio = { workspace = true, optional = true }
 bookclerk-plugin-integration-audiobookshelf = { workspace = true, optional = true }
 bookclerk-plugin-database-d1.workspace = true
 bookclerk-plugin-database-postgres.workspace = true
+bookclerk-plugin-database-sqlite.workspace = true
 hex.workspace = true
 sha2.workspace = true
 serde.workspace = true

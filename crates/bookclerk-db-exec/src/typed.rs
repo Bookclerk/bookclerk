@@ -496,8 +496,7 @@ fn proofs_for_request(
             "host execute envelope proofs must match statement count".into(),
         ));
     }
-    let env = type_env_with_bookkeeping(catalog);
-    proofs_for_host_plan(req, &env)
+    proofs_for_host_plan(req, &type_env_with_bookkeeping(catalog))
 }
 
 /// Host plans may include already-lowered schema companions (`PRAGMA`,
@@ -539,7 +538,9 @@ fn host_adapter_private_sql(sql: &str) -> bool {
     let t = sql.trim();
     let u = t.to_ascii_uppercase();
     crate::is_host_schema_version_marker(t)
+        || serialization_slot_sql(&u)
         || u.starts_with("PRAGMA ")
+        || u.contains(" FROM PRAGMA_")
         || u.starts_with("SET LOCAL ")
         || u.starts_with("CREATE OR REPLACE FUNCTION")
         || u.starts_with("CREATE FUNCTION")
@@ -548,6 +549,12 @@ fn host_adapter_private_sql(sql: &str) -> bool {
         || u.starts_with("DROP TRIGGER")
         || u.starts_with("ALTER TABLE")
         || u.starts_with("DO $")
+}
+
+/// Host-authored `schema:{namespace}` fencing DML (not guest SQL).
+fn serialization_slot_sql(upper: &str) -> bool {
+    (upper.starts_with("INSERT ") || upper.starts_with("UPDATE "))
+        && upper.contains("DB_SERIALIZATION_SLOTS")
 }
 
 fn type_env_with_bookkeeping(catalog: &SqlTypeEnv) -> SqlTypeEnv {
@@ -2191,5 +2198,75 @@ mod tests {
         assert_eq!(db_type_from_pg_type_name("FLOAT8"), DbType::Float64);
         assert_eq!(db_type_from_pg_type_name("INTERVAL"), DbType::Unspecified);
         assert_eq!(db_type_from_pg_type_name("NUMERIC"), DbType::Unspecified);
+    }
+
+    #[test]
+    fn pragma_eponymous_selects_skip_catalog_typecheck() {
+        let req = ExecuteRequest {
+            operation_id: "pragma".into(),
+            request_hash: String::new(),
+            deadline_unix_ms: 0,
+            statements: vec![TypedDbStatement {
+                sql: "SELECT user_version FROM pragma_user_version".into(),
+                parameters: Vec::new(),
+                kind: DbPlanStatementKind::Select,
+                max_rows: 0,
+                result_selection: DbResultSelection::Rows,
+            }],
+        };
+        let proofs = proofs_for_request(&SqlTypeEnv::new(), &req, &[], false)
+            .expect("pragma eponymous SELECT is host-private");
+        assert_eq!(proofs.len(), 1);
+    }
+
+    #[test]
+    fn host_schema_pack_create_receipts_then_version_markers() {
+        let req = ExecuteRequest {
+            operation_id: "schema-v1".into(),
+            request_hash: String::new(),
+            deadline_unix_ms: 0,
+            statements: vec![
+                TypedDbStatement {
+                    sql: "CREATE TABLE IF NOT EXISTS db_atomic_receipts (\
+                         operation_id TEXT PRIMARY KEY NOT NULL, operation_kind TEXT NOT NULL, \
+                         request_hash TEXT NOT NULL, status TEXT NOT NULL, payload TEXT, \
+                         created_at TEXT NOT NULL, expires_at TEXT NOT NULL, consume_key TEXT UNIQUE)"
+                        .into(),
+                    parameters: Vec::new(),
+                    kind: DbPlanStatementKind::Execute,
+                    max_rows: 0,
+                    result_selection: DbResultSelection::AffectedRows,
+                },
+                TypedDbStatement {
+                    sql: "CREATE TABLE IF NOT EXISTS schema_migrations (\
+                         version INTEGER PRIMARY KEY NOT NULL, checksum TEXT NOT NULL, \
+                         app_version TEXT NOT NULL, applied_at TEXT NOT NULL)"
+                        .into(),
+                    parameters: Vec::new(),
+                    kind: DbPlanStatementKind::Execute,
+                    max_rows: 0,
+                    result_selection: DbResultSelection::AffectedRows,
+                },
+                TypedDbStatement {
+                    sql: "PRAGMA user_version = 1".into(),
+                    parameters: Vec::new(),
+                    kind: DbPlanStatementKind::Execute,
+                    max_rows: 0,
+                    result_selection: DbResultSelection::AffectedRows,
+                },
+                TypedDbStatement {
+                    sql: "INSERT INTO schema_migrations (version, checksum, app_version, applied_at) \
+                         VALUES (1, 'abc', '0.1.0', '2026-01-01T00:00:00Z')"
+                        .into(),
+                    parameters: Vec::new(),
+                    kind: DbPlanStatementKind::Execute,
+                    max_rows: 0,
+                    result_selection: DbResultSelection::AffectedRows,
+                },
+            ],
+        };
+        let proofs = proofs_for_request(&SqlTypeEnv::new(), &req, &[], false)
+            .expect("mixed host schema DDL + markers typecheck");
+        assert_eq!(proofs.len(), 4);
     }
 }

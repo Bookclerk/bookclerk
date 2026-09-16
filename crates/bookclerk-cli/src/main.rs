@@ -100,6 +100,12 @@ enum Commands {
         /// Nested `import` verb (native backups or classic Libation Files).
         command: commands::import_cmd::ImportCommand,
     },
+    /// Host schema version, backups, migrate, and last-reversible downgrade.
+    Db {
+        #[command(subcommand)]
+        /// Nested `db` verb (version, backup, restore, migrate, downgrade).
+        command: commands::db::DbCommand,
+    },
     /// Talk to a running bookclerkd control plane.
     Daemon {
         #[command(subcommand)]
@@ -331,6 +337,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         Commands::Config { command } => commands::config_cmd::run(command, &config, format).await,
         Commands::Export { command } => commands::export_cmd::run(command, &config, format).await,
         Commands::Import { command } => commands::import_cmd::run(command, &config, format).await,
+        Commands::Db { command } => commands::db::run(command, &config, format).await,
         Commands::Daemon { command } => commands::daemon_cmd::run(command, &config, format).await,
         Commands::Events { command } => commands::events::run(command, &config, format).await,
         Commands::Login => commands::daemon_cmd::run_login(&config, format).await,

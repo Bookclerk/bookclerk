@@ -51,7 +51,9 @@ bookclerk-storage.workspace = true
 bookclerk-integrations.workspace = true
 bookclerk-discover.workspace = true
 bookclerk-plugin-host.workspace = true
+bookclerk-plugin-abi.workspace = true
 bookclerk-plugin-catalog.workspace = true
+sea-orm.workspace = true
 rusqlite.workspace = true
 chrono.workspace = true
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }

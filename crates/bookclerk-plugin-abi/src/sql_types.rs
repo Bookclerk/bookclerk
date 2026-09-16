@@ -34,6 +34,13 @@ pub const SQL_V1_MAX_IDENT_BYTES: usize = 63;
 /// Table-level durable schema fingerprint (identity + constraints).
 pub const SQL_SCHEMA_TABLE: &str = "bookclerk_sql_schema";
 
+/// Admitted canonical `CREATE TABLE` / `CREATE INDEX` SQL for backup restore.
+///
+/// Fingerprints in [`SQL_SCHEMA_TABLE`] are not invertible. This table stores
+/// the host-admitted canonical DDL so a plugin binding can be reconstructed
+/// without reverse-engineering adapter catalogs.
+pub const SQL_DDL_TABLE: &str = "bookclerk_sql_ddl";
+
 /// Page size for durable catalog / schema SELECTs.
 ///
 /// Uses the negotiated adapter `maxResultRows` when it is nonzero, then caps
@@ -391,8 +398,20 @@ pub struct CreateTableSchema {
     pub column_defaults: Vec<String>,
     /// Per-column CHECK SQL (empty if none).
     pub column_checks: Vec<String>,
+    /// Per-column `REFERENCES` targets (same order as `columns`).
+    pub column_references: Vec<Option<ColumnReference>>,
     /// Table-level constraints in declaration order.
     pub table_constraints: Vec<TableConstraint>,
+}
+
+/// Column-level `REFERENCES table [(cols…)]` captured in the structured schema IR.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnReference {
+    /// Referenced table.
+    pub ref_table: String,
+    /// Referenced columns (empty if omitted).
+    pub ref_columns: Vec<String>,
 }
 
 /// Table-level constraint captured in the structured schema IR.
@@ -414,6 +433,25 @@ pub enum TableConstraint {
         /// Referenced columns (empty if omitted).
         ref_columns: Vec<String>,
     },
+}
+
+/// Parsed `CREATE [UNIQUE] INDEX` (canonical SQL v1).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateIndexSchema {
+    /// Unquoted folded index name.
+    pub name: String,
+    /// Table the index is on.
+    pub table: String,
+    /// True when the statement is `CREATE UNIQUE INDEX`.
+    pub unique: bool,
+    /// Indexed columns in declaration order (`ident [ASC|DESC]`, no expressions).
+    pub columns: Vec<String>,
+    /// Optional partial-index `WHERE` predicate (no `WHERE` keyword).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub where_sql: Option<String>,
+    /// Canonical statement text (no trailing semicolon).
+    pub canonical_sql: String,
 }
 
 impl CreateTableSchema {
@@ -458,6 +496,18 @@ impl CreateTableSchema {
                     .as_bytes(),
             );
             h.update(b"\0");
+            match self.column_references.get(i).and_then(|r| r.as_ref()) {
+                Some(r) => {
+                    h.update(b"cfk\0");
+                    h.update(r.ref_table.as_bytes());
+                    h.update(b"\0");
+                    for col in &r.ref_columns {
+                        h.update(col.as_bytes());
+                        h.update(b"\0");
+                    }
+                }
+                None => h.update(b"cfk\0\0"),
+            }
         }
         for c in &self.table_constraints {
             match c {
@@ -501,6 +551,24 @@ impl CreateTableSchema {
         }
         hex::encode(h.finalize())
     }
+
+    /// Foreign-key parent table names from column-level and table-level IR.
+    ///
+    /// Does not scan `CREATE TABLE` text, so `REFERENCES` inside DEFAULT/CHECK
+    /// string literals is not a dependency.
+    #[must_use]
+    pub fn referenced_tables(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for r in self.column_references.iter().flatten() {
+            out.push(r.ref_table.clone());
+        }
+        for c in &self.table_constraints {
+            if let TableConstraint::ForeignKey { ref_table, .. } = c {
+                out.push(ref_table.clone());
+            }
+        }
+        out
+    }
 }
 
 /// Parses a canonical `CREATE TABLE` into columns / identity, if the head matches.
@@ -534,6 +602,7 @@ pub fn parse_create_table_schema(sql: &str) -> Option<CreateTableSchema> {
     let mut column_primary_key = Vec::new();
     let mut column_defaults = Vec::new();
     let mut column_checks = Vec::new();
+    let mut column_references = Vec::new();
     let mut table_constraints = Vec::new();
     for def in split_top_level_commas(inner) {
         let def = skip_ws(def);
@@ -563,6 +632,12 @@ pub fn parse_create_table_schema(sql: &str) -> Option<CreateTableSchema> {
         column_primary_key.push(flags.primary_key);
         column_defaults.push(flags.default_sql);
         column_checks.push(flags.check_sql);
+        column_references.push(
+            parse_column_reference(rest).map(|(ref_table, ref_columns)| ColumnReference {
+                ref_table,
+                ref_columns,
+            }),
+        );
     }
     if columns.is_empty() {
         return None;
@@ -576,6 +651,7 @@ pub fn parse_create_table_schema(sql: &str) -> Option<CreateTableSchema> {
         column_primary_key,
         column_defaults,
         column_checks,
+        column_references,
         table_constraints,
     })
 }
@@ -605,6 +681,91 @@ fn parse_column_constraint_flags(rest: &str) -> ColumnFlags {
         default_sql,
         check_sql,
     }
+}
+
+/// Column-level `REFERENCES` outside DEFAULT/CHECK string literals.
+fn parse_column_reference(rest: &str) -> Option<(String, Vec<String>)> {
+    let mut scan = rest;
+    loop {
+        scan = skip_ws(scan);
+        if scan.is_empty() {
+            return None;
+        }
+        if starts_kw(scan, "REFERENCES") {
+            let after = skip_kw(scan, "REFERENCES")?;
+            let (table, after) = read_ident(after)?;
+            let ref_columns = if skip_ws(after).starts_with('(') {
+                ident_list(balanced_inner(skip_ws(after))?)
+            } else {
+                Vec::new()
+            };
+            return Some((table, ref_columns));
+        }
+        if starts_kw(scan, "DEFAULT") {
+            scan = skip_kw(scan, "DEFAULT")?;
+            scan = skip_ws(scan);
+            if scan.starts_with('\'') {
+                scan = skip_sql_string(scan)?;
+            } else if scan.starts_with('(') {
+                let inner = balanced_inner(scan)?;
+                scan = scan.get(inner.len() + 2..).unwrap_or("");
+            } else if let Some((_, rest)) = read_ident(scan) {
+                scan = rest;
+            } else {
+                let end = scan
+                    .find(|c: char| c.is_whitespace() || c == ',')
+                    .unwrap_or(scan.len());
+                scan = scan.get(end..).unwrap_or("");
+            }
+            continue;
+        }
+        if starts_kw(scan, "CHECK") {
+            scan = skip_kw(scan, "CHECK")?;
+            scan = skip_ws(scan);
+            let inner = balanced_inner(scan)?;
+            scan = scan.get(inner.len() + 2..).unwrap_or("");
+            continue;
+        }
+        if starts_kw(scan, "CONSTRAINT") {
+            scan = skip_kw(scan, "CONSTRAINT")?;
+            let (_, rest) = read_ident(scan)?;
+            scan = rest;
+            continue;
+        }
+        if let Some((_, rest)) = read_ident(scan) {
+            scan = rest;
+            continue;
+        }
+        if scan.starts_with('(') {
+            let inner = balanced_inner(scan)?;
+            scan = scan.get(inner.len() + 2..).unwrap_or("");
+            continue;
+        }
+        if scan.starts_with('\'') {
+            scan = skip_sql_string(scan)?;
+            continue;
+        }
+        scan = scan.get(1..).unwrap_or("");
+    }
+}
+
+fn skip_sql_string(s: &str) -> Option<&str> {
+    if !s.starts_with('\'') {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut i = 1;
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            if bytes.get(i + 1) == Some(&b'\'') {
+                i += 2;
+                continue;
+            }
+            return Some(&s[i + 1..]);
+        }
+        i += 1;
+    }
+    None
 }
 
 fn extract_keyword_arg(s: &str, kw: &str) -> Option<String> {
@@ -723,6 +884,98 @@ pub fn parse_drop_table_name(sql: &str) -> Option<String> {
     Some(name)
 }
 
+/// Parses `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table (cols…) [WHERE …]`.
+///
+/// The column list and any supported tail must be complete SQL v1. Trailing
+/// tokens (`USING`, `INCLUDE`, `COLLATE`, or garbage after `ON table`) fail.
+#[must_use]
+pub fn parse_create_index_sql(sql: &str) -> Option<CreateIndexSchema> {
+    let mut s = skip_ws(sql);
+    s = skip_kw(s, "CREATE")?;
+    let unique = if starts_kw(s, "UNIQUE") {
+        s = skip_kw(s, "UNIQUE")?;
+        true
+    } else {
+        false
+    };
+    s = skip_kw(s, "INDEX")?;
+    if starts_kw(s, "IF") {
+        s = skip_kw(s, "IF")?;
+        s = skip_kw(s, "NOT")?;
+        s = skip_kw(s, "EXISTS")?;
+    }
+    let (name, rest) = read_ident(s)?;
+    let rest = skip_kw(skip_ws(rest), "ON")?;
+    let (table, rest) = read_ident(rest)?;
+    let rest = skip_ws(rest);
+    if !rest.starts_with('(') {
+        return None;
+    }
+    let inner = balanced_inner(rest)?;
+    let columns = parse_index_column_list(inner)?;
+    let after = skip_ws(rest.get(inner.len() + 2..).unwrap_or(""));
+    let after = after.trim_end_matches(';').trim_end();
+    let where_sql = if after.is_empty() {
+        None
+    } else if !starts_kw(after, "WHERE") {
+        return None;
+    } else {
+        let pred = skip_ws(skip_kw(after, "WHERE")?);
+        let pred = pred.trim_end_matches(';').trim();
+        if pred.is_empty() {
+            return None;
+        }
+        Some(pred.to_string())
+    };
+    Some(CreateIndexSchema {
+        name,
+        table,
+        unique,
+        columns,
+        where_sql,
+        canonical_sql: sql.trim().trim_end_matches(';').trim().to_string(),
+    })
+}
+
+/// Column list of `CREATE INDEX … (ident [ASC|DESC], …)`. Leftover tokens fail.
+fn parse_index_column_list(inner: &str) -> Option<Vec<String>> {
+    let parts = split_top_level_commas(inner);
+    if parts.is_empty() {
+        return None;
+    }
+    let mut cols = Vec::new();
+    for part in parts {
+        let (name, rest) = read_ident(part)?;
+        let rest = skip_ws(rest);
+        let rest = if starts_kw(rest, "ASC") {
+            skip_ws(skip_kw(rest, "ASC")?)
+        } else if starts_kw(rest, "DESC") {
+            skip_ws(skip_kw(rest, "DESC")?)
+        } else {
+            rest
+        };
+        if !rest.is_empty() {
+            return None;
+        }
+        cols.push(name);
+    }
+    Some(cols)
+}
+
+/// Parses `DROP INDEX [IF EXISTS] name`.
+#[must_use]
+pub fn parse_drop_index_name(sql: &str) -> Option<String> {
+    let mut s = skip_ws(sql);
+    s = skip_kw(s, "DROP")?;
+    s = skip_kw(s, "INDEX")?;
+    if starts_kw(s, "IF") {
+        s = skip_kw(s, "IF")?;
+        s = skip_kw(s, "EXISTS")?;
+    }
+    let (name, _) = read_ident(s)?;
+    Some(name)
+}
+
 /// `CREATE TABLE IF NOT EXISTS` for the reserved SQL v1 catalog.
 #[must_use]
 pub fn sql_catalog_create_table_sql() -> String {
@@ -743,6 +996,16 @@ pub fn sql_schema_create_table_sql() -> String {
     )
 }
 
+/// Durable canonical DDL companion table.
+#[must_use]
+pub fn sql_ddl_create_table_sql() -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {SQL_DDL_TABLE} (\
+         kind TEXT NOT NULL, name TEXT NOT NULL, table_name TEXT NOT NULL, \
+         canonical_sql TEXT NOT NULL, PRIMARY KEY (kind, name))"
+    )
+}
+
 /// Catalog DML companions for one canonical DDL statement (all backends).
 ///
 /// Callers must skip this when [`SchemaAction::Create`] is a fingerprint no-op.
@@ -755,53 +1018,107 @@ pub fn catalog_companions(sql: &str) -> Vec<String> {
 ///
 /// When `action` carries a [`SchemaAction::Create`] schema, companions are
 /// built from that proof (no CREATE reparse). Callers without a proof still
-/// parse canonical SQL.
+/// parse canonical SQL. [`SchemaAction::None`] still persists `CREATE INDEX`
+/// / `DROP INDEX` so backups can rebuild admitted indexes. A fingerprint
+/// matching [`SchemaAction::Create`] no-op emits no companions: the first
+/// admitted CREATE already persisted complete catalog DDL, and a binding
+/// missing that catalog fails closed.
 #[must_use]
 pub fn catalog_companions_for_action(sql: &str, action: Option<&SchemaAction>) -> Vec<String> {
     match action {
-        Some(SchemaAction::Create { noop: true, .. }) | Some(SchemaAction::None) => {
-            return Vec::new();
-        }
+        Some(SchemaAction::Create { noop: true, .. }) => return Vec::new(),
         Some(SchemaAction::Create {
             schema,
             fingerprint,
             noop: false,
         }) => {
-            return catalog_dml_for_create(schema, fingerprint);
+            return catalog_dml_for_create(schema, fingerprint, sql);
         }
         Some(SchemaAction::Drop { table }) => return catalog_dml_for_drop(table),
-        None => {}
+        Some(SchemaAction::None) | None => {}
     }
     if let Some(schema) = parse_create_table_schema(sql) {
         let fingerprint = schema.fingerprint();
-        return catalog_dml_for_create(&schema, &fingerprint);
+        return catalog_dml_for_create(&schema, &fingerprint, sql);
     }
     if let Some(table) = parse_drop_table_name(sql) {
         return catalog_dml_for_drop(&table);
     }
+    if let Some(index) = parse_create_index_sql(sql) {
+        return catalog_dml_for_create_index(&index);
+    }
+    if let Some(name) = parse_drop_index_name(sql) {
+        return catalog_dml_for_drop_index(&name);
+    }
     Vec::new()
 }
 
-fn catalog_dml_for_create(schema: &CreateTableSchema, fingerprint: &str) -> Vec<String> {
-    if schema.columns.is_empty() {
-        return Vec::new();
-    }
-    let ident = schema.identity_column.clone().unwrap_or_default();
+fn catalog_ensure_tables() -> Vec<String> {
     vec![
         sql_catalog_create_table_sql(),
         sql_schema_create_table_sql(),
-        catalog_insert_columns_sql(schema),
-        catalog_insert_schema_sql(&schema.table, fingerprint, &ident),
+        sql_ddl_create_table_sql(),
     ]
 }
 
+/// Host-managed catalog/identity tables are not guest-owned plugin schema.
+fn is_reserved_sql_catalog_ident(name: &str) -> bool {
+    matches!(
+        name,
+        SQL_CATALOG_TABLE | SQL_SCHEMA_TABLE | SQL_DDL_TABLE | SQL_IDENTITY_TABLE
+    )
+}
+
+fn catalog_dml_for_create(schema: &CreateTableSchema, fingerprint: &str, sql: &str) -> Vec<String> {
+    if schema.columns.is_empty() || is_reserved_sql_catalog_ident(&schema.table) {
+        return Vec::new();
+    }
+    let ident = schema.identity_column.clone().unwrap_or_default();
+    let mut out = catalog_ensure_tables();
+    out.push(catalog_insert_columns_sql(schema));
+    out.push(catalog_insert_schema_sql(
+        &schema.table,
+        fingerprint,
+        &ident,
+    ));
+    out.extend(catalog_insert_ddl_sql(
+        "table",
+        &schema.table,
+        &schema.table,
+        sql,
+    ));
+    out
+}
+
 fn catalog_dml_for_drop(table: &str) -> Vec<String> {
-    vec![
-        sql_catalog_create_table_sql(),
-        sql_schema_create_table_sql(),
-        catalog_delete_sql(SQL_CATALOG_TABLE, table),
-        catalog_delete_sql(SQL_SCHEMA_TABLE, table),
-    ]
+    if is_reserved_sql_catalog_ident(table) {
+        return Vec::new();
+    }
+    let mut out = catalog_ensure_tables();
+    out.push(catalog_delete_sql(SQL_CATALOG_TABLE, table));
+    out.push(catalog_delete_sql(SQL_SCHEMA_TABLE, table));
+    out.push(catalog_delete_ddl_for_table_sql(table));
+    out
+}
+
+fn catalog_dml_for_create_index(index: &CreateIndexSchema) -> Vec<String> {
+    if is_reserved_sql_catalog_ident(&index.table) {
+        return Vec::new();
+    }
+    let mut out = catalog_ensure_tables();
+    out.extend(catalog_insert_ddl_sql(
+        "index",
+        &index.name,
+        &index.table,
+        &index.canonical_sql,
+    ));
+    out
+}
+
+fn catalog_dml_for_drop_index(name: &str) -> Vec<String> {
+    let mut out = catalog_ensure_tables();
+    out.push(catalog_delete_ddl_kind_name_sql("index", name));
+    out
 }
 
 #[cfg(feature = "host")]
@@ -902,6 +1219,74 @@ fn catalog_delete_sql(catalog_table: &str, table: &str) -> String {
         "DELETE FROM {catalog_table} WHERE table_name = '{}'",
         escape_sql_str(table)
     )
+}
+
+fn catalog_insert_ddl_sql(kind: &str, name: &str, table_name: &str, sql: &str) -> Vec<String> {
+    let canonical = sql.trim().trim_end_matches(';').trim().to_string();
+    vec![
+        catalog_delete_ddl_kind_name_sql(kind, name),
+        catalog_insert_ddl_row_sql(kind, name, table_name, &canonical),
+    ]
+}
+
+#[cfg(feature = "host")]
+fn catalog_insert_ddl_row_sql(kind: &str, name: &str, table_name: &str, sql: &str) -> String {
+    sea_query::Query::insert()
+        .into_table(SQL_DDL_TABLE)
+        .columns(["kind", "name", "table_name", "canonical_sql"])
+        .values_panic([kind.into(), name.into(), table_name.into(), sql.into()])
+        .to_string(sea_query::SqliteQueryBuilder)
+}
+
+#[cfg(not(feature = "host"))]
+fn catalog_insert_ddl_row_sql(kind: &str, name: &str, table_name: &str, sql: &str) -> String {
+    format!(
+        "INSERT INTO {SQL_DDL_TABLE} (kind, name, table_name, canonical_sql) \
+         VALUES ('{}', '{}', '{}', '{}')",
+        escape_sql_str(kind),
+        escape_sql_str(name),
+        escape_sql_str(table_name),
+        escape_sql_str(sql)
+    )
+}
+
+fn catalog_delete_ddl_for_table_sql(table: &str) -> String {
+    #[cfg(feature = "host")]
+    {
+        sea_query::Query::delete()
+            .from_table(sea_query::Alias::new(SQL_DDL_TABLE))
+            .and_where(sea_query::ExprTrait::eq(
+                sea_query::Expr::col("table_name"),
+                table,
+            ))
+            .to_string(sea_query::SqliteQueryBuilder)
+    }
+    #[cfg(not(feature = "host"))]
+    {
+        format!(
+            "DELETE FROM {SQL_DDL_TABLE} WHERE table_name = '{}'",
+            escape_sql_str(table)
+        )
+    }
+}
+
+fn catalog_delete_ddl_kind_name_sql(kind: &str, name: &str) -> String {
+    #[cfg(feature = "host")]
+    {
+        sea_query::Query::delete()
+            .from_table(sea_query::Alias::new(SQL_DDL_TABLE))
+            .and_where(sea_query::ExprTrait::eq(sea_query::Expr::col("kind"), kind))
+            .and_where(sea_query::ExprTrait::eq(sea_query::Expr::col("name"), name))
+            .to_string(sea_query::SqliteQueryBuilder)
+    }
+    #[cfg(not(feature = "host"))]
+    {
+        format!(
+            "DELETE FROM {SQL_DDL_TABLE} WHERE kind = '{}' AND name = '{}'",
+            escape_sql_str(kind),
+            escape_sql_str(name)
+        )
+    }
 }
 
 /// Applies a resolved schema action to `env` without reparsing CREATE SQL.
@@ -1035,8 +1420,13 @@ pub fn sql_type_env_from_canonical_ddl(sql: &str) -> SqlTypeEnv {
 pub fn sql_host_bookkeeping_type_env() -> SqlTypeEnv {
     sql_type_env_from_canonical_ddl(
         "CREATE TABLE db_atomic_receipts (\
-         operation_id TEXT NOT NULL, operation_kind TEXT NOT NULL, request_hash TEXT NOT NULL, \
-         status TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)",
+         operation_id TEXT PRIMARY KEY NOT NULL, operation_kind TEXT NOT NULL, \
+         request_hash TEXT NOT NULL, status TEXT NOT NULL, payload TEXT, \
+         created_at TEXT NOT NULL, expires_at TEXT NOT NULL, consume_key TEXT UNIQUE);\
+         CREATE TABLE pragma_user_version (user_version INTEGER NOT NULL);\
+         CREATE TABLE pragma_table_info (\
+         cid INTEGER NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, \
+         notnull INTEGER NOT NULL, dflt_value TEXT, pk INTEGER NOT NULL)",
     )
 }
 
@@ -1130,6 +1520,18 @@ pub fn unify_types(index: usize, a: SqlType, b: SqlType) -> Result<SqlType> {
 /// v1 type contract.
 pub fn typecheck_execute_request(req: &ExecuteRequest, env: &SqlTypeEnv) -> Result<()> {
     let _proofs = typecheck_execute_request_resolved(req, env)?;
+    Ok(())
+}
+
+/// Typechecks one canonical `CREATE INDEX` (including a partial `WHERE`).
+///
+/// # Errors
+///
+/// Returns when the statement is not admitted SQL v1, the table is missing,
+/// an indexed column is not in [`SqlTypeEnv`], or a `WHERE` predicate is not
+/// a complete boolean SQL-v1 expression.
+pub fn typecheck_create_index_sql(sql: &str, env: &SqlTypeEnv) -> Result<()> {
+    let _ = typecheck_index_ddl(0, sql, env)?;
     Ok(())
 }
 
@@ -1282,31 +1684,20 @@ fn typecheck_index_ddl(index: usize, sql: &str, env: &SqlTypeEnv) -> Result<Reso
         let _ = scan.read_ident();
         return Ok(ResolvedStatement::bound_empty(sql));
     }
-    if !scan.take_kw("CREATE") {
-        return Err(ty_err(index, "CREATE INDEX"));
+    let parsed = parse_create_index_sql(sql)
+        .ok_or_else(|| ty_err(index, "CREATE INDEX is not admitted SQL v1"))?;
+    require_table_in_env(index, env, &parsed.table)?;
+    for column in &parsed.columns {
+        require_column_in_env(index, env, &parsed.table, column)?;
     }
-    let _ = scan.take_kw("UNIQUE");
-    if !scan.take_kw("INDEX") {
-        return Err(ty_err(index, "CREATE INDEX"));
+    if let Some(pred) = parsed.where_sql.as_deref() {
+        typecheck_index_where(index, &parsed.table, pred, env)?;
     }
-    let _ = scan.take_kw("IF");
-    let _ = scan.take_kw("NOT");
-    let _ = scan.take_kw("EXISTS");
-    let _ = scan
-        .read_ident()
-        .ok_or_else(|| ty_err(index, "CREATE INDEX name"))?;
-    if !scan.take_kw("ON") {
-        return Err(ty_err(index, "CREATE INDEX ON"));
-    }
-    let table = scan
-        .read_ident()
-        .ok_or_else(|| ty_err(index, "CREATE INDEX table"))?;
-    require_table_in_env(index, env, &table)?;
     Ok(ResolvedStatement {
         statement_hash: statement_sql_hash(sql),
         output_columns: Vec::new(),
         physical_accesses: vec![PhysicalAccess {
-            table,
+            table: parsed.table,
             column: None,
         }],
         assignments: Vec::new(),
@@ -1317,11 +1708,74 @@ fn typecheck_index_ddl(index: usize, sql: &str, env: &SqlTypeEnv) -> Result<Reso
     })
 }
 
+/// Typechecks a partial-index `WHERE` predicate and requires full consumption.
+fn typecheck_index_where(
+    index: usize,
+    table: &str,
+    predicate: &str,
+    env: &SqlTypeEnv,
+) -> Result<()> {
+    let binds: Vec<SqlType> = Vec::new();
+    let mut cx = TypeCx {
+        index,
+        env,
+        binds: &binds,
+        bind_i: 0,
+        from: BTreeMap::from([(table.to_string(), FromSrc::Physical(table.to_string()))]),
+        outer_from: Vec::new(),
+        ctes: BTreeMap::new(),
+        physical: BTreeSet::new(),
+        functions: BTreeSet::new(),
+        assignments: Vec::new(),
+        text_spans: Vec::new(),
+        integer_arith_sites: Vec::new(),
+        output_columns: Vec::new(),
+        require_named_derived: false,
+        suppress_string_collate: false,
+    };
+    let mut scan = TScan {
+        sql: predicate,
+        i: 0,
+        took_real: false,
+        base: 0,
+    };
+    let ty = infer_expr(&mut scan, &mut cx)?;
+    require_booleanish(index, ty, "CREATE INDEX WHERE")?;
+    if !cx.integer_arith_sites.is_empty() {
+        return Err(ty_err(
+            index,
+            "CREATE INDEX WHERE cannot use INTEGER + - * abs (overflow wrapping is DML-only)",
+        ));
+    }
+    scan.skip();
+    let rest = scan
+        .sql
+        .get(scan.i..)
+        .unwrap_or("")
+        .trim_end_matches(';')
+        .trim();
+    if !rest.is_empty() {
+        return Err(ty_err(
+            index,
+            "CREATE INDEX WHERE is not a complete SQL v1 predicate",
+        ));
+    }
+    Ok(())
+}
+
 fn require_table_in_env(index: usize, env: &SqlTypeEnv, table: &str) -> Result<()> {
     if env.has_table(table) {
         Ok(())
     } else {
         Err(ty_err(index, &format!("unknown table {table}")))
+    }
+}
+
+fn require_column_in_env(index: usize, env: &SqlTypeEnv, table: &str, column: &str) -> Result<()> {
+    if env.column_type(table, column).is_some() {
+        Ok(())
+    } else {
+        Err(ty_err(index, &format!("unknown column {table}.{column}")))
     }
 }
 
@@ -3707,6 +4161,11 @@ mod tests {
             proofs[0].schema_action,
             SchemaAction::Create { noop: true, .. }
         ));
+        let companions = catalog_companions_for_action(sql, Some(&proofs[0].schema_action));
+        assert!(
+            companions.is_empty(),
+            "fingerprint-matching IF NOT EXISTS CREATE must not emit catalog companions: {companions:?}"
+        );
         let err = typecheck_execute_request(&req("CREATE TABLE IF NOT EXISTS t (n TEXT)"), &env)
             .unwrap_err();
         assert!(err.to_string().contains("does not match"), "{err}");
@@ -3985,8 +4444,164 @@ mod tests {
                         .any(|s| s.contains("notes") && s.to_ascii_uppercase().contains("INSERT")),
                     "{companions:?}"
                 );
+                assert!(
+                    companions
+                        .iter()
+                        .any(|s| s.contains(SQL_DDL_TABLE)
+                            && s.to_ascii_uppercase().contains("INSERT")),
+                    "CREATE TABLE must persist canonical DDL: {companions:?}"
+                );
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_create_index_sql_reads_unique_and_table() {
+        let idx = parse_create_index_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_body ON notes (body)",
+        )
+        .expect("index");
+        assert_eq!(idx.name, "idx_notes_body");
+        assert_eq!(idx.table, "notes");
+        assert_eq!(idx.columns, vec!["body".to_string()]);
+        assert!(idx.unique);
+        let drop = parse_drop_index_name("DROP INDEX IF EXISTS idx_notes_body").expect("drop");
+        assert_eq!(drop, "idx_notes_body");
+    }
+
+    #[test]
+    fn parse_create_index_sql_rejects_trailing_tokens_and_malformed_lists() {
+        assert!(
+            parse_create_index_sql("CREATE INDEX idx ON t THIS IS NOT SQL").is_none(),
+            "garbage after ON table must not admit"
+        );
+        assert!(
+            parse_create_index_sql("CREATE INDEX idx ON t (a) THIS IS NOT SQL").is_none(),
+            "garbage after column list must not admit"
+        );
+        assert!(parse_create_index_sql("CREATE INDEX idx ON t (a) USING btree").is_none());
+        assert!(parse_create_index_sql("CREATE INDEX idx ON t (a) INCLUDE (id)").is_none());
+        assert!(parse_create_index_sql("CREATE INDEX idx ON t (body COLLATE NOCASE)").is_none());
+        assert!(parse_create_index_sql("CREATE INDEX idx ON t ()").is_none());
+        let ok = parse_create_index_sql("CREATE INDEX idx ON t (a ASC, b DESC)").expect("index");
+        assert_eq!(ok.table, "t");
+        assert_eq!(ok.columns, vec!["a".to_string(), "b".to_string()]);
+        assert!(!ok.unique);
+        assert!(parse_create_index_sql("CREATE INDEX idx ON t (a) WHERE a IS NOT NULL").is_some());
+        assert!(parse_create_index_sql("CREATE INDEX idx ON t (a) WHERE").is_none());
+        let partial =
+            parse_create_index_sql("CREATE INDEX idx ON t (a) WHERE a IS NOT NULL").expect("where");
+        assert_eq!(partial.where_sql.as_deref(), Some("a IS NOT NULL"));
+    }
+
+    #[test]
+    fn typecheck_create_index_where_requires_sql_v1_predicate() {
+        let mut env = SqlTypeEnv::new();
+        env.insert_table("t", [("a".into(), SqlType::Integer)]);
+        typecheck_execute_request(&req("CREATE INDEX idx ON t (a) WHERE a IS NOT NULL"), &env)
+            .expect("valid partial index");
+        typecheck_execute_request(
+            &req("CREATE INDEX idx ON t (a) WHERE wake_pending = 1"),
+            &env,
+        )
+        .expect_err("unknown column");
+        let err = typecheck_execute_request(
+            &req("CREATE INDEX idx ON t (a) WHERE THIS IS NOT SQL"),
+            &env,
+        )
+        .expect_err("garbage predicate");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("WHERE") || msg.contains("IS NULL") || msg.contains("unknown"),
+            "{msg}"
+        );
+        let err = typecheck_execute_request(
+            &req("CREATE INDEX idx ON t (a) WHERE a IS NOT NULL TRAILING"),
+            &env,
+        )
+        .expect_err("leftover tokens");
+        assert!(
+            err.to_string().contains("WHERE") || err.to_string().contains("complete"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn typecheck_create_index_requires_known_columns() {
+        let mut env = SqlTypeEnv::new();
+        env.insert_table("t", [("a".into(), SqlType::Integer)]);
+        typecheck_create_index_sql("CREATE INDEX idx ON t (a)", &env).expect("known column");
+        let err = typecheck_create_index_sql("CREATE INDEX idx ON t (no_such_column)", &env)
+            .expect_err("unknown indexed column");
+        assert!(
+            err.to_string().contains("unknown column")
+                && err.to_string().contains("no_such_column"),
+            "{err}"
+        );
+        let err = typecheck_execute_request(&req("CREATE INDEX idx ON t (no_such_column)"), &env)
+            .expect_err("execute path");
+        assert!(err.to_string().contains("unknown column"), "{err}");
+    }
+
+    #[test]
+    fn parse_create_table_column_references_ignore_string_defaults() {
+        let fake = parse_create_table_schema(
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, note TEXT DEFAULT 'REFERENCES parent')",
+        )
+        .expect("table");
+        assert!(fake.column_references.iter().all(Option::is_none));
+        assert!(fake.referenced_tables().is_empty());
+        let real = parse_create_table_schema(
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent (id))",
+        )
+        .expect("table");
+        assert_eq!(
+            real.column_references[1]
+                .as_ref()
+                .map(|r| r.ref_table.as_str()),
+            Some("parent")
+        );
+        assert_eq!(real.referenced_tables(), vec!["parent".to_string()]);
+    }
+
+    #[test]
+    fn catalog_companions_persist_and_drop_index_sql() {
+        let sql = "CREATE INDEX IF NOT EXISTS idx_notes_body ON notes (body)";
+        let companions = catalog_companions(sql);
+        assert!(
+            companions
+                .iter()
+                .any(|s| s.contains(SQL_DDL_TABLE) && s.contains("idx_notes_body")),
+            "{companions:?}"
+        );
+        let drop = catalog_companions("DROP INDEX IF EXISTS idx_notes_body");
+        assert!(
+            drop.iter()
+                .any(|s| s.to_ascii_uppercase().contains("DELETE") && s.contains("idx_notes_body")),
+            "{drop:?}"
+        );
+    }
+
+    #[test]
+    fn catalog_companions_skip_reserved_identity_and_catalog_tables() {
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {SQL_IDENTITY_TABLE} (\
+             table_name TEXT PRIMARY KEY, last INTEGER NOT NULL)"
+        );
+        assert!(
+            catalog_companions(&sql).is_empty(),
+            "identity-table DDL must not be catalogued as plugin schema"
+        );
+        assert!(catalog_companions(&format!(
+            "CREATE TABLE IF NOT EXISTS {SQL_CATALOG_TABLE} (table_name TEXT, column_name TEXT)"
+        ))
+        .is_empty());
+        assert!(catalog_companions(&format!(
+            "CREATE TABLE IF NOT EXISTS {SQL_DDL_TABLE} (\
+             kind TEXT NOT NULL, name TEXT NOT NULL, table_name TEXT NOT NULL, \
+             canonical_sql TEXT NOT NULL, PRIMARY KEY (kind, name))"
+        ))
+        .is_empty());
     }
 }

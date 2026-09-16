@@ -1338,7 +1338,7 @@ version = "3.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dee98b0db6a962de883bf5d20362dee4d7ca0d12fe39a7c6c73c844e1cd7c1f"
 dependencies = [
- "darling 0.23.0",
+ "darling 0.20.11",
  "ident_case",
  "prettyplease",
  "proc-macro2",
@@ -1386,6 +1386,7 @@ dependencies = [
  "bookclerk-media",
  "bookclerk-migrate",
  "bookclerk-naming",
+ "bookclerk-plugin-abi",
  "bookclerk-plugin-catalog",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-host",
@@ -1397,6 +1398,7 @@ dependencies = [
  "csv",
  "rusqlite",
  "rust_xlsxwriter",
+ "sea-orm",
  "secrecy",
  "serde",
  "serde_json",
@@ -1571,6 +1573,7 @@ dependencies = [
  "chacha20poly1305 0.11.0",
  "chrono",
  "email_address",
+ "flate2",
  "hex",
  "hmac 0.13.0",
  "html-escape",
@@ -1580,6 +1583,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tar",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",

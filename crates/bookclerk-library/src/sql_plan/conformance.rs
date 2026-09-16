@@ -1470,10 +1470,8 @@ async fn postgres_binding_db() -> sea_orm::DatabaseConnection {
         .await
         .expect("connect to disposable postgres binding database");
     let backend = sea_orm::ConnectionTrait::get_database_backend(&db);
-    for sql in
-        bookclerk_db_exec::split_schema_statements(crate::migrations::binding_bootstrap_sql())
-    {
-        let sql = bookclerk_db_exec::schema_sql_for_backend(backend, &sql);
+    for sql in crate::migrations::binding_bootstrap_statements() {
+        let sql = bookclerk_db_exec::schema_sql_for_backend(backend, sql);
         sea_orm::ConnectionTrait::execute_raw(
             &db,
             sea_orm::Statement::from_string(backend, sql.into_owned()),
@@ -1492,7 +1490,7 @@ async fn run_postgres_binding(
     let env = bookclerk_db_exec::load_sql_type_env(db)
         .await
         .expect("load binding catalog");
-    let policy = bookclerk_plugin_abi::GuestSqlPolicy::binding_owned().with_sql_types(env);
+    let policy = bookclerk_plugin_abi::GuestSqlPolicy::binding_migration().with_sql_types(env);
     let exec_caps = caps.clone();
     super::execute_guest_atomic_with(request, &caps, &policy, |envelope| async move {
         let deadline =

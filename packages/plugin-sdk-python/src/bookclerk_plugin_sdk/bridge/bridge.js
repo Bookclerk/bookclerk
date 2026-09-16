@@ -57,6 +57,88 @@ function catchErr(err) {
   return { code, message };
 }
 
+const MAX_LIST_PAGE = 256;
+const MAX_PLUGIN_MIGRATION_OPS = 256;
+const MAX_PLUGIN_MIGRATION_TOTAL_OPS = 2048;
+const MAX_SCALAR_BYTES = 262144;
+const MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES = 262144;
+
+function utf8Bytes(value) {
+  return new TextEncoder().encode(String(value ?? "")).byteLength;
+}
+
+function migrationOpSql(op) {
+  if (op && typeof op === "object") {
+    if (typeof op.schema === "string") return op.schema;
+    if (typeof op.data === "string") return op.data;
+  }
+  return "";
+}
+
+function requirePluginMigrationRegistration(migrations) {
+  const list = Array.isArray(migrations) ? migrations : [];
+  if (list.length > MAX_LIST_PAGE) {
+    const err = new Error(
+      `plugin migration count ${list.length} exceeds maxListPage (${MAX_LIST_PAGE})`,
+    );
+    err.code = "payload_too_large";
+    err.wireCode = "payload_too_large";
+    throw err;
+  }
+  let total = 0;
+  let totalOps = 0;
+  for (const migration of list) {
+    const ops = Array.isArray(migration?.operations) ? migration.operations : [];
+    if (ops.length > MAX_PLUGIN_MIGRATION_OPS) {
+      const err = new Error(
+        `plugin migration \`${migration?.id}\` has ${ops.length} operations; exceeds maxPluginMigrationOps (${MAX_PLUGIN_MIGRATION_OPS})`,
+      );
+      err.code = "payload_too_large";
+      err.wireCode = "payload_too_large";
+      throw err;
+    }
+    totalOps += ops.length;
+    if (totalOps > MAX_PLUGIN_MIGRATION_TOTAL_OPS) {
+      const err = new Error(
+        `plugin migration registration has ${totalOps} operations; exceeds maxPluginMigrationTotalOps (${MAX_PLUGIN_MIGRATION_TOTAL_OPS})`,
+      );
+      err.code = "payload_too_large";
+      err.wireCode = "payload_too_large";
+      throw err;
+    }
+    total += utf8Bytes(migration?.id);
+    if (total > MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES) {
+      const err = new Error(
+        `plugin migration registration is ${total} bytes; exceeds maxPluginMigrationRegistrationBytes (${MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES})`,
+      );
+      err.code = "payload_too_large";
+      err.wireCode = "payload_too_large";
+      throw err;
+    }
+    for (const op of ops) {
+      const n = utf8Bytes(migrationOpSql(op));
+      if (n > MAX_SCALAR_BYTES) {
+        const err = new Error(
+          `plugin migration \`${migration?.id}\` SQL is ${n} bytes; exceeds maxScalarBytes (${MAX_SCALAR_BYTES})`,
+        );
+        err.code = "payload_too_large";
+        err.wireCode = "payload_too_large";
+        throw err;
+      }
+      total += n;
+      if (total > MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES) {
+        const err = new Error(
+          `plugin migration registration is ${total} bytes; exceeds maxPluginMigrationRegistrationBytes (${MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES})`,
+        );
+        err.code = "payload_too_large";
+        err.wireCode = "payload_too_large";
+        throw err;
+      }
+    }
+  }
+  return list;
+}
+
 function metaHeaders(meta) {
   const headers = {
     "x-bookclerk-key": meta?.key || "",
@@ -364,6 +446,23 @@ async function handleRoleInvoke(request, env, url) {
       const clients =
         typeof plugin.oidcClients === "function" ? await plugin.oidcClients() : [];
       return Response.json({ clients: Array.isArray(clients) ? clients : [] });
+    } catch (err) {
+      const { code, message } = catchErr(err);
+      return errJson(null, code, message);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/databaseMigrations") {
+    try {
+      const body = await request.json().catch(() => ({}));
+      const binding = typeof body.binding === "string" ? body.binding : "";
+      const migrations =
+        typeof plugin.databaseMigrations === "function"
+          ? await plugin.databaseMigrations(binding)
+          : [];
+      return Response.json({
+        migrations: requirePluginMigrationRegistration(migrations),
+      });
     } catch (err) {
       const { code, message } = catchErr(err);
       return errJson(null, code, message);

@@ -30,6 +30,15 @@ MAX_CONFIG_PAYLOAD_BYTES: int = 65536
 MAX_EVENT_PAYLOAD_BYTES: int = 65536
 """Maximum decoded size of a domain-event scalar payload (not a stream)."""
 
+MAX_PLUGIN_MIGRATION_OPS: int = 256
+"""Maximum already-separated operations in one plugin-owned migration."""
+
+MAX_PLUGIN_MIGRATION_TOTAL_OPS: int = 2048
+"""Maximum already-separated operations across one `databaseMigrations` registration."""
+
+MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES: int = 262144
+"""Maximum aggregate UTF-8 bytes of plugin migration ids plus SQL in one `databaseMigrations` registration."""
+
 FEATURE_SCALAR_LIMITS: str = "rpc.scalarLimits"
 """Guest honors scalar / stream-window / list-page caps."""
 
@@ -57,6 +66,9 @@ __all__ = [
     "MAX_IDENTIFIER_BYTES",
     "MAX_CONFIG_PAYLOAD_BYTES",
     "MAX_EVENT_PAYLOAD_BYTES",
+    "MAX_PLUGIN_MIGRATION_OPS",
+    "MAX_PLUGIN_MIGRATION_TOTAL_OPS",
+    "MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES",
     "FEATURE_SCALAR_LIMITS",
     "FEATURE_STREAMS",
     "FEATURE_STORAGE_COPY",

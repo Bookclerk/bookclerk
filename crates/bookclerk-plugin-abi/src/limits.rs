@@ -19,6 +19,18 @@ pub const MAX_STREAM_WINDOW_BYTES: u32 = crate::plugin_capnp::MAX_STREAM_WINDOW_
 /// Maximum objects in one `Destination.list` page.
 pub const MAX_LIST_PAGE: u32 = crate::plugin_capnp::MAX_LIST_PAGE;
 
+/// Maximum already-separated operations in one plugin-owned migration.
+pub const MAX_PLUGIN_MIGRATION_OPS: u32 = crate::plugin_capnp::MAX_PLUGIN_MIGRATION_OPS;
+
+/// Maximum already-separated operations across one `databaseMigrations`
+/// registration (independent of the per-migration cap and of id+SQL UTF-8 bytes).
+pub const MAX_PLUGIN_MIGRATION_TOTAL_OPS: u32 = crate::plugin_capnp::MAX_PLUGIN_MIGRATION_TOTAL_OPS;
+
+/// Maximum aggregate UTF-8 bytes of plugin migration ids plus SQL in one
+/// `databaseMigrations` registration (Cap'n Proto framing is not counted).
+pub const MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES: u32 =
+    crate::plugin_capnp::MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES;
+
 /// Negotiated numeric limits advertised at [`super::PluginDescribe`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScalarLimits {

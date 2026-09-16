@@ -8,4 +8,7 @@
 pub mod atomic;
 pub mod d1;
 
-pub use d1::{delete_database, ensure_database, open, set_shared_proxy, shared_proxy, D1Proxy};
+pub use d1::{
+    delete_database, ensure_database, lookup_database, open, set_shared_proxy, shared_proxy,
+    D1Proxy,
+};

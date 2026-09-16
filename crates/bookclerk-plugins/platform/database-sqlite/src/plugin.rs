@@ -62,6 +62,8 @@ struct BindingOpen {
     binding: String,
     /// Dedicated database file for this binding.
     sqlite_path: String,
+    /// When false, refuse to create a missing file (backup capture).
+    provision: bool,
 }
 
 /// Returns the binding-open parameters when the context targets a named
@@ -70,6 +72,7 @@ fn binding_open(ctx: &DatabaseContext) -> Option<BindingOpen> {
     let DbConnectParams::Sqlite {
         sqlite_path,
         binding: Some(binding),
+        provision,
         ..
     } = connect_params_from_context(ctx).ok()?
     else {
@@ -78,6 +81,7 @@ fn binding_open(ctx: &DatabaseContext) -> Option<BindingOpen> {
     Some(BindingOpen {
         binding,
         sqlite_path: sqlite_path.unwrap_or_default(),
+        provision,
     })
 }
 
@@ -93,13 +97,21 @@ async fn open_binding_connection(open: &BindingOpen) -> Result<DatabaseConnectio
         )));
     }
     let path = std::path::Path::new(&open.sqlite_path);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            PluginError::internal(format!(
-                "database binding `{}` directory: {e}",
-                open.binding
-            ))
-        })?;
+    if !open.provision && !path.is_file() {
+        return Err(PluginError::invalid_params(format!(
+            "database binding `{}` file does not exist (lookup-only; will not provision)",
+            open.binding
+        )));
+    }
+    if open.provision {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                PluginError::internal(format!(
+                    "database binding `{}` directory: {e}",
+                    open.binding
+                ))
+            })?;
+        }
     }
     crate::open(path)
         .await

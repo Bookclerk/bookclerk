@@ -1172,7 +1172,10 @@ separate from the Bookclerk library and from every other plugin
   the REST API. Provisioning fails closed with an operator-facing error when
   the API token cannot create databases.
 - **Third-party adapters** — advertise `DbCapabilities.pluginDatabases` and
-  receive the binding name on the public `DatabaseAdapterConfig`; adapters
+  the backup flags they can actually provide (`consistentBackupRead`,
+  `atomicUnitRestore`). The host opens plugin bindings through the active
+  adapter session (`DatabaseAdapterConfig` + `provision`); it does not
+  switch on sqlite/postgres/d1 crates. Adapters
   that do not advertise support fail the job rather than sharing a database.
 
 Consent: each binding appears as a `database:<NAME>` grant entry and requires
@@ -1184,12 +1187,23 @@ re-opens never re-target a binding); inspect and remove them with
 Cloudflare D1 database, then removes the registry row; it fails closed if
 physical delete cannot be proven).
 
-Inside a binding the plugin **owns its schema**: full DML plus bounded
-idempotent DDL (`CREATE TABLE/INDEX IF NOT EXISTS`, `DROP TABLE/INDEX IF
-EXISTS`). `ALTER` and `CREATE TABLE AS` are refused (not retry-safe, and
-`AS SELECT` can copy another catalog). `REFERENCES` targets are authorized
-with the same reserved-name rules as `CREATE`/`DROP` (no
-`db_atomic_receipts` / `schema_migrations` / `plugin_databases`, no
+Inside a binding the plugin **owns its schema** by registering a complete
+ordered history at startup (`databaseMigrations(binding)`): opaque
+plugin-chosen IDs plus already-separated BookclerkSQL `schema`/`data`
+operations. Bookclerk assigns no version meaning to those IDs; registration
+order is the forward sequence. Registration is a bounded startup scalar: at
+most `maxListPage` migrations, `maxPluginMigrationOps` operations per
+migration, `maxPluginMigrationTotalOps` operations across the registration,
+each SQL at most `maxScalarBytes`, and aggregate id+SQL UTF-8 at most
+`maxPluginMigrationRegistrationBytes`. The host proves the sequence with one evolving
+type environment, verifies durable `plugin_migrations` history is an exact
+prefix of the registration, and applies only the pending suffix. Ordinary
+binding `execute` is query/DML only; durable `CREATE`/`DROP` is admitted only
+while the host applies that registration. `ALTER` and `CREATE TABLE AS` stay
+refused.
+`REFERENCES` targets use the same reserved-name rules as `CREATE`/`DROP`
+(no `db_atomic_receipts` / `schema_migrations` / `plugin_migrations` /
+`plugin_databases` / `db_serialization_slots`, no
 schema-qualified names). The guest grammar still applies —
 single statement, no `ATTACH`/`PRAGMA`/session verbs, no schema-qualified
 names — and functions are Bookclerk SQL v1 portable helpers (not a wider
@@ -1200,17 +1214,20 @@ D1 (`SELECT`/`WITH` sources are wrapped as `SELECT * FROM (<source>) AS
 _bc_src WHERE true`); helper arity and wire types are enforced so callers need
 not `CAST` for `round` / `sum` / `avg` / `count`. Canonical `LIKE` is
 case-sensitive (SQLite/D1 `GLOB` lowering; Postgres `COLLATE "C"`). Schema
-metadata is durable in adapter-private `bookclerk_sql_catalog` (Postgres
-identity in `bookclerk_identity`); both are guest-denied. Opening a binding
-reloads types from that catalog. See
-[`docs/sql-contract/v1.md`](sql-contract/v1.md)).
-A mixed `CREATE` + `INSERT` batch is one atomic receipt: first execution
-applies both statements on SQLite, PostgreSQL, and D1 (D1 claims the receipt
-before ungated DDL, then ungates DML for the claim owner). Same-token replay
-must not double-insert. The
-binding's own `db_atomic_receipts` bookkeeping table stays
-host-owned so retry tokens replay inside the binding, never against the
-library.
+metadata is durable in adapter-private `bookclerk_sql_catalog` /
+`bookclerk_sql_schema` / `bookclerk_sql_ddl` (Postgres identity in
+`bookclerk_identity`); all are guest-denied. Opening a binding
+reloads types from that catalog. A matching no-op `CREATE TABLE IF NOT
+EXISTS` does not rewrite catalog or identity: the first admitted CREATE
+must persist complete canonical DDL, and a binding missing that catalog
+fails closed (reset/recreate).
+See [`docs/sql-contract/v1.md`](sql-contract/v1.md).
+Plugin schema apply is one atomic receipt per registered migration (slot
+lock, ops, journal append). Mixed guest `CREATE` + `INSERT` is not a product
+path: register/apply, then DML. Same-token DML replay must not double-insert.
+The binding's own `db_atomic_receipts` and `plugin_migrations` tables stay
+host-owned so retry tokens replay inside the binding and plugins cannot
+edit the journal.
 
 Delivery: `JobHandler.handle` receives the bindings as the append-only
 `databases :List(NamedDatabase)` argument. Rust guests call

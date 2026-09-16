@@ -8,6 +8,10 @@ pub type Result<T> = std::result::Result<T, LibraryError>;
 /// Failures from library store, schema apply, secrets, or config.
 #[derive(Debug, Error)]
 pub enum LibraryError {
+    /// Schema versioning, backup, or canonical SQL failure.
+    #[error("{0}")]
+    Schema(String),
+
     /// SeaORM / database-plugin failure (`DbErr`).
     #[error("ORM / database plugin error: {0}")]
     Orm(#[from] sea_orm::DbErr),
@@ -56,14 +60,24 @@ impl LibraryError {
     /// Maps a SeaORM / adapter [`sea_orm::DbErr`] onto a typed library error.
     ///
     /// Busy, deadlock, and lost-commit tokens become [`Self::Unavailable`].
-    /// Unique/constraint tokens become [`Self::Conflict`]. Everything else
-    /// stays [`Self::Orm`].
+    /// Unique/duplicate-object tokens become [`Self::Conflict`]. Foreign-key,
+    /// CHECK, and NOT NULL stay [`Self::Orm`]. Everything else stays [`Self::Orm`].
     #[must_use]
     pub fn from_db_err(err: sea_orm::DbErr) -> Self {
         match bookclerk_db_exec::classify_db_err(&err) {
             bookclerk_db_exec::DbErrorClass::Unavailable => Self::Unavailable(err.to_string()),
             bookclerk_db_exec::DbErrorClass::Conflict => Self::Conflict(err.to_string()),
             bookclerk_db_exec::DbErrorClass::Other => Self::Orm(err),
+        }
+    }
+
+    /// True when host schema apply may retry after re-reading durable state.
+    #[must_use]
+    pub fn is_schema_apply_retryable(&self) -> bool {
+        match self {
+            Self::Unavailable(_) | Self::Conflict(_) => true,
+            Self::Orm(err) => bookclerk_db_exec::is_schema_apply_retryable(err),
+            _ => false,
         }
     }
 }

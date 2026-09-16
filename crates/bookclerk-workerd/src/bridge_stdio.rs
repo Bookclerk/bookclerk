@@ -12,14 +12,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bookclerk_plugin_abi::{
+    require_plugin_migration_json_lists, require_plugin_migration_registration, GuestSqlPolicy,
+    PluginError, Result as AbiResult,
+};
+use bookclerk_plugin_abi::{
     serve_plugin_stdio, ByteRange, CopyResult, Destination, DestinationContext, DomainEvent,
     EventResult, GuestDatabase, HealthOk, Integration, IntegrationContext, JobHandler,
     JobHandlerContext, JobInvocation, JobOutcome, ListOptions, ListPage, ObjectInfo,
-    ObjectMetadata, OidcClientTemplate, PluginDescribe, PluginRoot, PutResult, ReadResult,
-    ScalarLimitsDto, Source, SourceContext, WorkerContext, WriteOptions, MAX_LIST_PAGE,
+    ObjectMetadata, OidcClientTemplate, PluginDescribe, PluginMigration, PluginRoot, PutResult,
+    ReadResult, ScalarLimitsDto, Source, SourceContext, WorkerContext, WriteOptions, MAX_LIST_PAGE,
     MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
-use bookclerk_plugin_abi::{GuestSqlPolicy, PluginError, Result as AbiResult};
 use tokio::io::AsyncRead;
 
 use crate::bridge_http::BridgeHttp;
@@ -202,6 +205,26 @@ impl PluginRoot for WorkerdRoot {
             .cloned()
             .unwrap_or_else(|| serde_json::json!([]));
         serde_json::from_value(clients).map_err(|err| PluginError::internal(err.to_string()))
+    }
+
+    async fn database_migrations(&self, binding: &str) -> AbiResult<Vec<PluginMigration>> {
+        let v = self
+            .http
+            .json_post(
+                "/databaseMigrations",
+                &serde_json::json!({ "binding": binding }),
+            )
+            .await
+            .map_err(map_http)?;
+        let migrations = v
+            .get("migrations")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+        require_plugin_migration_json_lists(&migrations)?;
+        let parsed: Vec<PluginMigration> = serde_json::from_value(migrations)
+            .map_err(|err| PluginError::internal(err.to_string()))?;
+        require_plugin_migration_registration(&parsed)?;
+        Ok(parsed)
     }
 }
 

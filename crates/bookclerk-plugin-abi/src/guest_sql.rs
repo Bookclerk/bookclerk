@@ -12,7 +12,7 @@ use crate::{
     sql_types::{
         require_sql_v1_helper_arity, sql_host_bookkeeping_type_env, typecheck_execute_request,
         typecheck_execute_request_resolved, SqlType, SqlTypeEnv, INSERT_SELECT_WRAP_ALIAS,
-        SQL_CATALOG_TABLE, SQL_IDENTITY_TABLE, SQL_SCHEMA_TABLE,
+        SQL_CATALOG_TABLE, SQL_DDL_TABLE, SQL_IDENTITY_TABLE, SQL_SCHEMA_TABLE,
     },
     DbPlanStatementKind, DbResultSelection, ExecuteRequest, PluginError, Result, TypedDbStatement,
 };
@@ -29,6 +29,7 @@ const DENIED_TABLES: &[&str] = &[
     SQL_CATALOG_TABLE,
     SQL_IDENTITY_TABLE,
     SQL_SCHEMA_TABLE,
+    SQL_DDL_TABLE,
     INSERT_SELECT_WRAP_ALIAS,
 ];
 
@@ -91,9 +92,14 @@ pub struct GuestSqlPolicy {
     /// When true, table/column/function checks are deferred to the host session.
     host_authoritative: bool,
     /// Plugin-owned isolated database: any non-reserved unqualified table is
-    /// allowed and bounded idempotent DDL (`CREATE`/`DROP` `TABLE`/`INDEX`
-    /// with `IF [NOT] EXISTS`) passes. `ALTER` is refused.
+    /// allowed. Durable schema DDL is admitted only when
+    /// [`Self::migration_context`] is true. `ALTER` is refused.
     binding_owned: bool,
+    /// When true with [`Self::binding_owned`], bounded idempotent
+    /// `CREATE`/`DROP` `TABLE`/`INDEX` with `IF [NOT] EXISTS` is admitted.
+    /// Ordinary binding `execute` keeps this false so plugin SQL cannot
+    /// mutate schema outside the host migration engine.
+    migration_context: bool,
     /// Durable/loaded column types for fail-closed expression checking.
     sql_types: SqlTypeEnv,
 }
@@ -114,6 +120,7 @@ impl GuestSqlPolicy {
             functions: std::collections::BTreeSet::new(),
             host_authoritative: false,
             binding_owned: false,
+            migration_context: false,
             sql_types: SqlTypeEnv::new(),
         }
     }
@@ -129,24 +136,20 @@ impl GuestSqlPolicy {
             functions: std::collections::BTreeSet::new(),
             host_authoritative: true,
             binding_owned: false,
+            migration_context: false,
             sql_types: SqlTypeEnv::new(),
         }
     }
 
     /// Plugin-owned isolated database binding (Workers-D1-like ownership).
     ///
-    /// The plugin owns and migrates its own schema on a **physically separate**
-    /// database (SQLite file / Postgres database / D1 database). Bounded
-    /// idempotent DDL (`CREATE`/`DROP` `TABLE`/`INDEX` with `IF [NOT] EXISTS`)
-    /// is allowed and any table may be named — except reserved host
-    /// bookkeeping (`db_atomic_receipts`, `schema_migrations`,
-    /// `plugin_databases`), catalog identifiers, and schema-qualified names.
-    /// `CREATE TABLE AS`, `ALTER`, and unqualified `CREATE`/`DROP` without
-    /// `IF [NOT] EXISTS` are refused. Grammar and size checks still run.
-    /// Functions are the Bookclerk SQL v1 portable set (not a wider SQLite
-    /// dialect): contract helpers plus portable scalars. SQLite-only names
-    /// such as `strftime`, `typeof`, `group_concat`, `iif`, `instr`, `quote`,
-    /// `total`, `date`, `datetime`, and `time` are denied.
+    /// Ordinary binding execute is query/DML only. Durable `CREATE`/`DROP` is
+    /// admitted only via [`Self::binding_migration`] (host migration engine).
+    /// Any table may be named except reserved host bookkeeping
+    /// (`db_atomic_receipts`, `schema_migrations`, `plugin_migrations`,
+    /// `plugin_databases`, `db_serialization_slots`), catalog identifiers,
+    /// and schema-qualified names. Grammar and size
+    /// checks still run. Functions are the Bookclerk SQL v1 portable set.
     #[must_use]
     pub fn binding_owned() -> Self {
         Self {
@@ -155,6 +158,26 @@ impl GuestSqlPolicy {
             functions: portable_functions(),
             host_authoritative: false,
             binding_owned: true,
+            migration_context: false,
+            sql_types: SqlTypeEnv::new(),
+        }
+    }
+
+    /// Binding policy that admits bounded idempotent DDL for a migration apply.
+    ///
+    /// Same table/function rules as [`Self::binding_owned`], plus
+    /// `CREATE`/`DROP` `TABLE`/`INDEX` with `IF [NOT] EXISTS`. `ALTER` and
+    /// `CREATE TABLE AS` stay refused. Product `BindingGuestDatabase::execute`
+    /// must not use this constructor.
+    #[must_use]
+    pub fn binding_migration() -> Self {
+        Self {
+            tables: std::collections::BTreeSet::new(),
+            columns: std::collections::BTreeMap::new(),
+            functions: portable_functions(),
+            host_authoritative: false,
+            binding_owned: true,
+            migration_context: true,
             sql_types: SqlTypeEnv::new(),
         }
     }
@@ -163,6 +186,12 @@ impl GuestSqlPolicy {
     #[must_use]
     pub fn is_binding_owned(&self) -> bool {
         self.binding_owned
+    }
+
+    /// True when bounded binding DDL is admitted (migration apply only).
+    #[must_use]
+    pub fn is_migration_context(&self) -> bool {
+        self.migration_context
     }
 
     /// Allows `tables` with builtin scalar functions and any column on those tables.
@@ -178,6 +207,7 @@ impl GuestSqlPolicy {
             functions: builtin_functions(),
             host_authoritative: false,
             binding_owned: false,
+            migration_context: false,
             sql_types: SqlTypeEnv::new(),
         }
     }
@@ -322,10 +352,13 @@ impl GuestSqlPolicy {
 const BINDING_RESERVED_TABLES: &[&str] = &[
     "db_atomic_receipts",
     "schema_migrations",
+    "plugin_migrations",
     "plugin_databases",
+    "db_serialization_slots",
     SQL_CATALOG_TABLE,
     SQL_IDENTITY_TABLE,
     SQL_SCHEMA_TABLE,
+    SQL_DDL_TABLE,
     INSERT_SELECT_WRAP_ALIAS,
 ];
 
@@ -449,6 +482,11 @@ pub fn authorize_guest_sql_policy(req: &ExecuteRequest, policy: &GuestSqlPolicy)
         let proofs = typecheck_execute_request_resolved(req, &env)?;
         for (i, (stmt, proof)) in req.statements.iter().zip(proofs.iter()).enumerate() {
             if binding_ddl_verb(&stmt.sql).is_some() {
+                if !policy.migration_context {
+                    return Err(PluginError::invalid_params(format!(
+                        "statement {i} durable DDL is admitted only in a migration execution context"
+                    )));
+                }
                 authorize_binding_ddl(i, &stmt.sql, policy)?;
                 continue;
             }
@@ -2568,11 +2606,11 @@ pub fn validate_guest_execute_request(req: &ExecuteRequest) -> Result<()> {
 /// [`ExecuteRequest`]. Adapter-edge lowering happens later, at execute,
 /// against the isolated physical DB.
 ///
-/// A [`GuestSqlPolicy::binding_owned`] policy admits bounded DDL verbs
+/// A [`GuestSqlPolicy::binding_migration`] policy admits bounded DDL verbs
 /// (`CREATE` / `DROP`; `ALTER` is still classified then refused);
-/// shapes and names are then authorized by
-/// [`authorize_guest_sql_policy`]. Every other policy uses the fixed
-/// DML/SELECT grammar.
+/// [`GuestSqlPolicy::binding_owned`] stays query/DML. Shapes and names are
+/// then authorized by [`authorize_guest_sql_policy`]. Every other policy uses
+/// the fixed DML/SELECT grammar.
 ///
 /// # Errors
 ///
@@ -2629,6 +2667,7 @@ fn validate_guest_statement_for(
     crate::sql_text::require_portable_text_binds(&stmt.parameters)
         .map_err(|err| PluginError::invalid_params(format!("statement {index}: {err}")))?;
     let binding_ddl = policy.is_binding_owned()
+        && policy.migration_context
         && ["CREATE", "ALTER", "DROP"].contains(&verb.to_ascii_uppercase().as_str());
     if !binding_ddl && DENIED_VERBS.iter().any(|v| verb.eq_ignore_ascii_case(v)) {
         return Err(PluginError::invalid_params(format!(
@@ -3703,12 +3742,15 @@ mod tests {
         assert!(err.to_string().contains("disallowed"), "{err}");
     }
 
-    /// Validates + policy-authorizes one statement under `binding_owned`.
+    /// Validates + policy-authorizes one statement under binding policy.
+    ///
+    /// DDL uses [`GuestSqlPolicy::binding_migration`]; DML uses
+    /// [`GuestSqlPolicy::binding_owned`].
     ///
     /// # Errors
     ///
     /// Returns [`PluginError::invalid_params`] when the statement is outside
-    /// `GuestSqlPolicy::binding_owned`.
+    /// the selected binding policy.
     fn binding_check(sql: &str, selection: DbResultSelection, max_rows: u32) -> Result<()> {
         let mut env = SqlTypeEnv::new();
         apply_schema_sql_to_env(
@@ -3724,10 +3766,36 @@ mod tests {
             &mut env,
             "CREATE TABLE IF NOT EXISTS anything_i_own (id INTEGER)",
         );
-        let policy = GuestSqlPolicy::binding_owned().with_sql_types(env);
+        let policy = if binding_ddl_verb(sql).is_some() {
+            GuestSqlPolicy::binding_migration().with_sql_types(env)
+        } else {
+            GuestSqlPolicy::binding_owned().with_sql_types(env)
+        };
         let request = req(sql, vec![], selection, max_rows);
         validate_guest_execute_request_for_policy(&request, &policy)?;
         authorize_guest_sql_policy(&request, &policy)
+    }
+
+    #[test]
+    fn binding_owned_rejects_ddl_outside_migration_context() {
+        let policy = GuestSqlPolicy::binding_owned();
+        let request = req(
+            "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)",
+            vec![],
+            DbResultSelection::Discard,
+            0,
+        );
+        let err = validate_guest_execute_request_for_policy(&request, &policy).expect_err("ddl");
+        assert!(
+            err.to_string().contains("disallowed SQL verb")
+                || err.to_string().contains("migration execution context"),
+            "{err}"
+        );
+        let err = authorize_guest_sql_policy(&request, &policy).expect_err("authz ddl");
+        assert!(
+            err.to_string().contains("migration execution context"),
+            "{err}"
+        );
     }
 
     #[test]

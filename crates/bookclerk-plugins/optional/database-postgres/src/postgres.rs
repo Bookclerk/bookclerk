@@ -132,6 +132,32 @@ pub async fn open_binding(
     Ok(db)
 }
 
+/// Connects to an existing isolated binding database without creating it.
+///
+/// # Errors
+///
+/// Returns when the name is unsafe, the database is missing, or ping fails.
+pub async fn open_binding_existing(
+    url: &str,
+    database: &str,
+) -> std::result::Result<DatabaseConnection, DbErr> {
+    if !binding_database_name_ok(database) {
+        return Err(DbErr::Custom(format!(
+            "invalid binding database name `{database}`"
+        )));
+    }
+    let admin = Database::connect(url).await?;
+    if !binding_database_exists(&admin, database).await? {
+        return Err(DbErr::Custom(format!(
+            "plugin database `{database}` does not exist (lookup-only; will not provision)"
+        )));
+    }
+    drop(admin);
+    let db = Database::connect(postgres_url_with_database(url, database)).await?;
+    db.ping().await?;
+    Ok(db)
+}
+
 /// Drops an isolated per-binding PostgreSQL database.
 ///
 /// Connects to the admin URL (not `database`) so `DROP DATABASE` is legal.

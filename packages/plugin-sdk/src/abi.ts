@@ -29,6 +29,15 @@ export const MAX_CONFIG_PAYLOAD_BYTES = 65536 as const;
 /** Maximum decoded size of a domain-event scalar payload (not a stream). */
 export const MAX_EVENT_PAYLOAD_BYTES = 65536 as const;
 
+/** Maximum already-separated operations in one plugin-owned migration. */
+export const MAX_PLUGIN_MIGRATION_OPS = 256 as const;
+
+/** Maximum already-separated operations across one `databaseMigrations` registration. */
+export const MAX_PLUGIN_MIGRATION_TOTAL_OPS = 2048 as const;
+
+/** Maximum aggregate UTF-8 bytes of plugin migration ids plus SQL in one `databaseMigrations` registration. */
+export const MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES = 262144 as const;
+
 /** Guest honors scalar / stream-window / list-page caps. */
 export const FEATURE_SCALAR_LIMITS = "rpc.scalarLimits" as const;
 

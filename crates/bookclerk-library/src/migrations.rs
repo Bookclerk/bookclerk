@@ -1,13 +1,29 @@
-//! Greenfield schema for the Bookclerk library DB.
+//! Host library schema: frozen plan steps plus the unreleased development pack.
 //!
-//! Fresh databases apply a single version-1 DDL via [`host_migration_plan`].
-//! Adapters lower canonical DDL at the execution edge (see
-//! [`bookclerk_db_exec::expand_host_schema_batch`]).
-//! [`latest_schema_sqlite`] / [`latest_schema_postgres`] expose that same
-//! current-schema pack. Statements use `CREATE TABLE IF NOT EXISTS` /
-//! `CREATE INDEX IF NOT EXISTS`. There is no incremental V2–V29 chain.
+//! Bookclerk has **not** frozen a production v1 schema. [`host_migration_plan`]
+//! is empty until a release cut. Live schema lives in [`unreleased_ops`] (already
+//! separated [`MigrationOp`]s). Fresh databases apply those ops (frozen ups +
+//! unreleased) and persist [`crate::SchemaState::Unreleased`] with `base_version`
+//! equal to [`SCHEMA_VERSION`] (`0` today: no frozen revisions). Fresh init
+//! records each frozen plan step's checksum before the unreleased marker; when
+//! the unreleased bucket is empty the database ends
+//! [`crate::SchemaState::Frozen`]. Joined SQL ([`unreleased_sql`],
+//! [`current_canonical_schema`]) is derived for diagnostics/export/tests.
+//! Adapters lower canonical DDL at the execution edge
+//! ([`bookclerk_db_exec::expand_host_schema_batch`]).
+
+use bookclerk_plugin_abi::{
+    apply_schema_sql_to_env, canonical_statements_checksum, sql_v1_pack_statements,
+    statement_is_ddl, typecheck_execute_request, DbPlanStatementKind, DbResultSelection,
+    ExecuteRequest, SqlTypeEnv, TypedDbStatement,
+};
 
 use std::sync::OnceLock;
+
+use crate::error::{LibraryError, Result};
+
+#[cfg(test)]
+use std::cell::Cell;
 
 /// Final SQLite DDL for a fresh Bookclerk library database.
 ///
@@ -16,703 +32,510 @@ use std::sync::OnceLock;
 /// (including RFC 3339 timestamps) to `String`.
 #[must_use]
 pub fn latest_schema_sqlite() -> &'static str {
-    SQLITE_SCHEMA
+    current_canonical_schema()
 }
 
-/// Greenfield SQLite DDL for a fresh library database (`PRAGMA user_version` v1).
-const SQLITE_SCHEMA: &str = r#"
-    CREATE TABLE IF NOT EXISTS accounts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        account_id TEXT NOT NULL UNIQUE,
-        marketplace TEXT NOT NULL,
-        label TEXT,
-        scan_enabled INTEGER NOT NULL DEFAULT 1,
-        source TEXT NOT NULL DEFAULT 'audible',
-        connection_status TEXT NOT NULL DEFAULT 'active',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS books (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        uuid TEXT NOT NULL UNIQUE,
-        source TEXT NOT NULL,
-        account_id TEXT NOT NULL,
-        product_id TEXT NOT NULL,
-        asin TEXT,
-        isbn TEXT,
-        marketplace TEXT NOT NULL,
-        title TEXT NOT NULL,
-        authors TEXT,
-        narrators TEXT,
-        series TEXT,
-        series_index TEXT,
-        series_asin TEXT,
-        acquire_status TEXT NOT NULL DEFAULT 'not_acquired',
-        storage_key TEXT,
-        error_message TEXT,
-        purchased_at TEXT,
-        tags TEXT,
-        rating_overall REAL,
-        rating_performance REAL,
-        rating_story REAL,
-        is_finished INTEGER NOT NULL DEFAULT 0,
-        pdf_status TEXT NOT NULL DEFAULT 'not_acquired',
-        pdf_storage_key TEXT,
-        publisher TEXT,
-        length_minutes INTEGER,
-        is_abridged INTEGER NOT NULL DEFAULT 0,
-        content_kind TEXT NOT NULL DEFAULT 'book',
-        categories TEXT,
-        subtitle TEXT,
-        published_at TEXT,
-        description TEXT,
-        language TEXT,
-        cover_url TEXT,
-        subjects TEXT,
-        enrich_source TEXT,
-        enrich_confidence REAL,
-        enrich_updated_at TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        UNIQUE(source, account_id, product_id),
-        FOREIGN KEY(account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_books_uuid ON books(uuid);
-    CREATE INDEX IF NOT EXISTS idx_books_status ON books(acquire_status);
-    CREATE INDEX IF NOT EXISTS idx_books_account ON books(account_id);
-    CREATE INDEX IF NOT EXISTS idx_books_title ON books(title);
-    CREATE INDEX IF NOT EXISTS idx_books_pdf_status ON books(pdf_status);
-    CREATE INDEX IF NOT EXISTS idx_books_tags ON books(tags);
-    CREATE INDEX IF NOT EXISTS idx_books_series_asin ON books(series_asin);
-    CREATE INDEX IF NOT EXISTS idx_books_content_kind ON books(content_kind);
-    CREATE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn);
-    CREATE INDEX IF NOT EXISTS idx_books_source ON books(source);
-    CREATE INDEX IF NOT EXISTS idx_books_asin ON books(asin);
-    CREATE INDEX IF NOT EXISTS idx_books_product_id ON books(product_id);
-
-    CREATE TABLE IF NOT EXISTS ignored_titles (
-        source TEXT NOT NULL,
-        account_id TEXT NOT NULL,
-        product_id TEXT NOT NULL,
-        reason TEXT,
-        created_at TEXT NOT NULL,
-        PRIMARY KEY (source, account_id, product_id),
-        FOREIGN KEY(account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS saved_filters (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE,
-        query TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        role TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        display_name TEXT,
-        login_name TEXT,
-        email TEXT,
-        password_hash TEXT,
-        security_version INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        last_seen_at TEXT,
-        avatar_source TEXT,
-        totp_enabled INTEGER NOT NULL DEFAULT 0
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
-    CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_name ON users(login_name);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
-
-    CREATE TABLE IF NOT EXISTS portal_identities (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        provider TEXT NOT NULL,
-        external_user_id TEXT NOT NULL,
-        label TEXT,
-        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-        created_at TEXT NOT NULL,
-        picture_url TEXT,
-        UNIQUE(provider, external_user_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_portal_identities_user ON portal_identities(user_id);
-
-    CREATE TABLE IF NOT EXISTS claim_tickets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        token_hash TEXT NOT NULL UNIQUE,
-        identity_id INTEGER,
-        expires_at TEXT NOT NULL,
-        redeemed_at TEXT,
-        created_by TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_claim_tickets_hash ON claim_tickets(token_hash);
-    CREATE INDEX IF NOT EXISTS idx_claim_tickets_identity ON claim_tickets(identity_id);
-
-    CREATE TABLE IF NOT EXISTS portal_sessions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        token_hash TEXT NOT NULL UNIQUE,
-        identity_id INTEGER NOT NULL,
-        expires_at TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        user_agent TEXT,
-        device_type TEXT,
-        client_label TEXT,
-        last_used_at TEXT,
-        FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_portal_sessions_hash ON portal_sessions(token_hash);
-
-    CREATE TABLE IF NOT EXISTS operator_sessions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        token_hash TEXT NOT NULL UNIQUE,
-        expires_at TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        last_used_at TEXT,
-        elevated_from_user_id INTEGER,
-        impersonating_user_id INTEGER,
-        user_agent TEXT,
-        device_type TEXT,
-        client_label TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_operator_sessions_hash ON operator_sessions(token_hash);
-
-    CREATE TABLE IF NOT EXISTS security_audit_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        at TEXT NOT NULL,
-        actor TEXT NOT NULL,
-        action TEXT NOT NULL,
-        detail_json TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_security_audit_at ON security_audit_events(at);
-
-    CREATE TABLE IF NOT EXISTS account_links (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        identity_id INTEGER NOT NULL,
-        account_id TEXT NOT NULL,
-        source TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        UNIQUE(identity_id, account_id),
-        FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE,
-        FOREIGN KEY(account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_account_links_account ON account_links(account_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(account_id);
-
-    CREATE TABLE IF NOT EXISTS works (
-        id TEXT PRIMARY KEY,
-        canonical_asin TEXT,
-        canonical_isbn TEXT,
-        title TEXT NOT NULL,
-        authors TEXT,
-        narrators TEXT,
-        description TEXT,
-        subjects TEXT,
-        categories TEXT,
-        language TEXT,
-        series TEXT,
-        series_index TEXT,
-        cover_url TEXT,
-        openlibrary_id TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_works_asin ON works(canonical_asin);
-    CREATE INDEX IF NOT EXISTS idx_works_isbn ON works(canonical_isbn);
-    CREATE INDEX IF NOT EXISTS idx_works_title ON works(title);
-
-    CREATE TABLE IF NOT EXISTS work_editions (
-        work_id TEXT NOT NULL,
-        book_uuid TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL,
-        PRIMARY KEY (work_id, book_uuid),
-        FOREIGN KEY(work_id) REFERENCES works(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_work_editions_book ON work_editions(book_uuid);
-
-    CREATE TABLE IF NOT EXISTS listening_progress (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        identity_id INTEGER,
-        provider TEXT NOT NULL,
-        external_user_id TEXT NOT NULL,
-        book_uuid TEXT,
-        work_id TEXT,
-        external_item_id TEXT NOT NULL,
-        title TEXT,
-        authors TEXT,
-        asin TEXT,
-        isbn TEXT,
-        progress REAL,
-        current_time_seconds REAL,
-        duration_seconds REAL,
-        is_finished INTEGER NOT NULL DEFAULT 0,
-        last_listened_at TEXT,
-        updated_at TEXT NOT NULL,
-        UNIQUE(provider, external_user_id, external_item_id),
-        FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_listening_book ON listening_progress(book_uuid);
-    CREATE INDEX IF NOT EXISTS idx_listening_work ON listening_progress(work_id);
-    CREATE INDEX IF NOT EXISTS idx_listening_user ON listening_progress(provider, external_user_id);
-
-    CREATE TABLE IF NOT EXISTS title_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        uuid TEXT NOT NULL UNIQUE,
-        identity_id INTEGER,
-        title TEXT NOT NULL,
-        authors TEXT,
-        asin TEXT,
-        isbn TEXT,
-        notes TEXT,
-        status TEXT NOT NULL DEFAULT 'open',
-        preferred_source TEXT,
-        work_id TEXT,
-        work_key TEXT NOT NULL DEFAULT '',
-        resolved_book_uuid TEXT,
-        cover_url TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_title_requests_status ON title_requests(status);
-    CREATE INDEX IF NOT EXISTS idx_title_requests_identity ON title_requests(identity_id);
-    CREATE INDEX IF NOT EXISTS idx_title_requests_work_key ON title_requests(work_key);
-    CREATE INDEX IF NOT EXISTS idx_title_requests_identity_status ON title_requests(identity_id, status);
-
-    CREATE TABLE IF NOT EXISTS title_request_sources (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title_request_id INTEGER NOT NULL,
-        source TEXT NOT NULL,
-        product_id TEXT NOT NULL,
-        title TEXT,
-        subtitle TEXT,
-        authors TEXT,
-        narrators TEXT,
-        series TEXT,
-        series_index TEXT,
-        asin TEXT,
-        isbn TEXT,
-        description TEXT,
-        publisher TEXT,
-        length_minutes INTEGER,
-        published_at TEXT,
-        categories TEXT,
-        language TEXT,
-        cover_url TEXT,
-        url TEXT,
-        price_cents INTEGER,
-        currency TEXT,
-        price_label TEXT,
-        list_price_cents INTEGER,
-        list_price_label TEXT,
-        member_price_cents INTEGER,
-        member_price_label TEXT,
-        observed_at TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        UNIQUE(title_request_id, source, product_id),
-        FOREIGN KEY(title_request_id) REFERENCES title_requests(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_trs_request ON title_request_sources(title_request_id);
-
-    CREATE TABLE IF NOT EXISTS embeddings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        target_kind TEXT NOT NULL,
-        target_id TEXT NOT NULL,
-        model TEXT NOT NULL,
-        dims INTEGER NOT NULL,
-        vector BLOB NOT NULL,
-        text_hash TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        UNIQUE(target_kind, target_id, model)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_embeddings_target ON embeddings(target_kind, target_id);
-
-    CREATE TABLE IF NOT EXISTS user_preferences (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        subject_key TEXT NOT NULL UNIQUE,
-        identity_id INTEGER,
-        default_view TEXT NOT NULL DEFAULT 'discover',
-        disabled_shelves_json TEXT NOT NULL DEFAULT '[]',
-        discover_sort TEXT NOT NULL DEFAULT 'relevance',
-        discover_sort_dir TEXT NOT NULL DEFAULT 'desc',
-        discover_language TEXT,
-        discover_excluded_sources_json TEXT NOT NULL DEFAULT '[]',
-        theme TEXT NOT NULL DEFAULT 'system',
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_user_preferences_identity ON user_preferences(identity_id);
-
-    CREATE TABLE IF NOT EXISTS encrypted_secrets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        kind TEXT NOT NULL,
-        provider TEXT,
-        account_type TEXT NOT NULL DEFAULT 'integration',
-        account_id TEXT,
-        name TEXT NOT NULL,
-        format TEXT NOT NULL DEFAULT 'json',
-        ciphertext BLOB NOT NULL,
-        kdf_algorithm TEXT,
-        kdf_salt BLOB,
-        kdf_m_cost INTEGER,
-        kdf_t_cost INTEGER,
-        kdf_p_cost INTEGER,
-        cipher_algorithm TEXT,
-        cipher_nonce BLOB,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        UNIQUE(kind, provider, account_type, account_id, name)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_encrypted_secrets_kind ON encrypted_secrets(kind);
-    CREATE INDEX IF NOT EXISTS idx_encrypted_secrets_account ON encrypted_secrets(account_id);
-    CREATE INDEX IF NOT EXISTS idx_encrypted_secrets_account_type ON encrypted_secrets(account_type);
-
-    CREATE TABLE IF NOT EXISTS user_invites (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        token_hash TEXT NOT NULL UNIQUE,
-        role TEXT NOT NULL,
-        login_name TEXT,
-        display_name TEXT,
-        expires_at TEXT NOT NULL,
-        redeemed_at TEXT,
-        created_by TEXT NOT NULL,
-        created_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_user_invites_hash ON user_invites(token_hash);
-
-    CREATE TABLE IF NOT EXISTS oidc_clients (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        client_id TEXT NOT NULL UNIQUE,
-        client_secret_hash TEXT,
-        redirect_uris_json TEXT NOT NULL,
-        name TEXT,
-        created_at TEXT NOT NULL,
-        issue_refresh_token INTEGER NOT NULL DEFAULT 1,
-        allowed_scopes_json TEXT NOT NULL DEFAULT '["openid","profile","email"]',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        plugin_id TEXT
-    );
-    CREATE TABLE IF NOT EXISTS oidc_auth_codes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        code_hash TEXT NOT NULL UNIQUE,
-        client_id TEXT NOT NULL,
-        user_id INTEGER NOT NULL,
-        redirect_uri TEXT NOT NULL,
-        code_challenge TEXT NOT NULL,
-        code_challenge_method TEXT NOT NULL,
-        scope TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
-        consumed_at TEXT,
-        created_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_oidc_auth_codes_hash ON oidc_auth_codes(code_hash);
-    CREATE TABLE IF NOT EXISTS oidc_refresh_tokens (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        token_hash TEXT NOT NULL UNIQUE,
-        client_id TEXT NOT NULL,
-        user_id INTEGER NOT NULL,
-        scope TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
-        revoked_at TEXT,
-        created_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_oidc_refresh_hash ON oidc_refresh_tokens(token_hash);
-
-    CREATE TABLE IF NOT EXISTS oidc_rp_states (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        state_hash TEXT NOT NULL UNIQUE,
-        provider_id TEXT NOT NULL,
-        pkce_verifier TEXT NOT NULL,
-        nonce TEXT NOT NULL,
-        purpose TEXT NOT NULL,
-        user_id INTEGER,
-        expires_at TEXT NOT NULL,
-        created_at TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS webauthn_credentials (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        credential_id TEXT NOT NULL UNIQUE,
-        passkey_json TEXT NOT NULL,
-        name TEXT,
-        created_at TEXT NOT NULL,
-        last_used_at TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_user ON webauthn_credentials(user_id);
-    CREATE TABLE IF NOT EXISTS webauthn_challenges (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        challenge_id TEXT NOT NULL UNIQUE,
-        user_id INTEGER,
-        kind TEXT NOT NULL,
-        state_json TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
-        created_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_oidc_rp_states_expires ON oidc_rp_states(expires_at);
-    CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_expires ON webauthn_challenges(expires_at);
-
-    CREATE TABLE IF NOT EXISTS db_atomic_receipts (
-        operation_id TEXT PRIMARY KEY NOT NULL,
-        operation_kind TEXT NOT NULL,
-        request_hash TEXT NOT NULL,
-        status TEXT NOT NULL,
-        payload TEXT,
-        created_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
-        consume_key TEXT UNIQUE
-    );
-    CREATE INDEX IF NOT EXISTS idx_db_atomic_receipts_expires ON db_atomic_receipts(expires_at);
-
-    CREATE TABLE IF NOT EXISTS jobs (
-        id TEXT PRIMARY KEY NOT NULL,
-        kind TEXT NOT NULL,
-        state TEXT NOT NULL,
-        priority INTEGER NOT NULL DEFAULT 0,
-        resource_class TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        progress TEXT,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        max_attempts INTEGER NOT NULL DEFAULT 3,
-        run_after TEXT NOT NULL,
-        lease_owner TEXT,
-        lease_expires_at TEXT,
-        dedup_key TEXT NOT NULL,
-        error_kind TEXT,
-        error_message TEXT,
-        cancel_requested INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        started_at TEXT,
-        finished_at TEXT,
-        lease_generation INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(resource_class, state, run_after, priority);
-    CREATE INDEX IF NOT EXISTS idx_jobs_dedup ON jobs(dedup_key, state);
-    CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_dedup_active
-        ON jobs(dedup_key) WHERE state IN ('pending', 'running');
-    CREATE TABLE IF NOT EXISTS job_temp_paths (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id TEXT NOT NULL,
-        path TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        reserved_bytes INTEGER NOT NULL DEFAULT 0,
-        FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_job_temp_paths_job ON job_temp_paths(job_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_job_temp_paths_job_path
-        ON job_temp_paths(job_id, path);
-    CREATE TABLE IF NOT EXISTS job_queue_control (
-        id INTEGER PRIMARY KEY CHECK (id = 1)
-    );
-    INSERT OR IGNORE INTO job_queue_control (id) VALUES (1);
-
-    CREATE TABLE IF NOT EXISTS domain_events (
-        id TEXT PRIMARY KEY NOT NULL,
-        event_type TEXT NOT NULL,
-        schema_version INTEGER NOT NULL,
-        occurred_at TEXT NOT NULL,
-        account_id TEXT NOT NULL DEFAULT '',
-        source TEXT NOT NULL DEFAULT '',
-        correlation_id TEXT NOT NULL DEFAULT '',
-        causation_id TEXT NOT NULL DEFAULT '',
-        dedup_key TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        ordering_key TEXT NOT NULL DEFAULT '',
-        dispatch_state TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        wake_pending INTEGER NOT NULL DEFAULT 1,
-        wake_lease_owner TEXT,
-        wake_lease_expires_at TEXT,
-        wake_cursor_at TEXT NOT NULL DEFAULT '',
-        wake_cursor_id TEXT NOT NULL DEFAULT '',
-        dispatch_snapshot_json TEXT NOT NULL DEFAULT '',
-        UNIQUE(account_id, source, event_type, dedup_key)
-    );
-    CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch ON domain_events(dispatch_state, created_at);
-    CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch_created ON domain_events(dispatch_state, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_domain_events_wake_pending ON domain_events(created_at, id) WHERE wake_pending = 1;
-    CREATE TABLE IF NOT EXISTS event_deliveries (
-        id TEXT PRIMARY KEY NOT NULL,
-        event_id TEXT NOT NULL,
-        plugin_id TEXT NOT NULL,
-        idempotency_key TEXT NOT NULL UNIQUE,
-        state TEXT NOT NULL,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        max_attempts INTEGER NOT NULL DEFAULT 8,
-        lease_owner TEXT,
-        lease_expires_at TEXT,
-        lease_generation INTEGER NOT NULL DEFAULT 0,
-        run_after TEXT NOT NULL,
-        invocation_sequence INTEGER NOT NULL DEFAULT 0,
-        resume_pending INTEGER NOT NULL DEFAULT 0,
-        checkpoint_json TEXT,
-        checkpoint_schema_version INTEGER NOT NULL DEFAULT 0,
-        ordering_key TEXT NOT NULL DEFAULT '',
-        outcome TEXT,
-        error_message TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        cancel_requested INTEGER NOT NULL DEFAULT 0,
-        resource_class TEXT NOT NULL DEFAULT 'network',
-        wake_event_type TEXT NOT NULL DEFAULT '',
-        wake_filter_json TEXT NOT NULL DEFAULT '',
-        wake_grants_json TEXT NOT NULL DEFAULT '',
-        UNIQUE(event_id, plugin_id),
-        FOREIGN KEY(event_id) REFERENCES domain_events(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_claim ON event_deliveries(state, run_after, created_at);
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_plugin_order ON event_deliveries(plugin_id, ordering_key, created_at);
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_state ON event_deliveries(state);
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_wake ON event_deliveries(state, wake_event_type);
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_plugin_running ON event_deliveries(plugin_id, state);
-
-    CREATE TABLE IF NOT EXISTS event_subscriber_nodes (
-        node_id TEXT NOT NULL,
-        plugin_id TEXT NOT NULL,
-        subscriptions_json TEXT NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        heartbeat_at TEXT NOT NULL,
-        PRIMARY KEY (node_id, plugin_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_event_subscriber_nodes_heartbeat
-        ON event_subscriber_nodes(heartbeat_at);
-    CREATE TABLE IF NOT EXISTS event_outbox_stats (
-        id INTEGER PRIMARY KEY NOT NULL,
-        retries_total INTEGER NOT NULL DEFAULT 0,
-        suspensions_total INTEGER NOT NULL DEFAULT 0,
-        dead_letters_total INTEGER NOT NULL DEFAULT 0,
-        dispatch_latency_ms_sum INTEGER NOT NULL DEFAULT 0,
-        dispatch_count INTEGER NOT NULL DEFAULT 0,
-        handler_latency_ms_sum INTEGER NOT NULL DEFAULT 0,
-        handler_count INTEGER NOT NULL DEFAULT 0
-    );
-    INSERT OR IGNORE INTO event_outbox_stats (
-        id, retries_total, suspensions_total, dead_letters_total,
-        dispatch_latency_ms_sum, dispatch_count, handler_latency_ms_sum, handler_count
-    ) VALUES (1, 0, 0, 0, 0, 0, 0, 0);
-
-    CREATE TABLE IF NOT EXISTS db_serialization_slots (
-        slot_key TEXT PRIMARY KEY NOT NULL,
-        bump INTEGER NOT NULL DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS plugin_databases (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        plugin_id TEXT NOT NULL,
-        binding TEXT NOT NULL,
-        backend_kind TEXT NOT NULL,
-        unit_ref TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        UNIQUE(plugin_id, binding)
-    );
-    CREATE INDEX IF NOT EXISTS idx_plugin_databases_plugin ON plugin_databases(plugin_id);
-    "#;
-
-/// Durable atomic receipts for isolated plugin binding databases.
-const BINDING_RECEIPTS_SQL: &str = r#"
-    CREATE TABLE IF NOT EXISTS db_atomic_receipts (
-        operation_id TEXT PRIMARY KEY NOT NULL,
-        operation_kind TEXT NOT NULL,
-        request_hash TEXT NOT NULL,
-        status TEXT NOT NULL,
-        payload TEXT,
-        created_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
-        consume_key TEXT UNIQUE
-    );
-    CREATE INDEX IF NOT EXISTS idx_db_atomic_receipts_expires ON db_atomic_receipts(expires_at);
-"#;
-
-/// Reserved adapter-private catalog + identity tables (canonical SQLite-shaped).
+/// Highest **frozen** schema version this binary knows (`0` while the plan is empty).
 ///
-/// Postgres adapters rewrite `last INTEGER` to `BIGINT`. Guests cannot name
-/// these tables.
-const BINDING_SQL_CATALOG_SQLITE: &str = r#"
-    CREATE TABLE IF NOT EXISTS bookclerk_sql_catalog (
-        table_name TEXT NOT NULL,
-        column_name TEXT NOT NULL,
-        sql_type TEXT NOT NULL,
-        ordinal INTEGER NOT NULL,
-        is_identity INTEGER NOT NULL,
-        default_sql TEXT NOT NULL,
-        PRIMARY KEY (table_name, column_name)
-    );
-    CREATE TABLE IF NOT EXISTS bookclerk_sql_schema (
-        table_name TEXT PRIMARY KEY NOT NULL,
-        fingerprint TEXT NOT NULL,
-        identity_column TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS bookclerk_identity (
-        table_name TEXT PRIMARY KEY NOT NULL,
-        last INTEGER NOT NULL
-    );
-"#;
+/// This is not a discriminator for uninitialized vs unreleased. Use
+/// [`crate::SchemaState`].
+pub const SCHEMA_VERSION: i64 = 0;
+
+/// Live development DDL derived from [`unreleased_ops`] (joined with `;\n`).
+///
+/// Apply, checksum, and backup use the op list. This script is diagnostics,
+/// export, and `execute_batch` tests only.
+#[must_use]
+pub fn unreleased_sql() -> &'static str {
+    static SQL: OnceLock<String> = OnceLock::new();
+    SQL.get_or_init(|| join_op_sql(unreleased_ops())).as_str()
+}
+
+/// Host bookkeeping table created before applying plan versions.
+///
+/// `namespace` separates Bookclerk-owned ledger rows (`bookclerk`) from any
+/// leftover rows. Plugin-owned history uses the separate `plugin_migrations`
+/// journal, not this table.
+pub const SCHEMA_MIGRATIONS_DDL: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
+        namespace TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        checksum TEXT NOT NULL,
+        app_version TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        PRIMARY KEY (namespace, state, version)
+    )";
+
+/// One admitted BookclerkSQL statement in a host migration apply unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationOp {
+    /// Schema mutation (`CREATE` / `DROP` / `ALTER` / index).
+    Schema(&'static str),
+    /// Data backfill (`INSERT` / `UPDATE` / `DELETE`).
+    Data(&'static str),
+}
+
+impl MigrationOp {
+    /// Canonical BookclerkSQL for this op.
+    #[must_use]
+    pub const fn sql(self) -> &'static str {
+        match self {
+            Self::Schema(sql) | Self::Data(sql) => sql,
+        }
+    }
+
+    /// True when this op is admitted schema DDL.
+    #[must_use]
+    pub const fn is_schema(self) -> bool {
+        matches!(self, Self::Schema(_))
+    }
+
+    /// True when this op is admitted DML / backfill.
+    #[must_use]
+    pub const fn is_data(self) -> bool {
+        matches!(self, Self::Data(_))
+    }
+}
+
+mod binding_ops;
+mod engine;
+mod plan;
+mod plugin;
+mod unreleased_ops;
+
+pub use engine::{
+    apply_migration_plan, downgrade_migration_plan, remaining_upgrade_batches,
+    schema_session_matches, ApplyDirection,
+};
+pub use plan::{
+    frozen_marker_delete_sql, frozen_marker_sql, schema_slot_key, sql_string_literal,
+    unreleased_marker_sql_in, validate_schema_namespace, MigrationPlan, MigrationStep, PlanOp,
+    BOOKCLERK_SCHEMA_NAMESPACE,
+};
+pub use plugin::{
+    apply_plugin_migrations, history_from_execute_reply, load_plugin_migration_history,
+    load_plugin_migration_history_on, next_pending_plugin_migration, pending_plugin_suffix,
+    plugin_apply_statements, plugin_history_digest, plugin_history_session_matches,
+    plugin_journal_has_entry, plugin_journal_select_request, plugin_migration_checksum,
+    prove_plugin_migration_sequence, remaining_plugin_suffix_batches, require_history_prefix,
+    PluginJournalEntry, PluginMigrationHistory, PluginMigrationSequence, ProvenPluginMigration,
+    MAX_PLUGIN_MIGRATION_APPLY_ATTEMPTS, PLUGIN_MIGRATION_SLOT_KEY,
+};
 
 /// One host-owned schema version in the canonical Bookclerk migration plan.
 ///
 /// Marker capabilities ([`crate::HostSchemaKind`]) choose only how each version
-/// is recorded (`PRAGMA user_version`, `schema_migrations` row, or one atomic
-/// batch). The live connection backend lowers [`Self::canonical`] at the adapter
-/// boundary (Postgres) or applies it verbatim (SQLite / D1).
+/// is recorded (`schema_migrations` row). The live connection backend lowers
+/// each [`MigrationOp`] at the adapter boundary (Postgres) or applies it
+/// verbatim (SQLite / D1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostMigrationStep {
-    /// `PRAGMA user_version` / `schema_migrations.version` for this step.
+    /// `schema_migrations.version` for this step.
     pub version: i64,
-    /// Canonical SQLite-shaped Bookclerk DDL for this version.
-    pub canonical: &'static str,
+    /// Ordered schema and data ops for this version (the `up`).
+    pub steps: &'static [MigrationOp],
+    /// Reverse ops when this step is reversible; `None` means restore a backup.
+    pub down: Option<&'static [MigrationOp]>,
+    /// First Bookclerk semver that shipped this step.
+    pub introduced_in: &'static str,
 }
 
-/// Canonical bootstrap DDL applied inside every isolated plugin binding
-/// database at first open.
+impl HostMigrationStep {
+    /// SHA-256 hex digest of length-prefixed `up` (and `down` when present).
+    #[must_use]
+    pub fn checksum(&self) -> String {
+        migration_ops_checksum(self.steps, self.down)
+    }
+
+    /// True when [`Self::down`] is present so CLI rollback can apply this step.
+    #[must_use]
+    pub fn reversible(&self) -> bool {
+        self.down.is_some()
+    }
+
+    /// Concatenated up SQL (tests / derived views). Boundaries are the op list.
+    #[must_use]
+    pub fn up_sql(&self) -> String {
+        self.steps
+            .iter()
+            .map(|op| op.sql())
+            .collect::<Vec<_>>()
+            .join(";\n")
+    }
+}
+
+/// Oldest frozen schema version this binary can run.
 ///
-/// Each binding database carries its own `db_atomic_receipts` table so guest
-/// retry tokens replay inside the binding, never against the library.
-/// SQLite-shaped; adapters lower it mechanically like the host schema.
+/// Derived from [`host_migration_plan`]: `None` while the plan is empty
+/// (no frozen schema versions exist). Once frozen steps exist this is the
+/// first retained step, not a separately synchronized constant.
+#[must_use]
+pub fn min_supported_schema_version() -> Option<i64> {
+    host_migration_plan().first().map(|step| step.version)
+}
+
+/// Oldest frozen version in `plan` (`None` when `plan` is empty).
+#[must_use]
+pub fn min_supported_schema_version_in(plan: &[HostMigrationStep]) -> Option<i64> {
+    plan.first().map(|step| step.version)
+}
+
+/// SHA-256 of length-prefixed migration ops (not a joined script).
+#[must_use]
+pub fn migration_ops_checksum(ups: &[MigrationOp], down: Option<&[MigrationOp]>) -> String {
+    let up: Vec<&str> = ups.iter().map(|op| op.sql()).collect();
+    let down_sql: Option<Vec<&str>> = down.map(|ops| ops.iter().map(|op| op.sql()).collect());
+    let down_refs: Option<Vec<&str>> = down_sql.as_ref().map(|v| v.to_vec());
+    migration_statements_checksum(&up, down_refs.as_deref())
+}
+
+/// SHA-256 of canonical up statements, plus down statements when reversible.
+///
+/// # Errors
+///
+/// Returns when `canonical` or `down` is not a BookclerkSQL statement list.
+/// Parser failure is never treated as a single opaque statement.
+pub fn migration_sql_checksum(canonical: &str, down: Option<&str>) -> Result<String> {
+    let ups = pack_migration_sql(canonical)?;
+    let downs = match down {
+        Some(sql) => Some(pack_migration_sql(sql)?),
+        None => None,
+    };
+    let up_refs: Vec<&str> = ups.iter().map(String::as_str).collect();
+    let down_owned: Option<Vec<&str>> = downs
+        .as_ref()
+        .map(|v| v.iter().map(String::as_str).collect());
+    Ok(migration_statements_checksum(
+        &up_refs,
+        down_owned.as_deref(),
+    ))
+}
+
+/// Packs `sql` with the SQL-v1 lexer. Empty input yields no statements.
+///
+/// # Errors
+///
+/// Returns when `sql` is not a BookclerkSQL statement list.
+pub fn pack_migration_sql(sql: &str) -> Result<Vec<String>> {
+    sql_v1_pack_statements(sql).map_err(|err| {
+        LibraryError::Schema(format!(
+            "migration SQL is not a BookclerkSQL statement list: {err}"
+        ))
+    })
+}
+
+/// Length-prefixed checksum of `ups`, then `-- down` and down statements.
+fn migration_statements_checksum(ups: &[&str], down: Option<&[&str]>) -> String {
+    let mut parts = Vec::with_capacity(ups.len().saturating_add(1));
+    parts.extend(ups.iter().copied());
+    if let Some(down) = down {
+        parts.push("-- down");
+        parts.extend(down.iter().copied());
+    }
+    canonical_statements_checksum(&parts)
+}
+
+/// Joins already-separated ops with `;\n` for diagnostics/export.
+#[must_use]
+pub fn join_op_sql(ops: &[MigrationOp]) -> String {
+    ops.iter()
+        .map(|op| op.sql())
+        .collect::<Vec<_>>()
+        .join(";\n")
+}
+
+/// Highest frozen binding-bootstrap version (`0` until a binding freeze).
+pub const BINDING_SCHEMA_VERSION: i64 = 0;
+
+/// Host-owned bootstrap ops applied inside every isolated plugin binding.
+///
+/// # Panics
+///
+/// Panics when a bootstrap op is not one admitted BookclerkSQL statement of
+/// the declared [`MigrationOp`] kind.
+#[must_use]
+pub fn binding_bootstrap_ops() -> &'static [MigrationOp] {
+    static PROVEN: OnceLock<()> = OnceLock::new();
+    PROVEN.get_or_init(|| {
+        prove_migration_ops(binding_ops::BINDING_BOOTSTRAP_OPS).unwrap_or_else(|err| {
+            panic!("BINDING_BOOTSTRAP_OPS failed BookclerkSQL proof: {err}");
+        });
+    });
+    binding_ops::BINDING_BOOTSTRAP_OPS
+}
+
+/// Derived diagnostic SQL for [`binding_bootstrap_ops`].
 #[must_use]
 pub fn binding_bootstrap_sql() -> &'static str {
-    static SQL: OnceLock<&'static str> = OnceLock::new();
-    SQL.get_or_init(|| format!("{BINDING_RECEIPTS_SQL}\n{BINDING_SQL_CATALOG_SQLITE}").leak())
+    static SQL: OnceLock<String> = OnceLock::new();
+    SQL.get_or_init(|| join_op_sql(binding_bootstrap_ops()))
+        .as_str()
 }
 
-/// Column types implied by canonical host library DDL.
+/// Ordered canonical statements for [`binding_bootstrap_ops`].
+#[must_use]
+pub fn binding_bootstrap_statements() -> &'static [String] {
+    static STMTS: OnceLock<Vec<String>> = OnceLock::new();
+    STMTS
+        .get_or_init(|| ops_to_statements(binding_bootstrap_ops()))
+        .as_slice()
+}
+
+/// SHA-256 of [`binding_bootstrap_ops`] (length-prefixed statement list).
+#[must_use]
+pub fn binding_unreleased_checksum() -> String {
+    migration_ops_checksum(binding_bootstrap_ops(), None)
+}
+
+/// Frozen ups concatenated with [`unreleased_ops`] (derived diagnostic SQL).
+///
+/// After a future release cut this is `host_migration_plan` DDL plus whatever
+/// is again unreleased — do not assume it equals [`unreleased_sql`] forever.
+#[must_use]
+pub fn current_canonical_schema() -> &'static str {
+    static SQL: OnceLock<String> = OnceLock::new();
+    SQL.get_or_init(|| current_canonical_statements().join(";\n"))
+        .as_str()
+}
+
+/// Ordered canonical statements for [`current_canonical_schema`].
+#[must_use]
+pub fn current_canonical_statements() -> &'static [String] {
+    static STMTS: OnceLock<Vec<String>> = OnceLock::new();
+    STMTS
+        .get_or_init(|| {
+            let mut out = Vec::new();
+            for step in production_host_migration_plan() {
+                for op in step.steps {
+                    out.push(op.sql().to_string());
+                }
+            }
+            out.extend(unreleased_statements().iter().cloned());
+            out
+        })
+        .as_slice()
+}
+
+/// Live unreleased host schema ops (source of truth).
+///
+/// # Panics
+///
+/// Panics when an unreleased op is not one admitted BookclerkSQL statement of
+/// the declared [`MigrationOp`] kind.
+#[must_use]
+pub fn unreleased_ops() -> &'static [MigrationOp] {
+    static PROVEN: OnceLock<()> = OnceLock::new();
+    PROVEN.get_or_init(|| {
+        prove_migration_ops(unreleased_ops::UNRELEASED_OPS).unwrap_or_else(|err| {
+            panic!("UNRELEASED_OPS failed BookclerkSQL proof: {err}");
+        });
+    });
+    unreleased_ops::UNRELEASED_OPS
+}
+
+/// Ordered statements in [`unreleased_ops`].
+#[must_use]
+pub fn unreleased_statements() -> &'static [String] {
+    static STMTS: OnceLock<Vec<String>> = OnceLock::new();
+    STMTS
+        .get_or_init(|| ops_to_statements(unreleased_ops()))
+        .as_slice()
+}
+
+/// SHA-256 of [`unreleased_ops`] (empty string when empty).
+#[must_use]
+pub fn unreleased_checksum() -> String {
+    migration_ops_checksum(unreleased_ops(), None)
+}
+
+/// `INSERT` for an unreleased `schema_migrations` row in the Bookclerk namespace.
+#[must_use]
+pub fn unreleased_state_marker_sql(checksum: &str, base_version: i64) -> String {
+    unreleased_marker_sql_in(BOOKCLERK_SCHEMA_NAMESPACE, checksum, base_version)
+}
+
+/// Proves each op is exactly one BookclerkSQL statement of the declared kind.
+///
+/// Schema ops must be admitted DDL (`CREATE` / `ALTER` / `DROP`). Data ops must
+/// be admitted DML. Both go through the SQL-v1 typechecker; Schema ops also
+/// update `env` so later Data/index ops see prior `CREATE TABLE`.
+///
+/// # Errors
+///
+/// Returns when packing, kind, or typechecking fails.
+pub fn prove_migration_ops(ops: &[MigrationOp]) -> Result<()> {
+    let mut env = SqlTypeEnv::new();
+    for (index, op) in ops.iter().enumerate() {
+        prove_migration_op(index, *op, &mut env)?;
+    }
+    Ok(())
+}
+
+/// Packs `sql` and requires exactly one statement.
+///
+/// # Errors
+///
+/// Returns when packing fails or `sql` is not a single statement.
+pub fn require_single_migration_statement(sql: &str) -> Result<String> {
+    let packed = pack_migration_sql(sql)?;
+    match packed.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => Err(LibraryError::Schema(
+            "migration op is empty after packing".into(),
+        )),
+        _ => Err(LibraryError::Schema(format!(
+            "migration op packed into {} statements; each MigrationOp must be one statement",
+            packed.len()
+        ))),
+    }
+}
+
+/// Proves one op: single packed statement, Schema/Data kind, SQL-v1 typecheck.
+fn prove_migration_op(index: usize, op: MigrationOp, env: &mut SqlTypeEnv) -> Result<()> {
+    prove_plan_sql_op(index, op.sql(), op.is_schema(), env)
+}
+
+/// Proves one op: single packed statement, Schema/Data kind, SQL-v1 typecheck.
+pub(crate) fn prove_plan_sql_op(
+    index: usize,
+    sql: &str,
+    is_schema: bool,
+    env: &mut SqlTypeEnv,
+) -> Result<()> {
+    let packed = require_single_migration_statement(sql)
+        .map_err(|err| LibraryError::Schema(format!("migration op {index}: {err}")))?;
+    if packed != sql.trim() {
+        return Err(LibraryError::Schema(format!(
+            "migration op {index} is not already a single BookclerkSQL statement"
+        )));
+    }
+    let is_ddl = statement_is_ddl(sql);
+    if is_schema && !is_ddl {
+        return Err(LibraryError::Schema(format!(
+            "migration op {index} Schema variant is not admitted DDL"
+        )));
+    }
+    if !is_schema && is_ddl {
+        return Err(LibraryError::Schema(format!(
+            "migration op {index} Data variant is admitted DDL"
+        )));
+    }
+    let req = ExecuteRequest {
+        operation_id: format!("prove-migration-op-{index}"),
+        request_hash: String::new(),
+        deadline_unix_ms: 0,
+        statements: vec![TypedDbStatement {
+            sql: sql.to_string(),
+            parameters: Vec::new(),
+            kind: DbPlanStatementKind::Execute,
+            max_rows: 0,
+            result_selection: DbResultSelection::Discard,
+        }],
+    };
+    typecheck_execute_request(&req, env).map_err(|err| {
+        LibraryError::Schema(format!("migration op {index} failed typecheck: {err}"))
+    })?;
+    if is_schema {
+        apply_schema_sql_to_env(env, sql);
+    }
+    Ok(())
+}
+
+/// Copies each op's canonical SQL into an owned statement list.
+fn ops_to_statements(ops: &[MigrationOp]) -> Vec<String> {
+    ops.iter().map(|op| op.sql().to_string()).collect()
+}
+
+/// Host table names declared by [`current_canonical_schema`], plus
+/// `schema_migrations`.
+#[must_use]
+pub fn current_canonical_table_names() -> Vec<String> {
+    static NAMES: OnceLock<Vec<String>> = OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            let mut names = table_names_from_statements(current_canonical_statements());
+            if !names.iter().any(|n| n == "schema_migrations") {
+                names.push("schema_migrations".into());
+            }
+            names
+        })
+        .clone()
+}
+
+/// Parses `CREATE TABLE` names from already-separated canonical statements.
+fn table_names_from_statements(stmts: &[String]) -> Vec<String> {
+    let mut names = Vec::new();
+    for stmt in stmts {
+        let trimmed = stmt.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        let rest = if let Some(rest) = lower.strip_prefix("create table") {
+            rest.trim()
+        } else {
+            continue;
+        };
+        let rest = rest
+            .strip_prefix("if not exists")
+            .map(str::trim)
+            .unwrap_or(rest);
+        let name = rest
+            .split(|c: char| c.is_whitespace() || c == '(')
+            .find(|part| !part.is_empty())
+            .unwrap_or("");
+        if !name.is_empty() {
+            names.push(name.trim_matches('"').trim_matches('`').to_string());
+        }
+    }
+    names
+}
+
+/// Column types implied by [`current_canonical_schema`].
 #[must_use]
 pub fn host_sql_type_env() -> bookclerk_plugin_abi::SqlTypeEnv {
-    bookclerk_plugin_abi::sql_type_env_from_canonical_ddl(latest_schema_sqlite())
+    bookclerk_plugin_abi::sql_type_env_from_canonical_statements(current_canonical_statements())
 }
 
-/// Returns the canonical host migration plan shared by every marker kind.
-///
-/// Version 1 is the current flattened library schema (including
-/// `plugin_databases`). There are no historical incremental versions.
+/// Frozen host migration steps. Empty until a release cut copies
+/// [`unreleased_ops`] into version 1.
 #[must_use]
 pub fn host_migration_plan() -> Vec<HostMigrationStep> {
-    vec![HostMigrationStep {
-        version: 1,
-        canonical: latest_schema_sqlite(),
-    }]
+    #[cfg(test)]
+    {
+        if let Some(plan) = HOST_PLAN_OVERRIDE.with(Cell::get) {
+            return plan.to_vec();
+        }
+    }
+    production_host_migration_plan()
+}
+
+/// Production frozen plan (empty until a release cut). Test overrides must not
+/// feed [`current_canonical_schema`]'s `OnceLock`.
+fn production_host_migration_plan() -> Vec<HostMigrationStep> {
+    Vec::new()
+}
+
+#[cfg(test)]
+thread_local! {
+    static HOST_PLAN_OVERRIDE: Cell<Option<&'static [HostMigrationStep]>> = const { Cell::new(None) };
+}
+
+/// Test-only: [`host_migration_plan`] returns `plan` until the guard drops.
+#[cfg(test)]
+pub(crate) struct HostPlanOverrideGuard;
+
+#[cfg(test)]
+impl Drop for HostPlanOverrideGuard {
+    fn drop(&mut self) {
+        HOST_PLAN_OVERRIDE.with(|cell| cell.set(None));
+    }
+}
+
+/// Installs a test-only frozen plan for [`host_migration_plan`] until drop.
+#[cfg(test)]
+pub(crate) fn override_host_migration_plan(
+    plan: &'static [HostMigrationStep],
+) -> HostPlanOverrideGuard {
+    HOST_PLAN_OVERRIDE.with(|cell| cell.set(Some(plan)));
+    HostPlanOverrideGuard
 }
 
 /// Final PostgreSQL DDL for a fresh Bookclerk library database.
@@ -721,10 +544,9 @@ pub fn host_migration_plan() -> Vec<HostMigrationStep> {
 /// edge — there is no hand-authored parallel Postgres schema.
 #[must_use]
 pub fn latest_schema_postgres() -> String {
-    host_migration_plan()
+    current_canonical_statements()
         .iter()
-        .flat_map(|step| bookclerk_db_exec::split_schema_statements(step.canonical))
-        .map(|stmt| bookclerk_db_exec::lower_canonical_ddl_to_postgres(&stmt))
+        .map(|stmt| bookclerk_db_exec::lower_canonical_ddl_to_postgres(stmt))
         .collect::<Vec<_>>()
         .join(";\n")
 }
@@ -734,88 +556,128 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
 
-    fn apply_greenfield(conn: &Connection) {
-        conn.execute_batch(latest_schema_sqlite()).unwrap();
+    fn apply_current_schema(conn: &Connection) {
+        conn.execute_batch(current_canonical_schema()).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
     }
 
-    const EVENT_INSERT: &str = "INSERT INTO domain_events (
+    fn insert_domain_event(conn: &Connection, id: &str, account_id: &str, dedup_key: &str) {
+        conn.execute(
+            "INSERT INTO domain_events (
                 id, event_type, schema_version, occurred_at, account_id, source,
                 correlation_id, causation_id, dedup_key, payload, ordering_key,
-                dispatch_state, created_at, wake_pending
+                dispatch_state, created_at
             ) VALUES (
                 ?1, 'book_acquired', 1, '2026-01-01T00:00:00+00:00', ?2,
-                'audible', '', '', ?3, '{}', '', 'dispatched',
-                '2026-01-01T00:00:00+00:00', 1
-            )";
-
-    const DELIVERY_INSERT: &str = "INSERT INTO event_deliveries (
-                id, event_id, plugin_id, idempotency_key, state, attempt_count,
-                max_attempts, run_after, invocation_sequence, resume_pending,
-                checkpoint_schema_version, ordering_key, created_at, updated_at,
-                cancel_requested, resource_class, wake_event_type, wake_filter_json
-            ) VALUES (
-                ?1, ?2, 'echo', ?1, 'pending', 0, 8,
-                '2026-01-01T00:00:00+00:00', 0, 0, 0, '', '2026-01-01T00:00:00+00:00',
-                '2026-01-01T00:00:00+00:00', 0, 'network', '', ''
-            )";
-
-    #[test]
-    fn greenfield_preserves_deliveries_with_foreign_keys_on() {
-        let conn = Connection::open_in_memory().unwrap();
-        apply_greenfield(&conn);
-        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-        conn.execute(
-            EVENT_INSERT,
-            rusqlite::params!["evt-1", "acct", "book_acquired:u1"],
+                'audible', '', '', ?3, '{}', '', 'pending',
+                '2026-01-01T00:00:00+00:00'
+            )",
+            rusqlite::params![id, account_id, dedup_key],
         )
         .unwrap();
-        conn.execute(DELIVERY_INSERT, rusqlite::params!["evt-1:echo", "evt-1"])
-            .unwrap();
+    }
 
+    fn insert_delivery(conn: &Connection, id: &str, event_id: &str) -> rusqlite::Result<usize> {
+        conn.execute(
+            "INSERT INTO event_deliveries (
+                id, event_id, plugin_id, idempotency_key, state, run_after,
+                created_at, updated_at
+            ) VALUES (
+                ?1, ?2, 'echo', ?1, 'pending', '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'
+            )",
+            rusqlite::params![id, event_id],
+        )
+    }
+
+    #[test]
+    fn current_schema_rejects_orphan_event_deliveries_with_foreign_keys_on() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_current_schema(&conn);
+        let orphan = insert_delivery(&conn, "evt-missing:echo", "evt-missing");
+        assert!(
+            orphan.is_err(),
+            "event_deliveries.event_id must reference domain_events(id)"
+        );
+        insert_domain_event(&conn, "evt-1", "acct", "book_acquired:u1");
+        insert_delivery(&conn, "evt-1:echo", "evt-1").unwrap();
         let deliveries: i64 = conn
             .query_row("SELECT COUNT(*) FROM event_deliveries", [], |r| r.get(0))
             .unwrap();
         assert_eq!(deliveries, 1);
-        let grants: String = conn
-            .query_row(
-                "SELECT wake_grants_json FROM event_deliveries WHERE id = 'evt-1:echo'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(grants, "");
-
-        conn.execute(
-            EVENT_INSERT,
-            rusqlite::params!["evt-2", "other", "book_acquired:u1"],
-        )
-        .unwrap();
-        let dup = conn.execute(
-            EVENT_INSERT,
-            rusqlite::params!["evt-3", "acct", "book_acquired:u1"],
-        );
-        assert!(
-            dup.is_err(),
-            "namespaced unique must hold on the greenfield schema"
-        );
     }
 
     #[test]
-    fn host_migration_plan_is_one_current_schema_version() {
-        let plan = host_migration_plan();
-        assert_eq!(plan.len(), 1);
-        assert_eq!(plan[0].version, 1);
-        assert_eq!(plan[0].canonical, SQLITE_SCHEMA);
-        assert!(plan[0].canonical.contains("plugin_databases"));
-        assert!(plan[0].canonical.contains("dispatch_snapshot_json"));
-        assert!(plan[0].canonical.contains("db_serialization_slots"));
-        assert!(!plan[0].canonical.contains("domain_events_v27"));
-        assert!(!plan[0].canonical.contains("ALTER TABLE"));
+    fn current_schema_domain_events_unique_is_namespaced() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_current_schema(&conn);
+        insert_domain_event(&conn, "evt-1", "acct", "book_acquired:u1");
+        insert_domain_event(&conn, "evt-2", "other", "book_acquired:u1");
+        let dup = conn.execute(
+            "INSERT INTO domain_events (
+                id, event_type, schema_version, occurred_at, account_id, source,
+                correlation_id, causation_id, dedup_key, payload, ordering_key,
+                dispatch_state, created_at
+            ) VALUES (
+                'evt-3', 'book_acquired', 1, '2026-01-01T00:00:00+00:00', 'acct',
+                'audible', '', '', 'book_acquired:u1', '{}', '', 'pending',
+                '2026-01-01T00:00:00+00:00'
+            )",
+            [],
+        );
+        assert!(
+            dup.is_err(),
+            "UNIQUE(account_id, source, event_type, dedup_key) must hold"
+        );
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM domain_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn host_migration_plan_is_empty_until_a_release_cut() {
+        assert!(host_migration_plan().is_empty());
+        assert_eq!(SCHEMA_VERSION, 0);
+        assert_eq!(min_supported_schema_version(), None);
+        assert!(!unreleased_sql().trim().is_empty());
+        assert!(unreleased_sql().contains("plugin_databases"));
+        assert!(unreleased_sql().contains("dispatch_snapshot_json"));
+        assert!(unreleased_sql().contains("db_serialization_slots"));
+        assert_eq!(current_canonical_statements(), unreleased_statements());
+        assert_eq!(current_canonical_schema(), unreleased_sql());
+        assert!(
+            unreleased_ops()
+                .iter()
+                .any(|op| op.is_data() && op.sql().contains("job_queue_control")),
+            "seed INSERT must be MigrationOp::Data"
+        );
+        prove_migration_ops(unreleased_ops()).expect("unreleased ops must typecheck");
+        prove_migration_ops(binding_bootstrap_ops()).expect("binding ops must typecheck");
+        assert_eq!(unreleased_checksum().len(), 64);
+        let tables = current_canonical_table_names();
+        assert!(tables.contains(&"books".into()));
+        assert!(tables.contains(&"schema_migrations".into()));
+        assert!(tables.contains(&"plugin_databases".into()));
+    }
+
+    #[test]
+    fn unreleased_checksum_is_stable() {
+        let a = unreleased_checksum();
+        let b = unreleased_checksum();
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 64);
     }
 
     #[test]
     fn postgres_lowering_of_baseline_is_mechanically_complete() {
-        let lowered = latest_schema_postgres();
+        let lowered = current_canonical_statements()
+            .iter()
+            .map(|stmt| bookclerk_db_exec::lower_canonical_ddl_to_postgres(stmt))
+            .collect::<Vec<_>>()
+            .join(";\n");
+        // No SQLite-isms may survive the mechanical lowering; the CI Postgres
+        // sidecar applies this exact output (`postgres_test_store`).
         for token in [
             "AUTOINCREMENT",
             " INTEGER",
@@ -836,35 +698,9 @@ mod tests {
         assert!(lowered.contains(" BYTEA"), "blob columns");
         assert!(lowered.contains(" DOUBLE PRECISION"), "real columns");
         assert!(lowered.contains("UNIQUE(account_id, source, event_type, dedup_key)"));
+        // Word-boundary safety: string literals stay untouched.
         assert!(lowered.contains(r#"'["openid","profile","email"]'"#));
         assert!(!lowered.contains("domain_events_v27"));
-    }
-
-    #[test]
-    fn greenfield_event_deliveries_enforce_foreign_keys() {
-        let canonical = latest_schema_sqlite();
-        assert!(
-            canonical.contains("UNIQUE(account_id, source, event_type, dedup_key)"),
-            "baseline must include namespaced domain_events uniqueness"
-        );
-        assert!(
-            canonical
-                .contains("FOREIGN KEY(event_id) REFERENCES domain_events(id) ON DELETE CASCADE"),
-            "baseline must include event_deliveries FK onto domain_events"
-        );
-        assert!(
-            !canonical.contains("domain_events_v27"),
-            "current schema must not replay the V27 rebuild"
-        );
-
-        let conn = Connection::open_in_memory().unwrap();
-        apply_greenfield(&conn);
-        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-        let orphan = conn.execute(DELIVERY_INSERT, rusqlite::params!["orphan:echo", "missing"]);
-        assert!(
-            orphan.is_err(),
-            "orphan event_deliveries rows must fail under PRAGMA foreign_keys=ON"
-        );
     }
 
     #[test]
@@ -877,11 +713,16 @@ mod tests {
         );
         assert!(
             env.column_type("portal_identities", "user_id").is_some(),
-            "user_id must land in the host type env"
+            "ALTER ADD COLUMN user_id must land in the host type env"
         );
-        assert!(env.has_table("domain_events"));
-        assert!(!env.has_table("domain_events_v27"));
-        assert!(env.has_table("plugin_databases"));
+        assert!(
+            env.has_table("domain_events"),
+            "rebuild RENAME must restore domain_events"
+        );
+        assert!(
+            !env.has_table("domain_events_v27"),
+            "v27 rebuild table must be renamed away"
+        );
         let req = bookclerk_plugin_abi::ExecuteRequest {
             operation_id: "host-order".into(),
             request_hash: String::new(),
@@ -902,9 +743,9 @@ mod tests {
             proofs[0]
         );
         let mut working = env.clone();
-        for stmt in bookclerk_db_exec::split_schema_statements(latest_schema_sqlite()) {
-            bookclerk_plugin_abi::apply_schema_sql_to_env(&mut working, &stmt);
-            if bookclerk_plugin_abi::statement_is_ddl(&stmt) {
+        for stmt in current_canonical_statements() {
+            bookclerk_plugin_abi::apply_schema_sql_to_env(&mut working, stmt);
+            if bookclerk_plugin_abi::statement_is_ddl(stmt) {
                 continue;
             }
             let upper = stmt.trim().to_ascii_uppercase();
@@ -926,5 +767,70 @@ mod tests {
             bookclerk_plugin_abi::typecheck_execute_request_proofs(&one, &working)
                 .unwrap_or_else(|err| panic!("host schema DML failed on `{stmt}`: {err}"));
         }
+    }
+
+    #[test]
+    fn schema_vs_data_is_enforced() {
+        let err =
+            prove_migration_ops(&[MigrationOp::Schema("INSERT INTO accounts (id) VALUES (1)")])
+                .expect_err("Schema INSERT");
+        assert!(err.to_string().contains("not admitted DDL"), "{err}");
+        let err =
+            prove_migration_ops(&[MigrationOp::Data("CREATE TABLE t (id INTEGER PRIMARY KEY)")])
+                .expect_err("Data CREATE");
+        assert!(err.to_string().contains("admitted DDL"), "{err}");
+        let err = prove_migration_ops(&[MigrationOp::Schema(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY); CREATE TABLE u (id INTEGER PRIMARY KEY)",
+        )])
+        .expect_err("multi-statement Schema");
+        assert!(
+            err.to_string().contains("packed into") || err.to_string().contains("single"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn migration_sql_checksum_fails_closed_on_packer_error() {
+        let err = migration_sql_checksum("SELECT 'unterminated", None).expect_err("unterminated");
+        assert!(
+            err.to_string()
+                .contains("not a BookclerkSQL statement list"),
+            "{err}"
+        );
+        let err = migration_sql_checksum("CREATE TABLE t (id INTEGER PRIMARY KEY) /* ", None)
+            .expect_err("unterminated comment");
+        assert!(
+            err.to_string()
+                .contains("not a BookclerkSQL statement list"),
+            "{err}"
+        );
+        let err = prove_migration_ops(&[MigrationOp::Schema("CREATE TABLE t (id INTEGER /* ")])
+            .expect_err("static Schema must not pack_or_single");
+        assert!(
+            err.to_string().contains("migration op") || err.to_string().contains("BookclerkSQL"),
+            "{err}"
+        );
+        let ok = migration_sql_checksum("CREATE TABLE t (id INTEGER PRIMARY KEY)", None)
+            .expect("one statement");
+        assert_eq!(ok.len(), 64);
+        let two = migration_sql_checksum(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY); CREATE TABLE u (id INTEGER PRIMARY KEY)",
+            None,
+        )
+        .expect("two packed statements checksum as a list");
+        assert_ne!(ok, two);
+    }
+
+    #[test]
+    fn unreleased_statements_match_ops_without_repacking() {
+        let from_ops: Vec<&str> = unreleased_ops().iter().map(|op| op.sql()).collect();
+        let stmts: Vec<&str> = unreleased_statements().iter().map(String::as_str).collect();
+        assert_eq!(from_ops, stmts);
+        let binding: Vec<&str> = binding_bootstrap_ops().iter().map(|op| op.sql()).collect();
+        let binding_stmts: Vec<&str> = binding_bootstrap_statements()
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(binding, binding_stmts);
     }
 }

@@ -48,6 +48,9 @@ pub enum DbConnectParams {
         /// override never applies) so each binding is its own database file.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         binding: Option<String>,
+        /// When false, open an existing file and do not create a missing one.
+        #[serde(default = "default_true", skip_serializing_if = "skip_if_true")]
+        provision: bool,
     },
     /// Cloudflare D1 HTTP API backend (`backend: "d1"`).
     #[serde(rename_all = "camelCase")]
@@ -69,6 +72,9 @@ pub enum DbConnectParams {
         /// D1 database name to resolve/provision for a binding open.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         database_name: Option<String>,
+        /// When false, look up an existing D1 database and do not create it.
+        #[serde(default = "default_true", skip_serializing_if = "skip_if_true")]
+        provision: bool,
     },
     /// PostgreSQL connection-string backend (`backend: "postgres"`).
     #[serde(rename_all = "camelCase")]
@@ -83,7 +89,22 @@ pub enum DbConnectParams {
         /// Isolated PostgreSQL database for a binding open (created if missing).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         database: Option<String>,
+        /// When false, connect to an existing database and do not `CREATE DATABASE`.
+        #[serde(default = "default_true", skip_serializing_if = "skip_if_true")]
+        provision: bool,
     },
+}
+
+/// Serde default for omitted `provision` (create the binding unit).
+#[cfg(feature = "host")]
+fn default_true() -> bool {
+    true
+}
+
+/// Omit `provision` from JSON when it is the default (`true`).
+#[cfg(feature = "host")]
+fn skip_if_true(value: &bool) -> bool {
+    *value
 }
 
 /// Media type for [`crate::DatabaseContext::config`] connect payloads.
@@ -199,6 +220,7 @@ mod host_tests {
             plugin_data_dir: "/tmp/p".into(),
             sqlite_path: Some("/tmp/library.db".into()),
             binding: None,
+            provision: true,
         };
         let v = serde_json::to_value(&sqlite).unwrap();
         assert_eq!(v["backend"], "sqlite");
@@ -216,6 +238,7 @@ mod host_tests {
             url: "postgres://localhost/db".into(),
             binding: None,
             database: None,
+            provision: true,
         };
         let ctx = database_context_from_params(&params).unwrap();
         assert_eq!(ctx.config.media_type, DATABASE_CONTEXT_MEDIA_TYPE);
@@ -268,6 +291,7 @@ mod host_tests {
             config: serde_json::json!({ "url": "custom://x" }),
             binding: None,
             instance_id: None,
+            provision: true,
         };
         let ctx = database_context_from_adapter_config(&cfg).unwrap();
         connect_params_from_context(&ctx)
@@ -287,6 +311,7 @@ mod tests {
             config: serde_json::json!({ "url": "custom://host/db", "poolSize": 4 }),
             binding: None,
             instance_id: None,
+            provision: true,
         };
         let ctx = database_context_from_adapter_config(&cfg).unwrap();
         assert_eq!(ctx.config.media_type, DATABASE_ADAPTER_CONFIG_MEDIA_TYPE);

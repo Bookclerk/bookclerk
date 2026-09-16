@@ -55,7 +55,53 @@ bookclerk import native --from ./bookclerk-backup.tar.gz --force
 ```
 
 Optional export flags: `--include-plugin-manifests`, `--include-cache`,
-`--include-logs`.
+`--include-logs`, `--include-plugin-databases`. Native backup is a **files-dir
+archive** (config, `library.db`, optional extras). It is not a schema walk.
+
+## Host schema backups (`bookclerk db`)
+
+Schema state, in-place backups, and last-reversible downgrade live on
+`bookclerk db`, not `export native` or `config database migrate` (backend
+switch) or `plugins db` (binding list/drop). See
+[ADR: schema versioning](adr/schema-versioning.md).
+
+```bash
+bookclerk db version
+bookclerk db backup create --path ./recovery-point.tar.gz
+bookclerk db backup create --include-plugin-databases
+bookclerk db backup list
+bookclerk db backup verify --from <id-or-archive>
+bookclerk db backup prune
+bookclerk db restore --from ./recovery-point.tar.gz
+bookclerk db restore --from <recovery-point-id-or-timestamp>
+bookclerk db migrate --to 1
+bookclerk db downgrade
+```
+
+`db version` prints `uninitialized`, `unreleased@base<n>+<checksum>`, or
+`frozen@<version>+<checksum>` — never “schema 0” for both empty and
+applied development databases. `SCHEMA_VERSION = 0` means there are no
+frozen revisions. Automatic `pre-migrate` recovery points land under
+`$BOOKCLERK_FILES_DIR/backups/` (last five kept; reachability GC). Operator
+`manual` backups are never pruned. Restore **replaces** schema and data using
+canonical Bookclerk content (cross-adapter) and does not auto-migrate. Integrity
+is verified before any destructive step. There is no production frozen v1 pack
+yet: `downgrade` is a no-op until a reversible frozen step exists; use restore
+for time travel.
+
+`--include-plugin-databases` captures plugin-owned bindings from the
+`plugin_databases` registry in portable Bookclerk format. Plugin schema
+changes are host-mediated BookclerkSQL in the binding namespace (not a
+plugin-owned migration framework). Each database unit is replaced completely; a
+multi-database bundle is not one transaction across independent DBs.
+Unsupported adapters fail closed.
+
+Land new host DDL as already-separated `MigrationOp`s in `unreleased_ops`
+(one BookclerkSQL statement per op; `Schema` vs `Data` is proven). A future
+**release cut** may copy that bucket into
+immutable `HostMigrationStep` ops (`Schema` / `Data`); until then the frozen
+plan stays empty. Do not add a public plan version per PR. See
+[ADR: schema versioning](adr/schema-versioning.md).
 
 ## Postgres (`copydb`)
 

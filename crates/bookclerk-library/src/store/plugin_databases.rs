@@ -187,6 +187,65 @@ impl LibraryStore {
             .map_err(LibraryError::Orm)?;
         Ok(res.rows_affected())
     }
+
+    /// Inserts or updates placement for one `(plugin_id, binding)` on restore.
+    ///
+    /// Logical identity is portable; `backend_kind` / `unit_ref` are the
+    /// **target** adapter's physical placement, never the source's.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the upsert fails.
+    pub async fn rebind_plugin_database(
+        &self,
+        plugin_id: &str,
+        binding: &str,
+        backend_kind: &str,
+        unit_ref: &str,
+    ) -> Result<PluginDatabaseRecord> {
+        let backend = self.db().get_database_backend();
+        let now = now_str();
+        self.db()
+            .execute_raw(stmt_for(
+                backend,
+                "UPDATE plugin_databases SET backend_kind = ?, unit_ref = ? \
+                 WHERE plugin_id = ? AND binding = ?",
+                [
+                    backend_kind.into(),
+                    unit_ref.into(),
+                    plugin_id.into(),
+                    binding.into(),
+                ],
+            ))
+            .await
+            .map_err(LibraryError::Orm)?;
+        if let Some(existing) = self.get_plugin_database(plugin_id, binding).await? {
+            return Ok(existing);
+        }
+        self.db()
+            .execute_raw(stmt_for(
+                backend,
+                "INSERT INTO plugin_databases \
+                 (plugin_id, binding, backend_kind, unit_ref, created_at) \
+                 VALUES (?, ?, ?, ?, ?)",
+                [
+                    plugin_id.into(),
+                    binding.into(),
+                    backend_kind.into(),
+                    unit_ref.into(),
+                    now.into(),
+                ],
+            ))
+            .await
+            .map_err(LibraryError::Orm)?;
+        self.get_plugin_database(plugin_id, binding)
+            .await?
+            .ok_or_else(|| {
+                LibraryError::Schema(format!(
+                    "plugin database `{plugin_id}/{binding}` was not recorded after rebind"
+                ))
+            })
+    }
 }
 
 /// Decodes one registry row.

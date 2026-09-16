@@ -26,8 +26,8 @@ pub use bookclerk_plugin_abi::DbPlanStatementKind;
 pub use host_ir::AtomicSelection;
 
 pub use exec::{
-    execute_compiled_on, execute_compiled_on_capped, execute_typed_on, execute_typed_on_session,
-    AtomicSession,
+    execute_compiled_on, execute_compiled_on_capped, execute_typed_on, execute_typed_on_binding,
+    execute_typed_on_session, AtomicSession,
 };
 pub(crate) use guest_receipt::{unwrap_guest_typed_reply, wrap_guest_typed_request};
 pub use interpret::{interpret_typed_exec, PlanStmtResult};
@@ -235,7 +235,7 @@ pub fn authorize_typed_request(
 /// e.g. an isolated plugin database binding session. `exec` receives the
 /// receipt-wrapped envelope and must run it atomically on the target
 /// database (which needs its own `db_atomic_receipts` table — see
-/// [`crate::migrations::binding_bootstrap_sql`]).
+/// [`crate::migrations::binding_bootstrap_ops`]).
 ///
 /// # Errors
 ///

@@ -187,6 +187,12 @@ export interface DatabaseAdapterConfig {
    * both declare `DB`).
    */
   instanceId?: string;
+  /**
+   * Append-only. When false, open an existing binding unit and do not provision a missing one
+   * (read-only backup capture). Omitted/true on older hosts means the adapter may create the
+   * unit.
+   */
+  provision?: boolean;
 }
 
 /**

@@ -53,7 +53,8 @@ link two `links = "sqlite3"` crates in one binary.
 Bookclerk therefore:
 
 - Pins workspace `rusqlite` to **0.37** so it shares `libsqlite3-sys` 0.35
-  with a single SQLite link.
+  with a single SQLite link. Host schema apply no longer uses
+  `rusqlite_migration`.
 - Vendors `audible-rs` under [`third_party/audible-rs`](../third_party/audible-rs)
   (see `BOOKCLERK_PATCH.md` there). The plugin uses audible-rs as a library
   (`default-features = false`); its optional `cli` feature still pins
@@ -136,8 +137,9 @@ provisioned by the active adapter (SQLite file / PostgreSQL **database** /
 Cloudflare D1 database by name) and recorded in the host
 `plugin_databases` registry. Bindings are consented per name
 (`database:<NAME>` grant entries), carry their own `db_atomic_receipts` for
-retry-token replay, and allow plugin-owned schema (full DML plus idempotent
-`CREATE`/`DROP` `TABLE`/`INDEX` with `IF [NOT] EXISTS`). Jobs never receive
+retry-token replay, and own schema through startup migration registration
+(full DML on ordinary execute; durable `CREATE`/`DROP` only through the
+host-controlled `databaseMigrations` sequence). Jobs never receive
 the host library as guest SQL. Operator lifecycle:
 `bookclerk plugins db list` / `bookclerk plugins db drop <plugin> [binding]`
 (physical delete of the SQLite file / `DROP DATABASE` / D1 delete, then the
@@ -192,14 +194,16 @@ BOOKCLERK_DATABASE_POSTGRES_URL=postgres://user:pass@host/db
 BOOKCLERK_DATABASE_POSTGRES_URL_FILE=/run/secrets/postgres_url
 ```
 
-**Schema migrations**: Fresh Postgres databases apply
-[`latest_schema_postgres`](../crates/bookclerk-db-exec/src/schema_postgres.rs)
-(the single greenfield DDL, with `BIGSERIAL` / `BIGINT` / `BYTEA` so integer
-columns match the shared `i64` entities) and record version `1` in
-`schema_migrations`. Every statement is `IF NOT EXISTS`, so re-application is a
-no-op. Because the schema is greenfield rather than an incremental chain,
-changing it means editing the Postgres pack in `bookclerk-db-exec` and
-recreating (or manually altering) an existing Postgres DB.
+**Schema migrations**: Fresh databases apply
+[`current_canonical_schema`](../crates/bookclerk-library/src/migrations.rs)
+(today: derived from `unreleased_ops`; Postgres is that pack lowered mechanically in
+[`schema_postgres.rs`](../crates/bookclerk-db-exec/src/schema_postgres.rs)
+to `BIGSERIAL` / `BIGINT` / `BYTEA`) and persist
+`SchemaState::Unreleased { checksum }`. There is no production frozen v1
+pack (`host_migration_plan()` is empty). A frozen database newer than this
+binary **fails closed**; see [schema versioning](adr/schema-versioning.md)
+and `bookclerk db`. SQL-v1 / `SQL_CONTRACT_VERSION = 1` is the SQL
+grammar/ABI, not a library schema freeze.
 
 **Compiled features**: `sqlx-postgres` + `runtime-tokio-rustls` are enabled on
 the `sea-orm` workspace dependency. `sqlx-sqlite` is intentionally excluded to
@@ -258,10 +262,14 @@ avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
   metadata and is not hashed). Observed cancel/deadline before `BEGIN`/HTTP
   or between statements is `cancelled` / `deadline_exceeded`; around `COMMIT`
   or HTTP return is `unavailable` (ambiguous).
-- Schema versions are **host-owned**. After `db.connect` and capability
-  negotiation the host reads the current version and sends remaining DDL as
-  generic execute (one host-compiled `{ "batch": [...] }` on D1).
-  Guests connect and ping only.
+- Schema state is **host-owned**. After `db.connect` and capability
+  negotiation the host reads `Uninitialized` / `Unreleased` / `Frozen` and
+  sends remaining DDL as generic execute (unreleased apply and each future
+  frozen step is one host-compiled `{ "batch": [...] }` on D1). Unreleased
+  state records its frozen base (`unreleased@base0+…` today). A frozen
+  database newer than this binary fails closed (restore a backup).
+  Guests connect and ping only. Portable backups are canonical Bookclerk
+  recovery points (not D1 REST export, VACUUM, or `pg_dump`).
 
 ### Boundary: core vs database plugins
 
@@ -306,48 +314,102 @@ Owner / Administrator / Member is part of this greenfield schema. There is no
 Admin→Owner upgrade; testing and development hosts should recreate
 `library.db` after that role change (`cargo reset --yes`).
 
-### Single greenfield schema
+### Unreleased host schema (no production freeze)
 
-Bookclerk is greenfield: [`migrations.rs`](../crates/bookclerk-library/src/migrations.rs)
-exposes `latest_schema_sqlite()` as the current library DDL, and
-[`latest_schema_postgres()`](../crates/bookclerk-library/src/migrations.rs)
-is that pack lowered at the adapter edge. Fresh databases apply one version-1
-plan (`host_migration_plan`). Statements use `CREATE TABLE/INDEX IF NOT EXISTS`.
-Changing the schema means editing that pack and recreating (or manually
-altering) an existing database (`cargo reset --yes` in development).
+[`migrations.rs`](../crates/bookclerk-library/src/migrations.rs) exposes
+`current_canonical_schema()` as frozen ups plus `unreleased_ops`. Today the
+frozen plan is empty, so that helper equals `unreleased_sql()` — do not treat
+that equality as permanent. Postgres receives the same pack lowered
+mechanically ([`schema_postgres.rs`](../crates/bookclerk-db-exec/src/schema_postgres.rs)).
+There is no live incremental chain. Land new DDL as already-separated
+`MigrationOp`s in `unreleased_ops` until a
+**release cut** copies them into a `HostMigrationStep`. See
+[ADR: schema versioning](adr/schema-versioning.md).
 
-Tables include: `accounts`, `books`, `ignored_titles`, `saved_filters`,
-`users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
-`operator_sessions`, `account_links`, `works`, `work_editions`,
-`listening_progress`, `title_requests`, `title_request_sources`, `embeddings`,
-`user_preferences`, `encrypted_secrets`, `jobs`, `job_temp_paths`,
-`job_queue_control`, `domain_events`, `event_deliveries`,
-`event_subscriber_nodes`, `event_outbox_stats`, `db_atomic_receipts`,
-`db_serialization_slots`, `plugin_databases`.
+Library open compares explicit [`SchemaState`](../crates/bookclerk-library/src/schema_state.rs).
+`SCHEMA_VERSION = 0` means there are **no frozen schema revisions**, not that
+a database is “at schema zero.”
 
-The `jobs` table is the durable daemon queue (see [jobs.md](jobs.md)).
-`job_queue_control` is a singleton row used to serialize admission and
-scratch-quota updates under PostgreSQL `READ COMMITTED`. `users.last_seen_at`
-is a durable last-authenticated timestamp. `users.avatar_source` is
-`NULL`/`auto`, `monogram`, `gravatar`, `upload`, or
-`sso:{portal_identities.id}`; `portal_identities.picture_url` stores
-IdP-supplied avatars. `webauthn_credentials.name` is the passkey label;
-`users.totp_enabled` is confirmed authenticator-app TOTP (secrets stay in
-`encrypted_secrets`). `user_preferences.theme` is `system`, `light`, or
-`dark`. `oidc_clients` include `enabled` and `plugin_id`.
+- **Uninitialized** — apply current canonical schema (frozen ups + unreleased) and persist `Unreleased { base_version: SCHEMA_VERSION, checksum }`
+- **matching `Unreleased { base_version, checksum }`** — no-op
+- **mismatched checksum / frozen base / malformed markers** — fail closed (`cargo reset --yes`)
+- **`Frozen`** — verify checksums, apply remaining frozen steps, then the current unreleased bucket if any
+- **Frozen newer than this binary** — fail closed (never auto-downgrade). Restore a backup.
 
-Domain events are **not** job kinds; see [jobs.md](jobs.md). Duplicate
-publishes coalesce on `(account_id, source, event_type, dedup_key)`.
-Deliveries are idempotent on `(event_id, plugin_id)`. `domain_events` stores
-producer `source`, `ordering_key`, `wake_pending`, claimed wake slices, and
-`dispatch_snapshot_json`. `event_deliveries` stores `wake_event_type` /
-`wake_filter_json` / `wake_grants_json`, `cancel_requested`, and
-`resource_class`. Live dispatch unions `event_subscriber_nodes` whose
-heartbeat is within 60 seconds. `db_serialization_slots` is portable
-COUNT+mutate serialization (no PostgreSQL advisory locks). Wake page size is
-derived from the guest’s negotiated `maxBinds` (D1 is 100) minus the fenced
-UPDATE’s fixed binds. Claim uses this node’s catalog in **host** code; the
-atomic mutation is a compare-and-set on a concrete delivery id.
+`bookclerk db version|backup|restore|migrate|downgrade` inspects
+state and walks frozen revisions without applying on connect. Version display
+is `uninitialized` / `unreleased@base<n>+<checksum>` / `frozen@<version>+<checksum>`.
+With an empty frozen plan, `downgrade` is a no-op; restore is time travel.
+
+A Bookclerk **recovery point** is one complete logical database state. The
+backup **repository** may physically reuse immutable canonical objects from
+earlier recovery points (logically full, physically incremental). Restore
+never replays older manifests. Layout under `$BOOKCLERK_FILES_DIR/backups/`:
+
+```text
+manifests/<recovery-point-id>.json
+manifests/<recovery-point-id>.sha256
+objects/ab/cdef…   # SHA-256 of uncompressed canonical JSON
+```
+
+Objects are gzip-compressed on disk (`flate2`); the content address is the
+SHA-256 of the uncompressed canonical JSON so identical logical content keeps
+the same identity independent of compression settings. Table data is chunked
+at a 256 KiB uncompressed-JSON target (128–512 KiB band): large enough to
+avoid pathological per-object overhead, small enough for a small-VPS working
+set and for `maxResultRows` paging.
+
+Capture streams `ORDER BY` pages (`LIMIT`/`OFFSET`) inside one consistent
+read view (SQLite transaction; PostgreSQL `REPEATABLE READ`). Row order is
+primary key, else a unique key, else a full-row sort of declared columns —
+never physical/heap/`rowid` order. Restore verifies every referenced object
+(schema admission, typed `DbValue` cells, completeness) **before** the first
+`DROP`. Restore executes only admitted canonical DDL, then adapter lowering.
+
+A recovery point captured through one supported SQL adapter restores through
+another compatible adapter. Native snapshots / PITR / Time Travel / D1
+export do not define the portable Bookclerk format. First-party D1 does
+**not** advertise `consistentBackupRead` or `atomicUnitRestore` (sequential
+HTTP is not a consistent image and is not complete per-unit replacement).
+
+Plugin databases are enumerated from the `plugin_databases` registry when
+`--include-plugin-databases` is set — every registered binding must be
+captured or the backup fails. Bindings are opened through the **active
+adapter session**, not a sqlite/postgres/d1 switch. Logical identity is
+`(plugin_id, binding)`; source `unit_ref` is never the portable restore
+target. Library-only restore **preserves** the target registry and leaves
+physical plugin DBs untouched. Included restore **rebuilds/rebinds**
+registry rows to the target adapter’s placement. Plugin schema migration
+stays plugin-owned: restore writes captured rows (including a plugin’s own
+version marker) and does not run plugin migrations.
+
+Each logical database unit has complete replacement semantics. A
+multi-database bundle is not transactionally atomic across independent
+databases; a later unit failure can leave earlier units restored. Adapters
+without `consistentBackupRead` / `atomicUnitRestore` fail closed. Manual
+backups are never auto-pruned; automatic pre-migrate recovery points keep
+the last five, then reachability GC deletes unreferenced objects.
+
+Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. Tables include
+`accounts`, `books`, `ignored_titles`, `saved_filters`, `users`,
+`portal_identities`, `claim_tickets`, `portal_sessions`, `operator_sessions`,
+`account_links`, `works`, `work_editions`, `listening_progress`,
+`title_requests`, `title_request_sources`, `embeddings`, `user_preferences`,
+`encrypted_secrets`, `jobs`, `job_temp_paths`, `job_queue_control`,
+`domain_events`, `event_deliveries`, `event_subscriber_nodes`,
+`event_outbox_stats`, `db_serialization_slots`, `plugin_databases`, and
+`schema_migrations`. The `jobs` table is the durable daemon queue (see
+[jobs.md](jobs.md)). Domain events use a durable outbox with fenced
+deliveries, per-node catalogs, and portable `db_serialization_slots` (no
+PostgreSQL advisory locks). Isolated plugin binding databases are
+registered in `plugin_databases`; plugins own their own DDL inside those
+units. Wake registration (`wake_event_type` / `wake_filter_json` /
+`wake_grants_json`) is cleared when a matching event is accepted so retry
+is not re-woken. Wake page size is derived from the guest’s negotiated
+`maxBinds` (D1 is 100) minus the fenced UPDATE’s fixed binds. Claim uses
+this node’s catalog (type + schema + filter) in **host** code; the atomic
+mutation is a compare-and-set on a concrete delivery id. Cluster dispatch
+still unions live nodes.
 
 ## Encrypted secrets
 

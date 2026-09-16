@@ -552,6 +552,14 @@ pub struct DbCapabilities {
     /// `0` is unspecified (host does not enforce a lowered-size ceiling).
     #[serde(default)]
     pub max_lowered_statement_bytes: u32,
+    /// Adapter can expose one stable logical database state while the host
+    /// reads schema, rows, and identity.
+    #[serde(default)]
+    pub consistent_backup_read: bool,
+    /// Adapter can destructively replace one logical database unit so an
+    /// ordinary restore failure does not leave that unit partially replaced.
+    #[serde(default)]
+    pub atomic_unit_restore: bool,
 }
 
 impl DbCapabilities {
@@ -671,6 +679,20 @@ impl DbCapabilities {
         None
     }
 
+    /// True when the adapter can participate in a consistent canonical backup
+    /// capture (`consistentBackupRead`).
+    #[must_use]
+    pub fn supports_consistent_backup_read(&self) -> bool {
+        self.consistent_backup_read
+    }
+
+    /// True when the adapter can replace one logical unit completely
+    /// (`atomicUnitRestore`).
+    #[must_use]
+    pub fn supports_atomic_unit_restore(&self) -> bool {
+        self.atomic_unit_restore
+    }
+
     /// First-party SQLite capability advertisement (`PRAGMA user_version` marker).
     #[must_use]
     pub fn advertised_sqlite() -> Self {
@@ -697,11 +719,17 @@ impl DbCapabilities {
             max_schema_columns: SQLITE_MAX_SCHEMA_COLUMNS,
             max_pattern_bytes: SQLITE_MAX_PATTERN_BYTES,
             max_lowered_statement_bytes: 0,
+            consistent_backup_read: true,
+            atomic_unit_restore: true,
         }
     }
 
     /// First-party Cloudflare D1 capability advertisement
     /// (`schema_migrations` rows, one atomic HTTP batch per schema version).
+    ///
+    /// D1 HTTP has no interactive transaction and no complete per-unit
+    /// replacement primitive on sequential REST statements, so it does **not**
+    /// advertise consistent backup read or atomic unit restore.
     #[must_use]
     pub fn advertised_d1() -> Self {
         Self {
@@ -714,6 +742,8 @@ impl DbCapabilities {
             max_schema_columns: D1_MAX_SCHEMA_COLUMNS,
             max_pattern_bytes: D1_PORTABLE_LIKE_PATTERN_BYTES,
             max_lowered_statement_bytes: D1_MAX_SQL_STATEMENT_BYTES,
+            consistent_backup_read: false,
+            atomic_unit_restore: false,
             ..Self::advertised_sqlite()
         }
     }
@@ -928,6 +958,14 @@ mod tests {
         );
         assert!(DbCapabilities::advertised_d1().atomic_schema_batch);
         assert!(!DbCapabilities::advertised_postgres().atomic_schema_batch);
+        assert!(DbCapabilities::advertised_sqlite().supports_consistent_backup_read());
+        assert!(DbCapabilities::advertised_sqlite().supports_atomic_unit_restore());
+        assert!(DbCapabilities::advertised_postgres().supports_consistent_backup_read());
+        assert!(DbCapabilities::advertised_postgres().supports_atomic_unit_restore());
+        assert!(!DbCapabilities::advertised_d1().supports_consistent_backup_read());
+        assert!(!DbCapabilities::advertised_d1().supports_atomic_unit_restore());
+        assert!(!DbCapabilities::advertised_d1().consistent_backup_read);
+        assert!(!DbCapabilities::advertised_d1().atomic_unit_restore);
     }
 
     #[test]

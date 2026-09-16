@@ -247,6 +247,7 @@ async fn open_granted_binding_databases(
     state: &AppState,
     plugin_id: &str,
     library: &bookclerk_library::LibraryStore,
+    owner: &bookclerk_plugin_host::PluginSession,
 ) -> anyhow::Result<Vec<(String, bookclerk_plugin_host::GuestDatabaseFactory)>> {
     let config = state.config.read().await.clone();
     let files_dir = config.paths().files_dir.clone();
@@ -269,7 +270,7 @@ async fn open_granted_binding_databases(
         );
     };
     active
-        .open_binding_databases(&config, library, plugin_id, &names)
+        .open_binding_databases(&config, library, plugin_id, &names, owner)
         .await
         .map_err(|err| anyhow::anyhow!(err.to_string()))
 }
@@ -324,7 +325,7 @@ pub async fn run_plugin_copy(
     let cancel = ctx
         .map(|c| std::sync::Arc::clone(&c.cancel))
         .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
-    let databases = open_granted_binding_databases(state, plugin_id, &library).await?;
+    let databases = open_granted_binding_databases(state, plugin_id, &library, &session).await?;
     let outcome = tokio::select! {
         () = async {
             loop {

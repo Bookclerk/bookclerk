@@ -13,3 +13,6 @@ publish = false
 [dependencies]
 bookclerk-plugin-sdk = { path = "../../../crates/bookclerk-plugin-sdk", features = ["db"] }
 bookclerk-plugin-abi = { path = "../../../crates/bookclerk-plugin-abi" }
+# Standalone resolver (not the workspace lockfile). tinyvec 1.13.0 does not
+# compile on rustc 1.98 (`alloc::vec` shadows `vec!`).
+tinyvec = "=1.12.0"
