@@ -70,7 +70,9 @@ spoken to over the product ABI (`api_version = 3` object-capability Workers
 RPC) on stdio (native Cap'n Proto) or via `bookclerk-workerd` (script isolates
 keep `RpcTarget` stubs). Each guest is started by
 `bookclerk-jail`, which confines it to its own install directory (read-only),
-`plugins/<id>/data`, `plugins/<id>/tmp` (fetch scratch lives under that `tmp`),
+`$FILES_DIR/plugin-state/<PluginKey fs-id>/data`,
+`$FILES_DIR/plugin-state/<PluginKey fs-id>/tmp` (fetch scratch lives under that
+`tmp`),
 and — for the sqlite guest — file-level grants for `library.db` and its journal
 sidecars (never the files-dir parent / `master.key`). See [plugins.md](plugins.md).
 Database backends are selected via `[database].plugin` (see [database.md](database.md));
@@ -114,9 +116,13 @@ BookclerkFiles/
   library.db          # incl. encrypted_secrets (auth + Widevine CDM + S3 keys)
   cache/
   search_index/
-  plugins/            # third-party plugin installs (see plugin-registry.md)
-    <id>/data/        # one guest's state (its HOME inside the jail)
-    <id>/tmp/         # one guest's scratch (its TMPDIR inside the jail)
+  plugins/            # host-local install trees (immutable to guests)
+    <plugin-key-fs-id>/
+  plugin-state/       # host-local mutable guest state
+    <plugin-key-fs-id>/data/   # one guest's HOME inside the jail
+    <plugin-key-fs-id>/tmp/    # one guest's TMPDIR inside the jail
+  install-ledger.json # host-owned install trust anchor
+  .plugin-mutation.lock
   logs/               # reserved (Bookclerk does not rotate log files)
 ```
 

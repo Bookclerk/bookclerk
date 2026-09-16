@@ -321,9 +321,9 @@ pub fn plugin_instance_key(plugin_id: &str, account_id: &str) -> String {
 /// depend on a PID surviving.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExecutorIdentity {
-    /// Manifest plugin id.
+    /// Provenance-qualified [`bookclerk_plugin_catalog::PluginKey`] (canonical text).
     pub plugin_id: String,
-    /// Artifact digest or install path stand-in.
+    /// Artifact payload-root digest (or install-path stand-in when unsigned/dev).
     pub artifact_digest: String,
     /// Manifest version.
     pub version: String,
@@ -331,7 +331,7 @@ pub struct ExecutorIdentity {
     pub role: String,
     /// Account / principal.
     pub account_id: String,
-    /// Configuration revision.
+    /// Configuration revision (installed `plugin.toml` SHA-256).
     pub configuration_revision: String,
     /// Grant revision (revocation changes this).
     pub grant_revision: String,
@@ -372,12 +372,19 @@ impl ExecutorIdentity {
         runtime: GuestRuntimeKind,
     ) -> Self {
         Self {
-            plugin_id: plugin.manifest.id.clone(),
-            artifact_digest: plugin.command.to_string_lossy().into_owned(),
+            plugin_id: plugin.plugin_key().canonical().to_string(),
+            artifact_digest: {
+                let payload = plugin.identity.artifact.payload_root_sha256.clone();
+                if payload.is_empty() {
+                    plugin.command.to_string_lossy().into_owned()
+                } else {
+                    payload
+                }
+            },
             version: plugin.manifest.version.clone().unwrap_or_default(),
             role: plugin.manifest.primary_family().as_str().to_string(),
             account_id: account_id.to_string(),
-            configuration_revision: String::new(),
+            configuration_revision: plugin.identity.artifact.manifest_sha256.clone(),
             grant_revision: String::new(),
             runtime_backend: runtime.label().to_string(),
             compatibility_date: plugin
@@ -387,6 +394,13 @@ impl ExecutorIdentity {
                 .map(|w| w.compatibility_date.clone())
                 .unwrap_or_default(),
         }
+    }
+
+    /// Fills [`Self::grant_revision`] from the covering consent grant.
+    #[must_use]
+    pub fn with_grant_revision(mut self, grant: &crate::PluginGrant) -> Self {
+        self.grant_revision = crate::consent::grant_revision(grant);
+        self
     }
 
     /// Stable session key. Distinct PIDs with the same key are the same logical
@@ -615,9 +629,8 @@ impl PluginSession {
         let package_sid = spawned.package_sid.clone();
         let guest_pid = spawned.child.id();
         let instance_key = plugin_instance_key(&id, account_id);
-        let session_key =
-            ExecutorIdentity::from_plugin_with_runtime(plugin, account_id, plan.runtime)
-                .session_key();
+        let identity = ExecutorIdentity::from_plugin_with_runtime(plugin, account_id, plan.runtime)
+            .with_grant_revision(&grant);
         let (tx, rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) =
             oneshot::channel::<Result<(PluginDescribe, ScalarLimits, Vec<String>)>>();
@@ -641,7 +654,7 @@ impl PluginSession {
             data,
             instance_key,
             account_id: account_id.to_string(),
-            session_key,
+            session_key: identity.session_key(),
             guest_pid,
             limits,
             features,
@@ -2908,7 +2921,7 @@ mode = "deny"
     #[test]
     fn negotiate_rejects_id_mismatch_and_widened_entrypoints() {
         let manifest = manifest_with("storage");
-        let grant = crate::consent_request(&manifest);
+        let grant = crate::consent_request_alias(&manifest);
         let desc = PluginDescribe {
             id: "other".into(),
             ..output_describe()
@@ -2927,6 +2940,7 @@ mode = "deny"
         assert!(err.to_string().contains("storefront"), "{err}");
 
         let narrower_grant = crate::PluginGrant {
+            plugin_key: String::new(),
             entrypoints: Default::default(),
             ..grant.clone()
         };
@@ -2939,7 +2953,7 @@ mode = "deny"
     #[test]
     fn negotiate_rejects_missing_features_and_zero_limits() {
         let manifest = manifest_with("storage");
-        let grant = crate::consent_request(&manifest);
+        let grant = crate::consent_request_alias(&manifest);
         let desc = PluginDescribe {
             rpc_features: vec![FEATURE_STREAMS.into()],
             ..output_describe()

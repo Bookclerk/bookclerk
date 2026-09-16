@@ -144,7 +144,7 @@ async fn spawn_s3_guest(
         force_path_style: s3_config.force_path_style,
         credentials: None,
     };
-    let grant = crate::consent::spawn_grant(&config.paths().files_dir, &plugin.manifest)?;
+    let grant = crate::consent::spawn_grant(&config.paths().files_dir, plugin)?;
     let mut extra_env = Vec::new();
     if crate::consent::grant_has_binding(&grant, "secrets") {
         if let Some(creds) = &credentials {

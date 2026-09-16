@@ -20,6 +20,7 @@ path = "src/lib.rs"
 [dependencies]
 anyhow.workspace = true
 bookclerk-plugin-manifest = { path = "../bookclerk-plugin-manifest" }
+bookclerk-plugin-catalog = { path = "../bookclerk-plugin-catalog" }
 bookclerk-workerd = { path = "../bookclerk-workerd" }
 clap.workspace = true
 flate2 = "1"

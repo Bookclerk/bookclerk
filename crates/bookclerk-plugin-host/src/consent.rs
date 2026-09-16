@@ -144,11 +144,14 @@ pub fn granted_database_bindings(grant: &PluginGrant) -> Vec<String> {
         .collect()
 }
 
-/// One approved grant snapshot for a plugin id.
+/// One approved grant snapshot for a provenance-qualified plugin.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginGrant {
-    /// Plugin id from `plugin.toml` (globally unique across families).
+    /// Canonical [`bookclerk_plugin_catalog::PluginKey`].
+    #[serde(default)]
+    pub plugin_key: String,
+    /// Display / CLI alias from `plugin.toml` (not security authoritative).
     pub plugin_id: String,
     /// Approved named entrypoints (wire names: `storefront`, `storage`,
     /// `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`).
@@ -250,40 +253,69 @@ impl PluginGrantStore {
         Ok(())
     }
 
-    /// Returns the grant for `plugin_id`, if one is stored.
+    /// Returns the grant for `plugin_key` (canonical), or an unambiguous alias.
     ///
     /// # Arguments
     ///
-    /// * `plugin_id` - Plugin id to look up.
+    /// * `plugin_key` - Canonical PluginKey text, or a display alias.
     ///
     /// # Returns
     ///
     /// A reference to the matching [`PluginGrant`], or `None`.
-    pub fn get(&self, plugin_id: &str) -> Option<&PluginGrant> {
-        self.grants.iter().find(|g| g.plugin_id == plugin_id)
+    pub fn get(&self, plugin_key: &str) -> Option<&PluginGrant> {
+        if let Some(g) = self
+            .grants
+            .iter()
+            .find(|g| !g.plugin_key.is_empty() && g.plugin_key == plugin_key)
+        {
+            return Some(g);
+        }
+        let alias_hits: Vec<_> = self
+            .grants
+            .iter()
+            .filter(|g| g.plugin_id == plugin_key)
+            .collect();
+        match alias_hits.as_slice() {
+            [one] => Some(*one),
+            _ => None,
+        }
     }
 
-    /// Inserts or replaces the grant for `grant.plugin_id`.
+    /// Inserts or replaces the grant for `grant.plugin_key` (falling back to alias).
     ///
     /// # Arguments
     ///
     /// * `grant` - Full consent snapshot to persist in memory (call [`Self::save`] to flush).
     pub fn upsert(&mut self, grant: PluginGrant) {
-        if let Some(existing) = self
-            .grants
-            .iter_mut()
-            .find(|g| g.plugin_id == grant.plugin_id)
-        {
-            *existing = grant;
+        let idx = self.grants.iter().position(|g| {
+            if !grant.plugin_key.is_empty() && !g.plugin_key.is_empty() {
+                g.plugin_key == grant.plugin_key
+            } else {
+                g.plugin_id == grant.plugin_id
+            }
+        });
+        if let Some(i) = idx {
+            self.grants[i] = grant;
         } else {
             self.grants.push(grant);
         }
     }
 }
 
-/// Build the consent request surface from a manifest.
+/// Build the consent request surface from a manifest and its PluginKey.
 #[must_use]
-pub fn consent_request(manifest: &PluginManifest) -> PluginGrant {
+pub fn consent_request(
+    manifest: &PluginManifest,
+    plugin_key: &bookclerk_plugin_catalog::PluginKey,
+) -> PluginGrant {
+    let mut grant = consent_request_alias(manifest);
+    grant.plugin_key = plugin_key.canonical().to_string();
+    grant
+}
+
+/// Build the consent request surface from a manifest (alias only; tests).
+#[must_use]
+pub fn consent_request_alias(manifest: &PluginManifest) -> PluginGrant {
     let mut bindings = BTreeSet::new();
     let b = manifest.bindings();
     if b.config {
@@ -333,6 +365,7 @@ pub fn consent_request(manifest: &PluginManifest) -> PluginGrant {
         (None, None)
     };
     PluginGrant {
+        plugin_key: String::new(),
         plugin_id: manifest.id.clone(),
         entrypoints: manifest
             .entrypoints
@@ -534,13 +567,24 @@ pub fn grant_within_ceiling(existing: &PluginGrant, requested: &PluginGrant) -> 
             .is_subset(&requested.compatibility_flags)
 }
 
+/// True when both grants name the same provenance-qualified plugin.
+///
+/// Empty keys (legacy / test fixtures) fall back to matching the display alias.
+fn plugin_key_matches(existing: &PluginGrant, requested: &PluginGrant) -> bool {
+    if existing.plugin_key.is_empty() || requested.plugin_key.is_empty() {
+        return true;
+    }
+    existing.plugin_key == requested.plugin_key
+}
+
 /// True when a stored grant is usable for enable/spawn of this plugin id.
 ///
 /// Operator grants are authoritative: presence for the plugin id is enough.
 /// Manifest changes no longer invalidate a stored grant (operator responsibility).
 #[must_use]
 pub fn grant_covers(existing: &PluginGrant, requested: &PluginGrant) -> bool {
-    existing.plugin_id == requested.plugin_id
+    plugin_key_matches(existing, requested)
+        && existing.plugin_id == requested.plugin_id
         && requested.entrypoints.is_subset(&existing.entrypoints)
         && requested.producers.is_subset(&existing.producers)
 }
@@ -558,6 +602,11 @@ pub fn effective_grant(existing: &PluginGrant, requested: &PluginGrant) -> Plugi
         existing.network_mode.clone()
     };
     PluginGrant {
+        plugin_key: if existing.plugin_key.is_empty() {
+            requested.plugin_key.clone()
+        } else {
+            existing.plugin_key.clone()
+        },
         plugin_id: existing.plugin_id.clone(),
         entrypoints: existing.entrypoints.clone(),
         producers: existing.producers.clone(),
@@ -711,6 +760,7 @@ pub fn validate_approved_grant(
         .or(baseline.extra_processes)
         .map(|v| effective_extra_processes(Some(v)));
     Ok(PluginGrant {
+        plugin_key: baseline.plugin_key.clone(),
         plugin_id: baseline.plugin_id.clone(),
         entrypoints: baseline.entrypoints.clone(),
         producers: baseline.producers.clone(),
@@ -816,20 +866,26 @@ pub fn effective_disk_budget_bytes(grant: Option<&PluginGrant>) -> u64 {
 /// # Errors
 ///
 /// Returns [`PluginError`] when no grant exists for the plugin id.
-pub fn require_grant(files_dir: &Path, manifest: &PluginManifest) -> Result<PluginGrant> {
+pub fn require_grant(
+    files_dir: &Path,
+    plugin: &crate::discover::DiscoveredPlugin,
+) -> Result<PluginGrant> {
     let store = PluginGrantStore::load(files_dir)?;
-    let requested = consent_request(manifest);
-    match store.get(&manifest.id) {
+    let requested = consent_request(&plugin.manifest, plugin.plugin_key());
+    let existing = store
+        .get(plugin.plugin_key().canonical())
+        .or_else(|| store.get(plugin.alias()));
+    match existing {
         Some(existing) if grant_covers(existing, &requested) => {
             Ok(effective_grant(existing, &requested))
         }
         Some(_) => Err(PluginError::message(format!(
             "plugin `{}` grant does not match this plugin; re-approve with `bookclerk plugins approve {}`",
-            manifest.id, manifest.id
+            plugin.alias(), plugin.alias()
         ))),
         None => Err(PluginError::message(format!(
             "plugin `{}` has no permission grant; run `bookclerk plugins approve {}` first",
-            manifest.id, manifest.id
+            plugin.alias(), plugin.alias()
         ))),
     }
 }
@@ -872,24 +928,29 @@ pub fn spawn_config_for_grant(
     }
 }
 
-/// Platform guests shipped with the installer (`sqlite`, `local`) skip the
-/// consent UX and are enabled by default. Persist a covering grant when the
-/// installed manifest stays within the safe platform envelope (deny network,
-/// only `config` / `work_fs` bindings).
-pub fn ensure_platform_grant(files_dir: &Path, manifest: &PluginManifest) -> Result<PluginGrant> {
-    if !is_platform_plugin_id(&manifest.id) {
-        return require_grant(files_dir, manifest);
+/// Verified Bookclerk platform artifacts skip the consent UX when the
+/// installed payload still matches the host-stamped receipt and the request
+/// stays in the installer envelope (deny network, only `config` / `work_fs`).
+pub fn ensure_platform_grant(
+    files_dir: &Path,
+    plugin: &crate::discover::DiscoveredPlugin,
+) -> Result<PluginGrant> {
+    if !plugin.identity.provenance.grants_platform_defaults()
+        || !bookclerk_plugin_catalog::is_platform_plugin_key(plugin.plugin_key())
+    {
+        return require_grant(files_dir, plugin);
     }
-    let requested = consent_request(manifest);
+    let requested = consent_request(&plugin.manifest, plugin.plugin_key());
     if !is_safe_platform_request(&requested) {
         return Err(PluginError::message(format!(
             "platform plugin `{}` declares capabilities outside the installer envelope; \
              run `bookclerk plugins approve {}`",
-            manifest.id, manifest.id
+            plugin.alias(),
+            plugin.alias()
         )));
     }
     let mut store = PluginGrantStore::load(files_dir)?;
-    match store.get(&manifest.id) {
+    match store.get(plugin.plugin_key().canonical()) {
         Some(existing) if grant_within_ceiling(existing, &requested) => {
             Ok(effective_grant(existing, &requested))
         }
@@ -901,16 +962,21 @@ pub fn ensure_platform_grant(files_dir: &Path, manifest: &PluginManifest) -> Res
     }
 }
 
-/// Resolve the covering grant for spawn: platform auto-grant, else [`require_grant`].
+/// Resolve the covering grant for spawn: verified platform auto-grant, else [`require_grant`].
 ///
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub fn spawn_grant(files_dir: &Path, manifest: &PluginManifest) -> Result<PluginGrant> {
-    if is_platform_plugin_id(&manifest.id) {
-        ensure_platform_grant(files_dir, manifest)
+pub fn spawn_grant(
+    files_dir: &Path,
+    plugin: &crate::discover::DiscoveredPlugin,
+) -> Result<PluginGrant> {
+    if plugin.identity.provenance.grants_platform_defaults()
+        && bookclerk_plugin_catalog::is_platform_plugin_key(plugin.plugin_key())
+    {
+        ensure_platform_grant(files_dir, plugin)
     } else {
-        require_grant(files_dir, manifest)
+        require_grant(files_dir, plugin)
     }
 }
 
@@ -936,18 +1002,34 @@ pub fn inject_workerd_grant_env(cmd: &mut Command, grant: &PluginGrant) {
     }
 }
 
-/// Returns true for installer platform guests (`sqlite`, `local`).
-///
-/// # Arguments
-///
-/// * `id` - Plugin id to test (case-insensitive).
-///
-/// # Returns
-///
-/// `true` when the id is a built-in platform plugin.
+/// Canonical SHA-256 of a grant's security-relevant fields (not presentation).
 #[must_use]
-pub fn is_platform_plugin_id(id: &str) -> bool {
-    matches!(id.to_ascii_lowercase().as_str(), "sqlite" | "local")
+pub fn grant_revision(grant: &PluginGrant) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(grant.plugin_key.as_bytes());
+    hasher.update(b"\n");
+    for e in &grant.entrypoints {
+        hasher.update(e.as_bytes());
+        hasher.update(b",");
+    }
+    hasher.update(b"\n");
+    for p in &grant.producers {
+        hasher.update(p.as_bytes());
+        hasher.update(b",");
+    }
+    hasher.update(grant.network_mode.as_bytes());
+    hasher.update(b"\n");
+    for d in &grant.domains {
+        hasher.update(d.as_bytes());
+        hasher.update(b",");
+    }
+    hasher.update(b"\n");
+    for b in &grant.bindings {
+        hasher.update(b.as_bytes());
+        hasher.update(b",");
+    }
+    hex::encode(hasher.finalize())
 }
 
 /// True when a platform grant is deny-network with only `config` / `work_fs` bindings.
@@ -1076,10 +1158,59 @@ pub fn validate_described_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discover::DiscoveredPlugin;
     use crate::manifest::PluginManifest;
+    use bookclerk_plugin_catalog::PluginProvenance;
+
+    fn discovered(root: &std::path::Path, toml: &str) -> DiscoveredPlugin {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join("plugin.toml"), toml).unwrap();
+        let command = root.join("guest");
+        std::fs::write(&command, b"#!/bin/sh\n").unwrap();
+        let manifest = PluginManifest::parse(toml).unwrap();
+        DiscoveredPlugin::try_new(manifest, root.to_path_buf(), command, None)
+            .expect("test plugin tree must evaluate")
+    }
+
+    fn stamped_sqlite(files: &std::path::Path) -> DiscoveredPlugin {
+        let key = bookclerk_plugin_catalog::PluginKey::platform(
+            "bookclerk-plugin-database-sqlite",
+            "sqlite",
+        )
+        .unwrap();
+        let root = files.join("plugins").join(key.fs_id());
+        let plugin = discovered(
+            &root,
+            r#"
+api_version = 3
+id = "sqlite"
+runtime = "native"
+command = "./guest"
+entrypoints = ["databaseAdapter"]
+
+[capabilities.network]
+mode = "deny"
+
+[vars]
+
+[work_fs]
+"#,
+        );
+        bookclerk_plugin_catalog::stamp_platform_receipt(
+            &plugin.root,
+            files,
+            "bookclerk-plugin-database-sqlite",
+            &plugin.manifest,
+            "0.0.0",
+        )
+        .expect("stamp");
+        DiscoveredPlugin::try_new(plugin.manifest, plugin.root, plugin.command, Some(files))
+            .expect("stamped platform plugin")
+    }
 
     fn sample_grant(domains: &[&str], bindings: &[&str], flags: &[&str]) -> PluginGrant {
         PluginGrant {
+            plugin_key: String::new(),
             plugin_id: "demo".into(),
             entrypoints: ["storefront".to_string()].into_iter().collect(),
             producers: BTreeSet::new(),
@@ -1136,6 +1267,29 @@ mod tests {
         existing.network_mode = "deny".into();
         let requested = sample_grant(&[], &[], &[]);
         assert!(grant_covers(&existing, &requested));
+    }
+
+    #[test]
+    fn grant_revision_changes_with_authority_not_metadata() {
+        let a = sample_grant(&["a.example"], &["config"], &[]);
+        let mut b = a.clone();
+        b.approved_at = "2099-01-01T00:00:00Z".into();
+        assert_eq!(grant_revision(&a), grant_revision(&b));
+        b.domains.insert("b.example".into());
+        assert_ne!(grant_revision(&a), grant_revision(&b));
+        assert!(!grant_revision(&a).is_empty());
+        assert_eq!(grant_revision(&a).len(), 64);
+    }
+
+    #[test]
+    fn grant_covers_rejects_mismatched_plugin_keys() {
+        let mut a = sample_grant(&["a.example"], &["config"], &[]);
+        let mut b = a.clone();
+        a.plugin_key = "platform:bookclerk/bookclerk-plugin-database-sqlite".into();
+        b.plugin_key = "path:file:///tmp/evil".into();
+        a.plugin_id = "sqlite".into();
+        b.plugin_id = "sqlite".into();
+        assert!(!grant_covers(&a, &b));
     }
 
     #[test]
@@ -1209,7 +1363,7 @@ binding = "CACHE"
 "#,
         )
         .expect("manifest");
-        let grant = consent_request(&manifest);
+        let grant = consent_request_alias(&manifest);
         assert!(grant.bindings.contains("database:DB"));
         assert!(grant.bindings.contains("database:CACHE"));
         assert_eq!(granted_database_bindings(&grant), vec!["CACHE", "DB"]);
@@ -1248,12 +1402,13 @@ binding = "CACHE"
     #[test]
     fn require_grant_fails_without_store_entry() {
         let dir = tempfile::tempdir().unwrap();
-        let manifest = PluginManifest::parse(
+        let plugin = discovered(
+            &dir.path().join("install"),
             r#"
 api_version = 3
 id = "demo"
 runtime = "native"
-command = "./demo"
+command = "./guest"
 entrypoints = ["storefront"]
 
 [capabilities.network]
@@ -1261,11 +1416,8 @@ mode = "deny"
 
 [vars]
 "#,
-        )
-        .unwrap();
-        let err = require_grant(dir.path(), &manifest)
-            .unwrap_err()
-            .to_string();
+        );
+        let err = require_grant(dir.path(), &plugin).unwrap_err().to_string();
         assert!(err.contains("no permission grant"), "{err}");
     }
 
@@ -1278,12 +1430,13 @@ mode = "deny"
         store.upsert(existing);
         store.save(dir.path()).unwrap();
 
-        let manifest = PluginManifest::parse(
+        let plugin = discovered(
+            &dir.path().join("install"),
             r#"
 api_version = 3
 id = "demo"
 runtime = "native"
-command = "./demo"
+command = "./guest"
 entrypoints = ["storefront"]
 
 [capabilities.network]
@@ -1293,9 +1446,8 @@ mode = "deny"
 
 [secrets]
 "#,
-        )
-        .unwrap();
-        let grant = require_grant(dir.path(), &manifest).unwrap();
+        );
+        let grant = require_grant(dir.path(), &plugin).unwrap();
         assert!(grant_has_binding(&grant, "config"));
         assert!(!grant_has_binding(&grant, "secrets"));
     }
@@ -1309,7 +1461,8 @@ mode = "deny"
         store.upsert(existing);
         store.save(dir.path()).unwrap();
 
-        let manifest = PluginManifest::parse(
+        let plugin = discovered(
+            &dir.path().join("install"),
             r#"
 api_version = 3
 id = "demo"
@@ -1326,9 +1479,8 @@ domains = ["api.example.com"]
 
 [vars]
 "#,
-        )
-        .unwrap();
-        let grant = require_grant(dir.path(), &manifest).expect("operator widen kept");
+        );
+        let grant = require_grant(dir.path(), &plugin).expect("operator widen kept");
         assert!(grant.domains.contains("old.example"));
         assert!(!grant.domains.contains("api.example.com"));
     }
@@ -1336,12 +1488,32 @@ domains = ["api.example.com"]
     #[test]
     fn platform_grant_auto_persists_for_sqlite() {
         let dir = tempfile::tempdir().unwrap();
-        let manifest = PluginManifest::parse(
+        let plugin = stamped_sqlite(dir.path());
+        assert_eq!(
+            plugin.identity.provenance,
+            PluginProvenance::PlatformBundled
+        );
+        let grant = ensure_platform_grant(dir.path(), &plugin).unwrap();
+        assert!(grant_has_binding(&grant, "config"));
+        assert!(grant_has_binding(&grant, "work_fs"));
+        assert!(!grant.plugin_key.is_empty());
+        let again = spawn_grant(dir.path(), &plugin).unwrap();
+        assert_eq!(again.plugin_id, "sqlite");
+        assert_eq!(again.approved_at, grant.approved_at);
+        assert_eq!(again.bindings, grant.bindings);
+        assert_eq!(again.plugin_key, plugin.plugin_key().canonical());
+    }
+
+    #[test]
+    fn fake_sqlite_id_does_not_receive_platform_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = discovered(
+            &dir.path().join("install"),
             r#"
 api_version = 3
 id = "sqlite"
 runtime = "native"
-command = "./sqlite"
+command = "./guest"
 entrypoints = ["databaseAdapter"]
 
 [capabilities.network]
@@ -1351,36 +1523,28 @@ mode = "deny"
 
 [work_fs]
 "#,
-        )
-        .unwrap();
-        let grant = ensure_platform_grant(dir.path(), &manifest).unwrap();
-        assert!(grant_has_binding(&grant, "config"));
-        assert!(grant_has_binding(&grant, "work_fs"));
-        // Second call returns an effective grant (same surface, preserved approved_at).
-        let again = spawn_grant(dir.path(), &manifest).unwrap();
-        assert_eq!(again.plugin_id, "sqlite");
-        assert_eq!(again.approved_at, grant.approved_at);
-        assert_eq!(again.bindings, grant.bindings);
+        );
+        assert_eq!(
+            plugin.identity.provenance,
+            PluginProvenance::LocalDevelopment
+        );
+        assert!(!plugin.identity.provenance.grants_platform_defaults());
+        let err = ensure_platform_grant(dir.path(), &plugin)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no permission grant"), "{err}");
     }
 
     #[test]
     fn platform_grant_replaces_stale_grant_when_manifest_narrows() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = PluginGrantStore::default();
-        let mut existing = sample_grant(&[], &["config", "work_fs"], &[]);
-        existing.plugin_id = "sqlite".into();
-        existing.entrypoints = ["databaseAdapter".to_string()].into_iter().collect();
-        existing.network_mode = "deny".into();
-        existing.approved_at = "2026-02-02T00:00:00Z".into();
-        store.upsert(existing);
-        store.save(dir.path()).unwrap();
-
-        let manifest = PluginManifest::parse(
+        let plugin = discovered(
+            &dir.path().join("install"),
             r#"
 api_version = 3
 id = "sqlite"
 runtime = "native"
-command = "./sqlite"
+command = "./guest"
 entrypoints = ["databaseAdapter"]
 
 [capabilities.network]
@@ -1388,9 +1552,34 @@ mode = "deny"
 
 [vars]
 "#,
+        );
+        bookclerk_plugin_catalog::stamp_platform_receipt(
+            &plugin.root,
+            dir.path(),
+            "bookclerk-plugin-database-sqlite",
+            &plugin.manifest,
+            "0.0.0",
         )
         .unwrap();
-        let grant = ensure_platform_grant(dir.path(), &manifest).unwrap();
+        let plugin = DiscoveredPlugin::try_new(
+            plugin.manifest,
+            plugin.root,
+            plugin.command,
+            Some(dir.path()),
+        )
+        .unwrap();
+
+        let mut store = PluginGrantStore::default();
+        let mut existing = sample_grant(&[], &["config", "work_fs"], &[]);
+        existing.plugin_key = plugin.plugin_key().canonical().to_string();
+        existing.plugin_id = "sqlite".into();
+        existing.entrypoints = ["databaseAdapter".to_string()].into_iter().collect();
+        existing.network_mode = "deny".into();
+        existing.approved_at = "2026-02-02T00:00:00Z".into();
+        store.upsert(existing);
+        store.save(dir.path()).unwrap();
+
+        let grant = ensure_platform_grant(dir.path(), &plugin).unwrap();
         assert_eq!(
             grant.bindings.iter().cloned().collect::<Vec<_>>(),
             vec!["config".to_string()]
@@ -1401,20 +1590,13 @@ mode = "deny"
     #[test]
     fn platform_grant_fails_outside_installer_envelope() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = PluginGrantStore::default();
-        let mut existing = sample_grant(&[], &["config"], &[]);
-        existing.plugin_id = "sqlite".into();
-        existing.entrypoints = ["databaseAdapter".to_string()].into_iter().collect();
-        existing.network_mode = "deny".into();
-        store.upsert(existing);
-        store.save(dir.path()).unwrap();
-
-        let manifest = PluginManifest::parse(
+        let plugin = discovered(
+            &dir.path().join("install"),
             r#"
 api_version = 3
 id = "sqlite"
 runtime = "native"
-command = "./sqlite"
+command = "./guest"
 entrypoints = ["databaseAdapter"]
 
 [capabilities.network]
@@ -1424,9 +1606,23 @@ mode = "deny"
 
 [secrets]
 "#,
+        );
+        bookclerk_plugin_catalog::stamp_platform_receipt(
+            &plugin.root,
+            dir.path(),
+            "bookclerk-plugin-database-sqlite",
+            &plugin.manifest,
+            "0.0.0",
         )
         .unwrap();
-        let err = ensure_platform_grant(dir.path(), &manifest)
+        let plugin = DiscoveredPlugin::try_new(
+            plugin.manifest,
+            plugin.root,
+            plugin.command,
+            Some(dir.path()),
+        )
+        .unwrap();
+        let err = ensure_platform_grant(dir.path(), &plugin)
             .unwrap_err()
             .to_string();
         assert!(err.contains("outside the installer envelope"), "{err}");
@@ -1460,12 +1656,13 @@ mode = "deny"
         store.upsert(existing);
         store.save(dir.path()).unwrap();
 
-        let narrowed = PluginManifest::parse(
+        let narrowed = discovered(
+            &dir.path().join("install"),
             r#"
 api_version = 3
 id = "demo"
 runtime = "native"
-command = "./demo"
+command = "./guest"
 entrypoints = ["storefront"]
 
 [capabilities.network]
@@ -1473,17 +1670,17 @@ mode = "deny"
 
 [vars]
 "#,
-        )
-        .unwrap();
+        );
         let effective = require_grant(dir.path(), &narrowed).unwrap();
         assert!(grant_has_binding(&effective, "config"));
 
-        let widened = PluginManifest::parse(
+        let widened = discovered(
+            &dir.path().join("install"),
             r#"
 api_version = 3
 id = "demo"
 runtime = "native"
-command = "./demo"
+command = "./guest"
 entrypoints = ["storefront"]
 
 [capabilities.network]
@@ -1494,8 +1691,7 @@ mode = "deny"
 [[kv_namespaces]]
 binding = "KV"
 "#,
-        )
-        .unwrap();
+        );
         let effective = require_grant(dir.path(), &widened).unwrap();
         assert!(grant_has_binding(&effective, "config"));
         assert!(!grant_has_binding(&effective, "plugin_kv"));
@@ -1573,7 +1769,7 @@ mode = "deny"
 "#,
         )
         .unwrap();
-        let grant = consent_request(&manifest);
+        let grant = consent_request_alias(&manifest);
         let err = validate_described_capabilities(
             &manifest,
             &grant,
@@ -1604,7 +1800,7 @@ schema_versions = [1]
 "#,
         )
         .unwrap();
-        let grant = consent_request(&manifest);
+        let grant = consent_request_alias(&manifest);
         let err = validate_described_capabilities(
             &manifest,
             &grant,
@@ -1679,7 +1875,7 @@ type = "demo_pinged"
 "#,
         )
         .unwrap();
-        let grant = consent_request(&manifest);
+        let grant = consent_request_alias(&manifest);
         assert!(grant.producers.contains("demo_pinged"));
         assert!(grant.entrypoints.contains("remoteLibrary"));
         validate_described_capabilities(
@@ -1732,7 +1928,7 @@ domains = ["api.example.com"]
 "#,
         )
         .unwrap();
-        let grant = consent_request(&manifest);
+        let grant = consent_request_alias(&manifest);
         assert!(grant.domains.contains("api.example.com"));
         for host in bookclerk_plugin_manifest::PYODIDE_EGRESS_HOSTS {
             assert!(

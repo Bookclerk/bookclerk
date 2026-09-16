@@ -139,7 +139,7 @@ pub fn package_plugins(root: &Path, out_dir: &Path, version: &str) -> Result<()>
     let target = bookclerk_target();
     let mut checksums = String::new();
     for guest in plugins::discover_optional(root)? {
-        let plugin_dir = staged.join(&guest.id);
+        let plugin_dir = staged.join(plugins::guest_install_leaf(&guest)?);
         let crate_name = guest
             .package
             .clone()
@@ -270,8 +270,26 @@ pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()
     fs::create_dir_all(&plugins_root)
         .with_context(|| format!("create {}", plugins_root.display()))?;
     for guest in plugins::discover_platform(root)? {
-        copy_dir_all(&staged.join(&guest.id), &plugins_root.join(&guest.id))?;
-        eprintln!("bundled platform plugin `{}`", guest.id);
+        let leaf = plugins::guest_install_leaf(&guest)?;
+        let dest = plugins_root.join(&leaf);
+        copy_dir_all(&staged.join(&leaf), &dest)?;
+        if let Some(package) = guest.package.as_deref() {
+            if bookclerk_plugin_catalog::platform_artifact(package, &guest.id).is_some() {
+                let text = fs::read_to_string(dest.join("plugin.toml"))
+                    .with_context(|| format!("read {}", dest.join("plugin.toml").display()))?;
+                let manifest = bookclerk_plugin_manifest::PluginManifest::parse(&text)
+                    .with_context(|| format!("parse {}", dest.join("plugin.toml").display()))?;
+                bookclerk_plugin_catalog::stamp_platform_receipt(
+                    &dest,
+                    bundle.as_path(),
+                    package,
+                    &manifest,
+                    version,
+                )
+                .with_context(|| format!("stamp platform receipt for {}", guest.id))?;
+            }
+        }
+        eprintln!("bundled platform plugin `{}` ({leaf})", guest.id);
     }
 
     let archive = archive_path(out_dir, "bookclerk-platform", version, bookclerk_target());

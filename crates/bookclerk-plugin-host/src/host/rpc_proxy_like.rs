@@ -15,7 +15,7 @@ use tempfile::TempDir;
 use super::database::{capture_outbound_adapter_sql, ExternalDatabase};
 use crate::consent::{consent_request, PluginGrantStore};
 use crate::discover::DiscoveredPlugin;
-use crate::{Entrypoint, PluginManifest};
+use crate::Entrypoint;
 
 const LIKE_SQL: &str = "SELECT 1 AS n WHERE 'rowcap-keep' LIKE ?";
 
@@ -112,11 +112,8 @@ fn stage_first_party_guest(id: &str) -> Option<StagedGuest> {
     let files = TempDir::new().ok()?;
     Some(StagedGuest {
         files,
-        plugin: DiscoveredPlugin {
-            manifest,
-            root: install.path().to_path_buf(),
-            command: dest_bin,
-        },
+        plugin: DiscoveredPlugin::try_new(manifest, install.path().to_path_buf(), dest_bin, None)
+            .ok()?,
         _install: install,
     })
 }
@@ -136,10 +133,10 @@ fn guest_config(staged: &StagedGuest, plugin_id: &str, postgres_url: Option<Stri
     config
 }
 
-fn approve_guest(config: &Config, manifest: &PluginManifest) {
+fn approve_guest(config: &Config, plugin: &DiscoveredPlugin) {
     let files = &config.paths().files_dir;
     let mut grants = PluginGrantStore::load(files).expect("load grants");
-    grants.upsert(consent_request(manifest));
+    grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
     grants.save(files).expect("save grants");
 }
 
@@ -202,7 +199,7 @@ fn assert_canonical_like_boundary(sqls: &[String]) {
 }
 
 async fn assert_like_through_production_proxy(config: &Config, plugin: &DiscoveredPlugin) {
-    approve_guest(config, &plugin.manifest);
+    approve_guest(config, plugin);
     assert!(plugin.manifest.has_entrypoint(Entrypoint::DatabaseAdapter));
     let ext = ExternalDatabase::spawn(plugin, config)
         .await

@@ -114,11 +114,31 @@ Optional in-process iteration (no staging): build hosts with
 
 Reference Echo examples (distinct plugin ids):
 
-Plugin **ids are globally unique across kinds** (source / integration / output /
-database). The grammar is strict and non-lossy: lowercase `[a-z0-9_]{2,32}` with
-no leading/trailing `_` and no `__` (same rule as the crates.io `{id}` segment).
-Invalid characters are rejected at manifest load / install — never rewritten —
-so values like `a/b` and `a_b` cannot collide after sanitization.
+Plugin **aliases** (`plugin.toml` `id`) are unique within **one host plugin
+namespace** (`$BOOKCLERK_FILES_DIR`): each alias maps to exactly zero or one
+installed [`PluginKey`]. Duplicate aliases from different PluginKeys on the
+**same host** are invalid installation state (discovery fails closed; install
+rejects the second package, including with `--replace`). Distinct Bookclerk
+hosts with their own files directories may install the same alias and
+PluginKey independently — even when they share a library database. Aliases
+are **not** globally unique across an HA cluster.
+
+An installed PluginKey's alias is immutable across ordinary
+install/update/replace — a package cannot keep the same PluginKey while
+changing `id = "foo"` to `id = "foo2"`, because `[sources.<id>]` /
+`[integrations.<id>]` and related settings stay keyed by alias. Aliases are
+for humans and CLI ergonomics (`bookclerk plugins info postgres`). They are
+**not** trust: a third-party package that is the sole installed `sqlite`
+still receives no platform secrets, SQLite library path, or first-party jail
+allowances. Durable ownership (grants, sessions, databases, jobs, state
+directories, the install ledger) uses PluginKey.
+
+Plugin aliases are unique across kinds (source / integration / output /
+database) **within one host plugin namespace**. The grammar is strict and
+non-lossy: lowercase `[a-z0-9_]{2,32}` with no leading/trailing `_` and no
+`__` (same rule as the crates.io `{id}` segment). Invalid characters are
+rejected at manifest load / install — never rewritten — so values like `a/b`
+and `a_b` cannot collide after sanitization.
 
 | Path | Runtime |
 | --- | --- |
@@ -153,7 +173,7 @@ is narrow on top of that:
 | Host guarantees | Detail |
 | --- | --- |
 | No library DB path (sources / integrations / outputs) | `library.db` is never passed on the wire to those kinds — and not reachable if it were. **Database** sqlite guests open the file at a jail-granted path (`BOOKCLERK_SQLITE_PATH` / `sqlitePath` at session open) |
-| No files-dir root | Plugins get `plugin_data_dir` (`…/plugins/<id>/data`) and a per-fetch work directory (descriptor) — not `master.key` or the download cache root |
+| No files-dir root | Plugins get `plugin_data_dir` (`$FILES_DIR/plugin-state/<PluginKey fs-id>/data`) and a per-fetch work directory (descriptor) — not `master.key` or the download cache root |
 | Env scrub | Child spawn uses `env_clear` + a small allowlist (`PATH`, locale, …). `BOOKCLERK_*`, `AWS_*`, tokens, and DB URLs are not inherited; `HOME` and `TMPDIR` are replaced with the guest's own directories |
 | Host-mediated secrets | `login` returns `{ account, credentials }`; host seals into `encrypted_secrets` with `provider = plugin id`. `scan` and `fetchTitle` receive those blobs from the host |
 | Host-mediated library writes | `scan` returns book DTOs; host upserts with `source` forced to the plugin id. Account listing for a plugin id is answered from the host accounts table |
@@ -216,6 +236,50 @@ Users of a store-free build can still add any storefront back as an external
 guest, since discovery is independent of these features. That is a deployment
 choice made by whoever installs the plugin, not by whoever shipped the binary.
 
+## Host-local plugin namespace
+
+Plugin deployment state is **host-local**. Shared Bookclerk application data
+may live in a common database, but each host owns its own plugin inventory,
+trust ledger, runtime state, and mutation lock.
+
+`$BOOKCLERK_FILES_DIR` is one host plugin namespace:
+
+```text
+$FILES_DIR/
+  plugins/<PluginKey fs-id>/     # immutable install tree (guest cwd, read-only)
+  plugin-state/<PluginKey fs-id>/data
+  plugin-state/<PluginKey fs-id>/tmp
+  install-ledger.json            # host-owned trust anchor (not receipt.json)
+  .plugin-mutation.lock          # OS advisory lock for local install/remove
+  .plugin-hold/                  # held trees/state during remove transactions
+```
+
+Alias uniqueness, install-ledger mutation, jail/runtime processes, and
+`.plugin-mutation.lock` are scoped to this files directory. Two hosts:
+
+```text
+Host A $FILES_DIR/.plugin-mutation.lock
+Host B $FILES_DIR/.plugin-mutation.lock
+```
+
+do **not** interact, even when A and B use the same PostgreSQL/D1/shared
+Bookclerk database. That is intentional: the same alias and PluginKey may be
+installed on both hosts with no coordination through the shared database.
+Bookclerk does not take a PostgreSQL advisory lock (or any other shared-database
+lock) for plugin installation.
+
+A future stable `HostId` (for example `$FILES_DIR/host.json`) is expected to
+map naturally onto this files-dir namespace where shared-database placement
+matters (runtime availability, job eligibility, event-consumer placement,
+local SQLite ownership, rolling plugin rollout). This release does **not**
+persist a HostId, register hosts, replicate plugin inventories, or schedule
+cluster plugin deployment.
+
+`receipt.json` inside the install tree is metadata. Remove/install identity
+is bound to the host ledger plus filesystem placement
+(`basename == PluginKey.fs_id()` for `pk-*` directories). A tampered receipt
+cannot redirect `--purge-state` onto another PluginKey.
+
 ## The guest jail
 
 Every external guest is started by **`bookclerk-jail`**, a small launcher that
@@ -242,8 +306,8 @@ A guest gets four paths and nothing else:
 | Path | Access | Also known to the guest as |
 | --- | --- | --- |
 | its install directory | read-only | `cwd` |
-| `…/plugins/<id>/data` | read/write | `HOME`, and `plugin_data_dir` on the wire |
-| `…/plugins/<id>/tmp` | read/write | `TMPDIR` / `TEMP` / `TMP`; fetch scratch is `tmp/fetch` |
+| `…/plugin-state/<PluginKey fs-id>/data` | read/write | `HOME`, and `plugin_data_dir` on the wire |
+| `…/plugin-state/<PluginKey fs-id>/tmp` | read/write | `TMPDIR` / `TEMP` / `TMP`; fetch scratch is `tmp/fetch` |
 
 Plus the system read paths every process needs to start (the loader, shared
 libraries, the CA bundle — including `/var/lib/ca-certificates` on
@@ -270,7 +334,7 @@ download cache would let one plugin read or overwrite every other fetch's
 scratch.
 
 The host therefore never grants the cache root. `fetchTitle` receives a
-`cache_dir` under the guest's already-granted `TMPDIR` (`plugins/<id>/tmp/fetch`).
+`cache_dir` under the guest's already-granted `TMPDIR` (`plugin-state/<PluginKey fs-id>/tmp/fetch`).
 Returned media paths are under that directory; the unconfined host reads them
 afterward. Destinations ingest **byte streams** over the plugin ABI rather than a
 host file descriptor. SQLite gets spawn-time file grants for `library.db` and
@@ -854,7 +918,8 @@ Global confinement knobs (Settings → Confinement, or `config.toml`):
 | `plugins.jail.extra_processes` | ceiling on extra processes/threads beyond launcher overhead (default **2**; Spec `active_processes` = overhead + extra) |
 
 Guest filesystem access remains install read-only plus host-managed
-`plugins/<id>/data` and `plugins/<id>/tmp` — not a free-form widen.
+`plugin-state/<PluginKey fs-id>/data` and `plugin-state/<PluginKey fs-id>/tmp`
+— not a free-form widen.
 
 **Deferred (discovery/install):** a content hash bound to the grant so a
 different binary under the same id cannot keep an old grant forever. End goal

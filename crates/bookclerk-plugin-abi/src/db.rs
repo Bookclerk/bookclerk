@@ -39,7 +39,7 @@ pub enum DbConnectParams {
     #[serde(rename_all = "camelCase")]
     Sqlite {
         /// Scoped writable directory for this plugin
-        /// (`…/plugins/<id>/data`, wire `pluginDataDir`).
+        /// (`…/plugin-state/<PluginKey fs-id>/data`, wire `pluginDataDir`).
         plugin_data_dir: String,
         /// Absolute path to the DB file (wire `sqlitePath`). The sqlite jail
         /// grants this file and its journal sidecars at spawn.

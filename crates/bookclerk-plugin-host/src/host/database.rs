@@ -150,15 +150,19 @@ impl ExternalDatabase {
         }
         let table = crate::settings_table(config, plugin);
         let config_json = toml_to_json(&toml::Value::Table(table));
-        let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
+        let plugin_data_dir = plugin_data_dir(config, plugin)?;
         let extra_env = match DatabasePluginKind::parse(&plugin.manifest.id) {
             Some(DatabasePluginKind::D1) | Some(DatabasePluginKind::Postgres) => Vec::new(),
             Some(DatabasePluginKind::Sqlite) => {
-                let path = config.database.sqlite_path(&config.paths().files_dir);
-                vec![(
-                    "BOOKCLERK_SQLITE_PATH",
-                    std::ffi::OsString::from(path.as_os_str()),
-                )]
+                if crate::jail::is_sqlite_database_plugin(plugin) {
+                    let path = config.database.sqlite_path(&config.paths().files_dir);
+                    vec![(
+                        "BOOKCLERK_SQLITE_PATH",
+                        std::ffi::OsString::from(path.as_os_str()),
+                    )]
+                } else {
+                    Vec::new()
+                }
             }
             None => Vec::new(),
         };
@@ -2577,7 +2581,7 @@ pub fn database_connect_bindings(
     plugin: &DiscoveredPlugin,
     session: &PluginSession,
 ) -> PluginResult<bookclerk_plugin_sdk::BindingValues> {
-    let plugin_data_dir = plugin_data_dir(config, &plugin.manifest.id)?;
+    let plugin_data_dir = plugin_data_dir(config, plugin)?;
     let table = crate::settings_table(config, plugin);
     let settings_json = toml_to_json(&toml::Value::Table(table));
     connect_bindings(

@@ -121,7 +121,7 @@ pub struct BookclerkPackageManifest {
     pub min_bookclerk: Option<String>,
     /// Destination backend kind (`local`, `s3`, …).
     pub kind: PluginKind,
-    /// Plugin id (`[a-z0-9_]{2,32}`), globally unique across kinds.
+    /// Plugin alias (`[a-z0-9_]{2,32}`), unique within one host plugin namespace.
     pub id: String,
     /// Optional human-readable name for catalog and UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -161,7 +161,7 @@ lifecycle and tenancy as follows — **no implementation in this ADR revision**:
 2. **Per-account instantiation** — for account-bearing kinds (especially
    `source` / OAuth storefronts), prefer a jail (and workerd isolate) keyed by
    `(plugin_id, account_id)` so linked users do not share process memory or
-   `plugins/<id>/data`. Resource caps (`extraProcesses`, memory, CPU) stay
+   `plugin-state/<PluginKey fs-id>/data`. Resource caps (`extraProcesses`, memory, CPU) stay
    **per instance**.
 3. **Lifecycle by kind** — split long-lived vs one-shot:
    - **Long-lived:** platform DB/output and other shared infrastructure guests

@@ -1,6 +1,6 @@
 # Plugin registry (crates.io taxonomy + install without Rust)
 
-Third-party plugins install as archives under `$BOOKCLERK_FILES_DIR/plugins/<id>/`
+Third-party plugins install as archives under `$BOOKCLERK_FILES_DIR/plugins/<plugin-key-fs-id>/`
 (see [plugins.md](plugins.md) and the ADR
 [plugin-workers-rpc-workerd.md](adr/plugin-workers-rpc-workerd.md)):
 
@@ -55,7 +55,7 @@ notarization are optional; Bookclerk never re-signs third-party binaries.
 
 | Flag / config | Effect |
 | --- | --- |
-| `--allow-unsigned` / `[plugins] allow_unsigned` | Permit packages without publisher signatures (digest still required) |
+| `--allow-unverified-publisher` / `[plugins] allow_unverified_publisher` | Permit community packages that have no independent publisher authenticity proof. Archive SHA-256 is still required. Bookclerk does **not** verify publisher signatures. |
 | Yanked versions | Refused by install-grade validation |
 | macOS / Windows code signatures | Warn via `plugins doctor` when tooling is available; interactive override only |
 
@@ -75,7 +75,7 @@ These landed on the follow-up ecosystem track instead of expanding #74:
 | --- | --- |
 | crates.io crate | **Discovery index** + install URL metadata for plugin *authors* |
 | HTTPS downloadable archive | **Native:** per OS/arch binary + `plugin.toml`. **Workerd:** `plugin.toml` + `modules/` (portable) |
-| `$BOOKCLERK_FILES_DIR/plugins/<id>/` | **Installed** layout Bookclerk already loads |
+| `$BOOKCLERK_FILES_DIR/plugins/<plugin-key-fs-id>/` | **Installed** layout (`pk-` + 128-bit PluginKey digest); the manifest `id` remains a display alias |
 | Platform installer / `cargo package-platform` | **Hosts + jail + workerd + sqlite + local** — always bundled, not pulled from crates.io |
 
 Bookclerk never runs `cargo build` / `npm install` on the user’s machine to
@@ -99,7 +99,7 @@ crates.io ──search / metadata──► bookclerk plugins search|install
                               (native: per OS/arch; workerd: portable)
                                         │
                                         ▼
-                    plugins/<id>/{plugin.toml, binary and/or modules/}
+                    plugins/<plugin-key-fs-id>/{plugin.toml, binary and/or modules/}
 ```
 
 ## Crate naming taxonomy
@@ -298,9 +298,27 @@ publisher” vs “crates.io metadata only”.
 2. Read `[package.metadata.bookclerk]` from the crate’s published Cargo.toml
 3. Pick the host `target_triple` (or override)
 4. Download + verify the archive
-5. Extract into `$BOOKCLERK_FILES_DIR/plugins/<id>/`
+5. Extract into `$BOOKCLERK_FILES_DIR/plugins/<plugin-key-fs-id>/`
 6. Leave `enabled = false` for integrations (existing default); operator enables
    in config / dashboard
+
+Alias uniqueness (one host plugin namespace / `$BOOKCLERK_FILES_DIR`):
+
+- Different PluginKey + unused alias → allowed
+- Same PluginKey + same alias (update) → allowed
+- Different PluginKey + already-used alias → **rejected** (even with a full
+  PluginKey or `--replace`)
+- Same PluginKey + different manifest alias → **rejected** (even with
+  `--replace`). Alias changes are not supported by ordinary
+  install/update/replace; they need an explicit future migration because
+  `[sources.<id>]` / `[integrations.<id>]` stay keyed by alias
+- Corrupt disk with two PluginKeys sharing an alias → discovery fails closed
+- Distinct hosts with distinct `$FILES_DIR` values may install the same alias
+  and PluginKey independently (no shared-database lock)
+
+`--replace` updates files for an existing PluginKey at its current alias. It
+never lets a different provenance seize an alias, and it never renames an
+installed PluginKey's alias.
 
 No `cargo` / `rustc` on PATH is required.
 

@@ -8,6 +8,9 @@ pub enum CatalogError {
     /// Operator-facing error text with no structured code.
     #[error("{0}")]
     Message(String),
+    /// `receipt.json` is genuinely absent from the install directory.
+    #[error("plugin install receipt not found")]
+    ReceiptNotFound,
     /// Filesystem I/O failure during download, extract, or activate.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -35,6 +38,12 @@ impl CatalogError {
     #[must_use]
     pub fn message(msg: impl Into<String>) -> Self {
         Self::Message(msg.into())
+    }
+
+    /// True when this error is a genuinely missing install receipt.
+    #[must_use]
+    pub fn is_receipt_not_found(&self) -> bool {
+        matches!(self, Self::ReceiptNotFound)
     }
 }
 

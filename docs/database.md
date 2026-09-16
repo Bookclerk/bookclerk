@@ -107,7 +107,8 @@ Environment overrides:
 ## Plugin kinds
 
 Built-in **local SQLite** is a **platform-shipped guest**
-(`plugins/sqlite/`, default `[database].plugin = "sqlite"`). The host grants
+(`plugins/<plugin-key-fs-id>/` for the platform sqlite adapter; occupancy
+defaults to `[database].plugin = "sqlite"` until stamped to a PluginKey). The host grants
 `library.db` (and journal sidecars) in the jail allowlist and passes the path as
 `BOOKCLERK_SQLITE_PATH` / context `sqlitePath`; the guest runs with
 `[sandbox].network = none`. The matching guest is **required** — there is no
@@ -127,7 +128,8 @@ never admits or rejects a guest based on physical engine identity.
 First-party guests: `bookclerk-plugin-database-sqlite` (platform),
 `bookclerk-plugin-database-d1` and `bookclerk-plugin-database-postgres` (optional).
 Each is a full Workers-RPC guest with its own binary and `plugin.toml`. Install
-platform sqlite under `$BOOKCLERK_FILES_DIR/plugins/sqlite/`; stage optional DB
+platform sqlite under `$BOOKCLERK_FILES_DIR/plugins/<plugin-key-fs-id>/`
+(verified against `$BOOKCLERK_FILES_DIR/install-ledger.json`); stage optional DB
 guests with `cargo stage-plugins --optional`.
 
 ### Isolated plugin database bindings

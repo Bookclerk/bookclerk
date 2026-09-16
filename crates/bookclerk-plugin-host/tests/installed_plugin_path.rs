@@ -62,7 +62,7 @@ async fn live_audible_and_s3_installed_path_gated() {
         return;
     }
     // Operators run:
-    //   bookclerk plugins install local:<archive> --manifest … --allow-unsigned
+    //   bookclerk plugins install local:<archive> --manifest … --allow-unverified-publisher
     //   bookclerk auth set-scan <account> --scan false
     //   bookclerk library acquire --asin <ONE>
     // This automated gate intentionally does not bulk-acquire.

@@ -13,6 +13,7 @@ publish = false
 anyhow.workspace = true
 bookclerk-plugin-manifest.workspace = true
 chrono.workspace = true
+fs4.workspace = true
 flate2.workspace = true
 hex.workspace = true
 serde.workspace = true
@@ -30,6 +31,13 @@ zip.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+flate2.workspace = true
+tar.workspace = true
 
 [lints]
 workspace = true
+
+[[test]]
+name = "plugin_mutation_lock"
+path = "tests/plugin_mutation_lock.rs"
+harness = false

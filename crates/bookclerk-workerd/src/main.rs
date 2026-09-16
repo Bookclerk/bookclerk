@@ -8,9 +8,10 @@
 //! Under Linux Landlock `OutboundListen`, only `bind(port=0)` is allowed — the
 //! launcher binds the bridge RPC socket itself and passes it to workerd via
 //! `--socket-fd` (same inherited-FD pattern as the plugin fetch-directory
-//! channel). The adapter-private `GRANTED` capability channel uses a unix
-//! socket under `$TMPDIR` on Unix, or an already-bound loopback TCP listener
-//! on Windows (AppContainer-friendly).
+//! channel). The adapter-private `GRANTED` capability channel uses a Linux
+//! abstract unix socket (or a relative `unix:granted.sock` under `$TMPDIR` on
+//! other Unix), or an already-bound loopback TCP listener on Windows
+//! (AppContainer-friendly).
 //!
 //! Author `modules/` stay in the read-only install root (Cap'n Proto
 //! `/modules/…` embeds + `--import-path`). `$TMPDIR` only holds generated
@@ -202,11 +203,9 @@ async fn run_isolate(
 
     #[cfg(unix)]
     let (granted_addr, granted_unix) = {
-        let granted_sock = state_dir.join("granted.sock");
-        let _ = std::fs::remove_file(&granted_sock);
-        let listener = std::os::unix::net::UnixListener::bind(&granted_sock)
-            .with_context(|| format!("bind granted socket {}", granted_sock.display()))?;
-        (format!("unix:{}", granted_sock.display()), Some(listener))
+        let (addr, listener) = bookclerk_workerd::unix_bind::bind_granted(&state_dir)
+            .with_context(|| format!("bind granted socket under {}", state_dir.display()))?;
+        (addr, Some(listener))
     };
     #[cfg(not(unix))]
     let (granted_addr, granted_tcp) = {
@@ -338,11 +337,9 @@ async fn run_native_behind_workerd(
 
     #[cfg(unix)]
     let (granted_addr, granted_unix) = {
-        let granted_sock = state_dir.join("granted.sock");
-        let _ = std::fs::remove_file(&granted_sock);
-        let listener = std::os::unix::net::UnixListener::bind(&granted_sock)
-            .with_context(|| format!("bind granted socket {}", granted_sock.display()))?;
-        (format!("unix:{}", granted_sock.display()), Some(listener))
+        let (addr, listener) = bookclerk_workerd::unix_bind::bind_granted(&state_dir)
+            .with_context(|| format!("bind granted socket under {}", state_dir.display()))?;
+        (addr, Some(listener))
     };
     #[cfg(not(unix))]
     let (granted_addr, granted_tcp) = {

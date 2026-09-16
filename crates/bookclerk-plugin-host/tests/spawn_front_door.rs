@@ -41,7 +41,7 @@ impl Fixture {
         };
         let plugin = find_probe(&config);
         let mut grants = PluginGrantStore::default();
-        grants.upsert(consent_request(&plugin.manifest));
+        grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
         grants
             .save(&config.paths().files_dir)
             .expect("write plugin-grants.json");

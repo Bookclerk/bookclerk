@@ -5,8 +5,8 @@
 //! A guest is handed three directories and nothing else:
 //!
 //! - its own install directory, read-only — the binary and `plugin.toml`
-//! - `…/plugins/<id>/data`, its private state, also exported as `HOME`
-//! - `…/plugins/<id>/tmp`, its scratch, exported as `TMPDIR`
+//! - `…/plugin-state/<plugin-key-fs-id>/data`, its private state, also exported as `HOME`
+//! - `…/plugin-state/<plugin-key-fs-id>/tmp`, its scratch, exported as `TMPDIR`
 //!
 //! Fetch scratch is a subdirectory of that `tmp` (the host passes it as
 //! `cache_dir` on `fetchTitle`). Destinations ingest bytes over Cap'n Proto
@@ -53,14 +53,14 @@ const JAIL_BIN_ENV: &str = "BOOKCLERK_PLUGIN_JAIL";
 
 /// The private directory a plugin keeps state in.
 ///
-/// `plugin_id` must satisfy [`bookclerk_plugin_manifest::validate_plugin_id`];
-/// invalid ids are rejected (no lossy rewriting).
+/// State is keyed by [`bookclerk_plugin_catalog::PluginKey`] (`plugin-state/<fs_id>/data`), not the
+/// display alias. Invalid keys cannot be constructed.
 ///
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub fn plugin_data_dir(config: &Config, plugin_id: &str) -> Result<PathBuf> {
-    Ok(plugin_state_root(config, plugin_id)?.join("data"))
+pub fn plugin_data_dir(config: &Config, plugin: &DiscoveredPlugin) -> Result<PathBuf> {
+    Ok(plugin_state_root(config, plugin)?.join("data"))
 }
 
 /// Scratch space for one plugin, used as its `TMPDIR`.
@@ -68,23 +68,23 @@ pub fn plugin_data_dir(config: &Config, plugin_id: &str) -> Result<PathBuf> {
 /// Guests inherit `TMPDIR` from the host otherwise, which names a directory
 /// outside every jail — so a guest reaching for a temp file would fail on a
 /// permission error unrelated to anything it was denied.
-fn plugin_scratch_dir(config: &Config, plugin_id: &str) -> Result<PathBuf> {
-    Ok(plugin_state_root(config, plugin_id)?.join("tmp"))
+fn plugin_scratch_dir(config: &Config, plugin: &DiscoveredPlugin) -> Result<PathBuf> {
+    Ok(plugin_state_root(config, plugin)?.join("tmp"))
 }
 
 /// Where one plugin's host-managed directories live.
 ///
 /// Distinct from [`DiscoveredPlugin::root`], which is where the plugin is
 /// installed and is read-only to the guest.
-fn plugin_state_root(config: &Config, plugin_id: &str) -> Result<PathBuf> {
+fn plugin_state_root(config: &Config, plugin: &DiscoveredPlugin) -> Result<PathBuf> {
     Ok(config
         .paths()
         .files_dir
-        .join("plugins")
-        .join(validated_plugin_id(plugin_id)?))
+        .join("plugin-state")
+        .join(plugin.plugin_key().fs_id()))
 }
 
-/// Default host budget for each of `plugins/<id>/data` and `plugins/<id>/tmp`.
+/// Default host budget for each of `plugin-state/<fs_id>/data` and `…/tmp`.
 ///
 /// Checked at jail plan (spawn/reload) so a guest whose `data`/`tmp` already
 /// exceeds the budget cannot start. Operators may raise or lower this per plugin
@@ -218,9 +218,9 @@ impl GuestJail {
         plugin: &DiscoveredPlugin,
         spawn: &SpawnPlan,
     ) -> Result<Self> {
-        let id = &plugin.manifest.id;
-        let data = plugin_data_dir(config, id)?;
-        let scratch = plugin_scratch_dir(config, id)?;
+        let data = plugin_data_dir(config, plugin)?;
+        let scratch = plugin_scratch_dir(config, plugin)?;
+        let id = plugin.alias();
 
         for dir in [&data, &scratch] {
             std::fs::create_dir_all(dir).map_err(|err| {
@@ -229,15 +229,12 @@ impl GuestJail {
         }
         // Availability: refuse spawn/reload when state already exceeds the host
         // budget (runaway tmp from a previous session).
-        let grant = crate::consent::spawn_grant(&config.paths().files_dir, &plugin.manifest).ok();
+        let grant = crate::consent::spawn_grant(&config.paths().files_dir, plugin).ok();
         let disk_budget = crate::consent::effective_disk_budget_bytes(grant.as_ref());
         ensure_plugin_state_within_budget_limit(id, &data, &scratch, disk_budget)?;
         // Fail closed while planning: a missing/unwritable local output root
         // must not become a late, opaque guest IO failure after jail start.
-        if plugin.manifest.has_entrypoint(crate::Entrypoint::Storage)
-            && plugin.manifest.id == "local"
-            && config.output.local.enabled
-        {
+        if is_platform_local_storage(plugin) && config.output.local.enabled {
             let root = resolved_local_output_root(config);
             std::fs::create_dir_all(&root).map_err(|err| {
                 PluginError::message(format!(
@@ -392,10 +389,7 @@ fn build_spec_with_grant(
     let mut writes = vec![data.to_path_buf(), scratch.to_path_buf()];
     // Local output writes under `[output.local].root`; grant only that tree.
     // Require the `storage` entrypoint so a non-output plugin cannot claim id "local".
-    if plugin.manifest.has_entrypoint(crate::Entrypoint::Storage)
-        && plugin.manifest.id == "local"
-        && config.output.local.enabled
-    {
+    if is_platform_local_storage(plugin) && config.output.local.enabled {
         // Directory creation happens in [`GuestJail::plan`] (hard error).
         writes.push(resolved_local_output_root(config));
     }
@@ -563,12 +557,25 @@ fn guest_spec_resource_limits(
     }
 }
 
-/// True when this guest is the `sqlite` database plugin and may be granted `library.db` sidecars.
-fn is_sqlite_database_plugin(plugin: &DiscoveredPlugin) -> bool {
+/// True when this guest is the verified Bookclerk platform SQLite adapter.
+pub(crate) fn is_sqlite_database_plugin(plugin: &DiscoveredPlugin) -> bool {
     plugin
         .manifest
         .has_entrypoint(crate::Entrypoint::DatabaseAdapter)
-        && plugin.manifest.id.eq_ignore_ascii_case("sqlite")
+        && is_trusted_platform_plugin(plugin, "sqlite")
+}
+
+/// True when this guest is the verified Bookclerk platform local storage plugin.
+fn is_platform_local_storage(plugin: &DiscoveredPlugin) -> bool {
+    plugin.manifest.has_entrypoint(crate::Entrypoint::Storage)
+        && is_trusted_platform_plugin(plugin, "local")
+}
+
+/// Platform extra jail grants require host-stamped provenance, not a bare id.
+fn is_trusted_platform_plugin(plugin: &DiscoveredPlugin, expected_alias: &str) -> bool {
+    plugin.identity.provenance.grants_platform_defaults()
+        && plugin.alias() == expected_alias
+        && bookclerk_plugin_catalog::is_platform_plugin_key(plugin.plugin_key())
 }
 
 /// `library.db` plus the journal sidecars SQLite opens beside it.
@@ -694,15 +701,6 @@ fn resolved_local_output_root(config: &Config) -> PathBuf {
     }
 }
 
-/// Accepted plugin ids are used as path segments with no rewriting.
-///
-/// Invalid ids are rejected — lossy mapping (e.g. `/` → `_`) is forbidden so
-/// distinct raw ids cannot collide after sanitization.
-fn validated_plugin_id(id: &str) -> Result<&str> {
-    crate::registry::validate_plugin_id(id)?;
-    Ok(id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,7 +730,7 @@ mod tests {
             JailNetworkNeed::Outbound => ("mode = \"outbound\"", ""),
             JailNetworkNeed::Listen => ("mode = \"outbound\"", "[oauth]\n"),
         };
-        let manifest = crate::PluginManifest::parse(&format!(
+        let toml = format!(
             r#"
 api_version = 3
 id = "{id}"
@@ -746,17 +744,33 @@ entrypoints = ["{entrypoint}"]
 
 {oauth_toml}
 "#
-        ))
-        .expect("test manifest");
-        DiscoveredPlugin {
-            manifest,
-            root: root.to_path_buf(),
-            command,
-        }
+        );
+        std::fs::write(root.join("plugin.toml"), &toml).expect("write plugin.toml");
+        let manifest = crate::PluginManifest::parse(&toml).expect("test manifest");
+        DiscoveredPlugin::try_new(manifest, root.to_path_buf(), command, None)
+            .expect("test plugin tree must evaluate")
     }
 
-    fn sqlite_plugin_at(root: &Path) -> DiscoveredPlugin {
-        plugin_with_entrypoint(root, "sqlite", JailNetworkNeed::None, "databaseAdapter")
+    fn sqlite_plugin_at(files: &Path) -> DiscoveredPlugin {
+        let key = bookclerk_plugin_catalog::PluginKey::platform(
+            "bookclerk-plugin-database-sqlite",
+            "sqlite",
+        )
+        .unwrap();
+        let root = files.join("plugins").join(key.fs_id());
+        std::fs::create_dir_all(&root).expect("platform plugin dir");
+        let plugin =
+            plugin_with_entrypoint(&root, "sqlite", JailNetworkNeed::None, "databaseAdapter");
+        bookclerk_plugin_catalog::stamp_platform_receipt(
+            &plugin.root,
+            files,
+            "bookclerk-plugin-database-sqlite",
+            &plugin.manifest,
+            "0.0.0",
+        )
+        .expect("stamp platform sqlite");
+        DiscoveredPlugin::try_new(plugin.manifest, plugin.root, plugin.command, Some(files))
+            .expect("stamped platform sqlite")
     }
 
     /// Diagnostic-transport plan: the jail execs the native command itself.
@@ -810,8 +824,8 @@ entrypoints = ["{entrypoint}"]
             &plugin,
             &direct(&plugin),
             &config,
-            &plugin_data_dir(&config, "libro").unwrap(),
-            &plugin_scratch_dir(&config, "libro").unwrap(),
+            &plugin_data_dir(&config, &plugin).unwrap(),
+            &plugin_scratch_dir(&config, &plugin).unwrap(),
             Vec::new(),
             Enforcement::Required,
             None,
@@ -853,17 +867,16 @@ entrypoints = ["{entrypoint}"]
     #[test]
     fn sqlite_guest_gets_library_db_files_but_not_secrets() {
         let files = tempfile::tempdir().expect("tempdir");
-        let install = tempfile::tempdir().expect("tempdir");
         let config = config_at(files.path());
-        let plugin = sqlite_plugin_at(install.path());
+        let plugin = sqlite_plugin_at(files.path());
         ensure_sqlite_library_files(&config).expect("touch sqlite files");
 
         let spec = build_spec(
             &plugin,
             &direct(&plugin),
             &config,
-            &plugin_data_dir(&config, "sqlite").unwrap(),
-            &plugin_scratch_dir(&config, "sqlite").unwrap(),
+            &plugin_data_dir(&config, &plugin).unwrap(),
+            &plugin_scratch_dir(&config, &plugin).unwrap(),
             Vec::new(),
             Enforcement::Required,
             None,
@@ -895,12 +908,47 @@ entrypoints = ["{entrypoint}"]
     }
 
     #[test]
-    fn planning_sqlite_precreates_library_sidecars() {
+    fn fake_sqlite_alias_does_not_get_library_db_grants() {
         let files = tempfile::tempdir().expect("tempdir");
         let install = tempfile::tempdir().expect("tempdir");
+        let config = config_at(files.path());
+        let plugin = plugin_with_entrypoint(
+            install.path(),
+            "sqlite",
+            JailNetworkNeed::None,
+            "databaseAdapter",
+        );
+        ensure_sqlite_library_files(&config).expect("touch sqlite files");
+
+        let spec = build_spec(
+            &plugin,
+            &direct(&plugin),
+            &config,
+            &plugin_data_dir(&config, &plugin).unwrap(),
+            &plugin_scratch_dir(&config, &plugin).unwrap(),
+            Vec::new(),
+            Enforcement::Required,
+            None,
+        );
+        for path in sqlite_library_paths(&config) {
+            assert!(
+                !spec.writes.contains(&path),
+                "untrusted sqlite alias must not receive {}",
+                path.display()
+            );
+        }
+        assert_eq!(
+            plugin.identity.provenance,
+            bookclerk_plugin_catalog::PluginProvenance::LocalDevelopment
+        );
+    }
+
+    #[test]
+    fn planning_sqlite_precreates_library_sidecars() {
+        let files = tempfile::tempdir().expect("tempdir");
         let mut config = config_at(files.path());
         config.plugins.isolation = Isolation::Off;
-        let plugin = sqlite_plugin_at(install.path());
+        let plugin = sqlite_plugin_at(files.path());
 
         let _jail = GuestJail::plan(&config, &plugin, &direct(&plugin)).expect("plan");
         for path in sqlite_library_paths(&config) {
@@ -920,8 +968,8 @@ entrypoints = ["{entrypoint}"]
             &plugin,
             &direct(&plugin),
             &config,
-            &plugin_data_dir(&config, "libro").unwrap(),
-            &plugin_scratch_dir(&config, "libro").unwrap(),
+            &plugin_data_dir(&config, &plugin).unwrap(),
+            &plugin_scratch_dir(&config, &plugin).unwrap(),
             Vec::new(),
             Enforcement::Required,
             None,
@@ -948,8 +996,8 @@ entrypoints = ["{entrypoint}"]
             &plugin,
             &plan,
             &config,
-            &plugin_data_dir(&config, "sqlite").unwrap(),
-            &plugin_scratch_dir(&config, "sqlite").unwrap(),
+            &plugin_data_dir(&config, &plugin).unwrap(),
+            &plugin_scratch_dir(&config, &plugin).unwrap(),
             Vec::new(),
             Enforcement::Required,
             None,
@@ -981,11 +1029,18 @@ entrypoints = ["{entrypoint}"]
     #[test]
     fn one_guest_cannot_reach_another_guests_data() {
         let files = tempfile::tempdir().expect("tempdir");
+        let a_install = tempfile::tempdir().expect("tempdir");
+        let b_install = tempfile::tempdir().expect("tempdir");
         let config = config_at(files.path());
-        let mine = plugin_data_dir(&config, "libro").unwrap();
-        let theirs = plugin_data_dir(&config, "audible").unwrap();
+        let mine_plugin = plugin_at(a_install.path(), "libro", JailNetworkNeed::Outbound);
+        let theirs_plugin = plugin_at(b_install.path(), "audible", JailNetworkNeed::Outbound);
+        let mine = plugin_data_dir(&config, &mine_plugin).unwrap();
+        let theirs = plugin_data_dir(&config, &theirs_plugin).unwrap();
+        assert_ne!(mine, theirs);
         assert!(!theirs.starts_with(&mine));
         assert!(!mine.starts_with(&theirs));
+        assert!(mine.starts_with(files.path().join("plugin-state")));
+        assert!(theirs.starts_with(files.path().join("plugin-state")));
     }
 
     #[test]
@@ -1005,8 +1060,8 @@ entrypoints = ["{entrypoint}"]
                 &plugin,
                 &direct(&plugin),
                 &config,
-                &plugin_data_dir(&config, "xx").unwrap(),
-                &plugin_scratch_dir(&config, "xx").unwrap(),
+                &plugin_data_dir(&config, &plugin).unwrap(),
+                &plugin_scratch_dir(&config, &plugin).unwrap(),
                 Vec::new(),
                 Enforcement::Required,
                 None,
@@ -1027,8 +1082,8 @@ entrypoints = ["{entrypoint}"]
             &workerd,
             &workerd_plan,
             &config,
-            &plugin_data_dir(&config, "echo").unwrap(),
-            &plugin_scratch_dir(&config, "echo").unwrap(),
+            &plugin_data_dir(&config, &workerd).unwrap(),
+            &plugin_scratch_dir(&config, &workerd).unwrap(),
             Vec::new(),
             Enforcement::Required,
             None,
@@ -1038,6 +1093,7 @@ entrypoints = ["{entrypoint}"]
         // Operator `deny` must not strip the loopback RPC bind; isolate egress
         // still honours the grant via WORKERD_GRANT_NETWORK_MODE.
         let deny = PluginGrant {
+            plugin_key: String::new(),
             plugin_id: "echo".into(),
             entrypoints: Default::default(),
             producers: Default::default(),
@@ -1057,8 +1113,8 @@ entrypoints = ["{entrypoint}"]
             &workerd,
             &workerd_plan,
             &config,
-            &plugin_data_dir(&config, "echo").unwrap(),
-            &plugin_scratch_dir(&config, "echo").unwrap(),
+            &plugin_data_dir(&config, &workerd).unwrap(),
+            &plugin_scratch_dir(&config, &workerd).unwrap(),
             Vec::new(),
             Enforcement::Required,
             None,
@@ -1073,12 +1129,13 @@ entrypoints = ["{entrypoint}"]
             &native_listen,
             &direct(&native_listen),
             &config,
-            &plugin_data_dir(&config, "oauth").unwrap(),
-            &plugin_scratch_dir(&config, "oauth").unwrap(),
+            &plugin_data_dir(&config, &native_listen).unwrap(),
+            &plugin_scratch_dir(&config, &native_listen).unwrap(),
             Vec::new(),
             Enforcement::Required,
             None,
             Some(&PluginGrant {
+                plugin_key: String::new(),
                 plugin_id: "oauth".into(),
                 entrypoints: Default::default(),
                 producers: Default::default(),
@@ -1111,8 +1168,8 @@ entrypoints = ["{entrypoint}"]
             &native,
             &direct(&native),
             &config,
-            &plugin_data_dir(&config, "native").unwrap(),
-            &plugin_scratch_dir(&config, "native").unwrap(),
+            &plugin_data_dir(&config, &native).unwrap(),
+            &plugin_scratch_dir(&config, &native).unwrap(),
             vec![],
             Enforcement::Required,
             None,
@@ -1129,8 +1186,8 @@ entrypoints = ["{entrypoint}"]
             &native,
             &fronted(&native, helpers.path()),
             &config,
-            &plugin_data_dir(&config, "native").unwrap(),
-            &plugin_scratch_dir(&config, "native").unwrap(),
+            &plugin_data_dir(&config, &native).unwrap(),
+            &plugin_scratch_dir(&config, &native).unwrap(),
             vec![],
             Enforcement::Required,
             None,
@@ -1152,8 +1209,8 @@ entrypoints = ["{entrypoint}"]
             &native,
             &direct(&native),
             &config,
-            &plugin_data_dir(&config, "native").unwrap(),
-            &plugin_scratch_dir(&config, "native").unwrap(),
+            &plugin_data_dir(&config, &native).unwrap(),
+            &plugin_scratch_dir(&config, &native).unwrap(),
             vec![],
             Enforcement::Required,
             None,
@@ -1167,12 +1224,13 @@ entrypoints = ["{entrypoint}"]
             &native,
             &direct(&native),
             &config,
-            &plugin_data_dir(&config, "native").unwrap(),
-            &plugin_scratch_dir(&config, "native").unwrap(),
+            &plugin_data_dir(&config, &native).unwrap(),
+            &plugin_scratch_dir(&config, &native).unwrap(),
             vec![],
             Enforcement::Required,
             None,
             Some(&PluginGrant {
+                plugin_key: String::new(),
                 plugin_id: "native".into(),
                 entrypoints: Default::default(),
                 producers: Default::default(),
@@ -1207,8 +1265,8 @@ entrypoints = ["{entrypoint}"]
             &workerd,
             &workerd_plan,
             &config,
-            &plugin_data_dir(&config, "echo").unwrap(),
-            &plugin_scratch_dir(&config, "echo").unwrap(),
+            &plugin_data_dir(&config, &workerd).unwrap(),
+            &plugin_scratch_dir(&config, &workerd).unwrap(),
             vec![],
             Enforcement::Required,
             None,
@@ -1226,8 +1284,8 @@ entrypoints = ["{entrypoint}"]
             &workerd,
             &workerd_plan,
             &config_ceil,
-            &plugin_data_dir(&config_ceil, "echo").unwrap(),
-            &plugin_scratch_dir(&config_ceil, "echo").unwrap(),
+            &plugin_data_dir(&config_ceil, &workerd).unwrap(),
+            &plugin_scratch_dir(&config_ceil, &workerd).unwrap(),
             vec![],
             Enforcement::Required,
             None,
@@ -1250,12 +1308,13 @@ entrypoints = ["{entrypoint}"]
             &native,
             &direct(&native),
             &config,
-            &plugin_data_dir(&config, "native").unwrap(),
-            &plugin_scratch_dir(&config, "native").unwrap(),
+            &plugin_data_dir(&config, &native).unwrap(),
+            &plugin_scratch_dir(&config, &native).unwrap(),
             vec![],
             Enforcement::Required,
             None,
             Some(&PluginGrant {
+                plugin_key: String::new(),
                 plugin_id: "native".into(),
                 entrypoints: Default::default(),
                 producers: Default::default(),
@@ -1275,23 +1334,30 @@ entrypoints = ["{entrypoint}"]
         assert_eq!(spec.cpu_rate_percent, Some(want));
     }
 
-    /// Hostile / non-grammar ids are rejected (no lossy rewrite). Path
-    /// containment for valid ids remains: state lives under `plugins/<id>/`.
+    /// Hostile / non-grammar ids are rejected (no lossy rewrite). State for a
+    /// valid plugin lives under `plugin-state/<fs_id>/`, not the display alias.
     #[test]
     fn invalid_plugin_ids_are_rejected_not_rewritten() {
-        let files = tempfile::tempdir().expect("tempdir");
-        let config = config_at(files.path());
         for hostile in ["../../etc", "..", ".", "a/b", "/absolute", "a-b", "a__b"] {
-            let err = plugin_data_dir(&config, hostile).expect_err("must reject");
+            let err = bookclerk_plugin_catalog::PluginKey::from_install_path(
+                Path::new("/tmp/x"),
+                hostile,
+            )
+            .expect_err("must reject");
             assert!(
-                err.to_string().contains("plugin id"),
+                err.to_string().contains("plugin id") || err.to_string().contains("invalid"),
                 "id {hostile:?} got: {err}"
             );
         }
-        // Valid id is identity under plugins/.
-        let data = plugin_data_dir(&config, "echo").unwrap();
-        assert!(data.starts_with(files.path().join("plugins").join("echo")));
+        let files = tempfile::tempdir().expect("tempdir");
+        let install = tempfile::tempdir().expect("tempdir");
+        let config = config_at(files.path());
+        let plugin = plugin_at(install.path(), "echo", JailNetworkNeed::None);
+        let data = plugin_data_dir(&config, &plugin).unwrap();
+        assert!(data.starts_with(files.path().join("plugin-state")));
+        assert!(data.ends_with("data"));
         assert!(!data.to_string_lossy().contains(".."));
+        assert!(!data.to_string_lossy().contains("echo"));
     }
 
     /// The download cache root is never granted; fetch scratch is plugin `tmp`.
@@ -1305,8 +1371,8 @@ entrypoints = ["{entrypoint}"]
             &plugin,
             &direct(&plugin),
             &config,
-            &plugin_data_dir(&config, "libro").unwrap(),
-            &plugin_scratch_dir(&config, "libro").unwrap(),
+            &plugin_data_dir(&config, &plugin).unwrap(),
+            &plugin_scratch_dir(&config, &plugin).unwrap(),
             Vec::new(),
             Enforcement::Required,
             None,
@@ -1394,7 +1460,7 @@ entrypoints = ["{entrypoint}"]
         config.plugins.isolation = Isolation::Off;
         let plugin = plugin_at(install.path(), "libro", JailNetworkNeed::Outbound);
 
-        let data = plugin_data_dir(&config, "libro").unwrap();
+        let data = plugin_data_dir(&config, &plugin).unwrap();
         std::fs::create_dir_all(&data).unwrap();
         // Grow past the production 512 MiB ceiling with a sparse-ish write that
         // still counts via `metadata().len()` on a regular file.

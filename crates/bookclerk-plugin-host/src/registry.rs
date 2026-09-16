@@ -36,7 +36,7 @@ pub fn family_keyword(family: PluginFamily) -> &'static str {
 pub struct PluginCrateName {
     /// Plugin family encoded in the crates.io name.
     pub family: PluginFamily,
-    /// Plugin id (`[a-z0-9_]{2,32}`), globally unique across kinds.
+    /// Plugin id (`[a-z0-9_]{2,32}`), unique across kinds in one host namespace.
     pub id: String,
 }
 
@@ -86,7 +86,7 @@ impl fmt::Display for PluginCrateName {
 /// Validate plugin id segment used in crate names and `plugin.toml`.
 ///
 /// Delegates to [`bookclerk_plugin_manifest::validate_plugin_id`] (strict
-/// `[a-z0-9_]{2,32}` grammar; globally unique across kinds).
+/// `[a-z0-9_]{2,32}` grammar; unique across kinds in one host plugin namespace).
 ///
 /// # Errors
 ///
@@ -108,7 +108,7 @@ pub struct BookclerkPackageMetadata {
     pub api_version: u32,
     /// Plugin family encoded in the crates.io name.
     pub family: PluginFamily,
-    /// Plugin id (`[a-z0-9_]{2,32}`), globally unique across kinds.
+    /// Plugin id (`[a-z0-9_]{2,32}`), unique across kinds in one host namespace.
     pub id: String,
     /// Optional human-readable name for catalog UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]

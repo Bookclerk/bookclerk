@@ -179,16 +179,12 @@ impl Fixture {
             .find(|found| found.manifest.id == "probe")
             .expect("probe");
         let mut grants = PluginGrantStore::default();
-        grants.upsert(consent_request(&plugin.manifest));
+        grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
         grants
             .save(&config.paths().files_dir)
             .expect("write plugin-grants.json");
 
         Self { files, config }
-    }
-
-    fn paths(&self) -> Paths {
-        Paths::from_files_dir(self.files.path().to_path_buf())
     }
 
     fn plugin(&self) -> DiscoveredPlugin {
@@ -209,7 +205,7 @@ impl Fixture {
             spawn_direct(&plugin, &self.config),
         )
         .await;
-        let report = plugin_data_dir(&self.config, "probe")
+        let report = plugin_data_dir(&self.config, &plugin)
             .expect("valid plugin id")
             .join("probe-report");
         let text = std::fs::read_to_string(&report)
@@ -301,10 +297,11 @@ async fn a_jailed_guest_reaches_its_own_directories_and_nothing_else() {
 
     // The guest's own directories are where the host said they were, so an
     // operator can find (and back up, or delete) one plugin's state.
-    let paths = fixture.paths();
-    let state = paths.files_dir.join("plugins").join("probe");
-    assert!(state.join("data").join("state").is_file());
-    assert!(state.join("tmp").join("scratch").is_file());
+    let plugin = fixture.plugin();
+    let data = plugin_data_dir(&fixture.config, &plugin).expect("plugin data dir");
+    let scratch = data.parent().expect("state root").join("tmp");
+    assert!(data.join("state").is_file(), "{}", data.display());
+    assert!(scratch.join("scratch").is_file(), "{}", scratch.display());
 }
 
 /// `required` must refuse at the point a guest would start, not merely warn.
@@ -321,7 +318,7 @@ async fn a_guest_that_cannot_be_jailed_is_not_spawned() {
     };
     assert!(message.contains("refusing to run plugin"), "got: {message}");
     assert!(
-        !plugin_data_dir(&config, "probe")
+        !plugin_data_dir(&config, &fixture.plugin())
             .expect("valid plugin id")
             .join("probe-report")
             .exists(),
@@ -368,7 +365,7 @@ async fn spawn_keeps_stored_grant_when_manifest_widens() {
     .expect("widen plugin.toml");
 
     let plugin = fixture.plugin();
-    let grant = require_grant(fixture.config.paths().files_dir.as_path(), &plugin.manifest)
+    let grant = require_grant(fixture.config.paths().files_dir.as_path(), &plugin)
         .expect("stored grant still covers a widened manifest");
     assert!(
         !grant_has_binding(&grant, "secrets"),

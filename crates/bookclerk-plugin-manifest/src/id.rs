@@ -1,8 +1,10 @@
-//! Plugin id grammar shared by manifest parse, host registry, and SDKs.
+//! Display-alias grammar shared by manifest parse, host registry, and SDKs.
 //!
-//! Ids are globally unique across plugin kinds. The grammar is **non-lossy**:
+//! The `id` is a presentation alias unique within one host plugin namespace
+//! (`$BOOKCLERK_FILES_DIR`). It is not a durable security identity — that is the
+//! provenance-qualified PluginKey. The grammar is **non-lossy**:
 //! characters that would need rewriting (for example `/` → `_`) are rejected
-//! instead of sanitized, so `a/b` and `a_b` cannot collide in the registry.
+//! instead of sanitized, so `a/b` and `a_b` cannot collide as aliases.
 
 use crate::error::{Error, Result};
 

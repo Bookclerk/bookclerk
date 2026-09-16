@@ -52,7 +52,7 @@ impl fmt::Display for PluginKind {
 pub struct RuntimeIdentity {
     /// Destination backend kind (`local`, `s3`, …).
     pub kind: PluginKind,
-    /// Plugin id (`[a-z0-9_]{2,32}`), globally unique across kinds.
+    /// Plugin alias (`[a-z0-9_]{2,32}`), unique within one host plugin namespace.
     pub id: String,
 }
 

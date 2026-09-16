@@ -41,6 +41,7 @@ mod discover;
 mod error;
 mod event_publisher;
 mod host;
+mod install_preflight;
 mod jail;
 mod manifest;
 mod registry;
@@ -64,12 +65,12 @@ pub use builtins::{
     load_integrations, load_sources, register_builtin_integrations, register_builtin_sources,
 };
 pub use consent::{
-    active_processes_for, consent_request, consent_summary, cores_to_percent,
-    database_binding_name, effective_cpu_cores, effective_cpu_rate_percent,
+    active_processes_for, consent_request, consent_request_alias, consent_summary,
+    cores_to_percent, database_binding_name, effective_cpu_cores, effective_cpu_rate_percent,
     effective_disk_budget_bytes, effective_disk_mib, effective_extra_processes, effective_grant,
-    effective_memory_mib, format_cpu_cores, grant_covers, grant_has_binding, grant_within_ceiling,
-    granted_database_bindings, host_cpu_cores_max, host_cpu_rate_max, host_logical_cpus,
-    inject_workerd_grant_env, is_platform_plugin_id, jail_process_overhead, network_compatible,
+    effective_memory_mib, format_cpu_cores, grant_covers, grant_has_binding, grant_revision,
+    grant_within_ceiling, granted_database_bindings, host_cpu_cores_max, host_cpu_rate_max,
+    host_logical_cpus, inject_workerd_grant_env, jail_process_overhead, network_compatible,
     percent_to_cores, require_binding, require_grant, spawn_config_for_grant, spawn_grant,
     validate_approved_grant, validate_described_capabilities, PluginGrant, PluginGrantStore,
     GRANTS_FILE, KNOWN_HOST_BINDINGS, PLUGIN_JAIL_ACTIVE_PROCESSES_MAX,
@@ -82,7 +83,8 @@ pub use consent::{
 pub use crates_io::search_crates_io;
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{
-    discover_plugins, plugin_search_dirs, settings_table, settings_table_for, DiscoveredPlugin,
+    discover_plugins, plugin_search_dirs, resolve_plugin_ref, settings_table, settings_table_for,
+    DiscoveredPlugin,
 };
 pub use error::{PluginError, Result};
 pub use event_publisher::{EventOutbox, OutboxEventPublisher};
@@ -92,6 +94,10 @@ pub use host::{
     load_external_sources, migrate_database_plugin, migrate_library_schema, open_library_store,
     open_library_store_for_plugin, restore_plugin_backup_units, DatabaseRegistry,
     DestinationRegistry, ExternalDatabase, ExternalIntegration, ExternalSource,
+};
+pub use install_preflight::{
+    configured_alias_occupants, install_from_manifest_with_configured_aliases,
+    install_local_archive_with_configured_aliases, reject_configured_alias_collision,
 };
 pub use jail::plugin_data_dir;
 pub use manifest::{

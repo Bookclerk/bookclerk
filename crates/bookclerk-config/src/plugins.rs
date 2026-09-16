@@ -207,10 +207,11 @@ pub struct PluginsConfig {
     /// Search order is list order; default when empty is crates.io only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub registries: Vec<PluginRegistryEntry>,
-    /// When true, unsigned community plugins may be installed without
-    /// `--allow-unsigned` (digests are still required).
+    /// When true, community packages without independent publisher authenticity
+    /// may be installed without `--allow-unverified-publisher` (digests are still
+    /// required). Bookclerk does not verify publisher signatures.
     #[serde(default)]
-    pub allow_unsigned: bool,
+    pub allow_unverified_publisher: bool,
 }
 
 impl PluginsJailConfig {
@@ -261,9 +262,9 @@ impl PluginsConfig {
                 self.jail_bin = Some(std::path::PathBuf::from(trimmed));
             }
         }
-        if let Ok(value) = std::env::var("BOOKCLERK_PLUGIN_ALLOW_UNSIGNED") {
+        if let Ok(value) = std::env::var("BOOKCLERK_PLUGIN_ALLOW_UNVERIFIED_PUBLISHER") {
             if let Some(b) = parse_bool_loose(&value) {
-                self.allow_unsigned = b;
+                self.allow_unverified_publisher = b;
             }
         }
         if let Ok(value) = std::env::var("BOOKCLERK_PLUGIN_JAIL_MEMORY_MIB") {

@@ -1,4 +1,8 @@
 //! Installed-plugin receipt / lock record.
+//!
+//! Digests on this record prove: the installed bytes match the artifact recorded
+//! for this provenance-qualified package. They do **not** prove publisher
+//! identity. There is no publisher PKI in this receipt.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -6,8 +10,11 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use bookclerk_plugin_manifest::PluginManifest;
+
 use crate::coordinate::PackageCoordinate;
 use crate::error::{CatalogError, Result};
+use crate::identity::{PluginKey, PluginProvenance};
 use crate::kind::RuntimeIdentity;
 use crate::manifest::SandboxRequest;
 
@@ -21,6 +28,10 @@ pub const RECEIPT_BACKUP: &str = "receipt.json.bak";
 pub struct InstallReceipt {
     /// DTO schema version for CLI/UI JSON compatibility.
     pub schema_version: u32,
+    /// Provenance-qualified logical plugin identity (no version, no hash).
+    pub plugin_key: String,
+    /// Host-evaluated provenance at install time (re-checked at discovery).
+    pub provenance: PluginProvenance,
     /// Fully qualified package coordinate when version is known.
     pub coordinate: PackageCoordinate,
     /// Resolved or candidate package version string.
@@ -32,8 +43,12 @@ pub struct InstallReceipt {
     pub artifact_url: String,
     /// Host target triple used to select release artifacts.
     pub target: String,
-    /// Lowercase hex SHA-256 of the downloadable archive bytes.
+    /// Lowercase hex SHA-256 of the downloadable archive bytes (install-time).
     pub archive_sha256: String,
+    /// SHA-256 of the installed `plugin.toml` bytes.
+    pub manifest_sha256: String,
+    /// Deterministic Merkle-style root over immutable packaged files.
+    pub payload_root_sha256: String,
     /// Optional SHA-256 of the extracted executable bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executable_sha256: Option<String>,
@@ -52,17 +67,11 @@ pub struct InstallReceipt {
     /// Optional update constraint (for example pinned version range).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_constraint: Option<String>,
-    /// Publisher signing key id recorded when the install was verified.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publisher_key_id: Option<String>,
-    /// When true, allow packages without publisher signatures (digests still required).
-    #[serde(default)]
-    pub allow_unsigned: bool,
 }
 
 impl InstallReceipt {
     /// Receipt schema version for forward-compatible reads.
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;
 
     /// Path to receipt inside an installed plugin directory.
     #[must_use]
@@ -70,16 +79,92 @@ impl InstallReceipt {
         plugin_root.join(RECEIPT_FILE)
     }
 
+    /// Parsed [`PluginKey`] from [`Self::plugin_key`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored key is not canonical.
+    pub fn plugin_key(&self) -> Result<PluginKey> {
+        PluginKey::parse(&self.plugin_key)
+    }
+
+    /// Host-stamped receipt for a Bookclerk platform artifact.
+    #[must_use]
+    pub fn platform_bundled(
+        plugin_key: PluginKey,
+        version: &str,
+        manifest: &PluginManifest,
+        manifest_sha256: String,
+        payload_root_sha256: String,
+        product: &str,
+        package_name: &str,
+    ) -> Self {
+        use crate::kind::PluginKind;
+        let family = manifest.primary_family();
+        let kind = match family.as_str() {
+            "source" => PluginKind::Source,
+            "integration" => PluginKind::Integration,
+            "output" => PluginKind::Output,
+            _ => PluginKind::Database,
+        };
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            plugin_key: plugin_key.canonical().to_string(),
+            provenance: PluginProvenance::PlatformBundled,
+            coordinate: PackageCoordinate {
+                source: crate::coordinate::RegistrySource::LocalArchive,
+                name: format!("{product}/{package_name}"),
+                version: version.to_string(),
+            },
+            version: version.to_string(),
+            registry_url: None,
+            artifact_url: format!("platform:{product}/{package_name}"),
+            target: crate::target::host_bookclerk_target().to_string(),
+            archive_sha256: String::new(),
+            manifest_sha256,
+            payload_root_sha256,
+            executable_sha256: None,
+            protocol: crate::manifest::PROTOCOL_WORKERS_RPC.into(),
+            api_version: manifest.api_version,
+            runtime: RuntimeIdentity::new(kind, manifest.id.clone()),
+            requested_sandbox: SandboxRequest {
+                network: match manifest.capabilities.network.mode {
+                    bookclerk_plugin_manifest::NetworkMode::Deny => "deny".into(),
+                    bookclerk_plugin_manifest::NetworkMode::Outbound => "outbound".into(),
+                },
+            },
+            approved_network: match manifest.capabilities.network.mode {
+                bookclerk_plugin_manifest::NetworkMode::Deny => "deny".into(),
+                bookclerk_plugin_manifest::NetworkMode::Outbound => "outbound".into(),
+            },
+            installed_at: Utc::now(),
+            update_constraint: None,
+        }
+    }
+
     /// Load receipt from a plugin install directory.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Returns [`CatalogError::ReceiptNotFound`] when `receipt.json` is absent.
+    /// Any other I/O or JSON failure is returned as an error (fail closed).
     pub fn load(plugin_root: &Path) -> Result<Self> {
         let path = Self::path_in(plugin_root);
-        let text = fs::read_to_string(&path)
-            .map_err(|e| CatalogError::message(format!("read {}: {e}", path.display())))?;
-        Ok(serde_json::from_str(&text)?)
+        match fs::read_to_string(&path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Err(CatalogError::ReceiptNotFound)
+            }
+            Err(err) => Err(CatalogError::message(format!(
+                "read {}: {err}",
+                path.display()
+            ))),
+            Ok(text) => serde_json::from_str(&text).map_err(|err| {
+                CatalogError::message(format!(
+                    "malformed install receipt {}: {err}",
+                    path.display()
+                ))
+            }),
+        }
     }
 
     /// Atomically write receipt (temp + rename).
@@ -111,8 +196,11 @@ mod tests {
     #[test]
     fn receipt_round_trip() {
         let dir = tempfile::tempdir().unwrap();
+        let key = PluginKey::platform("bookclerk-plugin-database-sqlite", "sqlite").unwrap();
         let receipt = InstallReceipt {
             schema_version: InstallReceipt::SCHEMA_VERSION,
+            plugin_key: key.canonical().to_string(),
+            provenance: PluginProvenance::PlatformBundled,
             coordinate: PackageCoordinate {
                 source: RegistrySource::LocalArchive,
                 name: "/tmp/x.tar.gz".into(),
@@ -123,22 +211,23 @@ mod tests {
             artifact_url: "file:///tmp/x.tar.gz".into(),
             target: "linux-x64-gnu".into(),
             archive_sha256: "aa".repeat(32),
+            manifest_sha256: "bb".repeat(32),
+            payload_root_sha256: "cc".repeat(32),
             executable_sha256: None,
             protocol: PROTOCOL_WORKERS_RPC.into(),
-            api_version: 1,
-            runtime: RuntimeIdentity::new(PluginKind::Integration, "echo"),
+            api_version: 3,
+            runtime: RuntimeIdentity::new(PluginKind::Database, "sqlite"),
             requested_sandbox: SandboxRequest {
-                network: "none".into(),
+                network: "deny".into(),
             },
-            approved_network: "none".into(),
+            approved_network: "deny".into(),
             installed_at: Utc::now(),
             update_constraint: None,
-            publisher_key_id: None,
-            allow_unsigned: true,
         };
         receipt.store(dir.path()).unwrap();
         let loaded = InstallReceipt::load(dir.path()).unwrap();
-        assert_eq!(loaded.runtime.id, "echo");
-        assert_eq!(loaded.version, "1.0.0");
+        assert_eq!(loaded.runtime.id, "sqlite");
+        assert_eq!(loaded.plugin_key().unwrap(), key);
+        assert_eq!(loaded.provenance, PluginProvenance::PlatformBundled);
     }
 }

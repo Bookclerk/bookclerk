@@ -59,7 +59,7 @@ pub(crate) async fn spawn_stdio_guest(
     extra_env: &[(&str, std::ffi::OsString)],
 ) -> Result<SpawnedStdio> {
     let id = plugin.manifest.id.clone();
-    let grant = spawn_grant(&config.paths().files_dir, &plugin.manifest)?;
+    let grant = spawn_grant(&config.paths().files_dir, plugin)?;
     let spawn_config = spawn_config_for_grant(&grant, config_table);
     let jail = GuestJail::plan(config, plugin, plan)?;
 

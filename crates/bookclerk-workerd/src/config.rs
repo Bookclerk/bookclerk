@@ -84,7 +84,7 @@ fn plugin_root_prefix(plugin_root: &Path) -> String {
 /// Stable leaf under `$TMPDIR` for one materialization session.
 ///
 /// Unix `sockaddr_un` is about 108 bytes. Guest scratch is already
-/// `$FILES_DIR/plugins/<id>/tmp`, so this leaf must stay short. Eight hex
+/// `$FILES_DIR/plugin-state/<PluginKey fs-id>/tmp`, so this leaf must stay short. Eight hex
 /// chars identify the plugin root; four more are a per-session nonce so
 /// concurrent `materialize` callers of the *same* root cannot clobber
 /// `workerd-config.capnp` or unix sockets.

@@ -398,11 +398,7 @@ mode = "deny"
 "#
         ))
         .expect("test manifest");
-        DiscoveredPlugin {
-            manifest,
-            root: root.to_path_buf(),
-            command,
-        }
+        DiscoveredPlugin::for_test(manifest, root.to_path_buf(), command)
     }
 
     /// Fake front door: empty `bookclerk-workerd` + `workerd` files in `dir`.

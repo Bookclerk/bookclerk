@@ -18,7 +18,8 @@ from crates.io on the operator machine. `bookclerk plugins search` works today;
 
 Platform releases ship hosts + `bookclerk-jail` + `bookclerk-workerd` +
 the pinned Cloudflare `workerd` binary +
-`bookclerk-media-worker` + `plugins/sqlite/` + `plugins/local/` so a fresh
+`bookclerk-media-worker` + platform plugins under `plugins/<plugin-key-fs-id>/`
+(sqlite and local, recorded in `install-ledger.json`) so a fresh
 install works without storefronts or a Rust toolchain. `cargo build-app
 --platform` / `cargo ensure-workerd` fetch that pin into `target/<profile>/`.
 Reference Echo examples are never packaged.

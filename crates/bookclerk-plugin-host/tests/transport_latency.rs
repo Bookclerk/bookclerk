@@ -83,11 +83,8 @@ fn stage_sqlite_guest() -> Option<StagedGuest> {
     let manifest = bookclerk_plugin_manifest::parse(&toml).ok()?;
     Some(StagedGuest {
         files: TempDir::new().ok()?,
-        plugin: DiscoveredPlugin {
-            manifest,
-            root: install.path().to_path_buf(),
-            command: dest_bin,
-        },
+        plugin: DiscoveredPlugin::try_new(manifest, install.path().to_path_buf(), dest_bin, None)
+            .ok()?,
         _install: install,
     })
 }
@@ -106,7 +103,10 @@ fn guest_config(files: &Path) -> Config {
 fn approve(config: &Config, staged: &StagedGuest) {
     let files = &config.paths().files_dir;
     let mut grants = PluginGrantStore::load(files).expect("load grants");
-    grants.upsert(consent_request(&staged.plugin.manifest));
+    grants.upsert(consent_request(
+        &staged.plugin.manifest,
+        staged.plugin.plugin_key(),
+    ));
     grants.save(files).expect("save grants");
 }
 

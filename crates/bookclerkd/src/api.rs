@@ -2797,13 +2797,16 @@ async fn get_plugin_consent(
         .into_iter()
         .find(|p| p.manifest.id == id)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let request = consent_request(&plugin.manifest);
+    let request = consent_request(&plugin.manifest, plugin.plugin_key());
     let summary = consent_summary(&request);
     let store = PluginGrantStore::load(&cfg.paths().files_dir).map_err(|err| {
         tracing::error!(error = %err, "failed to load plugin grants");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    let existing = store.get(&id).cloned();
+    let existing = store
+        .get(plugin.plugin_key().canonical())
+        .or_else(|| store.get(&id))
+        .cloned();
     let covered = existing
         .as_ref()
         .is_some_and(|grant| grant_covers(grant, &request));
@@ -2841,7 +2844,7 @@ async fn post_plugin_consent(
         .into_iter()
         .find(|p| p.manifest.id == id)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let request = consent_request(&plugin.manifest);
+    let request = consent_request(&plugin.manifest, plugin.plugin_key());
     let summary = consent_summary(&request);
     let approved = build_approved_grant(&request, body.grant)?;
     let mut store = PluginGrantStore::load(&cfg.paths().files_dir).map_err(|err| {
@@ -3013,8 +3016,8 @@ async fn patch_settings(
                 tracing::warn!(%plugin_id, "cannot enable undiscovered plugin");
                 return Err(StatusCode::BAD_REQUEST.into_response());
             };
-            if let Err(err) = require_grant(&files_dir, &plugin.manifest) {
-                let request = consent_request(&plugin.manifest);
+            if let Err(err) = require_grant(&files_dir, plugin) {
+                let request = consent_request(&plugin.manifest, plugin.plugin_key());
                 let summary = consent_summary(&request);
                 tracing::warn!(%plugin_id, error = %err, "plugin enable blocked pending consent");
                 return Err(consent_required_response(
@@ -3169,7 +3172,7 @@ async fn migrate_database(
                     tracing::warn!(%to_plugin, "cannot apply migrate to undiscovered database plugin");
                     return Err(StatusCode::BAD_REQUEST);
                 };
-                if let Err(err) = require_grant(&files_dir, &plugin.manifest) {
+                if let Err(err) = require_grant(&files_dir, plugin) {
                     tracing::warn!(
                         plugin = %to_plugin,
                         error = %err,
@@ -5099,6 +5102,7 @@ mod tests {
         use std::collections::BTreeSet;
 
         let baseline = PluginGrant {
+            plugin_key: String::new(),
             plugin_id: "demo".into(),
             entrypoints: BTreeSet::from(["storefront".into()]),
             producers: BTreeSet::new(),

@@ -16,6 +16,8 @@ pub mod grant;
 pub mod granted;
 pub mod invoke;
 pub mod pin;
+#[cfg(unix)]
+pub mod unix_bind;
 
 pub use bridge_http::generate_bridge_token;
 pub use config::{

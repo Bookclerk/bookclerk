@@ -24,6 +24,7 @@ bookclerk-sandbox.workspace = true
 bookclerk-integrations.workspace = true
 bookclerk-library.workspace = true
 bookclerk-plugin-manifest.workspace = true
+bookclerk-plugin-catalog.workspace = true
 bookclerk-plugin-abi = { workspace = true, features = ["host"] }
 bookclerk-plugin-sdk = { workspace = true, features = ["db"] }
 bookclerk-source.workspace = true

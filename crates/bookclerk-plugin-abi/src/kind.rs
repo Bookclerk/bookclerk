@@ -38,7 +38,7 @@ impl std::fmt::Debug for S3CredentialsDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputS3ContextDto {
-    /// Scoped writable directory for this plugin only (`…/plugins/<id>/data`,
+    /// Scoped writable directory for this plugin only (`…/plugin-state/<PluginKey fs-id>/data`,
     /// wire `pluginDataDir`). Empty on the logical ABI (jail layout is
     /// transport-private).
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -67,7 +67,7 @@ pub struct OutputS3ContextDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputLocalContextDto {
-    /// Scoped writable directory for this plugin only (`…/plugins/<id>/data`,
+    /// Scoped writable directory for this plugin only (`…/plugin-state/<PluginKey fs-id>/data`,
     /// wire `pluginDataDir`). Empty on the logical ABI (jail layout is
     /// transport-private).
     #[serde(default, skip_serializing_if = "String::is_empty")]

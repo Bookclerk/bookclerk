@@ -124,7 +124,7 @@ optional), plus `cache/`, `logs/` (reserved; Bookclerk does not rotate log
 files), `search_index/`, and `plugins/` under it. Third-party plugins are discovered from `plugin.toml` under
 `plugins/` (and `BOOKCLERK_PLUGIN_DIRS`); enablement and knobs live in
 `config.toml` (see `docs/plugins.md`). A guest is confined to its install
-directory (read-only), `plugins/<id>/data` (its `HOME`), `plugins/<id>/tmp` (its
+directory (read-only), `plugin-state/<PluginKey fs-id>/data` (its `HOME`), `plugin-state/<PluginKey fs-id>/tmp` (its
 `TMPDIR`), and the download cache root. Network consent uses
 `[capabilities.network]` domains (approve before enable); redirect hops after an
 allowed initial host do not require re-approval.

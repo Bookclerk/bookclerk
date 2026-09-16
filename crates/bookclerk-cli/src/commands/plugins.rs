@@ -4,14 +4,16 @@ use std::path::PathBuf;
 
 use bookclerk_config::{Config, PluginRegistryEntry};
 use bookclerk_plugin_catalog::{
-    federated_search, host_bookclerk_target, CargoAdapter, InstallOptions, InstallReceipt,
-    Installer, NpmAdapter, PackageCoordinate, PypiAdapter, RegistryAdapter, SearchQuery,
-    StaticAdapter, TrustPolicy,
+    federated_search, host_bookclerk_target, CargoAdapter, InstallOptions, InstallOutcome,
+    InstallReceipt, Installer, NpmAdapter, PackageCoordinate, PluginMutationLock, PypiAdapter,
+    RegistryAdapter, SearchQuery, StaticAdapter, TrustPolicy,
 };
 use bookclerk_plugin_host::{
-    consent_request, consent_summary, host_target_triple, require_grant, search_crates_io,
-    CliInvokeParams, CliInvokeResult, CliSchema, DiscoveredPlugin, Entrypoint, PluginFamily,
-    PluginGrantStore, PluginSession, CRATE_NAME_PREFIX, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
+    consent_request, consent_summary, host_target_triple,
+    install_from_manifest_with_configured_aliases, install_local_archive_with_configured_aliases,
+    require_grant, search_crates_io, CliInvokeParams, CliInvokeResult, CliSchema, DiscoveredPlugin,
+    Entrypoint, PluginFamily, PluginGrantStore, PluginSession, CRATE_NAME_PREFIX,
+    HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
 use clap::{Subcommand, ValueEnum};
 use serde::Serialize;
@@ -48,15 +50,15 @@ pub enum PluginsCommand {
         /// Override Bookclerk target (e.g. `linux-x64-gnu`).
         #[arg(long)]
         target: Option<String>,
-        /// Replace an existing install with a different coordinate.
+        /// Replace files for an existing install of the same PluginKey at the same alias.
         #[arg(long)]
         replace: bool,
         /// Approve sandbox/network capability changes on update/replace.
         #[arg(long)]
         approve_capabilities: bool,
-        /// Allow unsigned community plugins (digest still required).
+        /// Allow community packages without independent publisher authenticity (digest still required).
         #[arg(long)]
-        allow_unsigned: bool,
+        allow_unverified_publisher: bool,
         /// Do not download; only resolve and print the plan.
         #[arg(long)]
         dry_run: bool,
@@ -72,8 +74,8 @@ pub enum PluginsCommand {
         #[arg(long)]
         to: Option<String>,
         #[arg(long)]
-        /// Allow unsigned community plugins on this update (digest still required).
-        allow_unsigned: bool,
+        /// Allow community packages without independent publisher authenticity on this update (digest still required).
+        allow_unverified_publisher: bool,
         #[arg(long)]
         /// Approve sandbox/network capability changes without a separate prompt.
         approve_capabilities: bool,
@@ -85,7 +87,7 @@ pub enum PluginsCommand {
     Remove {
         /// Plugin runtime id.
         id: String,
-        /// Also delete data/ and tmp/ state.
+        /// Also delete `$FILES_DIR/plugin-state/<PluginKey>/`.
         #[arg(long)]
         purge_state: bool,
     },
@@ -208,8 +210,12 @@ pub enum RegistryKindArg {
 #[derive(Debug, Serialize)]
 /// One discovered plugin row for `plugins list` JSON/text output.
 struct PluginListItem {
-    /// Runtime plugin id from `plugin.toml`.
+    /// Runtime plugin id from `plugin.toml` (unique within this host plugin namespace).
     id: String,
+    /// Provenance-qualified PluginKey (canonical text).
+    plugin_key: String,
+    /// Host-evaluated provenance (`platform_bundled`, `verified_installed`, …).
+    provenance: String,
     /// Primary handler family (`source`, `integration`, `output`, `database`).
     family: String,
     /// Exported entrypoints declared in `plugin.toml` (`storefront`, `cli`, …).
@@ -238,6 +244,8 @@ pub async fn run(
                 .iter()
                 .map(|p| PluginListItem {
                     id: p.manifest.id.clone(),
+                    plugin_key: p.plugin_key().canonical().to_string(),
+                    provenance: p.identity.provenance.to_string(),
                     family: p.manifest.primary_family().as_str().to_string(),
                     entrypoints: p
                         .manifest
@@ -269,8 +277,10 @@ pub async fn run(
                     }
                     for p in &items {
                         println!(
-                            "{} family={} entrypoints={} enabled={} cli={} command={}",
+                            "{} key={} provenance={} family={} entrypoints={} enabled={} cli={} command={}",
                             p.id,
+                            p.plugin_key,
+                            p.provenance,
                             p.family,
                             p.entrypoints.join(","),
                             p.enabled,
@@ -289,7 +299,7 @@ pub async fn run(
             target,
             replace,
             approve_capabilities,
-            allow_unsigned,
+            allow_unverified_publisher,
             dry_run,
             offline,
         } => {
@@ -301,7 +311,7 @@ pub async fn run(
                 target,
                 replace,
                 approve_capabilities,
-                allow_unsigned,
+                allow_unverified_publisher,
                 dry_run,
                 offline,
                 format,
@@ -311,7 +321,7 @@ pub async fn run(
         PluginsCommand::Update {
             id,
             to,
-            allow_unsigned,
+            allow_unverified_publisher,
             approve_capabilities,
             dry_run,
         } => {
@@ -319,7 +329,7 @@ pub async fn run(
                 config,
                 id,
                 to,
-                allow_unsigned,
+                allow_unverified_publisher,
                 approve_capabilities,
                 dry_run,
                 format,
@@ -562,14 +572,16 @@ async fn run_install(
     target: Option<String>,
     replace: bool,
     approve_capabilities: bool,
-    allow_unsigned: bool,
+    allow_unverified_publisher: bool,
     dry_run: bool,
     offline: bool,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let plugins_root = config.paths().files_dir.join("plugins");
+    let mutation_lock = PluginMutationLock::acquire(&config.paths().files_dir)?;
     let trust = TrustPolicy {
-        allow_unsigned: allow_unsigned || config.plugins.allow_unsigned,
+        allow_unverified_publisher: allow_unverified_publisher
+            || config.plugins.allow_unverified_publisher,
         ..TrustPolicy::default()
     };
     let opts = InstallOptions {
@@ -589,22 +601,37 @@ async fn run_install(
         })?;
         let text = std::fs::read_to_string(manifest_path)?;
         let manifest = bookclerk_plugin_catalog::BookclerkPackageManifest::from_json(&text)?;
-        Installer::install_local_archive(archive, &manifest, &opts)?
+        install_local_archive_with_configured_aliases(
+            config,
+            &mutation_lock,
+            archive,
+            &manifest,
+            &opts,
+        )?
     } else {
         let coord = resolve_coordinate(coordinate)?;
         let manifest = bookclerk_plugin_catalog::fetch_manifest_for_coordinate(&coord, &[])?;
-        Installer::install_from_manifest(&manifest, &coord, &opts)?
+        install_from_manifest_with_configured_aliases(
+            config,
+            &mutation_lock,
+            &manifest,
+            &coord,
+            &opts,
+        )?
     };
 
     // Post-install health when not dry-run.
     // Historical note: `skip_health: true` (install default) means "run health
     // here"; `false` leaves health + commit/rollback to the caller (update).
     if !outcome.dry_run && opts.skip_health {
-        if let Err(err) = health_check_installed(config, &outcome.receipt.runtime.id).await {
-            let _ = Installer::rollback(&outcome);
-            anyhow::bail!("post-install health check failed: {err:#}; install rolled back");
+        if let Err(err) = health_check_installed(config, &outcome.receipt.plugin_key).await {
+            return Err(health_failure_after_rollback(
+                err,
+                Installer::rollback(&outcome),
+                "install rolled back",
+            ));
         }
-        let _ = Installer::commit(&outcome);
+        commit_install_cleanup(&outcome)?;
     }
 
     let payload = json!({
@@ -635,16 +662,22 @@ async fn run_update(
     config: &Config,
     id: Option<String>,
     to: Option<String>,
-    allow_unsigned: bool,
+    allow_unverified_publisher: bool,
     approve_capabilities: bool,
     dry_run: bool,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let plugins_root = config.paths().files_dir.join("plugins");
+    let mutation_lock = PluginMutationLock::acquire(&config.paths().files_dir)?;
     let plugins = bookclerk_plugin_host::discover_plugins(config)?;
-    let targets: Vec<_> = plugins
+    let targets: Vec<_> = match id.as_deref() {
+        Some(want) => vec![bookclerk_plugin_host::resolve_plugin_ref(&plugins, want)
+            .map_err(|err| anyhow::anyhow!("{err}"))?
+            .clone()],
+        None => plugins,
+    };
+    let targets: Vec<_> = targets
         .into_iter()
-        .filter(|p| id.as_ref().is_none_or(|want| want == &p.manifest.id))
         .filter(|p| InstallReceipt::path_in(&p.root).is_file())
         .collect();
     if targets.is_empty() {
@@ -676,27 +709,35 @@ async fn run_update(
             plugins_root: plugins_root.clone(),
             target: Some(receipt.target.clone()),
             dry_run,
-            // Same runtime id from the same coordinate family; replace allows
-            // collision but must not bypass capability approval (see installer).
+            // Same PluginKey at the same alias; replace updates files but cannot
+            // rename aliases or seize a foreign PluginKey's alias.
             replace: true,
             offline: false,
             trust: TrustPolicy {
-                allow_unsigned: allow_unsigned || config.plugins.allow_unsigned,
+                allow_unverified_publisher: allow_unverified_publisher
+                    || config.plugins.allow_unverified_publisher,
                 ..TrustPolicy::default()
             },
             skip_health: false,
             approve_capabilities,
         };
-        let outcome = Installer::install_from_manifest(&manifest, &coord, &opts)?;
+        let outcome = install_from_manifest_with_configured_aliases(
+            config,
+            &mutation_lock,
+            &manifest,
+            &coord,
+            &opts,
+        )?;
         if !outcome.dry_run {
-            if let Err(err) = health_check_installed(config, &plugin.manifest.id).await {
-                let _ = Installer::rollback(&outcome);
-                anyhow::bail!(
-                    "update health check failed for {}: {err:#}; previous version restored",
-                    plugin.manifest.id
-                );
+            if let Err(err) = health_check_installed(config, plugin.plugin_key().canonical()).await
+            {
+                return Err(health_failure_after_rollback(
+                    err,
+                    Installer::rollback(&outcome),
+                    "previous version restored",
+                ));
             }
-            let _ = Installer::commit(&outcome);
+            commit_install_cleanup(&outcome)?;
         }
         results.push(json!({
             "id": plugin.manifest.id,
@@ -722,7 +763,7 @@ async fn run_update(
     })
 }
 
-/// Deletes an installed plugin directory, optionally purging `data/` and `tmp/`.
+/// Deletes an installed plugin directory, optionally purging `plugin-state/`.
 fn run_remove(
     config: &Config,
     id: &str,
@@ -730,7 +771,8 @@ fn run_remove(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let plugins_root = config.paths().files_dir.join("plugins");
-    Installer::remove(&plugins_root, id, purge_state)?;
+    let mutation_lock = PluginMutationLock::acquire(&config.paths().files_dir)?;
+    Installer::remove_with_lock(&mutation_lock, &plugins_root, id, purge_state)?;
     let payload = json!({ "id": id, "purge_state": purge_state });
     emit(format, &payload, || {
         println!(
@@ -747,14 +789,11 @@ async fn run_doctor(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let plugins = bookclerk_plugin_host::discover_plugins(config)?;
-    let targets: Vec<_> = if let Some(id) = id {
-        let p = plugins
-            .into_iter()
-            .find(|p| p.manifest.id == id)
-            .ok_or_else(|| anyhow::anyhow!("plugin `{id}` not discovered"))?;
-        vec![p]
-    } else {
-        plugins
+    let targets: Vec<_> = match id.as_deref() {
+        Some(want) => vec![bookclerk_plugin_host::resolve_plugin_ref(&plugins, want)
+            .map_err(|err| anyhow::anyhow!("{err}"))?
+            .clone()],
+        None => plugins,
     };
     let mut reports = Vec::new();
     for plugin in targets {
@@ -781,11 +820,15 @@ async fn run_doctor(
             }
             Err(_) => lines.push("receipt=missing (manual drop-in)".into()),
         }
-        match health_check_installed(config, &plugin.manifest.id).await {
+        match health_check_installed(config, plugin.plugin_key().canonical()).await {
             Ok(msg) => lines.push(msg),
             Err(err) => lines.push(format!("health=FAIL {err:#}")),
         }
-        reports.push(json!({ "id": plugin.manifest.id, "lines": lines }));
+        reports.push(json!({
+            "id": plugin.manifest.id,
+            "plugin_key": plugin.plugin_key().canonical(),
+            "lines": lines
+        }));
     }
     emit(format, &reports, || {
         for report in &reports {
@@ -1267,7 +1310,7 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
     use std::io::{self, IsTerminal, Write};
 
     let plugin = find_plugin(config, id)?;
-    let grant = consent_request(&plugin.manifest);
+    let grant = consent_request(&plugin.manifest, plugin.plugin_key());
     let summary = consent_summary(&grant);
 
     for line in &summary {
@@ -1324,7 +1367,7 @@ fn set_plugin_enabled(
 ) -> anyhow::Result<()> {
     let plugin = find_plugin(config, id)?;
     if enabled {
-        require_grant(&config.paths().files_dir, &plugin.manifest).map_err(|err| {
+        require_grant(&config.paths().files_dir, &plugin).map_err(|err| {
             anyhow::anyhow!(
                 "{err}\nRun `bookclerk plugins approve {}` first.",
                 plugin.manifest.id
@@ -1404,10 +1447,9 @@ fn matches_plugin_id(manifest_id: &str, active: &str) -> bool {
 /// Discovers plugins and returns the one whose manifest id matches, or errors if missing.
 fn find_plugin(config: &Config, id: &str) -> anyhow::Result<DiscoveredPlugin> {
     let plugins = bookclerk_plugin_host::discover_plugins(config)?;
-    plugins
-        .into_iter()
-        .find(|p| p.manifest.id == id)
-        .ok_or_else(|| anyhow::anyhow!("plugin `{id}` not discovered"))
+    bookclerk_plugin_host::resolve_plugin_ref(&plugins, id)
+        .cloned()
+        .map_err(|err| anyhow::anyhow!("{err}"))
 }
 
 /// Whether `config.toml` currently enables this discovered plugin.
@@ -1432,4 +1474,67 @@ fn is_enabled(config: &Config, plugin: &DiscoveredPlugin) -> bool {
 /// Converts a plugin settings TOML table to JSON, substituting `{}` if serialization fails.
 fn toml_table_to_json(table: &toml::Table) -> serde_json::Value {
     serde_json::to_value(table).unwrap_or_else(|_| json!({}))
+}
+
+/// Combines a failed health check with rollback outcome. Never claims restore
+/// succeeded unless rollback returned `Ok`.
+fn health_failure_after_rollback(
+    health: anyhow::Error,
+    rollback: bookclerk_plugin_catalog::Result<()>,
+    restored_message: &str,
+) -> anyhow::Error {
+    match rollback {
+        Ok(()) => anyhow::anyhow!("health check failed: {health:#}; {restored_message}"),
+        Err(rollback_err) => {
+            anyhow::anyhow!("health check failed: {health:#}; rollback also failed: {rollback_err}")
+        }
+    }
+}
+
+/// Surfaces commit cleanup failure without implying the install itself rolled back.
+fn commit_install_cleanup(outcome: &InstallOutcome) -> anyhow::Result<()> {
+    Installer::commit(outcome).map_err(|err| {
+        anyhow::anyhow!(
+            "plugin installation succeeded but commit cleanup failed: {err:#}; \
+             the new plugin is active, but a previous-version backup may remain under \
+             plugins/.staging"
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::health_failure_after_rollback;
+    use bookclerk_plugin_catalog::CatalogError;
+
+    #[test]
+    fn health_rollback_failure_does_not_claim_restore() {
+        let err = health_failure_after_rollback(
+            anyhow::anyhow!("spawn exploded"),
+            Err(CatalogError::message("ledger restore failed")),
+            "previous version restored",
+        )
+        .to_string();
+        assert!(err.contains("health check failed"), "{err}");
+        assert!(err.contains("spawn exploded"), "{err}");
+        assert!(err.contains("rollback also failed"), "{err}");
+        assert!(err.contains("ledger restore failed"), "{err}");
+        assert!(
+            !err.contains("previous version restored"),
+            "must not claim restore after a failed rollback: {err}"
+        );
+    }
+
+    #[test]
+    fn health_rollback_success_reports_restored() {
+        let err = health_failure_after_rollback(
+            anyhow::anyhow!("health boom"),
+            Ok(()),
+            "previous version restored",
+        )
+        .to_string();
+        assert!(err.contains("health check failed: health boom"), "{err}");
+        assert!(err.contains("previous version restored"), "{err}");
+        assert!(!err.contains("rollback also failed"), "{err}");
+    }
 }

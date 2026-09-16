@@ -107,7 +107,7 @@ fn install_from_static_fixture_registry() {
     let plugins = tmp.path().join("plugins");
     let opts = InstallOptions {
         plugins_root: plugins.clone(),
-        trust: TrustPolicy::allow_unsigned(),
+        trust: TrustPolicy::allow_unverified_publisher(),
         ..Default::default()
     };
     let out = Installer::install_from_manifest(&manifest, &coord, &opts).unwrap();
