@@ -170,7 +170,7 @@ async fn run_token(
                 format,
                 &serde_json::json!({ "token": token, "source": source }),
                 || {
-                    println!("{token}");
+                    crate::format_out::line(&token);
                 },
             )
         }
@@ -203,7 +203,7 @@ async fn run_token(
                     "note": "previous sessions are invalidated after a successful reload",
                 }),
                 || {
-                    println!("{token}");
+                    crate::format_out::line(&token);
                     if reloaded {
                         eprintln!("bookclerk: daemon reloaded with the new operator token");
                     } else if let Some(err) = &reload_error {

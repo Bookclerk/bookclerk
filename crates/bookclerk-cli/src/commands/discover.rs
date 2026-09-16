@@ -236,20 +236,20 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                     })
                     .await?;
                 format_out::emit(format, &row, || {
-                    println!("wishlisted {}", row.uuid);
+                    format_out::line(format!("wishlisted {}", row.uuid));
                 })?;
             }
             WishlistCommand::List => {
                 let rows = library.list_wishlist(None).await?;
                 format_out::emit(format, &rows, || {
                     for r in &rows {
-                        println!(
+                        format_out::line(format!(
                             "{} [{}] {} — {}",
                             r.uuid,
                             r.status.as_str(),
                             r.title,
                             r.authors.as_deref().unwrap_or("?")
-                        );
+                        ));
                     }
                 })?;
             }
@@ -257,7 +257,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                 library
                     .update_title_request_status(&uuid, RequestStatus::Cancelled, None)
                     .await?;
-                println!("removed {uuid} from wishlist");
+                format_out::line(format!("removed {uuid} from wishlist"));
             }
         },
     }

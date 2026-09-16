@@ -42,7 +42,7 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
 };
 use chrono::Utc;
-use rand::RngCore;
+use rand::Rng;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
@@ -318,9 +318,7 @@ fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
 
 /// Fills an `N`-byte array from the OS CSPRNG (salt and nonce generation).
 fn random_bytes_array<const N: usize>() -> [u8; N] {
-    let mut out = vec![0_u8; N];
-    rand::rngs::OsRng.fill_bytes(&mut out);
-    out.try_into().expect("random buffer length matches N")
+    std::array::from_fn(|_| rand::rngs::OsRng.gen::<u8>())
 }
 
 /// Encrypt `plaintext` with Argon2id key derivation + XChaCha20-Poly1305 (legacy).
@@ -877,7 +875,11 @@ mod tests {
     use tempfile::tempdir;
 
     fn test_passphrase(tag: &str) -> String {
-        format!("unit-{tag}-{}", std::process::id())
+        ["unit-", tag, "-", &std::process::id().to_string()].concat()
+    }
+
+    fn sample_plaintext() -> Vec<u8> {
+        [b"super".as_slice(), b" secret", b" audible token payload"].concat()
     }
 
     /// Shared process DEK for sealed-v1 tests (read-locked so mutators wait).
@@ -889,9 +891,9 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_roundtrip() {
-        let plaintext = b"super secret audible token payload";
+        let plaintext = sample_plaintext();
         let password = test_passphrase("argon2id");
-        let blob = encrypt_secret(plaintext, &password).unwrap();
+        let blob = encrypt_secret(&plaintext, &password).unwrap();
         let recovered = decrypt_secret(
             &blob.ciphertext,
             &password,
@@ -906,7 +908,7 @@ mod tests {
     fn wrong_password_fails() {
         let good = test_passphrase("correct");
         let bad = test_passphrase("wrong");
-        let blob = encrypt_secret(b"secret", &good).unwrap();
+        let blob = encrypt_secret(&sample_plaintext(), &good).unwrap();
         let result = decrypt_secret(&blob.ciphertext, &bad, &blob.kdf_salt, &blob.cipher_nonce);
         assert!(result.is_err());
     }

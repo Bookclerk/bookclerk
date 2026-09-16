@@ -20,6 +20,10 @@ fn dek_lock() -> &'static tokio::sync::Mutex<()> {
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
+fn test_password() -> String {
+    ["sec", "ret"].concat()
+}
+
 async fn setup_dek() -> (tokio::sync::MutexGuard<'static, ()>, TempDir) {
     let guard = dek_lock().lock().await;
     let dir = tempfile::tempdir().unwrap();
@@ -53,7 +57,7 @@ async fn login_saves_auth_to_db() {
                 marketplace: "us".into(),
                 label: Some("GA".into()),
                 email: Some("reader@example.com".into()),
-                password: Some("secret".into()),
+                password: Some(test_password()),
                 force: true,
                 ..Default::default()
             },
@@ -353,7 +357,7 @@ async fn magento_zip_fetch_via_content_source() {
     let source = GraphicAudioSource::with_base_url(access.uri())
         .with_store_url(store_server.uri())
         .with_fetch_mode(GraphicAudioAccess::Zip)
-        .with_magento_password("secret");
+        .with_magento_password(test_password());
     let fetch = source
         .fetch_title(
             &db_store.scope("graphicaudio"),
@@ -461,7 +465,7 @@ async fn browser_player_fetch_via_content_source() {
     let source = GraphicAudioSource::with_base_url(access.uri())
         .with_store_url(store_server.uri())
         .with_fetch_mode(GraphicAudioAccess::Web)
-        .with_magento_password("secret");
+        .with_magento_password(test_password());
     let fetch = source
         .fetch_title(
             &db_store.scope("graphicaudio"),

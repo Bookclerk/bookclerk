@@ -5,16 +5,17 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use bookclerk_mp4::boxutil::{
-    find_child, read_box_header, read_fourcc, read_full_box_version_flags, read_u32, read_u64,
-    read_u8, walk_children, BoxHeader, FourCC, DASH, ENCA, FTYP, HDLR, MDAT, MDHD, MDIA, MINF,
-    MOOF, MOOV, MVEX, MVHD, SCHI, SCHM, SENC, SIDX, SINF, STBL, STSD, TENC, TFHD, TRAF, TRAK, TRUN,
+    find_child, read_array, read_box_header, read_exact_vec, read_fourcc,
+    read_full_box_version_flags, read_u32, read_u64, read_u8, walk_children, BoxHeader, FourCC,
+    DASH, ENCA, FTYP, HDLR, MDAT, MDHD, MDIA, MINF, MOOF, MOOV, MVEX, MVHD, SCHI, SCHM, SENC, SIDX,
+    SINF, STBL, STSD, TENC, TFHD, TRAF, TRAK, TRUN,
 };
 use bookclerk_mp4::edit::{find_box_range, find_direct_child, splice_replace};
 use bookclerk_mp4::{
     write_progressive_m4b, Mp4Error, ProgressiveWriteInput, SampleReader, TrimRange,
 };
 
-use crate::drm::crypto::{decrypt_cenc_sample_in_place, expand_cenc_iv, parse_aes128_hex};
+use crate::drm::crypto::{decrypt_cenc_sample_in_place, parse_aes128_hex};
 use crate::drm::error::{DrmError, Result};
 use crate::drm::DecryptOutcome;
 
@@ -513,8 +514,7 @@ fn parse_tenc_default_kid(file: &mut (impl Read + Seek), tenc: &BoxHeader) -> Re
     let _reserved1_or_pattern = read_u8(file)?;
     let _is_protected = read_u8(file)?;
     let _per_sample_iv_size = read_u8(file)?;
-    let mut kid = [0u8; 16];
-    file.read_exact(&mut kid)?;
+    let kid = read_array::<16>(file)?;
     Ok(kid)
 }
 
@@ -736,28 +736,14 @@ fn parse_senc_ivs(
     }
     let mut ivs = Vec::with_capacity(sample_count);
     for _ in 0..sample_count {
-        let mut iv = vec![0u8; iv_size];
-        file.read_exact(&mut iv)?;
-        ivs.push(iv);
+        ivs.push(read_exact_vec(file, iv_size)?);
     }
     Ok(ivs)
 }
 
 /// Expands an 8-byte CENC IV to 16 bytes, or copies a 16-byte IV; other lengths fail.
 fn normalize_cenc_iv(iv: &[u8]) -> Result<[u8; 16]> {
-    match iv.len() {
-        16 => {
-            let mut out = [0u8; 16];
-            out.copy_from_slice(iv);
-            Ok(out)
-        }
-        8 => {
-            let mut iv8 = [0u8; 8];
-            iv8.copy_from_slice(iv);
-            Ok(expand_cenc_iv(&iv8))
-        }
-        n => Err(DrmError::Mp4(format!("unexpected CENC IV length {n}"))),
-    }
+    super::cenc::normalize_cenc_iv(iv)
 }
 
 /// Keeps samples overlapping `[start_ms, end_ms)` and rebases composition times to zero.
@@ -892,6 +878,7 @@ fn remove_moov_children_named(moov: &[u8], names: &[&[u8; 4]]) -> Result<Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::drm::crypto::expand_cenc_iv;
     use std::io::{Cursor, Write};
     use tempfile::NamedTempFile;
 
@@ -900,14 +887,17 @@ mod tests {
         let iv8 = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
         let iv16 = expand_cenc_iv(&iv8);
         assert_eq!(&iv16[..8], &iv8);
-        assert_eq!(&iv16[8..], &[0u8; 8]);
+        assert_eq!(&iv16[8..], &[0, 0, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]
     fn normalize_accepts_8_and_16() {
-        let iv8 = [1u8; 8];
-        assert_eq!(normalize_cenc_iv(&iv8).unwrap()[8..], [0u8; 8]);
-        let iv16 = [2u8; 16];
+        let iv8: [u8; 8] = std::array::from_fn(|i| (i as u8).wrapping_add(1));
+        assert_eq!(
+            normalize_cenc_iv(&iv8).unwrap()[8..],
+            [0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        let iv16: [u8; 16] = std::array::from_fn(|i| (i as u8).wrapping_add(2));
         assert_eq!(normalize_cenc_iv(&iv16).unwrap(), iv16);
     }
 
@@ -988,8 +978,8 @@ mod tests {
 
     #[test]
     fn synthetic_dash_roundtrip() {
-        let key = [0x42u8; 16];
-        let kid = [0x11u8; 16];
+        let key: [u8; 16] = std::array::from_fn(|i| 0x42u8.wrapping_add(i as u8));
+        let kid: [u8; 16] = std::array::from_fn(|i| 0x11u8.wrapping_add(i as u8));
         let plain = b"SYNTHETIC_AAC_FRAME_DATA!!".to_vec();
         let mut enc = plain.clone();
         let iv8 = [0xAAu8; 8];

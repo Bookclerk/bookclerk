@@ -4,8 +4,8 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
 use bookclerk_mp4::boxutil::{
-    find_child, read_full_box_version_flags, read_u32, read_u64, read_u8, BoxHeader, FourCC, MDIA,
-    MINF, SAIO, SAIZ, SCHI, SCHM, SINF, STBL, TENC,
+    find_child, read_array, read_exact_vec, read_full_box_version_flags, read_u32, read_u64,
+    read_u8, BoxHeader, FourCC, MDIA, MINF, SAIO, SAIZ, SCHI, SCHM, SINF, STBL, TENC,
 };
 
 use crate::drm::crypto::expand_cenc_iv;
@@ -25,14 +25,11 @@ pub struct TencInfo {
 /// Expand 8- or 16-byte CENC IV to the 16-byte AES-CTR counter block.
 pub fn normalize_cenc_iv(iv: &[u8]) -> Result<[u8; 16]> {
     match iv.len() {
-        16 => {
-            let mut out = [0u8; 16];
-            out.copy_from_slice(iv);
-            Ok(out)
-        }
+        16 => <[u8; 16]>::try_from(iv)
+            .map_err(|_| DrmError::Mp4(format!("unexpected CENC IV length {}", iv.len()))),
         8 => {
-            let mut iv8 = [0u8; 8];
-            iv8.copy_from_slice(iv);
+            let iv8 = <[u8; 8]>::try_from(iv)
+                .map_err(|_| DrmError::Mp4(format!("unexpected CENC IV length {}", iv.len())))?;
             Ok(expand_cenc_iv(&iv8))
         }
         n => Err(DrmError::Mp4(format!("unexpected CENC IV length {n}"))),
@@ -52,8 +49,7 @@ pub fn parse_tenc_from_enca_entry(
     if let Some(schm) = find_child(file, sinf.content_start(), sinf.end(), SCHM)? {
         file.seek(SeekFrom::Start(schm.content_start()))?;
         let (_v, _) = read_full_box_version_flags(file)?;
-        let mut scheme = [0u8; 4];
-        file.read_exact(&mut scheme)?;
+        let scheme = read_array::<4>(file)?;
         if &scheme != b"cenc" {
             return Err(DrmError::Mp4(format!(
                 "unsupported DRM scheme {}; only cenc is supported",
@@ -76,8 +72,7 @@ pub fn parse_tenc(file: &mut (impl Read + Seek), tenc: &BoxHeader) -> Result<Ten
     let _reserved1_or_pattern = read_u8(file)?;
     let is_protected = read_u8(file)?;
     let per_sample_iv_size = read_u8(file)?;
-    let mut kid = [0u8; 16];
-    file.read_exact(&mut kid)?;
+    let kid = read_array::<16>(file)?;
 
     let constant_iv = if is_protected == 1 && per_sample_iv_size == 0 {
         let constant_iv_size = read_u8(file)? as usize;
@@ -86,9 +81,7 @@ pub fn parse_tenc(file: &mut (impl Read + Seek), tenc: &BoxHeader) -> Result<Ten
                 "unsupported tenc constant_IV_size {constant_iv_size}"
             )));
         }
-        let mut iv = vec![0u8; constant_iv_size];
-        file.read_exact(&mut iv)?;
-        Some(iv)
+        Some(read_exact_vec(file, constant_iv_size)?)
     } else {
         let _ = version;
         None
@@ -157,9 +150,7 @@ fn read_saio_saiz_ivs(
         let mut out = Vec::with_capacity(sample_count);
         file.seek(SeekFrom::Start(offsets[0]))?;
         for _ in 0..sample_count {
-            let mut iv = vec![0u8; iv_size];
-            file.read_exact(&mut iv)?;
-            out.push(iv);
+            out.push(read_exact_vec(file, iv_size)?);
         }
         return Ok(out);
     }
@@ -172,9 +163,7 @@ fn read_saio_saiz_ivs(
     let mut out = Vec::with_capacity(sample_count);
     for &off in &offsets {
         file.seek(SeekFrom::Start(off))?;
-        let mut iv = vec![0u8; iv_size];
-        file.read_exact(&mut iv)?;
-        out.push(iv);
+        out.push(read_exact_vec(file, iv_size)?);
     }
     Ok(out)
 }

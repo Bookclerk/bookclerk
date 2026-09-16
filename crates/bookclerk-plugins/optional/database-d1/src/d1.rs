@@ -89,7 +89,7 @@ async fn d1_management_send(
     // Cloudflare account ids are public REST path segments. Off-loopback
     // transport is HTTPS (`d1_management_url`); the API token is Bearer, not a
     // URL query. Loopback HTTP is test-only (wiremock).
-    // lgtm[rust/cleartext-transmission]
+    // codeql[rust/cleartext-transmission]
     let mut req = client.request(method, url).bearer_auth(token);
     if let Some(body) = body {
         req = req.json(&body);

@@ -11,7 +11,7 @@ use clap::Subcommand;
 
 use crate::commands::copydb::{self, CopyDbArgs, CopyDbFormat};
 use crate::commands::export::{export_csv, export_json, export_xlsx, filter_books, load_books};
-use crate::format_out::{emit, OutputFormat};
+use crate::format_out::{emit, line, OutputFormat};
 
 #[derive(Debug, Subcommand)]
 /// `bookclerk export` subcommands: native backup, Libation, spreadsheet, or Postgres copy.
@@ -171,10 +171,10 @@ fn emit_libation_export(
     let n_books = summary.books;
     let notes = summary.warnings.clone();
     emit(format, summary, || {
-        println!("dest\t{}", dest.display());
-        println!("settings\t{}", summary.settings);
-        println!("accounts\t{n_storefronts}");
-        println!("books\t{n_books}");
+        line(format!("dest\t{}", dest.display()));
+        line(format!("settings\t{}", summary.settings));
+        line(format!("accounts\t{n_storefronts}"));
+        line(format!("books\t{n_books}"));
         for note in &notes {
             eprintln!("warning: {note}");
         }

@@ -6,7 +6,7 @@ use bookclerk_config::Config;
 use bookclerk_migrate::{import_native, migrate, MigrateOptions, NativeImportOptions};
 use clap::Subcommand;
 
-use crate::format_out::{emit, OutputFormat};
+use crate::format_out::{emit, line, OutputFormat};
 
 #[derive(Debug, Subcommand)]
 /// `bookclerk import` subcommands: native `.tar.gz` restore or classic Libation Files.
@@ -92,12 +92,12 @@ pub async fn run(
             })
             .await?;
             emit(format, &summary, || {
-                println!("settings\t{}", summary.settings_imported);
-                println!("accounts\t{}", summary.accounts);
-                println!("credentials\t{}", summary.credentials);
-                println!("books\t{}", summary.books);
-                println!("acquired\t{}", summary.acquired);
-                println!("storage_keys\t{}", summary.storage_keys);
+                line(format!("settings\t{}", summary.settings_imported));
+                line(format!("accounts\t{}", summary.accounts));
+                line(format!("credentials\t{}", summary.credentials));
+                line(format!("books\t{}", summary.books));
+                line(format!("acquired\t{}", summary.acquired));
+                line(format!("storage_keys\t{}", summary.storage_keys));
                 for warning in &summary.warnings {
                     eprintln!("warning: {warning}");
                 }

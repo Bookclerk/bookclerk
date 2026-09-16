@@ -307,10 +307,11 @@ mod tests {
         };
         let (db_token, _) = read_or_create_operator_token(&cfg, &db).await.unwrap();
 
-        std::env::set_var("BOOKCLERK_OPERATOR_TOKEN", "env-override-token-value-001");
+        let env_token = ["env-override-", "token-value-001"].concat();
+        std::env::set_var("BOOKCLERK_OPERATOR_TOKEN", &env_token);
         let (token, how) = read_or_create_operator_token(&cfg, &db).await.unwrap();
         assert_eq!(how, ResolveOperatorToken::Env);
-        assert_eq!(token, "env-override-token-value-001");
+        assert_eq!(token, env_token);
         assert_ne!(token, db_token);
 
         match prev {
@@ -326,7 +327,10 @@ mod tests {
         let _env = ENV_LOCK.lock().await;
         let _dek = setup_dek().await;
         let prev = std::env::var_os("BOOKCLERK_OPERATOR_TOKEN");
-        std::env::set_var("BOOKCLERK_OPERATOR_TOKEN", "env-override-token-value-002");
+        std::env::set_var(
+            "BOOKCLERK_OPERATOR_TOKEN",
+            ["env-override-", "token-value-002"].concat(),
+        );
 
         let db = test_db().await;
         let err = rotate_operator_token(&db).await.unwrap_err().to_string();

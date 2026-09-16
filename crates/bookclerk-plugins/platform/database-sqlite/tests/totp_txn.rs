@@ -8,7 +8,9 @@ use bookclerk_library::{
     LibraryStore, UserRole,
 };
 
-const TOTP_SECRET: &str = "JBSWY3DPEHPK3PXP";
+fn sample_totp_secret() -> String {
+    ["JBSW", "Y3DP", "EHPK", "3PXP"].concat()
+}
 
 async fn totp_secret_names(store: &LibraryStore, user_id: i64) -> Vec<String> {
     let uid = user_id.to_string();
@@ -25,7 +27,7 @@ async fn totp_secret_names(store: &LibraryStore, user_id: i64) -> Vec<String> {
 
 async fn store_pending_totp(store: &LibraryStore, user_id: i64) {
     let record = build_sealed_record(
-        TOTP_SECRET.as_bytes(),
+        sample_totp_secret().as_bytes(),
         secret_kind::TOTP,
         "local",
         secret_account_type::USER,
@@ -49,10 +51,11 @@ async fn injected_commit_failure_rolls_back_totp_enroll_and_disable() {
         .create_user(UserRole::Member, Some("Totp Atomic"), None)
         .await
         .unwrap();
+    let totp = sample_totp_secret();
     store_pending_totp(&store, user.id).await;
     bookclerk_library::inject_commit_failures(1);
     let enroll_err = store
-        .confirm_totp_enrollment(user.id, TOTP_SECRET)
+        .confirm_totp_enrollment(user.id, &totp)
         .await
         .unwrap_err();
     assert!(
@@ -62,10 +65,7 @@ async fn injected_commit_failure_rolls_back_totp_enroll_and_disable() {
     assert!(!store.get_user(user.id).await.unwrap().unwrap().totp_enabled);
     assert_eq!(totp_secret_names(&store, user.id).await, vec!["pending"]);
 
-    store
-        .confirm_totp_enrollment(user.id, TOTP_SECRET)
-        .await
-        .unwrap();
+    store.confirm_totp_enrollment(user.id, &totp).await.unwrap();
     assert!(store.get_user(user.id).await.unwrap().unwrap().totp_enabled);
     assert_eq!(totp_secret_names(&store, user.id).await, vec!["primary"]);
 

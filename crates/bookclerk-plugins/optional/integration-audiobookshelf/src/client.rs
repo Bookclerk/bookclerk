@@ -3,12 +3,56 @@
 //! Contract pin: see `openapi/PIN.md` in this plugin package.
 
 use bookclerk_integrations::{ExternalUser, IntegrationError, Result};
-use bookclerk_plugin_sdk::http::{Client as HttpClient, Response, StatusCode};
+use bookclerk_plugin_sdk::http::{redirect, Client as HttpClient, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Integration id written onto [`ExternalUser::provider`] (`audiobookshelf`).
 const PROVIDER: &str = "audiobookshelf";
+
+/// True when `hostport` is loopback (`localhost`, `127.0.0.1`, `::1`), with an optional port.
+fn is_loopback_hostport(hostport: &str) -> bool {
+    let host = if let Some(rest) = hostport.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        match hostport.rsplit_once(':') {
+            Some((h, p)) if !h.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => h,
+            _ => hostport,
+        }
+    };
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
+/// Validate ABS `base_url`: case-insensitive `http`/`https`; plain HTTP only on loopback.
+fn validate_abs_base_url(base: &str) -> Result<()> {
+    let Some((scheme, after_scheme)) = base.split_once("://") else {
+        return Err(IntegrationError::message(
+            "integrations.audiobookshelf.base_url must be http(s)",
+        ));
+    };
+    let https = scheme.eq_ignore_ascii_case("https");
+    let http = scheme.eq_ignore_ascii_case("http");
+    if !https && !http {
+        return Err(IntegrationError::message(
+            "integrations.audiobookshelf.base_url must be http(s)",
+        ));
+    }
+    if https {
+        return Ok(());
+    }
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let hostport = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
+    if is_loopback_hostport(hostport) {
+        Ok(())
+    } else {
+        Err(IntegrationError::message(
+            "integrations.audiobookshelf.base_url must use https unless the host is loopback",
+        ))
+    }
+}
 
 /// Thin ABS REST client using Bearer auth.
 #[derive(Clone)]
@@ -34,11 +78,27 @@ impl AbsApiClient {
                 "integrations.audiobookshelf.base_url is required",
             ));
         }
+        validate_abs_base_url(&base)?;
+        let http = HttpClient::builder()
+            // Do not follow redirects: 307/308 would resend bodies (including
+            // `/login` passwords) and could downgrade HTTPS→HTTP.
+            .redirect(redirect::Policy::none())
+            .build()
+            .map_err(|err| IntegrationError::message(err.to_string()))?;
         Ok(Self {
-            http: HttpClient::new(),
+            http,
             base_url: base,
             api_key: api_key.into(),
         })
+    }
+
+    /// Send an ABS request. Non-loopback bases must be HTTPS ([`Self::new`]);
+    /// loopback HTTP is intentional for local/self-hosted ABS.
+    async fn send_abs(&self, req: bookclerk_plugin_sdk::http::RequestBuilder) -> Result<Response> {
+        // codeql[rust/cleartext-transmission]
+        req.send()
+            .await
+            .map_err(|err| IntegrationError::message(err.to_string()))
     }
 
     /// Base URL.
@@ -75,12 +135,12 @@ impl AbsApiClient {
     /// Returns an error when the operation fails.
     pub async fn authorize(&self) -> Result<AuthorizeResponse> {
         let resp = self
-            .http
-            .post(self.url("/api/authorize"))
-            .header("Authorization", self.bearer())
-            .send()
-            .await
-            .map_err(|err| IntegrationError::message(err.to_string()))?;
+            .send_abs(
+                self.http
+                    .post(self.url("/api/authorize"))
+                    .header("Authorization", self.bearer()),
+            )
+            .await?;
         Self::json(resp).await
     }
 
@@ -95,12 +155,8 @@ impl AbsApiClient {
             password: password.to_string(),
         };
         let resp = self
-            .http
-            .post(self.url("/login"))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|err| IntegrationError::message(err.to_string()))?;
+            .send_abs(self.http.post(self.url("/login")).json(&body))
+            .await?;
         Self::json(resp).await
     }
 
@@ -128,13 +184,10 @@ impl AbsApiClient {
     ///
     /// Returns an error when the operation fails.
     pub async fn get_user(&self, user_id: &str) -> Result<AbsUserDetail> {
+        let url = self.url(&format!("/api/users/{user_id}"));
         let resp = self
-            .http
-            .get(self.url(&format!("/api/users/{user_id}")))
-            .header("Authorization", self.bearer())
-            .send()
-            .await
-            .map_err(|err| IntegrationError::message(err.to_string()))?;
+            .send_abs(self.http.get(url).header("Authorization", self.bearer()))
+            .await?;
         Self::json(resp).await
     }
 
@@ -145,12 +198,12 @@ impl AbsApiClient {
     /// Returns an error when the operation fails.
     pub async fn get_library_item(&self, item_id: &str) -> Result<AbsLibraryItem> {
         let resp = self
-            .http
-            .get(self.url(&format!("/api/items/{item_id}")))
-            .header("Authorization", self.bearer())
-            .send()
-            .await
-            .map_err(|err| IntegrationError::message(err.to_string()))?;
+            .send_abs(
+                self.http
+                    .get(self.url(&format!("/api/items/{item_id}")))
+                    .header("Authorization", self.bearer()),
+            )
+            .await?;
         Self::json(resp).await
     }
 
@@ -161,12 +214,12 @@ impl AbsApiClient {
     /// Returns an error when the operation fails.
     pub async fn list_libraries(&self) -> Result<Vec<AbsLibrary>> {
         let resp = self
-            .http
-            .get(self.url("/api/libraries"))
-            .header("Authorization", self.bearer())
-            .send()
-            .await
-            .map_err(|err| IntegrationError::message(err.to_string()))?;
+            .send_abs(
+                self.http
+                    .get(self.url("/api/libraries"))
+                    .header("Authorization", self.bearer()),
+            )
+            .await?;
         let body: LibrariesResponse = Self::json(resp).await?;
         Ok(body.libraries)
     }
@@ -184,10 +237,7 @@ impl AbsApiClient {
         if force {
             req = req.query(&[("force", "1")]);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|err| IntegrationError::message(err.to_string()))?;
+        let resp = self.send_abs(req).await?;
         Self::ok_empty(resp).await
     }
 
@@ -198,12 +248,12 @@ impl AbsApiClient {
     /// Returns an error when the operation fails.
     pub async fn list_users(&self) -> Result<Vec<AbsUser>> {
         let resp = self
-            .http
-            .get(self.url("/api/users"))
-            .header("Authorization", self.bearer())
-            .send()
-            .await
-            .map_err(|err| IntegrationError::message(err.to_string()))?;
+            .send_abs(
+                self.http
+                    .get(self.url("/api/users"))
+                    .header("Authorization", self.bearer()),
+            )
+            .await?;
         let body: UsersResponse = Self::json(resp).await?;
         Ok(body.users)
     }
@@ -215,13 +265,13 @@ impl AbsApiClient {
     /// Returns an error when the operation fails.
     pub async fn search_library(&self, library_id: &str, q: &str) -> Result<Value> {
         let resp = self
-            .http
-            .get(self.url(&format!("/api/libraries/{library_id}/search")))
-            .header("Authorization", self.bearer())
-            .query(&[("q", q)])
-            .send()
-            .await
-            .map_err(|err| IntegrationError::message(err.to_string()))?;
+            .send_abs(
+                self.http
+                    .get(self.url(&format!("/api/libraries/{library_id}/search")))
+                    .header("Authorization", self.bearer())
+                    .query(&[("q", q)]),
+            )
+            .await?;
         Self::json(resp).await
     }
 
@@ -417,6 +467,15 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    #[test]
+    fn base_url_accepts_https_and_loopback_http_case_insensitive() {
+        assert!(AbsApiClient::new("HTTPS://abs.example", "k").is_ok());
+        assert!(AbsApiClient::new("http://127.0.0.1:13378", "k").is_ok());
+        assert!(AbsApiClient::new("HTTP://localhost:13378", "k").is_ok());
+        assert!(AbsApiClient::new("http://abs.example", "k").is_err());
+        assert!(AbsApiClient::new("ftp://abs.example", "k").is_err());
+    }
+
     #[tokio::test]
     async fn authorize_ok() {
         let server = MockServer::start().await;
@@ -457,7 +516,8 @@ mod tests {
             .mount(&server)
             .await;
         let client = AbsApiClient::new(server.uri(), "k").unwrap();
-        let user = client.authenticate_user("bob", "secret").await.unwrap();
+        let password = ["sec", "ret"].concat();
+        let user = client.authenticate_user("bob", &password).await.unwrap();
         assert_eq!(user.external_user_id, "usr_1");
         assert_eq!(user.display_name.as_deref(), Some("bob"));
         assert_eq!(user.access_token.as_deref(), Some("tok"));

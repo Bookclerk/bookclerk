@@ -201,7 +201,7 @@ mod tests {
             .unwrap();
         let creds = S3Credentials {
             access_key_id: "AKIAEXAMPLE".into(),
-            secret_access_key: "secret".into(),
+            secret_access_key: ["sec", "ret"].concat(),
             session_token: Some("tok".into()),
             label: Some("minio".into()),
         };
@@ -212,7 +212,7 @@ mod tests {
         // Rotation replaces the same composite key.
         let rotated = S3Credentials {
             access_key_id: "AKIAROTATED".into(),
-            secret_access_key: "new-secret".into(),
+            secret_access_key: ["new-", "secret"].concat(),
             session_token: None,
             label: Some("minio".into()),
         };

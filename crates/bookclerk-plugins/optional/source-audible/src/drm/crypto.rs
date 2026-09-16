@@ -17,15 +17,12 @@ pub fn parse_aes128_hex(hex_str: &str) -> Result<[u8; 16]> {
     let bytes = hex::decode(trimmed).map_err(|err| {
         DrmError::InvalidKey(format!("invalid hex ({err}): expected 32 hex chars"))
     })?;
-    if bytes.len() != 16 {
-        return Err(DrmError::InvalidKey(format!(
+    <[u8; 16]>::try_from(bytes).map_err(|bytes| {
+        DrmError::InvalidKey(format!(
             "expected 16 bytes (32 hex chars), got {}",
             bytes.len()
-        )));
-    }
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&bytes);
-    Ok(out)
+        ))
+    })
 }
 
 /// Decrypt an Adrm AAC sample in place (AES-128-CBC, no padding).
@@ -57,9 +54,8 @@ pub fn decrypt_cenc_sample_in_place(key: &[u8; 16], iv: &[u8; 16], sample: &mut 
 /// Expand an 8-byte CENC IV to 16 bytes (IV || 0x00 * 8), per ISO/IEC 23001-7.
 #[must_use]
 pub fn expand_cenc_iv(iv8: &[u8; 8]) -> [u8; 16] {
-    let mut iv = [0u8; 16];
-    iv[..8].copy_from_slice(iv8);
-    iv
+    // ISO/IEC 23001-7: 8-byte CENC IVs are left-aligned and zero-padded to 16.
+    std::array::from_fn(|i| iv8.get(i).copied().unwrap_or_else(u8::default))
 }
 
 #[cfg(test)]
@@ -74,10 +70,14 @@ mod tests {
         assert!(parse_aes128_hex("gg").is_err());
     }
 
+    fn test_block(tag: u8) -> [u8; 16] {
+        std::array::from_fn(|i| tag.wrapping_add(i as u8))
+    }
+
     #[test]
     fn aavd_roundtrip_partial_block() {
-        let key = [0x11u8; 16];
-        let iv = [0x22u8; 16];
+        let key = test_block(0x11);
+        let iv = test_block(0x22);
         let mut plain = vec![0u8; 40];
         for (i, b) in plain.iter_mut().enumerate() {
             *b = i as u8;
@@ -97,8 +97,8 @@ mod tests {
 
     #[test]
     fn cenc_roundtrip() {
-        let key = [0x33u8; 16];
-        let iv = [0x44u8; 16];
+        let key = test_block(0x33);
+        let iv = test_block(0x44);
         let mut data = b"hello cenc audio!!".to_vec();
         let original = data.clone();
         decrypt_cenc_sample_in_place(&key, &iv, &mut data);

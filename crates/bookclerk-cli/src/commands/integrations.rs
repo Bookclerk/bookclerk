@@ -8,6 +8,8 @@ use bookclerk_config::Config;
 use bookclerk_integrations::{mint_for_external_user, ExternalUser};
 use clap::Subcommand;
 
+use crate::format_out;
+
 #[derive(Debug, Subcommand)]
 /// `bookclerk integrations` subcommands (status, test, tickets, remote scan).
 pub enum IntegrationsCommand {
@@ -113,31 +115,31 @@ pub async fn run(command: IntegrationsCommand, config: &Config) -> anyhow::Resul
                     access_token: None,
                 };
                 let minted = mint_for_external_user(&library, config, &user, "cli").await?;
-                println!("ticket={}", minted.token);
+                format_out::line(format!("ticket={}", minted.token));
                 if let Some(url) = minted.portal_url {
-                    println!("url={url}");
+                    format_out::line(format!("url={url}"));
                 }
-                println!(
+                format_out::line(format!(
                     "identity={} expires={}",
                     minted.identity.id,
                     minted.record.expires_at.to_rfc3339()
-                );
+                ));
                 Ok(())
             }
             TicketsCommand::List => {
                 let tickets = library.list_open_claim_tickets().await?;
                 if tickets.is_empty() {
-                    println!("no open claim tickets");
+                    format_out::line("no open claim tickets");
                 }
                 for t in tickets {
-                    println!(
+                    format_out::line(format!(
                         "id={} identity={:?} expires={} created_by={} hash={}…",
                         t.id,
                         t.identity_id,
                         t.expires_at.to_rfc3339(),
                         t.created_by,
                         &t.token_hash[..8.min(t.token_hash.len())]
-                    );
+                    ));
                 }
                 Ok(())
             }

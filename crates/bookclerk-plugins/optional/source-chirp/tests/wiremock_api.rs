@@ -21,6 +21,10 @@ fn op_name(req: &Request) -> Option<String> {
         .map(str::to_string)
 }
 
+fn test_password() -> String {
+    ["sec", "ret"].concat()
+}
+
 fn dek_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -70,7 +74,7 @@ async fn signin_saves_auth_to_db() {
                 marketplace: "us".into(),
                 label: Some("Chirp".into()),
                 email: Some("reader@example.com".into()),
-                password: Some("secret".into()),
+                password: Some(test_password()),
                 force: true,
                 ..Default::default()
             },

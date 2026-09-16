@@ -138,7 +138,8 @@ mod tests {
 
     #[test]
     fn derive_claim_session_token_binds_ticket_and_nonce() {
-        let dek = crate::MasterKey::from_test_bytes([7u8; 32]);
+        let dek =
+            crate::MasterKey::from_test_bytes(std::array::from_fn(|i| 7u8.wrapping_add(i as u8)));
         let ticket_one = assembled_nonce(&["ticket", "-", "one"]);
         let ticket_two = assembled_nonce(&["ticket", "-", "two"]);
         let nonce_one = assembled_nonce(&["nonce", "-", "one"]);
@@ -149,7 +150,8 @@ mod tests {
         assert_eq!(a.len(), 64);
         assert_ne!(derive_claim_session_token(&dek, &ticket_one, &nonce_two), a);
         assert_ne!(derive_claim_session_token(&dek, &ticket_two, &nonce_one), a);
-        let other_dek = crate::MasterKey::from_test_bytes([8u8; 32]);
+        let other_dek =
+            crate::MasterKey::from_test_bytes(std::array::from_fn(|i| 8u8.wrapping_add(i as u8)));
         assert_ne!(
             derive_claim_session_token(&other_dek, &ticket_one, &nonce_one),
             a
@@ -158,7 +160,8 @@ mod tests {
 
     #[test]
     fn password_fingerprint_is_stable_and_ignores_argon_salt() {
-        let dek = crate::MasterKey::from_test_bytes([7u8; 32]);
+        let dek =
+            crate::MasterKey::from_test_bytes(std::array::from_fn(|i| 7u8.wrapping_add(i as u8)));
         let nonce_one = assembled_nonce(&["nonce", "-", "one"]);
         let nonce_two = assembled_nonce(&["nonce", "-", "two"]);
         let invite_pass = assembled_nonce(&["invite", "-", "pass"]);

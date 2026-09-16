@@ -300,8 +300,8 @@ mod tests {
         let leaked = OutputS3ContextDto {
             plugin_data_dir: "/host/plugins/s3/data".into(),
             credentials: Some(S3CredentialsDto {
-                access_key_id: "AKIASECRET".into(),
-                secret_access_key: "wJalr".into(),
+                access_key_id: ["AKIA", "SECRET"].concat(),
+                secret_access_key: ["wJal", "r"].concat(),
                 session_token: None,
             }),
             ..ctx

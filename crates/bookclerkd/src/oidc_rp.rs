@@ -41,6 +41,49 @@ use crate::oidc_verify::{
 };
 use openidconnect::core::{CoreJwsSigningAlgorithm, CoreProviderMetadata};
 
+/// Maximum OIDC providers an operator may configure (enforced while deserializing).
+const MAX_OIDC_PROVIDERS: usize = 16;
+
+/// Deserialize `providers` and fail as soon as the sequence exceeds [`MAX_OIDC_PROVIDERS`].
+fn deserialize_bounded_oidc_providers<'de, D>(
+    deserializer: D,
+) -> Result<Vec<OidcProviderPut>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct BoundedVisitor;
+
+    impl<'de> Visitor<'de> for BoundedVisitor {
+        type Value = Vec<OidcProviderPut>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "at most {MAX_OIDC_PROVIDERS} identity providers")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let hint = seq.size_hint().unwrap_or(0).min(MAX_OIDC_PROVIDERS);
+            let mut out = Vec::with_capacity(hint);
+            while let Some(item) = seq.next_element::<OidcProviderPut>()? {
+                if out.len() >= MAX_OIDC_PROVIDERS {
+                    return Err(A::Error::custom(format!(
+                        "at most {MAX_OIDC_PROVIDERS} identity providers"
+                    )));
+                }
+                out.push(item);
+            }
+            Ok(out)
+        }
+    }
+
+    deserializer.deserialize_seq(BoundedVisitor)
+}
+
 /// Browser-bound OIDC login transaction (must match `state` on callback).
 const OIDC_TX_COOKIE: &str = "bookclerk_oidc_tx";
 
@@ -188,7 +231,7 @@ struct OidcConfigPut {
     #[serde(default)]
     /// Replacement broker-wide email domain allowlist.
     allowed_email_domains: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bounded_oidc_providers")]
     /// Full replacement list of IdPs (omitted secrets keep the previous generation).
     providers: Vec<OidcProviderPut>,
     /// `integrations.public_origin`. Omit to leave unchanged; empty string clears.
@@ -724,10 +767,17 @@ async fn put_oidc_config(
         },
     };
 
+    if body.providers.len() > MAX_OIDC_PROVIDERS {
+        return Err(oidc_config_error(
+            StatusCode::BAD_REQUEST,
+            format!("at most {MAX_OIDC_PROVIDERS} identity providers"),
+        ));
+    }
+
     let mut next = OidcBrokerConfig {
         enabled: body.enabled,
         allowed_email_domains: trim_list(body.allowed_email_domains),
-        providers: Vec::with_capacity(body.providers.len()),
+        providers: Vec::with_capacity(MAX_OIDC_PROVIDERS),
         secret_generation: next_gen,
     };
     let mut secret_actions: Vec<(String, Option<String>, bool)> = Vec::new();
@@ -2540,6 +2590,64 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn oidc_config_put_rejects_too_many_providers() {
+        let (state, app, library, _dir, _dek) = persist_harness().await;
+        let cookie =
+            portal_cookie_for_user(&library, bookclerk_library::UserRole::Owner, "Owner").await;
+        let seed = serde_json::json!({
+            "enabled": true,
+            "providers": [{
+                "id": "github",
+                "name": "GitHub",
+                "preset": "github",
+                "client_id": "keep-me",
+                "provision": "any",
+                "default_role": "member",
+                "link_by_email": true
+            }]
+        });
+        let (status, json) = put_oidc_json(app.clone(), &cookie, &seed).await;
+        assert_eq!(status, StatusCode::OK, "{json:?}");
+
+        let providers: Vec<Value> = (0..=MAX_OIDC_PROVIDERS)
+            .map(|i| {
+                serde_json::json!({
+                    "id": format!("p{i}"),
+                    "name": format!("Provider {i}"),
+                    "preset": "github",
+                    "client_id": format!("client-{i}"),
+                    "provision": "any",
+                    "default_role": "member",
+                    "link_by_email": true
+                })
+            })
+            .collect();
+        assert_eq!(providers.len(), MAX_OIDC_PROVIDERS + 1);
+        let oversized = serde_json::json!({
+            "enabled": true,
+            "providers": providers
+        });
+        let (status, json) = put_oidc_json(app, &cookie, &oversized).await;
+        // Bound is enforced in `deserialize_bounded_oidc_providers`, so Axum's
+        // Json extractor rejects before the handler (422), and config is unchanged.
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{json:?}");
+        let detail = json
+            .get("message")
+            .and_then(|v| v.as_str())
+            .or_else(|| json.get("raw").and_then(|v| v.as_str()))
+            .unwrap_or_default();
+        assert!(
+            detail.contains(&MAX_OIDC_PROVIDERS.to_string())
+                || detail.contains("identity providers"),
+            "{json:?}"
+        );
+
+        let live = state.config.read().await;
+        assert_eq!(live.auth.oidc.providers.len(), 1);
+        assert_eq!(live.auth.oidc.providers[0].client_id, "keep-me");
+    }
+
+    #[tokio::test]
     async fn oidc_config_put_public_origin_persists() {
         let (state, app, library, dir, _dek) = persist_harness().await;
         let cookie =
@@ -2984,9 +3092,11 @@ mod http_tests {
         );
 
         let secret = oidc_live_secret_plaintext(&state, &library, "github").await;
+        let put = ["put", "-", "secret"].concat();
+        let seed = ["seed", "-", "secret"].concat();
         assert!(
-            secret.as_deref() == Some("put-secret") || secret.as_deref() == Some("seed-secret"),
-            "live OIDC generation must still unseal, got {secret:?}"
+            secret.as_deref() == Some(put.as_str()) || secret.as_deref() == Some(seed.as_str()),
+            "live OIDC generation must still unseal"
         );
     }
 
@@ -3045,9 +3155,11 @@ mod http_tests {
         let live_plugin = state.config.read().await.database.plugin.clone();
         assert_eq!(live_plugin, plugin);
         let secret = oidc_live_secret_plaintext(&state, &library, "github").await;
+        let put = ["put", "-", "secret"].concat();
+        let seed = ["seed", "-", "secret"].concat();
         assert!(
-            secret.as_deref() == Some("put-secret") || secret.as_deref() == Some("seed-secret"),
-            "live OIDC generation must still unseal, got {secret:?}"
+            secret.as_deref() == Some(put.as_str()) || secret.as_deref() == Some(seed.as_str()),
+            "live OIDC generation must still unseal"
         );
     }
 

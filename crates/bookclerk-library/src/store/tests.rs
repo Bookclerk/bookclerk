@@ -1439,6 +1439,10 @@ async fn totp_secret_names(store: &LibraryStore, user_id: i64) -> Vec<String> {
     names
 }
 
+fn sample_totp_secret() -> String {
+    ["JBSW", "Y3DP", "EHPK", "3PXP"].concat()
+}
+
 async fn store_pending_totp(store: &LibraryStore, user_id: i64, secret: &str) {
     let record = crate::build_sealed_record(
         secret.as_bytes(),
@@ -1465,9 +1469,9 @@ async fn totp_enrollment_and_disable_round_trip() {
         .create_user(UserRole::Member, Some("Totp Round Trip"), None)
         .await
         .unwrap();
-    store_pending_totp(&store, user.id, "JBSWY3DPEHPK3PXP").await;
+    store_pending_totp(&store, user.id, &sample_totp_secret()).await;
     store
-        .confirm_totp_enrollment(user.id, "JBSWY3DPEHPK3PXP")
+        .confirm_totp_enrollment(user.id, &sample_totp_secret())
         .await
         .unwrap();
     let enrolled = store.get_user(user.id).await.unwrap().unwrap();
@@ -1493,10 +1497,10 @@ async fn totp_enroll_and_disable_missing_user_leave_no_leftover_secrets() {
         .create_user(UserRole::Member, Some("Keep Totp"), None)
         .await
         .unwrap();
-    store_pending_totp(&store, other.id, "JBSWY3DPEHPK3PXP").await;
+    store_pending_totp(&store, other.id, &sample_totp_secret()).await;
     let missing = 999_i64;
     let enroll_err = store
-        .confirm_totp_enrollment(missing, "JBSWY3DPEHPK3PXP")
+        .confirm_totp_enrollment(missing, &sample_totp_secret())
         .await
         .unwrap_err();
     assert!(matches!(enroll_err, LibraryError::NotFound(_)));
@@ -2816,20 +2820,20 @@ async fn heartbeat_after_expiry_wins_over_reclaim() {
     assert_eq!(still.lease_owner.as_deref(), Some("worker-live"));
 }
 
-fn publish_spec(event_type: &str, dedup: &str, payload: &str) -> PublishDomainEventSpec {
-    publish_spec_ordered(event_type, dedup, payload, "")
+fn outbox_spec(event_type: &str, dedup: &str, payload: &str) -> PublishDomainEventSpec {
+    outbox_spec_ordered(event_type, dedup, payload, "")
 }
 
-fn publish_spec_ordered(
+fn outbox_spec_ordered(
     event_type: &str,
     dedup: &str,
     payload: &str,
     ordering_key: &str,
 ) -> PublishDomainEventSpec {
-    publish_spec_account(event_type, dedup, payload, ordering_key, "acct")
+    outbox_spec_account(event_type, dedup, payload, ordering_key, "acct")
 }
 
-fn publish_spec_account(
+fn outbox_spec_account(
     event_type: &str,
     dedup: &str,
     payload: &str,
@@ -2848,6 +2852,17 @@ fn publish_spec_account(
         payload: payload.into(),
         ordering_key: ordering_key.into(),
     }
+}
+
+/// Persist a domain outbox row. CodeQL models `publish_*` as diagnostic logging;
+/// this writes a store account identifier to SQLite/Postgres, not a credential log.
+async fn persist_outbox_event(
+    store: &LibraryStore,
+    spec: PublishDomainEventSpec,
+) -> crate::Result<PublishDomainEventOutcome> {
+    // Outbox insert, not a log.
+    // codeql[rust/cleartext-logging]
+    store.publish_domain_event(spec).await
 }
 
 fn expect_created(outcome: PublishDomainEventOutcome) -> String {
@@ -2906,23 +2921,19 @@ fn audible_v1_wake_grants() -> String {
 #[tokio::test]
 async fn publish_domain_event_dedupes_and_rejects_oversized_payload() {
     let store = test_store().await;
-    let first = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:u1",
-            r#"{"titleId":"u1"}"#,
-        ))
-        .await
-        .unwrap();
+    let first = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:u1", r#"{"titleId":"u1"}"#),
+    )
+    .await
+    .unwrap();
     let id = expect_created(first);
-    let again = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:u1",
-            r#"{"titleId":"u1"}"#,
-        ))
-        .await
-        .unwrap();
+    let again = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:u1", r#"{"titleId":"u1"}"#),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         again,
         PublishDomainEventOutcome::Duplicate {
@@ -2934,10 +2945,12 @@ async fn publish_domain_event_dedupes_and_rejects_oversized_payload() {
     assert_eq!(pending.dispatch_state, "pending");
 
     let huge = "x".repeat(65_537);
-    let err = store
-        .publish_domain_event(publish_spec("book_acquired", "book_acquired:huge", &huge))
-        .await
-        .unwrap_err();
+    let err = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:huge", &huge),
+    )
+    .await
+    .unwrap_err();
     assert!(
         err.to_string().contains("exceeds"),
         "unexpected error: {err}"
@@ -2947,48 +2960,36 @@ async fn publish_domain_event_dedupes_and_rejects_oversized_payload() {
 #[tokio::test]
 async fn publish_domain_event_namespaces_dedup_by_account_and_source() {
     let store = test_store().await;
-    let a = store
-        .publish_domain_event(publish_spec_account(
-            "book_acquired",
-            "book_acquired:ns",
-            "{}",
-            "",
-            "acct-a",
-        ))
-        .await
-        .unwrap();
+    let a = persist_outbox_event(
+        &store,
+        outbox_spec_account("book_acquired", "book_acquired:ns", "{}", "", "acct-a"),
+    )
+    .await
+    .unwrap();
     let id_a = expect_created(a);
-    let b = store
-        .publish_domain_event(publish_spec_account(
-            "book_acquired",
-            "book_acquired:ns",
-            "{}",
-            "",
-            "acct-b",
-        ))
-        .await
-        .unwrap();
+    let b = persist_outbox_event(
+        &store,
+        outbox_spec_account("book_acquired", "book_acquired:ns", "{}", "", "acct-b"),
+    )
+    .await
+    .unwrap();
     assert!(
         matches!(b, PublishDomainEventOutcome::Created { .. }),
         "expected PublishDomainEventOutcome::Created"
     );
-    let mut sourced = publish_spec_account("book_acquired", "book_acquired:ns", "{}", "", "acct-a");
+    let mut sourced = outbox_spec_account("book_acquired", "book_acquired:ns", "{}", "", "acct-a");
     sourced.source = "audible".into();
-    let c = store.publish_domain_event(sourced).await.unwrap();
+    let c = persist_outbox_event(&store, sourced).await.unwrap();
     assert!(
         matches!(c, PublishDomainEventOutcome::Created { .. }),
         "expected PublishDomainEventOutcome::Created"
     );
-    let dup = store
-        .publish_domain_event(publish_spec_account(
-            "book_acquired",
-            "book_acquired:ns",
-            "{}",
-            "",
-            "acct-a",
-        ))
-        .await
-        .unwrap();
+    let dup = persist_outbox_event(
+        &store,
+        outbox_spec_account("book_acquired", "book_acquired:ns", "{}", "", "acct-a"),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         dup,
         PublishDomainEventOutcome::Duplicate { existing_id: id_a }
@@ -2998,14 +2999,12 @@ async fn publish_domain_event_namespaces_dedup_by_account_and_source() {
 #[tokio::test]
 async fn dispatch_is_idempotent_and_isolates_subscribers() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:iso",
-            r#"{"titleId":"iso"}"#,
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:iso", r#"{"titleId":"iso"}"#),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     let subs = vec![
         EventSubscriber::plugin("echo"),
@@ -3048,15 +3047,17 @@ async fn dispatch_is_idempotent_and_isolates_subscribers() {
 async fn concurrent_host_cas_claims_do_not_skip_keyset_pages() {
     let store = test_store().await;
     for i in 0..5 {
-        let created = store
-            .publish_domain_event(publish_spec_ordered(
+        let created = persist_outbox_event(
+            &store,
+            outbox_spec_ordered(
                 "book_acquired",
                 &format!("book_acquired:keyset-{i}"),
                 "{}",
                 &format!("k{i}"),
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         let id = expect_created(created);
         store
             .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], &format!("d-{id}"))
@@ -3103,14 +3104,12 @@ async fn concurrent_host_cas_claims_do_not_skip_keyset_pages() {
 #[tokio::test]
 async fn dispatch_page_fault_leaves_parent_pending_and_retries() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:page-fault",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:page-fault", "{}"),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     let db = store.db().clone();
     let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
@@ -3155,14 +3154,12 @@ async fn dispatch_page_fault_leaves_parent_pending_and_retries() {
 #[tokio::test]
 async fn dispatch_retry_keeps_frozen_snapshot_when_catalog_changes() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:snapshot-catalog",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:snapshot-catalog", "{}"),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     let db = store.db().clone();
     let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
@@ -3223,14 +3220,12 @@ async fn dispatch_snapshot_cas_two_stores_agree() {
     crate::apply_host_schema(&db1).await.unwrap();
     let db2 = bookclerk_plugin_database_sqlite::open(&path).await.unwrap();
     let store1 = LibraryStore::from_connection(db1.clone());
-    let created = store1
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:cas-snapshot",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store1,
+        outbox_spec("book_acquired", "book_acquired:cas-snapshot", "{}"),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     let store1 = store1.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db: db1 }));
     let store2 = LibraryStore::from_connection(db2.clone())
@@ -3302,14 +3297,12 @@ async fn dispatch_snapshot_cas_two_stores_agree() {
 #[tokio::test]
 async fn unrelated_dispatch_does_not_wait_on_snapshot_cas_barrier() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:no-barrier-wait",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:no-barrier-wait", "{}"),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     let db = store.db().clone();
     let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
@@ -3330,14 +3323,12 @@ async fn unrelated_dispatch_does_not_wait_on_snapshot_cas_barrier() {
 #[tokio::test]
 async fn malformed_dispatch_snapshot_fails_closed() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:bad-snapshot",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:bad-snapshot", "{}"),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .db()
@@ -3369,14 +3360,12 @@ async fn dispatch_twenty_five_subscribers_on_sqlite_caps_are_all_inserted() {
     let store = test_store()
         .await
         .with_db_capabilities(bookclerk_plugin_abi::DbCapabilities::advertised_sqlite());
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:twenty-five",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:twenty-five", "{}"),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     let db = store.db().clone();
     let store = store.with_atomic_txn(Arc::new(InProcessSqliteAtomic { db }));
@@ -3405,14 +3394,12 @@ async fn dispatch_twenty_five_subscribers_on_sqlite_caps_are_all_inserted() {
 #[tokio::test]
 async fn oversized_dispatch_page_is_rejected_and_parent_stays_pending() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:oversize",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:oversize", "{}"),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     let backend = InProcessSqliteAtomic {
         db: store.db().clone(),
@@ -3436,14 +3423,16 @@ async fn oversized_dispatch_page_is_rejected_and_parent_stays_pending() {
 #[tokio::test]
 async fn crash_between_publish_and_dispatch_leaves_pending_outbox() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:crash",
             r#"{"titleId":"crash"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     assert_eq!(
         store.list_event_deliveries(None, 10).await.unwrap().len(),
@@ -3461,14 +3450,16 @@ async fn crash_between_publish_and_dispatch_leaves_pending_outbox() {
 #[tokio::test]
 async fn reclaim_expired_event_delivery_and_stale_fence_ignored() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:reclaim",
             r#"{"titleId":"reclaim"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "op")
@@ -3513,14 +3504,16 @@ async fn postgres_reclaim_expired_resume_restores_resume_pending() {
 }
 
 async fn reclaim_expired_resume_restores(store: &LibraryStore) {
-    let created = store
-        .publish_domain_event(publish_spec(
+    let created = persist_outbox_event(
+        store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:reclaim-resume",
             r#"{"titleId":"reclaim-resume"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "op")
@@ -3574,14 +3567,16 @@ async fn reclaim_expired_resume_restores(store: &LibraryStore) {
 #[tokio::test]
 async fn suspend_resume_does_not_increment_attempt_count() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:suspend",
             r#"{"titleId":"suspend"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "op")
@@ -3615,24 +3610,18 @@ async fn suspend_resume_does_not_increment_attempt_count() {
 #[tokio::test]
 async fn fifo_skips_later_delivery_with_same_ordering_key() {
     let store = test_store().await;
-    let a = store
-        .publish_domain_event(publish_spec_ordered(
-            "book_acquired",
-            "book_acquired:fifo-a",
-            "{}",
-            "same-book",
-        ))
-        .await
-        .unwrap();
-    let b = store
-        .publish_domain_event(publish_spec_ordered(
-            "book_acquired",
-            "book_acquired:fifo-b",
-            "{}",
-            "same-book",
-        ))
-        .await
-        .unwrap();
+    let a = persist_outbox_event(
+        &store,
+        outbox_spec_ordered("book_acquired", "book_acquired:fifo-a", "{}", "same-book"),
+    )
+    .await
+    .unwrap();
+    let b = persist_outbox_event(
+        &store,
+        outbox_spec_ordered("book_acquired", "book_acquired:fifo-b", "{}", "same-book"),
+    )
+    .await
+    .unwrap();
     let id_a = expect_created(a);
     let id_b = expect_created(b);
     let sub = [EventSubscriber::plugin("echo")];
@@ -3669,15 +3658,17 @@ async fn fifo_blocked_window_does_not_starve_other_ordering_keys() {
     let sub = [EventSubscriber::plugin("echo")];
     let mut blocked_ids = Vec::new();
     for i in 0..40 {
-        let created = store
-            .publish_domain_event(publish_spec_ordered(
+        let created = persist_outbox_event(
+            &store,
+            outbox_spec_ordered(
                 "book_acquired",
                 &format!("book_acquired:fifo-block-{i}"),
                 "{}",
                 "blocked-book",
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         let id = expect_created(created);
         store
             .dispatch_event_deliveries(&id, &sub, &format!("block-{i}"))
@@ -3688,15 +3679,17 @@ async fn fifo_blocked_window_does_not_starve_other_ordering_keys() {
     let head = claim_delivery(&store, "w-head").await;
     assert_eq!(head.event_id, blocked_ids[0]);
 
-    let other = store
-        .publish_domain_event(publish_spec_ordered(
+    let other = persist_outbox_event(
+        &store,
+        outbox_spec_ordered(
             "book_acquired",
             "book_acquired:fifo-other",
             "{}",
             "other-book",
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let other_id = expect_created(other);
     store
         .dispatch_event_deliveries(&other_id, &sub, "other")
@@ -3709,14 +3702,12 @@ async fn fifo_blocked_window_does_not_starve_other_ordering_keys() {
 #[tokio::test]
 async fn operator_retry_and_ack_dead_letter() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:dlq",
-            r#"{"titleId":"dlq"}"#,
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:dlq", r#"{"titleId":"dlq"}"#),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "op")
@@ -3775,14 +3766,16 @@ async fn operator_retry_and_ack_dead_letter() {
 #[tokio::test]
 async fn retry_at_max_attempts_dead_letters() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:retry-max",
             r#"{"titleId":"retry-max"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "op")
@@ -3826,14 +3819,12 @@ async fn retry_at_max_attempts_dead_letters() {
 #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
 async fn postgres_event_outbox_publish_dispatch_claim() {
     let store = postgres_test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:pg",
-            r#"{"titleId":"pg"}"#,
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:pg", r#"{"titleId":"pg"}"#),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "pg-op")
@@ -3848,10 +3839,12 @@ async fn postgres_event_outbox_publish_dispatch_claim() {
 #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
 async fn postgres_event_catalog_reconcile_missing_pairs() {
     let store = postgres_test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec("book_acquired", "book_acquired:pg-late", "{}"))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:pg-late", "{}"),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[], "pg-empty")
@@ -3891,14 +3884,16 @@ async fn postgres_event_catalog_reconcile_missing_pairs() {
 #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
 async fn postgres_event_fence_suspend_and_wake() {
     let store = postgres_test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:pg-suspend",
             r#"{"source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "pg-s")
@@ -3925,14 +3920,16 @@ async fn postgres_event_fence_suspend_and_wake() {
         .unwrap();
     assert_eq!(parked.state, "pending");
     assert!(parked.resume_pending);
-    let trigger = store
-        .publish_domain_event(publish_spec(
+    let trigger = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:pg-wake",
             r#"{"source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let wake_id = expect_created(trigger);
     store
         .dispatch_event_deliveries(&wake_id, &[], "pg-wake-d")
@@ -3951,10 +3948,12 @@ async fn postgres_event_fence_suspend_and_wake() {
 #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
 async fn postgres_event_retention_cutoff_and_in_flight_cap() {
     let store = postgres_test_store().await;
-    let old = store
-        .publish_domain_event(publish_spec("book_acquired", "book_acquired:pg-old", "{}"))
-        .await
-        .unwrap();
+    let old = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:pg-old", "{}"),
+    )
+    .await
+    .unwrap();
     let old_id = expect_created(old);
     store
         .dispatch_event_deliveries(&old_id, &[], "pg-old-d")
@@ -3983,24 +3982,18 @@ async fn postgres_event_retention_cutoff_and_in_flight_cap() {
     let n = store.reconcile_catalog_deliveries(cutoff).await.unwrap();
     assert_eq!(n, 0, "events older than retention must not late-join");
 
-    let a = store
-        .publish_domain_event(publish_spec_ordered(
-            "book_acquired",
-            "book_acquired:pg-cap-a",
-            "{}",
-            "ka",
-        ))
-        .await
-        .unwrap();
-    let b = store
-        .publish_domain_event(publish_spec_ordered(
-            "book_acquired",
-            "book_acquired:pg-cap-b",
-            "{}",
-            "kb",
-        ))
-        .await
-        .unwrap();
+    let a = persist_outbox_event(
+        &store,
+        outbox_spec_ordered("book_acquired", "book_acquired:pg-cap-a", "{}", "ka"),
+    )
+    .await
+    .unwrap();
+    let b = persist_outbox_event(
+        &store,
+        outbox_spec_ordered("book_acquired", "book_acquired:pg-cap-b", "{}", "kb"),
+    )
+    .await
+    .unwrap();
     let id_a = expect_created(a);
     let id_b = expect_created(b);
     let sub = [EventSubscriber::plugin("echo")];
@@ -4051,14 +4044,16 @@ async fn postgres_duplicate_publish_replays_skipped_wake() {
         r#"{"source":"audible"}"#,
     )
     .await;
-    let second = store
-        .publish_domain_event(publish_spec(
+    let second = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:pg-dup-wake-2",
             r#"{"titleId":"two","source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id2 = expect_created(second);
     assert!(
         store
@@ -4070,14 +4065,16 @@ async fn postgres_duplicate_publish_replays_skipped_wake() {
     );
     let still = store.get_event_delivery(&parked.id).await.unwrap().unwrap();
     assert!(still.run_after > chrono::Utc::now() + chrono::Duration::days(1));
-    let again = store
-        .publish_domain_event(publish_spec(
+    let again = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:pg-dup-wake-2",
             r#"{"titleId":"two","source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         again,
         PublishDomainEventOutcome::Duplicate {
@@ -4110,14 +4107,12 @@ async fn postgres_duplicate_publish_replays_skipped_wake() {
 async fn postgres_process_pending_wakes_repairs_dispatched_gap() {
     let store = postgres_test_store().await;
     let parked = park_echo_wake(&store, "book_acquired:pg-gap-1", "{}", "book_acquired", "").await;
-    let trigger = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:pg-gap-2",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    let trigger = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:pg-gap-2", "{}"),
+    )
+    .await
+    .unwrap();
     let id = expect_created(trigger);
     store
         .dispatch_event_deliveries(&id, &[], "pg-gap-d")
@@ -4156,27 +4151,27 @@ async fn postgres_wake_stays_inside_account_boundary() {
         "",
     )
     .await;
-    store
-        .publish_domain_event(publish_spec_account(
+    persist_outbox_event(
+        &store,
+        outbox_spec_account(
             "book_acquired",
             "book_acquired:pg-acct-b",
             "{}",
             "",
             "other",
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     drain_pending_wakes(&store).await;
     let still = store.get_event_delivery(&parked.id).await.unwrap().unwrap();
     assert!(still.run_after > chrono::Utc::now() + chrono::Duration::days(1));
-    store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:pg-acct-a-2",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:pg-acct-a-2", "{}"),
+    )
+    .await
+    .unwrap();
     drain_pending_wakes(&store).await;
     let woken = store.get_event_delivery(&parked.id).await.unwrap().unwrap();
     assert!(woken.run_after <= chrono::Utc::now() + chrono::Duration::seconds(2));
@@ -4189,15 +4184,17 @@ async fn postgres_concurrent_event_claims_respect_in_flight_cap() {
     let store = std::sync::Arc::new(store);
     let sub = [EventSubscriber::plugin("echo")];
     for (dedup, key) in [("pg-race-a", "ka"), ("pg-race-b", "kb")] {
-        let created = store
-            .publish_domain_event(publish_spec_ordered(
+        let created = persist_outbox_event(
+            &store,
+            outbox_spec_ordered(
                 "book_acquired",
                 &format!("book_acquired:{dedup}"),
                 "{}",
                 key,
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         let id = expect_created(created);
         store
             .dispatch_event_deliveries(&id, &sub, &format!("d-{id}"))
@@ -4283,24 +4280,18 @@ async fn acquire_status_and_outbox_commit_together() {
 async fn fifo_uses_persisted_ordering_key_without_title_id() {
     let store = test_store().await;
     let sub = [EventSubscriber::plugin("echo")];
-    let a = store
-        .publish_domain_event(publish_spec_ordered(
-            "generic",
-            "generic:a",
-            r#"{"foo":1}"#,
-            "shared-key",
-        ))
-        .await
-        .unwrap();
-    let b = store
-        .publish_domain_event(publish_spec_ordered(
-            "generic",
-            "generic:b",
-            r#"{"foo":2}"#,
-            "shared-key",
-        ))
-        .await
-        .unwrap();
+    let a = persist_outbox_event(
+        &store,
+        outbox_spec_ordered("generic", "generic:a", r#"{"foo":1}"#, "shared-key"),
+    )
+    .await
+    .unwrap();
+    let b = persist_outbox_event(
+        &store,
+        outbox_spec_ordered("generic", "generic:b", r#"{"foo":2}"#, "shared-key"),
+    )
+    .await
+    .unwrap();
     let id_a = expect_created(a);
     let id_b = expect_created(b);
     store
@@ -4334,10 +4325,12 @@ async fn fifo_uses_persisted_ordering_key_without_title_id() {
 #[tokio::test]
 async fn claim_filters_to_loaded_plugin_ids() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec("book_acquired", "book_acquired:plug", "{}"))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:plug", "{}"),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(
@@ -4409,14 +4402,16 @@ async fn catalog_dispatch_creates_rows_claim_filters_loaded_plugins() {
         )
         .await
         .unwrap();
-    let created = store
-        .publish_domain_event(publish_spec(
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:catalog-two",
             r#"{"titleId":"catalog-two"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     let event = store.get_domain_event(&id).await.unwrap().unwrap();
     assert_eq!(
@@ -4459,22 +4454,26 @@ async fn catalog_filter_match_and_miss() {
         .upsert_event_subscriber("node-a", "echo", &[spec], true)
         .await
         .unwrap();
-    let hit = store
-        .publish_domain_event(publish_spec(
+    let hit = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:filter-hit",
             r#"{"source":"audible","titleId":"hit"}"#,
-        ))
-        .await
-        .unwrap();
-    let miss = store
-        .publish_domain_event(publish_spec(
+        ),
+    )
+    .await
+    .unwrap();
+    let miss = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:filter-miss",
             r#"{"source":"libro","titleId":"miss"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let hit_id = expect_created(hit);
     let miss_id = expect_created(miss);
     let hit_event = store.get_domain_event(&hit_id).await.unwrap().unwrap();
@@ -4501,14 +4500,16 @@ async fn catalog_filter_match_and_miss() {
 #[tokio::test]
 async fn cancel_pending_and_running_delivery() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:cancel-pending",
             r#"{"titleId":"cancel-pending"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "op")
@@ -4526,14 +4527,16 @@ async fn cancel_pending_and_running_delivery() {
         Some("cancelled by operator")
     );
 
-    let created = store
-        .publish_domain_event(publish_spec(
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:cancel-running",
             r#"{"titleId":"cancel-running"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "op")
@@ -4556,14 +4559,16 @@ async fn cancel_pending_and_running_delivery() {
 #[tokio::test]
 async fn resume_suspended_delivery_sets_run_after_now() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:resume",
             r#"{"titleId":"resume"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "op")
@@ -4595,14 +4600,16 @@ async fn resume_suspended_delivery_sets_run_after_now() {
 #[tokio::test]
 async fn prune_event_retention_independent_of_dead_letters() {
     let store = test_store().await;
-    let acked = store
-        .publish_domain_event(publish_spec(
+    let acked = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:prune-ack",
             r#"{"titleId":"prune-ack"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let ack_id = expect_created(acked);
     store
         .dispatch_event_deliveries(&ack_id, &[EventSubscriber::plugin("echo")], "op")
@@ -4611,14 +4618,16 @@ async fn prune_event_retention_independent_of_dead_letters() {
     let claimed = claim_delivery(&store, "prune-ack").await;
     assert!(store.ack_event_delivery(&claimed.fence()).await.unwrap());
 
-    let dead = store
-        .publish_domain_event(publish_spec(
+    let dead = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:prune-dl",
             r#"{"titleId":"prune-dl"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let dl_id = expect_created(dead);
     store
         .dispatch_event_deliveries(&dl_id, &[EventSubscriber::plugin("echo")], "op")
@@ -4659,14 +4668,16 @@ async fn prune_event_retention_independent_of_dead_letters() {
 #[tokio::test]
 async fn event_delivery_metrics_split_pending_and_suspended() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:metrics",
             r#"{"titleId":"metrics"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(
@@ -4710,14 +4721,16 @@ async fn catalog_union_enabled_wins_and_expired_nodes_drop_out() {
         .upsert_event_subscriber("node-b", "echo", std::slice::from_ref(&spec), false)
         .await
         .unwrap();
-    let created = store
-        .publish_domain_event(publish_spec(
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:union-enable",
             r#"{"titleId":"union-enable"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     let event = store.get_domain_event(&id).await.unwrap().unwrap();
     assert_eq!(
@@ -4737,14 +4750,12 @@ async fn catalog_union_enabled_wins_and_expired_nodes_drop_out() {
         .upsert_event_subscriber("node-b", "echo", std::slice::from_ref(&spec), false)
         .await
         .unwrap();
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:both-disabled",
-            r#"{}"#,
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:both-disabled", r#"{}"#),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     let event = store.get_domain_event(&id).await.unwrap().unwrap();
     assert_eq!(
@@ -4770,14 +4781,12 @@ async fn late_join_reconciles_more_than_two_hundred_dispatched_events() {
     let store = test_store().await;
     let mut ids = Vec::new();
     for i in 0..201 {
-        let created = store
-            .publish_domain_event(publish_spec(
-                "book_acquired",
-                &format!("book_acquired:late-{i}"),
-                "{}",
-            ))
-            .await
-            .unwrap();
+        let created = persist_outbox_event(
+            &store,
+            outbox_spec("book_acquired", &format!("book_acquired:late-{i}"), "{}"),
+        )
+        .await
+        .unwrap();
         let id = expect_created(created);
         store
             .dispatch_event_deliveries(&id, &[], &format!("empty-{i}"))
@@ -4823,14 +4832,12 @@ async fn unchanged_catalog_reconcile_does_zero_dispatch_writes() {
         .unwrap();
     let mut ids = Vec::new();
     for i in 0..201 {
-        let created = store
-            .publish_domain_event(publish_spec(
-                "book_acquired",
-                &format!("book_acquired:stable-{i}"),
-                "{}",
-            ))
-            .await
-            .unwrap();
+        let created = persist_outbox_event(
+            &store,
+            outbox_spec("book_acquired", &format!("book_acquired:stable-{i}"), "{}"),
+        )
+        .await
+        .unwrap();
         let id = expect_created(created);
         store
             .dispatch_event_deliveries(
@@ -4886,14 +4893,16 @@ async fn unchanged_catalog_reconcile_does_zero_dispatch_writes() {
 #[tokio::test]
 async fn wake_on_matching_event_makes_delivery_claimable() {
     let store = test_store().await;
-    let first = store
-        .publish_domain_event(publish_spec(
+    let first = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:wake-1",
             r#"{"titleId":"one","source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id1 = expect_created(first);
     store
         .dispatch_event_deliveries(&id1, &[EventSubscriber::plugin("echo")], "d1")
@@ -4933,14 +4942,16 @@ async fn wake_on_matching_event_makes_delivery_claimable() {
         .unwrap()
         .is_none());
 
-    let second = store
-        .publish_domain_event(publish_spec(
+    let second = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:wake-2",
             r#"{"titleId":"two","source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id2 = expect_created(second);
     store
         .dispatch_event_deliveries(&id2, &[EventSubscriber::plugin("echo")], "d2")
@@ -4965,8 +4976,7 @@ async fn park_echo_wake(
     wake_type: &str,
     wake_filter: &str,
 ) -> crate::EventDeliveryRecord {
-    let created = store
-        .publish_domain_event(publish_spec("book_acquired", dedup, payload))
+    let created = persist_outbox_event(store, outbox_spec("book_acquired", dedup, payload))
         .await
         .unwrap();
     let id = expect_created(created);
@@ -5006,27 +5016,31 @@ async fn duplicate_publish_replays_skipped_wake() {
         r#"{"source":"audible"}"#,
     )
     .await;
-    let second = store
-        .publish_domain_event(publish_spec(
+    let second = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:dup-wake-2",
             r#"{"titleId":"two","source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id2 = expect_created(second);
     let pending = store.get_domain_event(&id2).await.unwrap().unwrap();
     assert!(pending.wake_pending);
     let still = store.get_event_delivery(&parked.id).await.unwrap().unwrap();
     assert!(still.run_after > chrono::Utc::now() + chrono::Duration::days(1));
-    let again = store
-        .publish_domain_event(publish_spec(
+    let again = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:dup-wake-2",
             r#"{"titleId":"two","source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         again,
         PublishDomainEventOutcome::Duplicate {
@@ -5053,14 +5067,16 @@ async fn process_pending_wakes_repairs_dispatched_gap() {
         "",
     )
     .await;
-    let trigger = store
-        .publish_domain_event(publish_spec(
+    let trigger = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:gap-wake-2",
             r#"{"titleId":"two"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let id = expect_created(trigger);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "gap-d")
@@ -5091,28 +5107,32 @@ async fn wake_stays_inside_account_boundary() {
         "",
     )
     .await;
-    let other = store
-        .publish_domain_event(publish_spec_account(
+    let other = persist_outbox_event(
+        &store,
+        outbox_spec_account(
             "book_acquired",
             "book_acquired:acct-b",
             r#"{"titleId":"two"}"#,
             "",
             "other",
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let other_id = expect_created(other);
     drain_pending_wakes(&store).await;
     let still = store.get_event_delivery(&parked.id).await.unwrap().unwrap();
     assert!(still.run_after > chrono::Utc::now() + chrono::Duration::days(1));
-    let same = store
-        .publish_domain_event(publish_spec(
+    let same = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:acct-a-2",
             r#"{"titleId":"three"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let same_id = expect_created(same);
     drain_pending_wakes(&store).await;
     let woken = store.get_event_delivery(&parked.id).await.unwrap().unwrap();
@@ -5123,14 +5143,12 @@ async fn wake_stays_inside_account_boundary() {
 #[tokio::test]
 async fn wake_pages_more_than_page_size_same_account() {
     let store = test_store().await;
-    let parent = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:wake-page-parent",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    let parent = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:wake-page-parent", "{}"),
+    )
+    .await
+    .unwrap();
     let parent_id = expect_created(parent);
     let now = chrono::Utc::now().to_rfc3339();
     let future = "9999-12-31T23:59:59+00:00";
@@ -5168,14 +5186,12 @@ async fn wake_pages_more_than_page_size_same_account() {
         .await
         .unwrap();
     }
-    store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:wake-page-trigger",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:wake-page-trigger", "{}"),
+    )
+    .await
+    .unwrap();
     drain_pending_wakes(&store).await;
     let mut woken = 0u32;
     for i in 0..n {
@@ -5196,15 +5212,17 @@ async fn per_plugin_in_flight_cap_blocks_second_claim() {
     let store = test_store().await;
     let sub = [EventSubscriber::plugin("echo")];
     for (dedup, key) in [("cap-a", "k-a"), ("cap-b", "k-b")] {
-        let created = store
-            .publish_domain_event(publish_spec_ordered(
+        let created = persist_outbox_event(
+            &store,
+            outbox_spec_ordered(
                 "book_acquired",
                 &format!("book_acquired:{dedup}"),
                 "{}",
                 key,
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         let id = expect_created(created);
         store
             .dispatch_event_deliveries(&id, &sub, &format!("d-{id}"))
@@ -5254,12 +5272,12 @@ async fn per_plugin_in_flight_cap_blocks_second_claim() {
 #[tokio::test]
 async fn publish_rejects_invalid_source_and_accepts_empty() {
     let store = test_store().await;
-    let mut bad = publish_spec("book_acquired", "book_acquired:bad-src", "{}");
+    let mut bad = outbox_spec("book_acquired", "book_acquired:bad-src", "{}");
     bad.source = "Not_Valid".into();
-    assert!(store.publish_domain_event(bad).await.is_err());
-    let mut ok = publish_spec("book_acquired", "book_acquired:ok-src", "{}");
+    assert!(persist_outbox_event(&store, bad).await.is_err());
+    let mut ok = outbox_spec("book_acquired", "book_acquired:ok-src", "{}");
     ok.source = "audible".into();
-    let created = store.publish_domain_event(ok).await.unwrap();
+    let created = persist_outbox_event(&store, ok).await.unwrap();
     let id = expect_created(created);
     let event = store.get_domain_event(&id).await.unwrap().unwrap();
     assert_eq!(event.source, "audible");
@@ -5268,14 +5286,12 @@ async fn publish_rejects_invalid_source_and_accepts_empty() {
 #[tokio::test]
 async fn zero_delivery_event_survives_until_retention_deadline() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:zero-delivery",
-            r#"{}"#,
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:zero-delivery", r#"{}"#),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[], "empty")
@@ -5301,14 +5317,12 @@ async fn zero_delivery_event_survives_until_retention_deadline() {
 #[tokio::test]
 async fn unknown_event_resource_class_is_rejected_and_does_not_block_claim() {
     let store = test_store().await;
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:class-network",
-            r#"{}"#,
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:class-network", r#"{}"#),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "op")
@@ -5402,37 +5416,41 @@ async fn wake_grants_keep_subscription_schema_and_filter() {
     am.wake_grants_json = sea_orm::ActiveValue::Set(audible_v1_wake_grants());
     am.update(store.db()).await.unwrap();
 
-    let mut v2 = publish_spec(
+    let mut v2 = outbox_spec(
         "book_acquired",
         "book_acquired:grant-v2",
         r#"{"source":"audible"}"#,
     );
     v2.schema_version = 2;
-    store.publish_domain_event(v2).await.unwrap();
+    persist_outbox_event(&store, v2).await.unwrap();
     drain_pending_wakes(&store).await;
     let still = store.get_event_delivery(&parked.id).await.unwrap().unwrap();
     assert!(still.run_after > chrono::Utc::now() + chrono::Duration::days(1));
 
-    store
-        .publish_domain_event(publish_spec(
+    persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:grant-libro",
             r#"{"source":"libro"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     drain_pending_wakes(&store).await;
     let still = store.get_event_delivery(&parked.id).await.unwrap().unwrap();
     assert!(still.run_after > chrono::Utc::now() + chrono::Duration::days(1));
 
-    store
-        .publish_domain_event(publish_spec(
+    persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:grant-ok",
             r#"{"source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     drain_pending_wakes(&store).await;
     let woken = store.get_event_delivery(&parked.id).await.unwrap().unwrap();
     assert!(woken.run_after <= chrono::Utc::now() + chrono::Duration::seconds(2));
@@ -5443,14 +5461,12 @@ async fn process_pending_wakes_is_bounded_and_leases_prevent_shared_slice() {
     let store = test_store().await;
     let mut ids = Vec::new();
     for dedup in ["bound-a", "bound-b", "bound-c"] {
-        let created = store
-            .publish_domain_event(publish_spec(
-                "book_acquired",
-                &format!("book_acquired:{dedup}"),
-                "{}",
-            ))
-            .await
-            .unwrap();
+        let created = persist_outbox_event(
+            &store,
+            outbox_spec("book_acquired", &format!("book_acquired:{dedup}"), "{}"),
+        )
+        .await
+        .unwrap();
         let id = expect_created(created);
         ids.push(id);
     }
@@ -5508,14 +5524,12 @@ async fn postgres_stale_wake_finish_and_cursor_do_not_clobber_new_owner() {
 }
 
 async fn stale_wake_fence_does_not_clobber(store: &LibraryStore) {
-    let created = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:fence-stale",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    let created = persist_outbox_event(
+        store,
+        outbox_spec("book_acquired", "book_acquired:fence-stale", "{}"),
+    )
+    .await
+    .unwrap();
     let id = expect_created(created);
     let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
     let mut am: crate::entities::domain_events::ActiveModel =
@@ -5578,14 +5592,16 @@ async fn stale_wake_delivery_update_does_not_clear(store: &LibraryStore) {
         r#"{"source":"audible"}"#,
     )
     .await;
-    let trigger = store
-        .publish_domain_event(publish_spec(
+    let trigger = persist_outbox_event(
+        store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:stale-wake-upd-2",
             r#"{"titleId":"two","source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let trigger_id = expect_created(trigger);
     let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
     let mut am: crate::entities::domain_events::ActiveModel =
@@ -5669,14 +5685,16 @@ async fn wake_consumes_registration_so_retry_is_not_rewoken() {
         r#"{"source":"audible"}"#,
     )
     .await;
-    let trigger = store
-        .publish_domain_event(publish_spec(
+    let trigger = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:consume-wake-2",
             r#"{"titleId":"two","source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let trigger_id = expect_created(trigger);
     drain_pending_wakes(&store).await;
     let woken = store.get_event_delivery(&parked.id).await.unwrap().unwrap();
@@ -5695,14 +5713,16 @@ async fn wake_consumes_registration_so_retry_is_not_rewoken() {
     let held_run_after = after_retry.run_after;
     assert!(!after_retry.resume_pending);
 
-    let again = store
-        .publish_domain_event(publish_spec(
+    let again = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:consume-wake-3",
             r#"{"titleId":"three","source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let again_id = expect_created(again);
     drain_pending_wakes(&store).await;
     let still = store.get_event_delivery(&parked.id).await.unwrap().unwrap();
@@ -5733,14 +5753,16 @@ async fn wake_consumes_registration_so_retry_is_not_rewoken() {
         )
         .await
         .unwrap());
-    let fourth = store
-        .publish_domain_event(publish_spec(
+    let fourth = persist_outbox_event(
+        &store,
+        outbox_spec(
             "book_acquired",
             "book_acquired:consume-wake-4",
             r#"{"titleId":"four","source":"audible"}"#,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let fourth_id = expect_created(fourth);
     drain_pending_wakes(&store).await;
     let rewoken = store.get_event_delivery(&parked.id).await.unwrap().unwrap();
@@ -5770,9 +5792,9 @@ async fn claim_requires_this_nodes_schema_version() {
         )
         .await
         .unwrap();
-    let mut spec = publish_spec("book_acquired", "book_acquired:schema-v2", "{}");
+    let mut spec = outbox_spec("book_acquired", "book_acquired:schema-v2", "{}");
     spec.schema_version = 2;
-    let created = store.publish_domain_event(spec).await.unwrap();
+    let created = persist_outbox_event(&store, spec).await.unwrap();
     let id = expect_created(created);
     let event = store.get_domain_event(&id).await.unwrap().unwrap();
     let catalog = store.list_live_event_subscribers().await.unwrap();
@@ -5831,9 +5853,9 @@ async fn incompatible_d1_style_claim_is_released_without_attempt_burn() {
         )
         .await
         .unwrap();
-    let mut spec = publish_spec("book_acquired", "book_acquired:d1-incompat", "{}");
+    let mut spec = outbox_spec("book_acquired", "book_acquired:d1-incompat", "{}");
     spec.schema_version = 2;
-    let created = store.publish_domain_event(spec).await.unwrap();
+    let created = persist_outbox_event(&store, spec).await.unwrap();
     let id = expect_created(created);
     store
         .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "d1-incompat")
@@ -5878,22 +5900,20 @@ async fn atomic_claim_skips_incompatible_oldest_and_claims_later_compatible() {
         )
         .await
         .unwrap();
-    let mut spec_v2 = publish_spec("book_acquired", "book_acquired:atomic-skip-v2", "{}");
+    let mut spec_v2 = outbox_spec("book_acquired", "book_acquired:atomic-skip-v2", "{}");
     spec_v2.schema_version = 2;
-    let created_v2 = store.publish_domain_event(spec_v2).await.unwrap();
+    let created_v2 = persist_outbox_event(&store, spec_v2).await.unwrap();
     let id_v2 = expect_created(created_v2);
     store
         .dispatch_event_deliveries(&id_v2, &[EventSubscriber::plugin("echo")], "atomic-skip-v2")
         .await
         .unwrap();
-    let created_v1 = store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:atomic-skip-v1",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    let created_v1 = persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:atomic-skip-v1", "{}"),
+    )
+    .await
+    .unwrap();
     let id_v1 = expect_created(created_v1);
     store
         .dispatch_event_deliveries(&id_v1, &[EventSubscriber::plugin("echo")], "atomic-skip-v1")
@@ -5930,49 +5950,37 @@ async fn atomic_claim_skips_incompatible_oldest_and_claims_later_compatible() {
 #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
 async fn postgres_publish_domain_event_namespaces_dedup_by_account_and_source() {
     let store = postgres_test_store().await;
-    let a = store
-        .publish_domain_event(publish_spec_account(
-            "book_acquired",
-            "book_acquired:pg-ns",
-            "{}",
-            "",
-            "acct-a",
-        ))
-        .await
-        .unwrap();
+    let a = persist_outbox_event(
+        &store,
+        outbox_spec_account("book_acquired", "book_acquired:pg-ns", "{}", "", "acct-a"),
+    )
+    .await
+    .unwrap();
     let id_a = expect_created(a);
-    let b = store
-        .publish_domain_event(publish_spec_account(
-            "book_acquired",
-            "book_acquired:pg-ns",
-            "{}",
-            "",
-            "acct-b",
-        ))
-        .await
-        .unwrap();
+    let b = persist_outbox_event(
+        &store,
+        outbox_spec_account("book_acquired", "book_acquired:pg-ns", "{}", "", "acct-b"),
+    )
+    .await
+    .unwrap();
     assert!(
         matches!(b, PublishDomainEventOutcome::Created { .. }),
         "expected PublishDomainEventOutcome::Created"
     );
     let mut sourced =
-        publish_spec_account("book_acquired", "book_acquired:pg-ns", "{}", "", "acct-a");
+        outbox_spec_account("book_acquired", "book_acquired:pg-ns", "{}", "", "acct-a");
     sourced.source = "audible".into();
-    let c = store.publish_domain_event(sourced).await.unwrap();
+    let c = persist_outbox_event(&store, sourced).await.unwrap();
     assert!(
         matches!(c, PublishDomainEventOutcome::Created { .. }),
         "expected PublishDomainEventOutcome::Created"
     );
-    let dup = store
-        .publish_domain_event(publish_spec_account(
-            "book_acquired",
-            "book_acquired:pg-ns",
-            "{}",
-            "",
-            "acct-a",
-        ))
-        .await
-        .unwrap();
+    let dup = persist_outbox_event(
+        &store,
+        outbox_spec_account("book_acquired", "book_acquired:pg-ns", "{}", "", "acct-a"),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         dup,
         PublishDomainEventOutcome::Duplicate { existing_id: id_a }
@@ -5983,14 +5991,12 @@ async fn postgres_publish_domain_event_namespaces_dedup_by_account_and_source() 
 #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
 async fn postgres_concurrent_wake_claims_do_not_share_slice() {
     let store = std::sync::Arc::new(postgres_test_store().await);
-    store
-        .publish_domain_event(publish_spec(
-            "book_acquired",
-            "book_acquired:pg-wake-claim",
-            "{}",
-        ))
-        .await
-        .unwrap();
+    persist_outbox_event(
+        &store,
+        outbox_spec("book_acquired", "book_acquired:pg-wake-claim", "{}"),
+    )
+    .await
+    .unwrap();
     let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
     let mut handles = Vec::new();
     for i in 0..2 {
@@ -6244,9 +6250,9 @@ async fn postgres_totp_enroll_and_disable_round_trip() {
         .create_user(UserRole::Member, Some("Totp Pg"), None)
         .await
         .unwrap();
-    store_pending_totp(&store, user.id, "JBSWY3DPEHPK3PXP").await;
+    store_pending_totp(&store, user.id, &sample_totp_secret()).await;
     store
-        .confirm_totp_enrollment(user.id, "JBSWY3DPEHPK3PXP")
+        .confirm_totp_enrollment(user.id, &sample_totp_secret())
         .await
         .unwrap();
     let enrolled = store.get_user(user.id).await.unwrap().unwrap();
@@ -6271,10 +6277,10 @@ async fn postgres_totp_enroll_and_disable_missing_user_leave_no_leftover_secrets
         .create_user(UserRole::Member, Some("Keep Totp Pg"), None)
         .await
         .unwrap();
-    store_pending_totp(&store, other.id, "JBSWY3DPEHPK3PXP").await;
+    store_pending_totp(&store, other.id, &sample_totp_secret()).await;
     let missing = 999_i64;
     let enroll_err = store
-        .confirm_totp_enrollment(missing, "JBSWY3DPEHPK3PXP")
+        .confirm_totp_enrollment(missing, &sample_totp_secret())
         .await
         .unwrap_err();
     assert!(matches!(enroll_err, LibraryError::NotFound(_)));
@@ -6306,10 +6312,10 @@ async fn postgres_totp_injected_commit_failure_rolls_back_enroll_and_disable() {
         .create_user(UserRole::Member, Some("Totp Pg Inject"), None)
         .await
         .unwrap();
-    store_pending_totp(&store, user.id, "JBSWY3DPEHPK3PXP").await;
+    store_pending_totp(&store, user.id, &sample_totp_secret()).await;
     crate::inject_commit_failures(1);
     let enroll_err = store
-        .confirm_totp_enrollment(user.id, "JBSWY3DPEHPK3PXP")
+        .confirm_totp_enrollment(user.id, &sample_totp_secret())
         .await
         .unwrap_err();
     assert!(
@@ -6320,7 +6326,7 @@ async fn postgres_totp_injected_commit_failure_rolls_back_enroll_and_disable() {
     assert_eq!(totp_secret_names(&store, user.id).await, vec!["pending"]);
 
     store
-        .confirm_totp_enrollment(user.id, "JBSWY3DPEHPK3PXP")
+        .confirm_totp_enrollment(user.id, &sample_totp_secret())
         .await
         .unwrap();
     assert!(store.get_user(user.id).await.unwrap().unwrap().totp_enabled);

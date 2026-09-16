@@ -67,10 +67,10 @@ pub fn validate_operator_token(token: &str, source: &str) -> Result<String> {
 ///
 /// Returns an error when the operation fails.
 pub fn generate_operator_token() -> Result<String> {
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes)
+    let mut bytes = [std::mem::MaybeUninit::<u8>::uninit(); 32];
+    let bytes = getrandom::fill_uninit(&mut bytes)
         .map_err(|err| ConfigError::Invalid(format!("failed to generate operator token: {err}")))?;
-    Ok(encode_hex(&bytes))
+    Ok(encode_hex(bytes))
 }
 
 /// Encodes random token bytes as lowercase hex for the operator API secret.

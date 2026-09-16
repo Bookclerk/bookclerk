@@ -3,7 +3,6 @@
 use bookclerk_config::IntegrationsConfig;
 use bookclerk_library::{ClaimTicketRecord, LibraryStore, PortalIdentity};
 use chrono::{Duration, Utc};
-use rand::Rng;
 
 use crate::error::{IntegrationError, Result};
 use crate::types::ExternalUser;
@@ -13,8 +12,7 @@ pub use bookclerk_library::hash_token;
 /// Generate a URL-safe random token.
 #[must_use]
 pub fn generate_token() -> String {
-    let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
+    let bytes: [u8; 32] = std::array::from_fn(|_| rand::random::<u8>());
     hex::encode(bytes)
 }
 

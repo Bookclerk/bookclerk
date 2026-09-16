@@ -12,6 +12,7 @@ use bookclerk_storage::StorageBackend;
 use clap::Subcommand;
 
 use crate::commands::export::{export_csv, export_json, export_xlsx, filter_books, load_books};
+use crate::format_out;
 use crate::progress::BatchProgress;
 use crate::registry::{default_registry_with_plugins, resolve_source_id};
 
@@ -257,10 +258,10 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             } else {
                 registry.scan_all(&store, opts).await?
             };
-            println!(
+            format_out::line(format!(
                 "scan complete: {} account(s), {} book upsert(s), {} page(s), {} skipped (scan disabled)",
                 summary.accounts, summary.books_upserted, summary.pages, summary.skipped_disabled
-            );
+            ));
             if config.library.enrich_from_audible {
                 match bookclerk_enrich::enrich_books_from_audible(
                     &store,
@@ -853,11 +854,11 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     )
                     .await?;
             }
-            println!(
+            format_out::line(format!(
                 "account {} scan_enabled={}",
                 account_id,
                 if scan { "yes" } else { "no" }
-            );
+            ));
             Ok(())
         }
         LibraryCommand::Status { source } => {
@@ -874,10 +875,10 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 let accounts = src.list_accounts(&store.scope(src.id())).await?;
                 for acct in accounts {
                     any = true;
-                    println!(
+                    format_out::line(format!(
                         "{}\t{}\t{}\tstatus=present",
                         acct.source, acct.account_id, acct.marketplace
-                    );
+                    ));
                 }
             }
             if !any {
@@ -906,10 +907,10 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 bookclerk_source::revoke_credentials_default(&scope, &acct.account_id).await?;
             }
             store.revoke_credentials(&acct.account_id).await?;
-            println!(
+            format_out::line(format!(
                 "revoked credentials for {} (books retained, scan_enabled=false)",
                 acct.account_id
-            );
+            ));
             Ok(())
         }
     }
@@ -955,18 +956,18 @@ async fn list_all_accounts(
             let auth_ok = true;
             let status = String::from("ok");
             if bare {
-                println!(
+                format_out::line(format!(
                     "{}\t{}\t{name}\t{}\t{scan}\t{}",
                     acct.source,
                     acct.account_id,
                     acct.marketplace,
                     yes_no(auth_ok)
-                );
+                ));
             } else {
-                println!(
+                format_out::line(format!(
                     "{}\t{}\t{}\t{}\t{status}",
                     acct.source, acct.account_id, acct.marketplace, name
-                );
+                ));
             }
         }
     }
@@ -984,18 +985,18 @@ async fn list_all_accounts(
         any = true;
         let name = db.label.as_deref().unwrap_or(&db.account_id);
         if bare {
-            println!(
+            format_out::line(format!(
                 "{}\t{}\t{name}\t{}\t{}\tno",
                 db.source,
                 db.account_id,
                 db.marketplace,
                 yes_no(db.scan_enabled)
-            );
+            ));
         } else {
-            println!(
+            format_out::line(format!(
                 "{}\t{}\t{}\t{}\tdb_only",
                 db.source, db.account_id, db.marketplace, name
-            );
+            ));
         }
     }
 

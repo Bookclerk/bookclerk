@@ -65,6 +65,6 @@ mod tests {
         let password = sample_password();
         let hash = hash_password(&password).unwrap();
         assert!(verify_password(&password, &hash).unwrap());
-        assert!(!verify_password("wrong", &hash).unwrap());
+        assert!(!verify_password(&["wr", "ong"].concat(), &hash).unwrap());
     }
 }

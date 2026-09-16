@@ -46,14 +46,28 @@ struct AvatarKind {
 }
 
 /// Absolute path of a stored avatar for `user_id` with `ext`.
-fn avatar_path_with_ext(files_dir: &Path, user_id: i64, ext: &str) -> PathBuf {
-    files_dir.join("avatars").join(format!("{user_id}.{ext}"))
+///
+/// `user_id` is numeric and `ext` must be an allowlisted kind, so the file name
+/// cannot contain path separators. The trusted operator `files_dir` is used as
+/// configured (including relative/`..` components); containment is the
+/// `avatars/` join plus `starts_with` on that directory.
+fn avatar_path_with_ext(files_dir: &Path, user_id: i64, ext: &str) -> Option<PathBuf> {
+    if !AVATAR_KINDS.iter().any(|(kind, _)| *kind == ext) {
+        return None;
+    }
+    let dir = files_dir.join("avatars");
+    let path = dir.join(format!("{user_id}.{ext}"));
+    path.starts_with(&dir).then_some(path)
 }
 
 /// Stored avatar path and content type when a file exists.
 fn existing_avatar(files_dir: &Path, user_id: i64) -> Option<(PathBuf, &'static str)> {
     for (ext, content_type) in AVATAR_KINDS {
-        let path = avatar_path_with_ext(files_dir, user_id, ext);
+        let Some(path) = avatar_path_with_ext(files_dir, user_id, ext) else {
+            continue;
+        };
+        // Contained under `{files_dir}/avatars` by [`avatar_path_with_ext`].
+        // codeql[rust/path-injection]
         if path.is_file() {
             return Some((path, *content_type));
         }
@@ -69,8 +83,12 @@ pub(crate) fn avatar_exists(files_dir: &Path, user_id: i64) -> bool {
 /// Best-effort delete of a stored avatar; missing files are ignored.
 pub(crate) fn remove_avatar(files_dir: &Path, user_id: i64) {
     for (ext, _) in AVATAR_KINDS {
-        let path = avatar_path_with_ext(files_dir, user_id, ext);
+        let Some(path) = avatar_path_with_ext(files_dir, user_id, ext) else {
+            continue;
+        };
         if path.is_file() {
+            // Contained under `{files_dir}/avatars` by [`avatar_path_with_ext`].
+            // codeql[rust/path-injection]
             if let Err(err) = std::fs::remove_file(&path) {
                 tracing::warn!(error = %err, user_id, "failed to remove profile avatar");
             }
@@ -269,7 +287,10 @@ pub async fn put_avatar(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     remove_avatar(&files, user_id);
-    let dest = avatar_path_with_ext(&files, user_id, kind.ext);
+    let dest =
+        avatar_path_with_ext(&files, user_id, kind.ext).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Contained under `{files_dir}/avatars` by [`avatar_path_with_ext`].
+    // codeql[rust/path-injection]
     tokio::fs::write(&dest, &body)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -331,6 +352,8 @@ pub async fn get_avatar(
         .ok_or(StatusCode::NOT_FOUND)?;
     let files = files_dir(&state).await.ok_or(StatusCode::NOT_FOUND)?;
     let (path, content_type) = existing_avatar(&files, user_id).ok_or(StatusCode::NOT_FOUND)?;
+    // Contained under `{files_dir}/avatars` by [`avatar_path_with_ext`].
+    // codeql[rust/path-injection]
     let bytes = tokio::fs::read(&path)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
@@ -438,6 +461,23 @@ mod tests {
         let png = tiny_png();
         assert_eq!(sniff_avatar(&png).map(|k| k.ext), Some("png"));
         assert!(sniff_avatar(b"not-an-image").is_none());
+    }
+
+    #[test]
+    fn avatar_paths_stay_under_avatars_dir() {
+        let dir = PathBuf::from("/tmp/bookclerk-files");
+        let path = avatar_path_with_ext(&dir, 7, "png").expect("png");
+        assert!(path.starts_with(dir.join("avatars")));
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("7.png"));
+        assert!(avatar_path_with_ext(&dir, 7, "exe").is_none());
+        // Trusted files_dir is used verbatim (including `..`); the leaf name is
+        // still numeric + allowlisted and stays under that dir's `avatars/`.
+        let nested = avatar_path_with_ext(Path::new("/tmp/bookclerk-files/../data"), 7, "png")
+            .expect("verbatim files_dir");
+        assert_eq!(
+            nested,
+            PathBuf::from("/tmp/bookclerk-files/../data/avatars/7.png")
+        );
     }
 
     #[tokio::test]

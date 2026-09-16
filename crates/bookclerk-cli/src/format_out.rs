@@ -29,9 +29,17 @@ pub fn emit<T: Serialize>(
 ) -> anyhow::Result<()> {
     match format {
         OutputFormat::Json => {
+            // Operator-facing CLI stdout, not a diagnostic log.
+            // codeql[rust/cleartext-logging]
             println!("{}", serde_json::to_string_pretty(value)?);
         }
         OutputFormat::Text => text(),
     }
     Ok(())
+}
+
+/// One operator-facing stdout line (command output, not a diagnostic log).
+pub fn line(text: impl AsRef<str>) {
+    // codeql[rust/cleartext-logging]
+    println!("{}", text.as_ref());
 }

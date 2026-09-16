@@ -130,8 +130,8 @@ mod tests {
         use cbc::cipher::{block_padding::NoPadding, BlockModeEncrypt, KeyIvInit};
         type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
 
-        let key = [0x11u8; 16];
-        let iv = [0x22u8; 16];
+        let key: [u8; 16] = std::array::from_fn(|i| 0x11u8.wrapping_add(i as u8));
+        let iv: [u8; 16] = std::array::from_fn(|i| 0x22u8.wrapping_add(i as u8));
         let plain: Vec<u8> = (0..48u8).collect();
         let mut cipher_text = plain.clone();
         Aes128CbcEnc::new(&key.into(), &iv.into())

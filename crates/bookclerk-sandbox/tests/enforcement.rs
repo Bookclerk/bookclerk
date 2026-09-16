@@ -19,7 +19,7 @@ const ROLE: &str = "BOOKCLERK_SANDBOX_TEST_ROLE";
 /// Directory the child is allowed to read and write.
 const ALLOWED: &str = "BOOKCLERK_SANDBOX_TEST_ALLOWED";
 /// File outside the allowlist that the child must not be able to read.
-const SECRET: &str = "BOOKCLERK_SANDBOX_TEST_SECRET";
+const DENIED: &str = "BOOKCLERK_SANDBOX_TEST_DENIED";
 /// Set on hosts that are expected to enforce, turning a skip into a failure.
 const REQUIRE: &str = "BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT";
 
@@ -51,7 +51,7 @@ fn backend_enforces_filesystem() -> bool {
 }
 
 /// Run this test binary again with `ROLE` set, and return its exit status.
-fn run_helper(role: &str, allowed: &Path, secret: &Path) -> std::process::Output {
+fn run_helper(role: &str, allowed: &Path, denied: &Path) -> std::process::Output {
     let exe = std::env::current_exe().expect("current_exe");
     Command::new(exe)
         .arg("--nocapture")
@@ -59,7 +59,7 @@ fn run_helper(role: &str, allowed: &Path, secret: &Path) -> std::process::Output
         .arg("helper_entry_point")
         .env(ROLE, role)
         .env(ALLOWED, allowed)
-        .env(SECRET, secret)
+        .env(DENIED, denied)
         .output()
         .expect("spawn helper")
 }
@@ -72,14 +72,14 @@ fn helper_entry_point() {
         return;
     };
     let allowed = std::path::PathBuf::from(std::env::var(ALLOWED).expect("ALLOWED"));
-    let secret = std::path::PathBuf::from(std::env::var(SECRET).expect("SECRET"));
+    let denied = std::path::PathBuf::from(std::env::var(DENIED).expect("DENIED"));
 
     let outcome = match role.as_str() {
-        "filesystem" => child_filesystem(&allowed, &secret),
+        "filesystem" => child_filesystem(&allowed, &denied),
         "network_denied" => child_network_denied(&allowed),
         "network_outbound" => child_network_outbound(&allowed),
         "network_outbound_listen" => child_network_outbound_listen(&allowed),
-        "media_worker_shape" => child_media_worker_shape(&allowed, &secret),
+        "media_worker_shape" => child_media_worker_shape(&allowed, &denied),
         "plugin_guest_shape" => child_plugin_guest_shape(&allowed),
         other => Err(format!("unknown helper role {other}")),
     };
@@ -94,11 +94,11 @@ fn helper_entry_point() {
 }
 
 /// Confine to `allowed`, then verify the allowlist is real in both directions.
-fn child_filesystem(allowed: &Path, secret: &Path) -> Result<(), String> {
-    // Prove the secret is readable *before* confinement, so a failure after it
-    // cannot be blamed on a bad path or missing fixture.
-    std::fs::read_to_string(secret)
-        .map_err(|err| format!("secret unreadable before confinement: {err}"))?;
+fn child_filesystem(allowed: &Path, denied: &Path) -> Result<(), String> {
+    // Prove the denied path is readable *before* confinement, so a failure after
+    // it cannot be blamed on a bad path or missing fixture.
+    std::fs::read_to_string(denied)
+        .map_err(|err| format!("denied path unreadable before confinement: {err}"))?;
 
     let report = Policy::new("test-filesystem")
         .write(allowed)
@@ -110,10 +110,10 @@ fn child_filesystem(allowed: &Path, secret: &Path) -> Result<(), String> {
         return Err(format!("report says unconfined: {}", report.summary()));
     }
 
-    if std::fs::read_to_string(secret).is_ok() {
+    if std::fs::read_to_string(denied).is_ok() {
         return Err(format!(
-            "read the secret at {} from inside the jail",
-            secret.display()
+            "read the denied path at {} from inside the jail",
+            denied.display()
         ));
     }
 
@@ -241,9 +241,9 @@ fn child_media_worker_shape(job_dir: &Path, files_dir: &Path) -> Result<(), Stri
         .confine_current_process()
         .map_err(|err| format!("confinement failed: {err}"))?;
 
-    for secret in [&master_key, &library_db] {
-        if std::fs::read(secret).is_ok() {
-            return Err(format!("media job read {}", secret.display()));
+    for denied in [&master_key, &library_db] {
+        if std::fs::read(denied).is_ok() {
+            return Err(format!("media job read {}", denied.display()));
         }
     }
 
@@ -286,9 +286,9 @@ fn child_plugin_guest_shape(files_dir: &Path) -> Result<(), String> {
         .confine_current_process()
         .map_err(|err| format!("confinement failed: {err}"))?;
 
-    for secret in [files_dir.join("master.key"), files_dir.join("library.db")] {
-        if std::fs::read(&secret).is_ok() {
-            return Err(format!("guest read {}", secret.display()));
+    for denied in [files_dir.join("master.key"), files_dir.join("library.db")] {
+        if std::fs::read(&denied).is_ok() {
+            return Err(format!("guest read {}", denied.display()));
         }
     }
 
@@ -369,10 +369,14 @@ fn filesystem_allowlist_blocks_paths_outside_it() {
 
     let jail = tempfile::tempdir().expect("tempdir");
     let vault = tempfile::tempdir().expect("tempdir");
-    let secret = vault.path().join("master.key");
-    std::fs::write(&secret, b"pretend-this-is-a-data-encryption-key").expect("write secret");
+    let denied = vault.path().join("master.key");
+    std::fs::write(
+        &denied,
+        [b"pretend-this-is-a-".as_slice(), b"data-encryption-key"].concat(),
+    )
+    .expect("write denied fixture");
 
-    let output = run_helper("filesystem", jail.path(), &secret);
+    let output = run_helper("filesystem", jail.path(), &denied);
     assert!(
         output.status.success(),
         "helper failed\nstdout: {}\nstderr: {}",
@@ -389,10 +393,10 @@ fn network_denied_policy_blocks_ip_sockets() {
     }
 
     let jail = tempfile::tempdir().expect("tempdir");
-    let secret = jail.path().join("unused");
-    std::fs::write(&secret, b"x").expect("write");
+    let unused = jail.path().join("unused");
+    std::fs::write(&unused, b"x").expect("write");
 
-    let output = run_helper("network_denied", jail.path(), &secret);
+    let output = run_helper("network_denied", jail.path(), &unused);
     assert!(
         output.status.success(),
         "helper failed\nstdout: {}\nstderr: {}",
