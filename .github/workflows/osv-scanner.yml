@@ -32,7 +32,7 @@ jobs:
   scan-pr:
     name: PR scan
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@v2.5.0
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@v2.5.1
     with:
       # Fork and Dependabot pull_request runs get a read-only GITHUB_TOKEN, so
       # security-events: write is not granted and SARIF upload would fail the job.
@@ -58,7 +58,7 @@ jobs:
       github.event_name == 'push' ||
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch'
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.5.0
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.5.1
     with:
       # Report via Code Scanning SARIF; do not fail push/schedule runs on
       # already-known advisories (those are triaged in the Security tab).
